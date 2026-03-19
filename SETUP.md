@@ -16,6 +16,7 @@ Avoid the standard Anaconda distribution. Instead, install the `arm64`-optimized
 ```bash
 # Configure miniconda3
 brew install miniconda
+source ~/miniconda3/bin/activate
 conda config --add channels conda-forge
 conda config --set channel_priority strict
 

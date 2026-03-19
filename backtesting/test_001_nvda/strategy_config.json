@@ -1,0 +1,8 @@
+{
+  "model_name": "test-001-nvda",
+  "stock_symbol": "NVDA",
+  "data_src": "yfinance",
+  "initial_cash": 100000,
+  "backtest_start": "2022-01-01",
+  "backtest_end": "2023-01-01"
+}
