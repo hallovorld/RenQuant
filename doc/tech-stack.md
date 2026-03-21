@@ -9,7 +9,7 @@
 | ML | XGBoost + scikit-learn | Q-value estimation, preprocessing |
 | Fast backtest | backtesting.py | In-notebook iteration and validation |
 | Final backtest | QuantConnect LEAN | Rigorous, production-grade event-driven backtesting |
-| Runtime | Miniforge (arm64) | Apple Silicon-native Python environment |
+| Runtime | Miniconda (arm64) | Apple Silicon-native Python environment |
 | Containers | Docker Desktop | LEAN engine isolation |
 
 ---
@@ -69,9 +69,9 @@ LEAN is used only for final validation, not for every iteration, which limits th
 
 ---
 
-## Runtime: Miniforge (arm64)
+## Runtime: Miniconda (arm64)
 
-Standard Anaconda/conda ships x86_64 packages that run under Rosetta 2 emulation on Apple Silicon. Miniforge ships arm64-native packages, which means:
+RenQuant uses the Apple Silicon build of Miniconda and configures `conda-forge` with strict channel priority. That keeps the Python environment arm64-native, which means:
 - XGBoost, NumPy, and Pandas use NEON SIMD instructions natively
 - No emulation overhead on M-series chips
 - Packages like `pyarrow` and `scipy` compile correctly without Rosetta compatibility issues

@@ -1,6 +1,6 @@
 # Setup Guide
 
-Optimized for Apple Silicon (M-Series). All packages are arm64-native via Miniforge.
+Optimized for Apple Silicon (M-Series). All packages are arm64-native via Miniconda with `conda-forge` configured as the primary channel.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ Optimized for Apple Silicon (M-Series). All packages are arm64-native via Minifo
 RenQuant uses a **single conda environment** for everything — research, data, and ML.
 
 ```bash
-# Install Miniforge (arm64-optimized conda)
+# Install Miniconda (Apple Silicon arm64 build)
 brew install miniconda
 source ~/miniconda3/bin/activate
 

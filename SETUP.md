@@ -1,6 +1,6 @@
 # RenQuant Setup Guide ⚙️
 
-This guide is specifically tailored for the **Apple Silicon (M4 Pro)** architecture. To avoid complex C++ compilation errors and package conflicts, we use `Miniforge` for base environment management and strictly isolate the research, modeling, and backtesting environments.
+This guide is specifically tailored for the **Apple Silicon (M4 Pro)** architecture. To avoid complex C++ compilation errors and package conflicts, we use `Miniconda` for base environment management and strictly isolate the research, modeling, and backtesting environments.
 
 ## 0. Prerequisites
 
@@ -9,9 +9,9 @@ This guide is specifically tailored for the **Apple Silicon (M4 Pro)** architect
    - Ensure you download the Apple Silicon version.
    - **⚠️ Crucial Performance Tweak**: Open Docker Settings -> `Resources` -> `Memory`, and **allocate at least 16GB** (leveraging the host's 48GB capacity). This prevents the LEAN engine from crashing during heavy backtests.
 
-## 1. Base Environment Management (Miniforge)
+## 1. Base Environment Management (Miniconda)
 
-Avoid the standard Anaconda distribution. Instead, install the `arm64`-optimized Miniforge:
+Avoid the full Anaconda distribution. Instead, install the Apple Silicon `arm64` build of Miniconda:
 
 ```bash
 # Configure miniconda3

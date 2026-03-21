@@ -8,7 +8,7 @@ RenQuant is a personal quantitative trading workstation for Apple Silicon. It im
 
 ## Environment Setup
 
-Single conda environment (Miniforge, arm64-optimized):
+Single conda environment (Miniconda, Apple Silicon arm64):
 
 ```bash
 conda create -n renquant python=3.10
