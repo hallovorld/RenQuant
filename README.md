@@ -32,26 +32,39 @@ This project is highly optimized for the **Apple Silicon (M-Series)** architectu
 
 \`\`\`text
 RenQuant/
-├── Notebooks/             # Jupyter Notebooks — research, feature engineering, model training
-├── backtesting/           # QuantConnect LEAN strategies + serialized models
-│   └── test_001_nvda/     # NVDA strategy (main.py, config, JSON models)
-├── models/                # Trained ML models (.json)
-├── SETUP.md               # Environment configuration and deployment guide
-└── README.md              # Project overview
+├── common/                # Shared Python library (import as `import common as rq`)
+│   ├── config.py          # Config loading and path utilities
+│   ├── data.py            # OpenBB/yfinance OHLCV fetching
+│   ├── indicators.py      # MACD, RSI, CCI computation
+│   ├── features.py        # Gate signals, RL transition builder
+│   ├── training.py        # Fitted Q-Iteration, action scoring
+│   └── plotting.py        # Backtest dashboard and plot utilities
+├── Notebooks/
+│   ├── test_001_nvda.ipynb        # Strategy research: data → FQI → export models
+│   └── backtest_analysis.ipynb   # Backtest visualisation: signals, equity, stats
+├── backtesting/
+│   └── test_001_nvda/     # NVDA strategy (LEAN main.py, config, JSON models)
+├── doc/                   # Architecture, usage, setup, and tech-stack docs
+└── README.md
 \`\`\`
 
 ## 🚀 Quick Start
 
-Please refer to [`SETUP.md`](./SETUP.md) to configure your local environment.
+Please refer to [`doc/setup.md`](./doc/setup.md) to configure your local environment.
 
-**One environment for everything:**
+**1. Research — train and export models:**
 ```bash
 conda activate renquant
-jupyter lab  # research & fast iteration
+jupyter lab  # open Notebooks/test_001_nvda.ipynb and run all cells
 ```
 
-**Run a LEAN backtest (validation only):**
+**2. Validation — run rigorous LEAN backtest:**
 ```bash
 cd backtesting/test_001_nvda
 lean backtest .
+```
+
+**3. Analysis — visualize backtest results:**
+```bash
+# open Notebooks/backtest_analysis.ipynb and run all cells
 ```

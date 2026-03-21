@@ -21,11 +21,11 @@ lean login
 
 Docker must be allocated 16GB+ memory for LEAN engine.
 
-## Workflow: Two Modes
+## Workflow: Three Modes
 
-**Research mode** (fast iteration, no Docker): Use `backtesting.py` directly inside notebooks to test strategy ideas quickly.
+**Research mode** (fast iteration, no Docker): Run `Notebooks/test_001_nvda.ipynb` to train and export models.
 
-**Validation mode** (final backtest): Once a strategy is ready, export models to JSON and run LEAN for rigorous event-driven backtesting.
+**Validation mode** (final backtest): Run LEAN on the exported models.
 
 ```bash
 # Validation only — not for every iteration
@@ -33,46 +33,54 @@ cd backtesting/test_001_nvda
 lean backtest .
 ```
 
+**Analysis mode**: Open `Notebooks/backtest_analysis.ipynb` to visualize the latest LEAN result.
+
+## Shared Library: `common/`
+
+All reusable notebook/research logic lives in `common/`. Import as `import common as rq`.
+**Do not import `common/` from inside `backtesting/` — LEAN Docker cannot access it.**
+
+| Module | Key exports |
+|--------|-------------|
+| `common/config.py` | `load_strategy_config`, `build_model_path` |
+| `common/data.py` | `fetch_ohlcv` |
+| `common/indicators.py` | `add_indicators`, `compute_macd/rsi/cci` |
+| `common/features.py` | `add_gate_signals`, `build_transitions`, `STATE_COLUMNS` |
+| `common/training.py` | `fitted_q_iteration`, `score_valid_actions` |
+| `common/plotting.py` | `backtest_dashboard`, `load_latest_backtest`, parse/plot helpers |
+
 ## Architecture
 
-### Three-Layer Pipeline
+### Pipeline
 
-**1. Research Layer** (`Notebooks/`) — run in `renquant` conda env
-- Fetches OHLCV data via OpenBB/yfinance
-- Computes technical indicators (MACD, RSI, CCI)
-- Trains XGBoost Q-value models via Fitted Q-Iteration (8 iterations, gamma=0.95, 5bps transaction cost)
-- Exports 3 model JSON files (hold/buy/sell actions) + policy metadata JSON
+**1. Research** (`Notebooks/test_001_nvda.ipynb`) — `renquant` conda env
+- `rq.fetch_ohlcv` → `rq.add_indicators` → `rq.add_gate_signals` → `rq.build_transitions`
+- `rq.fitted_q_iteration` (8 iterations, gamma=0.95, 5bps transaction cost)
+- Exports 3 model JSON files (hold/buy/sell) + policy metadata JSON
 
-**2. Model Layer** (`models/`, `backtesting/test_001_nvda/*.json`)
-- Models are serialized as JSON (not pickle) for LEAN compatibility
-- Each model corresponds to one Q-value: `Q(state, hold)`, `Q(state, buy)`, `Q(state, sell)`
-- Policy metadata (`*-policy-metadata.json`) defines: state columns, indicator parameters, gate rules (position constraints), action definitions
+**2. Model Artifacts** (`backtesting/test_001_nvda/*.json`)
+- JSON (not pickle) for LEAN compatibility
+- `*-policy-metadata.json` is the contract between research and backtesting layers
 
-**3. Backtesting Layer** (`backtesting/`) — QuantConnect LEAN engine (Docker)
-- `main.py`: `QCAlgorithm` subclass that loads JSON models at `Initialize()`, then each trading day fetches 60-day history, computes features, runs XGBoost inference, and picks `argmax Q(s, a)`
-- `strategy_config.json`: symbol, initial cash ($100k), backtest date range
-- `config.json`: LEAN algorithm entry point configuration
+**3. Backtesting** (`backtesting/`) — QuantConnect LEAN engine (Docker)
+- `main.py`: `QCAlgorithm` that loads JSON models, recomputes indicators inline each day, picks `argmax Q(s, a)`
+- `config.py`: self-contained LEAN-local config loader (no `common/` dependency)
 
-### Data Flow
-
-```
-Notebook → trains XGBoost → exports *.json models
-                                    ↓
-                          LEAN loads models at init
-                                    ↓
-                    Each day: history → features → argmax Q → order
-```
+**4. Analysis** (`Notebooks/backtest_analysis.ipynb`)
+- `rq.load_latest_backtest` → `rq.backtest_dashboard`
+- 4-panel dashboard: price+signals, equity curve, drawdown, statistics table
 
 ### State Features
 
-All strategies use: `macd_line`, `macd_signal`, `macd_hist`, `rsi`, `cci`, `position_flag`
+All strategies: `macd_line`, `macd_signal`, `macd_hist`, `rsi`, `cci`, `position_flag`
 
-MACD(12,26,9), RSI(14), CCI(20) — parameters stored in policy metadata, must match between notebook and LEAN algorithm.
+MACD(12,26,9), RSI(14), CCI(20) — stored in policy metadata, must match between notebook and `main.py`.
 
 ### Adding a New Strategy
 
 1. Copy `Notebooks/test_001_nvda.ipynb` → new notebook
-2. Update `strategy_config.json` with new symbol/dates
-3. Train models, export JSON files to `backtesting/<strategy_name>/`
-4. Copy and adapt `main.py` to load the new model files
-5. Run `lean backtest .` from the strategy directory
+2. Copy `backtesting/test_001_nvda/` → `backtesting/<strategy_name>/`
+3. Update `strategy_config.json` (symbol, dates, model name)
+4. Run notebook → exports JSON models to the strategy directory
+5. `lean backtest .` from the strategy directory
+6. Open `backtest_analysis.ipynb`, point `STRATEGY_DIR` at the new strategy

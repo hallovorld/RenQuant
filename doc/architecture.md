@@ -35,8 +35,32 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 │    2. Compute features (MACD, RSI, CCI)             │
 │    3. Apply gate rules                              │
 │    4. argmax Q(state, action) → order               │
+│  - Results: backtests/<timestamp>/<id>.json         │
+└─────────────────────────────────────────────────────┘
+                        │ JSON results
+┌───────────────────────▼─────────────────────────────┐
+│  Analysis (Notebooks/backtest_analysis.ipynb)       │
+│  - Load latest LEAN result via common.plotting      │
+│  - Price chart + model buy/sell signals             │
+│  - Equity curve + drawdown (from LEAN trades)       │
+│  - Performance statistics table                     │
 └─────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Shared Library: `common/`
+
+All reusable logic lives in `common/` and is imported by notebooks as `import common as rq`. It is **not** available inside the LEAN Docker container — the backtesting layer remains self-contained.
+
+| Module | Contents |
+|--------|----------|
+| `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
+| `common/data.py` | `fetch_ohlcv` — OpenBB/yfinance data fetching |
+| `common/indicators.py` | `compute_macd`, `compute_rsi`, `compute_cci`, `add_indicators` |
+| `common/features.py` | `add_gate_signals`, `build_transitions`, `STATE_COLUMNS` |
+| `common/training.py` | `fitted_q_iteration`, `score_valid_actions` |
+| `common/plotting.py` | `backtest_dashboard`, `load_latest_backtest`, parse/plot utilities |
 
 ---
 

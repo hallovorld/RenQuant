@@ -39,8 +39,7 @@ conda activate renquant
 
 # Install all dependencies
 pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab
-pip install "openbb[all]" openbb-cli
-pip install backtesting
+pip install "openbb[all]" openbb-cli openbb-mcp-server
 
 # Build OpenBB extensions (takes a few minutes)
 openbb-build

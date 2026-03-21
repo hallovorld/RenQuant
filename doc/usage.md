@@ -2,12 +2,13 @@
 
 ## Workflow Overview
 
-RenQuant uses a two-mode workflow to keep iteration fast without sacrificing backtest rigor:
+RenQuant uses a three-mode workflow:
 
-| Mode | Tool | When to use |
-|------|------|-------------|
-| **Research** | `backtesting.py` inside notebook | Exploring ideas, tuning parameters, fast feedback |
-| **Validation** | QuantConnect LEAN (Docker) | Final verification before committing to a strategy |
+| Mode | Notebook / Tool | When to use |
+|------|-----------------|-------------|
+| **Research** | `Notebooks/test_001_nvda.ipynb` | Train models and export JSON artifacts |
+| **Validation** | QuantConnect LEAN (Docker) | Rigorous event-driven backtest |
+| **Analysis** | `Notebooks/backtest_analysis.ipynb` | Visualise LEAN results |
 
 ---
 
@@ -19,14 +20,12 @@ conda activate renquant
 jupyter lab
 ```
 
-Open the relevant notebook in `Notebooks/`. The notebook pipeline runs top-to-bottom:
+Open `Notebooks/test_001_nvda.ipynb`. The pipeline runs top-to-bottom:
 
-1. **Cell 1 — Data fetch**: pulls OHLCV history via OpenBB or yfinance
-2. **Cell 2 — Supervised baseline**: trains an XGBClassifier on return direction (sanity check)
-3. **Cell 3 — RL transitions**: generates `(state, action, reward, next_state)` tuples for all position/signal combinations
-4. **Cell 4 — Fitted Q-Iteration**: trains 3 XGBRegressor models (one per action) over 8 iterations, exports JSON artifacts
-
-For quick strategy iteration, use `backtesting.py` at the end of Cell 4 to run a fast in-notebook backtest before exporting to LEAN.
+1. **Cell 1 — Setup + baseline**: configures paths via `import common as rq`, trains a deprecated XGBClassifier baseline
+2. **Cell 2 — Data + transitions**: fetches OHLCV for the configured date range, computes MACD/RSI/CCI, applies gate signals, builds RL transition tuples
+3. **Cell 3 — FQI training**: runs Fitted Q-Iteration (8 iterations, γ=0.95) to train 3 XGBRegressor Q-value models; produces a state catalog showing the policy
+4. **Cell 4 — Export**: saves `*-q-hold.json`, `*-q-buy.json`, `*-q-sell.json`, and `*-policy-metadata.json` to the strategy directory
 
 ---
 
@@ -54,6 +53,23 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
 
 ---
 
+## Backtest Analysis
+
+After a LEAN run, open `Notebooks/backtest_analysis.ipynb` to visualize results.
+
+The notebook auto-loads the most recent backtest from `backtests/` and renders a 4-panel dashboard:
+
+| Panel | Content |
+|-------|---------|
+| **Price + Signals** | Close price with model buy/sell gate signals (▲/▼); LEAN entry/exit points overlaid when trades exist |
+| **Equity Curve** | Portfolio value over time with profit/loss shading; falls back to "no data" when LEAN produced 0 trades |
+| **Drawdown** | Rolling drawdown (%) with max drawdown labelled |
+| **Statistics** | Full performance table: win rate, Sharpe, Sortino, CAR, max drawdown, alpha, beta, fees |
+
+The dashboard is also saved as `dashboard.png` in the backtest run directory.
+
+---
+
 ## Adding a New Strategy
 
 1. **Copy the notebook**
@@ -68,17 +84,15 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
 
 3. **Update `strategy_config.json`** in the new directory — change `model_name`, `stock_symbol`, and date range.
 
-4. **Run the notebook** — update the ticker and dates at the top, then run all cells. This exports:
+4. **Run the notebook** — in Cell 1, update `STRATEGY_DIR` to point at the new strategy directory, then run all cells. Models are exported directly into the strategy directory:
    - `<model_name>-q-hold.json`
    - `<model_name>-q-buy.json`
    - `<model_name>-q-sell.json`
    - `<model_name>-policy-metadata.json`
 
-5. **Copy models** to the new strategy directory (the notebook exports them to a path configured in the notebook).
+5. **Update `main.py`** — rename the class (e.g. `XGBoostAAPLStrategy`) and verify `CONFIG` loads the right `model_name`.
 
-6. **Update `main.py`** — rename the class (e.g. `XGBoostAAPLStrategy`) and verify `CONFIG` loads the right `model_name`.
-
-7. **Validate**:
+6. **Validate**:
    ```bash
    cd backtesting/<new_strategy>
    lean backtest .
@@ -89,13 +103,26 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
 ## File Reference
 
 ```
+common/                            # Shared library — import as `import common as rq`
+├── config.py                      # load_strategy_config, build_model_path
+├── data.py                        # fetch_ohlcv (OpenBB)
+├── indicators.py                  # compute_macd / rsi / cci, add_indicators
+├── features.py                    # add_gate_signals, build_transitions, STATE_COLUMNS
+├── training.py                    # fitted_q_iteration, score_valid_actions
+└── plotting.py                    # backtest_dashboard, load_latest_backtest, plot helpers
+
+Notebooks/
+├── test_001_nvda.ipynb            # Strategy research: data → FQI → export JSON models
+└── backtest_analysis.ipynb        # Backtest visualisation: signals, equity, drawdown, stats
+
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference
-├── config.py                      # Config loader utilities
+├── config.py                      # LEAN-local config loader (self-contained for Docker)
 ├── strategy_config.json           # Symbol, dates, cash — edit this to change backtest params
 ├── config.json                    # LEAN entry point (rarely needs editing)
 ├── <model>-policy-metadata.json   # State columns, indicator params, gate rules
 ├── <model>-q-hold.json            # XGBoost Q-value model for hold action
 ├── <model>-q-buy.json             # XGBoost Q-value model for buy action
-└── <model>-q-sell.json            # XGBoost Q-value model for sell action
+├── <model>-q-sell.json            # XGBoost Q-value model for sell action
+└── backtests/<timestamp>/         # LEAN output: result JSON, logs, dashboard.png
 ```
