@@ -32,14 +32,26 @@ This project is highly optimized for the **Apple Silicon (M-Series)** architectu
 
 \`\`\`text
 RenQuant/
-├── data/                  # Local cache for market data and feature sets
-├── research/              # Jupyter Notebooks (EDA, Factor Mining, OpenBB experiments)
-├── models/                # Trained machine learning models (.pkl or .json)
-├── strategies/            # QuantConnect LEAN strategy scripts (Python/C#)
-├── setup.md               # Environment configuration and deployment guide
+├── Notebooks/             # Jupyter Notebooks — research, feature engineering, model training
+├── backtesting/           # QuantConnect LEAN strategies + serialized models
+│   └── test_001_nvda/     # NVDA strategy (main.py, config, JSON models)
+├── models/                # Trained ML models (.json)
+├── SETUP.md               # Environment configuration and deployment guide
 └── README.md              # Project overview
 \`\`\`
 
 ## 🚀 Quick Start
 
-Please refer to [`setup.md`](./setup.md) to configure your local environment and install dependencies.
+Please refer to [`SETUP.md`](./SETUP.md) to configure your local environment.
+
+**One environment for everything:**
+```bash
+conda activate renquant
+jupyter lab  # research & fast iteration
+```
+
+**Run a LEAN backtest (validation only):**
+```bash
+cd backtesting/test_001_nvda
+lean backtest .
+```

@@ -20,30 +20,21 @@ source ~/miniconda3/bin/activate
 conda config --add channels conda-forge
 conda config --set channel_priority strict
 
-# Create and activate the environment
+# Create and activate the single unified environment
 conda create -n renquant python=3.10 -y
 conda activate renquant
 
-# Install core data processing and ML libraries
+# Install all dependencies in one environment
 # XGBoost will automatically detect and utilize the Mac's multi-core CPU for acceleration
 pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab
+pip install "openbb[all]" openbb-cli
+pip install backtesting
 
-
-# Create an isolated environment
-conda create -n openbb python=3.10 -y
-conda activate openbb
-
-# Install OpenBB core and CLI interface
-pip install "openbb[all]"
-pip install openbb-cli
+# Build OpenBB extensions
 openbb-build
 
-# Test the installation (this will launch the interactive terminal)
+# Test OpenBB installation (launches the interactive terminal)
 openbb
-
-
-# Return to the base environment
-conda deactivate
 
 # Install the LEAN CLI tool
 pip install lean
