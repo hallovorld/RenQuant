@@ -281,3 +281,56 @@ def backtest_dashboard(
     plot_stats_table(ax_stats, stats)
 
     return fig
+
+
+# ── Normalized performance chart ──────────────────────────────────────
+
+def plot_normalized_performance(
+    ax,
+    equity: pd.Series,
+    benchmark: pd.Series | None = None,
+    trades: pd.DataFrame | None = None,
+    title: str = "Normalized Performance",
+):
+    """Plot strategy vs benchmark normalized to 1.0, with trade entry markers.
+
+    Args:
+        ax: Matplotlib axes.
+        equity: Portfolio equity series.
+        benchmark: Optional benchmark equity series (e.g. buy-and-hold).
+        trades: LEAN closed-trades DataFrame (from ``parse_closed_trades``).
+            Must have ``entry_time``, ``entry_price``, ``direction`` columns.
+    """
+    norm_eq = equity / equity.iloc[0]
+    ax.plot(norm_eq.index, norm_eq.values, color="#4a90d9", lw=1.5, label="Strategy")
+
+    if benchmark is not None:
+        norm_bm = benchmark / benchmark.iloc[0]
+        ax.plot(norm_bm.index, norm_bm.values, color="#aaaaaa", lw=1.2,
+                linestyle="--", label="Benchmark")
+
+    if trades is not None and not trades.empty:
+        # Normalize entry prices at the closest equity value
+        longs = trades[trades["direction"].str.lower().str.contains("long")]
+        shorts = trades[~trades["direction"].str.lower().str.contains("long")]
+
+        if not longs.empty:
+            long_idx = longs["entry_time"]
+            long_vals = [norm_eq.asof(t) for t in long_idx]
+            ax.scatter(long_idx, long_vals, marker="^", color="#2ecc71",
+                       s=100, zorder=5, edgecolors="white", lw=0.6,
+                       label=f"Long entry ({len(longs)})")
+
+        if not shorts.empty:
+            short_idx = shorts["entry_time"]
+            short_vals = [norm_eq.asof(t) for t in short_idx]
+            ax.scatter(short_idx, short_vals, marker="v", color="#e74c3c",
+                       s=100, zorder=5, edgecolors="white", lw=0.6,
+                       label=f"Short entry ({len(shorts)})")
+
+    ax.axhline(1.0, color="#cccccc", lw=0.8, linestyle=":")
+    ax.set_title(title, fontsize=11)
+    ax.set_ylabel("Normalized Value")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    _style_date_axis(ax)

@@ -5,10 +5,14 @@
 | Layer | Tool | Role |
 |-------|------|------|
 | Data | OpenBB + yfinance | OHLCV and financial data fetching |
+| Data cache | Parquet (pyarrow) | Local storage for fetched data |
 | Research | JupyterLab | Interactive development and model training |
-| ML | XGBoost + scikit-learn | Q-value estimation, preprocessing |
-| Fast backtest | backtesting.py | In-notebook iteration and validation |
+| ML | XGBoost + scikit-learn | Q-value estimation, classification, preprocessing |
+| Learners | RTLearner, BagLearner, TabularQLearner | Custom tree ensemble and Q-learning primitives |
+| Optimization | SciPy (Nelder-Mead) | Indicator parameter search |
+| Portfolio sim | common/portfolio.py | Local portfolio simulation for quick iteration |
 | Final backtest | QuantConnect LEAN | Rigorous, production-grade event-driven backtesting |
+| Live trading | IBKR (via ib_insync, pending) | Real-time order execution |
 | Runtime | Miniconda (arm64) | Apple Silicon-native Python environment |
 | Containers | Docker Desktop | LEAN engine isolation |
 
@@ -20,19 +24,26 @@
 
 **yfinance** is used as a lightweight fallback for simple OHLCV pulls during rapid prototyping. It requires no API key and is fast for single-ticker daily data.
 
-Why not just yfinance? yfinance covers only price/volume. When the project expands to fundamentals, macro indicators, or alternative data, OpenBB provides a single consistent interface across all data types.
+**Parquet caching**: Fetched data is cached locally at `data/ohlcv/{SYMBOL}/1d.parquet`. Subsequent calls to `fetch_ohlcv` hit the cache first, avoiding redundant network calls.
+
+**IBKR**: Interactive Brokers data source is stubbed out, pending TWS/Gateway setup. When configured, it will serve as both historical data provider and real-time data feed for live trading.
 
 ---
 
 ## Research: JupyterLab
 
-JupyterLab provides an interactive environment for the entire research pipeline: data exploration, feature engineering, model training, and fast iteration. Notebooks serve as living documents that combine code, outputs, and reasoning in one place — important for a first quant project where understanding each step matters.
+JupyterLab provides an interactive environment for the entire research pipeline: data exploration, feature engineering, model training, and fast iteration. Notebooks serve as living documents that combine code, outputs, and reasoning in one place.
 
 ---
 
-## ML: XGBoost
+## ML: XGBoost + Custom Learners
 
-XGBoost is used for both the supervised baseline (XGBClassifier) and the Q-value estimators (XGBRegressor) in Fitted Q-Iteration.
+**XGBoost** is used for the FQI model's Q-value estimators (XGBRegressor).
+
+**Custom learners** (ported from ML4T, cleaned up):
+- **RTLearner**: Random decision tree for classification (leaf nodes store majority class)
+- **BagLearner**: Bootstrap aggregation wrapper (Random Forest when wrapping RTLearner)
+- **TabularQLearner**: Q-table with epsilon-greedy exploration and optional Dyna experience replay
 
 Why XGBoost over alternatives:
 - **Interpretable**: tree-based models support feature importance, partial dependence plots, and SHAP values — fits the glass-box design goal
@@ -42,13 +53,13 @@ Why XGBoost over alternatives:
 
 ---
 
-## Fast Backtesting: backtesting.py
+## Portfolio Simulation: common/portfolio.py
 
-`backtesting.py` is a lightweight, pure-Python backtesting library that runs directly inside notebooks. It has no external dependencies, no Docker, and produces results in seconds.
+A local `compute_portvals()` function simulates portfolio value from trade schedules with commission and impact modeling. Used by:
+- The `OptimizationModel` for in-sample objective evaluation
+- Notebooks for quick backtesting without Docker/LEAN overhead
 
-Role in the workflow: **research-mode validation**. When tuning indicator parameters or testing a new signal idea, running LEAN for every iteration is too slow (Docker startup + full event-driven simulation). `backtesting.py` provides a fast sanity check before committing to LEAN validation.
-
-It does not replace LEAN — it handles transaction costs and slippage less rigorously and lacks corporate action adjustments.
+Does not replace LEAN — handles transaction costs less rigorously and lacks corporate action adjustments.
 
 ---
 
@@ -61,11 +72,21 @@ LEAN is an industrial-grade, event-driven backtesting engine used in production 
 - Live trading bridge (Alpaca, Interactive Brokers, etc.)
 
 Why LEAN despite the Docker overhead:
-- **Production parity**: the same algorithm code runs in backtesting and live trading — no rewrite required when moving to live deployment
-- **Corporate action correctness**: dividend and split handling matters for multi-year backtests; LEAN gets this right automatically
-- **Future-proofing**: as the project grows to multi-asset or live trading, LEAN scales without changing the backtesting infrastructure
+- **Production parity**: the same algorithm code runs in backtesting and live trading
+- **Corporate action correctness**: dividend and split handling matters for multi-year backtests
+- **Future-proofing**: as the project grows to multi-asset or live trading, LEAN scales
 
-LEAN is used only for final validation, not for every iteration, which limits the overhead cost.
+LEAN is used only for final validation, not for every iteration.
+
+---
+
+## Live Trading: IBKR
+
+The `live/` package provides a broker abstraction for live order execution:
+- **PaperBroker**: simulates fills locally for testing the full runner pipeline
+- **IBKRBroker**: connects to Interactive Brokers TWS/Gateway via `ib_insync` (stub, pending setup)
+
+The live runner loads the same JSON model artifacts that LEAN uses, ensuring consistency between backtested and live behavior.
 
 ---
 
@@ -76,17 +97,17 @@ RenQuant uses the Apple Silicon build of Miniconda and configures `conda-forge` 
 - No emulation overhead on M-series chips
 - Packages like `pyarrow` and `scipy` compile correctly without Rosetta compatibility issues
 
-All dependencies are installed in a **single `renquant` environment** — previously split into `renquant` and `openbb`, merged to reduce activation overhead and eliminate environment-switching friction.
+All dependencies are installed in a **single `renquant` environment**.
 
 ---
 
 ## Serialization: JSON over Pickle
 
-XGBoost models are saved as `.json` files rather than `.pkl`.
+All model artifacts are saved as `.json` files rather than `.pkl`.
 
-- **LEAN compatibility**: LEAN runs Python in a Docker container. The host filesystem is mounted, but pickle files carry Python version and library version constraints that can cause load failures across environments. JSON is version-agnostic.
+- **LEAN compatibility**: LEAN runs Python in a Docker container. Pickle files carry Python version and library version constraints that can cause load failures across environments. JSON is version-agnostic.
 - **Human-readable**: JSON model files can be inspected to verify tree structure, feature names, and hyperparameters
-- **Portability**: JSON files can be loaded by any language with an XGBoost binding (Python, C++, Java, R) — useful if the backtesting layer is ever ported to C#
+- **Portability**: JSON files can be loaded by any language with appropriate bindings
 
 ---
 

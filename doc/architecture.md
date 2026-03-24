@@ -6,44 +6,37 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 
 ---
 
-## Three-Layer Pipeline
+## Four-Layer Pipeline
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Layer 1: Research (Notebooks/)                     │
-│  - Fetch OHLCV via OpenBB / yfinance                │
-│  - Compute MACD, RSI, CCI                           │
-│  - Generate RL transitions                          │
-│  - Train XGBoost Q-models via Fitted Q-Iteration    │
-│  - Export: 3x *.json models + policy-metadata.json  │
+│  - Fetch OHLCV (yfinance/IBKR, cached as Parquet)  │
+│  - Compute indicators via registry                  │
+│  - Train model (Manual/RF/QL/FQI/Optimization)      │
+│  - Export: JSON model artifacts + policy-metadata    │
 └───────────────────────┬─────────────────────────────┘
                         │ JSON artifacts
 ┌───────────────────────▼─────────────────────────────┐
-│  Layer 2: Model (backtesting/<strategy>/*.json)     │
-│  - Q(state, hold)  → XGBRegressor JSON              │
-│  - Q(state, buy)   → XGBRegressor JSON              │
-│  - Q(state, sell)  → XGBRegressor JSON              │
-│  - policy-metadata → state cols, indicator params,  │
-│                       gate rules, transaction cost   │
-└───────────────────────┬─────────────────────────────┘
-                        │ loaded at Initialize()
-┌───────────────────────▼─────────────────────────────┐
-│  Layer 3: Backtesting (LEAN / Docker)               │
-│  - Load models at Initialize()                      │
-│  - Each trading day:                                │
-│    1. Fetch 60-day history                          │
-│    2. Compute features (MACD, RSI, CCI)             │
-│    3. Apply gate rules                              │
-│    4. argmax Q(state, action) → order               │
-│  - Results: backtests/<timestamp>/<id>.json         │
-└─────────────────────────────────────────────────────┘
-                        │ JSON results
-┌───────────────────────▼─────────────────────────────┐
-│  Analysis (Notebooks/backtest_analysis.ipynb)       │
-│  - Load latest LEAN result via common.plotting      │
-│  - Price chart + model buy/sell signals             │
-│  - Equity curve + drawdown (from LEAN trades)       │
-│  - Performance statistics table                     │
+│  Layer 2: Model Artifacts (backtesting/<strategy>/) │
+│  - JSON models (XGBoost, Q-table, rules, RF trees)  │
+│  - policy-metadata.json → state cols, indicator      │
+│    params, gate rules, model type                    │
+└────────────┬──────────────────────┬─────────────────┘
+             │ LEAN backtest        │ live runner
+┌────────────▼──────────┐  ┌───────▼─────────────────┐
+│  Layer 3: Backtesting  │  │  Layer 3b: Live Trading  │
+│  (LEAN / Docker)       │  │  (python -m live.runner)  │
+│  - Loads JSON models   │  │  - PaperBroker / IBKR    │
+│  - Daily inference     │  │  - Loads same artifacts   │
+│  - Event-driven sim    │  │  - Scheduled or --once    │
+└────────────┬──────────┘  └───────┬─────────────────┘
+             │                     │
+┌────────────▼─────────────────────▼─────────────────┐
+│  Layer 4: Analysis (Notebooks/backtest_analysis)    │
+│  - Load LEAN results or live logs                   │
+│  - 4-panel dashboard + normalized performance chart │
+│  - Performance statistics                           │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -51,16 +44,18 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 
 ## Shared Library: `common/`
 
-All reusable logic lives in `common/` and is imported by notebooks as `import common as rq`. It is **not** available inside the LEAN Docker container — the backtesting layer remains self-contained.
+All reusable logic lives in `common/` and is imported by notebooks as `import common`. It is **not** available inside the LEAN Docker container — the backtesting layer remains self-contained.
 
 | Module | Contents |
 |--------|----------|
 | `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
-| `common/data.py` | `fetch_ohlcv` — OpenBB/yfinance data fetching |
-| `common/indicators.py` | `compute_macd`, `compute_rsi`, `compute_cci`, `add_indicators` |
-| `common/features.py` | `add_gate_signals`, `build_transitions`, `STATE_COLUMNS` |
-| `common/training.py` | `fitted_q_iteration`, `score_valid_actions` |
-| `common/plotting.py` | `backtest_dashboard`, `load_latest_backtest`, parse/plot utilities |
+| `common/data/` | `fetch_ohlcv` (Parquet cache + yfinance/IBKR sources), `DataSource` ABC, `LocalStore` |
+| `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 8 indicators |
+| `common/models/` | `BaseModel` ABC, 5 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `create_model` factory |
+| `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
+| `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
+| `common/portfolio.py` | `compute_portvals`, `portfolio_stats` — local portfolio simulator |
+| `common/plotting.py` | `backtest_dashboard`, `plot_normalized_performance`, parse/plot utilities |
 
 ---
 
@@ -69,20 +64,17 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 **Location**: `Notebooks/`
 **Environment**: `renquant` conda env
 
-The notebook is the only place where training happens. It follows a 4-step pipeline:
+The notebook is where training happens. The typical workflow:
 
-1. **Data ingestion** — fetches daily OHLCV for a given ticker and date range
-2. **Supervised baseline** — trains an XGBClassifier on next-day return direction as a sanity check
-3. **Transition generation** — for each trading day, computes `(state, action, reward, next_state)` tuples:
-   - `state`: [macd_line, macd_signal, macd_hist, rsi, cci, position_flag]
-   - `action`: one of {hold, buy, sell}
-   - `reward`: immediate % return minus transaction cost (5 bps)
-   - Actions gated by buy/sell signals (MACD crossover + RSI confirmation)
-4. **Fitted Q-Iteration (FQI)** — trains Q-value estimators over 8 iterations:
-   - Initializes Q(s,a) = immediate reward
-   - Each iteration: `Q_target = reward + γ * max_a' Q(s', a')`, refits XGBRegressor
-   - `γ = 0.95` (values future rewards)
-   - Produces 3 separate XGBRegressor models, one per action
+1. **Data ingestion** — `common.fetch_ohlcv` fetches daily OHLCV (cached locally as Parquet)
+2. **Indicator computation** — `common.compute_indicators` applies any combination of registered indicators
+3. **Model training** — depends on model type:
+   - **Manual**: define threshold rules, no training needed
+   - **Classification**: label forward returns, train BagLearner(RTLearner) ensemble
+   - **Q-Learning**: discretize states, train Q-table over epochs
+   - **FQI**: build (s, a, r, s') transitions, run Fitted Q-Iteration with XGBoost
+   - **Optimization**: Nelder-Mead searches indicator params, trains inner Classification model
+4. **Export** — `model.save()` writes JSON artifacts to `backtesting/<strategy>/`
 
 ---
 
@@ -94,40 +86,50 @@ All artifacts are JSON (not pickle) — required for LEAN compatibility and huma
 
 | File | Contents |
 |------|----------|
-| `*-q-hold.json` | XGBoost model: Q(state, hold) |
-| `*-q-buy.json` | XGBoost model: Q(state, buy) |
-| `*-q-sell.json` | XGBoost model: Q(state, sell) |
-| `*-policy-metadata.json` | State columns, indicator parameters, gate rules, γ, transaction cost |
+| `*-policy-metadata.json` | Model type, state columns, indicator parameters, gate rules, hyperparams |
+| `*-q-hold/buy/sell.json` | XGBoost models (FQI) |
+| `*-rf-trees.json` | Random Forest tree structure (Classification) |
+| `*-qtable.json` + `*-bin-edges.json` | Q-table + discretization (Q-Learning) |
+| `*-manual-rules.json` | Threshold rules (Manual) |
 
-The policy metadata acts as a contract between Layer 1 and Layer 3 — both must use identical indicator parameters.
+The policy metadata acts as a contract between research and execution — both must use identical indicator parameters.
 
 ---
 
-## Layer 3: Backtesting
+## Layer 3: Backtesting (LEAN)
 
 **Location**: `backtesting/<strategy>/main.py`
 **Runtime**: QuantConnect LEAN engine (Docker)
 
 `main.py` implements `QCAlgorithm`:
 
-- **`Initialize()`** — reads `strategy_config.json`, loads policy metadata and 3 XGBoost models, sets 40-day warmup
+- **`Initialize()`** — reads `strategy_config.json`, loads policy metadata and model artifacts, sets warmup
 - **`OnData()`** — called once per trading day:
-  1. Fetches 60-day price history
-  2. Computes MACD(12,26,9), RSI(14), CCI(20) inline
-  3. Determines buy/sell gate signals (MACD crossover + RSI threshold)
-  4. Scores eligible actions via `model.predict(state)`; ineligible actions scored `-inf`
-  5. Executes `argmax Q(state, action)`: buy → `SetHoldings(1.0)`, sell → `Liquidate()`
+  1. Fetches price history
+  2. Computes indicators inline (duplicated from common/ — Docker constraint)
+  3. Determines gate signals
+  4. Scores eligible actions via model; executes argmax
 
-**Gate rules** (from policy metadata):
-- Buy eligible: MACD line crosses above signal AND RSI > 50 AND currently flat
-- Sell eligible: MACD line crosses below signal AND RSI < 50 AND currently long
-- Hold: always eligible (fallback)
+**Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
+
+---
+
+## Layer 3b: Live Trading
+
+**Location**: `live/`
+**Entry point**: `python -m live.runner --strategy <name> --broker paper|ibkr --once`
+
+The live runner loads the same model artifacts as LEAN but executes via broker API:
+
+- `PaperBroker` — simulates fills locally for testing
+- `IBKRBroker` — connects to Interactive Brokers TWS/Gateway (stub, pending IBKR setup)
+- Logs every signal and order to `live/logs/<strategy>/<date>.json`
 
 ---
 
 ## State Space
 
-All strategies share the same 6-feature state vector:
+Strategies define their own state features via `state_columns` in policy metadata. The default FQI state vector:
 
 | Feature | Description | Parameters |
 |---------|-------------|------------|
@@ -138,26 +140,29 @@ All strategies share the same 6-feature state vector:
 | `cci` | Commodity Channel Index | period=20 |
 | `position_flag` | 1 if long, 0 if flat | — |
 
-Parameters are stored in `policy-metadata.json` and must be identical in both the notebook (training) and `main.py` (inference).
+Other model types (Classification, Q-Learning) default to `rsi`, `macd_hist`, `cci` but can be configured with any registered indicators.
 
 ---
 
 ## Data Flow Summary
 
 ```
-yfinance / OpenBB
+yfinance / IBKR
+       ↓
+  Parquet cache (data/ohlcv/)
        ↓
   OHLCV DataFrame
        ↓
-  MACD, RSI, CCI computation
+  Indicator registry (compute_indicators)
        ↓
-  RL transition tuples (s, a, r, s')
+  Model training (Manual / RF / QL / FQI / Optimization)
        ↓
-  Fitted Q-Iteration (8 iterations, γ=0.95)
+  JSON artifacts → backtesting/<strategy>/
        ↓
-  3x XGBRegressor → exported as JSON
+  ┌─────────────────────────────────┐
+  │ LEAN backtest (Docker)          │
+  │ Live trader (IBKR / paper)      │
+  └─────────────────────────────────┘
        ↓
-  LEAN loads at Initialize()
-       ↓
-  Each day: history → features → gate check → argmax Q → order
+  Analysis dashboard + normalized performance chart
 ```

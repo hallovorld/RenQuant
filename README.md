@@ -1,70 +1,108 @@
-# RenQuant 🚀
+# RenQuant
 
-RenQuant is a personal quantitative trading and research workstation built for high-performance local compute. This project bridges academic machine learning concepts (such as those from Georgia Tech's ML4T) with real-world financial data, utilizing a modular, high-fault-tolerance, "glass-box" pipeline.
+Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline: data ingestion, ML signal generation, backtesting (LEAN), and live trading (IBKR).
 
-## 🎯 Design Philosophy
+## Architecture
 
-Unlike highly encapsulated end-to-end Reinforcement Learning frameworks (like FinRL), RenQuant adopts a **"Glass-box" engineering architecture**. 
-By strictly decoupling data ingestion, signal generation (Alpha), and backtest execution, we ensure that every trading decision is statistically interpretable and real-world risk is tightly managed.
+```
+  Data Layer          Model Layer              Execution Layer
+ ┌──────────┐    ┌──────────────────┐    ┌────────────────────────┐
+ │ yfinance  │───>│ Manual (rules)   │───>│ LEAN backtest (Docker) │
+ │ IBKR      │    │ Classification   │    │ Live trader (IBKR)     │
+ │ Parquet   │    │ Q-Learning       │    │ Paper broker           │
+ │ cache     │    │ FQI (XGBoost)    │    └────────────────────────┘
+ └──────────┘    │ Optimization     │              │
+                  └──────────────────┘              v
+                           │              ┌──────────────────┐
+                           └──────────────│ Analysis charts  │
+                                          └──────────────────┘
+```
 
-## 🏗️ Tech Stack Architecture
+## Directory Structure
 
-The RenQuant pipeline consists of three core modules:
-
-1. **Research & Data Layer**
-   - **Core Tool**: [OpenBB](https://openbb.co/)
-   - **Purpose**: Scrape and clean financial time-series data, fundamental earnings data, macroeconomic indicators, and alternative data (e.g., social media sentiment).
-2. **Signal & Modeling Layer**
-   - **Core Tools**: `Scikit-learn`, `XGBoost`, `Pandas`
-   - **Purpose**: Run traditional supervised learning models and time-series analysis. Leverage Gradient Boosting Decision Trees (GBDT) to mine statistically significant Alpha signals and predict the probability of future asset movements.
-3. **Backtesting & Execution Layer**
-   - **Core Tool**: [QuantConnect LEAN Engine](https://github.com/QuantConnect/Lean) (Local Docker Deployment)
-   - **Purpose**: An industrial-grade, event-driven backtesting engine. It strictly handles splits, dividends, slippage, and transaction fees. It can also bridge directly to major brokerages (e.g., Alpaca, IBKR) via APIs for paper or live trading.
-
-## 💻 Hardware Environment
-
-This project is highly optimized for the **Apple Silicon (M-Series)** architecture:
-- **Dev Machine**: MacBook Pro 14-inch (M4 Pro)
-- **Memory**: 48GB Unified Memory
-- **Performance Edge**: The unified memory architecture allows us to load massive historical tick datasets directly into RAM for rapid feature engineering. XGBoost natively utilizes Apple Silicon's multi-threading, while ample memory allocation for Docker prevents Out-Of-Memory (OOM) errors during multi-factor cross-sectional backtesting in LEAN.
-
-## 📂 Directory Structure
-
-\`\`\`text
+```
 RenQuant/
-├── common/                # Shared Python library (import as `import common as rq`)
-│   ├── config.py          # Config loading and path utilities
-│   ├── data.py            # OpenBB/yfinance OHLCV fetching
-│   ├── indicators.py      # MACD, RSI, CCI computation
-│   ├── features.py        # Gate signals, RL transition builder
-│   ├── training.py        # Fitted Q-Iteration, action scoring
-│   └── plotting.py        # Backtest dashboard and plot utilities
-├── Notebooks/
-│   ├── test_001_nvda.ipynb        # Strategy research: data → FQI → export models
-│   └── backtest_analysis.ipynb   # Backtest visualisation: signals, equity, stats
-├── backtesting/
-│   └── test_001_nvda/     # NVDA strategy (LEAN main.py, config, JSON models)
-├── doc/                   # Architecture, usage, setup, and tech-stack docs
-└── README.md
-\`\`\`
+├── common/                  # Shared library
+│   ├── data/                # DataSource ABC, yfinance, IBKR stub, Parquet cache
+│   ├── indicators/          # Registry-based: rsi, macd, cci, bbp, ema, stochastic, ppo, momentum
+│   ├── models/              # BaseModel ABC + 5 implementations
+│   │   └── learners/        # RTLearner, BagLearner, TabularQLearner
+│   ├── strategy.py          # StrategyConfig + Strategy composition
+│   ├── portfolio.py         # Local portfolio simulator
+│   ├── plotting.py          # Backtest dashboard + normalized performance chart
+│   └── config.py            # Config loading utilities
+├── Notebooks/               # Research notebooks
+├── backtesting/             # LEAN strategies (self-contained, no common/ imports)
+├── live/                    # Live trading runner + broker abstraction
+├── scripts/                 # Scaffolding tools
+├── data/                    # Local Parquet cache (gitignored)
+└── doc/                     # Detailed documentation
+```
 
-## 🚀 Quick Start
+## Quick Start
 
-Please refer to [`doc/setup.md`](./doc/setup.md) to configure your local environment.
-
-**1. Research — train and export models:**
 ```bash
+# Setup
+conda create -n renquant python=3.10
 conda activate renquant
-jupyter lab  # open Notebooks/test_001_nvda.ipynb and run all cells
+pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
+pip install "openbb[all]" openbb-cli backtesting scipy
+pip install lean
+lean login
 ```
 
-**2. Validation — run rigorous LEAN backtest:**
+### 1. Scaffold a new strategy
 ```bash
-cd backtesting/test_001_nvda
-lean backtest .
+python scripts/new_strategy.py --name nvda_rf --symbol NVDA --type classification
 ```
 
-**3. Analysis — visualize backtest results:**
+### 2. Research — train in notebook
 ```bash
-# open Notebooks/backtest_analysis.ipynb and run all cells
+jupyter lab  # open notebook, run all cells to train and export models
 ```
+
+### 3. Backtest with LEAN
+```bash
+cd backtesting/nvda_rf && lean backtest .
+```
+
+### 4. Analyze results
+```bash
+# Open Notebooks/backtest_analysis.ipynb
+```
+
+### 5. Live trading
+```bash
+# Paper trading (test)
+python -m live.runner --strategy nvda_rf --broker paper --once
+
+# Real trading (requires IBKR setup)
+python -m live.runner --strategy nvda_rf --broker ibkr
+```
+
+## Model Types
+
+| Type | Method | Use Case |
+|------|--------|----------|
+| **Manual** | Rule-based indicator voting | Baseline, interpretable |
+| **Classification** | Random Forest on forward-return labels | Fast, deterministic |
+| **Q-Learning** | Tabular Q with discretized states | Model-free RL |
+| **FQI** | Fitted Q-Iteration with XGBoost | Function approximation RL |
+| **Optimization** | Nelder-Mead parameter search + inner model | Auto-tuning |
+
+## Indicator Library
+
+All indicators share a uniform API: `(df, **params) -> DataFrame`
+
+| Category | Indicators |
+|----------|-----------|
+| Momentum | RSI, MACD (line/signal/hist), EMA, Momentum |
+| Volatility | CCI, BBP (Bollinger Band %), Stochastic (%K/%D), PPO |
+
+## Documentation
+
+- [Architecture](doc/architecture.md) — Pipeline design, data flow, state space
+- [Usage](doc/usage.md) — Workflow for all 4 modes
+- [Indicators](doc/indicators.md) — Indicator catalog with parameters
+- [Models](doc/models.md) — Model type reference and decision guide
+- [Setup](doc/setup.md) — Environment setup for Apple Silicon

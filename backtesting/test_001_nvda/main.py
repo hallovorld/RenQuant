@@ -50,7 +50,7 @@ class XGBoostNVDAStrategy(QCAlgorithm):
 		metadata_path = self.strategy_dir / f"{CONFIG['model_name']}-policy-metadata.json"
 		if not metadata_path.exists():
 			raise RuntimeError(
-				"Policy metadata not found. Run notebook Cells 3-5 to create the RL artifacts in the strategy directory."
+				"Policy metadata not found. Run the notebook model-training cells to create the RL artifacts in the strategy directory."
 			)
 
 		with metadata_path.open() as metadata_file:

@@ -22,7 +22,7 @@ Optimized for Apple Silicon (M-Series). All packages are arm64-native via Minico
 
 ## Environment Setup
 
-RenQuant uses a **single conda environment** for everything — research, data, and ML.
+RenQuant uses a **single conda environment** for everything — research, data, ML, and live trading.
 
 ```bash
 # Install Miniconda (Apple Silicon arm64 build)
@@ -37,12 +37,11 @@ conda config --set channel_priority strict
 conda create -n renquant python=3.10 -y
 conda activate renquant
 
-# Install all dependencies
-pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab
-pip install "openbb[all]" openbb-cli openbb-mcp-server
+# Core dependencies
+pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
 
-# Build OpenBB extensions (takes a few minutes)
-openbb-build
+# OpenBB + optimization + backtesting
+pip install "openbb[all]" openbb-cli backtesting scipy
 
 # Install and authenticate LEAN CLI
 pip install lean

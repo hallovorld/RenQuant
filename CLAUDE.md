@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RenQuant is a personal quantitative trading workstation for Apple Silicon. It implements a "Glass-box" three-layer pipeline: data ingestion → ML signal generation → backtesting execution. All components are statistically interpretable and strictly decoupled.
+RenQuant is a personal quantitative trading workstation for Apple Silicon. It implements a "Glass-box" pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live trading (IBKR). All components are statistically interpretable and strictly decoupled.
 
 ## Environment Setup
 
@@ -13,74 +13,107 @@ Single conda environment (Miniconda, Apple Silicon arm64):
 ```bash
 conda create -n renquant python=3.10
 conda activate renquant
-pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab
-pip install "openbb[all]" openbb-cli backtesting
+pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
+pip install "openbb[all]" openbb-cli backtesting scipy
 pip install lean
 lean login
 ```
 
 Docker must be allocated 16GB+ memory for LEAN engine.
 
-## Workflow: Three Modes
+## Workflow: Four Modes
 
-**Research mode** (fast iteration, no Docker): Run `Notebooks/test_001_nvda.ipynb` to train and export models.
+**Research mode** (fast iteration, no Docker): Run notebooks to train and export models.
 
-**Validation mode** (final backtest): Run LEAN on the exported models.
+**Validation mode** (final backtest): Run LEAN on exported models.
 
 ```bash
-# Validation only — not for every iteration
 cd backtesting/test_001_nvda
 lean backtest .
 ```
 
-**Analysis mode**: Open `Notebooks/backtest_analysis.ipynb` to visualize the latest LEAN result.
+**Analysis mode**: Open `Notebooks/backtest_analysis.ipynb` to visualize LEAN results.
+
+**Live mode**: Run the live trader with paper or IBKR broker.
+
+```bash
+python -m live.runner --strategy test_001_nvda --broker paper --once
+```
 
 ## Shared Library: `common/`
 
-All reusable notebook/research logic lives in `common/`. Import as `import common as rq`.
-**Do not import `common/` from inside `backtesting/` — LEAN Docker cannot access it.**
+Import as `import common`. **Do not import `common/` from inside `backtesting/` — LEAN Docker cannot access it.**
 
 | Module | Key exports |
 |--------|-------------|
 | `common/config.py` | `load_strategy_config`, `build_model_path` |
-| `common/data.py` | `fetch_ohlcv` |
-| `common/indicators.py` | `add_indicators`, `compute_macd/rsi/cci` |
-| `common/features.py` | `add_gate_signals`, `build_transitions`, `STATE_COLUMNS` |
-| `common/training.py` | `fitted_q_iteration`, `score_valid_actions` |
-| `common/plotting.py` | `backtest_dashboard`, `load_latest_backtest`, parse/plot helpers |
+| `common/data/` | `fetch_ohlcv` (with Parquet cache), `DataSource` ABC, `LocalStore` |
+| `common/indicators/` | `compute_indicators`, `add_indicators` (compat), `list_indicators`, `@register` |
+| `common/models/` | `BaseModel`, `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `create_model` |
+| `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
+| `common/strategy.py` | `StrategyConfig`, `Strategy` |
+| `common/portfolio.py` | `compute_portvals`, `portfolio_stats` |
+| `common/plotting.py` | `backtest_dashboard`, `plot_normalized_performance`, parse/plot helpers |
 
 ## Architecture
 
+### Data Layer (`common/data/`)
+
+- `DataSource` ABC with `YFinanceSource` (working) and `IBKRSource` (stub)
+- `LocalStore` caches OHLCV as Parquet at `data/ohlcv/{SYMBOL}/1d.parquet`
+- `fetch_ohlcv()` checks cache first, fetches missing dates, saves locally
+
+### Indicator Registry (`common/indicators/`)
+
+Uniform API: `(df: DataFrame, **params) -> DataFrame`. All indicators registered via `@register` decorator.
+
+- Momentum: `rsi`, `macd`, `ema`, `momentum`
+- Volatility: `cci`, `bbp`, `stochastic`, `ppo`
+- `compute_indicators(df, {"rsi": {"period": 14}, "macd": {}})` applies any subset
+
+### Model Types (`common/models/`)
+
+All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON artifacts only.
+
+| Type | Training | Prediction |
+|------|----------|------------|
+| `manual` | No-op (rules at construction) | Threshold voting |
+| `classification` | Forward-return labels → BagLearner(RTLearner) | Forest query |
+| `qlearning` | Discretize states, Q-table over epochs | Q-table argmax |
+| `fqi` | Transition tuples → FQI with XGBoost | Score per action, argmax |
+| `optimization` | Nelder-Mead over indicator params + inner model | Delegate to best inner |
+
 ### Pipeline
 
-**1. Research** (`Notebooks/test_001_nvda.ipynb`) — `renquant` conda env
-- `rq.fetch_ohlcv` → `rq.add_indicators` → `rq.add_gate_signals` → `rq.build_transitions`
-- `rq.fitted_q_iteration` (8 iterations, gamma=0.95, 5bps transaction cost)
-- Exports 3 model JSON files (hold/buy/sell) + policy metadata JSON
+**1. Research** (Notebooks) — `renquant` conda env
+- `common.fetch_ohlcv` → `common.compute_indicators` → model.train() → model.save()
+- Strategy-essential logic (gate rules, transitions) stays in notebooks
 
-**2. Model Artifacts** (`backtesting/test_001_nvda/*.json`)
+**2. Model Artifacts** (`backtesting/{strategy}/*.json`)
 - JSON (not pickle) for LEAN compatibility
-- `*-policy-metadata.json` is the contract between research and backtesting layers
+- `*-policy-metadata.json` is the contract between research and execution
 
 **3. Backtesting** (`backtesting/`) — QuantConnect LEAN engine (Docker)
-- `main.py`: `QCAlgorithm` that loads JSON models, recomputes indicators inline each day, picks `argmax Q(s, a)`
-- `config.py`: self-contained LEAN-local config loader (no `common/` dependency)
+- `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
+- Loads JSON models, recomputes indicators inline
 
-**4. Analysis** (`Notebooks/backtest_analysis.ipynb`)
-- `rq.load_latest_backtest` → `rq.backtest_dashboard`
-- 4-panel dashboard: price+signals, equity curve, drawdown, statistics table
+**4. Live Trading** (`live/`)
+- `python -m live.runner --strategy X --broker paper|ibkr --once`
+- `PaperBroker` for testing, `IBKRBroker` for real execution
+- Logs to `live/logs/{strategy}/{date}.json`
 
-### State Features
-
-All strategies: `macd_line`, `macd_signal`, `macd_hist`, `rsi`, `cci`, `position_flag`
-
-MACD(12,26,9), RSI(14), CCI(20) — stored in policy metadata, must match between notebook and `main.py`.
+**5. Analysis** (`Notebooks/backtest_analysis.ipynb`)
+- `common.backtest_dashboard` — 4-panel dashboard
+- `common.plot_normalized_performance` — normalized equity with entry markers
 
 ### Adding a New Strategy
 
-1. Copy `Notebooks/test_001_nvda.ipynb` → new notebook
-2. Copy `backtesting/test_001_nvda/` → `backtesting/<strategy_name>/`
-3. Update `strategy_config.json` (symbol, dates, model name)
-4. Run notebook → exports JSON models to the strategy directory
-5. `lean backtest .` from the strategy directory
-6. Open `backtest_analysis.ipynb`, point `STRATEGY_DIR` at the new strategy
+```bash
+python scripts/new_strategy.py --name foo --symbol AAPL --type classification
+```
+
+1. Scaffolds `backtesting/foo/` with `strategy_config.json`
+2. Open a notebook, use `Strategy` class or manual workflow to train
+3. Export model artifacts to the strategy directory
+4. `cd backtesting/foo && lean backtest .`
+5. `python -m live.runner --strategy foo --broker paper --once`
