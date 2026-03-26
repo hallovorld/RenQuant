@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 
 from config import load_strategy_config, split_date_parts
 
@@ -12,7 +11,7 @@ from config import load_strategy_config, split_date_parts
 CONFIG = load_strategy_config()
 
 
-class XGBoostNVDAStrategy(QCAlgorithm):
+class ClassificationNVDAStrategy(QCAlgorithm):
 	def Initialize(self):
 		start_year, start_month, start_day = split_date_parts(CONFIG["backtest_start"])
 		end_year, end_month, end_day = split_date_parts(CONFIG["backtest_end"])
@@ -24,9 +23,27 @@ class XGBoostNVDAStrategy(QCAlgorithm):
 		self.symbol = self.AddEquity(CONFIG["stock_symbol"], Resolution.Daily).Symbol
 		self.strategy_dir = Path(__file__).resolve().parent
 		self.policy_metadata = self._load_policy_metadata()
-		self.state_columns = self.policy_metadata["state_columns"]
-		self.action_models = self._load_action_models()
-		self.transaction_cost_bps = self.policy_metadata.get("transaction_cost_bps", 5)
+		self.policy_type = self.policy_metadata["policy_type"]
+		self.feature_columns = self.policy_metadata["feature_columns"]
+		self.buy_threshold = self.policy_metadata.get("buy_threshold", 0.1)
+		self.sell_threshold = self.policy_metadata.get("sell_threshold", -0.1)
+		self.wash_sale_days = int(CONFIG.get("wash_sale_days", 0))
+		self.min_hold_days = int(CONFIG.get("min_hold_days", 0))
+		self.trees = []
+		self.score_rules = []
+		self.bin_edges = {}
+		self.n_bins = 0
+		self.q_table = None
+		self._load_policy_artifacts()
+		self.last_decision = None
+		self.last_sell_time = None
+		self.entry_time = None
+		self.decision_counts = {"buy": 0, "sell": 0, "hold": 0}
+		self.executed_buys = 0
+		self.executed_sells = 0
+		self.blocked_wash_sales = 0
+		self.blocked_min_hold = 0
+		self._setup_telemetry_chart()
 
 		self.SetWarmUp(40)
 
@@ -38,39 +55,193 @@ class XGBoostNVDAStrategy(QCAlgorithm):
 		if feature_frame is None:
 			return
 
-		chosen_action = self._choose_action(feature_frame)
+		chosen_action, detail, telemetry = self._choose_action(feature_frame)
+		raw_action = chosen_action
+		chosen_action, constraint_detail = self._apply_trade_constraints(chosen_action)
+		if constraint_detail:
+			detail = f"{detail} {constraint_detail}"
+		self.decision_counts[chosen_action] += 1
 		holdings = self.Portfolio[self.symbol].Quantity
+		current_state = "long" if holdings > 0 else "flat"
+		self._plot_telemetry(telemetry, raw_action, chosen_action)
+
+		if chosen_action != self.last_decision:
+			self.Debug(
+				f"{self.Time.date()} policy={self.policy_type} action={chosen_action} portfolio={current_state} {detail}"
+			)
+			self.last_decision = chosen_action
 
 		if chosen_action == "buy" and holdings <= 0:
+			self.Debug(f"{self.Time.date()} submitting buy order")
+			self.entry_time = self.Time
+			self.executed_buys += 1
 			self.SetHoldings(self.symbol, 1.0)
 		elif chosen_action == "sell" and holdings > 0:
+			self.Debug(f"{self.Time.date()} submitting liquidation order")
+			self.last_sell_time = self.Time
+			self.entry_time = None
+			self.executed_sells += 1
 			self.Liquidate(self.symbol)
+
+	def OnEndOfAlgorithm(self):
+		runtime_stats = {
+			"Policy": self.policy_type,
+			"Wash Sale Days": str(self.wash_sale_days),
+			"Min Hold Days": str(self.min_hold_days),
+			"Buy Decisions": str(self.decision_counts["buy"]),
+			"Sell Decisions": str(self.decision_counts["sell"]),
+			"Hold Decisions": str(self.decision_counts["hold"]),
+			"Executed Buys": str(self.executed_buys),
+			"Executed Sells": str(self.executed_sells),
+			"Blocked Wash Sales": str(self.blocked_wash_sales),
+			"Blocked Min Hold": str(self.blocked_min_hold),
+		}
+		for key, value in runtime_stats.items():
+			self.SetRuntimeStatistic(key, value)
+
+		self.Log(
+			"End summary | "
+			f"policy={self.policy_type} buys={self.decision_counts['buy']} "
+			f"sells={self.decision_counts['sell']} holds={self.decision_counts['hold']} "
+			f"executed_buys={self.executed_buys} executed_sells={self.executed_sells} "
+			f"blocked_wash_sales={self.blocked_wash_sales} blocked_min_hold={self.blocked_min_hold}"
+		)
+
+	def _setup_telemetry_chart(self) -> None:
+		chart = Chart("Decision Telemetry")
+		chart.AddSeries(Series("Score", SeriesType.Line, "value"))
+		chart.AddSeries(Series("Buy Threshold", SeriesType.Line, "value"))
+		chart.AddSeries(Series("Sell Threshold", SeriesType.Line, "value"))
+		chart.AddSeries(Series("Raw Action", SeriesType.Line, "action"))
+		chart.AddSeries(Series("Action", SeriesType.Line, "action"))
+		self.AddChart(chart)
+
+	def _plot_telemetry(self, telemetry: dict, raw_action: str, chosen_action: str) -> None:
+		if telemetry.get("score") is not None:
+			self.Plot("Decision Telemetry", "Score", float(telemetry["score"]))
+		if telemetry.get("buy_threshold") is not None:
+			self.Plot("Decision Telemetry", "Buy Threshold", float(telemetry["buy_threshold"]))
+		if telemetry.get("sell_threshold") is not None:
+			self.Plot("Decision Telemetry", "Sell Threshold", float(telemetry["sell_threshold"]))
+		self.Plot("Decision Telemetry", "Raw Action", self._encode_action_value(raw_action))
+		self.Plot("Decision Telemetry", "Action", self._encode_action_value(chosen_action))
+
+	def _encode_action_value(self, action: str) -> int:
+		return {"buy": 1, "hold": 0, "sell": -1}.get(action, 0)
 
 	def _load_policy_metadata(self) -> dict:
 		metadata_path = self.strategy_dir / f"{CONFIG['model_name']}-policy-metadata.json"
 		if not metadata_path.exists():
 			raise RuntimeError(
-				"Policy metadata not found. Run the notebook model-training cells to create the RL artifacts in the strategy directory."
+				"Policy metadata not found. Run the notebook model-training cells to export the model artifacts to the strategy directory."
 			)
+		with metadata_path.open() as f:
+			return json.load(f)
 
-		with metadata_path.open() as metadata_file:
-			return json.load(metadata_file)
+	def _load_policy_artifacts(self) -> None:
+		policy_type = self.policy_type
 
-	def _load_action_models(self) -> dict:
-		action_models = {}
-		for action_name in ("hold", "buy", "sell"):
-			artifact_path = self.strategy_dir / f"{CONFIG['model_name']}-q-{action_name}.json"
-			if not artifact_path.exists():
+		if policy_type == "classification":
+			trees_path = self.strategy_dir / f"{CONFIG['model_name']}-rf-trees.json"
+			if not trees_path.exists():
+				raise RuntimeError(
+					"RF trees artifact not found. Run the notebook model-training cells to export the model artifacts to the strategy directory."
+				)
+			with trees_path.open() as f:
+				self.trees = json.load(f)
+			return
+
+		if policy_type == "manual":
+			rules_path = self.strategy_dir / f"{CONFIG['model_name']}-manual-rules.json"
+			if not rules_path.exists():
+				raise RuntimeError(
+					"Manual rules artifact not found. Run the notebook model-training cells to export the model artifacts to the strategy directory."
+				)
+			with rules_path.open() as f:
+				data = json.load(f)
+			self.score_rules = data["score_rules"]
+			self.buy_threshold = data["buy_threshold"]
+			self.sell_threshold = data["sell_threshold"]
+			return
+
+		if policy_type == "qlearning":
+			qtable_path = self.strategy_dir / f"{CONFIG['model_name']}-qtable.json"
+			edges_path = self.strategy_dir / f"{CONFIG['model_name']}-bin-edges.json"
+			if not qtable_path.exists() or not edges_path.exists():
+				raise RuntimeError(
+					"Q-learning artifacts not found. Run the notebook model-training cells to export the model artifacts to the strategy directory."
+				)
+			with qtable_path.open() as f:
+				self.q_table = np.array(json.load(f))
+			with edges_path.open() as f:
+				self.bin_edges = {
+					col: np.array(edges) for col, edges in json.load(f).items()
+				}
+			self.n_bins = self.policy_metadata["n_bins"]
+			return
+
+		raise RuntimeError(f"Unsupported policy type: {policy_type}")
+
+	def _traverse_tree(self, tree: list, row: list) -> float:
+		idx = 0
+		while True:
+			feat, split_val, left_off, right_off = tree[idx]
+			if feat == -1:
+				return split_val
+			idx += int(left_off) if row[int(feat)] <= split_val else int(right_off)
+
+	def _bag_predict(self, features: list) -> float:
+		preds = [self._traverse_tree(tree, features) for tree in self.trees]
+		return sum(preds) / len(preds)
+
+	def _score_manual_rules(self, row: pd.Series) -> int:
+		score = 0
+		for rule in self.score_rules:
+			value = row.get(rule["col"])
+			if value is None:
 				continue
+			if "buy_below" in rule and value < rule["buy_below"]:
+				score += 1
+			if "buy_above" in rule and value > rule["buy_above"]:
+				score += 1
+			if "sell_above" in rule and value > rule["sell_above"]:
+				score -= 1
+			if "sell_below" in rule and value < rule["sell_below"]:
+				score -= 1
+		return score
 
-			model = xgb.XGBRegressor()
-			model.load_model(str(artifact_path))
-			action_models[action_name] = model
+	def _encode_q_state(self, row: pd.Series, holdings: float) -> int:
+		state = 0
+		for col in self.feature_columns:
+			bin_idx = np.digitize(row[col], self.bin_edges[col]) - 1
+			bin_idx = int(np.clip(bin_idx, 0, self.n_bins - 1))
+			state = state * self.n_bins + bin_idx
 
-		if "hold" not in action_models:
-			raise RuntimeError("The hold action model is required but was not found.")
+		holding_bucket = 2 if holdings > 0 else (0 if holdings < 0 else 1)
+		return state * 3 + holding_bucket
 
-		return action_models
+	def _apply_trade_constraints(self, action: str) -> tuple[str, str]:
+		if action == "buy":
+			if self.Portfolio[self.symbol].Quantity > 0:
+				return "hold", "reason=already_long"
+			if self.last_sell_time is not None:
+				days_since_sell = (self.Time.date() - self.last_sell_time.date()).days
+				if days_since_sell < self.wash_sale_days:
+					self.blocked_wash_sales += 1
+					return "hold", f"reason=wash_sale_cooldown days_since_sell={days_since_sell}"
+			return action, ""
+
+		if action == "sell":
+			if self.Portfolio[self.symbol].Quantity <= 0:
+				return "hold", "reason=already_flat"
+			if self.entry_time is not None:
+				days_held = (self.Time.date() - self.entry_time.date()).days
+				if days_held < self.min_hold_days:
+					self.blocked_min_hold += 1
+					return "hold", f"reason=min_hold days_held={days_held}"
+			return action, ""
+
+		return action, ""
 
 	def _build_feature_frame(self):
 		history = self.History(self.symbol, 60, Resolution.Daily)
@@ -81,73 +252,102 @@ class XGBoostNVDAStrategy(QCAlgorithm):
 		if len(rows) < 40:
 			return None
 
-		macd_fast = rows["close"].ewm(span=12, adjust=False).mean()
-		macd_slow = rows["close"].ewm(span=26, adjust=False).mean()
-		rows["macd_line"] = macd_fast - macd_slow
-		rows["macd_signal"] = rows["macd_line"].ewm(span=9, adjust=False).mean()
-		rows["macd_hist"] = rows["macd_line"] - rows["macd_signal"]
+		close = rows["close"]
+		high = rows["high"]
+		low = rows["low"]
+		volume = rows["volume"]
 
-		delta = rows["close"].diff()
-		gains = delta.clip(lower=0)
-		losses = -delta.clip(upper=0)
-		avg_gain = gains.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-		avg_loss = losses.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-		relative_strength = avg_gain / avg_loss.replace(0, np.nan)
-		rows["rsi"] = 100 - (100 / (1 + relative_strength))
+		# RSI (period=14)
+		delta = close.diff()
+		avg_gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+		avg_loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+		rows["rsi"] = 100 - (100 / (1 + avg_gain / avg_loss.replace(0, np.nan)))
 
-		typical_price = (rows["high"] + rows["low"] + rows["close"]) / 3
-		cci_mean = typical_price.rolling(20).mean()
+		# MACD histogram (fast=12, slow=26, signal=9)
+		ema_fast = close.ewm(span=12, adjust=False).mean()
+		ema_slow = close.ewm(span=26, adjust=False).mean()
+		macd_line = ema_fast - ema_slow
+		rows["macd_hist"] = macd_line - macd_line.ewm(span=9, adjust=False).mean()
+
+		# CCI (period=20)
+		typical_price = (high + low + close) / 3
+		cci_sma = typical_price.rolling(20).mean()
 		cci_mad = typical_price.rolling(20).apply(
-			lambda values: np.mean(np.abs(values - values.mean())), raw=True
+			lambda v: np.mean(np.abs(v - v.mean())), raw=True
 		)
-		rows["cci"] = (typical_price - cci_mean) / (0.015 * cci_mad)
+		rows["cci"] = (typical_price - cci_sma) / (0.015 * cci_mad.replace(0, np.nan))
 
-		rows = rows.dropna().copy()
-		if len(rows) < 2:
+		# BBP — Bollinger Band Percentage (period=20)
+		sma20 = close.rolling(20).mean()
+		std20 = close.rolling(20).std()
+		rows["bbp"] = (close - sma20) / (2 * std20.replace(0, np.nan))
+
+		# ADX (period=14)
+		up_move = high.diff()
+		down_move = -low.diff()
+		plus_dm = pd.Series(
+			np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=rows.index
+		)
+		minus_dm = pd.Series(
+			np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=rows.index
+		)
+		tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+		atr14 = tr.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+		plus_di = 100 * plus_dm.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean() / atr14.replace(0, np.nan)
+		minus_di = 100 * minus_dm.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean() / atr14.replace(0, np.nan)
+		dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+		rows["adx"] = dx.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+
+		# Williams %R (period=14)
+		highest_high = high.rolling(14).max()
+		lowest_low = low.rolling(14).min()
+		rows["williams_r"] = -100 * (highest_high - close) / (highest_high - lowest_low).replace(0, np.nan)
+
+		# OBV slope (signal_period=20)
+		obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+		obv_ema = obv.ewm(span=20, adjust=False).mean()
+		rows["obv_slope"] = obv_ema.diff(5) / obv_ema.shift(5).replace(0, np.nan)
+
+		rows = rows.dropna(subset=self.feature_columns).copy()
+		if rows.empty:
 			return None
 
-		current_row = rows.iloc[-1]
-		previous_row = rows.iloc[-2]
-		position_flag = 1 if self.Portfolio[self.symbol].Quantity > 0 else 0
+		return rows[self.feature_columns].iloc[-1:]
 
-		feature_frame = pd.DataFrame(
-			[
-				{
-					"macd_line": current_row["macd_line"],
-					"macd_signal": current_row["macd_signal"],
-					"macd_hist": current_row["macd_hist"],
-					"rsi": current_row["rsi"],
-					"cci": current_row["cci"],
-					"position_flag": position_flag,
-				}
-			]
-		)
+	def _choose_action(self, feature_frame: pd.DataFrame) -> tuple[str, str, dict]:
+		row = feature_frame.iloc[0]
+		if self.policy_type == "classification":
+			features = row.tolist()
+			score = self._bag_predict(features)
+			telemetry = {
+				"score": score,
+				"buy_threshold": self.buy_threshold,
+				"sell_threshold": self.sell_threshold,
+			}
+			if score > self.buy_threshold:
+				return "buy", f"score={score:.4f} buy_threshold={self.buy_threshold:.4f}", telemetry
+			if score < self.sell_threshold:
+				return "sell", f"score={score:.4f} sell_threshold={self.sell_threshold:.4f}", telemetry
+			return "hold", f"score={score:.4f} thresholds=({self.sell_threshold:.4f},{self.buy_threshold:.4f})", telemetry
 
-		feature_frame["buy_signal"] = int(
-			(current_row["macd_line"] > current_row["macd_signal"])
-			and (previous_row["macd_line"] <= previous_row["macd_signal"])
-			and (current_row["rsi"] > 50)
-		)
-		feature_frame["sell_signal"] = int(
-			(current_row["macd_line"] < current_row["macd_signal"])
-			and (previous_row["macd_line"] >= previous_row["macd_signal"])
-			and (current_row["rsi"] < 50)
-		)
-		return feature_frame
+		if self.policy_type == "manual":
+			score = self._score_manual_rules(row)
+			telemetry = {
+				"score": score,
+				"buy_threshold": self.buy_threshold,
+				"sell_threshold": self.sell_threshold,
+			}
+			if score >= self.buy_threshold:
+				return "buy", f"score={score} buy_threshold={self.buy_threshold}", telemetry
+			if score <= self.sell_threshold:
+				return "sell", f"score={score} sell_threshold={self.sell_threshold}", telemetry
+			return "hold", f"score={score} thresholds=({self.sell_threshold},{self.buy_threshold})", telemetry
 
-	def _choose_action(self, feature_frame: pd.DataFrame) -> str:
-		position_flag = int(feature_frame["position_flag"].iloc[0])
-		buy_signal = int(feature_frame["buy_signal"].iloc[0])
-		sell_signal = int(feature_frame["sell_signal"].iloc[0])
-		state_values = feature_frame[self.state_columns]
+		if self.policy_type == "qlearning":
+			holdings = self.Portfolio[self.symbol].Quantity
+			state = self._encode_q_state(row, holdings)
+			action_id = int(np.argmax(self.q_table[state]))
+			action_name = {0: "buy", 1: "sell", 2: "hold"}[action_id]
+			return action_name, f"state={state} action_id={action_id}", {"score": None, "buy_threshold": None, "sell_threshold": None}
 
-		scores = {"hold": self.action_models["hold"].predict(state_values)[0]}
-		scores["buy"] = -np.inf
-		scores["sell"] = -np.inf
-
-		if position_flag == 0 and buy_signal == 1 and "buy" in self.action_models:
-			scores["buy"] = self.action_models["buy"].predict(state_values)[0]
-		if position_flag == 1 and sell_signal == 1 and "sell" in self.action_models:
-			scores["sell"] = self.action_models["sell"].predict(state_values)[0]
-
-		return max(scores, key=scores.get)
+		raise RuntimeError(f"Unsupported policy type: {self.policy_type}")

@@ -33,10 +33,10 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 └────────────┬──────────┘  └───────┬─────────────────┘
              │                     │
 ┌────────────▼─────────────────────▼─────────────────┐
-│  Layer 4: Analysis (Notebooks/backtest_analysis)    │
-│  - Load LEAN results or live logs                   │
-│  - 4-panel dashboard + normalized performance chart │
-│  - Performance statistics                           │
+│  Layer 4: Analysis (scripts/analyze_backtest.py)   │
+│  - Load LEAN results or live logs                  │
+│  - Dashboard + normalized performance chart        │
+│  - Performance statistics + decision telemetry     │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -107,8 +107,9 @@ The policy metadata acts as a contract between research and execution — both m
 - **`OnData()`** — called once per trading day:
   1. Fetches price history
   2. Computes indicators inline (duplicated from common/ — Docker constraint)
-  3. Determines gate signals
-  4. Scores eligible actions via model; executes argmax
+     3. Scores actions via the exported policy
+     4. Applies wash-sale and minimum-hold constraints
+     5. Logs decisions, plots telemetry, and submits orders when allowed
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -166,4 +167,5 @@ yfinance / IBKR
   └─────────────────────────────────┘
        ↓
   Analysis dashboard + normalized performance chart
+  via scripts/analyze_backtest.py
 ```

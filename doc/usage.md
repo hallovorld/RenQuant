@@ -8,7 +8,7 @@ RenQuant uses a four-mode workflow:
 |------|------|-------------|
 | **Research** | Jupyter notebooks | Train models and export JSON artifacts |
 | **Validation** | QuantConnect LEAN (Docker) | Rigorous event-driven backtest |
-| **Analysis** | `Notebooks/backtest_analysis.ipynb` | Visualise LEAN results |
+| **Analysis** | `python scripts/analyze_backtest.py --strategy ...` | Visualise LEAN results |
 | **Live Trading** | `python -m live.runner` | Paper or real trading via IBKR |
 
 ---
@@ -39,7 +39,26 @@ cd backtesting/test_001_nvda
 lean backtest .
 ```
 
+`lean backtest .` itself only prints logs and summary stats in the terminal. If you want charts immediately after the run, use the wrapper script instead:
+
+```bash
+python scripts/backtest_and_analyze.py --strategy test_001_nvda
+```
+
+On macOS, append `--open` to open the generated chart PNGs automatically after analysis finishes.
+
 Results land in `backtesting/test_001_nvda/backtests/<timestamp>/`.
+
+The LEAN strategy enforces config-backed execution constraints during backtests:
+
+- `wash_sale_days`: blocks a new buy for `N` calendar days after a sell
+- `min_hold_days`: blocks a sell until a position has been held for `N` calendar days
+
+If LEAN reports missing local symbol files such as `/equity/usa/daily/nvda.zip`, export the cached parquet data into LEAN format first:
+
+```bash
+python scripts/export_lean_data.py --symbol NVDA
+```
 
 To adjust the backtest period or initial capital, edit `strategy_config.json`:
 ```json
@@ -48,6 +67,8 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
   "stock_symbol": "NVDA",
   "model_type": "classification",
   "initial_cash": 100000,
+  "wash_sale_days": 30,
+  "min_hold_days": 0,
   "backtest_start": "2022-01-01",
   "backtest_end": "2023-01-01"
 }
@@ -57,18 +78,27 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
 
 ## Backtest Analysis
 
-After a LEAN run, open `Notebooks/backtest_analysis.ipynb` to visualize results.
+After a LEAN run, run the analysis script to render charts and print summary statistics.
 
-The notebook auto-loads the most recent backtest and renders a 4-panel dashboard:
+```bash
+python scripts/analyze_backtest.py --strategy test_001_nvda
+```
+
+The script auto-loads the most recent backtest, writes charts to the run directory, and prints a metric summary.
+
+When the algorithm emits runtime statistics in `OnEndOfAlgorithm`, the analysis output also includes execution metrics such as buy/sell/hold decision counts, executed orders, and blocked wash-sale or minimum-hold actions.
+
+When the LEAN strategy emits decision telemetry, the dashboard also plots model score, buy/sell thresholds, and final constrained actions so you can see why a trade fired or was suppressed.
 
 | Panel | Content |
 |-------|---------|
-| **Price + Signals** | Close price with model buy/sell signals; LEAN entry/exit points overlaid |
+| **Price + Trades** | Close price with LEAN entry/exit points overlaid |
+| **Decision Telemetry** | Model score, thresholds, and final buy/hold/sell actions |
 | **Equity Curve** | Portfolio value over time with profit/loss shading |
 | **Drawdown** | Rolling drawdown (%) with max drawdown labelled |
 | **Statistics** | Performance table: win rate, Sharpe, Sortino, max drawdown, alpha, beta, fees |
 
-A normalized performance chart with long/short entry markers is also available via `common.plot_normalized_performance`.
+It also writes a normalized performance chart against buy-and-hold when LEAN produced an equity series.
 
 ---
 
@@ -106,7 +136,7 @@ Then:
 1. **Train in a notebook** — use `common.compute_indicators`, `common.create_model`, or the `Strategy` class
 2. **Export artifacts** — `model.save(strategy_dir, model_name)` writes JSON to the strategy directory
 3. **Backtest** — `cd backtesting/nvda_rf && lean backtest .`
-4. **Analyze** — open `backtest_analysis.ipynb`, set `STRATEGY_DIR` to the new strategy
+4. **Analyze** — run `python scripts/analyze_backtest.py --strategy nvda_rf`
 5. **Live trade** — `python -m live.runner --strategy nvda_rf --broker paper --once`
 
 Available model types: `manual`, `classification`, `qlearning`, `fqi`, `optimization` (see [doc/models.md](models.md)).
@@ -123,11 +153,10 @@ common/                            # Shared library — import as `import common
 ├── models/                        # BaseModel ABC + 5 implementations + learners/
 ├── strategy.py                    # StrategyConfig + Strategy composition class
 ├── portfolio.py                   # compute_portvals, portfolio_stats
-└── plotting.py                    # backtest_dashboard, plot_normalized_performance
+└── plotting.py                    # backtest_dashboard, telemetry plots, normalized performance
 
 Notebooks/
-├── test_001_nvda.ipynb            # Strategy research: data → model → export
-└── backtest_analysis.ipynb        # Backtest visualisation: signals, equity, stats
+└── test_001_nvda.ipynb            # Strategy research: data → model → export
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference
@@ -144,5 +173,8 @@ live/
 └── ibkr_broker.py                 # IBKRBroker (stub, pending setup)
 
 scripts/
+├── export_lean_data.py           # Convert cached parquet OHLCV into LEAN daily equity files
+├── backtest_and_analyze.py       # Run LEAN backtest, then render/open charts
+├── analyze_backtest.py            # Render backtest charts + summary metrics
 └── new_strategy.py                # Scaffold a new strategy directory
 ```

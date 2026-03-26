@@ -24,16 +24,17 @@ def load_latest_backtest(strategy_dir: Path) -> tuple[dict, Path]:
         reverse=True,
     )
     for run_dir in run_dirs:
-        summary_stems = {
-            f.stem[: f.stem.rfind("-summary")]
-            for f in run_dir.glob("*-summary.json")
-        }
         candidates = [
-            f for f in run_dir.glob("[0-9]*.json") if f.stem not in summary_stems
+            f
+            for f in run_dir.glob("[0-9]*.json")
+            if "-" not in f.stem
         ]
         if candidates:
             path = candidates[0]
-            return json.loads(path.read_text()), path
+            result = json.loads(path.read_text())
+            if isinstance(result, dict):
+                result["_result_path"] = str(path)
+            return result, path
     raise FileNotFoundError(f"No backtest results found in {backtests_dir}")
 
 
@@ -45,31 +46,134 @@ def parse_equity_series(result: dict) -> pd.Series | None:
         values = result["charts"]["Strategy Equity"]["series"]["Equity"]["values"]
         if not values:
             return None
-        idx = [datetime.fromtimestamp(v["x"], tz=timezone.utc) for v in values]
-        return pd.Series([v["y"] for v in values], index=idx, name="equity")
+
+        if isinstance(values[0], dict):
+            idx = [datetime.fromtimestamp(v["x"], tz=timezone.utc) for v in values]
+            data = [v["y"] for v in values]
+        else:
+            idx = [datetime.fromtimestamp(v[0], tz=timezone.utc) for v in values]
+            data = [v[1] for v in values]
+
+        return pd.Series(data, index=idx, name="equity")
     except (KeyError, TypeError):
         return None
+
+
+def parse_chart_series(result: dict, chart_name: str, series_name: str) -> pd.Series | None:
+    """Extract a chart series as a UTC-indexed Series. Returns None if empty."""
+    try:
+        values = result["charts"][chart_name]["series"][series_name]["values"]
+        if not values:
+            return None
+
+        if isinstance(values[0], dict):
+            idx = [datetime.fromtimestamp(v["x"], tz=timezone.utc) for v in values]
+            data = [v["y"] for v in values]
+        else:
+            idx = [datetime.fromtimestamp(v[0], tz=timezone.utc) for v in values]
+            data = [v[1] for v in values]
+
+        return pd.Series(data, index=idx, name=series_name)
+    except (KeyError, TypeError):
+        return None
+
+
+def parse_decision_telemetry(result: dict) -> pd.DataFrame:
+    """Extract score, thresholds, and action telemetry emitted by the LEAN strategy."""
+    series_map = {
+        "score": parse_chart_series(result, "Decision Telemetry", "Score"),
+        "buy_threshold": parse_chart_series(result, "Decision Telemetry", "Buy Threshold"),
+        "sell_threshold": parse_chart_series(result, "Decision Telemetry", "Sell Threshold"),
+        "raw_action": parse_chart_series(result, "Decision Telemetry", "Raw Action"),
+        "action": parse_chart_series(result, "Decision Telemetry", "Action"),
+    }
+
+    non_empty = {name: series for name, series in series_map.items() if series is not None and not series.empty}
+    if not non_empty:
+        return pd.DataFrame()
+
+    telemetry = pd.concat(non_empty, axis=1).sort_index()
+    return telemetry.ffill()
 
 
 def parse_closed_trades(result: dict) -> pd.DataFrame:
     """Extract closed trades as a DataFrame with entry/exit pairs."""
     trades = result.get("totalPerformance", {}).get("closedTrades", [])
-    if not trades:
+    if trades:
+        rows = []
+        for trade in trades:
+            symbol = trade.get("symbol")
+            if isinstance(symbol, dict):
+                symbol = symbol.get("value")
+            direction = trade.get("direction", "Long")
+            if isinstance(direction, (int, float)):
+                direction = "Long" if int(direction) == 0 else "Short"
+            rows.append(
+                {
+                    "symbol": symbol or trade.get("symbolValue", ""),
+                    "direction": direction,
+                    "quantity": abs(float(trade.get("quantity", 0))),
+                    "entry_time": pd.to_datetime(trade["entryTime"], utc=True),
+                    "entry_price": float(trade["entryPrice"]),
+                    "exit_time": pd.to_datetime(trade["exitTime"], utc=True),
+                    "exit_price": float(trade["exitPrice"]),
+                    "pnl": float(trade.get("profitLoss", 0)),
+                    "fees": float(trade.get("totalFees", 0)),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    result_path_text = result.get("_result_path")
+    if not result_path_text:
         return pd.DataFrame()
-    rows = [
-        {
-            "symbol": t["symbol"]["value"],
-            "direction": t["direction"],
-            "quantity": float(t["quantity"]),
-            "entry_time": pd.to_datetime(t["entryTime"], utc=True),
-            "entry_price": float(t["entryPrice"]),
-            "exit_time": pd.to_datetime(t["exitTime"], utc=True),
-            "exit_price": float(t["exitPrice"]),
-            "pnl": float(t["profitLoss"]),
-            "fees": float(t["totalFees"]),
-        }
-        for t in trades
+
+    order_events_path = Path(result_path_text).with_name(f"{Path(result_path_text).stem}-order-events.json")
+    if not order_events_path.exists():
+        return pd.DataFrame()
+
+    events = json.loads(order_events_path.read_text())
+    filled_events = [
+        event for event in events
+        if event.get("status") == "filled" and float(event.get("fillQuantity", 0)) != 0
     ]
+    if not filled_events:
+        return pd.DataFrame()
+
+    rows = []
+    open_trade = None
+    for event in filled_events:
+        direction = str(event.get("direction", "")).lower()
+        event_time = datetime.fromtimestamp(event["time"], tz=timezone.utc)
+        quantity = abs(float(event.get("fillQuantity", 0)))
+        fee = float(event.get("orderFeeAmount", 0) or 0)
+        if direction == "buy":
+            open_trade = {
+                "symbol": event.get("symbolValue") or event.get("symbol", ""),
+                "direction": "Long",
+                "quantity": quantity,
+                "entry_time": event_time,
+                "entry_price": float(event.get("fillPrice", 0)),
+                "fees": fee,
+            }
+        elif direction == "sell" and open_trade is not None:
+            exit_price = float(event.get("fillPrice", 0))
+            total_fees = open_trade["fees"] + fee
+            pnl = (exit_price - open_trade["entry_price"]) * open_trade["quantity"] - total_fees
+            rows.append(
+                {
+                    "symbol": open_trade["symbol"],
+                    "direction": open_trade["direction"],
+                    "quantity": open_trade["quantity"],
+                    "entry_time": open_trade["entry_time"],
+                    "entry_price": open_trade["entry_price"],
+                    "exit_time": event_time,
+                    "exit_price": exit_price,
+                    "pnl": pnl,
+                    "fees": total_fees,
+                }
+            )
+            open_trade = None
+
     return pd.DataFrame(rows)
 
 
@@ -99,12 +203,17 @@ def parse_stats(result: dict) -> dict:
     return {
         "Period": f"{start} → {end}",
         "Status": state.get("Status", "—"),
+        "Total Orders": int(state.get("OrderCount", 0)),
         "Total Trades": int(ts.get("totalNumberOfTrades", 0)),
+        "Winning Trades": int(ts.get("numberOfWinningTrades", 0)),
+        "Losing Trades": int(ts.get("numberOfLosingTrades", 0)),
         "Win Rate": pct(ts.get("winRate", 0)),
         "Loss Rate": pct(ts.get("lossRate", 0)),
+        "Avg Trade Duration": ts.get("averageTradeDuration", "—"),
         "Profit Factor": num(ts.get("profitFactor", 0)),
         "Sharpe Ratio": num(ts.get("sharpeRatio", 0)),
         "Sortino Ratio": num(ts.get("sortinoRatio", 0)),
+        "End Equity": rt.get("Equity", "—"),
         "Net Profit": rt.get("Net Profit", "—"),
         "Total Return": rt.get("Return", "—"),
         "Ann. Return": pct(ps.get("compoundingAnnualReturn", 0)),
@@ -113,7 +222,29 @@ def parse_stats(result: dict) -> dict:
         "Total Fees": rt.get("Fees", "—"),
         "Alpha": num(ps.get("alpha", 0)),
         "Beta": num(ps.get("beta", 0)),
+        **{
+            key: rt[key]
+            for key in [
+                "Policy",
+                "Wash Sale Days",
+                "Min Hold Days",
+                "Buy Decisions",
+                "Sell Decisions",
+                "Hold Decisions",
+                "Executed Buys",
+                "Executed Sells",
+                "Blocked Wash Sales",
+                "Blocked Min Hold",
+            ]
+            if key in rt
+        },
     }
+
+
+def format_stats_lines(stats: dict) -> list[str]:
+    """Format performance stats for CLI output."""
+    width = max(len(key) for key in stats)
+    return [f"{key:<{width}} : {value}" for key, value in stats.items()]
 
 
 # ── Plot helpers ───────────────────────────────────────────────────────────
@@ -135,8 +266,10 @@ def plot_price_with_signals(ax, price_df: pd.DataFrame, title: str = "Price + Mo
 
     buys = price_df[price_df["buy_signal"].astype(bool)]
     sells = price_df[price_df["sell_signal"].astype(bool)]
-    ax.scatter(buys.index, buys["close"], marker="^", color="#2ecc71", s=90, zorder=5, label=f"Buy signal ({len(buys)})")
-    ax.scatter(sells.index, sells["close"], marker="v", color="#e74c3c", s=90, zorder=5, label=f"Sell signal ({len(sells)})")
+    if not buys.empty:
+        ax.scatter(buys.index, buys["close"], marker="^", color="#2ecc71", s=90, zorder=5, label=f"Buy signal ({len(buys)})")
+    if not sells.empty:
+        ax.scatter(sells.index, sells["close"], marker="v", color="#e74c3c", s=90, zorder=5, label=f"Sell signal ({len(sells)})")
 
     ax.set_title(title, fontsize=11)
     ax.set_ylabel("Price (USD)")
@@ -195,22 +328,89 @@ def plot_drawdown(ax, equity: pd.Series):
     _style_date_axis(ax)
 
 
+def plot_decision_telemetry(ax, telemetry: pd.DataFrame):
+    """Plot model score/threshold telemetry with action markers."""
+    score = telemetry.get("score")
+    if score is not None:
+        ax.plot(score.index, score.values, color="#1f4e79", lw=1.3, label="Score")
+
+    buy_threshold = telemetry.get("buy_threshold")
+    if buy_threshold is not None:
+        ax.plot(
+            buy_threshold.index,
+            buy_threshold.values,
+            color="#2ecc71",
+            lw=1.0,
+            linestyle="--",
+            label="Buy threshold",
+        )
+
+    sell_threshold = telemetry.get("sell_threshold")
+    if sell_threshold is not None:
+        ax.plot(
+            sell_threshold.index,
+            sell_threshold.values,
+            color="#e74c3c",
+            lw=1.0,
+            linestyle="--",
+            label="Sell threshold",
+        )
+
+    action = telemetry.get("action")
+    if action is not None:
+        buys = action[action >= 1]
+        sells = action[action <= -1]
+        holds = action[action == 0]
+        if not buys.empty:
+            buy_y = score.reindex(buys.index) if score is not None else pd.Series(0.0, index=buys.index)
+            ax.scatter(buys.index, buy_y.values, marker="^", color="#2ecc71", s=70, zorder=5, label="Final buy")
+        if not sells.empty:
+            sell_y = score.reindex(sells.index) if score is not None else pd.Series(0.0, index=sells.index)
+            ax.scatter(sells.index, sell_y.values, marker="v", color="#e74c3c", s=70, zorder=5, label="Final sell")
+        if score is not None and not holds.empty:
+            hold_y = score.reindex(holds.index)
+            ax.scatter(holds.index, hold_y.values, marker="o", color="#7f8c8d", s=20, alpha=0.35, zorder=4, label="Hold")
+
+    ax.axhline(0, color="#cccccc", lw=0.8, linestyle=":")
+    ax.set_title("Decision Telemetry", fontsize=11)
+    ax.set_ylabel("Model Score")
+    ax.legend(fontsize=8, ncol=3, loc="upper left")
+    ax.grid(True, alpha=0.3)
+    _style_date_axis(ax)
+
+
 def plot_stats_table(ax, stats: dict):
     """Render a two-column performance statistics table."""
     ax.axis("off")
     rows = [(k, str(v)) for k, v in stats.items()]
-    table = ax.table(cellText=rows, colLabels=["Metric", "Value"],
-                     loc="center", cellLoc="left")
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.5)
-    for (r, c), cell in table.get_celld().items():
-        if r == 0:
-            cell.set_facecolor("#2c3e50")
-            cell.set_text_props(color="white", fontweight="bold")
-        elif r % 2 == 0:
-            cell.set_facecolor("#f7f7f7")
-        cell.set_edgecolor("#dddddd")
+    midpoint = int(np.ceil(len(rows) / 2))
+    left_rows = rows[:midpoint]
+    right_rows = rows[midpoint:]
+
+    left_table = ax.table(
+        cellText=left_rows,
+        colLabels=["Metric", "Value"],
+        cellLoc="left",
+        bbox=[0.00, 0.0, 0.48, 1.0],
+    )
+    right_table = ax.table(
+        cellText=right_rows,
+        colLabels=["Metric", "Value"],
+        cellLoc="left",
+        bbox=[0.52, 0.0, 0.48, 1.0],
+    )
+
+    for table in (left_table, right_table):
+        table.auto_set_font_size(False)
+        table.set_fontsize(8.5)
+        table.scale(1, 1.3)
+        for (r, c), cell in table.get_celld().items():
+            if r == 0:
+                cell.set_facecolor("#2c3e50")
+                cell.set_text_props(color="white", fontweight="bold")
+            elif r % 2 == 0:
+                cell.set_facecolor("#f7f7f7")
+            cell.set_edgecolor("#dddddd")
     ax.set_title("Performance Statistics", fontsize=11, pad=16)
 
 
@@ -244,17 +444,36 @@ def backtest_dashboard(
         initial_cash: Starting capital for equity curve baseline.
     """
     equity = parse_equity_series(result)
+    telemetry = parse_decision_telemetry(result)
     trades = parse_closed_trades(result)
     stats = parse_stats(result)
     period = stats.get("Period", "")
 
-    fig = plt.figure(figsize=(16, 12))
+    has_telemetry = not telemetry.empty and "score" in telemetry
+
+    fig = plt.figure(figsize=(16, 14 if has_telemetry else 12))
     fig.suptitle(
         f"Backtest Analysis — {symbol}  ({period})",
         fontsize=13, fontweight="bold", y=0.99,
     )
-    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.50, wspace=0.30,
-                           height_ratios=[1.4, 1, 1])
+    if has_telemetry:
+        gs = gridspec.GridSpec(
+            4,
+            2,
+            figure=fig,
+            hspace=0.45,
+            wspace=0.30,
+            height_ratios=[1.35, 0.95, 1.0, 1.1],
+        )
+    else:
+        gs = gridspec.GridSpec(
+            3,
+            2,
+            figure=fig,
+            hspace=0.45,
+            wspace=0.30,
+            height_ratios=[1.4, 1.0, 1.1],
+        )
 
     # Row 0: price + signals (full width)
     ax_price = fig.add_subplot(gs[0, :])
@@ -262,22 +481,29 @@ def backtest_dashboard(
     if not trades.empty:
         plot_trades_on_price(ax_price, trades)
 
-    # Row 1: equity curve
-    ax_eq = fig.add_subplot(gs[1, 0])
+    if has_telemetry:
+        ax_telemetry = fig.add_subplot(gs[1, :])
+        plot_decision_telemetry(ax_telemetry, telemetry)
+        equity_row = 2
+        stats_row = 3
+    else:
+        equity_row = 1
+        stats_row = 2
+
+    # Equity row
+    ax_eq = fig.add_subplot(gs[equity_row, 0])
     if equity is not None:
         plot_equity_curve(ax_eq, equity, initial_cash=initial_cash)
     else:
         _no_data_panel(ax_eq, "Equity Curve", "No equity data\n(0 LEAN trades)")
 
-    # Row 1: drawdown
-    ax_dd = fig.add_subplot(gs[1, 1])
+    ax_dd = fig.add_subplot(gs[equity_row, 1])
     if equity is not None:
         plot_drawdown(ax_dd, equity)
     else:
         _no_data_panel(ax_dd, "Drawdown", "No drawdown data\n(0 LEAN trades)")
 
-    # Row 2: stats table (full width)
-    ax_stats = fig.add_subplot(gs[2, :])
+    ax_stats = fig.add_subplot(gs[stats_row, :])
     plot_stats_table(ax_stats, stats)
 
     return fig
@@ -311,8 +537,9 @@ def plot_normalized_performance(
 
     if trades is not None and not trades.empty:
         # Normalize entry prices at the closest equity value
-        longs = trades[trades["direction"].str.lower().str.contains("long")]
-        shorts = trades[~trades["direction"].str.lower().str.contains("long")]
+        directions = trades["direction"].fillna("").astype(str).str.lower()
+        longs = trades[directions.str.contains("long")]
+        shorts = trades[~directions.str.contains("long")]
 
         if not longs.empty:
             long_idx = longs["entry_time"]

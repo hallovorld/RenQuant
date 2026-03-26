@@ -4,7 +4,11 @@
   "model_type": "classification",
   "data_src": "yfinance",
   "initial_cash": 10000,
-  "backtest_start": "2023-01-01",
+  "wash_sale_days": 30,
+  "min_hold_days": 0,
+  "sample_start": "2021-01-01",
+  "sample_end": "2024-12-31",
+  "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-01",
   "indicator_spec": {
     "rsi": {"period": 14},

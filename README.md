@@ -53,8 +53,10 @@ lean login
 
 ### 1. Scaffold a new strategy
 ```bash
-python scripts/new_strategy.py --name nvda_rf --symbol NVDA --type classification
+python scripts/new_strategy.py --name my_nvda --symbol NVDA --type classification
 ```
+
+If you want a known-good example that already exists in the repo, use `test_001_nvda` in the commands below instead.
 
 ### 2. Research — train in notebook
 ```bash
@@ -63,21 +65,37 @@ jupyter lab  # open notebook, run all cells to train and export models
 
 ### 3. Backtest with LEAN
 ```bash
-cd backtesting/nvda_rf && lean backtest .
+cd backtesting/my_nvda && lean backtest .
+```
+
+If you want the performance charts to be generated immediately after the backtest completes, use the wrapper instead:
+
+```bash
+python scripts/backtest_and_analyze.py --strategy my_nvda
+```
+
+On macOS, add `--open` to open the generated PNG files automatically.
+
+Backtest execution respects `wash_sale_days` and `min_hold_days` from `strategy_config.json`.
+
+If LEAN is missing local daily equity data for a symbol, export it from the cached parquet store first:
+
+```bash
+python scripts/export_lean_data.py --symbol NVDA
 ```
 
 ### 4. Analyze results
 ```bash
-# Open Notebooks/backtest_analysis.ipynb
+python scripts/analyze_backtest.py --strategy my_nvda
 ```
 
 ### 5. Live trading
 ```bash
 # Paper trading (test)
-python -m live.runner --strategy nvda_rf --broker paper --once
+python -m live.runner --strategy my_nvda --broker paper --once
 
 # Real trading (requires IBKR setup)
-python -m live.runner --strategy nvda_rf --broker ibkr
+python -m live.runner --strategy my_nvda --broker ibkr
 ```
 
 ## Model Types
@@ -108,3 +126,5 @@ All indicators share a uniform API: `(df, **params) -> DataFrame`
 - [Indicators](doc/indicators.md) — Indicator catalog with parameters
 - [Models](doc/models.md) — Model type reference and decision guide
 - [Setup](doc/setup.md) — Environment setup for Apple Silicon
+
+The dashboard now includes decision telemetry from LEAN runtime output, so you can inspect model score, buy/sell thresholds, and the final constrained action alongside price, equity, and drawdown.

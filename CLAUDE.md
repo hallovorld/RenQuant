@@ -28,11 +28,18 @@ Docker must be allocated 16GB+ memory for LEAN engine.
 **Validation mode** (final backtest): Run LEAN on exported models.
 
 ```bash
+python scripts/export_lean_data.py --symbol NVDA
 cd backtesting/test_001_nvda
 lean backtest .
 ```
 
-**Analysis mode**: Open `Notebooks/backtest_analysis.ipynb` to visualize LEAN results.
+To backtest and render charts in one step:
+
+```bash
+python scripts/backtest_and_analyze.py --strategy test_001_nvda
+```
+
+**Analysis mode**: Run `python scripts/analyze_backtest.py --strategy test_001_nvda` to visualize LEAN results, including decision telemetry for score/threshold inspection.
 
 **Live mode**: Run the live trader with paper or IBKR broker.
 
@@ -97,15 +104,15 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 
 **3. Backtesting** (`backtesting/`) — QuantConnect LEAN engine (Docker)
 - `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
-- Loads JSON models, recomputes indicators inline
+- Loads JSON models, recomputes indicators inline, and enforces config-backed wash-sale / minimum-hold constraints
 
 **4. Live Trading** (`live/`)
 - `python -m live.runner --strategy X --broker paper|ibkr --once`
 - `PaperBroker` for testing, `IBKRBroker` for real execution
 - Logs to `live/logs/{strategy}/{date}.json`
 
-**5. Analysis** (`Notebooks/backtest_analysis.ipynb`)
-- `common.backtest_dashboard` — 4-panel dashboard
+**5. Analysis** (`scripts/analyze_backtest.py`)
+- `common.backtest_dashboard` — price, decision telemetry, equity, drawdown, and stats
 - `common.plot_normalized_performance` — normalized equity with entry markers
 
 ### Adding a New Strategy
