@@ -24,7 +24,7 @@ Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline:
 RenQuant/
 ├── common/                  # Shared library
 │   ├── data/                # DataSource ABC, yfinance, IBKR stub, Parquet cache
-│   ├── indicators/          # Registry-based: rsi, macd, cci, bbp, ema, stochastic, ppo, momentum
+│   ├── indicators/          # Registry-based: 12 indicators (momentum, volatility, trend, volume)
 │   ├── models/              # BaseModel ABC + 5 implementations
 │   │   └── learners/        # RTLearner, BagLearner, TabularQLearner
 │   ├── strategy.py          # StrategyConfig + Strategy composition
@@ -84,7 +84,7 @@ python -m live.runner --strategy nvda_rf --broker ibkr
 
 | Type | Method | Use Case |
 |------|--------|----------|
-| **Manual** | Rule-based indicator voting | Baseline, interpretable |
+| **Manual** | Generic indicator-threshold voting | Baseline, interpretable |
 | **Classification** | Random Forest on forward-return labels | Fast, deterministic |
 | **Q-Learning** | Tabular Q with discretized states | Model-free RL |
 | **FQI** | Fitted Q-Iteration with XGBoost | Function approximation RL |
@@ -96,8 +96,10 @@ All indicators share a uniform API: `(df, **params) -> DataFrame`
 
 | Category | Indicators |
 |----------|-----------|
-| Momentum | RSI, MACD (line/signal/hist), EMA, Momentum |
-| Volatility | CCI, BBP (Bollinger Band %), Stochastic (%K/%D), PPO |
+| Momentum | RSI, MACD (line/signal/hist), EMA, Momentum, Williams %R |
+| Volatility | CCI, BBP (Bollinger Band %), Stochastic (%K/%D), PPO, ATR |
+| Trend | ADX (+DI/-DI) |
+| Volume | OBV (with EMA signal + slope) |
 
 ## Documentation
 

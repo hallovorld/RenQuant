@@ -67,8 +67,10 @@ Import as `import common`. **Do not import `common/` from inside `backtesting/` 
 
 Uniform API: `(df: DataFrame, **params) -> DataFrame`. All indicators registered via `@register` decorator.
 
-- Momentum: `rsi`, `macd`, `ema`, `momentum`
-- Volatility: `cci`, `bbp`, `stochastic`, `ppo`
+- Momentum: `rsi`, `macd`, `ema`, `momentum`, `williams_r`
+- Volatility: `cci`, `bbp`, `stochastic`, `ppo`, `atr`
+- Trend: `adx`
+- Volume: `obv`
 - `compute_indicators(df, {"rsi": {"period": 14}, "macd": {}})` applies any subset
 
 ### Model Types (`common/models/`)
@@ -77,7 +79,7 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 
 | Type | Training | Prediction |
 |------|----------|------------|
-| `manual` | No-op (rules at construction) | Threshold voting |
+| `manual` | No-op (generic score_rules at construction) | Multi-indicator threshold voting |
 | `classification` | Forward-return labels → BagLearner(RTLearner) | Forest query |
 | `qlearning` | Discretize states, Q-table over epochs | Q-table argmax |
 | `fqi` | Transition tuples → FQI with XGBoost | Score per action, argmax |

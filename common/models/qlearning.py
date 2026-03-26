@@ -159,6 +159,19 @@ class QLearningModel(BaseModel):
         action = self.qlearner.querysetstate(s)
         return ACTION_NAMES[action]
 
+    def predict_bulk(self, df: pd.DataFrame) -> pd.Series:
+        if self.qlearner is None or self.bin_edges is None:
+            raise RuntimeError("Model not trained.")
+        disc = self._discretize(df[self.feature_columns])
+        pos_flags = df["position_flag"].values if "position_flag" in df.columns else np.zeros(len(df), dtype=int)
+        results = []
+        for i in range(len(df)):
+            holding = int(pos_flags[i]) * 1000
+            s = self._encode_state(disc[i], holding)
+            action = self.qlearner.querysetstate(s)
+            results.append(ACTION_NAMES[action])
+        return pd.Series(results, index=df.index)
+
     # ── persistence ────────────────────────────────────────────────────
 
     def save(self, directory: Path, model_name: str) -> dict:

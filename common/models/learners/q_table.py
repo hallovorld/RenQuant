@@ -39,9 +39,13 @@ class TabularQLearner:
         self.s: int = 0
         self.a: int = 0
 
-        # Dyna model
-        self.Tc = np.zeros((num_states, num_actions, num_states))
-        self.R = np.zeros((num_states, num_actions))
+        # Dyna model — only allocate if dyna > 0
+        if dyna > 0:
+            self.Tc = np.zeros((num_states, num_actions, num_states))
+            self.R = np.zeros((num_states, num_actions))
+        else:
+            self.Tc = None
+            self.R = None
         self._experiences: list[tuple[int, int]] = []
         self._experience_set: set[tuple[int, int]] = set()
 

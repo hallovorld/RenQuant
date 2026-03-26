@@ -1,4 +1,4 @@
-"""Momentum indicators: RSI, MACD, EMA, Momentum."""
+"""Momentum indicators: RSI, MACD, EMA, Momentum, Williams %R."""
 
 import numpy as np
 import pandas as pd
@@ -68,3 +68,18 @@ def compute_momentum(df: pd.DataFrame, period: int = 10) -> pd.DataFrame:
         {"momentum": close / close.shift(period) - 1},
         index=df.index,
     )
+
+
+@register("williams_r", default_params={"period": 14})
+def compute_williams_r(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Williams %R — momentum oscillator, inverse of Fast Stochastic.
+
+    Range: -100 (oversold) to 0 (overbought).
+
+    Output columns: ``williams_r``
+    """
+    high = df["high"].rolling(window=period).max()
+    low = df["low"].rolling(window=period).min()
+    price_range = (high - low).replace(0, np.nan)
+    wr = -100 * (high - df["close"]) / price_range
+    return pd.DataFrame({"williams_r": wr}, index=df.index)

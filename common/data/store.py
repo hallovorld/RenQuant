@@ -76,8 +76,15 @@ class LocalStore:
         timeframe: str = "1d",
         start: str | None = None,
         end: str | None = None,
+        tolerance_days: int = 5,
     ) -> bool:
-        """Check whether the local cache fully covers ``[start, end]``."""
+        """Check whether the local cache covers ``[start, end]``.
+
+        A tolerance of *tolerance_days* is applied to the end date to
+        account for weekends, holidays, and market closures so that a
+        request for e.g. Monday doesn't invalidate a cache whose last
+        bar is the previous Friday.
+        """
         path = self._path(symbol, timeframe)
         if not path.exists():
             return False
@@ -88,6 +95,6 @@ class LocalStore:
             df.index = pd.to_datetime(df.index)
         if start and df.index.min() > pd.Timestamp(start):
             return False
-        if end and df.index.max() < pd.Timestamp(end):
+        if end and df.index.max() < pd.Timestamp(end) - pd.Timedelta(days=tolerance_days):
             return False
         return True

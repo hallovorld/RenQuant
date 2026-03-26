@@ -1,7 +1,6 @@
 """YFinance / OpenBB data source."""
 
 import pandas as pd
-from openbb import obb
 
 from .base import DataSource
 
@@ -20,6 +19,8 @@ class YFinanceSource(DataSource):
         end: str | None = None,
         timeframe: str = "1d",
     ) -> pd.DataFrame:
+        from openbb import obb  # lazy import — OpenBB init is very slow
+
         kwargs: dict = {"symbol": symbol, "provider": "yfinance"}
         if start:
             kwargs["start_date"] = start

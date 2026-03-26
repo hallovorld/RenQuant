@@ -50,7 +50,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 |--------|----------|
 | `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
 | `common/data/` | `fetch_ohlcv` (Parquet cache + yfinance/IBKR sources), `DataSource` ABC, `LocalStore` |
-| `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 8 indicators |
+| `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 12 indicators across 4 categories |
 | `common/models/` | `BaseModel` ABC, 5 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `create_model` factory |
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
@@ -129,15 +129,18 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 
 ## State Space
 
-Strategies define their own feature columns. The default feature set used by Classification and Q-Learning models:
+Strategies define their own feature columns from any registered indicator. The NVDA strategy uses:
 
 | Feature | Description | Parameters |
 |---------|-------------|------------|
 | `rsi` | Relative Strength Index | period=14 |
 | `macd_hist` | MACD histogram (macd_line − macd_signal) | fast=12, slow=26, signal=9 |
 | `cci` | Commodity Channel Index | period=20 |
+| `bbp` | Bollinger Band Percentage | period=20 |
+| `adx` | Average Directional Index (trend strength) | period=14 |
+| `williams_r` | Williams %R (overbought/oversold) | period=14 |
 
-FQI models extend this with `macd_line`, `macd_signal`, and `position_flag` in their state vector. All feature columns can be configured with any registered indicators.
+The Manual model additionally uses `obv_slope` (volume confirmation) and `atr_pct` (volatility). All 12 registered indicators can be combined freely.
 
 ---
 

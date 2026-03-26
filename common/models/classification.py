@@ -35,6 +35,8 @@ class ClassificationModel(BaseModel):
         leaf_size: int = 25,
         bags: int = 15,
         impact: float = 0.0,
+        buy_threshold: float = 0.5,
+        sell_threshold: float = -0.5,
     ):
         self.feature_columns = feature_columns or ["rsi", "macd_hist", "cci"]
         self.lookahead = lookahead
@@ -42,6 +44,8 @@ class ClassificationModel(BaseModel):
         self.leaf_size = leaf_size
         self.bags = bags
         self.impact = impact
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
         self.learner: BagLearner | None = None
 
     @property
@@ -102,11 +106,24 @@ class ClassificationModel(BaseModel):
                 features = features.reshape(1, -1)
 
         pred = self.learner.query(features)[0]
-        if pred > 0.5:
+        if pred > self.buy_threshold:
             return "buy"
-        if pred < -0.5:
+        if pred < self.sell_threshold:
             return "sell"
         return "hold"
+
+    def predict_bulk(self, df: pd.DataFrame) -> pd.Series:
+        if self.learner is None:
+            raise RuntimeError("Model not trained. Call train() first.")
+        import numpy as np
+
+        features = df[self.feature_columns].values
+        preds = self.learner.query(features)
+        result = np.where(
+            preds > self.buy_threshold, "buy",
+            np.where(preds < self.sell_threshold, "sell", "hold"),
+        )
+        return pd.Series(result, index=df.index)
 
     # ── persistence ────────────────────────────────────────────────────
 
@@ -132,6 +149,8 @@ class ClassificationModel(BaseModel):
             "leaf_size": self.leaf_size,
             "bags": self.bags,
             "impact": self.impact,
+            "buy_threshold": self.buy_threshold,
+            "sell_threshold": self.sell_threshold,
             "artifacts": {"trees": str(artifact_path)},
         }
         meta_path = directory / f"{model_name}-policy-metadata.json"
@@ -149,6 +168,8 @@ class ClassificationModel(BaseModel):
         self.leaf_size = metadata["leaf_size"]
         self.bags = metadata["bags"]
         self.impact = metadata.get("impact", 0.0)
+        self.buy_threshold = metadata.get("buy_threshold", 0.5)
+        self.sell_threshold = metadata.get("sell_threshold", -0.5)
 
         trees_path = directory / f"{model_name}-rf-trees.json"
         trees_data = json.loads(trees_path.read_text())

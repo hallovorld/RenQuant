@@ -1,4 +1,4 @@
-"""Volatility indicators: CCI, BBP, Stochastic, PPO."""
+"""Volatility indicators: CCI, BBP, Stochastic, PPO, ATR."""
 
 import numpy as np
 import pandas as pd
@@ -78,5 +78,22 @@ def compute_ppo(
             "ppo_signal": ppo_signal,
             "ppo_hist": ppo_line - ppo_signal,
         },
+        index=df.index,
+    )
+
+
+@register("atr", default_params={"period": 14})
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Average True Range — volatility measure.
+
+    Output columns: ``atr``, ``atr_pct`` (ATR as % of close)
+    """
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close = (df["low"] - df["close"].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return pd.DataFrame(
+        {"atr": atr, "atr_pct": atr / df["close"] * 100},
         index=df.index,
     )

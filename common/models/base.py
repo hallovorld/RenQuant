@@ -38,6 +38,14 @@ class BaseModel(ABC):
         """
         ...
 
+    def predict_bulk(self, df: pd.DataFrame) -> pd.Series:
+        """Predict actions for every row in *df*.
+
+        Default implementation calls :meth:`predict` row-by-row.
+        Subclasses should override with a vectorized version for speed.
+        """
+        return df.apply(self.predict, axis=1)
+
     @abstractmethod
     def save(self, directory: Path, model_name: str) -> dict:
         """Export model artifacts (JSON) and return policy metadata dict."""
