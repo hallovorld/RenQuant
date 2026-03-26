@@ -129,18 +129,15 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 
 ## State Space
 
-Strategies define their own state features via `state_columns` in policy metadata. The default FQI state vector:
+Strategies define their own feature columns. The default feature set used by Classification and Q-Learning models:
 
 | Feature | Description | Parameters |
 |---------|-------------|------------|
-| `macd_line` | EMA(12) − EMA(26) | fast=12, slow=26 |
-| `macd_signal` | EMA(9) of macd_line | signal=9 |
-| `macd_hist` | macd_line − macd_signal | — |
 | `rsi` | Relative Strength Index | period=14 |
+| `macd_hist` | MACD histogram (macd_line − macd_signal) | fast=12, slow=26, signal=9 |
 | `cci` | Commodity Channel Index | period=20 |
-| `position_flag` | 1 if long, 0 if flat | — |
 
-Other model types (Classification, Q-Learning) default to `rsi`, `macd_hist`, `cci` but can be configured with any registered indicators.
+FQI models extend this with `macd_line`, `macd_signal`, and `position_flag` in their state vector. All feature columns can be configured with any registered indicators.
 
 ---
 

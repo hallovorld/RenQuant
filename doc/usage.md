@@ -46,7 +46,7 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
 {
   "model_name": "test-001-nvda",
   "stock_symbol": "NVDA",
-  "model_type": "fqi",
+  "model_type": "classification",
   "initial_cash": 100000,
   "backtest_start": "2022-01-01",
   "backtest_end": "2023-01-01"
