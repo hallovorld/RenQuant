@@ -1,4 +1,4 @@
-# Plan: Relative (Stock/SPY) Indicators — IMPLEMENTED
+# Plan: Relative (Stock/SPY) Indicators — PARTIALLY IMPLEMENTED
 
 ## Motivation
 
@@ -106,7 +106,7 @@ Current thresholds assume raw indicator ranges (e.g., RSI 40/65, CCI -100/+100).
 
 **These will need empirical tuning** — run the notebook, inspect distributions, then set thresholds at reasonable percentiles (e.g., 20th/80th).
 
-### 5. LEAN main.py impact
+### 5. LEAN main.py impact — NOT YET IMPLEMENTED
 
 `main.py` must also compute SPY indicators and do the relative transform. This means:
 

@@ -76,7 +76,7 @@ python scripts/backtest_and_analyze.py --strategy my_nvda
 
 On macOS, add `--open` to open the generated PNG files automatically.
 
-Backtest execution respects `wash_sale_days` and `min_hold_days` from `strategy_config.json`.
+Backtest execution respects `wash_sale_days`, `min_hold_days`, `max_hold_days`, and `position_sizing` from `strategy_config.json`.
 
 If LEAN is missing local daily equity data for a symbol, export it from the cached parquet store first:
 

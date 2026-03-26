@@ -106,13 +106,13 @@ The policy metadata acts as a contract between research and execution — both m
 
 - **`Initialize()`** — reads `strategy_config.json`, loads policy metadata and model artifacts, sets warmup
 - **`OnData()`** — called once per trading day:
-  1. Fetches price history for stock and SPY
-  2. Computes indicators inline for both (duplicated from common/ — Docker constraint)
-  3. Builds relative features (same ratio/diff transform as notebook)
-  4. Scores actions via the exported policy
-  5. Applies trading constraints (wash sale, min/max hold)
-  6. Applies position sizing (max position %, cash reserve) before submitting orders
-  7. Logs decisions, plots telemetry, and submits orders when allowed
+  1. Fetches price history and computes indicators inline (duplicated from common/ — Docker constraint)
+  2. Scores actions via the exported policy
+  3. Applies trading constraints (wash sale, min/max hold)
+  4. Applies position sizing (max position %, cash reserve) before submitting orders
+  5. Logs decisions, plots telemetry, and submits orders when allowed
+
+> **Note**: `main.py` does not yet compute relative (stock/SPY) features. It feeds raw indicators to the model. This is a known gap — the notebook trains on relative features, but LEAN backtests use raw features. See `doc/plan-relative-indicators.md` section 5 for the planned fix.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
