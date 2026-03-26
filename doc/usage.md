@@ -49,10 +49,13 @@ On macOS, append `--open` to open the generated chart PNGs automatically after a
 
 Results land in `backtesting/test_001_nvda/backtests/<timestamp>/`.
 
-The LEAN strategy enforces config-backed execution constraints during backtests:
+The LEAN strategy enforces config-backed execution constraints and position sizing during backtests:
 
 - `wash_sale_days`: blocks a new buy for `N` calendar days after a sell
 - `min_hold_days`: blocks a sell until a position has been held for `N` calendar days
+- `max_hold_days`: forces a sell if a position has been held for `N` calendar days
+- `position_sizing.max_position_pct`: caps any single position at this fraction of portfolio value
+- `position_sizing.cash_reserve_pct`: always maintains this fraction of portfolio as cash reserve
 
 If LEAN reports missing local symbol files such as `/equity/usa/daily/nvda.zip`, export the cached parquet data into LEAN format first:
 
@@ -66,11 +69,16 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
   "model_name": "test-001-nvda",
   "stock_symbol": "NVDA",
   "model_type": "classification",
-  "initial_cash": 100000,
+  "initial_cash": 10000,
   "wash_sale_days": 30,
-  "min_hold_days": 0,
-  "backtest_start": "2022-01-01",
-  "backtest_end": "2023-01-01"
+  "min_hold_days": 20,
+  "max_hold_days": 150,
+  "position_sizing": {
+    "max_position_pct": 0.33,
+    "cash_reserve_pct": 0.10
+  },
+  "backtest_start": "2024-01-01",
+  "backtest_end": "2026-03-01"
 }
 ```
 

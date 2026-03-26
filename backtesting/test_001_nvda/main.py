@@ -29,6 +29,10 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 		self.sell_threshold = self.policy_metadata.get("sell_threshold", -0.1)
 		self.wash_sale_days = int(CONFIG.get("wash_sale_days", 0))
 		self.min_hold_days = int(CONFIG.get("min_hold_days", 0))
+		self.max_hold_days = int(CONFIG.get("max_hold_days", 0))
+		pos_sizing = CONFIG.get("position_sizing", {})
+		self.max_position_pct = float(pos_sizing.get("max_position_pct", 1.0))
+		self.cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.0))
 		self.trees = []
 		self.score_rules = []
 		self.bin_edges = {}
@@ -72,10 +76,18 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 			self.last_decision = chosen_action
 
 		if chosen_action == "buy" and holdings <= 0:
-			self.Debug(f"{self.Time.date()} submitting buy order")
-			self.entry_time = self.Time
-			self.executed_buys += 1
-			self.SetHoldings(self.symbol, 1.0)
+			portfolio_value = self.Portfolio.TotalPortfolioValue
+			available_cash = self.Portfolio.Cash
+			cash_reserve = portfolio_value * self.cash_reserve_pct
+			investable = max(available_cash - cash_reserve, 0)
+			target_pct = min(self.max_position_pct, investable / max(portfolio_value, 1))
+			if target_pct < 0.01:
+				self.Debug(f"{self.Time.date()} buy skipped — insufficient cash (target_pct={target_pct:.4f})")
+			else:
+				self.Debug(f"{self.Time.date()} submitting buy order target_pct={target_pct:.4f}")
+				self.entry_time = self.Time
+				self.executed_buys += 1
+				self.SetHoldings(self.symbol, target_pct)
 		elif chosen_action == "sell" and holdings > 0:
 			self.Debug(f"{self.Time.date()} submitting liquidation order")
 			self.last_sell_time = self.Time
@@ -88,6 +100,9 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 			"Policy": self.policy_type,
 			"Wash Sale Days": str(self.wash_sale_days),
 			"Min Hold Days": str(self.min_hold_days),
+			"Max Hold Days": str(self.max_hold_days),
+			"Max Position Pct": f"{self.max_position_pct:.0%}",
+			"Cash Reserve Pct": f"{self.cash_reserve_pct:.0%}",
 			"Buy Decisions": str(self.decision_counts["buy"]),
 			"Sell Decisions": str(self.decision_counts["sell"]),
 			"Hold Decisions": str(self.decision_counts["hold"]),
@@ -221,6 +236,12 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 		return state * 3 + holding_bucket
 
 	def _apply_trade_constraints(self, action: str) -> tuple[str, str]:
+		# Max hold: force sell if position held too long
+		if self.max_hold_days > 0 and self.Portfolio[self.symbol].Quantity > 0 and self.entry_time is not None:
+			days_held = (self.Time.date() - self.entry_time.date()).days
+			if days_held >= self.max_hold_days:
+				return "sell", f"reason=max_hold days_held={days_held}"
+
 		if action == "buy":
 			if self.Portfolio[self.symbol].Quantity > 0:
 				return "hold", "reason=already_long"

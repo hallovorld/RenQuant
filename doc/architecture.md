@@ -110,8 +110,9 @@ The policy metadata acts as a contract between research and execution — both m
   2. Computes indicators inline for both (duplicated from common/ — Docker constraint)
   3. Builds relative features (same ratio/diff transform as notebook)
   4. Scores actions via the exported policy
-  5. Applies wash-sale and minimum-hold constraints
-  6. Logs decisions, plots telemetry, and submits orders when allowed
+  5. Applies trading constraints (wash sale, min/max hold)
+  6. Applies position sizing (max position %, cash reserve) before submitting orders
+  7. Logs decisions, plots telemetry, and submits orders when allowed
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -154,6 +155,22 @@ All models are subject to execution constraints during both notebook simulation 
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
 | Minimum hold | 20 calendar days | Prevents excessive short-term trading |
 | Maximum hold | 150 calendar days | Forces position review, prevents "buy and forget" |
+
+## Position Sizing
+
+Position sizing is configured in `strategy_config.json` under the `position_sizing` block and enforced during both notebook simulation and LEAN backtesting:
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `max_position_pct` | 0.33 (33%) | No single stock can exceed 1/3 of total portfolio value |
+| `cash_reserve_pct` | 0.10 (10%) | Always maintain 10% cash reserve |
+
+**Rules:**
+1. **Cash-only buys** — only use available cash for new positions; never sell existing holdings to fund a new buy
+2. **Max position cap** — `target_pct = min(max_position_pct, (available_cash - cash_reserve) / portfolio_value)`
+3. **Whole shares only** — notebook simulation buys whole shares; LEAN uses `SetHoldings` which handles this internally
+
+These rules are designed for future multi-stock portfolio expansion where diversification and cash management become critical.
 
 ---
 

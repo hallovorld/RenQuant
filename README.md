@@ -124,6 +124,15 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 | Min hold | 20 days | Prevents short-term trading |
 | Max hold | 150 days | Forces position review |
 
+## Position Sizing
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| Max position | 33% of portfolio | No single stock exceeds 1/3 of total value |
+| Cash reserve | 10% of portfolio | Always maintain cash buffer |
+
+Rules: cash-only buys (never sell to fund a new buy), whole shares only. Configured in `strategy_config.json` under `position_sizing`.
+
 ## Indicator Library
 
 All indicators share a uniform API: `(df, **params) -> DataFrame`

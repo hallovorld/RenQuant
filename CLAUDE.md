@@ -104,7 +104,8 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 
 **3. Backtesting** (`backtesting/`) — QuantConnect LEAN engine (Docker)
 - `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
-- Loads JSON models, recomputes indicators inline, and enforces config-backed wash-sale / minimum-hold constraints
+- Loads JSON models, recomputes indicators inline
+- Enforces trading constraints (wash sale, min/max hold) and position sizing (max position %, cash reserve) from `strategy_config.json`
 
 **4. Live Trading** (`live/`)
 - `python -m live.runner --strategy X --broker paper|ibkr --once`

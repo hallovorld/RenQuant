@@ -117,6 +117,17 @@ All models are subject to execution constraints during simulation and LEAN backt
 | Min hold | 20 days | Prevents short-term trading |
 | Max hold | 150 days | Forces position review |
 
+## Position Sizing
+
+All models use position sizing rules from `strategy_config.json`:
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `max_position_pct` | 33% | No single stock exceeds 1/3 of portfolio value |
+| `cash_reserve_pct` | 10% | Always maintain cash reserve |
+
+Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_reserve)`. Whole shares only in notebook simulation; LEAN uses `SetHoldings` with the capped percentage. Cash-only buys — never sell existing holdings to fund a new position.
+
 ## JSON Artifact Format
 
 All models export to JSON (no pickle) for LEAN compatibility. Each model writes:
