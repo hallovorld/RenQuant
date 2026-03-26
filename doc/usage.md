@@ -119,7 +119,7 @@ Available model types: `manual`, `classification`, `qlearning`, `fqi`, `optimiza
 common/                            # Shared library — import as `import common`
 ├── config.py                      # load_strategy_config, build_model_path
 ├── data/                          # fetch_ohlcv (Parquet cache + yfinance/IBKR)
-├── indicators/                    # compute_indicators, 8 registered indicators
+├── indicators/                    # compute_indicators, 12 registered indicators
 ├── models/                        # BaseModel ABC + 5 implementations + learners/
 ├── strategy.py                    # StrategyConfig + Strategy composition class
 ├── portfolio.py                   # compute_portvals, portfolio_stats

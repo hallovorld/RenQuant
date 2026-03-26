@@ -3,16 +3,20 @@
   "stock_symbol": "NVDA",
   "model_type": "classification",
   "data_src": "yfinance",
-  "initial_cash": 100000,
+  "initial_cash": 10000,
   "backtest_start": "2023-01-01",
   "backtest_end": "2026-03-01",
   "indicator_spec": {
     "rsi": {"period": 14},
     "macd": {"fast": 12, "slow": 26, "signal": 9},
-    "cci": {"period": 20}
+    "cci": {"period": 20},
+    "bbp": {"period": 20},
+    "adx": {"period": 14},
+    "williams_r": {"period": 14},
+    "obv": {"signal_period": 20}
   },
   "model_params": {
-    "feature_columns": ["rsi", "macd_hist", "cci"],
+    "feature_columns": ["rsi", "macd_hist", "cci", "bbp", "adx", "williams_r", "obv_slope"],
     "lookahead": 10,
     "threshold": 0.04,
     "leaf_size": 25,

@@ -129,7 +129,7 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 
 ## State Space
 
-Strategies define their own feature columns from any registered indicator. The NVDA strategy uses:
+Strategies define their own feature columns from any registered indicator. The NVDA strategy uses 7 shared features across all three model types (Manual, Classification, Q-Learning) for fair comparison:
 
 | Feature | Description | Parameters |
 |---------|-------------|------------|
@@ -139,8 +139,9 @@ Strategies define their own feature columns from any registered indicator. The N
 | `bbp` | Bollinger Band Percentage | period=20 |
 | `adx` | Average Directional Index (trend strength) | period=14 |
 | `williams_r` | Williams %R (overbought/oversold) | period=14 |
+| `obv_slope` | OBV rate of change (volume confirmation) | signal_period=20 |
 
-The Manual model additionally uses `obv_slope` (volume confirmation) and `atr_pct` (volatility). All 12 registered indicators can be combined freely.
+All 12 registered indicators can be combined freely.
 
 ---
 
