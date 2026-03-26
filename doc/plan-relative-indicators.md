@@ -1,4 +1,4 @@
-# Plan: Relative (Stock/SPY) Indicators
+# Plan: Relative (Stock/SPY) Indicators — IMPLEMENTED
 
 ## Motivation
 

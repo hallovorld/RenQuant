@@ -13,6 +13,7 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 │  Layer 1: Research (Notebooks/)                     │
 │  - Fetch OHLCV (yfinance/IBKR, cached as Parquet)  │
 │  - Compute indicators via registry                  │
+│  - Relativize indicators vs SPY benchmark           │
 │  - Train model (Manual/RF/QL/FQI/Optimization)      │
 │  - Export: JSON model artifacts + policy-metadata    │
 └───────────────────────┬─────────────────────────────┘
@@ -66,15 +67,15 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 
 The notebook is where training happens. The typical workflow:
 
-1. **Data ingestion** — `common.fetch_ohlcv` fetches daily OHLCV (cached locally as Parquet)
-2. **Indicator computation** — `common.compute_indicators` applies any combination of registered indicators
-3. **Model training** — depends on model type:
-   - **Manual**: define threshold rules, no training needed
-   - **Classification**: label forward returns, train BagLearner(RTLearner) ensemble
-   - **Q-Learning**: discretize states, train Q-table over epochs
-   - **FQI**: build (s, a, r, s') transitions, run Fitted Q-Iteration with XGBoost
-   - **Optimization**: Nelder-Mead searches indicator params, trains inner Classification model
-4. **Export** — `model.save()` writes JSON artifacts to `backtesting/<strategy>/`
+1. **Data ingestion** — `common.fetch_ohlcv` fetches daily OHLCV for both the target stock and SPY benchmark (cached locally as Parquet)
+2. **Indicator computation** — `common.compute_indicators` applied to both stock and SPY
+3. **Relative feature construction** — indicators are relativized against SPY:
+   - **Ratio** (`stock / SPY`) for always-positive indicators: RSI, ADX
+   - **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
+   - Additional trend-following features: `trend` (price/50EMA), `trend_long` (price/200EMA), `rel_mom_20d`, `rel_mom_60d`
+4. **Model training** — depends on model type (see below)
+5. **Comparison** — all models simulated with constraints (wash sale 30d, min hold 20d, max hold 150d), compared with stock and SPY buy-and-hold benchmarks
+6. **Export** — best model by Sharpe ratio auto-exported to `backtesting/<strategy>/`
 
 ---
 
@@ -101,15 +102,16 @@ The policy metadata acts as a contract between research and execution — both m
 **Location**: `backtesting/<strategy>/main.py`
 **Runtime**: QuantConnect LEAN engine (Docker)
 
-`main.py` implements `QCAlgorithm`:
+`main.py` implements `QCAlgorithm` and supports all three model types (Manual, Classification, Q-Learning):
 
 - **`Initialize()`** — reads `strategy_config.json`, loads policy metadata and model artifacts, sets warmup
 - **`OnData()`** — called once per trading day:
-  1. Fetches price history
-  2. Computes indicators inline (duplicated from common/ — Docker constraint)
-     3. Scores actions via the exported policy
-     4. Applies wash-sale and minimum-hold constraints
-     5. Logs decisions, plots telemetry, and submits orders when allowed
+  1. Fetches price history for stock and SPY
+  2. Computes indicators inline for both (duplicated from common/ — Docker constraint)
+  3. Builds relative features (same ratio/diff transform as notebook)
+  4. Scores actions via the exported policy
+  5. Applies wash-sale and minimum-hold constraints
+  6. Logs decisions, plots telemetry, and submits orders when allowed
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -128,21 +130,79 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 
 ---
 
+## Relative Indicator Framework
+
+All features are computed relative to SPY to answer "is the stock outperforming the market?" rather than "is the stock going up?"
+
+| Transform | When to use | Features |
+|-----------|-------------|----------|
+| **Ratio** (`stock / SPY`) | Always-positive indicators | `rsi`, `adx` |
+| **Difference** (`stock - SPY`) | Zero-crossing indicators | `macd_hist`, `cci`, `bbp`, `williams_r`, `obv_slope` |
+| **Absolute trend** | Price vs moving average | `trend` (price/50EMA), `trend_long` (price/200EMA) |
+| **Relative momentum** | Relative price changes | `rel_mom_20d`, `rel_mom_60d` |
+
+This means models learn relative patterns (outperformance/underperformance vs market), not absolute patterns that break in bull/bear regime changes.
+
+---
+
+## Trading Constraints
+
+All models are subject to execution constraints during both notebook simulation and LEAN backtesting:
+
+| Constraint | Value | Purpose |
+|------------|-------|---------|
+| Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
+| Minimum hold | 20 calendar days | Prevents excessive short-term trading |
+| Maximum hold | 150 calendar days | Forces position review, prevents "buy and forget" |
+
+---
+
 ## State Space
 
-Strategies define their own feature columns from any registered indicator. The NVDA strategy uses 7 shared features across all three model types (Manual, Classification, Q-Learning) for fair comparison:
+The NVDA strategy uses 7 shared relative indicator features for ML models (Classification, Q-Learning):
 
-| Feature | Description | Parameters |
-|---------|-------------|------------|
-| `rsi` | Relative Strength Index | period=14 |
-| `macd_hist` | MACD histogram (macd_line − macd_signal) | fast=12, slow=26, signal=9 |
-| `cci` | Commodity Channel Index | period=20 |
-| `bbp` | Bollinger Band Percentage | period=20 |
-| `adx` | Average Directional Index (trend strength) | period=14 |
-| `williams_r` | Williams %R (overbought/oversold) | period=14 |
-| `obv_slope` | OBV rate of change (volume confirmation) | signal_period=20 |
+| Feature | Transform | Description |
+|---------|-----------|-------------|
+| `rsi` | ratio | Relative Strength Index (stock/SPY) |
+| `macd_hist` | diff | MACD histogram (stock − SPY) |
+| `cci` | diff | Commodity Channel Index (stock − SPY) |
+| `bbp` | diff | Bollinger Band Percentage (stock − SPY) |
+| `adx` | ratio | Average Directional Index (stock/SPY) |
+| `williams_r` | diff | Williams %R (stock − SPY) |
+| `obv_slope` | diff | OBV rate of change (stock − SPY) |
+
+The Manual model uses trend-following features instead (see Strategy Details below).
+Q-Learning uses a subset of 3 trend features to keep state space small.
 
 All 12 registered indicators can be combined freely.
+
+---
+
+## Strategy Details (test_001_nvda)
+
+### Manual — Dual Momentum + Trend Following
+
+Based on Gary Antonacci's Dual Momentum principles. Uses **trend-following features** where threshold checks have clear meaning, unlike oscillator thresholds that whipsaw:
+
+| Rule | Feature | Buy condition | Sell condition | Rationale |
+|------|---------|---------------|----------------|-----------|
+| Absolute trend (50d) | `trend` | > 1.0 | < 0.97 | Price above 50-day EMA = uptrend |
+| Absolute trend (200d) | `trend_long` | > 1.0 | < 0.97 | Price above 200-day EMA = structural uptrend |
+| Relative momentum (20d) | `rel_mom_20d` | > 0.0 | < -0.03 | Stock outperforming SPY over 20 days |
+| Relative momentum (60d) | `rel_mom_60d` | > 0.0 | < -0.05 | Stock outperforming SPY over 60 days |
+| MACD confirmation | `macd_hist` diff | > 0 | < 0 | Stock momentum leads SPY |
+| Volume confirmation | `obv_slope` diff | > 0 | < 0 | Accumulation exceeds market |
+
+**Entry**: 4 of 6 rules agree bullish (trend + relative momentum + confirmations).
+**Exit**: 3 of 6 rules agree bearish (trend break + momentum loss).
+
+### Classification — Bagged Random Forest
+
+Uses all 7 relative indicator features. Labels each day by 10-day forward return (±4% threshold). BagLearner(RTLearner) ensemble with 15 bags and leaf_size=25. Buy/sell thresholds at ±0.1 (lowered from default ±0.5 for trending stocks). The RF learns nonlinear relationships between relative features automatically — it effectively discovers crossover patterns and conditional logic from the data.
+
+### Q-Learning — Tabular RL with Relative Reward
+
+Uses 3 trend-following features (`trend`, `rel_mom_20d`, `macd_hist`) with 5 bins = 375 states. Key design choice: **reward is relative price returns** (stock/SPY ratio changes), not raw stock returns. In a bull market, raw returns are always positive and the Q-learner learns "buy and never sell." Relative returns can go negative, giving the agent a reason to exit when the stock underperforms the market.
 
 ---
 
@@ -153,9 +213,11 @@ yfinance / IBKR
        ↓
   Parquet cache (data/ohlcv/)
        ↓
-  OHLCV DataFrame
+  OHLCV DataFrames (stock + SPY)
        ↓
-  Indicator registry (compute_indicators)
+  Indicator registry (compute_indicators) × 2
+       ↓
+  Relative features (ratio or diff vs SPY)
        ↓
   Model training (Manual / RF / QL / FQI / Optimization)
        ↓
@@ -167,5 +229,5 @@ yfinance / IBKR
   └─────────────────────────────────┘
        ↓
   Analysis dashboard + normalized performance chart
-  via scripts/analyze_backtest.py
+  (stock vs SPY vs model equity)
 ```

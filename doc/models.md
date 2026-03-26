@@ -7,11 +7,11 @@ All models implement `BaseModel` with a common interface:
 - `save(directory, model_name)` — export as JSON
 - `load(directory, model_name)` — load from JSON
 
-## Manual Model
+## Manual Model — Dual Momentum + Trend Following
 
 **Type**: `manual` | **Module**: `common/models/manual.py`
 
-Generic indicator-threshold voting. Each rule evaluates one indicator column and contributes +1 (bullish) or -1 (bearish) to a total score. No training required.
+Generic indicator-threshold voting. Each rule evaluates one column and contributes +1 (bullish) or -1 (bearish) to a total score. No ML training required.
 
 **Parameters**: `score_rules` (list of rule dicts), `buy_threshold` (default: 2), `sell_threshold` (default: -2)
 
@@ -21,17 +21,24 @@ Generic indicator-threshold voting. Each rule evaluates one indicator column and
 - `sell_above`: value > threshold → score -1
 - `sell_below`: value < threshold → score -1
 
-**Example**:
+### Strategy: Dual Momentum (NVDA)
+
+The NVDA strategy implements Dual Momentum (Gary Antonacci) + trend following. This approach uses **trend-following features** where thresholds have clear meaning, unlike oscillator thresholds that whipsaw:
+
 ```python
 model = create_model("manual", score_rules=[
-    {"col": "rsi",        "buy_below": 40,  "sell_above": 65},
-    {"col": "macd_hist",  "buy_above": 0,   "sell_below": 0},
-    {"col": "adx",        "buy_above": 25},
-    {"col": "obv_slope",  "buy_above": 0,   "sell_below": 0},
-], buy_threshold=2, sell_threshold=-2)
+    {"col": "trend",       "buy_above": 1.0,   "sell_below": 0.97},   # price > 50-day EMA
+    {"col": "trend_long",  "buy_above": 1.0,   "sell_below": 0.97},   # price > 200-day EMA
+    {"col": "rel_mom_20d", "buy_above": 0.0,   "sell_below": -0.03},  # outperforming SPY 20d
+    {"col": "rel_mom_60d", "buy_above": 0.0,   "sell_below": -0.05},  # outperforming SPY 60d
+    {"col": "macd_hist",   "buy_above": 0,      "sell_below": 0},      # momentum vs SPY
+    {"col": "obv_slope",   "buy_above": 0,      "sell_below": 0},      # volume vs SPY
+], buy_threshold=4, sell_threshold=-3)
 ```
 
-**When to use**: Baseline strategy, fully interpretable, zero training time. Supports any registered indicator.
+**Why Dual Momentum works better than oscillator voting**: Simple threshold voting on oscillators (RSI, CCI, BBP) is the weakest form of technical analysis — oscillators whipsaw and all fire at once because they're correlated. Trend-following features (`trend`, `rel_mom`) have clear monotonic meaning: above 1.0 = uptrend, positive = outperforming. Thresholds on these features are structurally meaningful.
+
+**When to use**: Interpretable baseline. Zero training time. Best with trend-following features rather than oscillators.
 
 ## Classification Model
 
@@ -41,9 +48,11 @@ Bagged Random Forest of RTLearners. Each day is labeled by its N-day forward ret
 
 **Key params**: `feature_columns`, `lookahead` (10), `threshold` (0.04), `leaf_size` (25), `bags` (15), `buy_threshold` (0.5), `sell_threshold` (-0.5)
 
+**With relative features**: The RF ensemble learns nonlinear relationships between relative indicators automatically. It effectively discovers crossover patterns, conditional logic, and regime changes from the data — capturing what simple threshold voting cannot express.
+
 **Tuning note**: The ensemble averages predictions of {-1, 0, +1} across trees. For trending stocks, the average is often close to 0, so the default `±0.5` thresholds may suppress sell signals entirely. Lower to `±0.1` for more active trading.
 
-**When to use**: Fast, deterministic, easy to explain. Good default for most strategies.
+**When to use**: Best default choice. Fast, deterministic, handles high-dimensional relative features well. Consistently outperforms Manual and Q-Learning in backtests.
 
 ## Q-Learning Model
 
@@ -55,9 +64,15 @@ Tabular Q-learning with discretized indicator states. Continuous features are bi
 
 **State space**: `n_bins^n_features * 3` (3 holding buckets: short/flat/long)
 
-**Scaling note**: With many features, reduce `n_bins` to keep state space manageable. E.g., 6 features with 4 bins = 4^6 * 3 = 12,288 states (fits in memory). 6 features with 10 bins = 3,000,000 states (does not).
+### Design considerations with relative features
 
-**When to use**: Model-free RL, no function approximation. Works well with small state spaces.
+**Feature selection**: Use 3 trend-following features (`trend`, `rel_mom_20d`, `macd_hist`) instead of 7 oscillators. With 5 bins: `5^3 * 3 = 375 states` — dense enough for ~1000 bars to get good coverage. Using all 7 features creates `5^7 * 3 = 234,375` states with <1 visit each.
+
+**Reward signal**: Use `rel_price` (stock/SPY ratio) as the "close" column so the Q-learner optimizes **relative returns**. With raw stock returns in a bull market, the agent learns "buy and never sell" because returns are always positive. Relative returns can go negative (stock underperforms SPY), giving the agent a real incentive to exit.
+
+**Scaling note**: With many features, reduce `n_bins` to keep state space manageable. E.g., 3 features with 5 bins = 375 states (good). 7 features with 4 bins = 49,152 states (too sparse).
+
+**When to use**: Model-free RL exploration. Best with small feature sets and relative reward.
 
 ## FQI Model (Fitted Q-Iteration)
 
@@ -83,14 +98,24 @@ Meta-model: SciPy Nelder-Mead searches over indicator parameters while training 
 
 ```
 Is your strategy rule-based?
-  └─ Yes → Manual
+  └─ Yes → Manual (use Dual Momentum, not oscillator voting)
   └─ No → Is the state space small (<15000 states)?
-              └─ Yes → Q-Learning
+              └─ Yes → Q-Learning (use relative reward + 3 trend features)
               └─ No → Do you have gate signals?
                         └─ Yes → FQI
-                        └─ No → Classification
+                        └─ No → Classification (best default)
                                   └─ Want auto-tuned params? → Optimization
 ```
+
+## Trading Constraints
+
+All models are subject to execution constraints during simulation and LEAN backtesting:
+
+| Constraint | Value | Purpose |
+|------------|-------|---------|
+| Wash sale | 30 days | Cannot buy within 30 calendar days of selling |
+| Min hold | 20 days | Prevents short-term trading |
+| Max hold | 150 days | Forces position review |
 
 ## JSON Artifact Format
 

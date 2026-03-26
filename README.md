@@ -98,15 +98,31 @@ python -m live.runner --strategy my_nvda --broker paper --once
 python -m live.runner --strategy my_nvda --broker ibkr
 ```
 
+## Relative Indicator Framework
+
+All indicators are computed relative to SPY to answer "is the stock outperforming the market?" rather than "is the stock going up?" This prevents bull-market bias where every stock looks like a buy.
+
+- **Ratio** (`stock / SPY`) for always-positive indicators: RSI, ADX
+- **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
+- **Trend features**: price/50EMA, price/200EMA, 20d/60d relative momentum
+
 ## Model Types
 
 | Type | Method | Use Case |
 |------|--------|----------|
-| **Manual** | Generic indicator-threshold voting | Baseline, interpretable |
-| **Classification** | Random Forest on forward-return labels | Fast, deterministic |
-| **Q-Learning** | Tabular Q with discretized states | Model-free RL |
+| **Manual** | Dual Momentum + trend following | Baseline, interpretable, no ML |
+| **Classification** | Random Forest on forward-return labels | Best default, handles relative features well |
+| **Q-Learning** | Tabular Q with relative reward | Model-free RL, small state space |
 | **FQI** | Fitted Q-Iteration with XGBoost | Function approximation RL |
 | **Optimization** | Nelder-Mead parameter search + inner model | Auto-tuning |
+
+## Trading Constraints
+
+| Constraint | Value | Purpose |
+|------------|-------|---------|
+| Wash sale | 30 days | Cannot buy within 30 days of selling |
+| Min hold | 20 days | Prevents short-term trading |
+| Max hold | 150 days | Forces position review |
 
 ## Indicator Library
 
