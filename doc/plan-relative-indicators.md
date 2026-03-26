@@ -43,7 +43,7 @@ relative_indicator = stock_indicator - spy_indicator
 
 ### 1. Data Layer — fetch SPY alongside the stock
 
-**File**: `Notebooks/test_001_nvda.ipynb` (Cell 1)
+**File**: `Notebooks/renquant_101.ipynb` (Cell 1)
 
 ```python
 df_stock = common.fetch_ohlcv(SYMBOL, start=START, end=END, provider=PROVIDER)
@@ -57,7 +57,7 @@ No changes to `common/data/` needed — `fetch_ohlcv` already supports any symbo
 
 ### 2. New helper — compute relative features
 
-**File**: `Notebooks/test_001_nvda.ipynb` (new Cell 1b, or inline in Cell 1)
+**File**: `Notebooks/renquant_101.ipynb` (new Cell 1b, or inline in Cell 1)
 
 Build a function that takes stock and SPY DataFrames and produces relative features:
 

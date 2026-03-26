@@ -3,9 +3,9 @@
 
 Examples:
 
-    python scripts/backtest_and_analyze.py --strategy test_001_nvda
-    python scripts/backtest_and_analyze.py --strategy test_001_nvda --open
-    cd backtesting/test_001_nvda && python ../../scripts/backtest_and_analyze.py
+    python scripts/backtest_and_analyze.py --strategy renquant_101
+    python scripts/backtest_and_analyze.py --strategy renquant_101 --open
+    cd backtesting/renquant_101 && python ../../scripts/backtest_and_analyze.py
 """
 
 from __future__ import annotations

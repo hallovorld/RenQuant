@@ -1,5 +1,5 @@
 {
-  "model_name": "test-001-nvda",
+  "model_name": "renquant-101",
   "stock_symbol": "NVDA",
   "model_type": "classification",
   "data_src": "yfinance",

@@ -35,19 +35,19 @@ Open a strategy notebook. The pipeline runs top-to-bottom:
 Run only after the notebook research is complete and models are exported.
 
 ```bash
-cd backtesting/test_001_nvda
+cd backtesting/renquant_101
 lean backtest .
 ```
 
 `lean backtest .` itself only prints logs and summary stats in the terminal. If you want charts immediately after the run, use the wrapper script instead:
 
 ```bash
-python scripts/backtest_and_analyze.py --strategy test_001_nvda
+python scripts/backtest_and_analyze.py --strategy renquant_101
 ```
 
 On macOS, append `--open` to open the generated chart PNGs automatically after analysis finishes.
 
-Results land in `backtesting/test_001_nvda/backtests/<timestamp>/`.
+Results land in `backtesting/renquant_101/backtests/<timestamp>/`.
 
 The LEAN strategy enforces config-backed execution constraints and position sizing during backtests:
 
@@ -66,7 +66,7 @@ python scripts/export_lean_data.py --symbol NVDA
 To adjust the backtest period or initial capital, edit `strategy_config.json`:
 ```json
 {
-  "model_name": "test-001-nvda",
+  "model_name": "renquant-101",
   "stock_symbol": "NVDA",
   "model_type": "classification",
   "initial_cash": 10000,
@@ -89,7 +89,7 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`:
 After a LEAN run, run the analysis script to render charts and print summary statistics.
 
 ```bash
-python scripts/analyze_backtest.py --strategy test_001_nvda
+python scripts/analyze_backtest.py --strategy renquant_101
 ```
 
 The script auto-loads the most recent backtest, writes charts to the run directory, and prints a metric summary.
@@ -116,13 +116,13 @@ Run a trained strategy with paper or real broker:
 
 ```bash
 # Paper trading (test, no real money)
-python -m live.runner --strategy test_001_nvda --broker paper --once
+python -m live.runner --strategy renquant_101 --broker paper --once
 
 # Real trading (requires IBKR TWS/Gateway)
-python -m live.runner --strategy test_001_nvda --broker ibkr
+python -m live.runner --strategy renquant_101 --broker ibkr
 
 # Scheduled mode (runs every 24h by default)
-python -m live.runner --strategy test_001_nvda --broker paper --interval 86400
+python -m live.runner --strategy renquant_101 --broker paper --interval 86400
 ```
 
 Trade logs are saved to `live/logs/<strategy>/<date>.json`.
@@ -164,7 +164,7 @@ common/                            # Shared library — import as `import common
 └── plotting.py                    # backtest_dashboard, telemetry plots, normalized performance
 
 Notebooks/
-└── test_001_nvda.ipynb            # Strategy research: data → model → export
+└── renquant_101.ipynb            # Strategy research: data → model → export
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference

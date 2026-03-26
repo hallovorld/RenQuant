@@ -3,8 +3,8 @@
 
 Usage::
 
-    python scripts/analyze_backtest.py --strategy test_001_nvda
-    python scripts/analyze_backtest.py --strategy test_001_nvda --run 2026-03-25_22-32-29
+    python scripts/analyze_backtest.py --strategy renquant_101
+    python scripts/analyze_backtest.py --strategy renquant_101 --run 2026-03-25_22-32-29
 """
 
 from __future__ import annotations

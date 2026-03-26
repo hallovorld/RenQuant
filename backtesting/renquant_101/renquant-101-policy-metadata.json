@@ -1,5 +1,5 @@
 {
-  "model_name": "test-001-nvda",
+  "model_name": "renquant-101",
   "policy_type": "classification",
   "feature_columns": [
     "rsi",
@@ -18,6 +18,6 @@
   "buy_threshold": 0.1,
   "sell_threshold": -0.1,
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/test_001_nvda/test-001-nvda-rf-trees.json"
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_101/renquant-101-rf-trees.json"
   }
 }

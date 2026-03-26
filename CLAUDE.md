@@ -29,22 +29,22 @@ Docker must be allocated 16GB+ memory for LEAN engine.
 
 ```bash
 python scripts/export_lean_data.py --symbol NVDA
-cd backtesting/test_001_nvda
+cd backtesting/renquant_101
 lean backtest .
 ```
 
 To backtest and render charts in one step:
 
 ```bash
-python scripts/backtest_and_analyze.py --strategy test_001_nvda
+python scripts/backtest_and_analyze.py --strategy renquant_101
 ```
 
-**Analysis mode**: Run `python scripts/analyze_backtest.py --strategy test_001_nvda` to visualize LEAN results, including decision telemetry for score/threshold inspection.
+**Analysis mode**: Run `python scripts/analyze_backtest.py --strategy renquant_101` to visualize LEAN results, including decision telemetry for score/threshold inspection.
 
 **Live mode**: Run the live trader with paper or IBKR broker.
 
 ```bash
-python -m live.runner --strategy test_001_nvda --broker paper --once
+python -m live.runner --strategy renquant_101 --broker paper --once
 ```
 
 ## Shared Library: `common/`

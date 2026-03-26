@@ -195,7 +195,7 @@ All 12 registered indicators can be combined freely.
 
 ---
 
-## Strategy Details (test_001_nvda)
+## Strategy Details (renquant_101)
 
 ### Manual — Dual Momentum + Trend Following
 

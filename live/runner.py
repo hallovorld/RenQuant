@@ -2,8 +2,8 @@
 
 Usage::
 
-    python -m live.runner --strategy test_001_nvda --broker paper --once
-    python -m live.runner --strategy test_001_nvda --broker ibkr
+    python -m live.runner --strategy renquant_101 --broker paper --once
+    python -m live.runner --strategy renquant_101 --broker ibkr
 """
 
 from __future__ import annotations

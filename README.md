@@ -56,7 +56,7 @@ lean login
 python scripts/new_strategy.py --name my_nvda --symbol NVDA --type classification
 ```
 
-If you want a known-good example that already exists in the repo, use `test_001_nvda` in the commands below instead.
+If you want a known-good example that already exists in the repo, use `renquant_101` in the commands below instead.
 
 ### 2. Research — train in notebook
 ```bash
