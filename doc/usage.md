@@ -182,7 +182,7 @@ common/                            # Shared library — import as `import common
 
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
-└── renquant_102.ipynb            # Multi-stock: train 4 approaches per symbol → export best per symbol
+└── renquant_102.ipynb            # Multi-stock: train 4 approaches per symbol → export best → portfolio simulation
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference

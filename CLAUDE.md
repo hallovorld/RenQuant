@@ -126,7 +126,7 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 
 **Single-stock** (renquant_101): One symbol, one model. Config uses `stock_symbol`.
 
-**Multi-stock pre-trained scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on rolling 2yr window, exports best model per symbol to `models/{SYMBOL}/`. LEAN loads pre-trained models, scans watchlist for volume z-score spikes, applies that stock's model for confirmation. Models include `trained_date`; LEAN skips models older than `model_staleness_days` (default 30). Config uses `watchlist` array (30 stocks + ETFs), `model_staleness_days`, `volume_zscore_lookback`, `volume_zscore_threshold`, `max_concurrent_positions`.
+**Multi-stock pre-trained scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on rolling 2yr window, exports best model per symbol to `models/{SYMBOL}/`. The notebook also includes a portfolio-level simulation that mirrors the LEAN multi-stock logic (volume z-score scan → model confirmation → multi-position management with configurable sizing and cash reserve), enabling parameter tuning in Python before running LEAN. LEAN loads pre-trained models, scans watchlist for volume z-score spikes, applies that stock's model for confirmation. Models include `trained_date`; LEAN skips models older than `model_staleness_days` (default 30). Config uses `watchlist` array (30 stocks + ETFs), `model_staleness_days`, `volume_zscore_lookback`, `volume_zscore_threshold`, `max_concurrent_positions`.
 
 ### Adding a New Strategy
 

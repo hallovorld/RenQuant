@@ -211,7 +211,7 @@ All 12 registered indicators can be combined freely.
 
 A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 
-**Notebook** (`renquant_102.ipynb`): Trains 4 approaches per symbol on a rolling 2-year window, picks the best by Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/`. The 4 approaches are:
+**Notebook** (`renquant_102.ipynb`): Trains 4 approaches per symbol on a rolling 2-year window, picks the best by Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/`. After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 4 approaches are:
 1. Dual Momentum — trend-following ManualModel rules
 2. Classification — BagLearner(RTLearner) random forest on relative features
 3. Q-Learning — tabular RL with discretized trend features

@@ -108,7 +108,7 @@ Current thresholds assume raw indicator ranges (e.g., RSI 40/65, CCI -100/+100).
 
 ### 5. LEAN main.py impact — IMPLEMENTED (renquant_102)
 
-renquant_102's `main.py` (`ZScoreScannerStrategy`) computes relative features inline:
+renquant_102's `main.py` (`PreTrainedMultiStockStrategy`) computes relative features inline:
 
 - `AddEquity("SPY", Resolution.Daily)` in `Initialize()`
 - `_build_feature_frame()` fetches history for both stock and SPY, computes indicators for both, then applies ratio/difference transforms

@@ -144,7 +144,7 @@ Trains a classification model (BagLearner/RTLearner) on relative indicators (sto
 
 ### renquant_102 — Multi-Stock Pre-Trained Scanner
 
-3-stage pipeline: **DETECT** (volume z-score spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 30 stocks/ETFs for volume z-score spikes (default threshold: 2.0σ, lookback: 15 days). The notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on a rolling 2yr window, exports the best by Sharpe to `models/{SYMBOL}/`. LEAN loads pre-trained models and applies them on spike days. Models older than 30 days are skipped (configurable via `model_staleness_days`). Max 3 concurrent positions.
+3-stage pipeline: **DETECT** (volume z-score spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 30 stocks/ETFs for volume z-score spikes (default threshold: 2.0σ, lookback: 15 days). The notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on a rolling 2yr window, exports the best by Sharpe to `models/{SYMBOL}/`. The notebook also includes a portfolio-level simulation that replicates the LEAN multi-stock logic in Python (volume z-score scan → model confirmation → position management), with a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation) for iterating on parameters before running LEAN. LEAN loads pre-trained models and applies them on spike days. Models older than 30 days are skipped (configurable via `model_staleness_days`). Max 3 concurrent positions.
 
 ```bash
 # Train and compare approaches
