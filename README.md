@@ -31,8 +31,10 @@ RenQuant/
 │   ├── portfolio.py         # Local portfolio simulator
 │   ├── plotting.py          # Backtest dashboard + normalized performance chart
 │   └── config.py            # Config loading utilities
-├── Notebooks/               # Research notebooks
+├── Notebooks/               # Research notebooks (renquant_101, renquant_201)
 ├── backtesting/             # LEAN strategies (self-contained, no common/ imports)
+│   ├── renquant_101/        # Single-stock classification strategy
+│   └── renquant_201/        # Multi-stock volume scanner strategy
 ├── live/                    # Live trading runner + broker abstraction
 ├── scripts/                 # Scaffolding tools
 ├── data/                    # Local Parquet cache (gitignored)
@@ -132,6 +134,27 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 | Cash reserve | 10% of portfolio | Always maintain cash buffer |
 
 Rules: cash-only buys (never sell to fund a new buy), whole shares only. Configured in `strategy_config.json` under `position_sizing`.
+
+## Strategies
+
+### renquant_101 — Single-Stock Classification
+
+Trains a classification model (BagLearner/RTLearner) on relative indicators (stock vs SPY) for a single symbol. Notebook trains 3 model types (Manual, Classification, Q-Learning), exports the best by Sharpe.
+
+### renquant_201 — Multi-Stock Volume Scanner
+
+Scans a watchlist of up to 10 stocks for unusual volume activity (volume ratio > 2x 20-day average), then runs per-stock classification models to decide buy/sell. Holds up to 3 concurrent positions. Per-stock model artifacts: `{model_name}-{SYMBOL}-rf-trees.json`.
+
+```bash
+# Train all models
+jupyter lab  # run Notebooks/renquant_201.ipynb
+
+# Backtest
+cd backtesting/renquant_201 && lean backtest .
+
+# Live (paper)
+python -m live.runner --strategy renquant_201 --broker paper --once
+```
 
 ## Indicator Library
 

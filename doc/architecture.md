@@ -112,7 +112,7 @@ The policy metadata acts as a contract between research and execution — both m
   4. Applies position sizing (max position %, cash reserve) before submitting orders
   5. Logs decisions, plots telemetry, and submits orders when allowed
 
-> **Note**: `main.py` does not yet compute relative (stock/SPY) features. It feeds raw indicators to the model. This is a known gap — the notebook trains on relative features, but LEAN backtests use raw features. See `doc/plan-relative-indicators.md` section 5 for the planned fix.
+> **Note**: renquant_101's `main.py` feeds raw indicators to the model (not relative to SPY). This is a known gap for that strategy. renquant_201's `main.py` computes relative features by fetching history for both the stock and SPY and computing ratio/diff transforms inline.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -170,7 +170,7 @@ Position sizing is configured in `strategy_config.json` under the `position_sizi
 2. **Max position cap** — `target_pct = min(max_position_pct, (available_cash - cash_reserve) / portfolio_value)`
 3. **Whole shares only** — notebook simulation buys whole shares; LEAN uses `SetHoldings` which handles this internally
 
-These rules are designed for future multi-stock portfolio expansion where diversification and cash management become critical.
+These rules are used by both single-stock (renquant_101) and multi-stock (renquant_201) strategies. In multi-stock mode, each position is independently capped and the cash reserve is maintained across all positions.
 
 ---
 
@@ -195,7 +195,31 @@ All 12 registered indicators can be combined freely.
 
 ---
 
-## Strategy Details (renquant_101)
+## Strategy Details
+
+### renquant_201 — Multi-Stock Volume Scanner
+
+A multi-stock strategy that scans a configurable watchlist for unusual volume activity, then applies per-stock classification models to decide trades.
+
+**Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
+```json
+{
+  "watchlist": ["NVDA", "TSLA", "AAPL", ...],
+  "volume_ratio_threshold": 2.0,
+  "volume_avg_window": 20,
+  "max_concurrent_positions": 3
+}
+```
+
+**LEAN `main.py` flow** (`ScannerStrategy`):
+1. `Initialize()` — `AddEquity` for each watchlist stock + SPY, load per-stock model artifacts
+2. `OnData()` — process sells first (check models + constraints for held positions), then scan volume ratios for non-held stocks, rank candidates by volume ratio, run per-stock models, execute buys (up to `max_concurrent_positions`)
+
+**Artifact naming**: `{model_name}-{SYMBOL}-rf-trees.json` and `{model_name}-{SYMBOL}-policy-metadata.json` per stock. The existing `ClassificationModel.save(dir, "renquant-201-NVDA")` handles this with no changes to `common/models/`.
+
+**Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which scans volume, checks sell signals, and executes buy orders across the watchlist.
+
+### renquant_101 — Single-Stock Classification
 
 ### Manual — Dual Momentum + Trend Following
 

@@ -63,22 +63,34 @@ If LEAN reports missing local symbol files such as `/equity/usa/daily/nvda.zip`,
 python scripts/export_lean_data.py --symbol NVDA
 ```
 
-To adjust the backtest period or initial capital, edit `strategy_config.json`:
+To adjust the backtest period or initial capital, edit `strategy_config.json`.
+
+**Single-stock** (renquant_101):
 ```json
 {
   "model_name": "renquant-101",
   "stock_symbol": "NVDA",
   "model_type": "classification",
   "initial_cash": 10000,
-  "wash_sale_days": 30,
-  "min_hold_days": 20,
-  "max_hold_days": 150,
-  "position_sizing": {
-    "max_position_pct": 0.33,
-    "cash_reserve_pct": 0.10
-  },
   "backtest_start": "2024-01-01",
-  "backtest_end": "2026-03-01"
+  "backtest_end": "2026-03-26"
+}
+```
+
+**Multi-stock scanner** (renquant_201):
+```json
+{
+  "model_name": "renquant-201",
+  "watchlist": ["NVDA", "TSLA", "AAPL", "AMZN", "META", "GOOG", "MSFT", "AMD", "NFLX", "AVGO"],
+  "benchmark": "SPY",
+  "model_type": "classification",
+  "initial_cash": 100000,
+  "scan_lookback_days": 10,
+  "volume_ratio_threshold": 2.0,
+  "volume_avg_window": 20,
+  "max_concurrent_positions": 3,
+  "backtest_start": "2024-01-01",
+  "backtest_end": "2026-03-26"
 }
 ```
 
@@ -118,12 +130,17 @@ Run a trained strategy with paper or real broker:
 # Paper trading (test, no real money)
 python -m live.runner --strategy renquant_101 --broker paper --once
 
+# Multi-stock strategy
+python -m live.runner --strategy renquant_201 --broker paper --once
+
 # Real trading (requires IBKR TWS/Gateway)
 python -m live.runner --strategy renquant_101 --broker ibkr
 
 # Scheduled mode (runs every 24h by default)
 python -m live.runner --strategy renquant_101 --broker paper --interval 86400
 ```
+
+The runner auto-detects single-stock vs multi-stock strategies by checking for `"watchlist"` in the config. Multi-stock strategies use `run_once_multi()` which scans volume, processes sell signals, and executes buy orders across the watchlist.
 
 Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
@@ -164,7 +181,8 @@ common/                            # Shared library — import as `import common
 └── plotting.py                    # backtest_dashboard, telemetry plots, normalized performance
 
 Notebooks/
-└── renquant_101.ipynb            # Strategy research: data → model → export
+├── renquant_101.ipynb            # Single-stock strategy: data → model → export
+└── renquant_201.ipynb            # Multi-stock scanner: train per-stock models → export
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference

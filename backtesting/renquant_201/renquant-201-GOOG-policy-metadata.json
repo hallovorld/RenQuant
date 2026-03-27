@@ -1,0 +1,23 @@
+{
+  "model_name": "renquant-201-GOOG",
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope"
+  ],
+  "lookahead": 10,
+  "threshold": 0.04,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_201/renquant-201-GOOG-rf-trees.json"
+  }
+}

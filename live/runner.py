@@ -4,6 +4,7 @@ Usage::
 
     python -m live.runner --strategy renquant_101 --broker paper --once
     python -m live.runner --strategy renquant_101 --broker ibkr
+    python -m live.runner --strategy renquant_201 --broker paper --once  # multi-stock
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 # Ensure repo root is importable
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -145,6 +147,182 @@ def run_once(
     _log_trade(strategy_dir, config.name, record)
 
 
+# ── Multi-stock support ──────────────────────────────────────────────────
+
+
+def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
+    """Load multi-stock strategy config and per-stock models."""
+    strategy_dir = REPO_ROOT / "backtesting" / strategy_name
+    config_path = strategy_dir / "strategy_config.json"
+    if not config_path.exists():
+        log.error("Strategy config not found: %s", config_path)
+        sys.exit(1)
+
+    config = json.loads(config_path.read_text())
+
+    models = {}
+    for symbol in config["watchlist"]:
+        model = create_model(config["model_type"], **config["model_params"])
+        artifact_name = f"{config['model_name']}-{symbol}"
+        model.load(strategy_dir, artifact_name)
+        models[symbol] = model
+
+    return config, models, strategy_dir
+
+
+def _build_relative_features(
+    df_stock, df_spy, feature_columns, indicator_spec,
+):
+    """Compute indicators and relative features for a stock vs SPY."""
+    import numpy as np
+    import pandas as pd
+
+    df_stock = compute_indicators(df_stock, indicator_spec)
+    df_spy = compute_indicators(df_spy, indicator_spec)
+
+    common_idx = df_stock.index.intersection(df_spy.index)
+    if len(common_idx) == 0:
+        return None
+
+    df_stock = df_stock.loc[common_idx]
+    df_spy = df_spy.loc[common_idx]
+
+    ratio_features = {"rsi", "adx"}
+    diff_features = {"macd_hist", "cci", "bbp", "williams_r", "obv_slope"}
+
+    result = pd.DataFrame(index=common_idx)
+    result["close"] = df_stock["close"]
+    for col in feature_columns:
+        if col in ratio_features:
+            result[col] = df_stock[col] / df_spy[col].replace(0, np.nan)
+        elif col in diff_features:
+            result[col] = df_stock[col] - df_spy[col]
+        else:
+            result[col] = df_stock[col]
+
+    return result.dropna()
+
+
+def run_once_multi(
+    config: dict[str, Any],
+    models: dict,
+    broker: BaseBroker,
+    strategy_dir: Path,
+) -> None:
+    """Execute one multi-stock trading cycle: scan → analyze → trade."""
+    import numpy as np
+
+    watchlist = config["watchlist"]
+    benchmark = config.get("benchmark", "SPY")
+    max_positions = config.get("max_concurrent_positions", 3)
+    vol_threshold = float(config.get("volume_ratio_threshold", 2.0))
+    vol_window = int(config.get("volume_avg_window", 20))
+    indicator_spec = config.get("indicator_spec", {})
+    feature_columns = config["model_params"]["feature_columns"]
+    pos_sizing = config.get("position_sizing", {})
+    max_position_pct = float(pos_sizing.get("max_position_pct", 0.33))
+    cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.10))
+
+    log.info("Running multi-stock strategy %s on %s", config["model_name"], watchlist)
+
+    # Fetch data for all stocks + benchmark
+    dfs = {}
+    for symbol in watchlist + [benchmark]:
+        df = fetch_ohlcv(symbol, provider=config.get("data_src", "yfinance"))
+        if df.empty:
+            log.warning("No data for %s, skipping", symbol)
+            continue
+        dfs[symbol] = df
+
+    if benchmark not in dfs:
+        log.error("No benchmark data for %s", benchmark)
+        return
+
+    df_spy = dfs[benchmark]
+
+    # Step 1: Check current positions, process sells first
+    held = [s for s in watchlist if broker.get_position(s) > 0]
+    log.info("Current positions: %s", held if held else "none")
+
+    for symbol in list(held):
+        if symbol not in dfs:
+            continue
+        rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
+        if rel is None or rel.empty:
+            continue
+        signal = models[symbol].predict(rel.iloc[-1])
+        if signal == "sell":
+            position = broker.get_position(symbol)
+            result = broker.place_order(symbol, "SELL", abs(position))
+            log.info("SELL %s: %.0f shares", symbol, abs(position))
+            _log_trade(strategy_dir, config["model_name"], {
+                "timestamp": datetime.now().isoformat(),
+                "symbol": symbol, "signal": "sell", "order": result,
+            })
+            held.remove(symbol)
+
+    # Step 2: Scan volume for non-held stocks
+    open_slots = max_positions - len(held)
+    if open_slots <= 0:
+        log.info("All %d slots filled, no scanning", max_positions)
+        return
+
+    candidates = []
+    for symbol in watchlist:
+        if symbol in held or symbol not in dfs:
+            continue
+        df = dfs[symbol]
+        if len(df) < vol_window + 1:
+            continue
+        today_vol = df["volume"].iloc[-1]
+        avg_vol = df["volume"].iloc[-(vol_window + 1):-1].mean()
+        vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0
+        if vol_ratio >= vol_threshold:
+            candidates.append((symbol, vol_ratio))
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    log.info("Volume candidates: %s", [(s, f"{v:.2f}x") for s, v in candidates] or "none")
+
+    # Step 3: Run models on top candidates
+    for symbol, vol_ratio in candidates[:open_slots]:
+        rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
+        if rel is None or rel.empty:
+            continue
+
+        signal = models[symbol].predict(rel.iloc[-1])
+        log.info("%s vol_ratio=%.2fx signal=%s", symbol, vol_ratio, signal)
+
+        if signal == "buy":
+            account_value = broker.get_account_value()
+            price = float(dfs[symbol]["close"].iloc[-1])
+            cash_reserve = account_value * cash_reserve_pct
+            available = broker.get_account_value() - cash_reserve
+            max_invest = account_value * max_position_pct
+            invest = min(max_invest, max(available, 0))
+            shares = int(invest / price)
+            if shares > 0:
+                result = broker.place_order(symbol, "BUY", shares)
+                log.info("BUY %s: %d shares at ~$%.2f (vol_ratio=%.2fx)",
+                         symbol, shares, price, vol_ratio)
+                _log_trade(strategy_dir, config["model_name"], {
+                    "timestamp": datetime.now().isoformat(),
+                    "symbol": symbol, "signal": "buy",
+                    "volume_ratio": vol_ratio, "order": result,
+                })
+                open_slots -= 1
+                if open_slots <= 0:
+                    break
+
+
+def _is_multi_stock(strategy_name: str) -> bool:
+    """Check if a strategy uses multi-stock watchlist config."""
+    config_path = REPO_ROOT / "backtesting" / strategy_name / "strategy_config.json"
+    if not config_path.exists():
+        return False
+    config = json.loads(config_path.read_text())
+    return "watchlist" in config
+
+
 def main():
     parser = argparse.ArgumentParser(description="RenQuant live trading runner")
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
@@ -154,18 +332,28 @@ def main():
                         help="Seconds between runs in scheduled mode (default: 86400)")
     args = parser.parse_args()
 
-    config, model, strategy_dir = _load_strategy(args.strategy)
-    broker = _get_broker(args.broker, initial_cash=config.initial_cash)
-    broker.connect()
+    multi = _is_multi_stock(args.strategy)
+
+    if multi:
+        config, models, strategy_dir = _load_strategy_multi(args.strategy)
+        initial_cash = config.get("initial_cash", 100_000)
+        broker = _get_broker(args.broker, initial_cash=initial_cash)
+        broker.connect()
+        run_fn = lambda: run_once_multi(config, models, broker, strategy_dir)
+    else:
+        config, model, strategy_dir = _load_strategy(args.strategy)
+        broker = _get_broker(args.broker, initial_cash=config.initial_cash)
+        broker.connect()
+        run_fn = lambda: run_once(config, model, broker, strategy_dir)
 
     try:
         if args.once:
-            run_once(config, model, broker, strategy_dir)
+            run_fn()
         else:
             log.info("Starting scheduled mode (interval=%ds)", args.interval)
             while True:
                 try:
-                    run_once(config, model, broker, strategy_dir)
+                    run_fn()
                 except Exception:
                     log.exception("Error in trading cycle")
                 log.info("Sleeping %ds until next cycle...", args.interval)

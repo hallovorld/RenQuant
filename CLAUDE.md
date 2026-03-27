@@ -45,6 +45,7 @@ python scripts/backtest_and_analyze.py --strategy renquant_101
 
 ```bash
 python -m live.runner --strategy renquant_101 --broker paper --once
+python -m live.runner --strategy renquant_201 --broker paper --once  # multi-stock
 ```
 
 ## Shared Library: `common/`
@@ -106,15 +107,24 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 - `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
 - Loads JSON models, recomputes indicators inline
 - Enforces trading constraints (wash sale, min/max hold) and position sizing (max position %, cash reserve) from `strategy_config.json`
+- Single-stock strategies (renquant_101): one symbol per backtest
+- Multi-stock strategies (renquant_201): volume scanner + per-stock models, max N concurrent positions
 
 **4. Live Trading** (`live/`)
 - `python -m live.runner --strategy X --broker paper|ibkr --once`
 - `PaperBroker` for testing, `IBKRBroker` for real execution
+- Auto-detects single-stock vs multi-stock strategies (presence of `watchlist` in config)
 - Logs to `live/logs/{strategy}/{date}.json`
 
 **5. Analysis** (`scripts/analyze_backtest.py`)
 - `common.backtest_dashboard` — price, decision telemetry, equity, drawdown, and stats
 - `common.plot_normalized_performance` — normalized equity with entry markers
+
+### Strategies
+
+**Single-stock** (renquant_101): One symbol, one model. Config uses `stock_symbol`.
+
+**Multi-stock scanner** (renquant_201): Watchlist of up to 10 stocks, volume-based scanning, per-stock models. Config uses `watchlist` array, `volume_ratio_threshold`, `max_concurrent_positions`. Artifacts are per-stock: `{model_name}-{SYMBOL}-rf-trees.json`.
 
 ### Adding a New Strategy
 
