@@ -77,14 +77,14 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
 }
 ```
 
-**Multi-stock z-score scanner** (renquant_102):
+**Multi-stock pre-trained scanner** (renquant_102):
 ```json
 {
   "model_name": "renquant-102",
-  "watchlist": ["NVDA", "TSLA", "AAPL", "AMZN", "META", "GOOG", "MSFT", "AMD", "NFLX", "AVGO"],
+  "watchlist": ["NVDA", "TSLA", "AAPL", "AMZN", "META", "GOOG", "MSFT", "AMD", "NFLX", "AVGO", "..."],
   "benchmark": "SPY",
-  "model_type": "classification",
   "initial_cash": 100000,
+  "model_staleness_days": 30,
   "volume_zscore_lookback": 15,
   "volume_zscore_threshold": 2.0,
   "training_years": 2,
@@ -182,7 +182,7 @@ common/                            # Shared library — import as `import common
 
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
-└── renquant_102.ipynb            # Multi-stock z-score scanner: 4 approaches → compare → export
+└── renquant_102.ipynb            # Multi-stock: train 4 approaches per symbol → export best per symbol
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference

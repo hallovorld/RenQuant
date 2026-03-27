@@ -1,5 +1,6 @@
 from AlgorithmImports import *
 import json
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,7 @@ from config import load_strategy_config, split_date_parts
 CONFIG = load_strategy_config()
 
 
-class ZScoreScannerStrategy(QCAlgorithm):
+class PreTrainedMultiStockStrategy(QCAlgorithm):
 	def Initialize(self):
 		start_year, start_month, start_day = split_date_parts(CONFIG["backtest_start"])
 		end_year, end_month, end_day = split_date_parts(CONFIG["backtest_end"])
@@ -22,13 +23,13 @@ class ZScoreScannerStrategy(QCAlgorithm):
 
 		self.strategy_dir = Path(__file__).resolve().parent
 		self.watchlist = CONFIG["watchlist"]
-		self.benchmark = CONFIG.get("benchmark", "SPY")
+		self._benchmark_ticker = CONFIG.get("benchmark", "SPY")
 
 		# Add equities for all watchlist stocks + benchmark
 		self.symbols = {}
 		for ticker in self.watchlist:
 			self.symbols[ticker] = self.AddEquity(ticker, Resolution.Daily).Symbol
-		self.spy_symbol = self.AddEquity(self.benchmark, Resolution.Daily).Symbol
+		self.spy_symbol = self.AddEquity(self._benchmark_ticker, Resolution.Daily).Symbol
 
 		# Volume z-score scanner config
 		self.volume_zscore_lookback = int(CONFIG.get("volume_zscore_lookback", 15))
@@ -43,10 +44,10 @@ class ZScoreScannerStrategy(QCAlgorithm):
 		self.max_position_pct = float(pos_sizing.get("max_position_pct", 0.33))
 		self.cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.10))
 
-		# Load per-stock model artifacts
+		# Load pre-trained models
+		staleness_days = int(CONFIG.get("model_staleness_days", 30))
 		self.models = {}
-		for ticker in self.watchlist:
-			self.models[ticker] = self._load_stock_model(ticker)
+		self._load_all_models(staleness_days)
 
 		# Per-stock tracking
 		self.entry_times = {}
@@ -68,7 +69,7 @@ class ZScoreScannerStrategy(QCAlgorithm):
 			return
 
 		# Step 1: Process SELLS first for all held positions
-		held_tickers = [t for t in self.watchlist if self.Portfolio[self.symbols[t]].Quantity > 0]
+		held_tickers = [t for t in self.models if self.Portfolio[self.symbols[t]].Quantity > 0]
 
 		for ticker in list(held_tickers):
 			if not data.ContainsKey(self.symbols[ticker]):
@@ -82,12 +83,11 @@ class ZScoreScannerStrategy(QCAlgorithm):
 					held_tickers.remove(ticker)
 					continue
 
-			feature_frame = self._build_feature_frame(ticker)
-			if feature_frame is None:
+			features = self._build_feature_frame(ticker)
+			if features is None:
 				continue
 
-			action, detail, telemetry = self._choose_action(ticker, feature_frame)
-
+			action, detail = self._choose_action(ticker, features)
 			if action == "sell":
 				action, constraint_detail = self._apply_sell_constraints(ticker, action)
 				if action == "sell":
@@ -104,7 +104,7 @@ class ZScoreScannerStrategy(QCAlgorithm):
 		# Step 3: DETECT — scan volume z-scores for non-held stocks
 		self.volume_scans += 1
 		candidates = []
-		for ticker in self.watchlist:
+		for ticker in self.models:
 			if ticker in held_tickers:
 				continue
 			if not data.ContainsKey(self.symbols[ticker]):
@@ -113,23 +113,21 @@ class ZScoreScannerStrategy(QCAlgorithm):
 			if zscore >= self.volume_zscore_threshold:
 				candidates.append((ticker, zscore))
 
-		# Step 4: Rank by z-score descending (most significant spike first)
+		# Step 4: Rank by z-score descending
 		candidates.sort(key=lambda x: x[1], reverse=True)
 
-		# Step 5: CONFIRM — run models on top candidates
+		# Step 5: CONFIRM + EXECUTE — apply pre-trained model
 		for ticker, zscore in candidates[:open_slots]:
-			# Check wash sale constraint before computing features
 			if self._is_wash_sale_blocked(ticker):
 				continue
 
-			feature_frame = self._build_feature_frame(ticker)
-			if feature_frame is None:
+			features = self._build_feature_frame(ticker)
+			if features is None:
 				continue
 
-			action, detail, telemetry = self._choose_action(ticker, feature_frame)
+			action, detail = self._choose_action(ticker, features)
 			self.decision_counts[action] += 1
 
-			# Step 6: EXECUTE — buy if confirmed
 			if action == "buy":
 				self._execute_buy(ticker, zscore, detail)
 				open_slots -= 1
@@ -141,6 +139,7 @@ class ZScoreScannerStrategy(QCAlgorithm):
 	def OnEndOfAlgorithm(self):
 		runtime_stats = {
 			"Watchlist Size": str(len(self.watchlist)),
+			"Active Models": str(len(self.models)),
 			"Max Positions": str(self.max_positions),
 			"Z-Score Lookback": str(self.volume_zscore_lookback),
 			"Z-Score Threshold": f"{self.volume_zscore_threshold:.1f}",
@@ -159,12 +158,97 @@ class ZScoreScannerStrategy(QCAlgorithm):
 		for key, value in runtime_stats.items():
 			self.SetRuntimeStatistic(key, value)
 
+		model_types = {}
+		for ticker, model in self.models.items():
+			pt = model["policy_type"]
+			model_types[pt] = model_types.get(pt, 0) + 1
+
 		self.Log(
-			f"End summary | watchlist={len(self.watchlist)} max_pos={self.max_positions} "
-			f"zscore_lookback={self.volume_zscore_lookback} zscore_threshold={self.volume_zscore_threshold} "
+			f"End summary | active_models={len(self.models)} model_types={model_types} "
 			f"buys={self.executed_buys} sells={self.executed_sells} "
 			f"blocked_wash={self.blocked_wash_sales} blocked_min_hold={self.blocked_min_hold}"
 		)
+
+	# ── Model loading ────────────────────────────────────────────────────
+
+	def _load_all_models(self, staleness_days: int) -> None:
+		models_dir = self.strategy_dir / "models"
+		if not models_dir.exists():
+			self.Log("WARNING: models/ directory not found. Run the notebook to train models.")
+			return
+
+		for ticker in self.watchlist:
+			symbol_dir = models_dir / ticker
+			meta_path = symbol_dir / f"{ticker}-policy-metadata.json"
+			if not meta_path.exists():
+				self.Log(f"WARNING: No model for {ticker}, skipping")
+				continue
+
+			with meta_path.open() as f:
+				metadata = json.load(f)
+
+			# Check staleness
+			trained_date = metadata.get("trained_date")
+			if trained_date and staleness_days > 0:
+				age = (datetime.now().date() - datetime.strptime(trained_date, "%Y-%m-%d").date()).days
+				if age > staleness_days:
+					self.Log(f"WARNING: {ticker} model is {age} days old (limit={staleness_days}), skipping")
+					continue
+
+			model_data = self._load_model_artifacts(ticker, metadata, symbol_dir)
+			if model_data is not None:
+				self.models[ticker] = model_data
+
+		self.Log(f"Loaded models for {len(self.models)} symbols: {sorted(self.models.keys())}")
+
+	def _load_model_artifacts(self, ticker: str, metadata: dict, symbol_dir: Path) -> dict | None:
+		policy_type = metadata["policy_type"]
+		feature_columns = metadata.get("feature_columns", [])
+		model_data = {
+			"policy_type": policy_type,
+			"feature_columns": feature_columns,
+			"buy_threshold": metadata.get("buy_threshold", 0.1),
+			"sell_threshold": metadata.get("sell_threshold", -0.1),
+		}
+
+		if policy_type == "classification":
+			trees_path = symbol_dir / f"{ticker}-rf-trees.json"
+			if not trees_path.exists():
+				self.Log(f"WARNING: {ticker} trees artifact missing, skipping")
+				return None
+			with trees_path.open() as f:
+				model_data["trees"] = json.load(f)
+			return model_data
+
+		if policy_type == "manual":
+			rules_path = symbol_dir / f"{ticker}-manual-rules.json"
+			if not rules_path.exists():
+				self.Log(f"WARNING: {ticker} manual rules artifact missing, skipping")
+				return None
+			with rules_path.open() as f:
+				data = json.load(f)
+			model_data["score_rules"] = data["score_rules"]
+			model_data["buy_threshold"] = data["buy_threshold"]
+			model_data["sell_threshold"] = data["sell_threshold"]
+			return model_data
+
+		if policy_type == "qlearning":
+			qtable_path = symbol_dir / f"{ticker}-qtable.json"
+			edges_path = symbol_dir / f"{ticker}-bin-edges.json"
+			if not qtable_path.exists() or not edges_path.exists():
+				self.Log(f"WARNING: {ticker} Q-learning artifacts missing, skipping")
+				return None
+			with qtable_path.open() as f:
+				model_data["q_table"] = np.array(json.load(f))
+			with edges_path.open() as f:
+				model_data["bin_edges"] = {
+					col: np.array(edges) for col, edges in json.load(f).items()
+				}
+			model_data["n_bins"] = metadata.get("n_bins", 5)
+			return model_data
+
+		self.Log(f"WARNING: {ticker} unsupported policy type '{policy_type}', skipping")
+		return None
 
 	# ── DETECT: Volume z-score scanning ──────────────────────────────────
 
@@ -182,58 +266,10 @@ class ZScoreScannerStrategy(QCAlgorithm):
 			return 0.0
 		return (today_vol - mean_vol) / std_vol
 
-	# ── Trade execution ──────────────────────────────────────────────────
-
-	def _execute_buy(self, ticker: str, zscore: float, detail: str) -> None:
-		portfolio_value = self.Portfolio.TotalPortfolioValue
-		available_cash = self.Portfolio.Cash
-		cash_reserve = portfolio_value * self.cash_reserve_pct
-		investable = max(available_cash - cash_reserve, 0)
-		target_pct = min(self.max_position_pct, investable / max(portfolio_value, 1))
-
-		if target_pct < 0.01:
-			self.Debug(f"{self.Time.date()} {ticker} buy skipped — insufficient cash")
-			return
-
-		self.Debug(f"{self.Time.date()} {ticker} BUY zscore={zscore:.2f} target_pct={target_pct:.4f} {detail}")
-		self.entry_times[ticker] = self.Time
-		self.executed_buys += 1
-		self.SetHoldings(self.symbols[ticker], target_pct)
-
-	def _execute_sell(self, ticker: str, detail: str) -> None:
-		self.Debug(f"{self.Time.date()} {ticker} SELL {detail}")
-		self.last_sell_times[ticker] = self.Time
-		self.entry_times.pop(ticker, None)
-		self.executed_sells += 1
-		self.Liquidate(self.symbols[ticker])
-
-	# ── Trade constraints ────────────────────────────────────────────────
-
-	def _is_wash_sale_blocked(self, ticker: str) -> bool:
-		if self.wash_sale_days <= 0:
-			return False
-		last_sell = self.last_sell_times.get(ticker)
-		if last_sell is None:
-			return False
-		days_since_sell = (self.Time.date() - last_sell.date()).days
-		if days_since_sell < self.wash_sale_days:
-			self.blocked_wash_sales += 1
-			return True
-		return False
-
-	def _apply_sell_constraints(self, ticker: str, action: str) -> tuple[str, str]:
-		if action != "sell":
-			return action, ""
-		if self.min_hold_days > 0 and ticker in self.entry_times:
-			days_held = (self.Time.date() - self.entry_times[ticker].date()).days
-			if days_held < self.min_hold_days:
-				self.blocked_min_hold += 1
-				return "hold", f"min_hold days_held={days_held}"
-		return action, ""
-
-	# ── CONFIRM: Feature computation ─────────────────────────────────────
+	# ── Feature computation ──────────────────────────────────────────────
 
 	def _build_feature_frame(self, ticker: str):
+		"""Fetch 60-day history, compute indicators + relative features."""
 		stock_history = self.History(self.symbols[ticker], 60, Resolution.Daily)
 		spy_history = self.History(self.spy_symbol, 60, Resolution.Daily)
 
@@ -253,53 +289,43 @@ class ZScoreScannerStrategy(QCAlgorithm):
 			return None
 
 		common_idx = stock_ind.index.intersection(spy_ind.index)
-		if len(common_idx) == 0:
+		if len(common_idx) < 10:
 			return None
 
 		stock_ind = stock_ind.loc[common_idx]
 		spy_ind = spy_ind.loc[common_idx]
 
-		# Determine features from model metadata
-		model = self.models[ticker]
-		metadata = model["metadata"]
-		feature_columns = metadata["feature_columns"]
-
 		ratio_features = {"rsi", "adx"}
 		diff_features = {"macd_hist", "cci", "bbp", "williams_r", "obv_slope"}
 
 		result = pd.DataFrame(index=common_idx)
-		for col in feature_columns:
+		result["close"] = stock_ind["close"]
+
+		# Relative indicator features (for Classification, Mean Reversion)
+		all_feature_cols = ["rsi", "macd_hist", "cci", "bbp", "adx", "williams_r", "obv_slope"]
+		for col in all_feature_cols:
 			if col in ratio_features:
 				result[col] = stock_ind[col] / spy_ind[col].replace(0, np.nan)
 			elif col in diff_features:
 				result[col] = stock_ind[col] - spy_ind[col]
-			else:
-				# Trend/breakout features computed from stock data only
-				result[col] = stock_ind.get(col, pd.Series(np.nan, index=common_idx))
 
-		# Add trend features for manual models that need them
-		policy_type = metadata.get("policy_type", "classification")
-		if policy_type == "manual":
-			close = stock_ind["close"]
-			ema50 = close.ewm(span=50, adjust=False).mean()
-			ema200 = close.ewm(span=200, adjust=False).mean()
-			result["trend"] = close / ema50
-			result["trend_long"] = close / ema200
+		# Trend features (for Dual Momentum, Q-Learning)
+		close = stock_ind["close"]
+		ema50 = close.ewm(span=50, adjust=False).mean()
+		ema200 = close.ewm(span=200, adjust=False).mean()
+		result["trend"] = close / ema50
+		result["trend_long"] = close / ema200
 
-			spy_close = spy_ind["close"]
-			rel_price = close / spy_close
-			result["rel_mom_20d"] = rel_price.pct_change(20)
-			result["rel_mom_60d"] = rel_price.pct_change(60)
-
-			# Breakout features
-			result["high_20d_break"] = close - close.rolling(20).max()
-			result["low_20d_break"] = close - close.rolling(20).min()
+		spy_close = spy_ind["close"]
+		rel_price = close / spy_close
+		result["rel_mom_20d"] = rel_price.pct_change(20)
+		result["rel_mom_60d"] = rel_price.pct_change(60)
 
 		result = result.dropna()
 		if result.empty:
 			return None
 
-		return result.iloc[-1:]
+		return result
 
 	def _compute_indicators(self, rows: pd.DataFrame) -> pd.DataFrame | None:
 		rows = rows.copy()
@@ -366,45 +392,43 @@ class ZScoreScannerStrategy(QCAlgorithm):
 
 		return rows
 
-	# ── Model loading and inference ──────────────────────────────────────
+	# ── Model prediction ─────────────────────────────────────────────────
 
-	def _load_stock_model(self, ticker: str) -> dict:
-		model_name = CONFIG["model_name"]
-		artifact_name = f"{model_name}-{ticker}"
-
-		meta_path = self.strategy_dir / f"{artifact_name}-policy-metadata.json"
-		if not meta_path.exists():
-			raise RuntimeError(
-				f"Policy metadata not found for {ticker}: {meta_path}. "
-				"Run the training notebook to export model artifacts."
-			)
-		with meta_path.open() as f:
-			metadata = json.load(f)
-
-		policy_type = metadata.get("policy_type", "classification")
-		model = {"metadata": metadata, "policy_type": policy_type}
+	def _choose_action(self, ticker: str, features: pd.DataFrame) -> tuple:
+		"""Apply pre-trained model for this ticker to get buy/sell/hold signal."""
+		model = self.models[ticker]
+		policy_type = model["policy_type"]
+		row = features.iloc[-1]
 
 		if policy_type == "classification":
-			trees_path = self.strategy_dir / f"{artifact_name}-rf-trees.json"
-			if not trees_path.exists():
-				raise RuntimeError(f"RF trees not found for {ticker}: {trees_path}")
-			with trees_path.open() as f:
-				model["trees"] = json.load(f)
+			feat_cols = model["feature_columns"]
+			feat_vals = [row.get(c, np.nan) for c in feat_cols]
+			if any(np.isnan(v) for v in feat_vals):
+				return "hold", "missing_features"
+			score = self._bag_predict(model["trees"], feat_vals)
+			if score > model["buy_threshold"]:
+				return "buy", f"RF score={score:.3f}"
+			if score < model["sell_threshold"]:
+				return "sell", f"RF score={score:.3f}"
+			return "hold", f"RF score={score:.3f}"
 
-		elif policy_type == "manual":
-			rules_path = self.strategy_dir / f"{artifact_name}-manual-rules.json"
-			if not rules_path.exists():
-				raise RuntimeError(f"Manual rules not found for {ticker}: {rules_path}")
-			with rules_path.open() as f:
-				data = json.load(f)
-			model["score_rules"] = data["score_rules"]
-			model["buy_threshold"] = data["buy_threshold"]
-			model["sell_threshold"] = data["sell_threshold"]
+		if policy_type == "manual":
+			score = self._score_manual_rules(row, model["score_rules"])
+			if score >= model["buy_threshold"]:
+				return "buy", f"manual score={score}"
+			if score <= model["sell_threshold"]:
+				return "sell", f"manual score={score}"
+			return "hold", f"manual score={score}"
 
-		else:
-			raise RuntimeError(f"Unsupported policy type for {ticker}: {policy_type}")
+		if policy_type == "qlearning":
+			holdings = self.Portfolio[self.symbols[ticker]].Quantity
+			feat_cols = model["feature_columns"]
+			state = self._encode_q_state(row, holdings, feat_cols, model["bin_edges"], model["n_bins"])
+			action_id = int(np.argmax(model["q_table"][state]))
+			action_name = {0: "buy", 1: "sell", 2: "hold"}[action_id]
+			return action_name, f"QL state={state} action_id={action_id}"
 
-		return model
+		return "hold", f"unsupported_policy={policy_type}"
 
 	def _traverse_tree(self, tree: list, row: list) -> float:
 		idx = 0
@@ -418,54 +442,82 @@ class ZScoreScannerStrategy(QCAlgorithm):
 		preds = [self._traverse_tree(tree, features) for tree in trees]
 		return sum(preds) / len(preds)
 
-	def _score_manual_rules(self, row: pd.Series, score_rules: list) -> int:
+	def _score_manual_rules(self, row: pd.Series, rules: list) -> int:
 		score = 0
-		for rule in score_rules:
+		for rule in rules:
 			value = row.get(rule["col"])
-			if value is None:
+			if value is None or (isinstance(value, float) and np.isnan(value)):
 				continue
-			if "buy_below" in rule and value < rule["buy_below"]:
+			if "buy_below" in rule and rule["buy_below"] is not None and value < rule["buy_below"]:
 				score += 1
-			if "buy_above" in rule and value > rule["buy_above"]:
+			if "buy_above" in rule and rule["buy_above"] is not None and value > rule["buy_above"]:
 				score += 1
-			if "sell_above" in rule and value > rule["sell_above"]:
+			if "sell_above" in rule and rule["sell_above"] is not None and value > rule["sell_above"]:
 				score -= 1
-			if "sell_below" in rule and value < rule["sell_below"]:
+			if "sell_below" in rule and rule["sell_below"] is not None and value < rule["sell_below"]:
 				score -= 1
 		return score
 
-	def _choose_action(self, ticker: str, feature_frame: pd.DataFrame) -> tuple[str, str, dict]:
-		model = self.models[ticker]
-		metadata = model["metadata"]
-		policy_type = model["policy_type"]
-		row = feature_frame.iloc[0]
+	def _encode_q_state(self, row: pd.Series, holdings: float,
+	                    feature_columns: list, bin_edges: dict, n_bins: int) -> int:
+		state = 0
+		for col in feature_columns:
+			val = row.get(col, 0)
+			bin_idx = np.digitize(val, bin_edges[col]) - 1
+			bin_idx = int(np.clip(bin_idx, 0, n_bins - 1))
+			state = state * n_bins + bin_idx
 
-		if policy_type == "classification":
-			features = [row[col] for col in metadata["feature_columns"]]
-			score = self._bag_predict(model["trees"], features)
-			buy_threshold = metadata.get("buy_threshold", 0.1)
-			sell_threshold = metadata.get("sell_threshold", -0.1)
-			telemetry = {"score": score, "buy_threshold": buy_threshold, "sell_threshold": sell_threshold}
+		holding_bucket = 2 if holdings > 0 else (0 if holdings < 0 else 1)
+		return state * 3 + holding_bucket
 
-			if score > buy_threshold:
-				return "buy", f"score={score:.4f}", telemetry
-			if score < sell_threshold:
-				return "sell", f"score={score:.4f}", telemetry
-			return "hold", f"score={score:.4f}", telemetry
+	# ── Trade execution ──────────────────────────────────────────────────
 
-		if policy_type == "manual":
-			score = self._score_manual_rules(row, model["score_rules"])
-			buy_threshold = model["buy_threshold"]
-			sell_threshold = model["sell_threshold"]
-			telemetry = {"score": score, "buy_threshold": buy_threshold, "sell_threshold": sell_threshold}
+	def _execute_buy(self, ticker: str, zscore: float, detail: str) -> None:
+		portfolio_value = self.Portfolio.TotalPortfolioValue
+		available_cash = self.Portfolio.Cash
+		cash_reserve = portfolio_value * self.cash_reserve_pct
+		investable = max(available_cash - cash_reserve, 0)
+		target_pct = min(self.max_position_pct, investable / max(portfolio_value, 1))
 
-			if score >= buy_threshold:
-				return "buy", f"score={score}", telemetry
-			if score <= sell_threshold:
-				return "sell", f"score={score}", telemetry
-			return "hold", f"score={score}", telemetry
+		if target_pct < 0.01:
+			self.Debug(f"{self.Time.date()} {ticker} buy skipped — insufficient cash")
+			return
 
-		raise RuntimeError(f"Unsupported policy type: {policy_type}")
+		self.Debug(f"{self.Time.date()} {ticker} BUY zscore={zscore:.2f} target_pct={target_pct:.4f} {detail}")
+		self.entry_times[ticker] = self.Time
+		self.executed_buys += 1
+		self.SetHoldings(self.symbols[ticker], target_pct)
+
+	def _execute_sell(self, ticker: str, detail: str) -> None:
+		self.Debug(f"{self.Time.date()} {ticker} SELL {detail}")
+		self.last_sell_times[ticker] = self.Time
+		self.entry_times.pop(ticker, None)
+		self.executed_sells += 1
+		self.Liquidate(self.symbols[ticker])
+
+	# ── Trade constraints ────────────────────────────────────────────────
+
+	def _is_wash_sale_blocked(self, ticker: str) -> bool:
+		if self.wash_sale_days <= 0:
+			return False
+		last_sell = self.last_sell_times.get(ticker)
+		if last_sell is None:
+			return False
+		days_since_sell = (self.Time.date() - last_sell.date()).days
+		if days_since_sell < self.wash_sale_days:
+			self.blocked_wash_sales += 1
+			return True
+		return False
+
+	def _apply_sell_constraints(self, ticker: str, action: str) -> tuple:
+		if action != "sell":
+			return action, ""
+		if self.min_hold_days > 0 and ticker in self.entry_times:
+			days_held = (self.Time.date() - self.entry_times[ticker].date()).days
+			if days_held < self.min_hold_days:
+				self.blocked_min_hold += 1
+				return "hold", f"min_hold days_held={days_held}"
+		return action, ""
 
 	# ── Telemetry ────────────────────────────────────────────────────────
 
@@ -475,5 +527,5 @@ class ZScoreScannerStrategy(QCAlgorithm):
 		self.AddChart(chart)
 
 	def _plot_positions(self) -> None:
-		held_count = sum(1 for t in self.watchlist if self.Portfolio[self.symbols[t]].Quantity > 0)
+		held_count = sum(1 for t in self.models if self.Portfolio[self.symbols[t]].Quantity > 0)
 		self.Plot("Portfolio", "Positions Held", held_count)

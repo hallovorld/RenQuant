@@ -99,16 +99,17 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 - `common.fetch_ohlcv` → `common.compute_indicators` → model.train() → model.save()
 - Strategy-essential logic (gate rules, transitions) stays in notebooks
 
-**2. Model Artifacts** (`backtesting/{strategy}/*.json`)
+**2. Model Artifacts** (`backtesting/{strategy}/*.json` or `models/{SYMBOL}/*.json`)
 - JSON (not pickle) for LEAN compatibility
 - `*-policy-metadata.json` is the contract between research and execution
+- Single-stock (101): artifacts at strategy root; multi-stock (102): `models/{SYMBOL}/` subdirectories
 
 **3. Backtesting** (`backtesting/`) — QuantConnect LEAN engine (Docker)
 - `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
 - Loads JSON models, recomputes indicators inline
 - Enforces trading constraints (wash sale, min/max hold) and position sizing (max position %, cash reserve) from `strategy_config.json`
 - Single-stock strategies (renquant_101): one symbol per backtest
-- Multi-stock strategies (renquant_102): volume z-score scanner + per-stock models (4 approaches), max N concurrent positions
+- Multi-stock strategies (renquant_102): volume z-score scanner, loads pre-trained models per symbol from `models/{SYMBOL}/`, max N concurrent positions
 
 **4. Live Trading** (`live/`)
 - `python -m live.runner --strategy X --broker paper|ibkr --once`
@@ -119,12 +120,13 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 **5. Analysis** (`scripts/analyze_backtest.py`)
 - `common.backtest_dashboard` — price, decision telemetry, equity, drawdown, and stats
 - `common.plot_normalized_performance` — normalized equity with entry markers
+- Multi-stock trade detail table (CSV + console) with per-symbol colored markers
 
 ### Strategies
 
 **Single-stock** (renquant_101): One symbol, one model. Config uses `stock_symbol`.
 
-**Multi-stock z-score scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Scans watchlist for volume z-score spikes, confirms with 4 approaches (Dual Momentum, Classification, Mean Reversion, Breakout). Config uses `watchlist` array, `volume_zscore_lookback`, `volume_zscore_threshold`, `max_concurrent_positions`. Artifacts are per-stock: `{model_name}-{SYMBOL}-policy-metadata.json`.
+**Multi-stock pre-trained scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on rolling 2yr window, exports best model per symbol to `models/{SYMBOL}/`. LEAN loads pre-trained models, scans watchlist for volume z-score spikes, applies that stock's model for confirmation. Models include `trained_date`; LEAN skips models older than `model_staleness_days` (default 30). Config uses `watchlist` array (30 stocks + ETFs), `model_staleness_days`, `volume_zscore_lookback`, `volume_zscore_threshold`, `max_concurrent_positions`.
 
 ### Adding a New Strategy
 

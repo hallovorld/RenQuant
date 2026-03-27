@@ -34,7 +34,8 @@ RenQuant/
 ├── Notebooks/               # Research notebooks (renquant_101, renquant_102)
 ├── backtesting/             # LEAN strategies (self-contained, no common/ imports)
 │   ├── renquant_101/        # Single-stock classification strategy
-│   └── renquant_102/        # Multi-stock volume z-score scanner strategy
+│   └── renquant_102/        # Multi-stock pre-trained scanner strategy
+│       └── models/{SYMBOL}/ # Per-symbol model artifacts
 ├── live/                    # Live trading runner + broker abstraction
 ├── scripts/                 # Scaffolding tools
 ├── data/                    # Local Parquet cache (gitignored)
@@ -141,16 +142,9 @@ Rules: cash-only buys (never sell to fund a new buy), whole shares only. Configu
 
 Trains a classification model (BagLearner/RTLearner) on relative indicators (stock vs SPY) for a single symbol. Notebook trains 3 model types (Manual, Classification, Q-Learning), exports the best by Sharpe.
 
-### renquant_102 — Multi-Stock Volume Z-Score Scanner
+### renquant_102 — Multi-Stock Pre-Trained Scanner
 
-3-stage pipeline: **DETECT** (volume z-score spike) → **CONFIRM** (4 approaches check 2yr history) → **EXECUTE** (trade). Scans a watchlist of up to 10 stocks for volume z-score spikes (default threshold: 2.0σ, lookback: 15 days). On spike days, 4 confirmation approaches analyze the bigger picture:
-
-1. **Dual Momentum** — trend-following rules (same as renquant_101 Manual)
-2. **Classification** — per-stock Random Forest on relative features
-3. **Mean Reversion** — contrarian buy-the-dip on oversold conditions
-4. **Breakout** — ride momentum on 20-day high breakouts
-
-The notebook compares all 4 approaches and exports the best by Sharpe. Max 3 concurrent positions. Per-stock model artifacts: `{model_name}-{SYMBOL}-policy-metadata.json`.
+3-stage pipeline: **DETECT** (volume z-score spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 30 stocks/ETFs for volume z-score spikes (default threshold: 2.0σ, lookback: 15 days). The notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on a rolling 2yr window, exports the best by Sharpe to `models/{SYMBOL}/`. LEAN loads pre-trained models and applies them on spike days. Models older than 30 days are skipped (configurable via `model_staleness_days`). Max 3 concurrent positions.
 
 ```bash
 # Train and compare approaches

@@ -95,6 +95,15 @@ All artifacts are JSON (not pickle) — required for LEAN compatibility and huma
 
 The policy metadata acts as a contract between research and execution — both must use identical indicator parameters.
 
+For multi-stock strategies (renquant_102), models are organized per-symbol under `models/{SYMBOL}/`:
+```
+backtesting/renquant_102/models/
+  NVDA/NVDA-policy-metadata.json, NVDA-rf-trees.json
+  TSLA/TSLA-policy-metadata.json, TSLA-manual-rules.json
+  ...
+```
+Each symbol's model may be a different type (the notebook picks the best approach per symbol).
+
 ---
 
 ## Layer 3: Backtesting (LEAN)
@@ -102,17 +111,18 @@ The policy metadata acts as a contract between research and execution — both m
 **Location**: `backtesting/<strategy>/main.py`
 **Runtime**: QuantConnect LEAN engine (Docker)
 
-`main.py` implements `QCAlgorithm`. renquant_101 supports Manual, Classification, and Q-Learning; renquant_102 supports Classification and Manual:
+`main.py` implements `QCAlgorithm`. The two strategies differ in their approach:
 
-- **`Initialize()`** — reads `strategy_config.json`, loads policy metadata and model artifacts, sets warmup
-- **`OnData()`** — called once per trading day:
-  1. Fetches price history and computes indicators inline (duplicated from common/ — Docker constraint)
-  2. Scores actions via the exported policy
-  3. Applies trading constraints (wash sale, min/max hold)
-  4. Applies position sizing (max position %, cash reserve) before submitting orders
-  5. Logs decisions, plots telemetry, and submits orders when allowed
+**renquant_101** (single-stock): Loads pre-exported model artifacts (Manual, Classification, or Q-Learning). `Initialize()` reads policy metadata and model files. `OnData()` computes indicators inline and scores actions via the exported policy.
 
-> **Note**: renquant_101's `main.py` feeds raw indicators to the model (not relative to SPY). This is a known gap for that strategy. renquant_102's `main.py` computes relative features by fetching history for both the stock and SPY and computing ratio/diff transforms inline.
+> **Note**: renquant_101's `main.py` feeds raw indicators to the model (not relative to SPY). This is a known gap for that strategy.
+
+**renquant_102** (multi-stock): Loads pre-trained models per symbol from `models/{SYMBOL}/`. `Initialize()` reads `strategy_config.json`, loads all per-symbol model artifacts (checking staleness), and sets up watchlist equities + SPY benchmark. `OnData()`:
+  1. Processes sells first for held positions (apply per-stock model + constraints + max hold)
+  2. Scans volume z-scores for non-held watchlist stocks (DETECT stage)
+  3. For each spike candidate, computes 60-day indicators + relative features for stock and SPY (CONFIRM stage)
+  4. Applies that stock's pre-trained model (classification, manual, or qlearning) to get buy/sell/hold signal
+  5. Applies position sizing and trading constraints, executes orders (EXECUTE stage)
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -197,36 +207,38 @@ All 12 registered indicators can be combined freely.
 
 ## Strategy Details
 
-### renquant_102 — Multi-Stock Volume Z-Score Scanner
+### renquant_102 — Multi-Stock Pre-Trained Scanner
 
 A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 
+**Notebook** (`renquant_102.ipynb`): Trains 4 approaches per symbol on a rolling 2-year window, picks the best by Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/`. The 4 approaches are:
+1. Dual Momentum — trend-following ManualModel rules
+2. Classification — BagLearner(RTLearner) random forest on relative features
+3. Q-Learning — tabular RL with discretized trend features
+4. Mean Reversion — contrarian ManualModel rules
+
+Each symbol's best model may be a different type. The user periodically re-runs the notebook to retrain. Models include a `trained_date` field; LEAN skips models older than `model_staleness_days` (default 30).
+
 **Stage 1: DETECT** — compute rolling volume z-score `(today_vol - mean_N) / std_N` for each watchlist stock. A z-score above threshold (default 2.0σ, lookback 15 days) signals unusual institutional activity.
 
-**Stage 2: CONFIRM** — on spike days, 4 approaches analyze 2 years of history to confirm direction:
-1. Dual Momentum — trend-following rules (trend, relative momentum, MACD, OBV)
-2. Classification — per-stock Random Forest on relative features
-3. Mean Reversion — contrarian buy-the-dip on oversold conditions
-4. Breakout — ride momentum on 20-day high breakouts
+**Stage 2: CONFIRM** — on spike days, apply that stock's pre-trained model to 60-day feature history.
 
-**Stage 3: EXECUTE** — best approach by Sharpe trades, max 3 concurrent positions.
+**Stage 3: EXECUTE** — if model says "buy" and constraints allow, enter position. Max 3 concurrent positions.
 
 **Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
 ```json
 {
   "watchlist": ["NVDA", "TSLA", "AAPL", ...],
+  "model_staleness_days": 30,
   "volume_zscore_lookback": 15,
   "volume_zscore_threshold": 2.0,
-  "training_years": 2,
   "max_concurrent_positions": 3
 }
 ```
 
-**LEAN `main.py` flow** (`ZScoreScannerStrategy`):
-1. `Initialize()` — `AddEquity` for each watchlist stock + SPY, load per-stock model artifacts
-2. `OnData()` — process sells first (check models + constraints for held positions), then compute volume z-scores for non-held stocks, rank candidates by z-score, run per-stock models, execute buys (up to `max_concurrent_positions`)
-
-**Artifact naming**: `{model_name}-{SYMBOL}-rf-trees.json` and `{model_name}-{SYMBOL}-policy-metadata.json` per stock. The existing `ClassificationModel.save(dir, "renquant-102-NVDA")` handles this with no changes to `common/models/`.
+**LEAN `main.py` flow** (`PreTrainedMultiStockStrategy`):
+1. `Initialize()` — load pre-trained models from `models/{SYMBOL}/`, check staleness, `AddEquity` for watchlist + SPY
+2. `OnData()` — process sells first (apply model + constraints for held positions), then compute volume z-scores for non-held stocks, rank candidates, apply pre-trained model, execute buys
 
 **Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which computes volume z-scores, checks sell signals, and executes buy orders across the watchlist.
 
