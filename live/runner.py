@@ -4,7 +4,7 @@ Usage::
 
     python -m live.runner --strategy renquant_101 --broker paper --once
     python -m live.runner --strategy renquant_101 --broker ibkr
-    python -m live.runner --strategy renquant_201 --broker paper --once  # multi-stock
+    python -m live.runner --strategy renquant_102 --broker paper --once  # multi-stock
 """
 
 from __future__ import annotations
@@ -215,8 +215,8 @@ def run_once_multi(
     watchlist = config["watchlist"]
     benchmark = config.get("benchmark", "SPY")
     max_positions = config.get("max_concurrent_positions", 3)
-    vol_threshold = float(config.get("volume_ratio_threshold", 2.0))
-    vol_window = int(config.get("volume_avg_window", 20))
+    zscore_threshold = float(config.get("volume_zscore_threshold", 2.0))
+    zscore_lookback = int(config.get("volume_zscore_lookback", 15))
     indicator_spec = config.get("indicator_spec", {})
     feature_columns = config["model_params"]["feature_columns"]
     pos_sizing = config.get("position_sizing", {})
@@ -272,25 +272,27 @@ def run_once_multi(
         if symbol in held or symbol not in dfs:
             continue
         df = dfs[symbol]
-        if len(df) < vol_window + 1:
+        if len(df) < zscore_lookback + 1:
             continue
-        today_vol = df["volume"].iloc[-1]
-        avg_vol = df["volume"].iloc[-(vol_window + 1):-1].mean()
-        vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0
-        if vol_ratio >= vol_threshold:
-            candidates.append((symbol, vol_ratio))
+        vol = df["volume"].astype(float)
+        roll_mean = vol.rolling(zscore_lookback).mean().iloc[-1]
+        roll_std = vol.rolling(zscore_lookback).std().iloc[-1]
+        today_vol = float(vol.iloc[-1])
+        zscore = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
+        if zscore >= zscore_threshold:
+            candidates.append((symbol, zscore))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
-    log.info("Volume candidates: %s", [(s, f"{v:.2f}x") for s, v in candidates] or "none")
+    log.info("Volume z-score candidates: %s", [(s, f"z={v:.2f}") for s, v in candidates] or "none")
 
     # Step 3: Run models on top candidates
-    for symbol, vol_ratio in candidates[:open_slots]:
+    for symbol, zscore in candidates[:open_slots]:
         rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
         if rel is None or rel.empty:
             continue
 
         signal = models[symbol].predict(rel.iloc[-1])
-        log.info("%s vol_ratio=%.2fx signal=%s", symbol, vol_ratio, signal)
+        log.info("%s zscore=%.2f signal=%s", symbol, zscore, signal)
 
         if signal == "buy":
             account_value = broker.get_account_value()
@@ -302,12 +304,12 @@ def run_once_multi(
             shares = int(invest / price)
             if shares > 0:
                 result = broker.place_order(symbol, "BUY", shares)
-                log.info("BUY %s: %d shares at ~$%.2f (vol_ratio=%.2fx)",
-                         symbol, shares, price, vol_ratio)
+                log.info("BUY %s: %d shares at ~$%.2f (zscore=%.2f)",
+                         symbol, shares, price, zscore)
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "buy",
-                    "volume_ratio": vol_ratio, "order": result,
+                    "volume_zscore": zscore, "order": result,
                 })
                 open_slots -= 1
                 if open_slots <= 0:

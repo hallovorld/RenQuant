@@ -31,10 +31,10 @@ RenQuant/
 │   ├── portfolio.py         # Local portfolio simulator
 │   ├── plotting.py          # Backtest dashboard + normalized performance chart
 │   └── config.py            # Config loading utilities
-├── Notebooks/               # Research notebooks (renquant_101, renquant_201)
+├── Notebooks/               # Research notebooks (renquant_101, renquant_102)
 ├── backtesting/             # LEAN strategies (self-contained, no common/ imports)
 │   ├── renquant_101/        # Single-stock classification strategy
-│   └── renquant_201/        # Multi-stock volume scanner strategy
+│   └── renquant_102/        # Multi-stock volume z-score scanner strategy
 ├── live/                    # Live trading runner + broker abstraction
 ├── scripts/                 # Scaffolding tools
 ├── data/                    # Local Parquet cache (gitignored)
@@ -141,19 +141,26 @@ Rules: cash-only buys (never sell to fund a new buy), whole shares only. Configu
 
 Trains a classification model (BagLearner/RTLearner) on relative indicators (stock vs SPY) for a single symbol. Notebook trains 3 model types (Manual, Classification, Q-Learning), exports the best by Sharpe.
 
-### renquant_201 — Multi-Stock Volume Scanner
+### renquant_102 — Multi-Stock Volume Z-Score Scanner
 
-Scans a watchlist of up to 10 stocks for unusual volume activity (volume ratio > 2x 20-day average), then runs per-stock classification models to decide buy/sell. Holds up to 3 concurrent positions. Per-stock model artifacts: `{model_name}-{SYMBOL}-rf-trees.json`.
+3-stage pipeline: **DETECT** (volume z-score spike) → **CONFIRM** (4 approaches check 2yr history) → **EXECUTE** (trade). Scans a watchlist of up to 10 stocks for volume z-score spikes (default threshold: 2.0σ, lookback: 15 days). On spike days, 4 confirmation approaches analyze the bigger picture:
+
+1. **Dual Momentum** — trend-following rules (same as renquant_101 Manual)
+2. **Classification** — per-stock Random Forest on relative features
+3. **Mean Reversion** — contrarian buy-the-dip on oversold conditions
+4. **Breakout** — ride momentum on 20-day high breakouts
+
+The notebook compares all 4 approaches and exports the best by Sharpe. Max 3 concurrent positions. Per-stock model artifacts: `{model_name}-{SYMBOL}-policy-metadata.json`.
 
 ```bash
-# Train all models
-jupyter lab  # run Notebooks/renquant_201.ipynb
+# Train and compare approaches
+jupyter lab  # run Notebooks/renquant_102.ipynb
 
 # Backtest
-cd backtesting/renquant_201 && lean backtest .
+cd backtesting/renquant_102 && lean backtest .
 
 # Live (paper)
-python -m live.runner --strategy renquant_201 --broker paper --once
+python -m live.runner --strategy renquant_102 --broker paper --once
 ```
 
 ## Indicator Library

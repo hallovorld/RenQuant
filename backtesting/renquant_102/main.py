@@ -11,7 +11,7 @@ from config import load_strategy_config, split_date_parts
 CONFIG = load_strategy_config()
 
 
-class ScannerStrategy(QCAlgorithm):
+class ZScoreScannerStrategy(QCAlgorithm):
 	def Initialize(self):
 		start_year, start_month, start_day = split_date_parts(CONFIG["backtest_start"])
 		end_year, end_month, end_day = split_date_parts(CONFIG["backtest_end"])
@@ -30,9 +30,9 @@ class ScannerStrategy(QCAlgorithm):
 			self.symbols[ticker] = self.AddEquity(ticker, Resolution.Daily).Symbol
 		self.spy_symbol = self.AddEquity(self.benchmark, Resolution.Daily).Symbol
 
-		# Scanner config
-		self.volume_ratio_threshold = float(CONFIG.get("volume_ratio_threshold", 2.0))
-		self.volume_avg_window = int(CONFIG.get("volume_avg_window", 20))
+		# Volume z-score scanner config
+		self.volume_zscore_lookback = int(CONFIG.get("volume_zscore_lookback", 15))
+		self.volume_zscore_threshold = float(CONFIG.get("volume_zscore_threshold", 2.0))
 		self.max_positions = int(CONFIG.get("max_concurrent_positions", 3))
 
 		# Trade constraints
@@ -87,7 +87,6 @@ class ScannerStrategy(QCAlgorithm):
 				continue
 
 			action, detail, telemetry = self._choose_action(ticker, feature_frame)
-			self._plot_telemetry(ticker, telemetry)
 
 			if action == "sell":
 				action, constraint_detail = self._apply_sell_constraints(ticker, action)
@@ -102,7 +101,7 @@ class ScannerStrategy(QCAlgorithm):
 		if open_slots <= 0:
 			return
 
-		# Step 3: Scan volume ratios for non-held stocks
+		# Step 3: DETECT — scan volume z-scores for non-held stocks
 		self.volume_scans += 1
 		candidates = []
 		for ticker in self.watchlist:
@@ -110,16 +109,16 @@ class ScannerStrategy(QCAlgorithm):
 				continue
 			if not data.ContainsKey(self.symbols[ticker]):
 				continue
-			volume_ratio = self._compute_volume_ratio(ticker)
-			if volume_ratio >= self.volume_ratio_threshold:
-				candidates.append((ticker, volume_ratio))
+			zscore = self._compute_volume_zscore(ticker)
+			if zscore >= self.volume_zscore_threshold:
+				candidates.append((ticker, zscore))
 
-		# Step 4: Rank by volume ratio descending
+		# Step 4: Rank by z-score descending (most significant spike first)
 		candidates.sort(key=lambda x: x[1], reverse=True)
 
-		# Step 5: Run models on top candidates
-		for ticker, vol_ratio in candidates[:open_slots]:
-			# Check wash sale constraint before spending time on features
+		# Step 5: CONFIRM — run models on top candidates
+		for ticker, zscore in candidates[:open_slots]:
+			# Check wash sale constraint before computing features
 			if self._is_wash_sale_blocked(ticker):
 				continue
 
@@ -128,20 +127,23 @@ class ScannerStrategy(QCAlgorithm):
 				continue
 
 			action, detail, telemetry = self._choose_action(ticker, feature_frame)
-			self._plot_telemetry(ticker, telemetry)
 			self.decision_counts[action] += 1
 
+			# Step 6: EXECUTE — buy if confirmed
 			if action == "buy":
-				self._execute_buy(ticker, vol_ratio, detail)
+				self._execute_buy(ticker, zscore, detail)
 				open_slots -= 1
 				if open_slots <= 0:
 					break
+
+		self._plot_positions()
 
 	def OnEndOfAlgorithm(self):
 		runtime_stats = {
 			"Watchlist Size": str(len(self.watchlist)),
 			"Max Positions": str(self.max_positions),
-			"Volume Threshold": f"{self.volume_ratio_threshold:.1f}x",
+			"Z-Score Lookback": str(self.volume_zscore_lookback),
+			"Z-Score Threshold": f"{self.volume_zscore_threshold:.1f}",
 			"Wash Sale Days": str(self.wash_sale_days),
 			"Min Hold Days": str(self.min_hold_days),
 			"Max Hold Days": str(self.max_hold_days),
@@ -159,27 +161,30 @@ class ScannerStrategy(QCAlgorithm):
 
 		self.Log(
 			f"End summary | watchlist={len(self.watchlist)} max_pos={self.max_positions} "
+			f"zscore_lookback={self.volume_zscore_lookback} zscore_threshold={self.volume_zscore_threshold} "
 			f"buys={self.executed_buys} sells={self.executed_sells} "
-			f"blocked_wash={self.blocked_wash_sales} blocked_min_hold={self.blocked_min_hold} "
-			f"volume_scans={self.volume_scans}"
+			f"blocked_wash={self.blocked_wash_sales} blocked_min_hold={self.blocked_min_hold}"
 		)
 
-	# ── Volume scanning ──────────────────────────────────────────────────
+	# ── DETECT: Volume z-score scanning ──────────────────────────────────
 
-	def _compute_volume_ratio(self, ticker: str) -> float:
-		history = self.History(self.symbols[ticker], self.volume_avg_window + 1, Resolution.Daily)
-		if history.empty or len(history) < self.volume_avg_window + 1:
+	def _compute_volume_zscore(self, ticker: str) -> float:
+		lookback = self.volume_zscore_lookback
+		history = self.History(self.symbols[ticker], lookback + 1, Resolution.Daily)
+		if history.empty or len(history) < lookback + 1:
 			return 0.0
 		volumes = history.loc[self.symbols[ticker]]["volume"]
 		today_vol = volumes.iloc[-1]
-		avg_vol = volumes.iloc[:-1].mean()
-		if avg_vol <= 0:
+		hist_vol = volumes.iloc[:-1]
+		mean_vol = hist_vol.mean()
+		std_vol = hist_vol.std()
+		if std_vol <= 0:
 			return 0.0
-		return today_vol / avg_vol
+		return (today_vol - mean_vol) / std_vol
 
 	# ── Trade execution ──────────────────────────────────────────────────
 
-	def _execute_buy(self, ticker: str, vol_ratio: float, detail: str) -> None:
+	def _execute_buy(self, ticker: str, zscore: float, detail: str) -> None:
 		portfolio_value = self.Portfolio.TotalPortfolioValue
 		available_cash = self.Portfolio.Cash
 		cash_reserve = portfolio_value * self.cash_reserve_pct
@@ -187,10 +192,10 @@ class ScannerStrategy(QCAlgorithm):
 		target_pct = min(self.max_position_pct, investable / max(portfolio_value, 1))
 
 		if target_pct < 0.01:
-			self.Debug(f"{self.Time.date()} {ticker} buy skipped — insufficient cash (target_pct={target_pct:.4f})")
+			self.Debug(f"{self.Time.date()} {ticker} buy skipped — insufficient cash")
 			return
 
-		self.Debug(f"{self.Time.date()} {ticker} BUY vol_ratio={vol_ratio:.2f}x target_pct={target_pct:.4f} {detail}")
+		self.Debug(f"{self.Time.date()} {ticker} BUY zscore={zscore:.2f} target_pct={target_pct:.4f} {detail}")
 		self.entry_times[ticker] = self.Time
 		self.executed_buys += 1
 		self.SetHoldings(self.symbols[ticker], target_pct)
@@ -226,7 +231,7 @@ class ScannerStrategy(QCAlgorithm):
 				return "hold", f"min_hold days_held={days_held}"
 		return action, ""
 
-	# ── Feature computation ──────────────────────────────────────────────
+	# ── CONFIRM: Feature computation ─────────────────────────────────────
 
 	def _build_feature_frame(self, ticker: str):
 		stock_history = self.History(self.symbols[ticker], 60, Resolution.Daily)
@@ -241,14 +246,12 @@ class ScannerStrategy(QCAlgorithm):
 		if len(stock_rows) < 40 or len(spy_rows) < 40:
 			return None
 
-		# Compute indicators for both stock and SPY
 		stock_ind = self._compute_indicators(stock_rows)
 		spy_ind = self._compute_indicators(spy_rows)
 
 		if stock_ind is None or spy_ind is None:
 			return None
 
-		# Align on common dates
 		common_idx = stock_ind.index.intersection(spy_ind.index)
 		if len(common_idx) == 0:
 			return None
@@ -256,8 +259,11 @@ class ScannerStrategy(QCAlgorithm):
 		stock_ind = stock_ind.loc[common_idx]
 		spy_ind = spy_ind.loc[common_idx]
 
-		# Compute relative features
-		feature_columns = self.models[ticker]["metadata"]["feature_columns"]
+		# Determine features from model metadata
+		model = self.models[ticker]
+		metadata = model["metadata"]
+		feature_columns = metadata["feature_columns"]
+
 		ratio_features = {"rsi", "adx"}
 		diff_features = {"macd_hist", "cci", "bbp", "williams_r", "obv_slope"}
 
@@ -268,13 +274,32 @@ class ScannerStrategy(QCAlgorithm):
 			elif col in diff_features:
 				result[col] = stock_ind[col] - spy_ind[col]
 			else:
-				result[col] = stock_ind[col]
+				# Trend/breakout features computed from stock data only
+				result[col] = stock_ind.get(col, pd.Series(np.nan, index=common_idx))
+
+		# Add trend features for manual models that need them
+		policy_type = metadata.get("policy_type", "classification")
+		if policy_type == "manual":
+			close = stock_ind["close"]
+			ema50 = close.ewm(span=50, adjust=False).mean()
+			ema200 = close.ewm(span=200, adjust=False).mean()
+			result["trend"] = close / ema50
+			result["trend_long"] = close / ema200
+
+			spy_close = spy_ind["close"]
+			rel_price = close / spy_close
+			result["rel_mom_20d"] = rel_price.pct_change(20)
+			result["rel_mom_60d"] = rel_price.pct_change(60)
+
+			# Breakout features
+			result["high_20d_break"] = close - close.rolling(20).max()
+			result["low_20d_break"] = close - close.rolling(20).min()
 
 		result = result.dropna()
 		if result.empty:
 			return None
 
-		return result[feature_columns].iloc[-1:]
+		return result.iloc[-1:]
 
 	def _compute_indicators(self, rows: pd.DataFrame) -> pd.DataFrame | None:
 		rows = rows.copy()
@@ -356,16 +381,30 @@ class ScannerStrategy(QCAlgorithm):
 		with meta_path.open() as f:
 			metadata = json.load(f)
 
-		trees_path = self.strategy_dir / f"{artifact_name}-rf-trees.json"
-		if not trees_path.exists():
-			raise RuntimeError(
-				f"RF trees not found for {ticker}: {trees_path}. "
-				"Run the training notebook to export model artifacts."
-			)
-		with trees_path.open() as f:
-			trees = json.load(f)
+		policy_type = metadata.get("policy_type", "classification")
+		model = {"metadata": metadata, "policy_type": policy_type}
 
-		return {"metadata": metadata, "trees": trees}
+		if policy_type == "classification":
+			trees_path = self.strategy_dir / f"{artifact_name}-rf-trees.json"
+			if not trees_path.exists():
+				raise RuntimeError(f"RF trees not found for {ticker}: {trees_path}")
+			with trees_path.open() as f:
+				model["trees"] = json.load(f)
+
+		elif policy_type == "manual":
+			rules_path = self.strategy_dir / f"{artifact_name}-manual-rules.json"
+			if not rules_path.exists():
+				raise RuntimeError(f"Manual rules not found for {ticker}: {rules_path}")
+			with rules_path.open() as f:
+				data = json.load(f)
+			model["score_rules"] = data["score_rules"]
+			model["buy_threshold"] = data["buy_threshold"]
+			model["sell_threshold"] = data["sell_threshold"]
+
+		else:
+			raise RuntimeError(f"Unsupported policy type for {ticker}: {policy_type}")
+
+		return model
 
 	def _traverse_tree(self, tree: list, row: list) -> float:
 		idx = 0
@@ -379,29 +418,54 @@ class ScannerStrategy(QCAlgorithm):
 		preds = [self._traverse_tree(tree, features) for tree in trees]
 		return sum(preds) / len(preds)
 
+	def _score_manual_rules(self, row: pd.Series, score_rules: list) -> int:
+		score = 0
+		for rule in score_rules:
+			value = row.get(rule["col"])
+			if value is None:
+				continue
+			if "buy_below" in rule and value < rule["buy_below"]:
+				score += 1
+			if "buy_above" in rule and value > rule["buy_above"]:
+				score += 1
+			if "sell_above" in rule and value > rule["sell_above"]:
+				score -= 1
+			if "sell_below" in rule and value < rule["sell_below"]:
+				score -= 1
+		return score
+
 	def _choose_action(self, ticker: str, feature_frame: pd.DataFrame) -> tuple[str, str, dict]:
 		model = self.models[ticker]
 		metadata = model["metadata"]
-		trees = model["trees"]
-
+		policy_type = model["policy_type"]
 		row = feature_frame.iloc[0]
-		features = row.tolist()
-		score = self._bag_predict(trees, features)
 
-		buy_threshold = metadata.get("buy_threshold", 0.1)
-		sell_threshold = metadata.get("sell_threshold", -0.1)
+		if policy_type == "classification":
+			features = [row[col] for col in metadata["feature_columns"]]
+			score = self._bag_predict(model["trees"], features)
+			buy_threshold = metadata.get("buy_threshold", 0.1)
+			sell_threshold = metadata.get("sell_threshold", -0.1)
+			telemetry = {"score": score, "buy_threshold": buy_threshold, "sell_threshold": sell_threshold}
 
-		telemetry = {
-			"score": score,
-			"buy_threshold": buy_threshold,
-			"sell_threshold": sell_threshold,
-		}
+			if score > buy_threshold:
+				return "buy", f"score={score:.4f}", telemetry
+			if score < sell_threshold:
+				return "sell", f"score={score:.4f}", telemetry
+			return "hold", f"score={score:.4f}", telemetry
 
-		if score > buy_threshold:
-			return "buy", f"score={score:.4f}", telemetry
-		if score < sell_threshold:
-			return "sell", f"score={score:.4f}", telemetry
-		return "hold", f"score={score:.4f}", telemetry
+		if policy_type == "manual":
+			score = self._score_manual_rules(row, model["score_rules"])
+			buy_threshold = model["buy_threshold"]
+			sell_threshold = model["sell_threshold"]
+			telemetry = {"score": score, "buy_threshold": buy_threshold, "sell_threshold": sell_threshold}
+
+			if score >= buy_threshold:
+				return "buy", f"score={score}", telemetry
+			if score <= sell_threshold:
+				return "sell", f"score={score}", telemetry
+			return "hold", f"score={score}", telemetry
+
+		raise RuntimeError(f"Unsupported policy type: {policy_type}")
 
 	# ── Telemetry ────────────────────────────────────────────────────────
 
@@ -410,6 +474,6 @@ class ScannerStrategy(QCAlgorithm):
 		chart.AddSeries(Series("Positions Held", SeriesType.Line, "count"))
 		self.AddChart(chart)
 
-	def _plot_telemetry(self, ticker: str, telemetry: dict) -> None:
+	def _plot_positions(self) -> None:
 		held_count = sum(1 for t in self.watchlist if self.Portfolio[self.symbols[t]].Quantity > 0)
 		self.Plot("Portfolio", "Positions Held", held_count)

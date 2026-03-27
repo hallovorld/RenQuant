@@ -1,4 +1,4 @@
-# Plan: Relative (Stock/SPY) Indicators — PARTIALLY IMPLEMENTED
+# Plan: Relative (Stock/SPY) Indicators — COMPLETED
 
 ## Motivation
 
@@ -106,13 +106,13 @@ Current thresholds assume raw indicator ranges (e.g., RSI 40/65, CCI -100/+100).
 
 **These will need empirical tuning** — run the notebook, inspect distributions, then set thresholds at reasonable percentiles (e.g., 20th/80th).
 
-### 5. LEAN main.py impact — NOT YET IMPLEMENTED
+### 5. LEAN main.py impact — IMPLEMENTED (renquant_102)
 
-`main.py` must also compute SPY indicators and do the relative transform. This means:
+renquant_102's `main.py` (`ZScoreScannerStrategy`) computes relative features inline:
 
-- Add `self.spy_symbol = self.AddEquity("SPY", Resolution.Daily).Symbol` in `Initialize()`
-- `_build_feature_frame()` fetches history for both symbols, computes indicators for both, then applies the same ratio/difference transform
-- The model artifacts (trees, Q-table, rules) already encode relative features from training — no artifact format changes
+- `AddEquity("SPY", Resolution.Daily)` in `Initialize()`
+- `_build_feature_frame()` fetches history for both stock and SPY, computes indicators for both, then applies ratio/difference transforms
+- renquant_101's `main.py` still uses raw indicators (known gap for that strategy)
 
 ### 6. Benchmark chart adjustment
 

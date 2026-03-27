@@ -102,7 +102,7 @@ The policy metadata acts as a contract between research and execution — both m
 **Location**: `backtesting/<strategy>/main.py`
 **Runtime**: QuantConnect LEAN engine (Docker)
 
-`main.py` implements `QCAlgorithm` and supports all three model types (Manual, Classification, Q-Learning):
+`main.py` implements `QCAlgorithm`. renquant_101 supports Manual, Classification, and Q-Learning; renquant_102 supports Classification and Manual:
 
 - **`Initialize()`** — reads `strategy_config.json`, loads policy metadata and model artifacts, sets warmup
 - **`OnData()`** — called once per trading day:
@@ -112,7 +112,7 @@ The policy metadata acts as a contract between research and execution — both m
   4. Applies position sizing (max position %, cash reserve) before submitting orders
   5. Logs decisions, plots telemetry, and submits orders when allowed
 
-> **Note**: renquant_101's `main.py` feeds raw indicators to the model (not relative to SPY). This is a known gap for that strategy. renquant_201's `main.py` computes relative features by fetching history for both the stock and SPY and computing ratio/diff transforms inline.
+> **Note**: renquant_101's `main.py` feeds raw indicators to the model (not relative to SPY). This is a known gap for that strategy. renquant_102's `main.py` computes relative features by fetching history for both the stock and SPY and computing ratio/diff transforms inline.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -170,7 +170,7 @@ Position sizing is configured in `strategy_config.json` under the `position_sizi
 2. **Max position cap** — `target_pct = min(max_position_pct, (available_cash - cash_reserve) / portfolio_value)`
 3. **Whole shares only** — notebook simulation buys whole shares; LEAN uses `SetHoldings` which handles this internally
 
-These rules are used by both single-stock (renquant_101) and multi-stock (renquant_201) strategies. In multi-stock mode, each position is independently capped and the cash reserve is maintained across all positions.
+These rules are used by both single-stock (renquant_101) and multi-stock (renquant_102) strategies. In multi-stock mode, each position is independently capped and the cash reserve is maintained across all positions.
 
 ---
 
@@ -197,29 +197,42 @@ All 12 registered indicators can be combined freely.
 
 ## Strategy Details
 
-### renquant_201 — Multi-Stock Volume Scanner
+### renquant_102 — Multi-Stock Volume Z-Score Scanner
 
-A multi-stock strategy that scans a configurable watchlist for unusual volume activity, then applies per-stock classification models to decide trades.
+A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
+
+**Stage 1: DETECT** — compute rolling volume z-score `(today_vol - mean_N) / std_N` for each watchlist stock. A z-score above threshold (default 2.0σ, lookback 15 days) signals unusual institutional activity.
+
+**Stage 2: CONFIRM** — on spike days, 4 approaches analyze 2 years of history to confirm direction:
+1. Dual Momentum — trend-following rules (trend, relative momentum, MACD, OBV)
+2. Classification — per-stock Random Forest on relative features
+3. Mean Reversion — contrarian buy-the-dip on oversold conditions
+4. Breakout — ride momentum on 20-day high breakouts
+
+**Stage 3: EXECUTE** — best approach by Sharpe trades, max 3 concurrent positions.
 
 **Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
 ```json
 {
   "watchlist": ["NVDA", "TSLA", "AAPL", ...],
-  "volume_ratio_threshold": 2.0,
-  "volume_avg_window": 20,
+  "volume_zscore_lookback": 15,
+  "volume_zscore_threshold": 2.0,
+  "training_years": 2,
   "max_concurrent_positions": 3
 }
 ```
 
-**LEAN `main.py` flow** (`ScannerStrategy`):
+**LEAN `main.py` flow** (`ZScoreScannerStrategy`):
 1. `Initialize()` — `AddEquity` for each watchlist stock + SPY, load per-stock model artifacts
-2. `OnData()` — process sells first (check models + constraints for held positions), then scan volume ratios for non-held stocks, rank candidates by volume ratio, run per-stock models, execute buys (up to `max_concurrent_positions`)
+2. `OnData()` — process sells first (check models + constraints for held positions), then compute volume z-scores for non-held stocks, rank candidates by z-score, run per-stock models, execute buys (up to `max_concurrent_positions`)
 
-**Artifact naming**: `{model_name}-{SYMBOL}-rf-trees.json` and `{model_name}-{SYMBOL}-policy-metadata.json` per stock. The existing `ClassificationModel.save(dir, "renquant-201-NVDA")` handles this with no changes to `common/models/`.
+**Artifact naming**: `{model_name}-{SYMBOL}-rf-trees.json` and `{model_name}-{SYMBOL}-policy-metadata.json` per stock. The existing `ClassificationModel.save(dir, "renquant-102-NVDA")` handles this with no changes to `common/models/`.
 
-**Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which scans volume, checks sell signals, and executes buy orders across the watchlist.
+**Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which computes volume z-scores, checks sell signals, and executes buy orders across the watchlist.
 
 ### renquant_101 — Single-Stock Classification
+
+Trains a single model on relative indicators (stock vs SPY) for one symbol. The notebook trains 3 model types (Manual/Dual Momentum, Classification/RF, Q-Learning), compares them with stock and SPY buy-and-hold benchmarks, and exports the best by Sharpe ratio. Config uses `stock_symbol` (single string).
 
 ### Manual — Dual Momentum + Trend Following
 

@@ -8,3 +8,4 @@
 | [models.md](models.md) | Model type reference and decision guide |
 | [indicators.md](indicators.md) | Indicator catalog with parameters |
 | [tech-stack.md](tech-stack.md) | Tool choices and rationale |
+| [plan-relative-indicators.md](plan-relative-indicators.md) | Historical plan for relative indicator framework (completed) |

@@ -45,7 +45,7 @@ python scripts/backtest_and_analyze.py --strategy renquant_101
 
 ```bash
 python -m live.runner --strategy renquant_101 --broker paper --once
-python -m live.runner --strategy renquant_201 --broker paper --once  # multi-stock
+python -m live.runner --strategy renquant_102 --broker paper --once  # multi-stock
 ```
 
 ## Shared Library: `common/`
@@ -108,7 +108,7 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 - Loads JSON models, recomputes indicators inline
 - Enforces trading constraints (wash sale, min/max hold) and position sizing (max position %, cash reserve) from `strategy_config.json`
 - Single-stock strategies (renquant_101): one symbol per backtest
-- Multi-stock strategies (renquant_201): volume scanner + per-stock models, max N concurrent positions
+- Multi-stock strategies (renquant_102): volume z-score scanner + per-stock models (4 approaches), max N concurrent positions
 
 **4. Live Trading** (`live/`)
 - `python -m live.runner --strategy X --broker paper|ibkr --once`
@@ -124,7 +124,7 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 
 **Single-stock** (renquant_101): One symbol, one model. Config uses `stock_symbol`.
 
-**Multi-stock scanner** (renquant_201): Watchlist of up to 10 stocks, volume-based scanning, per-stock models. Config uses `watchlist` array, `volume_ratio_threshold`, `max_concurrent_positions`. Artifacts are per-stock: `{model_name}-{SYMBOL}-rf-trees.json`.
+**Multi-stock z-score scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Scans watchlist for volume z-score spikes, confirms with 4 approaches (Dual Momentum, Classification, Mean Reversion, Breakout). Config uses `watchlist` array, `volume_zscore_lookback`, `volume_zscore_threshold`, `max_concurrent_positions`. Artifacts are per-stock: `{model_name}-{SYMBOL}-policy-metadata.json`.
 
 ### Adding a New Strategy
 

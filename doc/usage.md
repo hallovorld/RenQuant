@@ -77,17 +77,17 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
 }
 ```
 
-**Multi-stock scanner** (renquant_201):
+**Multi-stock z-score scanner** (renquant_102):
 ```json
 {
-  "model_name": "renquant-201",
+  "model_name": "renquant-102",
   "watchlist": ["NVDA", "TSLA", "AAPL", "AMZN", "META", "GOOG", "MSFT", "AMD", "NFLX", "AVGO"],
   "benchmark": "SPY",
   "model_type": "classification",
   "initial_cash": 100000,
-  "scan_lookback_days": 10,
-  "volume_ratio_threshold": 2.0,
-  "volume_avg_window": 20,
+  "volume_zscore_lookback": 15,
+  "volume_zscore_threshold": 2.0,
+  "training_years": 2,
   "max_concurrent_positions": 3,
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26"
@@ -131,7 +131,7 @@ Run a trained strategy with paper or real broker:
 python -m live.runner --strategy renquant_101 --broker paper --once
 
 # Multi-stock strategy
-python -m live.runner --strategy renquant_201 --broker paper --once
+python -m live.runner --strategy renquant_102 --broker paper --once
 
 # Real trading (requires IBKR TWS/Gateway)
 python -m live.runner --strategy renquant_101 --broker ibkr
@@ -140,7 +140,7 @@ python -m live.runner --strategy renquant_101 --broker ibkr
 python -m live.runner --strategy renquant_101 --broker paper --interval 86400
 ```
 
-The runner auto-detects single-stock vs multi-stock strategies by checking for `"watchlist"` in the config. Multi-stock strategies use `run_once_multi()` which scans volume, processes sell signals, and executes buy orders across the watchlist.
+The runner auto-detects single-stock vs multi-stock strategies by checking for `"watchlist"` in the config. Multi-stock strategies use `run_once_multi()` which computes volume z-scores, processes sell signals, and executes buy orders across the watchlist.
 
 Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
@@ -182,7 +182,7 @@ common/                            # Shared library — import as `import common
 
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
-└── renquant_201.ipynb            # Multi-stock scanner: train per-stock models → export
+└── renquant_102.ipynb            # Multi-stock z-score scanner: 4 approaches → compare → export
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference
