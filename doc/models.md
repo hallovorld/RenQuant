@@ -115,7 +115,7 @@ All models are subject to execution constraints during simulation and LEAN backt
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 calendar days of selling |
 | Min hold | 20 days | Prevents short-term trading |
-| Max hold | 150 days | Forces position review |
+| Max hold | 400 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
 
@@ -123,8 +123,8 @@ All models use position sizing rules from `strategy_config.json`:
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| `max_position_pct` | 33% | No single stock exceeds 1/3 of portfolio value |
-| `cash_reserve_pct` | 10% | Always maintain cash reserve |
+| `max_position_pct` | 30% | No single stock exceeds 30% of portfolio value |
+| `cash_reserve_pct` | 0% | All capital available for positions |
 
 Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_reserve)`. Whole shares only in notebook simulation; LEAN uses `SetHoldings` with the capped percentage. Cash-only buys — never sell existing holdings to fund a new position.
 

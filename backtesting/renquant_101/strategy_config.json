@@ -1,15 +1,15 @@
 {
   "model_name": "renquant-101",
-  "stock_symbol": "TSLA",
+  "stock_symbol": "NVDA",
   "model_type": "classification",
   "data_src": "yfinance",
   "initial_cash": 10000,
   "wash_sale_days": 30,
   "min_hold_days": 20,
-  "max_hold_days": 150,
+  "max_hold_days": 400,
   "position_sizing": {
-    "max_position_pct": 0.33,
-    "cash_reserve_pct": 0.10
+    "max_position_pct": 0.30,
+    "cash_reserve_pct": 0.00
   },
   "tax": {
     "short_term_rate": 0.50,

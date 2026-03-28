@@ -82,7 +82,7 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
 ```json
 {
   "model_name": "renquant-102",
-  "watchlist": ["NVDA", "TSLA", "AAPL", "AMZN", "META", "GOOG", "MSFT", "AMD", "NFLX", "AVGO", "..."],
+  "watchlist": ["TSLA", "AMZN", "GOOG", "MSFT", "AMD", "NFLX", "CRM", "PLTR", "COIN", "SHOP", "..."],
   "benchmark": "SPY",
   "initial_cash": 100000,
   "model_staleness_days": 30,
@@ -187,7 +187,7 @@ common/                            # Shared library — import as `import common
 
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
-└── renquant_102.ipynb            # Multi-stock: train 4 approaches per symbol → export best → portfolio simulation
+└── renquant_102.ipynb            # Multi-stock: train 3 approaches per symbol → export best → portfolio simulation
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference

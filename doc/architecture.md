@@ -75,8 +75,8 @@ The notebook is where training happens. The typical workflow:
    - **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
    - Additional trend-following features: `trend` (price/50EMA), `trend_long` (price/200EMA), `rel_mom_20d`, `rel_mom_60d`
 4. **Model training** — depends on model type (see below)
-5. **Comparison** — all models simulated with constraints (wash sale 30d, min hold 20d, max hold 150d), compared with stock and SPY buy-and-hold benchmarks
-6. **Export** — best model by Sharpe ratio auto-exported to `backtesting/<strategy>/`
+5. **Comparison** — all models simulated with constraints (wash sale 30d, min hold 20d, max hold 400d), compared with stock and SPY buy-and-hold benchmarks
+6. **Export** — best model by after-tax Sharpe ratio auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.5 for renquant_102)
 
 ---
 
@@ -165,7 +165,7 @@ All models are subject to execution constraints during both notebook simulation 
 |------------|-------|---------|
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
 | Minimum hold | 20 calendar days | Prevents excessive short-term trading |
-| Maximum hold | 150 calendar days | Forces position review, prevents "buy and forget" |
+| Maximum hold | 400 calendar days | Forces position review; allows long-term capital gains rate |
 
 ## Tax-Aware Returns
 
@@ -179,7 +179,7 @@ After-tax returns are computed at each sell event using configurable capital gai
 
 Losses pass through untaxed (loss harvesting is not modeled). In notebooks, tax is deducted from cash at each sell, producing after-tax equity curves. LEAN strategies report tax as metadata via `SetRuntimeStatistic()` (LEAN equity stays gross). The analysis notebook uses `common.add_tax_columns()` to enrich LEAN trade data with per-trade tax breakdowns.
 
-> **Note**: With `max_hold_days: 150`, all trades are short-term (50% rate). The long-term rate only applies if `max_hold_days` is raised to 365+.
+> **Note**: With `max_hold_days: 400`, trades held over 365 days qualify for the 32% long-term rate instead of 50% short-term.
 
 ## Position Sizing
 
@@ -187,8 +187,8 @@ Position sizing is configured in `strategy_config.json` under the `position_sizi
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| `max_position_pct` | 0.33 (33%) | No single stock can exceed 1/3 of total portfolio value |
-| `cash_reserve_pct` | 0.10 (10%) | Always maintain 10% cash reserve |
+| `max_position_pct` | 0.30 (30%) | No single stock can exceed 30% of total portfolio value |
+| `cash_reserve_pct` | 0.00 (0%) | All capital available for positions |
 
 **Rules:**
 1. **Cash-only buys** — only use available cash for new positions; never sell existing holdings to fund a new buy
@@ -226,24 +226,23 @@ All 12 registered indicators can be combined freely.
 
 A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 
-**Notebook** (`renquant_102.ipynb`): Trains 4 approaches per symbol on a rolling 2-year window, picks the best by Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/`. After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 4 approaches are:
+**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 2-year window, picks the best by after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.5). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
 1. Dual Momentum — trend-following ManualModel rules
 2. Classification — BagLearner(RTLearner) random forest on relative features
 3. Q-Learning — tabular RL with discretized trend features
-4. Mean Reversion — contrarian ManualModel rules
 
 Each symbol's best model may be a different type. The user periodically re-runs the notebook to retrain. Models include a `trained_date` field; LEAN skips models older than `model_staleness_days` (default 30).
 
-**Stage 1: DETECT** — compute rolling volume z-score `(today_vol - mean_N) / std_N` for each watchlist stock. A z-score above threshold (default 2.0σ, lookback 15 days) signals unusual institutional activity.
+**Stage 1: DETECT** — compute rolling volume z-score `(today_vol - mean_N) / std_N` for each watchlist stock. A z-score above threshold (default 2.0σ, lookback 15 days) on an up-close day (bullish filter) signals unusual institutional buying activity.
 
-**Stage 2: CONFIRM** — on spike days, apply that stock's pre-trained model to 60-day feature history.
+**Stage 2: CONFIRM** — on bullish spike days, apply that stock's pre-trained model to 60-day feature history.
 
 **Stage 3: EXECUTE** — if model says "buy" and constraints allow, enter position. Max 3 concurrent positions.
 
 **Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
 ```json
 {
-  "watchlist": ["NVDA", "TSLA", "AAPL", ...],
+  "watchlist": ["TSLA", "AMZN", "GOOG", "MSFT", "AMD", "NFLX", "..."],
   "model_staleness_days": 30,
   "volume_zscore_lookback": 15,
   "volume_zscore_threshold": 2.0,
@@ -253,7 +252,7 @@ Each symbol's best model may be a different type. The user periodically re-runs 
 
 **LEAN `main.py` flow** (`PreTrainedMultiStockStrategy`):
 1. `Initialize()` — load pre-trained models from `models/{SYMBOL}/`, check staleness, `AddEquity` for watchlist + SPY
-2. `OnData()` — process sells first (apply model + constraints for held positions), then compute volume z-scores for non-held stocks, rank candidates, apply pre-trained model, execute buys
+2. `OnData()` — process sells first (apply model + constraints for held positions), then compute volume z-scores for non-held stocks (bullish filter: up-close days only), rank candidates, apply pre-trained model, execute buys
 
 **Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which computes volume z-scores, checks sell signals, and executes buy orders across the watchlist.
 

@@ -109,7 +109,7 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		if open_slots <= 0:
 			return
 
-		# Step 3: DETECT — scan volume z-scores for non-held stocks
+		# Step 3: DETECT — scan volume z-scores for non-held stocks (bullish only)
 		self.volume_scans += 1
 		candidates = []
 		for ticker in self.models:
@@ -119,6 +119,9 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 				continue
 			zscore = self._compute_volume_zscore(ticker)
 			if zscore >= self.volume_zscore_threshold:
+				# Bullish filter: only enter on days where price closed up
+				if not self._is_price_up(ticker):
+					continue
 				candidates.append((ticker, zscore))
 
 		# Step 4: Rank by z-score descending
@@ -278,6 +281,14 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		if std_vol <= 0:
 			return 0.0
 		return (today_vol - mean_vol) / std_vol
+
+	def _is_price_up(self, ticker: str) -> bool:
+		"""Check if today's close is above yesterday's close (bullish day)."""
+		history = self.History(self.symbols[ticker], 2, Resolution.Daily)
+		if history.empty or len(history) < 2:
+			return False
+		closes = history.loc[self.symbols[ticker]]["close"]
+		return closes.iloc[-1] > closes.iloc[-2]
 
 	# ── Feature computation ──────────────────────────────────────────────
 

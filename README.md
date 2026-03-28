@@ -126,14 +126,14 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 days of selling |
 | Min hold | 20 days | Prevents short-term trading |
-| Max hold | 150 days | Forces position review |
+| Max hold | 400 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| Max position | 33% of portfolio | No single stock exceeds 1/3 of total value |
-| Cash reserve | 10% of portfolio | Always maintain cash buffer |
+| Max position | 30% of portfolio | No single stock exceeds 30% of total value |
+| Cash reserve | 0% of portfolio | All capital available for positions |
 
 Rules: cash-only buys (never sell to fund a new buy), whole shares only. Configured in `strategy_config.json` under `position_sizing`.
 
@@ -156,7 +156,7 @@ Trains a classification model (BagLearner/RTLearner) on relative indicators (sto
 
 ### renquant_102 — Multi-Stock Pre-Trained Scanner
 
-3-stage pipeline: **DETECT** (volume z-score spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 30 stocks/ETFs for volume z-score spikes (default threshold: 2.0σ, lookback: 15 days). The notebook trains 4 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning, Mean Reversion) on a rolling 2yr window, exports the best by Sharpe to `models/{SYMBOL}/`. The notebook also includes a portfolio-level simulation that replicates the LEAN multi-stock logic in Python (volume z-score scan → model confirmation → position management), with a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation) for iterating on parameters before running LEAN. LEAN loads pre-trained models and applies them on spike days. Models older than 30 days are skipped (configurable via `model_staleness_days`). Max 3 concurrent positions.
+3-stage pipeline: **DETECT** (bullish volume z-score spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 19 stocks/ETFs for volume z-score spikes on up-close days (default threshold: 2.0σ, lookback: 15 days). The notebook trains 3 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning) on a rolling 2yr window, exports the best by after-tax Sharpe to `models/{SYMBOL}/` (minimum Sharpe floor: 0.5). The notebook also includes a portfolio-level simulation that replicates the LEAN multi-stock logic in Python (volume z-score scan → model confirmation → position management), with a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation) for iterating on parameters before running LEAN. LEAN loads pre-trained models and applies them on spike days. Models older than 30 days are skipped (configurable via `model_staleness_days`). Max 3 concurrent positions.
 
 ```bash
 # Train and compare approaches
