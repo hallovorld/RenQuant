@@ -29,6 +29,7 @@ RenQuant/
 │   │   └── learners/        # RTLearner, BagLearner, TabularQLearner
 │   ├── strategy.py          # StrategyConfig + Strategy composition
 │   ├── portfolio.py         # Local portfolio simulator
+│   ├── tax.py               # After-tax return computation (ST/LT capital gains)
 │   ├── plotting.py          # Backtest dashboard + normalized performance chart
 │   └── config.py            # Config loading utilities
 ├── Notebooks/               # Research notebooks (renquant_101, renquant_102)
@@ -135,6 +136,17 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 | Cash reserve | 10% of portfolio | Always maintain cash buffer |
 
 Rules: cash-only buys (never sell to fund a new buy), whole shares only. Configured in `strategy_config.json` under `position_sizing`.
+
+## Tax-Aware Returns
+
+All strategies compute after-tax returns using configurable capital gains rates:
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| Short-term rate | 50% | Gains on positions held < 365 days |
+| Long-term rate | 32% | Gains on positions held ≥ 365 days |
+
+Losses pass through untaxed (loss harvesting not modeled). Tax is deducted at each sell in notebook simulations, producing after-tax equity curves and Sharpe ratios. LEAN strategies report tax as metadata via `SetRuntimeStatistic()`. Configured in `strategy_config.json` under `tax`.
 
 ## Strategies
 

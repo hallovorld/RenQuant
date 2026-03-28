@@ -60,6 +60,14 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		self.blocked_wash_sales = 0
 		self.blocked_min_hold = 0
 		self.volume_scans = 0
+		# Tax tracking
+		tax_cfg = CONFIG.get("tax", {})
+		self.tax_short_rate = float(tax_cfg.get("short_term_rate", 0.50))
+		self.tax_long_rate = float(tax_cfg.get("long_term_rate", 0.32))
+		self.tax_threshold_days = int(tax_cfg.get("long_term_threshold_days", 365))
+		self.total_tax = 0.0
+		self.short_term_trades = 0
+		self.long_term_trades = 0
 		self._setup_telemetry_chart()
 
 		self.SetWarmUp(60)
@@ -154,6 +162,11 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 			"Blocked Wash Sales": str(self.blocked_wash_sales),
 			"Blocked Min Hold": str(self.blocked_min_hold),
 			"Volume Scans": str(self.volume_scans),
+			"Total Tax": f"${self.total_tax:,.2f}",
+			"Short-Term Trades": str(self.short_term_trades),
+			"Long-Term Trades": str(self.long_term_trades),
+			"Tax Rate (ST)": f"{self.tax_short_rate:.0%}",
+			"Tax Rate (LT)": f"{self.tax_long_rate:.0%}",
 		}
 		for key, value in runtime_stats.items():
 			self.SetRuntimeStatistic(key, value)
@@ -489,7 +502,20 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		self.SetHoldings(self.symbols[ticker], target_pct)
 
 	def _execute_sell(self, ticker: str, detail: str) -> None:
-		self.Debug(f"{self.Time.date()} {ticker} SELL {detail}")
+		# Track tax on this trade
+		gross_pnl = self.Portfolio[self.symbols[ticker]].UnrealizedProfit
+		entry_time = self.entry_times.get(ticker)
+		days_held = (self.Time.date() - entry_time.date()).days if entry_time else 0
+		is_long_term = days_held >= self.tax_threshold_days
+		tax_rate = self.tax_long_rate if is_long_term else self.tax_short_rate
+		tax = max(gross_pnl, 0) * tax_rate
+		self.total_tax += tax
+		if is_long_term:
+			self.long_term_trades += 1
+		else:
+			self.short_term_trades += 1
+		self.Debug(f"{self.Time.date()} {ticker} SELL pnl=${gross_pnl:.2f} held={days_held}d "
+		           f"tax=${tax:.2f} ({'LT' if is_long_term else 'ST'} {tax_rate:.0%}) {detail}")
 		self.last_sell_times[ticker] = self.Time
 		self.entry_times.pop(ticker, None)
 		self.executed_sells += 1

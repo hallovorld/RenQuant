@@ -56,6 +56,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` — local portfolio simulator |
+| `common/tax.py` | `compute_trade_tax`, `load_tax_config`, `add_tax_columns`, `tax_rate_for_holding` — after-tax return analysis |
 | `common/plotting.py` | `backtest_dashboard`, `plot_normalized_performance`, parse/plot utilities |
 
 ---
@@ -165,6 +166,20 @@ All models are subject to execution constraints during both notebook simulation 
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
 | Minimum hold | 20 calendar days | Prevents excessive short-term trading |
 | Maximum hold | 150 calendar days | Forces position review, prevents "buy and forget" |
+
+## Tax-Aware Returns
+
+After-tax returns are computed at each sell event using configurable capital gains rates from the `tax` block in `strategy_config.json`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `short_term_rate` | 0.50 (50%) | Tax rate on gains held < `long_term_threshold_days` |
+| `long_term_rate` | 0.32 (32%) | Tax rate on gains held ≥ `long_term_threshold_days` |
+| `long_term_threshold_days` | 365 | Days to qualify for long-term rate |
+
+Losses pass through untaxed (loss harvesting is not modeled). In notebooks, tax is deducted from cash at each sell, producing after-tax equity curves. LEAN strategies report tax as metadata via `SetRuntimeStatistic()` (LEAN equity stays gross). The analysis notebook uses `common.add_tax_columns()` to enrich LEAN trade data with per-trade tax breakdowns.
+
+> **Note**: With `max_hold_days: 150`, all trades are short-term (50% rate). The long-term rate only applies if `max_hold_days` is raised to 365+.
 
 ## Position Sizing
 

@@ -2,7 +2,7 @@
   "model_name": "renquant-102",
   "watchlist": [
     "NVDA", "TSLA", "AAPL", "AMZN", "META", "GOOG", "MSFT", "AMD", "NFLX", "AVGO",
-    "CRM", "SNOW", "PLTR", "COIN", "SQ", "SHOP", "UBER",
+    "CRM", "SNOW", "PLTR", "COIN", "XYZ", "SHOP", "UBER",
     "JPM", "UNH", "LLY", "XOM", "HD", "CAT", "BA",
     "QQQ", "XLF", "XLE", "XLK", "ARKK", "SMH"
   ],
@@ -20,6 +20,11 @@
   "position_sizing": {
     "max_position_pct": 0.33,
     "cash_reserve_pct": 0.10
+  },
+  "tax": {
+    "short_term_rate": 0.50,
+    "long_term_rate": 0.32,
+    "long_term_threshold_days": 365
   },
   "sample_start": "2021-01-01",
   "sample_end": "2024-12-31",

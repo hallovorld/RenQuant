@@ -61,6 +61,7 @@ Import as `import common`. **Do not import `common/` from inside `backtesting/` 
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig`, `Strategy` |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` |
+| `common/tax.py` | `compute_trade_tax`, `load_tax_config`, `add_tax_columns`, `tax_rate_for_holding` |
 | `common/plotting.py` | `backtest_dashboard`, `plot_normalized_performance`, parse/plot helpers |
 
 ## Architecture
@@ -108,6 +109,7 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 - `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
 - Loads JSON models, recomputes indicators inline
 - Enforces trading constraints (wash sale, min/max hold) and position sizing (max position %, cash reserve) from `strategy_config.json`
+- Reports after-tax metrics via `SetRuntimeStatistic()` when `tax` config is present
 - Single-stock strategies (renquant_101): one symbol per backtest
 - Multi-stock strategies (renquant_102): volume z-score scanner, loads pre-trained models per symbol from `models/{SYMBOL}/`, max N concurrent positions
 

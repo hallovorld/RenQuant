@@ -1,6 +1,6 @@
 {
   "model_name": "renquant-101",
-  "stock_symbol": "NVDA",
+  "stock_symbol": "TSLA",
   "model_type": "classification",
   "data_src": "yfinance",
   "initial_cash": 10000,
@@ -11,10 +11,15 @@
     "max_position_pct": 0.33,
     "cash_reserve_pct": 0.10
   },
+  "tax": {
+    "short_term_rate": 0.50,
+    "long_term_rate": 0.32,
+    "long_term_threshold_days": 365
+  },
   "sample_start": "2021-01-01",
   "sample_end": "2024-12-31",
   "backtest_start": "2024-01-01",
-  "backtest_end": "2026-03-01",
+  "backtest_end": "2026-03-26",
   "indicator_spec": {
     "rsi": {"period": 14},
     "macd": {"fast": 12, "slow": 26, "signal": 9},

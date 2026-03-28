@@ -47,6 +47,14 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 		self.executed_sells = 0
 		self.blocked_wash_sales = 0
 		self.blocked_min_hold = 0
+		# Tax tracking
+		tax_cfg = CONFIG.get("tax", {})
+		self.tax_short_rate = float(tax_cfg.get("short_term_rate", 0.50))
+		self.tax_long_rate = float(tax_cfg.get("long_term_rate", 0.32))
+		self.tax_threshold_days = int(tax_cfg.get("long_term_threshold_days", 365))
+		self.total_tax = 0.0
+		self.short_term_trades = 0
+		self.long_term_trades = 0
 		self._setup_telemetry_chart()
 
 		self.SetWarmUp(40)
@@ -89,7 +97,19 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 				self.executed_buys += 1
 				self.SetHoldings(self.symbol, target_pct)
 		elif chosen_action == "sell" and holdings > 0:
-			self.Debug(f"{self.Time.date()} submitting liquidation order")
+			# Track tax on this trade
+			gross_pnl = self.Portfolio[self.symbol].UnrealizedProfit
+			days_held = (self.Time.date() - self.entry_time.date()).days if self.entry_time else 0
+			is_long_term = days_held >= self.tax_threshold_days
+			tax_rate = self.tax_long_rate if is_long_term else self.tax_short_rate
+			tax = max(gross_pnl, 0) * tax_rate
+			self.total_tax += tax
+			if is_long_term:
+				self.long_term_trades += 1
+			else:
+				self.short_term_trades += 1
+			self.Debug(f"{self.Time.date()} SELL pnl=${gross_pnl:.2f} held={days_held}d "
+			           f"tax=${tax:.2f} ({'LT' if is_long_term else 'ST'} {tax_rate:.0%})")
 			self.last_sell_time = self.Time
 			self.entry_time = None
 			self.executed_sells += 1
@@ -110,6 +130,11 @@ class ClassificationNVDAStrategy(QCAlgorithm):
 			"Executed Sells": str(self.executed_sells),
 			"Blocked Wash Sales": str(self.blocked_wash_sales),
 			"Blocked Min Hold": str(self.blocked_min_hold),
+			"Total Tax": f"${self.total_tax:,.2f}",
+			"Short-Term Trades": str(self.short_term_trades),
+			"Long-Term Trades": str(self.long_term_trades),
+			"Tax Rate (ST)": f"{self.tax_short_rate:.0%}",
+			"Tax Rate (LT)": f"{self.tax_long_rate:.0%}",
 		}
 		for key, value in runtime_stats.items():
 			self.SetRuntimeStatistic(key, value)

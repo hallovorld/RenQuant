@@ -69,9 +69,10 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
 ```json
 {
   "model_name": "renquant-101",
-  "stock_symbol": "NVDA",
+  "stock_symbol": "TSLA",
   "model_type": "classification",
   "initial_cash": 10000,
+  "tax": {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365},
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26"
 }
@@ -89,6 +90,7 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
   "volume_zscore_threshold": 2.0,
   "training_years": 2,
   "max_concurrent_positions": 3,
+  "tax": {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365},
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26"
 }
@@ -119,6 +121,8 @@ When the LEAN strategy emits decision telemetry, the dashboard also plots model 
 | **Statistics** | Performance table: win rate, Sharpe, Sortino, max drawdown, alpha, beta, fees |
 
 It also writes a normalized performance chart against buy-and-hold when LEAN produced an equity series.
+
+When the `tax` block is present in `strategy_config.json`, LEAN strategies report after-tax metrics via `SetRuntimeStatistic()` (total tax, short-term/long-term trade counts). The analysis notebook (`backtest_analysis.ipynb`) uses `common.add_tax_columns()` to enrich closed trades with per-trade holding days, tax rate, tax amount, and after-tax P&L.
 
 ---
 
@@ -178,6 +182,7 @@ common/                            # Shared library — import as `import common
 ├── models/                        # BaseModel ABC + 5 implementations + learners/
 ├── strategy.py                    # StrategyConfig + Strategy composition class
 ├── portfolio.py                   # compute_portvals, portfolio_stats
+├── tax.py                         # compute_trade_tax, load_tax_config, add_tax_columns
 └── plotting.py                    # backtest_dashboard, telemetry plots, normalized performance
 
 Notebooks/

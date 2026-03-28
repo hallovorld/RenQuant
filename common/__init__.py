@@ -27,6 +27,13 @@ from .models import (
     create_model,
 )
 from .portfolio import compute_portvals, portfolio_stats
+from .tax import (
+    compute_trade_tax,
+    compute_after_tax_pnl,
+    load_tax_config,
+    tax_rate_for_holding,
+    add_tax_columns,
+)
 from .plotting import (
     load_latest_backtest,
     parse_equity_series,
@@ -70,6 +77,12 @@ __all__ = [
     # portfolio
     "compute_portvals",
     "portfolio_stats",
+    # tax
+    "compute_trade_tax",
+    "compute_after_tax_pnl",
+    "load_tax_config",
+    "tax_rate_for_holding",
+    "add_tax_columns",
     # plotting
     "load_latest_backtest",
     "parse_equity_series",
