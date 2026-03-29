@@ -12,7 +12,7 @@
 | Optimization | SciPy (Nelder-Mead) | Indicator parameter search |
 | Portfolio sim | common/portfolio.py | Local portfolio simulation for quick iteration |
 | Final backtest | QuantConnect LEAN | Rigorous, production-grade event-driven backtesting |
-| Live trading | IBKR (via ib_insync, pending) | Real-time order execution |
+| Live trading | Alpaca (via alpaca-py) + IBKR (stub) | Real-time order execution |
 | Runtime | Miniconda (arm64) | Apple Silicon-native Python environment |
 | Containers | Docker Desktop | LEAN engine isolation |
 
@@ -80,10 +80,11 @@ LEAN is used only for final validation, not for every iteration.
 
 ---
 
-## Live Trading: IBKR
+## Live Trading: Alpaca + IBKR
 
 The `live/` package provides a broker abstraction for live order execution:
 - **PaperBroker**: simulates fills locally for testing the full runner pipeline
+- **AlpacaBroker**: connects to Alpaca Markets API via `alpaca-py` for both paper and live trading. Requires `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` environment variables. Supports market orders (DAY time-in-force), position queries, and account value lookups.
 - **IBKRBroker**: connects to Interactive Brokers TWS/Gateway via `ib_insync` (stub, pending setup)
 
 The live runner loads the same JSON model artifacts that LEAN uses, ensuring consistency between backtested and live behavior.

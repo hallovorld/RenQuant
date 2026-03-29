@@ -9,7 +9,7 @@ RenQuant uses a four-mode workflow:
 | **Research** | Jupyter notebooks | Train models and export JSON artifacts |
 | **Validation** | QuantConnect LEAN (Docker) | Rigorous event-driven backtest |
 | **Analysis** | `python scripts/analyze_backtest.py --strategy ...` | Visualise LEAN results |
-| **Live Trading** | `python -m live.runner` | Paper or real trading via IBKR |
+| **Live Trading** | `python -m live.runner` | Paper or real trading via Alpaca/IBKR |
 
 ---
 
@@ -137,12 +137,17 @@ python -m live.runner --strategy renquant_101 --broker paper --once
 # Multi-stock strategy
 python -m live.runner --strategy renquant_102 --broker paper --once
 
-# Real trading (requires IBKR TWS/Gateway)
-python -m live.runner --strategy renquant_101 --broker ibkr
+# Alpaca paper trading
+python -m live.runner --strategy renquant_102 --broker alpaca-paper --once
+
+# Real trading (Alpaca)
+python -m live.runner --strategy renquant_102 --broker alpaca --once
 
 # Scheduled mode (runs every 24h by default)
 python -m live.runner --strategy renquant_101 --broker paper --interval 86400
 ```
+
+Broker options: `paper`, `alpaca-paper`, `alpaca`, `ibkr`. Set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` environment variables for Alpaca.
 
 The runner auto-detects single-stock vs multi-stock strategies by checking for `"watchlist"` in the config. Multi-stock strategies use `run_once_multi()` which computes volume z-scores, processes sell signals, and executes buy orders across the watchlist.
 
@@ -201,6 +206,7 @@ live/
 ├── runner.py                      # Entry point: python -m live.runner
 ├── broker.py                      # BaseBroker ABC
 ├── paper_broker.py                # PaperBroker (simulated fills)
+├── alpaca_broker.py               # AlpacaBroker (Alpaca Markets API, paper + live)
 └── ibkr_broker.py                 # IBKRBroker (stub, pending setup)
 
 scripts/

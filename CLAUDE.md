@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RenQuant is a personal quantitative trading workstation for Apple Silicon. It implements a "Glass-box" pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live trading (IBKR). All components are statistically interpretable and strictly decoupled.
+RenQuant is a personal quantitative trading workstation for Apple Silicon. It implements a "Glass-box" pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live trading (Alpaca/IBKR). All components are statistically interpretable and strictly decoupled.
 
 ## Environment Setup
 
@@ -15,7 +15,7 @@ conda create -n renquant python=3.10
 conda activate renquant
 pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
 pip install "openbb[all]" openbb-cli backtesting scipy
-pip install lean
+pip install lean alpaca-py
 lean login
 ```
 
@@ -41,11 +41,12 @@ python scripts/backtest_and_analyze.py --strategy renquant_101
 
 **Analysis mode**: Run `python scripts/analyze_backtest.py --strategy renquant_101` to visualize LEAN results, including decision telemetry for score/threshold inspection.
 
-**Live mode**: Run the live trader with paper or IBKR broker.
+**Live mode**: Run the live trader with paper, Alpaca, or IBKR broker.
 
 ```bash
 python -m live.runner --strategy renquant_101 --broker paper --once
-python -m live.runner --strategy renquant_102 --broker paper --once  # multi-stock
+python -m live.runner --strategy renquant_102 --broker alpaca-paper --once  # multi-stock
+python -m live.runner --strategy renquant_102 --broker alpaca --once  # real money
 ```
 
 ## Shared Library: `common/`
@@ -114,8 +115,8 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 - Multi-stock strategies (renquant_102): volume z-score scanner, loads pre-trained models per symbol from `models/{SYMBOL}/`, max N concurrent positions
 
 **4. Live Trading** (`live/`)
-- `python -m live.runner --strategy X --broker paper|ibkr --once`
-- `PaperBroker` for testing, `IBKRBroker` for real execution
+- `python -m live.runner --strategy X --broker paper|alpaca-paper|alpaca|ibkr --once`
+- `PaperBroker` for testing, `AlpacaBroker` for real/paper trading, `IBKRBroker` (stub)
 - Auto-detects single-stock vs multi-stock strategies (presence of `watchlist` in config)
 - Logs to `live/logs/{strategy}/{date}.json`
 

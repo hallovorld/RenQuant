@@ -3,8 +3,12 @@
 Usage::
 
     python -m live.runner --strategy renquant_101 --broker paper --once
-    python -m live.runner --strategy renquant_101 --broker ibkr
-    python -m live.runner --strategy renquant_102 --broker paper --once  # multi-stock
+    python -m live.runner --strategy renquant_102 --broker alpaca-paper --once
+    python -m live.runner --strategy renquant_102 --broker alpaca --once  # real money
+
+Broker options: paper, alpaca, alpaca-paper, ibkr
+
+Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables for Alpaca.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from common.models import create_model
 from common.strategy import StrategyConfig
 
 from .broker import BaseBroker
+from .alpaca_broker import AlpacaBroker
 from .ibkr_broker import IBKRBroker
 from .paper_broker import PaperBroker
 
@@ -59,6 +64,10 @@ def _load_strategy(strategy_name: str):
 def _get_broker(broker_type: str, initial_cash: float = 100_000) -> BaseBroker:
     if broker_type == "paper":
         return PaperBroker(initial_cash=initial_cash)
+    elif broker_type == "alpaca":
+        return AlpacaBroker(paper=False)
+    elif broker_type == "alpaca-paper":
+        return AlpacaBroker(paper=True)
     elif broker_type == "ibkr":
         return IBKRBroker()
     else:
@@ -280,6 +289,10 @@ def run_once_multi(
         today_vol = float(vol.iloc[-1])
         zscore = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
         if zscore >= zscore_threshold:
+            # Bullish filter: only enter on up-close days
+            close = df["close"].astype(float)
+            if len(close) >= 2 and close.iloc[-1] <= close.iloc[-2]:
+                continue
             candidates.append((symbol, zscore))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
@@ -328,7 +341,7 @@ def _is_multi_stock(strategy_name: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="RenQuant live trading runner")
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
-    parser.add_argument("--broker", choices=["paper", "ibkr"], default="paper")
+    parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "ibkr"], default="paper")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--interval", type=int, default=86400,
                         help="Seconds between runs in scheduled mode (default: 86400)")

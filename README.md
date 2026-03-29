@@ -1,6 +1,6 @@
 # RenQuant
 
-Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline: data ingestion, ML signal generation, backtesting (LEAN), and live trading (IBKR).
+Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline: data ingestion, ML signal generation, backtesting (LEAN), and live trading (Alpaca/IBKR).
 
 ## Architecture
 
@@ -8,7 +8,7 @@ Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline:
   Data Layer          Model Layer              Execution Layer
  ┌──────────┐    ┌──────────────────┐    ┌────────────────────────┐
  │ yfinance  │───>│ Manual (rules)   │───>│ LEAN backtest (Docker) │
- │ IBKR      │    │ Classification   │    │ Live trader (IBKR)     │
+ │ IBKR      │    │ Classification   │    │ Live trader (Alpaca)   │
  │ Parquet   │    │ Q-Learning       │    │ Paper broker           │
  │ cache     │    │ FQI (XGBoost)    │    └────────────────────────┘
  └──────────┘    │ Optimization     │              │
@@ -51,7 +51,7 @@ conda create -n renquant python=3.10
 conda activate renquant
 pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
 pip install "openbb[all]" openbb-cli backtesting scipy
-pip install lean
+pip install lean alpaca-py
 lean login
 ```
 
@@ -98,8 +98,11 @@ python scripts/analyze_backtest.py --strategy my_nvda
 # Paper trading (test)
 python -m live.runner --strategy my_nvda --broker paper --once
 
-# Real trading (requires IBKR setup)
-python -m live.runner --strategy my_nvda --broker ibkr
+# Alpaca paper trading
+python -m live.runner --strategy my_nvda --broker alpaca-paper --once
+
+# Real trading (Alpaca)
+python -m live.runner --strategy my_nvda --broker alpaca --once
 ```
 
 ## Relative Indicator Framework

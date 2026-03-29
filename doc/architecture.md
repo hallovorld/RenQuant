@@ -28,7 +28,7 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 ┌────────────▼──────────┐  ┌───────▼─────────────────┐
 │  Layer 3: Backtesting  │  │  Layer 3b: Live Trading  │
 │  (LEAN / Docker)       │  │  (python -m live.runner)  │
-│  - Loads JSON models   │  │  - PaperBroker / IBKR    │
+│  - Loads JSON models   │  │  - Paper / Alpaca / IBKR │
 │  - Daily inference     │  │  - Loads same artifacts   │
 │  - Event-driven sim    │  │  - Scheduled or --once    │
 └────────────┬──────────┘  └───────┬─────────────────┘
@@ -132,11 +132,12 @@ Each symbol's model may be a different type (the notebook picks the best approac
 ## Layer 3b: Live Trading
 
 **Location**: `live/`
-**Entry point**: `python -m live.runner --strategy <name> --broker paper|ibkr --once`
+**Entry point**: `python -m live.runner --strategy <name> --broker paper|alpaca-paper|alpaca|ibkr --once`
 
 The live runner loads the same model artifacts as LEAN but executes via broker API:
 
 - `PaperBroker` — simulates fills locally for testing
+- `AlpacaBroker` — connects to Alpaca Markets API for paper or live trading (requires `alpaca-py` and `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` env vars)
 - `IBKRBroker` — connects to Interactive Brokers TWS/Gateway (stub, pending IBKR setup)
 - Logs every signal and order to `live/logs/<strategy>/<date>.json`
 
@@ -305,7 +306,7 @@ yfinance / IBKR
        ↓
   ┌─────────────────────────────────┐
   │ LEAN backtest (Docker)          │
-  │ Live trader (IBKR / paper)      │
+  │ Live trader (Alpaca / paper)    │
   └─────────────────────────────────┘
        ↓
   Analysis dashboard + normalized performance chart
