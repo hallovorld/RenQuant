@@ -56,7 +56,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` — local portfolio simulator |
-| `common/tax.py` | `compute_trade_tax`, `load_tax_config`, `add_tax_columns`, `tax_rate_for_holding` — after-tax return analysis |
+| `common/tax.py` | `compute_trade_tax`, `compute_after_tax_pnl`, `load_tax_config`, `add_tax_columns`, `tax_rate_for_holding` — after-tax return analysis |
 | `common/plotting.py` | `backtest_dashboard`, `plot_normalized_performance`, parse/plot utilities |
 
 ---

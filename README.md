@@ -76,9 +76,10 @@ If you want the performance charts to be generated immediately after the backtes
 
 ```bash
 python scripts/backtest_and_analyze.py --strategy my_nvda
+python scripts/backtest_and_analyze.py --strategy my_nvda --silent  # no notifications
 ```
 
-On macOS, add `--open` to open the generated PNG files automatically.
+On macOS, add `--open` to open the generated PNG files automatically. Notifications (macOS banner + iPhone push via ntfy.sh) are sent by default after each run; use `--silent` to disable.
 
 Backtest execution respects `wash_sale_days`, `min_hold_days`, `max_hold_days`, and `position_sizing` from `strategy_config.json`.
 

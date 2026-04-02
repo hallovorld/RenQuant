@@ -33,11 +33,15 @@ cd backtesting/renquant_101
 lean backtest .
 ```
 
-To backtest and render charts in one step:
+To backtest and render charts in one step (with notifications):
 
 ```bash
 python scripts/backtest_and_analyze.py --strategy renquant_101
+python scripts/backtest_and_analyze.py --strategy renquant_101 --ntfy other  # custom ntfy topic
+python scripts/backtest_and_analyze.py --strategy renquant_101 --silent      # no notifications
 ```
+
+Notifications (on by default, `--silent` to disable): macOS banner via `terminal-notifier` (`brew install terminal-notifier`) and iPhone push via [ntfy.sh](https://ntfy.sh) (default topic: `renquant`, override with `--ntfy <topic>`).
 
 **Analysis mode**: Run `python scripts/analyze_backtest.py --strategy renquant_101` to visualize LEAN results, including decision telemetry for score/threshold inspection.
 
@@ -62,7 +66,7 @@ Import as `import common`. **Do not import `common/` from inside `backtesting/` 
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig`, `Strategy` |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` |
-| `common/tax.py` | `compute_trade_tax`, `load_tax_config`, `add_tax_columns`, `tax_rate_for_holding` |
+| `common/tax.py` | `compute_trade_tax`, `compute_after_tax_pnl`, `load_tax_config`, `add_tax_columns`, `tax_rate_for_holding` |
 | `common/plotting.py` | `backtest_dashboard`, `plot_normalized_performance`, parse/plot helpers |
 
 ## Architecture

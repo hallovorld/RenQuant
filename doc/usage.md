@@ -43,9 +43,13 @@ lean backtest .
 
 ```bash
 python scripts/backtest_and_analyze.py --strategy renquant_101
+python scripts/backtest_and_analyze.py --strategy renquant_101 --ntfy other  # custom ntfy topic
+python scripts/backtest_and_analyze.py --strategy renquant_101 --silent      # no notifications
 ```
 
 On macOS, append `--open` to open the generated chart PNGs automatically after analysis finishes.
+
+**Notifications** (on by default, `--silent` to disable): after each run, a macOS banner is sent via `terminal-notifier` (`brew install terminal-notifier`) and an iPhone push is sent via [ntfy.sh](https://ntfy.sh) (default topic: `renquant`, override with `--ntfy <topic>`). Install the ntfy app on your iPhone and subscribe to the same topic to receive push notifications.
 
 Results land in `backtesting/renquant_101/backtests/<timestamp>/`.
 
@@ -211,7 +215,7 @@ live/
 
 scripts/
 ├── export_lean_data.py           # Convert cached parquet OHLCV into LEAN daily equity files
-├── backtest_and_analyze.py       # Run LEAN backtest, then render/open charts
+├── backtest_and_analyze.py       # Run LEAN backtest, render charts, send notifications
 ├── analyze_backtest.py            # Render backtest charts + summary metrics
 └── new_strategy.py                # Scaffold a new strategy directory
 ```
