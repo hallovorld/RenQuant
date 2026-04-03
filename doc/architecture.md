@@ -165,8 +165,8 @@ All models are subject to execution constraints during both notebook simulation 
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
-| Minimum hold | 20 calendar days | Prevents excessive short-term trading |
-| Maximum hold | 400 calendar days | Forces position review; allows long-term capital gains rate |
+| Minimum hold | 3 calendar days | Prevents same-day flipping |
+| Maximum hold | 500 calendar days | Forces position review; allows long-term capital gains rate |
 
 ## Tax-Aware Returns
 
@@ -180,7 +180,7 @@ After-tax returns are computed at each sell event using configurable capital gai
 
 Losses pass through untaxed (loss harvesting is not modeled). In notebooks, tax is deducted from cash at each sell, producing after-tax equity curves. LEAN strategies report tax as metadata via `SetRuntimeStatistic()` (LEAN equity stays gross). The analysis notebook uses `common.add_tax_columns()` to enrich LEAN trade data with per-trade tax breakdowns.
 
-> **Note**: With `max_hold_days: 400`, trades held over 365 days qualify for the 32% long-term rate instead of 50% short-term.
+> **Note**: With `max_hold_days: 500`, trades held over 365 days qualify for the 32% long-term rate instead of 50% short-term.
 
 ## Position Sizing
 

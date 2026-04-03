@@ -53,6 +53,17 @@ python -m live.runner --strategy renquant_102 --broker alpaca-paper --once  # mu
 python -m live.runner --strategy renquant_102 --broker alpaca --once  # real money
 ```
 
+**Scheduled mode**: Daily automation retrains models and trades via Alpaca.
+
+```bash
+bash scripts/daily_102.sh          # manual run
+# Automated via macOS launchd: weekdays at 7:00 AM
+# LaunchAgent: ~/Library/LaunchAgents/com.renquant.daily102.plist
+# Logs: logs/daily_102/{date}.log
+```
+
+Alpaca credentials are stored in `.env` (gitignored): `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS + iPhone/ntfy) are sent on success or failure.
+
 ## Shared Library: `common/`
 
 Import as `import common`. **Do not import `common/` from inside `backtesting/` — LEAN Docker cannot access it.**

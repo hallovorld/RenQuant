@@ -157,6 +157,22 @@ The runner auto-detects single-stock vs multi-stock strategies by checking for `
 
 Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
+### Daily Automation
+
+`scripts/daily_102.sh` retrains all renquant_102 models and runs one live trading pass via Alpaca. It is scheduled via macOS launchd to run every weekday at 7:00 AM.
+
+```bash
+# Manual run
+bash scripts/daily_102.sh
+
+# Manage the launchd agent
+launchctl load ~/Library/LaunchAgents/com.renquant.daily102.plist     # enable
+launchctl unload ~/Library/LaunchAgents/com.renquant.daily102.plist   # disable
+pmset -g sched                                                        # verify Mac wake schedule
+```
+
+Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent after each step with a trade summary (e.g., `BUY TSLA x15 (z=2.3)`) or error details. Logs are written to `logs/daily_102/{date}.log`.
+
 ---
 
 ## Adding a New Strategy

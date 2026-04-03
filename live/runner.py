@@ -160,7 +160,11 @@ def run_once(
 
 
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
-    """Load multi-stock strategy config and per-stock models."""
+    """Load multi-stock strategy config and per-stock models.
+
+    Each symbol has its own model type defined in its policy-metadata.json,
+    so we read the metadata first and create the correct model per symbol.
+    """
     strategy_dir = REPO_ROOT / "backtesting" / strategy_name
     config_path = strategy_dir / "strategy_config.json"
     if not config_path.exists():
@@ -168,14 +172,34 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
         sys.exit(1)
 
     config = json.loads(config_path.read_text())
+    staleness_days = int(config.get("model_staleness_days", 30))
+    models_dir = strategy_dir / "models"
 
     models = {}
     for symbol in config["watchlist"]:
-        model = create_model(config["model_type"], **config["model_params"])
-        artifact_name = f"{config['model_name']}-{symbol}"
-        model.load(strategy_dir, artifact_name)
+        meta_path = models_dir / symbol / f"{symbol}-policy-metadata.json"
+        if not meta_path.exists():
+            log.warning("No model metadata for %s, skipping", symbol)
+            continue
+
+        metadata = json.loads(meta_path.read_text())
+
+        # Check staleness
+        trained_date = metadata.get("trained_date")
+        if trained_date and staleness_days > 0:
+            from datetime import date
+            age = (date.today() - datetime.strptime(trained_date, "%Y-%m-%d").date()).days
+            if age > staleness_days:
+                log.warning("%s model is %d days old (limit=%d), skipping", symbol, age, staleness_days)
+                continue
+
+        policy_type = metadata["policy_type"]
+        model = create_model(policy_type)
+        model.load(models_dir / symbol, symbol)
         models[symbol] = model
 
+    log.info("Loaded models for %d/%d symbols: %s",
+             len(models), len(config["watchlist"]), sorted(models.keys()))
     return config, models, strategy_dir
 
 

@@ -106,6 +106,10 @@ python -m live.runner --strategy my_nvda --broker alpaca-paper --once
 python -m live.runner --strategy my_nvda --broker alpaca --once
 ```
 
+### Daily automation (renquant_102)
+
+`scripts/daily_102.sh` retrains models and trades via Alpaca, scheduled weekdays at 7:00 AM via macOS launchd. Sends trade summary notifications (macOS + iPhone/ntfy). See [doc/usage.md](doc/usage.md) for setup details.
+
 ## Relative Indicator Framework
 
 All indicators are computed relative to SPY to answer "is the stock outperforming the market?" rather than "is the stock going up?" This prevents bull-market bias where every stock looks like a buy.
@@ -129,8 +133,8 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 days of selling |
-| Min hold | 20 days | Prevents short-term trading |
-| Max hold | 400 days | Forces position review (allows long-term tax rate) |
+| Min hold | 3 days | Prevents same-day flipping |
+| Max hold | 500 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
 
