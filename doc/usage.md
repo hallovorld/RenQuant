@@ -159,7 +159,7 @@ Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
 ### Daily Automation
 
-`scripts/daily_102.sh` retrains all renquant_102 models and runs one live trading pass via Alpaca. It is scheduled via macOS launchd to run every weekday at 7:00 AM.
+`scripts/daily_102.sh` retrains all renquant_102 models and runs one live trading pass via Alpaca. It is scheduled via macOS launchd to run every weekday at 1:55 PM PST (4:55 PM EST, after market close) so that today's full volume bar is available for the z-score scan. Orders queue overnight and fill at next open.
 
 ```bash
 # Manual run

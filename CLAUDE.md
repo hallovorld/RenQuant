@@ -57,7 +57,7 @@ python -m live.runner --strategy renquant_102 --broker alpaca --once  # real mon
 
 ```bash
 bash scripts/daily_102.sh          # manual run
-# Automated via macOS launchd: weekdays at 7:00 AM
+# Automated via macOS launchd: weekdays at 1:55 PM PST (4:55 PM EST, after market close)
 # LaunchAgent: ~/Library/LaunchAgents/com.renquant.daily102.plist
 # Logs: logs/daily_102/{date}.log
 ```

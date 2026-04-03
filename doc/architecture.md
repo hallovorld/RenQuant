@@ -75,7 +75,7 @@ The notebook is where training happens. The typical workflow:
    - **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
    - Additional trend-following features: `trend` (price/50EMA), `trend_long` (price/200EMA), `rel_mom_20d`, `rel_mom_60d`
 4. **Model training** — depends on model type (see below)
-5. **Comparison** — all models simulated with constraints (wash sale 30d, min hold 20d, max hold 400d), compared with stock and SPY buy-and-hold benchmarks
+5. **Comparison** — all models simulated with constraints (wash sale 30d, min hold 3d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks
 6. **Export** — best model by after-tax Sharpe ratio auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.5 for renquant_102)
 
 ---
