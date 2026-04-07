@@ -9,18 +9,42 @@
   "benchmark": "SPY",
   "data_src": "yfinance",
   "initial_cash": 100000,
-  "model_staleness_days": 30,
+  "model_staleness_days": 60,
   "wash_sale_days": 30,
   "min_hold_days": 3,
   "max_hold_days": 500,
-  "volume_zscore_lookback": 15,
-  "volume_zscore_threshold": 2.0,
+  "train_split": 0.70,
+  "volume_zscore_lookback": 20,
+  "volume_zscore_threshold": 1.5,
+  "volume_filter": {
+    "mode": "percentile",
+    "percentile_threshold": 85
+  },
   "training_years": 2,
   "max_concurrent_positions": 3,
   "position_sizing": {
     "max_position_pct": 0.30,
     "cash_reserve_pct": 0.00
   },
+  "risk": {
+    "stop_loss_pct": 0.08,
+    "portfolio_drawdown_halt_pct": 0.15,
+    "regime_filter": {
+      "enabled": true,
+      "symbol": "SPY",
+      "sma_period": 200
+    }
+  },
+  "sector_map": {
+    "TSLA": "tech", "AMZN": "tech", "GOOG": "tech", "MSFT": "tech",
+    "AMD":  "tech", "NFLX": "tech", "CRM":  "tech", "PLTR": "tech",
+    "COIN": "tech", "SHOP": "tech", "UBER": "tech", "ARKK": "tech",
+    "JPM":  "finance", "XLF": "finance",
+    "UNH":  "healthcare",
+    "XOM":  "energy",  "XLE": "energy",
+    "CAT":  "industrial", "BA": "industrial"
+  },
+  "max_positions_per_sector": 1,
   "tax": {
     "short_term_rate": 0.50,
     "long_term_rate": 0.32,

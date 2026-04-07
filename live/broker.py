@@ -22,6 +22,10 @@ class BaseBroker(ABC):
         """Return total account liquidation value."""
         ...
 
+    def get_avg_cost(self, symbol: str) -> float:
+        """Return average cost basis per share for *symbol* (0 if not held). Override for accuracy."""
+        return 0.0
+
     @abstractmethod
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
         """Place a market order.

@@ -233,6 +233,17 @@ def _build_relative_features(
         else:
             result[col] = df_stock[col]
 
+    # Trend and relative momentum features (required by Q-Learning and Dual Momentum models)
+    close = df_stock.loc[common_idx, "close"]
+    spy_close = df_spy.loc[common_idx, "close"]
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    result["trend"] = close / ema50
+    result["trend_long"] = close / ema200
+    rel_price = close / spy_close.replace(0, np.nan)
+    result["rel_mom_20d"] = rel_price.pct_change(20)
+    result["rel_mom_60d"] = rel_price.pct_change(60)
+
     return result.dropna()
 
 
@@ -248,8 +259,11 @@ def run_once_multi(
     watchlist = config["watchlist"]
     benchmark = config.get("benchmark", "SPY")
     max_positions = config.get("max_concurrent_positions", 3)
-    zscore_threshold = float(config.get("volume_zscore_threshold", 2.0))
-    zscore_lookback = int(config.get("volume_zscore_lookback", 15))
+    zscore_threshold = float(config.get("volume_zscore_threshold", 1.5))
+    zscore_lookback = int(config.get("volume_zscore_lookback", 20))
+    vol_filter = config.get("volume_filter", {})
+    filter_mode = vol_filter.get("mode", "percentile")
+    percentile_threshold = float(vol_filter.get("percentile_threshold", 85))
     indicator_spec = config.get("indicator_spec", {})
     feature_columns = config["model_params"]["feature_columns"]
     pos_sizing = config.get("position_sizing", {})
@@ -273,6 +287,16 @@ def run_once_multi(
 
     df_spy = dfs[benchmark]
 
+    # Risk config
+    risk_cfg = config.get("risk", {})
+    stop_loss_pct = float(risk_cfg.get("stop_loss_pct", 0.0))
+    drawdown_halt_pct = float(risk_cfg.get("portfolio_drawdown_halt_pct", 0.0))
+    regime_cfg = risk_cfg.get("regime_filter", {})
+    regime_enabled = bool(regime_cfg.get("enabled", False))
+    regime_sma_period = int(regime_cfg.get("sma_period", 200))
+    sector_map = config.get("sector_map", {})
+    max_per_sector = int(config.get("max_positions_per_sector", 0))
+
     # Step 1: Check current positions, process sells first
     held = [s for s in watchlist if broker.get_position(s) > 0]
     log.info("Current positions: %s", held if held else "none")
@@ -280,10 +304,32 @@ def run_once_multi(
     for symbol in list(held):
         if symbol not in dfs:
             continue
+
+        # Stop-loss check before model signal
+        if stop_loss_pct > 0:
+            avg_cost = broker.get_avg_cost(symbol)
+            current_price = float(dfs[symbol]["close"].iloc[-1])
+            if avg_cost > 0:
+                loss_pct = (avg_cost - current_price) / avg_cost
+                if loss_pct >= stop_loss_pct:
+                    position = broker.get_position(symbol)
+                    result = broker.place_order(symbol, "SELL", abs(position))
+                    log.info("STOP LOSS %s: loss=%.1f%% avg=%.2f current=%.2f",
+                             symbol, loss_pct * 100, avg_cost, current_price)
+                    _log_trade(strategy_dir, config["model_name"], {
+                        "timestamp": datetime.now().isoformat(),
+                        "symbol": symbol, "signal": "stop_loss",
+                        "loss_pct": round(loss_pct, 4), "order": result,
+                    })
+                    held.remove(symbol)
+                    continue
+
         rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
         if rel is None or rel.empty:
             continue
-        signal = models[symbol].predict(rel.iloc[-1])
+        row = rel.iloc[-1].copy()
+        row["position_flag"] = 1  # currently held — needed by Q-Learning state encoding
+        signal = models[symbol].predict(row)
         if signal == "sell":
             position = broker.get_position(symbol)
             result = broker.place_order(symbol, "SELL", abs(position))
@@ -294,11 +340,37 @@ def run_once_multi(
             })
             held.remove(symbol)
 
-    # Step 2: Scan volume for non-held stocks
+    # Step 2: Check portfolio drawdown circuit breaker
     open_slots = max_positions - len(held)
     if open_slots <= 0:
         log.info("All %d slots filled, no scanning", max_positions)
         return
+
+    if drawdown_halt_pct > 0:
+        account_value = broker.get_account_value()
+        # Load persisted high-water mark
+        state_file = strategy_dir / "live_state.json"
+        state = json.loads(state_file.read_text()) if state_file.exists() else {}
+        hwm = float(state.get("high_water_mark", account_value))
+        hwm = max(hwm, account_value)
+        state["high_water_mark"] = hwm
+        state_file.write_text(json.dumps(state, indent=2))
+        if hwm > 0:
+            drawdown = (hwm - account_value) / hwm
+            if drawdown >= drawdown_halt_pct:
+                log.info("Drawdown circuit breaker: %.1f%% >= %.0f%%, halting new buys",
+                         drawdown * 100, drawdown_halt_pct * 100)
+                return
+
+    # Step 3: Regime filter — suppress new buys when SPY is below its 200-day SMA
+    if regime_enabled and benchmark in dfs:
+        spy_close = dfs[benchmark]["close"].astype(float)
+        if len(spy_close) >= regime_sma_period:
+            sma200 = float(spy_close.iloc[-regime_sma_period:].mean())
+            if float(spy_close.iloc[-1]) <= sma200:
+                log.info("Regime filter: SPY(%.2f) below 200-SMA(%.2f), suppressing new buys",
+                         float(spy_close.iloc[-1]), sma200)
+                return
 
     candidates = []
     for symbol in watchlist:
@@ -308,28 +380,50 @@ def run_once_multi(
         if len(df) < zscore_lookback + 1:
             continue
         vol = df["volume"].astype(float)
-        roll_mean = vol.rolling(zscore_lookback).mean().iloc[-1]
-        roll_std = vol.rolling(zscore_lookback).std().iloc[-1]
         today_vol = float(vol.iloc[-1])
-        zscore = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
-        if zscore >= zscore_threshold:
+        hist_vol = vol.iloc[-(zscore_lookback + 1):-1]
+
+        if filter_mode == "percentile":
+            # Percentile rank: what fraction of lookback days had lower volume?
+            score = float((hist_vol < today_vol).sum()) / len(hist_vol) * 100
+            triggered = score >= percentile_threshold
+        else:
+            # Legacy z-score mode
+            roll_mean = float(hist_vol.mean())
+            roll_std = float(hist_vol.std())
+            score = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
+            triggered = score >= zscore_threshold
+
+        if triggered:
             # Bullish filter: only enter on up-close days
             close = df["close"].astype(float)
             if len(close) >= 2 and close.iloc[-1] <= close.iloc[-2]:
                 continue
-            candidates.append((symbol, zscore))
+            candidates.append((symbol, score))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
-    log.info("Volume z-score candidates: %s", [(s, f"z={v:.2f}") for s, v in candidates] or "none")
+    score_label = "pct" if filter_mode == "percentile" else "z"
+    log.info("Volume candidates: %s", [(s, f"{score_label}={v:.1f}") for s, v in candidates] or "none")
 
-    # Step 3: Run models on top candidates
-    for symbol, zscore in candidates[:open_slots]:
+    # Step 4: Run models on top candidates
+    for symbol, vol_score in candidates[:open_slots]:
+        # Sector concentration guard
+        if max_per_sector > 0:
+            sector = sector_map.get(symbol, "other")
+            sector_count = sum(1 for h in held if sector_map.get(h, "other") == sector)
+            if sector_count >= max_per_sector:
+                log.info("Sector limit: %s (%s) already at %d/%d, skipping",
+                         symbol, sector, sector_count, max_per_sector)
+                continue
+
         rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
         if rel is None or rel.empty:
             continue
 
-        signal = models[symbol].predict(rel.iloc[-1])
-        log.info("%s zscore=%.2f signal=%s", symbol, zscore, signal)
+        row = rel.iloc[-1].copy()
+        row["position_flag"] = 0  # not held — needed by Q-Learning state encoding
+        signal = models[symbol].predict(row)
+        log.info("%s %s=%.1f signal=%s", symbol, score_label, vol_score, signal)
 
         if signal == "buy":
             account_value = broker.get_account_value()
@@ -341,12 +435,14 @@ def run_once_multi(
             shares = int(invest / price)
             if shares > 0:
                 result = broker.place_order(symbol, "BUY", shares)
-                log.info("BUY %s: %d shares at ~$%.2f (zscore=%.2f)",
-                         symbol, shares, price, zscore)
+                log.info("BUY %s: %d shares at ~$%.2f (%s=%.1f)",
+                         symbol, shares, price, score_label, vol_score)
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "buy",
-                    "volume_zscore": zscore, "order": result,
+                    "volume_score": vol_score,
+                    "volume_filter_mode": filter_mode,
+                    "order": result,
                 })
                 open_slots -= 1
                 if open_slots <= 0:
