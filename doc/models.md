@@ -46,11 +46,11 @@ model = create_model("manual", score_rules=[
 
 Bagged Random Forest of RTLearners. Each day is labeled by its N-day forward return as +1 (long), -1 (short), or 0 (hold), with thresholds adjusted for market impact.
 
-**Key params**: `feature_columns`, `lookahead` (10), `threshold` (0.04), `leaf_size` (25), `bags` (15), `buy_threshold` (0.5), `sell_threshold` (-0.5)
+**Key params**: `feature_columns`, `lookahead` (10), `threshold` (0.04), `leaf_size` (25), `bags` (15), `buy_threshold` (0.1), `sell_threshold` (-0.1)
 
 **With relative features**: The RF ensemble learns nonlinear relationships between relative indicators automatically. It effectively discovers crossover patterns, conditional logic, and regime changes from the data — capturing what simple threshold voting cannot express.
 
-**Tuning note**: The ensemble averages predictions of {-1, 0, +1} across trees. For trending stocks, the average is often close to 0, so the default `±0.5` thresholds may suppress sell signals entirely. Lower to `±0.1` for more active trading.
+**Tuning note**: The ensemble averages predictions of {-1, 0, +1} across trees. For trending stocks, the average is often close to 0, so wide thresholds suppress signals entirely. The renquant_102 default is `±0.1` for active trading; raise toward `±0.5` to filter only high-confidence signals.
 
 **When to use**: Best default choice. Fast, deterministic, handles high-dimensional relative features well. Consistently outperforms Manual and Q-Learning in backtests.
 
@@ -60,7 +60,7 @@ Bagged Random Forest of RTLearners. Each day is labeled by its N-day forward ret
 
 Tabular Q-learning with discretized indicator states. Continuous features are binned (quantile-based), then encoded with holding status into a single state integer. Trains over multiple epochs through the data.
 
-**Key params**: `feature_columns`, `n_bins` (10), `n_epochs` (100), `alpha` (0.2), `gamma` (0.9), `rar` (0.98)
+**Key params**: `feature_columns`, `n_bins` (5), `n_epochs` (500), `alpha` (0.15), `gamma` (0.95), `rar` (0.99)
 
 **State space**: `n_bins^n_features * 3` (3 holding buckets: short/flat/long)
 

@@ -28,10 +28,19 @@ Docker must be allocated 16GB+ memory for LEAN engine.
 **Validation mode** (final backtest): Run LEAN on exported models.
 
 ```bash
+# Single symbol export
 python scripts/export_lean_data.py --symbol NVDA
+
+# Batch export: all watchlist symbols for a strategy (recommended before first backtest)
+python scripts/export_lean_watchlist.py --strategy renquant_102
+python scripts/export_lean_watchlist.py --strategy renquant_102 --force  # re-export all
+python scripts/export_lean_watchlist.py --strategy renquant_102 --symbols CRM SHOP  # specific symbols
+
 cd backtesting/renquant_101
 lean backtest .
 ```
+
+**IMPORTANT**: LEAN uses its own data files at `backtesting/data/equity/usa/daily/`, NOT the yfinance parquet cache at `data/ohlcv/`. After training models in a notebook, always run `export_lean_watchlist.py` before backtesting to ensure LEAN has data for all watchlist symbols. Missing data causes silent failures (History() returns empty, no trades execute).
 
 To backtest and render charts in one step (with notifications):
 
@@ -88,6 +97,15 @@ Import as `import common`. **Do not import `common/` from inside `backtesting/` 
 - `LocalStore` caches OHLCV as Parquet at `data/ohlcv/{SYMBOL}/1d.parquet`
 - `fetch_ohlcv()` checks cache first, fetches missing dates, saves locally
 
+**Two separate data stores** — research and LEAN use different paths:
+
+| Store | Path | Format | Used By |
+|-------|------|--------|---------|
+| Parquet cache | `data/ohlcv/{SYMBOL}/1d.parquet` | Parquet | Notebooks, live runner |
+| LEAN data | `backtesting/data/equity/usa/daily/{symbol}.zip` | LEAN CSV zip | LEAN backtester (Docker) |
+
+`export_lean_data.py` (single) or `export_lean_watchlist.py` (batch) bridge the two by converting parquet → LEAN format. Both also generate required map files and factor files.
+
 ### Indicator Registry (`common/indicators/`)
 
 Uniform API: `(df: DataFrame, **params) -> DataFrame`. All indicators registered via `@register` decorator.
@@ -121,10 +139,16 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 - `*-policy-metadata.json` is the contract between research and execution
 - Single-stock (101): artifacts at strategy root; multi-stock (102): `models/{SYMBOL}/` subdirectories
 
+**2b. LEAN Data Export** (required before backtesting)
+- `python scripts/export_lean_watchlist.py --strategy renquant_102`
+- Converts parquet cache → LEAN daily zips + map files + factor files
+- Skips symbols already exported (use `--force` to re-export)
+- Must re-run after adding new symbols to a watchlist
+
 **3. Backtesting** (`backtesting/`) — QuantConnect LEAN engine (Docker)
 - `main.py`: self-contained `QCAlgorithm` (no `common/` dependency)
 - Loads JSON models, recomputes indicators inline
-- Enforces trading constraints (wash sale, min/max hold) and position sizing (max position %, cash reserve) from `strategy_config.json`
+- Enforces trading constraints (wash sale, min/max hold, stop-loss), position sizing, portfolio drawdown circuit breaker, SPY regime filter, and sector concentration guard — all from `strategy_config.json`
 - Reports after-tax metrics via `SetRuntimeStatistic()` when `tax` config is present
 - Single-stock strategies (renquant_101): one symbol per backtest
 - Multi-stock strategies (renquant_102): volume z-score scanner, loads pre-trained models per symbol from `models/{SYMBOL}/`, max N concurrent positions
@@ -144,7 +168,11 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `save()`, `load()`. JSON 
 
 **Single-stock** (renquant_101): One symbol, one model. Config uses `stock_symbol`.
 
-**Multi-stock pre-trained scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Notebook trains 3 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning) on rolling 2yr window, exports best model per symbol to `models/{SYMBOL}/` (Sharpe floor: 0.5). The notebook also includes a portfolio-level simulation that mirrors the LEAN multi-stock logic (bullish volume z-score scan → model confirmation → multi-position management with configurable sizing), enabling parameter tuning in Python before running LEAN. LEAN loads pre-trained models, scans watchlist for bullish volume z-score spikes (up-close days only), applies that stock's model for confirmation. Models include `trained_date`; LEAN skips models older than `model_staleness_days` (default 30). Config uses `watchlist` array (19 stocks + ETFs), `model_staleness_days`, `volume_zscore_lookback`, `volume_zscore_threshold`, `max_concurrent_positions`.
+**Multi-stock pre-trained scanner** (renquant_102): 3-stage pipeline (DETECT → CONFIRM → EXECUTE). Notebook trains 3 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning) on a 70/30 walk-forward train/test split of a rolling 2yr window, exports best model per symbol to `models/{SYMBOL}/` by OOS after-tax Sharpe (floor: 0.5). Orphan model directories (symbols removed from watchlist) are automatically purged on each export. Both OOS Sharpe (`sharpe`) and in-sample Sharpe (`sharpe_is`) are stored in `policy-metadata.json` for diagnostics. The notebook also includes a portfolio-level simulation that mirrors the LEAN multi-stock logic, enabling parameter tuning in Python before running LEAN. LEAN loads pre-trained models, scans watchlist for bullish volume spikes (percentile mode P85 by default, up-close days only), applies that stock's model for confirmation, and enforces: per-position 8% stop-loss, 15% portfolio drawdown circuit breaker (halts new buys), SPY 200-SMA regime filter (suppresses buys in bear markets), and sector concentration guard (max 1 position per sector). Models include `trained_date`; LEAN skips models older than `model_staleness_days` (default 60). Config uses `watchlist` array (19 stocks + ETFs), `train_split`, `model_staleness_days`, `volume_filter`, `max_concurrent_positions`, `risk` (stop-loss, drawdown halt, regime filter), `sector_map`, `max_positions_per_sector`.
+
+Volume filter supports two modes via `volume_filter.mode` in `strategy_config.json`:
+- `"percentile"` (default): Adaptive per-stock filter. Triggers when today's volume is in the top N% of the lookback window (default: P85 = top 15%). Self-calibrates for each stock's own volume distribution, so stable large-caps and volatile small-caps are held to the same relative standard.
+- `"zscore"` (legacy): Fixed z-score threshold across all stocks. Uses `volume_zscore_threshold` (default: 1.5).
 
 ### Adding a New Strategy
 
@@ -155,5 +183,6 @@ python scripts/new_strategy.py --name foo --symbol AAPL --type classification
 1. Scaffolds `backtesting/foo/` with `strategy_config.json`
 2. Open a notebook, use `Strategy` class or manual workflow to train
 3. Export model artifacts to the strategy directory
-4. `cd backtesting/foo && lean backtest .`
-5. `python -m live.runner --strategy foo --broker paper --once`
+4. Export LEAN data: `python scripts/export_lean_watchlist.py --strategy foo`
+5. `cd backtesting/foo && lean backtest .`
+6. `python -m live.runner --strategy foo --broker paper --once`

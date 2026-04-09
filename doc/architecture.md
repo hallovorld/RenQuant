@@ -75,8 +75,8 @@ The notebook is where training happens. The typical workflow:
    - **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
    - Additional trend-following features: `trend` (price/50EMA), `trend_long` (price/200EMA), `rel_mom_20d`, `rel_mom_60d`
 4. **Model training** — depends on model type (see below)
-5. **Comparison** — all models simulated with constraints (wash sale 30d, min hold 3d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks
-6. **Export** — best model by after-tax Sharpe ratio auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.5 for renquant_102)
+5. **Comparison** — all models simulated on the 30% OOS test set with constraints (wash sale 30d, min hold 3d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks. Both OOS Sharpe and in-sample Sharpe are recorded.
+6. **Export** — best model by OOS after-tax Sharpe auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.5 OOS for renquant_102). Orphan model directories for symbols not in the current watchlist are purged on each run.
 
 ---
 
@@ -88,7 +88,7 @@ All artifacts are JSON (not pickle) — required for LEAN compatibility and huma
 
 | File | Contents |
 |------|----------|
-| `*-policy-metadata.json` | Model type, state columns, indicator parameters, gate rules, hyperparams |
+| `*-policy-metadata.json` | Model type, state columns, indicator parameters, gate rules, hyperparams, `sharpe` (OOS), `sharpe_is` (in-sample, diagnostic), `trained_date`, `best_approach` |
 | `*-q-hold/buy/sell.json` | XGBoost models (FQI) |
 | `*-rf-trees.json` | Random Forest tree structure (Classification) |
 | `*-qtable.json` + `*-bin-edges.json` | Q-table + discretization (Q-Learning) |
@@ -232,28 +232,42 @@ A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 2. Classification — BagLearner(RTLearner) random forest on relative features
 3. Q-Learning — tabular RL with discretized trend features
 
-Each symbol's best model may be a different type. The user periodically re-runs the notebook to retrain. Models include a `trained_date` field; LEAN skips models older than `model_staleness_days` (default 30).
+Each symbol's best model may be a different type. The daily automation retrains all models via `daily_102.sh`. Models include a `trained_date` field; LEAN skips models older than `model_staleness_days` (default 60).
 
-**Stage 1: DETECT** — compute rolling volume z-score `(today_vol - mean_N) / std_N` for each watchlist stock. A z-score above threshold (default 2.0σ, lookback 15 days) on an up-close day (bullish filter) signals unusual institutional buying activity.
+**Stage 1: DETECT** — compute adaptive per-stock volume score for each watchlist symbol. Default mode: **percentile** — triggers when today's volume is in the top 15% of the 20-day lookback window (P85). Legacy **zscore** mode (threshold 1.5σ) also supported via `volume_filter.mode` config. Bullish filter: only enter on up-close days.
 
-**Stage 2: CONFIRM** — on bullish spike days, apply that stock's pre-trained model to 60-day feature history.
+**Stage 2: CONFIRM** — on bullish spike days, apply that stock's pre-trained model to 60-day relative feature history (indicators relativized vs SPY).
 
-**Stage 3: EXECUTE** — if model says "buy" and constraints allow, enter position. Max 5 concurrent positions.
+**Stage 3: EXECUTE** — if model says "buy" and all constraints pass, enter position. Max 5 concurrent positions.
+
+**Risk management** (all configured in `strategy_config.json` under `risk`):
+- **Stop-loss**: exit any position that falls 8% below entry price before waiting for model signal
+- **Drawdown circuit breaker**: halt all new buys when portfolio is down ≥15% from its high-water mark
+- **Regime filter**: suppress new buys when SPY is below its 200-day SMA (bear market)
+- **Sector guard**: max 1 concurrent position per sector (prevents all 5 slots being correlated tech names)
 
 **Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
 ```json
 {
   "watchlist": ["TSLA", "AMZN", "GOOG", "MSFT", "AMD", "NFLX", "..."],
-  "model_staleness_days": 30,
-  "volume_zscore_lookback": 15,
-  "volume_zscore_threshold": 2.0,
-  "max_concurrent_positions": 5
+  "train_split": 0.70,
+  "model_staleness_days": 60,
+  "volume_zscore_lookback": 20,
+  "volume_filter": {"mode": "percentile", "percentile_threshold": 85},
+  "max_concurrent_positions": 5,
+  "risk": {
+    "stop_loss_pct": 0.08,
+    "portfolio_drawdown_halt_pct": 0.15,
+    "regime_filter": {"enabled": true, "symbol": "SPY", "sma_period": 200}
+  },
+  "sector_map": {"TSLA": "tech", "JPM": "finance", "...": "..."},
+  "max_positions_per_sector": 1
 }
 ```
 
 **LEAN `main.py` flow** (`PreTrainedMultiStockStrategy`):
-1. `Initialize()` — load pre-trained models from `models/{SYMBOL}/`, check staleness, `AddEquity` for watchlist + SPY
-2. `OnData()` — process sells first (apply model + constraints for held positions), then compute volume z-scores for non-held stocks (bullish filter: up-close days only), rank candidates, apply pre-trained model, execute buys
+1. `Initialize()` — load pre-trained models from `models/{SYMBOL}/`, check staleness (log warning if <50% loaded), `AddEquity` for watchlist + SPY
+2. `OnData()` — update portfolio high-water mark; process sells first (stop-loss check → max hold check → model signal + constraints); if drawdown circuit breaker triggered, skip all buys; check SPY regime filter; scan volume for non-held stocks (DETECT); rank candidates; apply sector guard; apply pre-trained model (CONFIRM); execute buys (EXECUTE)
 
 **Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which computes volume z-scores, checks sell signals, and executes buy orders across the watchlist.
 

@@ -118,6 +118,14 @@ class AlpacaBroker(BaseBroker):
             "quantity": int(quantity),
         }
 
+    def get_avg_cost(self, symbol: str) -> float:
+        from alpaca.common.exceptions import APIError
+        try:
+            position = self._trading_client.get_open_position(symbol)
+            return float(position.avg_entry_price)
+        except APIError:
+            return 0.0
+
     def get_all_positions(self) -> list[dict]:
         """Return all open positions as a list of dicts."""
         positions = self._trading_client.get_all_positions()

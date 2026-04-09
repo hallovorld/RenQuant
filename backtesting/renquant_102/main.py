@@ -31,9 +31,12 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 			self.symbols[ticker] = self.AddEquity(ticker, Resolution.Daily).Symbol
 		self.spy_symbol = self.AddEquity(self._benchmark_ticker, Resolution.Daily).Symbol
 
-		# Volume z-score scanner config
-		self.volume_zscore_lookback = int(CONFIG.get("volume_zscore_lookback", 15))
-		self.volume_zscore_threshold = float(CONFIG.get("volume_zscore_threshold", 2.0))
+		# Volume scanner config — adaptive percentile-based filter
+		self.volume_zscore_lookback = int(CONFIG.get("volume_zscore_lookback", 20))
+		self.volume_zscore_threshold = float(CONFIG.get("volume_zscore_threshold", 1.5))
+		vol_filter = CONFIG.get("volume_filter", {})
+		self.volume_filter_mode = vol_filter.get("mode", "percentile")  # "percentile" or "zscore"
+		self.volume_percentile_threshold = float(vol_filter.get("percentile_threshold", 85))
 		self.max_positions = int(CONFIG.get("max_concurrent_positions", 3))
 
 		# Trade constraints
@@ -49,8 +52,23 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		self.models = {}
 		self._load_all_models(staleness_days)
 
+		# Risk management
+		risk_cfg = CONFIG.get("risk", {})
+		self.stop_loss_pct = float(risk_cfg.get("stop_loss_pct", 0.0))
+		self.drawdown_halt_pct = float(risk_cfg.get("portfolio_drawdown_halt_pct", 0.0))
+		self.high_water_mark = float(CONFIG["initial_cash"])
+		self._skip_buys = False
+		regime_cfg = risk_cfg.get("regime_filter", {})
+		self.regime_filter_enabled = bool(regime_cfg.get("enabled", False))
+		self.regime_sma_period = int(regime_cfg.get("sma_period", 200))
+
+		# Sector concentration
+		self.sector_map = CONFIG.get("sector_map", {})
+		self.max_positions_per_sector = int(CONFIG.get("max_positions_per_sector", 0))
+
 		# Per-stock tracking
 		self.entry_times = {}
+		self.entry_prices = {}
 		self.last_sell_times = {}
 
 		# Telemetry
@@ -59,6 +77,9 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		self.executed_sells = 0
 		self.blocked_wash_sales = 0
 		self.blocked_min_hold = 0
+		self.stop_loss_exits = 0
+		self.regime_blocks = 0
+		self.sector_blocks = 0
 		self.volume_scans = 0
 		# Tax tracking
 		tax_cfg = CONFIG.get("tax", {})
@@ -76,12 +97,33 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		if self.IsWarmingUp:
 			return
 
+		# Portfolio drawdown circuit breaker — update high-water mark
+		portfolio_value = self.Portfolio.TotalPortfolioValue
+		self.high_water_mark = max(self.high_water_mark, portfolio_value)
+		if self.drawdown_halt_pct > 0 and self.high_water_mark > 0:
+			drawdown = (self.high_water_mark - portfolio_value) / self.high_water_mark
+			self._skip_buys = drawdown >= self.drawdown_halt_pct
+			if self._skip_buys:
+				self.Debug(f"{self.Time.date()} drawdown={drawdown:.1%} >= {self.drawdown_halt_pct:.0%}: halting new buys")
+
 		# Step 1: Process SELLS first for all held positions
 		held_tickers = [t for t in self.models if self.Portfolio[self.symbols[t]].Quantity > 0]
 
 		for ticker in list(held_tickers):
 			if not data.ContainsKey(self.symbols[ticker]):
 				continue
+
+			# Stop-loss check
+			if self.stop_loss_pct > 0 and ticker in self.entry_prices:
+				current_price = float(data[self.symbols[ticker]].Close)
+				avg_price = self.entry_prices[ticker]
+				if avg_price > 0:
+					loss_pct = (avg_price - current_price) / avg_price
+					if loss_pct >= self.stop_loss_pct:
+						self._execute_sell(ticker, f"stop_loss loss={loss_pct:.1%}")
+						self.stop_loss_exits += 1
+						held_tickers.remove(ticker)
+						continue
 
 			# Check max hold forced sell
 			if self.max_hold_days > 0 and ticker in self.entry_times:
@@ -106,10 +148,16 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 
 		# Step 2: Count open slots
 		open_slots = self.max_positions - len(held_tickers)
-		if open_slots <= 0:
+		if open_slots <= 0 or self._skip_buys:
 			return
 
-		# Step 3: DETECT — scan volume z-scores for non-held stocks (bullish only)
+		# Step 3: Regime filter — suppress new entries when SPY is below its 200-day SMA
+		if self.regime_filter_enabled and not self._is_bull_regime():
+			self.regime_blocks += 1
+			self.Debug(f"{self.Time.date()} regime filter: SPY below 200-SMA, skipping buys")
+			return
+
+		# Step 4: DETECT — scan volume for non-held stocks (adaptive per-stock)
 		self.volume_scans += 1
 		candidates = []
 		for ticker in self.models:
@@ -117,20 +165,29 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 				continue
 			if not data.ContainsKey(self.symbols[ticker]):
 				continue
-			zscore = self._compute_volume_zscore(ticker)
-			if zscore >= self.volume_zscore_threshold:
+			score, triggered = self._compute_volume_score(ticker)
+			if triggered:
 				# Bullish filter: only enter on days where price closed up
 				if not self._is_price_up(ticker):
 					continue
-				candidates.append((ticker, zscore))
+				candidates.append((ticker, score))
 
-		# Step 4: Rank by z-score descending
+		# Step 5: Rank by volume score descending (highest activity first)
 		candidates.sort(key=lambda x: x[1], reverse=True)
 
-		# Step 5: CONFIRM + EXECUTE — apply pre-trained model
+		# Step 6: CONFIRM + EXECUTE — apply pre-trained model
 		for ticker, zscore in candidates[:open_slots]:
 			if self._is_wash_sale_blocked(ticker):
 				continue
+
+			# Sector concentration guard
+			if self.max_positions_per_sector > 0:
+				sector = self.sector_map.get(ticker, "other")
+				sector_count = sum(1 for t in held_tickers if self.sector_map.get(t, "other") == sector)
+				if sector_count >= self.max_positions_per_sector:
+					self.sector_blocks += 1
+					self.Debug(f"{self.Time.date()} {ticker} sector={sector} already at {sector_count}/{self.max_positions_per_sector}, skipping")
+					continue
 
 			features = self._build_feature_frame(ticker)
 			if features is None:
@@ -141,6 +198,7 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 
 			if action == "buy":
 				self._execute_buy(ticker, zscore, detail)
+				held_tickers.append(ticker)
 				open_slots -= 1
 				if open_slots <= 0:
 					break
@@ -152,8 +210,9 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 			"Watchlist Size": str(len(self.watchlist)),
 			"Active Models": str(len(self.models)),
 			"Max Positions": str(self.max_positions),
-			"Z-Score Lookback": str(self.volume_zscore_lookback),
-			"Z-Score Threshold": f"{self.volume_zscore_threshold:.1f}",
+			"Volume Filter Mode": self.volume_filter_mode,
+			"Volume Lookback": str(self.volume_zscore_lookback),
+			"Volume Threshold": f"P{self.volume_percentile_threshold:.0f}" if self.volume_filter_mode == "percentile" else f"Z{self.volume_zscore_threshold:.1f}",
 			"Wash Sale Days": str(self.wash_sale_days),
 			"Min Hold Days": str(self.min_hold_days),
 			"Max Hold Days": str(self.max_hold_days),
@@ -170,6 +229,9 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 			"Long-Term Trades": str(self.long_term_trades),
 			"Tax Rate (ST)": f"{self.tax_short_rate:.0%}",
 			"Tax Rate (LT)": f"{self.tax_long_rate:.0%}",
+			"Stop Loss Exits": str(self.stop_loss_exits),
+			"Regime Blocks": str(self.regime_blocks),
+			"Sector Blocks": str(self.sector_blocks),
 		}
 		for key, value in runtime_stats.items():
 			self.SetRuntimeStatistic(key, value)
@@ -215,7 +277,13 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 			if model_data is not None:
 				self.models[ticker] = model_data
 
-		self.Log(f"Loaded models for {len(self.models)} symbols: {sorted(self.models.keys())}")
+		n_loaded = len(self.models)
+		n_watchlist = len(self.watchlist)
+		self.Log(f"Loaded models for {n_loaded}/{n_watchlist} symbols: {sorted(self.models.keys())}")
+		if n_loaded == 0:
+			self.Log("CRITICAL: No models loaded. Check model staleness and retrain notebook.")
+		elif n_loaded < n_watchlist // 2:
+			self.Log(f"WARNING: Only {n_loaded}/{n_watchlist} models loaded — check staleness or retrain.")
 
 	def _load_model_artifacts(self, ticker: str, metadata: dict, symbol_dir: Path) -> dict | None:
 		policy_type = metadata["policy_type"]
@@ -266,21 +334,50 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		self.Log(f"WARNING: {ticker} unsupported policy type '{policy_type}', skipping")
 		return None
 
-	# ── DETECT: Volume z-score scanning ──────────────────────────────────
+	# ── Regime detection ────────────────────────────────────────────────
 
-	def _compute_volume_zscore(self, ticker: str) -> float:
+	def _is_bull_regime(self) -> bool:
+		"""Return True if SPY is above its 200-day SMA (bull regime). Fails open on insufficient data."""
+		history = self.History(self.spy_symbol, self.regime_sma_period + 1, Resolution.Daily)
+		if history.empty or len(history) < self.regime_sma_period:
+			return True
+		closes = history.loc[self.spy_symbol]["close"]
+		sma200 = float(closes.iloc[:-1].mean())
+		return float(closes.iloc[-1]) > sma200
+
+	# ── DETECT: Volume scanning ──────────────────────────────────────────
+
+	def _compute_volume_score(self, ticker: str) -> tuple[float, bool]:
+		"""Compute volume activity score for a ticker.
+
+		Returns (score, triggered) where:
+		  - percentile mode: score = percentile rank of today's volume (0-100),
+		    triggered if score >= percentile_threshold.  Each stock is measured
+		    against its own recent history, so liquid large-caps and volatile
+		    small-caps are held to the same *relative* standard.
+		  - zscore mode: score = z-score, triggered if score >= zscore threshold.
+		    (legacy behaviour, kept for backward compatibility)
+		"""
 		lookback = self.volume_zscore_lookback
 		history = self.History(self.symbols[ticker], lookback + 1, Resolution.Daily)
 		if history.empty or len(history) < lookback + 1:
-			return 0.0
+			return 0.0, False
 		volumes = history.loc[self.symbols[ticker]]["volume"]
 		today_vol = volumes.iloc[-1]
 		hist_vol = volumes.iloc[:-1]
-		mean_vol = hist_vol.mean()
-		std_vol = hist_vol.std()
-		if std_vol <= 0:
-			return 0.0
-		return (today_vol - mean_vol) / std_vol
+
+		if self.volume_filter_mode == "percentile":
+			# Percentile rank: what fraction of lookback days had lower volume?
+			rank = (hist_vol < today_vol).sum() / len(hist_vol) * 100
+			return rank, rank >= self.volume_percentile_threshold
+		else:
+			# Legacy z-score mode
+			mean_vol = hist_vol.mean()
+			std_vol = hist_vol.std()
+			if std_vol <= 0:
+				return 0.0, False
+			zscore = (today_vol - mean_vol) / std_vol
+			return zscore, zscore >= self.volume_zscore_threshold
 
 	def _is_price_up(self, ticker: str) -> bool:
 		"""Check if today's close is above yesterday's close (bullish day)."""
@@ -509,6 +606,7 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 
 		self.Debug(f"{self.Time.date()} {ticker} BUY zscore={zscore:.2f} target_pct={target_pct:.4f} {detail}")
 		self.entry_times[ticker] = self.Time
+		self.entry_prices[ticker] = float(self.Securities[self.symbols[ticker]].Price)
 		self.executed_buys += 1
 		self.SetHoldings(self.symbols[ticker], target_pct)
 
@@ -529,6 +627,7 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		           f"tax=${tax:.2f} ({'LT' if is_long_term else 'ST'} {tax_rate:.0%}) {detail}")
 		self.last_sell_times[ticker] = self.Time
 		self.entry_times.pop(ticker, None)
+		self.entry_prices.pop(ticker, None)
 		self.executed_sells += 1
 		self.Liquidate(self.symbols[ticker])
 

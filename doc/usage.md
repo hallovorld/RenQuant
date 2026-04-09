@@ -89,11 +89,19 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
   "watchlist": ["TSLA", "AMZN", "GOOG", "MSFT", "AMD", "NFLX", "CRM", "PLTR", "COIN", "SHOP", "..."],
   "benchmark": "SPY",
   "initial_cash": 100000,
-  "model_staleness_days": 30,
-  "volume_zscore_lookback": 15,
-  "volume_zscore_threshold": 2.0,
+  "train_split": 0.70,
+  "model_staleness_days": 60,
+  "volume_zscore_lookback": 20,
+  "volume_filter": {"mode": "percentile", "percentile_threshold": 85},
   "training_years": 2,
   "max_concurrent_positions": 5,
+  "risk": {
+    "stop_loss_pct": 0.08,
+    "portfolio_drawdown_halt_pct": 0.15,
+    "regime_filter": {"enabled": true, "symbol": "SPY", "sma_period": 200}
+  },
+  "sector_map": {"TSLA": "tech", "JPM": "finance", "UNH": "healthcare", "...": "..."},
+  "max_positions_per_sector": 1,
   "tax": {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365},
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26"
@@ -171,7 +179,11 @@ launchctl unload ~/Library/LaunchAgents/com.renquant.daily102.plist   # disable
 pmset -g sched                                                        # verify Mac wake schedule
 ```
 
-Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent after each step with a trade summary (e.g., `BUY TSLA x15 (z=2.3)`) or error details. Logs are written to `logs/daily_102/{date}.log`.
+Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent at each step:
+- After notebook retraining: model count (e.g., `Models retrained: 17 watchlist models ready`), or a warning if fewer than 10 models passed the OOS Sharpe floor
+- After live trading: trade summary (e.g., `BUY TSLA x15; SELL AMZN x8; STOP COIN (12.3% loss)`) or error details
+
+Logs are written to `logs/daily_102/{date}.log`.
 
 ---
 

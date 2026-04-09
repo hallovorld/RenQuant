@@ -48,15 +48,41 @@ if "$JUPYTER" nbconvert \
     --output /tmp/renquant_102_executed.ipynb \
     Notebooks/renquant_102.ipynb; then
     echo "Notebook finished at $(date)"
-    notify "RenQuant 102" "Models retrained successfully"
 else
     echo "Notebook FAILED at $(date)"
     notify "RenQuant 102 ERROR" "Notebook failed — check $LOG"
     exit 1
 fi
 
-# Step 2: Run live trading (Alpaca, single pass)
-echo "--- Step 2: Running live trader (alpaca) ---"
+# Step 1b: Validate model count — alert if too few models exported
+MIN_MODELS=10
+MODEL_COUNT=$("$PYTHON" -c "
+import json
+from pathlib import Path
+models_dir = Path('$REPO_DIR/backtesting/renquant_102/models')
+watchlist = json.loads(Path('$REPO_DIR/backtesting/renquant_102/strategy_config.json').read_text())['watchlist']
+count = sum(1 for s in watchlist if (models_dir / s / f'{s}-policy-metadata.json').exists())
+print(count)
+" 2>/dev/null || echo "0")
+echo "Models exported: $MODEL_COUNT / $(python3 -c "import json; print(len(json.loads(open('$REPO_DIR/backtesting/renquant_102/strategy_config.json').read())['watchlist']))" 2>/dev/null || echo "?")"
+if [ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null; then
+    notify "RenQuant 102 WARN" "Only $MODEL_COUNT models exported (min=$MIN_MODELS) — check OOS Sharpe floor"
+else
+    notify "RenQuant 102" "Models retrained: $MODEL_COUNT watchlist models ready"
+fi
+
+# Step 2: Export LEAN data for all watchlist symbols
+echo "--- Step 2: Exporting LEAN watchlist data ---"
+if "$PYTHON" scripts/export_lean_watchlist.py --strategy renquant_102; then
+    echo "LEAN data export finished at $(date)"
+else
+    echo "LEAN data export FAILED at $(date)"
+    notify "RenQuant 102 ERROR" "LEAN data export failed — check $LOG"
+    exit 1
+fi
+
+# Step 3: Run live trading (Alpaca, single pass)
+echo "--- Step 3: Running live trader (alpaca) ---"
 TRADE_LOG="$REPO_DIR/live/logs/renquant-102/$DATE.json"
 if "$PYTHON" -m live.runner --strategy renquant_102 --broker alpaca --once; then
     echo "=== daily_102 finished at $(date) ==="
@@ -71,18 +97,23 @@ if not log_path.exists():
 trades = json.loads(log_path.read_text())
 buys = [t for t in trades if t.get('signal') == 'buy']
 sells = [t for t in trades if t.get('signal') == 'sell']
+stops = [t for t in trades if t.get('signal') == 'stop_loss']
 parts = []
 for t in buys:
     sym = t.get('symbol', '?')
-    zscore = t.get('volume_zscore', 0)
+    score = t.get('volume_score', t.get('volume_zscore', 0))
     order = t.get('order', {})
     qty = order.get('qty', '?')
-    parts.append(f'BUY {sym} x{qty} (z={zscore:.1f})')
+    parts.append(f'BUY {sym} x{qty}')
 for t in sells:
     sym = t.get('symbol', '?')
     order = t.get('order', {})
     qty = order.get('qty', '?')
     parts.append(f'SELL {sym} x{qty}')
+for t in stops:
+    sym = t.get('symbol', '?')
+    loss = t.get('loss_pct', 0)
+    parts.append(f'STOP {sym} ({loss:.1%} loss)')
 if parts:
     print('; '.join(parts))
 else:
@@ -91,6 +122,6 @@ else:
     notify "RenQuant 102" "$SUMMARY"
 else
     echo "=== daily_102 FAILED at $(date) ==="
-    notify "RenQuant 102 ERROR" "Live trading failed — check $LOG"
+    notify "RenQuant 102 ERROR" "Live trader failed — check $LOG"
     exit 1
 fi
