@@ -21,7 +21,7 @@
     "mode": "percentile",
     "percentile_threshold": 85
   },
-  "training_years": 2,
+  "training_years": 3,
   "max_concurrent_positions": 5,
   "position_sizing": {
     "max_position_pct": 0.30,
@@ -52,7 +52,7 @@
     "long_term_rate": 0.32,
     "long_term_threshold_days": 365
   },
-  "sample_start": "2021-01-01",
+  "sample_start": "2020-01-01",
   "sample_end": "2024-12-31",
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26",
@@ -67,10 +67,10 @@
   },
   "model_params": {
     "feature_columns": ["rsi", "macd_hist", "cci", "bbp", "adx", "williams_r", "obv_slope"],
-    "lookahead": 10,
-    "threshold": 0.04,
-    "leaf_size": 25,
-    "bags": 15,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "leaf_size": 10,
+    "bags": 30,
     "buy_threshold": 0.1,
     "sell_threshold": -0.1
   }
