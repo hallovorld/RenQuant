@@ -46,7 +46,7 @@
     "XOM":  "energy",  "XLE": "energy",
     "CAT":  "industrial", "BA": "industrial"
   },
-  "max_positions_per_sector": 1,
+  "max_positions_per_sector": 3,
   "tax": {
     "short_term_rate": 0.50,
     "long_term_rate": 0.32,
