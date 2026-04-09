@@ -1,26 +1,21 @@
 {
   "model_name": "MSFT",
-  "policy_type": "classification",
+  "policy_type": "qlearning",
   "feature_columns": [
-    "rsi",
-    "macd_hist",
-    "cci",
-    "bbp",
-    "adx",
-    "williams_r",
-    "obv_slope"
+    "trend",
+    "rel_mom_20d",
+    "macd_hist"
   ],
-  "lookahead": 10,
-  "threshold": 0.04,
-  "leaf_size": 25,
-  "bags": 15,
+  "n_bins": 5,
+  "n_epochs": 500,
+  "alpha": 0.15,
+  "gamma": 0.95,
   "impact": 0.0,
-  "buy_threshold": 0.1,
-  "sell_threshold": -0.1,
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/MSFT/MSFT-rf-trees.json"
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/MSFT/MSFT-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/MSFT/MSFT-bin-edges.json"
   },
   "trained_date": "2026-04-08",
-  "best_approach": "Classification",
-  "sharpe": 1.2753
+  "best_approach": "Q-Learning",
+  "sharpe": 1.3348
 }

@@ -98,10 +98,10 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
   "risk": {
     "stop_loss_pct": 0.08,
     "portfolio_drawdown_halt_pct": 0.15,
-    "regime_filter": {"enabled": true, "symbol": "SPY", "sma_period": 200}
+    "regime_filter": {"enabled": false, "symbol": "SPY", "sma_period": 200}
   },
   "sector_map": {"TSLA": "tech", "JPM": "finance", "UNH": "healthcare", "...": "..."},
-  "max_positions_per_sector": 1,
+  "max_positions_per_sector": 3,
   "tax": {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365},
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26"

@@ -133,7 +133,7 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 days of selling |
-| Min hold | 3 days | Prevents same-day flipping |
+| Min hold | 1 day | Prevents same-day flipping |
 | Max hold | 500 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
@@ -164,7 +164,7 @@ Trains a classification model (BagLearner/RTLearner) on relative indicators (sto
 
 ### renquant_102 — Multi-Stock Pre-Trained Scanner
 
-3-stage pipeline: **DETECT** (bullish volume spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 21 stocks/ETFs for volume spikes on up-close days (default: P85 percentile of 20-day lookback, adaptive per-stock). The notebook trains 3 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning) on a 70/30 walk-forward train/test split of a rolling 2yr window, exports the best by OOS after-tax Sharpe to `models/{SYMBOL}/` (floor: 0.5 OOS). Orphan model directories are purged on each run. The notebook also includes a portfolio-level simulation for parameter tuning before running LEAN. LEAN loads pre-trained models, applies risk management: per-position 8% stop-loss, 15% portfolio drawdown circuit breaker, SPY 200-SMA regime filter, and sector concentration guard (max 1 per sector). Models older than 60 days are skipped (`model_staleness_days`). Max 5 concurrent positions.
+3-stage pipeline: **DETECT** (bullish volume spike) → **CONFIRM** (pre-trained model) → **EXECUTE** (trade). Scans a watchlist of 21 stocks/ETFs for volume spikes on up-close days (default: P85 percentile of 20-day lookback, adaptive per-stock). The notebook trains 3 approaches per symbol (Dual Momentum, Classification/RF, Q-Learning) on a 70/30 walk-forward train/test split of a rolling 2yr window, exports the best by OOS after-tax Sharpe to `models/{SYMBOL}/` (floor: 0.8 OOS). Orphan model directories are purged on each run. The notebook also includes a portfolio-level simulation for parameter tuning before running LEAN. LEAN loads pre-trained models, applies risk management: per-position 8% stop-loss, 15% portfolio drawdown circuit breaker, configurable regime filter (currently disabled — relative features encode market context), and sector concentration guard (max 3 per sector). Models older than 60 days are skipped (`model_staleness_days`). Max 5 concurrent positions.
 
 ```bash
 # Train and compare approaches

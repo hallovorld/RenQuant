@@ -37,12 +37,18 @@ def export_symbol(symbol: str) -> tuple[Path, Path, Path]:
 	symbol_lower = symbol.lower()
 	parquet_path = REPO_ROOT / "data" / "ohlcv" / symbol.upper() / "1d.parquet"
 	if not parquet_path.exists():
-		raise FileNotFoundError(f"Cached parquet not found: {parquet_path}")
+		# Fallback: notebook working directory caches to Notebooks/data/ohlcv/
+		notebook_path = REPO_ROOT / "Notebooks" / "data" / "ohlcv" / symbol.upper() / "1d.parquet"
+		if notebook_path.exists():
+			parquet_path = notebook_path
+		else:
+			raise FileNotFoundError(f"Cached parquet not found: {parquet_path}")
 
 	df = pd.read_parquet(parquet_path).copy()
 	if not isinstance(df.index, pd.DatetimeIndex):
 		df.index = pd.to_datetime(df.index)
 	df = df.sort_index()
+	df = df.dropna(subset=["open", "high", "low", "close", "volume"])
 	if df.empty:
 		raise RuntimeError(f"No rows found in {parquet_path}")
 

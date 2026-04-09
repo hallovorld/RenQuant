@@ -75,8 +75,8 @@ The notebook is where training happens. The typical workflow:
    - **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
    - Additional trend-following features: `trend` (price/50EMA), `trend_long` (price/200EMA), `rel_mom_20d`, `rel_mom_60d`
 4. **Model training** — depends on model type (see below)
-5. **Comparison** — all models simulated on the 30% OOS test set with constraints (wash sale 30d, min hold 3d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks. Both OOS Sharpe and in-sample Sharpe are recorded.
-6. **Export** — best model by OOS after-tax Sharpe auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.5 OOS for renquant_102). Orphan model directories for symbols not in the current watchlist are purged on each run.
+5. **Comparison** — all models simulated on the 30% OOS test set with constraints (wash sale 30d, min hold 1d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks. Both OOS Sharpe and in-sample Sharpe are recorded.
+6. **Export** — best model by OOS after-tax Sharpe auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.8 OOS for renquant_102). Orphan model directories for symbols not in the current watchlist are purged on each run.
 
 ---
 
@@ -165,7 +165,7 @@ All models are subject to execution constraints during both notebook simulation 
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
-| Minimum hold | 3 calendar days | Prevents same-day flipping |
+| Minimum hold | 1 calendar day | Prevents same-day flipping |
 | Maximum hold | 500 calendar days | Forces position review; allows long-term capital gains rate |
 
 ## Tax-Aware Returns
@@ -227,7 +227,7 @@ All 12 registered indicators can be combined freely.
 
 A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 
-**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 2-year window, picks the best by after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.5). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
+**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 2-year window, picks the best by after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.8). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
 1. Dual Momentum — trend-following ManualModel rules
 2. Classification — BagLearner(RTLearner) random forest on relative features
 3. Q-Learning — tabular RL with discretized trend features
@@ -243,8 +243,8 @@ Each symbol's best model may be a different type. The daily automation retrains 
 **Risk management** (all configured in `strategy_config.json` under `risk`):
 - **Stop-loss**: exit any position that falls 8% below entry price before waiting for model signal
 - **Drawdown circuit breaker**: halt all new buys when portfolio is down ≥15% from its high-water mark
-- **Regime filter**: suppress new buys when SPY is below its 200-day SMA (bear market)
-- **Sector guard**: max 1 concurrent position per sector (prevents all 5 slots being correlated tech names)
+- **Regime filter**: configurable (currently disabled — relative features already encode market context vs SPY)
+- **Sector guard**: max 3 concurrent positions per sector (prevents all 5 slots being correlated tech names)
 
 **Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
 ```json
@@ -258,10 +258,10 @@ Each symbol's best model may be a different type. The daily automation retrains 
   "risk": {
     "stop_loss_pct": 0.08,
     "portfolio_drawdown_halt_pct": 0.15,
-    "regime_filter": {"enabled": true, "symbol": "SPY", "sma_period": 200}
+    "regime_filter": {"enabled": false, "symbol": "SPY", "sma_period": 200}
   },
   "sector_map": {"TSLA": "tech", "JPM": "finance", "...": "..."},
-  "max_positions_per_sector": 1
+  "max_positions_per_sector": 3
 }
 ```
 
