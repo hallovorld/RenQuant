@@ -37,7 +37,7 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		vol_filter = CONFIG.get("volume_filter", {})
 		self.volume_filter_mode = vol_filter.get("mode", "percentile")  # "percentile" or "zscore"
 		self.volume_percentile_threshold = float(vol_filter.get("percentile_threshold", 85))
-		self.max_positions = int(CONFIG.get("max_concurrent_positions", 3))
+		self.max_positions = int(CONFIG.get("max_concurrent_positions", 5))
 
 		# Trade constraints
 		self.wash_sale_days = int(CONFIG.get("wash_sale_days", 0))

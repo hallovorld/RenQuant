@@ -79,10 +79,13 @@ def main() -> int:
 
         parquet_path = REPO_ROOT / "data" / "ohlcv" / symbol.upper() / "1d.parquet"
         if not parquet_path.exists():
-            print(f"  {symbol:6s} — NO parquet cache at {parquet_path}")
-            print(f"           Run: python -c \"import common; common.fetch_ohlcv('{symbol}')\"")
-            failed += 1
-            continue
+            # Fallback: notebook working directory caches to Notebooks/data/ohlcv/
+            notebook_path = REPO_ROOT / "Notebooks" / "data" / "ohlcv" / symbol.upper() / "1d.parquet"
+            if not notebook_path.exists():
+                print(f"  {symbol:6s} — NO parquet cache at {parquet_path}")
+                print(f"           Run: python -c \"import common; common.fetch_ohlcv('{symbol}')\"")
+                failed += 1
+                continue
 
         try:
             daily_zip, map_file, factor_file = export_symbol(symbol)

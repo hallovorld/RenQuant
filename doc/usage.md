@@ -67,6 +67,8 @@ If LEAN reports missing local symbol files such as `/equity/usa/daily/nvda.zip`,
 python scripts/export_lean_data.py --symbol NVDA
 ```
 
+Both export scripts (`export_lean_data.py` and `export_lean_watchlist.py`) check `data/ohlcv/{SYMBOL}/` first, then fall back to `Notebooks/data/ohlcv/{SYMBOL}/` — the path where the notebook kernel caches data when run from the `Notebooks/` directory. If both are missing, fetch with `python -c "import common; common.fetch_ohlcv('SYMBOL')"` from the repo root.
+
 To adjust the backtest period or initial capital, edit `strategy_config.json`.
 
 **Single-stock** (renquant_101):

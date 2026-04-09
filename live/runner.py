@@ -267,8 +267,8 @@ def run_once_multi(
     indicator_spec = config.get("indicator_spec", {})
     feature_columns = config["model_params"]["feature_columns"]
     pos_sizing = config.get("position_sizing", {})
-    max_position_pct = float(pos_sizing.get("max_position_pct", 0.33))
-    cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.10))
+    max_position_pct = float(pos_sizing.get("max_position_pct", 0.30))
+    cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.00))
 
     log.info("Running multi-stock strategy %s on %s", config["model_name"], watchlist)
 
