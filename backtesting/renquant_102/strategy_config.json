@@ -31,7 +31,7 @@
     "stop_loss_pct": 0.08,
     "portfolio_drawdown_halt_pct": 0.15,
     "regime_filter": {
-      "enabled": true,
+      "enabled": false,
       "symbol": "SPY",
       "sma_period": 200
     }
