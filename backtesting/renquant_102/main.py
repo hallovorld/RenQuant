@@ -44,11 +44,11 @@ class PreTrainedMultiStockStrategy(QCAlgorithm):
 		self.min_hold_days = int(CONFIG.get("min_hold_days", 0))
 		self.max_hold_days = int(CONFIG.get("max_hold_days", 0))
 		pos_sizing = CONFIG.get("position_sizing", {})
-		self.max_position_pct = float(pos_sizing.get("max_position_pct", 0.33))
-		self.cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.10))
+		self.max_position_pct = float(pos_sizing.get("max_position_pct", 0.30))
+		self.cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.00))
 
 		# Load pre-trained models
-		staleness_days = int(CONFIG.get("model_staleness_days", 30))
+		staleness_days = int(CONFIG.get("model_staleness_days", 60))
 		self.models = {}
 		self._load_all_models(staleness_days)
 
