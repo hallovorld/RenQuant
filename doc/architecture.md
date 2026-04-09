@@ -99,8 +99,8 @@ The policy metadata acts as a contract between research and execution — both m
 For multi-stock strategies (renquant_102), models are organized per-symbol under `models/{SYMBOL}/`:
 ```
 backtesting/renquant_102/models/
-  NVDA/NVDA-policy-metadata.json, NVDA-rf-trees.json
-  TSLA/TSLA-policy-metadata.json, TSLA-manual-rules.json
+  TSLA/TSLA-policy-metadata.json, TSLA-rf-trees.json
+  AMZN/AMZN-policy-metadata.json, AMZN-manual-rules.json
   ...
 ```
 Each symbol's model may be a different type (the notebook picks the best approach per symbol).
@@ -202,7 +202,7 @@ These rules are used by both single-stock (renquant_101) and multi-stock (renqua
 
 ## State Space
 
-The NVDA strategy uses 7 shared relative indicator features for ML models (Classification, Q-Learning):
+renquant_102 uses 7 shared relative indicator features for ML models (Classification, Q-Learning) per symbol:
 
 | Feature | Transform | Description |
 |---------|-----------|-------------|

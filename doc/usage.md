@@ -212,7 +212,8 @@ common/                            # Shared library — import as `import common
 
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
-└── renquant_102.ipynb            # Multi-stock: train 3 approaches per symbol → export best → portfolio simulation
+├── renquant_102.ipynb            # Multi-stock: train 3 approaches per symbol → export best → portfolio simulation
+└── backtest_analysis.ipynb       # Post-LEAN analysis: enrich LEAN trades with tax breakdown (add_tax_columns)
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference
@@ -233,5 +234,6 @@ scripts/
 ├── export_lean_data.py           # Convert cached parquet OHLCV into LEAN daily equity files
 ├── backtest_and_analyze.py       # Run LEAN backtest, render charts, send notifications
 ├── analyze_backtest.py            # Render backtest charts + summary metrics
-└── new_strategy.py                # Scaffold a new strategy directory
+├── new_strategy.py                # Scaffold a new strategy directory
+└── daily_102.sh                   # Retrain all renquant_102 models + run live trading pass
 ```
