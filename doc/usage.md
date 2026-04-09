@@ -93,7 +93,7 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
   "volume_zscore_lookback": 15,
   "volume_zscore_threshold": 2.0,
   "training_years": 2,
-  "max_concurrent_positions": 3,
+  "max_concurrent_positions": 5,
   "tax": {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365},
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26"

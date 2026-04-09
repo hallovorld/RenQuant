@@ -238,7 +238,7 @@ Each symbol's best model may be a different type. The user periodically re-runs 
 
 **Stage 2: CONFIRM** — on bullish spike days, apply that stock's pre-trained model to 60-day feature history.
 
-**Stage 3: EXECUTE** — if model says "buy" and constraints allow, enter position. Max 3 concurrent positions.
+**Stage 3: EXECUTE** — if model says "buy" and constraints allow, enter position. Max 5 concurrent positions.
 
 **Config** uses `watchlist` (array of symbols) instead of `stock_symbol`:
 ```json
@@ -247,7 +247,7 @@ Each symbol's best model may be a different type. The user periodically re-runs 
   "model_staleness_days": 30,
   "volume_zscore_lookback": 15,
   "volume_zscore_threshold": 2.0,
-  "max_concurrent_positions": 3
+  "max_concurrent_positions": 5
 }
 ```
 
