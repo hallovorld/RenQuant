@@ -227,11 +227,16 @@ def _build_relative_features(
     result["close"] = df_stock["close"]
     for col in feature_columns:
         if col in ratio_features:
-            result[col] = df_stock[col] / df_spy[col].replace(0, np.nan)
+            if col in df_stock.columns and col in df_spy.columns:
+                result[col] = df_stock[col] / df_spy[col].replace(0, np.nan)
         elif col in diff_features:
-            result[col] = df_stock[col] - df_spy[col]
-        else:
+            if col in df_stock.columns and col in df_spy.columns:
+                result[col] = df_stock[col] - df_spy[col]
+        elif col in df_stock.columns:
             result[col] = df_stock[col]
+        # else: regime-only columns (spy_realized_vol, hurst_proxy, etc.) not available
+        # at live inference time — silently skip; Manual models don't use feature_columns
+        # for prediction; ML models store only their own cols in policy-metadata.json
 
     # Trend and relative momentum features (required by Q-Learning and Dual Momentum models)
     close = df_stock.loc[common_idx, "close"]
