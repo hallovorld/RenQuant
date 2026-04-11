@@ -51,7 +51,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 |--------|----------|
 | `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
 | `common/data/` | `fetch_ohlcv` (Parquet cache + yfinance/IBKR sources), `DataSource` ABC, `LocalStore` |
-| `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 12 indicators across 4 categories |
+| `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 12 registered indicators across 4 categories; regime detection (non-registered): `compute_hurst`, `rolling_hurst`, `compute_cusum`, `rolling_cusum`, `build_gmm_features`, `RegimeGMM` |
 | `common/models/` | `BaseModel` ABC, 5 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `create_model` factory |
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
@@ -96,7 +96,7 @@ All artifacts are JSON (not pickle) — required for LEAN compatibility and huma
 
 The policy metadata acts as a contract between research and execution — both must use identical indicator parameters.
 
-For multi-stock strategies (renquant_102), models are organized per-symbol under `models/{SYMBOL}/`:
+For multi-stock strategies (renquant_102, renquant_103), models are organized per-symbol under `models/{SYMBOL}/`:
 ```
 backtesting/renquant_102/models/
   TSLA/TSLA-policy-metadata.json, TSLA-rf-trees.json
@@ -104,6 +104,14 @@ backtesting/renquant_102/models/
   ...
 ```
 Each symbol's model may be a different type (the notebook picks the best approach per symbol).
+
+renquant_103 adds three additional strategy-level artifacts:
+```
+backtesting/renquant_103/
+  spy-gmm-regime.json          # GMM parameters for 3-state regime classifier
+  watchlist-correlation.json   # 120-day pairwise return correlations for correlation guard
+  earnings-calendar.json       # Upcoming earnings dates per ticker (refreshed weekly)
+```
 
 ---
 
@@ -124,6 +132,14 @@ Each symbol's model may be a different type (the notebook picks the best approac
   3. For each spike candidate, computes 60-day indicators + relative features for stock and SPY (CONFIRM stage)
   4. Applies that stock's pre-trained model (classification, manual, or qlearning) to get buy/sell/hold signal
   5. Applies position sizing and trading constraints, executes orders (EXECUTE stage)
+
+**renquant_103** (adaptive regime multi-stock): Extends 102's architecture with a 3-layer regime detector. `Initialize()` additionally loads `spy-gmm-regime.json`, `watchlist-correlation.json`, and `earnings-calendar.json`. `OnData()`:
+  1. Accumulates SPY daily returns; runs Hurst (Layer 1), CUSUM (Layer 2), GMM (Layer 3) to classify regime and confidence
+  2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
+  3. Processes sells (same as 102, but with regime-adaptive stop-loss and trailing stop in BULL_CALM)
+  4. DETECT: regime-conditional scan — momentum (up-close) in BULL_CALM, capitulation (down-close in bottom 30% of 5d range) in BULL_VOLATILE, divergence-from-SPY in CHOPPY, blocked in BEAR; defensives (GLD/TLT/XLV/XLU) use counter-cyclical logic in BEAR/BULL_VOLATILE
+  5. CONFIRM: compute relative-strength score (vs sector ETF) + continuous model score; combined rank (50/50)
+  6. EXECUTE: correlation-aware greedy selection (max pairwise correlation 0.70), then sector guard, then orders
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -202,7 +218,7 @@ These rules are used by both single-stock (renquant_101) and multi-stock (renqua
 
 ## State Space
 
-renquant_102 uses 7 shared relative indicator features for ML models (Classification, Q-Learning) per symbol:
+renquant_102 uses 7 shared relative indicator features for ML models (Classification, Q-Learning) per symbol. renquant_103 adds 4 regime-context features (see below):
 
 | Feature | Transform | Description |
 |---------|-----------|-------------|
@@ -216,6 +232,15 @@ renquant_102 uses 7 shared relative indicator features for ML models (Classifica
 
 The Manual model uses trend-following features instead (see Strategy Details below).
 Q-Learning uses a subset of 3 trend features to keep state space small.
+
+renquant_103 adds 4 regime-context features (computed from SPY, appended to the stock frame):
+
+| Feature | Computation | Purpose |
+|---------|------------|---------|
+| `spy_realized_vol` | SPY 20d return std × √252 | Volatility regime signal |
+| `spy_adx` | ADX(14) on SPY | Trend strength of the market |
+| `spy_trend` | SPY close / SPY EMA50 | Market trend direction |
+| `hurst_proxy` | Autocorr(lag=1) of SPY 20d returns | Fast momentum-persistence proxy |
 
 All 12 registered indicators can be combined freely.
 
@@ -270,6 +295,18 @@ Each symbol's best model may be a different type. The daily automation retrains 
 2. `OnData()` — update portfolio high-water mark; process sells first (stop-loss check → max hold check → model signal + constraints); if drawdown circuit breaker triggered, skip all buys; check SPY regime filter; scan volume for non-held stocks (DETECT); rank candidates; apply sector guard; apply pre-trained model (CONFIRM); execute buys (EXECUTE)
 
 **Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which computes volume z-scores, checks sell signals, and executes buy orders across the watchlist.
+
+### renquant_103 — Adaptive Regime Multi-Stock
+
+Successor to 102, built for volatile and choppy markets. See full design: [`docs/renquant_103_design.md`](../docs/renquant_103_design.md).
+
+Key differences from 102:
+- **3-layer regime detection** always running on SPY: Hurst (slow baseline) + CUSUM (fast transition trigger) + GMM (continuous confidence)
+- **Regime-conditional entry**: momentum, capitulation, divergence, or blocked depending on regime
+- **Stock selection**: earnings filter → volume scan → relative-strength ranking vs sector ETF → continuous model score → combined rank → correlation-aware selection
+- **Regime-adaptive parameters**: all risk parameters (stop-loss, position size, max hold, cash reserve) adapt per regime and scale with GMM confidence
+- **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BEAR/BULL_VOLATILE
+- **Trailing stop**: active in BULL_CALM after 5% gain, trails at 5% below the position's high-water mark
 
 ### renquant_101 — Single-Stock Classification
 

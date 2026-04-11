@@ -91,6 +91,33 @@ df = compute_indicators(ohlcv, {
 - **Parameters**: `signal_period` (20)
 - **Uses**: close, volume. Rising OBV = accumulation; divergence from price precedes reversals.
 
+## Regime Detection (non-registered, used directly)
+
+These functions live in `common/indicators/regime.py` and are **not** registered in the indicator registry (they operate on SPY returns, not per-stock OHLCV). Import directly:
+
+```python
+from common.indicators import compute_hurst, rolling_hurst, compute_cusum, rolling_cusum, build_gmm_features, RegimeGMM
+```
+
+### Hurst Exponent
+- **Function**: `compute_hurst(returns, max_lag=40)` / `rolling_hurst(returns, window=63)`
+- **Input**: daily return series
+- **Output**: H in [0, 1]. > 0.55 = momentum (trending), < 0.45 = mean-reversion (choppy), 0.45–0.55 = random walk
+- **Method**: Rescaled Range (R/S) analysis
+
+### CUSUM Changepoint Detection
+- **Function**: `compute_cusum(returns, threshold=3.0, drift=0.5)` / `rolling_cusum(returns, window=20)`
+- **Input**: daily return series
+- **Output**: bool — True if a structural break is detected in the window
+- **Method**: Cumulative Sum control chart, normalised internally so threshold is in σ units
+
+### GMM Regime Classifier
+- **Class**: `RegimeGMM(n_components=3)`
+- **Methods**: `fit(features_df)`, `predict(features_df) → (label_series, proba_df)`, `save(path)`, `RegimeGMM.load(path)`
+- **Input features** (built via `build_gmm_features(spy_ohlcv)`): `10d_return`, `20d_realized_vol`, `spy_adx`, `return_autocorr`
+- **Output**: per-day regime label (`BULL_CALM`, `BULL_VOLATILE`, `BEAR`) + probability DataFrame
+- **Serialisation**: `save()` writes JSON compatible with LEAN's inline GMM inference (no sklearn dependency at runtime)
+
 ## Adding a New Indicator
 
 1. Create the function in an existing or new file under `common/indicators/`

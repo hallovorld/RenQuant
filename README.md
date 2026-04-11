@@ -25,6 +25,7 @@ RenQuant/
 ├── common/                  # Shared library
 │   ├── data/                # DataSource ABC, yfinance, IBKR stub, Parquet cache
 │   ├── indicators/          # Registry-based: 12 indicators (momentum, volatility, trend, volume)
+│   │                        #   + regime detection: Hurst, CUSUM, RegimeGMM (not registered)
 │   ├── models/              # BaseModel ABC + 5 implementations
 │   │   └── learners/        # RTLearner, BagLearner, TabularQLearner
 │   ├── strategy.py          # StrategyConfig + Strategy composition
@@ -32,15 +33,18 @@ RenQuant/
 │   ├── tax.py               # After-tax return computation (ST/LT capital gains)
 │   ├── plotting.py          # Backtest dashboard + normalized performance chart
 │   └── config.py            # Config loading utilities
-├── Notebooks/               # Research notebooks (renquant_101, renquant_102)
+├── Notebooks/               # Research notebooks (renquant_101, renquant_102, renquant_103)
 ├── backtesting/             # LEAN strategies (self-contained, no common/ imports)
 │   ├── renquant_101/        # Single-stock classification strategy
-│   └── renquant_102/        # Multi-stock pre-trained scanner strategy
+│   ├── renquant_102/        # Multi-stock pre-trained scanner (21 symbols)
+│   │   └── models/{SYMBOL}/ # Per-symbol model artifacts
+│   └── renquant_103/        # Adaptive regime multi-stock (24 symbols, 3-layer regime detector)
 │       └── models/{SYMBOL}/ # Per-symbol model artifacts
 ├── live/                    # Live trading runner + broker abstraction
-├── scripts/                 # Scaffolding tools
+├── scripts/                 # Scaffolding + data pipeline tools
 ├── data/                    # Local Parquet cache (gitignored)
-└── doc/                     # Detailed documentation
+├── doc/                     # Detailed documentation
+└── docs/                    # Strategy design specs (renquant_103_design.md)
 ```
 
 ## Quick Start
@@ -176,6 +180,35 @@ cd backtesting/renquant_102 && lean backtest .
 # Live (paper)
 python -m live.runner --strategy renquant_102 --broker paper --once
 ```
+
+### renquant_103 — Adaptive Regime Multi-Stock
+
+Successor to 102, designed for volatile/choppy markets. Adds a **3-layer regime detector** on top of 102's architecture:
+
+- **Layer 1 (Hurst)**: Rolling 63-day Hurst exponent. H > 0.55 = momentum, H < 0.45 = mean-reversion, ambiguous in between.
+- **Layer 2 (CUSUM)**: Changepoint detection — flags regime transitions within 2–5 days. Triggers a 3-bar uncertainty window (no new buys, tighter stops).
+- **Layer 3 (GMM)**: Gaussian Mixture Model on 4 SPY features outputs continuous P(regime), used to scale position sizes smoothly.
+
+Four regimes with distinct parameters: `BULL_CALM` (momentum entry, 30% max position, 8% stop), `BULL_VOLATILE` (capitulation entry on high-volume down-close, 20% max, 5% stop), `CHOPPY` (divergence-from-SPY entry, 15% max, 5% stop), `BEAR` (no new buys). Stock selection pipeline adds: earnings filter (±3 days), relative-strength ranking vs sector ETF, continuous model score ranking (50/50 blend), correlation-aware greedy selection (threshold 0.70). Watchlist (24 symbols): equity names minus ARKK/SHOP/COIN, plus GLD, TLT, XLV, XLU as counter-cyclical defensives.
+
+```bash
+# Refresh earnings calendar (weekly)
+python scripts/fetch_earnings_calendar.py --strategy renquant_103
+
+# Train
+jupyter lab  # run Notebooks/renquant_103.ipynb
+
+# Export LEAN data (includes new symbols GLD, TLT, XLV, XLU)
+python scripts/export_lean_watchlist.py --strategy renquant_103
+
+# Backtest
+cd backtesting/renquant_103 && lean backtest .
+
+# Live (paper)
+python -m live.runner --strategy renquant_103 --broker paper --once
+```
+
+Full design specification: [`docs/renquant_103_design.md`](docs/renquant_103_design.md).
 
 ## Indicator Library
 

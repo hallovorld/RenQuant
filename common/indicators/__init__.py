@@ -19,6 +19,16 @@ from . import trend as _trend  # noqa: F401
 from . import volume as _volume  # noqa: F401
 from .registry import INDICATOR_REGISTRY, compute_indicators, list_indicators, register
 
+# Regime detection (not registered — used directly)
+from .regime import (  # noqa: F401
+    compute_hurst,
+    rolling_hurst,
+    compute_cusum,
+    rolling_cusum,
+    build_gmm_features,
+    RegimeGMM,
+)
+
 # Re-export individual compute functions for direct use
 from .momentum import compute_ema, compute_macd, compute_momentum, compute_rsi, compute_williams_r
 from .volatility import compute_atr, compute_bbp, compute_cci, compute_ppo, compute_stochastic
@@ -51,6 +61,13 @@ def add_indicators(
 
 
 __all__ = [
+    # regime
+    "compute_hurst",
+    "rolling_hurst",
+    "compute_cusum",
+    "rolling_cusum",
+    "build_gmm_features",
+    "RegimeGMM",
     # registry
     "INDICATOR_REGISTRY",
     "compute_indicators",
