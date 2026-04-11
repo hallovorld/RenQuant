@@ -324,7 +324,8 @@ def run_once_multi(
                     held.remove(symbol)
                     continue
 
-        rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
+        model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
+        rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         if rel is None or rel.empty:
             continue
         row = rel.iloc[-1].copy()
@@ -416,7 +417,8 @@ def run_once_multi(
                          symbol, sector, sector_count, max_per_sector)
                 continue
 
-        rel = _build_relative_features(dfs[symbol], df_spy, feature_columns, indicator_spec)
+        model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
+        rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         if rel is None or rel.empty:
             continue
 
