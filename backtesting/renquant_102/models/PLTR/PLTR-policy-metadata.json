@@ -38,7 +38,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/PLTR/PLTR-manual-rules.json"
   },
-  "trained_date": "2026-04-08",
+  "trained_date": "2026-04-10",
   "best_approach": "Dual Momentum",
-  "sharpe": 1.2657
+  "sharpe": 1.1087
 }

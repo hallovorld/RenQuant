@@ -20,7 +20,7 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/NFLX/NFLX-rf-trees.json"
   },
-  "trained_date": "2026-04-08",
+  "trained_date": "2026-04-10",
   "best_approach": "Classification",
-  "sharpe": 1.08
+  "sharpe": 0.8169
 }

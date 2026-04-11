@@ -1,0 +1,25 @@
+{
+  "model_name": "AMZN",
+  "policy_type": "qlearning",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx"
+  ],
+  "n_bins": 10,
+  "n_epochs": 100,
+  "alpha": 0.2,
+  "gamma": 0.9,
+  "impact": 0.0,
+  "artifacts": {
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMZN/AMZN-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMZN/AMZN-bin-edges.json"
+  },
+  "trained_date": "2026-04-10",
+  "best_approach": "QLearning",
+  "sharpe": 1.1961,
+  "lookahead": 5,
+  "strategy": "renquant_103"
+}
