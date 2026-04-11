@@ -3,24 +3,9 @@
   "policy_type": "manual",
   "score_rules": [
     {
-      "col": "trend",
-      "buy_above": 1.0,
-      "sell_below": 0.97
-    },
-    {
-      "col": "trend_long",
-      "buy_above": 1.0,
-      "sell_below": 0.97
-    },
-    {
-      "col": "rel_mom_20d",
-      "buy_above": 0.0,
-      "sell_below": -0.03
-    },
-    {
-      "col": "rel_mom_60d",
-      "buy_above": 0.0,
-      "sell_below": -0.05
+      "col": "rsi",
+      "buy_below": 30,
+      "sell_above": 70
     },
     {
       "col": "macd_hist",
@@ -28,17 +13,19 @@
       "sell_below": 0
     },
     {
-      "col": "obv_slope",
-      "buy_above": 0,
-      "sell_below": 0
+      "col": "cci",
+      "buy_below": -100,
+      "sell_above": 50
     }
   ],
-  "buy_threshold": 4,
-  "sell_threshold": -3,
+  "buy_threshold": 2,
+  "sell_threshold": -2,
   "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/XOM/XOM-manual-rules.json"
+    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XOM/XOM-manual-rules.json"
   },
   "trained_date": "2026-04-10",
-  "best_approach": "Dual Momentum",
-  "sharpe": 0.9936
+  "best_approach": "Manual",
+  "sharpe": 0.8132,
+  "lookahead": 5,
+  "strategy": "renquant_103"
 }

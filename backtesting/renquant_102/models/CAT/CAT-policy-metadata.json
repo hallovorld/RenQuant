@@ -38,7 +38,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/CAT/CAT-manual-rules.json"
   },
-  "trained_date": "2026-04-08",
+  "trained_date": "2026-04-10",
   "best_approach": "Dual Momentum",
-  "sharpe": 1.3505
+  "sharpe": 1.3536
 }

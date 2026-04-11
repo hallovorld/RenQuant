@@ -227,7 +227,7 @@ common/                            # Shared library — import as `import common
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
 ├── renquant_102.ipynb            # Multi-stock: train 3 approaches per symbol → export best → portfolio simulation
-├── renquant_103.ipynb            # Adaptive regime multi-stock: GMM training, regime charts, per-symbol training, portfolio simulation
+├── renquant_103.ipynb            # Adaptive regime multi-stock: GMM training, regime charts, per-symbol training (relative-label Classification + QLearning + Manual, Sharpe floor 0.5), regime-aware portfolio simulation with after-tax accounting and trade log
 └── backtest_analysis.ipynb       # Post-LEAN analysis: enrich LEAN trades with tax breakdown (add_tax_columns)
 
 backtesting/<strategy>/

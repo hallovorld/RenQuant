@@ -2,8 +2,8 @@
 
 All models implement `BaseModel` with a common interface:
 - `train(df, **kwargs)` — train on indicator-enriched OHLCV data
-- `predict(state)` — return `"hold"`, `"buy"`, or `"sell"` for a single row
-- `predict_bulk(df)` — return a Series of signals for all rows (vectorized, faster)
+- `predict(state)` — return `"hold"`, `"buy"`, or `"sell"` (string) for a single row or DataFrame (only processes row 0)
+- `predict_bulk(df)` — return a Series of strings `"buy"/"hold"/"sell"` for all rows (vectorized); use `.map({"buy": 1, "hold": 0, "sell": -1})` to convert to integers for simulation/Sharpe computation
 - `save(directory, model_name)` — export as JSON
 - `load(directory, model_name)` — load from JSON
 
@@ -47,6 +47,8 @@ model = create_model("manual", score_rules=[
 Bagged Random Forest of RTLearners. Each day is labeled by its N-day forward return as +1 (long), -1 (short), or 0 (hold), with thresholds adjusted for market impact.
 
 **Key params**: `feature_columns`, `lookahead` (10), `threshold` (0.04), `leaf_size` (25), `bags` (15), `buy_threshold` (0.1), `sell_threshold` (-0.1)
+
+**Labels are built from `df["close"]`** — to get relative-outperformance labels (which prevent bull-market bias), pass a relative price series as `close`: e.g., `df["close"] = stock_close / spy_close × 100`. The model then labels each day by 5-day relative forward return vs the threshold. renquant_103 uses this technique with `lookahead=5, threshold=0.03`.
 
 **With relative features**: The RF ensemble learns nonlinear relationships between relative indicators automatically. It effectively discovers crossover patterns, conditional logic, and regime changes from the data — capturing what simple threshold voting cannot express.
 

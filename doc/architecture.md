@@ -252,7 +252,7 @@ All 12 registered indicators can be combined freely.
 
 A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 
-**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 2-year window, picks the best by after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.8). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
+**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 2-year window, picks the best by OOS after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.8). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
 1. Dual Momentum — trend-following ManualModel rules
 2. Classification — BagLearner(RTLearner) random forest on relative features
 3. Q-Learning — tabular RL with discretized trend features
@@ -304,9 +304,12 @@ Key differences from 102:
 - **3-layer regime detection** always running on SPY: Hurst (slow baseline) + CUSUM (fast transition trigger) + GMM (continuous confidence)
 - **Regime-conditional entry**: momentum, capitulation, divergence, or blocked depending on regime
 - **Stock selection**: earnings filter → volume scan → relative-strength ranking vs sector ETF → continuous model score → combined rank → correlation-aware selection
-- **Regime-adaptive parameters**: all risk parameters (stop-loss, position size, max hold, cash reserve) adapt per regime and scale with GMM confidence
+- **Regime-adaptive parameters**: all risk parameters (stop-loss, position size, cash reserve) adapt per regime and scale with GMM confidence; `max_hold_days` is 500 for most regimes (matching 102), staying 10 days only in CHOPPY
+- **Relative-outperformance labels**: Classification model trained with `close = stock_close / spy_close × 100`, so the 5-day forward return label measures stock outperformance vs SPY (not raw return), preventing bull-market always-buy bias
+- **Sharpe floor**: 0.5 (vs 0.8 for 102) — regime-aware models need more room to specialize on defensive and counter-cyclical behavior
 - **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BEAR/BULL_VOLATILE
 - **Trailing stop**: active in BULL_CALM after 5% gain, trails at 5% below the position's high-water mark
+- **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, win rate)
 
 ### renquant_101 — Single-Stock Classification
 
@@ -330,7 +333,7 @@ Based on Gary Antonacci's Dual Momentum principles. Uses **trend-following featu
 
 ### Classification — Bagged Random Forest
 
-Uses all 7 relative indicator features. Labels each day by 10-day forward return (±4% threshold). BagLearner(RTLearner) ensemble with 15 bags and leaf_size=25. Buy/sell thresholds at ±0.1 (lowered from default ±0.5 for trending stocks). The RF learns nonlinear relationships between relative features automatically — it effectively discovers crossover patterns and conditional logic from the data.
+Uses relative indicator features (7 for renquant_102; 11 for renquant_103, adding 4 SPY regime-context columns). Labels each day by N-day forward return vs a threshold — default: `lookahead=10, threshold=±4%`. renquant_103 overrides to `lookahead=5, threshold=±3%` and uses a **relative close price** (`stock_close / spy_close × 100`) so the label becomes the stock's relative outperformance vs SPY, not its raw return. This prevents the bull-market bias where every stock looks like a buy. BagLearner(RTLearner) ensemble with 15 bags and `leaf_size=25`. Buy/sell thresholds at ±0.1 on the raw tree output. The RF learns nonlinear relationships between relative features automatically — it effectively discovers crossover patterns and conditional logic from the data.
 
 ### Q-Learning — Tabular RL with Relative Reward
 
