@@ -15,7 +15,7 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/MSFT/MSFT-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/MSFT/MSFT-bin-edges.json"
   },
-  "trained_date": "2026-04-08",
+  "trained_date": "2026-04-11",
   "best_approach": "Q-Learning",
-  "sharpe": 1.3348
+  "sharpe": 0.9816
 }

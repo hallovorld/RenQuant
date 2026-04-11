@@ -169,23 +169,23 @@ Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
 ### Daily Automation
 
-`scripts/daily_102.sh` retrains all renquant_102 models and runs one live trading pass via Alpaca. It is scheduled via macOS launchd to run every weekday at 1:55 PM PST (4:55 PM EST, after market close) so that today's full volume bar is available for the z-score scan. Orders queue overnight and fill at next open.
+`scripts/daily_103.sh` retrains all renquant_103 models and runs one live trading pass via Alpaca. It is scheduled via macOS launchd to run every weekday at 1:55 PM PST (4:55 PM EST, after market close) so that today's full volume bar is available for the z-score scan. Orders queue overnight and fill at next open.
 
 ```bash
 # Manual run
-bash scripts/daily_102.sh
+bash scripts/daily_103.sh
 
 # Manage the launchd agent
-launchctl load ~/Library/LaunchAgents/com.renquant.daily102.plist     # enable
-launchctl unload ~/Library/LaunchAgents/com.renquant.daily102.plist   # disable
+launchctl load ~/Library/LaunchAgents/com.renquant.daily103.plist     # enable
+launchctl unload ~/Library/LaunchAgents/com.renquant.daily103.plist   # disable
 pmset -g sched                                                        # verify Mac wake schedule
 ```
 
 Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent at each step:
-- After notebook retraining: model count (e.g., `Models retrained: 17 watchlist models ready`), or a warning if fewer than 10 models passed the OOS Sharpe floor
+- After notebook retraining: model count (e.g., `Models retrained: 14 watchlist models ready`), or a warning if fewer than 10 models passed the OOS Sharpe floor
 - After live trading: trade summary (e.g., `BUY TSLA x15; SELL AMZN x8; STOP COIN (12.3% loss)`) or error details
 
-Logs are written to `logs/daily_102/{date}.log`.
+Logs are written to `logs/daily_103/{date}.log`.
 
 ---
 

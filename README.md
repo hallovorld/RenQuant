@@ -110,9 +110,9 @@ python -m live.runner --strategy my_nvda --broker alpaca-paper --once
 python -m live.runner --strategy my_nvda --broker alpaca --once
 ```
 
-### Daily automation (renquant_102)
+### Daily automation (renquant_103)
 
-`scripts/daily_102.sh` retrains models and trades via Alpaca, scheduled weekdays at 1:55 PM PST (4:55 PM EST, after market close) via macOS launchd. Sends trade summary notifications (macOS + iPhone/ntfy). See [doc/usage.md](doc/usage.md) for setup details.
+`scripts/daily_103.sh` retrains models and trades via Alpaca, scheduled weekdays at 1:55 PM PST (4:55 PM EST, after market close) via macOS launchd. Sends trade summary notifications (macOS + iPhone/ntfy). See [doc/usage.md](doc/usage.md) for setup details.
 
 ## Relative Indicator Framework
 
@@ -189,7 +189,7 @@ Successor to 102, designed for volatile/choppy markets. Adds a **3-layer regime 
 - **Layer 2 (CUSUM)**: Changepoint detection — flags regime transitions within 2–5 days. Triggers a 3-bar uncertainty window (no new buys, tighter stops).
 - **Layer 3 (GMM)**: Gaussian Mixture Model on 4 SPY features outputs continuous P(regime), used to scale position sizes smoothly.
 
-Four regimes with distinct parameters: `BULL_CALM` (momentum entry, 30% max position, 8% stop, `max_hold_days=500`), `BULL_VOLATILE` (capitulation entry on high-volume down-close, 20% max, 5% stop, `max_hold_days=500`), `CHOPPY` (divergence-from-SPY entry, 15% max, 5% stop, `max_hold_days=10`), `BEAR` (no new buys, existing positions held until stop-loss or sell signal). Stock selection pipeline adds: earnings filter (±3 days), relative-strength ranking vs sector ETF, continuous model score ranking (50/50 blend), correlation-aware greedy selection (threshold 0.70). Watchlist (24 symbols): equity names minus ARKK/SHOP/COIN, plus GLD, TLT, XLV, XLU as counter-cyclical defensives. Classification model trained with relative-close prices (`stock / SPY × 100`) so labels measure outperformance vs SPY rather than raw returns — prevents the bull-market always-buy bias. OOS Sharpe floor: 0.8 (matching renquant_102). `min_hold_days: 20` and 3-consecutive-sell-signal requirement prevent noise exits and extend avg hold to 150-200 days, improving long-term tax treatment.
+Four regimes with distinct parameters: `BULL_CALM` (momentum entry, 30% max position, 8% stop, `max_hold_days=500`), `BULL_VOLATILE` (capitulation entry on high-volume down-close, 20% max, 5% stop, `max_hold_days=500`), `CHOPPY` (divergence-from-SPY entry, 15% max, 5% stop, `max_hold_days=10`), `BEAR` (no new buys, existing positions held until stop-loss or sell signal). Stock selection pipeline adds: earnings filter (±3 days), relative-strength ranking vs sector ETF, continuous model score ranking (50/50 blend), correlation-aware greedy selection (threshold 0.70). Watchlist (24 symbols): equity names minus ARKK/SHOP/COIN, plus GLD, TLT, XLV, XLU as counter-cyclical defensives. Classification model trained with relative-close prices (`stock / SPY × 100`) so labels measure outperformance vs SPY rather than raw returns — prevents the bull-market always-buy bias. OOS Sharpe floor: 0.8 (matching renquant_102). `min_hold_days: 20` and 3-consecutive-sell-signal requirement prevent noise exits and extend avg hold to 150-200 days, improving long-term tax treatment. Q-Learning models use a deterministic per-ticker seed (`abs(hash(ticker)) % 2^32`) so daily retraining produces stable, reproducible model selections. **Active daily strategy** — replaces renquant_102 as the live trading engine, scheduled via `scripts/daily_103.sh`.
 
 ```bash
 # Refresh earnings calendar (weekly)

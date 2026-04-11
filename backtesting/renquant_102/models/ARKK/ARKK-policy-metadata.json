@@ -20,7 +20,7 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/ARKK/ARKK-rf-trees.json"
   },
-  "trained_date": "2026-04-08",
+  "trained_date": "2026-04-10",
   "best_approach": "Classification",
-  "sharpe": 0.8481
+  "sharpe": 0.8759
 }

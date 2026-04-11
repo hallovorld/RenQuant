@@ -21,7 +21,7 @@
     "mode": "percentile",
     "percentile_threshold": 85
   },
-  "training_years": 2,
+  "training_years": 3,
   "max_concurrent_positions": 5,
   "position_sizing": {
     "max_position_pct": 0.30,
@@ -52,8 +52,8 @@
     "long_term_rate": 0.32,
     "long_term_threshold_days": 365
   },
-  "sample_start": "2021-01-01",
-  "sample_end": "2024-12-31",
+  "sample_start": "2016-01-01",
+  "sample_end": "2026-06-30",
   "backtest_start": "2024-01-01",
   "backtest_end": "2026-03-26",
   "indicator_spec": {

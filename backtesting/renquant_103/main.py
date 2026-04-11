@@ -79,6 +79,8 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.entry_prices  = {}
         self.last_sell_times = {}
         self._position_high_watermarks = {}   # ticker → high price for trailing stop
+        self._sell_streak  = {}               # ticker → consecutive sell signal count
+        self._consecutive_sells_required = 3  # must see N consecutive sell days before exiting
 
         # ── Regime state ──
         self._current_regime       = BULL_CALM
@@ -118,6 +120,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.trailing_stop_exits  = 0
         self.blocked_wash_sales   = 0
         self.blocked_min_hold     = 0
+        self.blocked_streak       = 0   # model said sell but streak not yet met
         self.sector_blocks        = 0
         self.corr_blocks          = 0
         self.earnings_blocks      = 0
@@ -205,16 +208,24 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                     held_tickers.remove(ticker)
                     continue
 
-            # Model-driven sell
+            # Model-driven sell — requires consecutive signals to eliminate noise flips
             features = self._build_feature_frame(ticker)
             if features is None:
                 continue
             action, detail = self._choose_action(ticker, features)
             if action == "sell":
+                self._sell_streak[ticker] = self._sell_streak.get(ticker, 0) + 1
+            else:
+                self._sell_streak[ticker] = 0
+
+            if self._sell_streak.get(ticker, 0) >= self._consecutive_sells_required:
                 action, _ = self._apply_sell_constraints(ticker, action)
                 if action == "sell":
                     self._execute_sell(ticker, detail)
+                    self._sell_streak[ticker] = 0
                     held_tickers.remove(ticker)
+            elif self._sell_streak.get(ticker, 0) > 0:
+                self.blocked_streak += 1
 
         # ── BUY phase ──
         open_slots = self.max_positions - len(held_tickers)
@@ -939,6 +950,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.entry_times[ticker]                 = self.Time
         self.entry_prices[ticker]                = price
         self._position_high_watermarks[ticker]   = price
+        self._sell_streak[ticker]                = 0
         self.executed_buys += 1
         self.SetHoldings(self.symbols[ticker], target_pct)
 
@@ -962,6 +974,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.entry_times.pop(ticker, None)
         self.entry_prices.pop(ticker, None)
         self._position_high_watermarks.pop(ticker, None)
+        self._sell_streak.pop(ticker, None)
         self.executed_sells += 1
         self.Liquidate(self.symbols[ticker])
 
@@ -1099,6 +1112,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             "Trailing Stop Exits": str(self.trailing_stop_exits),
             "Blocked Wash Sales":  str(self.blocked_wash_sales),
             "Blocked Min Hold":    str(self.blocked_min_hold),
+            "Blocked Sell Streak": str(self.blocked_streak),
             "Sector Blocks":       str(self.sector_blocks),
             "Corr Guard Blocks":   str(self.corr_blocks),
             "Earnings Blocks":     str(self.earnings_blocks),
