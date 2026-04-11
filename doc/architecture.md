@@ -181,7 +181,7 @@ All models are subject to execution constraints during both notebook simulation 
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
-| Minimum hold | 1 calendar day | Prevents same-day flipping |
+| Minimum hold | 1 day (102) / 20 days (103) | Prevents noise-driven exits in early holding period |
 | Maximum hold | 500 calendar days | Forces position review; allows long-term capital gains rate |
 
 ## Tax-Aware Returns
@@ -306,10 +306,12 @@ Key differences from 102:
 - **Stock selection**: earnings filter → volume scan → relative-strength ranking vs sector ETF → continuous model score → combined rank → correlation-aware selection
 - **Regime-adaptive parameters**: all risk parameters (stop-loss, position size, cash reserve) adapt per regime and scale with GMM confidence; `max_hold_days` is 500 for most regimes (matching 102), staying 10 days only in CHOPPY
 - **Relative-outperformance labels**: Classification model trained with `close = stock_close / spy_close × 100`, so the 5-day forward return label measures stock outperformance vs SPY (not raw return), preventing bull-market always-buy bias
-- **Sharpe floor**: 0.5 (vs 0.8 for 102) — regime-aware models need more room to specialize on defensive and counter-cyclical behavior
+- **Sharpe floor**: 0.8 (matching 102) — high-conviction models only; marginal models below 0.8 are excluded
+- **min_hold_days: 20** — no position can be sold via model signal until held 20 days (stop-loss still immediate); extends avg hold to 150-200 days, improving LT tax treatment
+- **Consecutive-sell filter**: requires 3 consecutive daily sell signals before exiting a position; eliminates one-day noise flips that would otherwise trigger short-term tax events
 - **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BEAR/BULL_VOLATILE
 - **Trailing stop**: active in BULL_CALM after 5% gain, trails at 5% below the position's high-water mark
-- **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, win rate)
+- **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, total tax, win rate)
 
 ### renquant_101 — Single-Stock Classification
 

@@ -116,7 +116,7 @@ All models are subject to execution constraints during simulation and LEAN backt
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 calendar days of selling |
-| Min hold | 1 day | Prevents same-day flipping |
+| Min hold | 1 day (102) / 20 days (103) | Prevents noise-driven model-signal exits during early hold period |
 | Max hold | 500 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing

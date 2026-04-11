@@ -137,7 +137,7 @@ All indicators are computed relative to SPY to answer "is the stock outperformin
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 days of selling |
-| Min hold | 1 day | Prevents same-day flipping |
+| Min hold | 1 day (102) / 20 days (103) | Prevents noise-driven exits in early holding period |
 | Max hold | 500 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
@@ -189,7 +189,7 @@ Successor to 102, designed for volatile/choppy markets. Adds a **3-layer regime 
 - **Layer 2 (CUSUM)**: Changepoint detection — flags regime transitions within 2–5 days. Triggers a 3-bar uncertainty window (no new buys, tighter stops).
 - **Layer 3 (GMM)**: Gaussian Mixture Model on 4 SPY features outputs continuous P(regime), used to scale position sizes smoothly.
 
-Four regimes with distinct parameters: `BULL_CALM` (momentum entry, 30% max position, 8% stop, `max_hold_days=500`), `BULL_VOLATILE` (capitulation entry on high-volume down-close, 20% max, 5% stop, `max_hold_days=500`), `CHOPPY` (divergence-from-SPY entry, 15% max, 5% stop, `max_hold_days=10`), `BEAR` (no new buys, existing positions held until stop-loss or sell signal). Stock selection pipeline adds: earnings filter (±3 days), relative-strength ranking vs sector ETF, continuous model score ranking (50/50 blend), correlation-aware greedy selection (threshold 0.70). Watchlist (24 symbols): equity names minus ARKK/SHOP/COIN, plus GLD, TLT, XLV, XLU as counter-cyclical defensives. Classification model trained with relative-close prices (`stock / SPY × 100`) so labels measure outperformance vs SPY rather than raw returns — prevents the bull-market always-buy bias. OOS Sharpe floor: 0.5 (vs 0.8 for renquant_102).
+Four regimes with distinct parameters: `BULL_CALM` (momentum entry, 30% max position, 8% stop, `max_hold_days=500`), `BULL_VOLATILE` (capitulation entry on high-volume down-close, 20% max, 5% stop, `max_hold_days=500`), `CHOPPY` (divergence-from-SPY entry, 15% max, 5% stop, `max_hold_days=10`), `BEAR` (no new buys, existing positions held until stop-loss or sell signal). Stock selection pipeline adds: earnings filter (±3 days), relative-strength ranking vs sector ETF, continuous model score ranking (50/50 blend), correlation-aware greedy selection (threshold 0.70). Watchlist (24 symbols): equity names minus ARKK/SHOP/COIN, plus GLD, TLT, XLV, XLU as counter-cyclical defensives. Classification model trained with relative-close prices (`stock / SPY × 100`) so labels measure outperformance vs SPY rather than raw returns — prevents the bull-market always-buy bias. OOS Sharpe floor: 0.8 (matching renquant_102). `min_hold_days: 20` and 3-consecutive-sell-signal requirement prevent noise exits and extend avg hold to 150-200 days, improving long-term tax treatment.
 
 ```bash
 # Refresh earnings calendar (weekly)
