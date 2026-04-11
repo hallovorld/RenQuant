@@ -17,9 +17,9 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-bin-edges.json"
   },
-  "trained_date": "2026-04-10",
+  "trained_date": "2026-04-11",
   "best_approach": "QLearning",
-  "sharpe": 1.4886,
+  "sharpe": 1.1845,
   "lookahead": 5,
   "strategy": "renquant_103"
 }

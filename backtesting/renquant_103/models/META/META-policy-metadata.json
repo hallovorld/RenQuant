@@ -17,9 +17,9 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/META/META-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/META/META-bin-edges.json"
   },
-  "trained_date": "2026-04-10",
+  "trained_date": "2026-04-11",
   "best_approach": "QLearning",
-  "sharpe": 0.9304,
+  "sharpe": 1.3181,
   "lookahead": 5,
   "strategy": "renquant_103"
 }
