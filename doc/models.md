@@ -68,11 +68,13 @@ Tabular Q-learning with discretized indicator states. Continuous features are bi
 
 ### Design considerations with relative features
 
-**Feature selection**: Use 3 trend-following features (`trend`, `rel_mom_20d`, `macd_hist`) instead of 7 oscillators. With 5 bins: `5^3 * 3 = 375 states` — dense enough for ~1000 bars to get good coverage. Using all 7 features creates `5^7 * 3 = 234,375` states with <1 visit each.
+**Feature selection**: Use 5 indicator features (`rsi`, `macd_hist`, `cci`, `bbp`, `adx`) — these are the first 5 entries of the shared `feature_columns` list. With 5 bins: `5^5 * 3 = 9,375 states` — manageable for ~500+ training bars. Using all 11 features (including 4 regime-context columns) creates `5^11 * 3 = 146M` states — completely intractable.
 
 **Reward signal**: Use `rel_price` (stock/SPY ratio) as the "close" column so the Q-learner optimizes **relative returns**. With raw stock returns in a bull market, the agent learns "buy and never sell" because returns are always positive. Relative returns can go negative (stock underperforms SPY), giving the agent a real incentive to exit.
 
-**Scaling note**: With many features, reduce `n_bins` to keep state space manageable. E.g., 3 features with 5 bins = 375 states (good). 7 features with 4 bins = 49,152 states (too sparse).
+**Reproducibility**: Training uses a deterministic per-ticker seed (`abs(hash(ticker)) % 2^32`) so daily retraining produces the same model for each symbol regardless of execution order.
+
+**Scaling note**: With many features, reduce `n_bins` to keep state space manageable. E.g., 5 features with 5 bins = 9,375 states (good). 7 features with 5 bins = 234,375 states (too sparse).
 
 **When to use**: Model-free RL exploration. Best with small feature sets and relative reward.
 
@@ -102,7 +104,7 @@ Meta-model: SciPy Nelder-Mead searches over indicator parameters while training 
 Is your strategy rule-based?
   └─ Yes → Manual (use Dual Momentum, not oscillator voting)
   └─ No → Is the state space small (<15000 states)?
-              └─ Yes → Q-Learning (use relative reward + 3 trend features)
+              └─ Yes → Q-Learning (use relative reward + 5 indicator features)
               └─ No → Do you have gate signals?
                         └─ Yes → FQI
                         └─ No → Classification (best default)

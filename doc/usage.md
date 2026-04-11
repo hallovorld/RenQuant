@@ -95,7 +95,7 @@ To adjust the backtest period or initial capital, edit `strategy_config.json`.
   "model_staleness_days": 60,
   "volume_zscore_lookback": 20,
   "volume_filter": {"mode": "percentile", "percentile_threshold": 85},
-  "training_years": 2,
+  "training_years": 3,
   "max_concurrent_positions": 5,
   "risk": {
     "stop_loss_pct": 0.08,

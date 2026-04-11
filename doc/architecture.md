@@ -212,7 +212,7 @@ Position sizing is configured in `strategy_config.json` under the `position_sizi
 2. **Max position cap** — `target_pct = min(max_position_pct, (available_cash - cash_reserve) / portfolio_value)`
 3. **Whole shares only** — notebook simulation buys whole shares; LEAN uses `SetHoldings` which handles this internally
 
-These rules are used by both single-stock (renquant_101) and multi-stock (renquant_102) strategies. In multi-stock mode, each position is independently capped and the cash reserve is maintained across all positions.
+These rules are used by single-stock (renquant_101) and multi-stock (renquant_102, renquant_103) strategies. In multi-stock mode, each position is independently capped and the cash reserve is maintained across all positions.
 
 ---
 
@@ -231,7 +231,7 @@ renquant_102 uses 7 shared relative indicator features for ML models (Classifica
 | `obv_slope` | diff | OBV rate of change (stock − SPY) |
 
 The Manual model uses trend-following features instead (see Strategy Details below).
-Q-Learning uses a subset of 3 trend features to keep state space small.
+Q-Learning uses a subset of 5 indicator features (`rsi`, `macd_hist`, `cci`, `bbp`, `adx`) to keep state space tractable (5^5 × 3 = 9,375 states).
 
 renquant_103 adds 4 regime-context features (computed from SPY, appended to the stock frame):
 
@@ -252,12 +252,12 @@ All 12 registered indicators can be combined freely.
 
 A 3-stage pipeline strategy: **DETECT** → **CONFIRM** → **EXECUTE**.
 
-**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 2-year window, picks the best by OOS after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.8). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
+**Notebook** (`renquant_102.ipynb`): Trains 3 approaches per symbol on a rolling 3-year window (`training_years=3`), picks the best by OOS after-tax Sharpe ratio, exports one model per symbol to `models/{SYMBOL}/` (minimum Sharpe floor: 0.8). After export, a portfolio-level simulation replicates the LEAN multi-stock logic in Python — scanning bullish volume z-scores, confirming with models, managing concurrent positions — and renders a 4-panel dashboard (equity vs SPY, drawdown, positions held, cash allocation). This enables parameter tuning (z-score threshold, lookback, position sizing) before running LEAN. The 3 approaches are:
 1. Dual Momentum — trend-following ManualModel rules
 2. Classification — BagLearner(RTLearner) random forest on relative features
 3. Q-Learning — tabular RL with discretized trend features
 
-Each symbol's best model may be a different type. The daily automation retrains all models via `daily_102.sh`. Models include a `trained_date` field; LEAN skips models older than `model_staleness_days` (default 60).
+Each symbol's best model may be a different type. The daily automation retrains all models via `daily_103.sh` (renquant_103 is the active live strategy). Models include a `trained_date` field; LEAN skips models older than `model_staleness_days` (default 60).
 
 **Stage 1: DETECT** — compute adaptive per-stock volume score for each watchlist symbol. Default mode: **percentile** — triggers when today's volume is in the top 15% of the 20-day lookback window (P85). Legacy **zscore** mode (threshold 1.5σ) also supported via `volume_filter.mode` config. Bullish filter: only enter on up-close days.
 
@@ -339,7 +339,7 @@ Uses relative indicator features (7 for renquant_102; 11 for renquant_103, addin
 
 ### Q-Learning — Tabular RL with Relative Reward
 
-Uses 3 trend-following features (`trend`, `rel_mom_20d`, `macd_hist`) with 5 bins = 375 states. Key design choice: **reward is relative price returns** (stock/SPY ratio changes), not raw stock returns. In a bull market, raw returns are always positive and the Q-learner learns "buy and never sell." Relative returns can go negative, giving the agent a reason to exit when the stock underperforms the market.
+Uses 5 indicator features (`rsi`, `macd_hist`, `cci`, `bbp`, `adx`) with 5 bins = 9,375 states (5^5 × 3 holding buckets). Key design choice: **reward is relative price returns** (stock/SPY ratio changes), not raw stock returns. In a bull market, raw returns are always positive and the Q-learner learns "buy and never sell." Relative returns can go negative, giving the agent a reason to exit when the stock underperforms the market. Training uses a deterministic per-ticker seed (`abs(hash(ticker)) % 2^32`) for reproducible results across daily retraining runs.
 
 ---
 
