@@ -32,6 +32,8 @@
   "model_staleness_days": 60,
   "wash_sale_days": 30,
   "min_hold_days": 20,
+  "min_hold_profit_days": 20,
+  "min_hold_loss_days": 20,
   "max_hold_days": 500,
   "train_split": 0.7,
   "volume_zscore_lookback": 20,
@@ -64,12 +66,12 @@
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.08,
       "max_hold_days": 500,
-      "drawdown_halt_pct": 0.15,
+      "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",
       "min_model_score": 0.1,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.05,
-      "trailing_stop_trail_pct": 0.05
+      "trailing_stop_trigger_pct": 0.20,
+      "trailing_stop_trail_pct": 0.18
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,

@@ -26,6 +26,6 @@
   },
   "trained_date": "2026-04-11",
   "best_approach": "Classification",
-  "sharpe": 0.8104,
+  "sharpe": 0.8197,
   "strategy": "renquant_103"
 }

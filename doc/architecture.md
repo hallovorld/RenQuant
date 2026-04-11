@@ -75,7 +75,7 @@ The notebook is where training happens. The typical workflow:
    - **Difference** (`stock - SPY`) for zero-crossing indicators: MACD hist, CCI, BBP, Williams %R, OBV slope
    - Additional trend-following features: `trend` (price/50EMA), `trend_long` (price/200EMA), `rel_mom_20d`, `rel_mom_60d`
 4. **Model training** — depends on model type (see below)
-5. **Comparison** — all models simulated on the 30% OOS test set with constraints (wash sale 30d, min hold 1d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks. Both OOS Sharpe and in-sample Sharpe are recorded.
+5. **Comparison** — all models simulated on the 30% OOS test set with constraints (wash sale 30d, min hold 20d, max hold 500d), compared with stock and SPY buy-and-hold benchmarks. Both OOS Sharpe and in-sample Sharpe are recorded.
 6. **Export** — best model by OOS after-tax Sharpe auto-exported to `backtesting/<strategy>/` (Sharpe floor: 0.8 OOS for renquant_102). Orphan model directories for symbols not in the current watchlist are purged on each run.
 
 ---
@@ -181,7 +181,7 @@ All models are subject to execution constraints during both notebook simulation 
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale avoidance | 30 calendar days | Cannot buy within 30 days of selling (IRS wash sale rule) |
-| Minimum hold | 1 day (102) / 20 days (103) | Prevents noise-driven exits in early holding period |
+| Minimum hold | 20 days (all multi-stock strategies) | Prevents noise-driven model-signal exits during consolidation; stop-loss still triggers immediately |
 | Maximum hold | 500 calendar days | Forces position review; allows long-term capital gains rate |
 
 ## Tax-Aware Returns
@@ -310,7 +310,8 @@ Key differences from 102:
 - **min_hold_days: 20** — no position can be sold via model signal until held 20 days (stop-loss still immediate); extends avg hold to 150-200 days, improving LT tax treatment
 - **Consecutive-sell filter**: requires 3 consecutive daily sell signals before exiting a position; eliminates one-day noise flips that would otherwise trigger short-term tax events
 - **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BEAR/BULL_VOLATILE
-- **Trailing stop**: active in BULL_CALM after 5% gain, trails at 5% below the position's high-water mark
+- **Trailing stop**: active in BULL_CALM after 20% gain from entry, trails at 18% below the position's rolling high-water mark — locks in gains on large winners without capping upside during normal corrections
+- **BEAR regime defensive buys**: when regime = BEAR, offensive buys are blocked but GLD/TLT may be bought (1 slot, max 15% of portfolio) if their model gives a buy signal — provides counter-cyclical hedge instead of going fully to cash
 - **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, total tax, win rate)
 
 ### renquant_101 — Single-Stock Classification

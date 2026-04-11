@@ -25,7 +25,7 @@
   },
   "trained_date": "2026-04-11",
   "best_approach": "Manual",
-  "sharpe": 0.7562,
+  "sharpe": 0.8744,
   "lookahead": 5,
   "strategy": "renquant_103"
 }
