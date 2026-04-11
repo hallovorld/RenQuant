@@ -252,5 +252,6 @@ scripts/
 ├── analyze_backtest.py            # Render backtest charts + summary metrics
 ├── new_strategy.py                # Scaffold a new strategy directory
 ├── fetch_earnings_calendar.py    # Fetch upcoming earnings dates via yfinance → earnings-calendar.json
-└── daily_102.sh                   # Retrain all renquant_102 models + run live trading pass
+├── daily_103.sh                   # Retrain all renquant_103 models + run live trading pass (active)
+└── daily_102.sh                   # Retrain all renquant_102 models + run live trading pass (legacy)
 ```

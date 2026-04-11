@@ -298,7 +298,7 @@ Each symbol's best model may be a different type. The daily automation retrains 
 
 ### renquant_103 — Adaptive Regime Multi-Stock
 
-Successor to 102, built for volatile and choppy markets. See full design: [`docs/renquant_103_design.md`](../docs/renquant_103_design.md).
+Successor to 102, built for volatile and choppy markets. See full design: [`doc/renquant_103_design.md`](renquant_103_design.md).
 
 Key differences from 102:
 - **3-layer regime detection** always running on SPY: Hurst (slow baseline) + CUSUM (fast transition trigger) + GMM (continuous confidence)

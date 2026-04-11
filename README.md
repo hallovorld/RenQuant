@@ -43,8 +43,7 @@ RenQuant/
 ├── live/                    # Live trading runner + broker abstraction
 ├── scripts/                 # Scaffolding + data pipeline tools
 ├── data/                    # Local Parquet cache (gitignored)
-├── doc/                     # Detailed documentation
-└── docs/                    # Strategy design specs (renquant_103_design.md)
+└── doc/                     # Detailed documentation + strategy design specs
 ```
 
 ## Quick Start
@@ -208,7 +207,7 @@ cd backtesting/renquant_103 && lean backtest .
 python -m live.runner --strategy renquant_103 --broker paper --once
 ```
 
-Full design specification: [`docs/renquant_103_design.md`](docs/renquant_103_design.md).
+Full design specification: [`doc/renquant_103_design.md`](doc/renquant_103_design.md).
 
 ## Indicator Library
 

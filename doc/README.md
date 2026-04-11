@@ -9,3 +9,5 @@
 | [indicators.md](indicators.md) | Indicator catalog with parameters |
 | [tech-stack.md](tech-stack.md) | Tool choices and rationale |
 | [plan-relative-indicators.md](plan-relative-indicators.md) | Historical plan for relative indicator framework (completed) |
+| [renquant_103_design.md](renquant_103_design.md) | Full design spec for renquant_103 adaptive regime strategy |
+| [renquant_102_vs_103_report.md](renquant_102_vs_103_report.md) | Per-symbol OOS Sharpe comparison: renquant_102 vs renquant_103 |
