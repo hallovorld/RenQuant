@@ -1,5 +1,5 @@
 {
-  "model_name": "NVDA",
+  "model_name": "XLV",
   "policy_type": "qlearning",
   "feature_columns": [
     "rsi",
@@ -14,10 +14,10 @@
   "gamma": 0.95,
   "impact": 0.0,
   "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/NVDA/NVDA-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/NVDA/NVDA-bin-edges.json"
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/XLV/XLV-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/XLV/XLV-bin-edges.json"
   },
   "trained_date": "2026-04-11",
   "best_approach": "Q-Learning",
-  "sharpe": 0.8664
+  "sharpe": 0.9759
 }

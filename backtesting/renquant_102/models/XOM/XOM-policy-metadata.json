@@ -38,7 +38,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/XOM/XOM-manual-rules.json"
   },
-  "trained_date": "2026-04-10",
+  "trained_date": "2026-04-11",
   "best_approach": "Dual Momentum",
-  "sharpe": 0.9936
+  "sharpe": 1.6822
 }

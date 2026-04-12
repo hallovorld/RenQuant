@@ -1,31 +1,25 @@
 {
   "model_name": "AMZN",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "rsi",
-      "buy_below": 30,
-      "sell_above": 70
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "cci",
-      "buy_below": -100,
-      "sell_above": 50
-    }
+  "policy_type": "qlearning",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx"
   ],
-  "buy_threshold": 2,
-  "sell_threshold": -2,
+  "n_bins": 10,
+  "n_epochs": 100,
+  "alpha": 0.2,
+  "gamma": 0.9,
+  "impact": 0.0,
   "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMZN/AMZN-manual-rules.json"
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMZN/AMZN-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMZN/AMZN-bin-edges.json"
   },
   "trained_date": "2026-04-12",
-  "best_approach": "Manual",
-  "sharpe": 0.852,
+  "best_approach": "QLearning",
+  "sharpe": 0.8774,
   "lookahead": 5,
   "strategy": "renquant_103"
 }

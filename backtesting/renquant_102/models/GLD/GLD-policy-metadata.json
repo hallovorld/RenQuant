@@ -1,5 +1,5 @@
 {
-  "model_name": "AAPL",
+  "model_name": "GLD",
   "policy_type": "classification",
   "feature_columns": [
     "rsi",
@@ -18,9 +18,9 @@
   "buy_threshold": 0.1,
   "sell_threshold": -0.1,
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/AAPL/AAPL-rf-trees.json"
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/GLD/GLD-rf-trees.json"
   },
   "trained_date": "2026-04-11",
   "best_approach": "Classification",
-  "sharpe": 1.1337
+  "sharpe": 1.2458
 }
