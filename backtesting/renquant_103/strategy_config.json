@@ -42,9 +42,9 @@
     "percentile_threshold": 85
   },
   "training_years": 3,
-  "max_concurrent_positions": 5,
+  "max_concurrent_positions": 8,
   "position_sizing": {
-    "max_position_pct": 0.3,
+    "max_position_pct": 0.15,
     "cash_reserve_pct": 0.0
   },
   "regime": {
@@ -62,9 +62,9 @@
   },
   "regime_params": {
     "BULL_CALM": {
-      "max_position_pct": 0.3,
+      "max_position_pct": 0.15,
       "cash_reserve_pct": 0.0,
-      "stop_loss_pct": 0.08,
+      "stop_loss_pct": 0.05,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",

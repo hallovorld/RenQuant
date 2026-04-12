@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/TSLA/TSLA-manual-rules.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-12",
   "best_approach": "Manual",
   "sharpe": 0.8833,
   "lookahead": 5,

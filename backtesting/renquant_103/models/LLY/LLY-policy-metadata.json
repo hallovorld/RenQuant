@@ -17,9 +17,9 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/LLY/LLY-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/LLY/LLY-bin-edges.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-12",
   "best_approach": "QLearning",
-  "sharpe": 1.2419,
+  "sharpe": 1.0613,
   "lookahead": 5,
   "strategy": "renquant_103"
 }
