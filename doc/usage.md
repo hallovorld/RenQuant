@@ -207,7 +207,7 @@ Then:
 4. **Analyze** — run `python scripts/analyze_backtest.py --strategy nvda_rf`
 5. **Live trade** — `python -m live.runner --strategy nvda_rf --broker paper --once`
 
-Available model types: `manual`, `classification`, `qlearning`, `fqi`, `optimization` (see [doc/models.md](models.md)).
+Available model types: `manual`, `classification`, `qlearning`, `fqi`, `optimization`, `xgboost` (see [doc/models.md](models.md)).
 
 ---
 
@@ -218,7 +218,7 @@ common/                            # Shared library — import as `import common
 ├── config.py                      # load_strategy_config, build_model_path
 ├── data/                          # fetch_ohlcv (Parquet cache + yfinance/IBKR)
 ├── indicators/                    # compute_indicators, 12 registered indicators
-├── models/                        # BaseModel ABC + 5 implementations + learners/
+├── models/                        # BaseModel ABC + 6 implementations + learners/
 ├── strategy.py                    # StrategyConfig + Strategy composition class
 ├── portfolio.py                   # compute_portvals, portfolio_stats
 ├── tax.py                         # compute_trade_tax, load_tax_config, add_tax_columns

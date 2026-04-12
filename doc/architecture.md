@@ -138,7 +138,7 @@ backtesting/renquant_103/
   1. Accumulates SPY daily returns; runs Hurst (Layer 1), CUSUM (Layer 2), GMM (Layer 3) to classify regime and confidence
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
   3. Processes sells (same as 102, but with regime-adaptive stop-loss and wider trailing stop in BULL_CALM: 35% trigger, 28% trail)
-  4. DETECT: SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; then regime-conditional scan — momentum (up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY, blocked in BEAR; defensives (GLD/TLT/XLV/XLU) allowed in BEAR (1 slot, 15%)
+  4. DETECT: SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; then regime-conditional scan — momentum (up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY, blocked entirely in BEAR; defensives (GLD/TLT/XLV/XLU) use counter-cyclical scan in BULL_VOLATILE only
   5. CONFIRM: compute relative-strength score (vs sector ETF) + continuous model score; combined rank (50/50)
   6. EXECUTE: correlation-aware greedy selection (max pairwise correlation 0.70), then sector guard, then orders
 
@@ -310,9 +310,9 @@ Key differences from 102:
 - **Sharpe floor**: 0.8 (matching 102) — high-conviction models only; marginal models below 0.8 are excluded
 - **min_hold_days: 20** — no position can be sold via model signal until held 20 days (stop-loss still immediate); extends avg hold to 150-200 days, improving LT tax treatment
 - **Consecutive-sell filter**: requires 3 consecutive daily sell signals before exiting a position; eliminates one-day noise flips that would otherwise trigger short-term tax events
-- **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BEAR/BULL_VOLATILE
-- **Trailing stop**: active in BULL_CALM after 20% gain from entry, trails at 18% below the position's rolling high-water mark — locks in gains on large winners without capping upside during normal corrections
-- **BEAR regime defensive buys**: when regime = BEAR, offensive buys are blocked but GLD/TLT may be bought (1 slot, max 15% of portfolio) if their model gives a buy signal — provides counter-cyclical hedge instead of going fully to cash
+- **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BULL_VOLATILE only (SPY weak + defensive showing relative strength). In BEAR regime all buys including defensives are blocked.
+- **Trailing stop**: active in BULL_CALM after 35% gain from entry, trails at 28% below the position's rolling high-water mark — wide enough for high-beta tech corrections, locks in gains on large winners without capping upside.
+- **BEAR regime**: all new buys are blocked. Existing positions are held until stop-loss, max hold, or 3-consecutive-sell exit.
 - **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, total tax, win rate)
 
 ### renquant_101 — Single-Stock Classification

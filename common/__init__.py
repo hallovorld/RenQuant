@@ -24,6 +24,7 @@ from .models import (
     ManualModel,
     OptimizationModel,
     QLearningModel,
+    XGBoostModel,
     create_model,
 )
 from .portfolio import compute_portvals, portfolio_stats
@@ -73,6 +74,7 @@ __all__ = [
     "ManualModel",
     "OptimizationModel",
     "QLearningModel",
+    "XGBoostModel",
     "create_model",
     # portfolio
     "compute_portvals",
