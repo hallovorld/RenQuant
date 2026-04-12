@@ -1,25 +1,45 @@
 {
   "model_name": "NFLX",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
+  "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.09338037669658661,
+    "macd_hist": 0.08551537990570068,
+    "cci": 0.0859709084033966,
+    "bbp": 0.08576826751232147,
+    "adx": 0.10017461329698563,
+    "williams_r": 0.07618855684995651,
+    "obv_slope": 0.09724807739257812,
+    "spy_realized_vol": 0.10448820888996124,
+    "spy_adx": 0.0958578884601593,
+    "spy_trend": 0.09071783721446991,
+    "hurst_proxy": 0.08468987792730331
+  },
   "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/NFLX/NFLX-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/NFLX/NFLX-bin-edges.json"
+    "buy_model": "NFLX-xgb-buy.json",
+    "sell_model": "NFLX-xgb-sell.json"
   },
   "trained_date": "2026-04-12",
-  "best_approach": "QLearning",
-  "sharpe": 1.3751,
-  "lookahead": 5,
+  "best_approach": "XGBoost",
+  "sharpe": 1.1681,
   "strategy": "renquant_103"
 }

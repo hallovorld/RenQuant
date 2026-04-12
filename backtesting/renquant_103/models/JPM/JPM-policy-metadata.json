@@ -1,25 +1,45 @@
 {
   "model_name": "JPM",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
+  "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08986236155033112,
+    "macd_hist": 0.09513059258460999,
+    "cci": 0.08221949636936188,
+    "bbp": 0.0886671245098114,
+    "adx": 0.0973781943321228,
+    "williams_r": 0.08986324071884155,
+    "obv_slope": 0.08389416337013245,
+    "spy_realized_vol": 0.11382800340652466,
+    "spy_adx": 0.09014897048473358,
+    "spy_trend": 0.08364427834749222,
+    "hurst_proxy": 0.08536356687545776
+  },
   "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/JPM/JPM-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/JPM/JPM-bin-edges.json"
+    "buy_model": "JPM-xgb-buy.json",
+    "sell_model": "JPM-xgb-sell.json"
   },
   "trained_date": "2026-04-12",
-  "best_approach": "QLearning",
-  "sharpe": 0.9723,
-  "lookahead": 5,
+  "best_approach": "XGBoost",
+  "sharpe": 1.1968,
   "strategy": "renquant_103"
 }

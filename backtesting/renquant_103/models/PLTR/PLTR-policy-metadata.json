@@ -1,25 +1,45 @@
 {
   "model_name": "PLTR",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
+  "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08233391493558884,
+    "macd_hist": 0.08656460046768188,
+    "cci": 0.08586636930704117,
+    "bbp": 0.08531986176967621,
+    "adx": 0.09651663899421692,
+    "williams_r": 0.08214497566223145,
+    "obv_slope": 0.1089714914560318,
+    "spy_realized_vol": 0.0914209857583046,
+    "spy_adx": 0.09537751972675323,
+    "spy_trend": 0.0962962657213211,
+    "hurst_proxy": 0.0891873687505722
+  },
   "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-bin-edges.json"
+    "buy_model": "PLTR-xgb-buy.json",
+    "sell_model": "PLTR-xgb-sell.json"
   },
   "trained_date": "2026-04-12",
-  "best_approach": "QLearning",
-  "sharpe": 1.6849,
-  "lookahead": 5,
+  "best_approach": "XGBoost",
+  "sharpe": 1.7557,
   "strategy": "renquant_103"
 }

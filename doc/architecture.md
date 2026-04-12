@@ -52,7 +52,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 | `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
 | `common/data/` | `fetch_ohlcv` (Parquet cache + yfinance/IBKR sources), `DataSource` ABC, `LocalStore` |
 | `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 12 registered indicators across 4 categories; regime detection (non-registered): `compute_hurst`, `rolling_hurst`, `compute_cusum`, `rolling_cusum`, `build_gmm_features`, `RegimeGMM` |
-| `common/models/` | `BaseModel` ABC, 5 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `create_model` factory |
+| `common/models/` | `BaseModel` ABC, 6 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `XGBoostModel`, `create_model` factory |
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` — local portfolio simulator |
@@ -93,6 +93,7 @@ All artifacts are JSON (not pickle) — required for LEAN compatibility and huma
 | `*-rf-trees.json` | Random Forest tree structure (Classification) |
 | `*-qtable.json` + `*-bin-edges.json` | Q-table + discretization (Q-Learning) |
 | `*-manual-rules.json` | Threshold rules (Manual) |
+| `*-xgb-buy.json` + `*-xgb-sell.json` | XGBoost buy/sell classifiers (XGBoost model) |
 
 The policy metadata acts as a contract between research and execution — both must use identical indicator parameters.
 
@@ -136,8 +137,8 @@ backtesting/renquant_103/
 **renquant_103** (adaptive regime multi-stock): Extends 102's architecture with a 3-layer regime detector. `Initialize()` additionally loads `spy-gmm-regime.json`, `watchlist-correlation.json`, and `earnings-calendar.json`. `OnData()`:
   1. Accumulates SPY daily returns; runs Hurst (Layer 1), CUSUM (Layer 2), GMM (Layer 3) to classify regime and confidence
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
-  3. Processes sells (same as 102, but with regime-adaptive stop-loss and trailing stop in BULL_CALM)
-  4. DETECT: regime-conditional scan — momentum (up-close) in BULL_CALM, capitulation (down-close in bottom 30% of 5d range) in BULL_VOLATILE, divergence-from-SPY in CHOPPY, blocked in BEAR; defensives (GLD/TLT/XLV/XLU) use counter-cyclical logic in BEAR/BULL_VOLATILE
+  3. Processes sells (same as 102, but with regime-adaptive stop-loss and wider trailing stop in BULL_CALM: 35% trigger, 28% trail)
+  4. DETECT: SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; then regime-conditional scan — momentum (up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY, blocked in BEAR; defensives (GLD/TLT/XLV/XLU) allowed in BEAR (1 slot, 15%)
   5. CONFIRM: compute relative-strength score (vs sector ETF) + continuous model score; combined rank (50/50)
   6. EXECUTE: correlation-aware greedy selection (max pairwise correlation 0.70), then sector guard, then orders
 

@@ -19,7 +19,7 @@
   },
   "trained_date": "2026-04-12",
   "best_approach": "QLearning",
-  "sharpe": 1.0189,
+  "sharpe": 1.4178,
   "lookahead": 5,
   "strategy": "renquant_103"
 }

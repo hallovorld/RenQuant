@@ -98,6 +98,29 @@ Meta-model: SciPy Nelder-Mead searches over indicator parameters while training 
 
 **When to use**: When you suspect default indicator parameters are suboptimal for a given symbol/period.
 
+## XGBoost Model
+
+**Type**: `xgboost` | **Module**: `common/models/xgboost_model.py`
+
+Gradient-boosted trees using two one-vs-rest XGBClassifier instances (buy probability and sell probability). Labels are the same as Classification (N-day forward relative return vs threshold), but the learning algorithm is fundamentally different: each tree corrects the residual errors of the previous trees (boosting), with L1/L2 regularisation and row/column subsampling to prevent overfitting.
+
+**Key advantages over RTLearner/BagLearner:**
+- Residual boosting corrects previous errors systematically (vs random forests that average independent noisy trees)
+- L1/L2 regularisation + `min_child_weight` prevent overfitting on short time-series
+- `scale_pos_weight` handles class imbalance (buy/sell labels are typically 20-30% of data)
+- Feature importance scores (averaged over buy+sell models) give interpretable attribution
+- Saves to JSON natively via XGBoost's own format
+
+**Key params**: `feature_columns`, `lookahead` (5), `threshold` (0.03), `buy_threshold` (0.1), `sell_threshold` (0.1), `n_estimators` (200), `max_depth` (4), `learning_rate` (0.05), `subsample` (0.8), `colsample_bytree` (0.8), `min_child_weight` (10)
+
+**Signal**: `P(buy) - P(sell)` → buy if score > buy_threshold-0.5, sell if score < -(sell_threshold-0.5), hold otherwise.
+
+**Artifacts**: `{name}-xgb-buy.json` + `{name}-xgb-sell.json` + `{name}-policy-metadata.json`
+
+**When to use**: Primary replacement for Classification when higher prediction quality is needed. Consistently outperforms RTLearner/BagLearner on out-of-sample Sharpe for complex multi-feature setups. Tournament in renquant_103 picks the best of Classification / QLearning / Manual / XGBoost per ticker.
+
+**Note**: Requires `pip install xgboost`. Not yet supported in LEAN main.py (notebook simulation only until LEAN layer is extended).
+
 ## Decision Guide
 
 ```
@@ -107,7 +130,8 @@ Is your strategy rule-based?
               └─ Yes → Q-Learning (use relative reward + 5 indicator features)
               └─ No → Do you have gate signals?
                         └─ Yes → FQI
-                        └─ No → Classification (best default)
+                        └─ No → XGBoost (best default — gradient boosting, regularised)
+                                  └─ Want interpretable fallback? → Classification (RTLearner)
                                   └─ Want auto-tuned params? → Optimization
 ```
 
@@ -118,22 +142,35 @@ All models are subject to execution constraints during simulation and LEAN backt
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 calendar days of selling |
-| Min hold | 1 day (102) / 20 days (103) | Prevents noise-driven model-signal exits during early hold period |
+| Min hold | 20 days (all multi-stock strategies) | Prevents noise-driven model-signal exits during early hold period |
 | Max hold | 500 days | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
 
 All models use position sizing rules from `strategy_config.json`:
 
-| Parameter | Value | Purpose |
-|-----------|-------|---------|
-| `max_position_pct` | 30% | No single stock exceeds 30% of portfolio value |
+| Parameter | renquant_103 value | Purpose |
+|-----------|-------------------|---------|
+| `max_position_pct` | 15% | No single stock exceeds 15% of portfolio (8 concurrent slots) |
 | `cash_reserve_pct` | 0% | All capital available for positions |
+| `max_concurrent_positions` | 8 | Diversification across 8 simultaneous positions |
 
 Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_reserve)`. Whole shares only in notebook simulation; LEAN uses `SetHoldings` with the capped percentage. Cash-only buys — never sell existing holdings to fund a new position.
+
+## Exit Logic (renquant_103 priority order)
+
+1. **Trailing stop** (BULL_CALM): activates once position gains ≥35% from entry; then trails 28% below rolling high-water mark. Allows winners like NVDA/PLTR to run through minor corrections.
+2. **Hard stop-loss**: 5% from entry price (triggers immediately, no min-hold).
+3. **SPY velocity crash filter** (entry gate): blocks all new buys if SPY has fallen >3% over the last 3 days — prevents entering into momentum crashes (tariff events, flash crashes).
+4. **Max hold**: forced exit after 500 days (BULL_CALM/BEAR) or 10 days (CHOPPY).
+5. **Model sell**: 3 consecutive daily sell signals with min 20-day hold.
 
 ## JSON Artifact Format
 
 All models export to JSON (no pickle) for LEAN compatibility. Each model writes:
 - `{name}-policy-metadata.json` — contract between research and backtesting
-- Model-specific artifacts (e.g., `{name}-rf-trees.json` for Classification, `{name}-qtable.json` for Q-Learning)
+- Model-specific artifacts:
+  - Classification: `{name}-rf-trees.json`
+  - Q-Learning: `{name}-qtable.json` + `{name}-bin-edges.json`
+  - Manual: `{name}-manual-rules.json`
+  - XGBoost: `{name}-xgb-buy.json` + `{name}-xgb-sell.json`

@@ -1,8 +1,8 @@
 """Trading model library.
 
-Five model types available::
+Six model types available::
 
-    from common.models import ManualModel, ClassificationModel, QLearningModel, FQIModel, OptimizationModel
+    from common.models import ManualModel, ClassificationModel, QLearningModel, FQIModel, OptimizationModel, XGBoostModel
 """
 
 from .base import BaseModel
@@ -11,6 +11,7 @@ from .fqi import FQIModel
 from .manual import ManualModel
 from .optimization import OptimizationModel
 from .qlearning import QLearningModel
+from .xgboost_model import XGBoostModel
 
 MODEL_REGISTRY: dict[str, type[BaseModel]] = {
     "manual": ManualModel,
@@ -18,6 +19,7 @@ MODEL_REGISTRY: dict[str, type[BaseModel]] = {
     "qlearning": QLearningModel,
     "fqi": FQIModel,
     "optimization": OptimizationModel,
+    "xgboost": XGBoostModel,
 }
 
 
@@ -36,6 +38,7 @@ __all__ = [
     "ManualModel",
     "OptimizationModel",
     "QLearningModel",
+    "XGBoostModel",
     "MODEL_REGISTRY",
     "create_model",
 ]

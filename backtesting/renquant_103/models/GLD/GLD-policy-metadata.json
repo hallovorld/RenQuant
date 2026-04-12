@@ -1,25 +1,45 @@
 {
   "model_name": "GLD",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
+  "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.10174073278903961,
+    "macd_hist": 0.08511365205049515,
+    "cci": 0.08045318722724915,
+    "bbp": 0.0782502219080925,
+    "adx": 0.10544256865978241,
+    "williams_r": 0.07786832749843597,
+    "obv_slope": 0.09008629620075226,
+    "spy_realized_vol": 0.12026085704565048,
+    "spy_adx": 0.08130614459514618,
+    "spy_trend": 0.08845031261444092,
+    "hurst_proxy": 0.09102766960859299
+  },
   "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GLD/GLD-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GLD/GLD-bin-edges.json"
+    "buy_model": "GLD-xgb-buy.json",
+    "sell_model": "GLD-xgb-sell.json"
   },
   "trained_date": "2026-04-12",
-  "best_approach": "QLearning",
-  "sharpe": 1.0691,
-  "lookahead": 5,
+  "best_approach": "XGBoost",
+  "sharpe": 1.4419,
   "strategy": "renquant_103"
 }
