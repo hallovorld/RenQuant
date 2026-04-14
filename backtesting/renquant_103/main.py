@@ -177,11 +177,14 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             self._position_high_watermarks[ticker] = max(hwm, current_price)
 
             # Trailing stop (BULL_CALM only)
+            # Uses PEAK gain (HWM) to check if trigger was ever crossed — once armed, stays armed.
+            # Bug fix: using current gain disarmed the stop after pullbacks below the trigger level.
             ts_trigger = self._rp("trailing_stop_trigger_pct")
             ts_trail   = self._rp("trailing_stop_trail_pct")
             if ts_trigger > 0 and ts_trail > 0 and ticker in self.entry_prices:
-                gain = (current_price - self.entry_prices[ticker]) / self.entry_prices[ticker]
-                if gain >= ts_trigger:
+                peak_gain = ((self._position_high_watermarks[ticker] - self.entry_prices[ticker])
+                             / self.entry_prices[ticker])
+                if peak_gain >= ts_trigger:
                     trail_floor = self._position_high_watermarks[ticker] * (1 - ts_trail)
                     if current_price <= trail_floor:
                         self._execute_sell(ticker, f"trailing_stop trail_floor={trail_floor:.2f}")
@@ -210,7 +213,14 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                     held_tickers.remove(ticker)
                     continue
 
-            # Model-driven sell — requires consecutive signals to eliminate noise flips
+            # Model-driven sell — gated by min_hold; streak only accumulates after hold period.
+            # Matches notebook: if in min_hold, skip signal check entirely so streak stays at 0.
+            if self.min_hold_days > 0 and ticker in self.entry_times:
+                days_check = (self.Time.date() - self.entry_times[ticker].date()).days
+                if days_check < self.min_hold_days:
+                    self.blocked_min_hold += 1
+                    continue   # don't touch streak — it can't have earned 3 sells yet
+
             features = self._build_feature_frame(ticker)
             if features is None:
                 continue
@@ -221,11 +231,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 self._sell_streak[ticker] = 0
 
             if self._sell_streak.get(ticker, 0) >= self._consecutive_sells_required:
-                action, _ = self._apply_sell_constraints(ticker, action)
-                if action == "sell":
-                    self._execute_sell(ticker, detail)
-                    self._sell_streak[ticker] = 0
-                    held_tickers.remove(ticker)
+                self._execute_sell(ticker, detail)
+                self._sell_streak[ticker] = 0
+                held_tickers.remove(ticker)
             elif self._sell_streak.get(ticker, 0) > 0:
                 self.blocked_streak += 1
 
@@ -933,8 +941,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             state = self._encode_q_state(
                 row, holdings, feat_cols, model["bin_edges"], model["n_bins"])
             q_vals = model["q_table"][state]
-            # Score = Q(buy) - Q(hold): positive means buying is better
-            return float(q_vals[0] - q_vals[2])
+            # Score = Q(buy) - Q(sell): actions are 0=buy, 1=sell, 2=hold
+            # Matches common/models/qlearning.py predict_score_bulk() formula
+            return float(q_vals[0] - q_vals[1])
 
         if ptype == "xgboost":
             feat_cols = model["feature_columns"]

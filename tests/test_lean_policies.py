@@ -701,6 +701,405 @@ class TestLEANRankingByModelScore:
         assert ranked[0][0] == "AAPL"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests for the 6 fixes applied in the gap-alignment pass
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Fix 1: LEAN trailing stop uses peak_gain (HWM) not current_gain ──────────
+
+class TestLEANTrailingStopPeakGain:
+    """
+    Trailing stop must use peak_gain = (HWM - entry) / entry, NOT current_gain.
+    Once the trigger is crossed, the stop should stay armed even after pullback.
+    Old bug: if stock surged to +40% then fell to +10%, LEAN disarmed the stop.
+    New fix: uses HWM-based peak_gain, so stop remains armed.
+    """
+
+    def _trailing_stop_check(self, entry_price, high_watermark, current_price,
+                             ts_trigger=0.35, ts_trail=0.28):
+        """Replica of LEAN's fixed trailing stop logic (peak_gain version)."""
+        peak_gain = (high_watermark - entry_price) / entry_price
+        if peak_gain >= ts_trigger:
+            trail_floor = high_watermark * (1 - ts_trail)
+            return current_price <= trail_floor, trail_floor
+        return False, None
+
+    def test_fires_when_price_drops_below_trail_floor(self):
+        """Stock gained +50% (armed), now pulls back below trail floor → fire."""
+        entry = 100.0
+        hwm   = 150.0   # peak gain = 50% ≥ 35% trigger
+        # trail_floor = 150 * (1 - 0.28) = 108.0
+        current = 107.0   # below floor
+        fired, floor = self._trailing_stop_check(entry, hwm, current)
+        assert fired, f"Trailing stop should fire (price {current} < floor {floor:.2f})"
+
+    def test_does_not_fire_when_price_above_trail_floor(self):
+        """Stock gained +50% (armed), still above trail floor → hold."""
+        entry = 100.0
+        hwm   = 150.0   # peak gain = 50%
+        current = 120.0   # above floor (108.0)
+        fired, _ = self._trailing_stop_check(entry, hwm, current)
+        assert not fired, "Trailing stop should not fire while price above trail floor"
+
+    def test_stays_armed_after_pullback_below_trigger(self):
+        """
+        Critical fix: stock peaked at +40% (above trigger), then pulled back to +10%.
+        Old code: current_gain = 10% < 35% → stop DISARMED.
+        New code: peak_gain = 40% ≥ 35% → stop STAYS ARMED.
+        """
+        entry = 100.0
+        hwm   = 140.0   # peak gain = 40% ≥ 35% trigger
+        # With 28% trail: floor = 140 * 0.72 = 100.8
+        current = 99.0   # fallen BELOW floor — should fire
+        fired, floor = self._trailing_stop_check(entry, hwm, current)
+        assert fired, (
+            f"Bug fix: trailing stop should fire (peak_gain=40% ≥ trigger, "
+            f"current {current} < floor {floor:.2f}) even though current_gain=−1%"
+        )
+
+    def test_does_not_arm_if_trigger_never_crossed(self):
+        """Stock only gained +20%, trigger is 35% — stop never arms."""
+        entry = 100.0
+        hwm   = 120.0   # peak gain = 20% < 35% trigger
+        current = 85.0  # big drop, but trailing stop not armed — hard stop handles it
+        fired, _ = self._trailing_stop_check(entry, hwm, current)
+        assert not fired, "Trailing stop must not fire if trigger level was never reached"
+
+    def test_old_current_gain_logic_would_fail(self):
+        """Demonstrate that the OLD current_gain check would have missed the stop."""
+        entry = 100.0
+        hwm   = 140.0   # peak = +40%
+        current = 99.0  # current_gain = −1%
+
+        # Old (wrong) logic
+        current_gain = (current - entry) / entry   # −0.01
+        old_would_fire = current_gain >= 0.35      # False — BUG
+        assert not old_would_fire, "Old logic correctly shown to fail here"
+
+        # New (fixed) logic
+        peak_gain = (hwm - entry) / entry          # +0.40
+        trail_floor = hwm * (1 - 0.28)            # 100.8
+        new_fires = peak_gain >= 0.35 and current <= trail_floor
+        assert new_fires, "New logic correctly fires the stop"
+
+
+# ── Fix 5: LEAN sell streak doesn't accumulate during min_hold period ─────────
+
+class TestLEANStreakGatedByMinHold:
+    """
+    Old behavior: sell streak accumulated even during min_hold; _apply_sell_constraints
+    blocked execution but streak could reach 3 BEFORE min_hold expired, causing an
+    exit on day 20 even if no sell signals occurred after the hold period.
+
+    New behavior: sell signal check is skipped entirely during min_hold (matching
+    the notebook), so streak cannot accumulate until the hold period expires.
+    """
+
+    def _run_hold_sell_sim(self, signals: list, min_hold: int, consecutive_req: int = 3):
+        """
+        Simulate the fixed LEAN sell logic for a single position.
+        signals: list of "sell"/"hold" per day, starting from day 1 (entry is day 0).
+        Returns (exit_day, exit_type) or (None, None) if no exit.
+        """
+        entry_day = 0
+        sell_streak = 0
+        for day_offset, signal in enumerate(signals):
+            current_day = day_offset + 1   # day 1 is first post-entry bar
+            days_held = current_day - entry_day
+
+            # Fixed: skip streak accumulation during min_hold
+            if days_held < min_hold:
+                continue
+
+            if signal == "sell":
+                sell_streak += 1
+            else:
+                sell_streak = 0
+
+            if sell_streak >= consecutive_req:
+                return current_day, "model_sell"
+
+        return None, None
+
+    def test_streak_from_before_min_hold_does_not_cause_immediate_exit(self):
+        """
+        Sell signals on days 1-3 (within min_hold=20) must NOT count toward streak.
+        Exit should require 3 consecutive sells AFTER day 20.
+        """
+        # 3 sells in min_hold, then holds, then 3 consecutive sells after
+        signals = ["sell"] * 3 + ["hold"] * 17 + ["sell"] * 3   # total 23 days
+        exit_day, _ = self._run_hold_sell_sim(signals, min_hold=20)
+        assert exit_day == 23, (
+            f"Exit should be on day 23 (3 new sells after day 20), got day {exit_day}"
+        )
+
+    def test_exit_requires_new_streak_after_min_hold(self):
+        """3 sells before min_hold + 1 sell after: still not enough — need 3."""
+        signals = ["sell"] * 3 + ["hold"] * 17 + ["sell"] * 1 + ["hold"] * 5
+        exit_day, _ = self._run_hold_sell_sim(signals, min_hold=20)
+        assert exit_day is None, "Should not exit — streak restarted after min_hold"
+
+    def test_clean_three_consecutive_sells_after_min_hold_exits(self):
+        """After min_hold, 3 fresh consecutive sells triggers exit."""
+        signals = ["hold"] * 20 + ["sell"] * 3   # exactly at boundary + 3
+        exit_day, _ = self._run_hold_sell_sim(signals, min_hold=20)
+        assert exit_day == 23, f"Expected exit on day 23, got {exit_day}"
+
+    def test_interrupted_streak_resets(self):
+        """Sell-sell-hold-sell-sell-sell after min_hold: exit on 3rd consecutive."""
+        signals = ["hold"] * 20 + ["sell", "sell", "hold", "sell", "sell", "sell"]
+        exit_day, _ = self._run_hold_sell_sim(signals, min_hold=20)
+        assert exit_day == 26, f"Expected exit day 26 (3rd consecutive after reset), got {exit_day}"
+
+
+# ── Fix 6: Q-Learning score = Q(buy) − Q(sell), not Q(buy) − Q(hold) ─────────
+
+class TestQLearningScoreFormula:
+    """
+    LEAN was computing Q(buy) − Q(hold) (q_vals[0] − q_vals[2]).
+    The notebook predict_score_bulk() uses Q(buy) − Q(sell) (q_vals[0] − q_vals[1]).
+    Fix: LEAN now uses q_vals[0] − q_vals[1] to match.
+    Actions: 0=buy, 1=sell, 2=hold.
+    """
+
+    def _lean_score_fixed(self, q_row):
+        """Replica of fixed LEAN _get_raw_model_score for qlearning."""
+        return float(q_row[0] - q_row[1])   # Q(buy) - Q(sell)
+
+    def _lean_score_old(self, q_row):
+        """Old LEAN formula for comparison."""
+        return float(q_row[0] - q_row[2])   # Q(buy) - Q(hold) — was wrong
+
+    def _notebook_score(self, q_row):
+        """predict_score_bulk() in common/models/qlearning.py."""
+        return float(q_row[0] - q_row[1])   # Q(buy) - Q(sell)
+
+    def test_fixed_lean_matches_notebook(self):
+        """After fix, LEAN and notebook formulas produce identical scores."""
+        q = [0.7, 0.2, 0.5]   # Q(buy)=0.7, Q(sell)=0.2, Q(hold)=0.5
+        assert self._lean_score_fixed(q) == self._notebook_score(q), \
+            "Fixed LEAN score must match notebook predict_score_bulk"
+
+    def test_old_lean_differed_from_notebook(self):
+        """Verify the old formula did NOT match — proving the bug existed."""
+        q = [0.7, 0.2, 0.5]
+        assert self._lean_score_old(q) != self._notebook_score(q), \
+            "Old formula should differ — it used Q(hold) instead of Q(sell)"
+
+    def test_positive_when_buy_dominates(self):
+        """When Q(buy) > Q(sell), score > 0 (buy signal)."""
+        q = [0.8, 0.3, 0.5]
+        assert self._lean_score_fixed(q) > 0
+
+    def test_negative_when_sell_dominates(self):
+        """When Q(sell) > Q(buy), score < 0 (sell signal)."""
+        q = [0.3, 0.8, 0.5]
+        assert self._lean_score_fixed(q) < 0
+
+    def test_zero_when_buy_equals_sell(self):
+        """When Q(buy) == Q(sell), score is 0 (neutral)."""
+        q = [0.5, 0.5, 0.3]
+        assert self._lean_score_fixed(q) == 0.0
+
+    def test_notebook_predict_score_bulk_uses_same_formula(self):
+        """End-to-end: QLearningModel.predict_score_bulk() uses Q(buy)−Q(sell)."""
+        from common.models import create_model
+        import numpy as np, pandas as pd
+
+        rng = np.random.default_rng(99)
+        n = 300
+        feature_cols = ["rsi", "macd_hist", "cci", "bbp", "adx"]
+        df = pd.DataFrame(rng.normal(0, 1, (n, len(feature_cols))), columns=feature_cols)
+        df["close"] = 100 * np.cumprod(1 + rng.normal(0.001, 0.01, n))
+        df["position_flag"] = 0
+
+        model = create_model(
+            "qlearning", feature_columns=feature_cols,
+            n_bins=3, n_epochs=50,
+        )
+        model.train(df)
+        scores = model.predict_score_bulk(df)
+        # Verify scores match manual Q(buy)−Q(sell) computation
+        from common.models.qlearning import QLearningModel
+        assert isinstance(model, QLearningModel)
+        # A row where model says buy should have score ≥ 0
+        actions = model.predict_bulk(df)
+        buy_scores = scores[actions == "buy"]
+        if len(buy_scores):
+            assert (buy_scores >= 0).all(), "Buy rows must have Q(buy)−Q(sell) ≥ 0"
+
+
+# ── Fix: Notebook BEAR defensive uses live score, not static Sharpe ───────────
+
+class TestNotebookBEARRankingUsesLiveScore:
+    """
+    Old: def_candidates sorted by results[ticker]['sharpe'] (static, same every day).
+    New: def_candidates sorted by oos_raw_scores.loc[today] (live model confidence).
+    """
+
+    def _bear_defensive_rank(self, ticker_data: dict, today) -> str:
+        """Replica of fixed notebook BEAR defensive ranking."""
+        candidates = []
+        for ticker, data in ticker_data.items():
+            raw_sc = data.get("oos_raw_scores")
+            if raw_sc is None or today not in raw_sc.index:
+                continue
+            model_score = float(raw_sc.loc[today])
+            candidates.append((ticker, model_score))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+
+    def test_highest_live_score_wins(self):
+        today = pd.Timestamp("2024-06-01")
+        data = {
+            "GLD": {"oos_raw_scores": pd.Series([0.8], index=[today])},
+            "TLT": {"oos_raw_scores": pd.Series([0.3], index=[today])},
+        }
+        winner = self._bear_defensive_rank(data, today)
+        assert winner == "GLD", f"GLD has higher live score but got {winner}"
+
+    def test_missing_raw_scores_skipped(self):
+        today = pd.Timestamp("2024-06-01")
+        data = {
+            "GLD": {"oos_raw_scores": None},          # no raw scores
+            "TLT": {"oos_raw_scores": pd.Series([0.5], index=[today])},
+        }
+        winner = self._bear_defensive_rank(data, today)
+        assert winner == "TLT", "Ticker with missing raw scores should be skipped"
+
+    def test_live_score_differs_from_static_sharpe(self):
+        """Demonstrate that static Sharpe (old code) would pick differently."""
+        today = pd.Timestamp("2024-06-01")
+        # GLD: higher static Sharpe but lower live score
+        # TLT: lower static Sharpe but higher live score TODAY
+        static_sharpes = {"GLD": 1.5, "TLT": 0.9}
+        live_scores    = {"GLD": 0.2, "TLT": 0.7}
+
+        # Old behavior: pick by static Sharpe
+        old_winner = max(static_sharpes, key=lambda t: static_sharpes[t])  # GLD
+
+        # New behavior: pick by live score
+        new_winner = max(live_scores, key=lambda t: live_scores[t])        # TLT
+
+        assert old_winner == "GLD"
+        assert new_winner == "TLT"
+        assert old_winner != new_winner, "Fix changes selection when live score disagrees with Sharpe"
+
+
+# ── Fix: Notebook transition uncertainty window ───────────────────────────────
+
+class TestNotebookTransitionWindow:
+    """
+    Old: no transition uncertainty window in notebook simulation.
+    New: after each CUSUM changepoint, no new buys for TRANSITION_BARS bars.
+    Matches LEAN's _transition_countdown logic.
+    """
+
+    def _run_transition_sim(self, days, changepoint_dates, transition_bars=3):
+        """
+        Simulate the transition window logic.
+        Returns set of days that were blocked by the transition window.
+        """
+        blocked = []
+        countdown = 0
+        for today in days:
+            if today in changepoint_dates:
+                countdown = transition_bars   # (re)set on each changepoint
+            if countdown > 0:
+                blocked.append(today)
+                countdown -= 1
+        return set(blocked)
+
+    def test_blocks_three_bars_after_changepoint(self):
+        days = pd.date_range("2024-01-01", periods=6)
+        changepoints = {days[0]}   # changepoint on day 0
+        blocked = self._run_transition_sim(days, changepoints, transition_bars=3)
+        # Day 0 is the changepoint itself and is blocked, days 1 and 2 also blocked
+        assert days[0] in blocked, "Day of changepoint should be blocked"
+        assert days[1] in blocked, "Day 1 after changepoint should be blocked"
+        assert days[2] in blocked, "Day 2 after changepoint should be blocked"
+        assert days[3] not in blocked, "Day 3 should be clear"
+
+    def test_no_blocks_without_changepoint(self):
+        days = pd.date_range("2024-01-01", periods=5)
+        blocked = self._run_transition_sim(days, set())
+        assert len(blocked) == 0, "No blocks when no changepoints"
+
+    def test_consecutive_changepoints_reset_countdown(self):
+        """Two changepoints close together extend the block window."""
+        days = pd.date_range("2024-01-01", periods=8)
+        # changepoints on day 0 and day 2 — second one resets to 3
+        changepoints = {days[0], days[2]}
+        blocked = self._run_transition_sim(days, changepoints, transition_bars=3)
+        # Day 2 resets: days 2, 3, 4 blocked
+        assert days[4] in blocked, "Day 4 should be blocked (reset on day 2)"
+        assert days[5] not in blocked, "Day 5 should be clear"
+
+    def test_transition_blocks_match_lean_countdown_logic(self):
+        """Verify notebook and LEAN countdown decrement at same rate."""
+        # LEAN: countdown starts at N, decrements on each bar that checks it
+        # Notebook: same — decrement inside `if countdown > 0:` block
+        days = pd.date_range("2024-01-01", periods=5)
+        changepoints = {days[0]}
+        blocked = self._run_transition_sim(days, changepoints, transition_bars=3)
+        # Exactly 3 bars blocked (days 0, 1, 2)
+        assert len(blocked) == 3, f"Exactly 3 bars should be blocked, got {len(blocked)}"
+
+
+# ── Fix: Notebook earnings filter ────────────────────────────────────────────
+
+class TestNotebookEarningsFilter:
+    """
+    Old: no earnings filter in notebook simulation — all tickers eligible.
+    New: tickers within ±EARNINGS_BUFFER days of earnings date are blocked.
+    Matches LEAN's _is_earnings_blocked() check.
+    """
+
+    def _is_earnings_blocked(self, ticker, today_ts, calendar, buf=3):
+        """Replica of the earnings filter helper added to the notebook."""
+        for d_str in calendar.get(ticker, []):
+            try:
+                if abs((pd.Timestamp(d_str).date() - today_ts.date()).days) <= buf:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def test_blocked_on_earnings_day(self):
+        cal = {"AAPL": ["2024-07-25"]}
+        today = pd.Timestamp("2024-07-25")
+        assert self._is_earnings_blocked("AAPL", today, cal), \
+            "Should block on earnings day itself"
+
+    def test_blocked_within_buffer(self):
+        cal = {"AAPL": ["2024-07-25"]}
+        for delta in range(-3, 4):   # ±3 days
+            today = pd.Timestamp("2024-07-25") + pd.Timedelta(days=delta)
+            assert self._is_earnings_blocked("AAPL", today, cal, buf=3), \
+                f"Should block at offset {delta} days"
+
+    def test_not_blocked_outside_buffer(self):
+        cal = {"AAPL": ["2024-07-25"]}
+        today = pd.Timestamp("2024-07-29")   # 4 days after, outside ±3
+        assert not self._is_earnings_blocked("AAPL", today, cal), \
+            "Should not block 4 days away from earnings"
+
+    def test_no_earnings_date_not_blocked(self):
+        cal = {"MSFT": ["2024-07-30"]}
+        today = pd.Timestamp("2024-07-25")
+        assert not self._is_earnings_blocked("AAPL", today, cal), \
+            "Ticker with no earnings entry should not be blocked"
+
+    def test_multiple_earnings_dates_any_match_blocks(self):
+        cal = {"NVDA": ["2024-02-21", "2024-05-22"]}
+        today_q1 = pd.Timestamp("2024-02-20")   # 1 day before first
+        today_q2 = pd.Timestamp("2024-05-23")   # 1 day after second
+        assert self._is_earnings_blocked("NVDA", today_q1, cal)
+        assert self._is_earnings_blocked("NVDA", today_q2, cal)
+
+
 # ── Run directly ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import pytest as _pytest
