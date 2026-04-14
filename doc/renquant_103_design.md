@@ -2,7 +2,7 @@
 
 **Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Last updated**: 2026-04-13  
+**Last updated**: 2026-04-14  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
 
 > **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
@@ -545,10 +545,20 @@ Blocks all new offensive buys when SPY is below its 50-day EMA. Prevents enterin
 ### Live Model Score Ranking
 Simulation and LEAN rank buy candidates by today's actual model output (continuous confidence from `predict_score_bulk()`) rather than by static OOS Sharpe. Ensures the highest-conviction signal on a given day is executed first. Also applies a `min_model_score=0.10` threshold to filter out weak signals before ranking.
 
+### Gap-Alignment Fixes (2026-04-14)
+Six behavioral differences between notebook simulation and LEAN were identified and fixed:
+
+1. **Trailing stop trigger (LEAN bug)**: Was using `current_gain` to check if the trigger level was crossed — stop disarmed after pullback. Fixed to use `peak_gain = (HWM − entry) / entry` so the stop stays armed once ever triggered.
+2. **BEAR defensive ranking (notebook)**: Was sorting by static OOS Sharpe. Fixed to use `oos_raw_scores.loc[today]` (live model confidence), matching LEAN.
+3. **Transition uncertainty window (notebook missing)**: Added 3-bar block after each CUSUM changepoint using `changepoint_dates` already computed in Cell 5.
+4. **Earnings filter (notebook missing)**: Added `_is_earnings_blocked()` helper and check in candidates loop, loading `earnings-calendar.json` to match LEAN.
+5. **Sell streak during min_hold (LEAN)**: Was accumulating sell streak inside the min_hold window, which could trigger an exit on exactly day 20 even if no fresh sell signals occurred. Fixed to skip the model signal check entirely during min_hold, matching notebook behavior.
+6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
+
 ### Unit Tests (`tests/`)
-81 unit tests covering every major policy:
+108 unit tests covering every major policy (27 new tests added for the 6 gap fixes):
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
-- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, plus `predict_score_bulk()` correctness for Classification and Q-Learning models
+- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, plus regression tests for all 6 gap fixes (trailing stop peak_gain, streak/min_hold gating, Q-learning formula, BEAR ranking, transition window, earnings filter)
 
 Run with: `python -m pytest tests/ -v`
 
@@ -588,8 +598,8 @@ Run with: `python -m pytest tests/ -v`
 2. ✅ LEAN backtest: 2024-01-01 → 2026-03-26
 3. ✅ Strategy outperforms SPY in OOS period
 4. ✅ Regime telemetry verified in charts
-5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST)
-6. ✅ 81 unit tests passing (`python -m pytest tests/ -v`)
+5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST via launchd; no US market holiday guard — Alpaca rejects orders on closed market days gracefully)
+6. ✅ 108 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 

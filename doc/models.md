@@ -160,7 +160,7 @@ Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_res
 
 ## Exit Logic (renquant_103 priority order)
 
-1. **Trailing stop** (BULL_CALM): activates once position gains ≥35% from entry; then trails 28% below rolling high-water mark. Allows winners like NVDA/PLTR to run through minor corrections.
+1. **Trailing stop** (BULL_CALM): activates once position's peak gain (HWM-based) reaches ≥20% from entry; then trails 18% below the rolling high-water mark. Stop stays armed even after pullbacks — uses peak gain, not current gain. Allows winners like NVDA/PLTR to run through minor corrections.
 2. **Hard stop-loss**: 5% from entry price (triggers immediately, no min-hold).
 3. **SPY velocity crash filter** (entry gate): blocks all new buys if SPY has fallen >3% over the last 3 days — prevents entering into momentum crashes (tariff events, flash crashes).
 4. **Max hold**: forced exit after 500 days (BULL_CALM/BEAR) or 10 days (CHOPPY).
