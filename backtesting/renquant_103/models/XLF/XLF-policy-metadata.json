@@ -23,9 +23,11 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLF/XLF-manual-rules.json"
   },
-  "trained_date": "2026-04-12",
+  "trained_date": "2026-04-13",
   "best_approach": "Manual",
-  "sharpe": 1.473,
+  "sharpe": 1.5569,
   "lookahead": 5,
-  "strategy": "renquant_103"
+  "strategy": "renquant_103",
+  "live_train_rows": 2518,
+  "live_train_end": "2026-04-06"
 }

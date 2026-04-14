@@ -1,25 +1,47 @@
 {
   "model_name": "LLY",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
-  "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/LLY/LLY-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/LLY/LLY-bin-edges.json"
-  },
-  "trained_date": "2026-04-12",
-  "best_approach": "QLearning",
-  "sharpe": 1.4178,
   "lookahead": 5,
-  "strategy": "renquant_103"
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08890929818153381,
+    "macd_hist": 0.09471584111452103,
+    "cci": 0.08878520876169205,
+    "bbp": 0.08471215516328812,
+    "adx": 0.09295392036437988,
+    "williams_r": 0.06777480244636536,
+    "obv_slope": 0.09408405423164368,
+    "spy_realized_vol": 0.10644979774951935,
+    "spy_adx": 0.09581104665994644,
+    "spy_trend": 0.09840553998947144,
+    "hurst_proxy": 0.08739833533763885
+  },
+  "artifacts": {
+    "buy_model": "LLY-xgb-buy.json",
+    "sell_model": "LLY-xgb-sell.json"
+  },
+  "trained_date": "2026-04-13",
+  "best_approach": "XGBoost",
+  "sharpe": 1.2076,
+  "strategy": "renquant_103",
+  "live_train_rows": 2518,
+  "live_train_end": "2026-04-06"
 }

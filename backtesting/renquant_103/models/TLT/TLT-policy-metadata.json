@@ -24,8 +24,8 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/TLT/TLT-rf-trees.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-12",
   "best_approach": "Classification",
-  "sharpe": 0.9722,
+  "sharpe": 0.8544,
   "strategy": "renquant_103"
 }

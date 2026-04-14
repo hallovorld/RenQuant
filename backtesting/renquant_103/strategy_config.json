@@ -64,14 +64,14 @@
     "BULL_CALM": {
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.0,
-      "stop_loss_pct": 0.05,
+      "stop_loss_pct": 0.15,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",
-      "min_model_score": 0.1,
+      "min_model_score": 0.10,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.35,
-      "trailing_stop_trail_pct": 0.28,
+      "trailing_stop_trigger_pct": 0.20,
+      "trailing_stop_trail_pct": 0.18,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3
     },

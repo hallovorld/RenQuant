@@ -1,5 +1,6 @@
 from AlgorithmImports import *
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -80,7 +81,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.last_sell_times = {}
         self._position_high_watermarks = {}   # ticker → high price for trailing stop
         self._sell_streak  = {}               # ticker → consecutive sell signal count
-        self._consecutive_sells_required = 3  # must see N consecutive sell days before exiting
+        self._consecutive_sells_required = int(CONFIG.get("consecutive_sell_signals", 3))
 
         # ── Regime state ──
         self._current_regime       = BULL_CALM
@@ -125,6 +126,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.corr_blocks          = 0
         self.earnings_blocks      = 0
         self.transition_blocks    = 0
+        self.velocity_blocks      = 0
         self._regime_day_counts   = {r: 0 for r in REGIMES}
         self._high_water_mark     = float(CONFIG["initial_cash"])
         self._skip_buys           = False
@@ -241,10 +243,21 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             self._plot_state(held_tickers)
             return
 
-        entry_mode = regime_params.get("entry_mode", "momentum")
+        # SPY velocity crash filter (per-regime config)
+        velocity_halt_pct  = float(regime_params.get("spy_velocity_halt_pct", 0.0))
+        velocity_lookback  = int(regime_params.get("spy_velocity_lookback_days", 3))
+        if velocity_halt_pct > 0 and len(self._spy_return_buffer) >= velocity_lookback:
+            spy_nday = np.prod([1.0 + r for r in self._spy_return_buffer[-velocity_lookback:]]) - 1.0
+            if spy_nday < -velocity_halt_pct:
+                self.velocity_blocks += 1
+                self._plot_state(held_tickers)
+                return
 
-        # ── DETECT: scan candidates by regime-appropriate signal ──
-        candidates = []
+        # ── SCAN: model signal is the entry trigger (no separate volume-scan gate) ──
+        # Each candidate must: pass earnings filter, have a buy signal from the model,
+        # and have model_score >= min_score. This matches the notebook simulation logic.
+        min_score = regime_params.get("min_model_score", 0.10)
+        scored = []
         for ticker in self.models:
             if ticker in held_tickers:
                 continue
@@ -256,18 +269,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 self.earnings_blocks += 1
                 continue
 
-            is_defensive = ticker in self._defensive
-            triggered, vol_score = self._regime_scan(ticker, entry_mode, is_defensive)
-            if triggered:
-                candidates.append((ticker, vol_score))
-
-        if not candidates:
-            self._plot_state(held_tickers)
-            return
-
-        # ── CONFIRM: compute RS + model scores, combined rank ──
-        scored = []
-        for ticker, vol_score in candidates:
+            # Build features and run model
             features = self._build_feature_frame(ticker)
             if features is None:
                 continue
@@ -277,12 +279,11 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 continue
 
             model_score = self._get_raw_model_score(ticker, features)
-            min_score   = regime_params.get("min_model_score", 0.10)
             if model_score < min_score:
                 continue
 
             rs_score = self._compute_rs_score(ticker)
-            scored.append((ticker, model_score, rs_score, vol_score, detail))
+            scored.append((ticker, model_score, rs_score, detail))
 
         if not scored:
             self._plot_state(held_tickers)
@@ -305,7 +306,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         )
 
         # ── EXECUTE: correlation-aware greedy selection ──
-        for ticker, model_score, rs_score, vol_score, detail in ranked:
+        for ticker, model_score, rs_score, detail in ranked:
             if open_slots <= 0:
                 break
 
@@ -565,12 +566,19 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             return False, 0.0
 
     def _momentum_scan(self, ticker: str) -> tuple[bool, float]:
-        """Volume spike + up-close (same as 102)."""
+        """Volume spike + up-close + price above EMA(50)."""
         score, triggered = self._compute_volume_score(ticker)
         if not triggered:
             return False, 0.0
         if not self._is_price_up(ticker, min_move=0.0):
             return False, 0.0
+        # Trend filter: only enter if stock is in an uptrend (close > 50-day EMA)
+        hist50 = self.History(self.symbols[ticker], 51, Resolution.Daily)
+        if not hist50.empty and len(hist50) >= 51:
+            closes = hist50.loc[self.symbols[ticker]]["close"]
+            ema50  = closes.ewm(span=50, adjust=False).mean()
+            if closes.iloc[-1] < ema50.iloc[-1]:
+                return False, 0.0
         return True, score
 
     def _capitulation_scan(self, ticker: str) -> tuple[bool, float]:
@@ -887,6 +895,15 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             # Score = Q(buy) - Q(hold): positive means buying is better
             return float(q_vals[0] - q_vals[2])
 
+        if ptype == "xgboost":
+            feat_cols = model["feature_columns"]
+            feat_vals = [float(row.get(c, np.nan)) for c in feat_cols]
+            if any(np.isnan(v) for v in feat_vals):
+                return 0.0
+            p_buy  = self._xgb_predict(model["xgb_buy"],  feat_vals)
+            p_sell = self._xgb_predict(model["xgb_sell"], feat_vals)
+            return float(p_buy - p_sell)
+
         return 0.0
 
     def _traverse_tree(self, tree: list, row: list) -> float:
@@ -899,6 +916,28 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
     def _bag_predict(self, trees: list, features: list) -> float:
         return sum(self._traverse_tree(t, features) for t in trees) / len(trees)
+
+    def _xgb_predict(self, xgb_json: dict, feat_vals: list) -> float:
+        """Pure-Python XGBoost inference from JSON artifact. Returns P ∈ [0, 1].
+
+        Traverses all trees in the gradient boosted ensemble, sums leaf weights,
+        then applies sigmoid (binary:logistic objective).
+        """
+        trees = xgb_json["learner"]["gradient_booster"]["model"]["trees"]
+        total = 0.0
+        for tree in trees:
+            lc = tree["left_children"]
+            rc = tree["right_children"]
+            sc = tree["split_conditions"]
+            si = tree["split_indices"]
+            bw = tree["base_weights"]
+            node = 0
+            while lc[node] != -1:
+                fi  = si[node]
+                val = feat_vals[fi] if fi < len(feat_vals) else 0.0
+                node = lc[node] if val <= sc[node] else rc[node]
+            total += bw[node]
+        return 1.0 / (1.0 + math.exp(-total))
 
     def _score_manual_rules(self, row: pd.Series, rules: list) -> int:
         score = 0
@@ -1071,6 +1110,22 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 }
             model_data["n_bins"] = metadata.get("n_bins", 5)
             return model_data
+        if ptype == "xgboost":
+            artifacts  = metadata.get("artifacts", {})
+            buy_path   = symbol_dir / artifacts.get("buy_model",  f"{ticker}-xgb-buy.json")
+            sell_path  = symbol_dir / artifacts.get("sell_model", f"{ticker}-xgb-sell.json")
+            if not buy_path.exists() or not sell_path.exists():
+                self.Log(f"WARNING: {ticker} XGBoost artifacts missing")
+                return None
+            with buy_path.open() as f:
+                model_data["xgb_buy"] = json.load(f)
+            with sell_path.open() as f:
+                model_data["xgb_sell"] = json.load(f)
+            # buy: score > bt, sell: score < -bt  (score = P(buy) - P(sell) ∈ [-1,1])
+            bt = metadata.get("buy_threshold", 0.1)
+            model_data["buy_threshold"]  = bt
+            model_data["sell_threshold"] = -bt
+            return model_data
         self.Log(f"WARNING: {ticker} unsupported policy type '{ptype}'")
         return None
 
@@ -1117,6 +1172,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             "Corr Guard Blocks":   str(self.corr_blocks),
             "Earnings Blocks":     str(self.earnings_blocks),
             "Transition Blocks":   str(self.transition_blocks),
+            "Velocity Blocks":     str(self.velocity_blocks),
             "Total Tax":           f"${self.total_tax:,.2f}",
             "Short-Term Trades":   str(self.short_term_trades),
             "Long-Term Trades":    str(self.long_term_trades),

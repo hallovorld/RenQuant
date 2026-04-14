@@ -24,8 +24,8 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/BA/BA-rf-trees.json"
   },
-  "trained_date": "2026-04-10",
+  "trained_date": "2026-04-13",
   "best_approach": "Classification",
-  "sharpe": 0.6345,
+  "sharpe": 0.901,
   "strategy": "renquant_103"
 }

@@ -1,31 +1,33 @@
 {
   "model_name": "TSLA",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "rsi",
-      "buy_below": 30,
-      "sell_above": 70
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "cci",
-      "buy_below": -100,
-      "sell_above": 50
-    }
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "buy_threshold": 2,
-  "sell_threshold": -2,
-  "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/TSLA/TSLA-manual-rules.json"
-  },
-  "trained_date": "2026-04-12",
-  "best_approach": "Manual",
-  "sharpe": 0.8833,
   "lookahead": 5,
-  "strategy": "renquant_103"
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/TSLA/TSLA-rf-trees.json"
+  },
+  "trained_date": "2026-04-13",
+  "best_approach": "Classification",
+  "sharpe": 1.5484,
+  "strategy": "renquant_103",
+  "live_train_rows": 2518,
+  "live_train_end": "2026-04-06"
 }
