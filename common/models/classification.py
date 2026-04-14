@@ -125,6 +125,21 @@ class ClassificationModel(BaseModel):
         )
         return pd.Series(result, index=df.index)
 
+    def predict_score_bulk(self, df: pd.DataFrame) -> pd.Series:
+        """Return raw continuous scores before thresholding (same scale as buy/sell thresholds).
+
+        Positive values indicate buy pressure, negative indicate sell pressure.
+        Scores are the raw BagLearner/RTLearner output (forward-return prediction proxy).
+        Use this for ranking candidates by signal strength rather than just buy/hold/sell.
+        """
+        if self.learner is None:
+            raise RuntimeError("Model not trained. Call train() first.")
+        import numpy as np
+
+        features = df[self.feature_columns].values
+        preds = self.learner.query(features)
+        return pd.Series(preds.astype(float), index=df.index)
+
     # ── persistence ────────────────────────────────────────────────────
 
     def save(self, directory: Path, model_name: str) -> dict:

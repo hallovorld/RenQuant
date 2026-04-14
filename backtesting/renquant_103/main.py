@@ -235,11 +235,43 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             self._plot_state(held_tickers)
             return
 
-        # No new buys in BEAR or during transition uncertainty
-        if self._current_regime == BEAR or self._transition_countdown > 0:
-            if self._transition_countdown > 0:
-                self.transition_blocks += 1
-                self._transition_countdown -= 1
+        # Transition uncertainty window — no new buys for N bars after CUSUM break
+        if self._transition_countdown > 0:
+            self.transition_blocks += 1
+            self._transition_countdown -= 1
+            self._plot_state(held_tickers)
+            return
+
+        # BEAR regime — block all offensive buys; allow 1 defensive position (GLD/TLT/XLV/XLU)
+        if self._current_regime == BEAR:
+            defensive_held = [t for t in held_tickers if t in self._defensive]
+            if len(defensive_held) >= 1 or self._skip_buys:
+                self._plot_state(held_tickers)
+                return
+            # Scan defensives only: pick best by model score
+            bear_candidates = []
+            for ticker in self._defensive:
+                if ticker not in self.models or ticker in held_tickers:
+                    continue
+                if not data.ContainsKey(self.symbols[ticker]):
+                    continue
+                if self._is_wash_sale_blocked(ticker):
+                    continue
+                features = self._build_feature_frame(ticker)
+                if features is None:
+                    continue
+                action, _ = self._choose_action(ticker, features)
+                if action != "buy":
+                    continue
+                score = self._get_raw_model_score(ticker, features)
+                bear_candidates.append((ticker, score))
+            if bear_candidates:
+                bear_candidates.sort(key=lambda x: x[1], reverse=True)
+                best_ticker, best_score = bear_candidates[0]
+                # Use 15% max for defensive — BEAR config has max_position_pct=0.0
+                # (blocks offensive buys) but defensives should still be sized normally.
+                self._execute_buy(best_ticker, best_score, 0.0, "bear_defensive",
+                                  max_position_pct_override=0.15)
             self._plot_state(held_tickers)
             return
 
@@ -250,6 +282,15 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             spy_nday = np.prod([1.0 + r for r in self._spy_return_buffer[-velocity_lookback:]]) - 1.0
             if spy_nday < -velocity_halt_pct:
                 self.velocity_blocks += 1
+                self._plot_state(held_tickers)
+                return
+
+        # SPY EMA50 trend gate — block new buys when SPY is below its 50-day EMA
+        spy_hist50 = self.History(self.spy_symbol, 51, Resolution.Daily)
+        if not spy_hist50.empty and len(spy_hist50) >= 51:
+            spy_closes50 = spy_hist50.loc[self.spy_symbol]["close"]
+            spy_ema50    = spy_closes50.ewm(span=50, adjust=False).mean()
+            if spy_closes50.iloc[-1] < spy_ema50.iloc[-1]:
                 self._plot_state(held_tickers)
                 return
 
@@ -968,13 +1009,20 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
     # ── Trade execution ───────────────────────────────────────────────────────
 
     def _execute_buy(self, ticker: str, model_score: float,
-                     rs_score: float, detail: str) -> None:
+                     rs_score: float, detail: str,
+                     max_position_pct_override: float = None) -> None:
         portfolio_value = self.Portfolio.TotalPortfolioValue
         available_cash  = self.Portfolio.Cash
-        cash_reserve    = portfolio_value * self._rp("cash_reserve_pct", 0.0)
-        investable      = max(available_cash - cash_reserve, 0)
-        max_pct         = self._rp("max_position_pct", 0.30)
-        target_pct      = min(max_pct, investable / max(portfolio_value, 1))
+        # When override is set (e.g., BEAR defensive buy), skip the cash_reserve_pct
+        # constraint — BEAR reserves 100% cash which would block defensive buys.
+        if max_position_pct_override is not None:
+            investable = available_cash
+        else:
+            cash_reserve = portfolio_value * self._rp("cash_reserve_pct", 0.0)
+            investable   = max(available_cash - cash_reserve, 0)
+        max_pct    = max_position_pct_override if max_position_pct_override is not None \
+                     else self._rp("max_position_pct", 0.30)
+        target_pct = min(max_pct, investable / max(portfolio_value, 1))
 
         if target_pct < 0.01:
             self.Debug(f"{self.Time.date()} {ticker} buy skipped — insufficient cash")

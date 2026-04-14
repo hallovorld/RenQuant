@@ -172,6 +172,26 @@ class QLearningModel(BaseModel):
             results.append(ACTION_NAMES[action])
         return pd.Series(results, index=df.index)
 
+    def predict_score_bulk(self, df: pd.DataFrame) -> pd.Series:
+        """Return continuous score: Q(buy) - Q(sell) for each row.
+
+        Positive = model prefers buying, negative = model prefers selling.
+        Used for ranking candidates by signal strength (instead of static Sharpe).
+        """
+        if self.qlearner is None or self.bin_edges is None:
+            raise RuntimeError("Model not trained.")
+        disc = self._discretize(df[self.feature_columns])
+        pos_flags = df["position_flag"].values if "position_flag" in df.columns else np.zeros(len(df), dtype=int)
+        scores = []
+        # Actions: 0=buy, 1=sell, 2=hold (ACTION_NAMES = {0:"buy", 1:"sell", 2:"hold"})
+        # Score = Q[buy] - Q[sell] = Q[s,0] - Q[s,1]
+        for i in range(len(df)):
+            holding = int(pos_flags[i]) * 1000
+            s = self._encode_state(disc[i], holding)
+            q_row = self.qlearner.Q[s]
+            scores.append(float(q_row[0] - q_row[1]))  # Q(buy) - Q(sell)
+        return pd.Series(scores, index=df.index)
+
     # ── persistence ────────────────────────────────────────────────────
 
     def save(self, directory: Path, model_name: str) -> dict:
