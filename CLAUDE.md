@@ -69,6 +69,7 @@ bash scripts/daily_103.sh          # manual run
 # Automated via macOS launchd: weekdays at 1:55 PM PST (4:55 PM EST, after market close)
 # LaunchAgent: ~/Library/LaunchAgents/com.renquant.daily103.plist
 # Logs: logs/daily_103/{date}.log
+# NYSE calendar guard: script skips US market holidays automatically (pandas-market-calendars)
 ```
 
 Alpaca credentials are stored in `.env` (gitignored): `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS + iPhone/ntfy) are sent on success or failure.

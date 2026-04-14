@@ -598,7 +598,7 @@ Run with: `python -m pytest tests/ -v`
 2. ✅ LEAN backtest: 2024-01-01 → 2026-03-26
 3. ✅ Strategy outperforms SPY in OOS period
 4. ✅ Regime telemetry verified in charts
-5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST via launchd; no US market holiday guard — Alpaca rejects orders on closed market days gracefully)
+5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST via launchd; NYSE calendar guard via `pandas-market-calendars` skips US market holidays automatically)
 6. ✅ 108 unit tests passing (`python -m pytest tests/ -v`)
 
 ---

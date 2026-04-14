@@ -38,6 +38,20 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== daily_103 started at $(date) ==="
 
+# NYSE calendar guard — skip on market holidays (launchd fires Mon–Fri but not holiday-aware)
+TODAY_DATE=$(date +%Y-%m-%d)
+if ! "$PYTHON" -c "
+import sys, pandas_market_calendars as mcal, pandas as pd
+cal = mcal.get_calendar('NYSE')
+sched = cal.schedule('$TODAY_DATE', '$TODAY_DATE')
+sys.exit(0 if len(sched) > 0 else 1)
+"; then
+    echo "NYSE closed today ($TODAY_DATE) — skipping run."
+    notify "RenQuant 103" "Skipped — NYSE holiday ($TODAY_DATE)"
+    exit 0
+fi
+echo "NYSE open today ($TODAY_DATE) — proceeding."
+
 # Step 1: Run the 103 notebook to retrain all models
 echo "--- Step 1: Running renquant_103 notebook ---"
 cd "$REPO_DIR"

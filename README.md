@@ -111,7 +111,7 @@ python -m live.runner --strategy my_nvda --broker alpaca --once
 
 ### Daily automation (renquant_103)
 
-`scripts/daily_103.sh` retrains models and trades via Alpaca, scheduled weekdays at 1:55 PM PST (4:55 PM EST, after market close) via macOS launchd. Sends trade summary notifications (macOS + iPhone/ntfy). See [doc/usage.md](doc/usage.md) for setup details.
+`scripts/daily_103.sh` retrains models and trades via Alpaca, scheduled weekdays at 1:55 PM PST (4:55 PM EST, after market close) via macOS launchd. Automatically skips US market holidays via NYSE calendar check (`pandas-market-calendars`). Sends trade summary notifications (macOS + iPhone/ntfy). See [doc/usage.md](doc/usage.md) for setup details.
 
 ## Relative Indicator Framework
 
