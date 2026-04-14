@@ -1,9 +1,11 @@
 # renquant_103 — Design Specification
 
-**Status**: Design / Pre-implementation review  
+**Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Date**: 2026-04-10  
+**Last updated**: 2026-04-13  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
+
+> **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
 
 ---
 
@@ -274,16 +276,21 @@ This means the strategy never hard-switches between 30% and 15% positions — it
 
 ## 7. Regime-Adaptive Parameters
 
+⚠️ **Actual values in `strategy_config.json` (evolved from design):**
+
 | Parameter | BULL_CALM | BULL_VOLATILE | CHOPPY | BEAR |
 |-----------|-----------|---------------|--------|------|
-| Max position | 30% | 20% | 15% | 0% (no buys) |
+| Max position | 15% | 20% | 15% | 0% (offensive) |
 | Cash reserve | 0% | 20% | 30% | 100% |
-| Stop-loss | 8% | 5% | 5% | 5% (existing) |
-| Max hold days | 30 | 15 | 10 | 15 (existing) |
-| Entry direction | Momentum | Capitulation | Divergence | Blocked |
+| Stop-loss | 15% | 5% | 5% | 5% (existing) |
+| Max hold days | 500 | 500 | 10 | 500 (existing) |
+| Trailing stop trigger | 20% gain | — | — | — |
+| Trailing stop trail | 18% below HWM | — | — | — |
+| Drawdown halt | 35% | 10% | 8% | 5% |
+| Entry direction | Momentum | Capitulation | Divergence | Defensives only |
 | Min model score | 0.10 | 0.15 | 0.15 | — |
 
-All of these are scaled by `regime_confidence` for continuous adaptation.
+BEAR regime allows 1 defensive position (GLD/TLT/XLV/XLU) at 15% of portfolio — offensive buys are blocked but defensives can be entered. Stop-loss of 15% in BULL_CALM was widened from the original 8% design to give high-beta tech names room to breathe through normal corrections.
 
 ---
 
@@ -306,9 +313,10 @@ All of these are scaled by `regime_confidence` for continuous adaptation.
 - Stock RSI (relative to SPY RSI) shows improving trend over last 3 bars
 - Rationale: in a choppy market, stocks showing hidden strength relative to the index are accumulation candidates
 
-### BEAR — Blocked
-- No new buys under any conditions
-- Existing positions: tighten stop-loss to 5%, exit on any sell signal (min_hold ignored)
+### BEAR — Defensives Only
+- All offensive buys blocked (tech, finance, energy, industrial, healthcare equities)
+- **1 defensive slot** allowed: GLD, TLT, XLV, or XLU — best-ranked by model score, max 15% of portfolio
+- Existing positions: held until stop-loss (5%), max hold, or 3-consecutive-sell exit
 
 ---
 
@@ -402,8 +410,8 @@ training_years: 3            # was 2
 
 The 2019-2021 period adds pre-COVID bull + crash dynamics. The 2025 extension adds the tariff vol regime the models have never seen. Using 3-year rolling window gives more regime diversity per training run.
 
-### 10d. OOS Sharpe Floor Raised
-From 0.8 → 0.85. With more training data and regime features, models that don't pass a higher bar should be excluded rather than kept as weak signals. Better to skip a symbol than include a poor model.
+### 10d. OOS Sharpe Floor
+⚠️ Design proposed raising to 0.85. **Actual implementation uses 0.8** (matching renquant_102) — raising further reduced the number of qualifying models too aggressively on the 24-ticker watchlist.
 
 ---
 
@@ -481,8 +489,8 @@ Keep 15% from 102, but add a **regime-conditional reduction**:
 - BULL_VOLATILE: 10% halt threshold (earlier protection)
 - CHOPPY: 8% halt threshold (very conservative)
 
-### Trailing Stop (new, optional per regime)
-In BULL_CALM: after a position gains >5%, switch from fixed stop to trailing stop at 5% below the high watermark of that position. Locks in profit while letting winners run.
+### Trailing Stop (implemented)
+In BULL_CALM: activates after a position gains ≥20% from entry, then trails at 18% below the position's rolling high-water mark. ⚠️ Design proposed 5%/5% — widened to 20%/18% to avoid premature exits on high-beta tech stocks during normal intraday/weekly corrections.
 
 ---
 
@@ -523,37 +531,65 @@ New artifact required by the correlation-aware selection (Step 6 of Section 9):
 
 ---
 
-## 16. Implementation Roadmap
+## 16. Post-Design Additions (Implemented)
 
-### Phase 1 — Notebook (Research)
-1. Add SPY GMM training to renquant_103 notebook
-2. Add Hurst exponent and CUSUM functions to `common/indicators/`
-3. Extend training data window (`sample_end: 2025-12-31`, `training_years: 3`)
-4. Add regime features to per-symbol model training
-5. Change lookahead from 10 → 5 days
-6. Compute and serialize correlation matrix
-7. Scrape/prepare earnings calendar artifact
-8. Train all symbols, verify OOS Sharpe ≥ 0.85, export models
+The following features were added after the initial design based on backtesting results:
 
-### Phase 2 — LEAN Execution (backtesting/renquant_103/main.py)
-1. Scaffold strategy from 102 (`new_strategy.py` or manual copy)
-2. Implement 3-layer regime detection in `main.py`
-3. Implement regime-adaptive parameter switching
-4. Replace entry logic with regime-conditional scan (Section 8)
-5. Implement relative strength ranking (Section 9, Step 3)
-6. Replace binary model gate with continuous model scoring
-7. Implement correlation-aware greedy selection
-8. Implement earnings calendar filter
-9. Add trailing stop logic for BULL_CALM
-10. Update `strategy_config.json` with all new parameters
+### SPY EMA50 Trend Gate
+Blocks all new offensive buys when SPY is below its 50-day EMA. Prevents entering individual stocks during macro downtrends where all technical signals are overwhelmed by market-wide selling. Applied in both LEAN `main.py` and the notebook simulation.
 
-### Phase 3 — Validation
-1. `export_lean_watchlist.py --strategy renquant_103`
-2. Run LEAN backtest: 2024-01-01 → 2026-03-26
-3. Compare against 102 baseline on same period
-4. Check regime telemetry: verify regime signals make intuitive sense (e.g., early 2025 tariff shock flagged as BEAR/BULL_VOLATILE)
-5. Tune CUSUM threshold and GMM cluster assignments if needed
-6. Paper trade via `live/runner.py --broker alpaca-paper`
+### Fixed Training Cutoff + Expanding-Window Live Models
+- **Backtest simulation**: Models trained on 2016–2023 (fixed cutoff `2024-01-01`). OOS evaluation on 2024+. Prevents training boundary from shifting with each new day's data, eliminating simulation variance between notebook runs.
+- **Live trading**: After backtest export, each model is retrained on the last 4 years up to today and re-exported. Live runner always uses the most current data without contaminating backtest OOS metrics.
+
+### Live Model Score Ranking
+Simulation and LEAN rank buy candidates by today's actual model output (continuous confidence from `predict_score_bulk()`) rather than by static OOS Sharpe. Ensures the highest-conviction signal on a given day is executed first. Also applies a `min_model_score=0.10` threshold to filter out weak signals before ranking.
+
+### Unit Tests (`tests/`)
+81 unit tests covering every major policy:
+- `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
+- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, plus `predict_score_bulk()` correctness for Classification and Q-Learning models
+
+Run with: `python -m pytest tests/ -v`
+
+## 17. Implementation Roadmap (Status)
+
+### Phase 1 — Notebook (Research) ✅ Complete
+1. ✅ SPY GMM training in renquant_103 notebook
+2. ✅ Hurst exponent and CUSUM functions in `common/indicators/`
+3. ✅ Training data: `sample_start: 2016-01-01`, `training_years: 3`
+4. ✅ Regime features added to per-symbol model training
+5. ✅ Lookahead changed 10 → 5 days
+6. ✅ Correlation matrix computed and serialized
+7. ✅ Earnings calendar via `scripts/fetch_earnings_calendar.py`
+8. ✅ All symbols trained, OOS Sharpe floor 0.8, models exported
+9. ✅ Fixed training cutoff (2024-01-01) for stable OOS simulation
+10. ✅ Expanding-window live model refresh (last 4 years) in export cell
+11. ✅ Live model score ranking (predict_score_bulk) replacing static Sharpe ranking
+
+### Phase 2 — LEAN Execution (backtesting/renquant_103/main.py) ✅ Complete
+1. ✅ Strategy scaffolded from 102
+2. ✅ 3-layer regime detection implemented
+3. ✅ Regime-adaptive parameter switching
+4. ✅ Regime-conditional entry (momentum/capitulation/divergence/BEAR-defensive)
+5. ✅ Relative strength ranking
+6. ✅ Continuous model scoring via `_get_raw_model_score()`
+7. ✅ Correlation-aware greedy selection
+8. ✅ Earnings calendar filter
+9. ✅ Trailing stop (20% trigger, 18% trail in BULL_CALM)
+10. ✅ SPY velocity crash filter
+11. ✅ SPY EMA50 trend gate
+12. ✅ BEAR defensive buying (1 slot for GLD/TLT/XLV/XLU)
+13. ✅ XGBoost model support in LEAN
+14. ✅ `strategy_config.json` updated with all parameters
+
+### Phase 3 — Validation ✅ Complete
+1. ✅ `export_lean_watchlist.py --strategy renquant_103`
+2. ✅ LEAN backtest: 2024-01-01 → 2026-03-26
+3. ✅ Strategy outperforms SPY in OOS period
+4. ✅ Regime telemetry verified in charts
+5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST)
+6. ✅ 81 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 

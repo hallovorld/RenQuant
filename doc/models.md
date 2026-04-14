@@ -4,6 +4,7 @@ All models implement `BaseModel` with a common interface:
 - `train(df, **kwargs)` — train on indicator-enriched OHLCV data
 - `predict(state)` — return `"hold"`, `"buy"`, or `"sell"` (string) for a single row or DataFrame (only processes row 0)
 - `predict_bulk(df)` — return a Series of strings `"buy"/"hold"/"sell"` for all rows (vectorized); use `.map({"buy": 1, "hold": 0, "sell": -1})` to convert to integers for simulation/Sharpe computation
+- `predict_score_bulk(df)` — return a Series of continuous float scores (raw model confidence before thresholding); used for ranking candidates by signal strength in the simulation. Classification returns raw BagLearner output; Q-Learning returns Q(buy)−Q(sell); XGBoost returns P(buy)−P(sell) via `predict_score()`; Manual uses binary signal as proxy.
 - `save(directory, model_name)` — export as JSON
 - `load(directory, model_name)` — load from JSON
 
@@ -119,7 +120,7 @@ Gradient-boosted trees using two one-vs-rest XGBClassifier instances (buy probab
 
 **When to use**: Primary replacement for Classification when higher prediction quality is needed. Consistently outperforms RTLearner/BagLearner on out-of-sample Sharpe for complex multi-feature setups. Tournament in renquant_103 picks the best of Classification / QLearning / Manual / XGBoost per ticker.
 
-**Note**: Requires `pip install xgboost`. Not yet supported in LEAN main.py (notebook simulation only until LEAN layer is extended).
+**Note**: Requires `pip install xgboost`. Fully supported in LEAN `main.py` (renquant_103) — XGBoost artifacts are loaded and scored via a pure-Python tree traversal in `_xgb_predict()` / `_get_raw_model_score()`.
 
 ## Decision Guide
 

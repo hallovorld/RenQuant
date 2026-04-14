@@ -138,7 +138,7 @@ backtesting/renquant_103/
   1. Accumulates SPY daily returns; runs Hurst (Layer 1), CUSUM (Layer 2), GMM (Layer 3) to classify regime and confidence
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
   3. Processes sells (same as 102, but with regime-adaptive stop-loss and wider trailing stop in BULL_CALM: 35% trigger, 28% trail)
-  4. DETECT: SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; then regime-conditional scan — momentum (up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY, blocked entirely in BEAR; defensives (GLD/TLT/XLV/XLU) use counter-cyclical scan in BULL_VOLATILE only
+  4. DETECT: SPY EMA50 trend gate blocks new buys when SPY is below its 50-day EMA; SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; regime-conditional scan — momentum (model signal + up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY; BEAR blocks all offensive buys but allows 1 defensive slot (GLD/TLT/XLV/XLU) per portfolio
   5. CONFIRM: compute relative-strength score (vs sector ETF) + continuous model score; combined rank (50/50)
   6. EXECUTE: correlation-aware greedy selection (max pairwise correlation 0.70), then sector guard, then orders
 
@@ -203,10 +203,11 @@ Losses pass through untaxed (loss harvesting is not modeled). In notebooks, tax 
 
 Position sizing is configured in `strategy_config.json` under the `position_sizing` block and enforced during both notebook simulation and LEAN backtesting:
 
-| Parameter | Value | Purpose |
-|-----------|-------|---------|
-| `max_position_pct` | 0.30 (30%) | No single stock can exceed 30% of total portfolio value |
-| `cash_reserve_pct` | 0.00 (0%) | All capital available for positions |
+| Parameter | renquant_101/102 | renquant_103 | Purpose |
+|-----------|-----------------|--------------|---------|
+| `max_position_pct` | 0.30 (30%) | 0.15 (15%) | Max single-stock exposure of portfolio value |
+| `cash_reserve_pct` | 0.00 (0%) | 0.00 (0%) | Fraction kept in cash at all times |
+| `max_concurrent_positions` | 5 | 8 | Max simultaneous holdings |
 
 **Rules:**
 1. **Cash-only buys** — only use available cash for new positions; never sell existing holdings to fund a new buy
@@ -310,9 +311,12 @@ Key differences from 102:
 - **Sharpe floor**: 0.8 (matching 102) — high-conviction models only; marginal models below 0.8 are excluded
 - **min_hold_days: 20** — no position can be sold via model signal until held 20 days (stop-loss still immediate); extends avg hold to 150-200 days, improving LT tax treatment
 - **Consecutive-sell filter**: requires 3 consecutive daily sell signals before exiting a position; eliminates one-day noise flips that would otherwise trigger short-term tax events
-- **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BULL_VOLATILE only (SPY weak + defensive showing relative strength). In BEAR regime all buys including defensives are blocked.
-- **Trailing stop**: active in BULL_CALM after 35% gain from entry, trails at 28% below the position's rolling high-water mark — wide enough for high-beta tech corrections, locks in gains on large winners without capping upside.
-- **BEAR regime**: all new buys are blocked. Existing positions are held until stop-loss, max hold, or 3-consecutive-sell exit.
+- **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BULL_VOLATILE (SPY weak + defensive showing relative strength) and in BEAR regime (up to 1 defensive slot per portfolio while all offensive buys are blocked).
+- **Trailing stop**: active in BULL_CALM after 20% gain from entry, trails at 18% below the position's rolling high-water mark — wide enough for high-beta tech corrections, locks in gains on large winners without capping upside.
+- **BEAR regime**: all offensive buys blocked; up to 1 defensive position (GLD/TLT/XLV/XLU) allowed at 15% of portfolio. Existing positions held until stop-loss, max hold, or 3-consecutive-sell exit.
+- **SPY EMA50 trend gate**: blocks all new offensive buys when SPY is below its 50-day EMA — prevents entering individual stocks during macro downtrends where technical signals are overwhelmed by market-wide selling.
+- **Fixed training cutoff + expanding-window live models**: notebook trains per-symbol models on 2016–2023 for clean OOS validation (2024+). After export, models are retrained on the last 4 years up to today and re-exported for live trading — keeping live signals current without contaminating the backtest.
+- **Live model score ranking**: simulation and LEAN rank candidates by today's actual model confidence (continuous score from `predict_score_bulk()`), not by static OOS Sharpe — ensures the highest-conviction signal on each day gets executed first.
 - **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, total tax, win rate)
 
 ### renquant_101 — Single-Stock Classification
