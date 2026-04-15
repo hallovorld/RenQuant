@@ -2,7 +2,7 @@
 
 **Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Last updated**: 2026-04-14  
+**Last updated**: 2026-04-15  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
 
 > **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
@@ -471,10 +471,10 @@ These additions give the strategy something to buy in non-BULL_CALM regimes rath
 Stop-loss is no longer a fixed 8%. It adapts:
 
 ```
-BULL_CALM:      8% (same as 102 — give room to breathe)
-BULL_VOLATILE:  5% (tighter — preserve capital in whipsaw)
-CHOPPY:         5% (mean-reversion entries should be tight)
-BEAR:           5% (defensive)
+BULL_CALM:      15% (wide — give high-beta tech names room to breathe through normal corrections)
+BULL_VOLATILE:  5%  (tighter — preserve capital in whipsaw)
+CHOPPY:         5%  (mean-reversion entries should be tight)
+BEAR:           5%  (defensive)
 ```
 
 ### Transition Uncertainty Window (new)
@@ -585,9 +585,9 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-124 unit tests covering every major policy:
+155 unit tests covering every major policy:
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
-- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, plus regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests)
+- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests), SPY regime-context feature injection (8 tests — regression guard for the `spy_realized_vol`/`spy_adx`/`spy_trend`/`hurst_proxy` KeyError)
 - `tests/test_runner_ranking.py` — live runner model-score ranking, tiered thresholds, regression guards (31 tests)
 
 Run with: `python -m pytest tests/ -v`
@@ -629,7 +629,7 @@ Run with: `python -m pytest tests/ -v`
 3. ✅ Strategy outperforms SPY in OOS period
 4. ✅ Regime telemetry verified in charts
 5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST via launchd; NYSE calendar guard via `pandas-market-calendars` skips US market holidays automatically)
-6. ✅ 108 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 155 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 

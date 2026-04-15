@@ -1224,6 +1224,151 @@ class TestNotebookEarningsFilter:
         assert self._is_earnings_blocked("NVDA", today_q2, cal)
 
 
+# ── SPY regime feature injection tests ───────────────────────────────────────
+
+def _make_ohlcv(n=120, seed=0):
+    """Return a minimal OHLCV DataFrame with a DatetimeIndex."""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2023-01-01", periods=n)
+    close = 100 * np.cumprod(1 + rng.normal(0.001, 0.01, n))
+    df = pd.DataFrame({
+        "open":   close * (1 + rng.uniform(-0.005, 0.005, n)),
+        "high":   close * (1 + rng.uniform(0.000, 0.015, n)),
+        "low":    close * (1 - rng.uniform(0.000, 0.015, n)),
+        "close":  close,
+        "volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+    }, index=idx)
+    return df
+
+
+class TestBuildRelativeFeaturesSPYRegime:
+    """_build_relative_features() must inject all 4 SPY regime-context columns.
+
+    Regression guard for the KeyError that occurred when models trained with
+    spy_realized_vol / spy_adx / spy_trend / hurst_proxy were run live and those
+    columns were missing from the output of _build_relative_features().
+    """
+
+    SPY_REGIME_COLS = ["spy_realized_vol", "spy_adx", "spy_trend", "hurst_proxy"]
+    INDICATOR_SPEC  = {"rsi": {"period": 14}, "adx": {"period": 14}}
+
+    @pytest.fixture
+    def result_df(self):
+        from live.runner import _build_relative_features
+        df_stock = _make_ohlcv(n=120, seed=1)
+        df_spy   = _make_ohlcv(n=120, seed=2)
+        return _build_relative_features(
+            df_stock, df_spy,
+            feature_columns=self.SPY_REGIME_COLS + ["rsi", "adx"],
+            indicator_spec=self.INDICATOR_SPEC,
+        )
+
+    def test_all_four_cols_present(self, result_df):
+        """All 4 SPY regime columns must appear in the output — not silently skipped."""
+        missing = [c for c in self.SPY_REGIME_COLS if c not in result_df.columns]
+        assert not missing, f"Missing SPY regime columns: {missing}"
+
+    def test_spy_realized_vol_is_positive(self, result_df):
+        vol = result_df["spy_realized_vol"].dropna()
+        assert (vol > 0).all(), "spy_realized_vol must be strictly positive"
+
+    def test_spy_trend_near_one_on_stable_data(self, result_df):
+        """spy_trend = close / ema50; for smooth data should stay in (0.5, 2.0)."""
+        trend = result_df["spy_trend"].dropna()
+        assert ((trend > 0.5) & (trend < 2.0)).all(), \
+            f"spy_trend out of expected range: {trend.describe()}"
+
+    def test_hurst_proxy_bounded(self, result_df):
+        """|hurst_proxy| ≤ 1 because it is a Pearson correlation."""
+        hp = result_df["hurst_proxy"].dropna()
+        assert (hp.abs() <= 1.0 + 1e-9).all(), \
+            f"hurst_proxy out of [-1, 1]: {hp.describe()}"
+
+    def test_spy_adx_col_present_when_indicator_computed(self, result_df):
+        """spy_adx is the SPY ADX value; must be present with numeric values."""
+        assert "spy_adx" in result_df.columns
+        assert result_df["spy_adx"].dropna().shape[0] > 0
+
+    def test_no_keyerror_on_classification_predict(self):
+        """End-to-end: a ClassificationModel trained with spy regime features can
+        call predict() on _build_relative_features() output without KeyError."""
+        from live.runner import _build_relative_features
+        from common.models import create_model
+
+        indicator_spec = {"rsi": {"period": 14}, "adx": {"period": 14}}
+        feature_cols   = self.SPY_REGIME_COLS + ["rsi", "adx"]
+
+        # Build training data the same way the notebook does
+        df_stock_train = _make_ohlcv(n=200, seed=10)
+        df_spy_train   = _make_ohlcv(n=200, seed=11)
+        train_df = _build_relative_features(
+            df_stock_train, df_spy_train, feature_cols, indicator_spec
+        )
+        assert train_df is not None and len(train_df) > 20, "Training data too short"
+
+        model = create_model(
+            "classification", feature_columns=feature_cols,
+            lookahead=5, threshold=0.02, leaf_size=5, bags=3,
+            buy_threshold=0.1, sell_threshold=-0.1,
+        )
+        model.train(train_df)
+
+        # Build inference data (new stock/spy window)
+        df_stock_live = _make_ohlcv(n=150, seed=20)
+        df_spy_live   = _make_ohlcv(n=150, seed=21)
+        live_df = _build_relative_features(
+            df_stock_live, df_spy_live, feature_cols, indicator_spec
+        )
+        assert live_df is not None
+
+        # This must NOT raise KeyError
+        try:
+            result = model.predict_score_bulk(live_df)
+        except KeyError as e:
+            pytest.fail(
+                f"predict_score_bulk raised KeyError {e} — "
+                "SPY regime columns are missing from _build_relative_features output"
+            )
+        assert isinstance(result, pd.Series), "Expected a pd.Series from predict_score_bulk"
+
+    def test_spy_adx_fallback_when_no_adx_indicator(self):
+        """If ADX is not in the indicator spec, spy_adx should fall back to 25.0."""
+        from live.runner import _build_relative_features
+
+        # Use an indicator spec that does NOT include adx
+        df_stock = _make_ohlcv(n=120, seed=30)
+        df_spy   = _make_ohlcv(n=120, seed=31)
+        result = _build_relative_features(
+            df_stock, df_spy,
+            feature_columns=["spy_adx"],
+            indicator_spec={"rsi": {"period": 14}},   # no adx
+        )
+        assert result is not None
+        assert "spy_adx" in result.columns
+        vals = result["spy_adx"].dropna()
+        assert (vals == 25.0).all(), \
+            f"Expected fallback 25.0 when ADX not computed, got: {vals.unique()}"
+
+    def test_output_does_not_contain_nan_for_spy_regime_cols_after_warmup(self):
+        """After the 20-bar rolling warm-up period, no NaN values in spy regime cols."""
+        from live.runner import _build_relative_features
+
+        df_stock = _make_ohlcv(n=120, seed=40)
+        df_spy   = _make_ohlcv(n=120, seed=41)
+        result = _build_relative_features(
+            df_stock, df_spy,
+            feature_columns=self.SPY_REGIME_COLS,
+            indicator_spec=self.INDICATOR_SPEC,
+        )
+        # dropna() is called inside _build_relative_features, so the result
+        # should have no NaN rows at all for these columns
+        assert result is not None
+        for col in self.SPY_REGIME_COLS:
+            assert col in result.columns, f"{col} missing"
+            assert result[col].isna().sum() == 0, \
+                f"{col} has {result[col].isna().sum()} NaN values after dropna()"
+
+
 # ── Run directly ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import pytest as _pytest

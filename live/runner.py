@@ -239,6 +239,30 @@ def _build_relative_features(
     ratio_features = {"rsi", "adx"}
     diff_features = {"macd_hist", "cci", "bbp", "williams_r", "obv_slope"}
 
+    # ── SPY regime-context features (renquant_103 models trained with these) ──
+    # Computed from SPY series using the same formulas as the notebook training cell.
+    # Without these, any model whose feature_columns includes spy_realized_vol /
+    # spy_adx / spy_trend / hurst_proxy would raise KeyError at inference time.
+    spy_close_full = df_spy["close"]
+    spy_rets_full  = spy_close_full.pct_change()
+    spy_ema50_full = spy_close_full.ewm(span=50, adjust=False).mean()
+
+    def _hurst_proxy(x):
+        """Lag-1 autocorr of a 20-day window of SPY daily returns."""
+        if len(x) <= 2 or np.std(x) == 0:
+            return 0.0
+        cc = np.corrcoef(x[:-1], x[1:])
+        v = cc[0, 1]
+        return float(v) if not np.isnan(v) else 0.0
+
+    spy_regime_features = {
+        "spy_realized_vol": spy_rets_full.rolling(20).std() * np.sqrt(252),
+        "spy_adx":   df_spy["adx"] if "adx" in df_spy.columns
+                     else pd.Series(25.0, index=df_spy.index),
+        "spy_trend": spy_close_full / spy_ema50_full.replace(0, np.nan),
+        "hurst_proxy": spy_rets_full.rolling(20).apply(_hurst_proxy, raw=True),
+    }
+
     result = pd.DataFrame(index=common_idx)
     result["close"] = df_stock["close"]
     for col in feature_columns:
@@ -248,11 +272,11 @@ def _build_relative_features(
         elif col in diff_features:
             if col in df_stock.columns and col in df_spy.columns:
                 result[col] = df_stock[col] - df_spy[col]
+        elif col in spy_regime_features:
+            result[col] = spy_regime_features[col].reindex(common_idx)
         elif col in df_stock.columns:
             result[col] = df_stock[col]
-        # else: regime-only columns (spy_realized_vol, hurst_proxy, etc.) not available
-        # at live inference time — silently skip; Manual models don't use feature_columns
-        # for prediction; ML models store only their own cols in policy-metadata.json
+        # else: unknown column — silently skip (Manual models don't use feature_columns)
 
     # Trend and relative momentum features (required by Q-Learning and Dual Momentum models)
     close = df_stock.loc[common_idx, "close"]

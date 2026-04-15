@@ -137,7 +137,7 @@ backtesting/renquant_103/
 **renquant_103** (adaptive regime multi-stock): Extends 102's architecture with a 3-layer regime detector. `Initialize()` additionally loads `spy-gmm-regime.json`, `watchlist-correlation.json`, and `earnings-calendar.json`. `OnData()`:
   1. Accumulates SPY daily returns; runs Hurst (Layer 1), CUSUM (Layer 2), GMM (Layer 3) to classify regime and confidence
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
-  3. Processes sells (same as 102, but with regime-adaptive stop-loss and wider trailing stop in BULL_CALM: 35% trigger, 28% trail)
+  3. Processes sells (same as 102, but with regime-adaptive stop-loss and trailing stop in BULL_CALM: 20% gain trigger, 18% trail below high-water mark)
   4. DETECT: SPY EMA50 trend gate blocks new buys when SPY is below its 50-day EMA; SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; regime-conditional scan — momentum (model signal + up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY; BEAR blocks all offensive buys but allows 1 defensive slot (GLD/TLT/XLV/XLU) per portfolio
   5. CONFIRM: compute relative-strength score (vs sector ETF) + continuous model score; combined rank (50/50)
   6. EXECUTE: correlation-aware greedy selection (max pairwise correlation 0.70), then sector guard, then orders
