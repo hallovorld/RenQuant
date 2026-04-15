@@ -110,28 +110,23 @@ if not log_path.exists():
     print('No trades today')
     sys.exit(0)
 trades = json.loads(log_path.read_text())
-buys = [t for t in trades if t.get('signal') == 'buy']
-sells = [t for t in trades if t.get('signal') == 'sell']
-stops = [t for t in trades if t.get('signal') == 'stop_loss']
 parts = []
-for t in buys:
+for t in trades:
+    sig = t.get('signal', '')
     sym = t.get('symbol', '?')
     order = t.get('order', {})
     qty = order.get('qty', '?')
-    parts.append(f'BUY {sym} x{qty}')
-for t in sells:
-    sym = t.get('symbol', '?')
-    order = t.get('order', {})
-    qty = order.get('qty', '?')
-    parts.append(f'SELL {sym} x{qty}')
-for t in stops:
-    sym = t.get('symbol', '?')
-    loss = t.get('loss_pct', 0)
-    parts.append(f'STOP {sym} ({loss:.1%} loss)')
-if parts:
-    print('; '.join(parts))
-else:
-    print('No trades today')
+    if sig == 'buy':
+        parts.append(f'BUY {sym} x{qty}')
+    elif sig == 'sell':
+        parts.append(f'SELL {sym} x{qty}')
+    elif sig == 'stop_loss':
+        loss = t.get('loss_pct', 0)
+        parts.append(f'STOP {sym} ({loss:.1%})')
+    elif sig == 'single_day_loss':
+        drop = t.get('daily_drop_pct', 0)
+        parts.append(f'GAP-STOP {sym} ({drop:.1%} drop)')
+print('; '.join(parts) if parts else 'No trades today')
 " 2>/dev/null || echo "No trades today")
     notify "RenQuant 103" "$SUMMARY"
 else

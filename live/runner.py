@@ -273,8 +273,17 @@ def run_once_multi(
     models: dict,
     broker: BaseBroker,
     strategy_dir: Path,
+    sell_only: bool = False,
 ) -> None:
-    """Execute one multi-stock trading cycle: scan → analyze → trade."""
+    """Execute one multi-stock trading cycle: scan → analyze → trade.
+
+    Parameters
+    ----------
+    sell_only:
+        When True, skip the buy phase entirely.  Used for intraday runs
+        (market-open and pre-close) where the goal is to exit loss positions
+        quickly without placing new entries on incomplete daily bars.
+    """
     import numpy as np
 
     watchlist = config["watchlist"]
@@ -384,6 +393,11 @@ def run_once_multi(
                 "symbol": symbol, "signal": "sell", "order": result,
             })
             held.remove(symbol)
+
+    # Sell-only mode: stop here — don't scan for new buys.
+    if sell_only:
+        log.info("sell_only mode — skipping buy phase")
+        return
 
     # Step 2: Check portfolio drawdown circuit breaker
     open_slots = max_positions - len(held)
@@ -563,6 +577,8 @@ def main():
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
     parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "ibkr"], default="paper")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
+    parser.add_argument("--sell-only", action="store_true",
+                        help="Process exits only — skip buy scan (for intraday runs)")
     parser.add_argument("--interval", type=int, default=86400,
                         help="Seconds between runs in scheduled mode (default: 86400)")
     args = parser.parse_args()
@@ -574,7 +590,8 @@ def main():
         initial_cash = config.get("initial_cash", 100_000)
         broker = _get_broker(args.broker, initial_cash=initial_cash)
         broker.connect()
-        run_fn = lambda: run_once_multi(config, models, broker, strategy_dir)
+        run_fn = lambda: run_once_multi(config, models, broker, strategy_dir,
+                                        sell_only=args.sell_only)
     else:
         config, model, strategy_dir = _load_strategy(args.strategy)
         broker = _get_broker(args.broker, initial_cash=config.initial_cash)

@@ -62,14 +62,27 @@ python -m live.runner --strategy renquant_102 --broker alpaca-paper --once  # mu
 python -m live.runner --strategy renquant_102 --broker alpaca --once  # real money
 ```
 
-**Scheduled mode**: Daily automation retrains models and trades via Alpaca.
+**Scheduled mode**: Three daily automation runs via macOS launchd (all NYSE-holiday-aware):
+
+| Run | Time (PT) | Time (ET) | Script | What it does |
+|-----|-----------|-----------|--------|--------------|
+| Market open | 6:32 AM | 9:32 AM | `live_only_103.sh --sell-only` | Exit stop-loss / gap-down positions early using today's opening price |
+| Pre-close | 12:44 PM | 3:44 PM | `live_only_103.sh --sell-only` | Exit intraday stop breaches before close using near-final daily price |
+| After close | 1:55 PM | 4:55 PM | `daily_103.sh` | Full run: retrain models → export LEAN data → buy + sell signals |
 
 ```bash
-bash scripts/daily_103.sh          # manual run
-# Automated via macOS launchd: weekdays at 1:55 PM PST (4:55 PM EST, after market close)
-# LaunchAgent: ~/Library/LaunchAgents/com.renquant.daily103.plist
-# Logs: logs/daily_103/{date}.log
-# NYSE calendar guard: script skips US market holidays automatically (pandas-market-calendars)
+# Manual runs
+bash scripts/daily_103.sh              # full run (retrain + trade)
+bash scripts/live_only_103.sh          # intraday sell check (no retrain)
+python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
+
+# LaunchAgents (all loaded)
+# ~/Library/LaunchAgents/com.renquant.open103.plist
+# ~/Library/LaunchAgents/com.renquant.preclose103.plist
+# ~/Library/LaunchAgents/com.renquant.daily103.plist
+# Logs: logs/live_103/{date}-open.log, {date}-preclose.log
+#       logs/daily_103/{date}.log
+# NYSE calendar guard: all three scripts skip US market holidays automatically
 ```
 
 Alpaca credentials are stored in `.env` (gitignored): `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS + iPhone/ntfy) are sent on success or failure.
