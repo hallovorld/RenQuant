@@ -82,6 +82,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._position_high_watermarks = {}   # ticker → high price for trailing stop
         self._sell_streak  = {}               # ticker → consecutive sell signal count
         self._consecutive_sells_required = int(CONFIG.get("consecutive_sell_signals", 3))
+        self._prev_closes  = {}               # ticker → previous bar close (single-day loss gate)
 
         # ── Regime state ──
         self._current_regime       = BULL_CALM
@@ -105,6 +106,11 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.sector_map             = CONFIG.get("sector_map", {})
         self.max_positions_per_sector = int(CONFIG.get("max_positions_per_sector", 0))
 
+        # ── Tiered thresholds — per-slot escalating model-score bar ──
+        # Slot 1 uses tiers[0], slot 2 uses tiers[1], etc.
+        # Last tier applies to all remaining slots beyond the list length.
+        self._tiered_thresholds = CONFIG.get("tiered_thresholds", [])
+
         # ── Tax ──
         tax_cfg               = CONFIG.get("tax", {})
         self.tax_short_rate   = float(tax_cfg.get("short_term_rate", 0.50))
@@ -119,6 +125,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.executed_sells       = 0
         self.stop_loss_exits      = 0
         self.trailing_stop_exits  = 0
+        self.single_day_loss_exits = 0
         self.blocked_wash_sales   = 0
         self.blocked_min_hold     = 0
         self.blocked_streak       = 0   # model said sell but streak not yet met
@@ -204,6 +211,22 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                         held_tickers.remove(ticker)
                         continue
 
+            # Single-day loss gate — fires when today's bar drops ≥ N% from yesterday's close.
+            # Catches gap-down days that bypass the cumulative stop (BULL_CALM stop is 15%;
+            # a stock can drop 20%+ in one session before the first daily close is checked).
+            # Only meaningful in BULL_CALM where the cumulative stop is wide; other regimes
+            # already have a tight 5% stop so this is disabled there (max_single_day_loss_pct=0).
+            sdl_pct = self._rp("max_single_day_loss_pct")
+            if sdl_pct > 0 and ticker in self._prev_closes:
+                prev_close = self._prev_closes[ticker]
+                if prev_close > 0:
+                    daily_drop = (prev_close - current_price) / prev_close
+                    if daily_drop >= sdl_pct:
+                        self._execute_sell(ticker, f"single_day_loss drop={daily_drop:.1%}")
+                        self.single_day_loss_exits += 1
+                        held_tickers.remove(ticker)
+                        continue
+
             # Max hold forced exit
             max_hold = self._rp("max_hold_days")
             if max_hold > 0 and ticker in self.entry_times:
@@ -236,6 +259,13 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 held_tickers.remove(ticker)
             elif self._sell_streak.get(ticker, 0) > 0:
                 self.blocked_streak += 1
+
+        # Update previous closes for all symbols (used by single-day loss gate next bar).
+        # Done here — after sell loop, before buy phase — so it runs on every bar
+        # regardless of whether early returns fire in the buy phase.
+        for _t in self.models:
+            if data.ContainsKey(self.symbols[_t]):
+                self._prev_closes[_t] = float(data[self.symbols[_t]].Close)
 
         # ── BUY phase ──
         open_slots = self.max_positions - len(held_tickers)
@@ -355,9 +385,20 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         )
 
         # ── EXECUTE: correlation-aware greedy selection ──
+        slots_filled = 0
         for ticker, model_score, rs_score, detail in ranked:
             if open_slots <= 0:
                 break
+
+            # Tiered threshold — slot N requires TIERED_THRESHOLDS[N].min_model_score.
+            # Each successive position placed today must have higher model conviction.
+            # Matches notebook simulation and live runner.
+            if self._tiered_thresholds:
+                _tier_idx = min(slots_filled, len(self._tiered_thresholds) - 1)
+                _tier_min = float(self._tiered_thresholds[_tier_idx].get("min_model_score", 0.0))
+                if model_score < _tier_min:
+                    self.Debug(f"{self.Time.date()} {ticker} model_score={model_score:.4f} below slot-{slots_filled+1} tier min {_tier_min:.4f}, skipping")
+                    continue
 
             if self._is_wash_sale_blocked(ticker):
                 continue
@@ -382,6 +423,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
             self._execute_buy(ticker, model_score, rs_score, detail)
             held_tickers.append(ticker)
+            slots_filled += 1
             open_slots -= 1
 
         self._plot_state(held_tickers)
@@ -1220,8 +1262,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             "Active Models":       str(len(self.models)),
             "Executed Buys":       str(self.executed_buys),
             "Executed Sells":      str(self.executed_sells),
-            "Stop Loss Exits":     str(self.stop_loss_exits),
-            "Trailing Stop Exits": str(self.trailing_stop_exits),
+            "Stop Loss Exits":      str(self.stop_loss_exits),
+            "Single Day Loss Exits": str(self.single_day_loss_exits),
+            "Trailing Stop Exits":  str(self.trailing_stop_exits),
             "Blocked Wash Sales":  str(self.blocked_wash_sales),
             "Blocked Min Hold":    str(self.blocked_min_hold),
             "Blocked Sell Streak": str(self.blocked_streak),

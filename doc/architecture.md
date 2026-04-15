@@ -296,7 +296,7 @@ Each symbol's best model may be a different type. The daily automation retrains 
 1. `Initialize()` — load pre-trained models from `models/{SYMBOL}/`, check staleness (log warning if <50% loaded), `AddEquity` for watchlist + SPY
 2. `OnData()` — update portfolio high-water mark; process sells first (stop-loss check → max hold check → model signal + constraints); if drawdown circuit breaker triggered, skip all buys; check SPY regime filter; scan volume for non-held stocks (DETECT); rank candidates; apply sector guard; apply pre-trained model (CONFIRM); execute buys (EXECUTE)
 
-**Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which computes volume z-scores, checks sell signals, and executes buy orders across the watchlist.
+**Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which checks sell signals (cumulative stop-loss, single-day loss gate, model signal), scans volume for new candidates, ranks them by model conviction score (`_get_model_score`), applies tiered thresholds (slot 1 easiest, each successive slot requires higher model score), sector guard, and executes buys.
 
 ### renquant_103 — Adaptive Regime Multi-Stock
 
@@ -316,8 +316,10 @@ Key differences from 102:
 - **BEAR regime**: all offensive buys blocked; up to 1 defensive position (GLD/TLT/XLV/XLU) allowed at 15% of portfolio. Existing positions held until stop-loss, max hold, or 3-consecutive-sell exit.
 - **SPY EMA50 trend gate**: blocks all new offensive buys when SPY is below its 50-day EMA — prevents entering individual stocks during macro downtrends where technical signals are overwhelmed by market-wide selling.
 - **Fixed training cutoff + expanding-window live models**: notebook trains per-symbol models on 2016–2023 for clean OOS validation (2024+). After export, models are retrained on the last 4 years up to today and re-exported for live trading — keeping live signals current without contaminating the backtest.
-- **Live model score ranking**: simulation and LEAN rank candidates by today's actual model confidence (continuous score from `predict_score_bulk()`), not by static OOS Sharpe — ensures the highest-conviction signal on each day gets executed first.
-- **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, total tax, win rate)
+- **Live model score ranking**: simulation, LEAN, and live runner all rank candidates by today's actual model confidence (continuous score from `predict_score_bulk()`), not by static OOS Sharpe — ensures the highest-conviction signal on each day gets executed first.
+- **Tiered thresholds**: each successive buy slot in a single day requires a progressively higher model score — slot 1: 0.10, slot 2: 0.30, slot 3: 0.50. Prevents overcommitting on low-conviction multi-candidate days. Configured in `tiered_thresholds` array in `strategy_config.json`; identical logic in LEAN, notebook simulation, and live runner.
+- **Single-day loss gate**: in BULL_CALM, a position is exited if today's close drops ≥10% from yesterday's close (`max_single_day_loss_pct: 0.10`). Protects against gap-down days where a stock falls 15–20%+ in a single session before the 15% cumulative stop would fire on a daily bar. Disabled in other regimes (5% cumulative stop already tight).
+- **Simulation output**: includes trade log (buys/sells, avg hold, avg pnl per trade, total tax, win rate, exit reason breakdown)
 
 ### renquant_101 — Single-Stock Classification
 

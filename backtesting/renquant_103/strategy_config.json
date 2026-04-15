@@ -65,6 +65,7 @@
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
+      "max_single_day_loss_pct": 0.10,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",
@@ -79,6 +80,7 @@
       "max_position_pct": 0.2,
       "cash_reserve_pct": 0.2,
       "stop_loss_pct": 0.05,
+      "max_single_day_loss_pct": 0.0,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.1,
       "entry_mode": "capitulation",
@@ -91,6 +93,7 @@
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.3,
       "stop_loss_pct": 0.05,
+      "max_single_day_loss_pct": 0.0,
       "max_hold_days": 10,
       "drawdown_halt_pct": 0.08,
       "entry_mode": "divergence",
@@ -103,6 +106,7 @@
       "max_position_pct": 0.0,
       "cash_reserve_pct": 1.0,
       "stop_loss_pct": 0.05,
+      "max_single_day_loss_pct": 0.0,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.05,
       "entry_mode": "blocked",
@@ -189,6 +193,11 @@
       "signal_period": 20
     }
   },
+  "tiered_thresholds": [
+    {"min_model_score": 0.10},
+    {"min_model_score": 0.30},
+    {"min_model_score": 0.50}
+  ],
   "model_params": {
     "feature_columns": [
       "rsi",

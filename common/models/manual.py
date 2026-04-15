@@ -126,6 +126,24 @@ class ManualModel(BaseModel):
         )
         return pd.Series(result, index=df.index)
 
+    def predict_score_bulk(self, df: pd.DataFrame) -> pd.Series:
+        """Return raw vote score as float for ranking (positive = buy pressure)."""
+        score = np.zeros(len(df), dtype=float)
+        for rule in self.score_rules:
+            col = rule["col"]
+            if col not in df.columns:
+                continue
+            vals = df[col]
+            if "buy_below" in rule:
+                score += np.where(vals < rule["buy_below"], 1.0, 0.0)
+            if "buy_above" in rule:
+                score += np.where(vals > rule["buy_above"], 1.0, 0.0)
+            if "sell_above" in rule:
+                score += np.where(vals > rule["sell_above"], -1.0, 0.0)
+            if "sell_below" in rule:
+                score += np.where(vals < rule["sell_below"], -1.0, 0.0)
+        return pd.Series(score, index=df.index)
+
     # ── persistence ────────────────────────────────────────────────────
 
     def save(self, directory: Path, model_name: str) -> dict:

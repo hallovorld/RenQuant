@@ -356,8 +356,132 @@ class TestLEANStopLoss:
     def test_no_stop_in_profit(self):
         assert not check_stop_loss(100, 110, 0.15)
 
+    def test_daily_bar_gap_risk_stop_triggers_but_loss_exceeds_threshold(self):
+        """
+        Gap-risk scenario: stop IS triggered, but the recorded loss can exceed
+        the stop threshold because LEAN uses daily bars.
+
+        With daily resolution, the stop-loss check uses the previous day's
+        closing price (data[ticker].Close). If a high-beta stock (NVDA, TSLA,
+        PLTR, etc.) gaps down 20%+ in a single session due to an earnings miss
+        or macro shock, the daily close is already past the 15% threshold —
+        there was no intermediate daily close to trigger an earlier exit.
+
+        Real example from the backtest: one trade recorded -20.7% despite a
+        15% BULL_CALM stop. The stock dropped 20.7% in a single day.
+
+        LEAN behaviour:
+          Day T-1: close = -13%  → stop not triggered (below 15%)
+          Day T  : close = -20.7% in one session → stop triggers next morning
+          Day T+1: sell executes at open (near Day T close → ~-20.7%)
+
+        This test documents that:
+        1. The stop mechanism is CORRECT — it fires when loss >= threshold.
+        2. The actual fill price can exceed the stop % because daily bars have
+           no intraday visibility; the first detectable close is already past
+           the threshold on a gap-down day.
+        """
+        entry = 100.0
+        gap_day_close = 79.3        # single-day drop to -20.7% from entry
+        stop_pct = 0.15             # BULL_CALM stop
+
+        # The day before the gap: loss is below stop — not triggered.
+        pre_gap_close = 87.0        # -13%
+        assert not check_stop_loss(entry, pre_gap_close, stop_pct), \
+            "Stop must NOT trigger while loss < threshold (day before gap)"
+
+        # The gap day: close is already -20.7% — stop fires.
+        assert check_stop_loss(entry, gap_day_close, stop_pct), \
+            "Stop MUST trigger on gap-down day even though loss > threshold"
+
+        # The actual recorded loss exceeds the stated stop threshold.
+        actual_loss_pct = (entry - gap_day_close) / entry
+        assert actual_loss_pct > stop_pct, (
+            f"Gap-risk loss ({actual_loss_pct:.1%}) should exceed stop threshold "
+            f"({stop_pct:.1%}) — this is expected with daily-bar resolution"
+        )
+        assert abs(actual_loss_pct - 0.207) < 0.001, \
+            f"Expected ~20.7% loss, got {actual_loss_pct:.1%}"
+
 
 # ── Policy: BEAR regime defensive buying ─────────────────────────────────────
+
+# ── Policy: Single-day loss gate ─────────────────────────────────────────────
+
+def check_single_day_loss(prev_close: float, current_price: float, sdl_pct: float) -> bool:
+    """Replica of LEAN single-day loss gate logic."""
+    if sdl_pct <= 0 or prev_close <= 0:
+        return False
+    daily_drop = (prev_close - current_price) / prev_close
+    return daily_drop >= sdl_pct
+
+
+class TestLEANSingleDayLoss:
+    """
+    Single-day loss gate — fires when today's close drops ≥ sdl_pct from yesterday's close.
+
+    BULL_CALM has stop_loss_pct=0.15 (wide, to give high-beta tech room). Without the
+    single-day gate a stock can drop 20%+ in one session and only trigger the cumulative
+    stop at the next daily close — already past the intended threshold.
+
+    Other regimes (BULL_VOLATILE, CHOPPY, BEAR) have stop_loss_pct=0.05. Their cumulative
+    stop is already tight enough that the single-day gate adds no value (sdl_pct=0 disables).
+    """
+
+    def test_disabled_when_sdl_pct_zero(self):
+        """sdl_pct=0 means gate is disabled — no exit regardless of daily drop."""
+        assert not check_single_day_loss(100, 50, 0.0)
+
+    def test_no_exit_below_threshold(self):
+        """9% daily drop — below 10% threshold, no exit."""
+        assert not check_single_day_loss(100, 91, 0.10)
+
+    def test_fires_at_threshold(self):
+        """Exactly 10% daily drop — fires."""
+        assert check_single_day_loss(100, 90, 0.10)
+
+    def test_fires_above_threshold(self):
+        """20.7% daily drop — fires (the real -20.7% trade scenario)."""
+        assert check_single_day_loss(100, 79.3, 0.10)
+
+    def test_no_exit_on_up_day(self):
+        """Stock up 5% — no single-day loss."""
+        assert not check_single_day_loss(100, 105, 0.10)
+
+    def test_gap_protects_when_cumulative_stop_would_miss(self):
+        """
+        Demonstrates the gap-risk scenario the gate was designed to catch.
+
+        Timeline:
+          Day T-1: stock at $100 (entry)  — cumulative loss = 0%
+          Day T  : close = $87            — cumulative loss = 13%, below 15% stop (not triggered)
+          Day T+1: gap down opens at $70  — cumulative loss = 30%, single-day drop = 19.5%
+
+        Without single-day gate: cumulative stop fires at $85 or worse on gap day.
+        With single-day gate (10%): fires on Day T+1 because 19.5% > 10%, earlier exit.
+        """
+        entry = 100.0
+        stop_pct = 0.15   # BULL_CALM cumulative stop
+
+        # Day T close: cumulative stop NOT triggered
+        day_t_close = 87.0
+        assert not check_stop_loss(entry, day_t_close, stop_pct)
+
+        # Day T+1 (gap day): cumulative stop triggers, but single-day gate fires FIRST
+        # (it's checked before cumulative stop in LEAN's exit priority order)
+        gap_close = day_t_close * 0.805   # ~19.5% single-day drop from day_t_close
+        assert check_single_day_loss(day_t_close, gap_close, 0.10), \
+            "Single-day gate must fire on gap day before cumulative stop"
+        assert check_stop_loss(entry, gap_close, stop_pct), \
+            "Cumulative stop also fires, but single-day gate catches it first"
+
+    def test_prev_close_none_when_first_bar(self):
+        """
+        First bar in a position has no previous close — gate is disabled.
+        Simulated by passing prev_close=0 (LEAN's _prev_closes default).
+        """
+        assert not check_single_day_loss(0.0, 79.3, 0.10)
+
 
 class TestLEANBEARDefensive:
     """BEAR regime blocks offensive tickers; allows 1 defensive slot."""

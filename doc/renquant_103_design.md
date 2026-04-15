@@ -543,7 +543,36 @@ Blocks all new offensive buys when SPY is below its 50-day EMA. Prevents enterin
 - **Live trading**: After backtest export, each model is retrained on the last 4 years up to today and re-exported. Live runner always uses the most current data without contaminating backtest OOS metrics.
 
 ### Live Model Score Ranking
-Simulation and LEAN rank buy candidates by today's actual model output (continuous confidence from `predict_score_bulk()`) rather than by static OOS Sharpe. Ensures the highest-conviction signal on a given day is executed first. Also applies a `min_model_score=0.10` threshold to filter out weak signals before ranking.
+Simulation, LEAN, and live runner all rank buy candidates by today's actual model output (continuous confidence from `predict_score_bulk()`) rather than by static OOS Sharpe. Ensures the highest-conviction signal on a given day is executed first. Also applies a `min_model_score=0.10` threshold to filter out weak signals before ranking.
+
+`predict_score_bulk()` is now implemented on all four model types: Classification (raw BagLearner output), Q-Learning (Q(buy)−Q(sell)), XGBoost (P(buy)−P(sell)), Manual (raw vote count). The live runner uses `_get_model_score()` helper with priority: `predict_score_bulk` → `predict_score` → string fallback.
+
+### Tiered Thresholds
+Each successive buy slot in a single day requires a progressively higher model score bar, preventing overcommitment on low-conviction multi-candidate days.
+
+- Slot 1: `min_model_score = 0.10`
+- Slot 2: `min_model_score = 0.30`
+- Slot 3: `min_model_score = 0.50`
+
+Configured in `tiered_thresholds` array in `strategy_config.json`. Logic is identical across LEAN (`main.py`), notebook simulation (Cell 21), and live runner (`run_once_multi`): `tier_idx = min(slots_filled, len(tiers) - 1)`.
+
+### Single-Day Loss Gate
+Exits a position when today's close drops ≥10% from yesterday's close (`max_single_day_loss_pct: 0.10` in BULL_CALM regime). Addresses the gap-risk limitation of daily-bar resolution: with a 15% cumulative stop, a stock can drop 20%+ in a single session before the cumulative stop sees the damage. The single-day gate fires first.
+
+- **BULL_CALM**: enabled at 10% — meaningful because the cumulative stop is wide at 15%
+- **BULL_VOLATILE, CHOPPY, BEAR**: disabled (0.0) — 5% cumulative stop is already tight
+
+Logic is identical in all three components:
+- LEAN: `(prev_close − today_close) / prev_close >= sdl_pct`; `_prev_closes` dict updated each bar after the sell loop
+- Notebook: same formula using `ohlcv[ticker]["close"].iloc[_idx − 1]`
+- Live runner: same formula using `dfs[symbol]["close"].iloc[-2]`
+
+Exit priority order in all three (LEAN + notebook + live runner):
+1. Trailing stop (BULL_CALM: 20% trigger, 18% trail)
+2. Cumulative stop-loss (15% BULL_CALM, 5% others)
+3. **Single-day loss gate** (10% BULL_CALM, disabled others) ← new
+4. Max hold (500 days most regimes, 10 days CHOPPY)
+5. Model sell streak (3 consecutive signals, min_hold gating)
 
 ### Gap-Alignment Fixes (2026-04-14)
 Six behavioral differences between notebook simulation and LEAN were identified and fixed:
@@ -556,9 +585,10 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-108 unit tests covering every major policy (27 new tests added for the 6 gap fixes):
+124 unit tests covering every major policy:
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
-- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, plus regression tests for all 6 gap fixes (trailing stop peak_gain, streak/min_hold gating, Q-learning formula, BEAR ranking, transition window, earnings filter)
+- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, plus regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests)
+- `tests/test_runner_ranking.py` — live runner model-score ranking, tiered thresholds, regression guards (31 tests)
 
 Run with: `python -m pytest tests/ -v`
 

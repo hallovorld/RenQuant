@@ -213,6 +213,10 @@ class XGBoostModel(BaseModel):
         X = df[self.feature_columns].values
         return pd.Series(self._score(X), index=df.index)
 
+    def predict_score_bulk(self, df: pd.DataFrame) -> pd.Series:
+        """Alias of predict_score — P(buy)−P(sell) continuous score for ranking."""
+        return self.predict_score(df)
+
     # ── persistence ────────────────────────────────────────────────────
 
     def save(self, directory: Path, model_name: str) -> dict:

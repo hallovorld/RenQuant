@@ -159,6 +159,22 @@ def run_once(
 # ── Multi-stock support ──────────────────────────────────────────────────
 
 
+def _get_model_score(model, row) -> float:
+    """Return a continuous float score for *row* using the best available method.
+
+    Priority:
+      1. ``predict_score_bulk``  — present on Classification, QLearning, XGBoost, Manual
+      2. ``predict_score``       — XGBoost legacy name (kept for backwards compat)
+      3. Fallback: map predict() string → {buy: 1.0, hold: 0.0, sell: -1.0}
+    """
+    df_row = row.to_frame().T
+    if hasattr(model, "predict_score_bulk"):
+        return float(model.predict_score_bulk(df_row).iloc[0])
+    if hasattr(model, "predict_score"):
+        return float(model.predict_score(df_row).iloc[0])
+    return {"buy": 1.0, "hold": 0.0, "sell": -1.0}.get(model.predict(row), 0.0)
+
+
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock models.
 
@@ -329,6 +345,29 @@ def run_once_multi(
                     held.remove(symbol)
                     continue
 
+        # Single-day loss gate — catches gap-down days before the cumulative stop fires.
+        # Reads max_single_day_loss_pct from BULL_CALM regime params (most relevant regime;
+        # other regimes already have tight 5% cumulative stops so the value is 0 there).
+        _bull_calm_rp = config.get("regime_params", {}).get("BULL_CALM", {})
+        sdl_pct = float(_bull_calm_rp.get("max_single_day_loss_pct", 0.0))
+        if sdl_pct > 0 and len(dfs[symbol]) >= 2:
+            today_close = float(dfs[symbol]["close"].iloc[-1])
+            prev_close  = float(dfs[symbol]["close"].iloc[-2])
+            if prev_close > 0:
+                daily_drop = (prev_close - today_close) / prev_close
+                if daily_drop >= sdl_pct:
+                    position = broker.get_position(symbol)
+                    result = broker.place_order(symbol, "SELL", abs(position))
+                    log.info("SINGLE DAY LOSS %s: drop=%.1f%% prev=%.2f today=%.2f",
+                             symbol, daily_drop * 100, prev_close, today_close)
+                    _log_trade(strategy_dir, config["model_name"], {
+                        "timestamp": datetime.now().isoformat(),
+                        "symbol": symbol, "signal": "single_day_loss",
+                        "daily_drop_pct": round(daily_drop, 4), "order": result,
+                    })
+                    held.remove(symbol)
+                    continue
+
         model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
         rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         if rel is None or rel.empty:
@@ -378,7 +417,7 @@ def run_once_multi(
                          float(spy_close.iloc[-1]), sma200)
                 return
 
-    candidates = []
+    vol_candidates = []
     for symbol in watchlist:
         if symbol in held or symbol not in dfs:
             continue
@@ -391,29 +430,91 @@ def run_once_multi(
 
         if filter_mode == "percentile":
             # Percentile rank: what fraction of lookback days had lower volume?
-            score = float((hist_vol < today_vol).sum()) / len(hist_vol) * 100
-            triggered = score >= percentile_threshold
+            vol_score = float((hist_vol < today_vol).sum()) / len(hist_vol) * 100
+            triggered = vol_score >= percentile_threshold
         else:
             # Legacy z-score mode
             roll_mean = float(hist_vol.mean())
             roll_std = float(hist_vol.std())
-            score = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
-            triggered = score >= zscore_threshold
+            vol_score = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
+            triggered = vol_score >= zscore_threshold
 
         if triggered:
             # Bullish filter: only enter on up-close days
             close = df["close"].astype(float)
             if len(close) >= 2 and close.iloc[-1] <= close.iloc[-2]:
                 continue
-            candidates.append((symbol, score))
+            vol_candidates.append((symbol, vol_score))
 
-    candidates.sort(key=lambda x: x[1], reverse=True)
     score_label = "pct" if filter_mode == "percentile" else "z"
-    log.info("Volume candidates: %s", [(s, f"{score_label}={v:.1f}") for s, v in candidates] or "none")
+    log.info("Volume candidates: %s",
+             [(s, f"{score_label}={v:.1f}") for s, v in vol_candidates] or "none")
 
-    # Step 4: Run models on top candidates
-    for symbol, vol_score in candidates[:open_slots]:
-        # Sector concentration guard
+    # Step 4: Score all volume candidates with their models, then rank by model score.
+    # This ensures the highest-conviction signal gets priority over the largest volume spike.
+    #
+    # Tiered thresholds: each successive order placed in a single run requires a
+    # progressively higher bar. Configure via "tiered_thresholds" in strategy_config.json:
+    #   [{"min_volume_pct": 85, "min_model_score": 0.0},   <- slot 1 (easiest)
+    #    {"min_volume_pct": 90, "min_model_score": 0.30},  <- slot 2
+    #    {"min_volume_pct": 95, "min_model_score": 0.50}]  <- slot 3 (strictest)
+    # When not configured, a single tier uses the base thresholds for all slots.
+    vol_key = "min_volume_pct" if filter_mode == "percentile" else "min_volume_zscore"
+    base_vol_thresh = percentile_threshold if filter_mode == "percentile" else zscore_threshold
+    base_score_thresh = float(config.get("min_model_score", 0.0))
+
+    raw_tiers = config.get("tiered_thresholds", [])
+    if raw_tiers:
+        tiers = [
+            (float(t.get(vol_key, base_vol_thresh)), float(t.get("min_model_score", 0.0)))
+            for t in raw_tiers
+        ]
+    else:
+        tiers = [(base_vol_thresh, base_score_thresh)]
+
+    # Pre-score all candidates that pass the most lenient tier (tier 1)
+    tier1_vol_min, tier1_score_min = tiers[0]
+    scored_candidates = []
+    for symbol, vol_score in vol_candidates:
+        if symbol not in models:
+            continue
+        if vol_score < tier1_vol_min:
+            continue  # didn't even meet slot-1 bar
+        model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
+        rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
+        if rel is None or rel.empty:
+            continue
+        row = rel.iloc[-1].copy()
+        row["position_flag"] = 0
+        signal = models[symbol].predict(row)
+        model_score = _get_model_score(models[symbol], row)
+        log.info("%s %s=%.1f signal=%s model_score=%.4f",
+                 symbol, score_label, vol_score, signal, model_score)
+        if signal == "buy" and model_score >= tier1_score_min:
+            scored_candidates.append((symbol, vol_score, model_score, row))
+
+    # Sort by model score descending — highest conviction first
+    scored_candidates.sort(key=lambda x: x[2], reverse=True)
+
+    slots_filled_this_run = 0
+    for symbol, vol_score, model_score, row in scored_candidates:
+        if open_slots <= 0:
+            break
+        # Determine which tier applies for the slot we're about to fill
+        tier_idx = min(slots_filled_this_run, len(tiers) - 1)
+        tier_min_vol, tier_min_score = tiers[tier_idx]
+        slot_num = slots_filled_this_run + 1
+
+        if vol_score < tier_min_vol:
+            log.info("Slot %d: %s vol_score=%.1f below tier min %.1f, skipping",
+                     slot_num, symbol, vol_score, tier_min_vol)
+            continue
+        if model_score < tier_min_score:
+            log.info("Slot %d: %s model_score=%.4f below tier min %.4f, skipping",
+                     slot_num, symbol, model_score, tier_min_score)
+            continue
+
+        # Sector concentration guard (applied after ranking so sector count stays current)
         if max_per_sector > 0:
             sector = sector_map.get(symbol, "other")
             sector_count = sum(1 for h in held if sector_map.get(h, "other") == sector)
@@ -422,38 +523,30 @@ def run_once_multi(
                          symbol, sector, sector_count, max_per_sector)
                 continue
 
-        model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
-        rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
-        if rel is None or rel.empty:
-            continue
-
-        row = rel.iloc[-1].copy()
-        row["position_flag"] = 0  # not held — needed by Q-Learning state encoding
-        signal = models[symbol].predict(row)
-        log.info("%s %s=%.1f signal=%s", symbol, score_label, vol_score, signal)
-
-        if signal == "buy":
-            account_value = broker.get_account_value()
-            price = float(dfs[symbol]["close"].iloc[-1])
-            cash_reserve = account_value * cash_reserve_pct
-            available = broker.get_account_value() - cash_reserve
-            max_invest = account_value * max_position_pct
-            invest = min(max_invest, max(available, 0))
-            shares = int(invest / price)
-            if shares > 0:
-                result = broker.place_order(symbol, "BUY", shares)
-                log.info("BUY %s: %d shares at ~$%.2f (%s=%.1f)",
-                         symbol, shares, price, score_label, vol_score)
-                _log_trade(strategy_dir, config["model_name"], {
-                    "timestamp": datetime.now().isoformat(),
-                    "symbol": symbol, "signal": "buy",
-                    "volume_score": vol_score,
-                    "volume_filter_mode": filter_mode,
-                    "order": result,
-                })
-                open_slots -= 1
-                if open_slots <= 0:
-                    break
+        account_value = broker.get_account_value()
+        price = float(dfs[symbol]["close"].iloc[-1])
+        cash_reserve = account_value * cash_reserve_pct
+        available = broker.get_account_value() - cash_reserve
+        max_invest = account_value * max_position_pct
+        invest = min(max_invest, max(available, 0))
+        shares = int(invest / price)
+        if shares > 0:
+            result = broker.place_order(symbol, "BUY", shares)
+            log.info("BUY %s (slot %d/%d): %d shares at ~$%.2f (%s=%.1f model_score=%.4f)",
+                     symbol, slot_num, max_positions, shares, price,
+                     score_label, vol_score, model_score)
+            _log_trade(strategy_dir, config["model_name"], {
+                "timestamp": datetime.now().isoformat(),
+                "symbol": symbol, "signal": "buy",
+                "slot": slot_num,
+                "volume_score": vol_score,
+                "volume_filter_mode": filter_mode,
+                "model_score": model_score,
+                "order": result,
+            })
+            held.append(symbol)
+            slots_filled_this_run += 1
+            open_slots -= 1
 
 
 def _is_multi_stock(strategy_name: str) -> bool:

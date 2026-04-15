@@ -4,7 +4,7 @@ All models implement `BaseModel` with a common interface:
 - `train(df, **kwargs)` — train on indicator-enriched OHLCV data
 - `predict(state)` — return `"hold"`, `"buy"`, or `"sell"` (string) for a single row or DataFrame (only processes row 0)
 - `predict_bulk(df)` — return a Series of strings `"buy"/"hold"/"sell"` for all rows (vectorized); use `.map({"buy": 1, "hold": 0, "sell": -1})` to convert to integers for simulation/Sharpe computation
-- `predict_score_bulk(df)` — return a Series of continuous float scores (raw model confidence before thresholding); used for ranking candidates by signal strength in the simulation. Classification returns raw BagLearner output; Q-Learning returns Q(buy)−Q(sell); XGBoost returns P(buy)−P(sell) via `predict_score()`; Manual uses binary signal as proxy.
+- `predict_score_bulk(df)` — return a Series of continuous float scores (raw model confidence before thresholding); used for ranking candidates by signal strength in the live runner, simulation, and LEAN. Classification returns raw BagLearner output; Q-Learning returns Q(buy)−Q(sell); XGBoost returns P(buy)−P(sell); Manual returns raw vote count (positive = buy pressure, negative = sell pressure).
 - `save(directory, model_name)` — export as JSON
 - `load(directory, model_name)` — load from JSON
 
