@@ -351,6 +351,15 @@ def run_once_multi(
     sector_map = config.get("sector_map", {})
     max_per_sector = int(config.get("max_positions_per_sector", 0))
 
+    # Load persisted live state (entry dates, sell streaks, high-water mark)
+    state_file = strategy_dir / "live_state.json"
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    entry_dates: dict = state.setdefault("entry_dates", {})   # symbol → "YYYY-MM-DD"
+    sell_streaks: dict = state.setdefault("sell_streaks", {}) # symbol → int
+
+    min_hold_days = int(config.get("min_hold_days", 0))
+    consec_sells_required = int(config.get("consecutive_sell_signals", 1))
+
     # Step 1: Check current positions, process sells first
     held = [s for s in watchlist if broker.get_position(s) > 0]
     log.info("Current positions: %s", held if held else "none")
@@ -375,6 +384,8 @@ def run_once_multi(
                         "symbol": symbol, "signal": "stop_loss",
                         "loss_pct": round(loss_pct, 4), "order": result,
                     })
+                    entry_dates.pop(symbol, None)
+                    sell_streaks.pop(symbol, None)
                     held.remove(symbol)
                     continue
 
@@ -398,8 +409,27 @@ def run_once_multi(
                         "symbol": symbol, "signal": "single_day_loss",
                         "daily_drop_pct": round(daily_drop, 4), "order": result,
                     })
+                    entry_dates.pop(symbol, None)
+                    sell_streaks.pop(symbol, None)
                     held.remove(symbol)
                     continue
+
+        # min_hold_days guard: block model-sell exits during early hold period.
+        # Stop-loss and single-day loss gate are exempt (already processed above).
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        entry_date_str = entry_dates.get(symbol)
+        days_held = 0
+        if entry_date_str:
+            from datetime import date as _date
+            try:
+                days_held = (_date.today() - _date.fromisoformat(entry_date_str)).days
+            except ValueError:
+                days_held = 0
+        if min_hold_days > 0 and days_held < min_hold_days:
+            log.info("%s min_hold_days=%d, held %d days — skipping model-sell check",
+                     symbol, min_hold_days, days_held)
+            sell_streaks[symbol] = 0  # reset streak: we're inside the hold window
+            continue
 
         model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
         rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
@@ -409,18 +439,33 @@ def run_once_multi(
         row["position_flag"] = 1  # currently held — needed by Q-Learning state encoding
         signal = models[symbol].predict(row)
         if signal == "sell":
-            position = broker.get_position(symbol)
-            result = broker.place_order(symbol, "SELL", abs(position))
-            log.info("SELL %s: %.0f shares", symbol, abs(position))
-            _log_trade(strategy_dir, config["model_name"], {
-                "timestamp": datetime.now().isoformat(),
-                "symbol": symbol, "signal": "sell", "order": result,
-            })
-            held.remove(symbol)
+            sell_streaks[symbol] = sell_streaks.get(symbol, 0) + 1
+            streak = sell_streaks[symbol]
+            if streak < consec_sells_required:
+                log.info("%s sell signal (streak %d/%d) — waiting for %d consecutive",
+                         symbol, streak, consec_sells_required, consec_sells_required)
+            else:
+                sell_streaks[symbol] = 0
+                position = broker.get_position(symbol)
+                result = broker.place_order(symbol, "SELL", abs(position))
+                log.info("SELL %s (streak=%d, held=%d days): %.0f shares",
+                         symbol, streak, days_held, abs(position))
+                _log_trade(strategy_dir, config["model_name"], {
+                    "timestamp": datetime.now().isoformat(),
+                    "symbol": symbol, "signal": "sell",
+                    "days_held": days_held, "sell_streak": streak,
+                    "order": result,
+                })
+                entry_dates.pop(symbol, None)
+                held.remove(symbol)
+        else:
+            sell_streaks[symbol] = 0  # reset streak on non-sell signal
 
-    # Sell-only mode: stop here — don't scan for new buys.
+    # Sell-only mode: persist state updates (stop-loss exits may have cleared entry dates)
+    # then stop — don't scan for new buys.
     if sell_only:
         log.info("sell_only mode — skipping buy phase")
+        state_file.write_text(json.dumps(state, indent=2))
         return
 
     # Step 2: Check portfolio drawdown circuit breaker
@@ -431,13 +476,9 @@ def run_once_multi(
 
     if drawdown_halt_pct > 0:
         account_value = broker.get_account_value()
-        # Load persisted high-water mark
-        state_file = strategy_dir / "live_state.json"
-        state = json.loads(state_file.read_text()) if state_file.exists() else {}
         hwm = float(state.get("high_water_mark", account_value))
         hwm = max(hwm, account_value)
         state["high_water_mark"] = hwm
-        state_file.write_text(json.dumps(state, indent=2))
         if hwm > 0:
             drawdown = (hwm - account_value) / hwm
             if drawdown >= drawdown_halt_pct:
@@ -582,9 +623,15 @@ def run_once_multi(
                 "model_score": model_score,
                 "order": result,
             })
+            # Persist entry date so min_hold_days can be enforced on future runs
+            entry_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
+            sell_streaks.pop(symbol, None)
             held.append(symbol)
             slots_filled_this_run += 1
             open_slots -= 1
+
+    # Persist updated state (entry dates, sell streaks, high-water mark)
+    state_file.write_text(json.dumps(state, indent=2))
 
 
 def _is_multi_stock(strategy_name: str) -> bool:

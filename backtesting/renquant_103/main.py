@@ -158,6 +158,11 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
         # ── Layer 1+2+3: Detect regime ──
         self._update_regime()
+        self.Debug(
+            f"{self.Time.date()} REGIME={self._current_regime} "
+            f"conf={self._regime_confidence:.2f} "
+            f"held={[t for t in self.models if self.Portfolio[self.symbols[t]].Quantity > 0]}"
+        )
 
         # ── Portfolio drawdown circuit breaker (regime-aware threshold) ──
         portfolio_value = self.Portfolio.TotalPortfolioValue
@@ -242,6 +247,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 days_check = (self.Time.date() - self.entry_times[ticker].date()).days
                 if days_check < self.min_hold_days:
                     self.blocked_min_hold += 1
+                    self.Debug(f"{self.Time.date()} {ticker} min_hold_days={self.min_hold_days} held={days_check}d — model-sell blocked")
                     continue   # don't touch streak — it can't have earned 3 sells yet
 
             features = self._build_feature_frame(ticker)
@@ -250,6 +256,10 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             action, detail = self._choose_action(ticker, features)
             if action == "sell":
                 self._sell_streak[ticker] = self._sell_streak.get(ticker, 0) + 1
+                streak = self._sell_streak[ticker]
+                if streak < self._consecutive_sells_required:
+                    self.blocked_streak += 1
+                    self.Debug(f"{self.Time.date()} {ticker} sell streak {streak}/{self._consecutive_sells_required} — waiting")
             else:
                 self._sell_streak[ticker] = 0
 
@@ -320,6 +330,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             spy_nday = np.prod([1.0 + r for r in self._spy_return_buffer[-velocity_lookback:]]) - 1.0
             if spy_nday < -velocity_halt_pct:
                 self.velocity_blocks += 1
+                self.Debug(f"{self.Time.date()} SPY velocity crash filter: {spy_nday:.1%} over {velocity_lookback}d >= -{velocity_halt_pct:.0%} — blocking new buys")
                 self._plot_state(held_tickers)
                 return
 
@@ -329,6 +340,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             spy_closes50 = spy_hist50.loc[self.spy_symbol]["close"]
             spy_ema50    = spy_closes50.ewm(span=50, adjust=False).mean()
             if spy_closes50.iloc[-1] < spy_ema50.iloc[-1]:
+                self.Debug(f"{self.Time.date()} SPY EMA50 gate: SPY={spy_closes50.iloc[-1]:.2f} < EMA50={spy_ema50.iloc[-1]:.2f} — blocking new buys")
                 self._plot_state(held_tickers)
                 return
 
@@ -346,19 +358,23 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             # Earnings filter
             if self._is_earnings_blocked(ticker):
                 self.earnings_blocks += 1
+                self.Debug(f"{self.Time.date()} {ticker} SKIP earnings_blocked")
                 continue
 
             # Build features and run model
             features = self._build_feature_frame(ticker)
             if features is None:
+                self.Debug(f"{self.Time.date()} {ticker} SKIP feature_build_failed")
                 continue
 
             action, detail = self._choose_action(ticker, features)
+            model_score = self._get_raw_model_score(ticker, features)
+            self.Debug(f"{self.Time.date()} {ticker} SCAN action={action} model_score={model_score:.4f} {detail}")
             if action != "buy":
                 continue
 
-            model_score = self._get_raw_model_score(ticker, features)
             if model_score < min_score:
+                self.Debug(f"{self.Time.date()} {ticker} SKIP model_score={model_score:.4f} < min_score={min_score:.4f}")
                 continue
 
             rs_score = self._compute_rs_score(ticker)
@@ -401,6 +417,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                     continue
 
             if self._is_wash_sale_blocked(ticker):
+                self.Debug(f"{self.Time.date()} {ticker} SKIP wash_sale_blocked")
                 continue
 
             # Sector guard
@@ -414,11 +431,13 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                     )
                     if sector_count >= self.max_positions_per_sector:
                         self.sector_blocks += 1
+                        self.Debug(f"{self.Time.date()} {ticker} SKIP sector_guard {sector}={sector_count}/{self.max_positions_per_sector}")
                         continue
 
             # Correlation guard
             if not self._passes_correlation_guard(ticker, held_tickers):
                 self.corr_blocks += 1
+                self.Debug(f"{self.Time.date()} {ticker} SKIP correlation_guard (correlated with {held_tickers})")
                 continue
 
             self._execute_buy(ticker, model_score, rs_score, detail)
