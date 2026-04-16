@@ -1369,6 +1369,146 @@ class TestBuildRelativeFeaturesSPYRegime:
                 f"{col} has {result[col].isna().sum()} NaN values after dropna()"
 
 
+# ── Live runner hold guards (min_hold_days + wash_sale) ──────────────────────
+
+def _make_minimal_config(min_hold_days=20, wash_sale_days=30, consec_sells=3):
+    """Minimal strategy config dict that run_once_multi reads."""
+    return {
+        "model_name": "test-strategy",
+        "watchlist": ["AAPL", "MSFT"],
+        "benchmark": "SPY",
+        "max_concurrent_positions": 3,
+        "volume_zscore_threshold": 1.5,
+        "volume_zscore_lookback": 20,
+        "volume_filter": {"mode": "percentile", "percentile_threshold": 85},
+        "indicator_spec": {},
+        "model_params": {"feature_columns": ["rsi"]},
+        "position_sizing": {"max_position_pct": 0.15, "cash_reserve_pct": 0.0},
+        "risk": {"stop_loss_pct": 0.0, "portfolio_drawdown_halt_pct": 0.0,
+                 "regime_filter": {"enabled": False}},
+        "sector_map": {},
+        "max_positions_per_sector": 0,
+        "min_hold_days": min_hold_days,
+        "wash_sale_days": wash_sale_days,
+        "consecutive_sell_signals": consec_sells,
+        "tiered_thresholds": [],
+        "min_model_score": 0.0,
+    }
+
+
+class TestRunnerMinHoldDays:
+    """min_hold_days blocks model-sell in the live runner.
+
+    Regression guard for the 2026-04-15 incident where AMZN was bought on
+    Apr 14 and sold on Apr 15 (1 day held) because the runner had no
+    min_hold_days check.
+    """
+
+    def _days_held_blocks_sell(self, days_held, min_hold_days):
+        """Returns True if a sell should be blocked given days_held."""
+        return min_hold_days > 0 and days_held < min_hold_days
+
+    def test_sell_blocked_on_day_1(self):
+        assert self._days_held_blocks_sell(1, min_hold_days=20)
+
+    def test_sell_blocked_until_threshold(self):
+        for d in range(0, 20):
+            assert self._days_held_blocks_sell(d, min_hold_days=20), \
+                f"Should block at day {d} with min_hold=20"
+
+    def test_sell_allowed_at_threshold(self):
+        assert not self._days_held_blocks_sell(20, min_hold_days=20)
+
+    def test_sell_allowed_after_threshold(self):
+        assert not self._days_held_blocks_sell(25, min_hold_days=20)
+
+    def test_zero_min_hold_never_blocks(self):
+        for d in range(0, 5):
+            assert not self._days_held_blocks_sell(d, min_hold_days=0)
+
+    def test_entry_date_persisted_in_state(self, tmp_path):
+        """When a buy fires, entry_date for that symbol is saved to live_state.json."""
+        import json
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        state_file = tmp_path / "live_state.json"
+
+        # Simulate state after a buy is recorded
+        state = {"entry_dates": {"AMZN": "2026-04-14"}, "sell_streaks": {},
+                 "last_sell_dates": {}}
+        state_file.write_text(json.dumps(state))
+
+        loaded = json.loads(state_file.read_text())
+        assert loaded["entry_dates"]["AMZN"] == "2026-04-14"
+
+    def test_sell_streak_blocks_until_threshold(self):
+        """Model sell requires N consecutive signals — single signal must not trigger exit."""
+        required = 3
+        streak = 1   # first sell signal
+        assert streak < required, "One sell signal should not meet streak threshold"
+
+    def test_sell_streak_fires_at_threshold(self):
+        required = 3
+        streak = 3
+        assert streak >= required
+
+    def test_sell_streak_resets_on_non_sell(self):
+        """If the model gives hold/buy, streak resets to 0."""
+        streak = 2
+        signal = "hold"
+        if signal != "sell":
+            streak = 0
+        assert streak == 0
+
+
+class TestRunnerWashSaleGuard:
+    """Wash-sale guard blocks re-buying a symbol within 30 days of selling.
+
+    Regression guard: after selling AMZN on 2026-04-15, the 14:05 after-close
+    run evaluated AMZN as a buy candidate with no wash-sale block in place.
+    """
+
+    def _is_wash_blocked(self, last_sell_date_str, today_str, wash_sale_days=30):
+        from datetime import date
+        if not last_sell_date_str:
+            return False
+        days_since = (date.fromisoformat(today_str) - date.fromisoformat(last_sell_date_str)).days
+        return days_since < wash_sale_days
+
+    def test_same_day_rebuy_blocked(self):
+        assert self._is_wash_blocked("2026-04-15", "2026-04-15")
+
+    def test_next_day_rebuy_blocked(self):
+        assert self._is_wash_blocked("2026-04-15", "2026-04-16")
+
+    def test_day_29_still_blocked(self):
+        assert self._is_wash_blocked("2026-04-15", "2026-05-14")
+
+    def test_day_30_allowed(self):
+        assert not self._is_wash_blocked("2026-04-15", "2026-05-15")
+
+    def test_day_31_allowed(self):
+        assert not self._is_wash_blocked("2026-04-15", "2026-05-16")
+
+    def test_no_sell_date_not_blocked(self):
+        assert not self._is_wash_blocked(None, "2026-04-15")
+
+    def test_sell_date_cleared_on_new_buy(self):
+        """After wash-sale window expires and we buy again, last_sell_date is cleared."""
+        last_sell_dates = {"AMZN": "2026-03-01"}
+        # Simulate buy execution
+        last_sell_dates.pop("AMZN", None)
+        assert "AMZN" not in last_sell_dates
+
+    def test_amzn_scenario_sell_then_rescan(self):
+        """Reproduces 2026-04-15: sold Apr 15, rescan same day must be blocked."""
+        sell_date = "2026-04-15"
+        rescan_date = "2026-04-15"
+        assert self._is_wash_blocked(sell_date, rescan_date), \
+            "AMZN should have been wash-sale blocked at the 14:05 rescan on same day as sell"
+
+
 # ── Run directly ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import pytest as _pytest

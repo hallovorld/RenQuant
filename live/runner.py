@@ -354,11 +354,13 @@ def run_once_multi(
     # Load persisted live state (entry dates, sell streaks, high-water mark)
     state_file = strategy_dir / "live_state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    entry_dates: dict = state.setdefault("entry_dates", {})   # symbol → "YYYY-MM-DD"
-    sell_streaks: dict = state.setdefault("sell_streaks", {}) # symbol → int
+    entry_dates: dict     = state.setdefault("entry_dates", {})     # symbol → "YYYY-MM-DD"
+    sell_streaks: dict    = state.setdefault("sell_streaks", {})    # symbol → int
+    last_sell_dates: dict = state.setdefault("last_sell_dates", {}) # symbol → "YYYY-MM-DD"
 
     min_hold_days = int(config.get("min_hold_days", 0))
     consec_sells_required = int(config.get("consecutive_sell_signals", 1))
+    wash_sale_days = int(config.get("wash_sale_days", 30))
 
     # Step 1: Check current positions, process sells first
     held = [s for s in watchlist if broker.get_position(s) > 0]
@@ -386,6 +388,7 @@ def run_once_multi(
                     })
                     entry_dates.pop(symbol, None)
                     sell_streaks.pop(symbol, None)
+                    last_sell_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
                     held.remove(symbol)
                     continue
 
@@ -411,6 +414,7 @@ def run_once_multi(
                     })
                     entry_dates.pop(symbol, None)
                     sell_streaks.pop(symbol, None)
+                    last_sell_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
                     held.remove(symbol)
                     continue
 
@@ -457,6 +461,7 @@ def run_once_multi(
                     "order": result,
                 })
                 entry_dates.pop(symbol, None)
+                last_sell_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
                 held.remove(symbol)
         else:
             sell_streaks[symbol] = 0  # reset streak on non-sell signal
@@ -559,6 +564,18 @@ def run_once_multi(
             continue
         if vol_score < tier1_vol_min:
             continue  # didn't even meet slot-1 bar
+
+        # Wash-sale guard: block re-buy within wash_sale_days of last sell
+        if wash_sale_days > 0 and symbol in last_sell_dates:
+            from datetime import date as _date
+            try:
+                days_since_sell = (_date.today() - _date.fromisoformat(last_sell_dates[symbol])).days
+                if days_since_sell < wash_sale_days:
+                    log.info("%s wash-sale blocked: sold %d days ago (limit=%d)",
+                             symbol, days_since_sell, wash_sale_days)
+                    continue
+            except ValueError:
+                pass
         model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
         rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         if rel is None or rel.empty:
@@ -626,6 +643,7 @@ def run_once_multi(
             # Persist entry date so min_hold_days can be enforced on future runs
             entry_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
             sell_streaks.pop(symbol, None)
+            last_sell_dates.pop(symbol, None)  # reset wash-sale clock on new entry
             held.append(symbol)
             slots_filled_this_run += 1
             open_slots -= 1
