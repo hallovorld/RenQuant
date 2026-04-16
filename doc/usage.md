@@ -169,16 +169,25 @@ Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
 ### Daily Automation
 
-`scripts/daily_103.sh` retrains all renquant_103 models and runs one live trading pass via Alpaca. It is scheduled via macOS launchd to run every weekday at 1:55 PM PST (4:55 PM EST, after market close) so that today's full volume bar is available for the z-score scan. Orders queue overnight and fill at next open.
+Three NYSE-holiday-aware launchd agents run each trading day:
+
+| Run | Time (PT) | Time (ET) | Script | What it does |
+|-----|-----------|-----------|--------|--------------|
+| Market open | 6:32 AM | 9:32 AM | `live_only_103.sh --sell-only` | Exit stop-loss / gap-down positions using today's opening price |
+| Pre-close | 12:44 PM | 3:44 PM | `live_only_103.sh --sell-only` | Exit intraday stop breaches before close |
+| After close | 1:55 PM | 4:55 PM | `daily_103.sh` | Full run: retrain models → export LEAN data → buy + sell |
 
 ```bash
-# Manual run
-bash scripts/daily_103.sh
+# Manual runs
+bash scripts/daily_103.sh              # full retrain + trade
+bash scripts/live_only_103.sh          # intraday sell check only (no retrain)
+python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
 
-# Manage the launchd agent
-launchctl load ~/Library/LaunchAgents/com.renquant.daily103.plist     # enable
-launchctl unload ~/Library/LaunchAgents/com.renquant.daily103.plist   # disable
-pmset -g sched                                                        # verify Mac wake schedule
+# Manage launchd agents
+launchctl load ~/Library/LaunchAgents/com.renquant.daily103.plist
+launchctl load ~/Library/LaunchAgents/com.renquant.open103.plist
+launchctl load ~/Library/LaunchAgents/com.renquant.preclose103.plist
+# Logs: logs/daily_103/{date}.log, logs/live_103/{date}-open.log, {date}-preclose.log
 ```
 
 Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent at each step:
@@ -252,6 +261,7 @@ scripts/
 ├── analyze_backtest.py            # Render backtest charts + summary metrics
 ├── new_strategy.py                # Scaffold a new strategy directory
 ├── fetch_earnings_calendar.py    # Fetch upcoming earnings dates via yfinance → earnings-calendar.json
-├── daily_103.sh                   # Retrain all renquant_103 models + run live trading pass (active)
+├── daily_103.sh                   # Full run: retrain renquant_103 models + live trading pass (active)
+├── live_only_103.sh               # Sell-only pass for renquant_103 (no retrain, intraday stop checks)
 └── daily_102.sh                   # Retrain all renquant_102 models + run live trading pass (legacy)
 ```

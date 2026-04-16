@@ -375,8 +375,14 @@ def select_with_correlation_guard(ranked_candidates, held_positions,
 
 Correlation matrix: computed in notebook on 60-day rolling returns, serialized to JSON, loaded in LEAN.
 
-### Step 7: Wash Sale + Sector Guard
-Same as 102 — applied after correlation selection.
+### Step 7: Selection Loop Order
+For each candidate (in combined-rank order), the checks run in this exact sequence:
+1. **Tiered threshold** — slot 1: 0.10, slot 2: 0.30, slot 3: 0.50
+2. **Wash-sale guard** — skip if sold < 30 days ago
+3. **Sector guard** — skip if sector already has ≥3 positions (defensives exempt)
+4. **Correlation guard** — skip if pairwise correlation with any held or already-selected ticker ≥0.70
+
+This order matters: wash-sale and sector guard are cheap filters applied before the more expensive correlation lookup.
 
 ---
 
@@ -585,12 +591,12 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-155 unit tests covering every major policy:
-- `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
-- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests), SPY regime-context feature injection (8 tests — regression guard for the `spy_realized_vol`/`spy_adx`/`spy_trend`/`hurst_proxy` KeyError)
-- `tests/test_runner_ranking.py` — live runner model-score ranking, tiered thresholds, regression guards (31 tests)
+394 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
 
-Run with: `python -m pytest tests/ -v`
+- `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
+- `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
+- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests), SPY regime-context feature injection (8 tests — regression guard for the `spy_realized_vol`/`spy_adx`/`spy_trend`/`hurst_proxy` KeyError), min_hold_days (9 tests), wash-sale guard (8 tests)
+- `tests/test_runner_ranking.py` — live runner model-score ranking, tiered thresholds, regression guards (31 tests)
 
 ## 17. Implementation Roadmap (Status)
 
@@ -628,8 +634,11 @@ Run with: `python -m pytest tests/ -v`
 2. ✅ LEAN backtest: 2024-01-01 → 2026-03-26
 3. ✅ Strategy outperforms SPY in OOS period
 4. ✅ Regime telemetry verified in charts
-5. ✅ Live trading active via `scripts/daily_103.sh` (weekdays 1:55 PM PST via launchd; NYSE calendar guard via `pandas-market-calendars` skips US market holidays automatically)
-6. ✅ 155 unit tests passing (`python -m pytest tests/ -v`)
+5. ✅ Live trading active via three launchd agents (NYSE-holiday-aware):
+   - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
+   - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
+   - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
+6. ✅ 394 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 

@@ -137,10 +137,10 @@ backtesting/renquant_103/
 **renquant_103** (adaptive regime multi-stock): Extends 102's architecture with a 3-layer regime detector. `Initialize()` additionally loads `spy-gmm-regime.json`, `watchlist-correlation.json`, and `earnings-calendar.json`. `OnData()`:
   1. Accumulates SPY daily returns; runs Hurst (Layer 1), CUSUM (Layer 2), GMM (Layer 3) to classify regime and confidence
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
-  3. Processes sells (same as 102, but with regime-adaptive stop-loss and trailing stop in BULL_CALM: 20% gain trigger, 18% trail below high-water mark)
-  4. DETECT: SPY EMA50 trend gate blocks new buys when SPY is below its 50-day EMA; SPY velocity crash filter blocks new buys if SPY fell >3% in last 3 days; regime-conditional scan — momentum (model signal + up-close) in BULL_CALM, capitulation in BULL_VOLATILE, divergence-from-SPY in CHOPPY; BEAR blocks all offensive buys but allows 1 defensive slot (GLD/TLT/XLV/XLU) per portfolio
-  5. CONFIRM: compute relative-strength score (vs sector ETF) + continuous model score; combined rank (50/50)
-  6. EXECUTE: correlation-aware greedy selection (max pairwise correlation 0.70), then sector guard, then orders
+  3. Processes sells (regime-adaptive stop-loss and trailing stop in BULL_CALM: 20% gain trigger, 18% trail below HWM; single-day loss gate 10% in BULL_CALM; max hold 500d/10d CHOPPY; model-sell requires min_hold=20d + 3 consecutive signals)
+  4. BUY GATES (all short-circuit): open slots check → transition uncertainty window (3 bars post-CUSUM) → BEAR branch (1 defensive slot for GLD/TLT/XLV/XLU only) → SPY velocity crash filter (>3% drop in 3 days) → SPY EMA50 trend gate
+  5. SCAN: model signal is the entry trigger (no separate volume-scan gate). Each candidate: earnings filter → model buy signal → `min_model_score` (regime-aware). Score by RS (20d vs sector ETF) + model confidence, combined rank 50/50.
+  6. EXECUTE: greedy selection by rank; each slot checks tiered threshold → wash-sale → sector guard (max 3/sector) → correlation guard (max 0.70). Position sized as `min(cash − cash_reserve, portfolio × max_pos_pct)`.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -205,8 +205,8 @@ Position sizing is configured in `strategy_config.json` under the `position_sizi
 
 | Parameter | renquant_101/102 | renquant_103 | Purpose |
 |-----------|-----------------|--------------|---------|
-| `max_position_pct` | 0.30 (30%) | 0.15 (15%) | Max single-stock exposure of portfolio value |
-| `cash_reserve_pct` | 0.00 (0%) | 0.00 (0%) | Fraction kept in cash at all times |
+| `max_position_pct` | 0.30 (30%) | 0.15% (BULL_CALM/CHOPPY), 0.20% (BULL_VOLATILE), 0% (BEAR offensive) | Max single-stock exposure; scales with GMM confidence |
+| `cash_reserve_pct` | 0.00 (0%) | 0% (BULL_CALM), 20% (BULL_VOLATILE), 30% (CHOPPY), 100% (BEAR) | Regime-adaptive cash cushion; deducted before sizing each buy |
 | `max_concurrent_positions` | 5 | 8 | Max simultaneous holdings |
 
 **Rules:**
