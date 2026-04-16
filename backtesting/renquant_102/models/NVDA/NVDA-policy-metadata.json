@@ -17,7 +17,7 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/NVDA/NVDA-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/NVDA/NVDA-bin-edges.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-15",
   "best_approach": "Q-Learning",
-  "sharpe": 0.8664
+  "sharpe": 1.1549
 }

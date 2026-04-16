@@ -20,7 +20,7 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/AMZN/AMZN-rf-trees.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-15",
   "best_approach": "Classification",
-  "sharpe": 1.2909
+  "sharpe": 1.1656
 }

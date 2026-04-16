@@ -17,7 +17,7 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/JPM/JPM-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/JPM/JPM-bin-edges.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-13",
   "best_approach": "Q-Learning",
-  "sharpe": 0.8434
+  "sharpe": 0.8105
 }

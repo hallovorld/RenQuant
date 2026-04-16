@@ -38,7 +38,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/GOOG/GOOG-manual-rules.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-15",
   "best_approach": "Dual Momentum",
-  "sharpe": 1.0738
+  "sharpe": 1.2152
 }

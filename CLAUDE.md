@@ -225,7 +225,18 @@ Every policy in notebook and LEAN must have a corresponding test.
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
 - Total test count as of last update: 394 tests, all green. Run `python -m pytest tests/ -v` to verify.
 
-### 3. Always Keep Docs Up to Date
+### 3. Git Commits — Sync Everything, Guard Secrets
+After completing any task, commit and push all changed files so the remote is always up to date.
+
+**Before every commit:**
+- Check `git status` for untracked or modified files — all should be staged unless explicitly excluded.
+- If a file contains sensitive data (credentials, API keys, personal info), add it to `.gitignore` first, then commit the `.gitignore` change. Never commit the sensitive file itself.
+- Currently gitignored sensitive/large paths: `.env` (API keys), `live/logs/` (trade logs), `data/` (OHLCV cache), `backtesting/data/` (LEAN data), `backtesting/*/backtests/` (LEAN run output).
+- Everything else — model artifacts, strategy configs, notebooks, scripts, tests, docs — should be committed and pushed.
+
+**Rule of thumb**: if it's not in `.gitignore`, it should be in the remote. When in doubt, add to `.gitignore` rather than leaving files untracked silently.
+
+### 4. Always Keep Docs Up to Date
 After any non-trivial change, run `/update-docs` or manually sync:
 - `doc/logic_graph_103.md` — decision flowchart (update before LEAN changes)
 - `doc/architecture.md` — overall pipeline and data flow

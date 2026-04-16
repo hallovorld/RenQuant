@@ -23,11 +23,11 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XOM/XOM-manual-rules.json"
   },
-  "trained_date": "2026-04-13",
+  "trained_date": "2026-04-15",
   "best_approach": "Manual",
-  "sharpe": 1.0045,
+  "sharpe": 1.0027,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 2518,
-  "live_train_end": "2026-04-06"
+  "live_train_rows": 997,
+  "live_train_end": "2026-04-08"
 }

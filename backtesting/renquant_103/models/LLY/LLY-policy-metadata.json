@@ -22,26 +22,26 @@
   "max_depth": 4,
   "learning_rate": 0.05,
   "feature_importances": {
-    "rsi": 0.08890929818153381,
-    "macd_hist": 0.09471584111452103,
-    "cci": 0.08878520876169205,
-    "bbp": 0.08471215516328812,
-    "adx": 0.09295392036437988,
-    "williams_r": 0.06777480244636536,
-    "obv_slope": 0.09408405423164368,
-    "spy_realized_vol": 0.10644979774951935,
-    "spy_adx": 0.09581104665994644,
-    "spy_trend": 0.09840553998947144,
-    "hurst_proxy": 0.08739833533763885
+    "rsi": 0.08780638873577118,
+    "macd_hist": 0.09052688628435135,
+    "cci": 0.08696141839027405,
+    "bbp": 0.090910404920578,
+    "adx": 0.10870777070522308,
+    "williams_r": 0.07524040341377258,
+    "obv_slope": 0.09776527434587479,
+    "spy_realized_vol": 0.09922352433204651,
+    "spy_adx": 0.08948210626840591,
+    "spy_trend": 0.08713217079639435,
+    "hurst_proxy": 0.08624367415904999
   },
   "artifacts": {
     "buy_model": "LLY-xgb-buy.json",
     "sell_model": "LLY-xgb-sell.json"
   },
-  "trained_date": "2026-04-13",
+  "trained_date": "2026-04-15",
   "best_approach": "XGBoost",
-  "sharpe": 1.2076,
+  "sharpe": 1.2411,
   "strategy": "renquant_103",
-  "live_train_rows": 2518,
-  "live_train_end": "2026-04-06"
+  "live_train_rows": 997,
+  "live_train_end": "2026-04-08"
 }

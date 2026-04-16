@@ -17,11 +17,11 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLU/XLU-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLU/XLU-bin-edges.json"
   },
-  "trained_date": "2026-04-13",
+  "trained_date": "2026-04-15",
   "best_approach": "QLearning",
-  "sharpe": 0.9278,
+  "sharpe": 1.4064,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 2518,
-  "live_train_end": "2026-04-06"
+  "live_train_rows": 997,
+  "live_train_end": "2026-04-08"
 }

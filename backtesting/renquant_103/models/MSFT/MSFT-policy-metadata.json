@@ -24,7 +24,10 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/MSFT/MSFT-rf-trees.json"
   },
-  "trained_date": "2026-04-13",
-  "live_train_rows": 2518,
-  "live_train_end": "2026-04-06"
+  "trained_date": "2026-04-15",
+  "best_approach": "Classification",
+  "sharpe": 1.4011,
+  "strategy": "renquant_103",
+  "live_train_rows": 997,
+  "live_train_end": "2026-04-08"
 }

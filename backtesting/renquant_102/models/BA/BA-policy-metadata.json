@@ -17,7 +17,7 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/BA/BA-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/BA/BA-bin-edges.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-14",
   "best_approach": "Q-Learning",
-  "sharpe": 1.0304
+  "sharpe": 0.9689
 }
