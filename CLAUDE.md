@@ -206,3 +206,45 @@ python scripts/new_strategy.py --name foo --symbol AAPL --type classification
 4. Export LEAN data: `python scripts/export_lean_watchlist.py --strategy foo`
 5. `cd backtesting/foo && lean backtest .`
 6. `python -m live.runner --strategy foo --broker paper --once`
+
+---
+
+## Development Rules (mandatory, always follow)
+
+### 1. Logic Graph is the Source of Truth
+`doc/logic_graph_103.md` is the canonical decision flowchart for renquant_103.
+- **Whenever the notebook simulation cell (657a4a6c) changes**, update the logic graph first, then verify LEAN matches every node.
+- **Whenever LEAN main.py changes**, check it against the logic graph and update if LEAN is intentionally extended.
+- The logic graph covers: regime detection → mark-to-market → drawdown breaker → sell loop (all 5 exits in priority order) → buy gates (transition window, BEAR branch, velocity crash, EMA50) → candidate scan (all filters) → ranking → selection loop (tiered thresholds, sector guard, correlation guard, position sizing).
+
+### 2. Tests for Every Feature
+Every policy in notebook and LEAN must have a corresponding test.
+- Tests live in `tests/` (run with `python -m pytest tests/ -v`).
+- `tests/test_policy_alignment.py`: 17 policy classes, each with exactly 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
+- `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).
+- **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
+- Total test count as of last update: 394 tests, all green.
+
+### 3. Always Keep Docs Up to Date
+After any non-trivial change, run `/update-docs` or manually sync:
+- `doc/logic_graph_103.md` — decision flowchart (update before LEAN changes)
+- `doc/architecture.md` — overall pipeline and data flow
+- `doc/models.md` — model types, exit logic, stop-loss params
+- `doc/renquant_103_design.md` — full 103 strategy spec including test counts
+- `CLAUDE.md` — this file; keep test counts and rule set current
+
+### 4. Documentation Index
+
+| Doc | What it covers |
+|-----|----------------|
+| `doc/logic_graph_103.md` | **Complete decision flowchart** — every branch in notebook simulation and LEAN, regime param table, alignment table |
+| `doc/architecture.md` | Pipeline overview, data stores, indicator registry, model types, strategy list |
+| `doc/models.md` | Model ABC, all model types, exit logic, stop-loss, single-day gate, trailing stop |
+| `doc/renquant_103_design.md` | Full renquant_103 design spec: regime layers, stock selection pipeline, artifact list, key implementation details |
+| `doc/indicators.md` | All registered indicators and their parameters |
+| `doc/usage.md` | CLI commands, live runner flags, scheduled runs |
+| `doc/setup.md` | Environment setup, Docker, credentials |
+| `doc/tech-stack.md` | Technology choices and rationale |
+| `doc/renquant_102_vs_103_report.md` | Comparison report between strategies |
+| `tests/test_policy_alignment.py` | 222 paired NB/LEAN alignment tests (17 policies) |
+| `tests/test_lean_policies.py` | LEAN regression tests (172 tests) |
