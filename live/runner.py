@@ -412,6 +412,11 @@ def run_once_multi(
                                  config.get("min_model_score", 0.0)))
     tiers = [float(t.get("min_model_score", base_score_thresh)) for t in tiered_thresholds] \
             if tiered_thresholds else [base_score_thresh]
+    ranking_cfg = config.get("ranking", {})
+    _bw = ranking_cfg.get("blend_weights", [0.5, 0.5])
+    _bw_total = float(_bw[0]) + float(_bw[1])
+    w_rank = float(_bw[0]) / _bw_total if _bw_total > 0 else 0.5
+    w_rs   = float(_bw[1]) / _bw_total if _bw_total > 0 else 0.5
 
     # ── HEADER ────────────────────────────────────────────────────────────────
     run_mode = "sell-only" if sell_only else "full"
@@ -767,10 +772,10 @@ def run_once_multi(
         rs_lo, rs_hi = min(rs_vals), max(rs_vals)
         def _norm(v, lo, hi): return (v - lo) / (hi - lo) if hi > lo else 0.5
         buy_candidates.sort(
-            key=lambda c: 0.5 * _norm(c[2], rank_lo, rank_hi) + 0.5 * _norm(c[3], rs_lo, rs_hi),
+            key=lambda c: w_rank * _norm(c[2], rank_lo, rank_hi) + w_rs * _norm(c[3], rs_lo, rs_hi),
             reverse=True,
         )
-    log.info("RANKED CANDIDATES (50%% calibrated rank + 50%% RS):")
+    log.info("RANKED CANDIDATES (%.0f%% calibrated rank + %.0f%% RS):", w_rank * 100, w_rs * 100)
     for rank, (sym, raw_ms, rank_ms, rs, _) in enumerate(buy_candidates, 1):
         log.info("  #%d  %-6s  raw=%+.4f  rank=%+.4f  rs=%+.4f", rank, sym, raw_ms, rank_ms, rs)
 

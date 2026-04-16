@@ -96,6 +96,14 @@ else
     exit 1
 fi
 
+# Step 2b: Recalibrate model score calibrations and blend weights
+echo "--- Step 2b: Recalibrating model score calibrations ---"
+if "$PYTHON" scripts/recalibrate_scores.py --strategy renquant_103; then
+    echo "Score recalibration finished at $(date)"
+else
+    echo "WARNING: Score recalibration failed — continuing with existing calibration" >&2
+fi
+
 # Step 3: Run live trading (Alpaca, single pass)
 echo "--- Step 3: Running live trader (alpaca) ---"
 TRADE_LOG="$REPO_DIR/live/logs/renquant-103/$DATE.json"
