@@ -362,6 +362,51 @@ def run_once_multi(
     consec_sells_required = int(config.get("consecutive_sell_signals", 1))
     wash_sale_days = int(config.get("wash_sale_days", 30))
 
+    # ── Reconcile state with broker ──────────────────────────────────────────
+    # Read the last 60 days of filled orders from Alpaca and sync live_state:
+    #   1. Any currently-held position with no entry_date → fill from order history
+    #   2. Any filled SELL from today → ensure last_sell_dates is recorded
+    # This keeps the state file in sync even when a run fails mid-way or the
+    # file was missing (e.g. the premature AMZN sell on 2026-04-15 happened
+    # before live_state.json tracked last_sell_dates).
+    from datetime import date as _date
+    sixty_days_ago = (_date.today().replace(day=1) - __import__("datetime").timedelta(days=60)).isoformat()
+    try:
+        filled_orders = broker.get_filled_orders(after=sixty_days_ago)
+        today_str = _date.today().isoformat()
+
+        # Map symbol → most recent BUY date and SELL date from order history
+        last_buy: dict = {}
+        last_sell_hist: dict = {}
+        for o in filled_orders:
+            sym = o["symbol"]
+            filled_day = o["filled_at"][:10] if o.get("filled_at") else None
+            if not filled_day:
+                continue
+            if o["action"] == "BUY":
+                if sym not in last_buy or filled_day > last_buy[sym]:
+                    last_buy[sym] = filled_day
+            else:  # SELL
+                if sym not in last_sell_hist or filled_day > last_sell_hist[sym]:
+                    last_sell_hist[sym] = filled_day
+
+        # 1. Fill missing entry_dates for positions we currently hold
+        for sym, buy_day in last_buy.items():
+            if sym not in entry_dates and broker.get_position(sym) > 0:
+                entry_dates[sym] = buy_day
+                log.info("Reconcile: %s entry_date=%s (from order history)", sym, buy_day)
+
+        # 2. Record today's sells so wash-sale is enforced within the same day
+        for sym, sell_day in last_sell_hist.items():
+            if sell_day == today_str:
+                existing = last_sell_dates.get(sym)
+                if existing != sell_day:
+                    last_sell_dates[sym] = sell_day
+                    log.info("Reconcile: %s last_sell_date=%s (from order history)", sym, sell_day)
+
+    except Exception as e:
+        log.warning("Broker reconciliation failed (non-fatal): %s", e)
+
     # Step 1: Check current positions, process sells first
     held = [s for s in watchlist if broker.get_position(s) > 0]
     log.info("Current positions: %s", held if held else "none")

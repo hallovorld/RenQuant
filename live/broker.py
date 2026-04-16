@@ -26,6 +26,10 @@ class BaseBroker(ABC):
         """Return average cost basis per share for *symbol* (0 if not held). Override for accuracy."""
         return 0.0
 
+    def get_filled_orders(self, after: str | None = None) -> list[dict]:
+        """Return filled orders since *after* ('YYYY-MM-DD').  Returns [] if not supported."""
+        return []
+
     @abstractmethod
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
         """Place a market order.

@@ -140,6 +140,35 @@ class AlpacaBroker(BaseBroker):
             for p in positions
         ]
 
+    def get_filled_orders(self, after: str | None = None) -> list[dict]:
+        """Return filled orders, optionally filtered to those after a date string 'YYYY-MM-DD'.
+
+        Each entry: {"symbol", "action" (BUY/SELL), "qty", "filled_at" (ISO string), "avg_price"}
+        """
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        from datetime import datetime, timezone
+
+        params = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100)
+        if after:
+            # Alpaca expects a timezone-aware datetime
+            params.after = datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
+
+        orders = self._trading_client.get_orders(filter=params)
+        result = []
+        for o in orders:
+            if str(o.status) not in ("OrderStatus.FILLED", "filled"):
+                continue
+            filled_at = o.filled_at.isoformat() if o.filled_at else None
+            result.append({
+                "symbol": o.symbol,
+                "action": "BUY" if str(o.side) in ("OrderSide.BUY", "buy") else "SELL",
+                "qty": float(o.filled_qty or o.qty or 0),
+                "filled_at": filled_at,
+                "avg_price": float(o.filled_avg_price or 0),
+            })
+        return result
+
     def is_market_open(self) -> bool:
         """Check if the market is currently open."""
         clock = self._trading_client.get_clock()
