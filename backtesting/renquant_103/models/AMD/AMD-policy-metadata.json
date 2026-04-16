@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMD/AMD-manual-rules.json"
   },
-  "trained_date": "2026-04-15",
+  "trained_date": "2026-04-16",
   "best_approach": "Manual",
   "sharpe": 0.8977,
   "lookahead": 5,

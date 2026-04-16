@@ -38,7 +38,7 @@
     "buy_model": "NFLX-xgb-buy.json",
     "sell_model": "NFLX-xgb-sell.json"
   },
-  "trained_date": "2026-04-15",
+  "trained_date": "2026-04-16",
   "best_approach": "XGBoost",
   "sharpe": 1.1854,
   "strategy": "renquant_103",

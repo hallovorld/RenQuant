@@ -1,26 +1,46 @@
 {
   "model_name": "CAT",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
-  "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-bin-edges.json"
-  },
-  "trained_date": "2026-04-15",
-  "best_approach": "QLearning",
-  "sharpe": 1.3985,
   "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08380984514951706,
+    "macd_hist": 0.08323649317026138,
+    "cci": 0.07940516620874405,
+    "bbp": 0.08736971020698547,
+    "adx": 0.09823690354824066,
+    "williams_r": 0.09438261389732361,
+    "obv_slope": 0.09324312955141068,
+    "spy_realized_vol": 0.09641258418560028,
+    "spy_adx": 0.09771180897951126,
+    "spy_trend": 0.09538037329912186,
+    "hurst_proxy": 0.09081139415502548
+  },
+  "artifacts": {
+    "buy_model": "CAT-xgb-buy.json",
+    "sell_model": "CAT-xgb-sell.json"
+  },
+  "trained_date": "2026-04-16",
+  "best_approach": "XGBoost",
+  "sharpe": 1.1789,
   "strategy": "renquant_103",
   "live_train_rows": 997,
   "live_train_end": "2026-04-08"

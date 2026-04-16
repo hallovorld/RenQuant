@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 # Ensure repo root is importable
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -30,6 +32,14 @@ from common.config import load_strategy_config
 from common.data import fetch_ohlcv
 from common.indicators import compute_indicators
 from common.models import create_model
+from common.models.scoring import (
+    ScoreCalibration,
+    evaluate_row,
+    extract_raw_score,
+    extract_raw_scores_bulk,
+    fit_probability_calibration,
+    raw_score_kind_for_model,
+)
 from common.strategy import StrategyConfig
 
 from .broker import BaseBroker
@@ -167,12 +177,70 @@ def _get_model_score(model, row) -> float:
       2. ``predict_score``       — XGBoost legacy name (kept for backwards compat)
       3. Fallback: map predict() string → {buy: 1.0, hold: 0.0, sell: -1.0}
     """
-    df_row = row.to_frame().T
-    if hasattr(model, "predict_score_bulk"):
-        return float(model.predict_score_bulk(df_row).iloc[0])
-    if hasattr(model, "predict_score"):
-        return float(model.predict_score(df_row).iloc[0])
-    return {"buy": 1.0, "hold": 0.0, "sell": -1.0}.get(model.predict(row), 0.0)
+    return extract_raw_score(model, row)
+
+
+def _get_rank_score(model, row) -> float:
+    calibration = getattr(model, "_score_calibration", None)
+    return evaluate_row(model, row, calibration).rank_score
+
+
+def _build_score_calibration(
+    model,
+    metadata: dict[str, Any],
+    df_stock,
+    df_spy,
+    indicator_spec,
+    feature_columns,
+) -> ScoreCalibration | None:
+    model_feature_cols = getattr(model, "feature_columns", None) or feature_columns
+    rel = _build_relative_features(df_stock, df_spy, model_feature_cols, indicator_spec)
+    if rel is None or rel.empty:
+        return None
+
+    history_features = rel.copy()
+    history_features["position_flag"] = 0
+    raw_scores = extract_raw_scores_bulk(model, history_features)
+
+    stock_close = df_stock.loc[rel.index, "close"].astype(float)
+    spy_close = df_spy.loc[rel.index, "close"].astype(float).replace(0, np.nan)
+    relative_price = stock_close / spy_close
+
+    lookahead = int(metadata.get("lookahead", getattr(model, "lookahead", 5)))
+    threshold = float(metadata.get("threshold", getattr(model, "threshold", 0.0)))
+    future_relative_returns = relative_price.shift(-lookahead) / relative_price - 1.0
+
+    return fit_probability_calibration(
+        raw_scores,
+        future_relative_returns,
+        lookahead=lookahead,
+        threshold=threshold,
+        score_kind=raw_score_kind_for_model(model),
+    )
+
+
+def _ensure_model_score_calibrations(config: dict[str, Any], models: dict, dfs: dict, df_spy) -> None:
+    indicator_spec = config.get("indicator_spec", {})
+    feature_columns = config["model_params"]["feature_columns"]
+
+    for symbol, model in models.items():
+        if getattr(model, "_score_calibration", None) is not None:
+            continue
+        if symbol not in dfs:
+            continue
+
+        metadata = getattr(model, "_policy_metadata", {})
+        calibration = ScoreCalibration.from_dict(metadata.get("score_calibration"))
+        if calibration is None:
+            calibration = _build_score_calibration(
+                model,
+                metadata,
+                dfs[symbol],
+                df_spy,
+                indicator_spec,
+                feature_columns,
+            )
+        model._score_calibration = calibration
 
 
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
@@ -212,6 +280,9 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
         policy_type = metadata["policy_type"]
         model = create_model(policy_type)
         model.load(models_dir / symbol, symbol)
+        model._policy_metadata = metadata
+        model._score_symbol = symbol
+        model._score_calibration = ScoreCalibration.from_dict(metadata.get("score_calibration"))
         models[symbol] = model
 
     log.info("Loaded models for %d/%d symbols: %s",
@@ -310,21 +381,44 @@ def run_once_multi(
     """
     import numpy as np
 
-    watchlist = config["watchlist"]
-    benchmark = config.get("benchmark", "SPY")
-    max_positions = config.get("max_concurrent_positions", 3)
-    zscore_threshold = float(config.get("volume_zscore_threshold", 1.5))
-    zscore_lookback = int(config.get("volume_zscore_lookback", 20))
-    vol_filter = config.get("volume_filter", {})
-    filter_mode = vol_filter.get("mode", "percentile")
-    percentile_threshold = float(vol_filter.get("percentile_threshold", 85))
+    watchlist      = config["watchlist"]
+    benchmark      = config.get("benchmark", "SPY")
+    max_positions  = config.get("max_concurrent_positions", 3)
     indicator_spec = config.get("indicator_spec", {})
     feature_columns = config["model_params"]["feature_columns"]
-    pos_sizing = config.get("position_sizing", {})
-    max_position_pct = float(pos_sizing.get("max_position_pct", 0.30))
-    cash_reserve_pct = float(pos_sizing.get("cash_reserve_pct", 0.00))
+    pos_sizing     = config.get("position_sizing", {})
+    max_position_pct  = float(pos_sizing.get("max_position_pct", 0.30))
+    cash_reserve_pct  = float(pos_sizing.get("cash_reserve_pct", 0.00))
+    sector_map     = config.get("sector_map", {})
+    max_per_sector = int(config.get("max_positions_per_sector", 0))
+    risk_cfg       = config.get("risk", {})
+    drawdown_halt_pct = float(risk_cfg.get("portfolio_drawdown_halt_pct", 0.0))
 
-    log.info("Running multi-stock strategy %s on %s", config["model_name"], watchlist)
+    # Regime params — use BULL_CALM as default (runner doesn't have live GMM)
+    regime_params  = config.get("regime_params", {})
+    bull_calm_rp   = regime_params.get("BULL_CALM", {})
+    stop_loss_pct  = float(bull_calm_rp.get("stop_loss_pct",
+                           risk_cfg.get("stop_loss_pct", 0.0)))
+    sdl_pct        = float(bull_calm_rp.get("max_single_day_loss_pct", 0.0))
+    spy_vel_halt   = float(bull_calm_rp.get("spy_velocity_halt_pct", 0.03))
+    spy_vel_days   = int(bull_calm_rp.get("spy_velocity_lookback_days", 3))
+
+    # Trading constraint params
+    min_hold_days        = int(config.get("min_hold_days", 0))
+    consec_sells_required = int(config.get("consecutive_sell_signals", 1))
+    wash_sale_days       = int(config.get("wash_sale_days", 30))
+    tiered_thresholds    = config.get("tiered_thresholds", [])
+    base_score_thresh    = float(bull_calm_rp.get("min_model_score",
+                                 config.get("min_model_score", 0.0)))
+    tiers = [float(t.get("min_model_score", base_score_thresh)) for t in tiered_thresholds] \
+            if tiered_thresholds else [base_score_thresh]
+
+    # ── HEADER ────────────────────────────────────────────────────────────────
+    run_mode = "sell-only" if sell_only else "full"
+    sep = "=" * 62
+    log.info(sep)
+    log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
+    log.info(sep)
 
     # Fetch data for all stocks + benchmark
     dfs = {}
@@ -339,43 +433,72 @@ def run_once_multi(
         log.error("No benchmark data for %s", benchmark)
         return
 
-    df_spy = dfs[benchmark]
+    df_spy     = dfs[benchmark]
+    _ensure_model_score_calibrations(config, models, dfs, df_spy)
+    spy_close  = df_spy["close"].astype(float)
+    spy_price  = float(spy_close.iloc[-1])
+    spy_ret1d  = (spy_price / float(spy_close.iloc[-2]) - 1) if len(spy_close) >= 2 else 0.0
+    spy_ret5d  = (spy_price / float(spy_close.iloc[-6]) - 1) if len(spy_close) >= 6 else 0.0
 
-    # Risk config
-    risk_cfg = config.get("risk", {})
-    stop_loss_pct = float(risk_cfg.get("stop_loss_pct", 0.0))
-    drawdown_halt_pct = float(risk_cfg.get("portfolio_drawdown_halt_pct", 0.0))
-    regime_cfg = risk_cfg.get("regime_filter", {})
-    regime_enabled = bool(regime_cfg.get("enabled", False))
-    regime_sma_period = int(regime_cfg.get("sma_period", 200))
-    sector_map = config.get("sector_map", {})
-    max_per_sector = int(config.get("max_positions_per_sector", 0))
+    # SPY EMA50 gate
+    spy_ema50       = float(spy_close.ewm(span=50, adjust=False).mean().iloc[-1])
+    spy_above_ema50 = spy_price >= spy_ema50
 
-    # Load persisted live state (entry dates, sell streaks, high-water mark)
+    # SPY velocity crash filter
+    spy_vel_ret = 0.0
+    if len(spy_close) > spy_vel_days:
+        spy_vel_ret = float(spy_close.iloc[-1] / spy_close.iloc[-1 - spy_vel_days] - 1)
+    spy_vel_ok = spy_vel_ret >= -spy_vel_halt
+
+    # ── MARKET CONTEXT ────────────────────────────────────────────────────────
+    log.info("MARKET CONTEXT")
+    log.info("  SPY  $%.2f  |  1d %+.1f%%  |  5d %+.1f%%", spy_price, spy_ret1d*100, spy_ret5d*100)
+    log.info("  EMA50 $%.2f  |  SPY %s EMA50  →  gate %s",
+             spy_ema50,
+             ">" if spy_above_ema50 else "<",
+             "CLEAR" if spy_above_ema50 else "BLOCKING buys")
+    log.info("  Velocity (%dd): %+.1f%%  →  crash filter %s",
+             spy_vel_days, spy_vel_ret*100,
+             "CLEAR" if spy_vel_ok else f"BLOCKING buys (threshold -{spy_vel_halt*100:.0f}%)")
+
+    # ── ACCOUNT + POSITIONS (single batch fetch) ──────────────────────────────
+    account_value = broker.get_account_value()
+    try:
+        cash_avail = broker.get_cash()
+    except Exception:
+        cash_avail = account_value
+    # Fetch all positions in ONE API call — avoids N individual round-trips
+    try:
+        all_pos = broker.get_all_positions()
+    except Exception as e:
+        log.warning("  get_all_positions() failed, falling back to empty: %s", e)
+        all_pos = []
+    positions_cache: dict[str, dict] = {p["symbol"]: p for p in all_pos}
+    log.info("ACCOUNT")
+    log.info("  Equity $%.2f  |  Cash $%.2f", account_value, cash_avail)
+
+    # Load persisted live state
     state_file = strategy_dir / "live_state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    entry_dates: dict     = state.setdefault("entry_dates", {})     # symbol → "YYYY-MM-DD"
-    sell_streaks: dict    = state.setdefault("sell_streaks", {})    # symbol → int
-    last_sell_dates: dict = state.setdefault("last_sell_dates", {}) # symbol → "YYYY-MM-DD"
+    entry_dates: dict     = state.setdefault("entry_dates", {})
+    sell_streaks: dict    = state.setdefault("sell_streaks", {})
+    last_sell_dates: dict = state.setdefault("last_sell_dates", {})
 
-    min_hold_days = int(config.get("min_hold_days", 0))
-    consec_sells_required = int(config.get("consecutive_sell_signals", 1))
-    wash_sale_days = int(config.get("wash_sale_days", 30))
+    # HWM + drawdown
+    hwm = float(state.get("high_water_mark", account_value))
+    hwm = max(hwm, account_value)
+    state["high_water_mark"] = hwm
+    drawdown = (hwm - account_value) / hwm if hwm > 0 else 0.0
+    circuit_open = drawdown_halt_pct > 0 and drawdown >= drawdown_halt_pct
+    log.info("  HWM $%.2f  |  Drawdown %.1f%%  |  Circuit breaker %s",
+             hwm, drawdown*100, "OPEN — halting buys" if circuit_open else "CLEAR")
 
-    # ── Reconcile state with broker ──────────────────────────────────────────
-    # Read the last 60 days of filled orders from Alpaca and sync live_state:
-    #   1. Any currently-held position with no entry_date → fill from order history
-    #   2. Any filled SELL from today → ensure last_sell_dates is recorded
-    # This keeps the state file in sync even when a run fails mid-way or the
-    # file was missing (e.g. the premature AMZN sell on 2026-04-15 happened
-    # before live_state.json tracked last_sell_dates).
+    # ── BROKER RECONCILIATION ─────────────────────────────────────────────────
     from datetime import date as _date
-    sixty_days_ago = (_date.today().replace(day=1) - __import__("datetime").timedelta(days=60)).isoformat()
+    today_str = _date.today().isoformat()
+    sixty_days_ago = (_date.today() - __import__("datetime").timedelta(days=60)).isoformat()
     try:
         filled_orders = broker.get_filled_orders(after=sixty_days_ago)
-        today_str = _date.today().isoformat()
-
-        # Map symbol → most recent BUY date and SELL date from order history
         last_buy: dict = {}
         last_sell_hist: dict = {}
         for o in filled_orders:
@@ -386,98 +509,94 @@ def run_once_multi(
             if o["action"] == "BUY":
                 if sym not in last_buy or filled_day > last_buy[sym]:
                     last_buy[sym] = filled_day
-            else:  # SELL
+            else:
                 if sym not in last_sell_hist or filled_day > last_sell_hist[sym]:
                     last_sell_hist[sym] = filled_day
-
-        # 1. Fill missing entry_dates for positions we currently hold
         for sym, buy_day in last_buy.items():
-            if sym not in entry_dates and broker.get_position(sym) > 0:
+            if sym not in entry_dates and positions_cache.get(sym, {}).get("qty", 0.0) > 0:
                 entry_dates[sym] = buy_day
-                log.info("Reconcile: %s entry_date=%s (from order history)", sym, buy_day)
-
-        # 2. Record today's sells so wash-sale is enforced within the same day
+                log.info("  Reconcile: %s entry_date=%s (from Alpaca history)", sym, buy_day)
         for sym, sell_day in last_sell_hist.items():
-            if sell_day == today_str:
-                existing = last_sell_dates.get(sym)
-                if existing != sell_day:
-                    last_sell_dates[sym] = sell_day
-                    log.info("Reconcile: %s last_sell_date=%s (from order history)", sym, sell_day)
-
+            if sell_day == today_str and last_sell_dates.get(sym) != sell_day:
+                last_sell_dates[sym] = sell_day
+                log.info("  Reconcile: %s last_sell=%s (from Alpaca history)", sym, sell_day)
     except Exception as e:
-        log.warning("Broker reconciliation failed (non-fatal): %s", e)
+        log.warning("  Broker reconciliation failed (non-fatal): %s", e)
 
-    # Step 1: Check current positions, process sells first
-    held = [s for s in watchlist if broker.get_position(s) > 0]
-    log.info("Current positions: %s", held if held else "none")
+    # ── SELL PHASE ────────────────────────────────────────────────────────────
+    held = [s for s in watchlist if positions_cache.get(s, {}).get("qty", 0.0) > 0]
+    log.info("─" * 62)
+    log.info("SELL PHASE  (%d held: %s)", len(held), held if held else "none")
 
     for symbol in list(held):
         if symbol not in dfs:
             continue
-
-        # Stop-loss check before model signal
-        if stop_loss_pct > 0:
-            avg_cost = broker.get_avg_cost(symbol)
-            current_price = float(dfs[symbol]["close"].iloc[-1])
-            if avg_cost > 0:
-                loss_pct = (avg_cost - current_price) / avg_cost
-                if loss_pct >= stop_loss_pct:
-                    position = broker.get_position(symbol)
-                    result = broker.place_order(symbol, "SELL", abs(position))
-                    log.info("STOP LOSS %s: loss=%.1f%% avg=%.2f current=%.2f",
-                             symbol, loss_pct * 100, avg_cost, current_price)
-                    _log_trade(strategy_dir, config["model_name"], {
-                        "timestamp": datetime.now().isoformat(),
-                        "symbol": symbol, "signal": "stop_loss",
-                        "loss_pct": round(loss_pct, 4), "order": result,
-                    })
-                    entry_dates.pop(symbol, None)
-                    sell_streaks.pop(symbol, None)
-                    last_sell_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
-                    held.remove(symbol)
-                    continue
-
-        # Single-day loss gate — catches gap-down days before the cumulative stop fires.
-        # Reads max_single_day_loss_pct from BULL_CALM regime params (most relevant regime;
-        # other regimes already have tight 5% cumulative stops so the value is 0 there).
-        _bull_calm_rp = config.get("regime_params", {}).get("BULL_CALM", {})
-        sdl_pct = float(_bull_calm_rp.get("max_single_day_loss_pct", 0.0))
-        if sdl_pct > 0 and len(dfs[symbol]) >= 2:
-            today_close = float(dfs[symbol]["close"].iloc[-1])
-            prev_close  = float(dfs[symbol]["close"].iloc[-2])
-            if prev_close > 0:
-                daily_drop = (prev_close - today_close) / prev_close
-                if daily_drop >= sdl_pct:
-                    position = broker.get_position(symbol)
-                    result = broker.place_order(symbol, "SELL", abs(position))
-                    log.info("SINGLE DAY LOSS %s: drop=%.1f%% prev=%.2f today=%.2f",
-                             symbol, daily_drop * 100, prev_close, today_close)
-                    _log_trade(strategy_dir, config["model_name"], {
-                        "timestamp": datetime.now().isoformat(),
-                        "symbol": symbol, "signal": "single_day_loss",
-                        "daily_drop_pct": round(daily_drop, 4), "order": result,
-                    })
-                    entry_dates.pop(symbol, None)
-                    sell_streaks.pop(symbol, None)
-                    last_sell_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
-                    held.remove(symbol)
-                    continue
-
-        # min_hold_days guard: block model-sell exits during early hold period.
-        # Stop-loss and single-day loss gate are exempt (already processed above).
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_price = float(dfs[symbol]["close"].iloc[-1])
+        avg_cost      = float(positions_cache.get(symbol, {}).get("avg_entry_price", 0.0))
         entry_date_str = entry_dates.get(symbol)
         days_held = 0
         if entry_date_str:
-            from datetime import date as _date
             try:
                 days_held = (_date.today() - _date.fromisoformat(entry_date_str)).days
             except ValueError:
-                days_held = 0
+                pass
+        unrealized = ((current_price - avg_cost) / avg_cost) if avg_cost > 0 else 0.0
+
+        log.info("  %s  $%.2f  held=%dd  entry=$%.2f  P&L %+.1f%%",
+                 symbol, current_price, days_held, avg_cost, unrealized*100)
+
+        # [EXIT 1] Trailing stop — not tracked in runner (no per-position HWM yet)
+
+        # [EXIT 2] Cumulative stop-loss
+        if stop_loss_pct > 0 and avg_cost > 0:
+            loss_pct = (avg_cost - current_price) / avg_cost
+            if loss_pct >= stop_loss_pct:
+                position = positions_cache.get(symbol, {}).get("qty", 0.0)
+                result = broker.place_order(symbol, "SELL", abs(position))
+                log.info("    → SELL [STOP LOSS] loss=%.1f%% >= %.0f%%",
+                         loss_pct*100, stop_loss_pct*100)
+                _log_trade(strategy_dir, config["model_name"], {
+                    "timestamp": datetime.now().isoformat(),
+                    "symbol": symbol, "signal": "stop_loss",
+                    "loss_pct": round(loss_pct, 4), "order": result,
+                })
+                entry_dates.pop(symbol, None)
+                sell_streaks.pop(symbol, None)
+                last_sell_dates[symbol] = today_str
+                held.remove(symbol)
+                continue
+            else:
+                log.info("    stop-loss: loss=%.1f%% < threshold %.0f%%  HOLD",
+                         loss_pct*100, stop_loss_pct*100)
+
+        # [EXIT 2b] Single-day loss gate
+        if sdl_pct > 0 and len(dfs[symbol]) >= 2:
+            prev_close  = float(dfs[symbol]["close"].iloc[-2])
+            daily_drop  = (prev_close - current_price) / prev_close if prev_close > 0 else 0.0
+            if daily_drop >= sdl_pct:
+                position = positions_cache.get(symbol, {}).get("qty", 0.0)
+                result = broker.place_order(symbol, "SELL", abs(position))
+                log.info("    → SELL [SINGLE DAY LOSS] drop=%.1f%% >= %.0f%%",
+                         daily_drop*100, sdl_pct*100)
+                _log_trade(strategy_dir, config["model_name"], {
+                    "timestamp": datetime.now().isoformat(),
+                    "symbol": symbol, "signal": "single_day_loss",
+                    "daily_drop_pct": round(daily_drop, 4), "order": result,
+                })
+                entry_dates.pop(symbol, None)
+                sell_streaks.pop(symbol, None)
+                last_sell_dates[symbol] = today_str
+                held.remove(symbol)
+                continue
+            else:
+                log.info("    single-day gate: drop=%.1f%% < threshold %.0f%%  HOLD",
+                         daily_drop*100, sdl_pct*100)
+
+        # [EXIT 4] Model sell — gated by min_hold + consecutive streak
         if min_hold_days > 0 and days_held < min_hold_days:
-            log.info("%s min_hold_days=%d, held %d days — skipping model-sell check",
-                     symbol, min_hold_days, days_held)
-            sell_streaks[symbol] = 0  # reset streak: we're inside the hold window
+            log.info("    model-sell: min_hold=%dd, held=%dd  BLOCKED (in hold window)",
+                     min_hold_days, days_held)
+            sell_streaks[symbol] = 0
             continue
 
         model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
@@ -485,215 +604,246 @@ def run_once_multi(
         if rel is None or rel.empty:
             continue
         row = rel.iloc[-1].copy()
-        row["position_flag"] = 1  # currently held — needed by Q-Learning state encoding
-        signal = models[symbol].predict(row)
+        row["position_flag"] = 1
+        score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+        signal = score_eval.signal
+        raw_score = score_eval.raw_score
+        rank_score = score_eval.rank_score
+
         if signal == "sell":
             sell_streaks[symbol] = sell_streaks.get(symbol, 0) + 1
             streak = sell_streaks[symbol]
             if streak < consec_sells_required:
-                log.info("%s sell signal (streak %d/%d) — waiting for %d consecutive",
-                         symbol, streak, consec_sells_required, consec_sells_required)
+                log.info("    model-sell: signal=sell  raw=%.4f  rank=%.4f  streak=%d/%d  WAITING",
+                         raw_score, rank_score, streak, consec_sells_required)
             else:
                 sell_streaks[symbol] = 0
-                position = broker.get_position(symbol)
+                position = positions_cache.get(symbol, {}).get("qty", 0.0)
                 result = broker.place_order(symbol, "SELL", abs(position))
-                log.info("SELL %s (streak=%d, held=%d days): %.0f shares",
-                         symbol, streak, days_held, abs(position))
+                log.info("    → SELL [MODEL streak=%d] raw=%.4f rank=%.4f  held=%dd",
+                         streak, raw_score, rank_score, days_held)
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "sell",
                     "days_held": days_held, "sell_streak": streak,
+                    "raw_model_score": raw_score,
+                    "rank_model_score": rank_score,
                     "order": result,
                 })
                 entry_dates.pop(symbol, None)
-                last_sell_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
+                last_sell_dates[symbol] = today_str
                 held.remove(symbol)
         else:
-            sell_streaks[symbol] = 0  # reset streak on non-sell signal
+            sell_streaks[symbol] = 0
+            log.info("    model-sell: signal=%s  raw=%.4f rank=%.4f  HOLD", signal, raw_score, rank_score)
 
-    # Sell-only mode: persist state updates (stop-loss exits may have cleared entry dates)
-    # then stop — don't scan for new buys.
+    # Persist state after sell phase and return if sell-only
+    state_file.write_text(json.dumps(state, indent=2))
     if sell_only:
-        log.info("sell_only mode — skipping buy phase")
-        state_file.write_text(json.dumps(state, indent=2))
+        log.info("sell_only mode — buy phase skipped")
+        log.info(sep)
         return
 
-    # Step 2: Check portfolio drawdown circuit breaker
+    # ── BUY GATES ─────────────────────────────────────────────────────────────
+    log.info("─" * 62)
+    log.info("BUY PHASE  (slots %d/%d open)", max_positions - len(held), max_positions)
+
     open_slots = max_positions - len(held)
     if open_slots <= 0:
-        log.info("All %d slots filled, no scanning", max_positions)
+        log.info("  All %d slots filled — no scanning", max_positions)
+        log.info(sep)
         return
 
-    if drawdown_halt_pct > 0:
-        account_value = broker.get_account_value()
-        hwm = float(state.get("high_water_mark", account_value))
-        hwm = max(hwm, account_value)
-        state["high_water_mark"] = hwm
-        if hwm > 0:
-            drawdown = (hwm - account_value) / hwm
-            if drawdown >= drawdown_halt_pct:
-                log.info("Drawdown circuit breaker: %.1f%% >= %.0f%%, halting new buys",
-                         drawdown * 100, drawdown_halt_pct * 100)
-                return
+    if circuit_open:
+        log.info("  Drawdown circuit breaker OPEN (%.1f%%) — halting buys", drawdown*100)
+        log.info(sep)
+        return
 
-    # Step 3: Regime filter — suppress new buys when SPY is below its 200-day SMA
-    if regime_enabled and benchmark in dfs:
-        spy_close = dfs[benchmark]["close"].astype(float)
-        if len(spy_close) >= regime_sma_period:
-            sma200 = float(spy_close.iloc[-regime_sma_period:].mean())
-            if float(spy_close.iloc[-1]) <= sma200:
-                log.info("Regime filter: SPY(%.2f) below 200-SMA(%.2f), suppressing new buys",
-                         float(spy_close.iloc[-1]), sma200)
-                return
+    if not spy_above_ema50:
+        log.info("  SPY EMA50 gate BLOCKING (SPY $%.2f < EMA50 $%.2f) — no buys",
+                 spy_price, spy_ema50)
+        log.info(sep)
+        return
 
-    vol_candidates = []
+    if not spy_vel_ok:
+        log.info("  SPY velocity crash BLOCKING (%+.1f%% over %dd) — no buys",
+                 spy_vel_ret*100, spy_vel_days)
+        log.info(sep)
+        return
+
+    # ── FULL TICKER SCAN ──────────────────────────────────────────────────────
+    log.info("  SPY gates clear — scanning all %d tickers", len(watchlist))
+    log.info("─" * 62)
+    log.info("FULL TICKER SCAN")
+
+    buy_candidates = []   # (symbol, raw_score, rank_score, rs_score, row)
+
     for symbol in watchlist:
-        if symbol in held or symbol not in dfs:
+        if symbol in held:
+            log.info("  %-6s  SKIP  [already held]", symbol)
             continue
-        df = dfs[symbol]
-        if len(df) < zscore_lookback + 1:
+        if symbol not in dfs or symbol not in models:
+            log.info("  %-6s  SKIP  [no data/model]", symbol)
             continue
-        vol = df["volume"].astype(float)
-        today_vol = float(vol.iloc[-1])
-        hist_vol = vol.iloc[-(zscore_lookback + 1):-1]
 
-        if filter_mode == "percentile":
-            # Percentile rank: what fraction of lookback days had lower volume?
-            vol_score = float((hist_vol < today_vol).sum()) / len(hist_vol) * 100
-            triggered = vol_score >= percentile_threshold
-        else:
-            # Legacy z-score mode
-            roll_mean = float(hist_vol.mean())
-            roll_std = float(hist_vol.std())
-            vol_score = (today_vol - roll_mean) / roll_std if roll_std > 0 else 0
-            triggered = vol_score >= zscore_threshold
+        price   = float(dfs[symbol]["close"].iloc[-1])
+        ret1d   = float(dfs[symbol]["close"].iloc[-1] / dfs[symbol]["close"].iloc[-2] - 1) \
+                  if len(dfs[symbol]) >= 2 else 0.0
+        ret5d   = float(dfs[symbol]["close"].iloc[-1] / dfs[symbol]["close"].iloc[-6] - 1) \
+                  if len(dfs[symbol]) >= 6 else 0.0
+        spy5d_r = float(spy_close.iloc[-1] / spy_close.iloc[-6] - 1) \
+                  if len(spy_close) >= 6 else 0.0
+        rs5d    = ret5d - spy5d_r
 
-        if triggered:
-            # Bullish filter: only enter on up-close days
-            close = df["close"].astype(float)
-            if len(close) >= 2 and close.iloc[-1] <= close.iloc[-2]:
-                continue
-            vol_candidates.append((symbol, vol_score))
-
-    score_label = "pct" if filter_mode == "percentile" else "z"
-    log.info("Volume candidates: %s",
-             [(s, f"{score_label}={v:.1f}") for s, v in vol_candidates] or "none")
-
-    # Step 4: Score all volume candidates with their models, then rank by model score.
-    # This ensures the highest-conviction signal gets priority over the largest volume spike.
-    #
-    # Tiered thresholds: each successive order placed in a single run requires a
-    # progressively higher bar. Configure via "tiered_thresholds" in strategy_config.json:
-    #   [{"min_volume_pct": 85, "min_model_score": 0.0},   <- slot 1 (easiest)
-    #    {"min_volume_pct": 90, "min_model_score": 0.30},  <- slot 2
-    #    {"min_volume_pct": 95, "min_model_score": 0.50}]  <- slot 3 (strictest)
-    # When not configured, a single tier uses the base thresholds for all slots.
-    vol_key = "min_volume_pct" if filter_mode == "percentile" else "min_volume_zscore"
-    base_vol_thresh = percentile_threshold if filter_mode == "percentile" else zscore_threshold
-    base_score_thresh = float(config.get("min_model_score", 0.0))
-
-    raw_tiers = config.get("tiered_thresholds", [])
-    if raw_tiers:
-        tiers = [
-            (float(t.get(vol_key, base_vol_thresh)), float(t.get("min_model_score", 0.0)))
-            for t in raw_tiers
-        ]
-    else:
-        tiers = [(base_vol_thresh, base_score_thresh)]
-
-    # Pre-score all candidates that pass the most lenient tier (tier 1)
-    tier1_vol_min, tier1_score_min = tiers[0]
-    scored_candidates = []
-    for symbol, vol_score in vol_candidates:
-        if symbol not in models:
-            continue
-        if vol_score < tier1_vol_min:
-            continue  # didn't even meet slot-1 bar
-
-        # Wash-sale guard: block re-buy within wash_sale_days of last sell
+        # Wash-sale guard
         if wash_sale_days > 0 and symbol in last_sell_dates:
-            from datetime import date as _date
             try:
                 days_since_sell = (_date.today() - _date.fromisoformat(last_sell_dates[symbol])).days
                 if days_since_sell < wash_sale_days:
-                    log.info("%s wash-sale blocked: sold %d days ago (limit=%d)",
-                             symbol, days_since_sell, wash_sale_days)
+                    log.info("  %-6s  $%.2f  1d%+.1f%%  5d%+.1f%%  RS%+.1f%%  SKIP  "
+                             "[wash-sale: sold %dd ago, limit %dd]",
+                             symbol, price, ret1d*100, ret5d*100, rs5d*100,
+                             days_since_sell, wash_sale_days)
                     continue
             except ValueError:
                 pass
+
+        # Build features and run model
         model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
         rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         if rel is None or rel.empty:
+            log.info("  %-6s  $%.2f  SKIP  [feature build failed]", symbol, price)
             continue
         row = rel.iloc[-1].copy()
         row["position_flag"] = 0
-        signal = models[symbol].predict(row)
-        model_score = _get_model_score(models[symbol], row)
-        log.info("%s %s=%.1f signal=%s model_score=%.4f",
-                 symbol, score_label, vol_score, signal, model_score)
-        if signal == "buy" and model_score >= tier1_score_min:
-            scored_candidates.append((symbol, vol_score, model_score, row))
+        score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+        signal = score_eval.signal
+        raw_score = score_eval.raw_score
+        rank_score = score_eval.rank_score
 
-    # Sort by model score descending — highest conviction first
-    scored_candidates.sort(key=lambda x: x[2], reverse=True)
+        # Min model score (use tier-1 bar as baseline)
+        min_score = tiers[0]
+        if signal != "buy":
+            log.info("  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  signal=%-4s  raw=%+.4f  rank=%+.4f  SKIP  [signal=%s]",
+                     symbol, price, ret1d*100, rs5d*100, signal, raw_score, rank_score, signal)
+            continue
+        if rank_score < min_score:
+            log.info("  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  signal=buy  raw=%+.4f  rank=%+.4f  SKIP  "
+                     "[score < min %.2f]",
+                     symbol, price, ret1d*100, rs5d*100, raw_score, rank_score, min_score)
+            continue
 
-    slots_filled_this_run = 0
-    for symbol, vol_score, model_score, row in scored_candidates:
+        # Relative strength vs sector ETF (20d)
+        sector_etfs = {"tech": "XLK", "finance": "XLF", "healthcare": "XLV",
+                       "energy": "XLE", "industrial": "XLI", "utility": "XLU"}
+        sector  = sector_map.get(symbol, "other")
+        etf     = sector_etfs.get(sector)
+        rs_score = 0.0
+        if etf and etf in dfs and len(dfs[etf]) >= 21:
+            try:
+                stock_r = float(dfs[symbol]["close"].iloc[-1] / dfs[symbol]["close"].iloc[-21] - 1)
+                etf_r   = float(dfs[etf]["close"].iloc[-1]   / dfs[etf]["close"].iloc[-21]   - 1)
+                rs_score = stock_r - etf_r
+            except Exception:
+                pass
+
+        log.info("  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  signal=BUY  raw=%+.4f  rank=%+.4f  rs=%+.4f  "
+                 "→ CANDIDATE",
+             symbol, price, ret1d*100, rs5d*100, raw_score, rank_score, rs_score)
+        buy_candidates.append((symbol, raw_score, rank_score, rs_score, row))
+
+    # ── RANKING ───────────────────────────────────────────────────────────────
+    log.info("─" * 62)
+    if not buy_candidates:
+        log.info("BUY CANDIDATES: none — no buys placed")
+        log.info(sep)
+        return
+
+    import pandas as _pd
+    if len(buy_candidates) > 1:
+        rank_vals = [c[2] for c in buy_candidates]
+        rs_vals = [c[3] for c in buy_candidates]
+        rank_lo, rank_hi = min(rank_vals), max(rank_vals)
+        rs_lo, rs_hi = min(rs_vals), max(rs_vals)
+        def _norm(v, lo, hi): return (v - lo) / (hi - lo) if hi > lo else 0.5
+        buy_candidates.sort(
+            key=lambda c: 0.5 * _norm(c[2], rank_lo, rank_hi) + 0.5 * _norm(c[3], rs_lo, rs_hi),
+            reverse=True,
+        )
+    log.info("RANKED CANDIDATES (50%% calibrated rank + 50%% RS):")
+    for rank, (sym, raw_ms, rank_ms, rs, _) in enumerate(buy_candidates, 1):
+        log.info("  #%d  %-6s  raw=%+.4f  rank=%+.4f  rs=%+.4f", rank, sym, raw_ms, rank_ms, rs)
+
+    # ── SELECTION LOOP ────────────────────────────────────────────────────────
+    log.info("─" * 62)
+    log.info("SELECTION (tiered thresholds: %s)", tiers)
+    slots_filled = 0
+    for symbol, raw_score, rank_score, rs_score, row in buy_candidates:
         if open_slots <= 0:
             break
-        # Determine which tier applies for the slot we're about to fill
-        tier_idx = min(slots_filled_this_run, len(tiers) - 1)
-        tier_min_vol, tier_min_score = tiers[tier_idx]
-        slot_num = slots_filled_this_run + 1
 
-        if vol_score < tier_min_vol:
-            log.info("Slot %d: %s vol_score=%.1f below tier min %.1f, skipping",
-                     slot_num, symbol, vol_score, tier_min_vol)
-            continue
-        if model_score < tier_min_score:
-            log.info("Slot %d: %s model_score=%.4f below tier min %.4f, skipping",
-                     slot_num, symbol, model_score, tier_min_score)
+        tier_idx  = min(slots_filled, len(tiers) - 1)
+        tier_min  = tiers[tier_idx]
+        slot_num  = slots_filled + 1
+
+        if rank_score < tier_min:
+            log.info("  %-6s  SKIP  [slot %d tier min %.2f, rank %+.4f too low]",
+                     symbol, slot_num, tier_min, rank_score)
             continue
 
-        # Sector concentration guard (applied after ranking so sector count stays current)
+        # Sector guard
         if max_per_sector > 0:
-            sector = sector_map.get(symbol, "other")
+            sector       = sector_map.get(symbol, "other")
             sector_count = sum(1 for h in held if sector_map.get(h, "other") == sector)
             if sector_count >= max_per_sector:
-                log.info("Sector limit: %s (%s) already at %d/%d, skipping",
+                log.info("  %-6s  SKIP  [sector %s at %d/%d]",
                          symbol, sector, sector_count, max_per_sector)
                 continue
 
+        # Position sizing
         account_value = broker.get_account_value()
-        price = float(dfs[symbol]["close"].iloc[-1])
-        cash_reserve = account_value * cash_reserve_pct
-        available = broker.get_account_value() - cash_reserve
-        max_invest = account_value * max_position_pct
-        invest = min(max_invest, max(available, 0))
-        shares = int(invest / price)
-        if shares > 0:
-            result = broker.place_order(symbol, "BUY", shares)
-            log.info("BUY %s (slot %d/%d): %d shares at ~$%.2f (%s=%.1f model_score=%.4f)",
-                     symbol, slot_num, max_positions, shares, price,
-                     score_label, vol_score, model_score)
-            _log_trade(strategy_dir, config["model_name"], {
-                "timestamp": datetime.now().isoformat(),
-                "symbol": symbol, "signal": "buy",
-                "slot": slot_num,
-                "volume_score": vol_score,
-                "volume_filter_mode": filter_mode,
-                "model_score": model_score,
-                "order": result,
-            })
-            # Persist entry date so min_hold_days can be enforced on future runs
-            entry_dates[symbol] = datetime.now().strftime("%Y-%m-%d")
-            sell_streaks.pop(symbol, None)
-            last_sell_dates.pop(symbol, None)  # reset wash-sale clock on new entry
-            held.append(symbol)
-            slots_filled_this_run += 1
-            open_slots -= 1
+        price         = float(dfs[symbol]["close"].iloc[-1])
+        cash_reserve  = account_value * cash_reserve_pct
+        available     = max(cash_avail - cash_reserve, 0)
+        max_invest    = account_value * max_position_pct
+        invest        = min(max_invest, available)
+        shares        = int(invest / price)
 
-    # Persist updated state (entry dates, sell streaks, high-water mark)
+        if shares <= 0:
+            log.info("  %-6s  SKIP  [insufficient cash: invest=$%.0f, price=$%.2f]",
+                     symbol, invest, price)
+            continue
+
+        result = broker.place_order(symbol, "BUY", shares)
+        log.info("  %-6s  BUY  slot=%d  %d shares @ $%.2f  invest=$%.0f  "
+                 "raw=%+.4f  rank=%+.4f  rs=%+.4f",
+                 symbol, slot_num, shares, price, invest, raw_score, rank_score, rs_score)
+        _log_trade(strategy_dir, config["model_name"], {
+            "timestamp": datetime.now().isoformat(),
+            "symbol": symbol, "signal": "buy",
+            "slot": slot_num,
+            "raw_model_score": raw_score,
+            "rank_model_score": rank_score,
+            "rs_score": rs_score,
+            "shares": shares, "price": price, "invest": invest, "order": result,
+        })
+        entry_dates[symbol] = today_str
+        sell_streaks.pop(symbol, None)
+        last_sell_dates.pop(symbol, None)
+        held.append(symbol)
+        slots_filled += 1
+        open_slots   -= 1
+
+    if slots_filled == 0:
+        log.info("  No buys placed (all candidates filtered out)")
+
+    # ── SUMMARY ───────────────────────────────────────────────────────────────
+    log.info("─" * 62)
+    log.info("END OF RUN  |  positions held: %d/%d  |  %s",
+             len(held), max_positions, held if held else "none")
+    log.info(sep)
+
+    # Persist updated state
     state_file.write_text(json.dumps(state, indent=2))
 
 

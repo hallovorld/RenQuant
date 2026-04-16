@@ -4,9 +4,26 @@ All models implement `BaseModel` with a common interface:
 - `train(df, **kwargs)` — train on indicator-enriched OHLCV data
 - `predict(state)` — return `"hold"`, `"buy"`, or `"sell"` (string) for a single row or DataFrame (only processes row 0)
 - `predict_bulk(df)` — return a Series of strings `"buy"/"hold"/"sell"` for all rows (vectorized); use `.map({"buy": 1, "hold": 0, "sell": -1})` to convert to integers for simulation/Sharpe computation
-- `predict_score_bulk(df)` — return a Series of continuous float scores (raw model confidence before thresholding); used for ranking candidates by signal strength in the live runner, simulation, and LEAN. Classification returns raw BagLearner output; Q-Learning returns Q(buy)−Q(sell); XGBoost returns P(buy)−P(sell); Manual returns raw vote count (positive = buy pressure, negative = sell pressure).
+- `predict_score_bulk(df)` — return a Series of continuous float scores in the model's native scale. Classification returns raw BagLearner output; Q-Learning returns Q(buy)−Q(sell); XGBoost returns P(buy)−P(sell); Manual returns raw vote count (positive = buy pressure, negative = sell pressure).
 - `save(directory, model_name)` — export as JSON
 - `load(directory, model_name)` — load from JSON
+
+## Score Contract
+
+Raw model scores are intentionally preserved in their native semantics for interpretability and debugging, but they are **not directly comparable across model families**. A raw score of `2.0` from a Manual model and a raw score of `0.25` from XGBoost do not mean the same thing.
+
+The live runner therefore uses a two-layer contract:
+
+- `raw_score` — the native output from `predict_score_bulk()`; logged for diagnostics and model introspection
+- `rank_score` — a calibrated score used for portfolio filtering, cross-model ranking, and tier thresholds
+
+Calibration is handled by `common/models/scoring.py`:
+
+- If `policy-metadata.json` contains `score_calibration`, that artifact is used directly.
+- Otherwise the live runner fits a fallback isotonic calibration from recent symbol history.
+- The calibration target is `P(5d relative return > threshold)` using the model's own training horizon/threshold when available.
+
+This keeps one champion model per symbol while putting mixed model families onto a common ranking scale.
 
 ## Manual Model — Dual Momentum + Trend Following
 
@@ -169,7 +186,7 @@ Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_res
 ## JSON Artifact Format
 
 All models export to JSON (no pickle) for LEAN compatibility. Each model writes:
-- `{name}-policy-metadata.json` — contract between research and backtesting
+- `{name}-policy-metadata.json` — contract between research and execution; may also carry optional `score_calibration` metadata for live cross-model ranking
 - Model-specific artifacts:
   - Classification: `{name}-rf-trees.json`
   - Q-Learning: `{name}-qtable.json` + `{name}-bin-edges.json`

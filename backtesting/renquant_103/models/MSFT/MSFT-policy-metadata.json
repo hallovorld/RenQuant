@@ -26,7 +26,7 @@
   },
   "trained_date": "2026-04-15",
   "best_approach": "Classification",
-  "sharpe": 1.4011,
+  "sharpe": 0.8327,
   "strategy": "renquant_103",
   "live_train_rows": 997,
   "live_train_end": "2026-04-08"

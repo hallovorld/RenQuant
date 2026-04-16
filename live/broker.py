@@ -26,6 +26,17 @@ class BaseBroker(ABC):
         """Return average cost basis per share for *symbol* (0 if not held). Override for accuracy."""
         return 0.0
 
+    def get_cash(self) -> float:
+        """Return available cash.  Defaults to account value; override for accuracy."""
+        return self.get_account_value()
+
+    def get_all_positions(self) -> list[dict]:
+        """Return all open positions as a list of dicts with keys:
+        symbol, qty, avg_entry_price, market_value, unrealized_pl.
+        Override for batch-efficient broker implementations.
+        """
+        return []
+
     def get_filled_orders(self, after: str | None = None) -> list[dict]:
         """Return filled orders since *after* ('YYYY-MM-DD').  Returns [] if not supported."""
         return []

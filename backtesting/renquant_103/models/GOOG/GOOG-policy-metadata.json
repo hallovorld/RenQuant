@@ -1,26 +1,46 @@
 {
   "model_name": "GOOG",
-  "policy_type": "qlearning",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
-  "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GOOG/GOOG-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GOOG/GOOG-bin-edges.json"
-  },
-  "trained_date": "2026-04-15",
-  "best_approach": "QLearning",
-  "sharpe": 1.3152,
   "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08981789648532867,
+    "macd_hist": 0.0947282537817955,
+    "cci": 0.081759512424469,
+    "bbp": 0.09515754133462906,
+    "adx": 0.08682846277952194,
+    "williams_r": 0.08033657819032669,
+    "obv_slope": 0.09165410697460175,
+    "spy_realized_vol": 0.09400917589664459,
+    "spy_adx": 0.10687269270420074,
+    "spy_trend": 0.08163979649543762,
+    "hurst_proxy": 0.09719596803188324
+  },
+  "artifacts": {
+    "buy_model": "GOOG-xgb-buy.json",
+    "sell_model": "GOOG-xgb-sell.json"
+  },
+  "trained_date": "2026-04-16",
+  "best_approach": "XGBoost",
+  "sharpe": 1.1783,
   "strategy": "renquant_103",
   "live_train_rows": 997,
   "live_train_end": "2026-04-08"

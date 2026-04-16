@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/NVDA/NVDA-manual-rules.json"
   },
-  "trained_date": "2026-04-15",
+  "trained_date": "2026-04-16",
   "best_approach": "Manual",
   "sharpe": 1.9236,
   "lookahead": 5,

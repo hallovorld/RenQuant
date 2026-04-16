@@ -1,9 +1,9 @@
 """
-Tests for live/runner.py model-score ranking of buy candidates.
+Tests for live/runner.py ranking of buy candidates.
 
-Before this change, candidates were ranked by volume score (largest spike first).
-After the change, all volume-triggered candidates are scored by their model and
-ranked by model score descending — highest conviction gets the slot.
+Candidates are first filtered by their model signal, then ranked using a
+cross-model comparable score. Raw model scores remain available for debugging,
+but live portfolio selection uses calibrated rank scores when present.
 
 Test strategy:
   - Use a stub broker and stub models so no network I/O or Docker is needed.
@@ -28,7 +28,8 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from live.runner import _get_model_score, run_once_multi
+from common.models.scoring import ScoreCalibration, fit_probability_calibration
+from live.runner import _get_model_score, _get_rank_score, run_once_multi
 from live.broker import BaseBroker
 
 
@@ -62,6 +63,10 @@ class StubModel:
         self._signal = signal
         self._score = score
         self.feature_columns = feature_columns or ["rsi", "macd_hist"]
+        self._score_calibration = ScoreCalibration(
+            method="identity",
+            score_kind="stub_raw",
+        )
 
     def predict(self, row) -> str:
         return self._signal
@@ -248,26 +253,78 @@ class TestGetModelScore:
         assert isinstance(score, float)
         assert -1.0 <= score <= 1.0
 
+    def test_xgboost_model_save_load_predict(self, tmp_path):
+        """Saved XGBoost models must reload with sklearn classifier metadata intact."""
+        from common.models import create_model
+
+        rng = np.random.default_rng(19)
+        cols = ["rsi", "macd_hist", "cci"]
+        df = pd.DataFrame(rng.normal(0, 1, (220, len(cols))), columns=cols)
+        df["close"] = 100 * np.cumprod(1 + rng.normal(0.001, 0.01, 220))
+
+        model = create_model(
+            "xgboost", feature_columns=cols,
+            lookahead=5, threshold=0.02, buy_threshold=0.55, sell_threshold=0.55,
+        )
+        model.train(df)
+        model.save(tmp_path, "TEST")
+
+        reloaded = create_model("xgboost")
+        reloaded.load(tmp_path, "TEST")
+
+        row = df.iloc[-1].copy()
+        signal = reloaded.predict(row)
+        score = _get_model_score(reloaded, row)
+
+        assert signal in {"buy", "hold", "sell"}
+        assert isinstance(score, float)
+        assert -1.0 <= score <= 1.0
+
+    def test_rank_score_uses_calibration_when_present(self):
+        model = StubModel(score=2.0)
+        model._score_calibration = ScoreCalibration(
+            method="isotonic",
+            score_kind="vote_count",
+            x_thresholds=[0.0, 1.0, 2.0],
+            y_thresholds=[0.10, 0.40, 0.85],
+        )
+
+        score = _get_rank_score(model, self._row())
+        assert score == pytest.approx(0.85)
+
+
+class TestScoreCalibration:
+    def test_fit_probability_calibration_is_monotonic(self):
+        raw = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0, 3.0])
+        future = pd.Series([-0.05, -0.03, -0.01, 0.01, 0.05, 0.08])
+        calibration = fit_probability_calibration(
+            pd.concat([raw] * 30, ignore_index=True),
+            pd.concat([future] * 30, ignore_index=True),
+            lookahead=5,
+            threshold=0.02,
+            score_kind="bag_learner_raw",
+        )
+
+        assert calibration.method == "isotonic"
+        assert calibration.calibrate(-1.0) <= calibration.calibrate(2.0)
+
 
 # ── Ranking behaviour ─────────────────────────────────────────────────────────
 
 class TestModelScoreRanking:
-    """Verify that model score, not volume score, determines which stock is bought."""
+    """Verify that higher-conviction candidates get priority."""
 
     def test_higher_model_score_wins_over_higher_volume_score(
         self, monkeypatch, tmp_path
     ):
         """
-        AAPL has a larger volume spike (higher percentile) but a weaker model score.
-        MSFT has a smaller spike but a higher model score.
-        Expected: MSFT is bought first.
+        When multiple buy signals are present, the higher-conviction candidate wins.
         """
         aapl_df = _make_ohlcv(vol_spike=True)
-        # Give AAPL an even bigger spike so it ranks first by volume
-        aapl_df["volume"].iloc[-1] = 50_000_000
+        aapl_df.loc[aapl_df.index[-1], "volume"] = 50_000_000
 
         msft_df = _make_ohlcv(vol_spike=True)
-        msft_df["volume"].iloc[-1] = 5_000_000  # smaller spike
+        msft_df.loc[msft_df.index[-1], "volume"] = 5_000_000
 
         spy_df = _make_ohlcv()
         dfs = {"AAPL": aapl_df, "MSFT": msft_df, "AMZN": _make_ohlcv(), "SPY": spy_df}
@@ -285,8 +342,56 @@ class TestModelScoreRanking:
         run_once_multi(config, models, broker, tmp_path)
 
         assert len(broker.orders) == 1
+        assert broker.orders[0]["symbol"] == "MSFT"
+
+    def test_mixed_raw_scales_use_calibrated_rank_score(self, monkeypatch, tmp_path):
+        """Mixed model types should rank by calibrated score, not raw native scale."""
+        import live.runner as runner_mod
+
+        dfs = {
+            "AAPL": _make_ohlcv(vol_spike=True),
+            "MSFT": _make_ohlcv(vol_spike=True),
+            "AMZN": _make_ohlcv(vol_spike=False),
+            "SPY": _make_ohlcv(),
+        }
+
+        manual_like = StubModel(signal="buy", score=2.0)
+        manual_like._score_calibration = ScoreCalibration(
+            method="isotonic",
+            score_kind="vote_count",
+            x_thresholds=[0.0, 1.0, 2.0],
+            y_thresholds=[0.20, 0.45, 0.55],
+        )
+        xgb_like = StubModel(signal="buy", score=0.25)
+        xgb_like._score_calibration = ScoreCalibration(
+            method="isotonic",
+            score_kind="p_buy_minus_sell",
+            x_thresholds=[-0.2, 0.0, 0.25],
+            y_thresholds=[0.10, 0.35, 0.80],
+        )
+        models = {
+            "AAPL": manual_like,
+            "MSFT": xgb_like,
+            "AMZN": StubModel(signal="hold", score=0.0),
+        }
+
+        broker = StubBroker(equity=10_000)
+        config = _minimal_config(
+            max_concurrent_positions=1,
+            tiered_thresholds=[{"min_model_score": 0.0}],
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            runner_mod,
+            "_ensure_model_score_calibrations",
+            lambda config, models, dfs, df_spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        assert len(broker.orders) == 1
         assert broker.orders[0]["symbol"] == "MSFT", (
-            "MSFT should be chosen despite smaller volume spike because its model score is higher"
+            "MSFT should win because its calibrated rank score is stronger even though its raw score is smaller"
         )
 
     def test_both_bought_when_two_slots_open(self, monkeypatch, tmp_path):
@@ -313,16 +418,16 @@ class TestModelScoreRanking:
         assert set(bought) == {"AAPL", "MSFT"}
 
     def test_single_candidate_still_bought(self, monkeypatch, tmp_path):
-        """Regression: when only one candidate passes volume filter it is still bought."""
+        """Regression: when only one symbol produces a buy signal, it is still bought."""
         dfs = {
-            "AAPL": _make_ohlcv(vol_spike=False),  # no spike
+            "AAPL": _make_ohlcv(vol_spike=False),
             "MSFT": _make_ohlcv(vol_spike=False),
-            "AMZN": _make_ohlcv(vol_spike=True),   # only AMZN spikes
+            "AMZN": _make_ohlcv(vol_spike=False),
             "SPY":  _make_ohlcv(),
         }
         models = {
-            "AAPL": StubModel(signal="buy", score=0.9),
-            "MSFT": StubModel(signal="buy", score=0.8),
+            "AAPL": StubModel(signal="hold", score=0.9),
+            "MSFT": StubModel(signal="hold", score=0.8),
             "AMZN": StubModel(signal="buy", score=0.5),
         }
 
@@ -383,7 +488,7 @@ class TestModelScoreRanking:
         assert "MSFT" in bought
 
     def test_model_score_logged(self, monkeypatch, tmp_path, caplog):
-        """model_score appears in the log line for each candidate."""
+        """Candidate logs expose both raw and calibrated rank scores."""
         import logging
 
         dfs = {
@@ -405,10 +510,10 @@ class TestModelScoreRanking:
         with caplog.at_level(logging.INFO, logger="live.runner"):
             run_once_multi(config, models, broker, tmp_path)
 
-        assert any("model_score" in r.message for r in caplog.records)
+        assert any("raw=" in r.message and "rank=" in r.message for r in caplog.records)
 
     def test_trade_log_contains_model_score(self, monkeypatch, tmp_path):
-        """The JSON trade log record includes model_score for each buy."""
+        """The JSON trade log record includes raw and calibrated rank scores for each buy."""
         import live.runner as runner_mod
 
         dfs = {
@@ -435,8 +540,10 @@ class TestModelScoreRanking:
 
         buy_entries = [r for r in logged if r.get("signal") == "buy"]
         assert buy_entries, "No buy record logged"
-        assert "model_score" in buy_entries[0], "model_score missing from trade log record"
-        assert buy_entries[0]["model_score"] == pytest.approx(0.73, abs=1e-4)
+        assert "raw_model_score" in buy_entries[0]
+        assert "rank_model_score" in buy_entries[0]
+        assert buy_entries[0]["raw_model_score"] == pytest.approx(0.73, abs=1e-4)
+        assert buy_entries[0]["rank_model_score"] == pytest.approx(0.73, abs=1e-4)
 
 
 # ── Regression: existing guards still work ────────────────────────────────────
@@ -574,7 +681,7 @@ class TestRegressionGuards:
         assert len(bought) == 0, "Drawdown halt should block all new buys"
 
     def test_no_candidates_no_orders(self, monkeypatch, tmp_path):
-        """When no symbols pass the volume filter, no orders are placed."""
+        """When no symbols produce a buy signal, no orders are placed."""
         dfs = {
             "AAPL": _make_ohlcv(vol_spike=False),
             "MSFT": _make_ohlcv(vol_spike=False),
@@ -582,9 +689,9 @@ class TestRegressionGuards:
             "SPY":  _make_ohlcv(),
         }
         models = {
-            "AAPL": StubModel(signal="buy", score=0.9),
-            "MSFT": StubModel(signal="buy", score=0.8),
-            "AMZN": StubModel(signal="buy", score=0.7),
+            "AAPL": StubModel(signal="hold", score=0.9),
+            "MSFT": StubModel(signal="hold", score=0.8),
+            "AMZN": StubModel(signal="hold", score=0.7),
         }
 
         broker = StubBroker(equity=10_000)
@@ -814,7 +921,7 @@ class TestTieredThresholds:
 
         buy_logs = [r.message for r in caplog.records if "BUY" in r.message and "slot" in r.message]
         assert len(buy_logs) >= 1, "BUY log should include slot number"
-        assert "slot 1" in buy_logs[0].lower() or "slot 2" in " ".join(buy_logs).lower()
+        assert "slot=1" in buy_logs[0].lower() or "slot=2" in " ".join(buy_logs).lower()
 
     def test_trade_log_contains_slot_number(self, monkeypatch, tmp_path):
         """Each buy record includes which slot it filled."""
@@ -846,7 +953,7 @@ class TestTieredThresholds:
         assert all("slot" in e for e in buy_entries), "All buy records must include 'slot'"
 
     def test_no_tiers_config_still_works(self, monkeypatch, tmp_path):
-        """Backward compat: without tiered_thresholds, behavior is unchanged."""
+        """Without tiered thresholds, ranking still falls back to the base minimum score."""
         dfs = {
             "AAPL": _make_ohlcv(vol_spike=True),
             "MSFT": _make_ohlcv(vol_spike=False),
@@ -859,10 +966,10 @@ class TestTieredThresholds:
             "AMZN": StubModel(signal="hold", score=0.0),
         }
         broker = StubBroker(equity=10_000)
-        config = _minimal_config()  # no tiered_thresholds key
+        config = _minimal_config(max_concurrent_positions=1)  # no tiered_thresholds key
         _patch_runner(monkeypatch, dfs, models, tmp_path)
 
         run_once_multi(config, models, broker, tmp_path)
 
         bought = [o["symbol"] for o in broker.orders if o["action"] == "BUY"]
-        assert bought == ["AAPL"]  # AAPL is the only volume candidate
+        assert bought == ["MSFT"]

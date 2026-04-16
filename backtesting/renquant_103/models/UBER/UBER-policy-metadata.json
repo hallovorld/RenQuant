@@ -24,10 +24,10 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/UBER/UBER-rf-trees.json"
   },
-  "trained_date": "2026-04-14",
+  "trained_date": "2026-04-15",
   "best_approach": "Classification",
-  "sharpe": 0.8546,
+  "sharpe": 0.8762,
   "strategy": "renquant_103",
   "live_train_rows": 997,
-  "live_train_end": "2026-04-07"
+  "live_train_end": "2026-04-08"
 }

@@ -257,7 +257,7 @@ class XGBoostModel(BaseModel):
 
     def load(self, directory: Path, model_name: str) -> None:
         try:
-            from xgboost import XGBClassifier, Booster
+            from xgboost import XGBClassifier
         except ImportError:
             raise ImportError("xgboost not installed — run: pip install xgboost")
 
@@ -272,11 +272,13 @@ class XGBoostModel(BaseModel):
         self.sell_threshold  = metadata["sell_threshold"]
         self._feature_importances = metadata.get("feature_importances", {})
 
-        buy_path  = directory / f"{model_name}-xgb-buy.json"
-        sell_path = directory / f"{model_name}-xgb-sell.json"
+        artifacts = metadata.get("artifacts", {})
+        buy_name = artifacts.get("buy_model", f"{model_name}-xgb-buy.json")
+        sell_name = artifacts.get("sell_model", f"{model_name}-xgb-sell.json")
+        buy_path = directory / buy_name
+        sell_path = directory / sell_name
 
-        b_buy  = Booster(); b_buy.load_model(str(buy_path))
-        b_sell = Booster(); b_sell.load_model(str(sell_path))
-
-        self._buy_model  = XGBClassifier(); self._buy_model._Booster  = b_buy
-        self._sell_model = XGBClassifier(); self._sell_model._Booster = b_sell
+        self._buy_model = XGBClassifier()
+        self._buy_model.load_model(str(buy_path))
+        self._sell_model = XGBClassifier()
+        self._sell_model.load_model(str(sell_path))

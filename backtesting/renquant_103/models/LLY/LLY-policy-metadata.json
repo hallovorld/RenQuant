@@ -38,7 +38,7 @@
     "buy_model": "LLY-xgb-buy.json",
     "sell_model": "LLY-xgb-sell.json"
   },
-  "trained_date": "2026-04-15",
+  "trained_date": "2026-04-16",
   "best_approach": "XGBoost",
   "sharpe": 1.2411,
   "strategy": "renquant_103",

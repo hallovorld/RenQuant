@@ -52,7 +52,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 | `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
 | `common/data/` | `fetch_ohlcv` (Parquet cache + yfinance/IBKR sources), `DataSource` ABC, `LocalStore` |
 | `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 12 registered indicators across 4 categories; regime detection (non-registered): `compute_hurst`, `rolling_hurst`, `compute_cusum`, `rolling_cusum`, `build_gmm_features`, `RegimeGMM` |
-| `common/models/` | `BaseModel` ABC, 6 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `XGBoostModel`, `create_model` factory |
+| `common/models/` | `BaseModel` ABC, 6 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `XGBoostModel`, `create_model` factory, and `scoring.py` for raw-score extraction plus cross-model calibration |
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` — local portfolio simulator |
@@ -88,7 +88,7 @@ All artifacts are JSON (not pickle) — required for LEAN compatibility and huma
 
 | File | Contents |
 |------|----------|
-| `*-policy-metadata.json` | Model type, state columns, indicator parameters, gate rules, hyperparams, `sharpe` (OOS), `sharpe_is` (in-sample, diagnostic), `trained_date`, `best_approach` |
+| `*-policy-metadata.json` | Model type, state columns, indicator parameters, gate rules, hyperparams, `sharpe` (OOS), `sharpe_is` (in-sample, diagnostic), `trained_date`, `best_approach`, and optional `score_calibration` |
 | `*-q-hold/buy/sell.json` | XGBoost models (FQI) |
 | `*-rf-trees.json` | Random Forest tree structure (Classification) |
 | `*-qtable.json` + `*-bin-edges.json` | Q-table + discretization (Q-Learning) |
@@ -139,8 +139,10 @@ backtesting/renquant_103/
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
   3. Processes sells (regime-adaptive stop-loss and trailing stop in BULL_CALM: 20% gain trigger, 18% trail below HWM; single-day loss gate 10% in BULL_CALM; max hold 500d/10d CHOPPY; model-sell requires min_hold=20d + 3 consecutive signals)
   4. BUY GATES (all short-circuit): open slots check → transition uncertainty window (3 bars post-CUSUM) → BEAR branch (1 defensive slot for GLD/TLT/XLV/XLU only) → SPY velocity crash filter (>3% drop in 3 days) → SPY EMA50 trend gate
-  5. SCAN: model signal is the entry trigger (no separate volume-scan gate). Each candidate: earnings filter → model buy signal → `min_model_score` (regime-aware). Score by RS (20d vs sector ETF) + model confidence, combined rank 50/50.
+     5. SCAN: model signal is the entry trigger (no separate volume-scan gate). Each candidate: earnings filter → model buy signal → calibrated `rank_score` threshold. The native model output is kept as `raw_score`, then mapped to a comparable probability-like `rank_score` for live ranking. Score by RS (20d vs sector ETF) + calibrated rank score, combined rank 50/50.
   6. EXECUTE: greedy selection by rank; each slot checks tiered threshold → wash-sale → sector guard (max 3/sector) → correlation guard (max 0.70). Position sized as `min(cash − cash_reserve, portfolio × max_pos_pct)`.
+
+**Live scoring note**: mixed model families are not directly comparable in raw form. The live runner uses `common.models.scoring` to convert each symbol's champion model output into a calibrated `rank_score`. If `policy-metadata.json` already includes `score_calibration`, that artifact is used; otherwise the runner fits an isotonic fallback from recent relative-price history. Raw scores are still logged as diagnostics. LEAN currently continues to consume native model scores directly unless matching calibration metadata is exported and applied there as well.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -157,6 +159,8 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 - `AlpacaBroker` — connects to Alpaca Markets API for paper or live trading (requires `alpaca-py` and `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` env vars)
 - `IBKRBroker` — connects to Interactive Brokers TWS/Gateway (stub, pending IBKR setup)
 - Logs every signal and order to `live/logs/<strategy>/<date>.json`
+
+For renquant_103, live trade records now keep both `raw_model_score` and `rank_model_score`. Filtering, slot thresholds, and candidate ranking use `rank_model_score`; operator diagnostics and post-mortems can still inspect the original `raw_model_score`.
 
 ---
 

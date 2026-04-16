@@ -17,9 +17,9 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-bin-edges.json"
   },
-  "trained_date": "2026-04-15",
+  "trained_date": "2026-04-16",
   "best_approach": "QLearning",
-  "sharpe": 1.832,
+  "sharpe": 1.8171,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 997,

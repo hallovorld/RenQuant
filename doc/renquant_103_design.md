@@ -2,7 +2,7 @@
 
 **Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Last updated**: 2026-04-15  
+**Last updated**: 2026-04-16  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
 
 > **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
@@ -21,7 +21,16 @@ renquant_102 is a single-mode momentum system: it always hunts volume-spike brea
 6. **Correlated candidate selection** — sector guard limits concentration but doesn't optimize for diversification within the selected positions
 7. **Lagging training data** — `sample_end: 2024-12-31`; models haven't seen 2025–2026 volatility regimes
 
-renquant_103 addresses all of these while reusing the core architecture (pre-trained per-symbol models, 3-stage DETECT → CONFIRM → EXECUTE, BagLearner/classification/Q-learning tournament, JSON artifacts, shared LEAN pipeline).
+renquant_103 addresses all of these while reusing the core architecture (pre-trained per-symbol models, champion-model-per-symbol tournament, JSON artifacts, shared LEAN pipeline).
+
+### Implemented scoring note
+
+The original design assumed `model_score` could be compared directly across model families. That turned out to be false in practice because Manual, Classification, Q-Learning, and XGBoost emit different raw score types. The live implementation now uses a two-part score contract:
+
+- `raw_score`: the model's native output, kept for logging and debugging
+- `rank_score`: a calibrated score used for filtering, tier thresholds, and cross-symbol ranking
+
+Calibration lives in `common/models/scoring.py`. If `policy-metadata.json` contains `score_calibration`, the runner uses it; otherwise it fits a fallback isotonic calibration from recent relative-price history. This preserves one champion model per symbol without introducing ad hoc multi-model ensembling at execution time.
 
 ---
 
@@ -49,17 +58,16 @@ renquant_103 addresses all of these while reusing the core architecture (pre-tra
 │                                                          │
 │  [Earnings filter]                                       │
 │       ↓                                                  │
-│  [Regime-conditional volume scan]                        │
-│   BULL_CALM:      volume P85 + up-close                  │
-│   BULL_VOLATILE:  volume P85 + down-close (capitulation) │
-│   CHOPPY:         stock outperformed SPY last 5d         │
-│   BEAR:           no new buys                            │
+│  [Regime gates + candidate scan]                         │
+│   Current implementation: no separate volume DETECT gate │
+│   Offensive regimes: model buy signal is the trigger     │
+│   BEAR: defensives only                                  │
 │       ↓                                                  │
 │  [Relative strength ranking vs sector]                   │
 │       ↓                                                  │
-│  [Per-symbol model — continuous score, not binary gate]  │
+│  [Per-symbol champion model — raw score + calibration]   │
 │       ↓                                                  │
-│  [Combined rank = 0.5×RS + 0.5×model_score]             │
+│  [Combined rank = 0.5×RS + 0.5×rank_score]              │
 │       ↓                                                  │
 │  [Correlation-aware greedy selection]                    │
 └─────────────────────────┬───────────────────────────────┘
@@ -296,27 +304,17 @@ BEAR regime allows 1 defensive position (GLD/TLT/XLV/XLU) at 15% of portfolio �
 
 ## 8. Regime-Conditional Entry Signal
 
-### BULL_CALM — Momentum Entry (same as 102)
-- Volume today ≥ P85 of rolling 20-day lookback
-- Today's close > yesterday's close
-- Signals: buy strength, momentum expected to continue
+### Actual entry trigger in code
 
-### BULL_VOLATILE — Capitulation Entry (new)
-- Volume today ≥ P85 of rolling 20-day lookback (high volume required)
-- Today's close **< yesterday's close** (down day — reversal of 102)
-- Today's close must be in **bottom 30% of 5-day range** (not just any down day — proper dip)
-- Rationale: in volatile markets, high volume down days represent panic selling / capitulation; mean reversion to follow
+The current notebook, LEAN, and live runner no longer use a separate regime-conditional volume DETECT stage for renquant_103. Instead:
 
-### CHOPPY — Divergence Entry (new)
-- No volume spike required (volume signal is too noisy in choppy markets)
-- Stock 5-day return **outperforms SPY 5-day return by > 1%** (relative strength despite market weakness)
-- Stock RSI (relative to SPY RSI) shows improving trend over last 3 bars
-- Rationale: in a choppy market, stocks showing hidden strength relative to the index are accumulation candidates
+- offensive regimes use the per-symbol champion model's `buy` signal as the entry trigger
+- BEAR blocks offensive buys and allows only the best-ranked defensive ticker
+- candidate filtering uses a minimum calibrated `rank_score`, not heterogeneous raw scores
+- final ranking uses `0.5 × rank_score + 0.5 × relative_strength`
+- slot escalation (`tiered_thresholds`) also applies to calibrated `rank_score`
 
-### BEAR — Defensives Only
-- All offensive buys blocked (tech, finance, energy, industrial, healthcare equities)
-- **1 defensive slot** allowed: GLD, TLT, XLV, or XLU — best-ranked by model score, max 15% of portfolio
-- Existing positions: held until stop-loss (5%), max hold, or 3-consecutive-sell exit
+This was a deliberate correction after observing that raw scores from different model families were not comparable enough to support clean portfolio ranking.
 
 ---
 
@@ -329,8 +327,8 @@ Exclude any stock within ±3 trading days of its earnings announcement date.
 - The per-symbol models were never trained to predict earnings outcomes
 - Implementation: maintain earnings date lookup from a pre-downloaded schedule (JSON artifact, updated weekly)
 
-### Step 2: Regime-Conditional Volume/Signal Scan
-Apply the regime-appropriate filter from Section 8. Produces a candidate list.
+### Step 2: Signal Scan
+Apply the regime gates, then use the per-symbol champion model's `buy` signal to produce a candidate list. There is no separate volume DETECT stage in the implemented renquant_103 execution path.
 
 ### Step 3: Relative Strength Ranking
 Rank candidates by performance relative to their sector ETF over 20 days:
@@ -343,14 +341,12 @@ Sector ETFs used: XLK (tech), XLF (finance), XLV (healthcare), XLE (energy), XLI
 
 This measures institutional capital flows within sectors — less crowded than raw price/volume signals. Stocks at the top of their sector are where sector rotation money is flowing.
 
-### Step 4: Per-Symbol Model — Continuous Score
-Apply the pre-trained per-symbol model to each candidate. Instead of thresholding to buy/sell/hold, extract the **raw score** (classification: forest average, qlearning: Q-value difference between buy and hold actions).
-
-Use model score as a continuous number, not a binary gate.
+### Step 4: Per-Symbol Model — Raw Score plus Calibration
+Apply the pre-trained champion model to each candidate. The runner keeps the native `raw_score` (classification: forest average, qlearning: Q-value difference, xgboost: `P(buy)-P(sell)`, manual: vote count) for logging, then converts it into a calibrated `rank_score` for cross-model comparison.
 
 ### Step 5: Combined Ranking
 ```
-combined_rank = 0.5 × normalize(rs_score) + 0.5 × normalize(model_score)
+combined_rank = 0.5 × normalize(rs_score) + 0.5 × normalize(rank_score)
 ```
 
 Both components normalized to [0, 1] across the current candidate set. Sort descending.
@@ -377,7 +373,7 @@ Correlation matrix: computed in notebook on 60-day rolling returns, serialized t
 
 ### Step 7: Selection Loop Order
 For each candidate (in combined-rank order), the checks run in this exact sequence:
-1. **Tiered threshold** — slot 1: 0.10, slot 2: 0.30, slot 3: 0.50
+1. **Tiered threshold on calibrated `rank_score`** — slot 1: 0.10, slot 2: 0.30, slot 3: 0.50
 2. **Wash-sale guard** — skip if sold < 30 days ago
 3. **Sector guard** — skip if sector already has ≥3 positions (defensives exempt)
 4. **Correlation guard** — skip if pairwise correlation with any held or already-selected ticker ≥0.70

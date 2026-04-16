@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AAPL/AAPL-manual-rules.json"
   },
-  "trained_date": "2026-04-15",
+  "trained_date": "2026-04-16",
   "best_approach": "Manual",
   "sharpe": 1.3958,
   "lookahead": 5,

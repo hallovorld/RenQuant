@@ -33,6 +33,16 @@ class PaperBroker(BaseBroker):
         # In paper mode we only track cash (no mark-to-market)
         return self._cash
 
+    def get_cash(self) -> float:
+        return self._cash
+
+    def get_all_positions(self) -> list[dict]:
+        return [
+            {"symbol": sym, "qty": qty, "avg_entry_price": 0.0,
+             "market_value": 0.0, "unrealized_pl": 0.0}
+            for sym, qty in self._positions.items() if qty > 0
+        ]
+
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
         self._order_counter += 1
         oid = f"PAPER-{self._order_counter:04d}"
