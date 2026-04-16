@@ -52,7 +52,7 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 | `common/config.py` | `load_strategy_config`, `split_date_parts`, `build_model_path` |
 | `common/data/` | `fetch_ohlcv` (Parquet cache + yfinance/IBKR sources), `DataSource` ABC, `LocalStore` |
 | `common/indicators/` | `compute_indicators`, `add_indicators`, `list_indicators`, `@register` decorator; 12 registered indicators across 4 categories; regime detection (non-registered): `compute_hurst`, `rolling_hurst`, `compute_cusum`, `rolling_cusum`, `build_gmm_features`, `RegimeGMM` |
-| `common/models/` | `BaseModel` ABC, 6 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `XGBoostModel`, `create_model` factory, and `scoring.py` for raw-score extraction plus cross-model calibration |
+| `common/models/` | `BaseModel` ABC, 6 implementations: `ManualModel`, `ClassificationModel`, `QLearningModel`, `FQIModel`, `OptimizationModel`, `XGBoostModel`, `create_model` factory, and `scoring.py` for raw-score extraction and cross-model calibration (`ScoreCalibration`: isotonic for n≥300, Platt scaling for 120≤n<300, constant base-rate for n<120) |
 | `common/models/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 | `common/strategy.py` | `StrategyConfig` dataclass, `Strategy` class (composes data + indicators + model) |
 | `common/portfolio.py` | `compute_portvals`, `portfolio_stats` — local portfolio simulator |

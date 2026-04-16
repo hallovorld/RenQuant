@@ -185,7 +185,7 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │  ► add (ticker, model_score, rs_score) to candidates
 │
 ├─ ══════════════════════════════════════════════════════════
-│  RANKING  (50% model score + 50% relative strength)
+│  RANKING  (w_rank × model score + w_rs × relative strength)
 │  ══════════════════════════════════════════════════════════
 │  ◆ len(candidates) == 0?  YES ✗ return / continue
 │
@@ -193,7 +193,11 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │     norm_model = (model_score − min_ms) / (max_ms − min_ms)   [0.5 if range=0]
 │     norm_rs    = (rs_score − min_rs) / (max_rs − min_rs)      [0.5 if range=0]
 │
-│  combined_rank = 0.5 × norm_model + 0.5 × norm_rs
+│  Blend weights: read from strategy_config.json ranking.blend_weights
+│     Default [0.5, 0.5]; updated daily by scripts/recalibrate_scores.py
+│     via Pearson correlation of each signal vs actual forward outperformance
+│
+│  combined_rank = w_rank × norm_model + w_rs × norm_rs
 │  sort candidates by combined_rank DESC
 │
 ├─ ══════════════════════════════════════════════════════════
@@ -274,8 +278,8 @@ When any sell fires:
 |-------|-----------|---------------|--------|------|
 | `stop_loss_pct` | 0.15 | 0.05 | 0.05 | 0.05 |
 | `max_hold_days` | 500 | 500 | 10 | 500 |
-| `max_position_pct` | 0.15 | 0.15 | 0.15 | 0.0 |
-| `drawdown_halt_pct` | 0.15 | 0.15 | 0.15 | 0.15 |
+| `max_position_pct` | 0.15 | 0.20 | 0.15 | 0.0 |
+| `drawdown_halt_pct` | 0.35 | 0.10 | 0.08 | 0.05 |
 | `trailing_stop_trigger_pct` | 0.20 | 0.0 | 0.0 | 0.0 |
 | `trailing_stop_trail_pct` | 0.18 | 0.0 | 0.0 | 0.0 |
 | `max_single_day_loss_pct` | 0.10 | 0.0 | 0.0 | 0.0 |
@@ -319,7 +323,7 @@ When any sell fires:
 | 9 | SPY EMA50 uses ewm(span=50) | ✓ .ewm(span=50, adjust=False) | ✓ same | ✓ |
 | 10 | min_model_score is regime-aware | ✓ rp.get("min_model_score") | ✓ regime_params.get(...) | ✓ |
 | 11 | RS score = stock_20d − etf_20d | ✓ pct_change(20) | ✓ _compute_rs_score | ✓ |
-| 12 | Ranking: 50/50 normalize-then-blend | ✓ explicit | ✓ norm() helper | ✓ |
+| 12 | Ranking: data-driven blend (default 50/50) | ✓ w_rank/w_rs from config | ✓ norm() helper | ✓ |
 | 13 | Tiered thresholds: tier_idx = min(slots_filled, N-1) | ✓ | ✓ | ✓ |
 | 14 | Wash-sale checked in candidate scan AND selection | NB: scan only | LEAN: scan + selection | delta |
 | 15 | Sector guard counts held + already_selected_today | ✓ held+selected | ✓ held_tickers (appended) | ✓ |

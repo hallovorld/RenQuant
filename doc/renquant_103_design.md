@@ -28,9 +28,14 @@ renquant_103 addresses all of these while reusing the core architecture (pre-tra
 The original design assumed `model_score` could be compared directly across model families. That turned out to be false in practice because Manual, Classification, Q-Learning, and XGBoost emit different raw score types. The live implementation now uses a two-part score contract:
 
 - `raw_score`: the model's native output, kept for logging and debugging
-- `rank_score`: a calibrated score used for filtering, tier thresholds, and cross-symbol ranking
+- `rank_score`: a calibrated probability score `P(outperform SPY by threshold% in lookahead days)`, used for filtering, tier thresholds, and cross-symbol ranking
 
-Calibration lives in `common/models/scoring.py`. If `policy-metadata.json` contains `score_calibration`, the runner uses it; otherwise it fits a fallback isotonic calibration from recent relative-price history. This preserves one champion model per symbol without introducing ad hoc multi-model ensembling at execution time.
+Calibration lives in `common/models/scoring.py` and selects its method by sample size:
+- **n ≥ 300**: isotonic regression (step-function, rich data)
+- **120 ≤ n < 300**: Platt scaling (logistic regression sigmoid — smooth, no tail overfitting)
+- **n < 120**: constant base-rate
+
+`score_calibration` is baked into `policy-metadata.json` at notebook training time and **refreshed daily** by `scripts/recalibrate_scores.py` after each model retrain. If the metadata has no `score_calibration`, the runner computes a runtime fallback from recent history. This preserves one champion model per symbol without introducing ad hoc multi-model ensembling at execution time.
 
 ---
 
@@ -67,7 +72,8 @@ Calibration lives in `common/models/scoring.py`. If `policy-metadata.json` conta
 │       ↓                                                  │
 │  [Per-symbol champion model — raw score + calibration]   │
 │       ↓                                                  │
-│  [Combined rank = 0.5×RS + 0.5×rank_score]              │
+│  [Combined rank = w_rs×RS + w_rank×rank_score]           │
+│   weights from ranking.blend_weights in strategy_config  │
 │       ↓                                                  │
 │  [Correlation-aware greedy selection]                    │
 └─────────────────────────┬───────────────────────────────┘
@@ -311,7 +317,7 @@ The current notebook, LEAN, and live runner no longer use a separate regime-cond
 - offensive regimes use the per-symbol champion model's `buy` signal as the entry trigger
 - BEAR blocks offensive buys and allows only the best-ranked defensive ticker
 - candidate filtering uses a minimum calibrated `rank_score`, not heterogeneous raw scores
-- final ranking uses `0.5 × rank_score + 0.5 × relative_strength`
+- final ranking uses `w_rank × rank_score + w_rs × relative_strength` where weights are data-driven (default 0.5/0.5, updated daily by `recalibrate_scores.py`)
 - slot escalation (`tiered_thresholds`) also applies to calibrated `rank_score`
 
 This was a deliberate correction after observing that raw scores from different model families were not comparable enough to support clean portfolio ranking.
@@ -346,10 +352,12 @@ Apply the pre-trained champion model to each candidate. The runner keeps the nat
 
 ### Step 5: Combined Ranking
 ```
-combined_rank = 0.5 × normalize(rs_score) + 0.5 × normalize(rank_score)
+combined_rank = w_rank × normalize(rank_score) + w_rs × normalize(rs_score)
 ```
 
 Both components normalized to [0, 1] across the current candidate set. Sort descending.
+
+Weights `[w_rank, w_rs]` are stored in `strategy_config.json` under `ranking.blend_weights` and default to `[0.5, 0.5]`. They are updated daily by `scripts/recalibrate_scores.py` using Pearson correlations of each normalised signal against actual forward outperformance outcomes across all watchlist symbols.
 
 ### Step 6: Correlation-Aware Greedy Selection
 Greedily select from the ranked list, skipping any candidate whose **30-day rolling correlation with any already-selected or already-held position exceeds 0.70**.
@@ -576,6 +584,16 @@ Exit priority order in all three (LEAN + notebook + live runner):
 4. Max hold (500 days most regimes, 10 days CHOPPY)
 5. Model sell streak (3 consecutive signals, min_hold gating)
 
+### Calibration Gap Fixes (2026-04-16)
+
+Three structural weaknesses in the cross-model `rank_score` calibration were identified and fixed:
+
+**1. Staleness** (`scripts/recalibrate_scores.py`): Models retrain daily but calibration curves were frozen at notebook-training time. A new script re-fits the calibration after each daily retrain and writes updated `score_calibration` back into each symbol's `policy-metadata.json`. Also computes fresh data-driven blend weights and saves them to `strategy_config.json` as `ranking.blend_weights`. Wired into `daily_103.sh` as Step 2b (non-fatal: failure falls back to prior calibration).
+
+**2. Isotonic tail overfitting** (`common/models/scoring.py`): Isotonic regression is a piecewise step-function that can overfit on sparse tail samples. Method selection now depends on sample size: **isotonic** for n≥300, **Platt scaling** (logistic regression sigmoid — smooth and monotone) for 120≤n<300, **constant base-rate** for n<120.
+
+**3. Arbitrary 50/50 blend**: The `0.5 × rank + 0.5 × RS` blend had no empirical basis. `recalibrate_scores.py` computes Pearson correlations of each normalised signal against binary outperformance outcomes, averages across all symbols, and normalises to blend weights. The runner reads `ranking.blend_weights` from config instead of hardcoding.
+
 ### Gap-Alignment Fixes (2026-04-14)
 Six behavioral differences between notebook simulation and LEAN were identified and fixed:
 
@@ -587,12 +605,12 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-394 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
+403 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
 
 - `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
 - `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests), SPY regime-context feature injection (8 tests — regression guard for the `spy_realized_vol`/`spy_adx`/`spy_trend`/`hurst_proxy` KeyError), min_hold_days (9 tests), wash-sale guard (8 tests)
-- `tests/test_runner_ranking.py` — live runner model-score ranking, tiered thresholds, regression guards (31 tests)
+- `tests/test_runner_ranking.py` — live runner model-score ranking, calibration (Platt + isotonic), tiered thresholds, regression guards (40 tests)
 
 ## 17. Implementation Roadmap (Status)
 
@@ -634,7 +652,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 394 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 403 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 
@@ -651,4 +669,4 @@ All open questions resolved on 2026-04-10.
 | 5 | Correlation guard threshold | **0.70** | Standard threshold; tighten to 0.65 if portfolio still too correlated in validation |
 | 6 | GLD/TLT entry signal | **Yes — counter-cyclical** | GLD and TLT use BEAR regime as a BUY trigger (inverse of equity logic); they are also eligible in BULL_VOLATILE as partial hedge positions |
 | 7 | Run alongside 102 or replace? | **TBD — review backtest charts first** | Run LEAN backtest on 103, compare equity curves vs 102 on same period, then decide |
-| 8 | Combined rank weights | **50/50** (RS score + model score) | Equal weight as starting point; tune after first backtest by checking which component is more predictive |
+| 8 | Combined rank weights | **Data-driven** (default 50/50) | Initially equal weight; now automatically computed by `recalibrate_scores.py` via Pearson correlation of each signal vs actual outperformance outcomes across all watchlist symbols |
