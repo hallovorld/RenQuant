@@ -78,11 +78,15 @@ class StubModel:
 class StubBroker(BaseBroker):
     """In-memory broker that records orders without touching any API."""
 
-    def __init__(self, equity: float = 10_000.0, positions: dict = None):
+    def __init__(self, equity: float = 10_000.0, positions: dict = None,
+                 avg_costs: dict = None):
         self._equity = equity
         self._positions = dict(positions or {})
-        self._avg_costs = {}
+        self._avg_costs = dict(avg_costs or {})
         self.orders = []
+        # call counters for verifying batch-fetch behaviour
+        self.get_position_calls: list[str] = []
+        self.get_all_positions_calls: int = 0
 
     def connect(self):
         pass
@@ -91,6 +95,7 @@ class StubBroker(BaseBroker):
         pass
 
     def get_position(self, symbol: str) -> float:
+        self.get_position_calls.append(symbol)
         return self._positions.get(symbol, 0.0)
 
     def get_avg_cost(self, symbol: str) -> float:
@@ -98,6 +103,23 @@ class StubBroker(BaseBroker):
 
     def get_account_value(self) -> float:
         return self._equity
+
+    def get_cash(self) -> float:
+        return self._equity
+
+    def get_all_positions(self) -> list[dict]:
+        self.get_all_positions_calls += 1
+        return [
+            {
+                "symbol": sym,
+                "qty": qty,
+                "avg_entry_price": self._avg_costs.get(sym, 0.0),
+                "market_value": 0.0,
+                "unrealized_pl": 0.0,
+            }
+            for sym, qty in self._positions.items()
+            if qty > 0
+        ]
 
     def place_order(self, symbol: str, action: str, quantity: int) -> dict:
         record = {"symbol": symbol, "action": action, "quantity": quantity,
@@ -973,3 +995,89 @@ class TestTieredThresholds:
 
         bought = [o["symbol"] for o in broker.orders if o["action"] == "BUY"]
         assert bought == ["MSFT"]
+
+
+# ── Batch position fetch (regression for serial API-call timeout) ─────────────
+
+class TestBatchPositionFetch:
+    """Verify run_once_multi uses get_all_positions() instead of per-symbol
+    get_position() calls, preventing the N×API-round-trip timeout that hit
+    production on 2026-04-16."""
+
+    def _run(self, monkeypatch, tmp_path, positions: dict, avg_costs: dict = None):
+        watchlist = ["AAPL", "MSFT", "AMZN"]
+        dfs = {sym: _make_ohlcv() for sym in watchlist + ["SPY"]}
+        models = {sym: StubModel(signal="hold", score=0.0) for sym in watchlist}
+        broker = StubBroker(equity=10_000, positions=positions,
+                            avg_costs=avg_costs or {})
+        config = _minimal_config(watchlist=watchlist)
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        run_once_multi(config, models, broker, tmp_path)
+        return broker
+
+    def test_get_all_positions_called_once(self, monkeypatch, tmp_path):
+        """get_all_positions() must be called exactly once per run."""
+        broker = self._run(monkeypatch, tmp_path, positions={})
+        assert broker.get_all_positions_calls == 1
+
+    def test_get_position_never_called_in_multi_path(self, monkeypatch, tmp_path):
+        """get_position() must not be called in the multi-stock path — all
+        lookups should use the positions cache built from get_all_positions()."""
+        broker = self._run(monkeypatch, tmp_path, positions={})
+        assert broker.get_position_calls == [], (
+            f"get_position() was called {len(broker.get_position_calls)} times "
+            f"for: {broker.get_position_calls}"
+        )
+
+    def test_get_position_never_called_with_held_positions(self, monkeypatch, tmp_path):
+        """Even when symbols are held (sell phase executes), get_position() is
+        still never called — qty must come from the positions cache."""
+        broker = self._run(monkeypatch, tmp_path,
+                           positions={"AAPL": 10.0},
+                           avg_costs={"AAPL": 95.0})
+        assert broker.get_position_calls == [], (
+            f"get_position() called during sell phase: {broker.get_position_calls}"
+        )
+
+    def test_held_list_built_from_cache(self, monkeypatch, tmp_path):
+        """Symbols in the positions cache appear in the sell phase (model signal
+        evaluated), even with a hold signal."""
+        watchlist = ["AAPL", "MSFT", "AMZN"]
+        dfs = {sym: _make_ohlcv() for sym in watchlist + ["SPY"]}
+        # AAPL is held; model says "hold" so no sell order expected
+        models = {sym: StubModel(signal="hold", score=0.0) for sym in watchlist}
+        broker = StubBroker(equity=10_000, positions={"AAPL": 5.0},
+                            avg_costs={"AAPL": 100.0})
+        config = _minimal_config(watchlist=watchlist)
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        run_once_multi(config, models, broker, tmp_path)
+
+        sell_orders = [o for o in broker.orders if o["action"] == "SELL"]
+        assert sell_orders == [], "No sell expected — model said hold"
+        # Exactly one batch fetch, no per-symbol calls
+        assert broker.get_all_positions_calls == 1
+        assert broker.get_position_calls == []
+
+    def test_stop_loss_uses_cache_qty(self, monkeypatch, tmp_path):
+        """When a stop-loss fires, the SELL quantity comes from the positions
+        cache (not a live get_position() call)."""
+        watchlist = ["AAPL", "MSFT", "AMZN"]
+        dfs = {sym: _make_ohlcv(base_price=50.0) for sym in watchlist + ["SPY"]}
+        models = {sym: StubModel(signal="hold", score=0.0) for sym in watchlist}
+        # AAPL bought at 100, now at ~50 → 50% loss → triggers 8% stop
+        broker = StubBroker(equity=10_000, positions={"AAPL": 7.0},
+                            avg_costs={"AAPL": 100.0})
+        config = _minimal_config(
+            watchlist=watchlist,
+            risk={"stop_loss_pct": 0.08, "portfolio_drawdown_halt_pct": 0.0,
+                  "regime_filter": {"enabled": False}},
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        run_once_multi(config, models, broker, tmp_path)
+
+        sell_orders = [o for o in broker.orders if o["action"] == "SELL"]
+        assert len(sell_orders) == 1
+        assert sell_orders[0]["symbol"] == "AAPL"
+        assert sell_orders[0]["quantity"] == pytest.approx(7.0)
+        # Still no per-symbol get_position() calls
+        assert broker.get_position_calls == []
