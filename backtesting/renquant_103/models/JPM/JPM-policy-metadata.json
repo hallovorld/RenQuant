@@ -1,6 +1,6 @@
 {
   "model_name": "JPM",
-  "policy_type": "classification",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
@@ -16,18 +16,49 @@
   ],
   "lookahead": 5,
   "threshold": 0.03,
-  "leaf_size": 25,
-  "bags": 15,
-  "impact": 0.0,
   "buy_threshold": 0.1,
-  "sell_threshold": -0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.09155716001987457,
+    "macd_hist": 0.07315900921821594,
+    "cci": 0.07967321574687958,
+    "bbp": 0.08451162278652191,
+    "adx": 0.10218718647956848,
+    "williams_r": 0.08618128299713135,
+    "obv_slope": 0.08335672318935394,
+    "spy_realized_vol": 0.08777736127376556,
+    "spy_adx": 0.11989210546016693,
+    "spy_trend": 0.10985040664672852,
+    "hurst_proxy": 0.0818539559841156
+  },
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/JPM/JPM-rf-trees.json"
+    "buy_model": "JPM-xgb-buy.json",
+    "sell_model": "JPM-xgb-sell.json"
   },
   "trained_date": "2026-04-16",
-  "best_approach": "Classification",
-  "sharpe": 1.8599,
+  "best_approach": "XGBoost",
+  "sharpe": 1.0571,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-09",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "p_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.08648648648648649,
+    "raw_min": -0.9675544500350952,
+    "raw_max": 0.8725396394729614,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 3.156785024611311,
+    "platt_intercept": -2.882529648846281
+  },
+  "score_calibration_date": "2026-04-16"
 }

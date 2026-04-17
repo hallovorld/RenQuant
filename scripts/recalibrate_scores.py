@@ -27,6 +27,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+try:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler as _BlendScaler
+except ImportError:  # pragma: no cover
+    LogisticRegression = None
+    _BlendScaler = None
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -60,55 +67,83 @@ def _load_model(models_dir: Path, symbol: str) -> tuple[object, dict] | tuple[No
 
 
 def _compute_blend_weights(symbol_data: list[dict]) -> tuple[float, float]:
-    """Estimate blend weights via Pearson correlation averaged across symbols.
+    """Estimate blend weights from a logistic model on rank_score and RS.
 
-    For each symbol we compute:
-      - corr(normalised rank_score, binary_outcome)
-      - corr(normalised rs_proxy,   binary_outcome)
+    We fit a pooled logistic regression on per-symbol normalised features:
+      P(outperform) = sigmoid(b0 + b1 * norm(rank_score) + b2 * norm(rs_score))
 
-    Weights are proportional to average positive correlation.
-    Falls back to 0.5 / 0.5 when there is not enough data.
+    The positive coefficients are then normalised into live blend weights.
+    This is smoother and more defensible than the earlier Pearson-correlation
+    heuristic, while preserving the runner's simple weighted-sum ranking.
     """
-    rank_corrs: list[float] = []
-    rs_corrs: list[float] = []
+
+    def _norm(a: np.ndarray) -> np.ndarray:
+        lo, hi = a.min(), a.max()
+        return (a - lo) / (hi - lo) if hi > lo else np.full_like(a, 0.5)
+
+    rows: list[np.ndarray] = []
+    outcomes: list[np.ndarray] = []
+    n_symbols = 0
 
     for d in symbol_data:
         rank_arr = np.asarray(d["rank_scores"], dtype=float)
-        rs_arr   = np.asarray(d["rs_scores"],   dtype=float)
-        out_arr  = np.asarray(d["outcomes"],     dtype=float)
+        rs_arr = np.asarray(d["rs_scores"], dtype=float)
+        out_arr = np.asarray(d["outcomes"], dtype=float)
 
         mask = np.isfinite(rank_arr) & np.isfinite(rs_arr) & np.isfinite(out_arr)
         if mask.sum() < 30:
             continue
 
-        rank_arr, rs_arr, out_arr = rank_arr[mask], rs_arr[mask], out_arr[mask]
+        rank_arr = rank_arr[mask]
+        rs_arr = rs_arr[mask]
+        out_arr = out_arr[mask]
 
-        def _norm(a: np.ndarray) -> np.ndarray:
-            lo, hi = a.min(), a.max()
-            return (a - lo) / (hi - lo) if hi > lo else np.full_like(a, 0.5)
+        rows.append(np.column_stack([_norm(rank_arr), _norm(rs_arr)]))
+        outcomes.append(out_arr.astype(int))
+        n_symbols += 1
 
-        c_rank = float(np.corrcoef(_norm(rank_arr), out_arr)[0, 1])
-        c_rs   = float(np.corrcoef(_norm(rs_arr),   out_arr)[0, 1])
-        rank_corrs.append(max(0.0, c_rank))
-        rs_corrs.append(max(0.0, c_rs))
-
-    if not rank_corrs:
+    if not rows:
         log.warning("Not enough data for blend weight estimation — keeping 0.5 / 0.5")
         return 0.5, 0.5
 
-    avg_rank = float(np.mean(rank_corrs))
-    avg_rs   = float(np.mean(rs_corrs))
-    total    = avg_rank + avg_rs
-
-    if total < 1e-6:
+    if LogisticRegression is None:
+        log.warning("scikit-learn unavailable for blend logistic regression — keeping 0.5 / 0.5")
         return 0.5, 0.5
 
-    w_rank = round(avg_rank / total, 4)
-    w_rs   = round(avg_rs   / total, 4)
+    X = np.vstack(rows)
+    y = np.concatenate(outcomes)
+    if len(X) < 120 or len(np.unique(y)) < 2:
+        log.warning("Not enough labelled rows for blend logistic regression — keeping 0.5 / 0.5")
+        return 0.5, 0.5
+
+    # StandardScaler centers and scales each feature column so lbfgs line search
+    # stays in a numerically safe range and avoids overflow warnings in matmul.
+    if _BlendScaler is not None:
+        blend_scaler = _BlendScaler()
+        X = blend_scaler.fit_transform(X)
+
+    clf = LogisticRegression(max_iter=1000, solver="lbfgs")
+    clf.fit(X, y)
+    coef_rank = max(0.0, float(clf.coef_[0][0]))
+    coef_rs = max(0.0, float(clf.coef_[0][1]))
+    total = coef_rank + coef_rs
+
+    if total < 1e-6:
+        log.warning(
+            "Blend logistic regression produced non-positive coefficients "
+            "(rank=%.4f rs=%.4f) — keeping 0.5 / 0.5",
+            float(clf.coef_[0][0]), float(clf.coef_[0][1]),
+        )
+        return 0.5, 0.5
+
+    w_rank = round(coef_rank / total, 4)
+    w_rs = round(coef_rs / total, 4)
     log.info(
         "Blend weights: rank=%.3f  rs=%.3f  "
-        "(from %d symbols, avg corr rank=%.3f rs=%.3f)",
-        w_rank, w_rs, len(rank_corrs), avg_rank, avg_rs,
+        "(logit coef rank=%.4f rs=%.4f intercept=%.4f, symbols=%d, rows=%d)",
+        w_rank, w_rs,
+        float(clf.coef_[0][0]), float(clf.coef_[0][1]), float(clf.intercept_[0]),
+        n_symbols, len(X),
     )
     return w_rank, w_rs
 

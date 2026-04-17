@@ -1,11 +1,16 @@
 {
   "entry_dates": {
-    "UNH": "2026-04-15",
-    "JPM": "2026-04-15"
+    "UNH": "2026-04-16",
+    "JPM": "2026-04-15",
+    "AMZN": "2026-04-16",
+    "BA": "2026-04-16"
   },
-  "sell_streaks": {},
+  "sell_streaks": {
+    "AMZN": 0,
+    "BA": 0
+  },
   "last_sell_dates": {
     "AMZN": "2026-04-15"
   },
-  "high_water_mark": 4996.73
+  "high_water_mark": 5002.94
 }

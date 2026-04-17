@@ -19,9 +19,26 @@
   },
   "trained_date": "2026-04-16",
   "best_approach": "QLearning",
-  "sharpe": 1.2588,
+  "sharpe": 1.1815,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-09",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "q_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.0918918918918919,
+    "raw_min": -58.556594596159066,
+    "raw_max": 51.68638016630099,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.020332316591096255,
+    "platt_intercept": -2.342635133352643
+  },
+  "score_calibration_date": "2026-04-16"
 }

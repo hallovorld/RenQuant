@@ -17,7 +17,7 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/XLV/XLV-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/XLV/XLV-bin-edges.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-16",
   "best_approach": "Q-Learning",
-  "sharpe": 0.9759
+  "sharpe": 0.8072
 }

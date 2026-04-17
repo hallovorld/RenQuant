@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 from common.models.scoring import ScoreCalibration, fit_probability_calibration
 from live.runner import _get_model_score, _get_rank_score, run_once_multi
 from live.broker import BaseBroker
+from scripts.recalibrate_scores import _compute_blend_weights
 
 
 # ── Stub helpers ─────────────────────────────────────────────────────────────
@@ -330,6 +331,38 @@ class TestScoreCalibration:
         # 180 samples (30×6) → Platt range; both Platt and isotonic are monotone
         assert calibration.method in ("isotonic", "platt")
         assert calibration.calibrate(-1.0) <= calibration.calibrate(2.0)
+
+
+class TestBlendWeights:
+    def test_logistic_blend_weights_favor_stronger_signal(self):
+        rank_scores = np.linspace(0.05, 0.95, 200)
+        rs_scores = np.linspace(0.05, 0.95, 200)
+        outcomes = (rank_scores > 0.55).astype(float)
+
+        w_rank, w_rs = _compute_blend_weights([
+            {
+                "rank_scores": rank_scores,
+                "rs_scores": rs_scores[::-1],
+                "outcomes": outcomes,
+            }
+        ])
+
+        assert w_rank > w_rs
+
+    def test_logistic_blend_weights_fallback_when_labels_too_thin(self):
+        rank_scores = np.linspace(0.1, 0.9, 50)
+        rs_scores = np.linspace(0.2, 0.8, 50)
+        outcomes = np.ones(50)
+
+        w_rank, w_rs = _compute_blend_weights([
+            {
+                "rank_scores": rank_scores,
+                "rs_scores": rs_scores,
+                "outcomes": outcomes,
+            }
+        ])
+
+        assert (w_rank, w_rs) == (0.5, 0.5)
 
 
 # ── Ranking behaviour ─────────────────────────────────────────────────────────

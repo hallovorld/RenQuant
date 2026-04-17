@@ -66,13 +66,13 @@
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
-      "max_single_day_loss_pct": 0.10,
+      "max_single_day_loss_pct": 0.1,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",
-      "min_model_score": 0.10,
+      "min_model_score": 0.1,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.20,
+      "trailing_stop_trigger_pct": 0.2,
       "trailing_stop_trail_pct": 0.18,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3
@@ -195,9 +195,15 @@
     }
   },
   "tiered_thresholds": [
-    {"min_model_score": 0.10},
-    {"min_model_score": 0.30},
-    {"min_model_score": 0.50}
+    {
+      "min_model_score": 0.1
+    },
+    {
+      "min_model_score": 0.3
+    },
+    {
+      "min_model_score": 0.5
+    }
   ],
   "model_params": {
     "feature_columns": [
@@ -219,5 +225,13 @@
     "bags": 15,
     "buy_threshold": 0.1,
     "sell_threshold": -0.1
+  },
+  "ranking": {
+    "blend_weights": [
+      1.0,
+      0.0
+    ],
+    "blend_updated": "2026-04-16",
+    "blend_n_symbols": 24
   }
 }

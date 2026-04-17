@@ -27,5 +27,22 @@
   "best_approach": "Manual",
   "sharpe": 0.6829,
   "lookahead": 5,
-  "strategy": "renquant_103"
+  "strategy": "renquant_103",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "vote_count",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.24864864864864866,
+    "raw_min": -1.0,
+    "raw_max": 3.0,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": -0.0074108513933476075,
+    "platt_intercept": -1.0969606128255391
+  },
+  "score_calibration_date": "2026-04-16"
 }

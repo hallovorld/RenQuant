@@ -15,9 +15,11 @@ import pandas as pd
 try:
     from sklearn.isotonic import IsotonicRegression
     from sklearn.linear_model import LogisticRegression as _LogisticRegression
+    from sklearn.preprocessing import StandardScaler as _StandardScaler
 except ImportError:  # pragma: no cover
     IsotonicRegression = None
     _LogisticRegression = None
+    _StandardScaler = None
 
 # Sample-size thresholds for calibration method selection:
 #   n >= ISOTONIC_MIN  → isotonic regression (rich data, tolerates tail overfitting)
@@ -42,9 +44,11 @@ class ScoreCalibration:
     # isotonic
     x_thresholds: list[float] | None = None
     y_thresholds: list[float] | None = None
-    # platt (logistic regression on raw score)
+    # platt (logistic regression on standardised raw score)
     platt_coef: float | None = None
     platt_intercept: float | None = None
+    platt_scale_mean: float | None = None   # StandardScaler mean — applied before sigmoid
+    platt_scale_std: float | None = None    # StandardScaler std  — applied before sigmoid
 
     def calibrate(self, raw_score: float) -> float:
         if raw_score is None or not np.isfinite(raw_score):
@@ -65,7 +69,11 @@ class ScoreCalibration:
         if self.method == "platt":
             if self.platt_coef is None or self.platt_intercept is None:
                 return float(np.clip(self.base_rate, 0.0, 1.0))
-            log_odds = self.platt_coef * raw_score + self.platt_intercept
+            # Apply the same StandardScaler transform used at fit time
+            scaled = raw_score
+            if self.platt_scale_std and self.platt_scale_std > 0:
+                scaled = (raw_score - self.platt_scale_mean) / self.platt_scale_std
+            log_odds = self.platt_coef * scaled + self.platt_intercept
             return float(np.clip(1.0 / (1.0 + np.exp(-log_odds)), 0.0, 1.0))
         raise ValueError(f"Unknown calibration method: {self.method}")
 
@@ -175,8 +183,10 @@ def fit_probability_calibration(
 
     # Platt: moderate data, smooth sigmoid avoids tail overfitting
     if n >= _PLATT_MIN_SAMPLES and has_variance and _LogisticRegression is not None:
+        scaler = _StandardScaler()
+        raw_scaled = scaler.fit_transform(raw_vals.reshape(-1, 1)).ravel()
         lr = _LogisticRegression(max_iter=1000, solver="lbfgs")
-        lr.fit(raw_vals.reshape(-1, 1), targets.to_numpy())
+        lr.fit(raw_scaled.reshape(-1, 1), targets.to_numpy())
         return ScoreCalibration(
             method="platt",
             score_kind=score_kind,
@@ -188,6 +198,8 @@ def fit_probability_calibration(
             raw_max=float(np.max(raw_vals)),
             platt_coef=float(lr.coef_[0][0]),
             platt_intercept=float(lr.intercept_[0]),
+            platt_scale_mean=float(scaler.mean_[0]),
+            platt_scale_std=float(scaler.scale_[0]),
         )
 
     # Fallback: too few samples to fit a curve

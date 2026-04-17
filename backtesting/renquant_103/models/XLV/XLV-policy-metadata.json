@@ -21,5 +21,22 @@
   "best_approach": "QLearning",
   "sharpe": 0.5963,
   "lookahead": 5,
-  "strategy": "renquant_103"
+  "strategy": "renquant_103",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "q_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.11351351351351352,
+    "raw_min": -24.05277723258325,
+    "raw_max": 46.95702589424985,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": -0.04172749238804497,
+    "platt_intercept": -2.0738821583502114
+  },
+  "score_calibration_date": "2026-04-16"
 }

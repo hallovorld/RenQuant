@@ -22,17 +22,17 @@
   "max_depth": 4,
   "learning_rate": 0.05,
   "feature_importances": {
-    "rsi": 0.08780638873577118,
-    "macd_hist": 0.09052688628435135,
-    "cci": 0.08696141839027405,
-    "bbp": 0.090910404920578,
-    "adx": 0.10870777070522308,
-    "williams_r": 0.07524040341377258,
-    "obv_slope": 0.09776527434587479,
-    "spy_realized_vol": 0.09922352433204651,
-    "spy_adx": 0.08948210626840591,
-    "spy_trend": 0.08713217079639435,
-    "hurst_proxy": 0.08624367415904999
+    "rsi": 0.0903548151254654,
+    "macd_hist": 0.08923351764678955,
+    "cci": 0.08863426744937897,
+    "bbp": 0.090629942715168,
+    "adx": 0.10701034963130951,
+    "williams_r": 0.0759015679359436,
+    "obv_slope": 0.10242046415805817,
+    "spy_realized_vol": 0.09980008006095886,
+    "spy_adx": 0.08551221340894699,
+    "spy_trend": 0.0870458334684372,
+    "hurst_proxy": 0.08345695585012436
   },
   "artifacts": {
     "buy_model": "LLY-xgb-buy.json",
@@ -40,8 +40,25 @@
   },
   "trained_date": "2026-04-16",
   "best_approach": "XGBoost",
-  "sharpe": 1.2411,
+  "sharpe": 1.2426,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-09",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "p_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.23783783783783785,
+    "raw_min": -0.730919599533081,
+    "raw_max": 0.8292579054832458,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 2.532168866865365,
+    "platt_intercept": -1.2528043600540089
+  },
+  "score_calibration_date": "2026-04-16"
 }

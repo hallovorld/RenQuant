@@ -27,5 +27,22 @@
   "trained_date": "2026-04-11",
   "best_approach": "Classification",
   "sharpe": 0.945,
-  "strategy": "renquant_103"
+  "strategy": "renquant_103",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "bag_learner_raw",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.12432432432432433,
+    "raw_min": -0.26666666666666666,
+    "raw_max": 0.2,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.16465570584854589,
+    "platt_intercept": -1.9475511528237923
+  },
+  "score_calibration_date": "2026-04-16"
 }

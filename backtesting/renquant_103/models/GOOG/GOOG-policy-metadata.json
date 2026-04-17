@@ -1,47 +1,44 @@
 {
   "model_name": "GOOG",
-  "policy_type": "xgboost",
+  "policy_type": "qlearning",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx",
-    "williams_r",
-    "obv_slope",
-    "spy_realized_vol",
-    "spy_adx",
-    "spy_trend",
-    "hurst_proxy"
+    "adx"
   ],
-  "lookahead": 5,
-  "threshold": 0.03,
-  "buy_threshold": 0.1,
-  "sell_threshold": 0.1,
-  "n_estimators": 200,
-  "max_depth": 4,
-  "learning_rate": 0.05,
-  "feature_importances": {
-    "rsi": 0.08981789648532867,
-    "macd_hist": 0.0947282537817955,
-    "cci": 0.081759512424469,
-    "bbp": 0.09515754133462906,
-    "adx": 0.08682846277952194,
-    "williams_r": 0.08033657819032669,
-    "obv_slope": 0.09165410697460175,
-    "spy_realized_vol": 0.09400917589664459,
-    "spy_adx": 0.10687269270420074,
-    "spy_trend": 0.08163979649543762,
-    "hurst_proxy": 0.09719596803188324
-  },
+  "n_bins": 10,
+  "n_epochs": 100,
+  "alpha": 0.2,
+  "gamma": 0.9,
+  "impact": 0.0,
   "artifacts": {
-    "buy_model": "GOOG-xgb-buy.json",
-    "sell_model": "GOOG-xgb-sell.json"
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GOOG/GOOG-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GOOG/GOOG-bin-edges.json"
   },
   "trained_date": "2026-04-16",
-  "best_approach": "XGBoost",
-  "sharpe": 1.1783,
+  "best_approach": "QLearning",
+  "sharpe": 1.2609,
+  "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-09",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "q_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.24864864864864866,
+    "raw_min": -65.60201191374134,
+    "raw_max": 99.2947192010189,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.03580454139584091,
+    "platt_intercept": -1.435416939412756
+  },
+  "score_calibration_date": "2026-04-16"
 }

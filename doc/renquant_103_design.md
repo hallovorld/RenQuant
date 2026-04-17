@@ -357,7 +357,7 @@ combined_rank = w_rank × normalize(rank_score) + w_rs × normalize(rs_score)
 
 Both components normalized to [0, 1] across the current candidate set. Sort descending.
 
-Weights `[w_rank, w_rs]` are stored in `strategy_config.json` under `ranking.blend_weights` and default to `[0.5, 0.5]`. They are updated daily by `scripts/recalibrate_scores.py` using Pearson correlations of each normalised signal against actual forward outperformance outcomes across all watchlist symbols.
+Weights `[w_rank, w_rs]` are stored in `strategy_config.json` under `ranking.blend_weights` and default to `[0.5, 0.5]`. They are updated daily by `scripts/recalibrate_scores.py` using a logistic regression on `[norm(rank_score), norm(rs_score)]` against actual forward outperformance outcomes across all watchlist symbols. The positive coefficients are normalised into live blend weights.
 
 ### Step 6: Correlation-Aware Greedy Selection
 Greedily select from the ranked list, skipping any candidate whose **30-day rolling correlation with any already-selected or already-held position exceeds 0.70**.
@@ -592,7 +592,7 @@ Three structural weaknesses in the cross-model `rank_score` calibration were ide
 
 **2. Isotonic tail overfitting** (`common/models/scoring.py`): Isotonic regression is a piecewise step-function that can overfit on sparse tail samples. Method selection now depends on sample size: **isotonic** for n≥300, **Platt scaling** (logistic regression sigmoid — smooth and monotone) for 120≤n<300, **constant base-rate** for n<120.
 
-**3. Arbitrary 50/50 blend**: The `0.5 × rank + 0.5 × RS` blend had no empirical basis. `recalibrate_scores.py` computes Pearson correlations of each normalised signal against binary outperformance outcomes, averages across all symbols, and normalises to blend weights. The runner reads `ranking.blend_weights` from config instead of hardcoding.
+**3. Arbitrary 50/50 blend**: The `0.5 × rank + 0.5 × RS` blend had no empirical basis. `recalibrate_scores.py` now fits a logistic regression on `[norm(rank_score), norm(rs_score)]` versus binary outperformance outcomes and converts the positive coefficients into blend weights. The runner reads `ranking.blend_weights` from config instead of hardcoding.
 
 ### Gap-Alignment Fixes (2026-04-14)
 Six behavioral differences between notebook simulation and LEAN were identified and fixed:
@@ -605,7 +605,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-403 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
+405 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
 
 - `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
@@ -652,7 +652,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 403 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 405 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 

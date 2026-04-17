@@ -25,9 +25,26 @@
   },
   "trained_date": "2026-04-16",
   "best_approach": "Manual",
-  "sharpe": 1.3958,
+  "sharpe": 1.3945,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-09",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "vote_count",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.16756756756756758,
+    "raw_min": -1.0,
+    "raw_max": 3.0,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.05203787348677525,
+    "platt_intercept": -1.6589967939159422
+  },
+  "score_calibration_date": "2026-04-16"
 }

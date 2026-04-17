@@ -29,5 +29,22 @@
   "sharpe": 0.9508,
   "strategy": "renquant_103",
   "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_end": "2026-04-08",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "bag_learner_raw",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.22162162162162163,
+    "raw_min": -0.7333333333333333,
+    "raw_max": 0.4,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 2.0019614961854404,
+    "platt_intercept": -1.0944962377982996
+  },
+  "score_calibration_date": "2026-04-16"
 }

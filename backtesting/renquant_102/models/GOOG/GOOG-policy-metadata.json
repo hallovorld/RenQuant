@@ -1,44 +1,26 @@
 {
   "model_name": "GOOG",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "trend",
-      "buy_above": 1.0,
-      "sell_below": 0.97
-    },
-    {
-      "col": "trend_long",
-      "buy_above": 1.0,
-      "sell_below": 0.97
-    },
-    {
-      "col": "rel_mom_20d",
-      "buy_above": 0.0,
-      "sell_below": -0.03
-    },
-    {
-      "col": "rel_mom_60d",
-      "buy_above": 0.0,
-      "sell_below": -0.05
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "obv_slope",
-      "buy_above": 0,
-      "sell_below": 0
-    }
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope"
   ],
-  "buy_threshold": 4,
-  "sell_threshold": -3,
+  "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
   "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/GOOG/GOOG-manual-rules.json"
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_102/models/GOOG/GOOG-rf-trees.json"
   },
-  "trained_date": "2026-04-15",
-  "best_approach": "Dual Momentum",
-  "sharpe": 1.2152
+  "trained_date": "2026-04-16",
+  "best_approach": "Classification",
+  "sharpe": 1.2717
 }

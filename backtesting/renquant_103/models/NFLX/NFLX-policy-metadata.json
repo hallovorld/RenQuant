@@ -22,17 +22,17 @@
   "max_depth": 4,
   "learning_rate": 0.05,
   "feature_importances": {
-    "rsi": 0.08372175693511963,
-    "macd_hist": 0.08170953392982483,
-    "cci": 0.0849500223994255,
-    "bbp": 0.08238174021244049,
-    "adx": 0.09866704046726227,
-    "williams_r": 0.0842004269361496,
-    "obv_slope": 0.09804098308086395,
-    "spy_realized_vol": 0.10490745306015015,
-    "spy_adx": 0.10322704911231995,
-    "spy_trend": 0.09937523305416107,
-    "hurst_proxy": 0.07881879806518555
+    "rsi": 0.08942486345767975,
+    "macd_hist": 0.08314172923564911,
+    "cci": 0.08689519762992859,
+    "bbp": 0.08338171243667603,
+    "adx": 0.09525808691978455,
+    "williams_r": 0.08000174909830093,
+    "obv_slope": 0.09245790541172028,
+    "spy_realized_vol": 0.109122633934021,
+    "spy_adx": 0.10234464704990387,
+    "spy_trend": 0.09902539104223251,
+    "hurst_proxy": 0.07894612848758698
   },
   "artifacts": {
     "buy_model": "NFLX-xgb-buy.json",
@@ -40,8 +40,25 @@
   },
   "trained_date": "2026-04-16",
   "best_approach": "XGBoost",
-  "sharpe": 1.1854,
+  "sharpe": 1.2212,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-08"
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-09",
+  "score_calibration": {
+    "version": 1,
+    "method": "platt",
+    "score_kind": "p_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 185,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.12972972972972974,
+    "raw_min": -0.8829376697540283,
+    "raw_max": 0.7840209603309631,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 3.236050081507285,
+    "platt_intercept": -1.835463244649832
+  },
+  "score_calibration_date": "2026-04-16"
 }
