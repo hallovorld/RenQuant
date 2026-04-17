@@ -169,6 +169,15 @@ class AlpacaBroker(BaseBroker):
             })
         return result
 
+    def get_open_orders(self) -> set[str]:
+        """Return symbols that have a pending or open order right now."""
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+
+        params = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        orders = self._trading_client.get_orders(filter=params)
+        return {o.symbol for o in orders}
+
     def is_market_open(self) -> bool:
         """Check if the market is currently open."""
         clock = self._trading_client.get_clock()

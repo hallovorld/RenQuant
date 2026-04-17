@@ -974,6 +974,18 @@ def run_once_multi(
         log.info(sep)
         return
 
+    # Fetch pending Alpaca orders once — skip any symbol already queued.
+    # This prevents catch-up runs from placing duplicate DAY orders for the
+    # same symbol when a prior run already submitted them (e.g. after-hours
+    # orders that haven't filled yet because market is closed).
+    try:
+        pending_orders: set[str] = broker.get_open_orders()
+        if pending_orders:
+            log.info("  Pending orders already in Alpaca: %s", sorted(pending_orders))
+    except Exception as e:
+        log.warning("  Could not fetch open orders (non-fatal): %s", e)
+        pending_orders = set()
+
     if circuit_open:
         log.info("  Drawdown circuit breaker OPEN (%.1f%%) — halting buys", drawdown*100)
         log.info(sep)
@@ -1182,6 +1194,13 @@ def run_once_multi(
         if rank_score < tier_min:
             log.info("  %-6s  SKIP  [slot %d tier min %.2f, rank %+.4f too low]",
                      symbol, slot_num, tier_min, rank_score)
+            continue
+
+        # Duplicate-order guard — skip if Alpaca already has a pending order for
+        # this symbol (e.g. an after-hours DAY order placed by a prior run that
+        # hasn't filled yet).
+        if symbol in pending_orders:
+            log.info("  %-6s  SKIP  [pending order already in Alpaca]", symbol)
             continue
 
         # Sector guard

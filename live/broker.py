@@ -41,6 +41,14 @@ class BaseBroker(ABC):
         """Return filled orders since *after* ('YYYY-MM-DD').  Returns [] if not supported."""
         return []
 
+    def get_open_orders(self) -> set[str]:
+        """Return the set of symbols that have a pending/open order right now.
+        Used to avoid placing duplicate orders when a catch-up run fires after a
+        prior run already submitted orders that haven't filled yet.
+        Returns an empty set if not supported by this broker.
+        """
+        return set()
+
     @abstractmethod
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
         """Place a market order.

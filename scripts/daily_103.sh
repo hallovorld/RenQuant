@@ -38,20 +38,6 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== daily_103 started at $(date) ==="
 
-# ── Time-of-day guard ─────────────────────────────────────────────────────────
-# launchd fires a catch-up run whenever the Mac wakes after a missed schedule.
-# A midnight or early-morning catch-up would place DAY orders that execute at
-# the NEXT market open at whatever price the stock opens at — impossible to stop-
-# loss correctly with stale OHLCV data.  Only allow this script to run between
-# 12:00 PM (noon) and 22:00 (10 PM) PT, which covers the scheduled 1:55 PM slot
-# plus a generous window for legitimate manual runs, while blocking midnight runs.
-CURRENT_HOUR=$(date +%H)
-if [ "$CURRENT_HOUR" -lt 12 ] || [ "$CURRENT_HOUR" -ge 22 ]; then
-    echo "Outside allowed window [12:00–22:00 PT], hour=$CURRENT_HOUR — skipping (launchd catch-up guard)."
-    notify "RenQuant 103 SKIP" "Daily run skipped outside window (hour=$CURRENT_HOUR)"
-    exit 0
-fi
-
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
 LOCK_FILE="/tmp/renquant_103_daily.lock"
 if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
