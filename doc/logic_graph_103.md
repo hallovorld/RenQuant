@@ -45,7 +45,10 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │        hurst=REVERSION         → CHOPPY
 │        hurst=AMBIGUOUS         → dominant_GMM (unless BEAR → BULL_VOLATILE)
 │
-│     regime_confidence = GMM P(current_regime) [0.5 during transition]
+│     regime_confidence:
+│        CHOPPY → Hurst distance: (0.45 − H) / (0.45 − hurst_floor)  [floor=0.20]
+│        BULL_CALM / BULL_VOLATILE / BEAR → GMM P(current_regime)
+│        transition window → 0.5 (flat)
 │     rp = regime_params[regime]   ← all thresholds read from here
 │
 ├─ ══════════════════════════════════════════════════════════
@@ -336,6 +339,7 @@ When any sell fires:
 | 19 | last_sell_date.pop() on re-buy | ✓ pop() clears clock | LEAN: does NOT pop; old entry stays but days>=30 makes check pass — functionally equivalent | ✓ |
 | 20 | entry_dates recorded on buy | ✓ | ✓ entry_times[ticker] | ✓ |
 | 21 | EXIT 3 max_hold_days enforced | ✓ days_held >= max_hold_days in sell loop | ✓ days_held >= max_hold_days | ✓ live runner enforces max_hold between EXIT 2b and EXIT 4 | ✓ |
+| 22 | CHOPPY regime_confidence uses Hurst distance (not GMM) | ✓ (0.45−H)/(0.45−floor) | ✓ (0.45−hurst)/(0.45−_choppy_hurst_floor) | ✓ live runner: _hurst_choppy_confidence() |
 
 **Deltas (row 14, 18):** Minor divergences; row 14 is belt-and-suspenders (both block). Live runner selection-loop wash-sale re-check was added in 2026-04-17 maintenance pass — now all three components (Notebook, LEAN, live runner) re-check wash-sale in the selection loop. Row 18 means LEAN
 sizes slightly smaller during low-confidence periods — this is intentional in LEAN (confidence scaling)

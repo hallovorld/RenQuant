@@ -71,6 +71,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._corr_threshold      = float(regime_cfg.get("correlation_guard_threshold", 0.70))
         self._earnings_buffer     = int(regime_cfg.get("earnings_buffer_days", 3))
         self._vol_realized_window = int(regime_cfg.get("vol_realized_window", 20))
+        self._choppy_hurst_floor  = float(regime_cfg.get("choppy_hurst_floor", 0.20))
 
         # ── Regime-adaptive params ──
         self._regime_params = CONFIG.get("regime_params", {})
@@ -506,7 +507,12 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         if self._transition_countdown > 0:
             self._regime_confidence = 0.5
         else:
-            self._regime_confidence = gmm_probs.get(new_regime, 0.5)
+            # CHOPPY: GMM is structurally ~50/50 — use Hurst distance instead
+            if new_regime == CHOPPY:
+                _conf = (0.45 - hurst) / max(0.45 - self._choppy_hurst_floor, 1e-6)
+                self._regime_confidence = float(min(1.0, max(0.0, _conf)))
+            else:
+                self._regime_confidence = gmm_probs.get(new_regime, 0.5)
 
         if new_regime != self._current_regime:
             self.Debug(

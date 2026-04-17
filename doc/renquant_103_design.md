@@ -275,6 +275,12 @@ else:
 # Transition uncertainty: reduce confidence for 3 bars after changepoint
 if transition_uncertainty_bars_remaining > 0:
     regime_confidence = 0.5  # half confidence during transition
+elif final_regime == "CHOPPY":
+    # GMM has two near-equal clusters (~48/48%) so its CHOPPY posterior is structurally
+    # uninformative (~50% regardless of market state). Use Hurst distance instead:
+    # lower H (stronger mean-reversion) → higher CHOPPY confidence.
+    regime_confidence = (0.45 - hurst) / (0.45 - choppy_hurst_floor)  # floor=0.20
+    regime_confidence = clamp(regime_confidence, 0.0, 1.0)
 else:
     regime_confidence = gmm_probs[final_regime]
 ```
@@ -613,7 +619,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-462 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
+464 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
 
 - `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
@@ -660,7 +666,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 462 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 464 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 
