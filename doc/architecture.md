@@ -139,10 +139,10 @@ backtesting/renquant_103/
   2. Sets regime-adaptive parameters (stop-loss, position size, max hold, drawdown halt) — position sizing scales continuously with GMM confidence
   3. Processes sells (regime-adaptive stop-loss and trailing stop in BULL_CALM: 20% gain trigger, 18% trail below HWM; single-day loss gate 10% in BULL_CALM; max hold 500d/10d CHOPPY; model-sell requires min_hold=20d + 3 consecutive signals)
   4. BUY GATES (all short-circuit): open slots check → transition uncertainty window (3 bars post-CUSUM) → BEAR branch (1 defensive slot for GLD/TLT/XLV/XLU only) → SPY velocity crash filter (>3% drop in 3 days) → SPY EMA50 trend gate
-     5. SCAN: model signal is the entry trigger (no separate volume-scan gate). Each candidate: earnings filter → model buy signal → calibrated `rank_score` threshold. The native model output is kept as `raw_score`, then mapped to a comparable probability-like `rank_score` for live ranking. Score by RS (20d vs sector ETF) + calibrated rank score, combined rank 50/50.
-  6. EXECUTE: greedy selection by rank; each slot checks tiered threshold → wash-sale → sector guard (max 3/sector) → correlation guard (max 0.70). Position sized as `min(cash − cash_reserve, portfolio × max_pos_pct)`.
+           5. SCAN: model signal is the entry trigger (no separate volume-scan gate). Each candidate: earnings filter → model buy signal → calibrated `rank_score` threshold. The native model output is kept as `raw_score`, then mapped to a comparable probability-like `rank_score` for cross-model ranking. Relative strength (20d vs sector ETF) is blended with `rank_score` using config-driven `ranking.blend_weights`.
+     6. EXECUTE: greedy selection by rank; each slot checks tiered threshold → wash-sale → sector guard (max 3/sector) → correlation guard (max 0.70). Position sized as `min(cash − portfolio × cash_reserve_pct × regime_confidence, portfolio × max_position_pct × regime_confidence)`.
 
-**Live scoring note**: mixed model families are not directly comparable in raw form. The live runner uses `common.models.scoring` to convert each symbol's champion model output into a calibrated `rank_score`. If `policy-metadata.json` already includes `score_calibration`, that artifact is used; otherwise the runner fits an isotonic fallback from recent relative-price history. Raw scores are still logged as diagnostics. LEAN currently continues to consume native model scores directly unless matching calibration metadata is exported and applied there as well.
+**Scoring note**: mixed model families are not directly comparable in raw form. Notebook training now fits per-symbol `score_calibration`, exports it in `policy-metadata.json`, and uses calibrated `rank_score` for simulation ranking. LEAN consumes that exported calibration when present; absent metadata falls back to the raw score. The live runner also uses `common.models.scoring`, with a runtime fallback if metadata is missing. Raw scores are still logged as diagnostics.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
@@ -210,7 +210,7 @@ Position sizing is configured in `strategy_config.json` under the `position_sizi
 | Parameter | renquant_101/102 | renquant_103 | Purpose |
 |-----------|-----------------|--------------|---------|
 | `max_position_pct` | 0.30 (30%) | 0.15% (BULL_CALM/CHOPPY), 0.20% (BULL_VOLATILE), 0% (BEAR offensive) | Max single-stock exposure; scales with GMM confidence |
-| `cash_reserve_pct` | 0.00 (0%) | 0% (BULL_CALM), 20% (BULL_VOLATILE), 30% (CHOPPY), 100% (BEAR) | Regime-adaptive cash cushion; deducted before sizing each buy |
+| `cash_reserve_pct` | 0.00 (0%) | 0% (BULL_CALM), 20% (BULL_VOLATILE), 30% (CHOPPY), 100% (BEAR) | Regime-adaptive cash cushion; scales with regime confidence and is deducted before sizing each buy |
 | `max_concurrent_positions` | 5 | 8 | Max simultaneous holdings |
 
 **Rules:**

@@ -111,6 +111,13 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         # Last tier applies to all remaining slots beyond the list length.
         self._tiered_thresholds = CONFIG.get("tiered_thresholds", [])
 
+        # ── Ranking blend weights ──
+        ranking_cfg = CONFIG.get("ranking", {})
+        blend_weights = ranking_cfg.get("blend_weights", [0.5, 0.5])
+        blend_total = float(blend_weights[0]) + float(blend_weights[1])
+        self._w_rank = float(blend_weights[0]) / blend_total if blend_total > 0 else 0.5
+        self._w_rs = float(blend_weights[1]) / blend_total if blend_total > 0 else 0.5
+
         # ── Tax ──
         tax_cfg               = CONFIG.get("tax", {})
         self.tax_short_rate   = float(tax_cfg.get("short_term_rate", 0.50))
@@ -253,7 +260,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             features = self._build_feature_frame(ticker)
             if features is None:
                 continue
-            action, detail = self._choose_action(ticker, features)
+            action, _, _, detail = self._choose_action(ticker, features)
             if action == "sell":
                 self._sell_streak[ticker] = self._sell_streak.get(ticker, 0) + 1
                 streak = self._sell_streak[ticker]
@@ -308,11 +315,10 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 features = self._build_feature_frame(ticker)
                 if features is None:
                     continue
-                action, _ = self._choose_action(ticker, features)
+                action, _, rank_score, _ = self._choose_action(ticker, features)
                 if action != "buy":
                     continue
-                score = self._get_raw_model_score(ticker, features)
-                bear_candidates.append((ticker, score))
+                bear_candidates.append((ticker, rank_score))
             if bear_candidates:
                 bear_candidates.sort(key=lambda x: x[1], reverse=True)
                 best_ticker, best_score = bear_candidates[0]
@@ -367,27 +373,32 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 self.Debug(f"{self.Time.date()} {ticker} SKIP feature_build_failed")
                 continue
 
-            action, detail = self._choose_action(ticker, features)
-            model_score = self._get_raw_model_score(ticker, features)
-            self.Debug(f"{self.Time.date()} {ticker} SCAN action={action} model_score={model_score:.4f} {detail}")
+            action, raw_score, rank_score, detail = self._choose_action(ticker, features)
+            self.Debug(
+                f"{self.Time.date()} {ticker} SCAN action={action} "
+                f"raw={raw_score:.4f} rank={rank_score:.4f} {detail}"
+            )
             if action != "buy":
                 continue
 
-            if model_score < min_score:
-                self.Debug(f"{self.Time.date()} {ticker} SKIP model_score={model_score:.4f} < min_score={min_score:.4f}")
+            if rank_score < min_score:
+                self.Debug(
+                    f"{self.Time.date()} {ticker} SKIP rank_score={rank_score:.4f} < "
+                    f"min_score={min_score:.4f}"
+                )
                 continue
 
             rs_score = self._compute_rs_score(ticker)
-            scored.append((ticker, model_score, rs_score, detail))
+            scored.append((ticker, raw_score, rank_score, rs_score, detail))
 
         if not scored:
             self._plot_state(held_tickers)
             return
 
         # Normalize and combine
-        model_scores = [s[1] for s in scored]
-        rs_scores    = [s[2] for s in scored]
-        model_min, model_max = min(model_scores), max(model_scores)
+        rank_scores  = [s[2] for s in scored]
+        rs_scores    = [s[3] for s in scored]
+        rank_min, rank_max = min(rank_scores), max(rank_scores)
         rs_min,    rs_max    = min(rs_scores),    max(rs_scores)
 
         def norm(v, lo, hi):
@@ -395,14 +406,14 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
         ranked = sorted(
             scored,
-            key=lambda s: 0.5 * norm(s[1], model_min, model_max)
-                        + 0.5 * norm(s[2], rs_min,    rs_max),
+            key=lambda s: self._w_rank * norm(s[2], rank_min, rank_max)
+                        + self._w_rs * norm(s[3], rs_min,   rs_max),
             reverse=True,
         )
 
         # ── EXECUTE: correlation-aware greedy selection ──
         slots_filled = 0
-        for ticker, model_score, rs_score, detail in ranked:
+        for ticker, raw_score, rank_score, rs_score, detail in ranked:
             if open_slots <= 0:
                 break
 
@@ -412,8 +423,11 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             if self._tiered_thresholds:
                 _tier_idx = min(slots_filled, len(self._tiered_thresholds) - 1)
                 _tier_min = float(self._tiered_thresholds[_tier_idx].get("min_model_score", 0.0))
-                if model_score < _tier_min:
-                    self.Debug(f"{self.Time.date()} {ticker} model_score={model_score:.4f} below slot-{slots_filled+1} tier min {_tier_min:.4f}, skipping")
+                if rank_score < _tier_min:
+                    self.Debug(
+                        f"{self.Time.date()} {ticker} rank_score={rank_score:.4f} "
+                        f"below slot-{slots_filled+1} tier min {_tier_min:.4f}, skipping"
+                    )
                     continue
 
             if self._is_wash_sale_blocked(ticker):
@@ -440,7 +454,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 self.Debug(f"{self.Time.date()} {ticker} SKIP correlation_guard (correlated with {held_tickers})")
                 continue
 
-            self._execute_buy(ticker, model_score, rs_score, detail)
+            self._execute_buy(ticker, rank_score, rs_score, detail)
             held_tickers.append(ticker)
             slots_filled += 1
             open_slots -= 1
@@ -972,13 +986,14 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
     # ── Model prediction ──────────────────────────────────────────────────────
 
     def _choose_action(self, ticker: str, features: pd.DataFrame) -> tuple:
-        score = self._get_raw_model_score(ticker, features)
+        raw_score = self._get_raw_model_score(ticker, features)
+        rank_score = self._calibrate_model_score(ticker, raw_score)
         model = self.models[ticker]
-        if score > model["buy_threshold"]:
-            return "buy",  f"score={score:.3f}"
-        if score < model["sell_threshold"]:
-            return "sell", f"score={score:.3f}"
-        return "hold", f"score={score:.3f}"
+        if raw_score > model["buy_threshold"]:
+            return "buy", raw_score, rank_score, f"raw={raw_score:.3f} rank={rank_score:.3f}"
+        if raw_score < model["sell_threshold"]:
+            return "sell", raw_score, rank_score, f"raw={raw_score:.3f} rank={rank_score:.3f}"
+        return "hold", raw_score, rank_score, f"raw={raw_score:.3f} rank={rank_score:.3f}"
 
     def _get_raw_model_score(self, ticker: str, features: pd.DataFrame) -> float:
         """Return continuous model score (classification average or Q-value delta)."""
@@ -1016,6 +1031,35 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             return float(p_buy - p_sell)
 
         return 0.0
+
+    def _calibrate_model_score(self, ticker: str, raw_score: float) -> float:
+        calibration = self.models[ticker].get("score_calibration")
+        if not calibration:
+            return float(raw_score)
+
+        method = calibration.get("method", "identity")
+        if method == "identity":
+            return float(raw_score)
+        if method == "constant_probability":
+            return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
+        if method == "isotonic":
+            x_thresholds = calibration.get("x_thresholds") or []
+            y_thresholds = calibration.get("y_thresholds") or []
+            if not x_thresholds or not y_thresholds:
+                return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
+            return float(np.clip(np.interp(raw_score, x_thresholds, y_thresholds), 0.0, 1.0))
+        if method == "platt":
+            coef = calibration.get("platt_coef")
+            intercept = calibration.get("platt_intercept")
+            if coef is None or intercept is None:
+                return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
+            scaled = raw_score
+            scale_std = calibration.get("platt_scale_std")
+            if scale_std and scale_std > 0:
+                scaled = (raw_score - calibration.get("platt_scale_mean", 0.0)) / scale_std
+            log_odds = coef * scaled + intercept
+            return float(np.clip(1.0 / (1.0 + np.exp(-log_odds)), 0.0, 1.0))
+        return float(raw_score)
 
     def _traverse_tree(self, tree: list, row: list) -> float:
         idx = 0
@@ -1078,7 +1122,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
     # ── Trade execution ───────────────────────────────────────────────────────
 
-    def _execute_buy(self, ticker: str, model_score: float,
+    def _execute_buy(self, ticker: str, rank_score: float,
                      rs_score: float, detail: str,
                      max_position_pct_override: float = None) -> None:
         portfolio_value = self.Portfolio.TotalPortfolioValue
@@ -1100,7 +1144,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
         self.Debug(
             f"{self.Time.date()} {ticker} BUY regime={self._current_regime} "
-            f"conf={self._regime_confidence:.2f} model={model_score:.3f} "
+            f"conf={self._regime_confidence:.2f} rank={rank_score:.3f} "
             f"rs={rs_score:.3f} pct={target_pct:.2%} {detail}"
         )
         price = float(self.Securities[self.symbols[ticker]].Price)
@@ -1194,6 +1238,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             "feature_columns": feature_cols,
             "buy_threshold":   metadata.get("buy_threshold", 0.1),
             "sell_threshold":  metadata.get("sell_threshold", -0.1),
+            "score_calibration": metadata.get("score_calibration"),
         }
         if ptype == "classification":
             p = symbol_dir / f"{ticker}-rf-trees.json"

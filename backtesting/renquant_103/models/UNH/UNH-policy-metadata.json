@@ -41,8 +41,10 @@
     "raw_max": 3.0,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": -0.0074108513933476075,
-    "platt_intercept": -1.0969606128255391
+    "platt_coef": -0.006460423078787463,
+    "platt_intercept": -1.1053831044936415,
+    "platt_scale_mean": 1.2,
+    "platt_scale_std": 0.8686740439282129
   },
   "score_calibration_date": "2026-04-16"
 }

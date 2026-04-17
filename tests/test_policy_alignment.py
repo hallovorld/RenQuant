@@ -1260,13 +1260,13 @@ class TestMinModelScoreAlignment:
             assert nb == ln, f"regime={regime} score={score}: NB={nb} LEAN={ln}"
 
 
-# ─── POLICY: Combined Ranking (50/50 RS + model score) ───────────────────────
+# ─── POLICY: Combined Ranking (config-driven blend weights) ──────────────────
 
 class TestCombinedRankingAlignment:
-    """Candidates sorted by 0.5*norm(model_score) + 0.5*norm(rs_score), descending."""
+    """Candidates sorted by w_rank*norm(rank_score) + w_rs*norm(rs_score), descending."""
 
-    def _notebook(self, candidates):
-        """cell 657a4a6c lines ~321-326."""
+    def _notebook(self, candidates, rank_weight=0.5, rs_weight=0.5):
+        """Notebook simulation: calibrated rank-score blended with RS using config weights."""
         if len(candidates) <= 1:
             return [c[0] for c in candidates]
         ms = [c[1] for c in candidates]
@@ -1275,13 +1275,13 @@ class TestCombinedRankingAlignment:
         rs_range = max(rs) - min(rs) or 1
         ranked = sorted(
             candidates,
-            key=lambda c: 0.5 * (c[1] - min(ms)) / ms_range + 0.5 * (c[2] - min(rs)) / rs_range,
+            key=lambda c: rank_weight * (c[1] - min(ms)) / ms_range + rs_weight * (c[2] - min(rs)) / rs_range,
             reverse=True,
         )
         return [r[0] for r in ranked]
 
-    def _lean(self, candidates):
-        """main.py lines ~393-401."""
+    def _lean(self, candidates, rank_weight=0.5, rs_weight=0.5):
+        """LEAN ranking: calibrated rank-score blended with RS using config weights."""
         if len(candidates) <= 1:
             return [c[0] for c in candidates]
         model_scores = [s[1] for s in candidates]
@@ -1294,7 +1294,7 @@ class TestCombinedRankingAlignment:
 
         ranked = sorted(
             candidates,
-            key=lambda s: 0.5 * norm(s[1], model_min, model_max) + 0.5 * norm(s[2], rs_min, rs_max),
+            key=lambda s: rank_weight * norm(s[1], model_min, model_max) + rs_weight * norm(s[2], rs_min, rs_max),
             reverse=True,
         )
         return [r[0] for r in ranked]
@@ -1312,12 +1312,9 @@ class TestCombinedRankingAlignment:
         result = self._notebook([("A", 0.5, 0.2), ("B", 0.5, 0.8)])
         assert result[0] == "B"
 
-    def test_nb_balanced_ranking(self):
-        # A: model high, rs low; B: model medium, rs high; C: both medium
-        result = self._notebook([("A", 0.9, 0.1), ("B", 0.5, 0.9), ("C", 0.5, 0.5)])
-        # Combined: A=0.5*(1)+0.5*(0)=0.5, B=0.5*(0)+0.5*(1)=0.5, C=0.5*(0)+0.5*(0.5)=0.25
-        # A and B tie at 0.5, C is last
-        assert result[-1] == "C"
+    def test_nb_custom_rank_weight_can_override_rs(self):
+        result = self._notebook([("A", 0.9, 0.1), ("B", 0.6, 0.9)], rank_weight=0.8, rs_weight=0.2)
+        assert result[0] == "A"
 
     def test_nb_all_equal_stable(self):
         result = self._notebook([("A", 0.5, 0.5), ("B", 0.5, 0.5)])
@@ -1341,9 +1338,9 @@ class TestCombinedRankingAlignment:
         result = self._lean([("A", 0.5, 0.2), ("B", 0.5, 0.8)])
         assert result[0] == "B"
 
-    def test_lean_balanced_ranking(self):
-        result = self._lean([("A", 0.9, 0.1), ("B", 0.5, 0.9), ("C", 0.5, 0.5)])
-        assert result[-1] == "C"
+    def test_lean_custom_rank_weight_can_override_rs(self):
+        result = self._lean([("A", 0.9, 0.1), ("B", 0.6, 0.9)], rank_weight=0.8, rs_weight=0.2)
+        assert result[0] == "A"
 
     def test_lean_all_equal_stable(self):
         result = self._lean([("A", 0.5, 0.5), ("B", 0.5, 0.5)])
@@ -1357,33 +1354,36 @@ class TestCombinedRankingAlignment:
 
     def test_both_agree_on_rankings(self):
         test_cases = [
-            [("A", 0.3, 0.5), ("B", 0.6, 0.5)],
-            [("A", 0.5, 0.2), ("B", 0.5, 0.8)],
-            [("A", 0.9, 0.1), ("B", 0.5, 0.9), ("C", 0.5, 0.5)],
-            [("A", 0.5, 0.1), ("B", 0.5, 0.9)],
+            ([("A", 0.3, 0.5), ("B", 0.6, 0.5)], (0.5, 0.5)),
+            ([("A", 0.5, 0.2), ("B", 0.5, 0.8)], (0.5, 0.5)),
+            ([("A", 0.9, 0.1), ("B", 0.5, 0.9), ("C", 0.5, 0.5)], (0.5, 0.5)),
+            ([("A", 0.9, 0.1), ("B", 0.6, 0.9)], (0.8, 0.2)),
+            ([("A", 0.5, 0.1), ("B", 0.5, 0.9)], (0.5, 0.5)),
         ]
-        for candidates in test_cases:
-            nb = self._notebook(candidates)
-            ln = self._lean(candidates)
-            assert nb == ln, f"candidates={candidates}: NB={nb} LEAN={ln}"
+        for candidates, weights in test_cases:
+            nb = self._notebook(candidates, *weights)
+            ln = self._lean(candidates, *weights)
+            assert nb == ln, f"candidates={candidates} weights={weights}: NB={nb} LEAN={ln}"
 
 
 # ─── POLICY: Position Sizing with Cash Reserve ────────────────────────────────
 
 class TestPositionSizingAlignment:
-    """invest = min(cash - cash_reserve, port_val * max_pos_pct). Regime-aware reserve."""
+    """Invest sizing uses confidence-scaled max_position_pct and cash_reserve_pct."""
 
-    def _notebook(self, cash, port_val, max_pos_pct, cash_reserve_pct):
-        """cell 657a4a6c (FIXED): apply cash_reserve_pct per regime."""
-        cash_reserve = port_val * cash_reserve_pct
-        invest = min(cash - cash_reserve, port_val * max_pos_pct)
+    def _notebook(self, cash, port_val, max_pos_pct, cash_reserve_pct, confidence=1.0):
+        """Notebook simulation: position sizing params scale by regime confidence."""
+        scaled_max_pct = max_pos_pct * confidence
+        cash_reserve = port_val * cash_reserve_pct * confidence
+        invest = min(cash - cash_reserve, port_val * scaled_max_pct)
         return max(invest, 0)
 
-    def _lean(self, portfolio_value, available_cash, max_pct, cash_reserve_pct):
-        """main.py lines ~1085-1093."""
-        cash_reserve = portfolio_value * cash_reserve_pct
+    def _lean(self, portfolio_value, available_cash, max_pct, cash_reserve_pct, confidence=1.0):
+        """LEAN _rp() scales max_position_pct and cash_reserve_pct by regime confidence."""
+        scaled_max_pct = max_pct * confidence
+        cash_reserve = portfolio_value * cash_reserve_pct * confidence
         investable = max(available_cash - cash_reserve, 0)
-        target_pct = min(max_pct, investable / max(portfolio_value, 1))
+        target_pct = min(scaled_max_pct, investable / max(portfolio_value, 1))
         invest = target_pct * portfolio_value
         return max(invest, 0)
 
@@ -1394,9 +1394,9 @@ class TestPositionSizingAlignment:
         assert abs(invest - 1500) < 0.01
 
     def test_nb_volatile_20pct_reserve_reduces_invest(self):
-        invest = self._notebook(cash=10000, port_val=10000, max_pos_pct=0.20, cash_reserve_pct=0.20)
-        # cash_reserve=2000; cash-reserve=8000; max=2000; invest=min(8000,2000)=2000
-        assert abs(invest - 2000) < 0.01
+        invest = self._notebook(cash=10000, port_val=10000, max_pos_pct=0.20, cash_reserve_pct=0.20, confidence=0.5)
+        # scaled_max=10%; scaled_reserve=10%; invest=min(9000,1000)=1000
+        assert abs(invest - 1000) < 0.01
 
     def test_nb_choppy_30pct_reserve(self):
         # cash_reserve=3000; cash-reserve=7000; max=1500; invest=min(7000,1500)=1500
@@ -1423,8 +1423,8 @@ class TestPositionSizingAlignment:
         assert abs(invest - 1500) < 0.01
 
     def test_lean_volatile_20pct_reserve_reduces_invest(self):
-        invest = self._lean(portfolio_value=10000, available_cash=10000, max_pct=0.20, cash_reserve_pct=0.20)
-        assert abs(invest - 2000) < 0.01
+        invest = self._lean(portfolio_value=10000, available_cash=10000, max_pct=0.20, cash_reserve_pct=0.20, confidence=0.5)
+        assert abs(invest - 1000) < 0.01
 
     def test_lean_choppy_30pct_reserve(self):
         invest = self._lean(portfolio_value=10000, available_cash=10000, max_pct=0.15, cash_reserve_pct=0.30)
@@ -1446,15 +1446,17 @@ class TestPositionSizingAlignment:
 
     def test_both_agree_all_regimes(self):
         configs = [
-            (10000, 10000, 0.15, 0.00),  # BULL_CALM
-            (10000, 10000, 0.20, 0.20),  # BULL_VOLATILE
-            (10000, 10000, 0.15, 0.30),  # CHOPPY
-            (10000, 10000, 0.15, 1.00),  # BEAR (blocked)
+            (10000, 10000, 0.15, 0.00, 1.0),  # BULL_CALM
+            (10000, 10000, 0.20, 0.20, 0.5),  # BULL_VOLATILE with lower confidence
+            (10000, 10000, 0.15, 0.30, 1.0),  # CHOPPY
+            (10000, 10000, 0.15, 1.00, 1.0),  # BEAR (blocked)
         ]
-        for cash, port, pct, reserve in configs:
-            nb = self._notebook(cash, port, pct, reserve)
-            ln = self._lean(port, cash, pct, reserve)
-            assert abs(nb - ln) < 0.01, f"cash={cash} pct={pct} res={reserve}: NB={nb:.2f} LEAN={ln:.2f}"
+        for cash, port, pct, reserve, confidence in configs:
+            nb = self._notebook(cash, port, pct, reserve, confidence)
+            ln = self._lean(port, cash, pct, reserve, confidence)
+            assert abs(nb - ln) < 0.01, (
+                f"cash={cash} pct={pct} res={reserve} conf={confidence}: NB={nb:.2f} LEAN={ln:.2f}"
+            )
 
 
 # ── Count verification ────────────────────────────────────────────────────────

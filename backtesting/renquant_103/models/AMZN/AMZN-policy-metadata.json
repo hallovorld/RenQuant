@@ -26,7 +26,7 @@
   },
   "trained_date": "2026-04-16",
   "best_approach": "Classification",
-  "sharpe": 0.865,
+  "sharpe": 2.0453,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-09",
@@ -40,11 +40,13 @@
     "threshold": 0.03,
     "base_rate": 0.14594594594594595,
     "raw_min": -0.4,
-    "raw_max": 0.2,
+    "raw_max": 0.4,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.8748373821476512,
-    "platt_intercept": -1.7275105769738468
+    "platt_coef": 0.14604363518202457,
+    "platt_intercept": -1.7741997662865883,
+    "platt_scale_mean": 0.02234234234234234,
+    "platt_scale_std": 0.11190103109300914
   },
   "score_calibration_date": "2026-04-16"
 }

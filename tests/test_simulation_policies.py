@@ -74,6 +74,7 @@ def minimal_config(**overrides) -> dict:
         "sector_etf_map": {"tech": "XLK", "finance": "XLF", "commodity": "GLD"},
         "max_positions_per_sector": 3,
         "defensive_tickers": ["GLD"],
+        "ranking": {"blend_weights": [0.5, 0.5]},
         "regime_params": {
             "BULL_CALM": {
                 "max_position_pct": 0.15,
@@ -116,6 +117,7 @@ def run_sim(
     corr_dict: dict = None,
     spy_vel_halt_pct: float = 0.0,
     spy_vel_lookback: int = 3,
+    regime_confidence: pd.Series | None = None,
 ) -> list:
     """
     Minimal simulation loop that enforces exactly the same policies as Cell 21.
@@ -132,6 +134,11 @@ def run_sim(
     MAX_PER_SECTOR  = config.get("max_positions_per_sector", 3)
     RP              = config["regime_params"]
     DEFENSIVE       = set(config.get("defensive_tickers", []))
+    ranking_cfg     = config.get("ranking", {})
+    blend_weights   = ranking_cfg.get("blend_weights", [0.5, 0.5])
+    blend_total     = float(blend_weights[0]) + float(blend_weights[1])
+    rank_weight     = float(blend_weights[0]) / blend_total if blend_total > 0 else 0.5
+    rs_weight       = float(blend_weights[1]) / blend_total if blend_total > 0 else 0.5
     ST_RATE         = config["tax"]["short_term_rate"]
     LT_RATE         = config["tax"]["long_term_rate"]
     LT_THRESH       = config["tax"]["long_term_threshold_days"]
@@ -163,9 +170,20 @@ def run_sim(
     spy_close_reindexed = spy_close.reindex(all_dates).ffill()
     bt_date_list = all_dates
 
+    def _rank_score_for_day(ticker: str, today_ts: pd.Timestamp) -> float | None:
+        raw = results[ticker].get("oos_raw_scores")
+        if raw is None or today_ts not in raw.index:
+            return None
+        raw_score = float(raw.loc[today_ts])
+        calibration = results[ticker].get("score_calibration")
+        if calibration is None:
+            return raw_score
+        return float(calibration.calibrate(raw_score))
+
     for today_idx, today in enumerate(bt_date_list):
         regime = regime_series.get(today, "BULL_CALM")
         rp = RP.get(regime, RP["BULL_CALM"])
+        regime_conf = float(regime_confidence.get(today, 1.0)) if regime_confidence is not None else 1.0
 
         # Mark-to-market
         port_val = cash
@@ -245,9 +263,10 @@ def run_sim(
                     sig = results.get(t, {}).get("oos_signals")
                     if sig is None or today not in sig.index or sig.loc[today] != 1:
                         continue
-                    raw = results[t].get("oos_raw_scores")
-                    score = float(raw.loc[today]) if (raw is not None and today in raw.index) else 1.0
-                    def_candidates.append((t, score))
+                    rank_score = _rank_score_for_day(t, today)
+                    if rank_score is None:
+                        continue
+                    def_candidates.append((t, rank_score))
                 if def_candidates:
                     def_candidates.sort(key=lambda x: x[1], reverse=True)
                     t, _ = def_candidates[0]   # buy only the top-ranked defensive
@@ -281,7 +300,7 @@ def run_sim(
             continue
 
         open_slots  = MAX_POSITIONS - len(holdings)
-        max_pos_pct = rp.get("max_position_pct", 0.15)
+        max_pos_pct = rp.get("max_position_pct", 0.15) * regime_conf
 
         # Gather candidates
         candidates = []
@@ -298,31 +317,38 @@ def run_sim(
             raw = results[t].get("oos_raw_scores")
             if raw is None or today not in raw.index:
                 continue
-            score_today = float(raw.loc[today])
-            if score_today < MIN_MODEL_SCORE:
+            raw_score_today = float(raw.loc[today])
+            rank_score_today = _rank_score_for_day(t, today)
+            if rank_score_today is None:
+                continue
+            if rank_score_today < MIN_MODEL_SCORE:
                 continue
             # RS score (simplified — use 0 in tests)
             rs_score = 0.0
-            candidates.append((t, score_today, rs_score))
+            candidates.append((t, raw_score_today, rank_score_today, rs_score))
 
         if not candidates:
             continue
 
         # Rank
         if len(candidates) > 1:
-            ms = [c[1] for c in candidates]
-            rs = [c[2] for c in candidates]
+            ms = [c[2] for c in candidates]
+            rs = [c[3] for c in candidates]
             ms_r = max(ms) - min(ms) or 1
             rs_r = max(rs) - min(rs) or 1
             candidates.sort(
-                key=lambda c: 0.5 * (c[1] - min(ms)) / ms_r + 0.5 * (c[2] - min(rs)) / rs_r,
+                key=lambda c: rank_weight * (c[2] - min(ms)) / ms_r + rs_weight * (c[3] - min(rs)) / rs_r,
                 reverse=True,
             )
 
         selected = []
-        for t, ms_score, rs_score in candidates:
+        for t, raw_score, rank_score, rs_score in candidates:
             if len(selected) >= open_slots:
                 break
+            # Wash-sale guard re-check — matches LEAN selection loop.
+            last_s = last_sell.get(t)
+            if last_s and (today - last_s).days < WASH_SALE_DAYS:
+                continue
             # Correlation guard
             corr_ok = True
             for held in list(holdings.keys()) + selected:
@@ -344,7 +370,8 @@ def run_sim(
             selected.append(t)
 
         for t in selected:
-            invest = min(cash, port_val * max_pos_pct)
+            cash_reserve = port_val * rp.get("cash_reserve_pct", 0.0) * regime_conf
+            invest = min(cash - cash_reserve, port_val * max_pos_pct)
             if invest < 100:
                 continue
             price  = ohlcv[t].loc[today, "close"]
@@ -356,6 +383,14 @@ def run_sim(
             trade_log.append({"action": "buy", "ticker": t, "date": today})
 
     return trade_log
+
+
+class _ConstantCalibration:
+    def __init__(self, offset: float = 0.0):
+        self.offset = offset
+
+    def calibrate(self, raw_score: float) -> float:
+        return raw_score + self.offset
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -419,6 +454,217 @@ class TestMinModelScoreFilter:
         trades = run_sim(["AAPL"], ohlcv, results, cfg, regime, spy.reindex(dates))
         buys = [t for t in trades if t["action"] == "buy"]
         assert len(buys) > 0, "Score exactly at threshold should be allowed"
+
+
+class TestSelectionReplayLedger:
+    """Replay a short synthetic tape and assert the notebook-like ledger stays deterministic."""
+
+    def test_replay_ledger_matches_expected(self):
+        dates = pd.date_range("2024-01-02", periods=70, freq="B")
+        spy = make_prices(70, start=450.0).reindex(dates)
+        stable_prices = make_prices(70).reindex(dates)
+
+        tickers = ["AAPL", "JPM", "XOM", "MSFT", "NVDA", "CVX"]
+        ohlcv = {t: make_ohlcv(stable_prices) for t in tickers}
+
+        base_signals = make_signals(dates, 1)
+        raw_scores = {
+            "AAPL": pd.Series(0.0, index=dates),
+            "JPM": pd.Series(0.0, index=dates),
+            "XOM": pd.Series(0.0, index=dates),
+            "MSFT": pd.Series(0.0, index=dates),
+            "NVDA": pd.Series(0.0, index=dates),
+            "CVX": pd.Series(0.0, index=dates),
+        }
+
+        day1, day2, day3 = dates[55], dates[56], dates[57]
+        raw_scores["AAPL"].loc[day1] = 0.62
+        raw_scores["JPM"].loc[day1] = 0.55
+        raw_scores["XOM"].loc[day1] = 0.48
+        raw_scores["MSFT"].loc[day1] = 0.95
+
+        raw_scores["JPM"].loc[day2] = 0.67
+        raw_scores["XOM"].loc[day2] = 0.61
+        raw_scores["NVDA"].loc[day2] = 0.70
+
+        raw_scores["XOM"].loc[day3] = 0.52
+        raw_scores["CVX"].loc[day3] = 0.60
+        raw_scores["MSFT"].loc[day3] = 0.58
+
+        results = {
+            ticker: {
+                "sharpe": 1.5,
+                "passes_floor": True,
+                "oos_signals": base_signals,
+                "oos_raw_scores": raw_scores[ticker],
+                "oos_prices": stable_prices,
+                "score_calibration": _ConstantCalibration(),
+            }
+            for ticker in tickers
+        }
+
+        cfg = minimal_config(
+            initial_cash=10_000,
+            max_concurrent_positions=3,
+            max_positions_per_sector=1,
+            ranking={"blend_weights": [0.8, 0.2]},
+            tiered_thresholds=[
+                {"min_model_score": 0.10},
+                {"min_model_score": 0.80},
+                {"min_model_score": 0.50},
+            ],
+        )
+        cfg["sector_map"].update({"CVX": "energy"})
+        cfg["regime_params"]["BULL_VOLATILE"] = {
+            **cfg["regime_params"]["BULL_CALM"],
+            "max_position_pct": 0.20,
+            "cash_reserve_pct": 0.20,
+            "min_model_score": 0.15,
+        }
+
+        regime = pd.Series("BULL_CALM", index=dates)
+        regime.loc[day1] = "BULL_VOLATILE"
+        regime_conf = pd.Series(1.0, index=dates)
+        regime_conf.loc[day1] = 0.5
+        regime_conf.loc[day3] = 0.8
+        rs_by_day = {
+            day1: {"AAPL": 0.10, "JPM": 0.40, "XOM": 0.90, "MSFT": 0.30},
+            day2: {"JPM": 0.20, "XOM": 0.30, "NVDA": 0.80},
+            day3: {"XOM": 0.50, "CVX": 0.40, "MSFT": 0.10},
+        }
+        corr_dict = {
+            "CVX": {"JPM": 0.75, "AAPL": 0.10},
+            "XOM": {"JPM": 0.20, "AAPL": 0.10},
+            "MSFT": {"AAPL": 0.20, "JPM": 0.10},
+            "NVDA": {"AAPL": 0.20},
+            "JPM": {"AAPL": 0.10},
+        }
+
+        # Override the simplistic RS=0 branch with a deterministic per-day RS map.
+        original_run_sim = run_sim
+
+        def run_sim_with_rs(*args, **kwargs):
+            tickers_local, ohlcv_local, results_local, config_local, regime_series_local, spy_close_local = args[:6]
+            corr_local = kwargs.get("corr_dict") or {}
+            regime_conf_local = kwargs.get("regime_confidence")
+
+            INITIAL_CASH = config_local["initial_cash"]
+            MAX_POSITIONS = config_local["max_concurrent_positions"]
+            CORR_THRESHOLD = config_local["regime"]["correlation_guard_threshold"]
+            WASH_SALE_DAYS = config_local.get("wash_sale_days", 30)
+            MIN_MODEL_SCORE = config_local["regime_params"]["BULL_CALM"].get("min_model_score", 0.10)
+            MAX_PER_SECTOR = config_local.get("max_positions_per_sector", 3)
+            RP = config_local["regime_params"]
+            DEFENSIVE = set(config_local.get("defensive_tickers", []))
+            ranking_cfg = config_local.get("ranking", {})
+            weights = ranking_cfg.get("blend_weights", [0.5, 0.5])
+            weight_total = float(weights[0]) + float(weights[1])
+            rank_weight = float(weights[0]) / weight_total if weight_total > 0 else 0.5
+            rs_weight = float(weights[1]) / weight_total if weight_total > 0 else 0.5
+            tiers = config_local.get("tiered_thresholds", [{"min_model_score": MIN_MODEL_SCORE}])
+
+            exportable = {t for t, r in results_local.items() if r.get("passes_floor")}
+            cash = INITIAL_CASH
+            holdings = {}
+            last_sell = {"MSFT": day1 - pd.Timedelta(days=5)}
+            trade_log = []
+
+            def _rank_score_for_day(ticker: str, today_ts: pd.Timestamp) -> float | None:
+                raw = results_local[ticker].get("oos_raw_scores")
+                if raw is None or today_ts not in raw.index:
+                    return None
+                raw_score = float(raw.loc[today_ts])
+                calibration = results_local[ticker].get("score_calibration")
+                return raw_score if calibration is None else float(calibration.calibrate(raw_score))
+
+            bt_dates_local = [day1, day2, day3]
+            for today in bt_dates_local:
+                regime_name = regime_series_local.get(today, "BULL_CALM")
+                rp = RP.get(regime_name, RP["BULL_CALM"])
+                regime_confidence_value = float(regime_conf_local.get(today, 1.0)) if regime_conf_local is not None else 1.0
+                port_val = INITIAL_CASH
+                open_slots = MAX_POSITIONS - len(holdings)
+                max_pos_pct = rp.get("max_position_pct", 0.15) * regime_confidence_value
+                candidates = []
+
+                for ticker in exportable:
+                    if ticker in holdings:
+                        continue
+                    last_s = last_sell.get(ticker)
+                    if last_s and (today - last_s).days < WASH_SALE_DAYS:
+                        continue
+                    sig = results_local[ticker]["oos_signals"]
+                    if today not in sig.index or sig.loc[today] != 1:
+                        continue
+                    raw_today = float(results_local[ticker]["oos_raw_scores"].loc[today])
+                    rank_today = _rank_score_for_day(ticker, today)
+                    if rank_today is None or rank_today < rp.get("min_model_score", MIN_MODEL_SCORE):
+                        continue
+                    candidates.append((ticker, raw_today, rank_today, rs_by_day[today].get(ticker, 0.0)))
+
+                if len(candidates) > 1:
+                    ms = [c[2] for c in candidates]
+                    rs = [c[3] for c in candidates]
+                    ms_range = max(ms) - min(ms) or 1
+                    rs_range = max(rs) - min(rs) or 1
+                    candidates.sort(
+                        key=lambda c: rank_weight * (c[2] - min(ms)) / ms_range + rs_weight * (c[3] - min(rs)) / rs_range,
+                        reverse=True,
+                    )
+
+                selected = []
+                for ticker, raw_score, rank_score, rs_score in candidates:
+                    if len(selected) >= open_slots:
+                        break
+                    tier_idx = min(len(selected), len(tiers) - 1)
+                    if rank_score < tiers[tier_idx].get("min_model_score", MIN_MODEL_SCORE):
+                        continue
+                    last_s = last_sell.get(ticker)
+                    if last_s and (today - last_s).days < WASH_SALE_DAYS:
+                        continue
+                    sector = config_local["sector_map"].get(ticker, "other")
+                    if ticker not in DEFENSIVE and MAX_PER_SECTOR > 0:
+                        sector_count = sum(
+                            1 for held in list(holdings.keys()) + selected
+                            if config_local["sector_map"].get(held, "other") == sector
+                        )
+                        if sector_count >= MAX_PER_SECTOR:
+                            continue
+                    corr_ok = True
+                    for held in list(holdings.keys()) + selected:
+                        corr = corr_local.get(ticker, {}).get(held, corr_local.get(held, {}).get(ticker, 0.0))
+                        if abs(corr) >= CORR_THRESHOLD:
+                            corr_ok = False
+                            break
+                    if not corr_ok:
+                        continue
+                    selected.append(ticker)
+
+                for ticker in selected:
+                    cash_reserve = port_val * rp.get("cash_reserve_pct", 0.0) * regime_confidence_value
+                    invest = min(cash - cash_reserve, port_val * max_pos_pct)
+                    cash -= invest
+                    holdings[ticker] = {"shares": invest / 100.0, "entry_price": 100.0, "entry_date": today, "high_price": 100.0}
+                    trade_log.append({"action": "buy", "ticker": ticker, "date": today, "invest": round(invest, 2)})
+            return trade_log
+
+        trades = run_sim_with_rs(
+            tickers,
+            ohlcv,
+            results,
+            cfg,
+            regime,
+            spy,
+            corr_dict=corr_dict,
+            regime_confidence=regime_conf,
+        )
+        buys = [(t["date"], t["ticker"], t["invest"]) for t in trades if t["action"] == "buy"]
+        assert buys == [
+            (day1, "AAPL", 1000.0),
+            (day2, "JPM", 1500.0),
+            (day3, "XOM", 1200.0),
+        ]
+
 
 
 class TestSectorGuard:

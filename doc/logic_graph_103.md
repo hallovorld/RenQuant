@@ -185,19 +185,19 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │  ► add (ticker, model_score, rs_score) to candidates
 │
 ├─ ══════════════════════════════════════════════════════════
-│  RANKING  (w_rank × model score + w_rs × relative strength)
+│  RANKING  (w_rank × rank score + w_rs × relative strength)
 │  ══════════════════════════════════════════════════════════
 │  ◆ len(candidates) == 0?  YES ✗ return / continue
 │
 │  Normalize each dimension to [0, 1]:
-│     norm_model = (model_score − min_ms) / (max_ms − min_ms)   [0.5 if range=0]
-│     norm_rs    = (rs_score − min_rs) / (max_rs − min_rs)      [0.5 if range=0]
+│     norm_rank = (rank_score − min_ms) / (max_ms − min_ms)     [0.5 if range=0]
+│     norm_rs   = (rs_score − min_rs) / (max_rs − min_rs)       [0.5 if range=0]
 │
 │  Blend weights: read from strategy_config.json ranking.blend_weights
 │     Default [0.5, 0.5]; updated daily by scripts/recalibrate_scores.py
 │     via Pearson correlation of each signal vs actual forward outperformance
 │
-│  combined_rank = w_rank × norm_model + w_rs × norm_rs
+│  combined_rank = w_rank × norm_rank + w_rs × norm_rs
 │  sort candidates by combined_rank DESC
 │
 ├─ ══════════════════════════════════════════════════════════
@@ -205,7 +205,7 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  ══════════════════════════════════════════════════════════
 │  slots_filled = 0
 │
-│  ○ for (ticker, model_score, rs_score) in ranked:
+│  ○ for (ticker, rank_score, rs_score) in ranked:
 │  │  ◆ open_slots <= 0?  YES ✗ break
 │  │
 │  │  [CHECK 1] TIERED THRESHOLD ESCALATION
@@ -214,7 +214,7 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │     tier 0 (1st slot today) = 0.10
 │  │     tier 1 (2nd slot today) = 0.30
 │  │     tier 2 (3rd+ slot today)= 0.50
-│  │  ◆ model_score < tier_min?  YES ✗ skip ticker
+│  │  ◆ rank_score < tier_min?  YES ✗ skip ticker
 │  │
 │  │  [CHECK 2] WASH-SALE GUARD  (second check — LEAN re-checks here after ranking)
 │  │  ◆ wash-sale blocked?  YES ✗ skip
@@ -232,9 +232,9 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │  ◆ all correlations below threshold?  YES → proceed
 │  │
 │  │  ► POSITION SIZING
-│  │     cash_reserve = port_val × rp["cash_reserve_pct"]   ← regime-aware
+│  │     cash_reserve = port_val × rp["cash_reserve_pct"] × regime_confidence
 │  │        BULL_CALM=0%, BULL_VOLATILE=20%, CHOPPY=30%, BEAR=100%
-│  │     max_pos_pct  = rp["max_position_pct"]              ← scaled by confidence
+│  │     max_pos_pct  = rp["max_position_pct"] × regime_confidence
 │  │        BULL_CALM=15%, others vary
 │  │     invest = min(cash − cash_reserve,  port_val × max_pos_pct)
 │  │     ◆ invest < 100?  YES ✗ skip (insufficient capital)
@@ -321,15 +321,15 @@ When any sell fires:
 | 7 | BEAR: 1 defensive slot | ✓ BEAR_DEFENSIVE_SLOTS=1 | ✓ defensive_held>=1 → return | ✓ |
 | 8 | Velocity crash filter uses cumulative return | ✓ spy_now/spy_prev-1 | ✓ np.prod(1+r)-1 | ✓ |
 | 9 | SPY EMA50 uses ewm(span=50) | ✓ .ewm(span=50, adjust=False) | ✓ same | ✓ |
-| 10 | min_model_score is regime-aware | ✓ rp.get("min_model_score") | ✓ regime_params.get(...) | ✓ |
+| 10 | min_model_score is regime-aware rank-score filter | ✓ rp.get("min_model_score") on calibrated rank score | ✓ regime_params.get(...) on calibrated rank score | ✓ |
 | 11 | RS score = stock_20d − etf_20d | ✓ pct_change(20) | ✓ _compute_rs_score | ✓ |
-| 12 | Ranking: data-driven blend (default 50/50) | ✓ w_rank/w_rs from config | ✓ norm() helper | ✓ |
+| 12 | Ranking: data-driven blend on rank_score + RS | ✓ w_rank/w_rs from config | ✓ w_rank/w_rs from config | ✓ |
 | 13 | Tiered thresholds: tier_idx = min(slots_filled, N-1) | ✓ | ✓ | ✓ |
-| 14 | Wash-sale checked in candidate scan AND selection | NB: scan only | LEAN: scan + selection | delta |
+| 14 | Wash-sale checked in candidate scan AND selection | ✓ scan + selection | ✓ scan + selection | ✓ |
 | 15 | Sector guard counts held + already_selected_today | ✓ held+selected | ✓ held_tickers (appended) | ✓ |
 | 16 | Correlation guard checks held + already_selected | ✓ | ✓ | ✓ |
-| 17 | cash_reserve deducted before invest calc | ✓ cash-cash_reserve | ✓ _execute_buy cashReserve | ✓ |
-| 18 | max_position_pct scaled by regime_confidence | NB: not scaled | LEAN: scaled via _rp() | delta |
+| 17 | cash_reserve_pct scaled by regime_confidence before invest calc | ✓ port_val × reserve × confidence | ✓ _rp("cash_reserve_pct") | ✓ |
+| 18 | max_position_pct scaled by regime_confidence | ✓ rp["max_position_pct"] × confidence | ✓ _rp("max_position_pct") | ✓ |
 | 19 | last_sell_date.pop() on re-buy | ✓ pop() clears clock | LEAN: does NOT pop; old entry stays but days>=30 makes check pass — functionally equivalent | ✓ |
 | 20 | entry_dates recorded on buy | ✓ | ✓ entry_times[ticker] | ✓ |
 
