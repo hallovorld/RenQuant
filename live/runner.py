@@ -1409,11 +1409,22 @@ def run_once_multi(
         max_invest    = account_value * max_position_pct
         invest        = min(max_invest, available)
         shares        = int(invest / price)
+        oversize_pct  = None  # track if we fell back to a larger allocation
+
+        # Oversize fallback: if 1 share costs more than the normal allocation,
+        # try up to 25% of portfolio so high-priced stocks aren't silently skipped.
+        if shares <= 0 and price <= account_value * 0.25:
+            invest        = min(account_value * 0.25, available)
+            shares        = int(invest / price)
+            oversize_pct  = 25.0
+
         log.info(
-            "  %-6s  sizing: portfolio=$%.0f × %.1f%% × %.0f%%conf = $%.0f max  |  "
+            "  %-6s  sizing: portfolio=$%.0f × %.1f%% × %.0f%%conf = $%.0f max%s  |  "
             "cash=$%.0f  reserve=$%.0f  invest=$%.0f → %d sh @ $%.2f",
             symbol, account_value, base_max_position_pct * 100, regime_confidence * 100,
-            max_invest, cash_avail, cash_reserve, invest, shares, price,
+            max_invest,
+            f"  [oversize fallback: {oversize_pct:.0f}%]" if oversize_pct else "",
+            cash_avail, cash_reserve, invest, shares, price,
         )
 
         if shares <= 0:
