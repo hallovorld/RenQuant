@@ -41,6 +41,7 @@ Primary files and areas touched by this workflow:
 - `doc/logic_graph_103.md`
 - `doc/renquant_103_design.md` when semantics change materially
 - `doc/deep_review_YYYY-MM-DD.md` when a formal audit/report is requested
+- `doc/improvement_plan_YYYY-MM-DD.md` when an improvement plan is produced
 
 ## Definition Of Done
 
@@ -74,10 +75,11 @@ The workflow is complete when all of the following are true:
    - raw score vs calibrated score usage
    - ranking weights
    - tier thresholds
-   - wash-sale checks
+   - wash-sale checks (scan phase AND selection loop)
    - min-hold behavior
    - regime-confidence sizing
    - sell ordering
+   - data fetch set (notebook fetches WATCHLIST ∪ sector_etf_map.values() ∪ {SPY}; runner must match)
 3. If a deep audit is requested, write or update a dated review file in `doc/`.
 
 ### Phase 3: Choose Canonical Semantics
@@ -90,7 +92,9 @@ Canonical choices from this conversation were:
 - calibrated `rank_score` drives filtering, ranking, and tier thresholds
 - ranking blend weights come from config
 - `max_position_pct` and `cash_reserve_pct` scale by regime confidence
-- wash-sale is checked in both candidate scan and final selection
+- wash-sale is checked in both candidate scan AND the selection loop (all three components)
+- live runner fetches `WATCHLIST ∪ sector_etf_map.values() ∪ {SPY}` so RS scores use real ETF data
+- RS ranking uses 20-day lookback in all three components (notebook pct_change(20) = runner iloc[-21])
 
 If any of these change in a future pass, update notebook, LEAN, live, tests, and docs together.
 
@@ -193,3 +197,20 @@ This workflow was derived from the 2026-04-16 conversation that produced:
 - doc alignment updates
 - a pushed parity commit on `main`
 - a follow-up live-runner log improvement to print model type and calibrated score explicitly
+
+Updated 2026-04-17 maintenance pass findings:
+
+- **Sector ETF data bug (fixed)**: Runner was only fetching `watchlist + [SPY]`. XLK and XLI are
+  not in the watchlist, so all 12 tech/industrial stocks had RS = 0.0. Fixed: runner now fetches
+  `WATCHLIST ∪ sector_etf_map.values() ∪ {SPY}` to match notebook behavior.
+- **Wash-sale selection re-check (fixed)**: Runner's selection loop was missing the re-check for
+  wash-sale violations that both notebook and LEAN perform. Fixed: added re-check before sector
+  guard in runner's selection loop.
+- **False positive parity gaps**: RS timeframe (both 20-day), defensive_tickers (from config, all 4),
+  consecutive_sell_signals (from config, both 3), min-hold (both 20d from config) — all confirmed
+  aligned. Earlier analysis was comparing defaults, not actual config values.
+- **Improvement plan**: `doc/improvement_plan_2026-04-17.md` — 7 improvements ranked by priority.
+  Top items: verify RS non-zero after retrain; CHOPPY max_concurrent_positions → 4; GMM confidence
+  veto (<55% = no buys).
+- **New tests (6)**: EXIT 3 max-hold enforcement (3), oversize fallback (2), wash-sale recheck (1)
+  → 462 total tests.
