@@ -325,7 +325,7 @@ When any sell fires:
 | 8 | Velocity crash filter uses cumulative return | ✓ spy_now/spy_prev-1 | ✓ np.prod(1+r)-1 | ✓ |
 | 9 | SPY EMA50 uses ewm(span=50) | ✓ .ewm(span=50, adjust=False) | ✓ same | ✓ |
 | 10 | min_model_score is regime-aware rank-score filter | ✓ rp.get("min_model_score") on calibrated rank score | ✓ regime_params.get(...) on calibrated rank score | ✓ |
-| 11 | RS score = stock_20d − etf_20d | ✓ pct_change(20) | ✓ _compute_rs_score | ✓ |
+| 11 | RS score = stock_20d − etf_20d | ✓ pct_change(20); notebook fetches WATCHLIST ∪ sector_etf_map.values() ∪ {SPY} so all ETFs available | ✓ _compute_rs_score | ✓ live runner fixed 2026-04-17: now fetches sector ETFs in addition to watchlist |
 | 12 | Ranking: data-driven blend on rank_score + RS | ✓ w_rank/w_rs from config | ✓ w_rank/w_rs from config | ✓ |
 | 13 | Tiered thresholds: tier_idx = min(slots_filled, N-1) | ✓ | ✓ | ✓ |
 | 14 | Wash-sale checked in candidate scan AND selection | ✓ scan + selection | ✓ scan + selection | ✓ |
@@ -337,7 +337,7 @@ When any sell fires:
 | 20 | entry_dates recorded on buy | ✓ | ✓ entry_times[ticker] | ✓ |
 | 21 | EXIT 3 max_hold_days enforced | ✓ days_held >= max_hold_days in sell loop | ✓ days_held >= max_hold_days | ✓ live runner enforces max_hold between EXIT 2b and EXIT 4 | ✓ |
 
-**Deltas (row 14, 18):** Minor divergences; row 14 is belt-and-suspenders (both block), row 18 means LEAN
+**Deltas (row 14, 18):** Minor divergences; row 14 is belt-and-suspenders (both block). Live runner selection-loop wash-sale re-check was added in 2026-04-17 maintenance pass — now all three components (Notebook, LEAN, live runner) re-check wash-sale in the selection loop. Row 18 means LEAN
 sizes slightly smaller during low-confidence periods — this is intentional in LEAN (confidence scaling)
 but not replicated in the notebook which uses flat percentages.
 

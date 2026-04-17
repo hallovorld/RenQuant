@@ -697,10 +697,13 @@ def run_once_multi(
     log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
-    # Fetch data for all stocks + benchmark; auto-refresh stale cache entries.
+    # Fetch data for all stocks + benchmark + sector ETFs (needed for RS score).
+    # Notebook fetches WATCHLIST ∪ sector_etf_map.values() ∪ {SPY}; runner must match.
+    sector_etf_symbols = set(config.get("sector_etf_map", {}).values())
+    fetch_symbols = list(dict.fromkeys(watchlist + [benchmark] + sorted(sector_etf_symbols)))
     data_provider = config.get("data_src", "yfinance")
     dfs = {}
-    for symbol in watchlist + [benchmark]:
+    for symbol in fetch_symbols:
         df = fetch_ohlcv(symbol, provider=data_provider)
         if df.empty:
             log.warning("No data for %s, skipping", symbol)
@@ -1374,6 +1377,18 @@ def run_once_multi(
             log.info("  %-6s  SKIP  [slot %d tier min %.2f, rank %+.4f too low]",
                      symbol, slot_num, tier_min, rank_score)
             continue
+
+        # Wash-sale re-check — matches notebook selection loop (symbol may have
+        # been sold today in the sell loop above; catches same-day buy-after-sell).
+        if wash_sale_days > 0 and symbol in last_sell_dates:
+            try:
+                days_since_sell = (_date.today() - _date.fromisoformat(last_sell_dates[symbol])).days
+                if days_since_sell < wash_sale_days:
+                    log.info("  %-6s  SKIP  [wash-sale recheck: sold %dd ago, limit %dd]",
+                             symbol, days_since_sell, wash_sale_days)
+                    continue
+            except ValueError:
+                pass
 
         # Duplicate-order guard — skip if Alpaca already has a pending order for
         # this symbol (e.g. an after-hours DAY order placed by a prior run that

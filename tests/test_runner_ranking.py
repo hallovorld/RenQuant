@@ -1712,3 +1712,281 @@ class TestOhlcvFreshness:
             assert fetch_calls.count(sym) == 1, (
                 f"{sym} fetched {fetch_calls.count(sym)} times — expected 1 for fresh data"
             )
+
+
+# ── TestRunnerMaxHold ─────────────────────────────────────────────────────────
+
+class TestRunnerMaxHold:
+    """EXIT 3: max_hold_days forces a sell when a position is held too long."""
+
+    def _make_state(self, entry_date_str: str) -> dict:
+        return {
+            "entry_dates":     {"AAPL": entry_date_str},
+            "sell_streaks":    {},
+            "last_sell_dates": {},
+            "position_hwm":    {},
+        }
+
+    def test_max_hold_triggers_sell(self, monkeypatch, tmp_path):
+        """Position held longer than max_hold_days is sold via EXIT 3."""
+        import json
+        from datetime import date, timedelta
+
+        # AAPL entry 60 days ago; max_hold_days=5 → triggers
+        old_entry = (date.today() - timedelta(days=60)).isoformat()
+        (tmp_path / "live_state.json").write_text(json.dumps(self._make_state(old_entry)))
+
+        dfs = {
+            "AAPL": _make_ohlcv(base_price=100.0),
+            "SPY":  _make_ohlcv(),
+        }
+        models = {"AAPL": StubModel(signal="hold", score=0.0)}
+
+        broker = StubBroker(
+            equity=10_000,
+            positions={"AAPL": 5},
+            avg_costs={"AAPL": 100.0},
+        )
+
+        config = _minimal_config(
+            watchlist=["AAPL"],
+            regime_params={
+                "BULL_CALM": {
+                    "max_position_pct": 0.30, "cash_reserve_pct": 0.0,
+                    "stop_loss_pct": 0.0, "max_single_day_loss_pct": 0.0,
+                    "max_hold_days": 5,
+                    "drawdown_halt_pct": 0.0,
+                    "trailing_stop_trigger_pct": 0.0, "trailing_stop_trail_pct": 0.0,
+                }
+            },
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            __import__("live.runner", fromlist=["_ensure_model_score_calibrations"]),
+            "_ensure_model_score_calibrations",
+            lambda cfg, mdls, dfs, spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        sold = [o["symbol"] for o in broker.orders if o["action"] == "SELL"]
+        assert "AAPL" in sold, "EXIT 3 (max_hold) should sell AAPL held 60d > max_hold=5d"
+
+    def test_max_hold_not_triggered_within_window(self, monkeypatch, tmp_path):
+        """Position held fewer than max_hold_days is NOT sold via EXIT 3."""
+        import json
+        from datetime import date, timedelta
+
+        # AAPL entry only 2 days ago; max_hold_days=5 → no trigger
+        recent_entry = (date.today() - timedelta(days=2)).isoformat()
+        (tmp_path / "live_state.json").write_text(json.dumps(self._make_state(recent_entry)))
+
+        dfs = {
+            "AAPL": _make_ohlcv(base_price=100.0),
+            "SPY":  _make_ohlcv(),
+        }
+        # model says hold (no sell signal either)
+        models = {"AAPL": StubModel(signal="hold", score=0.0)}
+
+        broker = StubBroker(
+            equity=10_000,
+            positions={"AAPL": 5},
+            avg_costs={"AAPL": 100.0},
+        )
+
+        config = _minimal_config(
+            watchlist=["AAPL"],
+            regime_params={
+                "BULL_CALM": {
+                    "max_position_pct": 0.30, "cash_reserve_pct": 0.0,
+                    "stop_loss_pct": 0.0, "max_single_day_loss_pct": 0.0,
+                    "max_hold_days": 5,
+                    "drawdown_halt_pct": 0.0,
+                    "trailing_stop_trigger_pct": 0.0, "trailing_stop_trail_pct": 0.0,
+                }
+            },
+            min_hold_days=0,
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            __import__("live.runner", fromlist=["_ensure_model_score_calibrations"]),
+            "_ensure_model_score_calibrations",
+            lambda cfg, mdls, dfs, spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        sold = [o["symbol"] for o in broker.orders if o["action"] == "SELL"]
+        assert "AAPL" not in sold, "Should NOT sell AAPL held only 2d < max_hold=5d"
+
+    def test_max_hold_zero_disables_exit(self, monkeypatch, tmp_path):
+        """max_hold_days=0 disables EXIT 3 even for very old positions."""
+        import json
+        from datetime import date, timedelta
+
+        old_entry = (date.today() - timedelta(days=1000)).isoformat()
+        (tmp_path / "live_state.json").write_text(json.dumps(self._make_state(old_entry)))
+
+        dfs = {
+            "AAPL": _make_ohlcv(base_price=100.0),
+            "SPY":  _make_ohlcv(),
+        }
+        models = {"AAPL": StubModel(signal="hold", score=0.0)}
+
+        broker = StubBroker(
+            equity=10_000,
+            positions={"AAPL": 5},
+            avg_costs={"AAPL": 100.0},
+        )
+
+        config = _minimal_config(
+            watchlist=["AAPL"],
+            regime_params={
+                "BULL_CALM": {
+                    "max_position_pct": 0.30, "cash_reserve_pct": 0.0,
+                    "stop_loss_pct": 0.0, "max_single_day_loss_pct": 0.0,
+                    "max_hold_days": 0,
+                    "drawdown_halt_pct": 0.0,
+                    "trailing_stop_trigger_pct": 0.0, "trailing_stop_trail_pct": 0.0,
+                }
+            },
+            min_hold_days=0,
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            __import__("live.runner", fromlist=["_ensure_model_score_calibrations"]),
+            "_ensure_model_score_calibrations",
+            lambda cfg, mdls, dfs, spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        sold = [o["symbol"] for o in broker.orders if o["action"] == "SELL"]
+        assert "AAPL" not in sold, "max_hold_days=0 should disable EXIT 3 entirely"
+
+
+# ── TestRunnerOversizeFallback ─────────────────────────────────────────────────
+
+class TestRunnerOversizeFallback:
+    """Oversize fallback: high-priced stock bought at 25% cap when normal allocation too small."""
+
+    def _high_price_ohlcv(self, price: float = 800.0, n: int = 60) -> pd.DataFrame:
+        """Build OHLCV with all closes at a fixed high price."""
+        closes = np.full(n, price)
+        idx = pd.bdate_range("2024-01-02", periods=n)
+        return pd.DataFrame({
+            "open":   closes * 0.998,
+            "high":   closes * 1.01,
+            "low":    closes * 0.99,
+            "close":  closes,
+            "volume": np.full(n, 10_000_000, dtype=float),
+        }, index=idx)
+
+    def test_oversize_fallback_buys_high_priced_stock(self, monkeypatch, tmp_path):
+        """A stock priced beyond normal allocation but within 25% cap is bought."""
+        # equity=$10_000, max_position_pct=0.05 → normal invest=$500
+        # price=$800: 500/800=0 shares at normal, but 800 <= 10000*0.25=2500 → fallback
+        # fallback invest = min(2500, 10000) = 2500 → shares = int(2500/800) = 3
+        price = 800.0
+        equity = 10_000.0
+
+        dfs = {
+            "LLY": self._high_price_ohlcv(price=price),
+            "SPY": _make_ohlcv(),
+        }
+        models = {"LLY": StubModel(signal="buy", score=0.9)}
+
+        broker = StubBroker(equity=equity)
+        config = _minimal_config(
+            watchlist=["LLY"],
+            max_concurrent_positions=2,
+            position_sizing={"max_position_pct": 0.05, "cash_reserve_pct": 0.0},
+            sector_map={"LLY": "healthcare"},
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            __import__("live.runner", fromlist=["_ensure_model_score_calibrations"]),
+            "_ensure_model_score_calibrations",
+            lambda cfg, mdls, dfs, spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        bought = [o["symbol"] for o in broker.orders if o["action"] == "BUY"]
+        assert "LLY" in bought, (
+            f"Oversize fallback should allow buying LLY at ${price} even with "
+            f"5% allocation (normal invest=${equity*0.05:.0f} < ${price})"
+        )
+        qty = next(o["quantity"] for o in broker.orders if o["action"] == "BUY" and o["symbol"] == "LLY")
+        assert qty >= 1, "Should buy at least 1 share via oversize fallback"
+
+    def test_oversize_fallback_skips_when_price_exceeds_25pct(self, monkeypatch, tmp_path):
+        """Stock priced above 25% of portfolio is skipped even with the fallback."""
+        # equity=$5_000, price=$1_400: 25% = $1250 < $1400 → fallback condition fails → SKIP
+        price = 1_400.0
+        equity = 5_000.0
+
+        dfs = {
+            "LLY": self._high_price_ohlcv(price=price),
+            "SPY": _make_ohlcv(),
+        }
+        models = {"LLY": StubModel(signal="buy", score=0.9)}
+
+        broker = StubBroker(equity=equity)
+        config = _minimal_config(
+            watchlist=["LLY"],
+            max_concurrent_positions=2,
+            position_sizing={"max_position_pct": 0.10, "cash_reserve_pct": 0.0},
+            sector_map={"LLY": "healthcare"},
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            __import__("live.runner", fromlist=["_ensure_model_score_calibrations"]),
+            "_ensure_model_score_calibrations",
+            lambda cfg, mdls, dfs, spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        bought = [o["symbol"] for o in broker.orders if o["action"] == "BUY"]
+        assert "LLY" not in bought, (
+            f"LLY at ${price} exceeds 25% cap (${equity*0.25:.0f}) and should be skipped"
+        )
+
+    def test_wash_sale_recheck_in_selection_loop_blocks_buy(self, monkeypatch, tmp_path):
+        """Wash-sale re-check in selection loop catches a sell-then-buy on the same day."""
+        import json
+        from datetime import date
+
+        # AAPL was sold today (same day) — wash-sale re-check should block the buy
+        today_str = date.today().isoformat()
+        state = {
+            "entry_dates": {},
+            "sell_streaks": {},
+            "last_sell_dates": {"AAPL": today_str},
+            "position_hwm": {},
+        }
+        (tmp_path / "live_state.json").write_text(json.dumps(state))
+
+        dfs = {
+            "AAPL": _make_ohlcv(vol_spike=True),
+            "SPY":  _make_ohlcv(),
+        }
+        models = {"AAPL": StubModel(signal="buy", score=0.9)}
+
+        broker = StubBroker(equity=10_000)  # no positions — buy phase applies
+        config = _minimal_config(wash_sale_days=30)
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            __import__("live.runner", fromlist=["_ensure_model_score_calibrations"]),
+            "_ensure_model_score_calibrations",
+            lambda cfg, mdls, dfs, spy: None,
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        bought = [o["symbol"] for o in broker.orders if o["action"] == "BUY"]
+        assert "AAPL" not in bought, (
+            "Wash-sale re-check in selection loop must block buying AAPL "
+            "sold on the same day (last_sell_dates[AAPL] = today)"
+        )
