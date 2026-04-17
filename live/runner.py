@@ -243,6 +243,26 @@ def _ensure_model_score_calibrations(config: dict[str, Any], models: dict, dfs: 
         model._score_calibration = calibration
 
 
+def _model_label(model) -> str:
+    metadata = getattr(model, "_policy_metadata", {}) or {}
+    if metadata.get("best_approach"):
+        return str(metadata["best_approach"])
+
+    policy_type = metadata.get("policy_type")
+    if policy_type:
+        return {
+            "classification": "Classification",
+            "manual": "Manual",
+            "qlearning": "QLearning",
+            "xgboost": "XGBoost",
+            "fqi": "FQI",
+            "optimization": "Optimization",
+        }.get(str(policy_type).lower(), str(policy_type))
+
+    class_name = model.__class__.__name__
+    return class_name[:-5] if class_name.endswith("Model") else class_name
+
+
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock models.
 
@@ -614,23 +634,37 @@ def run_once_multi(
         signal = score_eval.signal
         raw_score = score_eval.raw_score
         rank_score = score_eval.rank_score
+        model_name = _model_label(models[symbol])
 
         if signal == "sell":
             sell_streaks[symbol] = sell_streaks.get(symbol, 0) + 1
             streak = sell_streaks[symbol]
             if streak < consec_sells_required:
-                log.info("    model-sell: signal=sell  raw=%.4f  rank=%.4f  streak=%d/%d  WAITING",
-                         raw_score, rank_score, streak, consec_sells_required)
+                log.info(
+                    "    model-sell: model=%s  signal=sell  raw=%.4f  calibrated=%.4f  streak=%d/%d  WAITING",
+                    model_name,
+                    raw_score,
+                    rank_score,
+                    streak,
+                    consec_sells_required,
+                )
             else:
                 sell_streaks[symbol] = 0
                 position = positions_cache.get(symbol, {}).get("qty", 0.0)
                 result = broker.place_order(symbol, "SELL", abs(position))
-                log.info("    → SELL [MODEL streak=%d] raw=%.4f rank=%.4f  held=%dd",
-                         streak, raw_score, rank_score, days_held)
+                log.info(
+                    "    → SELL [MODEL streak=%d] model=%s  raw=%.4f  calibrated=%.4f  held=%dd",
+                    streak,
+                    model_name,
+                    raw_score,
+                    rank_score,
+                    days_held,
+                )
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "sell",
                     "days_held": days_held, "sell_streak": streak,
+                    "model_type": model_name,
                     "raw_model_score": raw_score,
                     "rank_model_score": rank_score,
                     "order": result,
@@ -640,7 +674,13 @@ def run_once_multi(
                 held.remove(symbol)
         else:
             sell_streaks[symbol] = 0
-            log.info("    model-sell: signal=%s  raw=%.4f rank=%.4f  HOLD", signal, raw_score, rank_score)
+            log.info(
+                "    model-sell: model=%s  signal=%s  raw=%.4f  calibrated=%.4f  HOLD",
+                model_name,
+                signal,
+                raw_score,
+                rank_score,
+            )
 
     # Persist state after sell phase and return if sell-only
     state_file.write_text(json.dumps(state, indent=2))
@@ -725,17 +765,37 @@ def run_once_multi(
         signal = score_eval.signal
         raw_score = score_eval.raw_score
         rank_score = score_eval.rank_score
+        model_name = _model_label(models[symbol])
 
         # Min model score (use tier-1 bar as baseline)
         min_score = tiers[0]
         if signal != "buy":
-            log.info("  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  signal=%-4s  raw=%+.4f  rank=%+.4f  SKIP  [signal=%s]",
-                     symbol, price, ret1d*100, rs5d*100, signal, raw_score, rank_score, signal)
+            log.info(
+                "  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  model=%-14s  signal=%-4s  raw=%+.4f  calibrated=%+.4f  SKIP  [signal=%s]",
+                symbol,
+                price,
+                ret1d * 100,
+                rs5d * 100,
+                model_name,
+                signal,
+                raw_score,
+                rank_score,
+                signal,
+            )
             continue
         if rank_score < min_score:
-            log.info("  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  signal=buy  raw=%+.4f  rank=%+.4f  SKIP  "
-                     "[score < min %.2f]",
-                     symbol, price, ret1d*100, rs5d*100, raw_score, rank_score, min_score)
+            log.info(
+                "  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  model=%-14s  signal=buy  raw=%+.4f  calibrated=%+.4f  SKIP  "
+                "[score < min %.2f]",
+                symbol,
+                price,
+                ret1d * 100,
+                rs5d * 100,
+                model_name,
+                raw_score,
+                rank_score,
+                min_score,
+            )
             continue
 
         # Relative strength vs sector ETF (20d)
@@ -752,9 +812,18 @@ def run_once_multi(
             except Exception:
                 pass
 
-        log.info("  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  signal=BUY  raw=%+.4f  rank=%+.4f  rs=%+.4f  "
-                 "→ CANDIDATE",
-             symbol, price, ret1d*100, rs5d*100, raw_score, rank_score, rs_score)
+        log.info(
+            "  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  model=%-14s  signal=BUY  raw=%+.4f  calibrated=%+.4f  rs=%+.4f  "
+            "→ CANDIDATE",
+            symbol,
+            price,
+            ret1d * 100,
+            rs5d * 100,
+            model_name,
+            raw_score,
+            rank_score,
+            rs_score,
+        )
         buy_candidates.append((symbol, raw_score, rank_score, rs_score, row))
 
     # ── RANKING ───────────────────────────────────────────────────────────────
@@ -775,9 +844,17 @@ def run_once_multi(
             key=lambda c: w_rank * _norm(c[2], rank_lo, rank_hi) + w_rs * _norm(c[3], rs_lo, rs_hi),
             reverse=True,
         )
-    log.info("RANKED CANDIDATES (%.0f%% calibrated rank + %.0f%% RS):", w_rank * 100, w_rs * 100)
+    log.info("RANKED CANDIDATES (%.0f%% calibrated score + %.0f%% RS):", w_rank * 100, w_rs * 100)
     for rank, (sym, raw_ms, rank_ms, rs, _) in enumerate(buy_candidates, 1):
-        log.info("  #%d  %-6s  raw=%+.4f  rank=%+.4f  rs=%+.4f", rank, sym, raw_ms, rank_ms, rs)
+        log.info(
+            "  #%d  %-6s  model=%-14s  raw=%+.4f  calibrated=%+.4f  rs=%+.4f",
+            rank,
+            sym,
+            _model_label(models[sym]),
+            raw_ms,
+            rank_ms,
+            rs,
+        )
 
     # ── SELECTION LOOP ────────────────────────────────────────────────────────
     log.info("─" * 62)
@@ -820,13 +897,25 @@ def run_once_multi(
             continue
 
         result = broker.place_order(symbol, "BUY", shares)
-        log.info("  %-6s  BUY  slot=%d  %d shares @ $%.2f  invest=$%.0f  "
-                 "raw=%+.4f  rank=%+.4f  rs=%+.4f",
-                 symbol, slot_num, shares, price, invest, raw_score, rank_score, rs_score)
+        model_name = _model_label(models[symbol])
+        log.info(
+            "  %-6s  BUY  slot=%d  %d shares @ $%.2f  invest=$%.0f  model=%s  "
+            "raw=%+.4f  calibrated=%+.4f  rs=%+.4f",
+            symbol,
+            slot_num,
+            shares,
+            price,
+            invest,
+            model_name,
+            raw_score,
+            rank_score,
+            rs_score,
+        )
         _log_trade(strategy_dir, config["model_name"], {
             "timestamp": datetime.now().isoformat(),
             "symbol": symbol, "signal": "buy",
             "slot": slot_num,
+            "model_type": model_name,
             "raw_model_score": raw_score,
             "rank_model_score": rank_score,
             "rs_score": rs_score,

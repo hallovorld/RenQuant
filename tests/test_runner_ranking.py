@@ -544,7 +544,7 @@ class TestModelScoreRanking:
         assert "MSFT" in bought
 
     def test_model_score_logged(self, monkeypatch, tmp_path, caplog):
-        """Candidate logs expose both raw and calibrated rank scores."""
+        """Candidate logs expose model type, raw score, and calibrated score."""
         import logging
 
         dfs = {
@@ -566,7 +566,10 @@ class TestModelScoreRanking:
         with caplog.at_level(logging.INFO, logger="live.runner"):
             run_once_multi(config, models, broker, tmp_path)
 
-        assert any("raw=" in r.message and "rank=" in r.message for r in caplog.records)
+        assert any(
+            "model=" in r.message and "raw=" in r.message and "calibrated=" in r.message
+            for r in caplog.records
+        )
 
     def test_trade_log_contains_model_score(self, monkeypatch, tmp_path):
         """The JSON trade log record includes raw and calibrated rank scores for each buy."""
@@ -596,8 +599,10 @@ class TestModelScoreRanking:
 
         buy_entries = [r for r in logged if r.get("signal") == "buy"]
         assert buy_entries, "No buy record logged"
+        assert "model_type" in buy_entries[0]
         assert "raw_model_score" in buy_entries[0]
         assert "rank_model_score" in buy_entries[0]
+        assert buy_entries[0]["model_type"] == "Stub"
         assert buy_entries[0]["raw_model_score"] == pytest.approx(0.73, abs=1e-4)
         assert buy_entries[0]["rank_model_score"] == pytest.approx(0.73, abs=1e-4)
 
