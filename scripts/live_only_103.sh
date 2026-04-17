@@ -61,6 +61,24 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== live_103 [$TAG] started at $(date) ==="
 
+# ── Already-ran-today guard (per tag) ────────────────────────────────────────
+# launchd may fire multiple times on Mac sleep/wake. Allow only one successful
+# run per TAG per day (one "open", one "preclose").
+DONE_FILE="/tmp/renquant_103_${TAG}_${DATE}.done"
+if [ -f "$DONE_FILE" ]; then
+    echo "live_103 [$TAG] already completed today ($DATE) — skipping duplicate run."
+    exit 0
+fi
+
+# ── Lock file — prevent concurrent invocations of same tag ───────────────────
+LOCK_FILE="/tmp/renquant_103_${TAG}.lock"
+if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
+    EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
+    echo "live_103 [$TAG] already running (PID=$EXISTING_PID) — skipping."
+    exit 0
+fi
+trap "rm -f '$LOCK_FILE'" EXIT
+
 # NYSE calendar guard
 TODAY_DATE=$(date +%Y-%m-%d)
 if ! "$PYTHON" -c "
@@ -76,6 +94,19 @@ echo "NYSE open — running $TAG sell check."
 
 TRADE_LOG="$REPO_DIR/live/logs/renquant-103/$DATE.json"
 
+# Snapshot trade log length before this run so the notification only shows
+# trades placed by THIS run, not by earlier runs from the same day.
+PRE_COUNT=$("$PYTHON" -c "
+import json
+from pathlib import Path
+log_path = Path('$TRADE_LOG')
+try:
+    trades = json.loads(log_path.read_text()) if log_path.exists() else []
+    print(len(trades))
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")
+
 if "$PYTHON" -m live.runner \
     --strategy renquant_103 \
     --broker alpaca \
@@ -83,16 +114,23 @@ if "$PYTHON" -m live.runner \
     $SELL_ONLY_FLAG; then
 
     echo "=== live_103 [$TAG] finished at $(date) ==="
+    touch "$DONE_FILE"
 
-    # Build trade summary (sells/stops only for intraday runs)
+    # Build trade summary (THIS run's new entries only)
     SUMMARY=$("$PYTHON" -c "
 import json, sys
 from pathlib import Path
 log_path = Path('$TRADE_LOG')
+pre_count = $PRE_COUNT
 if not log_path.exists():
-    print('No exits today')
+    print('No exits this run')
     sys.exit(0)
-trades = json.loads(log_path.read_text())
+try:
+    all_trades = json.loads(log_path.read_text())
+except Exception:
+    print('No exits this run')
+    sys.exit(0)
+trades = all_trades[pre_count:]  # only entries from this run
 parts = []
 for t in trades:
     sig = t.get('signal', '')
@@ -105,10 +143,12 @@ for t in trades:
     elif sig == 'single_day_loss':
         drop = t.get('daily_drop_pct', 0)
         parts.append(f'GAP-STOP {sym} ({drop:.1%} drop)')
-    elif sig == 'sell':
+    elif sig == 'trailing_stop':
+        parts.append(f'TRAIL-STOP {sym}')
+    elif sig in ('sell', 'max_hold'):
         parts.append(f'SELL {sym} x{qty}')
-print('; '.join(parts) if parts else 'No exits')
-" 2>/dev/null || echo "No exits")
+print('; '.join(parts) if parts else 'No exits this run')
+" 2>/dev/null || echo "No exits this run")
 
     # Append current holdings to notification
     HOLDINGS=$("$PYTHON" -c "

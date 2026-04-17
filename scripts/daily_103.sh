@@ -38,6 +38,17 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== daily_103 started at $(date) ==="
 
+# ── Already-ran-today guard ───────────────────────────────────────────────────
+# launchd fires this script each time the Mac wakes if it thinks the scheduled
+# 13:55 run was missed (sleep/wake cycles). Block re-runs after a successful
+# completion by writing a date-stamped sentinel file.
+DONE_FILE="/tmp/renquant_103_daily_${DATE}.done"
+if [ -f "$DONE_FILE" ]; then
+    echo "daily_103 already completed successfully today ($DATE) — skipping duplicate run."
+    notify "RenQuant 103 SKIP" "daily_103 already ran today ($DATE) — blocked duplicate"
+    exit 0
+fi
+
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
 LOCK_FILE="/tmp/renquant_103_daily.lock"
 if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
@@ -117,17 +128,41 @@ fi
 # Step 3: Run live trading (Alpaca, single pass)
 echo "--- Step 3: Running live trader (alpaca) ---"
 TRADE_LOG="$REPO_DIR/live/logs/renquant-103/$DATE.json"
+
+# Snapshot trade log length before this run so the notification only shows
+# trades placed by THIS run, not earlier runs from the same day.
+PRE_COUNT=$("$PYTHON" -c "
+import json
+from pathlib import Path
+log_path = Path('$TRADE_LOG')
+try:
+    trades = json.loads(log_path.read_text()) if log_path.exists() else []
+    print(len(trades))
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")
+
 if "$PYTHON" -m live.runner --strategy renquant_103 --broker alpaca --once; then
     echo "=== daily_103 finished at $(date) ==="
-    # Build trade summary from today's trade log
+
+    # Mark today's run as complete — blocks duplicate launchd wake-up firings
+    touch "$DONE_FILE"
+
+    # Build trade summary from THIS run's new entries only
     SUMMARY=$("$PYTHON" -c "
 import json, sys
 from pathlib import Path
 log_path = Path('$TRADE_LOG')
+pre_count = $PRE_COUNT
 if not log_path.exists():
-    print('No trades today')
+    print('No trades this run')
     sys.exit(0)
-trades = json.loads(log_path.read_text())
+try:
+    all_trades = json.loads(log_path.read_text())
+except Exception:
+    print('No trades this run')
+    sys.exit(0)
+trades = all_trades[pre_count:]  # only entries from this run
 parts = []
 for t in trades:
     sig = t.get('signal', '')
@@ -136,7 +171,7 @@ for t in trades:
     qty = order.get('qty', '?')
     if sig == 'buy':
         parts.append(f'BUY {sym} x{qty}')
-    elif sig == 'sell':
+    elif sig in ('sell', 'max_hold'):
         parts.append(f'SELL {sym} x{qty}')
     elif sig == 'stop_loss':
         loss = t.get('loss_pct', 0)
@@ -144,8 +179,10 @@ for t in trades:
     elif sig == 'single_day_loss':
         drop = t.get('daily_drop_pct', 0)
         parts.append(f'GAP-STOP {sym} ({drop:.1%} drop)')
-print('; '.join(parts) if parts else 'No trades today')
-" 2>/dev/null || echo "No trades today")
+    elif sig == 'trailing_stop':
+        parts.append(f'TRAIL-STOP {sym}')
+print('; '.join(parts) if parts else 'No trades this run')
+" 2>/dev/null || echo "No trades this run")
     # Append current holdings to notification
     HOLDINGS=$("$PYTHON" -c "
 import os
