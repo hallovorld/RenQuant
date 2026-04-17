@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMD/AMD-manual-rules.json"
   },
-  "trained_date": "2026-04-16",
+  "trained_date": "2026-04-17",
   "best_approach": "Manual",
   "sharpe": 0.8969,
   "lookahead": 5,
@@ -48,5 +48,5 @@
     "platt_scale_mean": 0.9675675675675676,
     "platt_scale_std": 0.8246388411950997
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

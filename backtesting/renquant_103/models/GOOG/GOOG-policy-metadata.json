@@ -17,9 +17,9 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GOOG/GOOG-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/GOOG/GOOG-bin-edges.json"
   },
-  "trained_date": "2026-04-16",
+  "trained_date": "2026-04-17",
   "best_approach": "QLearning",
-  "sharpe": 1.2906,
+  "sharpe": 1.1983,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
@@ -33,14 +33,14 @@
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.24864864864864866,
-    "raw_min": -83.40926837211202,
-    "raw_max": 90.36309918053813,
+    "raw_min": -74.73694449354758,
+    "raw_max": 90.00489892527183,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.6278566000679019,
-    "platt_intercept": -1.186453364013175,
-    "platt_scale_mean": 3.269965192951875,
-    "platt_scale_std": 21.997836471197683
+    "platt_coef": 0.2710708072669967,
+    "platt_intercept": -1.1228463166660305,
+    "platt_scale_mean": 3.0848132242228616,
+    "platt_scale_std": 21.398722405758765
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

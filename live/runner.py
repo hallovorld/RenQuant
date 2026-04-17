@@ -790,8 +790,18 @@ def run_once_multi(
     for symbol in list(held):
         if symbol not in dfs:
             continue
-        current_price = float(dfs[symbol]["close"].iloc[-1])
-        avg_cost      = float(positions_cache.get(symbol, {}).get("avg_entry_price", 0.0))
+        pos_data  = positions_cache.get(symbol, {})
+        avg_cost  = float(pos_data.get("avg_entry_price", 0.0))
+        qty_held  = float(pos_data.get("qty", 0.0))
+        mkt_val   = float(pos_data.get("market_value", 0.0))
+        # Prefer Alpaca's live market price over stale OHLCV close.
+        # At the open run (6:30 AM open, 6:34 run), the OHLCV cache still has
+        # yesterday's close; comparing that to today's fill price creates phantom
+        # losses that fire stop-losses incorrectly.
+        if qty_held > 0 and mkt_val > 0:
+            current_price = mkt_val / qty_held
+        else:
+            current_price = float(dfs[symbol]["close"].iloc[-1])
         entry_date_str = entry_dates.get(symbol)
         days_held = 0
         if entry_date_str:

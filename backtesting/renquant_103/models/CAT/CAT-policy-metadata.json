@@ -17,9 +17,9 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-bin-edges.json"
   },
-  "trained_date": "2026-04-16",
+  "trained_date": "2026-04-17",
   "best_approach": "QLearning",
-  "sharpe": 1.3271,
+  "sharpe": 1.3946,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
@@ -33,14 +33,14 @@
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.32432432432432434,
-    "raw_min": -79.26148435725747,
-    "raw_max": 93.29346632805051,
+    "raw_min": -63.871718610122315,
+    "raw_max": 108.54579366293385,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.11582643370074744,
-    "platt_intercept": -0.7362969051939496,
-    "platt_scale_mean": 0.03217360954261853,
-    "platt_scale_std": 22.324576769102315
+    "platt_coef": 0.13934374162176755,
+    "platt_intercept": -0.7372117337852534,
+    "platt_scale_mean": 4.870855249470206,
+    "platt_scale_std": 26.745194982384575
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

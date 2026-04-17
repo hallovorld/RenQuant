@@ -1,46 +1,52 @@
 {
   "model_name": "PLTR",
-  "policy_type": "qlearning",
+  "policy_type": "classification",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
-  "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-bin-edges.json"
-  },
-  "trained_date": "2026-04-16",
-  "best_approach": "QLearning",
-  "sharpe": 2.0002,
   "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PLTR/PLTR-rf-trees.json"
+  },
+  "trained_date": "2026-04-17",
+  "best_approach": "Classification",
+  "sharpe": 1.8903,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-09",
   "score_calibration": {
     "version": 1,
     "method": "platt",
-    "score_kind": "q_buy_minus_sell",
+    "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
     "sample_size": 185,
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.2756756756756757,
-    "raw_min": -124.59037367640533,
-    "raw_max": 113.79625340452448,
+    "raw_min": -0.6666666666666666,
+    "raw_max": 0.6666666666666666,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.1925574520837605,
-    "platt_intercept": -0.9741493199846161,
-    "platt_scale_mean": 12.843994505494969,
-    "platt_scale_std": 43.09604476123291
+    "platt_coef": 0.8783918124571723,
+    "platt_intercept": -1.1228344095008178,
+    "platt_scale_mean": 0.020900900900900903,
+    "platt_scale_std": 0.26557507282969484
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

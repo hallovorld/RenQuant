@@ -1,6 +1,6 @@
 {
   "model_name": "AMZN",
-  "policy_type": "classification",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
@@ -16,37 +16,51 @@
   ],
   "lookahead": 5,
   "threshold": 0.03,
-  "leaf_size": 25,
-  "bags": 15,
-  "impact": 0.0,
   "buy_threshold": 0.1,
-  "sell_threshold": -0.1,
-  "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMZN/AMZN-rf-trees.json"
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08902691304683685,
+    "macd_hist": 0.0827072337269783,
+    "cci": 0.08326677978038788,
+    "bbp": 0.08432204276323318,
+    "adx": 0.09177854657173157,
+    "williams_r": 0.07964451611042023,
+    "obv_slope": 0.09994287043809891,
+    "spy_realized_vol": 0.10286101698875427,
+    "spy_adx": 0.10704648494720459,
+    "spy_trend": 0.0856221616268158,
+    "hurst_proxy": 0.09378142654895782
   },
-  "trained_date": "2026-04-16",
-  "best_approach": "Classification",
-  "sharpe": 2.0453,
+  "artifacts": {
+    "buy_model": "AMZN-xgb-buy.json",
+    "sell_model": "AMZN-xgb-sell.json"
+  },
+  "trained_date": "2026-04-17",
+  "best_approach": "XGBoost",
+  "sharpe": 0.9995,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-09",
   "score_calibration": {
     "version": 1,
     "method": "platt",
-    "score_kind": "bag_learner_raw",
+    "score_kind": "p_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
     "sample_size": 185,
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.14594594594594595,
-    "raw_min": -0.4,
-    "raw_max": 0.4,
+    "raw_min": -0.7141516208648682,
+    "raw_max": 0.9399850368499756,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.14604363518202457,
-    "platt_intercept": -1.7741997662865883,
-    "platt_scale_mean": 0.02234234234234234,
-    "platt_scale_std": 0.11190103109300914
+    "platt_coef": 1.4868173484524994,
+    "platt_intercept": -2.4219853570482166,
+    "platt_scale_mean": 0.18352040282979204,
+    "platt_scale_std": 0.37067997842216727
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

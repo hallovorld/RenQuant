@@ -1,6 +1,6 @@
 {
   "model_name": "JPM",
-  "policy_type": "xgboost",
+  "policy_type": "classification",
   "feature_columns": [
     "rsi",
     "macd_hist",
@@ -16,51 +16,37 @@
   ],
   "lookahead": 5,
   "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
   "buy_threshold": 0.1,
-  "sell_threshold": 0.1,
-  "n_estimators": 200,
-  "max_depth": 4,
-  "learning_rate": 0.05,
-  "feature_importances": {
-    "rsi": 0.09155716001987457,
-    "macd_hist": 0.07315900921821594,
-    "cci": 0.07967321574687958,
-    "bbp": 0.08451162278652191,
-    "adx": 0.10218718647956848,
-    "williams_r": 0.08618128299713135,
-    "obv_slope": 0.08335672318935394,
-    "spy_realized_vol": 0.08777736127376556,
-    "spy_adx": 0.11989210546016693,
-    "spy_trend": 0.10985040664672852,
-    "hurst_proxy": 0.0818539559841156
-  },
+  "sell_threshold": -0.1,
   "artifacts": {
-    "buy_model": "JPM-xgb-buy.json",
-    "sell_model": "JPM-xgb-sell.json"
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/JPM/JPM-rf-trees.json"
   },
-  "trained_date": "2026-04-16",
-  "best_approach": "XGBoost",
-  "sharpe": 1.0571,
+  "trained_date": "2026-04-17",
+  "best_approach": "Classification",
+  "sharpe": 1.1127,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-09",
   "score_calibration": {
     "version": 1,
     "method": "platt",
-    "score_kind": "p_buy_minus_sell",
+    "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
     "sample_size": 185,
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.08648648648648649,
-    "raw_min": -0.9675544500350952,
-    "raw_max": 0.8725396394729614,
+    "raw_min": -0.2,
+    "raw_max": 0.3333333333333333,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 1.9904716992678428,
-    "platt_intercept": -3.634773738771459,
-    "platt_scale_mean": -0.01687438834357906,
-    "platt_scale_std": 0.40062566294331703
+    "platt_coef": 0.9743175903733776,
+    "platt_intercept": -2.719551326568671,
+    "platt_scale_mean": 0.0075675675675675675,
+    "platt_scale_std": 0.06587206021908451
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

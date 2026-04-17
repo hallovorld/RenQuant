@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLE/XLE-manual-rules.json"
   },
-  "trained_date": "2026-04-16",
+  "trained_date": "2026-04-17",
   "best_approach": "Manual",
   "sharpe": 0.8713,
   "lookahead": 5,
@@ -48,5 +48,5 @@
     "platt_scale_mean": 1.2108108108108109,
     "platt_scale_std": 0.9664042531071906
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

@@ -23,7 +23,7 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLF/XLF-manual-rules.json"
   },
-  "trained_date": "2026-04-16",
+  "trained_date": "2026-04-17",
   "best_approach": "Manual",
   "sharpe": 1.5527,
   "lookahead": 5,
@@ -48,5 +48,5 @@
     "platt_scale_mean": 1.4216216216216215,
     "platt_scale_std": 0.989440228077427
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

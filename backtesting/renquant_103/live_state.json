@@ -11,7 +11,16 @@
     "BA": 0
   },
   "last_sell_dates": {
-    "AMZN": "2026-04-15"
+    "AMZN": "2026-04-15",
+    "AMD": "2026-04-17",
+    "NVDA": "2026-04-17"
   },
-  "high_water_mark": 10018.69
+  "high_water_mark": 10028.55,
+  "position_hwm": {
+    "AMZN": 238.3800048828125,
+    "BA": 217.6300048828125
+  },
+  "regime": "CHOPPY",
+  "transition_countdown": 2,
+  "regime_confidence": 0.5
 }

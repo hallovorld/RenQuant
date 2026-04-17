@@ -38,9 +38,9 @@
     "buy_model": "LLY-xgb-buy.json",
     "sell_model": "LLY-xgb-sell.json"
   },
-  "trained_date": "2026-04-16",
+  "trained_date": "2026-04-17",
   "best_approach": "XGBoost",
-  "sharpe": 1.2426,
+  "sharpe": 1.4141,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-09",
@@ -62,5 +62,5 @@
     "platt_scale_mean": -0.026395647731181738,
     "platt_scale_std": 0.3216428922311103
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }

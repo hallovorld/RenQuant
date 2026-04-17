@@ -1,66 +1,52 @@
 {
   "model_name": "META",
-  "policy_type": "xgboost",
-  "feature_columns": [
-    "rsi",
-    "macd_hist",
-    "cci",
-    "bbp",
-    "adx",
-    "williams_r",
-    "obv_slope",
-    "spy_realized_vol",
-    "spy_adx",
-    "spy_trend",
-    "hurst_proxy"
+  "policy_type": "manual",
+  "score_rules": [
+    {
+      "col": "rsi",
+      "buy_below": 30,
+      "sell_above": 70
+    },
+    {
+      "col": "macd_hist",
+      "buy_above": 0,
+      "sell_below": 0
+    },
+    {
+      "col": "cci",
+      "buy_below": -100,
+      "sell_above": 50
+    }
   ],
-  "lookahead": 5,
-  "threshold": 0.03,
-  "buy_threshold": 0.1,
-  "sell_threshold": 0.1,
-  "n_estimators": 200,
-  "max_depth": 4,
-  "learning_rate": 0.05,
-  "feature_importances": {
-    "rsi": 0.0936310887336731,
-    "macd_hist": 0.08928987383842468,
-    "cci": 0.08405934274196625,
-    "bbp": 0.0855722576379776,
-    "adx": 0.07702982425689697,
-    "williams_r": 0.07546612620353699,
-    "obv_slope": 0.11734135448932648,
-    "spy_realized_vol": 0.102723628282547,
-    "spy_adx": 0.09014442563056946,
-    "spy_trend": 0.08742295205593109,
-    "hurst_proxy": 0.09731906652450562
-  },
+  "buy_threshold": 2,
+  "sell_threshold": -2,
   "artifacts": {
-    "buy_model": "META-xgb-buy.json",
-    "sell_model": "META-xgb-sell.json"
+    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/META/META-manual-rules.json"
   },
-  "trained_date": "2026-04-16",
-  "best_approach": "XGBoost",
-  "sharpe": 1.0981,
+  "trained_date": "2026-04-17",
+  "best_approach": "Manual",
+  "sharpe": 1.077,
+  "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-09",
   "score_calibration": {
     "version": 1,
     "method": "platt",
-    "score_kind": "p_buy_minus_sell",
+    "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
     "sample_size": 185,
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.16216216216216217,
-    "raw_min": -0.8933064341545105,
-    "raw_max": 0.8841946125030518,
+    "raw_min": -1.0,
+    "raw_max": 3.0,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 1.75483294333908,
-    "platt_intercept": -2.467651834040735,
-    "platt_scale_mean": 0.024465902421522787,
-    "platt_scale_std": 0.45172524972014433
+    "platt_coef": -0.0989945634760033,
+    "platt_intercept": -1.6455081072090734,
+    "platt_scale_mean": 0.9675675675675676,
+    "platt_scale_std": 0.7843241380594709
   },
-  "score_calibration_date": "2026-04-16"
+  "score_calibration_date": "2026-04-17"
 }
