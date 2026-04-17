@@ -297,7 +297,7 @@ This means the strategy never hard-switches between 30% and 15% positions — it
 | Max position | 15% | 20% | 15% | 0% (offensive) |
 | Cash reserve | 0% | 20% | 30% | 100% |
 | Stop-loss | 15% | 5% | 5% | 5% (existing) |
-| Max hold days | 500 | 500 | 10 | 500 (existing) |
+| Max hold days | 500 | 500 | 23 | 500 (existing) |
 | Trailing stop trigger | 20% gain | — | — | — |
 | Trailing stop trail | 18% below HWM | — | — | — |
 | Drawdown halt | 35% | 10% | 8% | 5% |
@@ -581,8 +581,16 @@ Exit priority order in all three (LEAN + notebook + live runner):
 1. Trailing stop (BULL_CALM: 20% trigger, 18% trail)
 2. Cumulative stop-loss (15% BULL_CALM, 5% others)
 3. **Single-day loss gate** (10% BULL_CALM, disabled others) ← new
-4. Max hold (500 days most regimes, 10 days CHOPPY)
+4. Max hold (500 days most regimes, 23 days CHOPPY)
 5. Model sell streak (3 consecutive signals, min_hold gating)
+
+### Oversize Fallback for High-Priced Stocks
+If a stock's price exceeds the budget that would be allocated under the normal `max_position_pct × confidence` formula (e.g. LLY at $926 with a $752 budget computed from 15% × confidence), the live runner retries at up to 25% of portfolio value. Falls back only when 1 share fits within 25% of portfolio; otherwise the symbol is skipped and a warning is logged (`[oversize fallback: 25%]`).
+
+- **Normal path**: `invest = min(cash - reserve, portfolio × max_pos_pct × confidence)`
+- **Fallback trigger**: `shares = invest / price == 0` AND `price <= portfolio × 25%`
+- **Fallback invest**: `min(portfolio × 25%, available_cash)`
+- **Purpose**: prevents high-priced stocks from being silently excluded purely because their per-share cost exceeds the regime-confidence-scaled allocation
 
 ### Calibration Gap Fixes (2026-04-16)
 
@@ -605,7 +613,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-430 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
+456 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
 
 - `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
@@ -652,7 +660,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 430 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 456 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 

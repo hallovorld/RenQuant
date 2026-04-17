@@ -94,7 +94,7 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │  │
 │  │  ├─ [EXIT 3] MAX HOLD
 │  │  │     days_held = today − entry_date
-│  │  │     ◆ days_held >= rp["max_hold_days"]?  (500 BULL/BEAR, 10 CHOPPY)
+│  │  │     ◆ days_held >= rp["max_hold_days"]?  (500 BULL/BEAR, 23 CHOPPY)
 │  │  │        YES ►SELL  reason=max_hold  → continue
 │  │  │
 │  │  ├─ [EXIT 4] MODEL SELL  (gated by min_hold + streak)
@@ -237,6 +237,9 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │     max_pos_pct  = rp["max_position_pct"] × regime_confidence
 │  │        BULL_CALM=15%, others vary
 │  │     invest = min(cash − cash_reserve,  port_val × max_pos_pct)
+│  │     [OVERSIZE FALLBACK] shares = invest / current_price
+│  │     ◆ shares == 0 AND price ≤ portfolio × 25%?
+│  │        YES → invest = min(portfolio × 25%, available_cash)  [oversize fallback for high-priced stocks]
 │  │     ◆ invest < 100?  YES ✗ skip (insufficient capital)
 │  │
 │  │  ► BUY EXECUTION
@@ -277,7 +280,7 @@ When any sell fires:
 | Param | BULL_CALM | BULL_VOLATILE | CHOPPY | BEAR |
 |-------|-----------|---------------|--------|------|
 | `stop_loss_pct` | 0.15 | 0.05 | 0.05 | 0.05 |
-| `max_hold_days` | 500 | 500 | 10 | 500 |
+| `max_hold_days` | 500 | 500 | 23 | 500 |
 | `max_position_pct` | 0.15 | 0.20 | 0.15 | 0.0 |
 | `drawdown_halt_pct` | 0.35 | 0.10 | 0.08 | 0.05 |
 | `trailing_stop_trigger_pct` | 0.20 | 0.0 | 0.0 | 0.0 |
@@ -332,6 +335,7 @@ When any sell fires:
 | 18 | max_position_pct scaled by regime_confidence | ✓ rp["max_position_pct"] × confidence | ✓ _rp("max_position_pct") | ✓ |
 | 19 | last_sell_date.pop() on re-buy | ✓ pop() clears clock | LEAN: does NOT pop; old entry stays but days>=30 makes check pass — functionally equivalent | ✓ |
 | 20 | entry_dates recorded on buy | ✓ | ✓ entry_times[ticker] | ✓ |
+| 21 | EXIT 3 max_hold_days enforced | ✓ days_held >= max_hold_days in sell loop | ✓ days_held >= max_hold_days | ✓ live runner enforces max_hold between EXIT 2b and EXIT 4 | ✓ |
 
 **Deltas (row 14, 18):** Minor divergences; row 14 is belt-and-suspenders (both block), row 18 means LEAN
 sizes slightly smaller during low-confidence periods — this is intentional in LEAN (confidence scaling)
@@ -345,7 +349,7 @@ but not replicated in the notebook which uses flat percentages.
 1. Trailing stop      — BULL_CALM only; peak-gain triggers, then trails HWM
 2. Cumulative stop    — regime-dependent width (15% vs 5%)
 2b. Single-day gate   — BULL_CALM only; catches gap-downs before cumulative fires
-3. Max hold           — hard time limit (500d / 10d CHOPPY)
+3. Max hold           — hard time limit (500d / 23d CHOPPY)
 4. Model sell streak  — N=3 consecutive signals; gated by min_hold=20d
 ```
 

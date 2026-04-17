@@ -180,7 +180,7 @@ Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_res
 1. **Trailing stop** (BULL_CALM only): activates once position's peak gain (HWM-based) reaches ≥20% from entry; then trails 18% below the rolling high-water mark. Stop stays armed even after pullbacks — uses peak gain, not current gain. Allows winners like NVDA/PLTR to run through minor corrections.
 2. **Cumulative stop-loss**: 15% from entry in BULL_CALM; 5% in BULL_VOLATILE / CHOPPY / BEAR. Triggers immediately, no min-hold gating.
 3. **Single-day loss gate** (BULL_CALM only): exits if today's close drops ≥10% from yesterday's close. Protects against gap-down days where a 20%+ single-session drop would escape the 15% cumulative stop until the next bar. Disabled in other regimes (5% cumulative stop is already tight).
-4. **Max hold**: forced exit after 500 days (BULL_CALM/BULL_VOLATILE/BEAR) or 10 days (CHOPPY).
+4. **Max hold**: forced exit after 500 days (BULL_CALM/BULL_VOLATILE/BEAR) or 23 days (CHOPPY).
 5. **Model sell**: 3 consecutive daily sell signals with min 20-day hold.
 
 ## JSON Artifact Format

@@ -167,6 +167,8 @@ The runner auto-detects single-stock vs multi-stock strategies by checking for `
 
 Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
+**Daily log contents** (renquant_103): REGIME PARAMS block (regime name, confidence, stop/hold/reserve values) printed after MARKET CONTEXT; price source tag `[Alpaca]` or `[OHLCV <date>]` on each sell decision header; EXIT 3 max_hold entries with realized P&L; per-buy position sizing math (invest, shares, price); warnings for all bare exception paths.
+
 ### Daily Automation
 
 Three NYSE-holiday-aware launchd agents run each trading day:
@@ -193,6 +195,7 @@ launchctl load ~/Library/LaunchAgents/com.renquant.preclose103.plist
 Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent at each step:
 - After notebook retraining: model count (e.g., `Models retrained: 14 watchlist models ready`), or a warning if fewer than 10 models passed the OOS Sharpe floor
 - After live trading: trade summary (e.g., `BUY TSLA x15; SELL AMZN x8; STOP COIN (12.3% loss)`) or error details
+- Notification body appends current holdings with unrealized P&L (e.g. `BUY AAPL x5 | Held: NVDA+12% META-2%`)
 
 Logs are written to `logs/daily_103/{date}.log`.
 
