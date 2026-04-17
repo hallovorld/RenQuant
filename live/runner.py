@@ -374,6 +374,28 @@ def _compute_spy_adx_live(df_spy, period: int = 14) -> float:
     return float(adx.iloc[-1])
 
 
+def _hurst_choppy_confidence(hurst: float,
+                             hurst_threshold: float = 0.45,
+                             hurst_floor: float = 0.20) -> float:
+    """Translate a Hurst exponent into a CHOPPY regime confidence.
+
+    The GMM assigns ~50% to both its main clusters in ambiguous markets,
+    making it useless as a confidence signal for CHOPPY.  Hurst measures the
+    *degree* of mean-reversion directly:
+
+        H = 0.45  (just barely CHOPPY) → confidence ≈ 0
+        H = 0.35                        → confidence ≈ 0.40
+        H = 0.20  (strong reversion)    → confidence = 1.0
+
+    Linear interpolation between [hurst_threshold, hurst_floor].
+    """
+    if hurst >= hurst_threshold:
+        return 0.0
+    return float(min(1.0, max(0.0,
+        (hurst_threshold - hurst) / max(hurst_threshold - hurst_floor, 1e-6)
+    )))
+
+
 def _detect_regime_live(
     df_spy,
     gmm_artifact: dict | None,
@@ -381,10 +403,19 @@ def _detect_regime_live(
 ) -> tuple[str, float, bool]:
     """
     Run 3-layer regime detection on live SPY data.
-    Returns (regime_label, gmm_confidence, cusum_triggered).
+    Returns (regime_label, confidence, cusum_triggered).
+
     Layer 1: Hurst → CHOPPY if H < 0.45
     Layer 2: CUSUM → trigger transition countdown
     Layer 3: GMM → BULL_CALM / BULL_VOLATILE / BEAR
+
+    Confidence semantics by regime:
+      CHOPPY     — Hurst-based: how far below 0.45 (structurally meaningful).
+                   GMM confidence for CHOPPY is structurally unreliable because
+                   its two main clusters have nearly equal weights (~48% each),
+                   causing it to output ~50% regardless of market state.
+      BULL_CALM /
+      BULL_VOLATILE / BEAR — GMM posterior probability for the winning cluster.
     """
     if gmm_artifact is None or df_spy is None or df_spy.empty:
         return "BULL_CALM", 0.5, False
@@ -413,6 +444,12 @@ def _detect_regime_live(
     else:
         hurst_regime = "AMBIGUOUS"
 
+    log.info("  Hurst(%dd)=%.3f  [%s]  |  Vol20=%.1f%%  |  CUSUM lookback %dd",
+             hurst_window, hurst, hurst_regime,
+             float(returns.values[-vol_window:].std() * np.sqrt(252)) * 100
+             if len(returns) >= vol_window else 15.0,
+             cusum_lookback)
+
     cusum_triggered = _compute_cusum_live(returns.values, cusum_lookback, cusum_threshold, cusum_drift)
 
     spy_ret10d = float(spy_close_f.iloc[-1] / spy_close_f.iloc[-11] - 1) if len(spy_close_f) >= 11 else 0.0
@@ -434,7 +471,17 @@ def _detect_regime_live(
     else:
         regime = dominant_gmm if dominant_gmm != "BEAR" else "BULL_VOLATILE"
 
-    confidence = float(gmm_probs.get(regime, 0.5))
+    # Confidence signal — regime-specific:
+    #   CHOPPY: use Hurst distance from threshold (GMM is structurally unreliable
+    #           here; its two main clusters have near-equal weights ~48/48%).
+    #   All others: use GMM posterior probability for the winning cluster.
+    if regime == "CHOPPY":
+        hurst_floor = float(regime_cfg.get("choppy_hurst_floor", 0.20))
+        confidence = _hurst_choppy_confidence(hurst, hurst_threshold=0.45,
+                                              hurst_floor=hurst_floor)
+    else:
+        confidence = float(gmm_probs.get(regime, 0.5))
+
     return regime, confidence, cusum_triggered
 
 
@@ -758,7 +805,7 @@ def run_once_multi(
     # ── MARKET CONTEXT ────────────────────────────────────────────────────────
     log.info("MARKET CONTEXT")
     log.info("  SPY  $%.2f  |  1d %+.1f%%  |  5d %+.1f%%", spy_price, spy_ret1d*100, spy_ret5d*100)
-    log.info("  Regime: %s  (GMM confidence %.0f%%)  CUSUM: %s",
+    log.info("  Regime: %s  (confidence %.0f%%)  CUSUM: %s",
              current_regime, detected_confidence*100, "TRIGGERED" if cusum_triggered else "clear")
     log.info("  EMA50 $%.2f  |  SPY %s EMA50  →  gate %s",
              spy_ema50,

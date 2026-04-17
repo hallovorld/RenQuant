@@ -1156,7 +1156,11 @@ class TestBatchPositionFetch:
 
 
 class TestLiveRegimeParity:
-    def test_choppy_regime_defaults_to_half_confidence(self, monkeypatch):
+    def test_choppy_regime_uses_hurst_confidence(self, monkeypatch):
+        """CHOPPY confidence is Hurst-based, not GMM-based.
+        Hurst=0.40, threshold=0.45, floor=0.20 → (0.45-0.40)/(0.45-0.20) = 0.20
+        GMM probability for CHOPPY label is irrelevant and should not be used.
+        """
         import live.runner as runner_mod
 
         df_spy = _make_ohlcv(n=80)
@@ -1191,8 +1195,57 @@ class TestLiveRegimeParity:
         )
 
         assert regime == "CHOPPY"
-        assert confidence == pytest.approx(0.5)
+        # Hurst-based: (0.45 - 0.40) / (0.45 - 0.20) = 0.05 / 0.25 = 0.20
+        assert confidence == pytest.approx(0.20, abs=0.01)
         assert not triggered
+
+    def test_choppy_strong_reversion_higher_confidence(self, monkeypatch):
+        """Hurst=0.30 (strong reversion) gives higher confidence than Hurst=0.40."""
+        import live.runner as runner_mod
+
+        df_spy = _make_ohlcv(n=80)
+        regime_cfg = {"hurst_window": 63, "cusum_lookback": 20,
+                      "cusum_threshold": 3.0, "cusum_drift": 0.5,
+                      "vol_realized_window": 20}
+
+        for hurst_val, expected_conf in [(0.30, 0.60), (0.20, 1.00), (0.44, 0.04)]:
+            monkeypatch.setattr(runner_mod, "_compute_hurst_live",
+                                lambda r, w, h=hurst_val: h)
+            monkeypatch.setattr(runner_mod, "_compute_cusum_live",
+                                lambda *a, **k: False)
+            monkeypatch.setattr(runner_mod, "_gmm_predict_live",
+                                lambda *a, **k: {"BULL_CALM": 0.5,
+                                                 "BULL_VOLATILE": 0.3,
+                                                 "BEAR": 0.2})
+            _, conf, _ = runner_mod._detect_regime_live(
+                df_spy, {"artifact": True}, regime_cfg)
+            assert conf == pytest.approx(expected_conf, abs=0.02), \
+                f"Hurst={hurst_val}: expected conf≈{expected_conf}, got {conf:.3f}"
+
+    def test_bull_calm_still_uses_gmm_confidence(self, monkeypatch):
+        """Non-CHOPPY regimes (BULL_CALM) still use GMM posterior probability."""
+        import live.runner as runner_mod
+
+        df_spy = _make_ohlcv(n=80)
+        regime_cfg = {"hurst_window": 63, "cusum_lookback": 20,
+                      "cusum_threshold": 3.0, "cusum_drift": 0.5,
+                      "vol_realized_window": 20}
+
+        monkeypatch.setattr(runner_mod, "_compute_hurst_live",
+                            lambda r, w: 0.60)  # MOMENTUM → BULL_CALM
+        monkeypatch.setattr(runner_mod, "_compute_cusum_live",
+                            lambda *a, **k: False)
+        monkeypatch.setattr(runner_mod, "_gmm_predict_live",
+                            lambda *a, **k: {"BULL_CALM": 0.72,
+                                             "BULL_VOLATILE": 0.20,
+                                             "BEAR": 0.08})
+
+        regime, confidence, _ = runner_mod._detect_regime_live(
+            df_spy, {"artifact": True}, regime_cfg)
+
+        assert regime == "BULL_CALM"
+        assert confidence == pytest.approx(0.72, abs=0.01), \
+            "BULL_CALM should use GMM posterior, not Hurst-based formula"
 
     def test_detect_regime_uses_real_spy_adx(self, monkeypatch):
         import live.runner as runner_mod

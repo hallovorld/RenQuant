@@ -60,7 +60,8 @@
     "correlation_guard_threshold": 0.7,
     "correlation_artifact": "watchlist-correlation.json",
     "earnings_artifact": "earnings-calendar.json",
-    "earnings_buffer_days": 3
+    "earnings_buffer_days": 3,
+    "choppy_hurst_floor": 0.20
   },
   "regime_params": {
     "BULL_CALM": {
