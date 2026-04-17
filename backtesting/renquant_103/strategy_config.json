@@ -30,6 +30,7 @@
   "data_src": "yfinance",
   "initial_cash": 100000,
   "model_staleness_days": 60,
+  "sharpe_floor": 0.8,
   "wash_sale_days": 30,
   "min_hold_days": 20,
   "consecutive_sell_signals": 3,

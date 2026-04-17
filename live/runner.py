@@ -263,6 +263,125 @@ def _model_label(model) -> str:
     return class_name[:-5] if class_name.endswith("Model") else class_name
 
 
+def _compute_hurst_live(returns: "np.ndarray", window: int) -> float:
+    """Estimate Hurst exponent via R/S analysis (mirrors LEAN _update_regime logic)."""
+    arr = np.array(returns[-window:]) if len(returns) >= window else np.array(returns)
+    n = len(arr)
+    if n < 8:
+        return 0.5
+    max_lag = min(n // 2, 32)
+    lags, rs_vals = [], []
+    for lag in range(4, max_lag + 1, 2):
+        chunk = arr[:lag]
+        R = np.cumsum(chunk - chunk.mean())
+        span = R.max() - R.min()
+        S = chunk.std(ddof=1)
+        if S > 0:
+            lags.append(np.log(lag))
+            rs_vals.append(np.log(span / S))
+    if len(lags) < 2:
+        return 0.5
+    return float(np.polyfit(lags, rs_vals, 1)[0])
+
+
+def _compute_cusum_live(returns: "np.ndarray", lookback: int, threshold: float, drift: float) -> bool:
+    """Return True if CUSUM detects a changepoint in the most recent `lookback` bars."""
+    if len(returns) < lookback:
+        return False
+    window = np.array(returns[-lookback:])
+    mu = window.mean()
+    sigma = window.std(ddof=1)
+    if sigma <= 0:
+        return False
+    z = (window - mu) / sigma
+    cusum_pos = cusum_neg = 0.0
+    for zi in z:
+        cusum_pos = max(0.0, cusum_pos + zi - drift)
+        cusum_neg = max(0.0, cusum_neg - zi - drift)
+        if cusum_pos > threshold or cusum_neg > threshold:
+            return True
+    return False
+
+
+def _gmm_predict_live(gmm_artifact: dict, r10d: float, vol20: float, spy_adx: float, r_autocorr: float) -> dict:
+    """Apply saved GMM artifact (with scaler) and return {label: probability}."""
+    x = np.array([r10d, vol20, spy_adx, r_autocorr])
+    scaler_mean  = np.array(gmm_artifact.get("scaler_mean",  [0.0] * 4))
+    scaler_scale = np.array(gmm_artifact.get("scaler_scale", [1.0] * 4))
+    scaler_scale = np.where(scaler_scale > 0, scaler_scale, 1.0)
+    x = (x - scaler_mean) / scaler_scale
+    means   = gmm_artifact["means"]
+    covs    = gmm_artifact["covariances"]
+    weights = gmm_artifact["weights"]
+    labels  = gmm_artifact["cluster_labels"]
+    log_probs = []
+    for k in range(len(means)):
+        mu    = np.array(means[k])
+        sigma = np.array(covs[k])
+        diff  = x - mu
+        try:
+            sign, logdet = np.linalg.slogdet(sigma)
+            inv_s = np.linalg.inv(sigma)
+            mahal = float(diff @ inv_s @ diff)
+            lp    = -0.5 * (mahal + logdet) + np.log(max(weights[k], 1e-10))
+        except Exception:
+            lp = np.log(max(weights[k], 1e-10))
+        log_probs.append(lp)
+    log_probs_arr = np.array(log_probs)
+    log_probs_arr -= log_probs_arr.max()
+    probs = np.exp(log_probs_arr)
+    probs /= probs.sum()
+    return {label: float(p) for label, p in zip(labels, probs)}
+
+
+def _detect_regime_live(
+    spy_close: "pd.Series",
+    gmm_artifact: dict | None,
+    regime_cfg: dict,
+) -> tuple[str, float, bool]:
+    """
+    Run 3-layer regime detection on live SPY data.
+    Returns (regime_label, gmm_confidence, cusum_triggered).
+    Layer 1: Hurst → CHOPPY if H < 0.45
+    Layer 2: CUSUM → trigger transition countdown
+    Layer 3: GMM → BULL_CALM / BULL_VOLATILE / BEAR
+    """
+    if gmm_artifact is None or len(spy_close) < 20:
+        return "BULL_CALM", 0.0, False
+
+    spy_close_f = spy_close.astype(float)
+    returns = spy_close_f.pct_change().dropna()
+    if len(returns) < 20:
+        return "BULL_CALM", 0.0, False
+
+    hurst_window    = int(regime_cfg.get("hurst_window", 63))
+    cusum_lookback  = int(regime_cfg.get("cusum_lookback", 20))
+    cusum_threshold = float(regime_cfg.get("cusum_threshold", 3.0))
+    cusum_drift     = float(regime_cfg.get("cusum_drift", 0.5))
+    vol_window      = int(regime_cfg.get("vol_realized_window", 20))
+
+    hurst = _compute_hurst_live(returns.values, hurst_window)
+
+    if hurst < 0.45:
+        gmm_regime  = "CHOPPY"
+        confidence  = 0.0
+    else:
+        spy_ret10d = float(spy_close_f.iloc[-1] / spy_close_f.iloc[-11] - 1) if len(spy_close_f) >= 11 else 0.0
+        vol20 = float(returns.values[-vol_window:].std() * np.sqrt(252)) if len(returns) >= vol_window else 0.15
+        # ADX not computable without high/low in runner; use neutral default
+        spy_adx = 25.0
+        r_autocorr = 0.0
+        if len(returns) >= 20:
+            arr = returns.values[-20:]
+            r_autocorr = float(np.corrcoef(arr[:-1], arr[1:])[0, 1]) if len(arr) > 2 else 0.0
+        gmm_probs  = _gmm_predict_live(gmm_artifact, spy_ret10d, vol20, spy_adx, r_autocorr)
+        gmm_regime = max(gmm_probs, key=lambda k: gmm_probs[k])
+        confidence = gmm_probs[gmm_regime]
+
+    cusum_triggered = _compute_cusum_live(returns.values, cusum_lookback, cusum_threshold, cusum_drift)
+    return gmm_regime, confidence, cusum_triggered
+
+
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock models.
 
@@ -296,6 +415,13 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
             if age > staleness_days:
                 log.warning("%s model is %d days old (limit=%d), skipping", symbol, age, staleness_days)
                 continue
+
+        # Reject below-floor models regardless of artifact presence on disk
+        sharpe_floor = float(config.get("sharpe_floor", 0.8))
+        model_sharpe = float(metadata.get("sharpe", 0.0))
+        if sharpe_floor > 0 and model_sharpe < sharpe_floor:
+            log.warning("%s sharpe=%.3f below floor=%.1f, skipping", symbol, model_sharpe, sharpe_floor)
+            continue
 
         policy_type = metadata["policy_type"]
         model = create_model(policy_type)
@@ -400,43 +526,55 @@ def run_once_multi(
         quickly without placing new entries on incomplete daily bars.
     """
     import numpy as np
+    import pandas as pd
 
     watchlist      = config["watchlist"]
     benchmark      = config.get("benchmark", "SPY")
     max_positions  = config.get("max_concurrent_positions", 3)
     indicator_spec = config.get("indicator_spec", {})
     feature_columns = config["model_params"]["feature_columns"]
-    pos_sizing     = config.get("position_sizing", {})
-    max_position_pct  = float(pos_sizing.get("max_position_pct", 0.30))
-    cash_reserve_pct  = float(pos_sizing.get("cash_reserve_pct", 0.00))
     sector_map     = config.get("sector_map", {})
     max_per_sector = int(config.get("max_positions_per_sector", 0))
     risk_cfg       = config.get("risk", {})
+    regime_cfg     = config.get("regime", {})
     drawdown_halt_pct = float(risk_cfg.get("portfolio_drawdown_halt_pct", 0.0))
-
-    # Regime params — use BULL_CALM as default (runner doesn't have live GMM)
     regime_params  = config.get("regime_params", {})
-    bull_calm_rp   = regime_params.get("BULL_CALM", {})
-    stop_loss_pct  = float(bull_calm_rp.get("stop_loss_pct",
-                           risk_cfg.get("stop_loss_pct", 0.0)))
-    sdl_pct        = float(bull_calm_rp.get("max_single_day_loss_pct", 0.0))
-    spy_vel_halt   = float(bull_calm_rp.get("spy_velocity_halt_pct", 0.03))
-    spy_vel_days   = int(bull_calm_rp.get("spy_velocity_lookback_days", 3))
+    defensive_tickers = config.get("defensive_tickers", ["GLD", "TLT", "XLV", "XLU"])
+    transition_bars   = int(regime_cfg.get("transition_uncertainty_bars", 3))
 
     # Trading constraint params
     min_hold_days        = int(config.get("min_hold_days", 0))
     consec_sells_required = int(config.get("consecutive_sell_signals", 1))
     wash_sale_days       = int(config.get("wash_sale_days", 30))
     tiered_thresholds    = config.get("tiered_thresholds", [])
-    base_score_thresh    = float(bull_calm_rp.get("min_model_score",
-                                 config.get("min_model_score", 0.0)))
-    tiers = [float(t.get("min_model_score", base_score_thresh)) for t in tiered_thresholds] \
-            if tiered_thresholds else [base_score_thresh]
     ranking_cfg = config.get("ranking", {})
     _bw = ranking_cfg.get("blend_weights", [0.5, 0.5])
     _bw_total = float(_bw[0]) + float(_bw[1])
     w_rank = float(_bw[0]) / _bw_total if _bw_total > 0 else 0.5
     w_rs   = float(_bw[1]) / _bw_total if _bw_total > 0 else 0.5
+
+    # Load optional artifacts from strategy dir
+    gmm_artifact    = None
+    corr_matrix     = {}
+    earnings_cal    = {}
+    gmm_path = strategy_dir / regime_cfg.get("gmm_artifact", "spy-gmm-regime.json")
+    if gmm_path.exists():
+        try:
+            gmm_artifact = json.loads(gmm_path.read_text())
+        except Exception as e:
+            log.warning("Could not load GMM artifact: %s", e)
+    corr_path = strategy_dir / regime_cfg.get("correlation_artifact", "watchlist-correlation.json")
+    if corr_path.exists():
+        try:
+            corr_matrix = json.loads(corr_path.read_text())
+        except Exception as e:
+            log.warning("Could not load correlation artifact: %s", e)
+    earn_path = strategy_dir / "earnings-calendar.json"
+    if earn_path.exists():
+        try:
+            earnings_cal = json.loads(earn_path.read_text())
+        except Exception as e:
+            log.warning("Could not load earnings calendar: %s", e)
 
     # ── HEADER ────────────────────────────────────────────────────────────────
     run_mode = "sell-only" if sell_only else "full"
@@ -465,6 +603,28 @@ def run_once_multi(
     spy_ret1d  = (spy_price / float(spy_close.iloc[-2]) - 1) if len(spy_close) >= 2 else 0.0
     spy_ret5d  = (spy_price / float(spy_close.iloc[-6]) - 1) if len(spy_close) >= 6 else 0.0
 
+    # ── LIVE REGIME DETECTION ─────────────────────────────────────────────────
+    gmm_regime, gmm_confidence, cusum_triggered = _detect_regime_live(spy_close, gmm_artifact, regime_cfg)
+
+    # Resolve regime-specific params; fall back to top-level position_sizing
+    current_rp     = regime_params.get(gmm_regime, regime_params.get("BULL_CALM", {}))
+    pos_sizing_top = config.get("position_sizing", {})
+    max_position_pct  = float(current_rp.get("max_position_pct",
+                              pos_sizing_top.get("max_position_pct", 0.15)))
+    cash_reserve_pct  = float(current_rp.get("cash_reserve_pct",
+                              pos_sizing_top.get("cash_reserve_pct", 0.00)))
+    stop_loss_pct  = float(current_rp.get("stop_loss_pct",
+                           risk_cfg.get("stop_loss_pct", 0.0)))
+    sdl_pct        = float(current_rp.get("max_single_day_loss_pct", 0.0))
+    spy_vel_halt   = float(current_rp.get("spy_velocity_halt_pct", 0.03))
+    spy_vel_days   = int(current_rp.get("spy_velocity_lookback_days", 3))
+    trailing_trigger = float(current_rp.get("trailing_stop_trigger_pct", 0.0))
+    trailing_trail   = float(current_rp.get("trailing_stop_trail_pct", 0.0))
+
+    base_score_thresh = float(current_rp.get("min_model_score", config.get("min_model_score", 0.0)))
+    tiers = [float(t.get("min_model_score", base_score_thresh)) for t in tiered_thresholds] \
+            if tiered_thresholds else [base_score_thresh]
+
     # SPY EMA50 gate
     spy_ema50       = float(spy_close.ewm(span=50, adjust=False).mean().iloc[-1])
     spy_above_ema50 = spy_price >= spy_ema50
@@ -478,6 +638,8 @@ def run_once_multi(
     # ── MARKET CONTEXT ────────────────────────────────────────────────────────
     log.info("MARKET CONTEXT")
     log.info("  SPY  $%.2f  |  1d %+.1f%%  |  5d %+.1f%%", spy_price, spy_ret1d*100, spy_ret5d*100)
+    log.info("  Regime: %s  (GMM confidence %.0f%%)  CUSUM: %s",
+             gmm_regime, gmm_confidence*100, "TRIGGERED" if cusum_triggered else "clear")
     log.info("  EMA50 $%.2f  |  SPY %s EMA50  →  gate %s",
              spy_ema50,
              ">" if spy_above_ema50 else "<",
@@ -508,6 +670,20 @@ def run_once_multi(
     entry_dates: dict     = state.setdefault("entry_dates", {})
     sell_streaks: dict    = state.setdefault("sell_streaks", {})
     last_sell_dates: dict = state.setdefault("last_sell_dates", {})
+    position_hwm: dict    = state.setdefault("position_hwm", {})
+
+    # Regime state — persist so sell-only runs retain the last detected regime
+    state["regime"] = gmm_regime
+    state["regime_confidence"] = round(gmm_confidence, 4)
+
+    # Transition countdown — decrement each run; reset to transition_bars on new CUSUM trigger
+    transition_countdown = int(state.get("transition_countdown", 0))
+    if cusum_triggered and transition_countdown == 0:
+        transition_countdown = transition_bars
+        log.info("  CUSUM changepoint detected — transition countdown reset to %d bars", transition_bars)
+    elif transition_countdown > 0:
+        transition_countdown -= 1
+    state["transition_countdown"] = transition_countdown
 
     # HWM + drawdown
     hwm = float(state.get("high_water_mark", account_value))
@@ -542,7 +718,7 @@ def run_once_multi(
                 entry_dates[sym] = buy_day
                 log.info("  Reconcile: %s entry_date=%s (from Alpaca history)", sym, buy_day)
         for sym, sell_day in last_sell_hist.items():
-            if sell_day == today_str and last_sell_dates.get(sym) != sell_day:
+            if last_sell_dates.get(sym, "") < sell_day:
                 last_sell_dates[sym] = sell_day
                 log.info("  Reconcile: %s last_sell=%s (from Alpaca history)", sym, sell_day)
     except Exception as e:
@@ -567,10 +743,38 @@ def run_once_multi(
                 pass
         unrealized = ((current_price - avg_cost) / avg_cost) if avg_cost > 0 else 0.0
 
-        log.info("  %s  $%.2f  held=%dd  entry=$%.2f  P&L %+.1f%%",
-                 symbol, current_price, days_held, avg_cost, unrealized*100)
+        # Update per-position HWM
+        prev_hwm = float(position_hwm.get(symbol, current_price))
+        position_hwm[symbol] = max(prev_hwm, current_price)
+        peak_gain = (position_hwm[symbol] - avg_cost) / avg_cost if avg_cost > 0 else 0.0
 
-        # [EXIT 1] Trailing stop — not tracked in runner (no per-position HWM yet)
+        log.info("  %s  $%.2f  held=%dd  entry=$%.2f  P&L %+.1f%%  HWM $%.2f  peak_gain %+.1f%%",
+                 symbol, current_price, days_held, avg_cost, unrealized*100,
+                 position_hwm[symbol], peak_gain*100)
+
+        # [EXIT 1] Trailing stop (BULL_CALM only: trigger=20%, trail=18%)
+        if trailing_trigger > 0 and trailing_trail > 0 and avg_cost > 0 and peak_gain >= trailing_trigger:
+            trail_stop = position_hwm[symbol] * (1.0 - trailing_trail)
+            if current_price <= trail_stop:
+                position = positions_cache.get(symbol, {}).get("qty", 0.0)
+                result = broker.place_order(symbol, "SELL", abs(position))
+                log.info("    → SELL [TRAILING STOP] price=%.2f <= trail=%.2f (HWM=%.2f, trigger=%.0f%%, trail=%.0f%%)",
+                         current_price, trail_stop, position_hwm[symbol],
+                         trailing_trigger*100, trailing_trail*100)
+                _log_trade(strategy_dir, config["model_name"], {
+                    "timestamp": datetime.now().isoformat(),
+                    "symbol": symbol, "signal": "trailing_stop",
+                    "peak_gain": round(peak_gain, 4),
+                    "hwm": round(position_hwm[symbol], 4),
+                    "trail_stop": round(trail_stop, 4),
+                    "order": result,
+                })
+                entry_dates.pop(symbol, None)
+                sell_streaks.pop(symbol, None)
+                position_hwm.pop(symbol, None)
+                last_sell_dates[symbol] = today_str
+                held.remove(symbol)
+                continue
 
         # [EXIT 2] Cumulative stop-loss
         if stop_loss_pct > 0 and avg_cost > 0:
@@ -587,6 +791,7 @@ def run_once_multi(
                 })
                 entry_dates.pop(symbol, None)
                 sell_streaks.pop(symbol, None)
+                position_hwm.pop(symbol, None)
                 last_sell_dates[symbol] = today_str
                 held.remove(symbol)
                 continue
@@ -610,6 +815,7 @@ def run_once_multi(
                 })
                 entry_dates.pop(symbol, None)
                 sell_streaks.pop(symbol, None)
+                position_hwm.pop(symbol, None)
                 last_sell_dates[symbol] = today_str
                 held.remove(symbol)
                 continue
@@ -670,6 +876,7 @@ def run_once_multi(
                     "order": result,
                 })
                 entry_dates.pop(symbol, None)
+                position_hwm.pop(symbol, None)
                 last_sell_dates[symbol] = today_str
                 held.remove(symbol)
         else:
@@ -716,14 +923,33 @@ def run_once_multi(
         log.info(sep)
         return
 
+    if transition_countdown > 0:
+        log.info("  Transition uncertainty window: %d bars remaining — no buys", transition_countdown)
+        log.info(sep)
+        return
+
+    # ── BEAR BRANCH: defensives only ──────────────────────────────────────────
+    is_bear = gmm_regime == "BEAR"
+    scan_universe = defensive_tickers if is_bear else watchlist
+    if is_bear:
+        defensive_held = [s for s in held if s in defensive_tickers]
+        if defensive_held:
+            log.info("  BEAR regime — defensive already held (%s) — no new buys", defensive_held)
+            log.info(sep)
+            return
+        open_slots = min(open_slots, 1)  # only 1 defensive slot in BEAR
+        max_position_pct = 0.15          # override: BEAR config blocks offensive; defensives use 15%
+        log.info("  BEAR regime — scanning defensives only: %s", defensive_tickers)
+
     # ── FULL TICKER SCAN ──────────────────────────────────────────────────────
-    log.info("  SPY gates clear — scanning all %d tickers", len(watchlist))
+    log.info("  SPY gates clear — scanning %d tickers", len(scan_universe))
     log.info("─" * 62)
     log.info("FULL TICKER SCAN")
 
     buy_candidates = []   # (symbol, raw_score, rank_score, rs_score, row)
+    earnings_window = int(regime_cfg.get("earnings_buffer_days", 3))
 
-    for symbol in watchlist:
+    for symbol in scan_universe:
         if symbol in held:
             log.info("  %-6s  SKIP  [already held]", symbol)
             continue
@@ -752,6 +978,23 @@ def run_once_multi(
                     continue
             except ValueError:
                 pass
+
+        # Earnings filter (±earnings_window days around reported earnings date)
+        if earnings_window > 0 and symbol in earnings_cal:
+            today = _date.today()
+            near_earnings = False
+            for date_str in earnings_cal.get(symbol, []):
+                try:
+                    earn_date = _date.fromisoformat(date_str)
+                    if abs((today - earn_date).days) <= earnings_window:
+                        near_earnings = True
+                        break
+                except ValueError:
+                    pass
+            if near_earnings:
+                log.info("  %-6s  $%.2f  SKIP  [earnings within %dd window]",
+                         symbol, price, earnings_window)
+                continue
 
         # Build features and run model
         model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
@@ -799,8 +1042,7 @@ def run_once_multi(
             continue
 
         # Relative strength vs sector ETF (20d)
-        sector_etfs = {"tech": "XLK", "finance": "XLF", "healthcare": "XLV",
-                       "energy": "XLE", "industrial": "XLI", "utility": "XLU"}
+        sector_etfs = config.get("sector_etf_map", {})
         sector  = sector_map.get(symbol, "other")
         etf     = sector_etfs.get(sector)
         rs_score = 0.0
@@ -882,6 +1124,16 @@ def run_once_multi(
                          symbol, sector, sector_count, max_per_sector)
                 continue
 
+        # Correlation guard — reject if too correlated with any already-held position
+        corr_threshold = float(regime_cfg.get("correlation_guard_threshold", 0.7))
+        if corr_matrix and held:
+            sym_corrs = corr_matrix.get(symbol, {})
+            too_correlated = [h for h in held if abs(float(sym_corrs.get(h, 0.0))) >= corr_threshold]
+            if too_correlated:
+                log.info("  %-6s  SKIP  [corr guard: correlated with %s (threshold %.2f)]",
+                         symbol, too_correlated, corr_threshold)
+                continue
+
         # Position sizing
         account_value = broker.get_account_value()
         price         = float(dfs[symbol]["close"].iloc[-1])
@@ -927,6 +1179,7 @@ def run_once_multi(
         held.append(symbol)
         slots_filled += 1
         open_slots   -= 1
+        cash_avail   -= invest  # prevent subsequent buys from sizing off same cash snapshot
 
     if slots_filled == 0:
         log.info("  No buys placed (all candidates filtered out)")

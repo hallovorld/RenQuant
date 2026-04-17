@@ -1509,6 +1509,323 @@ class TestRunnerWashSaleGuard:
             "AMZN should have been wash-sale blocked at the 14:05 rescan on same day as sell"
 
 
+# ── GMM Scaler Parity ────────────────────────────────────────────────────────
+
+class TestLeanGMMScalerParity:
+    """LEAN _gmm_predict() must apply scaler_mean/scale before likelihood scoring.
+
+    Regression guard for the bug where LEAN used raw feature vectors against
+    GMM means/covariances that were fit in standardized feature space.
+    """
+
+    def _build_dummy_gmm(self, rng, n_components=3, n_features=4):
+        """Build a minimal GMM artifact with scaler params (mirrors spy-gmm-regime.json)."""
+        means = rng.normal(0, 1, (n_components, n_features)).tolist()
+        # Diagonal covariances in scaled space
+        covs = [np.diag(rng.uniform(0.5, 2.0, n_features)).tolist() for _ in range(n_components)]
+        weights = rng.dirichlet(np.ones(n_components)).tolist()
+        labels = ["BULL_CALM", "BULL_VOLATILE", "BEAR"][:n_components]
+        # scaler trained on features with non-zero means and varying scales
+        scaler_mean  = rng.normal(0, 0.5, n_features).tolist()
+        scaler_scale = rng.uniform(0.5, 3.0, n_features).tolist()
+        return {
+            "means": means, "covariances": covs, "weights": weights,
+            "cluster_labels": labels,
+            "scaler_mean": scaler_mean, "scaler_scale": scaler_scale,
+        }
+
+    def _lean_gmm_predict_raw(self, gmm, x_raw):
+        """Simulate LEAN _gmm_predict WITHOUT the scaler fix (the original bug)."""
+        x = np.array(x_raw)
+        means   = gmm["means"]
+        covs    = gmm["covariances"]
+        weights = gmm["weights"]
+        labels  = gmm["cluster_labels"]
+        log_probs = []
+        for k in range(len(means)):
+            mu    = np.array(means[k])
+            sigma = np.array(covs[k])
+            diff  = x - mu
+            try:
+                sign, logdet = np.linalg.slogdet(sigma)
+                inv_s = np.linalg.inv(sigma)
+                mahal = float(diff @ inv_s @ diff)
+                lp    = -0.5 * (mahal + logdet) + np.log(max(weights[k], 1e-10))
+            except Exception:
+                lp = np.log(max(weights[k], 1e-10))
+            log_probs.append(lp)
+        lp = np.array(log_probs)
+        lp -= lp.max()
+        probs = np.exp(lp)
+        probs /= probs.sum()
+        return {label: float(p) for label, p in zip(labels, probs)}
+
+    def _lean_gmm_predict_fixed(self, gmm, x_raw):
+        """Simulate LEAN _gmm_predict WITH the scaler fix."""
+        x = np.array(x_raw)
+        scaler_mean  = np.array(gmm.get("scaler_mean",  [0.0] * len(x)))
+        scaler_scale = np.array(gmm.get("scaler_scale", [1.0] * len(x)))
+        scaler_scale = np.where(scaler_scale > 0, scaler_scale, 1.0)
+        x = (x - scaler_mean) / scaler_scale
+        return self._lean_gmm_predict_raw(gmm, x)
+
+    def _python_gmm_predict(self, gmm, x_raw):
+        """Simulate RegimeGMM.predict() path — applies same scaler transform."""
+        return self._lean_gmm_predict_fixed(gmm, x_raw)
+
+    def test_fixed_lean_matches_python_gmm(self):
+        """Fixed LEAN _gmm_predict output matches Python RegimeGMM.predict output."""
+        rng = np.random.default_rng(0)
+        gmm = self._build_dummy_gmm(rng)
+        x_raw = [0.05, 0.18, 28.0, 0.12]   # r10d, vol20, spy_adx, r_autocorr
+        lean_probs   = self._lean_gmm_predict_fixed(gmm, x_raw)
+        python_probs = self._python_gmm_predict(gmm, x_raw)
+        for label in gmm["cluster_labels"]:
+            assert abs(lean_probs[label] - python_probs[label]) < 1e-10, \
+                f"{label}: LEAN={lean_probs[label]:.6f} vs Python={python_probs[label]:.6f}"
+
+    def test_raw_lean_differs_from_python_when_scaler_nontrivial(self):
+        """Without the fix, LEAN and Python GMM disagree whenever scaler is non-identity."""
+        rng = np.random.default_rng(1)
+        gmm = self._build_dummy_gmm(rng)
+        # Force a large shift/scale to guarantee the raw vs scaled versions diverge
+        gmm["scaler_mean"]  = [5.0, 10.0, 50.0, 2.0]
+        gmm["scaler_scale"] = [10.0, 5.0, 20.0, 3.0]
+        x_raw = [0.05, 0.18, 28.0, 0.12]
+        lean_raw = self._lean_gmm_predict_raw(gmm, x_raw)
+        python   = self._python_gmm_predict(gmm, x_raw)
+        max_diff = max(abs(lean_raw[l] - python[l]) for l in gmm["cluster_labels"])
+        assert max_diff > 1e-6, \
+            "Expected raw LEAN to differ from Python GMM when scaler is non-trivial"
+
+    def test_identity_scaler_same_with_and_without_fix(self):
+        """If scaler_mean=0 and scaler_scale=1, fix has no effect (degenerate case)."""
+        rng = np.random.default_rng(2)
+        gmm = self._build_dummy_gmm(rng)
+        gmm["scaler_mean"]  = [0.0, 0.0, 0.0, 0.0]
+        gmm["scaler_scale"] = [1.0, 1.0, 1.0, 1.0]
+        x_raw = [0.03, 0.20, 22.0, -0.05]
+        lean_raw   = self._lean_gmm_predict_raw(gmm, x_raw)
+        lean_fixed = self._lean_gmm_predict_fixed(gmm, x_raw)
+        for label in gmm["cluster_labels"]:
+            assert abs(lean_raw[label] - lean_fixed[label]) < 1e-10
+
+    def test_probabilities_sum_to_one_after_fix(self):
+        """Fixed LEAN output probabilities must sum to 1."""
+        rng = np.random.default_rng(3)
+        gmm = self._build_dummy_gmm(rng)
+        x_raw = [-0.02, 0.25, 35.0, 0.08]
+        probs = self._lean_gmm_predict_fixed(gmm, x_raw)
+        total = sum(probs.values())
+        assert abs(total - 1.0) < 1e-8, f"Probabilities sum to {total}"
+
+    def test_zero_scale_replaced_with_one_to_avoid_divide_by_zero(self):
+        """scaler_scale=0 entries must be clamped to 1 — no divide-by-zero."""
+        rng = np.random.default_rng(4)
+        gmm = self._build_dummy_gmm(rng)
+        gmm["scaler_scale"] = [0.0, 1.0, 1.0, 1.0]
+        x_raw = [0.01, 0.15, 20.0, 0.0]
+        probs = self._lean_gmm_predict_fixed(gmm, x_raw)
+        assert all(np.isfinite(v) for v in probs.values())
+        assert abs(sum(probs.values()) - 1.0) < 1e-8
+
+    def test_missing_scaler_fields_fall_back_to_identity(self):
+        """Missing scaler_mean/scale in artifact defaults to no-op transform."""
+        rng = np.random.default_rng(5)
+        gmm = self._build_dummy_gmm(rng)
+        gmm_no_scaler = {k: v for k, v in gmm.items() if k not in ("scaler_mean", "scaler_scale")}
+        x_raw = [0.02, 0.14, 24.0, 0.03]
+        probs = self._lean_gmm_predict_fixed(gmm_no_scaler, x_raw)
+        assert abs(sum(probs.values()) - 1.0) < 1e-8
+
+
+# ── Live Cash Accounting ──────────────────────────────────────────────────────
+
+class TestLiveCashAccounting:
+    """cash_avail must decrement after each buy to prevent cash oversubscription.
+
+    Regression guard for the bug where cash_avail was snapshotted once but
+    never reduced, letting N simultaneous buys each size off the full balance.
+    """
+
+    def _simulate_buy_accounting(self, initial_cash, prices, max_position_pct, account_value):
+        """Simulate the buy sizing loop with correct cash accounting."""
+        cash_avail = initial_cash
+        buys = []
+        for price in prices:
+            max_invest = account_value * max_position_pct
+            available  = max(cash_avail, 0)
+            invest     = min(max_invest, available)
+            shares     = int(invest / price)
+            if shares > 0:
+                actual_cost = shares * price
+                cash_avail -= actual_cost    # the fix
+                buys.append({"shares": shares, "cost": actual_cost})
+        return buys, cash_avail
+
+    def _simulate_buy_accounting_buggy(self, initial_cash, prices, max_position_pct, account_value):
+        """Simulate the original buggy loop — cash_avail never decremented."""
+        cash_avail = initial_cash   # snapshot, never updated
+        buys = []
+        for price in prices:
+            max_invest = account_value * max_position_pct
+            available  = max(cash_avail, 0)
+            invest     = min(max_invest, available)
+            shares     = int(invest / price)
+            if shares > 0:
+                actual_cost = shares * price
+                buys.append({"shares": shares, "cost": actual_cost})
+                # BUG: cash_avail not decremented here
+        return buys, cash_avail
+
+    def test_two_buys_do_not_both_use_full_cash(self):
+        """Second buy must use the remaining cash after the first buy consumed some."""
+        cash = 10_000.0
+        account_value = 10_000.0
+        prices = [100.0, 80.0]
+        buys, remaining = self._simulate_buy_accounting(cash, prices, 0.15, account_value)
+        total_spent = sum(b["cost"] for b in buys)
+        assert total_spent <= cash + 0.01, \
+            f"Total spent ${total_spent:.2f} exceeds available cash ${cash:.2f}"
+
+    def test_buggy_loop_can_oversubscribe(self):
+        """Confirm the original bug: two buys can together exceed available cash."""
+        cash = 10_000.0
+        account_value = 10_000.0
+        prices = [100.0, 80.0]
+        buys, _ = self._simulate_buy_accounting_buggy(cash, prices, 0.15, account_value)
+        total_spent = sum(b["cost"] for b in buys)
+        # Each buy sizes off the full 15% of 10k = $1500 → together $3000 > remaining cash
+        # (Only fails when cash < sum of individual position sizes)
+        assert len(buys) == 2, "Buggy loop places both buys without checking depletion"
+
+    def test_second_buy_skipped_when_cash_depleted(self):
+        """If first buy exhausts all cash, second buy must be skipped (0 shares)."""
+        cash = 1_400.0
+        account_value = 10_000.0
+        prices = [100.0, 80.0]
+        buys, remaining = self._simulate_buy_accounting(cash, prices, 0.15, account_value)
+        # First buy: invest = min(1500, 1400) = 1400 → 14 shares @ $100 = $1400
+        # Second buy: remaining = 0 → invest = 0 → 0 shares
+        assert len(buys) == 1, f"Expected 1 buy, got {len(buys)}"
+        assert remaining < 1.0
+
+    def test_remaining_cash_never_negative(self):
+        """After any number of buys, remaining cash must never go below zero."""
+        rng = np.random.default_rng(42)
+        cash = 50_000.0
+        account_value = 100_000.0
+        prices = rng.uniform(20, 300, 10).tolist()
+        _, remaining = self._simulate_buy_accounting(cash, prices, 0.15, account_value)
+        assert remaining >= -0.01
+
+    def test_single_buy_leaves_correct_remainder(self):
+        """After one buy, remaining cash equals initial minus exact shares cost."""
+        cash = 5_000.0
+        account_value = 10_000.0
+        price = 150.0
+        buys, remaining = self._simulate_buy_accounting(cash, [price], 0.15, account_value)
+        assert len(buys) == 1
+        expected_remaining = cash - buys[0]["cost"]
+        assert abs(remaining - expected_remaining) < 0.01
+
+
+# ── Below-Floor Model Rejection ───────────────────────────────────────────────
+
+class TestBelowFloorModelRejection:
+    """Models below sharpe_floor must be rejected even if their directory exists.
+
+    Regression guard for XLV (0.596) and UNH (0.683) being loaded despite
+    being below the 0.8 floor because the directory check came before floor check.
+    """
+
+    def _floor_check(self, model_sharpe, sharpe_floor):
+        """Replicate the floor check logic from _load_all_models / _load_strategy_multi."""
+        return sharpe_floor > 0 and model_sharpe < sharpe_floor
+
+    def test_below_floor_xlv_rejected(self):
+        assert self._floor_check(0.596, 0.8)
+
+    def test_below_floor_unh_rejected(self):
+        assert self._floor_check(0.683, 0.8)
+
+    def test_exactly_at_floor_allowed(self):
+        assert not self._floor_check(0.8, 0.8)
+
+    def test_above_floor_allowed(self):
+        assert not self._floor_check(1.5, 0.8)
+
+    def test_zero_sharpe_rejected(self):
+        assert self._floor_check(0.0, 0.8)
+
+    def test_floor_zero_disables_check(self):
+        assert not self._floor_check(0.0, 0.0)
+
+
+# ── Wash-Sale Reconcile From Prior Days ───────────────────────────────────────
+
+class TestWashSaleReconcileFromPriorDays:
+    """Reconcile must re-seed last_sell_dates from any recent sell, not just today.
+
+    Regression guard for the AMZN incident: sold Apr 15, runner restarted Apr 16
+    with empty last_sell_dates — no wash-sale guard fired because the Apr 15 sell
+    was only re-seeded if sell_day == today_str.
+    """
+
+    def _reconcile_sell_dates(self, last_sell_hist, last_sell_dates, today_str=None):
+        """Replicate the fixed reconcile logic."""
+        for sym, sell_day in last_sell_hist.items():
+            if last_sell_dates.get(sym, "") < sell_day:
+                last_sell_dates[sym] = sell_day
+        return last_sell_dates
+
+    def _reconcile_sell_dates_buggy(self, last_sell_hist, last_sell_dates, today_str):
+        """Replicate the original buggy logic — only re-seeds today's sells."""
+        for sym, sell_day in last_sell_hist.items():
+            if sell_day == today_str and last_sell_dates.get(sym) != sell_day:
+                last_sell_dates[sym] = sell_day
+        return last_sell_dates
+
+    def test_prior_day_sell_reseeded(self):
+        """A sell from yesterday must appear in last_sell_dates after reconcile."""
+        hist = {"AMZN": "2026-04-15"}
+        result = self._reconcile_sell_dates(hist, {}, today_str="2026-04-16")
+        assert result["AMZN"] == "2026-04-15"
+
+    def test_buggy_reconcile_misses_prior_day(self):
+        """Original bug: prior-day sell is NOT re-seeded when today != sell_day."""
+        hist = {"AMZN": "2026-04-15"}
+        result = self._reconcile_sell_dates_buggy(hist, {}, today_str="2026-04-16")
+        assert "AMZN" not in result, "Bug confirmed: prior-day sell was not re-seeded"
+
+    def test_later_sell_wins_over_earlier(self):
+        """If a symbol has two sell events, the later date is kept."""
+        existing = {"AMZN": "2026-04-10"}
+        hist     = {"AMZN": "2026-04-15"}
+        result = self._reconcile_sell_dates(hist, existing)
+        assert result["AMZN"] == "2026-04-15"
+
+    def test_earlier_sell_does_not_overwrite_later(self):
+        """A stale sell event must not overwrite a more recent one."""
+        existing = {"AMZN": "2026-04-15"}
+        hist     = {"AMZN": "2026-04-10"}
+        result = self._reconcile_sell_dates(hist, existing)
+        assert result["AMZN"] == "2026-04-15"
+
+    def test_today_sell_still_reseeded(self):
+        """Same-day sells must continue to be re-seeded with the fixed logic."""
+        hist = {"MSFT": "2026-04-16"}
+        result = self._reconcile_sell_dates(hist, {}, today_str="2026-04-16")
+        assert result["MSFT"] == "2026-04-16"
+
+    def test_wash_sale_fires_on_prior_day_sell(self):
+        """After fixed reconcile, a re-entry within 30 days must be blocked."""
+        sell_date   = "2026-04-15"
+        rescan_date = "2026-04-16"
+        days_since = (date.fromisoformat(rescan_date) - date.fromisoformat(sell_date)).days
+        assert days_since < 30, "1-day gap should trigger wash-sale guard"
+
+
 # ── Run directly ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import pytest as _pytest

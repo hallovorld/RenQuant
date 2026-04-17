@@ -91,7 +91,8 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._spy_return_buffer    = []       # rolling SPY daily returns for Hurst + CUSUM
 
         # ── Load artifacts ──
-        staleness_days = int(CONFIG.get("model_staleness_days", 60))
+        staleness_days    = int(CONFIG.get("model_staleness_days", 60))
+        self._sharpe_floor = float(CONFIG.get("sharpe_floor", 0.8))
         self.models    = {}
         self._load_all_models(staleness_days)
 
@@ -616,6 +617,12 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             r_autocorr = 0.0
 
         x = np.array([r10d, vol20, spy_adx, r_autocorr])
+
+        # Apply the same StandardScaler used during GMM training
+        scaler_mean  = np.array(self._gmm.get("scaler_mean",  [0.0] * len(x)))
+        scaler_scale = np.array(self._gmm.get("scaler_scale", [1.0] * len(x)))
+        scaler_scale = np.where(scaler_scale > 0, scaler_scale, 1.0)
+        x = (x - scaler_mean) / scaler_scale
 
         # Gaussian log-likelihood per component
         means  = self._gmm["means"]
@@ -1225,6 +1232,10 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 if age > staleness_days:
                     self.Log(f"WARNING: {ticker} model is {age}d old (limit={staleness_days}), skipping")
                     continue
+            model_sharpe = metadata.get("sharpe", 0.0)
+            if self._sharpe_floor > 0 and model_sharpe < self._sharpe_floor:
+                self.Log(f"WARNING: {ticker} sharpe={model_sharpe:.3f} below floor={self._sharpe_floor}, skipping")
+                continue
             model_data = self._load_model_artifacts(ticker, metadata, symbol_dir)
             if model_data is not None:
                 self.models[ticker] = model_data

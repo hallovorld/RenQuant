@@ -605,12 +605,12 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-405 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
+430 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
 
 - `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
-- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, regression tests for all 6 gap fixes, gap-risk stop-loss, single-day loss gate (7 tests), SPY regime-context feature injection (8 tests — regression guard for the `spy_realized_vol`/`spy_adx`/`spy_trend`/`hurst_proxy` KeyError), min_hold_days (9 tests), wash-sale guard (8 tests)
-- `tests/test_runner_ranking.py` — live runner model-score ranking, calibration (Platt + isotonic), tiered thresholds, regression guards (40 tests)
+- `tests/test_lean_policies.py` — pure-Python replicas of each LEAN policy function, `predict_score_bulk()` correctness, regression tests for all gap fixes, GMM scaler parity (6 tests), live cash accounting (5 tests), below-floor model rejection (6 tests), wash-sale reconcile from prior days (6 tests), min_hold_days, wash-sale guard, SPY regime-context feature injection
+- `tests/test_runner_ranking.py` — live runner model-score ranking, calibration (Platt + isotonic), tiered thresholds, regression guards (42 tests)
 
 ## 17. Implementation Roadmap (Status)
 
@@ -652,7 +652,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 405 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 430 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 
