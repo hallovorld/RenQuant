@@ -82,17 +82,20 @@ def rolling_hurst(returns: pd.Series, window: int = 63, max_lag: int = 40) -> pd
 
 def compute_cusum(returns: pd.Series | np.ndarray,
                   threshold: float = 3.0,
-                  drift: float     = 0.5) -> bool:
+                  drift: float     = 0.5,
+                  reference_returns: pd.Series | np.ndarray | None = None) -> bool:
     """CUSUM changepoint test.
 
     Returns True if a structural break is detected in ``returns``.
-    Normalises internally so threshold is in standard-deviation units.
+    When ``reference_returns`` is provided, that series defines the in-control
+    baseline used to estimate mean and standard deviation.
     """
     arr = np.asarray(returns, dtype=float)
-    if len(arr) < 5:
+    ref = np.asarray(reference_returns, dtype=float) if reference_returns is not None else arr
+    if len(arr) < 5 or len(ref) < 5:
         return False
-    mu    = arr.mean()
-    sigma = arr.std(ddof=1)
+    mu    = ref.mean()
+    sigma = ref.std(ddof=1)
     if sigma <= 0:
         return False
     s_pos = s_neg = 0.0
@@ -109,11 +112,17 @@ def rolling_cusum(returns: pd.Series,
                   window:    int   = 20,
                   threshold: float = 3.0,
                   drift:     float = 0.5) -> pd.Series:
-    """Rolling CUSUM — returns boolean Series (True = changepoint in window)."""
+    """Rolling CUSUM using the prior window as the in-control baseline."""
     result = pd.Series(False, index=returns.index)
-    for i in range(window, len(returns) + 1):
-        chunk            = returns.iloc[i - window:i].values
-        result.iloc[i - 1] = compute_cusum(chunk, threshold=threshold, drift=drift)
+    for i in range(window * 2, len(returns) + 1):
+        reference = returns.iloc[i - (window * 2):i - window].values
+        chunk = returns.iloc[i - window:i].values
+        result.iloc[i - 1] = compute_cusum(
+            chunk,
+            threshold=threshold,
+            drift=drift,
+            reference_returns=reference,
+        )
     return result
 
 

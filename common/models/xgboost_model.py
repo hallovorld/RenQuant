@@ -189,9 +189,9 @@ class XGBoostModel(BaseModel):
         else:
             X = state[self.feature_columns].values.reshape(1, -1)
         score = self._score(X)[0]
-        if score > self.buy_threshold - 0.5:   # threshold relative to 0.5 base
+        if score > self.buy_threshold:
             return "buy"
-        if score < -(self.sell_threshold - 0.5):
+        if score < -self.sell_threshold:
             return "sell"
         return "hold"
 
@@ -201,8 +201,8 @@ class XGBoostModel(BaseModel):
         X = df[self.feature_columns].values
         scores = self._score(X)
         result = np.where(
-            scores > (self.buy_threshold - 0.5), "buy",
-            np.where(scores < -(self.sell_threshold - 0.5), "sell", "hold"),
+            scores > self.buy_threshold, "buy",
+            np.where(scores < -self.sell_threshold, "sell", "hold"),
         )
         return pd.Series(result, index=df.index)
 

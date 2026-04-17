@@ -303,6 +303,39 @@ class TestGetModelScore:
         assert isinstance(score, float)
         assert -1.0 <= score <= 1.0
 
+    def test_xgboost_signal_threshold_uses_net_score_directly(self, monkeypatch):
+        """A buy_threshold of 0.55 should require a >0.55 net score, not merely >0.05."""
+        from common.models.xgboost_model import XGBoostModel
+
+        model = XGBoostModel(feature_columns=["rsi"], buy_threshold=0.55, sell_threshold=0.55)
+        model._buy_model = object()
+        model._sell_model = object()
+
+        monkeypatch.setattr(model, "_score", lambda X: np.array([0.10] * len(X)))
+
+        row = pd.Series({"rsi": 0.5})
+        signal = model.predict(row)
+        bulk_signal = model.predict_bulk(pd.DataFrame([row]))
+
+        assert signal == "hold"
+        assert bulk_signal.iloc[0] == "hold"
+
+    def test_xgboost_sell_threshold_uses_net_score_directly(self, monkeypatch):
+        from common.models.xgboost_model import XGBoostModel
+
+        model = XGBoostModel(feature_columns=["rsi"], buy_threshold=0.55, sell_threshold=0.55)
+        model._buy_model = object()
+        model._sell_model = object()
+
+        monkeypatch.setattr(model, "_score", lambda X: np.array([-0.10] * len(X)))
+
+        row = pd.Series({"rsi": 0.5})
+        signal = model.predict(row)
+        bulk_signal = model.predict_bulk(pd.DataFrame([row]))
+
+        assert signal == "hold"
+        assert bulk_signal.iloc[0] == "hold"
+
     def test_rank_score_uses_calibration_when_present(self):
         model = StubModel(score=2.0)
         model._score_calibration = ScoreCalibration(
@@ -1120,3 +1153,208 @@ class TestBatchPositionFetch:
         assert sell_orders[0]["quantity"] == pytest.approx(7.0)
         # Still no per-symbol get_position() calls
         assert broker.get_position_calls == []
+
+
+class TestLiveRegimeParity:
+    def test_choppy_regime_defaults_to_half_confidence(self, monkeypatch):
+        import live.runner as runner_mod
+
+        df_spy = _make_ohlcv(n=80)
+        regime_cfg = {
+            "hurst_window": 63,
+            "cusum_lookback": 20,
+            "cusum_threshold": 3.0,
+            "cusum_drift": 0.5,
+            "vol_realized_window": 20,
+        }
+
+        monkeypatch.setattr(runner_mod, "_compute_hurst_live", lambda returns, window: 0.40)
+        monkeypatch.setattr(
+            runner_mod,
+            "_compute_cusum_live",
+            lambda returns, lookback, threshold, drift: False,
+        )
+        monkeypatch.setattr(
+            runner_mod,
+            "_gmm_predict_live",
+            lambda *args, **kwargs: {
+                "BULL_CALM": 0.55,
+                "BULL_VOLATILE": 0.30,
+                "BEAR": 0.15,
+            },
+        )
+
+        regime, confidence, triggered = runner_mod._detect_regime_live(
+            df_spy,
+            {"artifact": True},
+            regime_cfg,
+        )
+
+        assert regime == "CHOPPY"
+        assert confidence == pytest.approx(0.5)
+        assert not triggered
+
+    def test_detect_regime_uses_real_spy_adx(self, monkeypatch):
+        import live.runner as runner_mod
+
+        idx = pd.bdate_range("2024-01-02", periods=80)
+        close = np.linspace(100.0, 180.0, len(idx))
+        df_spy = pd.DataFrame(
+            {
+                "open": close * 0.995,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.full(len(idx), 1_000_000.0),
+            },
+            index=idx,
+        )
+        regime_cfg = {
+            "hurst_window": 63,
+            "cusum_lookback": 20,
+            "cusum_threshold": 3.0,
+            "cusum_drift": 0.5,
+            "vol_realized_window": 20,
+        }
+        captured = {}
+
+        monkeypatch.setattr(runner_mod, "_compute_hurst_live", lambda returns, window: 0.50)
+        monkeypatch.setattr(
+            runner_mod,
+            "_compute_cusum_live",
+            lambda returns, lookback, threshold, drift: False,
+        )
+
+        def fake_gmm_predict(gmm_artifact, r10d, vol20, spy_adx, r_autocorr):
+            captured["spy_adx"] = spy_adx
+            return {"BULL_CALM": 0.55, "BULL_VOLATILE": 0.35, "BEAR": 0.10}
+
+        monkeypatch.setattr(runner_mod, "_gmm_predict_live", fake_gmm_predict)
+
+        runner_mod._detect_regime_live(df_spy, {"artifact": True}, regime_cfg)
+
+        assert "spy_adx" in captured
+        assert captured["spy_adx"] != pytest.approx(25.0)
+
+    def test_confidence_scaled_sizing_reduces_live_buy_size(self, monkeypatch, tmp_path):
+        import live.runner as runner_mod
+
+        aapl_df = _make_ohlcv(n=80, base_price=100.0, vol_spike=True)
+        aapl_df.loc[aapl_df.index[-1], ["open", "high", "low", "close"]] = [100.0, 101.0, 99.0, 100.0]
+        dfs = {"AAPL": aapl_df, "SPY": _make_ohlcv(n=80)}
+        models = {"AAPL": StubModel(signal="buy", score=0.9)}
+
+        broker = StubBroker(equity=10_000)
+        config = _minimal_config(
+            watchlist=["AAPL"],
+            sector_map={"AAPL": "tech"},
+            max_concurrent_positions=1,
+            tiered_thresholds=[{"min_model_score": 0.0}],
+            regime={"transition_uncertainty_bars": 3},
+            regime_params={
+                "BULL_CALM": {
+                    "max_position_pct": 0.15,
+                    "cash_reserve_pct": 0.0,
+                    "stop_loss_pct": 0.15,
+                    "max_single_day_loss_pct": 0.10,
+                    "max_hold_days": 500,
+                    "drawdown_halt_pct": 0.35,
+                    "min_model_score": 0.10,
+                    "spy_velocity_halt_pct": 0.03,
+                    "spy_velocity_lookback_days": 3,
+                },
+                "BULL_VOLATILE": {
+                    "max_position_pct": 0.20,
+                    "cash_reserve_pct": 0.20,
+                    "stop_loss_pct": 0.05,
+                    "max_single_day_loss_pct": 0.0,
+                    "max_hold_days": 500,
+                    "drawdown_halt_pct": 0.10,
+                    "min_model_score": 0.0,
+                    "spy_velocity_halt_pct": 0.03,
+                    "spy_velocity_lookback_days": 3,
+                },
+            },
+        )
+
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            runner_mod,
+            "_detect_regime_live",
+            lambda df_spy, gmm_artifact, regime_cfg: ("BULL_VOLATILE", 0.5, False),
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        assert len(broker.orders) == 1
+        assert broker.orders[0]["symbol"] == "AAPL"
+        assert broker.orders[0]["quantity"] == 10
+
+    def test_bear_defensive_buy_bypasses_macro_gates_and_cash_reserve(self, monkeypatch, tmp_path):
+        import live.runner as runner_mod
+
+        gld_df = _make_ohlcv(n=80, base_price=100.0, vol_spike=True)
+        gld_df.loc[gld_df.index[-1], ["open", "high", "low", "close"]] = [100.0, 101.0, 99.0, 100.0]
+
+        idx = pd.bdate_range("2024-01-02", periods=80)
+        close = np.linspace(200.0, 120.0, len(idx))
+        spy_df = pd.DataFrame(
+            {
+                "open": close * 1.005,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.full(len(idx), 1_000_000.0),
+            },
+            index=idx,
+        )
+
+        dfs = {"GLD": gld_df, "SPY": spy_df}
+        models = {"GLD": StubModel(signal="buy", score=0.9)}
+
+        broker = StubBroker(equity=10_000)
+        config = _minimal_config(
+            watchlist=["GLD"],
+            sector_map={"GLD": "commodity"},
+            defensive_tickers=["GLD"],
+            max_concurrent_positions=1,
+            tiered_thresholds=[{"min_model_score": 0.0}],
+            regime={"transition_uncertainty_bars": 3},
+            regime_params={
+                "BULL_CALM": {
+                    "max_position_pct": 0.15,
+                    "cash_reserve_pct": 0.0,
+                    "stop_loss_pct": 0.15,
+                    "max_single_day_loss_pct": 0.10,
+                    "max_hold_days": 500,
+                    "drawdown_halt_pct": 0.35,
+                    "min_model_score": 0.10,
+                    "spy_velocity_halt_pct": 0.03,
+                    "spy_velocity_lookback_days": 3,
+                },
+                "BEAR": {
+                    "max_position_pct": 0.0,
+                    "cash_reserve_pct": 1.0,
+                    "stop_loss_pct": 0.05,
+                    "max_single_day_loss_pct": 0.0,
+                    "max_hold_days": 500,
+                    "drawdown_halt_pct": 0.05,
+                    "min_model_score": 0.0,
+                    "spy_velocity_halt_pct": 0.03,
+                    "spy_velocity_lookback_days": 3,
+                },
+            },
+        )
+
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        monkeypatch.setattr(
+            runner_mod,
+            "_detect_regime_live",
+            lambda df_spy, gmm_artifact, regime_cfg: ("BEAR", 0.9, False),
+        )
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        assert len(broker.orders) == 1
+        assert broker.orders[0]["symbol"] == "GLD"
+        assert broker.orders[0]["quantity"] == 15

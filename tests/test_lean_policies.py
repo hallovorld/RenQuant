@@ -558,6 +558,41 @@ class TestLEANSPYVelocityFilter:
         assert not check_spy_velocity(returns, 3, 0.03)
 
 
+class TestCUSUMReferenceBaseline:
+    def test_common_compute_cusum_detects_shift_against_reference(self):
+        from common.indicators.regime import compute_cusum
+
+        reference = np.linspace(-0.01, 0.01, 20)
+        test = np.linspace(0.03, 0.05, 20)
+
+        assert compute_cusum(test, threshold=3.0, drift=0.5, reference_returns=reference)
+
+    def test_common_rolling_cusum_uses_prior_window(self):
+        from common.indicators.regime import rolling_cusum
+
+        reference = np.linspace(-0.01, 0.01, 20)
+        shifted = np.linspace(0.03, 0.05, 20)
+        series = pd.Series(np.concatenate([reference, shifted]))
+
+        result = rolling_cusum(series, window=20, threshold=3.0, drift=0.5)
+        assert bool(result.iloc[-1])
+
+    def test_live_cusum_requires_two_windows(self):
+        from live.runner import _compute_cusum_live
+
+        returns = np.linspace(-0.01, 0.01, 20)
+        assert not _compute_cusum_live(returns, lookback=20, threshold=3.0, drift=0.5)
+
+    def test_live_cusum_detects_shift_vs_prior_window(self):
+        from live.runner import _compute_cusum_live
+
+        reference = np.linspace(-0.01, 0.01, 20)
+        shifted = np.linspace(0.03, 0.05, 20)
+        returns = np.concatenate([reference, shifted])
+
+        assert _compute_cusum_live(returns, lookback=20, threshold=3.0, drift=0.5)
+
+
 # ── Policy: SPY EMA50 trend gate ─────────────────────────────────────────────
 
 def check_spy_ema50_gate(spy_closes: list) -> bool:
@@ -1760,6 +1795,18 @@ class TestBelowFloorModelRejection:
 
     def test_floor_zero_disables_check(self):
         assert not self._floor_check(0.0, 0.0)
+
+
+class TestStrategyConfigConsistency:
+    def test_choppy_model_sell_path_is_reachable(self):
+        config_path = ROOT / "backtesting" / "renquant_103" / "strategy_config.json"
+        config = json.loads(config_path.read_text())
+
+        min_hold_days = int(config.get("min_hold_days", 0))
+        consecutive_sells = int(config.get("consecutive_sell_signals", 1))
+        choppy_max_hold = int(config["regime_params"]["CHOPPY"]["max_hold_days"])
+
+        assert choppy_max_hold > min_hold_days + consecutive_sells - 1
 
 
 # ── Wash-Sale Reconcile From Prior Days ───────────────────────────────────────

@@ -480,8 +480,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             hurst_regime = "AMBIGUOUS"
 
         # Layer 2 — CUSUM changepoint
-        cusum_window = returns[-self._cusum_lookback:]
-        transition   = self._compute_cusum(cusum_window)
+        transition   = self._compute_cusum(returns, self._cusum_lookback)
         if transition:
             self._transition_countdown = self._transition_bars
             self.Debug(f"{self.Time.date()} CUSUM changepoint detected — uncertainty window starts")
@@ -576,16 +575,18 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
     # ── Layer 2: CUSUM Changepoint ────────────────────────────────────────────
 
-    def _compute_cusum(self, returns: np.ndarray) -> bool:
-        """Return True if a structural break is detected in the return window."""
-        if len(returns) < 5:
+    def _compute_cusum(self, returns: np.ndarray, lookback: int) -> bool:
+        """Return True if the latest window deviates from the prior baseline window."""
+        if len(returns) < lookback * 2:
             return False
-        mu    = returns.mean()
-        sigma = returns.std(ddof=1)
+        reference = returns[-(lookback * 2):-lookback]
+        window = returns[-lookback:]
+        mu    = reference.mean()
+        sigma = reference.std(ddof=1)
         if sigma <= 0:
             return False
         s_pos, s_neg = 0.0, 0.0
-        for r in returns:
+        for r in window:
             z    = (r - mu) / sigma
             s_pos = max(0.0, s_pos + z - self._cusum_drift)
             s_neg = max(0.0, s_neg - z - self._cusum_drift)

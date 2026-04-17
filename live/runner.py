@@ -285,12 +285,13 @@ def _compute_hurst_live(returns: "np.ndarray", window: int) -> float:
 
 
 def _compute_cusum_live(returns: "np.ndarray", lookback: int, threshold: float, drift: float) -> bool:
-    """Return True if CUSUM detects a changepoint in the most recent `lookback` bars."""
-    if len(returns) < lookback:
+    """Return True if the latest window deviates from the prior baseline window."""
+    if len(returns) < lookback * 2:
         return False
+    reference = np.array(returns[-(lookback * 2):-lookback])
     window = np.array(returns[-lookback:])
-    mu = window.mean()
-    sigma = window.std(ddof=1)
+    mu = reference.mean()
+    sigma = reference.std(ddof=1)
     if sigma <= 0:
         return False
     z = (window - mu) / sigma
@@ -334,8 +335,46 @@ def _gmm_predict_live(gmm_artifact: dict, r10d: float, vol20: float, spy_adx: fl
     return {label: float(p) for label, p in zip(labels, probs)}
 
 
+def _compute_spy_adx_live(df_spy, period: int = 14) -> float:
+    """Compute ADX(14) from cached SPY OHLCV data for live regime inference."""
+    import pandas as pd
+
+    if df_spy is None or df_spy.empty or len(df_spy) < period + 1:
+        return 25.0
+
+    rows = df_spy.tail(max(period * 2, period + 1)).copy()
+    high = rows["high"].astype(float)
+    low = rows["low"].astype(float)
+    close = rows["close"].astype(float)
+
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=rows.index).ewm(
+        alpha=1 / period, min_periods=period, adjust=False
+    ).mean() / atr.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=rows.index).ewm(
+        alpha=1 / period, min_periods=period, adjust=False
+    ).mean() / atr.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean().dropna()
+    if adx.empty or np.isnan(adx.iloc[-1]):
+        return 25.0
+    return float(adx.iloc[-1])
+
+
 def _detect_regime_live(
-    spy_close: "pd.Series",
+    df_spy,
     gmm_artifact: dict | None,
     regime_cfg: dict,
 ) -> tuple[str, float, bool]:
@@ -346,13 +385,17 @@ def _detect_regime_live(
     Layer 2: CUSUM → trigger transition countdown
     Layer 3: GMM → BULL_CALM / BULL_VOLATILE / BEAR
     """
-    if gmm_artifact is None or len(spy_close) < 20:
-        return "BULL_CALM", 0.0, False
+    if gmm_artifact is None or df_spy is None or df_spy.empty:
+        return "BULL_CALM", 0.5, False
+
+    spy_close = df_spy["close"].astype(float)
+    if len(spy_close) < 30:
+        return "BULL_CALM", 0.5, False
 
     spy_close_f = spy_close.astype(float)
     returns = spy_close_f.pct_change().dropna()
     if len(returns) < 20:
-        return "BULL_CALM", 0.0, False
+        return "BULL_CALM", 0.5, False
 
     hurst_window    = int(regime_cfg.get("hurst_window", 63))
     cusum_lookback  = int(regime_cfg.get("cusum_lookback", 20))
@@ -362,24 +405,36 @@ def _detect_regime_live(
 
     hurst = _compute_hurst_live(returns.values, hurst_window)
 
-    if hurst < 0.45:
-        gmm_regime  = "CHOPPY"
-        confidence  = 0.0
+    if hurst > 0.55:
+        hurst_regime = "MOMENTUM"
+    elif hurst < 0.45:
+        hurst_regime = "REVERSION"
     else:
-        spy_ret10d = float(spy_close_f.iloc[-1] / spy_close_f.iloc[-11] - 1) if len(spy_close_f) >= 11 else 0.0
-        vol20 = float(returns.values[-vol_window:].std() * np.sqrt(252)) if len(returns) >= vol_window else 0.15
-        # ADX not computable without high/low in runner; use neutral default
-        spy_adx = 25.0
-        r_autocorr = 0.0
-        if len(returns) >= 20:
-            arr = returns.values[-20:]
-            r_autocorr = float(np.corrcoef(arr[:-1], arr[1:])[0, 1]) if len(arr) > 2 else 0.0
-        gmm_probs  = _gmm_predict_live(gmm_artifact, spy_ret10d, vol20, spy_adx, r_autocorr)
-        gmm_regime = max(gmm_probs, key=lambda k: gmm_probs[k])
-        confidence = gmm_probs[gmm_regime]
+        hurst_regime = "AMBIGUOUS"
 
     cusum_triggered = _compute_cusum_live(returns.values, cusum_lookback, cusum_threshold, cusum_drift)
-    return gmm_regime, confidence, cusum_triggered
+
+    spy_ret10d = float(spy_close_f.iloc[-1] / spy_close_f.iloc[-11] - 1) if len(spy_close_f) >= 11 else 0.0
+    vol20 = float(returns.values[-vol_window:].std() * np.sqrt(252)) if len(returns) >= vol_window else 0.15
+    spy_adx = _compute_spy_adx_live(df_spy)
+    r_autocorr = 0.0
+    if len(returns) >= 20:
+        arr = returns.values[-20:]
+        r_autocorr = float(np.corrcoef(arr[:-1], arr[1:])[0, 1]) if len(arr) > 2 else 0.0
+    gmm_probs = _gmm_predict_live(gmm_artifact, spy_ret10d, vol20, spy_adx, r_autocorr)
+    dominant_gmm = max(gmm_probs, key=lambda k: gmm_probs[k])
+
+    if gmm_probs.get("BEAR", 0.0) > 0.5:
+        regime = "BEAR"
+    elif hurst_regime == "MOMENTUM":
+        regime = "BULL_CALM"
+    elif hurst_regime == "REVERSION":
+        regime = "CHOPPY"
+    else:
+        regime = dominant_gmm if dominant_gmm != "BEAR" else "BULL_VOLATILE"
+
+    confidence = float(gmm_probs.get(regime, 0.5))
+    return regime, confidence, cusum_triggered
 
 
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
@@ -604,15 +659,15 @@ def run_once_multi(
     spy_ret5d  = (spy_price / float(spy_close.iloc[-6]) - 1) if len(spy_close) >= 6 else 0.0
 
     # ── LIVE REGIME DETECTION ─────────────────────────────────────────────────
-    gmm_regime, gmm_confidence, cusum_triggered = _detect_regime_live(spy_close, gmm_artifact, regime_cfg)
+    current_regime, detected_confidence, cusum_triggered = _detect_regime_live(df_spy, gmm_artifact, regime_cfg)
 
     # Resolve regime-specific params; fall back to top-level position_sizing
-    current_rp     = regime_params.get(gmm_regime, regime_params.get("BULL_CALM", {}))
+    current_rp     = regime_params.get(current_regime, regime_params.get("BULL_CALM", {}))
     pos_sizing_top = config.get("position_sizing", {})
-    max_position_pct  = float(current_rp.get("max_position_pct",
-                              pos_sizing_top.get("max_position_pct", 0.15)))
-    cash_reserve_pct  = float(current_rp.get("cash_reserve_pct",
-                              pos_sizing_top.get("cash_reserve_pct", 0.00)))
+    base_max_position_pct = float(current_rp.get("max_position_pct",
+                                  pos_sizing_top.get("max_position_pct", 0.15)))
+    base_cash_reserve_pct = float(current_rp.get("cash_reserve_pct",
+                                  pos_sizing_top.get("cash_reserve_pct", 0.00)))
     stop_loss_pct  = float(current_rp.get("stop_loss_pct",
                            risk_cfg.get("stop_loss_pct", 0.0)))
     sdl_pct        = float(current_rp.get("max_single_day_loss_pct", 0.0))
@@ -639,7 +694,7 @@ def run_once_multi(
     log.info("MARKET CONTEXT")
     log.info("  SPY  $%.2f  |  1d %+.1f%%  |  5d %+.1f%%", spy_price, spy_ret1d*100, spy_ret5d*100)
     log.info("  Regime: %s  (GMM confidence %.0f%%)  CUSUM: %s",
-             gmm_regime, gmm_confidence*100, "TRIGGERED" if cusum_triggered else "clear")
+             current_regime, detected_confidence*100, "TRIGGERED" if cusum_triggered else "clear")
     log.info("  EMA50 $%.2f  |  SPY %s EMA50  →  gate %s",
              spy_ema50,
              ">" if spy_above_ema50 else "<",
@@ -673,8 +728,7 @@ def run_once_multi(
     position_hwm: dict    = state.setdefault("position_hwm", {})
 
     # Regime state — persist so sell-only runs retain the last detected regime
-    state["regime"] = gmm_regime
-    state["regime_confidence"] = round(gmm_confidence, 4)
+    state["regime"] = current_regime
 
     # Transition countdown — decrement each run; reset to transition_bars on new CUSUM trigger
     transition_countdown = int(state.get("transition_countdown", 0))
@@ -684,6 +738,10 @@ def run_once_multi(
     elif transition_countdown > 0:
         transition_countdown -= 1
     state["transition_countdown"] = transition_countdown
+    regime_confidence = 0.5 if transition_countdown > 0 else detected_confidence
+    state["regime_confidence"] = round(regime_confidence, 4)
+    max_position_pct = base_max_position_pct * regime_confidence
+    cash_reserve_pct = base_cash_reserve_pct * regime_confidence
 
     # HWM + drawdown
     hwm = float(state.get("high_water_mark", account_value))
@@ -911,25 +969,13 @@ def run_once_multi(
         log.info(sep)
         return
 
-    if not spy_above_ema50:
-        log.info("  SPY EMA50 gate BLOCKING (SPY $%.2f < EMA50 $%.2f) — no buys",
-                 spy_price, spy_ema50)
-        log.info(sep)
-        return
-
-    if not spy_vel_ok:
-        log.info("  SPY velocity crash BLOCKING (%+.1f%% over %dd) — no buys",
-                 spy_vel_ret*100, spy_vel_days)
-        log.info(sep)
-        return
-
     if transition_countdown > 0:
         log.info("  Transition uncertainty window: %d bars remaining — no buys", transition_countdown)
         log.info(sep)
         return
 
     # ── BEAR BRANCH: defensives only ──────────────────────────────────────────
-    is_bear = gmm_regime == "BEAR"
+    is_bear = current_regime == "BEAR"
     scan_universe = defensive_tickers if is_bear else watchlist
     if is_bear:
         defensive_held = [s for s in held if s in defensive_tickers]
@@ -939,7 +985,20 @@ def run_once_multi(
             return
         open_slots = min(open_slots, 1)  # only 1 defensive slot in BEAR
         max_position_pct = 0.15          # override: BEAR config blocks offensive; defensives use 15%
+        cash_reserve_pct = 0.0           # match LEAN: defensive buys bypass the 100% BEAR reserve
         log.info("  BEAR regime — scanning defensives only: %s", defensive_tickers)
+
+    if not spy_vel_ok and not is_bear:
+        log.info("  SPY velocity crash BLOCKING (%+.1f%% over %dd) — no buys",
+                 spy_vel_ret*100, spy_vel_days)
+        log.info(sep)
+        return
+
+    if not spy_above_ema50 and not is_bear:
+        log.info("  SPY EMA50 gate BLOCKING (SPY $%.2f < EMA50 $%.2f) — no buys",
+                 spy_price, spy_ema50)
+        log.info(sep)
+        return
 
     # ── FULL TICKER SCAN ──────────────────────────────────────────────────────
     log.info("  SPY gates clear — scanning %d tickers", len(scan_universe))
