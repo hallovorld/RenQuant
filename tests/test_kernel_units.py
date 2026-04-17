@@ -1,0 +1,661 @@
+"""Unit tests for kernel modules.
+
+All tests are self-contained — no common/ imports, no LEAN, no broker.
+Uses the kernel directly from backtesting/renquant_103/kernel/.
+"""
+from __future__ import annotations
+
+import datetime
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+# Ensure kernel is importable
+_KERNEL_PARENT = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_103"
+if str(_KERNEL_PARENT) not in sys.path:
+    sys.path.insert(0, str(_KERNEL_PARENT))
+
+from kernel.config import BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES
+from kernel.regime import (
+    RegimeState,
+    compute_hurst,
+    compute_cusum,
+    compute_regime_confidence,
+    detect_regime,
+)
+from kernel.indicators import (
+    compute_rsi,
+    compute_macd_hist,
+    compute_adx,
+    compute_all,
+    build_spy_context,
+    build_feature_frame,
+)
+from kernel.models import (
+    calibrate_score,
+    predict_classification,
+    predict_qlearning,
+    predict_manual,
+    predict_xgboost,
+    ScoreResult,
+    score_artifact,
+)
+from kernel.exits import (
+    HoldingState,
+    ExitSignal,
+    check_trailing_stop,
+    check_stop_loss,
+    check_single_day_loss,
+    check_max_hold,
+    check_model_sell,
+    compute_exits,
+)
+from kernel.selection import (
+    CandidateResult,
+    SelectionContext,
+    is_wash_sale_blocked,
+    is_earnings_blocked,
+    passes_sector_guard,
+    passes_correlation_guard,
+    score_candidates,
+    run_selection_loop,
+)
+from kernel.sizing import compute_position_size
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _make_ohlcv(n: int = 100, seed: int = 42) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.cumprod(1 + rng.normal(0.0005, 0.015, n))
+    high  = close * (1 + rng.uniform(0, 0.01, n))
+    low   = close * (1 - rng.uniform(0, 0.01, n))
+    df = pd.DataFrame({
+        "open": close * (1 + rng.normal(0, 0.003, n)),
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+    }, index=pd.date_range("2023-01-01", periods=n, freq="B"))
+    return df
+
+
+# ── kernel.config ─────────────────────────────────────────────────────────────
+
+class TestConfig:
+    def test_regimes_list(self):
+        assert set(REGIMES) == {BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR}
+
+    def test_regime_constants_unique(self):
+        assert len(REGIMES) == len(set(REGIMES))
+
+
+# ── kernel.regime ─────────────────────────────────────────────────────────────
+
+class TestComputeHurst:
+    def test_trending_series_above_half(self):
+        """A trending series should have H > 0.5."""
+        rng = np.random.default_rng(0)
+        trend = np.cumsum(rng.normal(0.001, 0.01, 200))
+        h = compute_hurst(trend)
+        assert h > 0.5
+
+    def test_mean_reverting_series_below_half(self):
+        """Alternating sign series is mean-reverting (H < 0.5)."""
+        n = 200
+        arr = np.array([(-1) ** i * 0.01 for i in range(n)])
+        h = compute_hurst(arr)
+        assert h < 0.5
+
+    def test_short_series_returns_half(self):
+        assert compute_hurst(np.array([0.01, -0.01, 0.01])) == 0.5
+
+    def test_returns_in_unit_interval(self):
+        rng = np.random.default_rng(1)
+        h = compute_hurst(rng.normal(0, 0.01, 100))
+        assert 0.0 <= h <= 1.0
+
+
+class TestComputeCusum:
+    def test_stable_series_no_trigger(self):
+        rng = np.random.default_rng(2)
+        data = rng.normal(0, 0.01, 60)
+        assert not compute_cusum(data, lookback=20, threshold=3.0, drift=0.5)
+
+    def test_mean_shift_triggers(self):
+        rng = np.random.default_rng(7)
+        # Reference window: small noise around 0
+        stable  = rng.normal(0, 0.002, 40)
+        # Current window: shifted up by many sigmas
+        shifted = rng.normal(0.05, 0.002, 20)
+        data = np.concatenate([stable, shifted])
+        assert compute_cusum(data, lookback=20, threshold=3.0, drift=0.5)
+
+    def test_too_short_returns_false(self):
+        assert not compute_cusum(np.ones(5), lookback=20, threshold=3.0, drift=0.5)
+
+
+class TestRegimeConfidence:
+    def test_transition_returns_half(self):
+        conf = compute_regime_confidence(BULL_CALM, 0.6, {BULL_CALM: 0.9}, True, {})
+        assert conf == 0.5
+
+    def test_choppy_uses_hurst(self):
+        """CHOPPY: H=0.20 → max confidence; H=0.44 → near zero."""
+        cfg = {"regime": {"choppy_hurst_floor": 0.20}}
+        high = compute_regime_confidence(CHOPPY, 0.20, {CHOPPY: 0.5}, False, cfg)
+        low  = compute_regime_confidence(CHOPPY, 0.44, {CHOPPY: 0.5}, False, cfg)
+        assert high > low
+        assert high == pytest.approx(1.0)
+
+    def test_bull_calm_uses_gmm(self):
+        gmm = {BULL_CALM: 0.75, BEAR: 0.25}
+        conf = compute_regime_confidence(BULL_CALM, 0.6, gmm, False, {})
+        assert conf == pytest.approx(0.75)
+
+
+class TestDetectRegime:
+    def _make_returns(self, n=100, seed=0):
+        rng = np.random.default_rng(seed)
+        return rng.normal(0, 0.01, n)
+
+    def test_returns_regime_state(self):
+        state = RegimeState()
+        returns = self._make_returns()
+        new_state = detect_regime(returns, None, None, state, {})
+        assert isinstance(new_state, RegimeState)
+        assert new_state.regime in REGIMES
+
+    def test_short_series_unchanged(self):
+        state = RegimeState()
+        result = detect_regime(np.zeros(10), None, None, state, {})
+        assert result.regime == BULL_CALM   # default unchanged
+
+    def test_confidence_in_unit_interval(self):
+        state = RegimeState()
+        returns = self._make_returns(120)
+        result = detect_regime(returns, None, None, state, {})
+        assert 0.0 <= result.confidence <= 1.0
+
+
+# ── kernel.indicators ─────────────────────────────────────────────────────────
+
+class TestComputeRSI:
+    def test_overbought_range(self):
+        # Mix of up and down days so avg_loss > 0, but mostly up → RSI should be high
+        rng = np.random.default_rng(99)
+        # 30 days: 90% up days with large gains, 10% down with tiny losses
+        deltas = np.where(rng.random(30) < 0.9, 2.0, -0.1)
+        close = pd.Series(np.cumsum(deltas) + 100.0)
+        rsi = compute_rsi(close)
+        assert rsi.dropna().iloc[-1] > 70
+
+    def test_range_0_to_100(self):
+        df = _make_ohlcv()
+        rsi = compute_rsi(df["close"])
+        valid = rsi.dropna()
+        assert (valid >= 0).all() and (valid <= 100).all()
+
+
+class TestComputeAll:
+    def test_returns_dataframe(self):
+        df = _make_ohlcv(80)
+        result = compute_all(df)
+        assert result is not None
+        assert isinstance(result, pd.DataFrame)
+        assert "rsi" in result.columns
+        assert "macd_hist" in result.columns
+
+    def test_short_series_returns_none(self):
+        result = compute_all(_make_ohlcv(5))
+        assert result is None
+
+    def test_no_nan_in_indicator_cols(self):
+        df = _make_ohlcv(100)
+        result = compute_all(df)
+        ind_cols = ["rsi", "macd_hist", "cci", "bbp", "adx", "williams_r", "obv_slope"]
+        assert result[ind_cols].isna().sum().sum() == 0
+
+
+class TestBuildFeatureFrame:
+    def test_returns_dataframe(self):
+        stock = _make_ohlcv(100, seed=1)
+        spy   = _make_ohlcv(100, seed=2)
+        result = build_feature_frame(stock, spy, {})
+        assert result is not None
+        assert not result.empty
+
+    def test_contains_relative_features(self):
+        stock = _make_ohlcv(100, seed=3)
+        spy   = _make_ohlcv(100, seed=4)
+        result = build_feature_frame(stock, spy, {})
+        assert "rsi" in result.columns
+        assert "hurst_proxy" in result.columns
+        assert "spy_realized_vol" in result.columns
+
+    def test_no_nan(self):
+        stock = _make_ohlcv(100, seed=5)
+        spy   = _make_ohlcv(100, seed=6)
+        result = build_feature_frame(stock, spy, {})
+        assert not result.isna().any().any()
+
+
+# ── kernel.models ─────────────────────────────────────────────────────────────
+
+class TestCalibrateScore:
+    def test_identity_passthrough(self):
+        assert calibrate_score(0.42, {"method": "identity"}) == pytest.approx(0.42)
+
+    def test_none_calibration(self):
+        assert calibrate_score(0.7, None) == pytest.approx(0.7)
+
+    def test_constant_probability(self):
+        val = calibrate_score(0.99, {"method": "constant_probability", "base_rate": 0.3})
+        assert val == pytest.approx(0.3)
+
+    def test_isotonic_interpolation(self):
+        cal = {
+            "method": "isotonic",
+            "x_thresholds": [0.0, 0.5, 1.0],
+            "y_thresholds": [0.1, 0.5, 0.9],
+        }
+        val = calibrate_score(0.25, cal)
+        assert 0.1 < val < 0.5
+
+    def test_platt_scaling(self):
+        cal = {
+            "method": "platt",
+            "platt_coef": 1.0,
+            "platt_intercept": 0.0,
+        }
+        val = calibrate_score(0.0, cal)
+        assert val == pytest.approx(0.5)
+
+    def test_platt_clipped(self):
+        cal = {"method": "platt", "platt_coef": 100.0, "platt_intercept": 100.0}
+        assert calibrate_score(1.0, cal) == pytest.approx(1.0)
+
+
+class TestPredictClassification:
+    def _make_artifact(self):
+        # Single-node tree: leaf at index 0, feature=-1 means leaf
+        tree = [[-1, 0.8, 0, 0]]  # leaf node returning 0.8
+        return {
+            "policy_type": "classification",
+            "feature_columns": ["rsi", "adx"],
+            "buy_threshold": 0.6,
+            "sell_threshold": -0.1,
+            "trees": [tree, tree],
+            "score_calibration": None,
+        }
+
+    def test_returns_float(self):
+        artifact = self._make_artifact()
+        row = pd.Series({"rsi": 50.0, "adx": 25.0})
+        val = predict_classification(artifact, row)
+        assert isinstance(val, float)
+        assert val == pytest.approx(0.8)
+
+    def test_nan_feature_returns_zero(self):
+        artifact = self._make_artifact()
+        row = pd.Series({"rsi": float("nan"), "adx": 25.0})
+        assert predict_classification(artifact, row) == 0.0
+
+
+class TestPredictManual:
+    def _make_artifact(self):
+        return {
+            "policy_type": "manual",
+            "feature_columns": [],
+            "buy_threshold": 1,
+            "sell_threshold": -1,
+            "score_rules": [
+                {"col": "rsi", "buy_below": 40, "sell_above": 70},
+                {"col": "adx", "buy_above": 25},
+            ],
+            "score_calibration": None,
+        }
+
+    def test_buy_signal(self):
+        artifact = self._make_artifact()
+        row = pd.Series({"rsi": 30.0, "adx": 30.0})
+        score = predict_manual(artifact, row)
+        assert score == 2   # rsi<40 + adx>25
+
+    def test_sell_signal(self):
+        artifact = self._make_artifact()
+        row = pd.Series({"rsi": 80.0, "adx": 10.0})
+        score = predict_manual(artifact, row)
+        assert score == -1  # rsi>70
+
+
+class TestScoreArtifact:
+    def _make_artifact(self, buy_thr=0.6, sell_thr=-0.1):
+        tree = [[-1, 0.8, 0, 0]]
+        return {
+            "policy_type": "classification",
+            "feature_columns": ["rsi", "adx"],
+            "buy_threshold": buy_thr,
+            "sell_threshold": sell_thr,
+            "trees": [tree],
+            "score_calibration": None,
+        }
+
+    def test_buy_signal(self):
+        artifact = self._make_artifact(buy_thr=0.5)
+        row = pd.Series({"rsi": 50.0, "adx": 25.0})
+        result = score_artifact(artifact, row)
+        assert isinstance(result, ScoreResult)
+        assert result.signal == "buy"
+        assert result.raw_score == pytest.approx(0.8)
+
+    def test_hold_signal(self):
+        artifact = self._make_artifact(buy_thr=0.9, sell_thr=-0.9)
+        row = pd.Series({"rsi": 50.0, "adx": 25.0})
+        result = score_artifact(artifact, row)
+        assert result.signal == "hold"
+
+
+# ── kernel.exits ──────────────────────────────────────────────────────────────
+
+class TestCheckTrailingStop:
+    def _state(self, entry=100.0, hwm=125.0):
+        return HoldingState(
+            entry_price=entry,
+            entry_date=datetime.date(2024, 1, 1),
+            high_watermark=hwm,
+        )
+
+    def test_not_armed_below_trigger(self):
+        state = self._state(hwm=105.0)
+        sig = check_trailing_stop(104.0, state, ts_trigger=0.20, ts_trail=0.18)
+        assert not sig.should_exit
+
+    def test_fires_when_below_trail_floor(self):
+        state = self._state(hwm=130.0)  # peak_gain=30% > trigger=20%
+        trail_floor = 130.0 * (1 - 0.18)   # 106.6
+        sig = check_trailing_stop(100.0, state, ts_trigger=0.20, ts_trail=0.18)
+        assert sig.should_exit
+        assert sig.exit_type == "trailing_stop"
+
+    def test_does_not_fire_above_trail_floor(self):
+        state = self._state(hwm=125.0)  # 25% gain > 20% trigger
+        sig = check_trailing_stop(110.0, state, ts_trigger=0.20, ts_trail=0.18)
+        # trail_floor = 125 * 0.82 = 102.5; 110 > 102.5 → no exit
+        assert not sig.should_exit
+
+
+class TestCheckStopLoss:
+    def test_fires_at_threshold(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+        sig = check_stop_loss(84.9, state, stop_pct=0.15)
+        assert sig.should_exit
+        assert sig.exit_type == "stop_loss"
+
+    def test_does_not_fire_above_threshold(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+        sig = check_stop_loss(86.0, state, stop_pct=0.15)
+        assert not sig.should_exit
+
+    def test_disabled_when_zero(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+        assert not check_stop_loss(0.0, state, stop_pct=0.0).should_exit
+
+
+class TestCheckSingleDayLoss:
+    def test_fires_on_gap_down(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1),
+            high_watermark=100.0, prev_close=100.0)
+        sig = check_single_day_loss(88.0, state, sdl_pct=0.10)
+        assert sig.should_exit
+        assert sig.exit_type == "single_day_loss"
+
+    def test_no_prev_close_no_exit(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+        assert not check_single_day_loss(88.0, state, sdl_pct=0.10).should_exit
+
+
+class TestCheckMaxHold:
+    def test_fires_at_max_days(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+        today = datetime.date(2024, 1, 1) + datetime.timedelta(days=500)
+        sig = check_max_hold(today, state, max_hold=500)
+        assert sig.should_exit
+        assert sig.exit_type == "max_hold"
+
+    def test_does_not_fire_before_max_days(self):
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+        today = datetime.date(2024, 1, 20)
+        assert not check_max_hold(today, state, max_hold=500).should_exit
+
+
+class TestCheckModelSell:
+    def _state(self, streak=0):
+        return HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1),
+            high_watermark=100.0, sell_streak=streak)
+
+    def test_accumulates_streak(self):
+        state, sig = check_model_sell("sell", self._state(0), 3, 0, datetime.date(2024, 2, 1))
+        assert state.sell_streak == 1
+        assert not sig.should_exit
+
+    def test_fires_at_streak(self):
+        state, sig = check_model_sell("sell", self._state(2), 3, 0, datetime.date(2024, 2, 1))
+        assert sig.should_exit
+        assert sig.exit_type == "model_sell"
+
+    def test_resets_on_hold(self):
+        state = self._state(streak=2)
+        new_state, sig = check_model_sell("hold", state, 3, 0, datetime.date(2024, 2, 1))
+        assert new_state.sell_streak == 0
+        assert not sig.should_exit
+
+    def test_blocked_by_min_hold(self):
+        state = self._state(streak=2)
+        today = datetime.date(2024, 1, 5)   # only 4 days after entry
+        new_state, sig = check_model_sell("sell", state, 3, min_hold_days=20, today=today)
+        assert not sig.should_exit
+        assert new_state.sell_streak == 2   # unchanged
+
+
+class TestComputeExits:
+    def _state(self):
+        return HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=100.0)
+
+    def test_priority_trailing_before_stop(self):
+        """Trailing stop should fire before cumulative stop when both would trigger."""
+        state = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2024, 1, 1), high_watermark=130.0)
+        params = {
+            "trailing_stop_trigger_pct": 0.20,
+            "trailing_stop_trail_pct": 0.18,
+            "stop_loss_pct": 0.05,
+        }
+        sig, _ = compute_exits(80.0, datetime.date(2024, 6, 1), "hold", state, params)
+        assert sig.should_exit
+        assert sig.exit_type == "trailing_stop"
+
+    def test_no_exit_when_all_hold(self):
+        state = self._state()
+        params = {
+            "stop_loss_pct": 0.15,
+            "max_hold_days": 500,
+            "consecutive_sell_signals": 3,
+            "min_hold_days": 0,
+        }
+        sig, _ = compute_exits(105.0, datetime.date(2024, 1, 10), "hold", state, params)
+        assert not sig.should_exit
+
+    def test_hwm_updated(self):
+        state = self._state()
+        _, new_state = compute_exits(110.0, datetime.date(2024, 1, 10), "hold", state, {})
+        assert new_state.high_watermark == 110.0
+
+
+# ── kernel.selection ─────────────────────────────────────────────────────────
+
+class TestGuards:
+    def test_wash_sale_blocked(self):
+        last_sell = {datetime.date(2024, 1, 15): None}
+        assert is_wash_sale_blocked(
+            "AAPL", datetime.date(2024, 1, 20),
+            {"AAPL": datetime.date(2024, 1, 15)}, 30)
+
+    def test_wash_sale_clear_after_period(self):
+        assert not is_wash_sale_blocked(
+            "AAPL", datetime.date(2024, 4, 1),
+            {"AAPL": datetime.date(2024, 1, 1)}, 30)
+
+    def test_earnings_blocked(self):
+        cal = {"AAPL": ["2024-02-01"]}
+        assert is_earnings_blocked("AAPL", datetime.date(2024, 2, 1), cal, 3)
+
+    def test_earnings_clear_outside_window(self):
+        cal = {"AAPL": ["2024-02-01"]}
+        assert not is_earnings_blocked("AAPL", datetime.date(2024, 2, 10), cal, 3)
+
+    def test_sector_guard_blocks_at_max(self):
+        held = ["AAPL", "MSFT"]
+        sector_map = {"AAPL": "tech", "MSFT": "tech", "GOOG": "tech"}
+        assert not passes_sector_guard("GOOG", held, sector_map, 2, set())
+
+    def test_sector_guard_allows_below_max(self):
+        held = ["AAPL"]
+        sector_map = {"AAPL": "tech", "MSFT": "tech"}
+        assert passes_sector_guard("MSFT", held, sector_map, 2, set())
+
+    def test_defensives_bypass_sector_guard(self):
+        held = ["GLD", "TLT"]
+        sector_map = {"GLD": "bond", "TLT": "bond", "XLV": "bond"}
+        assert passes_sector_guard("XLV", held, sector_map, 1, {"GLD", "TLT", "XLV"})
+
+    def test_correlation_guard_blocks_high_corr(self):
+        corr = {"AAPL": {"MSFT": 0.95}}
+        assert not passes_correlation_guard("AAPL", ["MSFT"], corr, 0.70)
+
+    def test_correlation_guard_allows_low_corr(self):
+        corr = {"AAPL": {"MSFT": 0.50}}
+        assert passes_correlation_guard("AAPL", ["MSFT"], corr, 0.70)
+
+
+class TestScoreCandidates:
+    def test_sorting_order(self):
+        candidates = [
+            CandidateResult("AAPL", 0.5, 0.3, 0.1),
+            CandidateResult("MSFT", 0.8, 0.7, 0.5),
+            CandidateResult("GOOG", 0.6, 0.5, 0.3),
+        ]
+        ranked = score_candidates(candidates, w_rank=0.5, w_rs=0.5)
+        assert ranked[0].ticker == "MSFT"  # highest blend
+
+    def test_empty_returns_empty(self):
+        assert score_candidates([], 0.5, 0.5) == []
+
+    def test_single_candidate(self):
+        c = CandidateResult("AAPL", 0.5, 0.5, 0.5)
+        result = score_candidates([c], 0.5, 0.5)
+        assert len(result) == 1
+
+
+class TestRunSelectionLoop:
+    def _ctx(self, open_slots=3, tiered=None):
+        return SelectionContext(
+            today=datetime.date(2024, 2, 1),
+            held_tickers=[],
+            last_sell_dates={},
+            earnings_calendar={},
+            corr_matrix=None,
+            sector_map={},
+            defensive_set=set(),
+            wash_sale_days=0,
+            earnings_buffer=3,
+            corr_threshold=0.70,
+            max_per_sector=0,
+            tiered_thresholds=tiered or [],
+            open_slots=open_slots,
+        )
+
+    def test_fills_up_to_slots(self):
+        candidates = [CandidateResult(f"T{i}", 0.5, 0.5, 0.5) for i in range(5)]
+        ctx = self._ctx(open_slots=2)
+        selected, _ = run_selection_loop(candidates, ctx)
+        assert len(selected) == 2
+
+    def test_tiered_threshold_blocks_low_score(self):
+        candidates = [CandidateResult("AAPL", 0.5, 0.05, 0.5)]
+        ctx = self._ctx(tiered=[{"min_model_score": 0.10}])
+        selected, blocks = run_selection_loop(candidates, ctx)
+        assert len(selected) == 0
+        assert blocks["tier"] == 1
+
+    def test_wash_sale_blocked(self):
+        ctx = self._ctx()
+        ctx.last_sell_dates = {"AAPL": datetime.date(2024, 1, 20)}
+        ctx.wash_sale_days = 30
+        candidates = [CandidateResult("AAPL", 0.8, 0.8, 0.8)]
+        selected, blocks = run_selection_loop(candidates, ctx)
+        assert len(selected) == 0
+        assert blocks["wash_sale"] == 1
+
+
+# ── kernel.sizing ─────────────────────────────────────────────────────────────
+
+class TestComputePositionSize:
+    def test_normal_sizing(self):
+        pct, shares = compute_position_size(
+            portfolio_value=100_000,
+            available_cash=80_000,
+            max_position_pct=0.15,
+            cash_reserve_pct=0.0,
+            price=50.0,
+        )
+        assert shares == 300   # 15% of 100k = 15k / 50 = 300
+        assert pct == pytest.approx(0.15)
+
+    def test_no_shares_when_no_cash(self):
+        pct, shares = compute_position_size(
+            portfolio_value=100_000,
+            available_cash=0.0,
+            max_position_pct=0.15,
+            cash_reserve_pct=0.0,
+            price=50.0,
+        )
+        assert shares == 0
+        assert pct == 0.0
+
+    def test_override_bypasses_reserve(self):
+        """override_pct bypasses cash_reserve constraint."""
+        pct, shares = compute_position_size(
+            portfolio_value=100_000,
+            available_cash=5_000,
+            max_position_pct=0.15,
+            cash_reserve_pct=0.90,  # 90% reserve would leave 10k unreachable
+            price=10.0,
+            override_pct=0.05,
+        )
+        assert shares > 0
+
+    def test_oversize_fallback_high_price(self):
+        """Expensive stock: normal allocation < 1 share → fallback to 25%."""
+        _, shares = compute_position_size(
+            portfolio_value=100_000,
+            available_cash=100_000,
+            max_position_pct=0.005,  # 0.5% → $500 < $2000 price
+            cash_reserve_pct=0.0,
+            price=2000.0,
+        )
+        # fallback: 25% of 100k = 25k / 2000 = 12 shares
+        assert shares == 12

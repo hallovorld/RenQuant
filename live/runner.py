@@ -42,6 +42,26 @@ from common.models.scoring import (
 )
 from common.strategy import StrategyConfig
 
+# ── Kernel support for renquant_103 ──────────────────────────────────────────
+# kernel/ is self-contained (no common/ imports); loaded lazily per strategy.
+_kernel_path_loaded: set[str] = set()
+
+
+def _load_kernel(strategy_dir: Path) -> bool:
+    """Add strategy_dir to sys.path so `from kernel.x import ...` works.
+
+    Returns True if the kernel package exists in strategy_dir.
+    """
+    key = str(strategy_dir)
+    if key in _kernel_path_loaded:
+        return True
+    if not (strategy_dir / "kernel" / "__init__.py").exists():
+        return False
+    if key not in sys.path:
+        sys.path.insert(0, key)
+    _kernel_path_loaded.add(key)
+    return True
+
 from .broker import BaseBroker
 from .alpaca_broker import AlpacaBroker
 from .ibkr_broker import IBKRBroker
@@ -488,8 +508,8 @@ def _detect_regime_live(
 def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock models.
 
-    Each symbol has its own model type defined in its policy-metadata.json,
-    so we read the metadata first and create the correct model per symbol.
+    For renquant_103 (kernel/ present), models are loaded as plain kernel
+    artifact dicts.  For other strategies, common/ model objects are used.
     """
     strategy_dir = REPO_ROOT / "backtesting" / strategy_name
     config_path = strategy_dir / "strategy_config.json"
@@ -500,6 +520,12 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
     config = json.loads(config_path.read_text())
     staleness_days = int(config.get("model_staleness_days", 30))
     models_dir = strategy_dir / "models"
+
+    # Detect if this strategy uses the kernel (renquant_103+)
+    use_kernel = _load_kernel(strategy_dir)
+    if use_kernel:
+        from kernel.models import load_artifact as _kernel_load_artifact  # noqa: PLC0415
+        log.info("Kernel detected — using kernel model loader for %s", strategy_name)
 
     models = {}
     for symbol in config["watchlist"]:
@@ -519,31 +545,41 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
                 log.warning("%s model is %d days old (limit=%d), skipping", symbol, age, staleness_days)
                 continue
 
-        # Reject below-floor models regardless of artifact presence on disk
+        # Reject below-floor models
         sharpe_floor = float(config.get("sharpe_floor", 0.8))
         model_sharpe = float(metadata.get("sharpe", 0.0))
         if sharpe_floor > 0 and model_sharpe < sharpe_floor:
             log.warning("%s sharpe=%.3f below floor=%.1f, skipping", symbol, model_sharpe, sharpe_floor)
             continue
 
-        policy_type = metadata["policy_type"]
-        model = create_model(policy_type)
-        model.load(models_dir / symbol, symbol)
-        model._policy_metadata = metadata
-        model._score_symbol = symbol
-        model._score_calibration = ScoreCalibration.from_dict(metadata.get("score_calibration"))
-        models[symbol] = model
+        if use_kernel:
+            artifact = _kernel_load_artifact(models_dir / symbol, symbol)
+            if artifact is None:
+                log.warning("Kernel load failed for %s, skipping", symbol)
+                continue
+            models[symbol] = artifact
+        else:
+            policy_type = metadata["policy_type"]
+            model = create_model(policy_type)
+            model.load(models_dir / symbol, symbol)
+            model._policy_metadata = metadata
+            model._score_symbol = symbol
+            model._score_calibration = ScoreCalibration.from_dict(metadata.get("score_calibration"))
+            models[symbol] = model
 
     log.info("Loaded models for %d/%d symbols: %s",
              len(models), len(config["watchlist"]), sorted(models.keys()))
 
-    # ── MODEL SUMMARY TABLE ───────────────────────────────────────────────────
+    # ── MODEL SUMMARY TABLE ─────────────────────────────────────────────────
     log.info("─" * 62)
     log.info("MODEL SUMMARY  (%d loaded)", len(models))
     log.info("  %-6s  %-14s  %-12s  %-5s  %-10s  %s",
              "SYMBOL", "TYPE", "TRAINED", "SHARPE", "ROWS", "TRAIN END")
     for sym in sorted(models):
-        meta = getattr(models[sym], "_policy_metadata", {})
+        if use_kernel:
+            meta = models[sym].get("_metadata", {})
+        else:
+            meta = getattr(models[sym], "_policy_metadata", {})
         log.info("  %-6s  %-14s  %-12s  %-5.2f  %-10s  %s",
                  sym,
                  meta.get("best_approach", meta.get("policy_type", "?")),
@@ -553,6 +589,8 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
                  meta.get("live_train_end", "?"))
     log.info("─" * 62)
 
+    # Store the kernel flag in config so run_once_multi can access it
+    config["_use_kernel"] = use_kernel
     return config, models, strategy_dir
 
 
@@ -714,23 +752,26 @@ def run_once_multi(
     w_rank = float(_bw[0]) / _bw_total if _bw_total > 0 else 0.5
     w_rs   = float(_bw[1]) / _bw_total if _bw_total > 0 else 0.5
 
-    # Load optional artifacts from strategy dir
+    # Load optional artifacts from strategy dir (renquant_103: under artifacts/)
+    use_kernel = config.get("_use_kernel", False)
+    _artifacts_dir = strategy_dir / "artifacts" if use_kernel else strategy_dir
+
     gmm_artifact    = None
     corr_matrix     = {}
     earnings_cal    = {}
-    gmm_path = strategy_dir / regime_cfg.get("gmm_artifact", "spy-gmm-regime.json")
+    gmm_path = _artifacts_dir / regime_cfg.get("gmm_artifact", "spy-gmm-regime.json")
     if gmm_path.exists():
         try:
             gmm_artifact = json.loads(gmm_path.read_text())
         except Exception as e:
             log.warning("Could not load GMM artifact: %s", e)
-    corr_path = strategy_dir / regime_cfg.get("correlation_artifact", "watchlist-correlation.json")
+    corr_path = _artifacts_dir / regime_cfg.get("correlation_artifact", "watchlist-correlation.json")
     if corr_path.exists():
         try:
             corr_matrix = json.loads(corr_path.read_text())
         except Exception as e:
             log.warning("Could not load correlation artifact: %s", e)
-    earn_path = strategy_dir / "earnings-calendar.json"
+    earn_path = _artifacts_dir / "earnings-calendar.json"
     if earn_path.exists():
         try:
             earnings_cal = json.loads(earn_path.read_text())
@@ -770,7 +811,20 @@ def run_once_multi(
     spy_ret5d  = (spy_price / float(spy_close.iloc[-6]) - 1) if len(spy_close) >= 6 else 0.0
 
     # ── LIVE REGIME DETECTION ─────────────────────────────────────────────────
-    current_regime, detected_confidence, cusum_triggered = _detect_regime_live(df_spy, gmm_artifact, regime_cfg)
+    if use_kernel:
+        from kernel.regime import detect_regime as _kernel_detect_regime, RegimeState as _KRegimeState  # noqa: PLC0415
+        _rs = _kernel_detect_regime(
+            df_spy["close"].astype(float).pct_change().dropna().values,
+            df_spy,
+            gmm_artifact,
+            _KRegimeState(),
+            config,
+        )
+        current_regime    = _rs.regime
+        detected_confidence = _rs.confidence
+        cusum_triggered     = _rs.in_transition
+    else:
+        current_regime, detected_confidence, cusum_triggered = _detect_regime_live(df_spy, gmm_artifact, regime_cfg)
 
     # Resolve regime-specific params; fall back to top-level position_sizing
     current_rp     = regime_params.get(current_regime, regime_params.get("BULL_CALM", {}))
@@ -1120,8 +1174,12 @@ def run_once_multi(
             continue
 
         try:
-            model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
-            rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
+            if use_kernel:
+                from kernel.indicators import build_feature_frame as _kernel_bff  # noqa: PLC0415
+                rel = _kernel_bff(dfs[symbol], df_spy, indicator_spec)
+            else:
+                model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
+                rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         except Exception as e:
             log.warning("    feature build failed for %s — skipping sell eval (triage: %s)", symbol, e)
             continue
@@ -1131,14 +1189,19 @@ def run_once_multi(
         row = rel.iloc[-1].copy()
         row["position_flag"] = 1
         try:
-            score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+            if use_kernel:
+                from kernel.models import score_artifact as _kernel_score  # noqa: PLC0415
+                score_eval = _kernel_score(models[symbol], row)
+                model_name = models[symbol].get("_metadata", {}).get("policy_type", "?")
+            else:
+                score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+                model_name = _model_label(models[symbol])
         except Exception as e:
             log.warning("    model scoring failed for %s — skipping sell eval (triage: %s)", symbol, e)
             continue
         signal = score_eval.signal
         raw_score = score_eval.raw_score
         rank_score = score_eval.rank_score
-        model_name = _model_label(models[symbol])
 
         if signal == "sell":
             sell_streaks[symbol] = sell_streaks.get(symbol, 0) + 1
@@ -1307,18 +1370,27 @@ def run_once_multi(
                 continue
 
         # Build features and run model
-        model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
-        rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
+        if use_kernel:
+            from kernel.indicators import build_feature_frame as _kernel_bff  # noqa: PLC0415
+            rel = _kernel_bff(dfs[symbol], df_spy, indicator_spec)
+        else:
+            model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
+            rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
         if rel is None or rel.empty:
             log.info("  %-6s  $%.2f  SKIP  [feature build failed]", symbol, price)
             continue
         row = rel.iloc[-1].copy()
         row["position_flag"] = 0
-        score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+        if use_kernel:
+            from kernel.models import score_artifact as _kernel_score  # noqa: PLC0415
+            score_eval = _kernel_score(models[symbol], row)
+            model_name = models[symbol].get("_metadata", {}).get("policy_type", "?")
+        else:
+            score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+            model_name = _model_label(models[symbol])
         signal = score_eval.signal
         raw_score = score_eval.raw_score
         rank_score = score_eval.rank_score
-        model_name = _model_label(models[symbol])
 
         # Min model score (use tier-1 bar as baseline)
         min_score = tiers[0]
