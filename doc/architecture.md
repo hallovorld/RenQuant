@@ -106,9 +106,9 @@ backtesting/renquant_102/models/
 ```
 Each symbol's model may be a different type (the notebook picks the best approach per symbol).
 
-renquant_103 adds three additional strategy-level artifacts:
+renquant_103 adds three additional strategy-level artifacts (under `artifacts/` subdir):
 ```
-backtesting/renquant_103/
+backtesting/renquant_103/artifacts/
   spy-gmm-regime.json          # GMM parameters for 3-state regime classifier
   watchlist-correlation.json   # 120-day pairwise return correlations for correlation guard
   earnings-calendar.json       # Upcoming earnings dates per ticker (refreshed weekly)
@@ -145,6 +145,26 @@ backtesting/renquant_103/
 **Scoring note**: mixed model families are not directly comparable in raw form. Notebook training now fits per-symbol `score_calibration`, exports it in `policy-metadata.json`, and uses calibrated `rank_score` for simulation ranking. LEAN consumes that exported calibration when present; absent metadata falls back to the raw score. The live runner also uses `common.models.scoring`, with a runtime fallback if metadata is missing. Raw scores are still logged as diagnostics.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
+
+**renquant_103 kernel**: Strategy logic is extracted into `backtesting/renquant_103/kernel/` — a self-contained package with zero `common/` imports (only stdlib + numpy + pandas). LEAN imports it locally (`from kernel.x import ...`), and `live/runner.py` adds the strategy dir to `sys.path` at runtime. This is the canonical source of truth for all 103 logic:
+
+| Module | What it provides |
+|--------|-----------------|
+| `kernel/config.py` | Regime constants, `artifact_path()` helper |
+| `kernel/regime.py` | `RegimeState`, `detect_regime()`, Hurst + CUSUM + GMM |
+| `kernel/indicators.py` | `compute_all()`, `build_feature_frame()` |
+| `kernel/models.py` | `load_artifact()`, `score_artifact()`, `calibrate_score()` |
+| `kernel/exits.py` | `HoldingState`, `ExitSignal`, `compute_exits()` (5-exit priority) |
+| `kernel/selection.py` | `CandidateResult`, `SelectionContext`, `run_selection_loop()`, guards |
+| `kernel/sizing.py` | `compute_position_size()` with oversize fallback |
+
+Three strategy-level artifacts live in `artifacts/` (not strategy root):
+```
+backtesting/renquant_103/artifacts/
+  spy-gmm-regime.json          # GMM parameters for regime classifier
+  watchlist-correlation.json   # 120-day pairwise correlations for correlation guard
+  earnings-calendar.json       # Upcoming earnings dates per ticker
+```
 
 ---
 

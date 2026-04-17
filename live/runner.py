@@ -804,7 +804,11 @@ def run_once_multi(
         return
 
     df_spy     = dfs[benchmark]
-    _ensure_model_score_calibrations(config, models, dfs, df_spy)
+    # Kernel models are artifact dicts — calibration is embedded in metadata,
+    # applied at scoring time by kernel.models.calibrate_score. Skip the
+    # common/-based ScoreCalibration path entirely.
+    if not use_kernel:
+        _ensure_model_score_calibrations(config, models, dfs, df_spy)
     spy_close  = df_spy["close"].astype(float)
     spy_price  = float(spy_close.iloc[-1])
     spy_ret1d  = (spy_price / float(spy_close.iloc[-2]) - 1) if len(spy_close) >= 2 else 0.0

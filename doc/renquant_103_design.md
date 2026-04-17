@@ -2,7 +2,7 @@
 
 **Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Last updated**: 2026-04-16  
+**Last updated**: 2026-04-17  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
 
 > **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
@@ -526,13 +526,45 @@ New artifact required by the correlation-aware selection (Step 6 of Section 9):
 | Artifact | Path | Updated by |
 |----------|------|------------|
 | Per-symbol models | `models/{SYM}/*` | Notebook (same as 102) |
-| SPY GMM regime model | `spy-gmm-regime.json` | Notebook (new) |
-| Watchlist correlation matrix | `watchlist-correlation.json` | Notebook (new) |
-| Earnings calendar | `earnings-calendar.json` | Script (weekly, new) |
+| SPY GMM regime model | `artifacts/spy-gmm-regime.json` | Notebook (new) |
+| Watchlist correlation matrix | `artifacts/watchlist-correlation.json` | Notebook (new) |
+| Earnings calendar | `artifacts/earnings-calendar.json` | Script (weekly, new) |
 
 ---
 
-## 15. What Is Unchanged from 102
+## 16. Strategy Kernel (`backtesting/renquant_103/kernel/`)
+
+All strategy-specific logic is extracted into a self-contained Python package with **zero `common/` imports**. This solves the LEAN/notebook parity gap: LEAN Docker cannot access `common/`, so previously all logic was manually duplicated into `main.py`. Now kernel code is the single source of truth.
+
+### Modules
+
+| Module | Key exports |
+|--------|-------------|
+| `kernel/config.py` | `BULL_CALM`, `BULL_VOLATILE`, `CHOPPY`, `BEAR`, `REGIMES`, `artifact_path()` |
+| `kernel/regime.py` | `RegimeState`, `detect_regime()`, `load_gmm_artifact()` |
+| `kernel/indicators.py` | `compute_all()`, `build_feature_frame()` |
+| `kernel/models.py` | `load_artifact()`, `score_artifact()`, `calibrate_score()`, `predict_classification()`, `predict_manual()` |
+| `kernel/exits.py` | `HoldingState`, `ExitSignal`, `compute_exits()` (5-exit priority order) |
+| `kernel/selection.py` | `CandidateResult`, `SelectionContext`, `score_candidates()`, `run_selection_loop()`, `is_wash_sale_blocked()`, `is_earnings_blocked()` |
+| `kernel/sizing.py` | `compute_position_size()` (with oversize fallback at 25%) |
+
+### How it's consumed
+
+- **LEAN `main.py`**: Thin ~300-line wrapper. Imports kernel locally (`from kernel.x import ...` — same pattern as `from config import ...`).
+- **`live/runner.py`**: Auto-detects kernel at startup (`_load_kernel()`): if `kernel/__init__.py` exists, adds strategy dir to `sys.path` and sets `config["_use_kernel"] = True`. All model loading, regime detection, and scoring then routes through kernel modules.
+- **CI enforcement**: `tests/test_kernel_isolation.py` asserts every `kernel/*.py` file contains no `import common` or `from common` statement (AST-parsed, not regex).
+
+### Artifact path
+
+Strategy-level artifacts moved to `artifacts/` subdir to separate from `models/{SYM}/`:
+```
+backtesting/renquant_103/artifacts/
+  spy-gmm-regime.json
+  watchlist-correlation.json
+  earnings-calendar.json
+```
+
+---
 
 - Pre-trained per-symbol model architecture (BagLearner / RTLearner / Q-learning tournament)
 - JSON-only artifacts (no pickle, LEAN-compatible)
@@ -619,7 +651,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
 
 ### Unit Tests (`tests/`)
-464 unit tests covering every major policy (run with `python -m pytest tests/ -v`):
+464 unit tests covering every major policy (run with `python -m pytest tests/ -v`) → **544 after kernel extraction** (80 new kernel unit tests):
 
 - `tests/test_policy_alignment.py` — **222 paired NB/LEAN alignment tests**: 17 policy classes (TrailingStop, CumulativeStopLoss, SingleDayLoss, MaxHold, MinHold, ConsecutiveSellStreak, SPYEMA50, VelocityCrash, TransitionWindow, Earnings, TieredThresholds, CorrelationGuard, SectorGuard, WashSale, MinModelScore, CombinedRanking, PositionSizing), each with 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. Meta-test enforces equal NB/LEAN count per class.
 - `tests/test_simulation_policies.py` — end-to-end simulation tests for min_score filter, sector guard, SPY velocity/EMA50 filters, BEAR defensive buying, ranking, wash sale, consecutive sells, stop-loss, trailing stop, correlation guard, position cap
@@ -666,7 +698,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 464 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 544 unit tests passing (`python -m pytest tests/ -v`)
 
 ---
 
