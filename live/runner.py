@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -564,6 +564,47 @@ def _build_relative_features(
     return result.dropna()
 
 
+_OHLCV_MAX_AGE_DAYS = 5  # calendar days; accounts for weekends + 1 missed trading day
+
+
+def _ensure_fresh_ohlcv(
+    symbol: str,
+    df: "pd.DataFrame",
+    provider: str = "yfinance",
+    max_age_days: int = _OHLCV_MAX_AGE_DAYS,
+) -> "pd.DataFrame":
+    """Return *df* refreshed from the provider if the last row is stale.
+
+    "Stale" means the most recent date in *df* is more than *max_age_days*
+    calendar days before today.  On success the refreshed data is written
+    back to the local Parquet cache so the next run benefits from it.
+    On any network / parse failure the original cached *df* is returned so
+    the runner can continue with degraded (but non-crashing) data.
+    """
+    if df.empty:
+        return df
+    last_date = df.index[-1].date() if hasattr(df.index[-1], "date") else df.index[-1]
+    age = (date.today() - last_date).days
+    if age <= max_age_days:
+        return df
+
+    log.warning(
+        "OHLCV data for %s is %d days old (last=%s, limit=%d) — refreshing from %s",
+        symbol, age, last_date, max_age_days, provider,
+    )
+    try:
+        fresh = fetch_ohlcv(symbol, cache=False, provider=provider)
+        if not fresh.empty:
+            from common.data import LocalStore
+            LocalStore().save(fresh, symbol)
+            log.info("OHLCV refreshed for %s — %d rows, last=%s", symbol, len(fresh), fresh.index[-1].date())
+            return fresh
+        log.warning("Refreshed OHLCV for %s is empty — keeping cached data", symbol)
+    except Exception as exc:
+        log.warning("Failed to refresh OHLCV for %s (%s) — using stale cached data", symbol, exc)
+    return df
+
+
 def run_once_multi(
     config: dict[str, Any],
     models: dict,
@@ -638,13 +679,15 @@ def run_once_multi(
     log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
-    # Fetch data for all stocks + benchmark
+    # Fetch data for all stocks + benchmark; auto-refresh stale cache entries.
+    data_provider = config.get("data_src", "yfinance")
     dfs = {}
     for symbol in watchlist + [benchmark]:
-        df = fetch_ohlcv(symbol, provider=config.get("data_src", "yfinance"))
+        df = fetch_ohlcv(symbol, provider=data_provider)
         if df.empty:
             log.warning("No data for %s, skipping", symbol)
             continue
+        df = _ensure_fresh_ohlcv(symbol, df, provider=data_provider)
         dfs[symbol] = df
 
     if benchmark not in dfs:

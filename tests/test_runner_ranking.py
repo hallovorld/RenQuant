@@ -29,7 +29,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from common.models.scoring import ScoreCalibration, fit_probability_calibration
-from live.runner import _get_model_score, _get_rank_score, run_once_multi
+from live.runner import _get_model_score, _get_rank_score, run_once_multi, _ensure_fresh_ohlcv
 from live.broker import BaseBroker
 from scripts.recalibrate_scores import _compute_blend_weights
 
@@ -1358,3 +1358,357 @@ class TestLiveRegimeParity:
         assert len(broker.orders) == 1
         assert broker.orders[0]["symbol"] == "GLD"
         assert broker.orders[0]["quantity"] == 15
+
+
+# ── TestOpenOrdersGuard ───────────────────────────────────────────────────────
+
+class TestOpenOrdersGuard:
+    """Tests for get_open_orders() in AlpacaBroker and the runner's pending-order guard."""
+
+    # ── AlpacaBroker unit tests ───────────────────────────────────────────────
+
+    def test_alpaca_get_open_orders_returns_symbol_set(self):
+        """get_open_orders() returns the set of symbols from OPEN-status orders."""
+        from live.alpaca_broker import AlpacaBroker
+        from unittest.mock import MagicMock
+
+        broker = AlpacaBroker.__new__(AlpacaBroker)
+        broker._paper = True
+
+        mock_order_amd = MagicMock()
+        mock_order_amd.symbol = "AMD"
+        mock_order_nvda = MagicMock()
+        mock_order_nvda.symbol = "NVDA"
+
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = [mock_order_amd, mock_order_nvda]
+        broker._trading_client = mock_client
+
+        result = broker.get_open_orders()
+
+        assert result == {"AMD", "NVDA"}
+        # Verify it called Alpaca with OPEN status
+        args, kwargs = mock_client.get_orders.call_args
+        filter_arg = kwargs.get("filter") or (args[0] if args else None)
+        from alpaca.trading.enums import QueryOrderStatus
+        assert filter_arg is not None
+        assert str(filter_arg.status) in (str(QueryOrderStatus.OPEN), "open")
+
+    def test_alpaca_get_open_orders_empty(self):
+        """get_open_orders() returns empty set when no open orders exist."""
+        from live.alpaca_broker import AlpacaBroker
+        from unittest.mock import MagicMock
+
+        broker = AlpacaBroker.__new__(AlpacaBroker)
+        mock_client = MagicMock()
+        mock_client.get_orders.return_value = []
+        broker._trading_client = mock_client
+
+        assert broker.get_open_orders() == set()
+
+    def test_base_broker_get_open_orders_returns_empty_set(self):
+        """BaseBroker.get_open_orders() default returns empty set (safe no-op)."""
+        from live.broker import BaseBroker
+
+        class ConcreteStub(BaseBroker):
+            def connect(self): pass
+            def disconnect(self): pass
+            def get_position(self, s): return 0.0
+            def get_account_value(self): return 0.0
+            def place_order(self, s, a, q): return {}
+
+        broker = ConcreteStub()
+        assert broker.get_open_orders() == set()
+
+    # ── runner integration tests ──────────────────────────────────────────────
+
+    def test_runner_skips_symbol_with_pending_order(self, monkeypatch, tmp_path):
+        """A candidate whose symbol already has a pending Alpaca order is skipped."""
+        import live.runner as runner_mod
+
+        dfs = {s: _make_ohlcv(60, vol_spike=True) for s in ["AAPL", "MSFT", "SPY"]}
+        models = {
+            "AAPL": StubModel(signal="buy", score=0.9),
+            "MSFT": StubModel(signal="buy", score=0.8),
+        }
+
+        class PendingBroker(StubBroker):
+            def get_open_orders(self):
+                return {"AAPL"}  # AAPL already queued
+
+        broker = PendingBroker(equity=10_000)
+        config = _minimal_config(
+            watchlist=["AAPL", "MSFT"],
+            max_concurrent_positions=2,
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        run_once_multi(config, models, broker, tmp_path)
+
+        bought = {o["symbol"] for o in broker.orders if o["action"] == "BUY"}
+        assert "AAPL" not in bought, "AAPL had a pending order — should have been skipped"
+        assert "MSFT" in bought, "MSFT had no pending order — should have been bought"
+
+    def test_runner_buys_all_when_no_pending_orders(self, monkeypatch, tmp_path):
+        """When get_open_orders() returns empty set all qualifying candidates are bought."""
+        import live.runner as runner_mod
+
+        dfs = {s: _make_ohlcv(60, vol_spike=True) for s in ["AAPL", "MSFT", "SPY"]}
+        models = {
+            "AAPL": StubModel(signal="buy", score=0.9),
+            "MSFT": StubModel(signal="buy", score=0.8),
+        }
+        broker = StubBroker(equity=20_000)
+        # StubBroker.get_open_orders() inherits BaseBroker default → empty set
+        config = _minimal_config(
+            watchlist=["AAPL", "MSFT"],
+            max_concurrent_positions=2,
+        )
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+        run_once_multi(config, models, broker, tmp_path)
+
+        bought = {o["symbol"] for o in broker.orders if o["action"] == "BUY"}
+        assert "AAPL" in bought
+        assert "MSFT" in bought
+
+    def test_runner_continues_on_get_open_orders_exception(self, monkeypatch, tmp_path):
+        """If get_open_orders() raises an exception the runner falls back to empty set."""
+        import live.runner as runner_mod
+
+        dfs = {s: _make_ohlcv(60, vol_spike=True) for s in ["AAPL", "SPY"]}
+        models = {"AAPL": StubModel(signal="buy", score=0.9)}
+
+        class ExplodingBroker(StubBroker):
+            def get_open_orders(self):
+                raise RuntimeError("Alpaca API unavailable")
+
+        broker = ExplodingBroker(equity=10_000)
+        config = _minimal_config(watchlist=["AAPL"], max_concurrent_positions=2)
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+
+        # Should not raise; should still buy AAPL
+        run_once_multi(config, models, broker, tmp_path)
+        bought = [o for o in broker.orders if o["action"] == "BUY"]
+        assert len(bought) == 1
+        assert bought[0]["symbol"] == "AAPL"
+
+    def test_pending_order_check_logs_skipped_symbol(self, monkeypatch, tmp_path, caplog):
+        """Runner logs a SKIP message when a symbol is blocked by a pending order."""
+        import logging
+        import live.runner as runner_mod
+
+        dfs = {s: _make_ohlcv(60, vol_spike=True) for s in ["AAPL", "SPY"]}
+        models = {"AAPL": StubModel(signal="buy", score=0.9)}
+
+        class PendingBroker(StubBroker):
+            def get_open_orders(self):
+                return {"AAPL"}
+
+        broker = PendingBroker(equity=10_000)
+        config = _minimal_config(watchlist=["AAPL"], max_concurrent_positions=2)
+        _patch_runner(monkeypatch, dfs, models, tmp_path)
+
+        with caplog.at_level(logging.INFO, logger="live.runner"):
+            run_once_multi(config, models, broker, tmp_path)
+
+        skip_msgs = [r.message for r in caplog.records if "pending order" in r.message.lower()]
+        assert any("AAPL" in m for m in skip_msgs), "Expected a log line mentioning AAPL pending order"
+
+
+# ── TestOhlcvFreshness ────────────────────────────────────────────────────────
+
+class TestOhlcvFreshness:
+    """Tests for _ensure_fresh_ohlcv() and its integration in run_once_multi."""
+
+    def _stale_df(self, n: int = 60, days_old: int = 30) -> "pd.DataFrame":
+        """Build a DataFrame whose last date is *days_old* days ago."""
+        from datetime import date, timedelta
+        import pandas as pd
+        import numpy as np
+
+        end = date.today() - timedelta(days=days_old)
+        idx = pd.bdate_range(end=end, periods=n)
+        closes = 100.0 * np.cumprod(1 + np.random.default_rng(1).normal(0, 0.005, n))
+        return pd.DataFrame({
+            "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.ones(n) * 1_000_000,
+        }, index=idx)
+
+    def _fresh_df(self, n: int = 60) -> "pd.DataFrame":
+        """Build a DataFrame whose last date is today (or nearest bday)."""
+        import pandas as pd
+        import numpy as np
+        idx = pd.bdate_range(end=pd.Timestamp.today(), periods=n)
+        closes = 100.0 * np.cumprod(1 + np.random.default_rng(2).normal(0, 0.005, n))
+        return pd.DataFrame({
+            "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.ones(n) * 1_000_000,
+        }, index=idx)
+
+    # ── _ensure_fresh_ohlcv unit tests ────────────────────────────────────────
+
+    def test_fresh_data_not_refreshed(self, monkeypatch):
+        """Data already fresh (age <= max_age_days) is returned unchanged, no refetch."""
+        import live.runner as runner_mod
+        calls = []
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", lambda *a, **kw: calls.append(1) or self._fresh_df())
+
+        df = self._fresh_df()
+        result = _ensure_fresh_ohlcv("AAPL", df, max_age_days=5)
+
+        assert calls == [], "fetch_ohlcv must not be called for fresh data"
+        assert len(result) == len(df)
+
+    def test_stale_data_triggers_refresh(self, monkeypatch):
+        """Data older than max_age_days triggers a provider refresh."""
+        import live.runner as runner_mod
+        fresh = self._fresh_df()
+        calls = []
+
+        def fake_fetch(symbol, provider=None, cache=True):
+            calls.append(symbol)
+            return fresh
+
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", fake_fetch)
+        # Also stub LocalStore so no disk I/O
+        import common.data as data_mod
+        monkeypatch.setattr(data_mod.LocalStore, "save", lambda self, df, sym, tf="1d": None)
+
+        stale = self._stale_df(days_old=30)
+        result = _ensure_fresh_ohlcv("NVDA", stale, max_age_days=5)
+
+        assert "NVDA" in calls, "fetch_ohlcv must be called for stale data"
+        assert result.index[-1] == fresh.index[-1], "Returned df should be the refreshed one"
+
+    def test_empty_df_returned_unchanged(self, monkeypatch):
+        """Empty DataFrame is returned as-is (no crash, no fetch attempt)."""
+        import pandas as pd
+        import live.runner as runner_mod
+        calls = []
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", lambda *a, **kw: calls.append(1) or self._fresh_df())
+
+        result = _ensure_fresh_ohlcv("TSLA", pd.DataFrame(), max_age_days=5)
+
+        assert calls == []
+        assert result.empty
+
+    def test_refresh_failure_falls_back_to_stale(self, monkeypatch):
+        """If the provider raises, the stale df is returned and no exception propagates."""
+        import live.runner as runner_mod
+
+        def boom(symbol, provider=None, cache=True):
+            raise ConnectionError("network down")
+
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", boom)
+
+        stale = self._stale_df(days_old=30)
+        result = _ensure_fresh_ohlcv("AAPL", stale, max_age_days=5)
+
+        assert result is stale, "Must fall back to original stale df on exception"
+
+    def test_refresh_returns_empty_falls_back_to_stale(self, monkeypatch):
+        """If provider returns empty DataFrame, stale cached data is kept."""
+        import pandas as pd
+        import live.runner as runner_mod
+
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", lambda *a, **kw: pd.DataFrame())
+
+        stale = self._stale_df(days_old=30)
+        result = _ensure_fresh_ohlcv("MSFT", stale, max_age_days=5)
+
+        assert result is stale
+
+    def test_cache_updated_after_successful_refresh(self, monkeypatch, tmp_path):
+        """After a successful refresh, LocalStore.save() is called to update the cache."""
+        import live.runner as runner_mod
+        import common.data as data_mod
+
+        fresh = self._fresh_df()
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", lambda *a, **kw: fresh)
+
+        save_calls = []
+        monkeypatch.setattr(
+            data_mod.LocalStore, "save",
+            lambda self, df, sym, tf="1d": save_calls.append(sym),
+        )
+
+        stale = self._stale_df(days_old=30)
+        _ensure_fresh_ohlcv("AMD", stale, max_age_days=5)
+
+        assert "AMD" in save_calls, "LocalStore.save must be called to persist refreshed data"
+
+    # ── run_once_multi integration tests ──────────────────────────────────────
+
+    def test_run_once_multi_refreshes_stale_symbol(self, monkeypatch, tmp_path):
+        """run_once_multi auto-refreshes a symbol whose cached data is stale."""
+        import live.runner as runner_mod
+        import common.data as data_mod
+
+        fresh_spy = self._fresh_df()
+        fresh_aapl = self._fresh_df()
+        stale_aapl = self._stale_df(days_old=30)
+
+        fetch_calls: list[str] = []
+
+        def controlled_fetch(symbol, provider=None, cache=True):
+            fetch_calls.append(symbol)
+            if symbol == "AAPL" and not cache:
+                return fresh_aapl
+            if symbol == "AAPL":
+                return stale_aapl
+            return fresh_spy
+
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", controlled_fetch)
+        monkeypatch.setattr(runner_mod, "_build_relative_features",
+                            lambda df_stock, df_spy, feature_cols, indicator_spec:
+                            __import__("pandas").DataFrame(
+                                {c: [0.5] for c in (feature_cols or ["rsi", "macd_hist"])},
+                                index=df_stock.index[-1:]))
+        monkeypatch.setattr(data_mod.LocalStore, "save", lambda self, df, sym, tf="1d": None)
+        monkeypatch.setattr(runner_mod, "_ensure_model_score_calibrations",
+                            lambda cfg, mdls, dfs, spy: None)
+
+        models = {"AAPL": StubModel(signal="buy", score=0.9)}
+        broker = StubBroker(equity=10_000)
+        config = _minimal_config(watchlist=["AAPL"], max_concurrent_positions=2)
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        # fetch_ohlcv must have been called a second time for AAPL with cache=False
+        cache_false_aapl = [c for c in fetch_calls if c == "AAPL"]
+        assert len(cache_false_aapl) >= 2, (
+            "AAPL should have been fetched twice: once from cache, once force-refresh"
+        )
+
+    def test_run_once_multi_does_not_refresh_fresh_symbol(self, monkeypatch, tmp_path):
+        """run_once_multi does NOT call fetch_ohlcv a second time for an up-to-date symbol."""
+        import live.runner as runner_mod
+        import common.data as data_mod
+
+        fresh_df = self._fresh_df()
+        fetch_calls: list[str] = []
+
+        def controlled_fetch(symbol, provider=None, cache=True):
+            fetch_calls.append(symbol)
+            return fresh_df
+
+        monkeypatch.setattr(runner_mod, "fetch_ohlcv", controlled_fetch)
+        monkeypatch.setattr(runner_mod, "_build_relative_features",
+                            lambda df_stock, df_spy, feature_cols, indicator_spec:
+                            __import__("pandas").DataFrame(
+                                {c: [0.5] for c in (feature_cols or ["rsi", "macd_hist"])},
+                                index=df_stock.index[-1:]))
+        monkeypatch.setattr(data_mod.LocalStore, "save", lambda self, df, sym, tf="1d": None)
+        monkeypatch.setattr(runner_mod, "_ensure_model_score_calibrations",
+                            lambda cfg, mdls, dfs, spy: None)
+
+        models = {"AAPL": StubModel(signal="buy", score=0.9)}
+        broker = StubBroker(equity=10_000)
+        config = _minimal_config(watchlist=["AAPL"], max_concurrent_positions=2)
+
+        run_once_multi(config, models, broker, tmp_path)
+
+        # Each symbol fetched exactly once (no extra refresh call)
+        for sym in set(fetch_calls):
+            assert fetch_calls.count(sym) == 1, (
+                f"{sym} fetched {fetch_calls.count(sym)} times — expected 1 for fresh data"
+            )
