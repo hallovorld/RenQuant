@@ -27,18 +27,18 @@
     "method": "platt",
     "score_kind": "q_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 185,
+    "sample_size": 190,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.11351351351351352,
+    "base_rate": 0.11052631578947368,
     "raw_min": -24.05277723258325,
     "raw_max": 46.95702589424985,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": -0.2841581647856172,
-    "platt_intercept": -2.0840622111517035,
-    "platt_scale_mean": 0.3251504543318585,
-    "platt_scale_std": 7.2221665099395596
+    "platt_coef": -0.2858583844637044,
+    "platt_intercept": -2.1146231927142267,
+    "platt_scale_mean": 0.3185578209858607,
+    "platt_scale_std": 7.126660537422017
   },
   "score_calibration_date": "2026-04-17"
 }

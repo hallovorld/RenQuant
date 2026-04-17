@@ -24,27 +24,29 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/TLT/TLT-rf-trees.json"
   },
-  "trained_date": "2026-04-12",
+  "trained_date": "2026-04-17",
   "best_approach": "Classification",
-  "sharpe": 0.8544,
+  "sharpe": 1.2595,
   "strategy": "renquant_103",
+  "live_train_rows": 999,
+  "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
     "method": "platt",
     "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 185,
+    "sample_size": 190,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.04864864864864865,
-    "raw_min": -0.3333333333333333,
-    "raw_max": 0.2,
+    "base_rate": 0.04736842105263158,
+    "raw_min": -0.2,
+    "raw_max": 0.13333333333333333,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.5486153308910757,
-    "platt_intercept": -3.094807641438077,
-    "platt_scale_mean": -0.02198198198198198,
-    "platt_scale_std": 0.08725186854297112
+    "platt_coef": 0.014866306952646886,
+    "platt_intercept": -3.001310187225846,
+    "platt_scale_mean": -0.008070175438596491,
+    "platt_scale_std": 0.04222351814764543
   },
   "score_calibration_date": "2026-04-17"
 }
