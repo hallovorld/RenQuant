@@ -146,7 +146,20 @@ for t in trades:
         parts.append(f'GAP-STOP {sym} ({drop:.1%} drop)')
 print('; '.join(parts) if parts else 'No trades today')
 " 2>/dev/null || echo "No trades today")
-    notify "RenQuant 103" "$SUMMARY"
+    # Append current holdings to notification
+    HOLDINGS=$("$PYTHON" -c "
+import os
+try:
+    from alpaca.trading.client import TradingClient
+    client = TradingClient(os.environ['ALPACA_API_KEY'], os.environ['ALPACA_SECRET_KEY'], paper=False)
+    positions = client.get_all_positions()
+    parts = [f\"{p.symbol}{float(p.unrealized_plpc)*100:+.0f}%\" for p in sorted(positions, key=lambda x: x.symbol)]
+    print('Held: ' + ' '.join(parts) if parts else 'No positions')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+    FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
+    notify "RenQuant 103" "$FULL_MSG"
 else
     echo "=== daily_103 FAILED at $(date) ==="
     notify "RenQuant 103 ERROR" "Live trader failed — check $LOG"
