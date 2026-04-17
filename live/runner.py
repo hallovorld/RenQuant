@@ -325,7 +325,8 @@ def _gmm_predict_live(gmm_artifact: dict, r10d: float, vol20: float, spy_adx: fl
             inv_s = np.linalg.inv(sigma)
             mahal = float(diff @ inv_s @ diff)
             lp    = -0.5 * (mahal + logdet) + np.log(max(weights[k], 1e-10))
-        except Exception:
+        except Exception as e:
+            log.warning("    GMM log-prob failed for component %d (using weight prior): %s", k, e)
             lp = np.log(max(weights[k], 1e-10))
         log_probs.append(lp)
     log_probs_arr = np.array(log_probs)
@@ -488,6 +489,23 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
 
     log.info("Loaded models for %d/%d symbols: %s",
              len(models), len(config["watchlist"]), sorted(models.keys()))
+
+    # ── MODEL SUMMARY TABLE ───────────────────────────────────────────────────
+    log.info("─" * 62)
+    log.info("MODEL SUMMARY  (%d loaded)", len(models))
+    log.info("  %-6s  %-14s  %-12s  %-5s  %-10s  %s",
+             "SYMBOL", "TYPE", "TRAINED", "SHARPE", "ROWS", "TRAIN END")
+    for sym in sorted(models):
+        meta = getattr(models[sym], "_policy_metadata", {})
+        log.info("  %-6s  %-14s  %-12s  %-5.2f  %-10s  %s",
+                 sym,
+                 meta.get("best_approach", meta.get("policy_type", "?")),
+                 meta.get("trained_date", "?"),
+                 float(meta.get("sharpe", 0.0)),
+                 str(meta.get("live_train_rows", "?")),
+                 meta.get("live_train_end", "?"))
+    log.info("─" * 62)
+
     return config, models, strategy_dir
 
 
@@ -718,6 +736,7 @@ def run_once_multi(
     spy_vel_days   = int(current_rp.get("spy_velocity_lookback_days", 3))
     trailing_trigger = float(current_rp.get("trailing_stop_trigger_pct", 0.0))
     trailing_trail   = float(current_rp.get("trailing_stop_trail_pct", 0.0))
+    max_hold_days    = int(current_rp.get("max_hold_days", 500))
 
     base_score_thresh = float(current_rp.get("min_model_score", config.get("min_model_score", 0.0)))
     tiers = [float(t.get("min_model_score", base_score_thresh)) for t in tiered_thresholds] \
@@ -746,11 +765,23 @@ def run_once_multi(
              spy_vel_days, spy_vel_ret*100,
              "CLEAR" if spy_vel_ok else f"BLOCKING buys (threshold -{spy_vel_halt*100:.0f}%)")
 
+    # ── REGIME PARAMS ─────────────────────────────────────────────────────────
+    log.info("─" * 62)
+    log.info("REGIME PARAMS  [%s × %.0f%% confidence]", current_regime, detected_confidence * 100)
+    _trail_str = (f"trigger {trailing_trigger*100:.0f}% / trail {trailing_trail*100:.0f}%"
+                  if trailing_trigger > 0 else "off")
+    log.info(
+        "  stop_loss=%.0f%%  sdl=%.0f%%  trailing=%s  max_hold=%dd  max_pos=%.0f%%  tiers=%s",
+        stop_loss_pct * 100, sdl_pct * 100, _trail_str, max_hold_days,
+        base_max_position_pct * 100, tiers,
+    )
+
     # ── ACCOUNT + POSITIONS (single batch fetch) ──────────────────────────────
     account_value = broker.get_account_value()
     try:
         cash_avail = broker.get_cash()
-    except Exception:
+    except Exception as e:
+        log.warning("  get_cash() failed, using account equity as cash estimate: %s", e)
         cash_avail = account_value
     # Fetch all positions in ONE API call — avoids N individual round-trips
     try:
@@ -825,6 +856,25 @@ def run_once_multi(
     except Exception as e:
         log.warning("  Broker reconciliation failed (non-fatal): %s", e)
 
+    # ── CURRENT HOLDINGS (all Alpaca positions) ───────────────────────────────
+    if positions_cache:
+        log.info("─" * 62)
+        log.info("CURRENT HOLDINGS  (%d positions)", len(positions_cache))
+        log.info("  %-6s  %5s  %9s  %9s  %10s  %s",
+                 "SYMBOL", "QTY", "AVG COST", "MKT PRICE", "MKT VALUE", "UNREAL P&L")
+        for sym, pos in sorted(positions_cache.items()):
+            qty      = float(pos.get("qty", 0))
+            avg_cost = float(pos.get("avg_entry_price", 0))
+            mkt_val  = float(pos.get("market_value", 0))
+            unreal   = float(pos.get("unrealized_pl", 0))
+            mkt_px   = mkt_val / qty if qty > 0 else 0.0
+            pct      = (unreal / (avg_cost * qty) * 100) if avg_cost > 0 and qty > 0 else 0.0
+            entry_dt = entry_dates.get(sym, "?")
+            log.info("  %-6s  %5.0f  %9.2f  %9.2f  %10.2f  %+.2f (%+.1f%%)  [entry %s]",
+                     sym, qty, avg_cost, mkt_px, mkt_val, unreal, pct, entry_dt)
+    else:
+        log.info("  No open positions in Alpaca")
+
     # ── SELL PHASE ────────────────────────────────────────────────────────────
     held = [s for s in watchlist if positions_cache.get(s, {}).get("qty", 0.0) > 0]
     log.info("─" * 62)
@@ -843,8 +893,11 @@ def run_once_multi(
         # losses that fire stop-losses incorrectly.
         if qty_held > 0 and mkt_val > 0:
             current_price = mkt_val / qty_held
+            price_src = "Alpaca"
         else:
             current_price = float(dfs[symbol]["close"].iloc[-1])
+            last_ohlcv_date = str(dfs[symbol].index[-1])[:10] if hasattr(dfs[symbol].index[-1], '__str__') else "?"
+            price_src = f"OHLCV {last_ohlcv_date}"
         entry_date_str = entry_dates.get(symbol)
         days_held = 0
         if entry_date_str:
@@ -859,8 +912,8 @@ def run_once_multi(
         position_hwm[symbol] = max(prev_hwm, current_price)
         peak_gain = (position_hwm[symbol] - avg_cost) / avg_cost if avg_cost > 0 else 0.0
 
-        log.info("  %s  $%.2f  held=%dd  entry=$%.2f  P&L %+.1f%%  HWM $%.2f  peak_gain %+.1f%%",
-                 symbol, current_price, days_held, avg_cost, unrealized*100,
+        log.info("  %s  $%.2f [%s]  held=%dd  entry=$%.2f  P&L %+.1f%%  HWM $%.2f  peak_gain %+.1f%%",
+                 symbol, current_price, price_src, days_held, avg_cost, unrealized*100,
                  position_hwm[symbol], peak_gain*100)
 
         # [EXIT 1] Trailing stop (BULL_CALM only: trigger=20%, trail=18%)
@@ -868,13 +921,27 @@ def run_once_multi(
             trail_stop = position_hwm[symbol] * (1.0 - trailing_trail)
             if current_price <= trail_stop:
                 position = positions_cache.get(symbol, {}).get("qty", 0.0)
-                result = broker.place_order(symbol, "SELL", abs(position))
-                log.info("    → SELL [TRAILING STOP] price=%.2f <= trail=%.2f (HWM=%.2f, trigger=%.0f%%, trail=%.0f%%)",
-                         current_price, trail_stop, position_hwm[symbol],
-                         trailing_trigger*100, trailing_trail*100)
+                realized_pl = (current_price - avg_cost) * position
+                try:
+                    result = broker.place_order(symbol, "SELL", abs(position))
+                except Exception as e:
+                    log.error("    SELL order FAILED [TRAILING STOP] %s — %s", symbol, e)
+                    continue
+                log.info(
+                    "    → SELL [TRAILING STOP]  %s  %.0f shares @ $%.2f"
+                    "  realized P&L $%+.2f (%+.1f%%)"
+                    "  trail=$%.2f  HWM=$%.2f  trigger=%.0f%%  trail=%.0f%%",
+                    symbol, abs(position), current_price,
+                    realized_pl, (realized_pl / (avg_cost * position) * 100) if avg_cost * position else 0,
+                    trail_stop, position_hwm[symbol],
+                    trailing_trigger*100, trailing_trail*100)
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "trailing_stop",
+                    "sell_price": round(current_price, 4),
+                    "avg_cost": round(avg_cost, 4),
+                    "qty": position,
+                    "realized_pl": round(realized_pl, 2),
                     "peak_gain": round(peak_gain, 4),
                     "hwm": round(position_hwm[symbol], 4),
                     "trail_stop": round(trail_stop, 4),
@@ -892,13 +959,27 @@ def run_once_multi(
             loss_pct = (avg_cost - current_price) / avg_cost
             if loss_pct >= stop_loss_pct:
                 position = positions_cache.get(symbol, {}).get("qty", 0.0)
-                result = broker.place_order(symbol, "SELL", abs(position))
-                log.info("    → SELL [STOP LOSS] loss=%.1f%% >= %.0f%%",
-                         loss_pct*100, stop_loss_pct*100)
+                realized_pl = (current_price - avg_cost) * position
+                try:
+                    result = broker.place_order(symbol, "SELL", abs(position))
+                except Exception as e:
+                    log.error("    SELL order FAILED [STOP LOSS] %s — %s", symbol, e)
+                    continue
+                log.info(
+                    "    → SELL [STOP LOSS]  %s  %.0f shares @ $%.2f"
+                    "  realized P&L $%+.2f (%+.1f%%)  loss=%.1f%% >= threshold %.0f%%",
+                    symbol, abs(position), current_price,
+                    realized_pl, unrealized*100,
+                    loss_pct*100, stop_loss_pct*100)
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "stop_loss",
-                    "loss_pct": round(loss_pct, 4), "order": result,
+                    "sell_price": round(current_price, 4),
+                    "avg_cost": round(avg_cost, 4),
+                    "qty": position,
+                    "realized_pl": round(realized_pl, 2),
+                    "loss_pct": round(loss_pct, 4),
+                    "order": result,
                 })
                 entry_dates.pop(symbol, None)
                 sell_streaks.pop(symbol, None)
@@ -916,13 +997,27 @@ def run_once_multi(
             daily_drop  = (prev_close - current_price) / prev_close if prev_close > 0 else 0.0
             if daily_drop >= sdl_pct:
                 position = positions_cache.get(symbol, {}).get("qty", 0.0)
-                result = broker.place_order(symbol, "SELL", abs(position))
-                log.info("    → SELL [SINGLE DAY LOSS] drop=%.1f%% >= %.0f%%",
-                         daily_drop*100, sdl_pct*100)
+                realized_pl = (current_price - avg_cost) * position
+                try:
+                    result = broker.place_order(symbol, "SELL", abs(position))
+                except Exception as e:
+                    log.error("    SELL order FAILED [SINGLE DAY LOSS] %s — %s", symbol, e)
+                    continue
+                log.info(
+                    "    → SELL [SINGLE DAY LOSS]  %s  %.0f shares @ $%.2f"
+                    "  realized P&L $%+.2f (%+.1f%%)  day_drop=%.1f%% >= threshold %.0f%%",
+                    symbol, abs(position), current_price,
+                    realized_pl, unrealized*100,
+                    daily_drop*100, sdl_pct*100)
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
                     "symbol": symbol, "signal": "single_day_loss",
-                    "daily_drop_pct": round(daily_drop, 4), "order": result,
+                    "sell_price": round(current_price, 4),
+                    "avg_cost": round(avg_cost, 4),
+                    "qty": position,
+                    "realized_pl": round(realized_pl, 2),
+                    "daily_drop_pct": round(daily_drop, 4),
+                    "order": result,
                 })
                 entry_dates.pop(symbol, None)
                 sell_streaks.pop(symbol, None)
@@ -934,6 +1029,39 @@ def run_once_multi(
                 log.info("    single-day gate: drop=%.1f%% < threshold %.0f%%  HOLD",
                          daily_drop*100, sdl_pct*100)
 
+        # [EXIT 3] Max hold days
+        if max_hold_days > 0 and days_held >= max_hold_days:
+            position = positions_cache.get(symbol, {}).get("qty", 0.0)
+            realized_pl = (current_price - avg_cost) * position
+            try:
+                result = broker.place_order(symbol, "SELL", abs(position))
+            except Exception as e:
+                log.error("    SELL order FAILED [MAX HOLD] %s — %s", symbol, e)
+                continue
+            log.info(
+                "    → SELL [MAX HOLD]  %s  %.0f shares @ $%.2f"
+                "  realized P&L $%+.2f (%+.1f%%)  held=%dd >= max_hold=%dd",
+                symbol, abs(position), current_price,
+                realized_pl, unrealized*100,
+                days_held, max_hold_days)
+            _log_trade(strategy_dir, config["model_name"], {
+                "timestamp": datetime.now().isoformat(),
+                "symbol": symbol, "signal": "max_hold",
+                "sell_price": round(current_price, 4),
+                "avg_cost": round(avg_cost, 4),
+                "qty": position,
+                "realized_pl": round(realized_pl, 2),
+                "days_held": days_held,
+                "max_hold_days": max_hold_days,
+                "order": result,
+            })
+            entry_dates.pop(symbol, None)
+            sell_streaks.pop(symbol, None)
+            position_hwm.pop(symbol, None)
+            last_sell_dates[symbol] = today_str
+            held.remove(symbol)
+            continue
+
         # [EXIT 4] Model sell — gated by min_hold + consecutive streak
         if min_hold_days > 0 and days_held < min_hold_days:
             log.info("    model-sell: min_hold=%dd, held=%dd  BLOCKED (in hold window)",
@@ -941,13 +1069,22 @@ def run_once_multi(
             sell_streaks[symbol] = 0
             continue
 
-        model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
-        rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
+        try:
+            model_feature_cols = getattr(models[symbol], "feature_columns", None) or feature_columns
+            rel = _build_relative_features(dfs[symbol], df_spy, model_feature_cols, indicator_spec)
+        except Exception as e:
+            log.warning("    feature build failed for %s — skipping sell eval (triage: %s)", symbol, e)
+            continue
         if rel is None or rel.empty:
+            log.warning("    feature build returned empty for %s — skipping sell eval", symbol)
             continue
         row = rel.iloc[-1].copy()
         row["position_flag"] = 1
-        score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+        try:
+            score_eval = evaluate_row(models[symbol], row, getattr(models[symbol], "_score_calibration", None))
+        except Exception as e:
+            log.warning("    model scoring failed for %s — skipping sell eval (triage: %s)", symbol, e)
+            continue
         signal = score_eval.signal
         raw_score = score_eval.raw_score
         rank_score = score_eval.rank_score
@@ -959,23 +1096,23 @@ def run_once_multi(
             if streak < consec_sells_required:
                 log.info(
                     "    model-sell: model=%s  signal=sell  raw=%.4f  calibrated=%.4f  streak=%d/%d  WAITING",
-                    model_name,
-                    raw_score,
-                    rank_score,
-                    streak,
-                    consec_sells_required,
+                    model_name, raw_score, rank_score, streak, consec_sells_required,
                 )
             else:
                 sell_streaks[symbol] = 0
                 position = positions_cache.get(symbol, {}).get("qty", 0.0)
-                result = broker.place_order(symbol, "SELL", abs(position))
+                realized_pl = (current_price - avg_cost) * position
+                try:
+                    result = broker.place_order(symbol, "SELL", abs(position))
+                except Exception as e:
+                    log.error("    SELL order FAILED [MODEL] %s — %s", symbol, e)
+                    continue
                 log.info(
-                    "    → SELL [MODEL streak=%d] model=%s  raw=%.4f  calibrated=%.4f  held=%dd",
-                    streak,
-                    model_name,
-                    raw_score,
-                    rank_score,
-                    days_held,
+                    "    → SELL [MODEL streak=%d]  %s  %.0f shares @ $%.2f"
+                    "  realized P&L $%+.2f (%+.1f%%)  model=%s  raw=%.4f  calibrated=%.4f  held=%dd",
+                    streak, symbol, abs(position), current_price,
+                    realized_pl, unrealized*100,
+                    model_name, raw_score, rank_score, days_held,
                 )
                 _log_trade(strategy_dir, config["model_name"], {
                     "timestamp": datetime.now().isoformat(),
@@ -1018,15 +1155,14 @@ def run_once_multi(
         return
 
     # Fetch pending Alpaca orders once — skip any symbol already queued.
-    # This prevents catch-up runs from placing duplicate DAY orders for the
-    # same symbol when a prior run already submitted them (e.g. after-hours
-    # orders that haven't filled yet because market is closed).
     try:
         pending_orders: set[str] = broker.get_open_orders()
         if pending_orders:
-            log.info("  Pending orders already in Alpaca: %s", sorted(pending_orders))
+            log.info("  Open/pending orders in Alpaca (%d): %s", len(pending_orders), sorted(pending_orders))
+        else:
+            log.info("  No pending orders in Alpaca")
     except Exception as e:
-        log.warning("  Could not fetch open orders (non-fatal): %s", e)
+        log.warning("  get_open_orders() failed — assuming no pending orders (triage: %s)", e)
         pending_orders = set()
 
     if circuit_open:
@@ -1175,8 +1311,8 @@ def run_once_multi(
                 stock_r = float(dfs[symbol]["close"].iloc[-1] / dfs[symbol]["close"].iloc[-21] - 1)
                 etf_r   = float(dfs[etf]["close"].iloc[-1]   / dfs[etf]["close"].iloc[-21]   - 1)
                 rs_score = stock_r - etf_r
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("  %-6s  RS score computation failed (using 0.0): %s", symbol, e)
 
         log.info(
             "  %-6s  $%.2f  1d%+.1f%%  RS%+.1f%%  model=%-14s  signal=BUY  raw=%+.4f  calibrated=%+.4f  rs=%+.4f  "
@@ -1273,6 +1409,12 @@ def run_once_multi(
         max_invest    = account_value * max_position_pct
         invest        = min(max_invest, available)
         shares        = int(invest / price)
+        log.info(
+            "  %-6s  sizing: portfolio=$%.0f × %.1f%% × %.0f%%conf = $%.0f max  |  "
+            "cash=$%.0f  reserve=$%.0f  invest=$%.0f → %d sh @ $%.2f",
+            symbol, account_value, base_max_position_pct * 100, regime_confidence * 100,
+            max_invest, cash_avail, cash_reserve, invest, shares, price,
+        )
 
         if shares <= 0:
             log.info("  %-6s  SKIP  [insufficient cash: invest=$%.0f, price=$%.2f]",
