@@ -286,10 +286,99 @@ TrainingPipeline().run(ctx)
 
 ---
 
+## Progress
+
+### Completed (commit `81012ad`, 2026-04-20)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1 — Kernel pipeline base | ✅ | `InferenceContext`, `Job`, `Pipeline` in `kernel/pipeline/` |
+| 2 — 7 inference jobs | ✅ | All jobs in `kernel/pipeline/jobs/` — 32 unit tests passing |
+| 3 — NotebookAdapter | ✅ | `adapters/notebook.py` + `InferencePipeline` convenience class |
+| 4 — Training pipeline | ✅ | `training/pipeline/` with 7 jobs wrapping existing training/ modules |
+| 5 — Wire consumers | ⏳ | **Next session** — see below |
+
+### Phase 5 — What to do next session
+
+**Step 5a: Validate NotebookAdapter produces identical output to current sim cell**
+
+Before replacing anything, run both side-by-side on the same data and assert `equity_df` and `trade_log` match within tolerance:
+
+```python
+# In notebook or a test — run old sim cell, then run adapter, compare
+old_equity = equity_df.copy()
+old_trades = list(trade_log)
+
+adapter  = NotebookAdapter(ohlcv, spy_daily_ret, results, corr_dict, CONFIG,
+                            gmm_artifact, earnings_cal)
+pipeline = InferencePipeline()
+for today in bt_dates:
+    ctx = adapter.make_context(today)
+    pipeline.run(ctx)
+    adapter.commit(ctx)
+
+# Assert parity (allow small float diff)
+pd.testing.assert_frame_equal(adapter.equity_df, old_equity, rtol=1e-4)
+```
+
+Add this as `tests/test_notebook_adapter_parity.py` before touching the live sim cell.
+
+**Step 5b: Replace notebook simulation cell (657a4a6c)**
+
+After parity confirmed, replace the ~300-line cell with:
+
+```python
+from adapters.notebook import NotebookAdapter, InferencePipeline
+
+adapter  = NotebookAdapter(ohlcv, spy_daily_ret, results, corr_dict, CONFIG,
+                            _gmm_artifact, _earnings_cal)
+pipeline = InferencePipeline()
+
+for today in spy_df.loc[BACKTEST_START:BACKTEST_END].index:
+    ctx = adapter.make_context(today)
+    pipeline.run(ctx)
+    adapter.commit(ctx)
+
+equity_df = adapter.equity_df
+trade_log = adapter.trade_log
+```
+
+**Step 5c: Replace notebook training cells**
+
+Replace cells 11 (features), 13 (tournament), 15 (export) with:
+
+```python
+from training.pipeline import TrainingPipeline, TrainingContext
+
+ctx = TrainingContext(config=CONFIG, strategy_dir=STRATEGY_DIR, today=TODAY)
+TrainingPipeline().run(ctx)
+
+# Access results
+results            = ctx.tournament_results
+exported, skipped  = ctx.exported, ctx.skipped
+corr_dict          = ctx.corr_dict
+```
+
+**Step 5d: Add LeanAdapter**
+
+New file `adapters/lean.py` — wraps `QCAlgorithm` self into `InferenceContext`. Key mappings:
+- `ohlcv`: `History(symbols, lookback, Resolution.Daily)` → normalize to dict of DataFrames
+- `holdings`: `self.Portfolio` → build `{symbol: HoldingState}` from entry tracking dicts
+- `action_fn` / `score_fn`: closures over loaded model artifacts (same as current LEAN code)
+- After `pipeline.run(ctx)`: apply `ctx.exit_actions` via `self.Liquidate()` and `ctx.orders` via `self.SetHoldings()`
+
+**Step 5e: Wire live runner**
+
+`adapters/runner.py` — wraps broker + cached OHLCV into `InferenceContext`. Replaces `_run_once_multi_pipeline()` in `live/runner.py`.
+
+### Key rule for Phase 5
+
+**Run old and new in parallel first. Do not delete old code until parity test passes.**
+
 ## Resumption Notes
 
-- **Branch**: `pipeline-unification` (off `main` at commit `96a5807`)
-- **Start with Phase 1** — it's pure scaffolding with no risk of breaking existing behavior
-- **Phase 2 is the critical path** — `SellJob` and `SelectionJob` are the most complex; unit test each before wiring into the pipeline
-- **Do not touch `main.py` or the notebook simulation cell until Phase 3 is complete** — keep the existing code running in parallel until the new pipeline is validated
-- The logic graph (`doc/logic_graph_103.md`) is the spec for each job — every node in that graph maps to a job method
+- **Branch**: `pipeline-unification` (off `main` at commit `96a5807`, current tip `81012ad`)
+- **Phase 2 is complete** — all 7 jobs are implemented and unit-tested; `SellJob` and `SelectionJob` were the most complex
+- **Do not touch `main.py` or the live sim cell until Step 5a parity test passes**
+- The logic graph (`doc/logic_graph_103.md`) is the spec — every node maps to a job method
+- `adapters/notebook.py` contains both `NotebookAdapter` and `InferencePipeline` for convenience
