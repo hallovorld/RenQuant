@@ -5,7 +5,9 @@
     "AMZN": "2026-04-16",
     "BA": "2026-04-16",
     "CAT": "2026-04-16",
-    "PLTR": "2026-04-17"
+    "PLTR": "2026-04-17",
+    "GOOG": "2026-04-19",
+    "LLY": "2026-04-19"
   },
   "sell_streaks": {
     "AMZN": 0,
@@ -17,13 +19,13 @@
     "AMD": "2026-04-17",
     "NVDA": "2026-04-17"
   },
-  "high_water_mark": 10039.11,
+  "high_water_mark": 100000,
   "position_hwm": {
     "AMZN": 254.0,
     "BA": 226.8099,
     "PLTR": 148.02
   },
-  "regime": "CHOPPY",
-  "transition_countdown": 1,
+  "regime": "BULL_VOLATILE",
+  "transition_countdown": 0,
   "regime_confidence": 0.5
 }

@@ -1,52 +1,69 @@
 {
   "model_name": "AMD",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "rsi",
-      "buy_below": 30,
-      "sell_above": 70
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "cci",
-      "buy_below": -100,
-      "sell_above": 50
-    }
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "buy_threshold": 2,
-  "sell_threshold": -2,
-  "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMD/AMD-manual-rules.json"
-  },
-  "trained_date": "2026-04-17",
-  "best_approach": "Manual",
-  "sharpe": 0.8961,
   "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMD/AMD-rf-trees.json"
+  },
+  "trained_date": "2026-04-19",
+  "best_approach": "Classification",
+  "sharpe": 1.3329,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
+  "live_train_rows": 998,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
-    "score_kind": "vote_count",
+    "method": "isotonic",
+    "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 190,
+    "sample_size": 565,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.3526315789473684,
-    "raw_min": -1.0,
-    "raw_max": 3.0,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": 0.22348189346687342,
-    "platt_intercept": -0.6145597131885572,
-    "platt_scale_mean": 0.9526315789473684,
-    "platt_scale_std": 0.8289933153515213
-  },
-  "score_calibration_date": "2026-04-17"
+    "base_rate": 0.31504424778761064,
+    "raw_min": -0.6,
+    "raw_max": 0.6666666666666666,
+    "x_thresholds": [
+      -0.6,
+      -0.4,
+      -0.3333333333333333,
+      -0.26666666666666666,
+      -0.2,
+      0.3333333333333333,
+      0.4,
+      0.6666666666666666
+    ],
+    "y_thresholds": [
+      0.25,
+      0.25,
+      0.3,
+      0.3125,
+      0.314410480349345,
+      0.314410480349345,
+      0.3287671232876712,
+      0.3287671232876712
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null
+  }
 }

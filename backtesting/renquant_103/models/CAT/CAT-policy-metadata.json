@@ -1,46 +1,69 @@
 {
   "model_name": "CAT",
-  "policy_type": "qlearning",
+  "policy_type": "classification",
   "feature_columns": [
     "rsi",
     "macd_hist",
     "cci",
     "bbp",
-    "adx"
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
-  "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-bin-edges.json"
-  },
-  "trained_date": "2026-04-17",
-  "best_approach": "QLearning",
-  "sharpe": 1.2073,
   "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-rf-trees.json"
+  },
+  "trained_date": "2026-04-19",
+  "best_approach": "Classification",
+  "sharpe": 1.4646,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
+  "live_train_rows": 998,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
-    "score_kind": "q_buy_minus_sell",
+    "method": "isotonic",
+    "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 190,
+    "sample_size": 565,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.3263157894736842,
-    "raw_min": -73.52607158493358,
-    "raw_max": 88.8369009307664,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": 0.37869240226074286,
-    "platt_intercept": -0.744889010688235,
-    "platt_scale_mean": 1.1792512493612366,
-    "platt_scale_std": 18.737119328258803
-  },
-  "score_calibration_date": "2026-04-17"
+    "base_rate": 0.215929203539823,
+    "raw_min": -0.3333333333333333,
+    "raw_max": 0.4,
+    "x_thresholds": [
+      -0.3333333333333333,
+      -0.26666666666666666,
+      -0.13333333333333333,
+      -0.06666666666666667,
+      0.06666666666666667,
+      0.13333333333333333,
+      0.2,
+      0.4
+    ],
+    "y_thresholds": [
+      0.0,
+      0.1643835616438356,
+      0.1643835616438356,
+      0.21627906976744185,
+      0.21627906976744185,
+      0.24324324324324326,
+      0.34782608695652173,
+      0.34782608695652173
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null
+  }
 }
