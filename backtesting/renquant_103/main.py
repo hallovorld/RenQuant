@@ -8,22 +8,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-
 from config import load_config, split_date_parts
-from kernel.config       import BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
-from kernel.regime       import RegimeState, detect_regime, load_gmm_artifact
-from kernel.models       import load_artifact, score_artifact
-from kernel.exits        import HoldingState, compute_exits
-from kernel.sizing       import compute_position_size
-from kernel.market_gates import check_spy_velocity_crash, check_spy_ema_trend
-from kernel.portfolio    import update_drawdown_circuit_breaker, compute_trade_tax
-from kernel.selection    import (
-    CandidateResult, SelectionContext,
-    score_candidates, run_selection_loop,
-    is_wash_sale_blocked, is_earnings_blocked,
-)
+from kernel.config    import BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
+from kernel.regime    import RegimeState, load_gmm_artifact
+from kernel.models    import load_artifact
+from kernel.exits     import HoldingState
+from kernel.sizing    import compute_position_size
+from kernel.portfolio import compute_trade_tax
 
 CONFIG = load_config()
 
@@ -134,8 +125,16 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._skip_buys        = False
         self._prev_closes: dict[str, float] = {}
 
+        # Expose config dict for LeanAdapter
+        self._config = CONFIG
+
         self._setup_charts()
         self.SetWarmUp(90)
+
+        # ── Adapter + pipeline (share a single InferencePipeline per bar) ──────
+        from adapters.lean import LeanAdapter, InferencePipeline as _IP
+        self._adapter  = LeanAdapter(self)
+        self._pipeline = _IP()
 
     # ── Main event loop ────────────────────────────────────────────────────────
 
@@ -143,7 +142,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        # Update SPY return buffer
+        # Must update SPY buffer before make_context so RegimeJob sees latest returns
         if data.ContainsKey(self._spy_sym):
             spy_close = float(data[self._spy_sym].Close)
             prev = self._prev_closes.get("SPY")
@@ -152,267 +151,16 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             if len(self._spy_returns) > 100:
                 self._spy_returns = self._spy_returns[-100:]
 
-        # Detect regime
-        spy_df = self._get_spy_df(60)
-        self._regime_state = detect_regime(
-            np.array(self._spy_returns),
-            spy_df,
-            self._gmm,
-            self._regime_state,
-            CONFIG,
-        )
-        regime    = self._regime_state.regime
-        conf      = self._regime_state.confidence
-        regime_p  = self._regime_params.get(regime, {})
-        self._regime_counts[regime] = self._regime_counts.get(regime, 0) + 1
+        ctx = self._adapter.make_context(data)
+        self._pipeline.run(ctx)
+        self._adapter.commit(ctx)
 
         self.Debug(
-            f"{self.Time.date()} REGIME={regime} conf={conf:.2f} "
-            f"held={[t for t in self._holdings]}"
+            f"{self.Time.date()} REGIME={ctx.regime} conf={ctx.regime_confidence:.2f} "
+            f"held={list(self._holdings)}"
         )
-        self._plot_regime(conf)
-
-        # Portfolio drawdown circuit breaker
-        pv = self.Portfolio.TotalPortfolioValue
-        self._hwm, self._skip_buys = update_drawdown_circuit_breaker(
-            pv, self._hwm, float(regime_p.get("drawdown_halt_pct", 0))
-        )
-
-        # ── SELL loop ──
-        exit_params = self._build_exit_params(regime_p)
-        for ticker in list(self._holdings.keys()):
-            if not data.ContainsKey(self.symbols[ticker]):
-                continue
-
-            current_price = float(data[self.symbols[ticker]].Close)
-            hs = self._holdings[ticker]
-            hs.prev_close = self._prev_closes.get(ticker)
-
-            # Get model action for sell-streak check
-            features = self._build_feature_frame(ticker, spy_df)
-            if features is not None:
-                holdings_qty = int(self.Portfolio[self.symbols[ticker]].Quantity)
-                sr = score_artifact(self._models[ticker], features.iloc[-1], holdings_qty)
-                model_action = sr.signal
-            else:
-                model_action = "hold"
-
-            sig, hs = compute_exits(current_price, self.Time.date(), model_action, hs, exit_params)
-            self._holdings[ticker] = hs   # persist updated state (streak, HWM)
-
-            if not sig.should_exit:
-                if model_action != "sell":
-                    pass
-                elif hs.sell_streak > 0:
-                    self._blocked_streak += 1
-                    self.Debug(f"{self.Time.date()} {ticker} sell streak {hs.sell_streak}/{self._consec_sells} — waiting")
-                continue
-
-            # Count exit types
-            if sig.exit_type == "trailing_stop":
-                self._trail_exits += 1
-            elif sig.exit_type == "stop_loss":
-                self._stop_exits += 1
-            elif sig.exit_type == "single_day_loss":
-                self._sdl_exits += 1
-            elif sig.exit_type == "model_sell":
-                pass   # counted in executed_sells below
-
-            self._execute_sell(ticker, sig.reason)
-
-        # Update prev closes (after sell, before buy)
-        for t in self._models:
-            if data.ContainsKey(self.symbols[t]):
-                self._prev_closes[t] = float(data[self.symbols[t]].Close)
-        if data.ContainsKey(self._spy_sym):
-            self._prev_closes["SPY"] = float(data[self._spy_sym].Close)
-
-        # ── BUY phase ──
-        held = list(self._holdings.keys())
-        open_slots = self._max_positions - len(held)
-        if open_slots <= 0 or self._skip_buys:
-            self.Plot("Portfolio", "Positions", len(held))
-            return
-
-        # Transition uncertainty window
-        if self._regime_state.in_transition:
-            self._transition_blocks += 1
-            self.Plot("Portfolio", "Positions", len(held))
-            return
-
-        # BEAR regime — defensives only
-        if regime == BEAR:
-            self._run_bear_defensives(held, conf)
-            self.Plot("Portfolio", "Positions", len(self._holdings))
-            return
-
-        # SPY velocity crash filter
-        v_halt = float(regime_p.get("spy_velocity_halt_pct", 0.0))
-        v_look = int(regime_p.get("spy_velocity_lookback_days", 3))
-        if check_spy_velocity_crash(self._spy_returns, v_look, v_halt):
-            self._velocity_blocks += 1
-            self.Debug(f"{self.Time.date()} SPY velocity crash — blocking buys")
-            self.Plot("Portfolio", "Positions", len(held))
-            return
-
-        # SPY EMA50 trend gate
-        spy_hist = self._get_spy_df(55)
-        if spy_hist is not None and check_spy_ema_trend(spy_hist["close"]):
-            self.Debug(f"{self.Time.date()} SPY EMA50 gate — blocking buys")
-            self.Plot("Portfolio", "Positions", len(held))
-            return
-
-        # ── Scan candidates ──
-        min_score = float(regime_p.get("min_model_score", 0.10))
-        candidates: list[CandidateResult] = []
-        today = self.Time.date()
-
-        for ticker in self._models:
-            if ticker in held:
-                continue
-            if not data.ContainsKey(self.symbols[ticker]):
-                continue
-            if is_earnings_blocked(ticker, today, self._earnings or {}, self._earnings_buf):
-                self._earnings_blocks += 1
-                continue
-
-            features = self._build_feature_frame(ticker, spy_df)
-            if features is None:
-                continue
-
-            holdings_qty = 0
-            sr = score_artifact(self._models[ticker], features.iloc[-1], holdings_qty)
-            self.Debug(
-                f"{self.Time.date()} {ticker} action={sr.signal} "
-                f"raw={sr.raw_score:.4f} rank={sr.rank_score:.4f}"
-            )
-            if sr.signal != "buy":
-                continue
-            if sr.rank_score < min_score:
-                continue
-
-            rs_score = self._compute_rs_score(ticker)
-            candidates.append(CandidateResult(
-                ticker=ticker, raw_score=sr.raw_score,
-                rank_score=sr.rank_score, rs_score=rs_score,
-                detail=f"raw={sr.raw_score:.3f} rank={sr.rank_score:.3f}",
-            ))
-
-        if not candidates:
-            self.Plot("Portfolio", "Positions", len(held))
-            return
-
-        ranked = score_candidates(candidates, self._w_rank, self._w_rs)
-
-        ctx = SelectionContext(
-            today=today,
-            held_tickers=held,
-            last_sell_dates=self._last_sell_dates,
-            earnings_calendar=self._earnings or {},
-            corr_matrix=self._corr,
-            sector_map=self._sector_map,
-            defensive_set=self._defensive,
-            wash_sale_days=self._wash_sale_days,
-            earnings_buffer=self._earnings_buf,
-            corr_threshold=self._corr_threshold,
-            max_per_sector=self._max_per_sector,
-            tiered_thresholds=self._tiered_thresholds,
-            open_slots=open_slots,
-        )
-        selected, blocks = run_selection_loop(ranked, ctx)
-
-        self._blocked_wash   += blocks["wash_sale"]
-        self._sector_blocks  += blocks["sector"]
-        self._corr_blocks    += blocks["correlation"]
-
-        for ticker in selected:
-            c = next(c for c in ranked if c.ticker == ticker)
-            self._execute_buy(ticker, c.rank_score, c.rs_score, c.detail,
-                              regime, conf, regime_p)
-
+        self._plot_regime(ctx.regime_confidence)
         self.Plot("Portfolio", "Positions", len(self._holdings))
-
-    # ── BEAR defensive branch ──────────────────────────────────────────────────
-
-    def _run_bear_defensives(self, held: list[str], conf: float) -> None:
-        """In BEAR: allow 1 defensive position; pick best by model score."""
-        def_held = [t for t in held if t in self._defensive]
-        if def_held or self._skip_buys:
-            return
-
-        today = self.Time.date()
-        bear_candidates: list[CandidateResult] = []
-        for ticker in self._defensive:
-            if ticker not in self._models or ticker in held:
-                continue
-            sym = self.symbols.get(ticker)
-            if sym is None:
-                continue
-            if not self.Securities.ContainsKey(sym):
-                continue
-            if is_wash_sale_blocked(ticker, today, self._last_sell_dates, self._wash_sale_days):
-                continue
-            features = self._build_feature_frame(ticker, self._get_spy_df(60))
-            if features is None:
-                continue
-            sr = score_artifact(self._models[ticker], features.iloc[-1], 0)
-            if sr.signal != "buy":
-                continue
-            rs = self._compute_rs_score(ticker)
-            bear_candidates.append(CandidateResult(
-                ticker=ticker, raw_score=sr.raw_score,
-                rank_score=sr.rank_score, rs_score=rs,
-            ))
-
-        if bear_candidates:
-            bear_candidates.sort(key=lambda c: c.rank_score, reverse=True)
-            best = bear_candidates[0]
-            regime_p = self._regime_params.get(BEAR, {})
-            self._execute_buy(best.ticker, best.rank_score, best.rs_score,
-                              "bear_defensive", BEAR, conf, regime_p,
-                              override_pct=0.15)
-
-    # ── Feature frame ──────────────────────────────────────────────────────────
-
-    def _build_feature_frame(self, ticker: str, spy_df: pd.DataFrame | None) -> pd.DataFrame | None:
-        from kernel.indicators import build_feature_frame
-        stock_hist = self.History(self.symbols[ticker], 60, Resolution.Daily)
-        if stock_hist.empty or len(stock_hist) < 40:
-            return None
-        stock_rows = stock_hist.loc[self.symbols[ticker]].copy()
-        if spy_df is None or len(spy_df) < 40:
-            return None
-        spec = CONFIG.get("indicator_spec", {})
-        return build_feature_frame(stock_rows, spy_df, spec, self._vol_window)
-
-    def _get_spy_df(self, bars: int) -> pd.DataFrame | None:
-        h = self.History(self._spy_sym, bars, Resolution.Daily)
-        if h.empty:
-            return None
-        return h.loc[self._spy_sym].copy()
-
-    # ── Relative-strength score ────────────────────────────────────────────────
-
-    def _compute_rs_score(self, ticker: str) -> float:
-        """20-day return of stock minus its sector ETF."""
-        from kernel.selection import compute_relative_strength
-        sector  = self._sector_map.get(ticker, "other")
-        etf     = self._sector_etf_map.get(sector)
-        if not etf:
-            return 0.0
-        etf_sym = self._sector_etf_symbols.get(etf) or self.symbols.get(etf)
-        if etf_sym is None:
-            return 0.0
-        sh = self.History(self.symbols[ticker], 21, Resolution.Daily)
-        eh = self.History(etf_sym, 21, Resolution.Daily)
-        if sh.empty or eh.empty or len(sh) < 21 or len(eh) < 21:
-            return 0.0
-        sr = sh.loc[self.symbols[ticker]]["close"]
-        er = eh.loc[etf_sym]["close"]
-        return compute_relative_strength(
-            float(sr.iloc[-1] / sr.iloc[0] - 1),
-            float(er.iloc[-1] / er.iloc[0] - 1),
-        )
 
     # ── Trade execution ────────────────────────────────────────────────────────
 
@@ -473,22 +221,6 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._last_sell_dates[ticker] = self.Time.date()
         self._executed_sells += 1
         self.Liquidate(self.symbols[ticker])
-
-    # ── Helpers ────────────────────────────────────────────────────────────────
-
-    def _build_exit_params(self, regime_p: dict) -> dict:
-        """Build param dict consumed by kernel.exits.compute_exits."""
-        return {
-            "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct", 0),
-            "trailing_stop_trail_pct":   regime_p.get("trailing_stop_trail_pct",   0),
-            "stop_loss_pct":             regime_p.get("stop_loss_pct",             0),
-            "max_single_day_loss_pct":   regime_p.get("max_single_day_loss_pct",   0),
-            "max_hold_days":             regime_p.get("max_hold_days",             0),
-            "consecutive_sell_signals":  self._consec_sells,
-            "min_hold_days":             self._min_hold_days,
-            "lt_hold_gate_days":         int(CONFIG.get("lt_hold_gate_days", 0)),
-            "lt_hold_min_gain":          float(CONFIG.get("lt_hold_min_gain", 0.10)),
-        }
 
     def _load_all_models(self) -> None:
         models_dir = self._strategy_dir / "models"

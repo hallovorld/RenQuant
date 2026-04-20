@@ -12,6 +12,12 @@ class DataFetchJob(TrainingJob):
     Uses the kernel data module (fetch_ohlcv with parquet cache).
     """
 
+    def should_skip(self, ctx: TrainingContext) -> bool:
+        if ctx.ohlcv:
+            print("DataFetchJob: ohlcv already populated — skipping")
+            return True
+        return False
+
     def run(self, ctx: TrainingContext) -> None:
         from kernel.data import fetch_ohlcv
 

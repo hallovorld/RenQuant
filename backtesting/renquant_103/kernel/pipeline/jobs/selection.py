@@ -69,10 +69,13 @@ class SelectionJob(Job):
                 continue
             invest      = shares * price
             ctx.cash   -= invest   # pre-decrement so next iteration respects budget
+            cand = next((c for c in ctx.ranked if c.ticker == t), None)
             ctx.orders.append({
-                "ticker":  t,
-                "price":   price,
-                "shares":  shares,
-                "invest":  invest,
-                "regime":  ctx.regime,
+                "ticker":     t,
+                "price":      price,
+                "shares":     shares,
+                "invest":     invest,
+                "regime":     ctx.regime,
+                "rank_score": cand.rank_score if cand else 0.0,
+                "rs_score":   cand.rs_score   if cand else 0.0,
             })

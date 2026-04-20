@@ -236,13 +236,16 @@ def _run_once_multi_pipeline(
     strategy_dir: Path,
     sell_only: bool,
 ) -> None:
-    """Create a PipelineContext and run the 3-job pipeline."""
-    _load_kernel(strategy_dir)  # ensure pipeline/ is importable
+    """Run the renquant-103 kernel InferencePipeline via RunnerAdapter.
 
-    from pipeline import Pipeline, PipelineContext          # noqa: PLC0415
-    from pipeline.jobs.data import DataJob                  # noqa: PLC0415
-    from pipeline.jobs.signals import SignalJob             # noqa: PLC0415
-    from pipeline.jobs.execution import ExecutionJob        # noqa: PLC0415
+    DataJob (OHLCV fetch + artifact load) runs via the old PipelineContext, then
+    RunnerAdapter wraps the loaded data into InferenceContext for the kernel pipeline.
+    """
+    _load_kernel(strategy_dir)  # ensure kernel/ and adapters/ are importable
+
+    from pipeline import Pipeline as _OldPipeline, PipelineContext  # noqa: PLC0415
+    from pipeline.jobs.data import DataJob                          # noqa: PLC0415
+    from adapters.runner import RunnerAdapter, InferencePipeline, SellOnlyPipeline  # noqa: PLC0415
 
     run_mode = "sell-only" if sell_only else "full"
     sep = "=" * 62
@@ -250,14 +253,27 @@ def _run_once_multi_pipeline(
     log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
-    ctx = PipelineContext(
-        config=config,
-        strategy_dir=strategy_dir,
-        sell_only=sell_only,
-        broker=broker,
-        models=models,
+    # Step 1: Data fetch via existing DataJob (OHLCV + artifact loading)
+    data_ctx = PipelineContext(
+        config=config, strategy_dir=strategy_dir,
+        sell_only=sell_only, broker=broker, models=models,
     )
-    Pipeline([DataJob(), SignalJob(), ExecutionJob()]).run(ctx)
+    _OldPipeline([DataJob()]).run(data_ctx)
+
+    # Step 2: Build trade log path
+    strategy_name = config.get("model_name", "renquant_103")
+    trade_log_path = (strategy_dir.parent.parent / "live" / "logs" / strategy_name
+                      / f"{datetime.now().strftime('%Y-%m-%d')}.json")
+
+    # Step 3: RunnerAdapter + kernel InferencePipeline
+    adapter  = RunnerAdapter(config, models, broker, strategy_dir, trade_log_path)
+    inf_ctx  = adapter.make_context(
+        data_ctx.ohlcv, data_ctx.gmm_artifact,
+        data_ctx.corr_matrix, data_ctx.earnings_cal,
+    )
+    pipeline = SellOnlyPipeline() if sell_only else InferencePipeline()
+    pipeline.run(inf_ctx)
+    adapter.commit(inf_ctx)
 
 
 def run_once_multi(

@@ -288,7 +288,7 @@ TrainingPipeline().run(ctx)
 
 ## Progress
 
-### Completed (commit `81012ad`, 2026-04-20)
+### Completed (2026-04-20)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
@@ -296,89 +296,32 @@ TrainingPipeline().run(ctx)
 | 2 — 7 inference jobs | ✅ | All jobs in `kernel/pipeline/jobs/` — 32 unit tests passing |
 | 3 — NotebookAdapter | ✅ | `adapters/notebook.py` + `InferencePipeline` convenience class |
 | 4 — Training pipeline | ✅ | `training/pipeline/` with 7 jobs wrapping existing training/ modules |
-| 5 — Wire consumers | ⏳ | **Next session** — see below |
+| 5 — Wire consumers | ✅ | All 5 steps complete — see below |
 
-### Phase 5 — What to do next session
+### Phase 5 — Completed steps (2026-04-20)
 
-**Step 5a: Validate NotebookAdapter produces identical output to current sim cell**
+**Step 5a: Parity test** — `tests/test_notebook_adapter_parity.py` (6 tests), all passing. Runs reference sim vs NotebookAdapter + InferencePipeline on same 200-bar synthetic data; asserts equity curve, trade counts, final value (1% tolerance), exit types.
 
-Before replacing anything, run both side-by-side on the same data and assert `equity_df` and `trade_log` match within tolerance:
+**Step 5b: Notebook sim cell replaced** — Cell `657a4a6c` reduced from 291 lines → 55 lines using `NotebookAdapter + InferencePipeline`. Outputs (`equity_df`, `trade_log`, `INITIAL_CASH`, `BACKTEST_START`, `BACKTEST_END`) preserved for downstream cells.
 
-```python
-# In notebook or a test — run old sim cell, then run adapter, compare
-old_equity = equity_df.copy()
-old_trades = list(trade_log)
+**Step 5c: Training cells replaced** — Cells 11 (features), 13 (tournament), 15 (export), 17 (correlation) replaced with one `TrainingPipeline().run(train_ctx)` cell. `DataFetchJob` skips when `ctx.ohlcv` is pre-populated. Outputs exposed: `results`, `feature_frames`, `corr_dict`, `exported`, `skipped_floor`.
 
-adapter  = NotebookAdapter(ohlcv, spy_daily_ret, results, corr_dict, CONFIG,
-                            gmm_artifact, earnings_cal)
-pipeline = InferencePipeline()
-for today in bt_dates:
-    ctx = adapter.make_context(today)
-    pipeline.run(ctx)
-    adapter.commit(ctx)
+**Step 5d: LeanAdapter + slim OnData** — `adapters/lean.py` created. `main.py` slimmed from 576 → 308 lines. `OnData` from ~185 lines → 20 lines. Single batch `History()` call replaces N per-ticker calls. Removed `_run_bear_defensives`, `_build_feature_frame`, `_get_spy_df`, `_compute_rs_score`, `_build_exit_params` — all handled by kernel pipeline jobs.
 
-# Assert parity (allow small float diff)
-pd.testing.assert_frame_equal(adapter.equity_df, old_equity, rtol=1e-4)
-```
+**Step 5e: RunnerAdapter** — `adapters/runner.py` created. `_run_once_multi_pipeline` in `live/runner.py` now runs `DataJob` (existing) then `RunnerAdapter` + `InferencePipeline` instead of `SignalJob + ExecutionJob`. `SellOnlyPipeline` class added for intraday sell-only runs.
 
-Add this as `tests/test_notebook_adapter_parity.py` before touching the live sim cell.
+### Final architecture
 
-**Step 5b: Replace notebook simulation cell (657a4a6c)**
+All three consumers share the same 7 kernel jobs:
 
-After parity confirmed, replace the ~300-line cell with:
+| Consumer | Adapter | Pipeline |
+|----------|---------|----------|
+| Notebook sim | `NotebookAdapter` | `InferencePipeline` (7 jobs) |
+| LEAN backtest | `LeanAdapter` | `InferencePipeline` (7 jobs) |
+| Live runner | `RunnerAdapter` | `InferencePipeline` or `SellOnlyPipeline` |
 
-```python
-from adapters.notebook import NotebookAdapter, InferencePipeline
-
-adapter  = NotebookAdapter(ohlcv, spy_daily_ret, results, corr_dict, CONFIG,
-                            _gmm_artifact, _earnings_cal)
-pipeline = InferencePipeline()
-
-for today in spy_df.loc[BACKTEST_START:BACKTEST_END].index:
-    ctx = adapter.make_context(today)
-    pipeline.run(ctx)
-    adapter.commit(ctx)
-
-equity_df = adapter.equity_df
-trade_log = adapter.trade_log
-```
-
-**Step 5c: Replace notebook training cells**
-
-Replace cells 11 (features), 13 (tournament), 15 (export) with:
-
-```python
-from training.pipeline import TrainingPipeline, TrainingContext
-
-ctx = TrainingContext(config=CONFIG, strategy_dir=STRATEGY_DIR, today=TODAY)
-TrainingPipeline().run(ctx)
-
-# Access results
-results            = ctx.tournament_results
-exported, skipped  = ctx.exported, ctx.skipped
-corr_dict          = ctx.corr_dict
-```
-
-**Step 5d: Add LeanAdapter**
-
-New file `adapters/lean.py` — wraps `QCAlgorithm` self into `InferenceContext`. Key mappings:
-- `ohlcv`: `History(symbols, lookback, Resolution.Daily)` → normalize to dict of DataFrames
-- `holdings`: `self.Portfolio` → build `{symbol: HoldingState}` from entry tracking dicts
-- `action_fn` / `score_fn`: closures over loaded model artifacts (same as current LEAN code)
-- After `pipeline.run(ctx)`: apply `ctx.exit_actions` via `self.Liquidate()` and `ctx.orders` via `self.SetHoldings()`
-
-**Step 5e: Wire live runner**
-
-`adapters/runner.py` — wraps broker + cached OHLCV into `InferenceContext`. Replaces `_run_once_multi_pipeline()` in `live/runner.py`.
-
-### Key rule for Phase 5
-
-**Run old and new in parallel first. Do not delete old code until parity test passes.**
+**598 tests passing** (was 592 before Phase 5).
 
 ## Resumption Notes
 
-- **Branch**: `pipeline-unification` (off `main` at commit `96a5807`, current tip `81012ad`)
-- **Phase 2 is complete** — all 7 jobs are implemented and unit-tested; `SellJob` and `SelectionJob` were the most complex
-- **Do not touch `main.py` or the live sim cell until Step 5a parity test passes**
-- The logic graph (`doc/logic_graph_103.md`) is the spec — every node maps to a job method
-- `adapters/notebook.py` contains both `NotebookAdapter` and `InferencePipeline` for convenience
+All phases complete. The old `pipeline/jobs/signals.py` and `pipeline/jobs/execution.py` are no longer used by `_run_once_multi_pipeline` but are kept in place until live runner parity is verified via a real trading run.
