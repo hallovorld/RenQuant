@@ -155,8 +155,47 @@ backtesting/renquant_103/artifacts/
 | `kernel/indicators.py` | `compute_all()`, `build_feature_frame()` |
 | `kernel/models.py` | `load_artifact()`, `score_artifact()`, `calibrate_score()` |
 | `kernel/exits.py` | `HoldingState`, `ExitSignal`, `compute_exits()` (5-exit priority) |
-| `kernel/selection.py` | `CandidateResult`, `SelectionContext`, `run_selection_loop()`, guards |
+| `kernel/selection.py` | `CandidateResult`, `SelectionContext`, `run_selection_loop()`, guards, `compute_relative_strength()` |
 | `kernel/sizing.py` | `compute_position_size()` with oversize fallback |
+| `kernel/market_gates.py` | `check_spy_velocity_crash()`, `check_spy_ema_trend()` |
+| `kernel/portfolio.py` | `update_drawdown_circuit_breaker()`, `compute_trade_tax()` |
+
+**renquant_103 pipeline**: The live execution is orchestrated by `backtesting/renquant_103/pipeline/` — a structured 3-job pipeline that replaces the monolithic `run_once_multi()` function. The pipeline can import from both `kernel/` and `common/` (it runs on the host, not in Docker).
+
+```
+backtesting/renquant_103/pipeline/
+  __init__.py          # Re-exports: Pipeline, PipelineContext, run_tasks
+  context.py           # PipelineContext — shared state carried between jobs
+  task.py              # TaskResult + run_tasks() (ThreadPoolExecutor)
+  pipeline.py          # Job ABC + Pipeline sequential orchestrator
+  jobs/
+    data.py            # DataJob: parallel OHLCV fetch + artifact loading
+    signals.py         # SignalJob: regime detection + parallel candidate scoring
+    execution.py       # ExecutionJob: sell phase + buy selection loop
+```
+
+**How the pipeline runs** (`live/runner.py` for kernel strategies):
+```
+DataJob            → fetch all OHLCV in parallel (ThreadPoolExecutor)
+                     load GMM, correlation, earnings artifacts
+                     populate ctx.ohlcv, ctx.df_spy, ctx.gmm_artifact, …
+
+SignalJob          → detect regime (kernel.regime.detect_regime)
+                     fetch broker account state + live_state.json
+                     broker reconciliation (fill history → entry_dates)
+                     parallel candidate scoring (build_feature_frame + score_artifact)
+                     rank candidates by blended score
+                     populate ctx.regime, ctx.candidates, ctx.held, …
+
+ExecutionJob       → sell phase: iterate held positions, run compute_exits()
+                     save state, return if sell_only
+                     buy phase: gate checks → run_selection_loop() → place_order()
+                     save final state
+```
+
+**Parallelism**: Both DataJob (OHLCV fetch) and SignalJob (candidate scoring) use `run_tasks()` with `ThreadPoolExecutor(max_workers=8)`. Sell and buy phases remain sequential since each step updates shared state (held list, cash balance).
+
+**`PipelineContext`** is the contract between jobs — a dataclass with ~30 fields spanning inputs (config, models, broker), DataJob outputs (ohlcv, gmm_artifact), SignalJob outputs (regime, candidates, held), and live state (entry_dates, sell_streaks, position_hwm).
 
 Three strategy-level artifacts live in `artifacts/` (not strategy root):
 ```
@@ -180,7 +219,9 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 - `IBKRBroker` — connects to Interactive Brokers TWS/Gateway (stub, pending IBKR setup)
 - Logs every signal and order to `live/logs/<strategy>/<date>.json`
 
-For renquant_103, live trade records now keep both `raw_model_score` and `rank_model_score`. Filtering, slot thresholds, and candidate ranking use `rank_model_score`; operator diagnostics and post-mortems can still inspect the original `raw_model_score`.
+**renquant_103 dispatch**: `run_once_multi()` detects kernel-based strategies via `config["_use_kernel"]` and delegates to `_run_once_multi_pipeline()`, which constructs a `PipelineContext` and runs `Pipeline([DataJob(), SignalJob(), ExecutionJob()])`. The legacy path remains for renquant_102 and non-kernel strategies.
+
+For renquant_103, live trade records keep both `raw_model_score` and `rank_model_score`. Filtering, slot thresholds, and candidate ranking use `rank_model_score`; operator diagnostics and post-mortems can still inspect the original `raw_model_score`.
 
 ---
 

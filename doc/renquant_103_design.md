@@ -2,7 +2,7 @@
 
 **Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Last updated**: 2026-04-17  
+**Last updated**: 2026-04-19  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
 
 > **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
@@ -698,7 +698,80 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 544 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 588 unit tests passing (`python -m pytest tests/ -v`)
+
+### Phase 4 — Pipeline Re-architecture ✅ Complete
+1. ✅ Strategy kernel extracted to `backtesting/renquant_103/kernel/` (9 self-contained modules, zero `common/` imports)
+2. ✅ Pipeline package created at `backtesting/renquant_103/pipeline/`
+3. ✅ `live/runner.py` dispatches renquant_103 to `_run_once_multi_pipeline()` via `config["_use_kernel"]`
+4. ✅ 113 kernel unit tests + 31 pipeline tests added
+
+---
+
+## 18. Execution Pipeline (renquant_103)
+
+renquant_103's live runner was re-architected from a monolithic 900-line function into a 3-job sequential pipeline. The pipeline lives at `backtesting/renquant_103/pipeline/` and is dispatched by `live/runner.py` when `config["_use_kernel"]` is `true`.
+
+### Job flow
+
+```
+DataJob → SignalJob → ExecutionJob
+```
+
+All jobs share a single `PipelineContext` dataclass (~30 fields) that is populated incrementally:
+
+| Job | Reads from ctx | Writes to ctx |
+|-----|---------------|---------------|
+| `DataJob` | `config`, `strategy_dir`, `broker` | `ohlcv`, `df_spy`, `gmm_artifact`, `corr_matrix`, `earnings_cal` |
+| `SignalJob` | `ohlcv`, `df_spy`, `gmm_artifact`, `corr_matrix`, `earnings_cal` | `regime`, `confidence`, `in_transition`, `spy_price`, `spy_above_ema50`, `spy_vel_ok`, `candidates`, `held`, `account_value`, `cash_avail`, `positions_cache`, `pending_orders`, `circuit_open`, `state`, `entry_dates`, `sell_streaks`, `last_sell_dates`, `position_hwm` |
+| `ExecutionJob` | all | trade orders placed via `ctx.broker`; state persisted |
+
+### Package layout
+
+```
+backtesting/renquant_103/pipeline/
+├── __init__.py          # re-exports PipelineContext, Job, Pipeline, TaskResult, run_tasks
+├── context.py           # PipelineContext dataclass
+├── pipeline.py          # Job ABC + Pipeline sequential orchestrator
+├── task.py              # TaskResult dataclass + run_tasks() via ThreadPoolExecutor
+└── jobs/
+    ├── data.py          # DataJob: parallel OHLCV fetch + artifact loading
+    ├── signals.py       # SignalJob: regime, account state, parallel candidate scoring
+    └── execution.py     # ExecutionJob: sell phase (5 exits) + buy phase (selection loop)
+```
+
+### Parallelism
+
+- **OHLCV fetch** (DataJob): all symbols fetched in parallel via `run_tasks()` with `max_workers=8`
+- **Candidate scoring** (SignalJob): all watchlist symbols scored in parallel (earnings filter, wash-sale pre-filter, feature build, `score_artifact()`, RS computation)
+- **Sell/buy phases** (ExecutionJob): sequential — each sell updates `ctx.held` which subsequent iterations check
+
+### Kernel dependency
+
+Pipeline jobs import from `kernel/` for all strategy logic:
+
+```python
+from kernel.exits import compute_exits, HoldingState
+from kernel.selection import run_selection_loop
+from kernel.sizing import compute_position_size
+from kernel.market_gates import check_spy_velocity_crash, check_spy_ema_trend
+from kernel.portfolio import update_drawdown_circuit_breaker
+```
+
+The kernel has zero `common/` imports, making it safe for LEAN Docker embedding if needed.
+
+### Runner dispatch
+
+```python
+# live/runner.py
+def run_once_multi(config, models, broker, strategy_dir, sell_only=False):
+    if config.get("_use_kernel", False):
+        _run_once_multi_pipeline(config, models, broker, strategy_dir, sell_only)
+        return
+    # ... legacy 900-line path for renquant_102 ...
+```
+
+Enable by adding `"_use_kernel": true` to `strategy_config.json` (already set for renquant_103).
 
 ---
 

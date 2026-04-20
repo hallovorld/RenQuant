@@ -729,7 +729,7 @@ def _run_once_multi_pipeline(
     run_mode = "sell-only" if sell_only else "full"
     sep = "=" * 62
     log.info(sep)
-    log.info("RENQUANT-103  %s  [%s]", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
+    log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
     ctx = PipelineContext(
