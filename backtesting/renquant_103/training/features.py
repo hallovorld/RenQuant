@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from kernel.indicators import compute_all as _compute_all
 
@@ -98,19 +99,32 @@ def build_all_training_features(
     lookahead: int,
     threshold: float,
 ) -> dict[str, pd.DataFrame]:
-    """Build labelled feature frames for all watchlist tickers. Prints per-ticker summary."""
+    """Build labelled feature frames for all watchlist tickers in parallel."""
+
+    def _build(ticker: str):
+        df = build_training_features(ticker, ohlcv, indicator_spec, lookahead, threshold)
+        return ticker, df
+
     feature_frames: dict[str, pd.DataFrame] = {}
+    # ThreadPoolExecutor: numpy/pandas release the GIL during computation,
+    # so multiple tickers genuinely run in parallel.
+    with ThreadPoolExecutor() as pool:
+        futures = {pool.submit(_build, t): t for t in watchlist}
+        # Collect results in original watchlist order for clean output
+        results = {}
+        for future in as_completed(futures):
+            ticker, df = future.result()
+            results[ticker] = df
+
     for ticker in watchlist:
-        try:
-            df = build_training_features(ticker, ohlcv, indicator_spec, lookahead, threshold)
-            if df is None or df.empty:
-                print(f"  {ticker}: no feature frame")
-                continue
-            lv = df["label"].value_counts().to_dict()
-            print(f"  {ticker}: {len(df)} rows  "
-                  f"buy={lv.get(1,0)}  sell={lv.get(-1,0)}  hold={lv.get(0,0)}")
-            feature_frames[ticker] = df
-        except Exception as e:
-            print(f"  {ticker}: ERROR — {e}")
+        df = results.get(ticker)
+        if df is None or df.empty:
+            print(f"  {ticker}: no feature frame")
+            continue
+        lv = df["label"].value_counts().to_dict()
+        print(f"  {ticker}: {len(df)} rows  "
+              f"buy={lv.get(1,0)}  sell={lv.get(-1,0)}  hold={lv.get(0,0)}")
+        feature_frames[ticker] = df
+
     print(f"\nBuilt frames for {len(feature_frames)} / {len(watchlist)} symbols.")
     return feature_frames

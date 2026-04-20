@@ -382,6 +382,7 @@ class XGBoostModel(BaseModel):
         min_child_weight: int = 10,
         reg_alpha: float = 0.1,
         reg_lambda: float = 1.0,
+        nthread: int | None = None,
     ):
         self.feature_columns = feature_columns or ["rsi", "macd_hist", "cci", "bbp", "adx"]
         self.lookahead = lookahead
@@ -396,6 +397,7 @@ class XGBoostModel(BaseModel):
         self.min_child_weight = min_child_weight
         self.reg_alpha = reg_alpha
         self.reg_lambda = reg_lambda
+        self.nthread = nthread
         self._buy_model: Any = None
         self._sell_model: Any = None
         self._feature_importances: dict[str, float] = {}
@@ -436,6 +438,8 @@ class XGBoostModel(BaseModel):
             reg_alpha=self.reg_alpha, reg_lambda=self.reg_lambda,
             use_label_encoder=False, eval_metric="logloss", verbosity=0,
         )
+        if self.nthread is not None:
+            xgb_kwargs["n_jobs"] = self.nthread
         y_buy = (y == 1).astype(int)
         y_sell = (y == -1).astype(int)
         buy_ratio  = max(1, (y_buy == 0).sum() / max(1, (y_buy == 1).sum()))
