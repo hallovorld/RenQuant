@@ -16,3 +16,4 @@
 | [renquant_102_vs_103_report.md](renquant_102_vs_103_report.md) | Per-symbol OOS Sharpe comparison: renquant_102 vs renquant_103 |
 | [plan-relative-indicators.md](plan-relative-indicators.md) | Historical plan for relative indicator framework (completed) |
 | [rearchitecture_plan.md](rearchitecture_plan.md) | Original re-architecture plan (implemented — see architecture.md for current state) |
+| [pipeline_unification_plan.md](pipeline_unification_plan.md) | **Active plan** — unify notebook/LEAN/runner onto shared inference + training pipelines (branch: `pipeline-unification`) |
