@@ -1,4 +1,4 @@
-"""Exit-check pure functions — all 5 exit types.
+"""Exit-check pure functions — all 5 exit types + tax-aware hold gate.
 
 Self-contained: only datetime, dataclasses.  No common/ imports.
 Priority order (highest → lowest):
@@ -6,7 +6,8 @@ Priority order (highest → lowest):
   2. stop_loss       (cumulative from entry)
   3. single_day_loss (drop from previous close — BULL_CALM only)
   4. max_hold        (forced time exit)
-  5. model_sell      (consecutive sell-signal streak)
+  5. [tax_hold_gate] (suppresses model-sell near 1-year mark with unrealized gain)
+  6. model_sell      (consecutive sell-signal streak)
 """
 from __future__ import annotations
 
@@ -169,10 +170,12 @@ def compute_exits(
     """Run all exits in priority order; return first triggered signal.
 
     params keys (all optional, default disabled if absent or zero):
-      ts_trigger_pct, ts_trail_pct    — trailing stop (BULL_CALM)
+      trailing_stop_trigger_pct, trailing_stop_trail_pct  — trailing stop (BULL_CALM)
       stop_loss_pct                   — cumulative stop
       max_single_day_loss_pct         — single-day gate (BULL_CALM)
       max_hold_days                   — time exit
+      lt_hold_gate_days               — suppress model-sell when approaching 1-year (tax)
+      lt_hold_min_gain                — min unrealized gain required for tax gate (default 0.10)
       consecutive_sell_signals        — model sell streak threshold
       min_hold_days                   — model-sell blocked before N days
     """
@@ -212,7 +215,25 @@ def compute_exits(
     if sig.should_exit:
         return sig, state
 
-    # 5. Model sell streak
+    # 5. Tax-aware hold gate — suppress model-sell near the 1-year LT threshold
+    #    when the position has a meaningful unrealized gain worth protecting.
+    #    Hard stops (trailing, cumulative, single-day) above still fire normally.
+    lt_gate = int(params.get("lt_hold_gate_days", 0))
+    if lt_gate > 0 and state.entry_price > 0:
+        days_held      = (today - state.entry_date).days
+        unrealized_gain = (current_price - state.entry_price) / state.entry_price
+        lt_min_gain    = float(params.get("lt_hold_min_gain", 0.10))
+        if lt_gate <= days_held < 365 and unrealized_gain >= lt_min_gain:
+            # Still update sell streak so it's ready when the window passes
+            state, _ = check_model_sell(
+                model_action, state,
+                int(params.get("consecutive_sell_signals", 3)),
+                int(params.get("min_hold_days", 0)),
+                today,
+            )
+            return _NO_EXIT, state
+
+    # 6. Model sell streak
     state, sig = check_model_sell(
         model_action, state,
         int(params.get("consecutive_sell_signals", 3)),

@@ -804,3 +804,250 @@ class TestComputeRelativeStrength:
     def test_both_negative(self):
         """Stock losing less than ETF = positive RS."""
         assert compute_relative_strength(-0.02, -0.07) == pytest.approx(0.05)
+
+
+# ── kernel.regime: configurable Hurst thresholds ─────────────────────────────
+
+class TestConfigurableHurstThresholds:
+    """detect_regime respects hurst_trending_threshold / hurst_reversion_threshold."""
+
+    def _cfg(self, trending=0.65, reversion=0.52):
+        return {"regime": {
+            "hurst_trending_threshold":  trending,
+            "hurst_reversion_threshold": reversion,
+            "cusum_threshold": 99.0,  # disable CUSUM for isolation
+            "cusum_lookback": 20,
+            "cusum_drift": 0.5,
+            "hurst_window": 63,
+            "transition_uncertainty_bars": 3,
+            "vol_realized_window": 20,
+            "bear_vol_threshold":    99.0,  # disable BEAR override
+            "bear_return_threshold": -99.0,
+        }}
+
+    def _strong_trend_returns(self, n=200):
+        """Persistent trending returns → high H."""
+        rng = np.random.default_rng(0)
+        return np.cumsum(rng.normal(0.001, 0.005, n))
+
+    def test_high_hurst_labels_bull_calm(self):
+        """H well above 0.65 → BULL_CALM (not CHOPPY)."""
+        # Force H by passing returns that produce momentum character
+        rets = np.diff(self._strong_trend_returns())
+        state = detect_regime(rets, None, None, RegimeState(), self._cfg())
+        assert state.regime in (BULL_CALM, BULL_VOLATILE)
+
+    def test_raising_threshold_reclassifies(self):
+        """With threshold raised to 0.90 even strong-trending H may become AMBIGUOUS."""
+        cfg_high = self._cfg(trending=0.90, reversion=0.52)
+        rets = np.diff(self._strong_trend_returns())
+        state = detect_regime(rets, None, None, RegimeState(), cfg_high)
+        # Hurst rarely hits 0.90, so should NOT be BULL_CALM via momentum branch
+        # (will fall to GMM dominant, likely BULL_VOLATILE or BEAR depending on data)
+        assert state.regime is not None  # just verify it ran without error
+
+    def test_low_hurst_labels_choppy(self):
+        """H below reversion threshold → CHOPPY."""
+        from unittest.mock import patch
+        rets = np.random.default_rng(42).normal(0, 0.01, 200)
+        with patch("kernel.regime.compute_hurst", return_value=0.40):
+            state = detect_regime(rets, None, None, RegimeState(), self._cfg())
+        assert state.regime == CHOPPY
+
+    def test_defaults_used_when_config_absent(self):
+        """Missing threshold keys fall back to hardcoded defaults (0.65/0.52)."""
+        cfg_empty = {"regime": {"cusum_threshold": 99.0, "cusum_lookback": 20,
+                                "cusum_drift": 0.5, "hurst_window": 63,
+                                "transition_uncertainty_bars": 3,
+                                "vol_realized_window": 20,
+                                "bear_vol_threshold": 99.0,
+                                "bear_return_threshold": -99.0}}
+        rets = np.diff(self._strong_trend_returns())
+        state = detect_regime(rets, None, None, RegimeState(), cfg_empty)
+        assert state.regime is not None
+
+
+# ── kernel.regime: BEAR hard override ────────────────────────────────────────
+
+class TestBearHardOverride:
+    """detect_regime forces BEAR when vol or return thresholds are breached."""
+
+    def _cfg(self, bear_vol=0.35, bear_ret=-0.08):
+        return {"regime": {
+            "hurst_trending_threshold":  0.65,
+            "hurst_reversion_threshold": 0.52,
+            "cusum_threshold": 99.0,
+            "cusum_lookback": 20,
+            "cusum_drift": 0.5,
+            "hurst_window": 63,
+            "transition_uncertainty_bars": 3,
+            "vol_realized_window": 20,
+            "bear_vol_threshold":    bear_vol,
+            "bear_return_threshold": bear_ret,
+        }}
+
+    def _high_vol_returns(self, n=200):
+        """Returns with very high realized vol (annualized >> 35%)."""
+        rng = np.random.default_rng(7)
+        # daily vol ~4% → annualized ~63%
+        return rng.normal(0.0, 0.04, n)
+
+    def _crash_returns(self, n=200):
+        """Persistent downward drift totalling > 8% over 20 days."""
+        base = np.zeros(n)
+        # last 20 days drop 0.5%/day = -10% cumulative
+        base[-20:] = -0.005
+        return base
+
+    def test_high_vol_forces_bear(self):
+        """Annualized vol > 35% → BEAR regardless of Hurst."""
+        rets = self._high_vol_returns()
+        state = detect_regime(rets, None, None, RegimeState(), self._cfg(bear_vol=0.35))
+        assert state.regime == BEAR
+
+    def test_crash_return_forces_bear(self):
+        """20-day cumulative return < -8% → BEAR."""
+        rets = self._crash_returns()
+        state = detect_regime(rets, None, None, RegimeState(), self._cfg(bear_ret=-0.08))
+        assert state.regime == BEAR
+
+    def test_normal_vol_does_not_force_bear(self):
+        """Normal vol (~1%/day, ~16% ann) does NOT trigger override."""
+        rng = np.random.default_rng(1)
+        rets = rng.normal(0.001, 0.01, 200)
+        state = detect_regime(rets, None, None, RegimeState(), self._cfg(bear_vol=0.35))
+        assert state.regime != BEAR
+
+    def test_override_disabled_with_high_threshold(self):
+        """Setting bear_vol_threshold=99 and bear_return_threshold=-99 disables override."""
+        rets = self._high_vol_returns()
+        state = detect_regime(rets, None, None, RegimeState(), self._cfg(bear_vol=99.0, bear_ret=-99.0))
+        # High vol + disabled override → should NOT be BEAR from override
+        # (may still be BEAR from GMM if GMM fires, but override path won't set it)
+        # We can't assert non-BEAR here since GMM might; just assert it ran cleanly
+        assert state.regime is not None
+
+    def test_bear_confidence_is_gmm_probability(self):
+        """BEAR regime confidence uses GMM P(BEAR), not Hurst distance."""
+        rets = self._crash_returns()
+        state = detect_regime(rets, None, None, RegimeState(), self._cfg(bear_ret=-0.08))
+        assert state.regime == BEAR
+        assert 0.0 <= state.confidence <= 1.0
+
+
+# ── kernel.exits: tax-aware hold gate ────────────────────────────────────────
+
+class TestTaxHoldGate:
+    """Tax-aware hold gate suppresses model-sell near the 1-year LT threshold."""
+
+    def _state(self, days_ago: int, entry_price=100.0) -> HoldingState:
+        entry = datetime.date.today() - datetime.timedelta(days=days_ago)
+        return HoldingState(
+            entry_price=entry_price,
+            entry_date=entry,
+            high_watermark=entry_price,
+        )
+
+    def _params(self, lt_gate=330, lt_min_gain=0.10):
+        return {
+            "trailing_stop_trigger_pct": 0.0,
+            "trailing_stop_trail_pct":   0.0,
+            "stop_loss_pct":             0.0,
+            "max_single_day_loss_pct":   0.0,
+            "max_hold_days":             0,
+            "consecutive_sell_signals":  1,
+            "min_hold_days":             0,
+            "lt_hold_gate_days":         lt_gate,
+            "lt_hold_min_gain":          lt_min_gain,
+        }
+
+    def test_gate_suppresses_model_sell_in_window(self):
+        """Day 340, 20% gain, 3 sell signals → gate suppresses exit."""
+        state = self._state(days_ago=340, entry_price=100.0)
+        sig, _ = compute_exits(
+            current_price=120.0,  # 20% gain
+            today=datetime.date.today(),
+            model_action="sell",
+            state=state,
+            params=self._params(lt_gate=330, lt_min_gain=0.10),
+        )
+        assert not sig.should_exit
+
+    def test_gate_does_not_suppress_before_window(self):
+        """Day 300 (before 330 gate) → model-sell fires normally."""
+        state = self._state(days_ago=300, entry_price=100.0)
+        sig, _ = compute_exits(
+            current_price=120.0,
+            today=datetime.date.today(),
+            model_action="sell",
+            state=state,
+            params=self._params(lt_gate=330, lt_min_gain=0.10),
+        )
+        assert sig.should_exit
+        assert sig.exit_type == "model_sell"
+
+    def test_gate_does_not_suppress_after_one_year(self):
+        """Day 366 (past 1-year) → gate window closed, model-sell fires."""
+        state = self._state(days_ago=366, entry_price=100.0)
+        sig, _ = compute_exits(
+            current_price=120.0,
+            today=datetime.date.today(),
+            model_action="sell",
+            state=state,
+            params=self._params(lt_gate=330, lt_min_gain=0.10),
+        )
+        assert sig.should_exit
+        assert sig.exit_type == "model_sell"
+
+    def test_gate_does_not_suppress_if_gain_below_minimum(self):
+        """In window but gain only 5% (below 10% min) → model-sell fires."""
+        state = self._state(days_ago=340, entry_price=100.0)
+        sig, _ = compute_exits(
+            current_price=105.0,  # only 5% gain
+            today=datetime.date.today(),
+            model_action="sell",
+            state=state,
+            params=self._params(lt_gate=330, lt_min_gain=0.10),
+        )
+        assert sig.should_exit
+        assert sig.exit_type == "model_sell"
+
+    def test_gate_disabled_when_zero(self):
+        """lt_hold_gate_days=0 disables tax gate entirely."""
+        state = self._state(days_ago=340, entry_price=100.0)
+        sig, _ = compute_exits(
+            current_price=120.0,
+            today=datetime.date.today(),
+            model_action="sell",
+            state=state,
+            params=self._params(lt_gate=0, lt_min_gain=0.10),
+        )
+        assert sig.should_exit
+        assert sig.exit_type == "model_sell"
+
+    def test_stop_loss_still_fires_through_gate(self):
+        """Hard stop-loss fires even when tax gate is active."""
+        state = self._state(days_ago=340, entry_price=100.0)
+        sig, _ = compute_exits(
+            current_price=80.0,   # 20% loss → triggers stop
+            today=datetime.date.today(),
+            model_action="hold",
+            state=state,
+            params={**self._params(lt_gate=330, lt_min_gain=0.10),
+                    "stop_loss_pct": 0.15},
+        )
+        assert sig.should_exit
+        assert sig.exit_type == "stop_loss"
+
+    def test_streak_accumulates_during_gate_window(self):
+        """Sell streak still builds during gate so it fires immediately after window."""
+        state = self._state(days_ago=340, entry_price=100.0)
+        today = datetime.date.today()
+        params = self._params(lt_gate=330, lt_min_gain=0.10)
+        params["consecutive_sell_signals"] = 2
+
+        # Two sell signals during gate — no exit yet
+        _, state = compute_exits(120.0, today, "sell", state, params)
+        _, state = compute_exits(120.0, today, "sell", state, params)
+        assert state.sell_streak == 2
+

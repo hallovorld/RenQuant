@@ -229,20 +229,24 @@ def detect_regime(
     """
     regime_cfg    = config.get("regime", {})
     hurst_window  = int(regime_cfg.get("hurst_window", 63))
+    hurst_trend   = float(regime_cfg.get("hurst_trending_threshold",   0.65))
+    hurst_rev     = float(regime_cfg.get("hurst_reversion_threshold",  0.52))
     cusum_lookback = int(regime_cfg.get("cusum_lookback", 20))
-    cusum_thresh  = float(regime_cfg.get("cusum_threshold", 3.0))
+    cusum_thresh  = float(regime_cfg.get("cusum_threshold", 5.5))
     cusum_drift   = float(regime_cfg.get("cusum_drift", 0.5))
     trans_bars    = int(regime_cfg.get("transition_uncertainty_bars", 3))
     vol_window    = int(regime_cfg.get("vol_realized_window", 20))
+    bear_vol_thr  = float(regime_cfg.get("bear_vol_threshold",    0.35))
+    bear_ret_thr  = float(regime_cfg.get("bear_return_threshold", -0.08))
 
     if len(spy_returns) < 30:
         return state   # not enough data yet
 
     # Layer 1 — Hurst
     hurst = compute_hurst(spy_returns, window=hurst_window)
-    if hurst > 0.55:
+    if hurst > hurst_trend:
         hurst_regime = "MOMENTUM"
-    elif hurst < 0.45:
+    elif hurst < hurst_rev:
         hurst_regime = "REVERSION"
     else:
         hurst_regime = "AMBIGUOUS"
@@ -256,8 +260,16 @@ def detect_regime(
     gmm_probs = gmm_predict(gmm_artifact, spy_returns, spy_df, vol_window=vol_window)
     dominant_gmm = max(gmm_probs, key=gmm_probs.get)
 
+    # BEAR hard override — fire if realized vol or cumulative return cross thresholds
+    # regardless of GMM output (GMM alone reacts too slowly to macro shocks)
+    spy_20d_vol = float(np.std(spy_returns[-vol_window:], ddof=1) * math.sqrt(252)) \
+        if len(spy_returns) >= vol_window else 0.0
+    spy_20d_ret = float(np.sum(spy_returns[-vol_window:])) \
+        if len(spy_returns) >= vol_window else 0.0
+    hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
+
     # Resolve regime
-    if gmm_probs.get(BEAR, 0) > 0.5:
+    if hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
         new_regime = BEAR
     elif hurst_regime == "MOMENTUM":
         new_regime = BULL_CALM
