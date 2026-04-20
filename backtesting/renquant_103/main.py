@@ -5,7 +5,6 @@ LEAN-safe: no common/ imports.  Docker can access kernel/ as a local package.
 """
 from AlgorithmImports import *  # noqa: F401,F403
 import json
-import math
 from datetime import datetime
 from pathlib import Path
 
@@ -13,12 +12,14 @@ import numpy as np
 import pandas as pd
 
 from config import load_config, split_date_parts
-from kernel.config   import BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
-from kernel.regime   import RegimeState, detect_regime, load_gmm_artifact
-from kernel.models   import load_artifact, score_artifact
-from kernel.exits    import HoldingState, compute_exits
-from kernel.sizing   import compute_position_size
-from kernel.selection import (
+from kernel.config       import BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
+from kernel.regime       import RegimeState, detect_regime, load_gmm_artifact
+from kernel.models       import load_artifact, score_artifact
+from kernel.exits        import HoldingState, compute_exits
+from kernel.sizing       import compute_position_size
+from kernel.market_gates import check_spy_velocity_crash, check_spy_ema_trend
+from kernel.portfolio    import update_drawdown_circuit_breaker, compute_trade_tax
+from kernel.selection    import (
     CandidateResult, SelectionContext,
     score_candidates, run_selection_loop,
     is_wash_sale_blocked, is_earnings_blocked,
@@ -173,10 +174,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
         # Portfolio drawdown circuit breaker
         pv = self.Portfolio.TotalPortfolioValue
-        self._hwm = max(self._hwm, pv)
-        halt_pct = float(regime_p.get("drawdown_halt_pct", 0))
-        if halt_pct > 0 and self._hwm > 0:
-            self._skip_buys = (self._hwm - pv) / self._hwm >= halt_pct
+        self._hwm, self._skip_buys = update_drawdown_circuit_breaker(
+            pv, self._hwm, float(regime_p.get("drawdown_halt_pct", 0))
+        )
 
         # ── SELL loop ──
         exit_params = self._build_exit_params(regime_p)
@@ -249,23 +249,18 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         # SPY velocity crash filter
         v_halt = float(regime_p.get("spy_velocity_halt_pct", 0.0))
         v_look = int(regime_p.get("spy_velocity_lookback_days", 3))
-        if v_halt > 0 and len(self._spy_returns) >= v_look:
-            spy_nday = math.prod(1.0 + r for r in self._spy_returns[-v_look:]) - 1.0
-            if spy_nday < -v_halt:
-                self._velocity_blocks += 1
-                self.Debug(f"{self.Time.date()} SPY velocity crash: {spy_nday:.1%} — blocking buys")
-                self.Plot("Portfolio", "Positions", len(held))
-                return
+        if check_spy_velocity_crash(self._spy_returns, v_look, v_halt):
+            self._velocity_blocks += 1
+            self.Debug(f"{self.Time.date()} SPY velocity crash — blocking buys")
+            self.Plot("Portfolio", "Positions", len(held))
+            return
 
         # SPY EMA50 trend gate
         spy_hist = self._get_spy_df(55)
-        if spy_hist is not None and len(spy_hist) >= 51:
-            closes = spy_hist["close"]
-            ema50  = closes.ewm(span=50, adjust=False).mean()
-            if closes.iloc[-1] < ema50.iloc[-1]:
-                self.Debug(f"{self.Time.date()} SPY EMA50 gate — blocking buys")
-                self.Plot("Portfolio", "Positions", len(held))
-                return
+        if spy_hist is not None and check_spy_ema_trend(spy_hist["close"]):
+            self.Debug(f"{self.Time.date()} SPY EMA50 gate — blocking buys")
+            self.Plot("Portfolio", "Positions", len(held))
+            return
 
         # ── Scan candidates ──
         min_score = float(regime_p.get("min_model_score", 0.10))
@@ -400,8 +395,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
     def _compute_rs_score(self, ticker: str) -> float:
         """20-day return of stock minus its sector ETF."""
-        sector = self._sector_map.get(ticker, "other")
-        etf    = self._sector_etf_map.get(sector)
+        from kernel.selection import compute_relative_strength
+        sector  = self._sector_map.get(ticker, "other")
+        etf     = self._sector_etf_map.get(sector)
         if not etf:
             return 0.0
         etf_sym = self._sector_etf_symbols.get(etf) or self.symbols.get(etf)
@@ -413,7 +409,10 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             return 0.0
         sr = sh.loc[self.symbols[ticker]]["close"]
         er = eh.loc[etf_sym]["close"]
-        return float(sr.iloc[-1] / sr.iloc[0] - 1) - float(er.iloc[-1] / er.iloc[0] - 1)
+        return compute_relative_strength(
+            float(sr.iloc[-1] / sr.iloc[0] - 1),
+            float(er.iloc[-1] / er.iloc[0] - 1),
+        )
 
     # ── Trade execution ────────────────────────────────────────────────────────
 
@@ -460,7 +459,8 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         gross_pnl  = self.Portfolio[self.symbols[ticker]].UnrealizedProfit
         days_held  = (self.Time.date() - hs.entry_date).days if hs else 0
         is_lt      = days_held >= self._tax_thresh_days
-        tax        = max(gross_pnl, 0) * (self._tax_long if is_lt else self._tax_short)
+        tax        = compute_trade_tax(gross_pnl, days_held,
+                                       self._tax_short, self._tax_long, self._tax_thresh_days)
         self._total_tax += tax
         if is_lt:
             self._lt_trades += 1

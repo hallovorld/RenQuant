@@ -708,6 +708,40 @@ def _ensure_fresh_ohlcv(
     return df
 
 
+def _run_once_multi_pipeline(
+    config: dict[str, Any],
+    models: dict,
+    broker: BaseBroker,
+    strategy_dir: Path,
+    sell_only: bool,
+) -> None:
+    """Thin dispatcher: create a PipelineContext and run the 3-job pipeline.
+
+    Used for renquant_103+ (kernel-based strategies only).
+    """
+    _load_kernel(strategy_dir)  # ensure pipeline/ is importable (same dir as kernel/)
+
+    from pipeline import Pipeline, PipelineContext          # noqa: PLC0415
+    from pipeline.jobs.data import DataJob                  # noqa: PLC0415
+    from pipeline.jobs.signals import SignalJob             # noqa: PLC0415
+    from pipeline.jobs.execution import ExecutionJob        # noqa: PLC0415
+
+    run_mode = "sell-only" if sell_only else "full"
+    sep = "=" * 62
+    log.info(sep)
+    log.info("RENQUANT-103  %s  [%s]", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
+    log.info(sep)
+
+    ctx = PipelineContext(
+        config=config,
+        strategy_dir=strategy_dir,
+        sell_only=sell_only,
+        broker=broker,
+        models=models,
+    )
+    Pipeline([DataJob(), SignalJob(), ExecutionJob()]).run(ctx)
+
+
 def run_once_multi(
     config: dict[str, Any],
     models: dict,
@@ -724,6 +758,11 @@ def run_once_multi(
         (market-open and pre-close) where the goal is to exit loss positions
         quickly without placing new entries on incomplete daily bars.
     """
+    # ── Pipeline path for renquant_103+ (kernel-based strategies) ────────────
+    if config.get("_use_kernel", False):
+        _run_once_multi_pipeline(config, models, broker, strategy_dir, sell_only)
+        return
+
     import numpy as np
     import pandas as pd
 

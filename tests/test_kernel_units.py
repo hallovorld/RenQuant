@@ -659,3 +659,148 @@ class TestComputePositionSize:
         )
         # fallback: 25% of 100k = 25k / 2000 = 12 shares
         assert shares == 12
+
+
+# ── kernel.market_gates ───────────────────────────────────────────────────────
+
+from kernel.market_gates import check_spy_velocity_crash, check_spy_ema_trend
+
+
+class TestCheckSpyVelocityCrash:
+    def test_no_crash_flat_market(self):
+        """No crash when SPY is flat."""
+        spy_rets = [0.0, 0.0, 0.0, 0.0, 0.0]
+        assert check_spy_velocity_crash(spy_rets) is False
+
+    def test_crash_detected_large_drop(self):
+        """Blocks when SPY fell > 3% cumulatively over 3 days."""
+        spy_rets = [-0.015, -0.015, -0.015]  # ≈ -4.4% cumulative
+        assert check_spy_velocity_crash(spy_rets, lookback_days=3, halt_pct=0.03) is True
+
+    def test_small_drop_not_blocked(self):
+        """Does not block when drop is below threshold."""
+        spy_rets = [-0.005, -0.005, -0.005]  # ≈ -1.5% cumulative
+        assert check_spy_velocity_crash(spy_rets, lookback_days=3, halt_pct=0.03) is False
+
+    def test_halt_pct_zero_never_blocks(self):
+        """halt_pct=0 disables the gate."""
+        spy_rets = [-0.05, -0.05, -0.05]
+        assert check_spy_velocity_crash(spy_rets, halt_pct=0) is False
+
+    def test_insufficient_history_returns_false(self):
+        """Returns False when fewer bars than lookback."""
+        assert check_spy_velocity_crash([-0.05], lookback_days=3) is False
+
+    def test_uses_only_last_lookback_days(self):
+        """Only the last lookback_days are considered."""
+        spy_rets = [-0.05, -0.05, 0.01, 0.01, 0.01]  # last 3 days are small gains
+        assert check_spy_velocity_crash(spy_rets, lookback_days=3, halt_pct=0.03) is False
+
+
+class TestCheckSpyEmaTrend:
+    def _make_series(self, n: int, trend: str = "up") -> pd.Series:
+        if trend == "up":
+            prices = [100.0 + i * 0.5 for i in range(n)]
+        else:
+            prices = [100.0 + 25 - i * 0.5 for i in range(n)]  # starts high, falls
+        return pd.Series(prices, index=pd.date_range("2020-01-01", periods=n, freq="B"))
+
+    def test_above_ema_returns_false(self):
+        """SPY above EMA50 → gate passes (returns False = not blocking)."""
+        s = self._make_series(100, "up")
+        assert check_spy_ema_trend(s, ema_span=50) is False
+
+    def test_below_ema_returns_true(self):
+        """SPY below EMA50 → gate blocks (returns True = blocking)."""
+        s = self._make_series(100, "down")
+        assert check_spy_ema_trend(s, ema_span=50) is True
+
+    def test_insufficient_history_returns_false(self):
+        """Too few bars → no block (default safe)."""
+        s = pd.Series([100.0] * 10)
+        assert check_spy_ema_trend(s, ema_span=50) is False
+
+    def test_none_series_returns_false(self):
+        """None input → no block."""
+        assert check_spy_ema_trend(None) is False  # type: ignore[arg-type]
+
+
+# ── kernel.portfolio ──────────────────────────────────────────────────────────
+
+from kernel.portfolio import update_drawdown_circuit_breaker, compute_trade_tax
+
+
+class TestUpdateDrawdownCircuitBreaker:
+    def test_no_drawdown_no_halt(self):
+        new_hwm, halt = update_drawdown_circuit_breaker(100_000, 100_000, 0.15)
+        assert new_hwm == 100_000
+        assert halt is False
+
+    def test_hwm_updated_on_new_high(self):
+        new_hwm, _ = update_drawdown_circuit_breaker(110_000, 100_000, 0.15)
+        assert new_hwm == 110_000
+
+    def test_circuit_fires_at_threshold(self):
+        """Drawdown exactly at threshold triggers halt."""
+        _, halt = update_drawdown_circuit_breaker(85_000, 100_000, 0.15)
+        assert halt is True
+
+    def test_circuit_does_not_fire_below_threshold(self):
+        _, halt = update_drawdown_circuit_breaker(90_000, 100_000, 0.15)
+        assert halt is False
+
+    def test_zero_halt_threshold_never_fires(self):
+        _, halt = update_drawdown_circuit_breaker(50_000, 100_000, 0.0)
+        assert halt is False
+
+
+class TestComputeTradeTax:
+    def test_no_tax_on_loss(self):
+        assert compute_trade_tax(-1000.0, 10, 0.35, 0.20) == 0.0
+
+    def test_short_term_rate_applied(self):
+        tax = compute_trade_tax(1000.0, 100, short_term_rate=0.35, long_term_rate=0.20)
+        assert tax == pytest.approx(350.0)
+
+    def test_long_term_rate_applied(self):
+        tax = compute_trade_tax(1000.0, 400, short_term_rate=0.35, long_term_rate=0.20)
+        assert tax == pytest.approx(200.0)
+
+    def test_exactly_at_lt_threshold(self):
+        """Hold_days == 365 → long-term rate."""
+        tax = compute_trade_tax(1000.0, 365, short_term_rate=0.35, long_term_rate=0.20)
+        assert tax == pytest.approx(200.0)
+
+    def test_one_day_before_threshold(self):
+        """Hold_days == 364 → short-term rate."""
+        tax = compute_trade_tax(1000.0, 364, short_term_rate=0.35, long_term_rate=0.20)
+        assert tax == pytest.approx(350.0)
+
+    def test_zero_pnl_no_tax(self):
+        assert compute_trade_tax(0.0, 200, 0.35, 0.20) == 0.0
+
+
+# ── kernel.selection.compute_relative_strength ────────────────────────────────
+
+from kernel.selection import compute_relative_strength
+
+
+class TestComputeRelativeStrength:
+    def test_positive_outperformance(self):
+        assert compute_relative_strength(0.10, 0.05) == pytest.approx(0.05)
+
+    def test_negative_underperformance(self):
+        assert compute_relative_strength(0.02, 0.08) == pytest.approx(-0.06)
+
+    def test_equal_returns_zero(self):
+        assert compute_relative_strength(0.05, 0.05) == pytest.approx(0.0)
+
+    def test_nan_stock_returns_zero(self):
+        assert compute_relative_strength(float("nan"), 0.05) == 0.0
+
+    def test_nan_etf_returns_zero(self):
+        assert compute_relative_strength(0.05, float("nan")) == 0.0
+
+    def test_both_negative(self):
+        """Stock losing less than ETF = positive RS."""
+        assert compute_relative_strength(-0.02, -0.07) == pytest.approx(0.05)

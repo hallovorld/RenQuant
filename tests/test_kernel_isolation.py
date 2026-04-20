@@ -42,7 +42,8 @@ def test_no_common_import(py_file: Path) -> None:
 def test_kernel_files_exist() -> None:
     """All expected kernel modules must be present."""
     expected = {"config.py", "regime.py", "indicators.py", "models.py",
-                "exits.py", "selection.py", "sizing.py", "__init__.py"}
+                "exits.py", "selection.py", "sizing.py",
+                "market_gates.py", "portfolio.py", "__init__.py"}
     found = {f.name for f in KERNEL_FILES} | {"__init__.py"}
     missing = expected - found
     assert not missing, f"Missing kernel modules: {missing}"

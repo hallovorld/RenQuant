@@ -1,14 +1,16 @@
 """Candidate scoring, guards, and tiered selection loop.
 
-Self-contained: only datetime, dataclasses.  No common/ imports.
+Self-contained: only datetime, dataclasses, math.  No common/ imports.
 
 Public API:
-  score_candidates(scored, w_rank, w_rs)    → ranked list
-  run_selection_loop(ranked, state, config) → list[str]
+  compute_relative_strength(stock_ret, etf_ret)  → float
+  score_candidates(candidates, w_rank, w_rs)      → ranked list
+  run_selection_loop(ranked, ctx)                 → (selected, blocks)
 """
 from __future__ import annotations
 
 import datetime
+import math
 from dataclasses import dataclass, field
 
 
@@ -190,3 +192,19 @@ def run_selection_loop(
         slots_filled += 1
 
     return selected, blocks
+
+
+# ── Relative-strength helper ───────────────────────────────────────────────────
+
+def compute_relative_strength(stock_ret_20d: float, etf_ret_20d: float) -> float:
+    """Return stock outperformance vs its sector ETF over a 20-day window.
+
+    Args:
+        stock_ret_20d: 20-day return of the stock  (pct_change(20)).
+        etf_ret_20d:   20-day return of its sector ETF.
+
+    Returns 0.0 when either input is NaN.
+    """
+    if math.isnan(stock_ret_20d) or math.isnan(etf_ret_20d):
+        return 0.0
+    return stock_ret_20d - etf_ret_20d
