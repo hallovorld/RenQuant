@@ -38,17 +38,6 @@ fi
 exec >> "$LOG" 2>&1
 echo "=== daily_103 started at $(date) ==="
 
-# ── Already-ran-today guard ───────────────────────────────────────────────────
-# launchd fires this script each time the Mac wakes if it thinks the scheduled
-# 13:55 run was missed (sleep/wake cycles). Block re-runs after a successful
-# completion by writing a date-stamped sentinel file.
-DONE_FILE="/tmp/renquant_103_daily_${DATE}.done"
-if [ -f "$DONE_FILE" ]; then
-    echo "daily_103 already completed successfully today ($DATE) — skipping duplicate run."
-    notify "RenQuant 103 SKIP" "daily_103 already ran today ($DATE) — blocked duplicate"
-    exit 0
-fi
-
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
 LOCK_FILE="/tmp/renquant_103_daily.lock"
 if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
@@ -144,9 +133,6 @@ except Exception:
 
 if "$PYTHON" -m live.runner --strategy renquant_103 --broker alpaca --once; then
     echo "=== daily_103 finished at $(date) ==="
-
-    # Mark today's run as complete — blocks duplicate launchd wake-up firings
-    touch "$DONE_FILE"
 
     # Build trade summary from THIS run's new entries only
     SUMMARY=$("$PYTHON" -c "

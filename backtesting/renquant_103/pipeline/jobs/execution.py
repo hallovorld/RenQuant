@@ -285,7 +285,7 @@ def _buy_phase(ctx: PipelineContext) -> None:
     )
 
     selected, blocks = run_selection_loop(ctx.candidates, sel_ctx)
-    log.info("SELECTION: selected=%s  blocks=%s", selected, blocks)
+    log.info("SELECTION DONE: %d selected, blocks=%s", len(selected), blocks)
 
     # ── Place buy orders ───────────────────────────────────────────────────────
     max_pos_pct   = ctx.regime_params["max_position_pct"] * ctx.confidence

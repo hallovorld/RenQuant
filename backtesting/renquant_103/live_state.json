@@ -26,6 +26,6 @@
     "PLTR": 148.02
   },
   "regime": "BULL_VOLATILE",
-  "transition_countdown": 3,
+  "transition_countdown": 1,
   "regime_confidence": 0.5
 }

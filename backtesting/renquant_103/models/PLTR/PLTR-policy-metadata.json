@@ -22,17 +22,17 @@
   "max_depth": 4,
   "learning_rate": 0.05,
   "feature_importances": {
-    "rsi": 0.08127760142087936,
-    "macd_hist": 0.0909772589802742,
-    "cci": 0.09018465876579285,
-    "bbp": 0.09835971146821976,
-    "adx": 0.09670595824718475,
-    "williams_r": 0.06913979351520538,
-    "obv_slope": 0.09476882219314575,
-    "spy_realized_vol": 0.0974019467830658,
-    "spy_adx": 0.10079953074455261,
-    "spy_trend": 0.09647470712661743,
-    "hurst_proxy": 0.08391004800796509
+    "rsi": 0.08051833510398865,
+    "macd_hist": 0.08247379958629608,
+    "cci": 0.0904497355222702,
+    "bbp": 0.09911452233791351,
+    "adx": 0.09835346043109894,
+    "williams_r": 0.07866590470075607,
+    "obv_slope": 0.0956621766090393,
+    "spy_realized_vol": 0.09522803127765656,
+    "spy_adx": 0.10024607181549072,
+    "spy_trend": 0.09681004285812378,
+    "hurst_proxy": 0.08247792720794678
   },
   "artifacts": {
     "buy_model": "PLTR-xgb-buy.json",
@@ -40,10 +40,10 @@
   },
   "trained_date": "2026-04-20",
   "best_approach": "XGBoost",
-  "sharpe": 2.0799,
+  "sharpe": 2.1086,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-10",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
     "method": "platt",
@@ -53,14 +53,14 @@
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.2682926829268293,
-    "raw_min": -0.8060269951820374,
-    "raw_max": 0.8826587796211243,
+    "raw_min": -0.7606806755065918,
+    "raw_max": 0.8820719122886658,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 1.4981618874752123,
-    "platt_intercept": -1.430640632137589,
-    "platt_scale_mean": 0.012273510827160463,
-    "platt_scale_std": 0.410566479844468
+    "platt_coef": 1.5715853666842008,
+    "platt_intercept": -1.4743948210855085,
+    "platt_scale_mean": 0.017646795683881132,
+    "platt_scale_std": 0.4089623657225208
   },
   "score_calibration_date": "2026-04-20"
 }

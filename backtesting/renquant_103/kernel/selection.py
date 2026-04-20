@@ -10,8 +10,11 @@ Public API:
 from __future__ import annotations
 
 import datetime
+import logging
 import math
 from dataclasses import dataclass, field
+
+log = logging.getLogger("pipeline.execution")
 
 
 # ── Data containers ────────────────────────────────────────────────────────────
@@ -160,6 +163,7 @@ def run_selection_loop(
 
     for c in ranked:
         if slots_filled >= ctx.open_slots:
+            log.info("  %-6s  SKIP   [slots full]", c.ticker)
             break
 
         # Tiered threshold — escalating conviction requirement per slot
@@ -168,10 +172,14 @@ def run_selection_loop(
             tier_min = float(ctx.tiered_thresholds[tier_idx].get("min_model_score", 0.0))
             if c.rank_score < tier_min:
                 blocks["tier"] += 1
+                log.info("  %-6s  SKIP   [tier %d needs %.2f, got %.4f]",
+                         c.ticker, tier_idx + 1, tier_min, c.rank_score)
                 continue
 
         if is_wash_sale_blocked(c.ticker, ctx.today, ctx.last_sell_dates, ctx.wash_sale_days):
             blocks["wash_sale"] += 1
+            last = ctx.last_sell_dates.get(c.ticker)
+            log.info("  %-6s  SKIP   [wash sale — sold %s]", c.ticker, last)
             continue
 
         if not passes_sector_guard(
@@ -179,6 +187,9 @@ def run_selection_loop(
             ctx.sector_map, ctx.max_per_sector, ctx.defensive_set,
         ):
             blocks["sector"] += 1
+            sector = ctx.sector_map.get(c.ticker, "other")
+            log.info("  %-6s  SKIP   [sector cap — %s at max %d]",
+                     c.ticker, sector, ctx.max_per_sector)
             continue
 
         if not passes_correlation_guard(
@@ -186,10 +197,22 @@ def run_selection_loop(
             ctx.corr_matrix, ctx.corr_threshold,
         ):
             blocks["correlation"] += 1
+            # find which held ticker caused the block
+            corr_culprit = ""
+            if ctx.corr_matrix:
+                for held in ctx.held_tickers + selected:
+                    corr = (ctx.corr_matrix.get(c.ticker, {}).get(held)
+                            or ctx.corr_matrix.get(held, {}).get(c.ticker))
+                    if corr is not None and abs(corr) >= ctx.corr_threshold:
+                        corr_culprit = f" (corr with {held}: {corr:.2f})"
+                        break
+            log.info("  %-6s  SKIP   [correlation guard%s]", c.ticker, corr_culprit)
             continue
 
-        selected.append(c.ticker)
         slots_filled += 1
+        log.info("  %-6s  SELECT [slot %d  calibrated=%+.4f  rs=%+.4f]",
+                 c.ticker, slots_filled, c.rank_score, c.rs_score)
+        selected.append(c.ticker)
 
     return selected, blocks
 

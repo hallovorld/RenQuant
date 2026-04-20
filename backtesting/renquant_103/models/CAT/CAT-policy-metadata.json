@@ -19,11 +19,11 @@
   },
   "trained_date": "2026-04-20",
   "best_approach": "QLearning",
-  "sharpe": 1.3811,
+  "sharpe": 1.4778,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 997,
-  "live_train_end": "2026-04-10",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
     "method": "platt",
@@ -33,14 +33,14 @@
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.36585365853658536,
-    "raw_min": -59.2961168343908,
-    "raw_max": 101.06259974823597,
+    "raw_min": -85.81613360223693,
+    "raw_max": 138.74935288750373,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.19724424599662982,
-    "platt_intercept": -0.5544012361613918,
-    "platt_scale_mean": 2.48879275863131,
-    "platt_scale_std": 20.399023016505044
+    "platt_coef": 0.13579705201638184,
+    "platt_intercept": -0.5520568400591497,
+    "platt_scale_mean": 5.649826514279104,
+    "platt_scale_std": 26.526524472234552
   },
   "score_calibration_date": "2026-04-20"
 }
