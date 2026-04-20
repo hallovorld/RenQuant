@@ -698,7 +698,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 588 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 568 unit tests passing (`python -m pytest tests/ -v`)
 
 ### Phase 4 — Pipeline Re-architecture ✅ Complete
 1. ✅ Strategy kernel extracted to `backtesting/renquant_103/kernel/` (9 self-contained modules, zero `common/` imports)

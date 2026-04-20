@@ -237,7 +237,7 @@ Every policy in notebook and LEAN must have a corresponding test.
 - `tests/test_policy_alignment.py`: 17 policy classes, each with exactly 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
 - `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 562 collected tests (560 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 568 collected tests (566 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.

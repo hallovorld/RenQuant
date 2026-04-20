@@ -261,3 +261,71 @@ class TestRetrainLiveModels:
                 results, {"AAPL": df} if df is not None else {},
                 exported, strategy_dir, model_params, config, "2025-04-19",
             )
+
+
+# ── Parallelism / new API ─────────────────────────────────────────────────────
+
+class TestParallelTraining:
+    """Verify the parallel execution API introduced in the perf refactor."""
+
+    _PARAMS = {
+        "feature_columns": ["rsi", "macd_hist"],
+        "lookahead": 5, "threshold": 0.02,
+        "bags": 3, "leaf_size": 5,
+        "buy_threshold": 0.1, "sell_threshold": -0.1,
+    }
+    _TAX = {"short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_threshold_days": 365}
+
+    def test_run_tournament_returns_log_key(self):
+        """run_tournament no longer prints; it returns a _log list instead."""
+        from training.tournament import run_tournament
+        ohlcv = _make_ohlcv_dict()
+        tiny_df = pd.DataFrame(
+            {"label": [1] * 10},
+            index=pd.bdate_range("2023-01-01", periods=10),
+        )
+        result = run_tournament(
+            "AAPL", tiny_df, ohlcv["AAPL"]["close"], ohlcv["SPY"]["close"],
+            self._PARAMS, sharpe_floor=0.8, tax_config=self._TAX,
+        )
+        assert "_log" in result
+        assert isinstance(result["_log"], list)
+
+    def test_xgboost_nthread_parameter(self):
+        """XGBoostModel accepts nthread=1 and trains correctly."""
+        from training.models import XGBoostModel
+        from training.features import build_training_features
+        ohlcv = _make_ohlcv_dict()
+        df = build_training_features("AAPL", ohlcv, _INDICATOR_SPEC, _LOOKAHEAD, _THRESHOLD)
+        if df is None:
+            pytest.skip("no feature frame")
+        model = XGBoostModel(
+            feature_columns=["rsi", "macd_hist"],
+            lookahead=5, threshold=0.02,
+            buy_threshold=0.1, sell_threshold=0.1,
+            n_estimators=10, max_depth=2,
+            nthread=1,
+        )
+        model.train(df)
+        assert len(model.predict_bulk(df.iloc[:5])) == 5
+
+    def test_run_tournament_all_parallel_returns_all_tickers(self):
+        """run_tournament_all returns a result entry for every ticker (parallel path)."""
+        from training.tournament import run_tournament_all
+        from training.features import build_all_training_features
+        ohlcv = _make_ohlcv_dict(["AAPL", "GOOG", "SPY"])
+        frames = build_all_training_features(
+            ["AAPL", "GOOG"], ohlcv, _INDICATOR_SPEC, _LOOKAHEAD, _THRESHOLD
+        )
+        config = {
+            "model_params": self._PARAMS,
+            "sharpe_floor": -99.0,
+            "tax": self._TAX,
+        }
+        # max_workers=2: exercises ProcessPoolExecutor path; synthetic data has no
+        # post-2024 rows so workers return immediately without training models.
+        results = run_tournament_all(["AAPL", "GOOG"], frames, ohlcv, config, max_workers=2)
+        assert set(results.keys()) == {"AAPL", "GOOG"}
+        for r in results.values():
+            assert "sharpe" in r
+            assert "passes_floor" in r

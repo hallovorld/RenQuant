@@ -182,3 +182,38 @@ class TestPipeline:
         Pipeline([j]).run(ctx)
         assert j.ran is True
         assert ctx.state["solo"] is True
+
+
+# ── Pipeline logging ──────────────────────────────────────────────────────────
+
+class TestPipelineLogging:
+    """Pipeline.run() logs start/done for the pipeline and each job."""
+
+    def test_pipeline_start_and_done_logged(self, caplog):
+        import logging
+        ctx = _make_ctx()
+        ctx.state = {}
+        with caplog.at_level(logging.INFO, logger="pipeline"):
+            Pipeline([_RecordingJob("j1")]).run(ctx)
+        messages = [r.message for r in caplog.records]
+        assert any("Pipeline START" in m for m in messages)
+        assert any("Pipeline DONE" in m for m in messages)
+
+    def test_job_start_and_done_logged(self, caplog):
+        import logging
+        ctx = _make_ctx()
+        ctx.state = {}
+        with caplog.at_level(logging.INFO, logger="pipeline"):
+            Pipeline([_RecordingJob("j1")]).run(ctx)
+        messages = [r.message for r in caplog.records]
+        assert any("_RecordingJob  START" in m for m in messages)
+        assert any("_RecordingJob  DONE" in m for m in messages)
+
+    def test_skipped_job_logs_skipped(self, caplog):
+        import logging
+        ctx = _make_ctx()
+        ctx.state = {}
+        with caplog.at_level(logging.INFO, logger="pipeline"):
+            Pipeline([_RecordingJob("j1", should_skip_result=True)]).run(ctx)
+        messages = [r.message for r in caplog.records]
+        assert any("SKIPPED" in m for m in messages)
