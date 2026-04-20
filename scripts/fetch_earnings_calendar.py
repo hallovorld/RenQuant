@@ -79,7 +79,10 @@ def main():
     args = parser.parse_args()
 
     watchlist = load_watchlist(args.strategy)
-    out_path  = ROOT / "backtesting" / args.strategy / "earnings-calendar.json"
+    strategy_dir = ROOT / "backtesting" / args.strategy
+    artifacts_dir = strategy_dir / "artifacts"
+    out_dir = artifacts_dir if artifacts_dir.exists() else strategy_dir
+    out_path = out_dir / "earnings-calendar.json"
 
     print(f"Fetching earnings calendar for {len(watchlist)} symbols → {out_path}")
     calendar = {}
