@@ -37,14 +37,6 @@ except ImportError:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from common.data import fetch_ohlcv
-from common.models import create_model
-from common.models.scoring import (
-    ScoreCalibration,
-    extract_raw_scores_bulk,
-    fit_probability_calibration,
-    raw_score_kind_for_model,
-)
 from live.runner import _build_relative_features
 
 logging.basicConfig(
@@ -60,6 +52,7 @@ def _load_model(models_dir: Path, symbol: str) -> tuple[object, dict] | tuple[No
         return None, None
     metadata = json.loads(meta_path.read_text())
     policy_type = metadata["policy_type"]
+    from training.models import create_model  # lazy — training/ added to sys.path in recalibrate()
     model = create_model(policy_type)
     model.load(models_dir / symbol, symbol)
     model._policy_metadata = metadata
@@ -156,6 +149,14 @@ def recalibrate(strategy: str, dry_run: bool = False) -> None:
     if not config_path.exists():
         log.error("Strategy config not found: %s", config_path)
         sys.exit(1)
+
+    # Add strategy dir to sys.path so kernel.* and training.* are importable
+    if str(strategy_dir) not in sys.path:
+        sys.path.insert(0, str(strategy_dir))
+
+    from kernel.data import fetch_ohlcv
+    from kernel.scoring import ScoreCalibration, extract_raw_scores_bulk
+    from training.scoring import fit_probability_calibration, raw_score_kind_for_model
 
     config         = json.loads(config_path.read_text())
     watchlist      = config["watchlist"]

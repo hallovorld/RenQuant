@@ -43,6 +43,13 @@ pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyte
 # OpenBB + optimization + backtesting
 pip install "openbb[all]" openbb-cli backtesting scipy
 
+# Live trading (Alpaca)
+pip install alpaca-py
+
+# Notifications (macOS + iPhone)
+brew install terminal-notifier   # macOS banner notifications
+# Install ntfy app on iPhone; subscribe to 'renquant' topic
+
 # Install and authenticate LEAN CLI
 pip install lean
 lean login          # enter your QuantConnect User ID and API Token

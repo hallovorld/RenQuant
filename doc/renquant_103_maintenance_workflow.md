@@ -28,13 +28,16 @@ If you want only part of it, say which phase to skip.
 
 Primary files and areas touched by this workflow:
 
-- `Notebooks/renquant_103.ipynb`
+- `backtesting/renquant_103/renquant_103.ipynb`
 - `backtesting/renquant_103/main.py`
+- `backtesting/renquant_103/kernel/` — regime, indicators, models, exits, selection, sizing, scoring
+- `backtesting/renquant_103/training/` — features.py, tournament.py, export.py
 - `live/runner.py`
 - `tests/test_policy_alignment.py`
 - `tests/test_simulation_policies.py`
 - `tests/test_strategy_ledger_parity.py`
 - `tests/test_runner_ranking.py`
+- `tests/test_training_modules.py`
 - `README.md`
 - `CLAUDE.md`
 - `doc/architecture.md`
@@ -212,5 +215,15 @@ Updated 2026-04-17 maintenance pass findings:
 - **Improvement plan**: `doc/improvement_plan_2026-04-17.md` — 7 improvements ranked by priority.
   Top items: verify RS non-zero after retrain; CHOPPY max_concurrent_positions → 4; GMM confidence
   veto (<55% = no buys).
-- **New tests (6)**: EXIT 3 max-hold enforcement (3), oversize fallback (2), wash-sale recheck (1)
-  → 462 total tests.
+
+Updated 2026-04-19 refactor pass:
+
+- **Notebook training cells extracted**: Cells 6 (85 lines), 7 (167 lines), and 8 (114 lines) were
+  extracted into `training/features.py`, `training/tournament.py`, and `training/export.py`. The
+  notebook is now a thin orchestrator (~15 lines per training step).
+- **LEAN parity fix**: `_build_exit_params()` in `main.py` was missing `lt_hold_gate_days` and
+  `lt_hold_min_gain` params. Fixed: these are now read from `CONFIG` and passed to `compute_exits()`.
+- **New tests (18)**: `tests/test_training_modules.py` covers `training/features.py`,
+  `training/tournament.py`, and `training/export.py` — 8 feature tests, 3 Sharpe tests, 7 export/
+  tournament tests.
+- **Current test count**: 560 passed, 2 skipped (562 total collected).

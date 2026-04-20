@@ -1,6 +1,7 @@
 # renquant_103 Decision Logic Graph
 *Covers notebook simulation (cell 657a4a6c, streaming detect_regime) and LEAN (main.py OnData).*
 *Every branch, condition, and policy. Use this as the ground truth for alignment.*
+*Last updated: 2026-04-19 — LEAN parity fix: `_build_exit_params()` now passes `lt_hold_gate_days` and `lt_hold_min_gain` to `compute_exits()`; training cells extracted to `training/features.py`, `training/tournament.py`, `training/export.py`.*
 
 ---
 

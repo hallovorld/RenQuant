@@ -59,7 +59,7 @@ class DataJob(Job):
         data_provider = config.get("data_src", "yfinance")
 
         # ── Parallel OHLCV fetch ───────────────────────────────────────────────
-        from common.data import fetch_ohlcv  # common/ available on host
+        from kernel.data import fetch_ohlcv  # kernel/ — no common/ dependency
 
         def _fetch(symbol: str):
             df = fetch_ohlcv(symbol, provider=data_provider)
@@ -106,7 +106,7 @@ def _ensure_fresh(symbol: str, df, provider: str, max_age_days: int = _MAX_AGE_D
         symbol, age, last_date,
     )
     try:
-        from common.data import fetch_ohlcv, LocalStore
+        from kernel.data import fetch_ohlcv, LocalStore
         fresh = fetch_ohlcv(symbol, cache=False, provider=provider)
         if not fresh.empty:
             LocalStore().save(fresh, symbol)

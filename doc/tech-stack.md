@@ -38,7 +38,9 @@ JupyterLab provides an interactive environment for the entire research pipeline:
 
 ## ML: XGBoost + Custom Learners
 
-**XGBoost** is used for the FQI model's Q-value estimators (XGBRegressor).
+**XGBoost** is used in two ways:
+- **XGBoostModel** (renquant_103 tournament): two `XGBClassifier` instances (buy-vs-rest, sell-vs-rest) with L1/L2 regularisation, residual boosting, and native JSON serialisation for LEAN compatibility.
+- **FQIModel** Q-value estimators (renquant_101/102 only): `XGBRegressor` per action in Fitted Q-Iteration.
 
 **Custom learners** (ported from ML4T, cleaned up):
 - **RTLearner**: Random decision tree for classification (leaf nodes store majority class)

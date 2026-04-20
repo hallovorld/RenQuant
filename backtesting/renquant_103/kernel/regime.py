@@ -62,6 +62,15 @@ def compute_hurst(returns: np.ndarray, window: int | None = None) -> float:
         return 0.5
 
 
+def rolling_hurst(returns: pd.Series, window: int = 63) -> pd.Series:
+    """Rolling Hurst exponent on a return series."""
+    result = pd.Series(index=returns.index, dtype=float)
+    arr = returns.values
+    for i in range(window, len(arr) + 1):
+        result.iloc[i - 1] = compute_hurst(arr[i - window:i])
+    return result
+
+
 # ── Layer 2: CUSUM Changepoint ────────────────────────────────────────────────
 
 def compute_cusum(
@@ -87,6 +96,25 @@ def compute_cusum(
         if s_pos > threshold or s_neg > threshold:
             return True
     return False
+
+
+def rolling_cusum(
+    returns: pd.Series,
+    window: int = 20,
+    threshold: float = 3.0,
+    drift: float = 0.5,
+) -> pd.Series:
+    """Rolling CUSUM: returns True bars where a changepoint is detected."""
+    result = pd.Series(False, index=returns.index)
+    arr = returns.values
+    for i in range(window * 2, len(arr) + 1):
+        result.iloc[i - 1] = compute_cusum(
+            arr[i - window * 2:i],
+            lookback=window,
+            threshold=threshold,
+            drift=drift,
+        )
+    return result
 
 
 # ── Layer 3: GMM ─────────────────────────────────────────────────────────────

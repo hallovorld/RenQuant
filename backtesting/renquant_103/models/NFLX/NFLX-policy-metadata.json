@@ -17,30 +17,47 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/NFLX/NFLX-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/NFLX/NFLX-bin-edges.json"
   },
-  "trained_date": "2026-04-17",
+  "trained_date": "2026-04-19",
   "best_approach": "QLearning",
-  "sharpe": 0.9009,
+  "sharpe": 1.1432,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
+  "live_train_rows": 998,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
+    "method": "isotonic",
     "score_kind": "q_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 190,
+    "sample_size": 565,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.13157894736842105,
-    "raw_min": -94.82453124044922,
-    "raw_max": 152.14148943334132,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": -0.04165415777608442,
-    "platt_intercept": -1.8875112253761992,
-    "platt_scale_mean": 4.221891220822104,
-    "platt_scale_std": 30.296647470231356
-  },
-  "score_calibration_date": "2026-04-17"
+    "base_rate": 0.19469026548672566,
+    "raw_min": -79.5755893634817,
+    "raw_max": 102.10563503984399,
+    "x_thresholds": [
+      -79.5755893634817,
+      -24.354684587922243,
+      -22.07724066344851,
+      -0.04322471196143751,
+      0.0,
+      53.30623152278284,
+      56.23301584121984,
+      102.10563503984399
+    ],
+    "y_thresholds": [
+      0.029411764705882353,
+      0.029411764705882353,
+      0.1206896551724138,
+      0.1206896551724138,
+      0.21238938053097345,
+      0.21238938053097345,
+      0.2857142857142857,
+      0.2857142857142857
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null
+  }
 }

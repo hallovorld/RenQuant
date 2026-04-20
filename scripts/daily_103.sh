@@ -81,7 +81,7 @@ if "$JUPYTER" nbconvert \
     --execute \
     --ExecutePreprocessor.timeout=3600 \
     --output /tmp/renquant_103_executed.ipynb \
-    Notebooks/renquant_103.ipynb; then
+    backtesting/renquant_103/renquant_103.ipynb; then
     echo "Notebook finished at $(date)"
 else
     echo "Notebook FAILED at $(date)"

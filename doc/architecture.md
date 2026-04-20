@@ -43,9 +43,9 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 
 ---
 
-## Shared Library: `common/`
+## Shared Library: `common/` (renquant_101 and renquant_102 only)
 
-All reusable logic lives in `common/` and is imported by notebooks as `import common`. It is **not** available inside the LEAN Docker container — the backtesting layer remains self-contained.
+`common/` is the shared library for the older strategies. **It is not used by renquant_103**, which has its own self-contained `kernel/` package (see the renquant_103 kernel section below). `common/` will be removed once 101 and 102 are migrated to the kernel pattern.
 
 | Module | Contents |
 |--------|----------|
@@ -63,10 +63,10 @@ All reusable logic lives in `common/` and is imported by notebooks as `import co
 
 ## Layer 1: Research
 
-**Location**: `Notebooks/`
+**Location**: `backtesting/<strategy>/` (for 101/102, notebooks live in `Notebooks/`; for 103, notebook lives alongside code in `backtesting/renquant_103/`)
 **Environment**: `renquant` conda env
 
-The notebook is where training happens. The typical workflow:
+The notebook is where training happens. The typical workflow for 101/102:
 
 1. **Data ingestion** — `common.fetch_ohlcv` fetches daily OHLCV for both the target stock and SPY benchmark (cached locally as Parquet)
 2. **Indicator computation** — `common.compute_indicators` applied to both stock and SPY
@@ -142,25 +142,38 @@ backtesting/renquant_103/artifacts/
            5. SCAN: model signal is the entry trigger (no separate volume-scan gate). Each candidate: earnings filter → model buy signal → calibrated `rank_score` threshold. The native model output is kept as `raw_score`, then mapped to a comparable probability-like `rank_score` for cross-model ranking. Relative strength (20d vs sector ETF) is blended with `rank_score` using config-driven `ranking.blend_weights`.
      6. EXECUTE: greedy selection by rank; each slot checks tiered threshold → wash-sale → sector guard (max 3/sector) → correlation guard (max 0.70). Position sized as `min(cash − portfolio × cash_reserve_pct × regime_confidence, portfolio × max_position_pct × regime_confidence)`.
 
-**Scoring note**: mixed model families are not directly comparable in raw form. Notebook training now fits per-symbol `score_calibration`, exports it in `policy-metadata.json`, and uses calibrated `rank_score` for simulation ranking. LEAN consumes that exported calibration when present; absent metadata falls back to the raw score. The live runner also uses `common.models.scoring`, with a runtime fallback if metadata is missing. Raw scores are still logged as diagnostics.
+**Scoring note**: mixed model families are not directly comparable in raw form. Notebook training now fits per-symbol `score_calibration`, exports it in `policy-metadata.json`, and uses calibrated `rank_score` for simulation ranking. LEAN consumes that exported calibration when present. The live runner also uses `kernel/scoring.py` for renquant_103, with a runtime fallback if metadata is missing. Raw scores are still logged as diagnostics.
 
 **Important**: `main.py` is self-contained. It does **not** import `common/` because LEAN Docker cannot access it.
 
-**renquant_103 kernel**: Strategy logic is extracted into `backtesting/renquant_103/kernel/` — a self-contained package with zero `common/` imports (only stdlib + numpy + pandas). LEAN imports it locally (`from kernel.x import ...`), and `live/runner.py` adds the strategy dir to `sys.path` at runtime. This is the canonical source of truth for all 103 logic:
+**renquant_103 kernel**: Strategy logic is extracted into `backtesting/renquant_103/kernel/` — a self-contained package with zero `common/` imports (only stdlib + numpy + pandas). LEAN imports it locally (`from kernel.x import ...`), and `live/runner.py` adds the strategy dir to `sys.path` at runtime. This is the canonical source of truth for all 103 inference logic:
 
 | Module | What it provides |
 |--------|-----------------|
 | `kernel/config.py` | Regime constants, `artifact_path()` helper |
 | `kernel/regime.py` | `RegimeState`, `detect_regime()`, Hurst + CUSUM + GMM |
-| `kernel/indicators.py` | `compute_all()`, `build_feature_frame()` |
+| `kernel/indicators.py` | `compute_all()`, `build_feature_frame()`, `build_spy_context()` |
 | `kernel/models.py` | `load_artifact()`, `score_artifact()`, `calibrate_score()` |
-| `kernel/exits.py` | `HoldingState`, `ExitSignal`, `compute_exits()` (5-exit priority) |
+| `kernel/exits.py` | `HoldingState`, `ExitSignal`, `compute_exits()` (5-exit priority + tax hold gate) |
 | `kernel/selection.py` | `CandidateResult`, `SelectionContext`, `run_selection_loop()`, guards, `compute_relative_strength()` |
 | `kernel/sizing.py` | `compute_position_size()` with oversize fallback |
 | `kernel/market_gates.py` | `check_spy_velocity_crash()`, `check_spy_ema_trend()` |
 | `kernel/portfolio.py` | `update_drawdown_circuit_breaker()`, `compute_trade_tax()` |
 
-**renquant_103 pipeline**: The live execution is orchestrated by `backtesting/renquant_103/pipeline/` — a structured 3-job pipeline that replaces the monolithic `run_once_multi()` function. The pipeline can import from both `kernel/` and `common/` (it runs on the host, not in Docker).
+**renquant_103 training**: Training-time logic lives in `backtesting/renquant_103/training/` — requires sklearn and xgboost. The notebook calls these modules directly; LEAN only uses `kernel/`.
+
+| Module | What it provides |
+|--------|-----------------|
+| `training/features.py` | `build_training_features()`, `build_all_training_features()` — per-ticker labelled feature frames with relative indicators and rolling regime context |
+| `training/tournament.py` | `run_tournament()`, `run_tournament_all()`, `oos_sharpe()` — 4-approach tournament (Classification, QLearning, Manual, XGBoost); fixed 2024-01-01 OOS split |
+| `training/export.py` | `export_models()`, `retrain_live_models()` — save tournament winners to JSON; expanding-window retrain for live trading |
+| `training/models.py` | `ClassificationModel`, `QLearningModel`, `ManualModel`, `XGBoostModel`, `create_model()` |
+| `training/scoring.py` | `fit_probability_calibration()`, `ScoreCalibration` — fits isotonic/Platt/constant calibration |
+| `training/regime.py` | `build_gmm_features()`, `RegimeGMM` — GMM training for the spy-gmm-regime.json artifact |
+| `training/portfolio.py` | `portfolio_stats()`, `compute_portvals()` |
+| `training/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
+
+**renquant_103 pipeline**: The live execution is orchestrated by `backtesting/renquant_103/pipeline/` — a structured 3-job pipeline that replaces the monolithic `run_once_multi()` function. The pipeline imports exclusively from `kernel/` (not from `common/`).
 
 ```
 backtesting/renquant_103/pipeline/

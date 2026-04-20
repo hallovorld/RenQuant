@@ -25,6 +25,10 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+STRATEGY_DIR = ROOT / "backtesting" / "renquant_103"
+if str(STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_DIR))
+
 
 # ── Model method tests ────────────────────────────────────────────────────────
 
@@ -33,7 +37,7 @@ class TestClassificationPredictScoreBulk:
 
     @pytest.fixture
     def trained_model(self):
-        from common.models import create_model
+        from training.models import create_model
         import numpy as np
         import pandas as pd
 
@@ -93,7 +97,7 @@ class TestQLearningPredictScoreBulk:
 
     @pytest.fixture
     def trained_model(self):
-        from common.models import create_model
+        from training.models import create_model
         import numpy as np
         import pandas as pd
 
@@ -121,7 +125,7 @@ class TestQLearningPredictScoreBulk:
 
     def test_score_is_q_buy_minus_q_sell(self, trained_model):
         """Score = Q(buy) - Q(sell). Manually verify for one row."""
-        from common.models.qlearning import QLearningModel
+        from training.models import QLearningModel
         model, df = trained_model
 
         # Compute expected score for row 0 manually
@@ -560,15 +564,17 @@ class TestLEANSPYVelocityFilter:
 
 class TestCUSUMReferenceBaseline:
     def test_common_compute_cusum_detects_shift_against_reference(self):
-        from common.indicators.regime import compute_cusum
+        from kernel.regime import compute_cusum
 
+        # New API: pass a single array [reference | window]; compute_cusum splits internally.
         reference = np.linspace(-0.01, 0.01, 20)
         test = np.linspace(0.03, 0.05, 20)
+        combined = np.concatenate([reference, test])
 
-        assert compute_cusum(test, threshold=3.0, drift=0.5, reference_returns=reference)
+        assert compute_cusum(combined, lookback=20, threshold=3.0, drift=0.5)
 
     def test_common_rolling_cusum_uses_prior_window(self):
-        from common.indicators.regime import rolling_cusum
+        from kernel.regime import rolling_cusum
 
         reference = np.linspace(-0.01, 0.01, 20)
         shifted = np.linspace(0.03, 0.05, 20)
@@ -578,19 +584,24 @@ class TestCUSUMReferenceBaseline:
         assert bool(result.iloc[-1])
 
     def test_live_cusum_requires_two_windows(self):
-        from live.runner import _compute_cusum_live
+        """With only one window of data, rolling_cusum has no reference — should not detect."""
+        from kernel.regime import rolling_cusum
 
-        returns = np.linspace(-0.01, 0.01, 20)
-        assert not _compute_cusum_live(returns, lookback=20, threshold=3.0, drift=0.5)
+        returns = pd.Series(np.linspace(-0.01, 0.01, 20))
+        result = rolling_cusum(returns, window=20, threshold=3.0, drift=0.5)
+        # Only 20 data points — rolling window needs >20 values to compare vs reference
+        assert not bool(result.iloc[-1])
 
     def test_live_cusum_detects_shift_vs_prior_window(self):
-        from live.runner import _compute_cusum_live
+        """rolling_cusum should detect a clear upward shift in the second window."""
+        from kernel.regime import rolling_cusum
 
         reference = np.linspace(-0.01, 0.01, 20)
         shifted = np.linspace(0.03, 0.05, 20)
-        returns = np.concatenate([reference, shifted])
+        returns = pd.Series(np.concatenate([reference, shifted]))
 
-        assert _compute_cusum_live(returns, lookback=20, threshold=3.0, drift=0.5)
+        result = rolling_cusum(returns, window=20, threshold=3.0, drift=0.5)
+        assert bool(result.iloc[-1])
 
 
 # ── Policy: SPY EMA50 trend gate ─────────────────────────────────────────────
@@ -1062,7 +1073,7 @@ class TestQLearningScoreFormula:
 
     def test_notebook_predict_score_bulk_uses_same_formula(self):
         """End-to-end: QLearningModel.predict_score_bulk() uses Q(buy)−Q(sell)."""
-        from common.models import create_model
+        from training.models import create_model
         import numpy as np, pandas as pd
 
         rng = np.random.default_rng(99)
@@ -1079,7 +1090,7 @@ class TestQLearningScoreFormula:
         model.train(df)
         scores = model.predict_score_bulk(df)
         # Verify scores match manual Q(buy)−Q(sell) computation
-        from common.models.qlearning import QLearningModel
+        from training.models import QLearningModel
         assert isinstance(model, QLearningModel)
         # A row where model says buy should have score ≥ 0
         actions = model.predict_bulk(df)
@@ -1328,7 +1339,7 @@ class TestBuildRelativeFeaturesSPYRegime:
         """End-to-end: a ClassificationModel trained with spy regime features can
         call predict() on _build_relative_features() output without KeyError."""
         from live.runner import _build_relative_features
-        from common.models import create_model
+        from training.models import create_model
 
         indicator_spec = {"rsi": {"period": 14}, "adx": {"period": 14}}
         feature_cols   = self.SPY_REGIME_COLS + ["rsi", "adx"]
@@ -1367,7 +1378,8 @@ class TestBuildRelativeFeaturesSPYRegime:
         assert isinstance(result, pd.Series), "Expected a pd.Series from predict_score_bulk"
 
     def test_spy_adx_fallback_when_no_adx_indicator(self):
-        """If ADX is not in the indicator spec, spy_adx should fall back to 25.0."""
+        """kernel.indicators.compute_all always computes ADX regardless of indicator_spec,
+        so spy_adx is always a real computed column (never the 25.0 fallback)."""
         from live.runner import _build_relative_features
 
         # Use an indicator spec that does NOT include adx
@@ -1376,13 +1388,15 @@ class TestBuildRelativeFeaturesSPYRegime:
         result = _build_relative_features(
             df_stock, df_spy,
             feature_columns=["spy_adx"],
-            indicator_spec={"rsi": {"period": 14}},   # no adx
+            indicator_spec={"rsi": {"period": 14}},   # no adx in spec
         )
         assert result is not None
         assert "spy_adx" in result.columns
         vals = result["spy_adx"].dropna()
-        assert (vals == 25.0).all(), \
-            f"Expected fallback 25.0 when ADX not computed, got: {vals.unique()}"
+        # compute_all always produces adx — values should be finite floats, not 25.0 constant
+        assert len(vals) > 0
+        assert vals.dtype == float
+        assert np.isfinite(vals).all(), "spy_adx should have finite computed values"
 
     def test_output_does_not_contain_nan_for_spy_regime_cols_after_warmup(self):
         """After the 20-bar rolling warm-up period, no NaN values in spy regime cols."""

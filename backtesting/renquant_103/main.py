@@ -486,6 +486,8 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             "max_hold_days":             regime_p.get("max_hold_days",             0),
             "consecutive_sell_signals":  self._consec_sells,
             "min_hold_days":             self._min_hold_days,
+            "lt_hold_gate_days":         int(CONFIG.get("lt_hold_gate_days", 0)),
+            "lt_hold_min_gain":          float(CONFIG.get("lt_hold_min_gain", 0.10)),
         }
 
     def _load_all_models(self) -> None:

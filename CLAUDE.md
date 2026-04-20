@@ -237,7 +237,7 @@ Every policy in notebook and LEAN must have a corresponding test.
 - `tests/test_policy_alignment.py`: 17 policy classes, each with exactly 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
 - `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 604 collected tests. Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 562 collected tests (560 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.
@@ -276,3 +276,45 @@ After any non-trivial change, run `/update-docs` or manually sync:
 | `tests/test_kernel_isolation.py` | CI enforcement: kernel/ must not import common/ |
 | `tests/test_kernel_units.py` | 114 unit tests for all 9 kernel modules (includes market_gates, portfolio, compute_relative_strength) |
 | `tests/test_pipeline.py` | 31 tests for PipelineContext, run_tasks, Job/Pipeline |
+| `tests/test_training_modules.py` | 16 tests for training/features.py, training/tournament.py, training/export.py |
+
+---
+
+## General Coding Guidelines
+
+**Bias toward caution over speed. For trivial tasks, use judgment.**
+
+### 1. Think Before Coding
+
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+- Remove imports/variables/functions that YOUR changes made unused.
+
+Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+Transform tasks into verifiable goals before implementing:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+
+For multi-step tasks, state a brief plan with verify steps before starting.

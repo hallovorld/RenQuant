@@ -118,6 +118,11 @@ def compute_all(rows: pd.DataFrame, spec: dict | None = None) -> pd.DataFrame | 
     return rows if not rows.empty else None
 
 
+# ── Alias for callers migrating from common/ ─────────────────────────────────
+
+compute_indicators = compute_all
+
+
 # ── Regime-context features added to inference frames ────────────────────────
 
 def build_spy_context(spy_df: pd.DataFrame, vol_window: int = 20) -> dict:

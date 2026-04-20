@@ -1,6 +1,15 @@
 # Indicator Library
 
-All indicators use a uniform API registered via `@register`:
+## Two implementations
+
+| Module | Used by | Imports |
+|--------|---------|---------|
+| `common/indicators/` | renquant_101, renquant_102, notebooks, live runner | pandas, numpy, scikit-learn |
+| `backtesting/renquant_103/kernel/indicators.py` | LEAN Docker, renquant_103 notebook + live runner | numpy, pandas only (no common/) |
+
+Both implement the same indicators with identical semantics. The kernel version is LEAN-safe (zero `common/` imports). Always use the kernel version inside `backtesting/renquant_103/`.
+
+## Usage (common/)
 
 ```python
 from common.indicators import compute_indicators

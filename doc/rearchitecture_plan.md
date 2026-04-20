@@ -1,5 +1,7 @@
 # renquant_103 Re-Architecture Plan
 
+> **Status: IMPLEMENTED** — All phases complete as of 2026-04-19. See `doc/architecture.md` for the current state. This document is preserved for historical context.
+
 ## Problem
 
 Three files implement the same decision logic independently:

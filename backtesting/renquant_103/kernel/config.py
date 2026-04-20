@@ -24,3 +24,16 @@ def split_date_parts(date_text: str) -> tuple[int, int, int]:
 def artifact_path(filename: str) -> Path:
     """Return the canonical path for a strategy artifact (artifacts/ subdir)."""
     return STRATEGY_DIR / "artifacts" / filename
+
+
+# ── Aliases for callers migrating from common/ ────────────────────────────────
+
+def load_strategy_config(path: Path | None = None) -> dict:
+    """Alias for load_config — compatible with common.config.load_strategy_config."""
+    return load_config(path)
+
+
+def build_model_path(strategy_dir: Path, symbol: str, filename: str) -> Path:
+    """Return the canonical model artifact path for a symbol."""
+    return strategy_dir / "models" / symbol / filename
+

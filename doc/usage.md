@@ -23,10 +23,15 @@ jupyter lab
 
 Open a strategy notebook. The pipeline runs top-to-bottom:
 
-1. **Setup** — configure paths via `import common`, define strategy gate signals
-2. **Data + indicators** — `common.fetch_ohlcv` (cached as Parquet) → `common.compute_indicators`
-3. **Model training** — depends on model type (see [doc/models.md](models.md))
-4. **Export** — `model.save()` writes JSON artifacts to the strategy directory
+1. **Setup** — configure paths, load config, import kernel + training modules
+2. **Data fetch** — `kernel.data.fetch_ohlcv` (cached as Parquet) for watchlist + SPY + sector ETFs
+3. **Regime detection** — Hurst (Layer 1) → CUSUM (Layer 2) → GMM training (Layer 3) → save `spy-gmm-regime.json`
+4. **Feature frames** — `training.features.build_all_training_features()` builds relative labelled DataFrames per ticker
+5. **Tournament training** — `training.tournament.run_tournament_all()` trains Classification / QLearning / Manual / XGBoost per ticker; picks best by OOS Sharpe (fixed 2024-01-01 cutoff)
+6. **Export** — `training.export.export_models()` saves winners to `models/{ticker}/`; `training.export.retrain_live_models()` retrains on last 4 years for live trading
+7. **Correlation artifact** — computes 120-day pairwise correlations; saves `watchlist-correlation.json`
+8. **Portfolio simulation** — regime-aware simulation mirroring LEAN; all 5 exit types, market gates, tiered selection
+9. **Charts + stats** — equity vs SPY, drawdown, regime timeline, per-symbol OOS curves, trade log
 
 ---
 

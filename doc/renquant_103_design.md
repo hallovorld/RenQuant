@@ -30,7 +30,7 @@ The original design assumed `model_score` could be compared directly across mode
 - `raw_score`: the model's native output, kept for logging and debugging
 - `rank_score`: a calibrated probability score `P(outperform SPY by threshold% in lookahead days)`, used for filtering, tier thresholds, and cross-symbol ranking
 
-Calibration lives in `common/models/scoring.py` and selects its method by sample size:
+Calibration lives in `kernel/scoring.py` and selects its method by sample size:
 - **n ≥ 300**: isotonic regression (step-function, rich data)
 - **120 ≤ n < 300**: Platt scaling (logistic regression sigmoid — smooth, no tail overfitting)
 - **n < 120**: constant base-rate
@@ -303,7 +303,7 @@ This means the strategy never hard-switches between 30% and 15% positions — it
 | Max position | 15% | 20% | 15% | 0% (offensive) |
 | Cash reserve | 0% | 20% | 30% | 100% |
 | Stop-loss | 15% | 5% | 5% | 5% (existing) |
-| Max hold days | 500 | 500 | 23 | 500 (existing) |
+| Max hold days | 500 | 500 | 40 | 500 (existing) |
 | Trailing stop trigger | 20% gain | — | — | — |
 | Trailing stop trail | 18% below HWM | — | — | — |
 | Drawdown halt | 35% | 10% | 8% | 5% |
@@ -636,7 +636,7 @@ Three structural weaknesses in the cross-model `rank_score` calibration were ide
 
 **1. Staleness** (`scripts/recalibrate_scores.py`): Models retrain daily but calibration curves were frozen at notebook-training time. A new script re-fits the calibration after each daily retrain and writes updated `score_calibration` back into each symbol's `policy-metadata.json`. Also computes fresh data-driven blend weights and saves them to `strategy_config.json` as `ranking.blend_weights`. Wired into `daily_103.sh` as Step 2b (non-fatal: failure falls back to prior calibration).
 
-**2. Isotonic tail overfitting** (`common/models/scoring.py`): Isotonic regression is a piecewise step-function that can overfit on sparse tail samples. Method selection now depends on sample size: **isotonic** for n≥300, **Platt scaling** (logistic regression sigmoid — smooth and monotone) for 120≤n<300, **constant base-rate** for n<120.
+**2. Isotonic tail overfitting** (`kernel/scoring.py`): Isotonic regression is a piecewise step-function that can overfit on sparse tail samples. Method selection now depends on sample size: **isotonic** for n≥300, **Platt scaling** (logistic regression sigmoid — smooth and monotone) for 120≤n<300, **constant base-rate** for n<120.
 
 **3. Arbitrary 50/50 blend**: The `0.5 × rank + 0.5 × RS` blend had no empirical basis. `recalibrate_scores.py` now fits a logistic regression on `[norm(rank_score), norm(rs_score)]` versus binary outperformance outcomes and converts the positive coefficients into blend weights. The runner reads `ranking.blend_weights` from config instead of hardcoding.
 
@@ -648,7 +648,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 3. **Transition uncertainty window (notebook missing)**: Added 3-bar block after each CUSUM changepoint using `changepoint_dates` already computed in Cell 5.
 4. **Earnings filter (notebook missing)**: Added `_is_earnings_blocked()` helper and check in candidates loop, loading `earnings-calendar.json` to match LEAN.
 5. **Sell streak during min_hold (LEAN)**: Was accumulating sell streak inside the min_hold window, which could trigger an exit on exactly day 20 even if no fresh sell signals occurred. Fixed to skip the model signal check entirely during min_hold, matching notebook behavior.
-6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `common/models/qlearning.py`.
+6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `kernel/models.py`.
 
 ### Unit Tests (`tests/`)
 464 unit tests covering every major policy (run with `python -m pytest tests/ -v`) → **544 after kernel extraction** (80 new kernel unit tests):

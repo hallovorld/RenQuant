@@ -17,7 +17,7 @@ The live runner therefore uses a two-layer contract:
 - `raw_score` — the native output from `predict_score_bulk()`; logged for diagnostics and model introspection
 - `rank_score` — a calibrated score used for portfolio filtering, cross-model ranking, and tier thresholds
 
-Calibration is handled by `common/models/scoring.py`:
+Calibration is handled by `kernel/scoring.py` (renquant_103) or `common/models/scoring.py` (renquant_101/102):
 
 - If `policy-metadata.json` contains `score_calibration`, that artifact is used directly.
 - Otherwise the live runner fits a fallback isotonic calibration from recent symbol history.
@@ -27,7 +27,7 @@ This keeps one champion model per symbol while putting mixed model families onto
 
 ## Manual Model — Dual Momentum + Trend Following
 
-**Type**: `manual` | **Module**: `common/models/manual.py`
+**Type**: `manual` | **Module**: `kernel/models.py` (renquant_103) / `common/models/manual.py` (101/102)
 
 Generic indicator-threshold voting. Each rule evaluates one column and contributes +1 (bullish) or -1 (bearish) to a total score. No ML training required.
 
@@ -60,7 +60,7 @@ model = create_model("manual", score_rules=[
 
 ## Classification Model
 
-**Type**: `classification` | **Module**: `common/models/classification.py`
+**Type**: `classification` | **Module**: `kernel/models.py` (renquant_103) / `common/models/classification.py` (101/102)
 
 Bagged Random Forest of RTLearners. Each day is labeled by its N-day forward return as +1 (long), -1 (short), or 0 (hold), with thresholds adjusted for market impact.
 
@@ -76,7 +76,7 @@ Bagged Random Forest of RTLearners. Each day is labeled by its N-day forward ret
 
 ## Q-Learning Model
 
-**Type**: `qlearning` | **Module**: `common/models/qlearning.py`
+**Type**: `qlearning` | **Module**: `kernel/models.py` (renquant_103) / `common/models/qlearning.py` (101/102)
 
 Tabular Q-learning with discretized indicator states. Continuous features are binned (quantile-based), then encoded with holding status into a single state integer. Trains over multiple epochs through the data.
 
@@ -98,7 +98,7 @@ Tabular Q-learning with discretized indicator states. Continuous features are bi
 
 ## FQI Model (Fitted Q-Iteration)
 
-**Type**: `fqi` | **Module**: `common/models/fqi.py`
+**Type**: `fqi` | **Module**: `common/models/fqi.py` (101/102 only — not used in renquant_103)
 
 Trains one XGBRegressor per action (hold/buy/sell) using Fitted Q-Iteration with discount factor gamma. Requires gate signals (buy_signal/sell_signal) to define valid actions.
 
@@ -108,7 +108,7 @@ Trains one XGBRegressor per action (hold/buy/sell) using Fitted Q-Iteration with
 
 ## Optimization Model
 
-**Type**: `optimization` | **Module**: `common/models/optimization.py`
+**Type**: `optimization` | **Module**: `common/models/optimization.py` (101/102 only — not used in renquant_103)
 
 Meta-model: SciPy Nelder-Mead searches over indicator parameters while training an inner ClassificationModel. Objective is in-sample cumulative return via portfolio simulation.
 
@@ -118,7 +118,7 @@ Meta-model: SciPy Nelder-Mead searches over indicator parameters while training 
 
 ## XGBoost Model
 
-**Type**: `xgboost` | **Module**: `common/models/xgboost_model.py`
+**Type**: `xgboost` | **Module**: `kernel/models.py` (renquant_103) / `common/models/xgboost_model.py` (101/102)
 
 Gradient-boosted trees using two one-vs-rest XGBClassifier instances (buy probability and sell probability). Labels are the same as Classification (N-day forward relative return vs threshold), but the learning algorithm is fundamentally different: each tree corrects the residual errors of the previous trees (boosting), with L1/L2 regularisation and row/column subsampling to prevent overfitting.
 
@@ -180,7 +180,7 @@ Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_res
 1. **Trailing stop** (BULL_CALM only): activates once position's peak gain (HWM-based) reaches ≥20% from entry; then trails 18% below the rolling high-water mark. Stop stays armed even after pullbacks — uses peak gain, not current gain. Allows winners like NVDA/PLTR to run through minor corrections.
 2. **Cumulative stop-loss**: 15% from entry in BULL_CALM; 5% in BULL_VOLATILE / CHOPPY / BEAR. Triggers immediately, no min-hold gating.
 3. **Single-day loss gate** (BULL_CALM only): exits if today's close drops ≥10% from yesterday's close. Protects against gap-down days where a 20%+ single-session drop would escape the 15% cumulative stop until the next bar. Disabled in other regimes (5% cumulative stop is already tight).
-4. **Max hold**: forced exit after 500 days (BULL_CALM/BULL_VOLATILE/BEAR) or 23 days (CHOPPY).
+4. **Max hold**: forced exit after 500 days (BULL_CALM/BULL_VOLATILE/BEAR) or 40 days (CHOPPY — raised from 23 to accommodate min_hold_days=30 + 3 consecutive sell signals).
 5. **Model sell**: 3 consecutive daily sell signals with min 20-day hold.
 
 ## JSON Artifact Format
