@@ -26,34 +26,21 @@
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "isotonic",
+    "method": "platt",
     "score_kind": "q_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 565,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.19469026548672566,
-    "raw_min": -41.66962325083385,
-    "raw_max": 67.37128531436154,
-    "x_thresholds": [
-      -41.66962325083385,
-      0.1994757663712819,
-      0.2208253233479237,
-      0.9859520159832045,
-      1.337454636871552,
-      67.37128531436154
-    ],
-    "y_thresholds": [
-      0.18082788671023964,
-      0.18082788671023964,
-      0.21739130434782608,
-      0.21739130434782608,
-      0.26506024096385544,
-      0.26506024096385544
-    ],
-    "platt_coef": null,
-    "platt_intercept": null,
-    "platt_scale_mean": null,
-    "platt_scale_std": null
-  }
+    "base_rate": 0.25609756097560976,
+    "raw_min": -50.85352300246211,
+    "raw_max": 61.93694618082906,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.47671525833507694,
+    "platt_intercept": -1.1147177281386202,
+    "platt_scale_mean": 3.898207587719564,
+    "platt_scale_std": 17.404672914868705
+  },
+  "score_calibration_date": "2026-04-20"
 }

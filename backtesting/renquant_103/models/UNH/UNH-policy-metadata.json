@@ -33,18 +33,18 @@
     "method": "platt",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 190,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.24736842105263157,
+    "base_rate": 0.23780487804878048,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.0033443777606716944,
-    "platt_intercept": -1.1121732076433093,
-    "platt_scale_mean": 1.2105263157894737,
-    "platt_scale_std": 0.8632220772029855
+    "platt_coef": -0.09242333316643238,
+    "platt_intercept": -1.1669721268245108,
+    "platt_scale_mean": 1.1097560975609757,
+    "platt_scale_std": 0.7964264325490583
   },
-  "score_calibration_date": "2026-04-17"
+  "score_calibration_date": "2026-04-20"
 }

@@ -23,41 +23,30 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AAPL/AAPL-manual-rules.json"
   },
-  "trained_date": "2026-04-19",
+  "trained_date": "2026-04-20",
   "best_approach": "Manual",
   "sharpe": 1.3933,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
+  "live_train_rows": 997,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "isotonic",
+    "method": "platt",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 565,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.1433628318584071,
+    "base_rate": 0.1524390243902439,
     "raw_min": -1.0,
     "raw_max": 3.0,
-    "x_thresholds": [
-      -1.0,
-      0.0,
-      1.0,
-      2.0,
-      3.0
-    ],
-    "y_thresholds": [
-      0.0,
-      0.13128491620111732,
-      0.13128491620111732,
-      0.16071428571428573,
-      0.22580645161290322
-    ],
-    "platt_coef": null,
-    "platt_intercept": null,
-    "platt_scale_mean": null,
-    "platt_scale_std": null
-  }
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": -0.10486598313618009,
+    "platt_intercept": -1.71936533636153,
+    "platt_scale_mean": 0.9146341463414634,
+    "platt_scale_std": 0.7994086154425554
+  },
+  "score_calibration_date": "2026-04-20"
 }

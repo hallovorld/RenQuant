@@ -22,56 +22,45 @@
   "max_depth": 4,
   "learning_rate": 0.05,
   "feature_importances": {
-    "rsi": 0.09405005723237991,
-    "macd_hist": 0.08406586945056915,
-    "cci": 0.08143825829029083,
-    "bbp": 0.08050867170095444,
-    "adx": 0.09298815578222275,
-    "williams_r": 0.08158998191356659,
-    "obv_slope": 0.09836038202047348,
-    "spy_realized_vol": 0.10337883234024048,
-    "spy_adx": 0.10473266243934631,
-    "spy_trend": 0.08276934921741486,
-    "hurst_proxy": 0.0961177796125412
+    "rsi": 0.09425301104784012,
+    "macd_hist": 0.08501379936933517,
+    "cci": 0.0826711505651474,
+    "bbp": 0.08154715597629547,
+    "adx": 0.0970362201333046,
+    "williams_r": 0.07941513508558273,
+    "obv_slope": 0.09130734205245972,
+    "spy_realized_vol": 0.10386359691619873,
+    "spy_adx": 0.10298274457454681,
+    "spy_trend": 0.08440057933330536,
+    "hurst_proxy": 0.09750925004482269
   },
   "artifacts": {
     "buy_model": "AMZN-xgb-buy.json",
     "sell_model": "AMZN-xgb-sell.json"
   },
-  "trained_date": "2026-04-19",
+  "trained_date": "2026-04-20",
   "best_approach": "XGBoost",
   "sharpe": 1.1811,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
+  "live_train_rows": 997,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "isotonic",
+    "method": "platt",
     "score_kind": "p_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 565,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.13982300884955753,
-    "raw_min": -1.0,
-    "raw_max": 3.0,
-    "x_thresholds": [
-      -1.0,
-      0.0,
-      1.0,
-      2.0,
-      3.0
-    ],
-    "y_thresholds": [
-      0.0,
-      0.13802816901408452,
-      0.13802816901408452,
-      0.14705882352941177,
-      0.14705882352941177
-    ],
-    "platt_coef": null,
-    "platt_intercept": null,
-    "platt_scale_mean": null,
-    "platt_scale_std": null
-  }
+    "base_rate": 0.17073170731707318,
+    "raw_min": -0.7502166032791138,
+    "raw_max": 0.9416699409484863,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 1.6271684521348904,
+    "platt_intercept": -2.292591637545508,
+    "platt_scale_mean": 0.19681566731618128,
+    "platt_scale_std": 0.3809092978254012
+  },
+  "score_calibration_date": "2026-04-20"
 }

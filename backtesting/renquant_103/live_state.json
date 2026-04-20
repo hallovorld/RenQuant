@@ -19,13 +19,13 @@
     "AMD": "2026-04-17",
     "NVDA": "2026-04-17"
   },
-  "high_water_mark": 100000,
+  "high_water_mark": 100000.0,
   "position_hwm": {
     "AMZN": 254.0,
     "BA": 226.8099,
     "PLTR": 148.02
   },
   "regime": "BULL_VOLATILE",
-  "transition_countdown": 0,
+  "transition_countdown": 3,
   "regime_confidence": 0.5
 }

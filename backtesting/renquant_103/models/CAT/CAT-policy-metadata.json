@@ -17,39 +17,30 @@
     "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-qtable.json",
     "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-bin-edges.json"
   },
-  "trained_date": "2026-04-19",
+  "trained_date": "2026-04-20",
   "best_approach": "QLearning",
-  "sharpe": 1.3201,
+  "sharpe": 1.3811,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
+  "live_train_rows": 997,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "isotonic",
+    "method": "platt",
     "score_kind": "q_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 565,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.215929203539823,
-    "raw_min": -82.98029585794099,
-    "raw_max": 96.99800105384061,
-    "x_thresholds": [
-      -82.98029585794099,
-      19.425297837536807,
-      19.42671725260781,
-      96.99800105384061
-    ],
-    "y_thresholds": [
-      0.2158859470468432,
-      0.2158859470468432,
-      0.21621621621621623,
-      0.21621621621621623
-    ],
-    "platt_coef": null,
-    "platt_intercept": null,
-    "platt_scale_mean": null,
-    "platt_scale_std": null
-  }
+    "base_rate": 0.36585365853658536,
+    "raw_min": -59.2961168343908,
+    "raw_max": 101.06259974823597,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.19724424599662982,
+    "platt_intercept": -0.5544012361613918,
+    "platt_scale_mean": 2.48879275863131,
+    "platt_scale_std": 20.399023016505044
+  },
+  "score_calibration_date": "2026-04-20"
 }

@@ -1,6 +1,6 @@
 {
   "model_name": "LLY",
-  "policy_type": "classification",
+  "policy_type": "xgboost",
   "feature_columns": [
     "rsi",
     "macd_hist",
@@ -16,50 +16,51 @@
   ],
   "lookahead": 5,
   "threshold": 0.03,
-  "leaf_size": 25,
-  "bags": 15,
-  "impact": 0.0,
   "buy_threshold": 0.1,
-  "sell_threshold": -0.1,
-  "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/LLY/LLY-rf-trees.json"
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.09172681719064713,
+    "macd_hist": 0.09320871531963348,
+    "cci": 0.08248117566108704,
+    "bbp": 0.0825112909078598,
+    "adx": 0.10601148009300232,
+    "williams_r": 0.07539461553096771,
+    "obv_slope": 0.09758616983890533,
+    "spy_realized_vol": 0.09736394137144089,
+    "spy_adx": 0.0913570299744606,
+    "spy_trend": 0.09003151208162308,
+    "hurst_proxy": 0.0923272967338562
   },
-  "trained_date": "2026-04-19",
-  "best_approach": "Classification",
-  "sharpe": 1.4174,
+  "artifacts": {
+    "buy_model": "LLY-xgb-buy.json",
+    "sell_model": "LLY-xgb-sell.json"
+  },
+  "trained_date": "2026-04-20",
+  "best_approach": "XGBoost",
+  "sharpe": 1.2075,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
+  "live_train_rows": 997,
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "isotonic",
-    "score_kind": "bag_learner_raw",
+    "method": "platt",
+    "score_kind": "p_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 565,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.215929203539823,
-    "raw_min": -0.26666666666666666,
-    "raw_max": 0.4666666666666667,
-    "x_thresholds": [
-      -0.26666666666666666,
-      -0.06666666666666667,
-      0.0,
-      0.26666666666666666,
-      0.3333333333333333,
-      0.4666666666666667
-    ],
-    "y_thresholds": [
-      0.1893939393939394,
-      0.1893939393939394,
-      0.22142857142857142,
-      0.22142857142857142,
-      0.3076923076923077,
-      0.3076923076923077
-    ],
-    "platt_coef": null,
-    "platt_intercept": null,
-    "platt_scale_mean": null,
-    "platt_scale_std": null
-  }
+    "base_rate": 0.21341463414634146,
+    "raw_min": -0.715997576713562,
+    "raw_max": 0.8278460502624512,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.8025163004298657,
+    "platt_intercept": -1.4680098932520949,
+    "platt_scale_mean": -0.05372386364402568,
+    "platt_scale_std": 0.30396060803469926
+  },
+  "score_calibration_date": "2026-04-20"
 }

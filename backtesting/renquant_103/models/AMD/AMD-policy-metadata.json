@@ -32,40 +32,21 @@
   "live_train_end": "2026-04-10",
   "score_calibration": {
     "version": 1,
-    "method": "isotonic",
+    "method": "platt",
     "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 565,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.31504424778761064,
-    "raw_min": -0.4666666666666667,
-    "raw_max": 0.5333333333333333,
-    "x_thresholds": [
-      -0.4666666666666667,
-      -0.4,
-      -0.2,
-      -0.13333333333333333,
-      0.13333333333333333,
-      0.2,
-      0.26666666666666666,
-      0.3333333333333333,
-      0.5333333333333333
-    ],
-    "y_thresholds": [
-      0.0,
-      0.27722772277227725,
-      0.27722772277227725,
-      0.3136094674556213,
-      0.3136094674556213,
-      0.358974358974359,
-      0.358974358974359,
-      0.36363636363636365,
-      0.36363636363636365
-    ],
-    "platt_coef": null,
-    "platt_intercept": null,
-    "platt_scale_mean": null,
-    "platt_scale_std": null
-  }
+    "base_rate": 0.3475609756097561,
+    "raw_min": -0.6666666666666666,
+    "raw_max": 0.8,
+    "x_thresholds": null,
+    "y_thresholds": null,
+    "platt_coef": 0.6143554116300524,
+    "platt_intercept": -0.67579365871528,
+    "platt_scale_mean": -0.015040650406504066,
+    "platt_scale_std": 0.30677324230738073
+  },
+  "score_calibration_date": "2026-04-20"
 }

@@ -35,18 +35,18 @@
     "method": "platt",
     "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 190,
+    "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.04736842105263158,
+    "base_rate": 0.042682926829268296,
     "raw_min": -0.2,
     "raw_max": 0.13333333333333333,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.014866306952646886,
-    "platt_intercept": -3.001310187225846,
-    "platt_scale_mean": -0.008070175438596491,
-    "platt_scale_std": 0.04222351814764543
+    "platt_coef": -0.011961188389632744,
+    "platt_intercept": -3.110264048605161,
+    "platt_scale_mean": -0.00894308943089431,
+    "platt_scale_std": 0.043879849653702875
   },
-  "score_calibration_date": "2026-04-17"
+  "score_calibration_date": "2026-04-20"
 }

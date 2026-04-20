@@ -64,7 +64,7 @@
     "correlation_artifact": "watchlist-correlation.json",
     "earnings_artifact": "earnings-calendar.json",
     "earnings_buffer_days": 3,
-    "choppy_hurst_floor": 0.20
+    "choppy_hurst_floor": 0.2
   },
   "regime_params": {
     "BULL_CALM": {
@@ -169,7 +169,7 @@
     "long_term_threshold_days": 365
   },
   "lt_hold_gate_days": 330,
-  "lt_hold_min_gain": 0.10,
+  "lt_hold_min_gain": 0.1,
   "sample_start": "2016-01-01",
   "sample_end": "2026-06-30",
   "backtest_start": "2024-01-01",
@@ -236,7 +236,7 @@
       1.0,
       0.0
     ],
-    "blend_updated": "2026-04-17",
-    "blend_n_symbols": 24
+    "blend_updated": "2026-04-20",
+    "blend_n_symbols": 23
   }
 }
