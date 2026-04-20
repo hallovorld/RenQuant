@@ -1,5 +1,5 @@
 # renquant_103 Decision Logic Graph
-*Covers notebook simulation (cell 657a4a6c) and LEAN (main.py OnData).*
+*Covers notebook simulation (cell 657a4a6c, streaming detect_regime) and LEAN (main.py OnData).*
 *Every branch, condition, and policy. Use this as the ground truth for alignment.*
 
 ---
@@ -27,26 +27,35 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  REGIME DETECTION (3 layers)
 │  ══════════════════════════════════════════════════════════
 │  │
-│  ├─ Layer 1 — Hurst exponent on last 63 SPY daily returns
-│  │     H > 0.55  → MOMENTUM
-│  │     H < 0.45  → REVERSION
-│  │     else      → AMBIGUOUS
+│  ├─ Layer 1 — Hurst exponent on last 63 SPY daily returns (configurable)
+│  │     H > hurst_trending_threshold (0.65)  → MOMENTUM
+│  │     H < hurst_reversion_threshold (0.52) → REVERSION
+│  │     else                                  → AMBIGUOUS
 │  │
 │  ├─ Layer 2 — CUSUM changepoint on last N SPY returns
+│  │     threshold=5.5, drift=0.5, lookback=20
 │  │     ◆ break detected?
-│  │     YES → transition_countdown = TRANSITION_BARS (3)
+│  │     YES → regime_state.countdown = TRANSITION_BARS (3)
 │  │
 │  ├─ Layer 3 — GMM on [10d_ret, 20d_vol, SPY_ADX, autocorr]
 │  │     → P(BULL_CALM), P(BULL_VOLATILE), P(CHOPPY), P(BEAR)
 │  │
+│  ├─ BEAR hard override  (checked before GMM threshold)
+│  │     spy_20d_ann_vol = std(spy[-20:]) × √252
+│  │     spy_20d_ret     = sum(spy[-20:])
+│  │     ◆ ann_vol > bear_vol_threshold (0.35)
+│  │         OR spy_20d_ret < bear_return_threshold (-0.08)?
+│  │       YES → hard_bear = True
+│  │
 │  └─ Resolve regime:
-│        P(BEAR) > 0.5           → BEAR
-│        hurst=MOMENTUM          → BULL_CALM
-│        hurst=REVERSION         → CHOPPY
-│        hurst=AMBIGUOUS         → dominant_GMM (unless BEAR → BULL_VOLATILE)
+│        hard_bear OR P(BEAR) > 0.5  → BEAR
+│        hurst=MOMENTUM              → BULL_CALM
+│        hurst=REVERSION             → CHOPPY
+│        hurst=AMBIGUOUS             → dominant_GMM (unless BEAR → BULL_VOLATILE)
 │
 │     regime_confidence:
-│        CHOPPY → Hurst distance: (0.45 − H) / (0.45 − hurst_floor)  [floor=0.20]
+│        CHOPPY → Hurst distance: (hurst_rev − H) / (hurst_rev − hurst_floor)
+│                 hurst_rev=0.52, hurst_floor=0.20 (both from config)
 │        BULL_CALM / BULL_VOLATILE / BEAR → GMM P(current_regime)
 │        transition window → 0.5 (flat)
 │     rp = regime_params[regime]   ← all thresholds read from here
@@ -97,11 +106,17 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  │  │
 │  │  ├─ [EXIT 3] MAX HOLD
 │  │  │     days_held = today − entry_date
-│  │  │     ◆ days_held >= rp["max_hold_days"]?  (500 BULL/BEAR, 23 CHOPPY)
+│  │  │     ◆ days_held >= rp["max_hold_days"]?  (500 BULL/BEAR, 40 CHOPPY)
 │  │  │        YES ►SELL  reason=max_hold  → continue
 │  │  │
-│  │  ├─ [EXIT 4] MODEL SELL  (gated by min_hold + streak)
-│  │  │     ◆ min_hold_days > 0 AND days_held < min_hold_days (20)?
+│  │  ├─ [EXIT 4a] TAX-AWARE HOLD GATE  (suppress model-sell near 1-year LT threshold)
+│  │  │     lt_gate = lt_hold_gate_days (330)
+│  │  │     ◆ lt_gate > 0 AND lt_gate <= days_held < 365 AND gain >= lt_hold_min_gain (10%)?
+│  │  │        YES → still update sell_streak (ready when gate opens)
+│  │  │              ✗ return _NO_EXIT  (suppresses model-sell; hard stops above still fire)
+│  │  │
+│  │  ├─ [EXIT 4b] MODEL SELL  (gated by min_hold + streak)
+│  │  │     ◆ min_hold_days > 0 AND days_held < min_hold_days (30)?
 │  │  │        YES → sell_streak[ticker] = 0  (streak cannot build during hold period)
 │  │  │              ✗ continue  (skip model check entirely)
 │  │  │        │
@@ -283,7 +298,7 @@ When any sell fires:
 | Param | BULL_CALM | BULL_VOLATILE | CHOPPY | BEAR |
 |-------|-----------|---------------|--------|------|
 | `stop_loss_pct` | 0.15 | 0.05 | 0.05 | 0.05 |
-| `max_hold_days` | 500 | 500 | 23 | 500 |
+| `max_hold_days` | 500 | 500 | 40 | 500 |
 | `max_position_pct` | 0.15 | 0.20 | 0.15 | 0.0 |
 | `drawdown_halt_pct` | 0.35 | 0.10 | 0.08 | 0.05 |
 | `trailing_stop_trigger_pct` | 0.20 | 0.0 | 0.0 | 0.0 |
@@ -301,7 +316,7 @@ When any sell fires:
 | Constant | Value | Where used |
 |----------|-------|------------|
 | `CONSECUTIVE_SELLS` | 3 | model sell streak trigger |
-| `MIN_HOLD_DAYS` | 20 | min days before model-sell allowed |
+| `MIN_HOLD_DAYS` | 30 | min days before model-sell allowed |
 | `WASH_SALE_DAYS` | 30 | cool-off after any exit |
 | `EARNINGS_BUFFER` | 3 | days around earnings blocked |
 | `CORR_THRESHOLD` | 0.70 | correlation guard |
@@ -310,6 +325,8 @@ When any sell fires:
 | `BEAR_DEFENSIVE_SLOTS` | 1 | max defensive positions in BEAR |
 | `BEAR_DEFENSIVE_PCT` | 0.15 | defensive position size in BEAR |
 | `TRANSITION_BARS` | 3 | post-CUSUM no-buy window |
+| `LT_HOLD_GATE_DAYS` | 330 | suppress model-sell near 1-year threshold |
+| `LT_HOLD_MIN_GAIN` | 10% | min unrealized gain to activate tax gate |
 | `TIERED_THRESHOLDS` | [0.10, 0.30, 0.50] | slot-N escalation |
 
 ---
@@ -337,13 +354,19 @@ When any sell fires:
 | 17 | cash_reserve_pct scaled by regime_confidence before invest calc | ✓ port_val × reserve × confidence | ✓ _rp("cash_reserve_pct") | ✓ |
 | 18 | max_position_pct scaled by regime_confidence | ✓ rp["max_position_pct"] × confidence | ✓ _rp("max_position_pct") | ✓ |
 | 19 | last_sell_date.pop() on re-buy | ✓ pop() clears clock | LEAN: does NOT pop; old entry stays but days>=30 makes check pass — functionally equivalent | ✓ |
+| 23 | Notebook uses streaming detect_regime() per bar | ✓ RegimeState persists across bars; no precomputed series | LEAN: same kernel.detect_regime() | ✓ |
+| 24 | BEAR hard override (vol/return threshold) | ✓ ann_vol > 0.35 or 20d_ret < -0.08 → BEAR | ✓ same in kernel/regime.py detect_regime() | ✓ |
+| 25 | Artifacts in artifacts/ subdir | ✓ STRATEGY_DIR/artifacts/ | DataJob checks artifacts/ first, falls back to root | ✓ |
+| 26 | LT tax-aware hold gate | ✓ lt_hold_gate_days=330, lt_hold_min_gain=0.10 in exit_params | ✓ compute_exits EXIT 4a | ✓ |
 | 20 | entry_dates recorded on buy | ✓ | ✓ entry_times[ticker] | ✓ |
 | 21 | EXIT 3 max_hold_days enforced | ✓ days_held >= max_hold_days in sell loop | ✓ days_held >= max_hold_days | ✓ live runner enforces max_hold between EXIT 2b and EXIT 4 | ✓ |
-| 22 | CHOPPY regime_confidence uses Hurst distance (not GMM) | ✓ (0.45−H)/(0.45−floor) | ✓ (0.45−hurst)/(0.45−_choppy_hurst_floor) | ✓ live runner: _hurst_choppy_confidence() |
+| 22 | CHOPPY regime_confidence uses Hurst distance (not GMM) | ✓ (hurst_rev−H)/(hurst_rev−floor) | ✓ (hurst_rev−hurst)/(hurst_rev−floor) | ✓ hurst_rev read from config (default 0.52) |
 
 **Deltas (row 14, 18):** Minor divergences; row 14 is belt-and-suspenders (both block). Live runner selection-loop wash-sale re-check was added in 2026-04-17 maintenance pass — now all three components (Notebook, LEAN, live runner) re-check wash-sale in the selection loop. Row 18 means LEAN
 sizes slightly smaller during low-confidence periods — this is intentional in LEAN (confidence scaling)
 but not replicated in the notebook which uses flat percentages.
+
+**CHOPPY max_hold_days raised 23 → 40** to accommodate min_hold_days=30 + 3 consecutive sell signals (otherwise model-sell is structurally unreachable in CHOPPY with short max_hold).
 
 ---
 
@@ -353,9 +376,11 @@ but not replicated in the notebook which uses flat percentages.
 1. Trailing stop      — BULL_CALM only; peak-gain triggers, then trails HWM
 2. Cumulative stop    — regime-dependent width (15% vs 5%)
 2b. Single-day gate   — BULL_CALM only; catches gap-downs before cumulative fires
-3. Max hold           — hard time limit (500d / 23d CHOPPY)
-4. Model sell streak  — N=3 consecutive signals; gated by min_hold=20d
+3. Max hold           — hard time limit (500d / 40d CHOPPY)
+4a. Tax-aware hold gate — suppress model-sell at days 330-364 if gain ≥ 10%
+4b. Model sell streak  — N=3 consecutive signals; gated by min_hold=30d
 ```
 
 Stop-loss and single-day gate are immediate (no hold guard).
-Model sell requires 20-day seasoning AND 3 consecutive signals.
+Tax gate suppresses model-sell near the 1-year LT threshold to protect unrealized gains.
+Model sell requires 30-day seasoning AND 3 consecutive signals.

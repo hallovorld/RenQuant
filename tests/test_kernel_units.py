@@ -145,12 +145,18 @@ class TestRegimeConfidence:
         assert conf == 0.5
 
     def test_choppy_uses_hurst(self):
-        """CHOPPY: H=0.20 → max confidence; H=0.44 → near zero."""
-        cfg = {"regime": {"choppy_hurst_floor": 0.20}}
+        """CHOPPY: H=hurst_floor → max confidence (1.0); H close to hurst_rev → low.
+
+        Formula: (hurst_rev - H) / (hurst_rev - hurst_floor).
+        With defaults hurst_rev=0.52, hurst_floor=0.20:
+          H=0.20 → 1.0, H=0.51 → (0.52-0.51)/(0.52-0.20)=0.03 (very low).
+        """
+        cfg = {"regime": {"choppy_hurst_floor": 0.20, "hurst_reversion_threshold": 0.52}}
         high = compute_regime_confidence(CHOPPY, 0.20, {CHOPPY: 0.5}, False, cfg)
-        low  = compute_regime_confidence(CHOPPY, 0.44, {CHOPPY: 0.5}, False, cfg)
+        low  = compute_regime_confidence(CHOPPY, 0.51, {CHOPPY: 0.5}, False, cfg)
         assert high > low
         assert high == pytest.approx(1.0)
+        assert low == pytest.approx((0.52 - 0.51) / (0.52 - 0.20))
 
     def test_bull_calm_uses_gmm(self):
         gmm = {BULL_CALM: 0.75, BEAR: 0.25}

@@ -89,9 +89,9 @@ Calibration lives in `common/models/scoring.py` and selects its method by sample
 ### What it measures
 Long-range memory of the SPY return series. Directly answers: **"Is the market in a momentum or mean-reversion regime?"**
 
-- H > 0.55 → momentum regime (returns are positively autocorrelated — trends persist)
+- H > 0.65 (hurst_trending_threshold) → momentum regime (returns are positively autocorrelated — trends persist)
 - H = 0.45–0.55 → ambiguous / random walk (no exploitable directional pattern)
-- H < 0.45 → mean-reversion regime (returns are negatively autocorrelated — moves reverse)
+- H < 0.52 (hurst_reversion_threshold) → mean-reversion regime (returns are negatively autocorrelated — moves reverse)
 
 ### Computation
 Rescaled Range (R/S) analysis on rolling 63-day (≈ 3 months) SPY daily returns.
@@ -668,7 +668,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 5. ✅ Lookahead changed 10 → 5 days
 6. ✅ Correlation matrix computed and serialized
 7. ✅ Earnings calendar via `scripts/fetch_earnings_calendar.py`
-8. ✅ All symbols trained, OOS Sharpe floor 0.8, models exported
+8. ✅ All symbols trained, OOS Sharpe floor 1.0, models exported
 9. ✅ Fixed training cutoff (2024-01-01) for stable OOS simulation
 10. ✅ Expanding-window live model refresh (last 4 years) in export cell
 11. ✅ Live model score ranking (predict_score_bulk) replacing static Sharpe ranking
@@ -704,7 +704,7 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 1. ✅ Strategy kernel extracted to `backtesting/renquant_103/kernel/` (9 self-contained modules, zero `common/` imports)
 2. ✅ Pipeline package created at `backtesting/renquant_103/pipeline/`
 3. ✅ `live/runner.py` dispatches renquant_103 to `_run_once_multi_pipeline()` via `config["_use_kernel"]`
-4. ✅ 113 kernel unit tests + 31 pipeline tests added
+4. ✅ 114 kernel unit tests + 31 pipeline tests added
 
 ---
 

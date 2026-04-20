@@ -201,7 +201,8 @@ def compute_regime_confidence(
 
     if regime == CHOPPY:
         hurst_floor = float(config.get("regime", {}).get("choppy_hurst_floor", 0.20))
-        conf = (0.45 - hurst) / max(0.45 - hurst_floor, 1e-6)
+        hurst_rev   = float(config.get("regime", {}).get("hurst_reversion_threshold", 0.52))
+        conf = (hurst_rev - hurst) / max(hurst_rev - hurst_floor, 1e-6)
         return float(min(1.0, max(0.0, conf)))
 
     return float(gmm_probs.get(regime, 0.5))
