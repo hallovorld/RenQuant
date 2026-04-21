@@ -611,21 +611,728 @@ closed them.
 | Q-learning | Removed | Panel renders it obsolete |
 | Stacking | Deferred to Stage 3, contingent on orthogonal base models | Correlated bases = noise memorization |
 
-## 7. Remaining open questions
+## 7. Resolved answers to the v2 open questions
 
-1. **Fundamental data source.** Stage 1 can launch with technicals-only + size
-   + beta + 12-1 momentum (all from yfinance). Moving to full fundamentals
-   (earnings yield, ROE, short interest) requires OpenBB or a paid source.
-   What's the budget?
-2. **Compute budget.** Weekly panel refit on ~15k rows × ~20 features is ~minutes
-   on CPU — no GPU needed for Stage 1+2. Stage 3 TFT/GNN would need GPU.
-3. **A/B experimental setup.** Keep notebook-only side-by-side comparisons until
-   the panel beats per-stock on OOS IC for 4 consecutive weekly rebuilds, then
-   flip the live default via `ranking.model_type` config flag?
-4. **Factor universe for the neutralization regression.** Sector ETFs are the
-   obvious choice (XLK, XLF, XLE, XLI, XLV, XLU, XLC, XLP, XLY, XLRE, XLB).
-   Do we also neutralize against a separate size factor (IWM / SPY spread),
-   or is that captured well enough by the size feature in 3.5?
+1. **Fundamental data source**: **free only** — yfinance for OHLCV / shares
+   outstanding / market cap (already used); OpenBB free tier for fundamentals
+   when Stage 3 lands (P/E, earnings yield, ROE, book value). No paid sources.
+2. **Compute budget**: **laptop is sufficient** — M4 Pro, 48 GB RAM, 14 cores.
+   Panel ~15k rows × ~20 features → XGBoost `rank:pairwise` single fit in tens
+   of seconds; 5-fold purged CV in a few minutes. NGBoost slower but still
+   sub-hour. No GPU for Stage 1 or Stage 2. Graph/TFT (out of scope) would
+   need one.
+3. **A/B experimental setup**: **plan approved** — shadow mode for 2 weeks
+   (both pipelines logged), promotion only after 4 consecutive weekly rebuilds
+   where panel mean-IC and realised top-10 Sharpe both ≥ per-stock (see 14.2).
+   Single-flag rollback.
+4. **Factor universe for neutralization**: **sector ETFs only** — the 11
+   SPDR sector ETFs already mapped in `strategy_config.json`. Size is
+   captured by the size feature in 3.5, so no separate size-factor
+   regression. Keeps the neutralization pipeline simple.
+
+### Environment note
+
+`ngboost` is **not currently installed** in the `renquant` conda env.
+Stage 2 begins with `pip install ngboost` (pure-Python wheel, ~2 MB, no
+native deps). Stage 1 uses only libraries already present (xgboost 3.2,
+scikit-learn 1.7, pandas 2.3, numpy 2.2).
+
+---
+
+## 8. Parallel pipeline architecture (how we actually build this)
+
+**Core rule: keep every current pipeline untouched.** The panel pipeline ships
+**alongside** per-stock code and is switched at inference via a config flag. We
+run both on the same data for at least two weekly cycles, compare outcomes in a
+notebook, and only promote when the panel is clearly better. Rollback = flip
+one flag.
+
+### 8.1 Directory layout
+
+```
+backtesting/renquant_103/
+├── training/                        # EXISTING — no edits
+│   ├── tournament.py
+│   ├── scoring.py
+│   ├── models.py
+│   └── export.py
+├── training_panel/                  # NEW
+│   ├── __init__.py
+│   ├── panel_frame.py               # 9.1
+│   ├── labels.py                    # 9.2
+│   ├── neutralization.py            # 9.3
+│   ├── imputation.py                # 9.4
+│   ├── factors.py                   # 9.5
+│   ├── purged_cv.py                 # 9.6
+│   ├── ltr_model.py                 # 9.7
+│   ├── ngboost_head.py              # 10  (Stage 2)
+│   ├── stacker.py                   # 11  (Stage 3, conditional)
+│   └── pipeline.py                  # 9.8 orchestrator
+├── kernel/
+│   ├── pipeline/                    # EXISTING per-stock — no edits
+│   └── panel_pipeline/              # NEW
+│       ├── __init__.py
+│       ├── panel_context.py
+│       ├── pp_panel_inference.py
+│       ├── task_panel_score.py
+│       └── task_panel_rank_gate.py
+├── artifacts/
+│   ├── ... (existing)
+│   ├── panel_model_v{N}.json        # NEW single artifact
+│   └── panel_model_v{N}-metadata.json
+├── main.py                          # EDITED — branch on ranking.model_type
+└── strategy_config.json             # EDITED — add ranking.panel block
+
+tests/
+├── test_panel_frame.py              # NEW
+├── test_panel_labels.py             # NEW
+├── test_panel_neutralization.py     # NEW
+├── test_panel_imputation.py         # NEW
+├── test_panel_factors.py            # NEW
+├── test_panel_purged_cv.py          # NEW
+├── test_panel_ltr_model.py          # NEW
+├── test_panel_pipeline_e2e.py       # NEW
+├── test_panel_inference.py          # NEW
+├── test_ngboost_head.py             # NEW  (Stage 2)
+└── test_stacking.py                 # NEW  (Stage 3, conditional)
+```
+
+### 8.2 Config flag + artifact versioning
+
+Add to `strategy_config.json`:
+```json
+"ranking": {
+  "model_type": "per_stock",
+  "panel": {
+    "artifact": "panel_model_v1",
+    "gate_mode": "rank",
+    "top_n_per_bar": 10,
+    "prob_threshold": 0.6,
+    "lambda_sigma": 1.0
+  }
+}
+```
+
+Default stays `"per_stock"` during development. Flip to `"panel"` only after
+acceptance criteria (9.11) are met.
+
+Panel artifact is a single JSON (weights + metadata), versioned by filename.
+We never mutate an existing artifact — each refit bumps the version.
+
+### 8.3 Coexistence rules
+
+- **No per-stock code is edited** except `main.py` and `strategy_config.json`,
+  which gain a single `if config["ranking"]["model_type"] == "panel"` branch.
+- `tests/test_kernel_isolation.py` must still pass for both kernels.
+- All new panel tests live under `tests/test_panel_*` — existing tests untouched.
+- Live runner `live/runner.py` gains the same branch.
+- Scheduled daily/weekly scripts gain a parallel `retrain_panel.sh` that runs
+  Sundays only; existing `daily_103.sh` is unchanged.
+
+---
+
+## 9. Stage 1 — Panel LTR implementation detail
+
+Each subsection names **the file path, public API, I/O contract, and tests**.
+Write tests first (or alongside) — every module ships with its test file green.
+
+### 9.1 `training_panel/panel_frame.py`
+
+**Purpose**: Assemble the unified panel training frame from per-ticker inputs.
+
+**Public API:**
+```python
+def build_panel_frame(
+    feature_frames: dict[str, pd.DataFrame],
+    labels: dict[str, pd.Series],
+    ticker_sectors: dict[str, str],
+    factor_frames: dict[str, pd.DataFrame] | None = None,
+    min_history_days: int = 252,
+    lookahead_days: int = 5,
+    age_warmup_days: int = 504,
+) -> tuple[pd.DataFrame, np.ndarray, dict]:
+    """Return (panel_df, group_sizes, metadata).
+
+    panel_df columns (in order):
+      date, ticker, sector,
+      <feature_cols>, <factor_cols>,
+      <*_is_missing indicators>,
+      label, weight_concurrency, weight_age, weight
+    Sorted by (date, ticker).
+
+    group_sizes: np.int32 array, row = one date, value = # tickers on that date.
+    metadata: {
+      "n_rows", "n_tickers", "n_dates", "dates": [iso, iso],
+      "feature_cols", "factor_cols", "missing_cols",
+      "per_ticker": { ticker: { first_bar, last_bar, n_rows } }
+    }
+    """
+
+def compute_concurrency_weight(
+    dates: pd.Series, lookahead_days: int = 5
+) -> pd.Series:
+    """AFML ch.4 concurrency weight: w = 1 / mean_concurrency_over_active_window."""
+```
+
+**Tests** (`tests/test_panel_frame.py`):
+- `test_build_shape_and_columns`
+- `test_sorted_by_date_then_ticker`
+- `test_group_sizes_sum_equals_row_count`
+- `test_group_sizes_align_with_date_counts`
+- `test_min_history_gate_drops_young_tickers`
+- `test_missingness_indicators_binary`
+- `test_concurrency_weight_roughly_inverse_of_overlap`
+- `test_age_weight_ramps_linearly_to_1`
+- `test_metadata_ticker_stats_correct`
+
+### 9.2 `training_panel/labels.py`
+
+**Purpose**: Beta-neutral, cross-sectionally Gaussianized labels.
+
+**Public API:**
+```python
+def compute_residual_returns(
+    fwd_returns: dict[str, pd.Series],
+    spy_returns: pd.Series,
+    sector_returns_by_ticker: dict[str, pd.Series],
+    beta_window: int = 60,
+    lookahead_days: int = 5,
+) -> dict[str, pd.Series]:
+    """fwd_return − β_spy·spy_fwd − β_sec·sec_fwd.
+
+    β computed by rolling OLS on strictly-prior data (purged).
+    """
+
+def gaussianize_cross_section(
+    residuals: dict[str, pd.Series],
+) -> dict[str, pd.Series]:
+    """Per date: rank → [0,1] → scipy.stats.norm.ppf → N(0,1)."""
+
+def build_labels(
+    fwd_returns, spy_returns, sector_returns_by_ticker, *,
+    beta_window: int = 60, lookahead_days: int = 5,
+) -> dict[str, pd.Series]:
+    """Pipeline: residualize → Gaussianize."""
+```
+
+**Tests** (`tests/test_panel_labels.py`):
+- `test_beta_regression_uses_only_prior_data` — verify no current-bar rows
+  enter the rolling regression
+- `test_residuals_uncorrelated_with_spy_returns`
+- `test_residuals_uncorrelated_with_sector_returns`
+- `test_gaussianize_preserves_ranking`
+- `test_gaussianize_output_approx_unit_normal_per_date`
+- `test_constant_input_maps_to_zero`
+- `test_single_ticker_day_edge_case`
+
+### 9.3 `training_panel/neutralization.py`
+
+**Purpose**: Partial feature neutralization — momentum/trend only.
+
+**Public API:**
+```python
+NEUTRALIZE_COLS = ["rel_mom_20d", "rel_mom_60d", "trend", "trend_long"]
+
+def compute_sector_momentum(
+    sector_etf_ohlcv: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """Sector-ETF mom_20d, mom_60d series per sector."""
+
+def neutralize_features(
+    feature_frames: dict[str, pd.DataFrame],
+    sector_momentum: dict[str, pd.DataFrame],
+    ticker_sectors: dict[str, str],
+    cols: list[str] = NEUTRALIZE_COLS,
+    rolling_window: int = 252,
+    expanding_warmup_days: int = 252,
+) -> dict[str, pd.DataFrame]:
+    """Replace cols with residuals vs sector momentum.
+    
+    Expanding window for first `expanding_warmup_days` past listing,
+    then rolling. Mean-reversion features untouched.
+    """
+```
+
+**Tests** (`tests/test_panel_neutralization.py`):
+- `test_neutralized_feature_uncorrelated_with_sector_momentum`
+- `test_mean_reversion_features_unchanged` (RSI/BBP/Williams %R not in list)
+- `test_expanding_window_used_within_warmup`
+- `test_rolling_window_used_after_warmup`
+- `test_missing_sector_returns_feature_unchanged`
+- `test_neutralization_is_purged`
+
+### 9.4 `training_panel/imputation.py`
+
+**Purpose**: Layered new-ticker / NaN handling.
+
+**Public API:**
+```python
+def apply_min_history_gate(
+    feature_frames: dict[str, pd.DataFrame],
+    min_history_days: int = 252,
+) -> dict[str, pd.DataFrame]:
+    """Drop first N bars per ticker."""
+
+def add_missingness_indicators(
+    panel: pd.DataFrame, cols: list[str],
+) -> pd.DataFrame:
+    """Append {col}_is_missing ∈ {0,1} per col in cols."""
+
+def sector_median_fill(
+    panel: pd.DataFrame, cols: list[str], *,
+    sector_col: str = "sector", date_col: str = "date",
+) -> pd.DataFrame:
+    """NaN → same-date same-sector median."""
+
+def compute_age_weight(
+    panel: pd.DataFrame,
+    listing_dates: dict[str, pd.Timestamp],
+    warmup_days: int = 504,
+) -> pd.Series:
+    """min(1, (bar_date − listing_date).days / warmup_days)."""
+```
+
+**Tests** (`tests/test_panel_imputation.py`):
+- `test_gate_drops_expected_row_count`
+- `test_missingness_indicator_equals_1_iff_nan`
+- `test_sector_median_respects_date_bucket`
+- `test_sector_median_unaffected_by_other_sector_values`
+- `test_age_weight_linear_ramp`
+- `test_age_weight_caps_at_1`
+
+### 9.5 `training_panel/factors.py`
+
+**Purpose**: Cross-sectional factor features.
+
+**Public API:**
+```python
+def compute_momentum_12_1(
+    ohlcv: dict[str, pd.DataFrame],
+) -> dict[str, pd.Series]:
+    """252d return − 21d return."""
+
+def compute_rolling_beta(
+    ohlcv: dict[str, pd.DataFrame], spy: pd.DataFrame, window: int = 60,
+) -> dict[str, pd.Series]:
+    """cov(r_i, r_spy) / var(r_spy) over rolling window."""
+
+def compute_residual_momentum(
+    ohlcv, spy, window: int = 60, mom_window: int = 252,
+) -> dict[str, pd.Series]:
+    """12-1 momentum minus β_60d × SPY's 12-1 momentum."""
+
+def compute_size_feature(
+    ohlcv: dict[str, pd.DataFrame],
+    shares_outstanding: dict[str, pd.Series] | None = None,
+) -> dict[str, pd.Series]:
+    """log(price × shares). If shares missing, log(price) as fallback proxy."""
+
+def cross_sectional_zscore(
+    feature: dict[str, pd.Series],
+) -> dict[str, pd.Series]:
+    """Per date, z-score across tickers."""
+
+def build_factor_bundle(
+    ohlcv, spy, shares_outstanding=None, *, config=None,
+) -> dict[str, pd.DataFrame]:
+    """One DataFrame per ticker, columns = [size_z, mom_12_1_z, beta_60d_z, resid_mom_z]."""
+```
+
+**Tests** (`tests/test_panel_factors.py`):
+- `test_mom_12_1_exact_formula`
+- `test_beta_of_spy_against_spy_is_1`
+- `test_residual_momentum_orthogonal_to_spy_mom`
+- `test_cross_sectional_zscore_mean_zero_std_one_per_date`
+- `test_size_uses_log_scale`
+- `test_factor_bundle_covers_all_tickers`
+
+### 9.6 `training_panel/purged_cv.py`
+
+**Purpose**: Purged K-fold CV with embargo (AFML ch.7).
+
+**Public API:**
+```python
+@dataclass
+class PurgedKFold:
+    n_splits: int = 5
+    embargo_days: int = 5
+    lookahead_days: int = 5
+
+    def split(
+        self, panel: pd.DataFrame, date_col: str = "date"
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        """Yield (train_idx, test_idx) with purge+embargo applied to train side."""
+
+def evaluate_fold_ic(
+    model, panel: pd.DataFrame, feature_cols: list[str],
+    label_col: str, test_idx: np.ndarray, *, date_col: str = "date",
+) -> pd.Series:
+    """Per-date Spearman IC on the test slice."""
+
+def cross_validated_ic(
+    model_factory, panel, feature_cols, label_col,
+    cv: PurgedKFold, weight_col: str = "weight",
+) -> dict:
+    """Return {"mean_ic", "std_ic", "per_fold_ic", "per_fold_ic_series"}."""
+```
+
+**Tests** (`tests/test_panel_purged_cv.py`):
+- `test_each_row_in_exactly_one_test_fold`
+- `test_purge_removes_rows_with_overlap_into_test`
+- `test_embargo_removes_post_fold_bars`
+- `test_fold_ic_equals_1_on_perfect_signal`
+- `test_fold_ic_equals_0_on_random_signal_within_noise`
+
+### 9.7 `training_panel/ltr_model.py`
+
+**Purpose**: XGBoost `rank:pairwise` wrapper with JSON artifact.
+
+**Public API:**
+```python
+class PanelLTRModel:
+    def __init__(self, params: dict | None = None): ...
+
+    def train(
+        self, panel: pd.DataFrame, group_sizes: np.ndarray,
+        feature_cols: list[str],
+        label_col: str = "label", weight_col: str = "weight",
+        num_boost_round: int = 400, early_stopping_rounds: int | None = 50,
+        eval_panel: pd.DataFrame | None = None,
+        eval_group_sizes: np.ndarray | None = None,
+    ) -> dict:
+        """Train; return { "best_iter", "train_ic", "eval_ic" (if eval given) }."""
+
+    def predict(self, panel: pd.DataFrame) -> pd.Series:
+        """Per-row score, indexed same as panel."""
+
+    def save(self, path: Path, metadata: dict) -> None:
+        """Write panel_model_v{N}.json."""
+
+    @classmethod
+    def load(cls, path: Path) -> "PanelLTRModel": ...
+```
+
+**Default params**:
+```python
+DEFAULT_PARAMS = {
+    "objective": "rank:pairwise",
+    "eta": 0.05,
+    "max_depth": 6,
+    "min_child_weight": 20,
+    "subsample": 0.8,
+    "colsample_bytree": 0.7,
+    "lambda": 1.0,
+    "alpha": 0.5,
+    "tree_method": "hist",
+    "nthread": -1,
+}
+```
+
+**Artifact schema** (`panel_model_v{N}.json`):
+```json
+{
+  "version": 1,
+  "trained_date": "2026-04-20",
+  "feature_cols": ["..."],
+  "params": {"...": "..."},
+  "booster_raw_json": "...",
+  "panel_shape": {"rows": 15234, "tickers": 32, "dates": 476},
+  "oos_mean_ic": 0.123,
+  "oos_per_fold_ic": [0.11, 0.14, 0.10, 0.15, 0.12],
+  "training_notes": "Stage 1 baseline"
+}
+```
+
+**Tests** (`tests/test_panel_ltr_model.py`):
+- `test_train_produces_booster`
+- `test_predict_returns_finite_scores_of_expected_length`
+- `test_save_load_roundtrip_identical_predictions`
+- `test_group_sizes_used_in_training`
+- `test_ic_monotonic_with_boosting_rounds_on_easy_signal`
+- `test_training_respects_sample_weights`
+
+### 9.8 `training_panel/pipeline.py` — orchestrator
+
+**Public API:**
+```python
+def train_panel_model(
+    watchlist: list[str],
+    feature_frames: dict[str, pd.DataFrame],
+    ohlcv: dict[str, pd.DataFrame],
+    spy_ohlcv: pd.DataFrame,
+    sector_etf_ohlcv: dict[str, pd.DataFrame],
+    ticker_sectors: dict[str, str],
+    listing_dates: dict[str, pd.Timestamp],
+    config: dict,
+    out_path: Path,
+) -> dict:
+    """End-to-end Stage-1 training.
+
+    Steps:
+      1. Compute sector momentum (9.3)
+      2. Neutralize features (9.3)
+      3. Build factor bundle (9.5)
+      4. Compute fwd returns + residualize + Gaussianize labels (9.2)
+      5. Apply min-history gate (9.4)
+      6. Build panel + group sizes + weights + missingness (9.1, 9.4)
+      7. Purged K-fold CV for mean-IC (9.6)
+      8. Fit final model on full training range (9.7)
+      9. Save artifact with metadata (9.7)
+
+    Returns: { "mean_ic", "per_fold_ic", "artifact_path", "panel_metadata" }
+    """
+```
+
+**Tests** (`tests/test_panel_pipeline_e2e.py`):
+- `test_end_to_end_on_synthetic_cohort_returns_valid_artifact`
+- `test_artifact_disk_roundtrip`
+- `test_reported_mean_ic_matches_cv_output`
+
+### 9.9 Inference — `kernel/panel_pipeline/`
+
+Mirrors `kernel/pipeline/`. Reuses `job_regime`, `job_drawdown`, `job_gates`,
+`job_sell`, `job_selection` (model-agnostic). Replaces `TickerCandidateJob`,
+`RankingJob` with:
+
+- `task_panel_score.py::ComputePanelScoresTask`: builds today's cross-sectional
+  feature matrix, calls `PanelLTRModel.predict()`, attaches `panel_score` to
+  each candidate context.
+- `task_panel_rank_gate.py::PanelRankGateTask`: applies `gate_mode`:
+  - `"rank"`: keep top-N per bar (default)
+  - `"probability"`: keep candidates with `calibrated_prob ≥ threshold`
+    (requires global calibrator artifact)
+
+**Tests** (`tests/test_panel_inference.py`):
+- `test_panel_inference_matches_training_predictions_on_identical_row`
+- `test_rank_gate_keeps_top_n`
+- `test_probability_gate_requires_calibrator`
+- `test_fallback_when_artifact_missing_logs_warning`
+
+### 9.10 Integration points
+
+**`main.py`** gains:
+```python
+if self._config["ranking"]["model_type"] == "panel":
+    from kernel.panel_pipeline import PanelInferencePipeline
+    self._pipeline = PanelInferencePipeline()
+else:
+    self._pipeline = InferencePipeline()  # existing
+```
+
+**`live/runner.py`**: same branch on `_run_once_multi_pipeline()`.
+
+**`scripts/retrain_panel.sh`** (new, Sunday cron): calls
+`python -m training_panel.pipeline --strategy renquant_103 --out artifacts/`.
+
+### 9.11 Stage 1 acceptance criteria
+
+Must all hold before merging Stage 1 to main:
+
+1. ✅ All existing tests pass (current baseline: 600).
+2. ✅ All new Stage-1 tests pass (target: +40–50 tests).
+3. ✅ `test_kernel_isolation.py` passes for `kernel/panel_pipeline/` too.
+4. ✅ `train_panel_model()` completes in < 10 min on CPU for the 37-ticker watchlist.
+5. ✅ Purged 5-fold **mean-IC ≥ 0.08** on the current OOS window.
+6. ✅ Artifact round-trip bit-identical predictions.
+7. ✅ Panel inference in shadow mode for 2 weeks without error.
+8. ✅ Notebook cell at `Notebooks/panel_vs_per_stock.ipynb` shows
+   side-by-side top-10 picks per bar.
+
+---
+
+## 10. Stage 2 — NGBoost uncertainty head
+
+Ship only after Stage 1 is green in shadow mode for 2 weeks.
+
+### 10.1 `training_panel/ngboost_head.py`
+
+**Purpose**: Separate regression head producing `μ, σ` over **raw** residual
+returns (not Gaussianized — we need real-scale σ for sizing).
+
+**Public API:**
+```python
+class NGBoostHead:
+    def __init__(self, base_learner="default_tree_learner", n_estimators=400): ...
+
+    def train(
+        self, panel: pd.DataFrame, feature_cols: list[str],
+        label_col: str = "residual_return_raw",
+        sample_weight_col: str = "weight",
+    ) -> None: ...
+
+    def predict_distribution(self, panel: pd.DataFrame) -> pd.DataFrame:
+        """Returns DataFrame with columns [mu, sigma], indexed same as panel."""
+
+    def save(self, path: Path, metadata: dict) -> None: ...
+
+    @classmethod
+    def load(cls, path: Path) -> "NGBoostHead": ...
+```
+
+### 10.2 Wiring into inference
+
+Panel inference now produces three columns per candidate: `ltr_score`,
+`mu`, `sigma`. Selection score:
+
+```python
+score = mu - lambda_sigma * sigma
+```
+
+Position sizing multiplier:
+```python
+sigma_factor = np.clip(sigma_p50_in_universe / candidate_sigma, 0.3, 1.0)
+scaled_max_pct = base_max_pct * confidence * sigma_factor
+```
+
+### 10.3 Tests (`tests/test_ngboost_head.py`)
+
+- `test_ngboost_recovers_mean_on_known_gaussian`
+- `test_sigma_correlates_with_label_noise`
+- `test_predict_distribution_shape`
+- `test_save_load_roundtrip`
+- `test_combined_score_prefers_high_mu_low_sigma`
+- `test_sigma_sizing_multiplier_bounds`
+
+### 10.4 Stage 2 acceptance
+
+- `test_ngboost_head.py` all green
+- NGBoost σ-based sizing reduces drawdown on the same OOS period vs
+  Stage 1 selection-only
+- Shadow mode 2 weeks, no regression in mean-IC
+
+---
+
+## 11. Stage 3 — Alpha expansion
+
+Open-ended. Two work streams:
+
+### 11.1 Fundamental factor plumbing
+
+- New module: `common/data/fundamentals.py` (cached OpenBB pulls).
+- New columns into `training_panel/factors.py::build_factor_bundle`:
+  `earnings_yield`, `roe`, `gross_profitability`, `book_to_price`.
+- Cache at `data/fundamentals/{SYMBOL}.parquet`.
+- Tests: `test_fundamentals_cache.py`.
+
+### 11.2 Optional second model (microstructure / sentiment)
+
+Only worth doing if we have time to add a genuinely orthogonal signal source:
+intraday volume profile, spread proxies, SEC filing velocity, analyst
+revisions. Otherwise skip and close Stage 3.
+
+### 11.3 Stacking meta-learner (conditional on 11.2)
+
+`training_panel/stacker.py` — LightGBM meta on
+`[ltr_score, ngboost_mu, ngboost_sigma, second_model_score, regime_features]`.
+Tests: `test_stacking.py::test_stacking_beats_best_single_base`.
+
+---
+
+## 12. Evaluation & comparison framework
+
+### 12.1 Side-by-side notebook — `Notebooks/panel_vs_per_stock.ipynb`
+
+Cells:
+1. Load both artifacts.
+2. Run each pipeline on the last 60 OOS trading days.
+3. Metrics per bar:
+   - Mean-IC per pipeline
+   - Spearman correlation of the two pipelines' scores
+   - Top-10 overlap (Jaccard)
+   - Simulated portfolio P&L if you followed each pipeline's picks
+4. Plot: cumulative IC, top-k overlap over time, per-sector IC breakdown,
+   realised portfolio Sharpe.
+
+### 12.2 Regression harness — `scripts/panel_regression_check.py`
+
+Fails CI if:
+- Stage N's mean-IC < Stage N-1's mean-IC − 0.02
+- Stage N's top-10 set differs from Stage N-1 by > 40% Jaccard
+
+### 12.3 Metrics dashboard — `Notebooks/panel_metrics.ipynb`
+
+- Per-fold IC (box plot)
+- IC stability over 60-day rolling window
+- Feature importance (XGBoost gain)
+- Calibration curves (if global calibrator present)
+- Residual-return distribution per sector
+
+---
+
+## 13. Full test plan & count targets
+
+New test files under `tests/`:
+
+| File | Stage | Target test count |
+|------|-------|-------------------|
+| test_panel_frame.py | 1 | 9 |
+| test_panel_labels.py | 1 | 7 |
+| test_panel_neutralization.py | 1 | 6 |
+| test_panel_imputation.py | 1 | 6 |
+| test_panel_factors.py | 1 | 6 |
+| test_panel_purged_cv.py | 1 | 5 |
+| test_panel_ltr_model.py | 1 | 6 |
+| test_panel_pipeline_e2e.py | 1 | 3 |
+| test_panel_inference.py | 1 | 4 |
+| test_ngboost_head.py | 2 | 6 |
+| test_stacking.py | 3 (cond.) | 4 |
+| **Total new** | | **~62** |
+
+Post-Stage-1 total: 600 existing + ~52 new = **~652**.
+Post-Stage-2 total: ~658.
+Post-Stage-3 total: ~662.
+
+Regression gate (blocks merge): all existing + all relevant new green.
+
+---
+
+## 14. Rollout & A/B protocol
+
+### 14.1 Shadow mode (minimum 2 weeks)
+
+- Panel retrains Sunday night via `scripts/retrain_panel.sh`.
+- Live runner stays on per-stock — panel inference logs to
+  `live/logs/panel_shadow/{date}.json` with top-10 picks and predicted IC.
+- Daily cron compares realised 5-day forward returns of each pipeline's
+  top-10 vs SPY baseline.
+
+### 14.2 Promotion criterion
+
+Flip `ranking.model_type` → `"panel"` only when ALL hold over ≥ 4 weekly rebuilds:
+- Purged mean-IC(panel) ≥ mean-IC(per-stock)
+- Top-10 realised 5d Sharpe(panel) ≥ top-10 realised 5d Sharpe(per-stock)
+- Zero inference errors in shadow logs
+
+### 14.3 Rollback
+
+- Single config flag flip, no data migrations.
+- Per-stock artifacts remain fresh (daily refit continues).
+- All panel code remains in place for re-enable.
+
+---
+
+## 15. Progress log (update this after every milestone)
+
+| Date | Module / Milestone | Status | Commit | Notes |
+|------|--------------------|--------|--------|-------|
+| 2026-04-20 | Doc v2 — parallel architecture, full Stage 1–3 plan | ✅ | (this) | Ready to start impl |
+| 2026-04-20 | 9.1 panel_frame.py + tests | ⏳ | | First module |
+| 2026-04-20 | 9.2 labels.py + tests | ⏳ | | |
+| 2026-04-20 | 9.3 neutralization.py + tests | ⏳ | | |
+| 2026-04-20 | 9.4 imputation.py + tests | ⏳ | | |
+| 2026-04-20 | 9.5 factors.py + tests | ⏳ | | |
+| 2026-04-20 | 9.6 purged_cv.py + tests | ⏳ | | |
+| 2026-04-20 | 9.7 ltr_model.py + tests | ⏳ | | |
+| 2026-04-20 | 9.8 pipeline.py + e2e tests | ⏳ | | |
+| 2026-04-20 | 9.9 panel_pipeline/ inference | ⏳ | | |
+| 2026-04-20 | 9.10 main.py + config integration | ⏳ | | |
+| 2026-04-20 | Stage 1 acceptance run | ⏳ | | target mean-IC ≥ 0.08 |
+| | Shadow mode (2 weeks minimum) | ⏳ | | |
+| | Stage 1 promotion decision | ⏳ | | |
+| | Stage 2: NGBoost head | ⏳ | | |
+| | Stage 2 acceptance | ⏳ | | |
+| | Stage 3: fundamentals | ⏳ | | |
+| | Stage 3: optional second model | ⏳ | | |
 
 ---
 
