@@ -236,13 +236,11 @@ def _run_once_multi_pipeline(
     strategy_dir: Path,
     sell_only: bool,
 ) -> None:
-    """Create a PipelineContext and run the 3-job pipeline."""
-    _load_kernel(strategy_dir)  # ensure pipeline/ is importable
+    """Create RunnerAdapter + InferencePipeline and execute one trading cycle."""
+    _load_kernel(strategy_dir)  # ensure kernel/ is importable
 
-    from pipeline import Pipeline, PipelineContext          # noqa: PLC0415
-    from pipeline.jobs.data import DataJob                  # noqa: PLC0415
-    from pipeline.jobs.signals import SignalJob             # noqa: PLC0415
-    from pipeline.jobs.execution import ExecutionJob        # noqa: PLC0415
+    from kernel.pipeline import InferencePipeline, SellOnlyPipeline  # noqa: PLC0415
+    from adapters.runner import RunnerAdapter                          # noqa: PLC0415
 
     run_mode = "sell-only" if sell_only else "full"
     sep = "=" * 62
@@ -250,14 +248,12 @@ def _run_once_multi_pipeline(
     log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
-    ctx = PipelineContext(
-        config=config,
-        strategy_dir=strategy_dir,
-        sell_only=sell_only,
-        broker=broker,
-        models=models,
-    )
-    Pipeline([DataJob(), SignalJob(), ExecutionJob()]).run(ctx)
+    adapter  = RunnerAdapter(config, models, broker, strategy_dir, sell_only=sell_only)
+    pipeline = SellOnlyPipeline() if sell_only else InferencePipeline()
+
+    ctx = adapter.make_context()
+    pipeline.run(ctx)
+    adapter.commit(ctx)
 
 
 def run_once_multi(

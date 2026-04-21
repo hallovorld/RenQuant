@@ -1,7 +1,57 @@
 # renquant_103 Decision Logic Graph
-*Covers notebook simulation (cell 657a4a6c, streaming detect_regime) and LEAN (main.py OnData).*
+*Covers notebook simulation (cell 657a4a6c, streaming detect_regime), LEAN (main.py OnData), and live runner.*
 *Every branch, condition, and policy. Use this as the ground truth for alignment.*
-*Last updated: 2026-04-19 — LEAN parity fix: `_build_exit_params()` now passes `lt_hold_gate_days` and `lt_hold_min_gain` to `compute_exits()`; training cells extracted to `training/features.py`, `training/tournament.py`, `training/export.py`.*
+*Last updated: 2026-04-20 — comprehensive pipeline migration: kernel/pipeline/ (7 InferenceJob files) + adapters/lean.py + adapters/runner.py. LEAN main.py slimmed to ~160 lines. Live runner uses RunnerAdapter + InferencePipeline. All 566 tests pass.*
+
+---
+
+## Pipeline Architecture
+
+LEAN `OnData` and the live runner both execute via the same 7-job `InferencePipeline`:
+
+```
+LeanAdapter.make_context(data)         RunnerAdapter.make_context()
+         │                                      │
+         ▼                                      ▼
+ InferenceContext (populated with LEAN Portfolio / broker state + OHLCV)
+         │
+         ▼
+ InferencePipeline.run(ctx)
+ ┌──────────────────────────────────────────────────────────────────┐
+ │  1. RegimeJob      — detect_regime() → ctx.regime, ctx.confidence │
+ │  2. DrawdownJob    — circuit breaker → ctx.hwm, ctx.skip_buys     │
+ │  3. SellJob        — compute_exits() → ctx.exits                  │
+ │  4. BuyGatesJob    — market gates   → ctx.buy_blocked / bear_only │
+ │  5. CandidateJob   — score_artifact() → ctx.candidates            │
+ │  6. RankingJob     — score_candidates() → ctx.ranked              │
+ │  7. SelectionJob   — run_selection_loop() → ctx.orders            │
+ └──────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+ LeanAdapter.commit(ctx)               RunnerAdapter.commit(ctx)
+ (Liquidate / SetHoldings)             (broker.place_order / save live_state.json)
+```
+
+**Key files:**
+| File | Purpose |
+|------|---------|
+| `kernel/pipeline/context.py` | `InferenceContext` dataclass (~50 fields) |
+| `kernel/pipeline/pipeline.py` | `Job` ABC, `InferencePipeline`, `SellOnlyPipeline` |
+| `kernel/pipeline/jobs/regime.py` | `RegimeJob` |
+| `kernel/pipeline/jobs/drawdown.py` | `DrawdownJob` |
+| `kernel/pipeline/jobs/sell.py` | `SellJob` |
+| `kernel/pipeline/jobs/gates.py` | `BuyGatesJob` |
+| `kernel/pipeline/jobs/candidates.py` | `CandidateJob` |
+| `kernel/pipeline/jobs/ranking.py` | `RankingJob` |
+| `kernel/pipeline/jobs/selection.py` | `SelectionJob` |
+| `adapters/lean.py` | `LeanAdapter` — LEAN ↔ context bridge |
+| `adapters/runner.py` | `RunnerAdapter` — live runner ↔ context bridge |
+| `main.py` | ~160-line LEAN entry point (Initialize + OnData) |
+
+**Isolation rules:**
+- `kernel/` — no `common/` imports; stdlib + numpy + pandas only (Docker-safe)
+- `adapters/` — can import `kernel/` and broker libs; not used inside LEAN Docker
+- `main.py` — imports `kernel/` and `adapters/lean.py` only
 
 ---
 
@@ -332,40 +382,43 @@ When any sell fires:
 
 ---
 
-## NOTEBOOK vs LEAN: KEY ALIGNMENT POINTS
+## NOTEBOOK vs LEAN vs LIVE RUNNER: KEY ALIGNMENT POINTS
 
-| # | Policy | Notebook | LEAN | Verified |
-|---|--------|----------|------|----------|
-| 1 | Trailing stop uses peak_gain (HWM) | ✓ pos["high_price"] HWM | ✓ _position_high_watermarks | ✓ |
-| 2 | Stop-loss from entry price (not HWM) | ✓ (entry_price − price) / entry_price | ✓ same | ✓ |
-| 3 | Single-day loss gate uses prev_close | ✓ ohlcv.iloc[_idx-1] | ✓ _prev_closes[ticker] | ✓ |
-| 4 | min_hold resets streak to 0 | ✓ sell_streak[t]=0 under hold | ✓ continue skips streak | ✓ |
-| 5 | Consecutive sell streak (3 required) | ✓ CONSECUTIVE_SELLS=3 | ✓ _consecutive_sells_required | ✓ |
-| 6 | Transition window before BEAR branch | ✓ countdown check first | ✓ same order | ✓ |
-| 7 | BEAR: 1 defensive slot | ✓ BEAR_DEFENSIVE_SLOTS=1 | ✓ defensive_held>=1 → return | ✓ |
-| 8 | Velocity crash filter uses cumulative return | ✓ spy_now/spy_prev-1 | ✓ np.prod(1+r)-1 | ✓ |
-| 9 | SPY EMA50 uses ewm(span=50) | ✓ .ewm(span=50, adjust=False) | ✓ same | ✓ |
-| 10 | min_model_score is regime-aware rank-score filter | ✓ rp.get("min_model_score") on calibrated rank score | ✓ regime_params.get(...) on calibrated rank score | ✓ |
-| 11 | RS score = stock_20d − etf_20d | ✓ pct_change(20); notebook fetches WATCHLIST ∪ sector_etf_map.values() ∪ {SPY} so all ETFs available | ✓ _compute_rs_score | ✓ live runner fixed 2026-04-17: now fetches sector ETFs in addition to watchlist |
-| 12 | Ranking: data-driven blend on rank_score + RS | ✓ w_rank/w_rs from config | ✓ w_rank/w_rs from config | ✓ |
-| 13 | Tiered thresholds: tier_idx = min(slots_filled, N-1) | ✓ | ✓ | ✓ |
-| 14 | Wash-sale checked in candidate scan AND selection | ✓ scan + selection | ✓ scan + selection | ✓ |
-| 15 | Sector guard counts held + already_selected_today | ✓ held+selected | ✓ held_tickers (appended) | ✓ |
-| 16 | Correlation guard checks held + already_selected | ✓ | ✓ | ✓ |
-| 17 | cash_reserve_pct scaled by regime_confidence before invest calc | ✓ port_val × reserve × confidence | ✓ _rp("cash_reserve_pct") | ✓ |
-| 18 | max_position_pct scaled by regime_confidence | ✓ rp["max_position_pct"] × confidence | ✓ _rp("max_position_pct") | ✓ |
-| 19 | last_sell_date.pop() on re-buy | ✓ pop() clears clock | LEAN: does NOT pop; old entry stays but days>=30 makes check pass — functionally equivalent | ✓ |
-| 23 | Notebook uses streaming detect_regime() per bar | ✓ RegimeState persists across bars; no precomputed series | LEAN: same kernel.detect_regime() | ✓ |
-| 24 | BEAR hard override (vol/return threshold) | ✓ ann_vol > 0.35 or 20d_ret < -0.08 → BEAR | ✓ same in kernel/regime.py detect_regime() | ✓ |
-| 25 | Artifacts in artifacts/ subdir | ✓ STRATEGY_DIR/artifacts/ | DataJob checks artifacts/ first, falls back to root | ✓ |
-| 26 | LT tax-aware hold gate | ✓ lt_hold_gate_days=330, lt_hold_min_gain=0.10 in exit_params | ✓ compute_exits EXIT 4a | ✓ |
-| 20 | entry_dates recorded on buy | ✓ | ✓ entry_times[ticker] | ✓ |
-| 21 | EXIT 3 max_hold_days enforced | ✓ days_held >= max_hold_days in sell loop | ✓ days_held >= max_hold_days | ✓ live runner enforces max_hold between EXIT 2b and EXIT 4 | ✓ |
-| 22 | CHOPPY regime_confidence uses Hurst distance (not GMM) | ✓ (hurst_rev−H)/(hurst_rev−floor) | ✓ (hurst_rev−hurst)/(hurst_rev−floor) | ✓ hurst_rev read from config (default 0.52) |
+All three components now share the same `kernel/pipeline/` job implementations.
+LEAN uses `LeanAdapter` + `InferencePipeline`; live runner uses `RunnerAdapter` + `InferencePipeline`.
 
-**Deltas (row 14, 18):** Minor divergences; row 14 is belt-and-suspenders (both block). Live runner selection-loop wash-sale re-check was added in 2026-04-17 maintenance pass — now all three components (Notebook, LEAN, live runner) re-check wash-sale in the selection loop. Row 18 means LEAN
-sizes slightly smaller during low-confidence periods — this is intentional in LEAN (confidence scaling)
-but not replicated in the notebook which uses flat percentages.
+| # | Policy | Notebook | LEAN/Live (via kernel.pipeline) | Verified |
+|---|--------|----------|---------------------------------|----------|
+| 1 | Trailing stop uses peak_gain (HWM) | ✓ pos["high_price"] HWM | ✓ SellJob → compute_exits EXIT 1 | ✓ |
+| 2 | Stop-loss from entry price (not HWM) | ✓ (entry_price − price) / entry_price | ✓ SellJob → compute_exits EXIT 2 | ✓ |
+| 3 | Single-day loss gate uses prev_close | ✓ ohlcv.iloc[_idx-1] | ✓ SellJob sets hs.prev_close = ohlcv[-2] | ✓ |
+| 4 | min_hold resets streak to 0 | ✓ sell_streak[t]=0 under hold | ✓ SellJob → compute_exits EXIT 4b | ✓ |
+| 5 | Consecutive sell streak (3 required) | ✓ CONSECUTIVE_SELLS=3 | ✓ SellJob exit_params["consecutive_sell_signals"] | ✓ |
+| 6 | Transition window before BEAR branch | ✓ countdown check first | ✓ BuyGatesJob Gate 1 before Gate 2 | ✓ |
+| 7 | BEAR: 1 defensive slot | ✓ BEAR_DEFENSIVE_SLOTS=1 | ✓ SelectionJob limits open_slots=1 in bear_only | ✓ |
+| 8 | Velocity crash filter uses cumulative return | ✓ spy_now/spy_prev-1 | ✓ BuyGatesJob → check_spy_velocity_crash | ✓ |
+| 9 | SPY EMA50 uses ewm(span=50) | ✓ .ewm(span=50, adjust=False) | ✓ BuyGatesJob → check_spy_ema_trend | ✓ |
+| 10 | min_model_score is regime-aware rank-score filter | ✓ rp.get("min_model_score") on calibrated rank score | ✓ CandidateJob reads regime_p["min_model_score"] | ✓ |
+| 11 | RS score = stock_20d − etf_20d | ✓ pct_change(20) | ✓ CandidateJob → compute_relative_strength | ✓ |
+| 12 | Ranking: data-driven blend on rank_score + RS | ✓ w_rank/w_rs from config | ✓ RankingJob reads ranking.blend_weights | ✓ |
+| 13 | Tiered thresholds: tier_idx = min(slots_filled, N-1) | ✓ | ✓ SelectionJob → run_selection_loop | ✓ |
+| 14 | Wash-sale checked in candidate scan AND selection | ✓ scan + selection | ✓ CandidateJob + SelectionJob both check | ✓ |
+| 15 | Sector guard counts held + already_selected_today | ✓ held+selected | ✓ SelectionContext.held_tickers (appended) | ✓ |
+| 16 | Correlation guard checks held + already_selected | ✓ | ✓ SelectionJob → passes_correlation_guard | ✓ |
+| 17 | cash_reserve_pct scaled by regime_confidence | ✓ port_val × reserve × confidence | ✓ SelectionJob: reserve_pct × ctx.confidence | ✓ |
+| 18 | max_position_pct scaled by regime_confidence | ✓ rp["max_position_pct"] × confidence | ✓ SelectionJob: max_pct × ctx.confidence | ✓ |
+| 19 | last_sell_date.pop() on re-buy | ✓ pop() clears clock | ✓ RunnerAdapter.commit() pops on buy | ✓ |
+| 20 | entry_dates recorded on buy | ✓ | ✓ commit() in both adapters sets entry_dates | ✓ |
+| 21 | EXIT 3 max_hold_days enforced | ✓ days_held >= max_hold_days in sell loop | ✓ SellJob → compute_exits EXIT 3 | ✓ |
+| 22 | CHOPPY regime_confidence uses Hurst distance (not GMM) | ✓ (hurst_rev−H)/(hurst_rev−floor) | ✓ RegimeJob → detect_regime → compute_regime_confidence | ✓ |
+| 23 | Streaming detect_regime() per bar (RegimeState persists) | ✓ RegimeState across bars | ✓ RegimeJob reads/writes ctx.regime_state | ✓ |
+| 24 | BEAR hard override (vol/return threshold) | ✓ ann_vol > 0.35 or 20d_ret < -0.08 → BEAR | ✓ RegimeJob → detect_regime in kernel/regime.py | ✓ |
+| 25 | Artifacts in artifacts/ subdir | ✓ STRATEGY_DIR/artifacts/ | ✓ RunnerAdapter.make_context() / lean adapter | ✓ |
+| 26 | LT tax-aware hold gate | ✓ lt_hold_gate_days=330, lt_hold_min_gain=0.10 | ✓ SellJob → _build_exit_params passes both keys | ✓ |
+
+**Post-migration note (2026-04-20):** LEAN `main.py` is now ~160 lines (down from 576). All decision
+logic lives in `kernel/pipeline/jobs/` and is shared by LEAN and the live runner via adapters.
+Notebook remains independent Python simulation code that mirrors the same kernel functions.
 
 **CHOPPY max_hold_days raised 23 → 40** to accommodate min_hold_days=30 + 3 consecutive sell signals (otherwise model-sell is structurally unreachable in CHOPPY with short max_hold).
 
