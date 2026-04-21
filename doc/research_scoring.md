@@ -1,6 +1,6 @@
 # Research: Per-Stock Modeling & Calibrated Scoring
 
-Written 2026-04-20. Draft for discussion — not a commitment to implement.
+Written 2026-04-20. Revised 2026-04-20 after architectural review.
 
 This doc evaluates the current renquant_103 modelling + scoring stack and researches
 whether we can do meaningfully better. The `rank_score` this stack produces is what
@@ -16,23 +16,34 @@ so its quality caps the whole strategy's ceiling.
    calibration that makes scores cross-comparable is fitted on only the stock's
    own ~500 OOS rows. Extreme tickers fall back to a constant probability.
 2. Nothing fancy is used. Calibration is **isotonic → Platt → constant base-rate**
-   by sample size. Expected-return regression (used by rotation) is **isotonic →
-   OLS → constant**. All per-stock, no cross-learning.
+   by sample size. Expected-return regression is **isotonic → OLS → constant**.
+   All per-stock, no cross-learning. Separately, 5-day labels overlap ~80%
+   day-over-day and we don't correct for it in either training or evaluation —
+   the effective sample size is N/5, not N.
 3. The biggest levers, ranked by expected lift vs. engineering cost:
-   - **(A) Cross-sectional panel model with learning-to-rank objective** — pool all
-     tickers into one model; train with `rank:pairwise` / `lambdarank`, group=date.
-     Solves data starvation *and* gives you cross-sectional comparability for free.
-   - **(B) Purged K-fold CV with embargo** for tournament evaluation — the current
-     single fixed split (now rolling 2y) is a noisy estimator.
-   - **(C) Stacking meta-learner** on top of the 4 existing model heads — gains
-     10–30% over best-single-model in typical Kaggle quant.
-   - **(D) Distributional output** (e.g. NGBoost) so `rank_score` carries
-     uncertainty, not just a point probability. Enables confidence-aware sizing.
-   - **(E) Cross-sectional factor features** (size, value, momentum, quality) —
-     pure alpha additions, orthogonal to technicals.
-4. My concrete recommendation: **do (A) first.** It replaces the tournament, adds
-   no fundamental data dependency, and makes scores cross-comparable by construction.
-   Everything else can layer on top afterward.
+   - **(A) Cross-sectional panel model with LTR objective** — pool all tickers,
+     train with `rank:pairwise` / `lambdarank`, group=date. Solves data starvation
+     *and* makes scores cross-comparable by construction.
+   - **(B) Sample weighting by label concurrency** (AFML ch.4) — paired with (A),
+     prevents the tree from treating 5 overlapping rows as 5 independent samples.
+   - **(C) Beta-neutral, cross-sectionally Gaussianized labels** — residualize
+     forward return against SPY + sector ETF, then rank-normalize per date and
+     apply inverse-normal CDF. Kills the arbitrary 3%/5d threshold and removes
+     outlier chasing.
+   - **(D) Partial feature neutralization** (Numerai-style) on momentum/trend
+     features only. Forces the panel model to find idiosyncratic alpha rather
+     than collapse into a beta-tracker.
+   - **(E) Cross-sectional factor features** (size, value, quality, 12-1
+     momentum) — fundamental anchors that pure technicals lack.
+   - **(F) Purged K-fold CV with embargo** — replaces the current single-split
+     holdout with a distribution of OOS metrics.
+   - **(G) NGBoost for uncertainty** — `score = μ − λσ`; use σ as a sizing
+     multiplier, not as input to a Markowitz optimizer.
+4. Concrete recommendation: **Stage 1 ships (A)+(B)+(C)+(D)+(E)+(F) as a single
+   architectural shift**, trained **weekly** with daily calibration/inference.
+   Stacking meta-learners move to Stage 3 (or get killed if the panel + factors
+   already saturate). Tabular Q-learning is removed entirely. TFT / graph models
+   stay out of scope until the panel LTR baseline plateaus.
 
 ---
 
@@ -189,8 +200,10 @@ and thrown away at training time. Either wire them in or remove the code.
   XLU (vol ~12%). LLY clears 3% on noise alone; XLU rarely clears it.
 - Label distributions are skewed by ticker volatility, which means the per-stock
   model learns a different base rate of `label=1` for each ticker.
-- A volatility-normalised target (e.g. `forward_return / 20d_realised_vol`) would
-  make labels directly comparable.
+- Beyond volatility normalisation, the label also contains raw market beta (a
+  bull-market 3% move is common for everything); without neutralizing SPY /
+  sector beta, the model learns to predict market direction instead of
+  idiosyncratic outperformance.
 
 ### 2.8 No proper cross-validation (medium impact)
 
@@ -208,6 +221,29 @@ return) is computed but multiplied by zero in ranking. The recalibration script 
 finding it un-useful, which suggests it's a noisy duplicate of information already in
 the model score (`rel_mom_20d` was in features.py but not in feature_columns, and the
 relative-price target of the classifier already captures short-term relative perf).
+
+### 2.10 Overlapping-label training bias (high impact — missed in v1 of this doc)
+
+- 5-day forward-return labels overlap 80% between consecutive bars.
+- Trees don't know that `label_t` and `label_{t+1}` carry the same information —
+  they treat every row as independent. Effective N is N/5, not N.
+- This isn't just a CV concern (2.8). It biases **training**: splits that
+  happen to land on overlap regions look disproportionately "signal-rich", which
+  is why XGBoost + 200 trees + 500 rows is so prone to spurious structure.
+- Fix: weight each row inversely proportional to label concurrency on that date
+  (AFML ch.4). XGBoost and LightGBM both accept `sample_weight`. Cheap.
+
+### 2.11 Feature-level beta leakage (medium impact)
+
+- `rel_mom_20d`, `rel_mom_60d`, `trend`, `trend_long` all load on market/sector
+  beta. A panel LTR model handed these features will happily become a glorified
+  beta-tracker: the strongest in-sample signal is "stock followed SPY up the
+  most in the last 20 days, so rank it highest", which is zero alpha.
+- Mean-reversion features (RSI, BBP, Williams %R) don't have this problem — they
+  measure distance from equilibrium, which is already cross-sectional.
+- Fix: partial neutralization (Numerai-style) — regress momentum features
+  against sector momentum, feed residuals to the model. Only neutralize the
+  features that actually contain beta; leave mean-reversion indicators alone.
 
 ---
 
@@ -233,7 +269,7 @@ rank stocks against each other on the same day.
   calibration needed for ranking (you still need calibration if you want a
   probability, but for selection/rotation you just need the order).
 - Adding a new ticker costs zero training data problem. It inherits the shared
-  parameters.
+  parameters (subject to the minimum-history gate in 3.12).
 - Standard Kaggle stack for finance competitions (Jane Street, Numerai, the Two
   Sigma problems). Mean-IC of 0.10–0.15 is plausible; papers report Sharpe 1.5–2.0
   net-of-cost on US equities with this approach
@@ -259,9 +295,14 @@ def build_panel_frame(feature_frames, watchlist):
     group_sizes = panel.groupby("date").size().values
     return panel, group_sizes
 
-def train_panel_ltr(panel, group_sizes, feature_cols, label_col="label"):
+def train_panel_ltr(panel, group_sizes, feature_cols, label_col="label",
+                    sample_weight_col="w"):
     import xgboost as xgb
-    dtrain = xgb.DMatrix(panel[feature_cols], label=panel[label_col])
+    dtrain = xgb.DMatrix(
+        panel[feature_cols],
+        label=panel[label_col],
+        weight=panel[sample_weight_col],   # from 3.9
+    )
     dtrain.set_group(group_sizes)
     model = xgb.train(
         params={
@@ -282,13 +323,8 @@ descending. No per-stock calibration required for ordering; optionally apply one
 **global** calibrator fitted on all OOS rows (10× more data → isotonic fit much
 tighter).
 
-**Effort**: 2–3 days of work including:
-- New `build_panel_frame` + `train_panel_ltr` module.
-- Inference path that loads a single artifact and scores all candidates at once
-  (`kernel/panel_model.py` — lightweight json load + xgb.Booster.predict).
-- Keep current per-stock tournament alongside as a baseline; add a config flag
-  `ranking.model_type: "panel" | "per_stock"` to A/B.
-- A few tests for group construction and rank invariance.
+**Effort**: 2–3 days for the core, but Stage 1 bundles this with 3.9–3.12 so
+budget 5–6 days total.
 
 ### 3.2 Purged K-fold CV with embargo (high impact on model selection)
 
@@ -302,105 +338,104 @@ Reports the *distribution* of OOS Sharpe/IC per model, not a single noisy number
 ([Lopez de Prado, AFML ch.7](https://reasonabledeviations.com/notes/adv_fin_ml/);
 [skfolio CPCV impl](https://skfolio.org/generated/skfolio.model_selection.CombinatorialPurgedCV.html)).
 
-**Why valuable.** Tournament model selection becomes much less noisy. Currently, a
-random seed change can flip the winner between Classification and XGBoost; with
-5-fold purged CV averaging, the winner is more stable and reflects real skill
-rather than luck on a single OOS window.
+**Why valuable.** Model selection, hyperparameter tuning, and
+"is this actually improving?" decisions all become much less noisy.
 
-**Effort**: 1 day. Plug `skfolio.model_selection.CombinatorialPurgedCV` into
-`run_tournament`, loop folds, take mean-IC or mean-Sharpe as the selection score.
+**Effort**: 1 day. Plug `skfolio.model_selection.CombinatorialPurgedCV` into the
+panel training loop, mean-IC as the selection score.
 
-### 3.3 Stacking meta-learner (medium-high impact, low effort)
+### 3.3 Stacking meta-learner (demoted — Stage 3, if at all)
 
-**What.** Keep the 4 base models. Instead of `argmax(Sharpe)`, feed their 4
-predictions (`rank_score_cls`, `rank_score_ql`, `rank_score_xgb`, `rank_score_manual`)
-plus a few regime features (`regime`, `spy_20d_vol`, `hurst`) into a simple
-meta-learner (LightGBM with ~50 trees, or even a logistic regression). The
-meta-learner outputs the final `rank_score`.
+**What.** Feed multiple base-model predictions into a meta-learner.
 
-**Why.**
-- No model is always best. The tournament throws away information from the 3
-  losers. Stacking uses it.
-- In quant Kaggles, stacking 3–5 base models consistently adds 10–30% to IC over
-  best-single.
-- Regime features let the meta-learner implicitly pick "use XGBoost in CHOPPY,
-  QLearning in BULL_CALM" — current tournament makes a single static pick.
+**Why demoted from v1.** Stacking correlated base models (4 trees on the same
+feature set) mostly memorizes noise and adds IC lift of maybe ~5% while doubling
+the inference complexity. The real gains come from structurally orthogonal bases
+(microstructure, fundamentals-only tree, sentiment) — which we don't have yet.
+Revisit only if Stage 1 plateaus and we have a genuinely orthogonal second model.
 
-**Effort**: 1 day. Fit a LightGBM on `[base_model_scores] + [regime_features]` →
-`label`. Persist the meta-model. Score at inference = meta-model prediction.
+### 3.4 Distributional output via NGBoost + σ-aware scoring (medium impact, Stage 2)
 
-### 3.4 Distributional output via NGBoost (medium impact, medium effort)
-
-**What.** Replace XGBoost classifier + separate calibration with
-[NGBoost](https://arxiv.org/abs/1910.03225), which outputs the full parameters of
+**What.** [NGBoost](https://arxiv.org/abs/1910.03225) outputs the full parameters of
 a distribution (e.g. Normal(μ, σ)) over future returns. You get:
 - `E[R - SPY]` — what rotation needs, no separate ER regression.
 - `Var[R - SPY]` — uncertainty, unavailable today.
 - P(R > threshold) — analytically computed from the distribution, no calibration.
 
-Built on scikit-learn, similar runtime to sklearn GBM, published by Stanford ML group.
+**How to use σ** — and specifically, **what not to do**:
+- **Ranking/selection score**: `score = μ − λσ`, `λ ∈ [0.5, 1.5]`. Replaces
+  calibrated `rank_score`.
+- **Position sizing**: scale existing confidence-based `max_position_pct` by
+  `σ_p50 / σ_i`. High-uncertainty candidates get smaller allocations.
+- **Keep the greedy selector + correlation guard.** Don't build a
+  Markowitz / Black-Litterman optimizer for N=8 concurrent positions.
+  At that scale, mean-variance optimization chases corner solutions; the
+  covariance matrix is rank-deficient without aggressive regularization, and
+  once you regularize enough to get diversification, you've approximated what
+  the correlation guard already does. σ-in-score captures ~80% of the
+  uncertainty benefit for ~10% of the complexity.
 
-**Why.**
-- Unifies probability + expected-return + uncertainty into one head. Today these
-  are three separate fitted objects.
-- P(outperform) is computed from the predicted distribution, not from a post-hoc
-  calibration on tiny samples. Solves 2.3 (calibration fragility) for free.
-- Uncertainty → confidence-aware sizing: reduce `max_position_pct` when σ is high,
-  skip candidates whose Sharpe CI includes zero.
+**Effort**: 2 days. New `NGBoostPanelModel` class (supports the same API as
+XGBoost). Persistence via sklearn pickle or JSON schema. Test that the calibrated
+probability recovers correct base rates.
 
-**Effort**: 2 days. New `NGBoostPanelModel` class (could combine with 3.1 since
-ngboost supports the same API). Persistence is a simple pickle → JSON schema.
-Test that the calibrated probability recovers correct base rates.
+**Caveat**: NGBoost doesn't support rank objectives natively. If we go with 3.1
+(LTR), we keep LightGBM/XGBoost for ranking and use NGBoost only for the
+uncertainty/ER head. Two artifacts per panel, same features.
 
-Caveat: NGBoost doesn't support rank objectives natively. If we go with 3.1 (LTR),
-we'd keep LightGBM/XGBoost for ranking and use NGBoost only for the uncertainty/ER
-head. That's fine — two artifacts per model, both trained on the same panel.
-
-### 3.5 Cross-sectional factor features (medium impact, cheap)
+### 3.5 Cross-sectional factor features (promoted to Stage 1)
 
 **What.** Add per-date cross-sectional z-scores of:
 - Size (log market cap)
-- Value (earnings yield, book-to-price if we can pull from yfinance.info / OpenBB)
+- Value (earnings yield, book-to-price)
 - Quality (ROE, gross profitability)
 - Momentum (12m - 1m return)
 - Short-interest (if available)
 - Beta to SPY (rolling 60d)
 - Residual momentum (momentum orthogonal to SPY)
 
-The Fama-French / Carhart factor literature is clear these exposures have
-persistent risk premia. They're cheap to compute and orthogonal to pure technicals.
+**Why promoted.** LTR models *thrive* on cross-sectional comparisons. Technical
+indicators alone, even in a panel, are weak without fundamental anchors — they
+tell you what has happened to the price, not what the business is. The
+Fama-French / Carhart factor literature is clear these exposures have persistent
+risk premia, and at daily frequency stocks still trade on their factor
+exposures cross-sectionally.
 
-**Why.** Current features are purely technical/relative. The 5-day horizon is short
-enough that fundamentals don't dominate, but stocks do trade on their factor
-exposures even at daily frequency, especially cross-sectionally. Adds diversification
-to the feature set.
+**Effort**: 1–2 days. yfinance provides size + beta + 12-1 momentum. Fundamentals
+(earnings yield, quality) need OpenBB or quarterly statement caching. Even
+without full fundamentals, the technical factors alone (size, momentum, beta,
+residual momentum) are worth adding.
 
-**Effort**: 1–2 days depending on data source. yfinance provides enough for size +
-beta + momentum. Fundamentals (earnings yield) need OpenBB or quarterly statement
-caching.
+### 3.6 Beta-neutral, cross-sectionally Gaussianized labels (Stage 1)
 
-### 3.6 Volatility-normalised labels (low-medium impact, trivial)
+**What.** Pipeline:
+1. Compute `fwd_return_5d` per (ticker, date).
+2. Residualize against rolling 60d regression on `[SPY_return, sector_ETF_return]`.
+   **Purged** — the regression uses only data strictly before the current bar.
+3. Rank each date's cross-section of residual returns → `[0, 1]`.
+4. Apply inverse-normal CDF → final label `~ N(0, 1)` per date.
 
-**What.** Change label from `fwd_return > 0.03` to `fwd_return / realised_vol > k`.
-Same k across tickers. LLY's 3% move is ~0.5σ; XLU's 3% move is ~1.5σ — they're not
-the same signal.
+**Why.** Two issues fixed at once:
+- Beta noise removed — the model can't trivially win by predicting market
+  direction (which is what the panel LTR would otherwise latch onto).
+- Heavy-tailed per-ticker returns are replaced by a Gaussian cross-section,
+  which is what tree-based LTR objectives consume best. No more threshold
+  tuning (3%/5d is arbitrary); the label is continuous and orderable.
 
-**Why.** Label distribution becomes comparable across tickers. Per-stock base rate
-of `y=1` stabilises. Downstream calibration works better. Also composable: if we
-later drop the threshold entirely and use regression, no change required.
+**Effort**: ~1 day, mostly care in purging the rolling beta regression (easy to
+leak current-bar data if you're not careful). **Supersedes** the simpler
+volatility-normalised-label idea from an earlier draft.
 
-**Effort**: 30 minutes. One line change in `features.py`.
+### 3.7 Learning-to-rank objective, even without panel model (backup option)
 
-### 3.7 Learning-to-rank objective, even without panel model (low effort, medium impact)
-
-If (3.1) is too invasive, a cheap halfway step: keep per-stock models but switch the
+If (3.1) is delayed, a cheap halfway step: keep per-stock models but switch the
 tournament's evaluation metric from Sharpe to **cross-sectional IC averaged over
 OOS bars**. Better model selection without touching the training code.
 
 **Effort**: 2 hours. Change `oos_sharpe` in tournament.py to an IC computation
 across tickers per bar, averaged.
 
-### 3.8 Graph / relational models (TFT-GNN, etc.) — out of scope for now
+### 3.8 Graph / relational models (TFT-GNN, etc.) — out of scope
 
 Recent papers (e.g. [TFT-GNN 2025](https://www.mdpi.com/2673-9909/5/4/176),
 [Multi-Sensor TFT 2025](https://www.mdpi.com/1424-8220/25/3/976)) report meaningful
@@ -408,61 +443,189 @@ lifts from attention models that explicitly represent asset relationships. These
 are 5–10× the engineering effort of (3.1) and require GPU or patient training.
 Revisit only after the panel LTR baseline is solid.
 
+### 3.9 Sample weighting for overlapping labels (Stage 1, paired with 3.1)
+
+**What.** Weight each training row inversely proportional to the number of
+concurrent active labels on that date:
+`w_i = 1 / mean(concurrency_i over bars where label_i is active)`, where
+`concurrency_i = count of labels whose 5-day forward window includes date i`.
+
+**Why.** Closes the training-time overlapping-label bias from 2.10. Without it,
+a panel model with 5-day labels across ~30 tickers treats 5 overlapping
+rows per bar per ticker as 5 independent samples, which massively over-counts the
+available information and drives overfitting.
+
+**Effort**: < 1 day. Precompute a `weight` column in the panel frame;
+XGBoost/LightGBM accept `sample_weight` in the DMatrix.
+
+### 3.10 Partial feature neutralization (Stage 1)
+
+**What.** For each date, regress each of `{rel_mom_20d, rel_mom_60d, trend,
+trend_long}` against sector-momentum features. Feed the **residuals** into the
+model. Keep mean-reversion indicators (RSI, BBP, Williams %R) un-neutralized —
+those signals *are* distance-from-equilibrium, and projecting out sector beta
+destroys what makes them alpha.
+
+**Why.** Tree ensembles naturally over-weight momentum / beta exposures because
+those are the most predictive features in-sample. Neutralizing forces the model
+to find idiosyncratic alpha. Numerai-style neutralization reports ~10–20% IC
+lift on crowded factor sets.
+
+**Effort**: < 1 day. Rolling linear regression per feature, per bar, computed
+once at panel construction.
+
+### 3.11 Handling newly-listed tickers in the panel (Stage 1 design pattern)
+
+The panel model collapses the v1 cold-start problem but introduces a new one:
+how do we handle tickers whose history is shorter than the longest lookback
+window (e.g. 252d for 12-1 momentum)?
+
+**Layered defence:**
+
+1. **Minimum-history gate** (hard floor): a ticker enters the panel only after
+   252 trading days of OHLCV. Below that, it stays out of the candidate pool
+   entirely — no buys. Longest-horizon factors are unreliable below that.
+2. **Missingness indicators**: for each feature that can be NaN on young
+   tickers, emit a binary `{feature}_is_missing` column. Trees learn the
+   "new-ticker" pattern as its own regime.
+3. **Sector-median imputation for fundamentals**: for missing factor features
+   (P/E, earnings yield, quality), fill with the date's sector-bucket median
+   — not global mean/median. A missing P/E on a live ticker almost always
+   means "unreleased yet, probably close to peers", not zero.
+4. **NaN-native tree defaults**: XGBoost and LightGBM learn optimal default
+   split directions for NaN; we don't pre-impute technicals at all.
+5. **Sample-weight decay on young history**: `w_early = min(1, history_days/504)`,
+   stacked multiplicatively on top of 3.9's concurrency weight. Prevents
+   "every IPO looks like AVGO in year 1" bias.
+6. **Expanding-window neutralization warmup**: for the first year past the 252d
+   gate, the neutralization regression (3.10) uses an expanding window from
+   listing date, not a rolling 252d — a ticker newly past the gate has zero
+   lookback for its own residuals.
+
+**What to avoid.**
+- Cross-sectional rank imputation on the *feature itself* (e.g. fill missing
+  feature with 0.5 after rank-normalization) — creates artificial clustering
+  at the median that trees latch onto as a spurious signal.
+- Hierarchical Bayesian partial pooling — statistically cleanest approach, but
+  the implementation and debugging cost dwarfs the expected lift at our scale.
+
+**Effort**: ~1 day bundled with panel feature construction.
+
 ---
 
 ## 4. What I'd ship, in order
 
-**Stage 1 — "better foundations"** (highest lift, ~4–5 days total):
-1. **Switch tournament selection metric from Sharpe to IC** (3.7) — 2 hours.
-2. **Add purged K-fold CV** around tournament (3.2) — 1 day.
-3. **Replace tournament with cross-sectional panel LTR model** (3.1) — 2–3 days.
-   Keep per-stock as a fallback via config flag so we can A/B.
-4. **Volatility-normalised labels** (3.6) inside 3.1 — trivial.
+**Stage 1 — "panel rewrite"** (~5–6 days, single atomic migration):
 
-At this point we should see measurable IC improvement and much more stable
-model-selection behaviour.
+Ship all of the following together. They're mutually reinforcing; skipping one
+weakens the rest.
 
-**Stage 2 — "uncertainty + stacking"** (~3 days):
-5. **Stacking meta-learner** over current heads + regime features (3.3) — 1 day.
-6. **NGBoost for ER + uncertainty head** alongside LTR ranker (3.4) — 2 days.
+1. **Cross-sectional panel LTR model** (3.1) replacing per-stock tournament.
+   `xgb.rank:pairwise`, `group_id = date`. Single JSON artifact.
+2. **Sample weighting by label concurrency** (3.9). Precomputed in the panel frame.
+3. **Beta-neutral, cross-sectionally Gaussianized labels** (3.6). Purged rolling
+   beta regression + rank + inverse-normal CDF.
+4. **Partial feature neutralization** (3.10) on momentum/trend features only.
+5. **Cross-sectional factor features** (3.5). At minimum: size, 12-1 momentum,
+   rolling 60d beta, residual momentum. Fundamentals (P/E, ROE) if OpenBB is
+   already plumbed, otherwise deferred to 3.5 follow-up.
+6. **Newly-listed ticker imputation** (3.11) — 252d gate, missingness indicators,
+   sector-median fill, sample-weight decay.
+7. **Purged K-fold CV with embargo** (3.2) for hyperparameter tuning and
+   "is this better?" decisions. Use IC (not Sharpe) as the selection metric.
+8. **Retraining cadence change**: **weekly** full panel refit (Sunday cron),
+   **daily** score calibration + blend-weight recalibration. Frozen weights
+   between weekly refits. Daily panel refits create excessive turnover and
+   waste compute.
 
-**Stage 3 — "alpha expansion"** (~1 week, ongoing):
-7. **Cross-sectional factor features** (3.5).
-8. (Speculative) TFT / graph model if Stage 1+2 plateaus.
+Keep the per-stock tournament code path alongside as a `ranking.model_type`
+config flag so we can A/B — but flip the live default to the panel model once
+OOS IC beats the per-stock baseline for 4 consecutive weekly rebuilds.
+
+**Stage 2 — "uncertainty head"** (~2–3 days):
+9. **NGBoost panel model for μ, σ** (3.4). Second artifact, same features.
+10. **Replace calibrated `rank_score` with `μ − λσ`** for selection.
+11. **σ-based position-size multiplier** inside the sizing step.
+
+Keep the greedy selector + correlation guard. No Markowitz, no Black-Litterman.
+
+**Stage 3 — "alpha expansion + optional stacking"** (timeline open):
+12. **Full fundamental factor set** — quality, value, short interest, analyst
+    revisions (3.5 follow-up). Requires OpenBB or similar data plumbing.
+13. **Orthogonal second model** — microstructure (intraday), sentiment
+    (news/SEC filings), or fundamentals-only tree. Only *after* we have one,
+    consider stacking (3.3). Stacking four trees on the same feature set is
+    theater.
+14. **(Speculative) TFT / graph model** (3.8) if Stage 1+2+3 plateaus.
 
 ---
 
 ## 5. What *not* to do
 
-- **Don't add more model types to the tournament**. Five/six isn't better than
+- **Don't add more model types to the tournament.** Five/six isn't better than
   four — with ~500 rows each, the variance in model selection swamps the diversity
   gain. Fix the data problem first (3.1).
-- **Don't hand-tune `buy_threshold`/`sell_threshold` per stock**. These live in
+- **Don't keep tabular Q-learning** after the panel migration. Discretizing the
+  state space is a massive information loss; with the panel fixing data
+  starvation, the Q-table's value proposition is gone. Remove the code path.
+- **Don't build a Markowitz / Black-Litterman optimizer for N=8 positions.**
+  Covariance estimation is rank-deficient at that scale; unconstrained MV
+  concentrates into 2–3 names; constrained MV approximates what the
+  correlation guard already does. Use NGBoost σ in the scoring function and
+  the sizing multiplier instead.
+- **Don't stack the existing four models.** They share a feature set; a meta-learner
+  will just memorize noise. Stacking only pays off when the base models are
+  structurally orthogonal.
+- **Don't skip the sample weighting** in Stage 1. It's the cheapest piece and
+  closes the biggest methodological hole (2.10). Panel LTR without concurrency
+  weights is a panel LTR overfit to 80%-overlap redundancy.
+- **Don't refit the panel daily.** Weekly refits with frozen weights between
+  refits is the industry standard. Daily panel refits waste compute and produce
+  noise-driven turnover.
+- **Don't hand-tune `buy_threshold`/`sell_threshold` per stock.** These live in
   `strategy_config.json → model_params` and are shared. If we want per-stock
   thresholds, derive them from score quantiles on calibration data, not by hand.
-- **Don't keep the `rs_score` blend channel "just in case"**. It's zero-weighted by
-  the daily recalibrator, which is evidence it's redundant. Either (a) remove it
-  to simplify, or (b) replace it with something that actually adds orthogonal
-  signal — residualised industry-relative momentum, short-interest change, or
-  analyst revisions. `norm(20d_return − sector_20d_return)` appears to carry no
-  information the model doesn't already have.
+  (Better: 3.6 Gaussianized labels remove the need for thresholds entirely.)
+- **Don't keep the `rs_score` blend channel "just in case".** It's zero-weighted
+  by the daily recalibrator — evidence it's redundant. Either remove it to
+  simplify, or replace it with something genuinely orthogonal (short-interest
+  change, analyst revisions, residualised industry-relative momentum).
 
 ---
 
-## 6. Open questions before implementation
+## 6. Resolved design decisions (post architectural review)
 
-These shape the priority list and I'd like your view:
+These were open questions in the v1 draft. Architectural-review discussion has
+closed them.
 
-1. **Compute budget**. Is GPU / multi-hour training acceptable? If yes, TFT /
-   Transformer options open up. If no, stick to CPU LightGBM/XGBoost panel.
-2. **Fundamental data**. Are you willing to pull from OpenBB / a paid source for
-   value & quality factors? Affects whether (3.5) is worth doing.
-3. **Retraining cadence**. Currently daily. If we move to a panel model, daily
-   full retrain might be overkill — weekly full + daily incremental is common.
-   Do you want the panel fit once a week and frozen, or refit daily?
-4. **A/B experimental setup**. Do we keep a "research" and "production" model
-   side-by-side with notebook-only comparisons, or swap the live pipeline once a
-   new approach beats the baseline on holdout?
+| Question | Decision | Reason |
+|----------|----------|--------|
+| Model architecture | Cross-sectional panel LTR (XGBoost/LightGBM) | Data starvation → panel; ranking objective → LTR |
+| Model-selection metric | Mean-IC (not Sharpe) | Ranking needs cross-sectional IC |
+| Label design | Beta-neutral + cross-sectionally Gaussianized | Kills threshold arbitrariness + beta noise |
+| Training-time overlap handling | AFML sample weighting | Effective N is N/5 without it |
+| Feature neutralization | Partial — momentum/trend only | Preserve mean-reversion signal |
+| Uncertainty | NGBoost for μ, σ, and `score = μ − λσ` | Unifies ER + P + σ into one head |
+| Portfolio optimization | Greedy + correlation guard + σ sizing multiplier | Markowitz overkill at N=8 |
+| Retraining cadence | Weekly panel refit + daily calibration | Balance fit freshness against turnover |
+| Q-learning | Removed | Panel renders it obsolete |
+| Stacking | Deferred to Stage 3, contingent on orthogonal base models | Correlated bases = noise memorization |
+
+## 7. Remaining open questions
+
+1. **Fundamental data source.** Stage 1 can launch with technicals-only + size
+   + beta + 12-1 momentum (all from yfinance). Moving to full fundamentals
+   (earnings yield, ROE, short interest) requires OpenBB or a paid source.
+   What's the budget?
+2. **Compute budget.** Weekly panel refit on ~15k rows × ~20 features is ~minutes
+   on CPU — no GPU needed for Stage 1+2. Stage 3 TFT/GNN would need GPU.
+3. **A/B experimental setup.** Keep notebook-only side-by-side comparisons until
+   the panel beats per-stock on OOS IC for 4 consecutive weekly rebuilds, then
+   flip the live default via `ranking.model_type` config flag?
+4. **Factor universe for the neutralization regression.** Sector ETFs are the
+   obvious choice (XLK, XLF, XLE, XLI, XLV, XLU, XLC, XLP, XLY, XLRE, XLB).
+   Do we also neutralize against a separate size factor (IWM / SPY spread),
+   or is that captured well enough by the size feature in 3.5?
 
 ---
 
@@ -487,8 +650,11 @@ Distributional regression:
 - [NGBoost Stanford ML Group page](https://stanfordmlgroup.github.io/projects/ngboost/)
 - [Forecasting Probability Distributions of Financial Returns with Deep Neural Networks (arXiv 2508.18921, 2025)](https://arxiv.org/html/2508.18921v1)
 
-Purged cross-validation:
+Purged cross-validation & sample weighting:
+- [Advances in Financial Machine Learning (López de Prado) — ch.4 sample weighting, ch.7 purged CV](https://reasonabledeviations.com/notes/adv_fin_ml/)
 - [Purged cross-validation — Wikipedia](https://en.wikipedia.org/wiki/Purged_cross-validation)
-- [Advances in Financial Machine Learning — Reasonable Deviations notes](https://reasonabledeviations.com/notes/adv_fin_ml/)
 - [skfolio CombinatorialPurgedCV](https://skfolio.org/generated/skfolio.model_selection.CombinatorialPurgedCV.html)
 - [QuantInsti — Cross Validation in Finance: Purging, Embargoing, Combinatorial](https://blog.quantinsti.com/cross-validation-embargo-purging-combinatorial/)
+
+Feature neutralization:
+- [Numerai — Feature Neutralization documentation](https://docs.numer.ai/numerai-tournament/models/feature-neutralization)
