@@ -15,23 +15,65 @@ from .context import InferenceContext, TickerInferenceContext
 log = logging.getLogger("kernel.pipeline")
 
 
+# ── Task ABC ───────────────────────────────────────────────────────────────────
+
+class Task(ABC):
+    """Atomic step within a Job or TickerJob.
+
+    run() returns True (or None) to continue the chain, False to stop early.
+    Short-circuit is used by gate tasks (e.g. EarningsFilterTask) to halt
+    downstream processing when a condition is not met.
+    """
+
+    @abstractmethod
+    def run(self, ctx) -> "bool | None": ...
+
+    @property
+    def name(self) -> str:
+        return type(self).__name__
+
+
 # ── Job ABCs ───────────────────────────────────────────────────────────────────
 
 class Job(ABC):
-    """Global pipeline stage — reads/writes InferenceContext."""
+    """Global pipeline stage — reads/writes InferenceContext.
 
-    @abstractmethod
-    def run(self, ctx: InferenceContext) -> None: ...
+    Override tasks() to define a sequential task chain.  The default run()
+    implementation drives the chain and respects False short-circuits.
+    Jobs with non-linear flow override run() directly.
+    """
+
+    @property
+    def tasks(self) -> "list[Task]":
+        return []
+
+    def run(self, ctx: InferenceContext) -> None:
+        for task in self.tasks:
+            if task.run(ctx) is False:
+                log.debug("[%s] chain stopped by %s", type(self).__name__, task.name)
+                return
 
     def should_skip(self, ctx: InferenceContext) -> bool:
         return False
 
 
 class TickerJob(ABC):
-    """Per-ticker pipeline stage — reads/writes TickerInferenceContext."""
+    """Per-ticker pipeline stage — reads/writes TickerInferenceContext.
 
-    @abstractmethod
-    def run(self, tc: TickerInferenceContext) -> None: ...
+    Override tasks() to define a sequential task chain; same short-circuit
+    semantics as Job.
+    """
+
+    @property
+    def tasks(self) -> "list[Task]":
+        return []
+
+    def run(self, tc: TickerInferenceContext) -> None:
+        for task in self.tasks:
+            if task.run(tc) is False:
+                log.debug("[%s|%s] chain stopped by %s",
+                          tc.ticker, type(self).__name__, task.name)
+                return
 
 
 # ── Parallel executor ──────────────────────────────────────────────────────────

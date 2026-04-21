@@ -98,6 +98,11 @@ class TickerInferenceContext:
     earnings_calendar: Any = None  # dict[ticker → list[str]] | None
     last_sell_dates: Any = None    # dict[ticker → date | None] | None
 
-    # Outputs (written by TickerSellJob or TickerCandidateJob)
+    # Intermediate task outputs — written by one task, read by the next
+    features: Any = None         # built feature DataFrame (shared by sell + candidate tasks)
+    model_action: str = "hold"   # scored model signal
+    rs_score: float = 0.0        # relative-strength score vs sector ETF
+
+    # Final outputs (written by TickerSellJob or TickerCandidateJob)
     exit_signal: Any = None      # ExitSignal | None
     candidate: Any = None        # CandidateResult | None

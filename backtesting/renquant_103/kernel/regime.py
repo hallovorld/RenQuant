@@ -27,6 +27,12 @@ class RegimeState:
     cusum_pos: float = 0.0
     cusum_neg: float = 0.0
 
+    # Intermediate layer outputs — written by individual tasks, read by later tasks
+    hurst: float = 0.5                       # Layer 1 output
+    hurst_regime: str = "AMBIGUOUS"          # MOMENTUM | REVERSION | AMBIGUOUS
+    gmm_probs: dict = field(default_factory=dict)  # Layer 3: P(regime) for each label
+    hard_bear: bool = False                  # BEAR hard-override flag
+
 
 # ── Layer 1: Hurst Exponent ───────────────────────────────────────────────────
 

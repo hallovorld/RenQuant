@@ -1,35 +1,32 @@
-"""RegimeJob — 3-layer regime detection (Hurst + CUSUM + GMM).
+"""RegimeJob — 3-layer regime detection (Hurst → CUSUM → GMM → BEAR-override → finalize).
 
-Reads:  ctx.spy_returns, ctx.ohlcv["SPY"], ctx.gmm, ctx.regime_state, ctx.config
-Writes: ctx.regime_state, ctx.regime, ctx.confidence, ctx.regime_counts
+Task chain:
+    HurstTask         Layer 1: rolling Hurst → state.hurst, state.hurst_regime
+    CUSUMTask         Layer 2: changepoint detection → state.countdown, state.in_transition
+    GMMTask           Layer 3: GMM posterior → state.gmm_probs
+    BEAROverrideTask  Hard vol/return override → state.hard_bear
+    RegimeFinalizeTask Resolve final regime + confidence → ctx.regime, ctx.confidence
 """
 from __future__ import annotations
 
-import numpy as np
-
-from ..context import InferenceContext
-from ..pipeline import Job
+from ..pipeline import Job, Task
+from ..tasks.regime import (
+    HurstTask, CUSUMTask, GMMTask, BEAROverrideTask, RegimeFinalizeTask,
+)
 
 
 class RegimeJob(Job):
-    """Detect market regime via Hurst + CUSUM + GMM and update ctx."""
+    """Detect market regime via Hurst + CUSUM + GMM and update ctx.
 
-    def run(self, ctx: InferenceContext) -> None:
-        from kernel.regime import detect_regime  # noqa: PLC0415
+    Task chain: Hurst → CUSUM → GMM → BEAROverride → Finalize
+    """
 
-        spy_df = ctx.ohlcv.get("SPY")
-        spy_returns = np.array(ctx.spy_returns)
-
-        ctx.regime_state = detect_regime(
-            spy_returns,
-            spy_df,
-            ctx.gmm,
-            ctx.regime_state,
-            ctx.config,
-        )
-
-        ctx.regime     = ctx.regime_state.regime
-        ctx.confidence = ctx.regime_state.confidence
-
-        # Update regime day-count telemetry
-        ctx.regime_counts[ctx.regime] = ctx.regime_counts.get(ctx.regime, 0) + 1
+    @property
+    def tasks(self) -> list[Task]:
+        return [
+            HurstTask(),
+            CUSUMTask(),
+            GMMTask(),
+            BEAROverrideTask(),
+            RegimeFinalizeTask(),
+        ]

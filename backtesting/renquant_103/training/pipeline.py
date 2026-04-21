@@ -113,10 +113,30 @@ class TickerTrainingContext:
     calibration: dict | None = None
 
 
-# ── Job ABCs ───────────────────────────────────────────────────────────────────
+# ── Task + Job ABCs ────────────────────────────────────────────────────────────
+
+class TrainingTask(ABC):
+    """Atomic step within a training Job.
+
+    run() returns None to continue the chain.  There is no short-circuit
+    (training tasks never discard work — they either succeed or raise).
+    """
+
+    @abstractmethod
+    def run(self, ctx: TrainingContext) -> None: ...
+
+    @property
+    def name(self) -> str:
+        return type(self).__name__
+
 
 class Job(ABC):
-    """Global training pipeline stage."""
+    """Global training pipeline stage.
+
+    Override tasks() to define a sequential TrainingTask chain — the default
+    run() drives the chain.  Jobs with non-linear flow (DataFetchJob,
+    CorrelationJob, etc.) override run() directly.
+    """
 
     @property
     def name(self) -> str:
@@ -125,8 +145,13 @@ class Job(ABC):
     def should_skip(self, ctx: TrainingContext) -> bool:
         return False
 
-    @abstractmethod
-    def run(self, ctx: TrainingContext) -> None: ...
+    @property
+    def tasks(self) -> "list[TrainingTask]":
+        return []
+
+    def run(self, ctx: TrainingContext) -> None:
+        for task in self.tasks:
+            task.run(ctx)
 
 
 class TickerJob(ABC):
@@ -235,28 +260,19 @@ class DataFetchJob(Job):
         print(f"DataFetchJob: loaded {len(ctx.ohlcv)} / {len(all_tickers)} tickers")
 
 
-class RegimeFitJob(Job):
-    """Fit Hurst + CUSUM + GMM and build daily regime series. Saves GMM artifact."""
-
-    def should_skip(self, ctx: TrainingContext) -> bool:
-        if ctx.final_regime is not None:
-            print("RegimeFitJob: final_regime already populated — skipping")
-            return True
-        return False
+class HurstCUSUMTask(TrainingTask):
+    """Compute rolling Hurst exponent and CUSUM → ctx.hurst_series, ctx.cusum_series."""
 
     def run(self, ctx: TrainingContext) -> None:
-        from training.regime import (
-            build_gmm_features, RegimeGMM,
-            rolling_hurst, rolling_cusum,
-        )
+        from training.regime import rolling_hurst, rolling_cusum  # noqa: PLC0415
 
         spy_df = ctx.spy_df
         if spy_df is None:
-            raise RuntimeError("RegimeFitJob: SPY not in ohlcv — run DataFetchJob first")
+            raise RuntimeError("HurstCUSUMTask: SPY not in ohlcv — run DataFetchJob first")
 
-        rcfg = ctx.config["regime"]
-
+        rcfg        = ctx.config["regime"]
         spy_returns = spy_df["close"].pct_change().dropna()
+
         ctx.hurst_series = rolling_hurst(spy_returns, window=rcfg["hurst_window"]).dropna()
         ctx.cusum_series = rolling_cusum(
             spy_returns,
@@ -266,6 +282,20 @@ class RegimeFitJob(Job):
         )
         ctx.changepoint_dates = ctx.cusum_series[ctx.cusum_series].index
 
+        print(f"HurstCUSUMTask: CUSUM detected {len(ctx.changepoint_dates)} changepoints")
+        print(f"HurstCUSUMTask: Hurst {ctx.hurst_series.min():.3f}–"
+              f"{ctx.hurst_series.max():.3f} (mean={ctx.hurst_series.mean():.3f})")
+
+
+class GMMFitTask(TrainingTask):
+    """Fit GMM on SPY features and predict regime labels + probs → ctx.gmm."""
+
+    def run(self, ctx: TrainingContext) -> None:
+        from training.regime import build_gmm_features, RegimeGMM  # noqa: PLC0415
+
+        spy_df = ctx.spy_df
+        rcfg   = ctx.config["regime"]
+
         gmm_features = build_gmm_features(
             spy_df, vol_window=20, hurst_window=rcfg["hurst_window"]
         )
@@ -273,11 +303,20 @@ class RegimeFitJob(Job):
         gmm.fit(gmm_features)
         ctx.gmm = gmm
 
+        # Stash raw GMM outputs as scratch for RegimeCombineTask
         regime_labels, regime_probs = gmm.predict(gmm_features)
+        ctx._gmm_labels = regime_labels  # noqa: SLF001
+        ctx._gmm_probs  = regime_probs   # noqa: SLF001
 
+
+class RegimeCombineTask(TrainingTask):
+    """Combine Hurst + CUSUM + GMM + hard-BEAR rule → ctx.final_regime, ctx.final_regime_conf."""
+
+    def run(self, ctx: TrainingContext) -> None:
         BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR = (
             "BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"
         )
+        rcfg         = ctx.config["regime"]
         hurst_trend  = rcfg["hurst_trending_threshold"]
         hurst_rev    = rcfg["hurst_reversion_threshold"]
         vol_window   = rcfg["vol_realized_window"]
@@ -285,10 +324,14 @@ class RegimeFitJob(Job):
         bear_ret_thr = rcfg["bear_return_threshold"]
         choppy_floor = rcfg.get("choppy_hurst_floor", 0.20)
 
+        spy_returns = ctx.spy_df["close"].pct_change().dropna()
         spy_20d_vol = spy_returns.rolling(vol_window).std() * np.sqrt(252)
         spy_20d_ret = spy_returns.rolling(vol_window).sum()
 
-        common_idx = ctx.hurst_series.index.intersection(regime_labels.index)
+        regime_labels = ctx._gmm_labels  # noqa: SLF001
+        regime_probs  = ctx._gmm_probs   # noqa: SLF001
+
+        common_idx        = ctx.hurst_series.index.intersection(regime_labels.index)
         final_regime      = pd.Series(index=common_idx, dtype=str)
         final_regime_conf = pd.Series(index=common_idx, dtype=float)
 
@@ -296,8 +339,7 @@ class RegimeFitJob(Job):
             h          = ctx.hurst_series.loc[dt]
             gmm_r      = regime_labels.loc[dt]
             gmm_bear_p = regime_probs.loc[dt].get(BEAR, 0.0)
-
-            base = BULL_CALM if h > hurst_trend else (CHOPPY if h < hurst_rev else None)
+            base       = BULL_CALM if h > hurst_trend else (CHOPPY if h < hurst_rev else None)
 
             vol_today = float(spy_20d_vol.loc[dt]) if dt in spy_20d_vol.index else 0.0
             ret_today = float(spy_20d_ret.loc[dt]) if dt in spy_20d_ret.index else 0.0
@@ -320,18 +362,38 @@ class RegimeFitJob(Job):
         ctx.final_regime      = final_regime
         ctx.final_regime_conf = final_regime_conf
 
-        print(f"RegimeFitJob: CUSUM detected {len(ctx.changepoint_dates)} changepoints")
-        print(f"RegimeFitJob: Hurst {ctx.hurst_series.min():.3f}–"
-              f"{ctx.hurst_series.max():.3f} (mean={ctx.hurst_series.mean():.3f})")
-        print("RegimeFitJob: Final regime distribution:")
+        print("RegimeCombineTask: Final regime distribution:")
         print(final_regime.value_counts().to_string())
 
-        if ctx.strategy_dir:
-            artifacts_dir = ctx.strategy_dir / "artifacts"
-            artifacts_dir.mkdir(exist_ok=True)
-            gmm_path = artifacts_dir / "spy-gmm-regime.json"
-            gmm.save(gmm_path)
-            print(f"RegimeFitJob: GMM artifact saved → {gmm_path}")
+
+class RegimeSaveTask(TrainingTask):
+    """Save the GMM artifact to disk."""
+
+    def run(self, ctx: TrainingContext) -> None:
+        if not ctx.strategy_dir:
+            return
+        artifacts_dir = ctx.strategy_dir / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        gmm_path = artifacts_dir / "spy-gmm-regime.json"
+        ctx.gmm.save(gmm_path)
+        print(f"RegimeSaveTask: GMM artifact saved → {gmm_path}")
+
+
+class RegimeFitJob(Job):
+    """Fit Hurst + CUSUM + GMM and build daily regime series. Saves GMM artifact.
+
+    Task chain: HurstCUSUM → GMMFit → RegimeCombine → RegimeSave
+    """
+
+    def should_skip(self, ctx: TrainingContext) -> bool:
+        if ctx.final_regime is not None:
+            print("RegimeFitJob: final_regime already populated — skipping")
+            return True
+        return False
+
+    @property
+    def tasks(self) -> list[TrainingTask]:
+        return [HurstCUSUMTask(), GMMFitTask(), RegimeCombineTask(), RegimeSaveTask()]
 
 
 class FeatureJob(Job):
