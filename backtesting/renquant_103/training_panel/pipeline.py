@@ -14,7 +14,15 @@ from typing import Any
 import pandas as pd
 
 from .context import PanelTrainingContext
-from .pp_panel_training import PanelTrainingPipeline
+from .pp_panel_training import (
+    SectorMomentumTask,
+    PanelFeatureJob,
+    PanelAssemblyJob,
+    PanelModelJob,
+    TickerPanelContext,
+    TickerPanelNeutralizeJob,
+    TickerPanelFactorJob,
+)
 
 
 def train_panel_model(
@@ -30,31 +38,25 @@ def train_panel_model(
 ) -> dict:
     """Legacy signature — preserved for existing callers/tests.
 
-    Internally builds a PanelTrainingContext with the inputs already
-    prepared by the caller (feature frames already built, OHLCV already
-    fetched) and runs the full PanelTrainingPipeline starting at
-    PanelSectorMomentumJob (DataFetchJob skipped because ohlcv is populated).
-
-    Because the caller already built `feature_frames` (pre-neutralize),
-    we also skip TickerPanelFeatureJob by seeding the per-ticker context
-    outputs directly — see _SeedFeatures below.
+    Inputs are already-prepared (feature frames built, OHLCV fetched) so
+    we skip the fetch task and seed the per-ticker outputs, then run the
+    remaining Jobs through the pipeline.
     """
     ctx_ohlcv = dict(ohlcv)
     benchmark = config.get("benchmark", "SPY")
     ctx_ohlcv[benchmark] = spy_ohlcv
 
     panel_cfg = dict(config.get("panel_ltr", {}))
-    # Surface legacy top-level knobs under panel_ltr.* for the new jobs
+    # Surface legacy top-level knobs under panel_ltr.* for the new tasks
     for k in ("lookahead_days", "beta_window", "min_history_days",
               "age_warmup_days", "cv_n_splits", "cv_embargo_days",
               "num_boost_round", "neutralize_features", "nan_prone_cols",
               "xgb_params", "training_notes"):
         if k in config and k not in panel_cfg:
             panel_cfg[k] = config[k]
+    panel_cfg["artifact_path"] = str(Path(out_path))
     merged_config = dict(config)
     merged_config["panel_ltr"] = panel_cfg
-    if "artifact_path" not in panel_cfg:
-        panel_cfg["artifact_path"] = str(out_path)
 
     ctx = PanelTrainingContext(
         config=merged_config,
@@ -64,24 +66,13 @@ def train_panel_model(
         ticker_sectors=dict(ticker_sectors),
         listing_dates=listing_dates,
     )
-    # Seed pre-built per-ticker features so TickerPanelFeatureJob is a no-op
     ctx.feature_frames = dict(feature_frames)
 
-    # Force the exact out_path the caller asked for — no artifacts/ redirect
-    _requested_out = Path(out_path)
-    panel_cfg["artifact_path"] = str(_requested_out)
+    # Phase 1: OHLCV already loaded → run sector momentum only
+    SectorMomentumTask().run(ctx)
 
-    # Run the new orchestrator but skip data fetch / seeded feature pass
-    from .pp_panel_training import (
-        PanelSectorMomentumJob, PanelFeatureJob, PanelFactorZScoreJob,
-        PanelLabelsJob, PanelAssemblyJob, PanelCVJob, PanelFitExportJob,
-        TickerPanelContext, TickerPanelNeutralizeJob, TickerPanelFactorJob,
-        run_panel_ticker_parallel, _run_panel_ticker_chain,
-    )
-
-    PanelSectorMomentumJob().run(ctx)
-
-    # Replicate PanelFeatureJob but skip the Feature step (frames already built)
+    # Phase 2: skip per-ticker Feature step (frames already built) but run
+    # Neutralize + Factor in parallel to stay aligned with production concurrency.
     ticker_ctxs = [
         TickerPanelContext(
             ticker=t, ohlcv=ctx.ohlcv, sector_momentum=ctx.sector_momentum,
@@ -92,15 +83,15 @@ def train_panel_model(
     for tc in ticker_ctxs:
         tc.feature_frame = ctx.feature_frames[tc.ticker]
 
-    # Parallel Neutralize + Factor
-    def _chain(tc: TickerPanelContext):
-        TickerPanelNeutralizeJob().run(tc)
-        TickerPanelFactorJob().run(tc)
-
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import os
     n_workers = max(1, (os.cpu_count() or 4) - 2)
     n_workers = min(n_workers, max(1, len(ticker_ctxs)))
+
+    def _chain(tc: TickerPanelContext):
+        TickerPanelNeutralizeJob().run(tc)
+        TickerPanelFactorJob().run(tc)
+
     with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="panel-wrap") as ex:
         futs = [ex.submit(_chain, tc) for tc in ticker_ctxs]
         for f in as_completed(futs):
@@ -115,10 +106,8 @@ def train_panel_model(
         if tc.raw_factor_frame is not None
     }
 
-    PanelFactorZScoreJob().run(ctx)
-    PanelLabelsJob().run(ctx)
+    # Phase 3 + 4: assembly + model via the Job chain
     PanelAssemblyJob().run(ctx)
-    PanelCVJob().run(ctx)
-    PanelFitExportJob().run(ctx)
+    PanelModelJob().run(ctx)
 
     return ctx.summary

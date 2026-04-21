@@ -1,31 +1,31 @@
 """PanelTrainingPipeline — parallel panel-LTR training pipeline for renquant_103.
 
 Mirrors the Job/Task/TickerJob architecture used by
-kernel/pipeline/pp_training.py, but with panel-specific stages::
+kernel/pipeline/pp_training.py: each logical phase is one Job, with
+atomic steps expressed as Tasks chained inside it.
 
-    Phase 1  Global (sequential)
-      PanelDataFetchJob          fetch watchlist + SPY + sector ETF OHLCV
-      PanelSectorMomentumJob     compute sector-ETF momentum frames once
+Job structure::
 
-    Phase 2  Per-ticker parallel  (ThreadPoolExecutor, one TickerPanelContext each)
-      TickerPanelFeatureJob      reuse training.features.build_training_features
-      TickerPanelNeutralizeJob   residualize momentum/trend vs sector
-      TickerPanelFactorJob       raw factor bundle (size/mom_12_1/beta/resid_mom)
+    PanelDataJob            (global, sequential tasks)
+      ├─ FetchOHLCVTask
+      └─ SectorMomentumTask
 
-    Phase 3  Global (sequential)
-      PanelFactorZScoreJob       cross-sectional z-score per date
-      PanelLabelsJob             forward returns → residualize → Gaussianize
-      PanelAssemblyJob           build panel DataFrame + group_sizes
-      PanelCVJob                 purged K-fold Spearman IC
-      PanelFitExportJob          final fit + save JSON artifact
+    PanelFeatureJob         (orchestrator — parallel per-ticker chain)
+      └─ run_panel_ticker_parallel(
+              TickerPanelFeatureJob →
+              TickerPanelNeutralizeJob →
+              TickerPanelFactorJob
+         )
 
-Usage::
+    PanelAssemblyJob        (global, sequential tasks)
+      ├─ FactorZScoreTask
+      ├─ LabelsTask
+      └─ BuildPanelTask
 
-    ctx = PanelTrainingContext(config=CONFIG, watchlist=wl, ohlcv=ohlcv,
-                               sector_etf_ohlcv=sec_etfs,
-                               ticker_sectors=sector_map)
-    PanelTrainingPipeline().run(ctx)
-    # ctx.summary contains oos_mean_ic, artifact_path, feature_cols, ...
+    PanelModelJob           (global, sequential tasks)
+      ├─ CrossValidateTask
+      ├─ FinalFitTask
+      └─ SaveArtifactTask
 """
 from __future__ import annotations
 
@@ -47,6 +47,8 @@ log = logging.getLogger("training_panel.pipeline")
 # ── Task / Job ABCs (self-contained — same shape as pp_training.py) ───────────
 
 class PanelTask(ABC):
+    """Atomic step inside a PanelJob. Runs sequentially."""
+
     @abstractmethod
     def run(self, ctx: PanelTrainingContext) -> None: ...
 
@@ -56,6 +58,8 @@ class PanelTask(ABC):
 
 
 class PanelJob(ABC):
+    """Global panel-training stage. Default run() drives a Task chain."""
+
     @property
     def name(self) -> str:
         return type(self).__name__
@@ -136,18 +140,15 @@ def run_panel_ticker_parallel(
              time.monotonic() - t0, len(ticker_ctxs))
 
 
-# ── Phase 1 global Jobs ──────────────────────────────────────────────────────
+# ── Phase 1 — PanelDataJob + tasks ───────────────────────────────────────────
 
-class PanelDataFetchJob(PanelJob):
-    """Fetch watchlist + benchmark + sector ETFs. Skipped if pre-populated."""
-
-    def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        if ctx.ohlcv:
-            log.info("PanelDataFetchJob: ohlcv already populated — skipping")
-            return True
-        return False
+class FetchOHLCVTask(PanelTask):
+    """Fetch watchlist + benchmark + sector ETFs into ctx.ohlcv."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.ohlcv:
+            log.info("FetchOHLCVTask: ohlcv already populated — skipping")
+            return
         from kernel.data import fetch_ohlcv
 
         cfg = ctx.config
@@ -159,7 +160,7 @@ class PanelDataFetchJob(PanelJob):
         all_syms = sorted(
             set(ctx.watchlist) | set(sector_etf_map.values()) | {benchmark}
         )
-        log.info("PanelDataFetchJob: fetching %d tickers", len(all_syms))
+        log.info("FetchOHLCVTask: fetching %d tickers", len(all_syms))
         for sym in all_syms:
             try:
                 df = fetch_ohlcv(sym, start=start, end=end)
@@ -175,32 +176,43 @@ class PanelDataFetchJob(PanelJob):
             sec: ctx.ohlcv[etf] for sec, etf in sector_etf_map.items()
             if etf in ctx.ohlcv
         }
-        log.info("PanelDataFetchJob: loaded %d / %d  sectors=%d",
+        log.info("FetchOHLCVTask: loaded %d / %d  sectors=%d",
                  len(ctx.ohlcv), len(all_syms), len(ctx.sector_etf_ohlcv))
 
 
-class PanelSectorMomentumJob(PanelJob):
-    """Compute per-sector momentum frames once — used by TickerPanelNeutralizeJob."""
-
-    def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        if ctx.sector_momentum:
-            log.info("PanelSectorMomentumJob: sector_momentum already populated — skipping")
-            return True
-        if not ctx.sector_etf_ohlcv:
-            log.warning("PanelSectorMomentumJob: no sector_etf_ohlcv — skipping")
-            return True
-        return False
+class SectorMomentumTask(PanelTask):
+    """Compute per-sector momentum frames once — reused by per-ticker neutralization."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.sector_momentum:
+            log.info("SectorMomentumTask: already populated — skipping")
+            return
+        if not ctx.sector_etf_ohlcv:
+            log.warning("SectorMomentumTask: no sector_etf_ohlcv — skipping")
+            return
         from training_panel.neutralization import compute_sector_momentum
         ctx.sector_momentum = compute_sector_momentum(ctx.sector_etf_ohlcv)
-        log.info("PanelSectorMomentumJob: %d sector frames", len(ctx.sector_momentum))
+        log.info("SectorMomentumTask: %d sector frames", len(ctx.sector_momentum))
 
 
-# ── Phase 2 orchestrator + per-ticker Jobs ───────────────────────────────────
+class PanelDataJob(PanelJob):
+    """Phase 1 — gather market data + sector momentum.
+
+    Task chain: FetchOHLCV → SectorMomentum
+    """
+
+    def should_skip(self, ctx: PanelTrainingContext) -> bool:
+        return bool(ctx.ohlcv) and bool(ctx.sector_momentum)
+
+    @property
+    def tasks(self) -> list[PanelTask]:
+        return [FetchOHLCVTask(), SectorMomentumTask()]
+
+
+# ── Phase 2 — PanelFeatureJob (orchestrator) + per-ticker Jobs ───────────────
 
 class PanelFeatureJob(PanelJob):
-    """Orchestrate parallel per-ticker chain: Feature → Neutralize → Factor."""
+    """Phase 2 — parallel per-ticker chain (Feature → Neutralize → Factor)."""
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
         if ctx.feature_frames and ctx.neutralized_frames and ctx.raw_factor_frames:
@@ -303,7 +315,6 @@ class TickerPanelFactorJob(PanelTickerJob):
             compute_rolling_beta, compute_residual_momentum,
         )
         try:
-            # Pass only this ticker to the building-block helpers
             one = {tc.ticker: tc.ohlcv[tc.ticker]}
             size = compute_size_feature(one, None).get(tc.ticker)
             mom  = compute_momentum_12_1(one, mom_window=mom_window, skip=skip).get(tc.ticker)
@@ -323,17 +334,16 @@ class TickerPanelFactorJob(PanelTickerJob):
             log.error("  %s: TickerPanelFactorJob failed — %s", tc.ticker, exc)
 
 
-# ── Phase 3 global Jobs ──────────────────────────────────────────────────────
+# ── Phase 3 — PanelAssemblyJob + tasks ───────────────────────────────────────
 
-class PanelFactorZScoreJob(PanelJob):
-    """Cross-sectional z-score of raw per-ticker factor frames, per date."""
-
-    def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        if ctx.factor_frames:
-            return True
-        return not ctx.raw_factor_frames
+class FactorZScoreTask(PanelTask):
+    """Cross-sectional z-score of raw factor frames, per date."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.factor_frames:
+            return
+        if not ctx.raw_factor_frames:
+            return
         from training_panel.factors import cross_sectional_zscore
 
         raw_cols = ["size", "mom_12_1", "beta_60d", "resid_mom"]
@@ -343,9 +353,7 @@ class PanelFactorZScoreJob(PanelJob):
                 t: df[col] for t, df in ctx.raw_factor_frames.items()
                 if col in df.columns
             }
-        z: dict[str, dict[str, pd.Series]] = {
-            col: cross_sectional_zscore(per_col[col]) for col in raw_cols
-        }
+        z = {col: cross_sectional_zscore(per_col[col]) for col in raw_cols}
 
         out: dict[str, pd.DataFrame] = {}
         for t, raw in ctx.raw_factor_frames.items():
@@ -357,16 +365,15 @@ class PanelFactorZScoreJob(PanelJob):
                 "resid_mom_z": z["resid_mom"].get(t, pd.Series(index=idx)).reindex(idx),
             }, index=idx)
         ctx.factor_frames = out
-        log.info("PanelFactorZScoreJob: z-scored %d factor frames", len(out))
+        log.info("FactorZScoreTask: z-scored %d factor frames", len(out))
 
 
-class PanelLabelsJob(PanelJob):
-    """Forward returns → purged β-neutral residuals → cross-sectional Gaussianization."""
-
-    def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        return bool(ctx.labels)
+class LabelsTask(PanelTask):
+    """Forward returns → purged β-neutral residuals → cross-sectional Gaussianize."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.labels:
+            return
         from training_panel.labels import build_labels
 
         cfg = ctx.config.get("panel_ltr", {})
@@ -376,7 +383,7 @@ class PanelLabelsJob(PanelJob):
 
         spy_df = ctx.ohlcv.get(benchmark)
         if spy_df is None:
-            raise RuntimeError("PanelLabelsJob: benchmark OHLCV missing")
+            raise RuntimeError("LabelsTask: benchmark OHLCV missing")
 
         spy_close = spy_df["close"].astype(float)
         spy_fwd = spy_close.shift(-lookahead) / spy_close - 1.0
@@ -388,29 +395,28 @@ class PanelLabelsJob(PanelJob):
             c = df["close"].astype(float)
             fwd_returns[t] = c.shift(-lookahead) / c - 1.0
 
-        sec_fwd_by_ticker: dict[str, pd.Series] = {}
         sec_fwd_frames: dict[str, pd.Series] = {}
         for sec, df in ctx.sector_etf_ohlcv.items():
             c = df["close"].astype(float)
             sec_fwd_frames[sec] = c.shift(-lookahead) / c - 1.0
-        for t, sec in ctx.ticker_sectors.items():
-            if sec in sec_fwd_frames:
-                sec_fwd_by_ticker[t] = sec_fwd_frames[sec]
+        sec_fwd_by_ticker = {
+            t: sec_fwd_frames[sec] for t, sec in ctx.ticker_sectors.items()
+            if sec in sec_fwd_frames
+        }
 
         ctx.labels = build_labels(
             fwd_returns, spy_fwd, sec_fwd_by_ticker,
             beta_window=beta_window, lookahead_days=lookahead,
         )
-        log.info("PanelLabelsJob: built labels for %d tickers", len(ctx.labels))
+        log.info("LabelsTask: built labels for %d tickers", len(ctx.labels))
 
 
-class PanelAssemblyJob(PanelJob):
-    """Build the long-form panel DataFrame + group_sizes array."""
-
-    def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        return ctx.panel is not None
+class BuildPanelTask(PanelTask):
+    """Assemble long-form panel DataFrame + group_sizes array."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.panel is not None:
+            return
         from training_panel.panel_frame import build_panel_frame
 
         cfg = ctx.config.get("panel_ltr", {})
@@ -450,17 +456,32 @@ class PanelAssemblyJob(PanelJob):
         ctx.group_sizes = group_sizes
         ctx.panel_metadata = meta
         ctx.feature_cols = feature_cols
-        log.info("PanelAssemblyJob: panel=%d rows  features=%d  tickers=%d  dates=%d",
+        log.info("BuildPanelTask: panel=%d rows  features=%d  tickers=%d  dates=%d",
                  len(panel), len(feature_cols), meta.get("n_tickers"), meta.get("n_dates"))
 
 
-class PanelCVJob(PanelJob):
-    """Purged K-fold Spearman IC."""
+class PanelAssemblyJob(PanelJob):
+    """Phase 3 — turn per-ticker outputs into a panel DataFrame.
+
+    Task chain: FactorZScore → Labels → BuildPanel
+    """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        return bool(ctx.cv_result)
+        return ctx.panel is not None and bool(ctx.feature_cols)
+
+    @property
+    def tasks(self) -> list[PanelTask]:
+        return [FactorZScoreTask(), LabelsTask(), BuildPanelTask()]
+
+
+# ── Phase 4 — PanelModelJob + tasks ──────────────────────────────────────────
+
+class CrossValidateTask(PanelTask):
+    """Purged K-fold Spearman IC over the assembled panel."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.cv_result:
+            return
         from training_panel.purged_cv import PurgedKFold, cross_validated_ic
         from training_panel.ltr_model import PanelLTRModel
 
@@ -498,14 +519,16 @@ class PanelCVJob(PanelJob):
             _SklearnAdapter, panel, feature_cols, "label", cv,
             weight_col="weight",
         )
-        log.info("PanelCVJob: mean_ic=%+.4f  std=%.4f",
+        log.info("CrossValidateTask: mean_ic=%+.4f  std=%.4f",
                  ctx.cv_result["mean_ic"], ctx.cv_result["std_ic"])
 
 
-class PanelFitExportJob(PanelJob):
-    """Final fit on full panel + save JSON artifact with CV metadata."""
+class FinalFitTask(PanelTask):
+    """Fit the final PanelLTRModel on the full panel."""
 
     def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.final_model is not None:
+            return
         from training_panel.ltr_model import PanelLTRModel
 
         cfg = ctx.config.get("panel_ltr", {})
@@ -520,12 +543,22 @@ class PanelFitExportJob(PanelJob):
             num_boost_round=num_rounds,
         )
         ctx.final_model = model
+        ctx._final_fit = fit  # noqa: SLF001 — read by SaveArtifactTask
+        log.info("FinalFitTask: train_ic=%+.4f", fit.get("train_ic", 0.0))
+
+
+class SaveArtifactTask(PanelTask):
+    """Write the JSON artifact with CV metadata + populate ctx.summary."""
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = ctx.config.get("panel_ltr", {})
 
         out_path = Path(cfg.get("artifact_path", "panel-ltr.json"))
         if ctx.strategy_dir and not out_path.is_absolute():
             out_path = ctx.strategy_dir / "artifacts" / out_path.name
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        fit = getattr(ctx, "_final_fit", {}) or {}
         meta = {
             "panel_shape": {
                 "rows":    int(ctx.panel_metadata.get("n_rows", len(ctx.panel))),
@@ -535,7 +568,7 @@ class PanelFitExportJob(PanelJob):
             "oos_mean_ic":     ctx.cv_result["mean_ic"],
             "oos_std_ic":      ctx.cv_result["std_ic"],
             "oos_per_fold_ic": ctx.cv_result["per_fold_ic"],
-            "training_train_ic": fit["train_ic"],
+            "training_train_ic": fit.get("train_ic", 0.0),
             "training_notes":  cfg.get("training_notes", "Stage-1 panel pipeline"),
             "neutralize_features": cfg.get("neutralize_features", True),
             "lookahead_days":  cfg.get("lookahead_days", 5),
@@ -544,33 +577,43 @@ class PanelFitExportJob(PanelJob):
             "cv_n_splits":     cfg.get("cv_n_splits", 5),
             "cv_embargo_days": cfg.get("cv_embargo_days", cfg.get("lookahead_days", 5)),
         }
-        model.save(out_path, metadata=meta)
+        ctx.final_model.save(out_path, metadata=meta)
         ctx.artifact_path = out_path
         ctx.summary = {
-            "mean_ic":       ctx.cv_result["mean_ic"],
-            "per_fold_ic":   ctx.cv_result["per_fold_ic"],
-            "artifact_path": str(out_path),
+            "mean_ic":        ctx.cv_result["mean_ic"],
+            "per_fold_ic":    ctx.cv_result["per_fold_ic"],
+            "artifact_path":  str(out_path),
             "panel_metadata": ctx.panel_metadata,
-            "feature_cols":  ctx.feature_cols,
+            "feature_cols":   ctx.feature_cols,
         }
-        log.info("PanelFitExportJob: artifact → %s", out_path)
+        log.info("SaveArtifactTask: artifact → %s", out_path)
+
+
+class PanelModelJob(PanelJob):
+    """Phase 4 — cross-validate, fit final, save artifact.
+
+    Task chain: CrossValidate → FinalFit → SaveArtifact
+    """
+
+    def should_skip(self, ctx: PanelTrainingContext) -> bool:
+        return ctx.final_model is not None and ctx.artifact_path is not None
+
+    @property
+    def tasks(self) -> list[PanelTask]:
+        return [CrossValidateTask(), FinalFitTask(), SaveArtifactTask()]
 
 
 # ── Orchestrator ─────────────────────────────────────────────────────────────
 
 class PanelTrainingPipeline:
-    """Run all three phases in order."""
+    """Four-phase panel-LTR training pipeline."""
 
     def run(self, ctx: PanelTrainingContext) -> PanelTrainingContext:
         jobs: list[PanelJob] = [
-            PanelDataFetchJob(),
-            PanelSectorMomentumJob(),
-            PanelFeatureJob(),      # parallel per-ticker chain
-            PanelFactorZScoreJob(),
-            PanelLabelsJob(),
-            PanelAssemblyJob(),
-            PanelCVJob(),
-            PanelFitExportJob(),
+            PanelDataJob(),       # FetchOHLCV + SectorMomentum
+            PanelFeatureJob(),    # parallel per-ticker chain
+            PanelAssemblyJob(),   # FactorZScore + Labels + BuildPanel
+            PanelModelJob(),      # CrossValidate + FinalFit + SaveArtifact
         ]
         t0 = time.monotonic()
         log.info("PanelTrainingPipeline START  watchlist=%d", len(ctx.watchlist))
