@@ -2,7 +2,7 @@
 
 **Status**: Implemented and live (active daily strategy)
 **Author**: Ren Hao  
-**Last updated**: 2026-04-19  
+**Last updated**: 2026-04-20  
 **Based on**: renquant_102 (multi-stock pre-trained scanner)
 
 > **Note**: This document started as a design spec. Sections marked with ⚠️ contain decisions that evolved during implementation — see inline notes for the actual values in the codebase.
@@ -702,76 +702,91 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 
 ### Phase 4 — Pipeline Re-architecture ✅ Complete
 1. ✅ Strategy kernel extracted to `backtesting/renquant_103/kernel/` (9 self-contained modules, zero `common/` imports)
-2. ✅ Pipeline package created at `backtesting/renquant_103/pipeline/`
-3. ✅ `live/runner.py` dispatches renquant_103 to `_run_once_multi_pipeline()` via `config["_use_kernel"]`
-4. ✅ 114 kernel unit tests + 31 pipeline tests added
+2. ✅ `InferencePipeline` (7 jobs) + `SellOnlyPipeline` + `TrainingPipeline` (per-ticker parallel)
+3. ✅ `LeanAdapter` + `RunnerAdapter` bridge LEAN/broker state to `InferenceContext`
+4. ✅ `main.py` slimmed to ~200 lines; `live/runner.py` uses `RunnerAdapter + InferencePipeline`
+5. ✅ 114 kernel unit tests + 31 pipeline tests; 566 total passing
 
 ---
 
-## 18. Execution Pipeline (renquant_103)
+## 18. Pipeline Architecture (renquant_103)
 
-renquant_103's live runner was re-architected from a monolithic 900-line function into a 3-job sequential pipeline. The pipeline lives at `backtesting/renquant_103/pipeline/` and is dispatched by `live/runner.py` when `config["_use_kernel"]` is `true`.
+renquant_103 uses two parallel pipelines sharing the same 3-phase pattern: **global sequential → per-ticker parallel → global sequential**. Full spec: [`doc/pipeline_design.md`](pipeline_design.md).
 
-### Job flow
+### Inference Pipeline
 
-```
-DataJob → SignalJob → ExecutionJob
-```
-
-All jobs share a single `PipelineContext` dataclass (~30 fields) that is populated incrementally:
-
-| Job | Reads from ctx | Writes to ctx |
-|-----|---------------|---------------|
-| `DataJob` | `config`, `strategy_dir`, `broker` | `ohlcv`, `df_spy`, `gmm_artifact`, `corr_matrix`, `earnings_cal` |
-| `SignalJob` | `ohlcv`, `df_spy`, `gmm_artifact`, `corr_matrix`, `earnings_cal` | `regime`, `confidence`, `in_transition`, `spy_price`, `spy_above_ema50`, `spy_vel_ok`, `candidates`, `held`, `account_value`, `cash_avail`, `positions_cache`, `pending_orders`, `circuit_open`, `state`, `entry_dates`, `sell_streaks`, `last_sell_dates`, `position_hwm` |
-| `ExecutionJob` | all | trade orders placed via `ctx.broker`; state persisted |
-
-### Package layout
+Used by both LEAN (`main.py` via `LeanAdapter`) and the live runner (`live/runner.py` via `RunnerAdapter`).
 
 ```
-backtesting/renquant_103/pipeline/
-├── __init__.py          # re-exports PipelineContext, Job, Pipeline, TaskResult, run_tasks
-├── context.py           # PipelineContext dataclass
-├── pipeline.py          # Job ABC + Pipeline sequential orchestrator
-├── task.py              # TaskResult dataclass + run_tasks() via ThreadPoolExecutor
-└── jobs/
-    ├── data.py          # DataJob: parallel OHLCV fetch + artifact loading
-    ├── signals.py       # SignalJob: regime, account state, parallel candidate scoring
-    └── execution.py     # ExecutionJob: sell phase (5 exits) + buy phase (selection loop)
+LeanAdapter.make_context(data)       RunnerAdapter.make_context()
+                       ↓
+            InferenceContext (~50 fields)
+                       ↓
+         InferencePipeline.run(ctx)
+┌─────────────────────────────────────────────────────────┐
+│  Phase 1: Global sequential                             │
+│    RegimeJob    → ctx.regime, ctx.confidence            │
+│    DrawdownJob  → ctx.hwm, ctx.skip_buys                │
+│    BuyGatesJob  → ctx.buy_blocked, ctx.bear_only        │
+│                                                         │
+│  Phase 2a: Parallel (ThreadPoolExecutor, per held)      │
+│    TickerSellJob[AAPL], TickerSellJob[GOOG], ...        │
+│    → collect ctx.exits                                  │
+│                                                         │
+│  Phase 2b: Parallel (per candidate)                     │
+│    TickerCandidateJob[AMD], TickerCandidateJob[CAT], …  │
+│    → collect ctx.candidates                             │
+│                                                         │
+│  Phase 3: Global sequential                             │
+│    RankingJob   → ctx.ranked                            │
+│    SelectionJob → ctx.orders                            │
+└─────────────────────────────────────────────────────────┘
+                       ↓
+LeanAdapter.commit(ctx)              RunnerAdapter.commit(ctx)
+(Liquidate/SetHoldings)              (broker.place_order + live_state.json)
 ```
 
-### Parallelism
+`SellOnlyPipeline` (intraday): Phase 1 (Regime → Drawdown) + parallel `TickerSellJob` only.
 
-- **OHLCV fetch** (DataJob): all symbols fetched in parallel via `run_tasks()` with `max_workers=8`
-- **Candidate scoring** (SignalJob): all watchlist symbols scored in parallel (earnings filter, wash-sale pre-filter, feature build, `score_artifact()`, RS computation)
-- **Sell/buy phases** (ExecutionJob): sequential — each sell updates `ctx.held` which subsequent iterations check
+**File map** (`kernel/pipeline/`):
 
-### Kernel dependency
+| File | Contents |
+|------|----------|
+| `context.py` | `InferenceContext`, `TickerInferenceContext` |
+| `pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
+| `jobs/regime.py` | `RegimeJob` |
+| `jobs/drawdown.py` | `DrawdownJob` |
+| `jobs/gates.py` | `BuyGatesJob` |
+| `jobs/sell.py` | `TickerSellJob` (per-ticker, runs `compute_exits()`) |
+| `jobs/candidates.py` | `TickerCandidateJob` (per-ticker, scores + RS) |
+| `jobs/ranking.py` | `RankingJob` |
+| `jobs/selection.py` | `SelectionJob` |
 
-Pipeline jobs import from `kernel/` for all strategy logic:
+**Adapters** (`adapters/`): `lean.py` → `LeanAdapter`; `runner.py` → `RunnerAdapter`. Both are isolated from `kernel/` isolation rules (can import broker libs).
 
-```python
-from kernel.exits import compute_exits, HoldingState
-from kernel.selection import run_selection_loop
-from kernel.sizing import compute_position_size
-from kernel.market_gates import check_spy_velocity_crash, check_spy_ema_trend
-from kernel.portfolio import update_drawdown_circuit_breaker
+**LEAN `main.py`**: ~200 lines. `OnData` = `make_context → pipeline.run → commit → plot`.
+
+### Training Pipeline
+
+Runs in the notebook and daily automation. Parallel per-ticker phase covers the expensive work.
+
+```
+TrainingContext (global)
+        ↓
+Phase 1 (global): DataFetchJob → RegimeFitJob
+        ↓
+Phase 2 (parallel, ThreadPoolExecutor — one thread per ticker):
+  TickerFeatureJob → TickerTournamentJob → TickerExportJob → TickerCalibrationJob
+  [orchestrated by FeatureJob.run(ctx) which calls run_ticker_parallel()]
+        ↓
+Phase 3 (global): CorrelationJob
 ```
 
-The kernel has zero `common/` imports, making it safe for LEAN Docker embedding if needed.
+All four per-ticker stages run in sequence **within each ticker's own thread** — tickers are fully independent. Results are collected into `TrainingContext` after all threads complete.
 
-### Runner dispatch
+`TournamentJob`, `ExportJob`, `CalibrationJob` are kept as skip-if-populated no-ops for backward notebook cell compatibility. Calling them after `FeatureJob` is a no-op.
 
-```python
-# live/runner.py
-def run_once_multi(config, models, broker, strategy_dir, sell_only=False):
-    if config.get("_use_kernel", False):
-        _run_once_multi_pipeline(config, models, broker, strategy_dir, sell_only)
-        return
-    # ... legacy 900-line path for renquant_102 ...
-```
-
-Enable by adding `"_use_kernel": true` to `strategy_config.json` (already set for renquant_103).
+**Logging**: every worker logs `[TICKER|thread-name] job START/DONE elapsed=Xs` for traceable async output.
 
 ---
 

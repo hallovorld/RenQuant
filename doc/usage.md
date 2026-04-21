@@ -26,9 +26,9 @@ Open a strategy notebook. The pipeline runs top-to-bottom:
 1. **Setup** — configure paths, load config, import kernel + training modules
 2. **Data fetch** — `kernel.data.fetch_ohlcv` (cached as Parquet) for watchlist + SPY + sector ETFs
 3. **Regime detection** — Hurst (Layer 1) → CUSUM (Layer 2) → GMM training (Layer 3) → save `spy-gmm-regime.json`
-4. **Feature frames** — `training.features.build_all_training_features()` builds relative labelled DataFrames per ticker
-5. **Tournament training** — `training.tournament.run_tournament_all()` trains Classification / QLearning / Manual / XGBoost per ticker; picks best by OOS Sharpe (fixed 2024-01-01 cutoff)
-6. **Export** — `training.export.export_models()` saves winners to `models/{ticker}/`; `training.export.retrain_live_models()` retrains on last 4 years for live trading
+4. **Parallel training** — `TrainingPipeline().run(ctx)` dispatches `FeatureJob`, which fans out `run_ticker_parallel()`: each ticker's `TickerFeatureJob → TickerTournamentJob → TickerExportJob → TickerCalibrationJob` chain runs concurrently in its own worker thread; results are collected back into `TrainingContext`
+5. **Summary** — `train_ctx.results` / `train_ctx.calibration_summary` show OOS Sharpe, best model, calibration method per ticker; the notebook cell displays a formatted summary table
+6. **Correlation artifact** — `CorrelationJob` (Phase 3) computes 120-day pairwise correlations and saves `watchlist-correlation.json`
 7. **Correlation artifact** — computes 120-day pairwise correlations; saves `watchlist-correlation.json`
 8. **Portfolio simulation** — regime-aware simulation mirroring LEAN; all 5 exit types, market gates, tiered selection
 9. **Charts + stats** — equity vs SPY, drawdown, regime timeline, per-symbol OOS curves, trade log

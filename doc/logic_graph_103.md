@@ -1,7 +1,7 @@
 # renquant_103 Decision Logic Graph
 *Covers notebook simulation (cell 657a4a6c, streaming detect_regime), LEAN (main.py OnData), and live runner.*
 *Every branch, condition, and policy. Use this as the ground truth for alignment.*
-*Last updated: 2026-04-20 — comprehensive pipeline migration: kernel/pipeline/ (7 InferenceJob files) + adapters/lean.py + adapters/runner.py. LEAN main.py slimmed to ~160 lines. Live runner uses RunnerAdapter + InferencePipeline. All 566 tests pass.*
+*Last updated: 2026-04-20 — parallel pipeline: per-ticker ThreadPoolExecutor for sell and candidate phases. TrainingPipeline also parallel per-ticker. 566 tests pass (568 collected, 2 skipped).*
 
 ---
 
