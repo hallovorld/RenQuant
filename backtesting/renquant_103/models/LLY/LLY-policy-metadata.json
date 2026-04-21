@@ -46,21 +46,64 @@
   "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
+    "method": "isotonic",
     "score_kind": "p_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 164,
+    "sample_size": 566,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.21341463414634146,
-    "raw_min": -0.7221179604530334,
-    "raw_max": 0.8191444873809814,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": 0.7879343665012974,
-    "platt_intercept": -1.4629898502820633,
-    "platt_scale_mean": -0.05425616122055345,
-    "platt_scale_std": 0.29785892907617456
-  },
-  "score_calibration_date": "2026-04-20"
+    "base_rate": 0.21554770318021202,
+    "raw_min": -0.3333333333333333,
+    "raw_max": 0.4666666666666667,
+    "x_thresholds": [
+      -0.3333333333333333,
+      -0.26666666666666666,
+      -0.2,
+      -0.13333333333333333,
+      -0.06666666666666667,
+      0.0,
+      0.26666666666666666,
+      0.3333333333333333,
+      0.4666666666666667
+    ],
+    "y_thresholds": [
+      0.0,
+      0.0,
+      0.07692307692307693,
+      0.15555555555555556,
+      0.22330097087378642,
+      0.2245430809399478,
+      0.2245430809399478,
+      0.2631578947368421,
+      0.2631578947368421
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.04889056987830538,
+    "er_x_thresholds": [
+      -0.3333333333333333,
+      -0.2,
+      -0.13333333333333333,
+      -0.06666666666666667,
+      0.26666666666666666,
+      0.3333333333333333,
+      0.4666666666666667
+    ],
+    "er_y_thresholds": [
+      -0.013493946551573217,
+      -0.013493946551573217,
+      -0.0018505229107587489,
+      0.0014351641969169418,
+      0.0014351641969169418,
+      0.032509822893258815,
+      0.032509822893258815
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
 }

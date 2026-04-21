@@ -35,6 +35,8 @@ LeanAdapter.make_context(data)         RunnerAdapter.make_context()
  │                                                                        │
  │  Phase 3: Global sequential                                            │
  │    RankingJob   — blend rank_score + rs_score → ctx.ranked             │
+ │    RotationJob  — held vs candidates on rank_score; tax-adj swap_margin│
+ │                  emits "rotation" exits + buys → ctx.rotations         │
  │    SelectionJob — run_selection_loop() → ctx.orders                    │
  └────────────────────────────────────────────────────────────────────────┘
          │
@@ -58,7 +60,9 @@ LeanAdapter.make_context(data)         RunnerAdapter.make_context()
 | `kernel/pipeline/job_sell.py` | `TickerSellJob` (per-ticker `TickerJob`) |
 | `kernel/pipeline/job_candidates.py` | `TickerCandidateJob` (per-ticker `TickerJob`) |
 | `kernel/pipeline/job_ranking.py` | `RankingJob` |
+| `kernel/pipeline/job_rotation.py` | `RotationJob` |
 | `kernel/pipeline/job_selection.py` | `SelectionJob` |
+| `kernel/rotation.py` | `find_rotation_pairs`, `tax_drag`, `effective_swap_margin` (pure swap-pair selector) |
 | `kernel/pipeline/task_*.py` | Atomic tasks per concern (regime, drawdown, gates, sell, candidates, ranking, selection) |
 | `adapters/lean.py` | `LeanAdapter` — LEAN ↔ `InferenceContext` bridge |
 | `adapters/runner.py` | `RunnerAdapter` — live runner ↔ `InferenceContext` bridge |
@@ -286,6 +290,37 @@ for each TRADING DAY  (bt_dates in notebook / OnData call in LEAN)
 │  sort candidates by combined_rank DESC
 │
 ├─ ══════════════════════════════════════════════════════════
+│  ROTATION  (held vs candidates on calibrated rank_score)
+│  ══════════════════════════════════════════════════════════
+│  ◆ rotation.enabled? (config) ── NO ✗ skip block
+│  ◆ regime == BEAR?               ── YES ✗ skip block
+│
+│  build held_scores: {ticker → hs.rank_score} for each holding
+│         (skip those exiting today and those with score=None)
+│  build held_meta:   {ticker → {entry_date, entry_price, current_price}}
+│
+│  pairs = find_rotation_pairs(held_scores, held_meta, ranked,
+│                              today, rotation_cfg, tax_cfg)
+│         per-position effective margin =
+│            base swap_margin
+│            + tax_drag(unrealized_pnl%, hold_days, ST/LT rate, threshold)
+│         positions within lt_protection_days of LT threshold w/ gain → +inf
+│         greedy: walk candidates in rank order; pair each with the weakest
+│         eligible held that it beats by ≥ effective margin (max 2/bar)
+│
+│  ○ for pair in pairs:                                    [Validate guards]
+│  │  ◆ wash-sale on pair.buy_ticker?     YES ✗ drop
+│  │  ◆ sector cap fails on virtual set?  YES ✗ drop
+│  │  ◆ correlation > 0.70 on virtual?    YES ✗ drop
+│  │  → append to validated
+│
+│  ○ for pair in validated:                                [Emit]
+│  │  ► append ExitSignal(exit_type="rotation") for sell_ticker → ctx.exits
+│  │  ► size buy_ticker via compute_position_size(max_pct, reserve_pct)
+│  │  ► append buy order → ctx.orders, increment counters["rotations"]
+│  │  ► remove buy_ticker from ctx.ranked (avoid double-buy)
+│
+├─ ══════════════════════════════════════════════════════════
 │  SELECTION LOOP  (greedy, fills slots in rank order)
 │  ══════════════════════════════════════════════════════════
 │  slots_filled = 0
@@ -431,6 +466,10 @@ LEAN uses `LeanAdapter` + `InferencePipeline`; live runner uses `RunnerAdapter` 
 | 24 | BEAR hard override (vol/return threshold) | ✓ ann_vol > 0.35 or 20d_ret < -0.08 → BEAR | ✓ RegimeJob → detect_regime in kernel/regime.py | ✓ |
 | 25 | Artifacts in artifacts/ subdir | ✓ STRATEGY_DIR/artifacts/ | ✓ RunnerAdapter.make_context() / lean adapter | ✓ |
 | 26 | LT tax-aware hold gate | ✓ lt_hold_gate_days=330, lt_hold_min_gain=0.10 | ✓ SellJob → _build_exit_params passes both keys | ✓ |
+| 27 | Cross-sectional rotation (held vs candidates) | ✓ cell calls find_rotation_pairs + guards | ✓ RotationJob (BuildPairs → ValidatePairs → EmitRotations) | ✓ |
+| 28 | Tax-adjusted swap_margin (ST/LT drag) | ✓ kernel.rotation.tax_drag | ✓ same — shared kernel primitive | ✓ |
+| 29 | LT-discount protection window pins position | ✓ effective_swap_margin → +inf when within lt_protection_days w/ gain | ✓ same — shared | ✓ |
+| 30 | Rotation skipped in BEAR regime | ✓ BEAR `continue` before rotation block | ✓ RotationJob.should_skip on bear_only | ✓ |
 
 **Post-migration note (2026-04-20):** LEAN `main.py` is now ~160 lines (down from 576). All decision
 logic lives in `kernel/pipeline/job_*.py` + `kernel/pipeline/task_*.py` (flat layout) and is shared by LEAN and the live runner via adapters.

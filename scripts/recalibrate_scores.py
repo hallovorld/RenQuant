@@ -156,7 +156,11 @@ def recalibrate(strategy: str, dry_run: bool = False) -> None:
 
     from kernel.data import fetch_ohlcv
     from kernel.scoring import ScoreCalibration, extract_raw_scores_bulk
-    from training.scoring import fit_probability_calibration, raw_score_kind_for_model
+    from training.scoring import (
+        fit_expected_return_calibration,
+        fit_probability_calibration,
+        raw_score_kind_for_model,
+    )
 
     config         = json.loads(config_path.read_text())
     watchlist      = config["watchlist"]
@@ -214,9 +218,18 @@ def recalibrate(strategy: str, dry_run: bool = False) -> None:
                 score_kind=raw_score_kind_for_model(model),
             )
 
+            er_fields = fit_expected_return_calibration(
+                raw_scores,
+                future_rel_returns,
+                lookahead=lookahead,
+            )
+            for k, v in er_fields.items():
+                setattr(calibration, k, v)
+
             log.info(
-                "  %-6s  method=%-20s  n=%-4d  base_rate=%.3f",
-                symbol, calibration.method, calibration.sample_size, calibration.base_rate,
+                "  %-6s  method=%-20s  n=%-4d  base_rate=%.3f  er=%s",
+                symbol, calibration.method, calibration.sample_size,
+                calibration.base_rate, calibration.er_method,
             )
 
             # Collect data for blend weight estimation

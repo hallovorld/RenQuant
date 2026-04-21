@@ -158,6 +158,8 @@ class LeanAdapter:
                 algo._stop_exits  += 1
             elif sig.exit_type == "single_day_loss":
                 algo._sdl_exits   += 1
+            elif sig.exit_type == "rotation":
+                algo._rotation_exits += 1
 
             algo.Debug(
                 f"{ctx.today} {ticker} SELL pnl=${gross_pnl:.2f} "

@@ -159,6 +159,7 @@ backtesting/renquant_103/artifacts/
 | `kernel/sizing.py` | `compute_position_size()` with oversize fallback |
 | `kernel/market_gates.py` | `check_spy_velocity_crash()`, `check_spy_ema_trend()` |
 | `kernel/portfolio.py` | `update_drawdown_circuit_breaker()`, `compute_trade_tax()` |
+| `kernel/rotation.py` | `find_rotation_pairs()`, `tax_drag()`, `effective_swap_margin()` (cross-sectional swap selector) |
 
 **renquant_103 training**: Training-time logic lives in `backtesting/renquant_103/training/` — requires sklearn and xgboost. The notebook calls these modules directly; LEAN only uses `kernel/`.
 
@@ -198,7 +199,7 @@ Phase 2b: Parallel (ThreadPoolExecutor, per candidate ticker)
   ...                         ┘
 
 Phase 3: Global sequential
-  RankingJob → SelectionJob
+  RankingJob → RotationJob → SelectionJob
 ```
 
 **`SellOnlyPipeline`** — intraday sell-only variant (used on market-open and pre-close runs). Runs Phase 1 (RegimeJob → DrawdownJob) then parallel `TickerSellJob` — no buy phase.
@@ -258,6 +259,7 @@ Both LEAN and the live runner need to translate their own state representations 
 | `job_sell.py` | `TickerSellJob` (per-ticker) |
 | `job_candidates.py` | `TickerCandidateJob` (per-ticker) |
 | `job_ranking.py` | `RankingJob` |
+| `job_rotation.py` | `RotationJob` (held vs candidates on calibrated rank_score) |
 | `job_selection.py` | `SelectionJob` |
 | `task_regime.py` | `HurstTask`, `CUSUMTask`, `GMMTask`, `BEAROverrideTask`, `RegimeFinalizeTask` |
 | `task_drawdown.py` | `HWMUpdateTask`, `DrawdownCircuitTask` |
@@ -265,6 +267,7 @@ Both LEAN and the live runner need to translate their own state representations 
 | `task_sell.py` | `PrepareHoldingTask`, `ScoreModelTask`, `EvaluateExitsTask` |
 | `task_candidates.py` | `EarningsFilterTask`, `WashSaleFilterTask`, `BuildFeaturesTask`, `ScoreBuyTask`, `ScoreThresholdTask`, `RelativeStrengthTask`, `AssembleCandidateTask` |
 | `task_ranking.py` | `BlendScoresTask`, `SortCandidatesTask` |
+| `task_rotation.py` | `BuildPairsTask`, `ValidatePairsTask`, `EmitRotationsTask` |
 | `task_selection.py` | `PrepareSelectionTask`, `RunSelectionTask`, `SizeAndEmitTask` |
 
 `training/pipeline.py` is a thin re-export shim (notebook imports unchanged).

@@ -49,8 +49,15 @@ class ScoreModelTask(Task):
         tc.features = build_feature_frame(stock_df, spy_df, spec, vol_win)
 
         if tc.features is not None and not tc.features.empty:
-            sr = score_artifact(tc.model, tc.features.iloc[-1], holdings=1)
+            rotation_horizon = int(tc.config.get("rotation", {}).get("target_horizon_days", 20))
+            sr = score_artifact(
+                tc.model, tc.features.iloc[-1],
+                holdings=1, horizon_days=rotation_horizon,
+            )
             tc.model_action = sr.signal
+            if tc.holding is not None:
+                tc.holding.rank_score      = float(sr.rank_score)
+                tc.holding.expected_return = float(sr.expected_return)
         else:
             tc.model_action = "hold"
 

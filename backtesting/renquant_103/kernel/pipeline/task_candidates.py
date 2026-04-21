@@ -44,14 +44,19 @@ class BuildFeaturesTask(Task):
 class ScoreBuyTask(Task):
     def run(self, tc: TickerInferenceContext) -> bool | None:
         from kernel.models import score_artifact  # noqa: PLC0415
-        sr = score_artifact(tc.model, tc.features.iloc[-1], holdings=0)
+        rotation_horizon = int(tc.config.get("rotation", {}).get("target_horizon_days", 20))
+        sr = score_artifact(
+            tc.model, tc.features.iloc[-1],
+            holdings=0, horizon_days=rotation_horizon,
+        )
         tc.model_action = sr.signal
-        log.debug("ScoreBuyTask [%s]: action=%s  raw=%.4f  rank=%.4f",
-                  tc.ticker, sr.signal, sr.raw_score, sr.rank_score)
+        log.debug("ScoreBuyTask [%s]: action=%s  raw=%.4f  rank=%.4f  er=%.4f",
+                  tc.ticker, sr.signal, sr.raw_score, sr.rank_score, sr.expected_return)
         if sr.signal != "buy":
             return False
-        tc._raw_score  = sr.raw_score   # noqa: SLF001
-        tc._rank_score = sr.rank_score  # noqa: SLF001
+        tc._raw_score       = sr.raw_score          # noqa: SLF001
+        tc._rank_score      = sr.rank_score         # noqa: SLF001
+        tc._expected_return = sr.expected_return    # noqa: SLF001
 
 
 class ScoreThresholdTask(Task):
@@ -90,13 +95,16 @@ class RelativeStrengthTask(Task):
 class AssembleCandidateTask(Task):
     def run(self, tc: TickerInferenceContext) -> bool | None:
         from kernel.selection import CandidateResult  # noqa: PLC0415
-        raw  = getattr(tc, "_raw_score",  0.0)
-        rank = getattr(tc, "_rank_score", 0.0)
+        raw  = getattr(tc, "_raw_score",        0.0)
+        rank = getattr(tc, "_rank_score",       0.0)
+        er   = getattr(tc, "_expected_return",  0.0)
         tc.candidate = CandidateResult(
-            ticker    = tc.ticker,
-            raw_score = raw,
-            rank_score= rank,
-            rs_score  = tc.rs_score,
-            detail    = f"raw={raw:.3f} rank={rank:.3f} rs={tc.rs_score:.3f}",
+            ticker          = tc.ticker,
+            raw_score       = raw,
+            rank_score      = rank,
+            rs_score        = tc.rs_score,
+            detail          = (f"raw={raw:.3f} rank={rank:.3f} "
+                               f"rs={tc.rs_score:.3f} er={er:+.4f}"),
+            expected_return = er,
         )
         log.debug("AssembleCandidateTask [%s]: candidate assembled", tc.ticker)

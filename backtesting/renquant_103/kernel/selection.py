@@ -21,11 +21,12 @@ log = logging.getLogger("pipeline.execution")
 
 @dataclass
 class CandidateResult:
-    ticker:     str
-    raw_score:  float
-    rank_score: float
-    rs_score:   float
-    detail:     str = ""
+    ticker:          str
+    raw_score:       float
+    rank_score:      float
+    rs_score:        float
+    detail:          str = ""
+    expected_return: float = 0.0   # E[R - SPY] over rotation.target_horizon_days
 
 
 # ── Guard helpers ──────────────────────────────────────────────────────────────

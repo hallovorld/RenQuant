@@ -1057,3 +1057,282 @@ class TestTaxHoldGate:
         _, state = compute_exits(120.0, today, "sell", state, params)
         assert state.sell_streak == 2
 
+
+
+# ── kernel.rotation ───────────────────────────────────────────────────────────
+
+from kernel.rotation import (
+    RotationPair,
+    tax_drag,
+    is_lt_protected,
+    find_rotation_pairs,
+)
+
+
+class _Cand:
+    """Lightweight stand-in for CandidateResult."""
+    def __init__(self, ticker: str, rank_score: float, expected_return: float = 0.0):
+        self.ticker          = ticker
+        self.rank_score      = rank_score
+        self.expected_return = expected_return
+
+
+class TestTaxDrag:
+    def test_loss_returns_zero(self):
+        assert tax_drag(-0.10, 60, 0.5, 0.32, 365) == 0.0
+
+    def test_zero_pnl_returns_zero(self):
+        assert tax_drag(0.0, 200, 0.5, 0.32, 365) == 0.0
+
+    def test_short_term_uses_st_rate(self):
+        # 20% gain held 30 days → 0.20 * 0.50 = 0.10
+        assert tax_drag(0.20, 30, 0.50, 0.32, 365) == pytest.approx(0.10)
+
+    def test_long_term_uses_lt_rate(self):
+        # 20% gain held 400 days → 0.20 * 0.32 = 0.064
+        assert tax_drag(0.20, 400, 0.50, 0.32, 365) == pytest.approx(0.064)
+
+    def test_threshold_boundary_inclusive(self):
+        # Exactly at threshold → LT rate
+        assert tax_drag(0.10, 365, 0.50, 0.32, 365) == pytest.approx(0.032)
+
+    def test_one_day_before_threshold_uses_st(self):
+        assert tax_drag(0.10, 364, 0.50, 0.32, 365) == pytest.approx(0.05)
+
+
+class TestIsLtProtected:
+    def test_loss_position_not_protected(self):
+        # No tax discount to lose if you'd be selling at a loss
+        assert not is_lt_protected(-0.05, 350, 365, 30)
+
+    def test_zero_pnl_not_protected(self):
+        assert not is_lt_protected(0.0, 350, 365, 30)
+
+    def test_inside_window_with_gain_protected(self):
+        # 350d held + gain → within 30d window → protected
+        assert is_lt_protected(0.20, 350, 365, 30)
+
+    def test_outside_window_not_protected(self):
+        # 300d held → 65d from LT threshold > 30d window
+        assert not is_lt_protected(0.20, 300, 365, 30)
+
+    def test_already_lt_not_protected(self):
+        # Past the threshold — discount already secured
+        assert not is_lt_protected(0.20, 400, 365, 30)
+
+
+class TestFindRotationPairs:
+    """Expected-return rotation: net_advantage = (buy_er - sell_er) - tax - cost.
+
+    Scenarios use ER values directly, not probabilities — the kernel never
+    interprets rank_score for the swap decision (it's only carried for log
+    readability).
+    """
+
+    def _cfg(self, **over):
+        cfg = {
+            "enabled": True,
+            "min_expected_advantage_pct": 0.03,
+            "target_horizon_days": 20,
+            "transaction_cost_pct": 0.0,
+            "min_rotation_hold_days": 30,
+            "lt_protection_days": 30,
+            "max_rotations_per_bar": 2,
+        }
+        cfg.update(over)
+        return cfg
+
+    def _tax(self):
+        return {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365}
+
+    def _meta(self, entry_days_ago: int = 60, entry_price: float = 100.0,
+              current_price: float = 100.0):
+        return {
+            "entry_date":    datetime.date.today() - datetime.timedelta(days=entry_days_ago),
+            "entry_price":   entry_price,
+            "current_price": current_price,
+        }
+
+    def test_disabled_returns_empty(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.30},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta()},
+            candidates =[_Cand("MSFT", 0.80, expected_return=0.10)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(enabled=False),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_min_hold_blocks_recent_entries(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.30},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_days_ago=10)},
+            candidates =[_Cand("MSFT", 0.95, expected_return=0.10)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_swap_emitted_when_net_advantage_clears_threshold(self):
+        # AAPL ER=0.01, loss position (no tax drag).
+        # MSFT ER=0.06 → raw_adv 0.05, no cost/tax → net_adv 0.05 ≥ 0.03 → swap.
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.30},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_price=120.0, current_price=100.0)},
+            candidates =[_Cand("MSFT", 0.50, expected_return=0.06)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert len(pairs) == 1
+        p = pairs[0]
+        assert p.sell_ticker == "AAPL"
+        assert p.buy_ticker  == "MSFT"
+        assert p.raw_advantage    == pytest.approx(0.05)
+        assert p.tax_drag         == pytest.approx(0.0)
+        assert p.transaction_cost == pytest.approx(0.0)
+        assert p.net_advantage    == pytest.approx(0.05)
+        assert p.threshold        == pytest.approx(0.03)
+        assert p.margin_realized  == pytest.approx(0.02)
+        assert p.horizon_days     == 20
+
+    def test_tax_drag_blocks_marginal_swap(self):
+        # AAPL +20% ST gain → drag 0.10.
+        # raw_adv = 0.06 - 0.01 = 0.05; net_adv = 0.05 - 0.10 = -0.05 < 0.03 → no swap.
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.30},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_price=100.0, current_price=120.0)},
+            candidates =[_Cand("MSFT", 0.45, expected_return=0.06)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_transaction_cost_blocks_marginal_swap(self):
+        # 5% raw advantage, 4% transaction cost → net 1% < 3% threshold → no swap.
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.30},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_price=120.0, current_price=100.0)},
+            candidates =[_Cand("MSFT", 0.50, expected_return=0.06)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(transaction_cost_pct=0.04),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_lt_protection_pins_position(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.10},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_days_ago=350,
+                                            entry_price=100.0, current_price=120.0)},
+            candidates =[_Cand("MSFT", 0.90, expected_return=0.50)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_max_rotations_per_bar_caps_output(self):
+        held_scores = {"H1": 0.10, "H2": 0.12, "H3": 0.15}
+        held_er     = {"H1": 0.01, "H2": 0.015, "H3": 0.02}
+        held_meta   = {t: self._meta(entry_price=120.0, current_price=100.0)
+                       for t in held_scores}
+        candidates  = [
+            _Cand("C1", 0.90, expected_return=0.10),
+            _Cand("C2", 0.85, expected_return=0.09),
+            _Cand("C3", 0.80, expected_return=0.08),
+        ]
+        pairs = find_rotation_pairs(
+            held_scores=held_scores, held_er=held_er, held_meta=held_meta,
+            candidates=candidates, today=datetime.date.today(),
+            rotation_cfg=self._cfg(max_rotations_per_bar=2),
+            tax_cfg=self._tax(),
+        )
+        assert len(pairs) == 2
+        # Strongest candidate paired with weakest-ER hold
+        assert pairs[0].buy_ticker == "C1" and pairs[0].sell_ticker == "H1"
+
+    def test_held_ticker_excluded_as_candidate(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.20},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_price=120.0, current_price=100.0)},
+            candidates =[_Cand("AAPL", 0.95, expected_return=0.50)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_each_held_used_once(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.10},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta(entry_price=120.0, current_price=100.0)},
+            candidates =[
+                _Cand("MSFT", 0.90, expected_return=0.10),
+                _Cand("NVDA", 0.85, expected_return=0.09),
+            ],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert len(pairs) == 1
+        assert pairs[0].buy_ticker == "MSFT"
+
+    def test_no_candidates_returns_empty(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.10},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta()},
+            candidates =[],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_no_holdings_returns_empty(self):
+        pairs = find_rotation_pairs(
+            held_scores={}, held_er={}, held_meta={},
+            candidates =[_Cand("MSFT", 0.90, expected_return=0.10)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_skips_holding_with_none_score(self):
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": None},
+            held_er    ={"AAPL": 0.01},
+            held_meta  ={"AAPL": self._meta()},
+            candidates =[_Cand("MSFT", 0.90, expected_return=0.10)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []
+
+    def test_skips_holding_with_no_expected_return(self):
+        # Held position has rank_score but no ER (e.g. stale calibration) —
+        # rotation skips it rather than guessing.
+        pairs = find_rotation_pairs(
+            held_scores={"AAPL": 0.10},
+            held_er    ={},
+            held_meta  ={"AAPL": self._meta(entry_price=120.0, current_price=100.0)},
+            candidates =[_Cand("MSFT", 0.90, expected_return=0.10)],
+            today      =datetime.date.today(),
+            rotation_cfg=self._cfg(),
+            tax_cfg    =self._tax(),
+        )
+        assert pairs == []

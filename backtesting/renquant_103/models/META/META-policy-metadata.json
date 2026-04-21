@@ -32,21 +32,48 @@
   "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
+    "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 164,
+    "sample_size": 566,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.18292682926829268,
+    "base_rate": 0.22614840989399293,
     "raw_min": -1.0,
     "raw_max": 3.0,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": -0.04313843594596457,
-    "platt_intercept": -1.4965885594221873,
-    "platt_scale_mean": 0.9634146341463414,
-    "platt_scale_std": 0.8181645423277809
-  },
-  "score_calibration_date": "2026-04-20"
+    "x_thresholds": [
+      -1.0,
+      0.0,
+      1.0,
+      2.0,
+      3.0
+    ],
+    "y_thresholds": [
+      0.10526315789473684,
+      0.21951219512195122,
+      0.21951219512195122,
+      0.25280898876404495,
+      0.25280898876404495
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.04158646121767062,
+    "er_x_thresholds": [
+      -1.0,
+      0.0,
+      3.0
+    ],
+    "er_y_thresholds": [
+      -0.02008406971706926,
+      0.003454272927562691,
+      0.003454272927562691
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
 }

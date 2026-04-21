@@ -19,6 +19,7 @@ from .job_gates      import BuyGatesJob
 from .job_sell       import TickerSellJob
 from .job_candidates import TickerCandidateJob
 from .job_ranking    import RankingJob
+from .job_rotation   import RotationJob
 from .job_selection  import SelectionJob
 
 log = logging.getLogger("kernel.pipeline")
@@ -117,9 +118,11 @@ class InferencePipeline:
                      len(ctx.candidates), len(universe))
 
         RankingJob().run(ctx)
+        RotationJob().run(ctx)
         SelectionJob().run(ctx)
 
-        log.info("InferencePipeline DONE  total=%.2fs", time.monotonic() - t0)
+        log.info("InferencePipeline DONE  total=%.2fs  rotations=%d",
+                 time.monotonic() - t0, len(ctx.rotations))
 
 
 # ── SellOnlyPipeline ───────────────────────────────────────────────────────────

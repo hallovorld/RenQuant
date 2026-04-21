@@ -18,7 +18,11 @@ import numpy as np
 import pandas as pd
 
 from .models import create_model, XGBoostModel
-from .scoring import fit_probability_calibration, raw_score_kind_for_model
+from .scoring import (
+    fit_expected_return_calibration,
+    fit_probability_calibration,
+    raw_score_kind_for_model,
+)
 
 _TRAIN_CUTOFF = pd.Timestamp("2024-01-01")
 
@@ -166,6 +170,11 @@ def run_tournament(
             lookahead=lookahead, threshold=threshold,
             score_kind=raw_score_kind_for_model(best_model),
         )
+        er_fields = fit_expected_return_calibration(
+            best_scores, future_rel, lookahead=lookahead,
+        )
+        for k, v in er_fields.items():
+            setattr(best_calibration, k, v)
 
     passes = best_sharpe >= sharpe_floor
     _log.append(f"  → WINNER: {best_name}  Sharpe={best_sharpe:.3f}  "

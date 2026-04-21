@@ -34,6 +34,18 @@ class ScoreCalibration:
     platt_intercept: float | None = None
     platt_scale_mean: float | None = None
     platt_scale_std: float | None = None
+    # expected-return regression (continuous target)
+    # Fits raw_score → E[stock_return - SPY_return] over `er_lookahead` trading
+    # days, in fraction units.  Used by rotation to compare candidates and held
+    # positions on a dimensionally honest "8% better" rule.
+    er_method: str = "none"          # "none", "isotonic", "linear", "constant"
+    er_lookahead: int = 5
+    er_residual_std: float | None = None
+    er_x_thresholds: list[float] | None = None
+    er_y_thresholds: list[float] | None = None
+    er_coef: float | None = None
+    er_intercept: float | None = None
+    er_constant: float | None = None
 
     def calibrate(self, raw_score: float) -> float:
         if raw_score is None or not np.isfinite(raw_score):
@@ -59,6 +71,35 @@ class ScoreCalibration:
             log_odds = self.platt_coef * scaled + self.platt_intercept
             return float(np.clip(1.0 / (1.0 + np.exp(-log_odds)), 0.0, 1.0))
         raise ValueError(f"Unknown calibration method: {self.method}")
+
+    def expected_return(
+        self, raw_score: float, *, horizon_days: int | None = None
+    ) -> float:
+        """E[stock_return − SPY_return] in fraction units.
+
+        Returned in `er_lookahead` units by default; pass `horizon_days` to
+        scale linearly (additive-return assumption — fine for short horizons,
+        breaks down past ~60 days).
+        """
+        if raw_score is None or not np.isfinite(raw_score):
+            base = 0.0
+        elif (self.er_method == "isotonic"
+              and self.er_x_thresholds and self.er_y_thresholds):
+            base = float(np.interp(
+                raw_score, self.er_x_thresholds, self.er_y_thresholds,
+            ))
+        elif self.er_method == "linear" and self.er_coef is not None:
+            base = float(self.er_coef * raw_score + (self.er_intercept or 0.0))
+        elif self.er_method == "constant" and self.er_constant is not None:
+            base = float(self.er_constant)
+        else:
+            base = 0.0
+
+        if horizon_days is None or horizon_days == self.er_lookahead:
+            return base
+        if self.er_lookahead <= 0:
+            return base
+        return base * (horizon_days / self.er_lookahead)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

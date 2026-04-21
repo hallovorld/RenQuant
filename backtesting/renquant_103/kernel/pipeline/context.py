@@ -66,6 +66,9 @@ class InferenceContext:
     # RankingJob
     ranked: list = field(default_factory=list)          # list of CandidateResult, sorted
 
+    # RotationJob — list of RotationPair (held → candidate swaps)
+    rotations: list = field(default_factory=list)
+
     # SelectionJob
     orders: list = field(default_factory=list)          # list of order dicts
 

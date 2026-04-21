@@ -44,6 +44,50 @@ def calibrate_score(raw_score: float, calibration: dict | None) -> float:
     return float(raw_score)
 
 
+def expected_return_from_calibration(
+    raw_score: float,
+    calibration: dict | None,
+    *,
+    horizon_days: int | None = None,
+) -> float:
+    """E[stock_return - SPY_return] in fraction units over `horizon_days`.
+
+    Uses the er_* fields of the calibration block (written by
+    training.scoring.fit_expected_return_calibration).  Returns 0.0 when no
+    expected-return calibration is available — rotation gracefully degrades
+    to "no swap" rather than mis-ranking on stale probability scores.
+    """
+    if not calibration:
+        return 0.0
+    er_method   = calibration.get("er_method", "none")
+    er_lookahead = int(calibration.get("er_lookahead", 5))
+
+    if not math.isfinite(raw_score):
+        base = 0.0
+    elif er_method == "isotonic":
+        xs = calibration.get("er_x_thresholds") or []
+        ys = calibration.get("er_y_thresholds") or []
+        if not xs or not ys:
+            base = 0.0
+        else:
+            base = float(np.interp(raw_score, xs, ys))
+    elif er_method == "linear":
+        coef      = calibration.get("er_coef")
+        intercept = calibration.get("er_intercept", 0.0) or 0.0
+        if coef is None:
+            base = 0.0
+        else:
+            base = float(coef * raw_score + intercept)
+    elif er_method == "constant":
+        base = float(calibration.get("er_constant", 0.0) or 0.0)
+    else:
+        base = 0.0
+
+    if horizon_days is None or horizon_days == er_lookahead or er_lookahead <= 0:
+        return base
+    return base * (horizon_days / er_lookahead)
+
+
 # ── Model type inference ──────────────────────────────────────────────────────
 
 def _traverse_tree(tree: list, row: list) -> float:
@@ -198,13 +242,25 @@ def load_artifact(model_dir: Path, ticker: str) -> dict | None:
 
 @dataclass
 class ScoreResult:
-    raw_score:  float
-    rank_score: float
-    signal:     str   # "buy" | "hold" | "sell"
+    raw_score:       float
+    rank_score:      float
+    signal:          str   # "buy" | "hold" | "sell"
+    expected_return: float = 0.0   # E[R - SPY] over `er_lookahead` days
 
 
-def score_artifact(artifact: dict, feature_row: pd.Series, holdings: int = 0) -> ScoreResult:
-    """Compute raw score, calibrated rank_score, and buy/hold/sell signal."""
+def score_artifact(
+    artifact: dict,
+    feature_row: pd.Series,
+    holdings: int = 0,
+    *,
+    horizon_days: int | None = None,
+) -> ScoreResult:
+    """Compute raw score, calibrated rank_score, expected_return, and signal.
+
+    `horizon_days` overrides the calibration's native lookahead for the
+    expected_return field — pass the rotation target horizon (e.g. 20) to
+    get E[R - SPY] over that period rather than the 5-day calibration window.
+    """
     ptype = artifact["policy_type"]
 
     if ptype == "classification":
@@ -228,7 +284,11 @@ def score_artifact(artifact: dict, feature_row: pd.Series, holdings: int = 0) ->
     else:
         raw = 0.0
 
-    rank = calibrate_score(raw, artifact.get("score_calibration"))
+    calibration = artifact.get("score_calibration")
+    rank = calibrate_score(raw, calibration)
+    er   = expected_return_from_calibration(
+        raw, calibration, horizon_days=horizon_days,
+    )
 
     if raw > artifact.get("buy_threshold", 0.1):
         signal = "buy"
@@ -237,4 +297,6 @@ def score_artifact(artifact: dict, feature_row: pd.Series, holdings: int = 0) ->
     else:
         signal = "hold"
 
-    return ScoreResult(raw_score=raw, rank_score=rank, signal=signal)
+    return ScoreResult(
+        raw_score=raw, rank_score=rank, signal=signal, expected_return=er,
+    )

@@ -46,21 +46,60 @@
   "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
+    "method": "isotonic",
     "score_kind": "p_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 164,
+    "sample_size": 566,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.0975609756097561,
-    "raw_min": -0.9665031433105469,
-    "raw_max": 0.9029698371887207,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": 2.0479385808932555,
-    "platt_intercept": -3.552905144925481,
-    "platt_scale_mean": -0.03850517219795686,
-    "platt_scale_std": 0.41850021716120955
-  },
-  "score_calibration_date": "2026-04-20"
+    "base_rate": 0.11130742049469965,
+    "raw_min": -60.13722681360451,
+    "raw_max": 38.54968820826553,
+    "x_thresholds": [
+      -60.13722681360451,
+      -43.5061082281409,
+      -17.812135378940933,
+      -17.233056174394154,
+      19.40150453252667,
+      19.425439544196784,
+      38.54968820826553
+    ],
+    "y_thresholds": [
+      0.0,
+      0.02857142857142857,
+      0.02857142857142857,
+      0.11608961303462322,
+      0.11608961303462322,
+      0.1282051282051282,
+      0.1282051282051282
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.02476254863262904,
+    "er_x_thresholds": [
+      -60.13722681360451,
+      -18.135643600789162,
+      -17.812135378940933,
+      30.733586538053135,
+      32.39860206235322,
+      37.50691195433026,
+      38.54968820826553
+    ],
+    "er_y_thresholds": [
+      0.001695704537215164,
+      0.001695704537215164,
+      0.0022456652838346277,
+      0.0022456652838346277,
+      0.00450177021647016,
+      0.00450177021647016,
+      0.004975113457481584
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
 }

@@ -21,6 +21,7 @@ from kernel.scoring import ScoreCalibration, raw_score_kind_for_model
 
 _ISOTONIC_MIN_SAMPLES = 300
 _PLATT_MIN_SAMPLES = 120
+_ER_LINEAR_MIN_SAMPLES = 60
 
 
 def fit_probability_calibration(
@@ -82,4 +83,71 @@ def fit_probability_calibration(
     )
 
 
-__all__ = ["ScoreCalibration", "fit_probability_calibration", "raw_score_kind_for_model"]
+def fit_expected_return_calibration(
+    raw_scores: pd.Series,
+    future_relative_returns: pd.Series,
+    *,
+    lookahead: int,
+) -> dict:
+    """Regress raw_score → continuous E[future_relative_return] (fraction units).
+
+    Returns a dict of er_* fields to merge into a ScoreCalibration.  Used for
+    rotation decisions: gives us "expected outperformance vs SPY over `lookahead`
+    days" rather than a binary probability.
+
+    Method selection by sample size:
+      * n >= 300         — isotonic regression on continuous target
+      * 60 <= n < 300    — linear (least-squares) regression
+      * n < 60           — constant fallback (sample mean)
+    """
+    joined = pd.DataFrame({
+        "raw_score":     pd.Series(raw_scores, dtype=float),
+        "future_return": pd.Series(future_relative_returns, dtype=float),
+    }).replace([np.inf, -np.inf], np.nan).dropna()
+
+    if joined.empty:
+        return {"er_method": "none", "er_lookahead": lookahead}
+
+    raw_vals  = joined["raw_score"].to_numpy(dtype=float)
+    targets   = joined["future_return"].to_numpy(dtype=float)
+    n         = len(joined)
+    has_var   = np.unique(raw_vals).size >= 2
+
+    if n >= _ISOTONIC_MIN_SAMPLES and has_var and IsotonicRegression is not None:
+        iso = IsotonicRegression(out_of_bounds="clip")
+        iso.fit(raw_vals, targets)
+        residuals = targets - iso.predict(raw_vals)
+        return {
+            "er_method":         "isotonic",
+            "er_lookahead":      lookahead,
+            "er_residual_std":   float(np.std(residuals)),
+            "er_x_thresholds":   [float(v) for v in iso.X_thresholds_],
+            "er_y_thresholds":   [float(v) for v in iso.y_thresholds_],
+        }
+
+    if n >= _ER_LINEAR_MIN_SAMPLES and has_var:
+        slope, intercept = np.polyfit(raw_vals, targets, 1)
+        residuals = targets - (slope * raw_vals + intercept)
+        return {
+            "er_method":         "linear",
+            "er_lookahead":      lookahead,
+            "er_residual_std":   float(np.std(residuals)),
+            "er_coef":           float(slope),
+            "er_intercept":      float(intercept),
+        }
+
+    mean_target = float(np.mean(targets))
+    return {
+        "er_method":       "constant",
+        "er_lookahead":    lookahead,
+        "er_constant":     mean_target,
+        "er_residual_std": float(np.std(targets - mean_target)) if n > 1 else 0.0,
+    }
+
+
+__all__ = [
+    "ScoreCalibration",
+    "fit_probability_calibration",
+    "fit_expected_return_calibration",
+    "raw_score_kind_for_model",
+]

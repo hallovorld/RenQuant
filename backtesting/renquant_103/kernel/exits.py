@@ -26,8 +26,10 @@ class HoldingState:
     entry_price:    float
     entry_date:     datetime.date
     high_watermark: float   # max close seen since entry (trailing stop trigger)
-    sell_streak:    int = 0
-    prev_close:     float | None = None
+    sell_streak:     int = 0
+    prev_close:      float | None = None
+    rank_score:      float | None = None   # latest calibrated probability (set by ScoreModelTask)
+    expected_return: float | None = None   # latest E[R-SPY] over rotation horizon
 
 
 # ── Exit result ────────────────────────────────────────────────────────────────
@@ -36,7 +38,7 @@ class HoldingState:
 class ExitSignal:
     should_exit: bool
     reason:      str
-    exit_type:   str   # "trailing_stop" | "stop_loss" | "single_day_loss" | "max_hold" | "model_sell" | ""
+    exit_type:   str   # "trailing_stop" | "stop_loss" | "single_day_loss" | "max_hold" | "model_sell" | "rotation" | ""
 
 
 _NO_EXIT = ExitSignal(should_exit=False, reason="", exit_type="")

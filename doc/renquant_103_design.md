@@ -650,6 +650,29 @@ Six behavioral differences between notebook simulation and LEAN were identified 
 5. **Sell streak during min_hold (LEAN)**: Was accumulating sell streak inside the min_hold window, which could trigger an exit on exactly day 20 even if no fresh sell signals occurred. Fixed to skip the model signal check entirely during min_hold, matching notebook behavior.
 6. **Q-Learning score formula (LEAN)**: Was using `Q(buy) − Q(hold)` = `q_vals[0] − q_vals[2]`. Fixed to `Q(buy) − Q(sell)` = `q_vals[0] − q_vals[1]`, matching `predict_score_bulk()` in `kernel/models.py`.
 
+### Cross-Sectional Rotation (2026-04-20)
+Held positions now compete with new candidates on the same calibrated `rank_score` every bar — the standard mainstream-quant rotation rule. Without this, a held stock with a marginal score blocks a far-better unowned candidate from ever entering the portfolio.
+
+- **Where**: new `RotationJob` (`kernel/pipeline/job_rotation.py` + `task_rotation.py`) sits between `RankingJob` and `SelectionJob` in Phase 3. The notebook simulation cell mirrors the same logic via `kernel.rotation.find_rotation_pairs()`.
+- **Pure primitive**: `kernel/rotation.py` — `find_rotation_pairs(held_scores, held_meta, candidates, today, rotation_cfg, tax_cfg) → list[RotationPair]`. Stdlib only.
+- **Tax-adjusted swap margin**: `effective_swap_margin = base_margin + tax_drag(unrealized_pnl, hold_days, ST/LT rate)`. Positions within `lt_protection_days` of the long-term threshold sitting on a gain are pinned (`+inf`) — forced swap would burn the upcoming LT discount.
+- **Guards**: each pair re-checked against wash-sale, sector cap, and correlation guards on the **virtual post-swap holdings set** before being emitted.
+- **Output**: emits `ExitSignal(exit_type="rotation")` for the sold ticker (handled by the existing exits path) plus a sized buy order. Telemetry counter `Rotation Exits` reported in LEAN runtime stats.
+- **Skip conditions**: rotation block is skipped entirely in BEAR regime (defensive branch already restricts buys), when `rotation.enabled=false`, or when there are no holdings/candidates.
+- **Config** (`strategy_config.json`):
+  ```json
+  "rotation": {
+    "enabled": true,
+    "swap_margin": 0.10,
+    "min_rotation_hold_days": 30,
+    "lt_protection_days": 30,
+    "max_rotations_per_bar": 2
+  }
+  ```
+- **Tests**: 22 unit tests in `tests/test_kernel_units.py` (`TestTaxDrag`, `TestEffectiveSwapMargin`, `TestFindRotationPairs`); 13 paired-alignment tests in `tests/test_policy_alignment.py::TestRotationAlignment`.
+
+> **Open issue (2026-04-20)**: `swap_margin` is in calibrated rank-score (probability) units while `tax_drag` is in fraction-of-position units — these are added as if they were the same unit. A future fix should translate both to expected-forward-return units using the calibration's `lookahead`/`threshold`. Until then, `swap_margin = 0.10` literally means "10 percentage-point edge in P(beat SPY by 3% over 5 days)".
+
 ### Unit Tests (`tests/`)
 464 unit tests covering every major policy (run with `python -m pytest tests/ -v`) → **544 after kernel extraction** (80 new kernel unit tests):
 

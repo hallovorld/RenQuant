@@ -1483,6 +1483,7 @@ def test_equal_nb_and_lean_test_counts():
         TestMinModelScoreAlignment,
         TestCombinedRankingAlignment,
         TestPositionSizingAlignment,
+        TestRotationAlignment,
     ]
     for cls in classes:
         methods = [m for m in dir(cls) if m.startswith("test_")]
@@ -1499,3 +1500,272 @@ def test_equal_nb_and_lean_test_counts():
 if __name__ == "__main__":
     import pytest as _pytest
     _pytest.main([__file__, "-v", "--tb=short"])
+
+
+# ─── POLICY: Cross-Sectional Rotation ─────────────────────────────────────────
+
+# Make kernel importable so _notebook/_lean helpers can call the shared primitive.
+_KERNEL_DIR = ROOT / "backtesting" / "renquant_103"
+if str(_KERNEL_DIR) not in sys.path:
+    sys.path.insert(0, str(_KERNEL_DIR))
+
+from kernel.rotation import find_rotation_pairs  # noqa: E402
+from kernel.selection import (  # noqa: E402
+    is_wash_sale_blocked,
+    passes_sector_guard,
+    passes_correlation_guard,
+)
+
+
+class _RCand:
+    def __init__(self, ticker, rank_score, expected_return=0.0):
+        self.ticker          = ticker
+        self.rank_score      = rank_score
+        self.expected_return = expected_return
+
+
+class TestRotationAlignment:
+    """Held positions vs ranked candidates rotate when expected-return advantage
+    over the rotation horizon clears `min_expected_advantage_pct` net of tax
+    and transaction cost, and survives wash-sale, sector, and correlation
+    guards."""
+
+    DEFAULT_CFG = {
+        "enabled": True,
+        "min_expected_advantage_pct": 0.03,
+        "target_horizon_days": 20,
+        "transaction_cost_pct": 0.0,
+        "min_rotation_hold_days": 30,
+        "lt_protection_days": 30,
+        "max_rotations_per_bar": 2,
+    }
+    DEFAULT_TAX = {
+        "short_term_rate": 0.50,
+        "long_term_rate": 0.32,
+        "long_term_threshold_days": 365,
+    }
+
+    def _meta(self, entry_days_ago=60, entry_price=100.0, current_price=100.0):
+        return {
+            "entry_date":    date(2026, 4, 20) - timedelta(days=entry_days_ago),
+            "entry_price":   entry_price,
+            "current_price": current_price,
+        }
+
+    # Both helpers replicate the same flow because NB and LEAN share the kernel.
+    # Tests still exercise the per-side surface: NB applies guards via kernel
+    # helpers (cell 657a4a6c) and LEAN does the same via task_rotation.py.
+
+    def _notebook_rotate(self, held_scores, held_er, held_meta, candidates, today,
+                         last_sells, sector_map, max_per_sector, defensive,
+                         corr, corr_thresh, wash_days, cfg=None, tax=None):
+        """Replicates cell 657a4a6c rotation block."""
+        cfg = cfg or self.DEFAULT_CFG
+        tax = tax or self.DEFAULT_TAX
+        if not cfg.get("enabled", False) or not held_scores:
+            return []
+        eligible = [c for c in candidates if c.ticker not in held_scores]
+        pairs = find_rotation_pairs(
+            held_scores=held_scores, held_er=held_er, held_meta=held_meta,
+            candidates=eligible, today=today, rotation_cfg=cfg, tax_cfg=tax,
+        )
+        validated = []
+        for p in pairs:
+            if is_wash_sale_blocked(p.buy_ticker, today, last_sells, wash_days):
+                continue
+            virtual = (set(held_scores.keys())
+                       - {x.sell_ticker for x in validated} - {p.sell_ticker}
+                       | {x.buy_ticker for x in validated})
+            if not passes_sector_guard(p.buy_ticker, list(virtual),
+                                       sector_map, max_per_sector, defensive):
+                continue
+            if not passes_correlation_guard(p.buy_ticker, list(virtual),
+                                            corr, corr_thresh):
+                continue
+            validated.append(p)
+        return validated
+
+    def _lean_rotate(self, held_scores, held_er, held_meta, candidates, today,
+                     last_sells, sector_map, max_per_sector, defensive,
+                     corr, corr_thresh, wash_days, cfg=None, tax=None):
+        """Replicates kernel/pipeline/task_rotation.py BuildPairs+Validate."""
+        cfg = cfg or self.DEFAULT_CFG
+        tax = tax or self.DEFAULT_TAX
+        if not cfg.get("enabled", False) or not held_scores:
+            return []
+        held_set = set(held_scores.keys())
+        eligible = [c for c in candidates if c.ticker not in held_set]
+        pairs = find_rotation_pairs(
+            held_scores=held_scores, held_er=held_er, held_meta=held_meta,
+            candidates=eligible, today=today, rotation_cfg=cfg, tax_cfg=tax,
+        )
+        validated = []
+        for p in pairs:
+            if is_wash_sale_blocked(p.buy_ticker, today, last_sells, wash_days):
+                continue
+            virtual = (held_set
+                       - {x.sell_ticker for x in validated} - {p.sell_ticker}
+                       | {x.buy_ticker for x in validated})
+            if not passes_sector_guard(p.buy_ticker, list(virtual),
+                                       sector_map, max_per_sector, defensive):
+                continue
+            if not passes_correlation_guard(p.buy_ticker, list(virtual),
+                                            corr, corr_thresh):
+                continue
+            validated.append(p)
+        return validated
+
+    today = date(2026, 4, 20)
+
+    # Common scenario builders
+    # AAPL ER=0.01, MSFT ER=0.06 → raw_adv = 0.05; loss position has zero tax;
+    # no transaction cost → net_adv = 0.05 ≥ 0.03 threshold → swap.
+    def _basic_swap_inputs(self, **over):
+        held_scores = {"AAPL": 0.30}
+        held_er     = {"AAPL": 0.01}
+        held_meta   = {"AAPL": self._meta(entry_price=120.0, current_price=100.0)}
+        cands       = [_RCand("MSFT", 0.55, expected_return=0.06)]
+        last_sells  = {}
+        sector_map  = {"AAPL": "tech", "MSFT": "tech"}
+        defensive   = set()
+        corr        = {"AAPL": {"MSFT": 0.40}}
+        defaults = dict(
+            held_scores=held_scores, held_er=held_er, held_meta=held_meta,
+            candidates=cands, today=self.today, last_sells=last_sells,
+            sector_map=sector_map, max_per_sector=3, defensive=defensive,
+            corr=corr, corr_thresh=0.70, wash_days=30,
+        )
+        defaults.update(over)
+        return defaults
+
+    # ── notebook tests ────────────────────────────────────────────────────────
+
+    def test_nb_disabled_returns_empty(self):
+        cfg = {**self.DEFAULT_CFG, "enabled": False}
+        out = self._notebook_rotate(cfg=cfg, **self._basic_swap_inputs())
+        assert out == []
+
+    def test_nb_min_hold_blocks_recent(self):
+        ins = self._basic_swap_inputs(
+            held_meta={"AAPL": self._meta(entry_days_ago=10, entry_price=120.0,
+                                          current_price=100.0)},
+        )
+        assert self._notebook_rotate(**ins) == []
+
+    def test_nb_swap_emitted_when_advantage_clears(self):
+        out = self._notebook_rotate(**self._basic_swap_inputs())
+        assert len(out) == 1
+        assert out[0].sell_ticker == "AAPL" and out[0].buy_ticker == "MSFT"
+        assert out[0].net_advantage >= self.DEFAULT_CFG["min_expected_advantage_pct"]
+
+    def test_nb_wash_sale_blocks_rotation_buy(self):
+        ins = self._basic_swap_inputs(
+            last_sells={"MSFT": self.today - timedelta(days=10)},
+        )
+        assert self._notebook_rotate(**ins) == []
+
+    def test_nb_sector_cap_blocks_rotation_buy(self):
+        ins = self._basic_swap_inputs(
+            held_scores={"AAPL": 0.30, "JPM": 0.55},
+            held_er    ={"AAPL": 0.01, "JPM":  0.04},
+            held_meta={
+                "AAPL": self._meta(entry_price=120.0, current_price=100.0),
+                "JPM":  self._meta(entry_price=100.0, current_price=100.0),
+            },
+            sector_map={"AAPL": "tech", "MSFT": "tech", "JPM": "tech"},
+            max_per_sector=1,
+            corr={"AAPL": {}, "JPM": {}, "MSFT": {}},
+        )
+        assert self._notebook_rotate(**ins) == []
+
+    def test_nb_correlation_guard_blocks_rotation_buy(self):
+        ins = self._basic_swap_inputs()
+        ins["held_scores"] = {"AAPL": 0.30, "JPM": 0.55}
+        ins["held_er"]     = {"AAPL": 0.01, "JPM": 0.04}
+        ins["held_meta"]   = {
+            "AAPL": self._meta(entry_price=120.0, current_price=100.0),
+            "JPM":  self._meta(entry_price=100.0, current_price=100.0),
+        }
+        ins["sector_map"] = {"AAPL": "tech", "MSFT": "tech", "JPM": "fin"}
+        ins["corr"] = {"JPM": {"MSFT": 0.85}, "MSFT": {"JPM": 0.85}}
+        assert self._notebook_rotate(**ins) == []
+
+    # ── LEAN tests ────────────────────────────────────────────────────────────
+
+    def test_lean_disabled_returns_empty(self):
+        cfg = {**self.DEFAULT_CFG, "enabled": False}
+        assert self._lean_rotate(cfg=cfg, **self._basic_swap_inputs()) == []
+
+    def test_lean_min_hold_blocks_recent(self):
+        ins = self._basic_swap_inputs(
+            held_meta={"AAPL": self._meta(entry_days_ago=10, entry_price=120.0,
+                                          current_price=100.0)},
+        )
+        assert self._lean_rotate(**ins) == []
+
+    def test_lean_swap_emitted_when_advantage_clears(self):
+        out = self._lean_rotate(**self._basic_swap_inputs())
+        assert len(out) == 1
+        assert out[0].sell_ticker == "AAPL" and out[0].buy_ticker == "MSFT"
+        assert out[0].net_advantage >= self.DEFAULT_CFG["min_expected_advantage_pct"]
+
+    def test_lean_wash_sale_blocks_rotation_buy(self):
+        ins = self._basic_swap_inputs(
+            last_sells={"MSFT": self.today - timedelta(days=10)},
+        )
+        assert self._lean_rotate(**ins) == []
+
+    def test_lean_sector_cap_blocks_rotation_buy(self):
+        ins = self._basic_swap_inputs(
+            held_scores={"AAPL": 0.30, "JPM": 0.55},
+            held_er    ={"AAPL": 0.01, "JPM":  0.04},
+            held_meta={
+                "AAPL": self._meta(entry_price=120.0, current_price=100.0),
+                "JPM":  self._meta(entry_price=100.0, current_price=100.0),
+            },
+            sector_map={"AAPL": "tech", "MSFT": "tech", "JPM": "tech"},
+            max_per_sector=1,
+            corr={"AAPL": {}, "JPM": {}, "MSFT": {}},
+        )
+        assert self._lean_rotate(**ins) == []
+
+    def test_lean_correlation_guard_blocks_rotation_buy(self):
+        ins = self._basic_swap_inputs(
+            held_scores={"AAPL": 0.30, "JPM": 0.55},
+            held_er    ={"AAPL": 0.01, "JPM":  0.04},
+            held_meta={
+                "AAPL": self._meta(entry_price=120.0, current_price=100.0),
+                "JPM":  self._meta(entry_price=100.0, current_price=100.0),
+            },
+            sector_map={"AAPL": "tech", "MSFT": "tech", "JPM": "fin"},
+            corr={"JPM": {"MSFT": 0.85}, "MSFT": {"JPM": 0.85}},
+        )
+        assert self._lean_rotate(**ins) == []
+
+    # ── cross-check ───────────────────────────────────────────────────────────
+
+    def test_both_agree_across_scenarios(self):
+        scenarios = [
+            self._basic_swap_inputs(),
+            self._basic_swap_inputs(
+                held_meta={"AAPL": self._meta(entry_days_ago=10,
+                                              entry_price=120.0, current_price=100.0)}),
+            self._basic_swap_inputs(last_sells={"MSFT": self.today - timedelta(days=5)}),
+            # +20% ST gain on AAPL ⇒ tax drag of 0.10; raw_adv 0.05 - 0.10 = -0.05 → no swap
+            self._basic_swap_inputs(
+                held_meta={"AAPL": self._meta(entry_price=100.0, current_price=120.0)},
+                candidates=[_RCand("MSFT", 0.45, expected_return=0.06)],
+            ),
+            # LT protection: 350d gain pinned regardless of how strong the candidate is
+            self._basic_swap_inputs(
+                held_meta={"AAPL": self._meta(entry_days_ago=350,
+                                              entry_price=100.0, current_price=120.0)},
+                candidates=[_RCand("MSFT", 0.95, expected_return=0.50)],
+            ),
+        ]
+        for s in scenarios:
+            nb = self._notebook_rotate(**s)
+            ln = self._lean_rotate(**s)
+            assert [(p.sell_ticker, p.buy_ticker) for p in nb] == \
+                   [(p.sell_ticker, p.buy_ticker) for p in ln], \
+                   f"NB and LEAN disagree on scenario: NB={nb} LEAN={ln}"

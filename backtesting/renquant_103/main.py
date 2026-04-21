@@ -74,6 +74,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._stop_exits       = 0
         self._trail_exits      = 0
         self._sdl_exits        = 0
+        self._rotation_exits   = 0
         self._blocked_wash     = 0
         self._blocked_min_hold = 0
         self._blocked_streak   = 0
@@ -181,6 +182,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             "Stop Loss Exits":        str(self._stop_exits),
             "Single Day Loss Exits":  str(self._sdl_exits),
             "Trailing Stop Exits":    str(self._trail_exits),
+            "Rotation Exits":         str(self._rotation_exits),
             "Blocked Wash Sales":     str(self._blocked_wash),
             "Blocked Min Hold":       str(self._blocked_min_hold),
             "Blocked Sell Streak":    str(self._blocked_streak),

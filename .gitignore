@@ -7,6 +7,14 @@ __pycache__/
 # Jupyter
 .ipynb_checkpoints/
 
+# Pytest cache
+.pytest_cache/
+
+# Claude Code local state (keep .claude/skills/ for shared skill defs)
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.claude/settings.local.json
+
 # Env
 .env
 .venv/
@@ -25,3 +33,6 @@ logs/
 backtesting/lean.json
 backtesting/data/
 backtesting/*/backtests/
+
+# Live trading state (personal)
+backtesting/*/live_state.json

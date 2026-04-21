@@ -24,12 +24,12 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/AMD/AMD-rf-trees.json"
   },
-  "trained_date": "2026-04-19",
+  "trained_date": "2026-04-20",
   "best_approach": "Classification",
-  "sharpe": 1.1987,
+  "sharpe": 1.1814,
   "strategy": "renquant_103",
   "live_train_rows": 998,
-  "live_train_end": "2026-04-10",
+  "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
     "method": "platt",
@@ -39,14 +39,14 @@
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.3475609756097561,
-    "raw_min": -0.6666666666666666,
+    "raw_min": -0.7333333333333333,
     "raw_max": 0.8,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.6143554116300524,
-    "platt_intercept": -0.67579365871528,
-    "platt_scale_mean": -0.015040650406504066,
-    "platt_scale_std": 0.30677324230738073
+    "platt_coef": 1.1159617770581005,
+    "platt_intercept": -0.7938673137559346,
+    "platt_scale_mean": -0.00040650406504065165,
+    "platt_scale_std": 0.31446577499520356
   },
   "score_calibration_date": "2026-04-20"
 }

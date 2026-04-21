@@ -170,6 +170,15 @@
   },
   "lt_hold_gate_days": 330,
   "lt_hold_min_gain": 0.1,
+  "rotation": {
+    "enabled": true,
+    "min_expected_advantage_pct": 0.03,
+    "target_horizon_days": 20,
+    "transaction_cost_pct": 0.0,
+    "min_rotation_hold_days": 30,
+    "lt_protection_days": 30,
+    "max_rotations_per_bar": 2
+  },
   "sample_start": "2016-01-01",
   "sample_end": "2026-06-30",
   "backtest_start": "2024-01-01",

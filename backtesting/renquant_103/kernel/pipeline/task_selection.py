@@ -26,7 +26,14 @@ class PrepareSelectionTask(Task):
         defensive_set  = set(config.get("defensive_tickers", []))
         tiered         = config.get("tiered_thresholds", [])
 
-        held       = list(ctx.holdings.keys())
+        # Account for rotations already emitted by RotationJob: the sells will
+        # be liquidated this bar (so they don't count as held for guards) and
+        # the buys are already booked (so they do count as held for guards).
+        rotation_sells = {p.sell_ticker for p in (ctx.rotations or [])}
+        rotation_buys  = {p.buy_ticker  for p in (ctx.rotations or [])}
+        effective_held = (set(ctx.holdings.keys()) - rotation_sells) | rotation_buys
+
+        held       = list(effective_held)
         open_slots = max_positions - len(held)
 
         if open_slots <= 0:

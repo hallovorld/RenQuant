@@ -26,27 +26,56 @@
   },
   "trained_date": "2026-04-20",
   "best_approach": "Classification",
-  "sharpe": 1.0232,
+  "sharpe": 1.296,
   "strategy": "renquant_103",
   "live_train_rows": 998,
   "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
-    "method": "platt",
+    "method": "isotonic",
     "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 164,
+    "sample_size": 566,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.06097560975609756,
+    "base_rate": 0.061837455830388695,
     "raw_min": -0.13333333333333333,
     "raw_max": 0.2,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": 0.8266388227046833,
-    "platt_intercept": -3.0704406831351845,
-    "platt_scale_mean": 0.0020325203252032514,
-    "platt_scale_std": 0.04319476311214853
-  },
-  "score_calibration_date": "2026-04-20"
+    "x_thresholds": [
+      -0.13333333333333333,
+      -0.06666666666666667,
+      0.0,
+      0.06666666666666667,
+      0.2
+    ],
+    "y_thresholds": [
+      0.0,
+      0.05919661733615222,
+      0.05919661733615222,
+      0.07692307692307693,
+      0.07692307692307693
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.024644867013279403,
+    "er_x_thresholds": [
+      -0.13333333333333333,
+      0.0,
+      0.06666666666666667,
+      0.2
+    ],
+    "er_y_thresholds": [
+      -0.00288007120559943,
+      -0.00288007120559943,
+      -0.0022978505106170987,
+      -0.0022978505106170987
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
 }
