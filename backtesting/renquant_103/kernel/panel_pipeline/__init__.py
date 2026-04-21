@@ -24,10 +24,16 @@ from .panel_scorer import (
     top_n_by_score,
     probability_gate,
 )
+from .feature_matrix import (
+    build_inference_matrix,
+    run_panel_inference,
+)
 
 __all__ = [
     "PanelScorer",
     "compute_panel_scores",
     "top_n_by_score",
     "probability_gate",
+    "build_inference_matrix",
+    "run_panel_inference",
 ]

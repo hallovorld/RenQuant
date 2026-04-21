@@ -1325,7 +1325,8 @@ Flip `ranking.model_type` → `"panel"` only when ALL hold over ≥ 4 weekly reb
 | 2026-04-20 | 9.7 ltr_model.py + 9 tests | ✅ | 643267a | XGBoost rank:pairwise wrapper, pure-JSON artifact |
 | 2026-04-20 | 9.8 pipeline.py + 3 e2e tests | ✅ | 8284916 | Stage-1 orchestrator; 75 panel tests, 675 total pass |
 | 2026-04-20 | 9.9 panel_pipeline/ + 13 inference tests | ✅ | 7bd19df | PanelScorer + top_n + prob_gate; 688 total pass |
-| 2026-04-20 | 9.10 main.py + config integration | ⏳ | | |
+| 2026-04-21 | 9.10 feature_matrix.py + 13 inference tests | ✅ | (pending) | build_inference_matrix + run_panel_inference; 701 total pass |
+| 2026-04-21 | 9.10 main.py + live runner config flag | ⏳ | | deferred pending shadow-mode validation |
 | 2026-04-20 | Stage 1 acceptance run | ⏳ | | target mean-IC ≥ 0.08 |
 | | Shadow mode (2 weeks minimum) | ⏳ | | |
 | | Stage 1 promotion decision | ⏳ | | |
