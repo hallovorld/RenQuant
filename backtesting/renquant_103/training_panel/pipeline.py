@@ -1,67 +1,20 @@
-"""Stage-1 training orchestrator for the panel-LTR pipeline.
+"""Thin wrapper — delegates to `pp_panel_training.PanelTrainingPipeline`.
 
-Strings together modules 9.1–9.7:
-
-  1. Compute sector-ETF momentum features (9.3)
-  2. Neutralize per-ticker momentum/trend features (9.3)
-  3. Build cross-sectional factor bundle (9.5)
-  4. Compute forward returns → residualize vs SPY/sector → Gaussianize (9.2)
-  5. Apply min-history gate (9.4)
-  6. Assemble panel + group_sizes + weights + missingness (9.1)
-  7. Purged K-fold CV for mean IC (9.6)
-  8. Fit final model on full panel (9.7)
-  9. Save JSON artifact with CV metadata (9.7)
-
-Inputs are *already-computed* per-ticker feature frames (from the existing
-`training/features.py`) plus raw OHLCV. This keeps the orchestrator
-agnostic to upstream data-fetching.
+Kept as a backwards-compatible entrypoint so legacy callers
+(`scripts/train_panel_model.py`, `tests/test_panel_pipeline_e2e.py`,
+and earlier notebooks) keep working while the Job/Task refactor landed
+in `pp_panel_training.py` becomes the single source of truth for the
+Stage-1 orchestration.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
-from training_panel.panel_frame import build_panel_frame
-from training_panel.labels import build_labels
-from training_panel.neutralization import (
-    NEUTRALIZE_COLS, compute_sector_momentum, neutralize_features,
-)
-from training_panel.factors import build_factor_bundle
-from training_panel.imputation import apply_min_history_gate
-from training_panel.purged_cv import PurgedKFold, cross_validated_ic
-from training_panel.ltr_model import PanelLTRModel
-
-
-def _compute_fwd_returns(
-    ohlcv: dict[str, pd.DataFrame], lookahead_days: int,
-) -> dict[str, pd.Series]:
-    """Forward simple return: (close[t+L] / close[t]) − 1, indexed at t."""
-    out: dict[str, pd.Series] = {}
-    for t, df in ohlcv.items():
-        close = df["close"].astype(float)
-        fwd = close.shift(-lookahead_days) / close - 1.0
-        out[t] = fwd
-    return out
-
-
-def _sector_returns_by_ticker(
-    ticker_sectors: dict[str, str],
-    sector_etf_ohlcv: dict[str, pd.DataFrame],
-    lookahead_days: int,
-) -> dict[str, pd.Series]:
-    """Per-ticker forward return of that ticker's sector ETF."""
-    sec_fwd: dict[str, pd.Series] = {}
-    for sec, df in sector_etf_ohlcv.items():
-        close = df["close"].astype(float)
-        sec_fwd[sec] = close.shift(-lookahead_days) / close - 1.0
-    out: dict[str, pd.Series] = {}
-    for t, sec in ticker_sectors.items():
-        if sec in sec_fwd:
-            out[t] = sec_fwd[sec]
-    return out
+from .context import PanelTrainingContext
+from .pp_panel_training import PanelTrainingPipeline
 
 
 def train_panel_model(
@@ -75,148 +28,97 @@ def train_panel_model(
     config: dict[str, Any],
     out_path: Path | str,
 ) -> dict:
-    """End-to-end Stage-1 training. Writes JSON artifact and returns summary."""
+    """Legacy signature — preserved for existing callers/tests.
 
-    # ── Config (with sensible defaults) ────────────────────────────────────
-    lookahead   = int(config.get("lookahead_days", 5))
-    beta_window = int(config.get("beta_window", 60))
-    min_history = int(config.get("min_history_days", 252))
-    age_warmup  = int(config.get("age_warmup_days", 504))
-    cv_splits   = int(config.get("cv_n_splits", 5))
-    embargo     = int(config.get("cv_embargo_days", 5))
-    num_rounds  = int(config.get("num_boost_round", 400))
-    neutralize  = bool(config.get("neutralize_features", True))
-    nan_cols    = list(config.get("nan_prone_cols", []))
-    xgb_params  = dict(config.get("xgb_params", {}))
+    Internally builds a PanelTrainingContext with the inputs already
+    prepared by the caller (feature frames already built, OHLCV already
+    fetched) and runs the full PanelTrainingPipeline starting at
+    PanelSectorMomentumJob (DataFetchJob skipped because ohlcv is populated).
 
-    # ── 1 & 2. Sector momentum + feature neutralization ───────────────────
-    sec_momentum = compute_sector_momentum(sector_etf_ohlcv)
-    if neutralize:
-        ff = neutralize_features(
-            feature_frames, sec_momentum, ticker_sectors,
-            cols=NEUTRALIZE_COLS,
-        )
-    else:
-        ff = {t: feature_frames[t].copy() for t in feature_frames}
+    Because the caller already built `feature_frames` (pre-neutralize),
+    we also skip TickerPanelFeatureJob by seeding the per-ticker context
+    outputs directly — see _SeedFeatures below.
+    """
+    ctx_ohlcv = dict(ohlcv)
+    benchmark = config.get("benchmark", "SPY")
+    ctx_ohlcv[benchmark] = spy_ohlcv
 
-    # ── 3. Factor bundle ──────────────────────────────────────────────────
-    factor_frames = build_factor_bundle(ohlcv, spy_ohlcv)
+    panel_cfg = dict(config.get("panel_ltr", {}))
+    # Surface legacy top-level knobs under panel_ltr.* for the new jobs
+    for k in ("lookahead_days", "beta_window", "min_history_days",
+              "age_warmup_days", "cv_n_splits", "cv_embargo_days",
+              "num_boost_round", "neutralize_features", "nan_prone_cols",
+              "xgb_params", "training_notes"):
+        if k in config and k not in panel_cfg:
+            panel_cfg[k] = config[k]
+    merged_config = dict(config)
+    merged_config["panel_ltr"] = panel_cfg
+    if "artifact_path" not in panel_cfg:
+        panel_cfg["artifact_path"] = str(out_path)
 
-    # ── 4. Labels: forward returns → residuals → Gaussianized ─────────────
-    fwd_returns = _compute_fwd_returns(ohlcv, lookahead)
-    sec_fwd_by_t = _sector_returns_by_ticker(
-        ticker_sectors, sector_etf_ohlcv, lookahead,
-    )
-    spy_fwd = spy_ohlcv["close"].astype(float).shift(-lookahead) / spy_ohlcv["close"].astype(float) - 1.0
-    labels = build_labels(
-        fwd_returns, spy_fwd, sec_fwd_by_t,
-        beta_window=beta_window, lookahead_days=lookahead,
-    )
-
-    # ── 5. Min-history gate (applied to features; panel_frame also gates) ─
-    ff_gated = apply_min_history_gate(ff, min_history_days=0)  # no-op here
-    # (panel_frame applies its own `min_history_days` drop internally)
-
-    # ── 6. Assemble panel ────────────────────────────────────────────────
-    # Restrict to requested watchlist
-    ff_wl = {t: ff_gated[t] for t in watchlist if t in ff_gated}
-    lab_wl = {t: labels[t] for t in watchlist if t in labels}
-    sec_wl = {t: ticker_sectors[t] for t in watchlist if t in ticker_sectors}
-    fac_wl = {t: factor_frames[t] for t in watchlist if t in factor_frames}
-
-    panel, group_sizes, panel_meta = build_panel_frame(
-        ff_wl, lab_wl, sec_wl,
-        factor_frames=fac_wl,
+    ctx = PanelTrainingContext(
+        config=merged_config,
+        watchlist=list(watchlist),
+        ohlcv=ctx_ohlcv,
+        sector_etf_ohlcv=dict(sector_etf_ohlcv),
+        ticker_sectors=dict(ticker_sectors),
         listing_dates=listing_dates,
-        min_history_days=min_history,
-        lookahead_days=lookahead,
-        age_warmup_days=age_warmup,
-        nan_prone_cols=nan_cols,
+    )
+    # Seed pre-built per-ticker features so TickerPanelFeatureJob is a no-op
+    ctx.feature_frames = dict(feature_frames)
+
+    # Force the exact out_path the caller asked for — no artifacts/ redirect
+    _requested_out = Path(out_path)
+    panel_cfg["artifact_path"] = str(_requested_out)
+
+    # Run the new orchestrator but skip data fetch / seeded feature pass
+    from .pp_panel_training import (
+        PanelSectorMomentumJob, PanelFeatureJob, PanelFactorZScoreJob,
+        PanelLabelsJob, PanelAssemblyJob, PanelCVJob, PanelFitExportJob,
+        TickerPanelContext, TickerPanelNeutralizeJob, TickerPanelFactorJob,
+        run_panel_ticker_parallel, _run_panel_ticker_chain,
     )
 
-    # Drop rows whose label is NaN (early warmup / end-of-history)
-    label_mask = panel["label"].notna()
-    panel = panel[label_mask].reset_index(drop=True)
-    group_sizes = panel.groupby("date", sort=True).size().values.astype(np.int32)
+    PanelSectorMomentumJob().run(ctx)
 
-    # Feature columns = everything that isn't a label/weight/id column
-    exclude = {"date", "ticker", "sector", "label",
-               "weight", "weight_concurrency", "weight_age"}
-    feature_cols = [c for c in panel.columns if c not in exclude]
+    # Replicate PanelFeatureJob but skip the Feature step (frames already built)
+    ticker_ctxs = [
+        TickerPanelContext(
+            ticker=t, ohlcv=ctx.ohlcv, sector_momentum=ctx.sector_momentum,
+            ticker_sectors=ctx.ticker_sectors, config=ctx.config,
+        )
+        for t in ctx.watchlist if t in ctx.feature_frames
+    ]
+    for tc in ticker_ctxs:
+        tc.feature_frame = ctx.feature_frames[tc.ticker]
 
-    # ── 7. Purged K-fold CV ──────────────────────────────────────────────
-    def _factory():
-        return PanelLTRModel(params=xgb_params)
+    # Parallel Neutralize + Factor
+    def _chain(tc: TickerPanelContext):
+        TickerPanelNeutralizeJob().run(tc)
+        TickerPanelFactorJob().run(tc)
 
-    # cross_validated_ic expects models to have .fit/.predict sklearn-like;
-    # wrap PanelLTRModel to adapt its train() → fit().
-    class _SklearnAdapter:
-        def __init__(self):
-            self._m = PanelLTRModel(params=xgb_params)
-        def fit(self, X, y, sample_weight=None):
-            # Reconstruct local panel + group_sizes for the train slice.
-            # X is panel[feature_cols] already — add date column for grouping.
-            df = X.copy()
-            # Look up date & weight from the outer panel by positional index.
-            df["label"] = y
-            df["date"] = panel.loc[X.index, "date"].values
-            if sample_weight is not None:
-                df["weight"] = sample_weight
-            else:
-                df["weight"] = 1.0
-            df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
-            gs = df.groupby("date", sort=True).size().values.astype(np.int32)
-            self._m.train(
-                df, gs, feature_cols=list(X.columns),
-                label_col="label", weight_col="weight",
-                num_boost_round=max(num_rounds // 2, 50),
-            )
-        def predict(self, X):
-            df = X.copy()
-            return self._m.predict(df).values
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import os
+    n_workers = max(1, (os.cpu_count() or 4) - 2)
+    n_workers = min(n_workers, max(1, len(ticker_ctxs)))
+    with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="panel-wrap") as ex:
+        futs = [ex.submit(_chain, tc) for tc in ticker_ctxs]
+        for f in as_completed(futs):
+            f.result()
 
-    cv = PurgedKFold(
-        n_splits=cv_splits, embargo_days=embargo, lookahead_days=lookahead,
-    )
-    cv_out = cross_validated_ic(
-        _SklearnAdapter, panel, feature_cols, "label", cv,
-        weight_col="weight",
-    )
-
-    # ── 8. Final fit on full panel ───────────────────────────────────────
-    final_model = PanelLTRModel(params=xgb_params)
-    final_out = final_model.train(
-        panel, group_sizes, feature_cols=feature_cols,
-        label_col="label", weight_col="weight",
-        num_boost_round=num_rounds,
-    )
-
-    # ── 9. Save artifact ─────────────────────────────────────────────────
-    out_path = Path(out_path)
-    metadata = {
-        "panel_shape": {
-            "rows":    int(panel_meta["n_rows"]),
-            "tickers": int(panel_meta["n_tickers"]),
-            "dates":   int(panel_meta["n_dates"]),
-        },
-        "oos_mean_ic":     cv_out["mean_ic"],
-        "oos_std_ic":      cv_out["std_ic"],
-        "oos_per_fold_ic": cv_out["per_fold_ic"],
-        "training_train_ic": final_out["train_ic"],
-        "training_notes":  config.get("training_notes", "Stage 1 baseline"),
-        "neutralize_features": neutralize,
-        "lookahead_days":  lookahead,
-        "beta_window":     beta_window,
-        "min_history_days": min_history,
-        "cv_n_splits":     cv_splits,
-        "cv_embargo_days": embargo,
+    ctx.neutralized_frames = {
+        tc.ticker: tc.neutralized_frame for tc in ticker_ctxs
+        if tc.neutralized_frame is not None
     }
-    final_model.save(out_path, metadata=metadata)
-
-    return {
-        "mean_ic":      cv_out["mean_ic"],
-        "per_fold_ic":  cv_out["per_fold_ic"],
-        "artifact_path": str(out_path),
-        "panel_metadata": panel_meta,
-        "feature_cols": feature_cols,
+    ctx.raw_factor_frames = {
+        tc.ticker: tc.raw_factor_frame for tc in ticker_ctxs
+        if tc.raw_factor_frame is not None
     }
+
+    PanelFactorZScoreJob().run(ctx)
+    PanelLabelsJob().run(ctx)
+    PanelAssemblyJob().run(ctx)
+    PanelCVJob().run(ctx)
+    PanelFitExportJob().run(ctx)
+
+    return ctx.summary
