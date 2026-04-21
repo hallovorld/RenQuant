@@ -1,11 +1,14 @@
 """Per-symbol model tournament: trains 4 approaches, picks best by OOS Sharpe.
 
-Fixed train/OOS split at 2024-01-01. Tries Classification, QLearning, Manual,
-and XGBoost; selects the winner by annualised Sharpe on the OOS period.
+Rolling train/OOS split — default: today - 2 years. Tries Classification,
+QLearning, Manual, and XGBoost; selects the winner by annualised Sharpe on
+the OOS period. Override with config["oos_cutoff"] (ISO date) or
+config["oos_years"] (int).
 
 Exports:
   oos_sharpe(prices, signals) -> float
-  run_tournament(ticker, df, prices, spy_prices, model_params, sharpe_floor, tax_config) -> dict
+  resolve_oos_cutoff(config) -> pd.Timestamp
+  run_tournament(ticker, df, prices, spy_prices, model_params, sharpe_floor, tax_config, *, oos_cutoff=None) -> dict
   run_tournament_all(watchlist, feature_frames, ohlcv, config, max_workers=None) -> dict[str, dict]
 """
 from __future__ import annotations
@@ -24,7 +27,16 @@ from .scoring import (
     raw_score_kind_for_model,
 )
 
-_TRAIN_CUTOFF = pd.Timestamp("2024-01-01")
+_DEFAULT_OOS_YEARS = 2
+
+
+def resolve_oos_cutoff(config: dict) -> pd.Timestamp:
+    """OOS cutoff: explicit config["oos_cutoff"] wins, else today - oos_years."""
+    raw = config.get("oos_cutoff") if config else None
+    if raw:
+        return pd.Timestamp(raw)
+    years = int(config.get("oos_years", _DEFAULT_OOS_YEARS)) if config else _DEFAULT_OOS_YEARS
+    return pd.Timestamp.today().normalize() - pd.DateOffset(years=years)
 
 # Strategy root dir — used to set PYTHONPATH in worker processes so they can
 # import training.* even with spawn (which doesn't inherit sys.path).
@@ -55,12 +67,14 @@ def run_tournament(
     sharpe_floor: float,
     tax_config: dict,
     nthread: int | None = None,
+    oos_cutoff: "pd.Timestamp | str | None" = None,
 ) -> dict:
-    """Train all 4 approaches on pre-2024 data; evaluate OOS on 2024+; return best.
+    """Train on data before oos_cutoff; evaluate OOS on data on/after; return best.
 
     df must contain feature columns + 'label'.
     prices / spy_prices should cover the full df period; OOS slice is derived internally.
     nthread: passed to XGBoostModel to limit CPU usage when running in parallel workers.
+    oos_cutoff: explicit cutoff; defaults to today - 2 years.
     """
     _log: list[str] = []
 
@@ -72,8 +86,13 @@ def run_tournament(
     buy_thr      = model_params["buy_threshold"]
     sell_thr     = model_params["sell_threshold"]
 
-    train_df = df[df.index < _TRAIN_CUTOFF]
-    oos_df   = df[df.index >= _TRAIN_CUTOFF]
+    if oos_cutoff is None:
+        oos_cutoff = resolve_oos_cutoff({})
+    else:
+        oos_cutoff = pd.Timestamp(oos_cutoff)
+
+    train_df = df[df.index < oos_cutoff]
+    oos_df   = df[df.index >= oos_cutoff]
 
     _empty = {
         "sharpe": -99.0, "passes_floor": False, "best_approach": None, "model": None,
@@ -210,6 +229,7 @@ def run_tournament_all(
     model_params = config["model_params"]
     sharpe_floor = float(config.get("sharpe_floor", 0.8))
     tax_config   = config["tax"]
+    oos_cutoff   = resolve_oos_cutoff(config)
 
     tickers = [t for t in watchlist if t in feature_frames]
     if not tickers:
@@ -242,6 +262,7 @@ def run_tournament_all(
                 sharpe_floor,
                 tax_config,
                 xgb_nthread,
+                oos_cutoff,
             ): ticker
             for ticker in tickers
         }

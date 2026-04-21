@@ -141,8 +141,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 if age > staleness_days:
                     self.Log(f"WARNING: {ticker} model {age}d old (limit={staleness_days}), skipping")
                     continue
-            if sharpe_floor > 0 and meta.get("sharpe", 0.0) < sharpe_floor:
-                self.Log(f"WARNING: {ticker} sharpe={meta.get('sharpe', 0):.3f} below floor, skipping")
+            filter_sharpe = meta.get("live_holdout_sharpe", meta.get("sharpe", 0.0))
+            if sharpe_floor > 0 and filter_sharpe < sharpe_floor:
+                self.Log(f"WARNING: {ticker} sharpe={filter_sharpe:.3f} below floor, skipping")
                 continue
             self._models[ticker] = artifact
         self.Log(f"Loaded {len(self._models)}/{len(self._watchlist)} models: {sorted(self._models)}")

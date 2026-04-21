@@ -193,9 +193,10 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
                 log.warning("%s model is %d days old (limit=%d), skipping", symbol, age, staleness_days)
                 continue
 
-        # Reject below-floor models
+        # Reject below-floor models — prefer live_holdout_sharpe (reflects
+        # shipped weights) over tournament sharpe (algorithm-selection metric).
         sharpe_floor = float(config.get("sharpe_floor", 0.8))
-        model_sharpe = float(metadata.get("sharpe", 0.0))
+        model_sharpe = float(metadata.get("live_holdout_sharpe", metadata.get("sharpe", 0.0)))
         if sharpe_floor > 0 and model_sharpe < sharpe_floor:
             log.warning("%s sharpe=%.3f below floor=%.1f, skipping", symbol, model_sharpe, sharpe_floor)
             continue

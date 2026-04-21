@@ -496,6 +496,7 @@ class ExportJob(TrainingJob):
         retrain_live_models(
             ctx.results, ctx.feature_frames, ctx.exported,
             ctx.strategy_dir, mp, ctx.config, today,
+            ohlcv=ctx.ohlcv,
         )
 
 
@@ -562,7 +563,7 @@ class TickerTournamentJob(TrainingTickerJob):
     """Train all model types for one ticker; select best by OOS Sharpe."""
 
     def run(self, tc: TickerTrainingContext) -> None:
-        from training.tournament import run_tournament
+        from training.tournament import run_tournament, resolve_oos_cutoff
 
         if tc.feature_frame is None or tc.feature_frame.empty:
             return
@@ -576,6 +577,7 @@ class TickerTournamentJob(TrainingTickerJob):
                 mp,
                 sharpe_floor=float(tc.config.get("sharpe_floor", 0.8)),
                 tax_config=tc.config["tax"],
+                oos_cutoff=resolve_oos_cutoff(tc.config),
             )
             for line in result.pop("_log", []):
                 print(f"  [{tc.ticker}] {line}")
@@ -607,6 +609,7 @@ class TickerExportJob(TrainingTickerJob):
                 retrain_one_live_model(
                     tc.ticker, tc.result, tc.feature_frame,
                     tc.strategy_dir, mp, tc.config, today,
+                    ohlcv=tc.ohlcv,
                 )
         except Exception as exc:
             print(f"  {tc.ticker}: TickerExportJob failed — {exc}")
@@ -634,8 +637,9 @@ class TickerCalibrationJob(TrainingTickerJob):
             return
 
         try:
+            from training.tournament import resolve_oos_cutoff
             raw_scores  = model_obj.predict_score_bulk(tc.feature_frame)
-            oos_start   = tc.config.get("oos_cutoff", "2024-01-01")
+            oos_start   = resolve_oos_cutoff(tc.config)
             oos_frame   = tc.feature_frame[tc.feature_frame.index >= oos_start]
             if oos_frame.empty:
                 return

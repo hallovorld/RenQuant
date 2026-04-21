@@ -6,7 +6,7 @@ on an expanding window (last 4 years) for live trading.
 Exports:
   export_models(results, strategy_dir, today, sharpe_floor, lookahead, strategy_name)
       -> (exported: list[str], skipped: list[str])
-  retrain_live_models(results, feature_frames, exported, strategy_dir, model_params, config, today)
+  retrain_live_models(results, feature_frames, exported, strategy_dir, model_params, config, today, ohlcv=None)
 """
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ import numpy as np
 import pandas as pd
 
 from .models import create_model, XGBoostModel
+from .tournament import oos_sharpe
+
+_LIVE_HOLDOUT_DAYS = 126  # ~6 months of trading days
+_LIVE_HOLDOUT_MIN_TRAIN = 60  # skip holdout if train portion would be shorter than this
 
 
 def export_models(
@@ -59,6 +63,64 @@ def export_models(
     return exported, skipped
 
 
+def _build_unfitted_live_model(approach: str, feature_cols: list[str], mp: dict, seed: int):
+    """Construct (not train) the live model for a chosen approach."""
+    lookahead = mp["lookahead"]
+    threshold = mp["threshold"]
+    bags      = mp["bags"]
+    leaf_size = mp["leaf_size"]
+    buy_thr   = mp["buy_threshold"]
+    sell_thr  = mp["sell_threshold"]
+
+    np.random.seed(seed)
+    if approach == "Classification":
+        return create_model("classification", feature_columns=feature_cols,
+                            lookahead=lookahead, threshold=threshold,
+                            leaf_size=leaf_size, bags=bags,
+                            buy_threshold=buy_thr, sell_threshold=sell_thr)
+    if approach == "QLearning":
+        import random as _random
+        _random.seed(seed)
+        return create_model("qlearning", feature_columns=feature_cols[:5])
+    if approach == "XGBoost":
+        return XGBoostModel(feature_columns=feature_cols,
+                            lookahead=lookahead, threshold=threshold,
+                            buy_threshold=0.1, sell_threshold=0.1,
+                            n_estimators=200, max_depth=4,
+                            learning_rate=0.05, subsample=0.8,
+                            colsample_bytree=0.8, min_child_weight=10)
+    if approach == "Manual":
+        return create_model("manual", buy_threshold=2, sell_threshold=-2)
+    return None
+
+
+def _compute_live_holdout_sharpe(
+    approach: str,
+    df_full: pd.DataFrame,
+    prices: pd.Series,
+    feature_cols: list[str],
+    mp: dict,
+    seed: int,
+) -> float | None:
+    """Train a fresh model on df_full[:-holdout] and evaluate OOS Sharpe on the tail.
+
+    Returns None when df_full is too short to carve out a meaningful holdout.
+    """
+    if len(df_full) < _LIVE_HOLDOUT_DAYS + _LIVE_HOLDOUT_MIN_TRAIN:
+        return None
+    df_train   = df_full.iloc[:-_LIVE_HOLDOUT_DAYS]
+    df_holdout = df_full.iloc[-_LIVE_HOLDOUT_DAYS:]
+    holdout_model = _build_unfitted_live_model(approach, feature_cols, mp, seed)
+    if holdout_model is None:
+        return None
+    holdout_model.train(df_train)
+    sigs = (holdout_model.predict_bulk(df_holdout)
+            .map({"buy": 1, "hold": 0, "sell": -1})
+            .reindex(df_holdout.index))
+    holdout_prices = prices.reindex(df_holdout.index)
+    return oos_sharpe(holdout_prices, sigs)
+
+
 def retrain_live_models(
     results: dict[str, dict],
     feature_frames: dict[str, pd.DataFrame],
@@ -68,19 +130,19 @@ def retrain_live_models(
     config: dict,
     today: str,
     live_train_years: int = 4,
+    ohlcv: dict[str, pd.DataFrame] | None = None,
 ) -> None:
     """Retrain each exported model on the last N years of data; overwrite artifacts.
 
-    The tournament used a fixed 2024-01-01 cutoff for reproducible OOS evaluation.
-    This second pass trains on all recent data so the live model has seen current patterns.
+    Also computes a walk-forward holdout Sharpe (last ~6 months of the 4yr window)
+    and writes it to metadata as `live_holdout_sharpe`, so LEAN/live can filter
+    on a figure that reflects the shipped weights — not the tournament weights.
+
+    ohlcv: optional. When provided, holdout Sharpe uses absolute close prices from
+    ohlcv[ticker]["close"]; without it, holdout is skipped.
     """
     feature_cols = model_params["feature_columns"]
     lookahead    = model_params["lookahead"]
-    threshold    = model_params["threshold"]
-    bags         = model_params["bags"]
-    leaf_size    = model_params["leaf_size"]
-    buy_thr      = model_params["buy_threshold"]
-    sell_thr     = model_params["sell_threshold"]
     strategy     = config.get("strategy", "renquant_103")
 
     print(f"\n=== Live model refresh: expanding window up to {today} ===")
@@ -96,26 +158,21 @@ def retrain_live_models(
         _seed   = abs(hash(ticker)) % (2 ** 32)
 
         try:
-            np.random.seed(_seed)
-            if best_approach == "Classification":
-                live_model = create_model("classification", feature_columns=feature_cols,
-                                          lookahead=lookahead, threshold=threshold,
-                                          leaf_size=leaf_size, bags=bags,
-                                          buy_threshold=buy_thr, sell_threshold=sell_thr)
-            elif best_approach == "QLearning":
-                import random as _random
-                _random.seed(_seed)
-                live_model = create_model("qlearning", feature_columns=feature_cols[:5])
-            elif best_approach == "XGBoost":
-                live_model = XGBoostModel(feature_columns=feature_cols,
-                                          lookahead=lookahead, threshold=threshold,
-                                          buy_threshold=0.1, sell_threshold=0.1,
-                                          n_estimators=200, max_depth=4,
-                                          learning_rate=0.05, subsample=0.8,
-                                          colsample_bytree=0.8, min_child_weight=10)
-            elif best_approach == "Manual":
-                live_model = create_model("manual", buy_threshold=2, sell_threshold=-2)
-            else:
+            # ── walk-forward holdout (skipped when ohlcv unavailable) ──
+            holdout_sharpe: float | None = None
+            if ohlcv is not None and ticker in ohlcv:
+                try:
+                    holdout_sharpe = _compute_live_holdout_sharpe(
+                        best_approach, df_full,
+                        ohlcv[ticker]["close"],
+                        feature_cols, model_params, _seed,
+                    )
+                except Exception as e:
+                    print(f"  {ticker}: holdout Sharpe FAILED — {e}")
+
+            # ── train shipped model on full window ──
+            live_model = _build_unfitted_live_model(best_approach, feature_cols, model_params, _seed)
+            if live_model is None:
                 print(f"  {ticker}: unknown approach {best_approach!r}, skipping")
                 continue
 
@@ -133,13 +190,17 @@ def retrain_live_models(
                 meta["strategy"]        = strategy
                 meta["live_train_rows"] = len(df_full)
                 meta["live_train_end"]  = str(df_full.index[-1].date())
+                if holdout_sharpe is not None:
+                    meta["live_holdout_sharpe"] = round(holdout_sharpe, 4)
+                    meta["live_holdout_days"]   = _LIVE_HOLDOUT_DAYS
                 if results[ticker].get("score_calibration") is not None:
                     meta["score_calibration"] = results[ticker]["score_calibration"].to_dict()
                 with meta_path.open("w") as f:
                     json.dump(meta, f, indent=2)
 
+            hs = f" holdout_sharpe={holdout_sharpe:.3f}" if holdout_sharpe is not None else ""
             print(f"  {ticker}: {best_approach}, {len(df_full)} rows, "
-                  f"train_end={df_full.index[-1].date()}")
+                  f"train_end={df_full.index[-1].date()}{hs}")
         except Exception as e:
             print(f"  {ticker}: refresh FAILED — {e}")
 
@@ -190,6 +251,7 @@ def retrain_one_live_model(
     config: dict,
     today: str,
     live_train_years: int = 4,
+    ohlcv: dict[str, pd.DataFrame] | None = None,
 ) -> None:
     """Retrain one ticker's live model on the last N years; overwrite artifact."""
     retrain_live_models(
@@ -201,4 +263,5 @@ def retrain_one_live_model(
         config,
         today,
         live_train_years=live_train_years,
+        ohlcv=ohlcv,
     )
