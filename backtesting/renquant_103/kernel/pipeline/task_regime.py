@@ -1,12 +1,4 @@
-"""Regime detection tasks: Hurst → CUSUM → GMM → BEAR override → finalize.
-
-Each task writes intermediate results to ctx.regime_state so any task
-downstream (or a test) can inspect the layer-by-layer computation.
-
-Reads:  ctx.spy_returns, ctx.ohlcv["SPY"], ctx.gmm, ctx.regime_state, ctx.config
-Writes: ctx.regime_state.{hurst,hurst_regime,gmm_probs,hard_bear}
-        ctx.{regime,confidence,regime_counts}
-"""
+"""Regime detection tasks: Hurst → CUSUM → GMM → BEAR override → finalize."""
 from __future__ import annotations
 
 import logging
@@ -14,8 +6,8 @@ import math
 
 import numpy as np
 
-from ..context import InferenceContext
-from ..pipeline import Task
+from .context import InferenceContext
+from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.regime")
 
@@ -27,13 +19,13 @@ class HurstTask(Task):
         from kernel.regime import compute_hurst  # noqa: PLC0415
 
         cfg = ctx.config.get("regime", {})
-        hurst_window  = int(cfg.get("hurst_window", 63))
-        hurst_trend   = float(cfg.get("hurst_trending_threshold",  0.65))
-        hurst_rev     = float(cfg.get("hurst_reversion_threshold", 0.52))
+        hurst_window = int(cfg.get("hurst_window", 63))
+        hurst_trend  = float(cfg.get("hurst_trending_threshold",  0.65))
+        hurst_rev    = float(cfg.get("hurst_reversion_threshold", 0.52))
 
         spy_returns = np.array(ctx.spy_returns)
         if len(spy_returns) < 30:
-            return None  # not enough data — leave state as-is, continue
+            return None
 
         state = ctx.regime_state
         state.hurst = compute_hurst(spy_returns, window=hurst_window)
@@ -66,7 +58,6 @@ class CUSUMTask(Task):
         triggered = compute_cusum(spy_returns, cusum_lookback, cusum_thresh, cusum_drift)
         if triggered and state.countdown == 0:
             state.countdown = trans_bars
-            log.debug("CUSUMTask: changepoint — transition window opened (%d bars)", trans_bars)
 
         state.in_transition = state.countdown > 0
         if state.countdown > 0:
@@ -96,17 +87,13 @@ class GMMTask(Task):
 
 
 class BEAROverrideTask(Task):
-    """Hard BEAR override: fire if realized vol or cumulative return cross thresholds.
-
-    GMM alone reacts too slowly to macro shocks (e.g. tariff announcements).
-    This task checks raw SPY stats and forces BEAR regardless of GMM output.
-    """
+    """Hard BEAR override: fire if realized vol or cumulative return cross thresholds."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
         cfg = ctx.config.get("regime", {})
-        vol_window    = int(cfg.get("vol_realized_window", 20))
-        bear_vol_thr  = float(cfg.get("bear_vol_threshold",    0.35))
-        bear_ret_thr  = float(cfg.get("bear_return_threshold", -0.08))
+        vol_window   = int(cfg.get("vol_realized_window", 20))
+        bear_vol_thr = float(cfg.get("bear_vol_threshold",    0.35))
+        bear_ret_thr = float(cfg.get("bear_return_threshold", -0.08))
 
         spy_returns = np.array(ctx.spy_returns)
         state = ctx.regime_state
@@ -119,24 +106,20 @@ class BEAROverrideTask(Task):
             state.hard_bear = False
 
         if state.hard_bear:
-            log.info("BEAROverrideTask: hard BEAR override triggered "
-                     "(vol=%.1f%% ret=%.1f%%)",
-                     (spy_20d_vol if len(spy_returns) >= vol_window else 0) * 100,
-                     (spy_20d_ret if len(spy_returns) >= vol_window else 0) * 100)
+            log.info("BEAROverrideTask: hard BEAR override triggered")
 
 
 class RegimeFinalizeTask(Task):
-    """Resolve final regime from all layer outputs; write ctx.regime and ctx.confidence."""
+    """Resolve final regime from all layer outputs → ctx.regime, ctx.confidence."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.regime import compute_regime_confidence  # noqa: PLC0415
         from kernel.config import BEAR, BULL_VOLATILE        # noqa: PLC0415
 
         state = ctx.regime_state
-        gmm_probs = state.gmm_probs
+        gmm_probs    = state.gmm_probs
         dominant_gmm = max(gmm_probs, key=gmm_probs.get) if gmm_probs else "BULL_CALM"
 
-        # Priority: BEAR hard override > BEAR GMM dominant > Hurst layer > GMM fallback
         if state.hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
             new_regime = BEAR
         elif state.hurst_regime == "MOMENTUM":
@@ -152,9 +135,8 @@ class RegimeFinalizeTask(Task):
 
         state.regime     = new_regime
         state.confidence = confidence
-
-        ctx.regime     = new_regime
-        ctx.confidence = confidence
+        ctx.regime       = new_regime
+        ctx.confidence   = confidence
         ctx.regime_counts[new_regime] = ctx.regime_counts.get(new_regime, 0) + 1
 
         log.info("RegimeFinalizeTask: regime=%s  conf=%.2f  transition=%s",

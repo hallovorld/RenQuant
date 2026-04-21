@@ -241,12 +241,9 @@ class TestJobShouldSkip:
 
     def test_custom_should_skip_respected_by_pipeline(self):
         """Pipeline skips a job whose should_skip() returns True."""
-        from kernel.pipeline.pipeline import InferencePipeline
-
         ran = []
 
-        # We test Job.should_skip logic directly, not InferencePipeline (which
-        # imports real jobs). Just verify Job.run() isn't called when skipped.
+        # Test Job.should_skip logic directly; just verify Job.run() isn't called when skipped.
         class SkippableJob(Job):
             def should_skip(self, ctx): return True
             @property

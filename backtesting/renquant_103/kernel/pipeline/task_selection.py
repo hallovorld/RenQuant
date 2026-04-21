@@ -1,17 +1,10 @@
-"""Greedy slot-filling tasks: prepare context → run selection loop → size and emit.
-
-Reads:  ctx.ranked, ctx.holdings, ctx.last_sell_dates, ctx.portfolio_value,
-        ctx.cash, ctx.prices, ctx.regime, ctx.confidence, ctx.bear_only,
-        ctx.corr_matrix, ctx.earnings_calendar, ctx.config, ctx.today
-Writes: ctx.orders (list of order dicts)
-        ctx.counters["blocked_wash", "sector_blocks", "corr_blocks"] incremented
-"""
+"""Selection tasks: prepare context → run greedy loop → size and emit orders."""
 from __future__ import annotations
 
 import logging
 
-from ..context import InferenceContext
-from ..pipeline import Task
+from .context import InferenceContext
+from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.selection")
 
@@ -58,7 +51,6 @@ class PrepareSelectionTask(Task):
             tiered_thresholds = tiered,
             open_slots        = open_slots,
         )
-        log.debug("PrepareSelectionTask: open_slots=%d  bear_only=%s", open_slots, ctx.bear_only)
 
 
 class RunSelectionTask(Task):
@@ -67,17 +59,13 @@ class RunSelectionTask(Task):
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.selection import run_selection_loop  # noqa: PLC0415
 
-        sel_ctx = ctx._sel_ctx  # noqa: SLF001
-        selected, blocks = run_selection_loop(ctx.ranked, sel_ctx)
-
+        selected, blocks = run_selection_loop(ctx.ranked, ctx._sel_ctx)  # noqa: SLF001
         ctx._selected = selected  # noqa: SLF001
         ctx._blocks   = blocks    # noqa: SLF001
 
         ctx.counters["blocked_wash"]  = ctx.counters.get("blocked_wash",  0) + blocks.get("wash_sale",   0)
         ctx.counters["sector_blocks"] = ctx.counters.get("sector_blocks", 0) + blocks.get("sector",      0)
         ctx.counters["corr_blocks"]   = ctx.counters.get("corr_blocks",   0) + blocks.get("correlation", 0)
-
-        log.debug("RunSelectionTask: %d selected  blocks=%s", len(selected), blocks)
 
 
 class SizeAndEmitTask(Task):
@@ -89,7 +77,7 @@ class SizeAndEmitTask(Task):
         regime_p     = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         max_pct      = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
         reserve_pct  = float(regime_p.get("cash_reserve_pct", 0.0))  * ctx.confidence
-        override_pct = 0.15 if ctx.bear_only else None  # BEAR defensive uses fixed 15%
+        override_pct = 0.15 if ctx.bear_only else None
 
         for ticker in ctx._selected:  # noqa: SLF001
             price = ctx.prices.get(ticker)
@@ -108,7 +96,6 @@ class SizeAndEmitTask(Task):
 
             invest     = shares * price
             target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
-
             c = next((c for c in ctx.ranked if c.ticker == ticker), None)
             ctx.orders.append({
                 "ticker":     ticker,
@@ -125,5 +112,4 @@ class SizeAndEmitTask(Task):
             log.info("SizeAndEmitTask: %s BUY %d shares @ %.2f (%.1f%%)",
                      ticker, shares, price, target_pct * 100)
 
-        log.info("SizeAndEmitTask: %d orders placed  blocks=%s",
-                 len(ctx.orders), getattr(ctx, "_blocks", {}))
+        log.info("SizeAndEmitTask: %d orders placed", len(ctx.orders))

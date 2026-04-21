@@ -1,16 +1,10 @@
-"""Pre-buy gate tasks — each returns False to short-circuit and block buys.
-
-Reads:  ctx.skip_buys, ctx.regime_state, ctx.regime, ctx.spy_returns,
-        ctx.ohlcv["SPY"], ctx.config
-Writes: ctx.buy_blocked, ctx.bear_only
-        ctx.counters["transition_blocks"], ctx.counters["velocity_blocks"]
-"""
+"""Pre-buy gate tasks — each returns False to short-circuit and block buys."""
 from __future__ import annotations
 
 import logging
 
-from ..context import InferenceContext
-from ..pipeline import Task
+from .context import InferenceContext
+from .pipeline import Task
 from kernel.config import BEAR
 
 log = logging.getLogger("kernel.pipeline.gates")
@@ -44,7 +38,7 @@ class BEARBranchTask(Task):
         if ctx.regime == BEAR:
             ctx.bear_only = True
             log.info("BEARBranchTask: BEAR regime — defensives only")
-            return False  # stop chain; bear_only candidates handled separately
+            return False
 
 
 class VelocityCrashTask(Task):

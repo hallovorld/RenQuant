@@ -1,21 +1,16 @@
-"""Per-ticker sell evaluation tasks.
-
-Reads:  tc.ticker, tc.ohlcv, tc.model, tc.holding, tc.price,
-        tc.exit_params, tc.config, tc.today, tc.regime
-Writes: tc.holding (updated streak + HWM), tc.features, tc.model_action, tc.exit_signal
-"""
+"""Per-ticker sell evaluation tasks."""
 from __future__ import annotations
 
 import logging
 
-from ..context import TickerInferenceContext
-from ..pipeline import Task
+from .context import TickerInferenceContext
+from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.sell")
 
 
 class PrepareHoldingTask(Task):
-    """Validate that we have a holding and a valid price; attach prev_close."""
+    """Validate holding + price; attach prev_close."""
 
     def run(self, tc: TickerInferenceContext) -> bool | None:
         if tc.holding is None:
@@ -29,7 +24,6 @@ class PrepareHoldingTask(Task):
         if stock_df is None:
             return False
 
-        # Attach previous close for single-day loss gate calculation
         if len(stock_df) >= 2:
             tc.holding.prev_close = float(stock_df["close"].iloc[-2])
         else:
@@ -37,10 +31,7 @@ class PrepareHoldingTask(Task):
 
 
 class ScoreModelTask(Task):
-    """Build feature frame and score model → tc.model_action.
-
-    Requires SPY data; falls back to 'hold' if features unavailable.
-    """
+    """Build feature frame and score model → tc.model_action."""
 
     def run(self, tc: TickerInferenceContext) -> bool | None:
         from kernel.models     import score_artifact       # noqa: PLC0415
@@ -75,14 +66,13 @@ class EvaluateExitsTask(Task):
         sig, updated_hs = compute_exits(
             tc.price, tc.today, tc.model_action, tc.holding, tc.exit_params
         )
-        tc.holding = updated_hs  # updated streak + HWM
+        tc.holding = updated_hs
 
         if sig.should_exit:
             tc.exit_signal = sig
         elif tc.model_action == "sell" and updated_hs.sell_streak > 0:
-            sig._blocked_streak = True   # noqa: SLF001 — lightweight flag
+            sig._blocked_streak = True   # noqa: SLF001
             tc.exit_signal = sig
 
         log.debug("EvaluateExitsTask [%s]: should_exit=%s  type=%s",
-                  tc.ticker, sig.should_exit,
-                  getattr(sig, "exit_type", None))
+                  tc.ticker, sig.should_exit, getattr(sig, "exit_type", None))

@@ -10,8 +10,9 @@ Usage::
     ctx = InferenceContext(config=cfg, today=today, ...)
     InferencePipeline().run(ctx)
 """
-from .context  import InferenceContext, TickerInferenceContext
-from .pipeline import Job, TickerJob, InferencePipeline, SellOnlyPipeline, run_parallel
+from .context      import InferenceContext, TickerInferenceContext
+from .pipeline     import Job, TickerJob, run_parallel
+from .pp_inference import InferencePipeline, SellOnlyPipeline
 
 __all__ = [
     "InferenceContext", "TickerInferenceContext",

@@ -1,14 +1,10 @@
-"""Drawdown circuit breaker tasks.
-
-Reads:  ctx.portfolio_value, ctx.hwm, ctx.regime, ctx.config
-Writes: ctx.hwm, ctx.skip_buys
-"""
+"""Drawdown circuit breaker tasks."""
 from __future__ import annotations
 
 import logging
 
-from ..context import InferenceContext
-from ..pipeline import Task
+from .context import InferenceContext
+from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.drawdown")
 
