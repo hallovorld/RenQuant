@@ -10,8 +10,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from config import load_config, split_date_parts
-from kernel.config       import BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
+from kernel.config       import load_config, split_date_parts, BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
 from kernel.regime       import RegimeState, load_gmm_artifact
 from kernel.models       import load_artifact
 from kernel.pipeline     import InferencePipeline, SellOnlyPipeline
