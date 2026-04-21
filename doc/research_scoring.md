@@ -466,6 +466,38 @@ These shape the priority list and I'd like your view:
 
 ---
 
+## 7. Review notes (2026-04-21)
+
+Overall: this doc **makes sense** and the diagnosis is directionally strong. The
+biggest insight — current model-selection objective (single-stock Sharpe) is
+misaligned with production use (cross-sectional ranking/rotation) — is especially
+important and worth prioritising.
+
+Suggestions to make this draft tighter and easier to execute:
+
+1. **Split "quick wins" vs "architecture shifts" explicitly.**
+   - Quick wins: 3.7 (IC metric), 3.2 (purged CV), 3.6 (vol-normalised labels).
+   - Architecture shifts: 3.1 (panel LTR), 3.3 (stacking), 3.4 (distributional head).
+   This reduces implementation risk and makes sequencing clearer.
+
+2. **Add acceptance criteria per stage.**
+   For each stage, define clear go/no-go thresholds (e.g. IC uplift, calibration
+   error reduction, turnover change, drawdown impact) before promoting to live.
+
+3. **Tone down external performance numbers unless framed as illustrative only.**
+   Keep cited papers for direction, but avoid implying expected Sharpe ranges for
+   this specific watchlist unless confirmed by internal OOS tests.
+
+4. **Document migration/rollback guardrails for 3.1 panel LTR.**
+   Add a short checklist: artifact versioning, fallback path, parity checks, and
+   "disable-and-revert" conditions if live behaviour diverges from notebook/LEAN.
+
+5. **Clarify whether `rs_score` is deprecated or intentionally retained.**
+   If retained, define a concrete replacement signal and test plan; if deprecated,
+   mark removal criteria to avoid dead-path complexity.
+
+---
+
 ## Sources
 
 Cross-sectional / learning-to-rank:
