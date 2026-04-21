@@ -28,6 +28,12 @@ from .feature_matrix import (
     build_inference_matrix,
     run_panel_inference,
 )
+from .job_panel_scoring import (
+    PanelScoringJob,
+    LoadScorerTask,
+    BuildFeatureMatrixTask,
+    ApplyScoresTask,
+)
 
 __all__ = [
     "PanelScorer",
@@ -36,4 +42,8 @@ __all__ = [
     "probability_gate",
     "build_inference_matrix",
     "run_panel_inference",
+    "PanelScoringJob",
+    "LoadScorerTask",
+    "BuildFeatureMatrixTask",
+    "ApplyScoresTask",
 ]
