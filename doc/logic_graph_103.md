@@ -7,7 +7,7 @@
 
 ## Pipeline Architecture
 
-LEAN `OnData` and the live runner both execute via the same 7-job `InferencePipeline`:
+LEAN `OnData` and the live runner both execute via the same `InferencePipeline`. The pipeline runs in 3 phases: global sequential → per-ticker parallel → global sequential.
 
 ```
 LeanAdapter.make_context(data)         RunnerAdapter.make_context()
@@ -17,36 +17,49 @@ LeanAdapter.make_context(data)         RunnerAdapter.make_context()
          │
          ▼
  InferencePipeline.run(ctx)
- ┌──────────────────────────────────────────────────────────────────┐
- │  1. RegimeJob      — detect_regime() → ctx.regime, ctx.confidence │
- │  2. DrawdownJob    — circuit breaker → ctx.hwm, ctx.skip_buys     │
- │  3. SellJob        — compute_exits() → ctx.exits                  │
- │  4. BuyGatesJob    — market gates   → ctx.buy_blocked / bear_only │
- │  5. CandidateJob   — score_artifact() → ctx.candidates            │
- │  6. RankingJob     — score_candidates() → ctx.ranked              │
- │  7. SelectionJob   — run_selection_loop() → ctx.orders            │
- └──────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │  Phase 1: Global sequential                                            │
+ │    RegimeJob    — detect_regime() → ctx.regime, ctx.confidence         │
+ │    DrawdownJob  — circuit breaker → ctx.hwm, ctx.skip_buys             │
+ │    BuyGatesJob  — market gates    → ctx.buy_blocked / ctx.bear_only    │
+ │                                                                        │
+ │  Phase 2a: Parallel (ThreadPoolExecutor, per held ticker)              │
+ │    TickerSellJob [AAPL] ──┐                                            │
+ │    TickerSellJob [GOOG] ──┤─→ collect ctx.exits                        │
+ │    TickerSellJob [TSLA] ──┘   (compute_exits() per ticker)             │
+ │                                                                        │
+ │  Phase 2b: Parallel (ThreadPoolExecutor, per candidate ticker)         │
+ │    TickerCandidateJob [AMD] ──┐                                        │
+ │    TickerCandidateJob [CAT] ──┤─→ collect ctx.candidates               │
+ │    ...                        ┘   (score_artifact() per ticker)        │
+ │                                                                        │
+ │  Phase 3: Global sequential                                            │
+ │    RankingJob   — blend rank_score + rs_score → ctx.ranked             │
+ │    SelectionJob — run_selection_loop() → ctx.orders                    │
+ └────────────────────────────────────────────────────────────────────────┘
          │
          ▼
  LeanAdapter.commit(ctx)               RunnerAdapter.commit(ctx)
  (Liquidate / SetHoldings)             (broker.place_order / save live_state.json)
 ```
 
+`SellOnlyPipeline` (intraday sell-only): Phase 1 (RegimeJob → DrawdownJob) + parallel `TickerSellJob` — no buy phase.
+
 **Key files:**
 | File | Purpose |
 |------|---------|
-| `kernel/pipeline/context.py` | `InferenceContext` dataclass (~50 fields) |
-| `kernel/pipeline/pipeline.py` | `Job` ABC, `InferencePipeline`, `SellOnlyPipeline` |
+| `kernel/pipeline/context.py` | `InferenceContext` (~50 fields), `TickerInferenceContext` |
+| `kernel/pipeline/pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
 | `kernel/pipeline/jobs/regime.py` | `RegimeJob` |
 | `kernel/pipeline/jobs/drawdown.py` | `DrawdownJob` |
-| `kernel/pipeline/jobs/sell.py` | `SellJob` |
 | `kernel/pipeline/jobs/gates.py` | `BuyGatesJob` |
-| `kernel/pipeline/jobs/candidates.py` | `CandidateJob` |
+| `kernel/pipeline/jobs/sell.py` | `TickerSellJob` (per-ticker `TickerJob`) |
+| `kernel/pipeline/jobs/candidates.py` | `TickerCandidateJob` (per-ticker `TickerJob`) |
 | `kernel/pipeline/jobs/ranking.py` | `RankingJob` |
 | `kernel/pipeline/jobs/selection.py` | `SelectionJob` |
-| `adapters/lean.py` | `LeanAdapter` — LEAN ↔ context bridge |
-| `adapters/runner.py` | `RunnerAdapter` — live runner ↔ context bridge |
-| `main.py` | ~160-line LEAN entry point (Initialize + OnData) |
+| `adapters/lean.py` | `LeanAdapter` — LEAN ↔ `InferenceContext` bridge |
+| `adapters/runner.py` | `RunnerAdapter` — live runner ↔ `InferenceContext` bridge |
+| `main.py` | ~200-line LEAN entry point (Initialize + OnData) |
 
 **Isolation rules:**
 - `kernel/` — no `common/` imports; stdlib + numpy + pandas only (Docker-safe)

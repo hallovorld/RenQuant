@@ -173,42 +173,113 @@ backtesting/renquant_103/artifacts/
 | `training/portfolio.py` | `portfolio_stats()`, `compute_portvals()` |
 | `training/learners/` | `RTLearner`, `BagLearner`, `TabularQLearner` |
 
-**renquant_103 pipeline**: The live execution is orchestrated by `backtesting/renquant_103/pipeline/` — a structured 3-job pipeline that replaces the monolithic `run_once_multi()` function. The pipeline imports exclusively from `kernel/` (not from `common/`).
+**renquant_103 pipeline**: The live execution and LEAN backtesting are both orchestrated by a structured parallel pipeline that replaces the monolithic `run_once_multi()` function. Two pipeline types share the same 3-phase pattern.
+
+---
+
+## Pipeline Architecture
+
+### Two Pipelines
+
+**`InferencePipeline`** — used by LEAN (`main.py` via `LeanAdapter`) and the live runner (`live/runner.py` via `RunnerAdapter`). Runs in 3 phases:
 
 ```
-backtesting/renquant_103/pipeline/
-  __init__.py          # Re-exports: Pipeline, PipelineContext, run_tasks
-  context.py           # PipelineContext — shared state carried between jobs
-  task.py              # TaskResult + run_tasks() (ThreadPoolExecutor)
-  pipeline.py          # Job ABC + Pipeline sequential orchestrator
-  jobs/
-    data.py            # DataJob: parallel OHLCV fetch + artifact loading
-    signals.py         # SignalJob: regime detection + parallel candidate scoring
-    execution.py       # ExecutionJob: sell phase + buy selection loop
+Phase 1: Global sequential
+  RegimeJob → DrawdownJob → BuyGatesJob
+
+Phase 2a: Parallel (ThreadPoolExecutor, per held ticker)
+  TickerSellJob [AAPL] ──┐
+  TickerSellJob [GOOG] ──┤─→ collect ctx.exits
+  TickerSellJob [TSLA] ──┘
+
+Phase 2b: Parallel (ThreadPoolExecutor, per candidate ticker)
+  TickerCandidateJob [AMD] ──┐
+  TickerCandidateJob [CAT] ──┤─→ collect ctx.candidates
+  ...                         ┘
+
+Phase 3: Global sequential
+  RankingJob → SelectionJob
 ```
 
-**How the pipeline runs** (`live/runner.py` for kernel strategies):
+**`SellOnlyPipeline`** — intraday sell-only variant (used on market-open and pre-close runs). Runs Phase 1 (RegimeJob → DrawdownJob) then parallel `TickerSellJob` — no buy phase.
+
+**`TrainingPipeline`** — notebook training. Same 3-phase pattern:
+
 ```
-DataJob            → fetch all OHLCV in parallel (ThreadPoolExecutor)
-                     load GMM, correlation, earnings artifacts
-                     populate ctx.ohlcv, ctx.df_spy, ctx.gmm_artifact, …
+Phase 1: Global sequential
+  DataFetchJob → RegimeFitJob
 
-SignalJob          → detect regime (kernel.regime.detect_regime)
-                     fetch broker account state + live_state.json
-                     broker reconciliation (fill history → entry_dates)
-                     parallel candidate scoring (build_feature_frame + score_artifact)
-                     rank candidates by blended score
-                     populate ctx.regime, ctx.candidates, ctx.held, …
+Phase 2: Per-ticker parallel (ThreadPoolExecutor)
+  TickerFeatureJob → TickerTournamentJob → TickerExportJob → TickerCalibrationJob
+  (all four run in sequence within each ticker's worker thread)
+  orchestrated by FeatureJob (the global Job that dispatches run_ticker_parallel())
 
-ExecutionJob       → sell phase: iterate held positions, run compute_exits()
-                     save state, return if sell_only
-                     buy phase: gate checks → run_selection_loop() → place_order()
-                     save final state
+Phase 3: Global sequential
+  CorrelationJob
 ```
 
-**Parallelism**: Both DataJob (OHLCV fetch) and SignalJob (candidate scoring) use `run_tasks()` with `ThreadPoolExecutor(max_workers=8)`. Sell and buy phases remain sequential since each step updates shared state (held list, cash balance).
+### Context Dataclasses
 
-**`PipelineContext`** is the contract between jobs — a dataclass with ~30 fields spanning inputs (config, models, broker), DataJob outputs (ohlcv, gmm_artifact), SignalJob outputs (regime, candidates, held), and live state (entry_dates, sell_streaks, position_hwm).
+| Dataclass | Used by | Purpose |
+|-----------|---------|---------|
+| `InferenceContext` | `InferencePipeline`, `SellOnlyPipeline` | ~50 fields: config, models, ohlcv, regime, holdings, exits, candidates, orders |
+| `TickerInferenceContext` | `TickerSellJob`, `TickerCandidateJob` | Per-ticker slice: ticker, ohlcv, model, holding, exit_signal, candidate |
+| `TrainingContext` | `TrainingPipeline` | Global: config, ohlcv, gmm artifact, regime series, per-ticker results |
+| `TickerTrainingContext` | `TickerFeatureJob`, `TickerTournamentJob`, etc. | Per-ticker: feature frame, tournament results, calibration metadata |
+
+### Adapter Pattern
+
+Both LEAN and the live runner need to translate their own state representations into `InferenceContext` and commit results back. Adapters handle this translation:
+
+| Adapter | Location | Translates |
+|---------|----------|-----------|
+| `LeanAdapter` | `adapters/lean.py` | LEAN `Portfolio`, `Securities`, `History()` → `InferenceContext`; commits via `Liquidate()` / `SetHoldings()` |
+| `RunnerAdapter` | `adapters/runner.py` | Broker account state + parquet OHLCV + `live_state.json` → `InferenceContext`; commits via `broker.place_order()` + state save |
+| `NotebookAdapter` | (inline in notebook) | Pre-loaded OHLCV + simulated portfolio state → `InferenceContext` for backsimulation |
+
+**Isolation rules:**
+- `kernel/` — no `common/` imports; stdlib + numpy + pandas only (Docker-safe)
+- `adapters/` — can import `kernel/` and broker libs; not used inside LEAN Docker
+- `main.py` — imports `kernel/` and `adapters/lean.py` only
+
+### File Map
+
+**Inference pipeline** (`kernel/pipeline/`):
+
+| File | Contents |
+|------|----------|
+| `context.py` | `InferenceContext` (~50 fields), `TickerInferenceContext` |
+| `pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
+| `jobs/regime.py` | `RegimeJob` |
+| `jobs/drawdown.py` | `DrawdownJob` |
+| `jobs/gates.py` | `BuyGatesJob` |
+| `jobs/sell.py` | `TickerSellJob` (per-ticker, runs `compute_exits()`) |
+| `jobs/candidates.py` | `TickerCandidateJob` (per-ticker, scores and filters) |
+| `jobs/ranking.py` | `RankingJob` |
+| `jobs/selection.py` | `SelectionJob` |
+
+**Training pipeline** (`training/pipeline.py`):
+
+| Class | Phase | Contents |
+|-------|-------|----------|
+| `DataFetchJob` | 1 (global) | Fetch OHLCV for all tickers |
+| `RegimeFitJob` | 1 (global) | Fit GMM, build `final_regime` series |
+| `FeatureJob` | 2 orchestrator | Dispatches `run_ticker_parallel()` for all per-ticker jobs |
+| `TickerFeatureJob` | 2 (per-ticker) | Build labelled feature frame |
+| `TickerTournamentJob` | 2 (per-ticker) | Train all model types, select best |
+| `TickerExportJob` | 2 (per-ticker) | Write `models/` JSON artifacts |
+| `TickerCalibrationJob` | 2 (per-ticker) | Write `score_calibration` to policy-metadata |
+| `TournamentJob`, `ExportJob`, `CalibrationJob` | 2 no-ops | Skip-if-populated stubs for notebook backward compatibility |
+| `CorrelationJob` | 3 (global) | Compute 120-day correlations, save artifact |
+
+**Adapters** (`adapters/`):
+
+| File | Contents |
+|------|----------|
+| `adapters/lean.py` | `LeanAdapter` — LEAN ↔ `InferenceContext` bridge |
+| `adapters/runner.py` | `RunnerAdapter` — live runner ↔ `InferenceContext` bridge |
+
+**LEAN entry point**: `main.py` is now ~200 lines. `OnData()` = 5 lines: `make_context → pipeline.run → commit → plot → debug`.
 
 Three strategy-level artifacts live in `artifacts/` (not strategy root):
 ```
@@ -232,7 +303,7 @@ The live runner loads the same model artifacts as LEAN but executes via broker A
 - `IBKRBroker` — connects to Interactive Brokers TWS/Gateway (stub, pending IBKR setup)
 - Logs every signal and order to `live/logs/<strategy>/<date>.json`
 
-**renquant_103 dispatch**: `run_once_multi()` detects kernel-based strategies via `config["_use_kernel"]` and delegates to `_run_once_multi_pipeline()`, which constructs a `PipelineContext` and runs `Pipeline([DataJob(), SignalJob(), ExecutionJob()])`. The legacy path remains for renquant_102 and non-kernel strategies.
+**renquant_103 dispatch**: `live/runner.py` uses `RunnerAdapter` to build an `InferenceContext` from broker account state and parquet OHLCV, then runs `InferencePipeline` (full run) or `SellOnlyPipeline` (intraday sell-only). The legacy 900-line path remains for renquant_102.
 
 For renquant_103, live trade records keep both `raw_model_score` and `rank_model_score`. Filtering, slot thresholds, and candidate ranking use `rank_model_score`; operator diagnostics and post-mortems can still inspect the original `raw_model_score`.
 
