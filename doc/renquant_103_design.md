@@ -698,14 +698,15 @@ Six behavioral differences between notebook simulation and LEAN were identified 
    - `com.renquant.open103.plist` — 6:32 AM PT: sell-only pass using today's opening price
    - `com.renquant.preclose103.plist` — 12:44 PM PT: intraday stop-breach sell check
    - `com.renquant.daily103.plist` — 1:55 PM PT: retrain + full buy+sell pass after close
-6. ✅ 568 unit tests passing (`python -m pytest tests/ -v`)
+6. ✅ 564 unit tests passing — 562 passed + 2 skipped (`python -m pytest tests/ -v`)
 
 ### Phase 4 — Pipeline Re-architecture ✅ Complete
 1. ✅ Strategy kernel extracted to `backtesting/renquant_103/kernel/` (9 self-contained modules, zero `common/` imports)
 2. ✅ `InferencePipeline` (7 jobs) + `SellOnlyPipeline` + `TrainingPipeline` (per-ticker parallel)
 3. ✅ `LeanAdapter` + `RunnerAdapter` bridge LEAN/broker state to `InferenceContext`
 4. ✅ `main.py` slimmed to ~200 lines; `live/runner.py` uses `RunnerAdapter + InferencePipeline`
-5. ✅ 114 kernel unit tests + 31 pipeline tests; 566 total passing
+5. ✅ 114 kernel unit tests + 14 pipeline tests; 562 total passing (+ 2 skipped)
+6. ✅ Flat `kernel/pipeline/` layout — `pp_inference.py`, `pp_training.py`, `job_*.py`, `task_*.py` at the same level so pipelines share jobs and jobs share tasks
 
 ---
 
@@ -748,19 +749,22 @@ LeanAdapter.commit(ctx)              RunnerAdapter.commit(ctx)
 
 `SellOnlyPipeline` (intraday): Phase 1 (Regime → Drawdown) + parallel `TickerSellJob` only.
 
-**File map** (`kernel/pipeline/`):
+**File map** (`kernel/pipeline/` — flat layout: `pp_*` orchestrators, `job_*` jobs, `task_*` atomic steps at the same level):
 
 | File | Contents |
 |------|----------|
 | `context.py` | `InferenceContext`, `TickerInferenceContext` |
-| `pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
-| `jobs/regime.py` | `RegimeJob` |
-| `jobs/drawdown.py` | `DrawdownJob` |
-| `jobs/gates.py` | `BuyGatesJob` |
-| `jobs/sell.py` | `TickerSellJob` (per-ticker, runs `compute_exits()`) |
-| `jobs/candidates.py` | `TickerCandidateJob` (per-ticker, scores + RS) |
-| `jobs/ranking.py` | `RankingJob` |
-| `jobs/selection.py` | `SelectionJob` |
+| `pipeline.py` | `Task`, `Job`, `TickerJob` ABCs + `run_parallel()` |
+| `pp_inference.py` | `InferencePipeline`, `SellOnlyPipeline` (+ ticker-context builders) |
+| `pp_training.py` | `TrainingPipeline` + all training jobs/tasks |
+| `job_regime.py` | `RegimeJob` |
+| `job_drawdown.py` | `DrawdownJob` |
+| `job_gates.py` | `BuyGatesJob` |
+| `job_sell.py` | `TickerSellJob` (per-ticker, runs `compute_exits()`) |
+| `job_candidates.py` | `TickerCandidateJob` (per-ticker, scores + RS) |
+| `job_ranking.py` | `RankingJob` |
+| `job_selection.py` | `SelectionJob` |
+| `task_*.py` | Atomic tasks per concern (regime, drawdown, gates, sell, candidates, ranking, selection) |
 
 **Adapters** (`adapters/`): `lean.py` → `LeanAdapter`; `runner.py` → `RunnerAdapter`. Both are isolated from `kernel/` isolation rules (can import broker libs).
 

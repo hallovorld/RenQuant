@@ -244,21 +244,32 @@ Both LEAN and the live runner need to translate their own state representations 
 
 ### File Map
 
-**Inference pipeline** (`kernel/pipeline/`):
+**Inference + training pipeline** (`kernel/pipeline/`, flat layout — `pp_*` orchestrators, `job_*` jobs, `task_*` atomic tasks at the same level):
 
 | File | Contents |
 |------|----------|
 | `context.py` | `InferenceContext` (~50 fields), `TickerInferenceContext` |
-| `pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
-| `jobs/regime.py` | `RegimeJob` |
-| `jobs/drawdown.py` | `DrawdownJob` |
-| `jobs/gates.py` | `BuyGatesJob` |
-| `jobs/sell.py` | `TickerSellJob` (per-ticker, runs `compute_exits()`) |
-| `jobs/candidates.py` | `TickerCandidateJob` (per-ticker, scores and filters) |
-| `jobs/ranking.py` | `RankingJob` |
-| `jobs/selection.py` | `SelectionJob` |
+| `pipeline.py` | `Task`, `Job`, `TickerJob` ABCs + `run_parallel()` |
+| `pp_inference.py` | `InferencePipeline`, `SellOnlyPipeline` (+ ticker-context builders) |
+| `pp_training.py` | `TrainingContext`, `TickerTrainingContext`, `TrainingTask`, `TrainingJob`, `TrainingTickerJob`, `TrainingPipeline` + all training jobs/tasks |
+| `job_regime.py` | `RegimeJob` |
+| `job_drawdown.py` | `DrawdownJob` |
+| `job_gates.py` | `BuyGatesJob` |
+| `job_sell.py` | `TickerSellJob` (per-ticker) |
+| `job_candidates.py` | `TickerCandidateJob` (per-ticker) |
+| `job_ranking.py` | `RankingJob` |
+| `job_selection.py` | `SelectionJob` |
+| `task_regime.py` | `HurstTask`, `CUSUMTask`, `GMMTask`, `BEAROverrideTask`, `RegimeFinalizeTask` |
+| `task_drawdown.py` | `HWMUpdateTask`, `DrawdownCircuitTask` |
+| `task_gates.py` | `DrawdownGateTask`, `TransitionWindowTask`, `BEARBranchTask`, `VelocityCrashTask`, `EMA50GateTask` |
+| `task_sell.py` | `PrepareHoldingTask`, `ScoreModelTask`, `EvaluateExitsTask` |
+| `task_candidates.py` | `EarningsFilterTask`, `WashSaleFilterTask`, `BuildFeaturesTask`, `ScoreBuyTask`, `ScoreThresholdTask`, `RelativeStrengthTask`, `AssembleCandidateTask` |
+| `task_ranking.py` | `BlendScoresTask`, `SortCandidatesTask` |
+| `task_selection.py` | `PrepareSelectionTask`, `RunSelectionTask`, `SizeAndEmitTask` |
 
-**Training pipeline** (`training/pipeline.py`):
+`training/pipeline.py` is a thin re-export shim (notebook imports unchanged).
+
+**Training pipeline classes** (defined in `kernel/pipeline/pp_training.py`):
 
 | Class | Phase | Contents |
 |-------|-------|----------|

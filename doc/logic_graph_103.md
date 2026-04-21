@@ -45,18 +45,21 @@ LeanAdapter.make_context(data)         RunnerAdapter.make_context()
 
 `SellOnlyPipeline` (intraday sell-only): Phase 1 (RegimeJob → DrawdownJob) + parallel `TickerSellJob` — no buy phase.
 
-**Key files:**
+**Key files** (flat layout — all pipeline modules at the same level):
 | File | Purpose |
 |------|---------|
 | `kernel/pipeline/context.py` | `InferenceContext` (~50 fields), `TickerInferenceContext` |
-| `kernel/pipeline/pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
-| `kernel/pipeline/jobs/regime.py` | `RegimeJob` |
-| `kernel/pipeline/jobs/drawdown.py` | `DrawdownJob` |
-| `kernel/pipeline/jobs/gates.py` | `BuyGatesJob` |
-| `kernel/pipeline/jobs/sell.py` | `TickerSellJob` (per-ticker `TickerJob`) |
-| `kernel/pipeline/jobs/candidates.py` | `TickerCandidateJob` (per-ticker `TickerJob`) |
-| `kernel/pipeline/jobs/ranking.py` | `RankingJob` |
-| `kernel/pipeline/jobs/selection.py` | `SelectionJob` |
+| `kernel/pipeline/pipeline.py` | `Task`, `Job`, `TickerJob` ABCs + `run_parallel()` |
+| `kernel/pipeline/pp_inference.py` | `InferencePipeline`, `SellOnlyPipeline` (+ ticker-context builders) |
+| `kernel/pipeline/pp_training.py` | `TrainingPipeline` + all training jobs/tasks |
+| `kernel/pipeline/job_regime.py` | `RegimeJob` |
+| `kernel/pipeline/job_drawdown.py` | `DrawdownJob` |
+| `kernel/pipeline/job_gates.py` | `BuyGatesJob` |
+| `kernel/pipeline/job_sell.py` | `TickerSellJob` (per-ticker `TickerJob`) |
+| `kernel/pipeline/job_candidates.py` | `TickerCandidateJob` (per-ticker `TickerJob`) |
+| `kernel/pipeline/job_ranking.py` | `RankingJob` |
+| `kernel/pipeline/job_selection.py` | `SelectionJob` |
+| `kernel/pipeline/task_*.py` | Atomic tasks per concern (regime, drawdown, gates, sell, candidates, ranking, selection) |
 | `adapters/lean.py` | `LeanAdapter` — LEAN ↔ `InferenceContext` bridge |
 | `adapters/runner.py` | `RunnerAdapter` — live runner ↔ `InferenceContext` bridge |
 | `main.py` | ~200-line LEAN entry point (Initialize + OnData) |
@@ -430,7 +433,7 @@ LEAN uses `LeanAdapter` + `InferencePipeline`; live runner uses `RunnerAdapter` 
 | 26 | LT tax-aware hold gate | ✓ lt_hold_gate_days=330, lt_hold_min_gain=0.10 | ✓ SellJob → _build_exit_params passes both keys | ✓ |
 
 **Post-migration note (2026-04-20):** LEAN `main.py` is now ~160 lines (down from 576). All decision
-logic lives in `kernel/pipeline/jobs/` and is shared by LEAN and the live runner via adapters.
+logic lives in `kernel/pipeline/job_*.py` + `kernel/pipeline/task_*.py` (flat layout) and is shared by LEAN and the live runner via adapters.
 Notebook remains independent Python simulation code that mirrors the same kernel functions.
 
 **CHOPPY max_hold_days raised 23 → 40** to accommodate min_hold_days=30 + 3 consecutive sell signals (otherwise model-sell is structurally unreachable in CHOPPY with short max_hold).

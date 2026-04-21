@@ -187,21 +187,27 @@ All implement `BaseModel` ABC: `train()`, `predict()`, `predict_bulk()`, `predic
 
 Two 3-phase parallel pipelines shared by the live runner, LEAN, and the notebook.
 
+All pipeline components live in `kernel/pipeline/` as a flat layout:
+`pp_*` = pipeline orchestrators, `job_*` = sequential task chains, `task_*` = atomic steps.
+This lets pipelines share jobs and jobs share tasks without subdirectory plumbing.
+
 **InferencePipeline** (`kernel/pipeline/`):
 
 | Module | Contents |
 |--------|----------|
 | `pipeline/context.py` | `InferenceContext` (~50 fields), `TickerInferenceContext` (per-ticker slice) |
-| `pipeline/pipeline.py` | `Job` ABC, `TickerJob` ABC, `run_parallel()`, `InferencePipeline`, `SellOnlyPipeline` |
-| `pipeline/jobs/regime.py` | `RegimeJob` (Phase 1) |
-| `pipeline/jobs/drawdown.py` | `DrawdownJob` (Phase 1) |
-| `pipeline/jobs/gates.py` | `BuyGatesJob` (Phase 1) |
-| `pipeline/jobs/sell.py` | `TickerSellJob` (Phase 2a, per-ticker parallel) |
-| `pipeline/jobs/candidates.py` | `TickerCandidateJob` (Phase 2b, per-ticker parallel) |
-| `pipeline/jobs/ranking.py` | `RankingJob` (Phase 3) |
-| `pipeline/jobs/selection.py` | `SelectionJob` (Phase 3) |
+| `pipeline/pipeline.py` | `Task`, `Job`, `TickerJob` ABCs + `run_parallel()` |
+| `pipeline/pp_inference.py` | `InferencePipeline`, `SellOnlyPipeline` |
+| `pipeline/job_regime.py` | `RegimeJob` (Phase 1) |
+| `pipeline/job_drawdown.py` | `DrawdownJob` (Phase 1) |
+| `pipeline/job_gates.py` | `BuyGatesJob` (Phase 1) |
+| `pipeline/job_sell.py` | `TickerSellJob` (Phase 2a, per-ticker parallel) |
+| `pipeline/job_candidates.py` | `TickerCandidateJob` (Phase 2b, per-ticker parallel) |
+| `pipeline/job_ranking.py` | `RankingJob` (Phase 3) |
+| `pipeline/job_selection.py` | `SelectionJob` (Phase 3) |
+| `pipeline/task_*.py` | Atomic tasks per concern (regime, drawdown, gates, sell, candidates, ranking, selection) |
 
-**TrainingPipeline** (`training/pipeline.py`):
+**TrainingPipeline** (`kernel/pipeline/pp_training.py` — `training/pipeline.py` is a re-export shim for notebook imports):
 
 | Class | Phase | Contents |
 |-------|-------|----------|
@@ -255,7 +261,7 @@ Every policy in notebook and LEAN must have a corresponding test.
 - `tests/test_policy_alignment.py`: 17 policy classes, each with exactly 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
 - `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 568 collected tests (566 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 564 collected tests (562 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.

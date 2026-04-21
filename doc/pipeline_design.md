@@ -175,20 +175,33 @@ RegimeJob → DrawdownJob → [parallel TickerSellJob per held ticker]
 
 ## File map
 
+All pipeline components live in a single flat directory: `kernel/pipeline/`.
+`pp_*` = pipeline orchestrator, `job_*` = job (sequential task chain), `task_*` = atomic step.
+This lets pipelines share jobs, and jobs share tasks, without subdirectory plumbing.
+
 | File | Contents |
 |------|----------|
 | `kernel/pipeline/context.py` | `InferenceContext`, `TickerInferenceContext` |
-| `kernel/pipeline/pipeline.py` | `Job`, `TickerJob`, `InferencePipeline`, `SellOnlyPipeline`, `run_parallel` |
-| `kernel/pipeline/jobs/regime.py` | `RegimeJob` |
-| `kernel/pipeline/jobs/drawdown.py` | `DrawdownJob` |
-| `kernel/pipeline/jobs/gates.py` | `BuyGatesJob` |
-| `kernel/pipeline/jobs/sell.py` | `TickerSellJob` (per-ticker) |
-| `kernel/pipeline/jobs/candidates.py` | `TickerCandidateJob` (per-ticker) |
-| `kernel/pipeline/jobs/ranking.py` | `RankingJob` |
-| `kernel/pipeline/jobs/selection.py` | `SelectionJob` |
+| `kernel/pipeline/pipeline.py` | `Task`, `Job`, `TickerJob` ABCs + `run_parallel` |
+| `kernel/pipeline/pp_inference.py` | `InferencePipeline`, `SellOnlyPipeline` (+ context builders) |
+| `kernel/pipeline/pp_training.py` | `TrainingContext`, `TickerTrainingContext`, `TrainingTask`, `TrainingJob`, `TrainingTickerJob`, `TrainingPipeline` + all training jobs/tasks |
+| `kernel/pipeline/job_regime.py` | `RegimeJob` (Hurst → CUSUM → GMM → BEAR override → finalize) |
+| `kernel/pipeline/job_drawdown.py` | `DrawdownJob` (HWM update → circuit breaker) |
+| `kernel/pipeline/job_gates.py` | `BuyGatesJob` (drawdown gate → transition window → BEAR branch → velocity → EMA50) |
+| `kernel/pipeline/job_sell.py` | `TickerSellJob` (per-ticker: prepare → score → evaluate exits) |
+| `kernel/pipeline/job_candidates.py` | `TickerCandidateJob` (per-ticker: earnings → wash → features → score → threshold → RS → assemble) |
+| `kernel/pipeline/job_ranking.py` | `RankingJob` (blend → sort) |
+| `kernel/pipeline/job_selection.py` | `SelectionJob` (prepare → run selection → size & emit) |
+| `kernel/pipeline/task_regime.py` | `HurstTask`, `CUSUMTask`, `GMMTask`, `BEAROverrideTask`, `RegimeFinalizeTask` |
+| `kernel/pipeline/task_drawdown.py` | `HWMUpdateTask`, `DrawdownCircuitTask` |
+| `kernel/pipeline/task_gates.py` | `DrawdownGateTask`, `TransitionWindowTask`, `BEARBranchTask`, `VelocityCrashTask`, `EMA50GateTask` |
+| `kernel/pipeline/task_sell.py` | `PrepareHoldingTask`, `ScoreModelTask`, `EvaluateExitsTask` |
+| `kernel/pipeline/task_candidates.py` | `EarningsFilterTask`, `WashSaleFilterTask`, `BuildFeaturesTask`, `ScoreBuyTask`, `ScoreThresholdTask`, `RelativeStrengthTask`, `AssembleCandidateTask` |
+| `kernel/pipeline/task_ranking.py` | `BlendScoresTask`, `SortCandidatesTask` |
+| `kernel/pipeline/task_selection.py` | `PrepareSelectionTask`, `RunSelectionTask`, `SizeAndEmitTask` |
 | `adapters/lean.py` | `LeanAdapter` |
 | `adapters/runner.py` | `RunnerAdapter` |
-| `training/pipeline.py` | `TrainingContext`, `TickerTrainingContext`, `TrainingPipeline`, all jobs |
+| `training/pipeline.py` | Re-export shim → `kernel/pipeline/pp_training.py` (preserved for notebook imports) |
 
 ---
 
