@@ -1,84 +1,66 @@
-"""SellJob — evaluate exit signals for all held positions.
+"""TickerSellJob — evaluate exit signals for one held position.
 
-Reads:  ctx.holdings, ctx.prices, ctx.ohlcv, ctx.models, ctx.regime,
-        ctx.config, ctx.today
-Writes: ctx.exits (list of (ticker, ExitSignal))
-        ctx.holdings (updated HoldingState per ticker)
-        ctx.counters["blocked_streak"] incremented when streak not met
+Per-ticker job: reads/writes TickerInferenceContext only.
+Run in parallel by InferencePipeline for all held tickers.
+
+Reads:  tc.ticker, tc.ohlcv, tc.model, tc.holding, tc.price,
+        tc.exit_params, tc.config, tc.today, tc.regime
+Writes: tc.holding (updated streak + HWM), tc.exit_signal
 """
 from __future__ import annotations
 
 import logging
 
-from ..context import InferenceContext
-from ..pipeline import Job
+from ..context import TickerInferenceContext
+from ..pipeline import TickerJob
 
 log = logging.getLogger("kernel.pipeline.sell")
 
 
-class SellJob(Job):
-    """Run all 5 exit checks for each held ticker; populate ctx.exits."""
+class TickerSellJob(TickerJob):
+    """Compute exit signal for one held ticker."""
 
-    def run(self, ctx: InferenceContext) -> None:
-        from kernel.exits import compute_exits          # noqa: PLC0415
-        from kernel.models import score_artifact        # noqa: PLC0415
-        from kernel.indicators import build_feature_frame  # noqa: PLC0415
+    def run(self, tc: TickerInferenceContext) -> None:
+        from kernel.exits      import compute_exits       # noqa: PLC0415
+        from kernel.models     import score_artifact      # noqa: PLC0415
+        from kernel.indicators import build_feature_frame # noqa: PLC0415
 
-        config    = ctx.config
-        regime_p  = config.get("regime_params", {}).get(ctx.regime, {})
-        spec      = config.get("indicator_spec", {})
-        vol_win   = int(config.get("regime", {}).get("vol_realized_window", 20))
-        spy_df    = ctx.ohlcv.get("SPY")
+        hs = tc.holding
+        if hs is None:
+            return
 
-        exit_params = _build_exit_params(regime_p, config)
+        price = tc.price
+        if price <= 0:
+            log.warning("TickerSellJob: no price for %s — skipping", tc.ticker)
+            return
 
-        for ticker, hs in list(ctx.holdings.items()):
-            current_price = ctx.prices.get(ticker)
-            if current_price is None or current_price <= 0:
-                log.warning("SellJob: no price for %s — skipping", ticker)
-                continue
+        stock_df = tc.ohlcv.get(tc.ticker)
+        spy_df   = tc.ohlcv.get("SPY")
+        if stock_df is None:
+            return
 
-            stock_df = ctx.ohlcv.get(ticker)
-            if stock_df is None:
-                continue
+        # Attach prev_close
+        if len(stock_df) >= 2:
+            hs.prev_close = float(stock_df["close"].iloc[-2])
+        else:
+            hs.prev_close = None
 
-            # Attach prev_close to HoldingState
-            if len(stock_df) >= 2:
-                hs.prev_close = float(stock_df["close"].iloc[-2])
-            else:
-                hs.prev_close = None
+        # Model action for sell-streak check
+        model_action = "hold"
+        if tc.model is not None and spy_df is not None:
+            spec    = tc.config.get("indicator_spec", {})
+            vol_win = int(tc.config.get("regime", {}).get("vol_realized_window", 20))
+            features = build_feature_frame(stock_df, spy_df, spec, vol_win)
+            if features is not None and not features.empty:
+                sr = score_artifact(tc.model, features.iloc[-1], qty=1)
+                model_action = sr.signal
 
-            # Model signal — needed for sell-streak check
-            model_action = "hold"
-            artifact = ctx.models.get(ticker)
-            if artifact is not None and spy_df is not None:
-                features = build_feature_frame(stock_df, spy_df, spec, vol_win)
-                if features is not None and not features.empty:
-                    qty = 1  # non-zero → held position bucket in Q-learning
-                    sr = score_artifact(artifact, features.iloc[-1], qty)
-                    model_action = sr.signal
+        sig, hs = compute_exits(price, tc.today, model_action, hs, tc.exit_params)
+        tc.holding = hs   # updated streak + HWM
 
-            sig, hs = compute_exits(current_price, ctx.today, model_action, hs, exit_params)
-            ctx.holdings[ticker] = hs  # persist updated streak + HWM
-
-            if sig.should_exit:
-                ctx.exits.append((ticker, sig))
-            elif model_action == "sell" and hs.sell_streak > 0:
-                ctx.counters["blocked_streak"] = ctx.counters.get("blocked_streak", 0) + 1
-                log.debug("%s sell streak %d — waiting", ticker, hs.sell_streak)
-
-
-# ── Helper ─────────────────────────────────────────────────────────────────────
-
-def _build_exit_params(regime_p: dict, config: dict) -> dict:
-    return {
-        "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct", 0),
-        "trailing_stop_trail_pct":   regime_p.get("trailing_stop_trail_pct",   0),
-        "stop_loss_pct":             regime_p.get("stop_loss_pct",             0),
-        "max_single_day_loss_pct":   regime_p.get("max_single_day_loss_pct",   0),
-        "max_hold_days":             regime_p.get("max_hold_days",             0),
-        "consecutive_sell_signals":  int(config.get("consecutive_sell_signals", 3)),
-        "min_hold_days":             int(config.get("min_hold_days", 0)),
-        "lt_hold_gate_days":         int(config.get("lt_hold_gate_days", 0)),
-        "lt_hold_min_gain":          float(config.get("lt_hold_min_gain", 0.10)),
-    }
+        if sig.should_exit:
+            tc.exit_signal = sig
+        elif model_action == "sell" and hs.sell_streak > 0:
+            # Signal back to orchestrator that a streak is accumulating
+            sig._blocked_streak = True   # noqa: SLF001 — lightweight flag
+            tc.exit_signal = sig

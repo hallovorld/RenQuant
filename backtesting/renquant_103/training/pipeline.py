@@ -1,37 +1,61 @@
-"""TrainingPipeline — sequential job runner for renquant_103 model training.
+"""TrainingPipeline — parallel-per-ticker training pipeline for renquant_103.
 
-Each Job reads/writes TrainingContext.  Jobs run in order; any job may call
-should_skip() to short-circuit when its outputs are already populated.
+Architecture:
+
+    Phase 1  Global (sequential)
+      DataFetchJob    fetch OHLCV for all tickers
+      RegimeFitJob    fit GMM, build final_regime series
+
+    Phase 2  Per-ticker parallel  (ThreadPoolExecutor, one TickerTrainingContext each)
+      TickerFeatureJob    build labelled feature frame
+      TickerTournamentJob train all model types, select best
+      TickerExportJob     write models/ artifacts
+      TickerCalibrationJob write score_calibration metadata
+
+    Phase 3  Global (sequential)
+      CorrelationJob  120-day return correlation artifact
+
+The four per-ticker jobs run in sequence within each ticker's worker thread, so
+ticker pipelines are fully independent and all four stages fire in one pass.
+Notebook cells call the global orchestrator jobs (FeatureJob, TournamentJob,
+ExportJob, CalibrationJob) whose run() dispatch to the parallel worker threads.
 
 Usage from the notebook::
 
-    ctx = TrainingContext(config=CONFIG, ohlcv=ohlcv)   # pre-populate ohlcv to skip DataFetchJob
-    TrainingPipeline().run(ctx)
-    # ctx.final_regime, ctx.results, ctx.feature_frames, ... all populated
+    ctx = TrainingContext(config=CONFIG, ohlcv=ohlcv)  # ohlcv pre-populated → DataFetchJob skipped
+    DataFetchJob().run(ctx)      # skip if ohlcv already loaded
+    RegimeFitJob().run(ctx)      # skip if final_regime already set
+    FeatureJob().run(ctx)        # parallel: feature+tournament+export+calibrate per ticker
+    CorrelationJob().run(ctx)    # save artifact
 
-Or from automation scripts::
+Or via TrainingPipeline::
 
-    ctx = TrainingContext(config=CONFIG)
-    TrainingPipeline().run(ctx)                          # DataFetchJob fetches ohlcv
+    TrainingPipeline().run(ctx)  # runs all phases in order
 """
 from __future__ import annotations
 
 import json
+import logging
+import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from threading import current_thread
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+log = logging.getLogger("training.pipeline")
 
-# ── Context ────────────────────────────────────────────────────────────────────
+
+# ── Global context ─────────────────────────────────────────────────────────────
 
 @dataclass
 class TrainingContext:
-    """All shared state that flows through training jobs."""
+    """Shared state for global (cross-ticker) training jobs."""
     config: dict[str, Any]
 
     # populated by DataFetchJob (or pre-filled by caller)
@@ -43,22 +67,16 @@ class TrainingContext:
     changepoint_dates: pd.Index = field(default=None)
     final_regime: pd.Series = field(default=None)
     final_regime_conf: pd.Series = field(default=None)
-    gmm: Any = field(default=None)  # training.regime.RegimeGMM instance
+    gmm: Any = field(default=None)
 
-    # populated by FeatureJob
+    # collected from TickerTrainingContexts after parallel phase
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)
-
-    # populated by TournamentJob
     results: dict[str, Any] = field(default_factory=dict)
-
-    # populated by ExportJob
     exported: list[str] = field(default_factory=list)
+    calibration_summary: dict[str, Any] = field(default_factory=dict)
 
     # populated by CorrelationJob
     corr_matrix: pd.DataFrame = field(default=None)
-
-    # populated by CalibrationJob
-    calibration_summary: dict[str, Any] = field(default_factory=dict)
 
     @property
     def spy_df(self) -> pd.DataFrame | None:
@@ -74,10 +92,31 @@ class TrainingContext:
         return Path(_sd) if _sd else None
 
 
-# ── Job ABC ────────────────────────────────────────────────────────────────────
+# ── Per-ticker context ─────────────────────────────────────────────────────────
+
+@dataclass
+class TickerTrainingContext:
+    """Isolated per-ticker context for the parallel training phase.
+
+    One instance per ticker; jobs write only to this object — never to
+    TrainingContext.  Results are collected back after all threads complete.
+    """
+    ticker: str
+    ohlcv: dict[str, pd.DataFrame]  # shared read-only reference
+    config: dict[str, Any]
+    strategy_dir: Path | None
+
+    # outputs — written by per-ticker jobs
+    feature_frame: pd.DataFrame | None = None
+    result: dict | None = None
+    exported: bool = False
+    calibration: dict | None = None
+
+
+# ── Job ABCs ───────────────────────────────────────────────────────────────────
 
 class Job(ABC):
-    """A single stage in the training pipeline."""
+    """Global training pipeline stage."""
 
     @property
     def name(self) -> str:
@@ -90,13 +129,81 @@ class Job(ABC):
     def run(self, ctx: TrainingContext) -> None: ...
 
 
-# ── Jobs ───────────────────────────────────────────────────────────────────────
+class TickerJob(ABC):
+    """Per-ticker training stage — reads/writes TickerTrainingContext only."""
+
+    @abstractmethod
+    def run(self, tc: TickerTrainingContext) -> None: ...
+
+
+# ── Parallel runner ────────────────────────────────────────────────────────────
+
+def _run_ticker_chain(tc: TickerTrainingContext) -> None:
+    """Run the full per-ticker job chain in one worker thread.
+
+    Each stage logs [ticker|thread] so async output is traceable in the
+    notebook and in log files even when multiple tickers run concurrently.
+    """
+    tag = f"[{tc.ticker}|{current_thread().name}]"
+    t0 = time.monotonic()
+    log.info("%s FeatureJob START", tag)
+    TickerFeatureJob().run(tc)
+    if tc.feature_frame is None:
+        log.warning("%s FeatureJob produced no frame — skipping chain", tag)
+        return
+    log.info("%s FeatureJob OK  %d rows", tag, len(tc.feature_frame))
+
+    log.info("%s TournamentJob START", tag)
+    TickerTournamentJob().run(tc)
+    if not tc.result:
+        log.warning("%s TournamentJob produced no result — skipping export", tag)
+        return
+    passes = tc.result.get("passes_floor", False)
+    sharpe = tc.result.get("sharpe", 0.0)
+    best   = tc.result.get("best_approach", "?")
+    log.info("%s TournamentJob OK  best=%s sharpe=%.3f passes=%s", tag, best, sharpe, passes)
+
+    log.info("%s ExportJob START", tag)
+    TickerExportJob().run(tc)
+    log.info("%s ExportJob OK  exported=%s", tag, tc.exported)
+
+    log.info("%s CalibrationJob START", tag)
+    TickerCalibrationJob().run(tc)
+    log.info("%s CalibrationJob OK  cal=%s", tag, tc.calibration)
+
+    log.info("%s chain DONE  total=%.1fs", tag, time.monotonic() - t0)
+
+
+def run_ticker_parallel(
+    ticker_ctxs: list[TickerTrainingContext],
+    max_workers: int = 8,
+) -> None:
+    """Run _run_ticker_chain for each ticker in parallel via ThreadPoolExecutor.
+
+    Faults are caught per-ticker so one failure doesn't abort the batch.
+    Each worker thread is named 'ticker-SYMBOL' for readable log output.
+    """
+    if not ticker_ctxs:
+        return
+    n = min(max_workers, len(ticker_ctxs))
+    log.info("run_ticker_parallel: %d tickers, %d workers", len(ticker_ctxs), n)
+    t0 = time.monotonic()
+    with ThreadPoolExecutor(max_workers=n, thread_name_prefix="ticker") as ex:
+        futures = {ex.submit(_run_ticker_chain, tc): tc.ticker for tc in ticker_ctxs}
+        for fut in as_completed(futures):
+            ticker = futures[fut]
+            exc = fut.exception()
+            if exc:
+                log.error("[%s] chain ERROR — %s: %s", ticker, type(exc).__name__, exc)
+    elapsed = time.monotonic() - t0
+    log.info("run_ticker_parallel: DONE  %.1fs total  (%d tickers)", elapsed, len(ticker_ctxs))
+    print(f"  parallel phase done in {elapsed:.1f}s  ({len(ticker_ctxs)} tickers, {n} workers)")
+
+
+# ── Global jobs ────────────────────────────────────────────────────────────────
 
 class DataFetchJob(Job):
-    """Fetch OHLCV for all tickers (watchlist + sector ETFs + SPY).
-
-    Skipped when ctx.ohlcv is already populated (e.g. pre-loaded in notebook).
-    """
+    """Fetch OHLCV for all tickers. Skipped if ohlcv already populated."""
 
     def should_skip(self, ctx: TrainingContext) -> bool:
         if ctx.ohlcv:
@@ -129,12 +236,7 @@ class DataFetchJob(Job):
 
 
 class RegimeFitJob(Job):
-    """Compute Hurst, CUSUM, GMM, and combine into final daily regime series.
-
-    Saves the GMM artifact to strategy_dir/artifacts/spy-gmm-regime.json.
-    Populates: hurst_series, cusum_series, changepoint_dates,
-               final_regime, final_regime_conf, gmm.
-    """
+    """Fit Hurst + CUSUM + GMM and build daily regime series. Saves GMM artifact."""
 
     def should_skip(self, ctx: TrainingContext) -> bool:
         if ctx.final_regime is not None:
@@ -154,11 +256,8 @@ class RegimeFitJob(Job):
 
         rcfg = ctx.config["regime"]
 
-        # Layer 1: Hurst
         spy_returns = spy_df["close"].pct_change().dropna()
         ctx.hurst_series = rolling_hurst(spy_returns, window=rcfg["hurst_window"]).dropna()
-
-        # Layer 2: CUSUM
         ctx.cusum_series = rolling_cusum(
             spy_returns,
             window    = rcfg["cusum_lookback"],
@@ -167,7 +266,6 @@ class RegimeFitJob(Job):
         )
         ctx.changepoint_dates = ctx.cusum_series[ctx.cusum_series].index
 
-        # Layer 3: GMM
         gmm_features = build_gmm_features(
             spy_df, vol_window=20, hurst_window=rcfg["hurst_window"]
         )
@@ -177,7 +275,6 @@ class RegimeFitJob(Job):
 
         regime_labels, regime_probs = gmm.predict(gmm_features)
 
-        # Combine into final daily regime
         BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR = (
             "BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"
         )
@@ -200,12 +297,7 @@ class RegimeFitJob(Job):
             gmm_r      = regime_labels.loc[dt]
             gmm_bear_p = regime_probs.loc[dt].get(BEAR, 0.0)
 
-            if h > hurst_trend:
-                base = BULL_CALM
-            elif h < hurst_rev:
-                base = CHOPPY
-            else:
-                base = None
+            base = BULL_CALM if h > hurst_trend else (CHOPPY if h < hurst_rev else None)
 
             vol_today = float(spy_20d_vol.loc[dt]) if dt in spy_20d_vol.index else 0.0
             ret_today = float(spy_20d_ret.loc[dt]) if dt in spy_20d_ret.index else 0.0
@@ -234,7 +326,6 @@ class RegimeFitJob(Job):
         print("RegimeFitJob: Final regime distribution:")
         print(final_regime.value_counts().to_string())
 
-        # Save GMM artifact
         if ctx.strategy_dir:
             artifacts_dir = ctx.strategy_dir / "artifacts"
             artifacts_dir.mkdir(exist_ok=True)
@@ -244,7 +335,12 @@ class RegimeFitJob(Job):
 
 
 class FeatureJob(Job):
-    """Build labelled feature frames for every ticker in the watchlist."""
+    """Orchestrate parallel per-ticker: Feature → Tournament → Export → Calibrate.
+
+    All four per-ticker stages run in one ThreadPoolExecutor wave.
+    Results are collected into ctx.feature_frames / ctx.results / ctx.exported /
+    ctx.calibration_summary after all workers complete.
+    """
 
     def should_skip(self, ctx: TrainingContext) -> bool:
         if ctx.feature_frames:
@@ -253,55 +349,86 @@ class FeatureJob(Job):
         return False
 
     def run(self, ctx: TrainingContext) -> None:
-        from training.features import build_all_training_features
+        ticker_ctxs = [
+            TickerTrainingContext(
+                ticker=t,
+                ohlcv=ctx.ohlcv,
+                config=ctx.config,
+                strategy_dir=ctx.strategy_dir,
+            )
+            for t in ctx.watchlist
+        ]
+        log.info("FeatureJob: launching parallel chain for %d tickers", len(ticker_ctxs))
+        print(f"FeatureJob: launching parallel chain for {len(ticker_ctxs)} tickers")
+        run_ticker_parallel(ticker_ctxs)
 
-        mp = ctx.config["model_params"]
-        ctx.feature_frames = build_all_training_features(
-            ctx.watchlist,
-            ctx.ohlcv,
-            ctx.config["indicator_spec"],
-            mp["lookahead"],
-            mp["threshold"],
-        )
-        print(f"FeatureJob: built feature frames for {len(ctx.feature_frames)} tickers")
+        ctx.feature_frames = {
+            tc.ticker: tc.feature_frame
+            for tc in ticker_ctxs if tc.feature_frame is not None
+        }
+        ctx.results = {
+            tc.ticker: tc.result
+            for tc in ticker_ctxs if tc.result
+        }
+        ctx.exported = [tc.ticker for tc in ticker_ctxs if tc.exported]
+        ctx.calibration_summary = {
+            tc.ticker: tc.calibration
+            for tc in ticker_ctxs if tc.calibration
+        }
+
+        passed  = sum(1 for r in ctx.results.values() if r.get("passes_floor"))
+        n_feat  = len(ctx.feature_frames)
+        n_exp   = len(ctx.exported)
+        n_cal   = len(ctx.calibration_summary)
+        log.info("FeatureJob: frames=%d  passed=%d/%d  exported=%d  calibrated=%d",
+                 n_feat, passed, len(ctx.watchlist), n_exp, n_cal)
+        print(f"FeatureJob: {n_feat} feature frames, "
+              f"{passed}/{len(ctx.watchlist)} passed Sharpe floor, "
+              f"{n_exp} exported, {n_cal} calibrated")
 
 
 class TournamentJob(Job):
-    """Train and evaluate all model types; select best per ticker."""
+    """No-op: tournament runs inside FeatureJob's parallel chain.
+
+    Kept so notebook cells calling TournamentJob() still work — they just skip.
+    """
 
     def should_skip(self, ctx: TrainingContext) -> bool:
         if ctx.results:
-            print("TournamentJob: results already populated — skipping")
+            print("TournamentJob: results already populated by FeatureJob — skipping")
             return True
         return False
 
     def run(self, ctx: TrainingContext) -> None:
+        print("TournamentJob: re-running standalone (not recommended — use FeatureJob)")
         from training.tournament import run_tournament_all
-
         ctx.results = run_tournament_all(
             ctx.watchlist, ctx.feature_frames, ctx.ohlcv, ctx.config
         )
-        passed = sum(1 for r in ctx.results.values() if r.get("passes_floor"))
-        print(f"TournamentJob: {passed}/{len(ctx.watchlist)} tickers passed Sharpe floor")
 
 
 class ExportJob(Job):
-    """Export trained models to strategy_dir/models/ and retrain on full history."""
+    """No-op: export runs inside FeatureJob's parallel chain.
+
+    Kept so notebook cells calling ExportJob() still work — they just skip.
+    """
+
+    def should_skip(self, ctx: TrainingContext) -> bool:
+        if ctx.exported:
+            print("ExportJob: exported already populated by FeatureJob — skipping")
+            return True
+        return False
 
     def run(self, ctx: TrainingContext) -> None:
+        print("ExportJob: re-running standalone (not recommended — use FeatureJob)")
         from datetime import date as _date
         from training.export import export_models, retrain_live_models
-
         if not ctx.strategy_dir:
-            print("ExportJob: no strategy_dir set — skipping")
             return
-
         today = str(_date.today())
         mp = ctx.config["model_params"]
         ctx.exported, _ = export_models(
-            ctx.results,
-            ctx.strategy_dir,
-            today,
+            ctx.results, ctx.strategy_dir, today,
             sharpe_floor=float(ctx.config.get("sharpe_floor", 0.8)),
             lookahead=mp["lookahead"],
             strategy_name=ctx.config.get("_strategy_name", "renquant_103"),
@@ -310,17 +437,14 @@ class ExportJob(Job):
             ctx.results, ctx.feature_frames, ctx.exported,
             ctx.strategy_dir, mp, ctx.config, today,
         )
-        print(f"ExportJob: exported {len(ctx.exported)} models")
 
 
 class CorrelationJob(Job):
-    """Compute 120-day rolling return correlation and save artifact."""
+    """Compute 120-day return correlation and save watchlist artifact."""
 
     def run(self, ctx: TrainingContext) -> None:
         close_df = pd.DataFrame({
-            t: ctx.ohlcv[t]["close"]
-            for t in ctx.watchlist
-            if t in ctx.ohlcv
+            t: ctx.ohlcv[t]["close"] for t in ctx.watchlist if t in ctx.ohlcv
         })
         ret_df = close_df.pct_change().dropna()
         ctx.corr_matrix = ret_df.tail(120).corr()
@@ -341,86 +465,164 @@ class CorrelationJob(Job):
 
 
 class CalibrationJob(Job):
-    """Refresh score calibrations and blend weights for all exported models."""
+    """No-op: calibration runs inside FeatureJob's parallel chain.
+
+    Kept so notebook cells calling CalibrationJob() still work — they just skip.
+    """
+
+    def should_skip(self, ctx: TrainingContext) -> bool:
+        if ctx.calibration_summary:
+            print("CalibrationJob: calibration_summary already populated — skipping")
+            return True
+        return False
 
     def run(self, ctx: TrainingContext) -> None:
+        print("CalibrationJob: nothing to do (calibration ran in FeatureJob parallel chain)")
+
+
+# ── Per-ticker jobs ────────────────────────────────────────────────────────────
+
+class TickerFeatureJob(TickerJob):
+    """Build the labelled feature frame for one ticker."""
+
+    def run(self, tc: TickerTrainingContext) -> None:
+        from training.features import build_training_features
+
+        mp = tc.config["model_params"]
+        try:
+            tc.feature_frame = build_training_features(
+                tc.ticker,
+                tc.ohlcv,
+                tc.config["indicator_spec"],
+                mp["lookahead"],
+                mp["threshold"],
+            )
+        except Exception as exc:
+            print(f"  {tc.ticker}: TickerFeatureJob failed — {exc}")
+
+
+class TickerTournamentJob(TickerJob):
+    """Train all model types for one ticker; select best by OOS Sharpe."""
+
+    def run(self, tc: TickerTrainingContext) -> None:
+        from training.tournament import run_tournament
+
+        if tc.feature_frame is None or tc.feature_frame.empty:
+            return
+        mp = tc.config["model_params"]
+        try:
+            result = run_tournament(
+                tc.ticker,
+                tc.feature_frame,
+                tc.ohlcv[tc.ticker]["close"],
+                tc.ohlcv["SPY"]["close"],
+                mp,
+                sharpe_floor=float(tc.config.get("sharpe_floor", 0.8)),
+                tax_config=tc.config["tax"],
+            )
+            for line in result.pop("_log", []):
+                print(f"  [{tc.ticker}] {line}")
+            tc.result = result
+        except Exception as exc:
+            print(f"  {tc.ticker}: TickerTournamentJob failed — {exc}")
+
+
+class TickerExportJob(TickerJob):
+    """Export the best model artifact for one ticker."""
+
+    def run(self, tc: TickerTrainingContext) -> None:
+        from datetime import date as _date
+        from training.export import export_one_model, retrain_one_live_model
+
+        if not tc.result or not tc.strategy_dir:
+            return
+        today = str(_date.today())
+        mp = tc.config["model_params"]
+        try:
+            exported = export_one_model(
+                tc.ticker, tc.result, tc.strategy_dir, today,
+                sharpe_floor=float(tc.config.get("sharpe_floor", 0.8)),
+                lookahead=mp["lookahead"],
+                strategy_name=tc.config.get("_strategy_name", "renquant_103"),
+            )
+            if exported:
+                tc.exported = True
+                retrain_one_live_model(
+                    tc.ticker, tc.result, tc.feature_frame,
+                    tc.strategy_dir, mp, tc.config, today,
+                )
+        except Exception as exc:
+            print(f"  {tc.ticker}: TickerExportJob failed — {exc}")
+
+
+class TickerCalibrationJob(TickerJob):
+    """Fit and save score calibration metadata for one ticker."""
+
+    def run(self, tc: TickerTrainingContext) -> None:
+        if not tc.exported or not tc.result or tc.feature_frame is None:
+            return
+
         try:
             from training.scoring import fit_probability_calibration
-            from kernel.scoring import ScoreCalibration, raw_score_kind_for_model
-        except ImportError as exc:
-            print(f"CalibrationJob: skipped — {exc}")
+        except ImportError:
             return
 
-        if not ctx.strategy_dir:
-            print("CalibrationJob: no strategy_dir — skipping")
+        import json as _json
+
+        mp = tc.config["model_params"]
+        res = tc.result
+        best = res.get("best_approach")
+        model_obj = res.get(best, {}).get("model") if best else None
+        if model_obj is None:
             return
 
-        models_dir = ctx.strategy_dir / "models"
-        mp = ctx.config["model_params"]
-        summary: dict[str, Any] = {}
+        try:
+            raw_scores  = model_obj.predict_score_bulk(tc.feature_frame)
+            oos_start   = tc.config.get("oos_cutoff", "2024-01-01")
+            oos_frame   = tc.feature_frame[tc.feature_frame.index >= oos_start]
+            if oos_frame.empty:
+                return
+            oos_scores  = raw_scores.reindex(oos_frame.index).dropna()
+            future_rets = oos_frame["label"].reindex(oos_scores.index)
+            if len(oos_scores) < 50:
+                return
 
-        for ticker in ctx.exported:
-            res = ctx.results.get(ticker, {})
-            if not res:
-                continue
-            feature_frame = ctx.feature_frames.get(ticker)
-            if feature_frame is None or feature_frame.empty:
-                continue
-
-            best = res.get("best_approach")
-            model_obj = res.get(best, {}).get("model") if best else None
-            if model_obj is None:
-                continue
-
-            try:
-                raw_scores = model_obj.predict_score_bulk(feature_frame)
-                oos_start  = ctx.config.get("oos_cutoff", "2024-01-01")
-                oos_frame  = feature_frame[feature_frame.index >= oos_start]
-                if oos_frame.empty:
-                    continue
-                oos_scores = raw_scores.reindex(oos_frame.index).dropna()
-                future_rets = oos_frame["label"].reindex(oos_scores.index)
-                if len(oos_scores) < 50:
-                    continue
-
-                cal = fit_probability_calibration(
-                    oos_scores,
-                    future_rets,
-                    lookahead=mp["lookahead"],
-                )
-                meta_path = models_dir / ticker / f"{ticker}-policy-metadata.json"
+            cal = fit_probability_calibration(
+                oos_scores, future_rets, lookahead=mp["lookahead"]
+            )
+            if tc.strategy_dir:
+                meta_path = (tc.strategy_dir / "models" / tc.ticker
+                             / f"{tc.ticker}-policy-metadata.json")
                 if meta_path.exists():
-                    meta = json.loads(meta_path.read_text())
+                    meta = _json.loads(meta_path.read_text())
                     meta["score_calibration"] = cal.to_dict()
-                    meta_path.write_text(json.dumps(meta, indent=2))
-                    summary[ticker] = {"method": cal.method, "n": len(oos_scores)}
-            except Exception as exc:
-                print(f"CalibrationJob: {ticker} failed — {exc}")
-
-        ctx.calibration_summary = summary
-        print(f"CalibrationJob: calibrated {len(summary)}/{len(ctx.exported)} models")
+                    meta_path.write_text(_json.dumps(meta, indent=2))
+            tc.calibration = {"method": cal.method, "n": len(oos_scores)}
+        except Exception as exc:
+            print(f"  {tc.ticker}: TickerCalibrationJob failed — {exc}")
 
 
-# ── Pipeline ───────────────────────────────────────────────────────────────────
+# ── TrainingPipeline ───────────────────────────────────────────────────────────
 
 class TrainingPipeline:
-    """Run all training jobs in sequence."""
-
-    def __init__(self, jobs: list[Job] | None = None):
-        self._jobs = jobs or [
-            DataFetchJob(),
-            RegimeFitJob(),
-            FeatureJob(),
-            TournamentJob(),
-            ExportJob(),
-            CorrelationJob(),
-            CalibrationJob(),
-        ]
+    """Run the full training pipeline (3 phases)."""
 
     def run(self, ctx: TrainingContext) -> TrainingContext:
-        for job in self._jobs:
+        jobs: list[Job] = [
+            DataFetchJob(),
+            RegimeFitJob(),
+            FeatureJob(),    # orchestrates parallel per-ticker chain
+            CorrelationJob(),
+        ]
+        t0 = time.monotonic()
+        log.info("TrainingPipeline START  watchlist=%d", len(ctx.watchlist))
+        for job in jobs:
             if job.should_skip(ctx):
                 continue
+            t1 = time.monotonic()
+            log.info("── %s START", job.name)
             print(f"\n── {job.name} ──")
             job.run(ctx)
+            log.info("── %s DONE  %.1fs", job.name, time.monotonic() - t1)
+        log.info("TrainingPipeline DONE  total=%.1fs", time.monotonic() - t0)
         return ctx

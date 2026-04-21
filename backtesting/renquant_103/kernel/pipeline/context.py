@@ -71,3 +71,33 @@ class InferenceContext:
 
     # Telemetry counters — incremented by jobs
     counters: dict = field(default_factory=dict)
+
+
+@dataclass
+class TickerInferenceContext:
+    """Per-ticker context for parallel sell/candidate jobs.
+
+    Created by the pipeline orchestrator from InferenceContext fields.
+    Jobs write only to output fields; they never touch InferenceContext directly.
+    """
+    # Inputs (read-only)
+    ticker: str
+    ohlcv: dict                  # shared reference to InferenceContext.ohlcv
+    model: Any                   # model artifact dict
+    config: dict
+    today: datetime.date
+    regime: str
+    regime_params: dict
+    exit_params: dict            # pre-built from regime_params + config
+
+    # Sell-job inputs (None for candidate jobs)
+    holding: Any = None          # HoldingState | None
+    price: float = 0.0
+
+    # Candidate-job inputs (None for sell jobs)
+    earnings_calendar: Any = None  # dict[ticker → list[str]] | None
+    last_sell_dates: Any = None    # dict[ticker → date | None] | None
+
+    # Outputs (written by TickerSellJob or TickerCandidateJob)
+    exit_signal: Any = None      # ExitSignal | None
+    candidate: Any = None        # CandidateResult | None

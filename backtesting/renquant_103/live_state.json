@@ -31,6 +31,6 @@
     "CAT": 798.0
   },
   "regime": "BULL_VOLATILE",
-  "transition_countdown": 0,
+  "transition_countdown": 3,
   "regime_confidence": 0.5
 }

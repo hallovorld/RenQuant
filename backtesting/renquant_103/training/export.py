@@ -144,3 +144,61 @@ def retrain_live_models(
             print(f"  {ticker}: refresh FAILED — {e}")
 
     print("Live model refresh complete.")
+
+
+# ── Per-ticker helpers (used by TickerExportJob in parallel pipeline) ──────────
+
+def export_one_model(
+    ticker: str,
+    result: dict,
+    strategy_dir: Path,
+    today: str,
+    sharpe_floor: float,
+    lookahead: int,
+    strategy_name: str,
+) -> bool:
+    """Export one ticker's model artifact; return True if exported."""
+    if not result.get("passes_floor"):
+        return False
+    sym_dir = strategy_dir / "models" / ticker
+    sym_dir.mkdir(parents=True, exist_ok=True)
+    result["model"].save(sym_dir, model_name=ticker)
+
+    meta_path = sym_dir / f"{ticker}-policy-metadata.json"
+    if meta_path.exists():
+        import json as _json
+        with meta_path.open() as f:
+            meta = _json.load(f)
+        meta["trained_date"]  = today
+        meta["best_approach"] = result["best_approach"]
+        meta["sharpe"]        = round(result["sharpe"], 4)
+        meta["lookahead"]     = lookahead
+        meta["strategy"]      = strategy_name
+        if result.get("score_calibration") is not None:
+            meta["score_calibration"] = result["score_calibration"].to_dict()
+        with meta_path.open("w") as f:
+            _json.dump(meta, f, indent=2)
+    return True
+
+
+def retrain_one_live_model(
+    ticker: str,
+    result: dict,
+    feature_frame: pd.DataFrame,
+    strategy_dir: Path,
+    model_params: dict,
+    config: dict,
+    today: str,
+    live_train_years: int = 4,
+) -> None:
+    """Retrain one ticker's live model on the last N years; overwrite artifact."""
+    retrain_live_models(
+        {ticker: result},
+        {ticker: feature_frame},
+        [ticker],
+        strategy_dir,
+        model_params,
+        config,
+        today,
+        live_train_years=live_train_years,
+    )

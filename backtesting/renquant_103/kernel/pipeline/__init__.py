@@ -1,6 +1,7 @@
-"""kernel.pipeline — 7-job InferencePipeline for LEAN and live runner.
+"""kernel.pipeline — parallel InferencePipeline for LEAN and live runner.
 
-Self-contained: no common/ imports.
+Architecture: 3-phase pipeline where per-ticker work (sell eval, candidate
+scoring) runs in parallel via ThreadPoolExecutor.
 
 Usage::
 
@@ -9,7 +10,12 @@ Usage::
     ctx = InferenceContext(config=cfg, today=today, ...)
     InferencePipeline().run(ctx)
 """
-from .context  import InferenceContext
-from .pipeline import Job, InferencePipeline, SellOnlyPipeline
+from .context  import InferenceContext, TickerInferenceContext
+from .pipeline import Job, TickerJob, InferencePipeline, SellOnlyPipeline, run_parallel
 
-__all__ = ["InferenceContext", "Job", "InferencePipeline", "SellOnlyPipeline"]
+__all__ = [
+    "InferenceContext", "TickerInferenceContext",
+    "Job", "TickerJob",
+    "InferencePipeline", "SellOnlyPipeline",
+    "run_parallel",
+]
