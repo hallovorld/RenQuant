@@ -1327,7 +1327,8 @@ Flip `ranking.model_type` → `"panel"` only when ALL hold over ≥ 4 weekly reb
 | 2026-04-20 | 9.9 panel_pipeline/ + 13 inference tests | ✅ | 7bd19df | PanelScorer + top_n + prob_gate; 688 total pass |
 | 2026-04-21 | 9.10 feature_matrix.py + 13 inference tests | ✅ | f11a454 | build_inference_matrix + run_panel_inference; 701 total pass |
 | 2026-04-21 | 9.10 main.py + live runner config flag | ⏳ | | deferred pending shadow-mode validation |
-| 2026-04-20 | Stage 1 acceptance run | ⏳ | | target mean-IC ≥ 0.08 |
+| 2026-04-21 | Stage-1 driver script `scripts/train_panel_model.py` | ✅ | 9a89726 | ready to run: `python scripts/train_panel_model.py --strategy renquant_103` |
+| 2026-04-21 | Stage 1 acceptance run | ⏳ | | run driver; target mean-IC ≥ 0.08 |
 | | Shadow mode (2 weeks minimum) | ⏳ | | |
 | | Stage 1 promotion decision | ⏳ | | |
 | | Stage 2: NGBoost head | ⏳ | | |
