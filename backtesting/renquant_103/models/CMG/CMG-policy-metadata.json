@@ -1,0 +1,93 @@
+{
+  "model_name": "CMG",
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
+  ],
+  "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CMG/CMG-rf-trees.json"
+  },
+  "trained_date": "2026-04-20",
+  "best_approach": "Classification",
+  "sharpe": 1.0686,
+  "strategy": "renquant_103",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
+  "score_calibration": {
+    "version": 1,
+    "method": "isotonic",
+    "score_kind": "bag_learner_raw",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 566,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.2067137809187279,
+    "raw_min": -0.4,
+    "raw_max": 0.5333333333333333,
+    "x_thresholds": [
+      -0.4,
+      -0.3333333333333333,
+      -0.13333333333333333,
+      -0.06666666666666667,
+      0.06666666666666667,
+      0.13333333333333333,
+      0.5333333333333333
+    ],
+    "y_thresholds": [
+      0.0,
+      0.18292682926829268,
+      0.18292682926829268,
+      0.1925287356321839,
+      0.1925287356321839,
+      0.25925925925925924,
+      0.25925925925925924
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.04309982132380077,
+    "er_x_thresholds": [
+      -0.4,
+      0.0,
+      0.06666666666666667,
+      0.13333333333333333,
+      0.3333333333333333,
+      0.4,
+      0.4666666666666667,
+      0.5333333333333333
+    ],
+    "er_y_thresholds": [
+      -0.009371175085620952,
+      -0.009371175085620952,
+      -0.006660085686635106,
+      0.008072166671349534,
+      0.008072166671349534,
+      0.009185879927022578,
+      0.011883756972083104,
+      0.022856252055724058
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
+}

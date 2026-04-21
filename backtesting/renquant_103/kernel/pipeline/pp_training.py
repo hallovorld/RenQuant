@@ -197,21 +197,39 @@ def _run_ticker_chain(tc: TickerTrainingContext) -> None:
 
 def run_ticker_parallel(
     ticker_ctxs: list[TickerTrainingContext],
-    max_workers: int = 8,
+    max_workers: "int | None" = None,
+    timeout_seconds: "float | None" = None,
 ) -> None:
-    """Run _run_ticker_chain for each ticker in parallel via ThreadPoolExecutor."""
+    """Run _run_ticker_chain for each ticker in parallel via ThreadPoolExecutor.
+
+    max_workers=None → auto (cpu_count-2, min 1).
+    timeout_seconds=None → no per-ticker timeout. Hung tickers logged and skipped.
+    """
     if not ticker_ctxs:
         return
-    n = min(max_workers, len(ticker_ctxs))
-    log.info("run_ticker_parallel: %d tickers, %d workers", len(ticker_ctxs), n)
+    from concurrent.futures import TimeoutError as _FutTimeout
+    from .pipeline import resolve_workers
+    if max_workers is None or timeout_seconds is None:
+        cfg = getattr(ticker_ctxs[0], "config", None) or {}
+        if max_workers is None:
+            max_workers = cfg.get("parallel_workers")
+        if timeout_seconds is None:
+            timeout_seconds = cfg.get("parallel_ticker_timeout_seconds")
+    n = resolve_workers(max_workers, len(ticker_ctxs))
+    log.info("run_ticker_parallel: %d tickers, %d workers, timeout=%s",
+             len(ticker_ctxs), n, timeout_seconds)
     t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=n, thread_name_prefix="ticker") as ex:
         futures = {ex.submit(_run_ticker_chain, tc): tc.ticker for tc in ticker_ctxs}
-        for fut in as_completed(futures):
+        for fut in as_completed(futures, timeout=None):
             ticker = futures[fut]
-            exc = fut.exception()
-            if exc:
-                log.error("[%s] chain ERROR — %s: %s", ticker, type(exc).__name__, exc)
+            try:
+                fut.result(timeout=timeout_seconds)
+            except _FutTimeout:
+                log.error("[%s] chain TIMEOUT after %ss — skipped", ticker, timeout_seconds)
+                fut.cancel()
+            except Exception as e:
+                log.error("[%s] chain ERROR — %s: %s", ticker, type(e).__name__, e)
     elapsed = time.monotonic() - t0
     log.info("run_ticker_parallel: DONE  %.1fs total  (%d tickers)", elapsed, len(ticker_ctxs))
     print(f"  parallel phase done in {elapsed:.1f}s  ({len(ticker_ctxs)} tickers, {n} workers)")

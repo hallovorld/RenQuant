@@ -1,0 +1,87 @@
+{
+  "model_name": "PANW",
+  "policy_type": "qlearning",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx"
+  ],
+  "n_bins": 10,
+  "n_epochs": 100,
+  "alpha": 0.2,
+  "gamma": 0.9,
+  "impact": 0.0,
+  "artifacts": {
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PANW/PANW-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/PANW/PANW-bin-edges.json"
+  },
+  "trained_date": "2026-04-20",
+  "best_approach": "QLearning",
+  "sharpe": 1.1511,
+  "lookahead": 5,
+  "strategy": "renquant_103",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
+  "score_calibration": {
+    "version": 1,
+    "method": "isotonic",
+    "score_kind": "q_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 566,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.22614840989399293,
+    "raw_min": -70.40096254464673,
+    "raw_max": 137.45089938213664,
+    "x_thresholds": [
+      -70.40096254464673,
+      -59.313753707071946,
+      -56.686184952630796,
+      -55.986100088971185,
+      -45.067631318989285,
+      -0.013459612419116862,
+      0.0,
+      137.45089938213664
+    ],
+    "y_thresholds": [
+      0.0,
+      0.0,
+      0.14285714285714285,
+      0.14285714285714285,
+      0.2153846153846154,
+      0.2153846153846154,
+      0.23349056603773585,
+      0.23349056603773585
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.048532763798300134,
+    "er_x_thresholds": [
+      -70.40096254464673,
+      -55.986100088971185,
+      -45.067631318989285,
+      -0.013459612419116862,
+      0.0,
+      91.04218523045984,
+      137.45089938213664
+    ],
+    "er_y_thresholds": [
+      -0.006562227753692464,
+      -0.006562227753692464,
+      -0.004782961528648328,
+      -0.004782961528648328,
+      0.0007291944667060633,
+      0.0007291944667060633,
+      0.006995317939632262
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
+}

@@ -7,14 +7,24 @@ TrainingPipeline and all training jobs live in pp_training.py.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from threading import current_thread
 
 from .context import InferenceContext, TickerInferenceContext
 
 log = logging.getLogger("kernel.pipeline")
+
+
+def resolve_workers(config_value: "int | None", item_count: int) -> int:
+    """Resolve worker count: explicit config wins; None/<=0 → cpu_count-2 (min 1)."""
+    if config_value is not None and config_value > 0:
+        n = int(config_value)
+    else:
+        n = max(1, (os.cpu_count() or 4) - 2)
+    return min(n, item_count)
 
 
 # ── Task ABC ───────────────────────────────────────────────────────────────────
@@ -74,23 +84,41 @@ class TickerJob(ABC):
 def run_parallel(
     ticker_ctxs: list[TickerInferenceContext],
     job: TickerJob,
-    max_workers: int = 8,
+    max_workers: "int | None" = None,
+    timeout_seconds: "float | None" = None,
 ) -> None:
-    """Run job.run(tc) for each tc in parallel; faults are logged, not raised."""
+    """Run job.run(tc) for each tc in parallel; faults are logged, not raised.
+
+    max_workers=None → auto (cpu_count-2, min 1).
+    timeout_seconds=None → no per-ticker timeout. Hung tickers are logged and skipped.
+    """
     if not ticker_ctxs:
         return
+    if max_workers is None and ticker_ctxs:
+        cfg = getattr(ticker_ctxs[0], "config", None)
+        cfg_workers = (cfg or {}).get("parallel_workers") if isinstance(cfg, dict) else None
+        cfg_timeout = (cfg or {}).get("parallel_ticker_timeout_seconds") if isinstance(cfg, dict) else None
+        max_workers = cfg_workers
+        if timeout_seconds is None:
+            timeout_seconds = cfg_timeout
     job_name = type(job).__name__
-    n = min(max_workers, len(ticker_ctxs))
-    log.info("run_parallel: %s  %d tickers  %d workers", job_name, len(ticker_ctxs), n)
+    n = resolve_workers(max_workers, len(ticker_ctxs))
+    log.info("run_parallel: %s  %d tickers  %d workers  timeout=%s",
+             job_name, len(ticker_ctxs), n, timeout_seconds)
     t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=n, thread_name_prefix="infer") as ex:
         futures = {ex.submit(_wrapped_run, job, tc): tc.ticker for tc in ticker_ctxs}
-        for fut in as_completed(futures):
+        for fut in as_completed(futures, timeout=None):
             ticker = futures[fut]
-            exc = fut.exception()
-            if exc:
+            try:
+                fut.result(timeout=timeout_seconds)
+            except TimeoutError:
+                log.error("run_parallel [%s] %s TIMEOUT after %ss — skipped",
+                          ticker, job_name, timeout_seconds)
+                fut.cancel()
+            except Exception as e:
                 log.error("run_parallel [%s] %s ERROR — %s: %s",
-                          ticker, job_name, type(exc).__name__, exc)
+                          ticker, job_name, type(e).__name__, e)
     log.info("run_parallel: %s DONE  %.2fs", job_name, time.monotonic() - t0)
 
 

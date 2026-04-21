@@ -1,0 +1,97 @@
+{
+  "model_name": "VRT",
+  "policy_type": "xgboost",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
+  ],
+  "lookahead": 5,
+  "threshold": 0.03,
+  "buy_threshold": 0.1,
+  "sell_threshold": 0.1,
+  "n_estimators": 200,
+  "max_depth": 4,
+  "learning_rate": 0.05,
+  "feature_importances": {
+    "rsi": 0.08625204861164093,
+    "macd_hist": 0.09243595600128174,
+    "cci": 0.07818014919757843,
+    "bbp": 0.07934672385454178,
+    "adx": 0.10240786522626877,
+    "williams_r": 0.0845990777015686,
+    "obv_slope": 0.0985286608338356,
+    "spy_realized_vol": 0.09257978200912476,
+    "spy_adx": 0.09165328741073608,
+    "spy_trend": 0.09088985621929169,
+    "hurst_proxy": 0.10312658548355103
+  },
+  "artifacts": {
+    "buy_model": "VRT-xgb-buy.json",
+    "sell_model": "VRT-xgb-sell.json"
+  },
+  "trained_date": "2026-04-20",
+  "best_approach": "XGBoost",
+  "sharpe": 1.5131,
+  "strategy": "renquant_103",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
+  "score_calibration": {
+    "version": 1,
+    "method": "isotonic",
+    "score_kind": "p_buy_minus_sell",
+    "target_kind": "forward_relative_return_gt_threshold",
+    "sample_size": 566,
+    "lookahead": 5,
+    "threshold": 0.03,
+    "base_rate": 0.43462897526501765,
+    "raw_min": -0.4,
+    "raw_max": 0.4,
+    "x_thresholds": [
+      -0.4,
+      0.06666666666666667,
+      0.13333333333333333,
+      0.4
+    ],
+    "y_thresholds": [
+      0.4282608695652174,
+      0.4282608695652174,
+      0.46226415094339623,
+      0.46226415094339623
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.0734056616139646,
+    "er_x_thresholds": [
+      -0.4,
+      0.06666666666666667,
+      0.13333333333333333,
+      0.26666666666666666,
+      0.3333333333333333,
+      0.4
+    ],
+    "er_y_thresholds": [
+      0.015003493299531951,
+      0.015003493299531951,
+      0.016719672960915612,
+      0.016719672960915612,
+      0.033011034557896314,
+      0.033011034557896314
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
+  }
+}

@@ -1,25 +1,31 @@
 {
   "model_name": "CAT",
-  "policy_type": "qlearning",
-  "feature_columns": [
-    "rsi",
-    "macd_hist",
-    "cci",
-    "bbp",
-    "adx"
+  "policy_type": "manual",
+  "score_rules": [
+    {
+      "col": "rsi",
+      "buy_below": 30,
+      "sell_above": 70
+    },
+    {
+      "col": "macd_hist",
+      "buy_above": 0,
+      "sell_below": 0
+    },
+    {
+      "col": "cci",
+      "buy_below": -100,
+      "sell_above": 50
+    }
   ],
-  "n_bins": 10,
-  "n_epochs": 100,
-  "alpha": 0.2,
-  "gamma": 0.9,
-  "impact": 0.0,
+  "buy_threshold": 2,
+  "sell_threshold": -2,
   "artifacts": {
-    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-qtable.json",
-    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-bin-edges.json"
+    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CAT/CAT-manual-rules.json"
   },
   "trained_date": "2026-04-20",
-  "best_approach": "QLearning",
-  "sharpe": 1.1713,
+  "best_approach": "Manual",
+  "sharpe": 1.151,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
@@ -27,29 +33,27 @@
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
-    "score_kind": "q_buy_minus_sell",
+    "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
     "sample_size": 566,
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.21731448763250882,
-    "raw_min": -56.95146704737615,
-    "raw_max": 57.36244599558928,
+    "raw_min": -1.0,
+    "raw_max": 3.0,
     "x_thresholds": [
-      -56.95146704737615,
-      -50.280661397513484,
-      -45.339208957639,
-      0.32771222245601056,
-      0.33266850681147425,
-      57.36244599558928
+      -1.0,
+      0.0,
+      1.0,
+      2.0,
+      3.0
     ],
     "y_thresholds": [
-      0.0,
-      0.0,
-      0.21559633027522937,
-      0.21559633027522937,
-      0.2283464566929134,
-      0.2283464566929134
+      0.13636363636363635,
+      0.1910828025477707,
+      0.21100917431192662,
+      0.25308641975308643,
+      0.42857142857142855
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -57,22 +61,20 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.03449092967257599,
+    "er_residual_std": 0.03421512335000638,
     "er_x_thresholds": [
-      -56.95146704737615,
-      -24.03160124021808,
-      -22.605392046092664,
-      37.38113954205715,
-      37.7846813494336,
-      57.36244599558928
+      -1.0,
+      0.0,
+      1.0,
+      2.0,
+      3.0
     ],
     "er_y_thresholds": [
-      0.0035841036606595444,
-      0.0035841036606595444,
-      0.005960967933432298,
-      0.005960967933432298,
-      0.022187193828860204,
-      0.022187193828860204
+      -0.005375356232248627,
+      0.0041695342130367505,
+      0.0041695342130367505,
+      0.011001215776601382,
+      0.03136718433782937
     ],
     "er_coef": null,
     "er_intercept": null,
