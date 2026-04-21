@@ -1315,15 +1315,15 @@ Flip `ranking.model_type` → `"panel"` only when ALL hold over ≥ 4 weekly reb
 
 | Date | Module / Milestone | Status | Commit | Notes |
 |------|--------------------|--------|--------|-------|
-| 2026-04-20 | Doc v2 — parallel architecture, full Stage 1–3 plan | ✅ | (this) | Ready to start impl |
-| 2026-04-20 | 9.1 panel_frame.py + tests | ⏳ | | First module |
-| 2026-04-20 | 9.2 labels.py + tests | ⏳ | | |
-| 2026-04-20 | 9.3 neutralization.py + tests | ⏳ | | |
-| 2026-04-20 | 9.4 imputation.py + tests | ⏳ | | |
-| 2026-04-20 | 9.5 factors.py + tests | ⏳ | | |
-| 2026-04-20 | 9.6 purged_cv.py + tests | ⏳ | | |
-| 2026-04-20 | 9.7 ltr_model.py + tests | ⏳ | | |
-| 2026-04-20 | 9.8 pipeline.py + e2e tests | ⏳ | | |
+| 2026-04-20 | Doc v2 — parallel architecture, full Stage 1–3 plan | ✅ | f8feff6 | Ready to start impl |
+| 2026-04-20 | 9.1 panel_frame.py + 10 tests | ✅ | ae86437 | build_panel_frame + concurrency + age weights |
+| 2026-04-20 | 9.2 labels.py + 10 tests | ✅ | 18783d5 | purged β-neutral residuals + per-date Gaussianization |
+| 2026-04-20 | 9.3 neutralization.py + 9 tests | ✅ | f4f7096 | partial feature neutralization, momentum/trend only |
+| 2026-04-20 | 9.4 imputation.py + 14 tests | ✅ | c0c3cf3 | min-history gate + missingness + sector-median fill + age weight |
+| 2026-04-20 | 9.5 factors.py + 11 tests | ✅ | e2b8fc8 | size / mom_12_1 / beta_60d / resid_mom z-scored |
+| 2026-04-20 | 9.6 purged_cv.py + 9 tests | ✅ | 4e297b0 | PurgedKFold with purge + embargo, per-date Spearman IC |
+| 2026-04-20 | 9.7 ltr_model.py + 9 tests | ✅ | 643267a | XGBoost rank:pairwise wrapper, pure-JSON artifact |
+| 2026-04-20 | 9.8 pipeline.py + 3 e2e tests | ✅ | 8284916 | Stage-1 orchestrator; 75 panel tests, 675 total pass |
 | 2026-04-20 | 9.9 panel_pipeline/ inference | ⏳ | | |
 | 2026-04-20 | 9.10 main.py + config integration | ⏳ | | |
 | 2026-04-20 | Stage 1 acceptance run | ⏳ | | target mean-IC ≥ 0.08 |
