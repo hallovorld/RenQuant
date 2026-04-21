@@ -4,15 +4,18 @@
     "JPM": "2026-04-15",
     "AMZN": "2026-04-16",
     "BA": "2026-04-16",
-    "CAT": "2026-04-16",
+    "CAT": "2026-04-20",
     "PLTR": "2026-04-17",
-    "GOOG": "2026-04-19",
-    "LLY": "2026-04-19"
+    "GOOG": "2026-04-20",
+    "LLY": "2026-04-19",
+    "XLU": "2026-04-20"
   },
   "sell_streaks": {
     "AMZN": 0,
     "BA": 0,
-    "PLTR": 0
+    "PLTR": 0,
+    "GOOG": 0,
+    "CAT": 0
   },
   "last_sell_dates": {
     "AMZN": "2026-04-15",
@@ -21,11 +24,13 @@
   },
   "high_water_mark": 100000.0,
   "position_hwm": {
-    "AMZN": 254.0,
+    "AMZN": 254.5,
     "BA": 226.8099,
-    "PLTR": 148.02
+    "PLTR": 148.02,
+    "GOOG": 336.33,
+    "CAT": 798.0
   },
   "regime": "BULL_VOLATILE",
-  "transition_countdown": 1,
+  "transition_countdown": 0,
   "regime_confidence": 0.5
 }

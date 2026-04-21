@@ -1,52 +1,52 @@
 {
   "model_name": "XLE",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "rsi",
-      "buy_below": 30,
-      "sell_above": 70
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "cci",
-      "buy_below": -100,
-      "sell_above": 50
-    }
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "buy_threshold": 2,
-  "sell_threshold": -2,
-  "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLE/XLE-manual-rules.json"
-  },
-  "trained_date": "2026-04-17",
-  "best_approach": "Manual",
-  "sharpe": 0.8706,
   "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLE/XLE-rf-trees.json"
+  },
+  "trained_date": "2026-04-20",
+  "best_approach": "Classification",
+  "sharpe": 1.3053,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-10",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
     "method": "platt",
-    "score_kind": "vote_count",
+    "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
     "sample_size": 164,
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.23780487804878048,
-    "raw_min": -1.0,
-    "raw_max": 3.0,
+    "raw_min": -0.2,
+    "raw_max": 0.5333333333333333,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": -0.22709279990825024,
-    "platt_intercept": -1.178154932850192,
-    "platt_scale_mean": 1.048780487804878,
-    "platt_scale_std": 0.868169352710131
+    "platt_coef": 1.0409754005054717,
+    "platt_intercept": -1.3610817547140224,
+    "platt_scale_mean": 0.04065040650406504,
+    "platt_scale_std": 0.11417482793734834
   },
   "score_calibration_date": "2026-04-20"
 }

@@ -24,10 +24,12 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CRM/CRM-rf-trees.json"
   },
-  "trained_date": "2026-04-11",
+  "trained_date": "2026-04-20",
   "best_approach": "Classification",
-  "sharpe": 0.945,
+  "sharpe": 1.0503,
   "strategy": "renquant_103",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
     "method": "platt",
@@ -37,14 +39,14 @@
     "lookahead": 5,
     "threshold": 0.03,
     "base_rate": 0.12195121951219512,
-    "raw_min": -0.26666666666666666,
+    "raw_min": -0.6666666666666666,
     "raw_max": 0.2,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.02754090278436078,
-    "platt_intercept": -1.9740040195604978,
-    "platt_scale_mean": -0.028861788617886172,
-    "platt_scale_std": 0.0858974928132224
+    "platt_coef": 0.9818854477703062,
+    "platt_intercept": -2.256302196283487,
+    "platt_scale_mean": -0.11707317073170731,
+    "platt_scale_std": 0.17157361140670457
   },
   "score_calibration_date": "2026-04-20"
 }

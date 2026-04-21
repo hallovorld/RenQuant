@@ -24,12 +24,12 @@
   "artifacts": {
     "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/MSFT/MSFT-rf-trees.json"
   },
-  "trained_date": "2026-04-17",
+  "trained_date": "2026-04-20",
   "best_approach": "Classification",
-  "sharpe": 1.1032,
+  "sharpe": 1.0232,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-10",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-13",
   "score_calibration": {
     "version": 1,
     "method": "platt",
@@ -43,10 +43,10 @@
     "raw_max": 0.2,
     "x_thresholds": null,
     "y_thresholds": null,
-    "platt_coef": 0.7938439388240546,
-    "platt_intercept": -3.073373455490294,
-    "platt_scale_mean": 0.0036585365853658543,
-    "platt_scale_std": 0.04785538783965596
+    "platt_coef": 0.8266388227046833,
+    "platt_intercept": -3.0704406831351845,
+    "platt_scale_mean": 0.0020325203252032514,
+    "platt_scale_std": 0.04319476311214853
   },
   "score_calibration_date": "2026-04-20"
 }
