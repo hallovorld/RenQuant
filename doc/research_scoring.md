@@ -473,6 +473,16 @@ biggest insight — current model-selection objective (single-stock Sharpe) is
 misaligned with production use (cross-sectional ranking/rotation) — is especially
 important and worth prioritising.
 
+### 7.1 Keep
+
+- Keep the thesis: **optimise for cross-sectional ordering quality first**, not
+  single-stock strategy Sharpe.
+- Keep panel-LTR as the primary medium-term architecture direction.
+- Keep purged CV and embargo in scope; this is the right anti-leakage guardrail
+  for overlapping forward-return labels.
+
+### 7.2 Tighten before implementation
+
 Suggestions to make this draft tighter and easier to execute:
 
 1. **Split "quick wins" vs "architecture shifts" explicitly.**
@@ -495,6 +505,40 @@ Suggestions to make this draft tighter and easier to execute:
 5. **Clarify whether `rs_score` is deprecated or intentionally retained.**
    If retained, define a concrete replacement signal and test plan; if deprecated,
    mark removal criteria to avoid dead-path complexity.
+
+### 7.3 "Beat it" plan (practical and testable)
+
+If the goal is to beat the current system decisively, add an explicit promotion
+gate and fail-fast criteria:
+
+1. **Primary research metric**: mean daily cross-sectional Spearman IC.
+   - Track level, stability (std), and IC information ratio.
+2. **Secondary portfolio metrics**: after-tax Sharpe, max drawdown, turnover,
+   average holding period, and realised slippage sensitivity.
+3. **Calibration quality metrics**: Brier score + reliability curve error
+   (ECE/MCE) for any probability-like score used in tier thresholds.
+4. **Ablation matrix**:
+   - Baseline (current),
+   - +IC-based tournament selection,
+   - +purged CV,
+   - +panel LTR,
+   - +stacking / +uncertainty head.
+   Require each step to show incremental lift (not just end-to-end cherry-picking).
+5. **Promotion rule example** (for live candidate):
+   - IC uplift >= +0.02 absolute vs baseline over identical OOS window,
+   - after-tax Sharpe non-inferior, and
+   - drawdown not worse by >20% relative.
+   If not met, auto-fallback to baseline path.
+
+### 7.4 Risk flags not to miss
+
+- **Regime non-stationarity**: include rolling-window IC plots and decay curves
+  (1d/5d/10d forward horizons) to avoid selecting models that only worked in one
+  macro regime.
+- **Concentration risk**: panel models can over-rank one sector; enforce sector
+  exposure diagnostics in research, not only in execution guards.
+- **Operational complexity creep**: adding LTR + stacking + NGBoost at once may
+  blur attribution. Ship one orthogonal lever per stage.
 
 ---
 
