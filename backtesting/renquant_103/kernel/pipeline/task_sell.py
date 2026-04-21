@@ -49,7 +49,7 @@ class ScoreModelTask(Task):
         tc.features = build_feature_frame(stock_df, spy_df, spec, vol_win)
 
         if tc.features is not None and not tc.features.empty:
-            sr = score_artifact(tc.model, tc.features.iloc[-1], qty=1)
+            sr = score_artifact(tc.model, tc.features.iloc[-1], holdings=1)
             tc.model_action = sr.signal
         else:
             tc.model_action = "hold"
