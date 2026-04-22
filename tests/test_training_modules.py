@@ -173,6 +173,125 @@ class TestRunTournamentSmoke:
         assert result["passes_floor"] is False
         assert result["model"] is None
 
+    def test_excludes_qlearning_when_configured(self):
+        """exclude_models={'qlearning'} drops the QLearning approach from the tournament log."""
+        from training.tournament import run_tournament
+        df, ohlcv = self._make_df_with_labels()
+        if df is None:
+            pytest.skip("insufficient training data")
+        # Pick a cutoff inside the synthetic window so we always have OOS rows.
+        mid = df.index[len(df) // 2]
+        result = run_tournament(
+            "AAPL", df, ohlcv["AAPL"]["close"], ohlcv["SPY"]["close"],
+            {"feature_columns": ["rsi", "macd_hist"], "lookahead": 5, "threshold": 0.02,
+             "bags": 3, "leaf_size": 5, "buy_threshold": 0.1, "sell_threshold": -0.1},
+            sharpe_floor=0.0,
+            tax_config={"short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_threshold_days": 365},
+            oos_cutoff=mid,
+            exclude_models={"qlearning"},
+        )
+        log_blob = " ".join(result.get("_log", []))
+        assert "QLearning" not in log_blob
+        # Tournament still produces *some* best_approach (classification / xgboost / manual)
+        assert result["best_approach"] in {"Classification", "XGBoost", "Manual", None}
+
+    def test_excludes_multiple_models(self):
+        """exclude_models={'qlearning','manual'} drops both approaches."""
+        from training.tournament import run_tournament
+        df, ohlcv = self._make_df_with_labels()
+        if df is None:
+            pytest.skip("insufficient training data")
+        mid = df.index[len(df) // 2]
+        result = run_tournament(
+            "AAPL", df, ohlcv["AAPL"]["close"], ohlcv["SPY"]["close"],
+            {"feature_columns": ["rsi", "macd_hist"], "lookahead": 5, "threshold": 0.02,
+             "bags": 3, "leaf_size": 5, "buy_threshold": 0.1, "sell_threshold": -0.1},
+            sharpe_floor=0.0,
+            tax_config={"short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_threshold_days": 365},
+            oos_cutoff=mid,
+            exclude_models={"qlearning", "manual"},
+        )
+        log_blob = " ".join(result.get("_log", []))
+        assert "QLearning" not in log_blob
+        assert "Manual" not in log_blob
+        assert result["best_approach"] in {"Classification", "XGBoost", None}
+
+
+class TestTournamentWinnerMetric:
+    """winner_metric='ic' selects by Spearman IC instead of Sharpe."""
+
+    def _make_df_with_labels(self, n=400):
+        from training.features import build_training_features
+        ohlcv = _make_ohlcv_dict(["AAPL", "SPY"], n=n)
+        df = build_training_features("AAPL", ohlcv, _INDICATOR_SPEC, _LOOKAHEAD, _THRESHOLD)
+        return df, ohlcv
+
+    def test_default_is_sharpe(self):
+        """No winner_metric arg → uses Sharpe; selection_metric=sharpe in result."""
+        from training.tournament import run_tournament
+        df, ohlcv = self._make_df_with_labels()
+        if df is None:
+            pytest.skip("insufficient training data")
+        mid = df.index[len(df) // 2]
+        result = run_tournament(
+            "AAPL", df, ohlcv["AAPL"]["close"], ohlcv["SPY"]["close"],
+            {"feature_columns": ["rsi", "macd_hist"], "lookahead": 5, "threshold": 0.02,
+             "bags": 3, "leaf_size": 5, "buy_threshold": 0.1, "sell_threshold": -0.1},
+            sharpe_floor=0.0,
+            tax_config={"short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_threshold_days": 365},
+            oos_cutoff=mid,
+        )
+        assert result["selection_metric"] == "sharpe"
+        # selection_score should equal the tracked sharpe
+        assert result["selection_score"] == result["sharpe"]
+
+    def test_ic_metric_runs_and_reports(self):
+        """With winner_metric='ic', result exposes selection_metric='ic' + log mentions IC."""
+        from training.tournament import run_tournament
+        df, ohlcv = self._make_df_with_labels()
+        if df is None:
+            pytest.skip("insufficient training data")
+        mid = df.index[len(df) // 2]
+        result = run_tournament(
+            "AAPL", df, ohlcv["AAPL"]["close"], ohlcv["SPY"]["close"],
+            {"feature_columns": ["rsi", "macd_hist"], "lookahead": 5, "threshold": 0.02,
+             "bags": 3, "leaf_size": 5, "buy_threshold": 0.1, "sell_threshold": -0.1},
+            sharpe_floor=-99,   # make sure we pass floor no matter what
+            tax_config={"short_term_rate": 0.4, "long_term_rate": 0.2, "long_term_threshold_days": 365},
+            oos_cutoff=mid,
+            winner_metric="ic",
+        )
+        assert result["selection_metric"] == "ic"
+        log_blob = " ".join(result.get("_log", []))
+        assert "IC:" in log_blob    # per-approach IC printed
+        # selection_score is IC — a real-valued correlation, bounded [-1, 1]
+        assert -1.0 <= result["selection_score"] <= 1.0
+
+    def test_oos_single_ticker_ic_on_perfect_signal(self):
+        """IC should be ~1.0 when raw_scores equal future relative return (perfect foresight)."""
+        from training.tournament import oos_single_ticker_ic
+        idx = pd.bdate_range("2024-01-01", periods=60)
+        spy = pd.Series(100.0, index=idx)
+        # Stock grows linearly; compute its 5-day forward relative return and
+        # use that directly as raw_score → IC must be 1.0 by construction.
+        stock = pd.Series(np.linspace(100.0, 150.0, 60), index=idx)
+        rel = stock / spy
+        fwd = (rel.shift(-5) / rel - 1.0).dropna()
+        raw = fwd.copy()          # perfect foresight
+        ic = oos_single_ticker_ic(raw, stock, spy, lookahead=5)
+        assert ic > 0.95, f"expected near-perfect IC, got {ic:.3f}"
+
+    def test_oos_single_ticker_ic_on_noise(self):
+        """IC should be near 0 when raw_scores are random noise."""
+        from training.tournament import oos_single_ticker_ic
+        rng = np.random.default_rng(0)
+        idx = pd.bdate_range("2024-01-01", periods=200)
+        spy = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.01, 200))), index=idx)
+        stock = pd.Series(100 * np.exp(np.cumsum(rng.normal(0, 0.015, 200))), index=idx)
+        raw = pd.Series(rng.normal(size=200), index=idx)
+        ic = oos_single_ticker_ic(raw, stock, spy, lookahead=5)
+        assert abs(ic) < 0.25, f"random signal should yield IC near 0, got {ic:.3f}"
+
 
 # ── training/export ───────────────────────────────────────────────────────────
 
@@ -204,16 +323,27 @@ class TestExportModels:
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
             results = self._fake_results(tmpdir, passes=True)
-            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_104")
+            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 5, "renquant_104")
             assert "AAPL" in exported
             assert (strategy_dir / "models" / "AAPL").is_dir()
 
-    def test_below_floor_goes_to_skipped(self):
+    def test_export_ignores_passes_floor(self):
+        """Export no longer gates on passes_floor — admission moved to LoadUniverseJob."""
         from training.export import export_models
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
             results = self._fake_results(tmpdir, passes=False)
-            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_104")
+            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 5, "renquant_104")
+            assert "AAPL" in exported
+            assert "AAPL" not in skipped
+
+    def test_missing_model_goes_to_skipped(self):
+        from training.export import export_models
+        with tempfile.TemporaryDirectory() as tmpdir:
+            strategy_dir = Path(tmpdir)
+            results = {"AAPL": {"sharpe": 1.5, "best_approach": "x", "model": None,
+                                "passes_floor": True}}
+            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 5, "renquant_104")
             assert "AAPL" not in exported
             assert "AAPL" in skipped
 
@@ -222,7 +352,7 @@ class TestExportModels:
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
             results = self._fake_results(tmpdir, passes=True)
-            export_models(results, strategy_dir, "2025-04-19", 0.8, 5, "renquant_104")
+            export_models(results, strategy_dir, "2025-04-19", 5, "renquant_104")
             meta_path = strategy_dir / "models" / "AAPL" / "AAPL-policy-metadata.json"
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text())
@@ -256,7 +386,7 @@ class TestRetrainLiveModels:
                                                        "long_term_threshold_days": 365}}
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
-            exported, _ = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_104")
+            exported, _ = export_models(results, strategy_dir, "2025-01-01", 5, "renquant_104")
             retrain_live_models(
                 results, {"AAPL": df} if df is not None else {},
                 exported, strategy_dir, model_params, config, "2025-04-19",

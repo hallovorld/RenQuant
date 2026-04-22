@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 import time
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -166,46 +166,19 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
         sys.exit(1)
 
     config = json.loads(config_path.read_text())
-    staleness_days = int(config.get("model_staleness_days", 30))
-    models_dir = strategy_dir / "models"
 
     use_kernel = _load_kernel(strategy_dir)
     if not use_kernel:
         log.error("Strategy %s does not have a kernel/ package", strategy_name)
         sys.exit(1)
 
-    from kernel.models import load_artifact as _kernel_load_artifact  # noqa: PLC0415
+    from kernel.pipeline.job_universe import UniverseContext, LoadUniverseJob  # noqa: PLC0415
 
-    models = {}
-    for symbol in config["watchlist"]:
-        meta_path = models_dir / symbol / f"{symbol}-policy-metadata.json"
-        if not meta_path.exists():
-            log.warning("No model metadata for %s, skipping", symbol)
-            continue
-
-        metadata = json.loads(meta_path.read_text())
-
-        # Check staleness
-        trained_date = metadata.get("trained_date")
-        if trained_date and staleness_days > 0:
-            age = (date.today() - datetime.strptime(trained_date, "%Y-%m-%d").date()).days
-            if age > staleness_days:
-                log.warning("%s model is %d days old (limit=%d), skipping", symbol, age, staleness_days)
-                continue
-
-        # Reject below-floor models — prefer live_holdout_sharpe (reflects
-        # shipped weights) over tournament sharpe (algorithm-selection metric).
-        sharpe_floor = float(config.get("sharpe_floor", 0.8))
-        model_sharpe = float(metadata.get("live_holdout_sharpe", metadata.get("sharpe", 0.0)))
-        if sharpe_floor > 0 and model_sharpe < sharpe_floor:
-            log.warning("%s sharpe=%.3f below floor=%.1f, skipping", symbol, model_sharpe, sharpe_floor)
-            continue
-
-        artifact = _kernel_load_artifact(models_dir / symbol, symbol)
-        if artifact is None:
-            log.warning("Kernel load failed for %s, skipping", symbol)
-            continue
-        models[symbol] = artifact
+    uctx = UniverseContext(config=config, strategy_dir=strategy_dir)
+    LoadUniverseJob().run(uctx)
+    models = uctx.loaded_models
+    for ticker, reason in uctx.rejections:
+        log.warning("%s %s, skipping", ticker, reason)
 
     log.info("Loaded models for %d/%d symbols: %s",
              len(models), len(config["watchlist"]), sorted(models.keys()))
@@ -237,6 +210,7 @@ def _run_once_multi_pipeline(
     broker: BaseBroker,
     strategy_dir: Path,
     sell_only: bool,
+    use_intraday_prices: bool = False,
 ) -> None:
     """Create RunnerAdapter + InferencePipeline and execute one trading cycle."""
     _load_kernel(strategy_dir)  # ensure kernel/ is importable
@@ -245,13 +219,19 @@ def _run_once_multi_pipeline(
     from adapters.runner import RunnerAdapter                          # noqa: PLC0415
 
     run_mode = "sell-only" if sell_only else "full"
+    if use_intraday_prices:
+        run_mode += " (intraday)"
     sep = "=" * 62
     log.info(sep)
     label = strategy_dir.name.upper().replace("_", "-")
     log.info("%s  %s  [%s]", label, datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
-    adapter  = RunnerAdapter(config, models, broker, strategy_dir, sell_only=sell_only)
+    adapter  = RunnerAdapter(
+        config, models, broker, strategy_dir,
+        sell_only=sell_only,
+        use_intraday_prices=use_intraday_prices,
+    )
     pipeline = SellOnlyPipeline() if sell_only else InferencePipeline()
 
     ctx = adapter.make_context()
@@ -265,9 +245,13 @@ def run_once_multi(
     broker: BaseBroker,
     strategy_dir: Path,
     sell_only: bool = False,
+    use_intraday_prices: bool = False,
 ) -> None:
     """Execute one multi-stock trading cycle via the kernel pipeline."""
-    _run_once_multi_pipeline(config, models, broker, strategy_dir, sell_only)
+    _run_once_multi_pipeline(
+        config, models, broker, strategy_dir,
+        sell_only, use_intraday_prices,
+    )
 
 
 def _is_multi_stock(strategy_name: str) -> bool:
@@ -286,6 +270,9 @@ def main():
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--sell-only", action="store_true",
                         help="Process exits only — skip buy scan (for intraday runs)")
+    parser.add_argument("--intraday", action="store_true",
+                        help="Overlay latest Alpaca 5-min close onto today's bar "
+                             "(only useful with --sell-only during market hours)")
     parser.add_argument("--interval", type=int, default=86400,
                         help="Seconds between runs in scheduled mode (default: 86400)")
     args = parser.parse_args()
@@ -294,8 +281,11 @@ def main():
     initial_cash = config.get("initial_cash", 100_000)
     broker = _get_broker(args.broker, initial_cash=initial_cash)
     broker.connect()
-    run_fn = lambda: run_once_multi(config, models, broker, strategy_dir,
-                                    sell_only=args.sell_only)
+    run_fn = lambda: run_once_multi(
+        config, models, broker, strategy_dir,
+        sell_only=args.sell_only,
+        use_intraday_prices=args.intraday,
+    )
 
     try:
         if args.once:

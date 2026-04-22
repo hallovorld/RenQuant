@@ -489,7 +489,6 @@ class ExportJob(TrainingJob):
         mp = ctx.config["model_params"]
         ctx.exported, _ = export_models(
             ctx.results, ctx.strategy_dir, today,
-            sharpe_floor=float(ctx.config.get("sharpe_floor", 0.8)),
             lookahead=mp["lookahead"],
             strategy_name=ctx.config.get("_strategy_name", "renquant_103"),
         )
@@ -600,7 +599,6 @@ class TickerExportJob(TrainingTickerJob):
         try:
             exported = export_one_model(
                 tc.ticker, tc.result, tc.strategy_dir, today,
-                sharpe_floor=float(tc.config.get("sharpe_floor", 0.8)),
                 lookahead=mp["lookahead"],
                 strategy_name=tc.config.get("_strategy_name", "renquant_103"),
             )

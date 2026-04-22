@@ -7,12 +7,10 @@ LEAN-safe: no common/ imports.  Docker can access kernel/ and adapters/ locally.
 """
 from AlgorithmImports import *  # noqa: F401,F403
 import json
-from datetime import datetime
 from pathlib import Path
 
 from kernel.config       import load_config, split_date_parts, BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
 from kernel.regime       import RegimeState, load_gmm_artifact
-from kernel.models       import load_artifact
 from kernel.pipeline     import InferencePipeline, SellOnlyPipeline
 from adapters.lean       import LeanAdapter
 
@@ -123,29 +121,12 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _load_all_models(self) -> None:
-        models_dir = self._strategy_dir / "models"
-        if not models_dir.exists():
-            self.Log("WARNING: models/ not found. Run the notebook to train models.")
-            return
-        sharpe_floor   = float(CONFIG.get("sharpe_floor", 0.8))
-        staleness_days = int(CONFIG.get("model_staleness_days", 60))
-        for ticker in self._watchlist:
-            artifact = load_artifact(models_dir / ticker, ticker)
-            if artifact is None:
-                self.Log(f"WARNING: no artifact for {ticker}, skipping")
-                continue
-            meta = artifact.get("_metadata", {})
-            trained = meta.get("trained_date")
-            if trained and staleness_days > 0:
-                age = (datetime.now().date() - datetime.strptime(trained, "%Y-%m-%d").date()).days
-                if age > staleness_days:
-                    self.Log(f"WARNING: {ticker} model {age}d old (limit={staleness_days}), skipping")
-                    continue
-            filter_sharpe = meta.get("live_holdout_sharpe", meta.get("sharpe", 0.0))
-            if sharpe_floor > 0 and filter_sharpe < sharpe_floor:
-                self.Log(f"WARNING: {ticker} sharpe={filter_sharpe:.3f} below floor, skipping")
-                continue
-            self._models[ticker] = artifact
+        from kernel.pipeline.job_universe import UniverseContext, LoadUniverseJob
+        uctx = UniverseContext(config=CONFIG, strategy_dir=self._strategy_dir)
+        LoadUniverseJob().run(uctx)
+        self._models = uctx.loaded_models
+        for ticker, reason in uctx.rejections:
+            self.Log(f"WARNING: {ticker} {reason}, skipping")
         self.Log(f"Loaded {len(self._models)}/{len(self._watchlist)} models: {sorted(self._models)}")
 
     def _load_json_artifact(self, filename: str, label: str) -> dict | None:

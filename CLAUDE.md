@@ -62,13 +62,15 @@ python -m live.runner --strategy renquant_102 --broker alpaca-paper --once  # mu
 python -m live.runner --strategy renquant_102 --broker alpaca --once  # real money
 ```
 
-**Scheduled mode**: Three daily automation runs via macOS launchd (all NYSE-holiday-aware). renquant_104 is the **active strategy**; 103 scripts remain for reference and rollback.
+**Scheduled mode**: Five automation runs via macOS launchd (all NYSE-holiday-aware). renquant_104 is the **active strategy**; 103 scripts remain for reference and rollback.
 
 | Run | Time (PT) | Time (ET) | Script | What it does |
 |-----|-----------|-----------|--------|--------------|
 | Market open | 6:32 AM | 9:32 AM | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down positions early using today's opening price |
+| Intraday | 7:00 – 12:30 every 30min | 10:00 – 15:30 | `intraday_sell_104.sh --sell-only --intraday` | Alpaca IEX 5-min overlay → trigger stop-loss / trailing-stop / SDL mid-session (never places buys) |
 | Pre-close | 12:44 PM | 3:44 PM | `live_only_104.sh --sell-only` | Exit intraday stop breaches before close using near-final daily price |
-| After close | 1:55 PM | 4:55 PM | `daily_104.sh` | Full run: `FullTrainingPipeline` (tournament → panel-LTR → recalibrate) → export LEAN data → buy + sell signals |
+| After close | 1:55 PM | 4:55 PM | `daily_104.sh` | Full run: `FullTrainingPipeline` (cadence-gated) → export LEAN data → buy + sell signals |
+| Sunday retrain | Sun 10:00 AM | Sun 13:00 ET | `retrain_panel.sh` | Force-retrain (cadence bypass) when daily_104 would otherwise skip the weekend |
 
 ```bash
 # Manual runs — 104 (active)
@@ -79,11 +81,15 @@ python -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only
 
 # LaunchAgents (104 active; 103 unloaded)
 # ~/Library/LaunchAgents/com.renquant.open104.plist
+# ~/Library/LaunchAgents/com.renquant.intraday104.plist      (NEW: 20 slots 07:00-12:30 Mon-Fri)
 # ~/Library/LaunchAgents/com.renquant.preclose104.plist
 # ~/Library/LaunchAgents/com.renquant.daily104.plist
+# ~/Library/LaunchAgents/com.renquant.retrain-panel104.plist (NEW: Sun 10:00)
 # Logs: logs/live_104/{date}-open.log, {date}-preclose.log
+#       logs/intraday_104/{date}.log
 #       logs/daily_104/{date}.log
-# NYSE calendar guard: all three scripts skip US market holidays automatically
+#       logs/retrain_panel/{date}.log
+# NYSE calendar guard: all scripts skip US market holidays automatically
 
 # Manual runs — 103 (legacy, kept for rollback)
 bash scripts/daily_103.sh
@@ -240,6 +246,17 @@ Volume filter supports two modes via `volume_filter.mode` in `strategy_config.js
 
 **Panel-LTR cross-sectional ranking** (renquant_104): Extends 103 by replacing each candidate's per-ticker `rank_score` with a cross-sectional panel-LTR score computed via a single XGBoost learning-to-rank model fitted on the whole watchlist panel. Enabled via `ranking.panel_scoring.enabled: true` (config block also includes `artifact_path`, `nan_prone_cols`). Panel training labels use beta-neutralized + sector-/size-neutralized forward excess returns; `PanelScoringJob` (four Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask`) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and short-circuits via `should_skip()` when the flag is off so 103 behavior is preserved. `ApplyScoresTask` writes `panel_score` onto both candidates (and overwrites `rank_score`) and holdings so rotation can compare apples-to-apples. Three additional knobs under `ranking.panel_scoring`: `buy_floor` drops candidates below a panel-score threshold (`VetoWeakBuysTask`), `sizing.{enabled,floor,ceiling,min_mult}` drives `conviction_multiplier()` which scales `max_position_pct` in `SizeAndEmitTask` + `EmitRotationsTask`, and `rotation_advantage` requires a candidate's panel score to beat a held position's by at least that fraction before a rotation pair is emitted. Training is driven by `scripts/train_104.py` (thin entrypoint) backed by `kernel/pipeline/pp_training_full.py::FullTrainingPipeline` (`BaselineTournamentJob` → `PanelTrainingJob` → `RecalibrationJob`) — no notebook dependency. Inference requires 520 bars of history (vs 60 for 103) to warm up neutralization + factor windows; both `LeanAdapter` (LEAN main.py path) and `RunnerAdapter` (live runner path) read the flag and call `prepare_inference_panel_frames()` before running the pipeline, and each adapter injects `config["_strategy_dir"]` so `LoadScorerTask` can resolve the artifact path from the strategy directory (not CWD). The 104 notebook lives at `backtesting/renquant_104/renquant_104.ipynb` (parallel to the 103 notebook layout). Full spec: `doc/renquant_104_design.md`.
 
+**renquant_104 Stage 2 — NGBoost μ,σ head** (default off): `training_panel/ngboost_head.py` fits a separate NGBoost Normal(μ, σ) regressor on raw (pre-Gaussianized) residual forward returns. When `ranking.panel_scoring.ngboost.enabled` is true, `PanelScoringJob` appends `LoadNGBoostTask` + `ApplyNGBoostTask` (6-task chain total): μ,σ are written to both `CandidateResult` and `HoldingState`, and in the default `score_mode=mu_minus_lambda_sigma` the combined score `μ − λσ` overrides `rank_score` + `panel_score` (set `score_mode=additive` to leave rank_score untouched and only populate μ,σ for sizing). `ranking.panel_scoring.sigma_sizing.{enabled,floor,ceiling}` drives `sigma_multiplier()` which scales `max_position_pct` by `σ_median / σ_i` (clipped) in both `SizeAndEmitTask` and `EmitRotationsTask`. Training adds `PanelNGBoostJob` as Phase 5 of `PanelTrainingPipeline`. Artifact is a self-contained JSON with a base64-encoded pickle (ngboost has no pure-JSON serializer).
+
+**renquant_104 Stage 3.1 — fundamental factors** (now wired + enabled): `kernel/fundamentals.py` caches OpenBB snapshots at `data/fundamentals/{SYMBOL}.parquet` (columns: `earnings_yield, roe, gross_profitability, book_to_price`). `scripts/fetch_fundamentals.py` is the watchlist driver. A new `LoadFundamentalsTask` runs inside `PanelDataJob` (Phase 1 of `PanelTrainingPipeline`) and populates `PanelTrainingContext.fundamentals`. `TickerPanelFactorJob` broadcasts the per-ticker scalar factors into `raw_factor_frame`; `FactorZScoreTask` cross-sectionally z-scores them with sector-median fill for missing values. Training artifact now has 24 feature columns (16 neutralized indicators + 4 technical factor z-columns + 4 fundamental z-columns). Enabled via `panel_ltr.fundamentals.enabled: true`. Time-invariant snapshot in this release; extending to point-in-time time-series is a future change.
+
+**renquant_104 Stage 1 cleanups** (all behind flags, defaults preserve existing behaviour):
+- `training.cadence` — `"daily"` (default, runs every weekday), `"weekly"` with `training.weekly_weekday: 6`, or `"custom"` with `training.allowed_weekdays: [1, 3, 6]` (Python weekdays, Mon=0…Sun=6) to short-circuit `FullTrainingPipeline.run()` on non-cadence days. **104 is configured with `cadence: "custom"` + `allowed_weekdays: [1, 3, 6]` → Tue/Thu/Sun training.** `daily_104.sh` fires Mon-Fri 1:55 PM PT and trades daily (cadence gate skips training on Mon/Wed/Fri); `retrain_panel.sh` fires Sunday 10 AM PT via `com.renquant.retrain-panel104.plist` and forces a retrain (no trading, market closed). `scripts/train_104.py --force` bypasses the gate for manual runs.
+- `ranking.tournament.exclude_models` — e.g. `["qlearning"]` drops that approach from `run_tournament_all`. Default is empty (all four approaches run).
+- rs_score is retired from ranking math: `BlendScoresTask` hardcodes `(w_rank, w_rs) = (1.0, 0.0)` and logs a warning if a legacy `ranking.blend_weights` with non-zero rs weight is found. `recalibrate_scores.py` no longer writes that key (but `_compute_blend_weights` remains for offline diagnostics). `rs_score` is still populated on `CandidateResult` for logs.
+- **Universe admission** is consolidated into `kernel/pipeline/job_universe.py::LoadUniverseJob` and driven by `ranking.universe_floor.{type, threshold}`. `type` ∈ `{"none", "sharpe", "ic", ...}` (default `"none"` — admit all models that load). Sharpe reads `live_holdout_sharpe`/`sharpe` from each model's policy-metadata; IC reads `panel_oos_ic`. New floor types register themselves by adding an entry to `FLOOR_EVALUATORS`. LEAN (`main.py`), the live runner (`live/runner.py`), and the notebook sim (`adapters/sim.py`) all call `LoadUniverseJob` — the hand-written per-adapter filter loops have been deleted (test enforcement: `tests/test_universe_alignment.py::TestAdapterParity::test_no_hand_written_filter_loops_remain`).
+- **Legacy sim loop deleted**: `sim/runner.run_backtest` now always drives `SimAdapter + InferencePipeline`. The legacy hand-written loop (`_run_backtest_legacy`) and its helpers (`swap_in_panel_scores`, `apply_ngboost_head`, `_GlobalCalibAdapter`) are gone. LEAN, live, and sim share one decision-logic source of truth (`InferencePipeline`); `run_backtest_via_pipeline` is retained as a back-compat alias for `run_backtest`.
+
 ### Adding a New Strategy
 
 ```bash
@@ -268,11 +285,11 @@ python scripts/new_strategy.py --name foo --symbol AAPL --type classification
 - **Task**: an atomic step that reads/writes `InferenceContext` (or a ticker slice). Return `False` to short-circuit the enclosing Job's chain.
 - **Job**: a sequential Task chain with a `should_skip(ctx)` gate. Jobs may run serially or via `run_parallel()` for per-ticker work.
 - **Pipeline**: orders Jobs into phases and owns the full run (`InferencePipeline`, `SellOnlyPipeline`, `FullTrainingPipeline`, `PanelTrainingPipeline`).
-- LEAN (`main.py`) and the live runner (`live/runner.py`) already go through `InferencePipeline` via `LeanAdapter` / `RunnerAdapter`. The notebook simulation backend `backtesting/renquant_104/sim/runner.py` is currently a hand-written loop calling kernel primitives directly — **any decision added to `InferencePipeline` must also be reflected in `sim/runner.py`** until that file is refactored to run through `InferencePipeline` too. Long-term goal: delete `sim/runner.py`'s hand-written loop in favor of `InferencePipeline.run()` with a sim adapter.
+- LEAN (`main.py`), the live runner (`live/runner.py`), and the notebook sim (`sim/runner.py`) all go through `InferencePipeline` via `LeanAdapter` / `RunnerAdapter` / `SimAdapter`. The legacy hand-written sim loop has been deleted — there is **one source of truth** for decision logic across all three surfaces. Universe admission is similarly consolidated into `kernel/pipeline/job_universe.py::LoadUniverseJob` (Tasks: `LoadArtifactsTask` → `FilterStalenessTask` → `FilterUniverseFloorTask`) so adding a new admission rule only requires touching one file.
 - When adding a new decision:
   1. Write it as a Task (or new Job + Task chain) under `kernel/pipeline/` or `kernel/panel_pipeline/`.
   2. Wire it into the correct phase of the owning Pipeline.
-  3. Apply the **same** logic in `sim/runner.py` (until that's unified).
+  3. (LEAN / live / sim already all route through `InferencePipeline` — no per-surface mirroring needed.)
   4. Add paired alignment tests in `tests/test_panel_alignment.py` or `tests/test_policy_alignment.py`.
 
 ### 2. Tests for Every Feature
@@ -280,9 +297,12 @@ Every policy in notebook and LEAN must have a corresponding test.
 - Tests live in `tests/` (run with `python -m pytest tests/ -v`).
 - `tests/test_policy_alignment.py`: 18 policy classes (Trailing/Stop/SDL/MaxHold/MinHold/SellStreak/EMA50/Velocity/Transition/Earnings/Tiered/Correlation/Sector/WashSale/MinScore/CombinedRanking/Sizing/**Rotation**), each with at least 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
 - `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).
-- `tests/test_panel_alignment.py`: 20 tests — flag parity across LeanAdapter / RunnerAdapter / PanelScoringJob, pipeline ordering invariant, panel-veto (`TestPanelVetoWeakBuys`), conviction sizing (`TestPanelConvictionSizing`), panel-rotation gate (`TestPanelRotationAdvantage`).
+- `tests/test_panel_alignment.py`: 34 tests — flag parity across LeanAdapter / RunnerAdapter / PanelScoringJob, pipeline ordering invariant, panel-veto, conviction sizing, panel-rotation gate, **plus NGBoost** (flag parity, μ−λσ scoring, σ-sizing multiplier).
+- `tests/test_ngboost_head.py`: 12 tests — NGBoost Normal(μ, σ) fit/predict/save/load, σ tracks heteroskedasticity, μ−λσ combined score, σ sizing multiplier bounds.
+- `tests/test_training_cadence.py`: 8 tests — `training.cadence` gate (daily preserves existing behavior, weekly short-circuits off-cadence days, `--force` bypass).
+- `tests/test_fundamentals_cache.py`: 9 tests — `FundamentalsStore` parquet cache + `fetch_fundamentals` with injected provider.
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 802 collected (800 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 922 collected (920 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.
@@ -308,6 +328,9 @@ After any non-trivial change, run `/update-docs` or manually sync:
 
 | Doc | What it covers |
 |-----|----------------|
+| `doc/improvement_roadmap.md` | **Living roadmap** — 8 improvement items with action plans, status, and Result sections. Work through top-down. |
+| `doc/panel_training_runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
+| `doc/panel_ltr_primer.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
 | `doc/logic_graph_103.md` | **Complete decision flowchart** — every branch in notebook simulation and LEAN, regime param table, alignment table |
 | `doc/architecture.md` | Pipeline overview, data stores, indicator registry, model types, strategy list |
 | `doc/models.md` | Model ABC, all model types, exit logic, stop-loss, single-day gate, trailing stop |
@@ -323,6 +346,7 @@ After any non-trivial change, run `/update-docs` or manually sync:
 | `tests/test_kernel_isolation.py` | CI enforcement: kernel/ must not import common/ |
 | `tests/test_kernel_units.py` | 136 unit tests for all 10 kernel modules (includes market_gates, portfolio, compute_relative_strength, rotation) |
 | `tests/test_pipeline.py` | 31 tests for PipelineContext, run_tasks, Job/Pipeline |
+| `tests/test_universe_alignment.py` | 16 tests — LoadUniverseJob, universe_floor type dispatch (none / sharpe / ic), staleness, extensibility, adapter parity (no hand-written filter loops remain in main.py / adapters/sim.py / live/runner.py) |
 | `tests/test_training_modules.py` | 16 tests for training/features.py, training/tournament.py, training/export.py |
 
 ---

@@ -37,3 +37,25 @@ def build_model_path(strategy_dir: Path, symbol: str, filename: str) -> Path:
     """Return the canonical model artifact path for a symbol."""
     return strategy_dir / "models" / symbol / filename
 
+
+def universe_floor_spec(config: dict) -> tuple[str, float]:
+    """Return (floor_type, threshold) for universe admission.
+
+    Config shape::
+
+        ranking:
+          universe_floor:
+            type:      "none" | "sharpe" | "ic"   # default "none"
+            threshold: 0.0                          # numeric floor
+
+    Returns ("none", 0.0) if absent.  Unknown types fall back to "none"
+    with a runtime warning logged by FilterUniverseFloorTask.
+    """
+    block = (
+        config.get("ranking", {})
+              .get("universe_floor", {})
+    )
+    floor_type = str(block.get("type", "none")).lower()
+    threshold  = float(block.get("threshold", 0.0))
+    return floor_type, threshold
+

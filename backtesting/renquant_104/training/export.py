@@ -4,9 +4,14 @@ Exports tournament winners to models/{ticker}/ and optionally retrains
 on an expanding window (last 4 years) for live trading.
 
 Exports:
-  export_models(results, strategy_dir, today, sharpe_floor, lookahead, strategy_name)
+  export_models(results, strategy_dir, today, lookahead, strategy_name)
       -> (exported: list[str], skipped: list[str])
   retrain_live_models(results, feature_frames, exported, strategy_dir, model_params, config, today, ohlcv=None)
+
+Admission decisions (sharpe / ic / ... floors) live in
+kernel.pipeline.job_universe.LoadUniverseJob and are applied at load
+time by LeanAdapter / RunnerAdapter / SimAdapter.  Export emits every
+ticker with a trained model.
 """
 from __future__ import annotations
 
@@ -27,16 +32,22 @@ def export_models(
     results: dict[str, dict],
     strategy_dir: Path,
     today: str,
-    sharpe_floor: float,
     lookahead: int,
     strategy_name: str,
 ) -> tuple[list[str], list[str]]:
-    """Save winning models to models/{ticker}/; patch metadata; return (exported, skipped)."""
+    """Save trained models to models/{ticker}/; patch metadata; return (exported, skipped).
+
+    Export emits every ticker with a non-None model. Universe admission
+    happens at load time via kernel.pipeline.job_universe.LoadUniverseJob,
+    which reads ranking.universe_floor.{type, threshold} and applies the
+    configured floor (none / sharpe / ic / ...). This separation keeps
+    all admission decisions in one place (one Job, one config key).
+    """
     exported: list[str] = []
     skipped:  list[str] = []
 
     for ticker, r in results.items():
-        if not r.get("passes_floor"):
+        if r.get("model") is None:
             skipped.append(ticker)
             continue
         sym_dir = strategy_dir / "models" / ticker
@@ -59,7 +70,7 @@ def export_models(
         exported.append(ticker)
 
     print(f"Exported : {sorted(exported)}")
-    print(f"Skipped (below Sharpe floor {sharpe_floor}): {sorted(skipped)}")
+    print(f"Skipped (no model): {sorted(skipped)}")
     return exported, skipped
 
 
@@ -214,12 +225,15 @@ def export_one_model(
     result: dict,
     strategy_dir: Path,
     today: str,
-    sharpe_floor: float,
     lookahead: int,
     strategy_name: str,
 ) -> bool:
-    """Export one ticker's model artifact; return True if exported."""
-    if not result.get("passes_floor"):
+    """Export one ticker's model artifact; return True if exported.
+
+    Admission decisions live in LoadUniverseJob (kernel.pipeline.job_universe).
+    Export only skips when there is no trained model to save.
+    """
+    if result.get("model") is None:
         return False
     sym_dir = strategy_dir / "models" / ticker
     sym_dir.mkdir(parents=True, exist_ok=True)

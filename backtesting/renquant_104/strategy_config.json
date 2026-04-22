@@ -277,11 +277,7 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_weights": [
-      1.0,
-      0.0
-    ],
-    "blend_updated": "2026-04-21",
+    "blend_updated": "2026-04-22",
     "blend_n_symbols": 36,
     "panel_scoring": {
       "enabled": true,
@@ -294,25 +290,80 @@
         "floor": 0.0,
         "ceiling": 1.0,
         "min_mult": 0.5
+      },
+      "ngboost": {
+        "enabled": true,
+        "artifact_path": "artifacts/ngboost-head.json",
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      },
+      "sigma_sizing": {
+        "enabled": true,
+        "floor": 0.3,
+        "ceiling": 1.0
+      },
+      "global_calibration": {
+        "enabled": true,
+        "artifact_path": "artifacts/panel-rank-calibration.json"
       }
+    },
+    "universe_floor": {
+      "type": "none",
+      "threshold": 0.0
     }
   },
   "panel_ltr": {
-    "lookahead_days": 5,
-    "beta_window": 60,
+    "lookahead_days": 10,
+    "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
     "cv_n_splits": 5,
-    "cv_embargo_days": 5,
-    "num_boost_round": 400,
+    "cv_embargo_days": 10,
+    "num_boost_round": 300,
     "neutralize_features": true,
     "nan_prone_cols": [],
     "factor_mom_window": 252,
     "factor_skip": 21,
     "neutralize_rolling_window": 252,
     "neutralize_warmup_days": 252,
-    "xgb_params": {},
+    "xgb_params": {
+      "eta": 0.02,
+      "max_depth": 3,
+      "min_child_weight": 60,
+      "subsample": 0.5,
+      "colsample_bytree": 0.5,
+      "lambda": 5.0,
+      "alpha": 2.0
+    },
     "artifact_path": "artifacts/panel-ltr.json",
-    "training_notes": "renquant_104 \u2014 panel-LTR primary scorer"
+    "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
+    "ngboost": {
+      "enabled": true,
+      "artifact_path": "artifacts/ngboost-head.json",
+      "params": {
+        "n_estimators": 400,
+        "learning_rate": 0.01
+      },
+      "training_notes": "Stage-2 NGBoost head for residual returns"
+    },
+    "fundamentals": {
+      "enabled": false,
+      "cache_dir": "data/fundamentals",
+      "allow_fetch": true
+    },
+    "backend": "xgboost",
+    "lightgbm_params": {}
+  },
+  "training": {
+    "cadence": "custom",
+    "allowed_weekdays": [
+      1,
+      3,
+      6
+    ]
+  },
+  "persistence": {
+    "enabled": true,
+    "db_path": "data/runs.db"
   }
 }
