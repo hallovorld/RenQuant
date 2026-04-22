@@ -23,14 +23,14 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLF/XLF-manual-rules.json"
   },
-  "trained_date": "2026-04-20",
+  "trained_date": "2026-04-21",
   "best_approach": "Manual",
-  "sharpe": 1.7508,
+  "sharpe": 1.749,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
-  "live_train_end": "2026-04-13",
-  "live_holdout_sharpe": 0.7515,
+  "live_train_end": "2026-04-14",
+  "live_holdout_sharpe": 0.586,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
@@ -58,5 +58,5 @@
     "er_intercept": -0.0008841521220822322,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-20"
+  "score_calibration_date": "2026-04-21"
 }

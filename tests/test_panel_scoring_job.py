@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import xgboost as xgb
 
-_STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_103"
+_STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
@@ -281,16 +281,17 @@ class TestPanelScoringJob:
         ctx = _make_ctx(tmp_path, enabled=True)
         assert PanelScoringJob().should_skip(ctx) is False
 
-    def test_tasks_are_three_in_order(self, tmp_path):
+    def test_tasks_are_four_in_order(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import (
             ApplyScoresTask, BuildFeatureMatrixTask, LoadScorerTask,
-            PanelScoringJob,
+            PanelScoringJob, VetoWeakBuysTask,
         )
         tasks = PanelScoringJob().tasks
-        assert len(tasks) == 3
+        assert len(tasks) == 4
         assert isinstance(tasks[0], LoadScorerTask)
         assert isinstance(tasks[1], BuildFeatureMatrixTask)
         assert isinstance(tasks[2], ApplyScoresTask)
+        assert isinstance(tasks[3], VetoWeakBuysTask)
 
     def test_end_to_end_overrides_rank_scores(self, tmp_path):
         """Run the full Job chain — candidate rank_scores change to panel scores."""

@@ -1,4 +1,4 @@
-"""Replay-style parity checks for renquant_103 selection semantics.
+"""Replay-style parity checks for renquant_104 selection semantics.
 
 This file adds a short synthetic tape that verifies notebook-like and LEAN-like
 selection ledgers stay aligned on the currently-canonical semantics:

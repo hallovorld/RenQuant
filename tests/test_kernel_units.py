@@ -1,7 +1,7 @@
 """Unit tests for kernel modules.
 
 All tests are self-contained — no common/ imports, no LEAN, no broker.
-Uses the kernel directly from backtesting/renquant_103/kernel/.
+Uses the kernel directly from backtesting/renquant_104/kernel/.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 # Ensure kernel is importable
-_KERNEL_PARENT = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_103"
+_KERNEL_PARENT = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(_KERNEL_PARENT) not in sys.path:
     sys.path.insert(0, str(_KERNEL_PARENT))
 

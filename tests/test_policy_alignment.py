@@ -1459,6 +1459,264 @@ class TestPositionSizingAlignment:
             )
 
 
+# ─── POLICY: BEAR Defensive Slots ─────────────────────────────────────────────
+
+class TestBearDefensiveSlotsAlignment:
+    """In BEAR (or veto-active) the selection layer caps open slots at
+    `bear_defensive_slots` (default 1, raised to 2). Defensive sizing uses
+    `bear_defensive_pct`.
+    """
+
+    # ── pure replication ──────────────────────────────────────────────────────
+    # Semantics: bear_slots is a TOTAL cap on defensive holdings, not a per-bar
+    # cap on new entries. `remaining = bear_slots - defensive_held`.
+
+    def _notebook_open_slots(self, held_count, defensive_held, bear_only,
+                             bear_slots, global_cap):
+        slots = max(global_cap - held_count, 0)
+        if bear_only:
+            remaining = max(bear_slots - defensive_held, 0)
+            slots = min(slots, remaining)
+        return slots
+
+    def _lean_open_slots(self, held_count, defensive_held, bear_only,
+                         bear_slots, global_cap):
+        # kernel/pipeline/task_selection.py::PrepareSelectionTask
+        slots = max(global_cap - held_count, 0)
+        if bear_only:
+            remaining = max(bear_slots - defensive_held, 0)
+            slots = min(slots, remaining)
+        return slots
+
+    # ── notebook tests ────────────────────────────────────────────────────────
+
+    def test_nb_bear_only_caps_at_two_slots(self):
+        assert self._notebook_open_slots(0, 0, True, 2, 8) == 2
+
+    def test_nb_bear_only_with_one_defensive_held_leaves_one(self):
+        assert self._notebook_open_slots(1, 1, True, 2, 8) == 1
+
+    def test_nb_bear_only_fully_filled(self):
+        assert self._notebook_open_slots(2, 2, True, 2, 8) == 0
+
+    def test_nb_non_bear_ignores_bear_cap(self):
+        assert self._notebook_open_slots(0, 0, False, 2, 8) == 8
+
+    def test_nb_legacy_one_slot_still_works(self):
+        assert self._notebook_open_slots(0, 0, True, 1, 8) == 1
+
+    def test_nb_global_cap_tighter_than_bear_cap(self):
+        assert self._notebook_open_slots(7, 0, True, 2, 8) == 1
+
+    # ── LEAN tests ────────────────────────────────────────────────────────────
+
+    def test_lean_bear_only_caps_at_two_slots(self):
+        assert self._lean_open_slots(0, 0, True, 2, 8) == 2
+
+    def test_lean_bear_only_with_one_defensive_held_leaves_one(self):
+        assert self._lean_open_slots(1, 1, True, 2, 8) == 1
+
+    def test_lean_bear_only_fully_filled(self):
+        assert self._lean_open_slots(2, 2, True, 2, 8) == 0
+
+    def test_lean_non_bear_ignores_bear_cap(self):
+        assert self._lean_open_slots(0, 0, False, 2, 8) == 8
+
+    def test_lean_legacy_one_slot_still_works(self):
+        assert self._lean_open_slots(0, 0, True, 1, 8) == 1
+
+    def test_lean_global_cap_tighter_than_bear_cap(self):
+        assert self._lean_open_slots(7, 0, True, 2, 8) == 1
+
+    # ── cross-check ───────────────────────────────────────────────────────────
+
+    def test_both_agree_bear_slots(self):
+        cases = [
+            (0, 0, True,  2, 8),
+            (1, 1, True,  2, 8),
+            (2, 2, True,  2, 8),
+            (0, 0, False, 2, 8),
+            (0, 0, True,  1, 8),
+            (7, 0, True,  2, 8),
+        ]
+        for held, def_held, bear, slots, gcap in cases:
+            assert self._notebook_open_slots(held, def_held, bear, slots, gcap) == \
+                   self._lean_open_slots(held, def_held, bear, slots, gcap), \
+                   f"held={held} def={def_held} bear={bear} slots={slots} gcap={gcap}"
+
+
+# ─── POLICY: GMM Confidence Veto ──────────────────────────────────────────────
+
+class TestConfidenceVetoAlignment:
+    """If regime_confidence < regime.confidence_veto_threshold and the detected
+    regime is not BEAR, treat as BEAR (defensives only) — block offensive buys
+    without a BEAR label.
+    """
+
+    # ── pure replication ──────────────────────────────────────────────────────
+
+    def _notebook(self, regime, confidence, threshold):
+        """Sim/runner.py: veto_active flag folds into the BEAR branch."""
+        if regime == "BEAR":
+            return False            # BEAR branch handles it — veto not needed
+        if threshold <= 0.0:
+            return False            # disabled
+        return confidence < threshold
+
+    def _lean(self, regime, confidence, threshold):
+        """ConfidenceVetoTask in kernel/pipeline/task_gates.py — same gate logic."""
+        if regime == "BEAR":
+            return False
+        if threshold <= 0.0:
+            return False
+        return confidence < threshold
+
+    # ── notebook tests ────────────────────────────────────────────────────────
+
+    def test_nb_low_confidence_choppy_vetoes(self):
+        assert self._notebook("CHOPPY", 0.45, 0.55) is True
+
+    def test_nb_high_confidence_choppy_passes(self):
+        assert self._notebook("CHOPPY", 0.70, 0.55) is False
+
+    def test_nb_bear_regime_skips_veto(self):
+        assert self._notebook("BEAR", 0.10, 0.55) is False
+
+    def test_nb_threshold_zero_disables_veto(self):
+        assert self._notebook("CHOPPY", 0.05, 0.0) is False
+
+    def test_nb_at_exact_threshold_no_veto(self):
+        assert self._notebook("BULL_CALM", 0.55, 0.55) is False
+
+    def test_nb_bull_volatile_low_confidence_vetoes(self):
+        assert self._notebook("BULL_VOLATILE", 0.40, 0.55) is True
+
+    # ── LEAN tests ────────────────────────────────────────────────────────────
+
+    def test_lean_low_confidence_choppy_vetoes(self):
+        assert self._lean("CHOPPY", 0.45, 0.55) is True
+
+    def test_lean_high_confidence_choppy_passes(self):
+        assert self._lean("CHOPPY", 0.70, 0.55) is False
+
+    def test_lean_bear_regime_skips_veto(self):
+        assert self._lean("BEAR", 0.10, 0.55) is False
+
+    def test_lean_threshold_zero_disables_veto(self):
+        assert self._lean("CHOPPY", 0.05, 0.0) is False
+
+    def test_lean_at_exact_threshold_no_veto(self):
+        assert self._lean("BULL_CALM", 0.55, 0.55) is False
+
+    def test_lean_bull_volatile_low_confidence_vetoes(self):
+        assert self._lean("BULL_VOLATILE", 0.40, 0.55) is True
+
+    # ── cross-check ───────────────────────────────────────────────────────────
+
+    def test_both_agree_veto(self):
+        cases = [
+            ("CHOPPY", 0.45, 0.55),
+            ("CHOPPY", 0.70, 0.55),
+            ("BEAR",   0.10, 0.55),
+            ("BULL_CALM", 0.55, 0.55),
+            ("BULL_VOLATILE", 0.40, 0.55),
+            ("CHOPPY", 0.50, 0.0),
+        ]
+        for regime, conf, thr in cases:
+            assert self._notebook(regime, conf, thr) == self._lean(regime, conf, thr), (
+                f"regime={regime} conf={conf} thr={thr}"
+            )
+
+
+# ─── POLICY: Regime-Aware Position Cap ────────────────────────────────────────
+
+class TestRegimeCapAlignment:
+    """Open slots = regime-scoped max_concurrent_positions - held.
+
+    regime_params[regime].max_concurrent_positions overrides the global cap;
+    if absent, the global config cap applies. BEAR branch clamps to the
+    defensive-slot count (1) via a later-applied min().
+    """
+
+    # ── pure replication ──────────────────────────────────────────────────────
+
+    def _notebook(self, held_count, regime, config):
+        regime_params = config.get("regime_params", {}).get(regime, {})
+        cap = int(regime_params.get(
+            "max_concurrent_positions",
+            config.get("max_concurrent_positions", 8),
+        ))
+        return max(cap - held_count, 0)
+
+    def _lean(self, held_count, regime, config):
+        # PrepareSelectionTask logic in kernel/pipeline/task_selection.py
+        regime_params = config.get("regime_params", {}).get(regime, {})
+        max_positions = int(regime_params.get(
+            "max_concurrent_positions",
+            config.get("max_concurrent_positions", 8),
+        ))
+        return max(max_positions - held_count, 0)
+
+    def _cfg(self, **choppy_overrides):
+        cfg = {"max_concurrent_positions": 8, "regime_params": {
+            "BULL_CALM": {}, "BULL_VOLATILE": {}, "CHOPPY": {}, "BEAR": {},
+        }}
+        cfg["regime_params"]["CHOPPY"].update(choppy_overrides)
+        return cfg
+
+    # ── notebook tests ────────────────────────────────────────────────────────
+
+    def test_nb_bull_calm_uses_global_cap(self):
+        assert self._notebook(3, "BULL_CALM", self._cfg()) == 5
+
+    def test_nb_choppy_override_to_4(self):
+        assert self._notebook(2, "CHOPPY", self._cfg(max_concurrent_positions=4)) == 2
+
+    def test_nb_choppy_override_caps_open_slots(self):
+        # 7 held in CHOPPY cap=4 → no open slots
+        assert self._notebook(7, "CHOPPY", self._cfg(max_concurrent_positions=4)) == 0
+
+    def test_nb_choppy_without_override_falls_back_to_global(self):
+        assert self._notebook(2, "CHOPPY", self._cfg()) == 6
+
+    def test_nb_bear_uses_global_cap_before_defensive_clamp(self):
+        assert self._notebook(0, "BEAR", self._cfg(max_concurrent_positions=4)) == 8
+
+    def test_nb_unknown_regime_uses_global_cap(self):
+        assert self._notebook(1, "UNKNOWN", self._cfg(max_concurrent_positions=4)) == 7
+
+    # ── LEAN tests ────────────────────────────────────────────────────────────
+
+    def test_lean_bull_calm_uses_global_cap(self):
+        assert self._lean(3, "BULL_CALM", self._cfg()) == 5
+
+    def test_lean_choppy_override_to_4(self):
+        assert self._lean(2, "CHOPPY", self._cfg(max_concurrent_positions=4)) == 2
+
+    def test_lean_choppy_override_caps_open_slots(self):
+        assert self._lean(7, "CHOPPY", self._cfg(max_concurrent_positions=4)) == 0
+
+    def test_lean_choppy_without_override_falls_back_to_global(self):
+        assert self._lean(2, "CHOPPY", self._cfg()) == 6
+
+    def test_lean_bear_uses_global_cap_before_defensive_clamp(self):
+        assert self._lean(0, "BEAR", self._cfg(max_concurrent_positions=4)) == 8
+
+    def test_lean_unknown_regime_uses_global_cap(self):
+        assert self._lean(1, "UNKNOWN", self._cfg(max_concurrent_positions=4)) == 7
+
+    # ── cross-check ───────────────────────────────────────────────────────────
+
+    def test_both_agree_regime_cap(self):
+        cfg = self._cfg(max_concurrent_positions=4)
+        for regime in ("BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"):
+            for held in (0, 2, 4, 8):
+                assert self._notebook(held, regime, cfg) == self._lean(held, regime, cfg), (
+                    f"regime={regime} held={held}: NB={self._notebook(held, regime, cfg)} "
+                    f"LEAN={self._lean(held, regime, cfg)}"
+                )
+
+
 # ── Count verification ────────────────────────────────────────────────────────
 
 def test_equal_nb_and_lean_test_counts():
@@ -1484,6 +1742,9 @@ def test_equal_nb_and_lean_test_counts():
         TestCombinedRankingAlignment,
         TestPositionSizingAlignment,
         TestRotationAlignment,
+        TestRegimeCapAlignment,
+        TestConfidenceVetoAlignment,
+        TestBearDefensiveSlotsAlignment,
     ]
     for cls in classes:
         methods = [m for m in dir(cls) if m.startswith("test_")]
@@ -1505,7 +1766,7 @@ if __name__ == "__main__":
 # ─── POLICY: Cross-Sectional Rotation ─────────────────────────────────────────
 
 # Make kernel importable so _notebook/_lean helpers can call the shared primitive.
-_KERNEL_DIR = ROOT / "backtesting" / "renquant_103"
+_KERNEL_DIR = ROOT / "backtesting" / "renquant_104"
 if str(_KERNEL_DIR) not in sys.path:
     sys.path.insert(0, str(_KERNEL_DIR))
 

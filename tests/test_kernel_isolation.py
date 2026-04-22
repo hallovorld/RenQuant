@@ -1,6 +1,6 @@
 """CI enforcement: kernel/ must not import from common/.
 
-Scans every .py file in backtesting/renquant_103/kernel/ and asserts
+Scans every .py file in backtesting/renquant_104/kernel/ and asserts
 no 'import common' or 'from common' statement exists.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-KERNEL_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_103" / "kernel"
+KERNEL_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104" / "kernel"
 KERNEL_FILES = sorted(KERNEL_DIR.glob("*.py"))
 
 

@@ -1,5 +1,5 @@
 """
-Unit tests for renquant_103 LEAN strategy policies (main.py).
+Unit tests for renquant_104 LEAN strategy policies (main.py).
 
 LEAN requires Docker to run the full engine, so these tests:
   1. Test the pure-Python model methods added to common/models/ (predict_score_bulk)
@@ -25,7 +25,7 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-STRATEGY_DIR = ROOT / "backtesting" / "renquant_103"
+STRATEGY_DIR = ROOT / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
@@ -1813,7 +1813,7 @@ class TestBelowFloorModelRejection:
 
 class TestStrategyConfigConsistency:
     def test_choppy_model_sell_path_is_reachable(self):
-        config_path = ROOT / "backtesting" / "renquant_103" / "strategy_config.json"
+        config_path = ROOT / "backtesting" / "renquant_104" / "strategy_config.json"
         config = json.loads(config_path.read_text())
 
         min_hold_days = int(config.get("min_hold_days", 0))

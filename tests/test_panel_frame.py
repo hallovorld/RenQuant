@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-_STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_103"
+_STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 

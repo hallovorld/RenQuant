@@ -29,7 +29,7 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-STRATEGY_DIR = ROOT / "backtesting" / "renquant_103"
+STRATEGY_DIR = ROOT / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 

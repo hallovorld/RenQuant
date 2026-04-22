@@ -227,6 +227,7 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
     log.info("─" * 62)
 
     config["_use_kernel"] = True
+    config["_strategy_dir"] = str(strategy_dir)
     return config, models, strategy_dir
 
 
@@ -246,7 +247,8 @@ def _run_once_multi_pipeline(
     run_mode = "sell-only" if sell_only else "full"
     sep = "=" * 62
     log.info(sep)
-    log.info("RENQUANT-103  %s  [%s]", datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
+    label = strategy_dir.name.upper().replace("_", "-")
+    log.info("%s  %s  [%s]", label, datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
     adapter  = RunnerAdapter(config, models, broker, strategy_dir, sell_only=sell_only)

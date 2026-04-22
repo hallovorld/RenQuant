@@ -23,13 +23,13 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/NVDA/NVDA-manual-rules.json"
   },
-  "trained_date": "2026-04-20",
+  "trained_date": "2026-04-21",
   "best_approach": "Manual",
-  "sharpe": 1.5322,
+  "sharpe": 1.5306,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
-  "live_train_end": "2026-04-13",
+  "live_train_end": "2026-04-14",
   "live_holdout_sharpe": 1.3421,
   "live_holdout_days": 126,
   "score_calibration": {
@@ -82,5 +82,5 @@
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-20"
+  "score_calibration_date": "2026-04-21"
 }

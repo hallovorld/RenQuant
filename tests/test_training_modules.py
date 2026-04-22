@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 # Add strategy dir so kernel.* and training.* are importable
-_STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_103"
+_STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
@@ -204,7 +204,7 @@ class TestExportModels:
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
             results = self._fake_results(tmpdir, passes=True)
-            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_103")
+            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_104")
             assert "AAPL" in exported
             assert (strategy_dir / "models" / "AAPL").is_dir()
 
@@ -213,7 +213,7 @@ class TestExportModels:
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
             results = self._fake_results(tmpdir, passes=False)
-            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_103")
+            exported, skipped = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_104")
             assert "AAPL" not in exported
             assert "AAPL" in skipped
 
@@ -222,7 +222,7 @@ class TestExportModels:
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
             results = self._fake_results(tmpdir, passes=True)
-            export_models(results, strategy_dir, "2025-04-19", 0.8, 5, "renquant_103")
+            export_models(results, strategy_dir, "2025-04-19", 0.8, 5, "renquant_104")
             meta_path = strategy_dir / "models" / "AAPL" / "AAPL-policy-metadata.json"
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text())
@@ -252,11 +252,11 @@ class TestRetrainLiveModels:
         }
         model_params = {"feature_columns": ["rsi", "macd_hist"], "lookahead": 5, "threshold": 0.02,
                         "bags": 3, "leaf_size": 5, "buy_threshold": 0.1, "sell_threshold": -0.1}
-        config = {"strategy": "renquant_103", "tax": {"short_term_rate": 0.4, "long_term_rate": 0.2,
+        config = {"strategy": "renquant_104", "tax": {"short_term_rate": 0.4, "long_term_rate": 0.2,
                                                        "long_term_threshold_days": 365}}
         with tempfile.TemporaryDirectory() as tmpdir:
             strategy_dir = Path(tmpdir)
-            exported, _ = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_103")
+            exported, _ = export_models(results, strategy_dir, "2025-01-01", 0.8, 5, "renquant_104")
             retrain_live_models(
                 results, {"AAPL": df} if df is not None else {},
                 exported, strategy_dir, model_params, config, "2025-04-19",

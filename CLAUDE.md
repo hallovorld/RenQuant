@@ -62,27 +62,33 @@ python -m live.runner --strategy renquant_102 --broker alpaca-paper --once  # mu
 python -m live.runner --strategy renquant_102 --broker alpaca --once  # real money
 ```
 
-**Scheduled mode**: Three daily automation runs via macOS launchd (all NYSE-holiday-aware):
+**Scheduled mode**: Three daily automation runs via macOS launchd (all NYSE-holiday-aware). renquant_104 is the **active strategy**; 103 scripts remain for reference and rollback.
 
 | Run | Time (PT) | Time (ET) | Script | What it does |
 |-----|-----------|-----------|--------|--------------|
-| Market open | 6:32 AM | 9:32 AM | `live_only_103.sh --sell-only` | Exit stop-loss / gap-down positions early using today's opening price |
-| Pre-close | 12:44 PM | 3:44 PM | `live_only_103.sh --sell-only` | Exit intraday stop breaches before close using near-final daily price |
-| After close | 1:55 PM | 4:55 PM | `daily_103.sh` | Full run: retrain models → export LEAN data → recalibrate scores → buy + sell signals |
+| Market open | 6:32 AM | 9:32 AM | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down positions early using today's opening price |
+| Pre-close | 12:44 PM | 3:44 PM | `live_only_104.sh --sell-only` | Exit intraday stop breaches before close using near-final daily price |
+| After close | 1:55 PM | 4:55 PM | `daily_104.sh` | Full run: `FullTrainingPipeline` (tournament → panel-LTR → recalibrate) → export LEAN data → buy + sell signals |
 
 ```bash
-# Manual runs
-bash scripts/daily_103.sh              # full run (retrain + trade)
-bash scripts/live_only_103.sh          # intraday sell check (no retrain)
-python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
+# Manual runs — 104 (active)
+bash scripts/daily_104.sh              # full retrain + trade
+bash scripts/live_only_104.sh          # intraday sell check (no retrain)
+python scripts/train_104.py --skip-baseline --skip-recalibrate  # partial retrain
+python -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only
 
-# LaunchAgents (all loaded)
-# ~/Library/LaunchAgents/com.renquant.open103.plist
-# ~/Library/LaunchAgents/com.renquant.preclose103.plist
-# ~/Library/LaunchAgents/com.renquant.daily103.plist
-# Logs: logs/live_103/{date}-open.log, {date}-preclose.log
-#       logs/daily_103/{date}.log
+# LaunchAgents (104 active; 103 unloaded)
+# ~/Library/LaunchAgents/com.renquant.open104.plist
+# ~/Library/LaunchAgents/com.renquant.preclose104.plist
+# ~/Library/LaunchAgents/com.renquant.daily104.plist
+# Logs: logs/live_104/{date}-open.log, {date}-preclose.log
+#       logs/daily_104/{date}.log
 # NYSE calendar guard: all three scripts skip US market holidays automatically
+
+# Manual runs — 103 (legacy, kept for rollback)
+bash scripts/daily_103.sh
+bash scripts/live_only_103.sh
+python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
 ```
 
 Alpaca credentials are stored in `.env` (gitignored): `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS + iPhone/ntfy) are sent on success or failure. Notification body includes current holdings with unrealized P&L percentages (e.g. `BUY AAPL x5 | Held: NVDA+12% META-2%`).
@@ -232,6 +238,8 @@ Volume filter supports two modes via `volume_filter.mode` in `strategy_config.js
 - `"percentile"` (default): Adaptive per-stock filter. Triggers when today's volume is in the top N% of the lookback window (default: P85 = top 15%). Self-calibrates for each stock's own volume distribution, so stable large-caps and volatile small-caps are held to the same relative standard.
 - `"zscore"` (legacy): Fixed z-score threshold across all stocks. Uses `volume_zscore_threshold` (default: 1.5).
 
+**Panel-LTR cross-sectional ranking** (renquant_104): Extends 103 by replacing each candidate's per-ticker `rank_score` with a cross-sectional panel-LTR score computed via a single XGBoost learning-to-rank model fitted on the whole watchlist panel. Enabled via `ranking.panel_scoring.enabled: true` (config block also includes `artifact_path`, `nan_prone_cols`). Panel training labels use beta-neutralized + sector-/size-neutralized forward excess returns; `PanelScoringJob` (four Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask`) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and short-circuits via `should_skip()` when the flag is off so 103 behavior is preserved. `ApplyScoresTask` writes `panel_score` onto both candidates (and overwrites `rank_score`) and holdings so rotation can compare apples-to-apples. Three additional knobs under `ranking.panel_scoring`: `buy_floor` drops candidates below a panel-score threshold (`VetoWeakBuysTask`), `sizing.{enabled,floor,ceiling,min_mult}` drives `conviction_multiplier()` which scales `max_position_pct` in `SizeAndEmitTask` + `EmitRotationsTask`, and `rotation_advantage` requires a candidate's panel score to beat a held position's by at least that fraction before a rotation pair is emitted. Training is driven by `scripts/train_104.py` (thin entrypoint) backed by `kernel/pipeline/pp_training_full.py::FullTrainingPipeline` (`BaselineTournamentJob` → `PanelTrainingJob` → `RecalibrationJob`) — no notebook dependency. Inference requires 520 bars of history (vs 60 for 103) to warm up neutralization + factor windows; both `LeanAdapter` (LEAN main.py path) and `RunnerAdapter` (live runner path) read the flag and call `prepare_inference_panel_frames()` before running the pipeline, and each adapter injects `config["_strategy_dir"]` so `LoadScorerTask` can resolve the artifact path from the strategy directory (not CWD). The 104 notebook lives at `backtesting/renquant_104/renquant_104.ipynb` (parallel to the 103 notebook layout). Full spec: `doc/renquant_104_design.md`.
+
 ### Adding a New Strategy
 
 ```bash
@@ -255,13 +263,26 @@ python scripts/new_strategy.py --name foo --symbol AAPL --type classification
 - **Whenever LEAN main.py changes**, check it against the logic graph and update if LEAN is intentionally extended.
 - The logic graph covers: regime detection → mark-to-market → drawdown breaker → sell loop (all 5 exits in priority order) → buy gates (transition window, BEAR branch, velocity crash, EMA50) → candidate scan (all filters) → ranking → selection loop (tiered thresholds, sector guard, correlation guard, position sizing).
 
+### 1b. Every Logical Unit Is a Task, Job, or Pipeline
+**All new decision logic belongs in `kernel/pipeline/` or `kernel/panel_pipeline/` as a Task, Job, or Pipeline.** No new hand-written loops that bypass the orchestration layer.
+- **Task**: an atomic step that reads/writes `InferenceContext` (or a ticker slice). Return `False` to short-circuit the enclosing Job's chain.
+- **Job**: a sequential Task chain with a `should_skip(ctx)` gate. Jobs may run serially or via `run_parallel()` for per-ticker work.
+- **Pipeline**: orders Jobs into phases and owns the full run (`InferencePipeline`, `SellOnlyPipeline`, `FullTrainingPipeline`, `PanelTrainingPipeline`).
+- LEAN (`main.py`) and the live runner (`live/runner.py`) already go through `InferencePipeline` via `LeanAdapter` / `RunnerAdapter`. The notebook simulation backend `backtesting/renquant_104/sim/runner.py` is currently a hand-written loop calling kernel primitives directly — **any decision added to `InferencePipeline` must also be reflected in `sim/runner.py`** until that file is refactored to run through `InferencePipeline` too. Long-term goal: delete `sim/runner.py`'s hand-written loop in favor of `InferencePipeline.run()` with a sim adapter.
+- When adding a new decision:
+  1. Write it as a Task (or new Job + Task chain) under `kernel/pipeline/` or `kernel/panel_pipeline/`.
+  2. Wire it into the correct phase of the owning Pipeline.
+  3. Apply the **same** logic in `sim/runner.py` (until that's unified).
+  4. Add paired alignment tests in `tests/test_panel_alignment.py` or `tests/test_policy_alignment.py`.
+
 ### 2. Tests for Every Feature
 Every policy in notebook and LEAN must have a corresponding test.
 - Tests live in `tests/` (run with `python -m pytest tests/ -v`).
 - `tests/test_policy_alignment.py`: 18 policy classes (Trailing/Stop/SDL/MaxHold/MinHold/SellStreak/EMA50/Velocity/Transition/Earnings/Tiered/Correlation/Sector/WashSale/MinScore/CombinedRanking/Sizing/**Rotation**), each with at least 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
 - `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).
+- `tests/test_panel_alignment.py`: 20 tests — flag parity across LeanAdapter / RunnerAdapter / PanelScoringJob, pipeline ordering invariant, panel-veto (`TestPanelVetoWeakBuys`), conviction sizing (`TestPanelConvictionSizing`), panel-rotation gate (`TestPanelRotationAdvantage`).
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 564 collected tests (562 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 802 collected (800 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.
@@ -280,6 +301,7 @@ After any non-trivial change, run `/update-docs` or manually sync:
 - `doc/architecture.md` — overall pipeline and data flow
 - `doc/models.md` — model types, exit logic, stop-loss params
 - `doc/renquant_103_design.md` — full 103 strategy spec including test counts
+- `doc/renquant_104_design.md` — renquant_104 panel-LTR spec (diff vs 103, FullTrainingPipeline, panel flag wiring, test coverage)
 - `CLAUDE.md` — this file; keep test counts and rule set current
 
 ### 4. Documentation Index
@@ -290,6 +312,7 @@ After any non-trivial change, run `/update-docs` or manually sync:
 | `doc/architecture.md` | Pipeline overview, data stores, indicator registry, model types, strategy list |
 | `doc/models.md` | Model ABC, all model types, exit logic, stop-loss, single-day gate, trailing stop |
 | `doc/renquant_103_design.md` | Full renquant_103 design spec: regime layers, stock selection pipeline, artifact list, key implementation details |
+| `doc/renquant_104_design.md` | renquant_104 panel-LTR design: cross-sectional ranking, FullTrainingPipeline, panel flag wiring across LEAN/live/sim |
 | `doc/indicators.md` | All registered indicators and their parameters |
 | `doc/usage.md` | CLI commands, live runner flags, scheduled runs |
 | `doc/setup.md` | Environment setup, Docker, credentials |

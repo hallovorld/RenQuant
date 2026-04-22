@@ -23,14 +23,14 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/MU/MU-manual-rules.json"
   },
-  "trained_date": "2026-04-20",
+  "trained_date": "2026-04-21",
   "best_approach": "Manual",
-  "sharpe": 2.0736,
+  "sharpe": 2.1709,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
-  "live_train_end": "2026-04-13",
-  "live_holdout_sharpe": 1.0038,
+  "live_train_end": "2026-04-14",
+  "live_holdout_sharpe": 1.6317,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
@@ -78,5 +78,5 @@
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-20"
+  "score_calibration_date": "2026-04-21"
 }
