@@ -179,6 +179,33 @@ class TestExtensibility:
 
 # ── Staleness ────────────────────────────────────────────────────────────────
 
+class TestResilience:
+    """A single malformed artifact must not crash the entire LoadArtifactsTask
+    (regression — this used to kill daily_104.sh in production)."""
+
+    def test_empty_metadata_rejects_only_that_ticker(self, fake_models_dir):
+        strategy_dir, tickers = fake_models_dir
+        # Zero out one ticker's metadata (empty file → JSONDecodeError)
+        p = strategy_dir / "models" / "BBB" / "BBB-policy-metadata.json"
+        p.write_text("")
+        uctx = _run_job(strategy_dir, tickers, floor_type="none", threshold=0.0)
+        # BBB rejected with a load_error reason; AAA + CCC still admitted.
+        assert "AAA" in uctx.loaded_models
+        assert "CCC" in uctx.loaded_models
+        assert "BBB" not in uctx.loaded_models
+        assert any(r[0] == "BBB" and r[1].startswith("load_error_")
+                   for r in uctx.rejections)
+
+    def test_truncated_metadata_rejects_only_that_ticker(self, fake_models_dir):
+        strategy_dir, tickers = fake_models_dir
+        p = strategy_dir / "models" / "BBB" / "BBB-policy-metadata.json"
+        p.write_text("{\"policy_type\": \"classifi")  # truncated mid-write
+        uctx = _run_job(strategy_dir, tickers, floor_type="none", threshold=0.0)
+        assert "BBB" not in uctx.loaded_models
+        assert "AAA" in uctx.loaded_models
+        assert "CCC" in uctx.loaded_models
+
+
 class TestStaleness:
     def test_stale_models_dropped(self, fake_models_dir):
         strategy_dir, tickers = fake_models_dir

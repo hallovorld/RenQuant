@@ -772,10 +772,14 @@ class CrossValidateTask(PanelTask):
         else:
             from training_panel.ltr_model import PanelLTRModel
             xgb_params = dict(cfg.get("xgb_params", {}))
+            monotone = dict(cfg.get("monotone_constraints", {}))
 
             class _SklearnAdapter:
                 def __init__(self):
-                    self._m = PanelLTRModel(params=xgb_params)
+                    self._m = PanelLTRModel(
+                        params=xgb_params,
+                        monotone_constraints=monotone,
+                    )
                 def fit(self, X, y, sample_weight=None):
                     df = X.copy()
                     df["label"] = y
@@ -850,7 +854,8 @@ class FinalFitTask(PanelTask):
         else:
             from training_panel.ltr_model import PanelLTRModel
             xgb_params = dict(cfg.get("xgb_params", {}))
-            model = PanelLTRModel(params=xgb_params)
+            monotone = dict(cfg.get("monotone_constraints", {}))
+            model = PanelLTRModel(params=xgb_params, monotone_constraints=monotone)
             fit = model.train(
                 ctx.panel, ctx.group_sizes,
                 feature_cols=ctx.feature_cols,

@@ -56,7 +56,12 @@ class LoadArtifactsTask(UniverseTask):
             log.warning("models/ not found at %s", models_dir)
             return False
         for ticker in uctx.config.get("watchlist", []):
-            art = load_artifact(models_dir / ticker, ticker)
+            try:
+                art = load_artifact(models_dir / ticker, ticker)
+            except Exception as exc:
+                log.warning("%s load_artifact failed: %s — rejected", ticker, exc)
+                uctx.rejections.append((ticker, f"load_error_{type(exc).__name__}"))
+                continue
             if art is None:
                 uctx.rejections.append((ticker, "no_artifact"))
                 continue

@@ -278,7 +278,7 @@
   },
   "ranking": {
     "blend_updated": "2026-04-22",
-    "blend_n_symbols": 36,
+    "blend_n_symbols": 38,
     "panel_scoring": {
       "enabled": true,
       "artifact_path": "artifacts/panel-ltr.json",
@@ -317,7 +317,7 @@
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
-    "cv_n_splits": 5,
+    "cv_n_splits": 6,
     "cv_embargo_days": 10,
     "num_boost_round": 150,
     "neutralize_features": true,
@@ -352,7 +352,34 @@
       "allow_fetch": true
     },
     "backend": "xgboost",
-    "lightgbm_params": {}
+    "lightgbm_params": {
+      "objective": "lambdarank",
+      "metric": "ndcg",
+      "ndcg_at": [
+        5,
+        10
+      ],
+      "learning_rate": 0.02,
+      "num_leaves": 15,
+      "max_depth": 4,
+      "min_data_in_leaf": 50,
+      "feature_fraction": 0.5,
+      "bagging_fraction": 0.5,
+      "bagging_freq": 5,
+      "lambda_l1": 2.0,
+      "lambda_l2": 5.0,
+      "verbose": -1
+    },
+    "cv_method": "cpcv",
+    "cv_n_test_groups": 2,
+    "monotone_constraints": {
+      "beta_60d_z": -1,
+      "mom_12_1_z": 1,
+      "resid_mom_z": 1,
+      "earnings_yield_z": 1,
+      "roe_z": 1,
+      "gross_profitability_z": 1
+    }
   },
   "training": {
     "cadence": "custom",

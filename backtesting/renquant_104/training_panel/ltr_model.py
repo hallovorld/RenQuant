@@ -67,13 +67,18 @@ def _mean_ic(panel: pd.DataFrame, preds: np.ndarray,
 class PanelLTRModel:
     """XGBoost rank:pairwise wrapper."""
 
-    def __init__(self, params: dict | None = None):
+    def __init__(self, params: dict | None = None,
+                 monotone_constraints: dict[str, int] | None = None):
         self.params: dict[str, Any] = dict(DEFAULT_PARAMS)
         if params:
             self.params.update(params)
         self.booster: xgb.Booster | None = None
         self.feature_cols: list[str] = []
         self.best_iter: int | None = None
+        # Sign constraints per feature name: {"roe_z": +1, "beta_60d_z": -1, ...}
+        # Sign 0 or missing entries are unconstrained. The XGBoost-formatted
+        # tuple is built during train() once feature_cols is known.
+        self.monotone_constraints: dict[str, int] = dict(monotone_constraints or {})
 
     # ── Training ──────────────────────────────────────────────────────────
 
@@ -121,6 +126,14 @@ class PanelLTRModel:
         # use per-date Spearman IC (computed in Python after training) instead.
         # Pass no evals ⇒ no metric evaluation inside xgboost.
         params = dict(self.params)
+
+        # Monotone constraints: build XGBoost-format tuple string matching
+        # feature_cols order. Only inject when at least one feature is
+        # constrained — otherwise XGBoost's default (unconstrained) applies.
+        if self.monotone_constraints:
+            signs = [int(self.monotone_constraints.get(c, 0)) for c in feature_cols]
+            if any(s != 0 for s in signs):
+                params["monotone_constraints"] = "(" + ",".join(str(s) for s in signs) + ")"
 
         self.booster = xgb.train(
             params, dtrain,
