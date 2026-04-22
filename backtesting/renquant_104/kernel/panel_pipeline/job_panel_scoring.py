@@ -189,12 +189,203 @@ class VetoWeakBuysTask(Task):
                      dropped, floor)
 
 
+# ── Global calibration (Item #2 — optional) ───────────────────────────────────
+
+class LoadGlobalCalibrationTask(Task):
+    """Load the global panel calibrator artifact if enabled."""
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        gc_cfg = (ctx.config.get("ranking", {})
+                           .get("panel_scoring", {})
+                           .get("global_calibration", {}))
+        if not gc_cfg.get("enabled", False):
+            return
+
+        cached = getattr(ctx, "_global_calibrator", None)
+        if cached is not None:
+            return
+
+        path = Path(gc_cfg.get("artifact_path", "artifacts/panel-rank-calibration.json"))
+        if not path.is_absolute():
+            strategy_dir = ctx.config.get("_strategy_dir")
+            if strategy_dir:
+                path = Path(strategy_dir) / path
+        try:
+            from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
+            ctx._global_calibrator = GlobalPanelCalibration.load(path)  # noqa: SLF001
+        except Exception as exc:
+            log.warning("LoadGlobalCalibrationTask: failed to load %s — %s", path, exc)
+            ctx._global_calibrator = None  # noqa: SLF001
+            return
+        log.info("LoadGlobalCalibrationTask: loaded (pool_IC=%s)",
+                 ctx._global_calibrator.metadata.get("pool_ic"))
+
+
+class ApplyGlobalCalibrationTask(Task):
+    """Transform raw panel_score → calibrated P(outperform) + E[R - SPY].
+
+    Runs AFTER ApplyScoresTask (which wrote panel_score into rank_score).
+    With calibration enabled:
+      - `rank_score` ← calibrated probability ∈ [0, 1]
+      - `expected_return` ← calibrated E[R_i - R_spy] over lookahead
+    `panel_score` stays the raw LTR output for rotation comparison.
+    Skipped (no-op) when ngboost is enabled — NGBoost's μ-λσ already
+    provides a calibrated comparison-ready score.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
+        if not panel_cfg.get("global_calibration", {}).get("enabled", False):
+            return
+        # Only defer to NGBoost when NGBoost itself overrides rank_score
+        # (score_mode == "mu_minus_lambda_sigma"). In "additive" mode NGBoost
+        # only writes mu/sigma for sizing — rank_score still needs calibration.
+        ngb_cfg = panel_cfg.get("ngboost", {})
+        if ngb_cfg.get("enabled", False) and \
+                str(ngb_cfg.get("score_mode", "mu_minus_lambda_sigma")) == "mu_minus_lambda_sigma":
+            log.debug("ApplyGlobalCalibrationTask: ngboost μ−λσ active — deferring")
+            return
+        cal = getattr(ctx, "_global_calibrator", None)
+        if cal is None:
+            return
+
+        n_cand = 0
+        for c in ctx.candidates:
+            if c.panel_score is None or c.panel_score != c.panel_score:
+                continue
+            prob = cal.calibrate_probability(c.panel_score)
+            er   = cal.expected_return(c.panel_score)
+            c.rank_score      = float(prob)
+            c.expected_return = float(er)
+            n_cand += 1
+
+        n_held = 0
+        for ticker, hs in ctx.holdings.items():
+            ps = getattr(hs, "panel_score", None)
+            if ps is None or ps != ps:
+                continue
+            hs.rank_score      = cal.calibrate_probability(ps)
+            hs.expected_return = cal.expected_return(ps)
+            n_held += 1
+
+        log.info(
+            "ApplyGlobalCalibrationTask: calibrated %d/%d candidates, %d/%d holdings",
+            n_cand, len(ctx.candidates), n_held, len(ctx.holdings),
+        )
+
+
+# ── NGBoost tasks (Stage 2 — optional) ────────────────────────────────────────
+
+class LoadNGBoostTask(Task):
+    """Load the NGBoostHead artifact when enabled.
+
+    No-op when the `ngboost.enabled` sub-flag is false. Failure to load is
+    logged and downstream NGBoost tasks short-circuit — the LTR-only path
+    keeps working.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
+        ngb_cfg   = panel_cfg.get("ngboost", {})
+        if not ngb_cfg.get("enabled", False):
+            return
+
+        head = getattr(ctx, "_ngboost_head", None)
+        if head is not None:
+            return
+
+        artifact = ngb_cfg.get("artifact_path", "artifacts/ngboost-head.json")
+        p = Path(artifact)
+        if not p.is_absolute():
+            strategy_dir = ctx.config.get("_strategy_dir")
+            if strategy_dir:
+                p = Path(strategy_dir) / p
+
+        try:
+            from training_panel.ngboost_head import NGBoostHead  # noqa: PLC0415
+            ctx._ngboost_head = NGBoostHead.load(p)  # noqa: SLF001
+        except Exception as exc:
+            log.warning("LoadNGBoostTask: failed to load %s — %s", p, exc)
+            ctx._ngboost_head = None  # noqa: SLF001
+            return
+        log.info("LoadNGBoostTask: loaded ngboost head (features=%d)",
+                 len(ctx._ngboost_head.feature_cols))
+
+
+class ApplyNGBoostTask(Task):
+    """Apply NGBoost μ,σ predictions on top of the LTR panel scoring.
+
+    - Writes `mu` + `sigma` onto every candidate / holding for which a
+      prediction is available.
+    - When `ngboost.score_mode == "mu_minus_lambda_sigma"` (the default
+      when ngboost is enabled), overwrites `rank_score` AND `panel_score`
+      with `μ − λ·σ` so downstream ranking + rotation use the combined
+      signal. Set score_mode = "additive" to keep the LTR rank_score
+      unchanged and only populate mu/sigma for sizing.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        ngb_cfg = (ctx.config.get("ranking", {})
+                             .get("panel_scoring", {})
+                             .get("ngboost", {}))
+        if not ngb_cfg.get("enabled", False):
+            return
+        head = getattr(ctx, "_ngboost_head", None)
+        X    = getattr(ctx, "_panel_matrix", None)
+        if head is None or X is None or X.empty:
+            return
+
+        # Skip matrix rows missing any head feature — NGBoost won't predict NaN rows.
+        missing = [c for c in head.feature_cols if c not in X.columns]
+        if missing:
+            log.warning("ApplyNGBoostTask: feature matrix missing cols %s — skipping",
+                        missing)
+            return
+
+        try:
+            dist = head.predict_distribution(X)
+        except Exception as exc:
+            log.warning("ApplyNGBoostTask: predict failed — %s", exc)
+            return
+
+        lambda_sigma = float(ngb_cfg.get("lambda_sigma", 1.0))
+        score_mode   = str(ngb_cfg.get("score_mode", "mu_minus_lambda_sigma"))
+        override     = (score_mode == "mu_minus_lambda_sigma")
+
+        mu    = dist["mu"]
+        sigma = dist["sigma"]
+        combined = mu - lambda_sigma * sigma
+
+        for cand in ctx.candidates:
+            if cand.ticker not in mu.index:
+                continue
+            cand.mu    = float(mu.loc[cand.ticker])
+            cand.sigma = float(sigma.loc[cand.ticker])
+            if override:
+                v = float(combined.loc[cand.ticker])
+                cand.rank_score  = v
+                cand.panel_score = v
+
+        for ticker, hs in ctx.holdings.items():
+            if ticker not in mu.index:
+                continue
+            hs.mu    = float(mu.loc[ticker])
+            hs.sigma = float(sigma.loc[ticker])
+            if override:
+                hs.panel_score = float(combined.loc[ticker])
+
+        log.info("ApplyNGBoostTask: mode=%s  λ=%.2f  n_cands=%d  n_holdings=%d",
+                 score_mode, lambda_sigma, len(ctx.candidates), len(ctx.holdings))
+
+
 # ── Job ──────────────────────────────────────────────────────────────────────
 
 class PanelScoringJob(Job):
     """Overwrite rank_score on surviving candidates with cross-sectional panel scores.
 
-    Task chain: LoadScorer → BuildFeatureMatrix → ApplyScores → VetoWeakBuys
+    Task chain:
+      LoadScorer → BuildFeatureMatrix → ApplyScores → VetoWeakBuys
+        → LoadNGBoost → ApplyNGBoost   (no-op when ngboost.enabled is false)
     """
 
     def should_skip(self, ctx: InferenceContext) -> bool:
@@ -206,4 +397,13 @@ class PanelScoringJob(Job):
 
     @property
     def tasks(self) -> list[Task]:
-        return [LoadScorerTask(), BuildFeatureMatrixTask(), ApplyScoresTask(), VetoWeakBuysTask()]
+        return [
+            LoadScorerTask(),
+            BuildFeatureMatrixTask(),
+            ApplyScoresTask(),
+            VetoWeakBuysTask(),
+            LoadGlobalCalibrationTask(),
+            ApplyGlobalCalibrationTask(),
+            LoadNGBoostTask(),
+            ApplyNGBoostTask(),
+        ]

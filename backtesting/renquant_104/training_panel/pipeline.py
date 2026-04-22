@@ -17,6 +17,8 @@ from .context import PanelTrainingContext
 from .pp_panel_training import (
     SectorMomentumTask,
     FactorZScoreTask,
+    NeutralizedFeatureZScoreTask,
+    LoadFundamentalsTask,
     PanelFeatureJob,
     PanelAssemblyJob,
     PanelModelJob,
@@ -66,11 +68,13 @@ def prepare_inference_panel_frames(
     )
 
     SectorMomentumTask().run(ctx)
+    LoadFundamentalsTask().run(ctx)
 
     ticker_ctxs = [
         TickerPanelContext(
             ticker=t, ohlcv=ctx.ohlcv, sector_momentum=ctx.sector_momentum,
             ticker_sectors=ctx.ticker_sectors, config=ctx.config,
+            fundamentals=ctx.fundamentals,
         )
         for t in ctx.watchlist if t in ctx.ohlcv
     ]
@@ -97,6 +101,10 @@ def prepare_inference_panel_frames(
         if tc.raw_factor_frame is not None
     }
 
+    # Cross-sectional z-score per-ticker indicators so inference distribution
+    # matches training. Must run BEFORE FactorZScoreTask so order matches
+    # PanelAssemblyJob in the training pipeline.
+    NeutralizedFeatureZScoreTask().run(ctx)
     FactorZScoreTask().run(ctx)
 
     return ctx.neutralized_frames, ctx.factor_frames

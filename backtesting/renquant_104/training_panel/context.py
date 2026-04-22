@@ -31,6 +31,7 @@ class PanelTrainingContext:
 
     # ── Phase 1 outputs ───────────────────────────────────────────────────
     sector_momentum: dict[str, pd.DataFrame] = field(default_factory=dict)
+    fundamentals: dict[str, dict[str, float]] = field(default_factory=dict)   # {ticker: {factor: value}}
 
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
@@ -40,14 +41,21 @@ class PanelTrainingContext:
     # ── Phase 3 outputs ───────────────────────────────────────────────────
     factor_frames: dict[str, pd.DataFrame] = field(default_factory=dict)        # post-zscore
     labels: dict[str, pd.Series] = field(default_factory=dict)
+    raw_residuals: dict[str, pd.Series] = field(default_factory=dict)           # pre-Gaussianization (NGBoost label)
     panel: pd.DataFrame | None = None
     group_sizes: Any = None                     # np.ndarray[int32]
     panel_metadata: dict = field(default_factory=dict)
     feature_cols: list[str] = field(default_factory=list)
+    feature_diagnostics: list[dict] = field(default_factory=list)  # per-feature std + IC
     cv_result: dict = field(default_factory=dict)
     final_model: Any = None                     # PanelLTRModel
     artifact_path: Path | None = None
     summary: dict = field(default_factory=dict)
+
+    # ── Phase 5 (NGBoost head — optional) ────────────────────────────────
+    ngboost_head: Any = None                    # NGBoostHead | None
+    ngboost_artifact_path: Path | None = None
+    ngboost_fit: dict = field(default_factory=dict)
 
     @property
     def spy_df(self) -> pd.DataFrame | None:
@@ -71,6 +79,7 @@ class TickerPanelContext:
     sector_momentum: dict[str, pd.DataFrame]        # shared read-only
     ticker_sectors: dict[str, str]                  # shared read-only
     config: dict[str, Any]
+    fundamentals: dict[str, dict[str, float]] = field(default_factory=dict)  # shared read-only
 
     # Outputs — written by per-ticker jobs
     feature_frame: pd.DataFrame | None = None

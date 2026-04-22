@@ -195,10 +195,52 @@ class SectorMomentumTask(PanelTask):
         log.info("SectorMomentumTask: %d sector frames", len(ctx.sector_momentum))
 
 
-class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum.
+class LoadFundamentalsTask(PanelTask):
+    """Populate ctx.fundamentals from the parquet cache (or fetch on demand).
 
-    Task chain: FetchOHLCV → SectorMomentum
+    No-op when `panel_ltr.fundamentals.enabled` is false (default). The
+    cache lives at `data/fundamentals/{SYMBOL}.parquet`; see
+    `kernel/fundamentals.py` + `scripts/fetch_fundamentals.py`.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = ctx.config.get("panel_ltr", {}).get("fundamentals", {})
+        if not cfg.get("enabled", False):
+            return
+        if ctx.fundamentals:
+            return
+
+        from kernel.fundamentals import (  # noqa: PLC0415
+            FundamentalsStore, fetch_fundamentals_watchlist,
+        )
+
+        cache_dir = cfg.get("cache_dir", "data/fundamentals")
+        store = FundamentalsStore(data_dir=cache_dir)
+        refetch = bool(cfg.get("refetch", False))
+
+        out: dict[str, dict[str, float]] = {}
+        for sym in ctx.watchlist:
+            cached = None if refetch else store.latest(sym)
+            if cached is not None:
+                out[sym] = cached
+        missing = [s for s in ctx.watchlist if s not in out]
+        if missing and cfg.get("allow_fetch", True):
+            log.info("LoadFundamentalsTask: fetching %d missing tickers", len(missing))
+            try:
+                fresh = fetch_fundamentals_watchlist(missing, store=store)
+                out.update(fresh)
+            except Exception as exc:
+                log.warning("LoadFundamentalsTask: fetch_fundamentals_watchlist failed — %s", exc)
+
+        ctx.fundamentals = out
+        log.info("LoadFundamentalsTask: %d / %d tickers with fundamentals",
+                 len(out), len(ctx.watchlist))
+
+
+class PanelDataJob(PanelJob):
+    """Phase 1 — gather market data + sector momentum + fundamentals.
+
+    Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -206,7 +248,7 @@ class PanelDataJob(PanelJob):
 
     @property
     def tasks(self) -> list[PanelTask]:
-        return [FetchOHLCVTask(), SectorMomentumTask()]
+        return [FetchOHLCVTask(), SectorMomentumTask(), LoadFundamentalsTask()]
 
 
 # ── Phase 2 — PanelFeatureJob (orchestrator) + per-ticker Jobs ───────────────
@@ -228,6 +270,7 @@ class PanelFeatureJob(PanelJob):
                 sector_momentum=ctx.sector_momentum,
                 ticker_sectors=ctx.ticker_sectors,
                 config=ctx.config,
+                fundamentals=ctx.fundamentals,
             )
             for t in ctx.watchlist if t in ctx.ohlcv
         ]
@@ -299,7 +342,14 @@ class TickerPanelNeutralizeJob(PanelTickerJob):
 
 
 class TickerPanelFactorJob(PanelTickerJob):
-    """Compute raw factor bundle for one ticker (unscaled; z-score is global)."""
+    """Compute raw factor bundle for one ticker (unscaled; z-score is global).
+
+    Emits size / mom_12_1 / beta_60d / resid_mom time-series per ticker, plus
+    four optional static-scalar columns (earnings_yield / roe /
+    gross_profitability / book_to_price) broadcast to the date index when
+    fundamentals are loaded. FactorZScoreTask z-scores every column below
+    cross-sectionally.
+    """
 
     def run(self, tc: TickerPanelContext) -> None:
         benchmark = tc.config.get("benchmark", "SPY")
@@ -313,6 +363,7 @@ class TickerPanelFactorJob(PanelTickerJob):
         from training_panel.factors import (
             compute_size_feature, compute_momentum_12_1,
             compute_rolling_beta, compute_residual_momentum,
+            FUNDAMENTAL_COLS,
         )
         try:
             one = {tc.ticker: tc.ohlcv[tc.ticker]}
@@ -324,27 +375,112 @@ class TickerPanelFactorJob(PanelTickerJob):
                 mom_window=mom_window, skip=skip,
             ).get(tc.ticker)
             idx = tc.ohlcv[tc.ticker].index
-            tc.raw_factor_frame = pd.DataFrame({
+            cols: dict[str, pd.Series] = {
                 "size":      (size if size is not None else pd.Series(index=idx)).reindex(idx),
                 "mom_12_1":  (mom  if mom  is not None else pd.Series(index=idx)).reindex(idx),
                 "beta_60d":  (beta if beta is not None else pd.Series(index=idx)).reindex(idx),
                 "resid_mom": (rmom if rmom is not None else pd.Series(index=idx)).reindex(idx),
-            }, index=idx)
+            }
+            # Fundamentals: broadcast the ticker's snapshot scalar to every bar.
+            # A missing ticker → NaN series (FactorZScoreTask / sector-median
+            # fill will handle it globally).
+            if tc.fundamentals:
+                ticker_fund = tc.fundamentals.get(tc.ticker, {})
+                for col in FUNDAMENTAL_COLS:
+                    val = ticker_fund.get(col, float("nan"))
+                    cols[col] = pd.Series(val, index=idx)
+            tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
         except Exception as exc:
             log.error("  %s: TickerPanelFactorJob failed — %s", tc.ticker, exc)
 
 
 # ── Phase 3 — PanelAssemblyJob + tasks ───────────────────────────────────────
 
+
+# Default panel feature columns that should be cross-sectionally z-scored
+# across tickers per date (per-ticker raw indicators whose absolute values
+# aren't comparable across tickers — e.g. AAPL's RSI distribution ≠ BRK's).
+# `trend*` / `rel_mom_*` live here because they are residualized against
+# sector momentum (partial neutralization) but still carry per-ticker scale.
+DEFAULT_CS_ZSCORE_COLS: list[str] = [
+    "rsi", "adx", "williams_r", "bbp", "cci", "obv_slope", "macd_hist",
+    "trend", "trend_long", "rel_mom_20d", "rel_mom_60d",
+]
+
+# Panel feature columns that should be dropped outright from the model
+# input — either zero within-date variance (same value for every ticker on
+# a given date, so no LTR ranking information) or uncomparable raw levels.
+DEFAULT_DROP_COLS: list[str] = [
+    "close",              # raw price level
+    "spy_realized_vol",   # SPY context — same across tickers per date
+    "spy_adx",            # ditto
+    "spy_trend",          # ditto
+    "hurst_proxy",        # ditto
+]
+
+
+class NeutralizedFeatureZScoreTask(PanelTask):
+    """Cross-sectionally z-score per-ticker indicator columns per date.
+
+    Without this step, raw indicators (RSI, ADX, CCI, …) enter the panel
+    as per-ticker absolute values — the ranker then compares AAPL's RSI=30
+    against BRK's RSI=30 as if they meant the same thing. Z-scoring within
+    each date puts every ticker on a comparable scale.
+
+    Only rewrites the columns listed in `panel_ltr.cs_zscore_cols`
+    (defaults to DEFAULT_CS_ZSCORE_COLS). Columns that don't exist in the
+    neutralized frames are skipped silently.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        if not ctx.neutralized_frames:
+            return
+        from training_panel.factors import cross_sectional_zscore
+
+        cfg       = ctx.config.get("panel_ltr", {})
+        cs_cols   = list(cfg.get("cs_zscore_cols", DEFAULT_CS_ZSCORE_COLS))
+        if not cs_cols:
+            return
+
+        present_cols: list[str] = []
+        for col in cs_cols:
+            if any(col in f.columns for f in ctx.neutralized_frames.values()):
+                present_cols.append(col)
+
+        for col in present_cols:
+            per_ticker = {
+                t: f[col] for t, f in ctx.neutralized_frames.items()
+                if col in f.columns
+            }
+            z = cross_sectional_zscore(per_ticker)
+            for t, frame in ctx.neutralized_frames.items():
+                if t in z:
+                    frame[col] = z[t].reindex(frame.index)
+
+        log.info("NeutralizedFeatureZScoreTask: cross-sectionally z-scored %d cols  (%s)",
+                 len(present_cols), present_cols)
+
+
 class FactorZScoreTask(PanelTask):
-    """Cross-sectional z-score of raw factor frames, per date."""
+    """Cross-sectional z-score of raw factor frames, per date.
+
+    Z-scores four technical columns (size, mom_12_1, beta_60d, resid_mom).
+    When ctx.fundamentals is populated, also z-scores four fundamental
+    columns (earnings_yield, roe, gross_profitability, book_to_price) after
+    same-sector median fill for missing values.
+    """
 
     def run(self, ctx: PanelTrainingContext) -> None:
         if ctx.factor_frames:
             return
         if not ctx.raw_factor_frames:
             return
-        from training_panel.factors import cross_sectional_zscore
+        from training_panel.factors import (
+            cross_sectional_zscore,
+            FUNDAMENTAL_COLS,
+            _cross_sectional_zscore_static,
+            _sector_median_fill,
+        )
 
         raw_cols = ["size", "mom_12_1", "beta_60d", "resid_mom"]
         per_col: dict[str, dict[str, pd.Series]] = {}
@@ -355,26 +491,59 @@ class FactorZScoreTask(PanelTask):
             }
         z = {col: cross_sectional_zscore(per_col[col]) for col in raw_cols}
 
+        # Fundamentals: static scalar per (ticker, col). Fill missing by
+        # sector median, then cross-sectionally z-score across tickers once.
+        fund_z_by_col: dict[str, dict[str, float]] = {}
+        has_fundamentals = any(
+            col in next(iter(ctx.raw_factor_frames.values())).columns
+            for col in FUNDAMENTAL_COLS
+        ) if ctx.raw_factor_frames else False
+        if has_fundamentals:
+            for col in FUNDAMENTAL_COLS:
+                raw_vals = {}
+                for t, df in ctx.raw_factor_frames.items():
+                    if col in df.columns and not df[col].empty:
+                        v = df[col].iloc[-1]   # broadcast scalar — any row works
+                        raw_vals[t] = float(v) if pd.notna(v) else float("nan")
+                    else:
+                        raw_vals[t] = float("nan")
+                filled = _sector_median_fill(raw_vals, ctx.ticker_sectors)
+                fund_z_by_col[col] = _cross_sectional_zscore_static(filled)
+
         out: dict[str, pd.DataFrame] = {}
         for t, raw in ctx.raw_factor_frames.items():
             idx = raw.index
-            out[t] = pd.DataFrame({
+            cols: dict[str, pd.Series] = {
                 "size_z":      z["size"].get(t,      pd.Series(index=idx)).reindex(idx),
                 "mom_12_1_z":  z["mom_12_1"].get(t,  pd.Series(index=idx)).reindex(idx),
                 "beta_60d_z":  z["beta_60d"].get(t,  pd.Series(index=idx)).reindex(idx),
                 "resid_mom_z": z["resid_mom"].get(t, pd.Series(index=idx)).reindex(idx),
-            }, index=idx)
+            }
+            for col in FUNDAMENTAL_COLS:
+                if col in fund_z_by_col:
+                    v = fund_z_by_col[col].get(t, float("nan"))
+                    cols[f"{col}_z"] = pd.Series(v, index=idx)
+            out[t] = pd.DataFrame(cols, index=idx)
         ctx.factor_frames = out
-        log.info("FactorZScoreTask: z-scored %d factor frames", len(out))
+        log.info("FactorZScoreTask: z-scored %d factor frames (fundamentals=%s)",
+                 len(out), has_fundamentals)
 
 
 class LabelsTask(PanelTask):
-    """Forward returns → purged β-neutral residuals → cross-sectional Gaussianize."""
+    """Forward returns → purged β-neutral residuals → cross-sectional Gaussianize.
+
+    Stores both the raw residuals (in ctx.raw_residuals, consumed by the
+    optional NGBoost head) and the Gaussianized labels (in ctx.labels,
+    consumed by the LTR model).
+    """
 
     def run(self, ctx: PanelTrainingContext) -> None:
         if ctx.labels:
             return
-        from training_panel.labels import build_labels
+        from training_panel.labels import (
+            compute_residual_returns,
+            gaussianize_cross_section,
+        )
 
         cfg = ctx.config.get("panel_ltr", {})
         lookahead   = int(cfg.get("lookahead_days", 5))
@@ -404,11 +573,13 @@ class LabelsTask(PanelTask):
             if sec in sec_fwd_frames
         }
 
-        ctx.labels = build_labels(
+        ctx.raw_residuals = compute_residual_returns(
             fwd_returns, spy_fwd, sec_fwd_by_ticker,
             beta_window=beta_window, lookahead_days=lookahead,
         )
-        log.info("LabelsTask: built labels for %d tickers", len(ctx.labels))
+        ctx.labels = gaussianize_cross_section(ctx.raw_residuals)
+        log.info("LabelsTask: built labels for %d tickers (raw residuals + gauss)",
+                 len(ctx.labels))
 
 
 class BuildPanelTask(PanelTask):
@@ -448,9 +619,29 @@ class BuildPanelTask(PanelTask):
         panel = panel[label_mask].reset_index(drop=True)
         group_sizes = panel.groupby("date", sort=True).size().values.astype(np.int32)
 
+        # Attach raw residuals as a separate column for the NGBoost head.
+        # Does not affect LTR training (exclude list below).
+        if ctx.raw_residuals:
+            raw_rows = []
+            for t, s in ctx.raw_residuals.items():
+                rr = pd.DataFrame({
+                    "ticker": t,
+                    "date":   pd.to_datetime(s.index),
+                    "residual_return_raw": s.values,
+                })
+                raw_rows.append(rr)
+            raw_df = pd.concat(raw_rows, ignore_index=True)
+            panel["date"] = pd.to_datetime(panel["date"])
+            panel = panel.merge(raw_df, on=["ticker", "date"], how="left")
+
+        drop_cols = set(cfg.get("drop_cols", DEFAULT_DROP_COLS))
         exclude = {"date", "ticker", "sector", "label",
-                   "weight", "weight_concurrency", "weight_age"}
+                   "residual_return_raw",
+                   "weight", "weight_concurrency", "weight_age"} | drop_cols
         feature_cols = [c for c in panel.columns if c not in exclude]
+        if drop_cols & set(panel.columns):
+            log.info("BuildPanelTask: dropped non-ranking cols %s",
+                     sorted(drop_cols & set(panel.columns)))
 
         ctx.panel = panel
         ctx.group_sizes = group_sizes
@@ -460,10 +651,57 @@ class BuildPanelTask(PanelTask):
                  len(panel), len(feature_cols), meta.get("n_tickers"), meta.get("n_dates"))
 
 
+class FeatureDiagnosticTask(PanelTask):
+    """Log per-feature within-date std + Spearman IC vs label.
+
+    Surfaces features that carry no cross-sectional information (std ≈ 0)
+    or no predictive power (|IC| < 0.01) so they can be removed from
+    `panel_ltr.drop_cols`. Pure diagnostic — does not modify the panel.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.panel is None or not ctx.feature_cols:
+            return
+        from scipy.stats import spearmanr
+
+        panel = ctx.panel
+        dates = panel["date"].values
+        label = panel["label"].values
+        rows: list[tuple[str, float, float]] = []
+        for col in ctx.feature_cols:
+            vals = panel[col].values
+            # Within-date std, averaged across dates (pandas is slow per-group;
+            # use a group-by-transform once)
+            df = panel[["date", col]].dropna(subset=[col])
+            if df.empty:
+                rows.append((col, 0.0, 0.0))
+                continue
+            std = df.groupby("date", sort=False)[col].transform("std").mean()
+            # Per-date Spearman IC, averaged
+            ics: list[float] = []
+            for _, g in panel[["date", col, "label"]].dropna().groupby("date", sort=False):
+                y = g["label"].values
+                p = g[col].values
+                if len(y) < 2 or (y == y[0]).all() or (p == p[0]).all():
+                    continue
+                rho, _ = spearmanr(p, y)
+                if not np.isnan(rho):
+                    ics.append(float(rho))
+            mean_ic = float(np.mean(ics)) if ics else 0.0
+            rows.append((col, float(std), mean_ic))
+
+        rows.sort(key=lambda r: abs(r[2]), reverse=True)
+        lines = [f"{c:<22s}  std={s:7.4f}  IC={i:+7.4f}" for c, s, i in rows]
+        log.info("FeatureDiagnosticTask: per-feature within-date std + Spearman IC\n%s",
+                 "\n".join("  " + ln for ln in lines))
+        ctx.feature_diagnostics = [{"col": c, "within_date_std": s, "ic": i}
+                                    for c, s, i in rows]
+
+
 class PanelAssemblyJob(PanelJob):
     """Phase 3 — turn per-ticker outputs into a panel DataFrame.
 
-    Task chain: FactorZScore → Labels → BuildPanel
+    Task chain: NeutralizedFeatureZScore → FactorZScore → Labels → BuildPanel
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -471,80 +709,158 @@ class PanelAssemblyJob(PanelJob):
 
     @property
     def tasks(self) -> list[PanelTask]:
-        return [FactorZScoreTask(), LabelsTask(), BuildPanelTask()]
+        return [
+            NeutralizedFeatureZScoreTask(),
+            FactorZScoreTask(),
+            LabelsTask(),
+            BuildPanelTask(),
+            FeatureDiagnosticTask(),
+        ]
 
 
 # ── Phase 4 — PanelModelJob + tasks ──────────────────────────────────────────
 
 class CrossValidateTask(PanelTask):
-    """Purged K-fold Spearman IC over the assembled panel."""
+    """Purged K-fold or Combinatorial Purged Spearman IC over the panel.
+
+    Selected via `panel_ltr.cv_method`:
+      - "purged" (default): PurgedKFold — 1 train/test split per fold
+      - "cpcv":             Combinatorial Purged CV — C(n_splits, n_test_groups)
+                             splits, yielding a distribution of IC estimates
+    """
 
     def run(self, ctx: PanelTrainingContext) -> None:
         if ctx.cv_result:
             return
-        from training_panel.purged_cv import PurgedKFold, cross_validated_ic
-        from training_panel.ltr_model import PanelLTRModel
+        from training_panel.purged_cv import (
+            PurgedKFold, CombinatorialPurgedCV,
+            cross_validated_ic, cross_validated_ic_cpcv,
+        )
 
         cfg = ctx.config.get("panel_ltr", {})
+        cv_method  = str(cfg.get("cv_method", "purged")).strip().lower()
         cv_splits  = int(cfg.get("cv_n_splits", 5))
         embargo    = int(cfg.get("cv_embargo_days", cfg.get("lookahead_days", 5)))
         lookahead  = int(cfg.get("lookahead_days", 5))
         num_rounds = int(cfg.get("num_boost_round", 400))
-        xgb_params = dict(cfg.get("xgb_params", {}))
+        backend    = str(cfg.get("backend", "xgboost")).strip().lower()
 
         panel = ctx.panel
         feature_cols = ctx.feature_cols
 
-        class _SklearnAdapter:
-            def __init__(self):
-                self._m = PanelLTRModel(params=xgb_params)
-            def fit(self, X, y, sample_weight=None):
-                df = X.copy()
-                df["label"] = y
-                df["date"] = panel.loc[X.index, "date"].values
-                df["weight"] = sample_weight if sample_weight is not None else 1.0
-                df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
-                gs = df.groupby("date", sort=True).size().values.astype(np.int32)
-                self._m.train(
-                    df, gs, feature_cols=list(X.columns),
-                    label_col="label", weight_col="weight",
-                    num_boost_round=max(num_rounds // 2, 50),
-                )
-            def predict(self, X):
-                return self._m.predict(X.copy()).values
+        if backend == "lightgbm":
+            from training_panel.lgbm_ltr import PanelLGBMModel
+            params = dict(cfg.get("lightgbm_params", {}))
 
-        cv = PurgedKFold(n_splits=cv_splits, embargo_days=embargo,
-                         lookahead_days=lookahead)
-        ctx.cv_result = cross_validated_ic(
-            _SklearnAdapter, panel, feature_cols, "label", cv,
-            weight_col="weight",
-        )
-        log.info("CrossValidateTask: mean_ic=%+.4f  std=%.4f",
-                 ctx.cv_result["mean_ic"], ctx.cv_result["std_ic"])
+            class _SklearnAdapter:
+                def __init__(self):
+                    self._m = PanelLGBMModel(params=params, feature_cols=feature_cols)
+                def fit(self, X, y, sample_weight=None):
+                    df = X.copy()
+                    df["label"] = y
+                    df["date"] = panel.loc[X.index, "date"].values
+                    df["weight"] = sample_weight if sample_weight is not None else 1.0
+                    df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
+                    gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    self._m.train(
+                        df, gs, feature_cols=list(X.columns),
+                        label_col="label", weight_col="weight",
+                        num_boost_round=max(num_rounds // 2, 50),
+                    )
+                def predict(self, X):
+                    return self._m.predict(X.copy()).values
+        else:
+            from training_panel.ltr_model import PanelLTRModel
+            xgb_params = dict(cfg.get("xgb_params", {}))
+
+            class _SklearnAdapter:
+                def __init__(self):
+                    self._m = PanelLTRModel(params=xgb_params)
+                def fit(self, X, y, sample_weight=None):
+                    df = X.copy()
+                    df["label"] = y
+                    df["date"] = panel.loc[X.index, "date"].values
+                    df["weight"] = sample_weight if sample_weight is not None else 1.0
+                    df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
+                    gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    self._m.train(
+                        df, gs, feature_cols=list(X.columns),
+                        label_col="label", weight_col="weight",
+                        num_boost_round=max(num_rounds // 2, 50),
+                    )
+                def predict(self, X):
+                    return self._m.predict(X.copy()).values
+
+        if cv_method == "cpcv":
+            n_test_groups = int(cfg.get("cv_n_test_groups", 2))
+            cv = CombinatorialPurgedCV(
+                n_splits=cv_splits, n_test_groups=n_test_groups,
+                embargo_days=embargo, lookahead_days=lookahead,
+            )
+            ctx.cv_result = cross_validated_ic_cpcv(
+                _SklearnAdapter, panel, feature_cols, "label", cv,
+                weight_col="weight",
+            )
+            q = ctx.cv_result.get("quantiles", {})
+            log.info(
+                "CrossValidateTask[cpcv]: mean=%+.4f std=%.4f "
+                "q05=%+.4f q50=%+.4f q95=%+.4f n_splits=%d",
+                ctx.cv_result["mean_ic"], ctx.cv_result["std_ic"],
+                q.get("q05", 0.0), q.get("q50", 0.0), q.get("q95", 0.0),
+                len(ctx.cv_result["per_fold_ic"]),
+            )
+        else:
+            cv = PurgedKFold(
+                n_splits=cv_splits, embargo_days=embargo, lookahead_days=lookahead,
+            )
+            ctx.cv_result = cross_validated_ic(
+                _SklearnAdapter, panel, feature_cols, "label", cv,
+                weight_col="weight",
+            )
+            log.info("CrossValidateTask[purged]: mean_ic=%+.4f  std=%.4f",
+                     ctx.cv_result["mean_ic"], ctx.cv_result["std_ic"])
 
 
 class FinalFitTask(PanelTask):
-    """Fit the final PanelLTRModel on the full panel."""
+    """Fit the final panel model on the full panel.
+
+    Backend selected via `panel_ltr.backend`:
+      - `"xgboost"` (default): rank:pairwise via `PanelLTRModel`
+      - `"lightgbm"`:            LambdaRank@10 via `PanelLGBMModel`
+    """
 
     def run(self, ctx: PanelTrainingContext) -> None:
         if ctx.final_model is not None:
             return
-        from training_panel.ltr_model import PanelLTRModel
 
-        cfg = ctx.config.get("panel_ltr", {})
-        xgb_params = dict(cfg.get("xgb_params", {}))
+        cfg     = ctx.config.get("panel_ltr", {})
+        backend = str(cfg.get("backend", "xgboost")).strip().lower()
         num_rounds = int(cfg.get("num_boost_round", 400))
 
-        model = PanelLTRModel(params=xgb_params)
-        fit = model.train(
-            ctx.panel, ctx.group_sizes,
-            feature_cols=ctx.feature_cols,
-            label_col="label", weight_col="weight",
-            num_boost_round=num_rounds,
-        )
+        if backend == "lightgbm":
+            from training_panel.lgbm_ltr import PanelLGBMModel
+            params = dict(cfg.get("lightgbm_params", {}))
+            model = PanelLGBMModel(params=params, feature_cols=ctx.feature_cols)
+            fit = model.train(
+                ctx.panel, ctx.group_sizes,
+                feature_cols=ctx.feature_cols,
+                label_col="label", weight_col="weight",
+                num_boost_round=num_rounds,
+            )
+        else:
+            from training_panel.ltr_model import PanelLTRModel
+            xgb_params = dict(cfg.get("xgb_params", {}))
+            model = PanelLTRModel(params=xgb_params)
+            fit = model.train(
+                ctx.panel, ctx.group_sizes,
+                feature_cols=ctx.feature_cols,
+                label_col="label", weight_col="weight",
+                num_boost_round=num_rounds,
+            )
         ctx.final_model = model
         ctx._final_fit = fit  # noqa: SLF001 — read by SaveArtifactTask
-        log.info("FinalFitTask: train_ic=%+.4f", fit.get("train_ic", 0.0))
+        log.info("FinalFitTask: backend=%s  train_ic=%+.4f",
+                 backend, fit.get("train_ic", 0.0))
 
 
 class SaveArtifactTask(PanelTask):
@@ -568,13 +884,16 @@ class SaveArtifactTask(PanelTask):
             "oos_mean_ic":     ctx.cv_result["mean_ic"],
             "oos_std_ic":      ctx.cv_result["std_ic"],
             "oos_per_fold_ic": ctx.cv_result["per_fold_ic"],
+            "oos_ic_quantiles": ctx.cv_result.get("quantiles"),   # only present for CPCV
             "training_train_ic": fit.get("train_ic", 0.0),
             "training_notes":  cfg.get("training_notes", "Stage-1 panel pipeline"),
             "neutralize_features": cfg.get("neutralize_features", True),
             "lookahead_days":  cfg.get("lookahead_days", 5),
             "beta_window":     cfg.get("beta_window", 60),
             "min_history_days": cfg.get("min_history_days", 252),
+            "cv_method":       cfg.get("cv_method", "purged"),
             "cv_n_splits":     cfg.get("cv_n_splits", 5),
+            "cv_n_test_groups": cfg.get("cv_n_test_groups"),
             "cv_embargo_days": cfg.get("cv_embargo_days", cfg.get("lookahead_days", 5)),
         }
         ctx.final_model.save(out_path, metadata=meta)
@@ -603,10 +922,96 @@ class PanelModelJob(PanelJob):
         return [CrossValidateTask(), FinalFitTask(), SaveArtifactTask()]
 
 
+# ── Phase 5 — PanelNGBoostJob (optional) ─────────────────────────────────────
+
+class NGBoostFitTask(PanelTask):
+    """Fit the NGBoostHead on raw residual forward returns.
+
+    Reads the `residual_return_raw` column attached to the panel by
+    BuildPanelTask. No-op if the column is missing or the config flag is off.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.ngboost_head is not None:
+            return
+        cfg = ctx.config.get("panel_ltr", {}).get("ngboost", {})
+        if not cfg.get("enabled", False):
+            log.info("NGBoostFitTask: panel_ltr.ngboost.enabled=false — skipping")
+            return
+        if ctx.panel is None or "residual_return_raw" not in ctx.panel.columns:
+            log.warning("NGBoostFitTask: panel missing residual_return_raw — skipping")
+            return
+
+        # Drop rows whose raw residual is NaN (insufficient beta history)
+        sub = ctx.panel.dropna(subset=["residual_return_raw"])
+        if sub.empty:
+            log.warning("NGBoostFitTask: no non-NaN residual rows — skipping")
+            return
+
+        from training_panel.ngboost_head import NGBoostHead
+
+        params = dict(cfg.get("params", {}))
+        head = NGBoostHead(params=params)
+        fit = head.train(
+            sub,
+            feature_cols=ctx.feature_cols,
+            label_col="residual_return_raw",
+            sample_weight_col="weight" if "weight" in sub.columns else None,
+        )
+        ctx.ngboost_head = head
+        ctx.ngboost_fit = fit
+        log.info("NGBoostFitTask: trained on %d rows  μ_mean=%.5f  σ_mean=%.5f",
+                 fit["n_rows"], fit["train_mu_mean"], fit["train_sigma_mean"])
+
+
+class NGBoostSaveTask(PanelTask):
+    """Persist the NGBoost head next to the LTR artifact."""
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        if ctx.ngboost_head is None:
+            return
+        cfg = ctx.config.get("panel_ltr", {}).get("ngboost", {})
+        out_name = cfg.get("artifact_path", "ngboost-head.json")
+        out_path = Path(out_name)
+        if ctx.strategy_dir and not out_path.is_absolute():
+            out_path = ctx.strategy_dir / "artifacts" / out_path.name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        meta = {
+            "training_notes": cfg.get("training_notes", "Stage-2 NGBoost head"),
+            "train_mu_mean":   ctx.ngboost_fit.get("train_mu_mean"),
+            "train_sigma_mean": ctx.ngboost_fit.get("train_sigma_mean"),
+            "n_rows":          ctx.ngboost_fit.get("n_rows"),
+        }
+        ctx.ngboost_head.save(out_path, metadata=meta)
+        ctx.ngboost_artifact_path = out_path
+        log.info("NGBoostSaveTask: artifact → %s", out_path)
+
+
+class PanelNGBoostJob(PanelJob):
+    """Phase 5 — train + save NGBoost Normal(μ, σ) head.
+
+    Task chain: NGBoostFit → NGBoostSave
+
+    Skipped entirely when `panel_ltr.ngboost.enabled` is false (default).
+    """
+
+    def should_skip(self, ctx: PanelTrainingContext) -> bool:
+        cfg = ctx.config.get("panel_ltr", {}).get("ngboost", {})
+        if not cfg.get("enabled", False):
+            return True
+        return (ctx.ngboost_head is not None
+                and ctx.ngboost_artifact_path is not None)
+
+    @property
+    def tasks(self) -> list[PanelTask]:
+        return [NGBoostFitTask(), NGBoostSaveTask()]
+
+
 # ── Orchestrator ─────────────────────────────────────────────────────────────
 
 class PanelTrainingPipeline:
-    """Four-phase panel-LTR training pipeline."""
+    """Five-phase panel training pipeline (LTR + optional NGBoost head)."""
 
     def run(self, ctx: PanelTrainingContext) -> PanelTrainingContext:
         jobs: list[PanelJob] = [
@@ -614,6 +1019,7 @@ class PanelTrainingPipeline:
             PanelFeatureJob(),    # parallel per-ticker chain
             PanelAssemblyJob(),   # FactorZScore + Labels + BuildPanel
             PanelModelJob(),      # CrossValidate + FinalFit + SaveArtifact
+            PanelNGBoostJob(),    # NGBoostFit + NGBoostSave (optional)
         ]
         t0 = time.monotonic()
         log.info("PanelTrainingPipeline START  watchlist=%d", len(ctx.watchlist))

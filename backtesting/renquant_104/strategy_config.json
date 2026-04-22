@@ -207,7 +207,7 @@
   "lt_hold_gate_days": 330,
   "lt_hold_min_gain": 0.1,
   "rotation": {
-    "enabled": false,
+    "enabled": true,
     "min_expected_advantage_pct": 0.03,
     "target_horizon_days": 20,
     "transaction_cost_pct": 0.0,
@@ -294,8 +294,8 @@
       "ngboost": {
         "enabled": true,
         "artifact_path": "artifacts/ngboost-head.json",
-        "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "score_mode": "additive",
+        "lambda_sigma": 0.0
       },
       "sigma_sizing": {
         "enabled": true,
@@ -308,8 +308,8 @@
       }
     },
     "universe_floor": {
-      "type": "none",
-      "threshold": 0.0
+      "type": "sharpe",
+      "threshold": 0.5
     }
   },
   "panel_ltr": {
@@ -319,7 +319,7 @@
     "age_warmup_days": 504,
     "cv_n_splits": 5,
     "cv_embargo_days": 10,
-    "num_boost_round": 300,
+    "num_boost_round": 150,
     "neutralize_features": true,
     "nan_prone_cols": [],
     "factor_mom_window": 252,
@@ -328,12 +328,12 @@
     "neutralize_warmup_days": 252,
     "xgb_params": {
       "eta": 0.02,
-      "max_depth": 3,
-      "min_child_weight": 60,
-      "subsample": 0.5,
-      "colsample_bytree": 0.5,
-      "lambda": 5.0,
-      "alpha": 2.0
+      "max_depth": 2,
+      "min_child_weight": 100,
+      "subsample": 0.4,
+      "colsample_bytree": 0.4,
+      "lambda": 10.0,
+      "alpha": 5.0
     },
     "artifact_path": "artifacts/panel-ltr.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
@@ -347,7 +347,7 @@
       "training_notes": "Stage-2 NGBoost head for residual returns"
     },
     "fundamentals": {
-      "enabled": false,
+      "enabled": true,
       "cache_dir": "data/fundamentals",
       "allow_fetch": true
     },
