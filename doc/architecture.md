@@ -45,7 +45,7 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 
 ## Shared Library: `common/` (renquant_101 and renquant_102 only)
 
-`common/` is the shared library for the older strategies. **It is not used by renquant_103**, which has its own self-contained `kernel/` package (see the renquant_103 kernel section below). `common/` will be removed once 101 and 102 are migrated to the kernel pattern.
+`common/` is the shared library for the older strategies. **It is not used by renquant_103 or renquant_104** — each of those ships its own self-contained `kernel/` package (see the kernel section below). `common/` will be removed once 101 and 102 are retired.
 
 | Module | Contents |
 |--------|----------|
@@ -63,7 +63,7 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 
 ## Layer 1: Research
 
-**Location**: `backtesting/<strategy>/` (for 101/102, notebooks live in `Notebooks/`; for 103, notebook lives alongside code in `backtesting/renquant_103/`)
+**Location**: `backtesting/<strategy>/` (for 101/102, notebooks live in `Notebooks/`; for 103 and 104, the notebook lives alongside code in `backtesting/renquant_10X/`)
 **Environment**: `renquant` conda env
 
 The notebook is where training happens. The typical workflow for 101/102:
@@ -202,9 +202,11 @@ Phase 3: Global sequential
   RankingJob → RotationJob → SelectionJob
 ```
 
+In renquant_104 (active strategy), a `PanelScoringJob` is slotted **between Phase 2b and Phase 3** — it re-scores both candidates and holdings with the cross-sectional panel-LTR model so rotation and selection compare everything on the same scale. It short-circuits via `should_skip()` when `ranking.panel_scoring.enabled=false`, in which case the pipeline behaves identically to 103. See `doc/renquant_104_design.md` for the full spec.
+
 **`SellOnlyPipeline`** — intraday sell-only variant (used on market-open and pre-close runs). Runs Phase 1 (RegimeJob → DrawdownJob) then parallel `TickerSellJob` — no buy phase.
 
-**`TrainingPipeline`** — notebook training. Same 3-phase pattern:
+**`TrainingPipeline`** (renquant_103) — notebook-driven training. Same 3-phase pattern:
 
 ```
 Phase 1: Global sequential
@@ -218,6 +220,18 @@ Phase 2: Per-ticker parallel (ThreadPoolExecutor)
 Phase 3: Global sequential
   CorrelationJob
 ```
+
+**`FullTrainingPipeline`** (renquant_104) — driven by `scripts/train_104.py` (no notebook required). Three Jobs in sequence:
+
+```
+BaselineTournamentJob   (wraps TrainingPipeline — per-ticker champions)
+    ↓
+PanelTrainingJob        (wraps PanelTrainingPipeline — single panel-LTR model)
+    ↓
+RecalibrationJob        (refresh blend weights + per-symbol calibrations)
+```
+
+Each phase is skippable via CLI flag (`--skip-baseline`, `--skip-panel`, `--skip-recalibrate`); each Job's `should_skip(ctx)` reads the flag off `FullTrainingContext`.
 
 ### Context Dataclasses
 
@@ -269,6 +283,14 @@ Both LEAN and the live runner need to translate their own state representations 
 | `task_ranking.py` | `BlendScoresTask`, `SortCandidatesTask` |
 | `task_rotation.py` | `BuildPairsTask`, `ValidatePairsTask`, `EmitRotationsTask` |
 | `task_selection.py` | `PrepareSelectionTask`, `RunSelectionTask`, `SizeAndEmitTask` |
+
+renquant_104 additions under `kernel/panel_pipeline/`:
+
+| File | Contents |
+|------|----------|
+| `panel_scorer.py` | `PanelScorer` — loads `artifacts/panel-ltr.json`, exposes `predict(feature_matrix)` |
+| `feature_matrix.py` | `build_inference_feature_matrix` — stacks today's neutralized feature + factor rows into a single DataFrame keyed by ticker |
+| `job_panel_scoring.py` | `PanelScoringJob` — 4 Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask` |
 
 `training/pipeline.py` is a thin re-export shim (notebook imports unchanged).
 
@@ -461,18 +483,32 @@ Each symbol's best model may be a different type. The daily automation retrains 
 
 **Live runner**: auto-detects multi-stock strategies by checking for `"watchlist"` in config. Uses `run_once_multi()` which checks sell signals (cumulative stop-loss, single-day loss gate, model signal), scans volume for new candidates, ranks them by model conviction score (`_get_model_score`), applies tiered thresholds (slot 1 easiest, each successive slot requires higher model score), sector guard, and executes buys.
 
-### renquant_103 — Adaptive Regime Multi-Stock
+### renquant_104 — Panel-LTR Cross-Sectional Ranking (active)
 
-Successor to 102, built for volatile and choppy markets. See full design: [`doc/renquant_103_design.md`](renquant_103_design.md).
+Successor to 103, now the active daily strategy. Inherits the entire 103 decision graph — regime detection, sell priority, buy gates, sector/wash-sale guards, rotation — and replaces per-ticker `rank_score` with a cross-sectional panel-LTR score. See full design: [`doc/renquant_104_design.md`](renquant_104_design.md).
+
+Key differences from 103:
+- **Cross-sectional panel-LTR ranker**: single XGBoost ranker trained on the whole watchlist panel each day. `PanelScoringJob` (4 Tasks) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and scores both candidates and current holdings so rotation/sizing compare apples-to-apples.
+- **Hybrid scoring stack**: per-ticker tournament still picks champion Buy/Hold/Sell models, filtered by OOS Sharpe floor (`sharpe_floor=1.0`). Panel model is filtered by OOS mean IC at training time.
+- **Panel-gated policies** (all optional, driven by `ranking.panel_scoring` block in `strategy_config.json`):
+  - `buy_floor`: drops candidates whose panel score is below the floor (`VetoWeakBuysTask`)
+  - `sizing.{enabled,floor,ceiling,min_mult}`: scales `max_position_pct` by a conviction multiplier derived from the panel score (applied in `SizeAndEmitTask` and `EmitRotationsTask`)
+  - `rotation_advantage`: rotation pair is only emitted when the candidate's panel score beats the held position's by at least this margin
+- **Training driver**: `scripts/train_104.py` → `FullTrainingPipeline` (Baseline → Panel → Recalibrate). No notebook dependency for training.
+- **Inference lookback**: 520 bars (vs 60 for 103) — panel feature neutralization and factor windows need ≥504 days. Both `LeanAdapter` and `RunnerAdapter` pull the longer history and inject `config["_strategy_dir"]` so `LoadScorerTask` resolves the panel artifact relative to the strategy dir.
+
+### renquant_103 — Adaptive Regime Multi-Stock (reference / rollback)
+
+Still supported and usable for rollback. See full design: [`doc/renquant_103_design.md`](renquant_103_design.md).
 
 Key differences from 102:
 - **3-layer regime detection** always running on SPY: Hurst (slow baseline) + CUSUM (fast transition trigger) + GMM (continuous confidence)
 - **Regime-conditional entry**: momentum, capitulation, divergence, or blocked depending on regime
 - **Stock selection**: earnings filter → volume scan → relative-strength ranking vs sector ETF → continuous model score → combined rank → correlation-aware selection
-- **Regime-adaptive parameters**: all risk parameters (stop-loss, position size, cash reserve) adapt per regime and scale with GMM confidence; `max_hold_days` is 500 for most regimes (matching 102), staying 10 days only in CHOPPY
+- **Regime-adaptive parameters**: all risk parameters (stop-loss, position size, cash reserve) adapt per regime and scale with GMM confidence; `max_hold_days` is 500 for most regimes and 40 in CHOPPY
 - **Relative-outperformance labels**: Classification model trained with `close = stock_close / spy_close × 100`, so the 5-day forward return label measures stock outperformance vs SPY (not raw return), preventing bull-market always-buy bias
-- **Sharpe floor**: 0.8 (matching 102) — high-conviction models only; marginal models below 0.8 are excluded
-- **min_hold_days: 20** — no position can be sold via model signal until held 20 days (stop-loss still immediate); extends avg hold to 150-200 days, improving LT tax treatment
+- **Sharpe floor**: 1.0 (raised from 0.8) — only high-conviction models pass
+- **min_hold_days: 5** — model-sell blocked before 5 calendar days (stop-loss and single-day gate trigger immediately regardless); combined with the 3-consecutive-sell requirement, avg hold stays long enough to get LT tax treatment on winners
 - **Consecutive-sell filter**: requires 3 consecutive daily sell signals before exiting a position; eliminates one-day noise flips that would otherwise trigger short-term tax events
 - **Defensive tickers**: GLD, TLT, XLV, XLU — triggered as counter-cyclical buys in BULL_VOLATILE (SPY weak + defensive showing relative strength) and in BEAR regime (up to 1 defensive slot per portfolio while all offensive buys are blocked).
 - **Trailing stop**: active in BULL_CALM after 20% gain from entry, trails at 18% below the position's rolling high-water mark — wide enough for high-beta tech corrections, locks in gains on large winners without capping upside.

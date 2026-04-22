@@ -52,16 +52,34 @@ The artifact written by training (`artifacts/panel-ltr.json`) contains:
 - `oos_mean_ic` — mean information coefficient across CV folds
 - `trained_date`
 
-At inference time `PanelScoringJob` performs three atomic tasks:
+At inference time `PanelScoringJob` performs four atomic tasks:
 
 1. **LoadScorerTask** — deserialize the booster, resolve `artifact_path` against the
    strategy dir if relative. Short-circuits the chain if disabled or missing.
 2. **BuildFeatureMatrixTask** — stack today's row from each candidate's
    neutralized feature frame + factor frame into a single matrix keyed by ticker.
-3. **ApplyScoresTask** — predict and overwrite each `CandidateResult.rank_score`.
+3. **ApplyScoresTask** — predict and write `panel_score` onto both candidates **and**
+   current holdings (so rotation compares apples-to-apples). Also overwrites each
+   candidate's `rank_score` with its `panel_score`.
+4. **VetoWeakBuysTask** — drops candidates whose `panel_score` is below
+   `ranking.panel_scoring.buy_floor` (if configured). Only affects buys —
+   holdings keep their `panel_score` for rotation.
 
 When the flag is off, `PanelScoringJob.should_skip()` returns True and the
 per-ticker `rank_score` set by `CandidateJob` is used as-is (identical to 103).
+
+### Panel-driven policy knobs
+
+Three additional knobs under `ranking.panel_scoring` let the panel score shape
+downstream decisions without touching pipeline code:
+
+| Knob | Where it plugs in | Effect |
+|---|---|---|
+| `buy_floor` | `VetoWeakBuysTask` | Drops candidates with `panel_score < buy_floor` before ranking |
+| `sizing.{enabled, floor, ceiling, min_mult}` | `SizeAndEmitTask`, `EmitRotationsTask` via `conviction_multiplier()` | Scales `max_position_pct` by a multiplier in `[min_mult, 1.0]` based on `panel_score`'s location in `[floor, ceiling]` |
+| `rotation_advantage` | `find_rotation_pairs` / `RotationJob` | Requires the candidate's `panel_score` to beat the held position's by at least this fraction before a rotation pair is emitted |
+
+All three short-circuit cleanly when unset or when the panel flag is off.
 
 ---
 
@@ -113,14 +131,14 @@ panel-specific coverage:
 
 | Test file | What it covers |
 |---|---|
-| `tests/test_panel_scoring_job.py` | 24 tests — Load / BuildMatrix / ApplyScores / Job wiring |
-| `tests/test_panel_training_pipeline.py` | 33 tests — PanelTrainingPipeline end-to-end with Job/Task ABCs |
-| `tests/test_panel_pipeline_e2e.py` | 4 tests — `prepare_inference_panel_frames` path |
-| `tests/test_panel_inference.py` | 18 tests — inference-time feature / factor flows |
-| `tests/test_panel_alignment.py` | **7 tests** — panel flag parity across LeanAdapter / RunnerAdapter / PanelScoringJob, pipeline ordering invariant |
-| `tests/test_panel_*` (frame, labels, neutralization, imputation, factors, purged_cv, ltr_model, feature_matrix) | 100+ tests for the underlying building blocks |
+| `tests/test_panel_scoring_job.py` | Load / BuildMatrix / ApplyScores / VetoWeakBuys / Job wiring |
+| `tests/test_panel_training_pipeline.py` | PanelTrainingPipeline end-to-end with Job/Task ABCs |
+| `tests/test_panel_pipeline_e2e.py` | `prepare_inference_panel_frames` path |
+| `tests/test_panel_inference.py` | inference-time feature / factor flows |
+| `tests/test_panel_alignment.py` | **20 tests** — flag parity across LeanAdapter / RunnerAdapter / PanelScoringJob, pipeline ordering invariant, `TestPanelVetoWeakBuys`, `TestPanelConvictionSizing`, `TestPanelRotationAdvantage` |
+| `tests/test_panel_*` (frame, labels, neutralization, imputation, factors, purged_cv, ltr_model, feature_matrix) | tests for the underlying building blocks |
 
-Total test count after migration: **748 passing, 2 skipped**.
+Total test count after migration: **802 collected — 800 passing, 2 skipped**.
 
 ---
 

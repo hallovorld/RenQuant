@@ -17,13 +17,17 @@ The live runner therefore uses a two-layer contract:
 - `raw_score` — the native output from `predict_score_bulk()`; logged for diagnostics and model introspection
 - `rank_score` — a calibrated score used for portfolio filtering, cross-model ranking, and tier thresholds
 
-Calibration is handled by `kernel/scoring.py` (renquant_103) or `common/models/scoring.py` (renquant_101/102):
+Calibration is handled by `kernel/scoring.py` (renquant_103/104) or `common/models/scoring.py` (renquant_101/102):
 
 - If `policy-metadata.json` contains `score_calibration`, that artifact is used directly.
 - Otherwise the live runner fits a fallback isotonic calibration from recent symbol history.
 - The calibration target is `P(5d relative return > threshold)` using the model's own training horizon/threshold when available.
 
 This keeps one champion model per symbol while putting mixed model families onto a common ranking scale.
+
+### renquant_104 — Panel-LTR override
+
+In renquant_104 the per-ticker `rank_score` above is **overwritten cross-sectionally** by `PanelScoringJob` (see `doc/renquant_104_design.md`) whenever `ranking.panel_scoring.enabled=true` in `strategy_config.json`. A single XGBoost learning-to-rank model, trained on neutralized forward excess returns across the whole watchlist, emits `panel_score` — which is also written into `rank_score` so every downstream consumer (ranking blend, tier thresholds, rotation advantage) sees a directly comparable cross-sectional score. Short-circuits to the per-ticker calibrated score when the flag is off.
 
 ## Manual Model — Dual Momentum + Trend Following
 
@@ -160,28 +164,31 @@ All models are subject to execution constraints during simulation and LEAN backt
 | Constraint | Value | Purpose |
 |------------|-------|---------|
 | Wash sale | 30 days | Cannot buy within 30 calendar days of selling |
-| Min hold | 20 days (all multi-stock strategies) | Prevents noise-driven model-signal exits during early hold period |
-| Max hold | 500 days | Forces position review (allows long-term tax rate) |
+| Min hold | 5 days (renquant_104) / 30 days (renquant_103) | Prevents noise-driven model-signal exits during early hold period — tuned per strategy via `min_hold_days` in `strategy_config.json` |
+| Max hold | 500 days (BULL / BEAR), 40 days (CHOPPY) | Forces position review (allows long-term tax rate) |
 
 ## Position Sizing
 
 All models use position sizing rules from `strategy_config.json`:
 
-| Parameter | renquant_103 value | Purpose |
-|-----------|-------------------|---------|
+| Parameter | renquant_103/104 value | Purpose |
+|-----------|------------------------|---------|
 | `max_position_pct` | 15% | No single stock exceeds 15% of portfolio (8 concurrent slots) |
 | `cash_reserve_pct` | 0% | All capital available for positions |
 | `max_concurrent_positions` | 8 | Diversification across 8 simultaneous positions |
 
 Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_reserve)`. Whole shares only in notebook simulation; LEAN uses `SetHoldings` with the capped percentage. Cash-only buys — never sell existing holdings to fund a new position.
 
-## Exit Logic (renquant_103 priority order)
+**renquant_104 conviction multiplier**: when `ranking.panel_scoring.sizing.enabled=true`, `max_position_pct` is multiplied by `conviction_multiplier(panel_score)` before sizing. The multiplier maps panel score to a `[min_mult, 1.0]` range using config floor/ceiling bounds — higher-conviction candidates get up to the full `max_position_pct`, weaker ones are sized down to `min_mult × max_position_pct`. See `kernel/sizing.py::conviction_multiplier`.
+
+## Exit Logic (renquant_103/104 priority order)
 
 1. **Trailing stop** (BULL_CALM only): activates once position's peak gain (HWM-based) reaches ≥20% from entry; then trails 18% below the rolling high-water mark. Stop stays armed even after pullbacks — uses peak gain, not current gain. Allows winners like NVDA/PLTR to run through minor corrections.
 2. **Cumulative stop-loss**: 15% from entry in BULL_CALM; 5% in BULL_VOLATILE / CHOPPY / BEAR. Triggers immediately, no min-hold gating.
 3. **Single-day loss gate** (BULL_CALM only): exits if today's close drops ≥10% from yesterday's close. Protects against gap-down days where a 20%+ single-session drop would escape the 15% cumulative stop until the next bar. Disabled in other regimes (5% cumulative stop is already tight).
-4. **Max hold**: forced exit after 500 days (BULL_CALM/BULL_VOLATILE/BEAR) or 40 days (CHOPPY — raised from 23 to accommodate min_hold_days=30 + 3 consecutive sell signals).
-5. **Model sell**: 3 consecutive daily sell signals with min 20-day hold.
+4. **Max hold**: forced exit after 500 days (BULL_CALM/BULL_VOLATILE/BEAR) or 40 days (CHOPPY).
+5. **Tax-aware hold gate** (`lt_hold_gate_days=330`, `lt_hold_min_gain=10%`): suppresses model-sell (but not hard stops) at days 330–364 if gain ≥10%, to preserve the upcoming long-term tax rate.
+6. **Model sell**: 3 consecutive daily sell signals, gated by `min_hold_days` (30 in renquant_103; 5 in renquant_104).
 
 ## JSON Artifact Format
 

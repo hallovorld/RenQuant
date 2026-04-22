@@ -3,16 +3,13 @@
 | Doc | Contents |
 |-----|----------|
 | [setup.md](setup.md) | Environment setup, prerequisites, daily activation |
-| [usage.md](usage.md) | How to run research, run backtests, add new strategies |
-| [architecture.md](architecture.md) | Four-layer pipeline, data flow, state space |
-| [models.md](models.md) | Model type reference and decision guide |
+| [usage.md](usage.md) | Research, backtests, live runner, scheduled runs |
+| [architecture.md](architecture.md) | Four-layer pipeline, kernel/adapter isolation, inference + training pipelines |
+| [models.md](models.md) | Model type reference + decision guide |
 | [indicators.md](indicators.md) | Indicator catalog with parameters |
 | [tech-stack.md](tech-stack.md) | Tool choices and rationale |
-| [logic_graph_103.md](logic_graph_103.md) | **Complete decision flowchart** — every branch in notebook simulation and LEAN |
-| [renquant_103_design.md](renquant_103_design.md) | Full design spec for renquant_103 adaptive regime strategy |
-| [renquant_103_maintenance_workflow.md](renquant_103_maintenance_workflow.md) | Reusable review, alignment, validation, and commit workflow |
-| [assessment_103.md](assessment_103.md) | Current state assessment: fixed bugs, remaining risks, test counts |
-| [improvement_plan_2026-04-17.md](improvement_plan_2026-04-17.md) | Improvement ideas ranked by priority (April 2026) |
-| [renquant_102_vs_103_report.md](renquant_102_vs_103_report.md) | Per-symbol OOS Sharpe comparison: renquant_102 vs renquant_103 |
-| [plan-relative-indicators.md](plan-relative-indicators.md) | Historical plan for relative indicator framework (completed) |
-| [rearchitecture_plan.md](rearchitecture_plan.md) | Original re-architecture plan (implemented — see architecture.md for current state) |
+| [logic_graph_103.md](logic_graph_103.md) | Decision flowchart — every branch in the inference pipeline (shared 103/104 trunk, see renquant_104_design.md for the 104 delta) |
+| [renquant_103_design.md](renquant_103_design.md) | Full design spec for renquant_103 (reference/rollback strategy) |
+| [renquant_104_design.md](renquant_104_design.md) | renquant_104 panel-LTR design — the active strategy |
+| [research_scoring.md](research_scoring.md) | Research notes on calibrated scoring, panel-LTR, feature neutralization |
+| [renquant_103_maintenance_workflow.md](renquant_103_maintenance_workflow.md) | Reusable review / alignment / validation / commit workflow (applies to 103 and 104) |

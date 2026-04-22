@@ -1,50 +1,46 @@
-# renquant_103 Maintenance Workflow
+# renquant Maintenance Workflow (applies to 103 and 104)
 
 ## Purpose
 
-This is the reusable workflow for the kind of work done in this conversation:
+This is the reusable workflow for the kind of work done in prior review passes:
 
-- deep review of `renquant_103`
-- notebook vs LEAN vs live parity checks
+- deep review of `renquant_103` or `renquant_104`
+- notebook / sim vs LEAN vs live parity checks
 - canonical-semantics decisions
 - test and replay-harness updates
 - doc synchronization
 - validation, commit, and push
 - optional performance-improvement follow-up
 
-Use this when you want the repo brought back to a known-good, aligned state after strategy changes.
+Use this when you want the repo brought back to a known-good, aligned state after strategy changes. Both strategies share the same inference trunk (`kernel/pipeline/`, `InferencePipeline`), so the workflow is identical — only the strategy-specific artifacts differ (per-ticker tournament for 103; per-ticker tournament **plus** panel-LTR artifact for 104).
 
 ## Recommended Prompt
 
 Use one of these prompts when you want this workflow run again:
 
-- `Run the renquant_103 maintenance workflow.`
-- `Do the renquant_103 review/alignment workflow, then validate, commit, and push.`
-- `Run the workflow from doc/renquant_103_maintenance_workflow.md.`
+- `Run the renquant maintenance workflow for 104.`
+- `Do the renquant_104 review/alignment workflow, then validate, commit, and push.`
+- `Run the workflow from doc/renquant_103_maintenance_workflow.md against renquant_104.`
 
-If you want only part of it, say which phase to skip.
+If you want only part of it, say which phase to skip. When targeting 103 (reference/rollback) instead of 104, swap every `_104` path for its `_103` counterpart.
 
 ## Scope
 
-Primary files and areas touched by this workflow:
+Primary files and areas touched by this workflow (swap `_104` ↔ `_103` depending on which strategy you are maintaining):
 
-- `backtesting/renquant_103/renquant_103.ipynb`
-- `backtesting/renquant_103/main.py`
-- `backtesting/renquant_103/kernel/` — regime, indicators, models, exits, selection, sizing, scoring
-- `backtesting/renquant_103/training/` — features.py, tournament.py, export.py
-- `live/runner.py`
-- `tests/test_policy_alignment.py`
-- `tests/test_simulation_policies.py`
-- `tests/test_strategy_ledger_parity.py`
-- `tests/test_runner_ranking.py`
-- `tests/test_training_modules.py`
-- `README.md`
-- `CLAUDE.md`
-- `doc/architecture.md`
-- `doc/logic_graph_103.md`
-- `doc/renquant_103_design.md` when semantics change materially
+- `backtesting/renquant_{103,104}/renquant_{103,104}.ipynb`
+- `backtesting/renquant_{103,104}/main.py`
+- `backtesting/renquant_{103,104}/kernel/` — regime, indicators, models, exits, selection, sizing, scoring, rotation
+- `backtesting/renquant_{103,104}/kernel/pipeline/` — `pp_inference.py`, `pp_training.py`, and (104 only) `pp_training_full.py`
+- `backtesting/renquant_104/kernel/panel_pipeline/` — `panel_scorer.py`, `feature_matrix.py`, `job_panel_scoring.py`
+- `backtesting/renquant_{103,104}/training/` — features.py, tournament.py, export.py
+- `backtesting/renquant_104/sim/runner.py` — hand-written sim loop; every decision added to `InferencePipeline` must be mirrored here until it is refactored through the pipeline
+- `live/runner.py`, `live/adapters/lean.py`, `live/adapters/runner.py`
+- `scripts/train_104.py`, `scripts/train_panel_model.py`, `scripts/recalibrate_scores.py`
+- `tests/test_policy_alignment.py`, `tests/test_panel_alignment.py`, `tests/test_simulation_policies.py`, `tests/test_strategy_ledger_parity.py`, `tests/test_runner_ranking.py`, `tests/test_training_modules.py`, `tests/test_panel_scoring_job.py`, `tests/test_panel_training_pipeline.py`
+- `README.md`, `CLAUDE.md`
+- `doc/architecture.md`, `doc/logic_graph_103.md` (shared trunk), `doc/renquant_103_design.md`, `doc/renquant_104_design.md`
 - `doc/deep_review_YYYY-MM-DD.md` when a formal audit/report is requested
-- `doc/improvement_plan_YYYY-MM-DD.md` when an improvement plan is produced
 
 ## Definition Of Done
 
@@ -126,9 +122,10 @@ At minimum, review and update these when semantics changed:
 - `README.md`
 - `CLAUDE.md`
 - `doc/architecture.md`
-- `doc/logic_graph_103.md`
+- `doc/logic_graph_103.md` (shared trunk for 103 and 104)
+- `doc/models.md` when scoring/calibration/sizing semantics changed
 
-Update `doc/renquant_103_design.md` if the strategy description changed materially.
+Update `doc/renquant_103_design.md` if renquant_103 semantics changed, or `doc/renquant_104_design.md` if any panel-LTR layer (training, scoring, veto, conviction sizing, rotation advantage) changed.
 
 ### Phase 7: Validate
 

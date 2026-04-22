@@ -172,37 +172,44 @@ The runner auto-detects single-stock vs multi-stock strategies by checking for `
 
 Trade logs are saved to `live/logs/<strategy>/<date>.json`.
 
-**Daily log contents** (renquant_103): REGIME PARAMS block (regime name, confidence, stop/hold/reserve values) printed after MARKET CONTEXT; price source tag `[Alpaca]` or `[OHLCV <date>]` on each sell decision header; EXIT 3 max_hold entries with realized P&L; per-buy position sizing math (invest, shares, price); warnings for all bare exception paths.
+**Daily log contents** (renquant_103 / renquant_104): REGIME PARAMS block (regime name, confidence, stop/hold/reserve values) printed after MARKET CONTEXT; price source tag `[Alpaca]` or `[OHLCV <date>]` on each sell decision header; EXIT 3 max_hold entries with realized P&L; per-buy position sizing math (invest, shares, price, conviction multiplier); warnings for all bare exception paths. On 104 runs, `PanelScoringJob` emits a line showing how many candidates + holdings were scored by the panel model; `VetoWeakBuysTask` logs dropped candidates when `buy_floor` is configured; rotation logs reject reasons including `panel_advantage`.
 
 ### Daily Automation
 
-Three NYSE-holiday-aware launchd agents run each trading day:
+Three NYSE-holiday-aware launchd agents run each trading day. **renquant_104 is the active strategy**; 103 scripts remain for rollback.
 
 | Run | Time (PT) | Time (ET) | Script | What it does |
 |-----|-----------|-----------|--------|--------------|
-| Market open | 6:32 AM | 9:32 AM | `live_only_103.sh --sell-only` | Exit stop-loss / gap-down positions using today's opening price |
-| Pre-close | 12:44 PM | 3:44 PM | `live_only_103.sh --sell-only` | Exit intraday stop breaches before close |
-| After close | 1:55 PM | 4:55 PM | `daily_103.sh` | Full run: retrain models → export LEAN data → buy + sell |
+| Market open | 6:32 AM | 9:32 AM | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down positions early using today's opening price |
+| Pre-close | 12:44 PM | 3:44 PM | `live_only_104.sh --sell-only` | Exit intraday stop breaches before close using near-final daily price |
+| After close | 1:55 PM | 4:55 PM | `daily_104.sh` | Full run: `FullTrainingPipeline` (tournament → panel-LTR → recalibrate) → export LEAN data → buy + sell |
 
 ```bash
-# Manual runs
-bash scripts/daily_103.sh              # full retrain + trade
-bash scripts/live_only_103.sh          # intraday sell check only (no retrain)
-python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
+# Manual runs — 104 (active)
+bash scripts/daily_104.sh              # full retrain + trade
+bash scripts/live_only_104.sh          # intraday sell check (no retrain)
+python scripts/train_104.py --skip-baseline --skip-recalibrate  # partial retrain
+python -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only
 
-# Manage launchd agents
-launchctl load ~/Library/LaunchAgents/com.renquant.daily103.plist
-launchctl load ~/Library/LaunchAgents/com.renquant.open103.plist
-launchctl load ~/Library/LaunchAgents/com.renquant.preclose103.plist
-# Logs: logs/daily_103/{date}.log, logs/live_103/{date}-open.log, {date}-preclose.log
+# LaunchAgents (104 active; 103 unloaded)
+# ~/Library/LaunchAgents/com.renquant.open104.plist
+# ~/Library/LaunchAgents/com.renquant.preclose104.plist
+# ~/Library/LaunchAgents/com.renquant.daily104.plist
+# Logs: logs/live_104/{date}-open.log, {date}-preclose.log
+#       logs/daily_104/{date}.log
+
+# Manual runs — 103 (legacy, kept for rollback)
+bash scripts/daily_103.sh
+bash scripts/live_only_103.sh
+python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
 ```
 
-Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent at each step:
-- After notebook retraining: model count (e.g., `Models retrained: 14 watchlist models ready`), or a warning if fewer than 10 models passed the OOS Sharpe floor
+Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent on success or failure:
+- After retraining: model count (e.g., `Models retrained: 34 watchlist models ready`), or a warning if fewer than 10 models passed the OOS Sharpe floor
 - After live trading: trade summary (e.g., `BUY TSLA x15; SELL AMZN x8; STOP COIN (12.3% loss)`) or error details
 - Notification body appends current holdings with unrealized P&L (e.g. `BUY AAPL x5 | Held: NVDA+12% META-2%`)
 
-Logs are written to `logs/daily_103/{date}.log`.
+Logs are written to `logs/daily_104/{date}.log`.
 
 ---
 
@@ -244,8 +251,10 @@ common/                            # Shared library — import as `import common
 Notebooks/
 ├── renquant_101.ipynb            # Single-stock strategy: data → model → export
 ├── renquant_102.ipynb            # Multi-stock: train 3 approaches per symbol → export best → portfolio simulation
-├── renquant_103.ipynb            # Adaptive regime multi-stock: GMM training, regime charts, per-symbol training (relative-label Classification + QLearning + Manual, Sharpe floor 0.8), regime-aware portfolio simulation with after-tax accounting, trade log, and buy/sell markers
 └── backtest_analysis.ipynb       # Post-LEAN analysis: enrich LEAN trades with tax breakdown (add_tax_columns)
+
+backtesting/renquant_103/renquant_103.ipynb   # Adaptive regime multi-stock — reference/rollback
+backtesting/renquant_104/renquant_104.ipynb   # Panel-LTR — parallel notebook (training driven by scripts/train_104.py)
 
 backtesting/<strategy>/
 ├── main.py                        # LEAN QCAlgorithm — loads models, runs daily inference
@@ -269,7 +278,11 @@ scripts/
 ├── analyze_backtest.py            # Render backtest charts + summary metrics
 ├── new_strategy.py                # Scaffold a new strategy directory
 ├── fetch_earnings_calendar.py    # Fetch upcoming earnings dates via yfinance → earnings-calendar.json
-├── daily_103.sh                   # Full run: retrain renquant_103 models + live trading pass (active)
-├── live_only_103.sh               # Sell-only pass for renquant_103 (no retrain, intraday stop checks)
-└── daily_102.sh                   # Retrain all renquant_102 models + run live trading pass (legacy)
+├── daily_104.sh                   # Full run: renquant_104 FullTrainingPipeline + live trading pass (ACTIVE)
+├── live_only_104.sh               # Sell-only pass for renquant_104 (no retrain, intraday stop checks)
+├── train_104.py                   # Thin CLI wrapper over FullTrainingPipeline (baseline / panel / recalibrate)
+├── compare_panel_vs_baseline.py  # A/B compare 103 baseline vs 104 panel scorer on the same sim
+├── daily_103.sh                   # 103 daily run — kept for rollback
+├── live_only_103.sh               # 103 sell-only — kept for rollback
+└── daily_102.sh                   # 102 legacy
 ```

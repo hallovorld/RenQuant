@@ -1,7 +1,13 @@
 # renquant_103 Decision Logic Graph
 *Covers notebook simulation (cell 657a4a6c, streaming detect_regime), LEAN (main.py OnData), and live runner.*
 *Every branch, condition, and policy. Use this as the ground truth for alignment.*
-*Last updated: 2026-04-20 — parallel pipeline: per-ticker ThreadPoolExecutor for sell and candidate phases. TrainingPipeline also parallel per-ticker. 566 tests pass (568 collected, 2 skipped).*
+*Last updated: 2026-04-21 — 802 tests collected (800 pass, 2 skipped). Parallel pipeline: per-ticker ThreadPoolExecutor for sell and candidate phases. TrainingPipeline also parallel per-ticker.*
+
+> **Shared 103/104 trunk.** This decision graph is the inference trunk for both strategies.
+> renquant_104 (active) inserts a single `PanelScoringJob` node between `CandidateJob` and
+> `RankingJob` and adds three panel-driven policy knobs (`buy_floor`, sizing conviction,
+> `rotation_advantage`). See `doc/renquant_104_design.md` for the diff. Everything else below
+> applies verbatim to both strategies.
 
 ---
 
