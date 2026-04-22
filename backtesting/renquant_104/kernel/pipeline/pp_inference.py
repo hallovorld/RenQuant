@@ -119,11 +119,19 @@ class InferencePipeline:
             universe   = _buy_universe(ctx)
             cand_tctxs = [_make_cand_tctx(ctx, t) for t in universe]
             run_parallel(cand_tctxs, TickerCandidateJob())
+            rejected: dict[str, int] = {}
             for tc in cand_tctxs:
                 if tc.candidate is not None:
                     ctx.candidates.append(tc.candidate)
+                    continue
+                reason = tc.candidate_reject_reason or "unknown"
+                rejected[reason] = rejected.get(reason, 0) + 1
+                key = f"candidate_reject_{reason}"
+                ctx.counters[key] = ctx.counters.get(key, 0) + 1
             log.info("Phase 2b (buy scan): %d candidates from %d tickers",
                      len(ctx.candidates), len(universe))
+            if rejected:
+                log.info("Phase 2b rejects: %s", rejected)
 
         PanelScoringJob().run(ctx)
         RankingJob().run(ctx)

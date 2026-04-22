@@ -105,6 +105,7 @@ class TickerInferenceContext:
     features: Any = None         # built feature DataFrame (shared by sell + candidate tasks)
     model_action: str = "hold"   # scored model signal
     rs_score: float = 0.0        # relative-strength score vs sector ETF
+    candidate_reject_reason: str | None = None  # set when candidate chain short-circuits
 
     # Final outputs (written by TickerSellJob or TickerCandidateJob)
     exit_signal: Any = None      # ExitSignal | None
