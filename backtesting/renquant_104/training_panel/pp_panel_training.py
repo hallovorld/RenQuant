@@ -363,6 +363,9 @@ class TickerPanelFactorJob(PanelTickerJob):
         from training_panel.factors import (
             compute_size_feature, compute_momentum_12_1,
             compute_rolling_beta, compute_residual_momentum,
+            compute_amihud_illiquidity, compute_volume_shift,
+            compute_price_to_high, compute_realized_vol,
+            compute_drawdown_from_peak,
             FUNDAMENTAL_COLS,
         )
         try:
@@ -374,12 +377,24 @@ class TickerPanelFactorJob(PanelTickerJob):
                 one, tc.ohlcv[benchmark], window=beta_window,
                 mom_window=mom_window, skip=skip,
             ).get(tc.ticker)
+            # Round 3 orthogonal factors
+            amihud   = compute_amihud_illiquidity(one, window=21).get(tc.ticker)
+            vol_shft = compute_volume_shift(one, short_window=20, long_window=60).get(tc.ticker)
+            p2h      = compute_price_to_high(one, window=252).get(tc.ticker)
+            rvol     = compute_realized_vol(one, window=20).get(tc.ticker)
+            ddn      = compute_drawdown_from_peak(one, window=252).get(tc.ticker)
             idx = tc.ohlcv[tc.ticker].index
             cols: dict[str, pd.Series] = {
-                "size":      (size if size is not None else pd.Series(index=idx)).reindex(idx),
-                "mom_12_1":  (mom  if mom  is not None else pd.Series(index=idx)).reindex(idx),
-                "beta_60d":  (beta if beta is not None else pd.Series(index=idx)).reindex(idx),
-                "resid_mom": (rmom if rmom is not None else pd.Series(index=idx)).reindex(idx),
+                "size":            (size if size is not None else pd.Series(index=idx)).reindex(idx),
+                "mom_12_1":        (mom  if mom  is not None else pd.Series(index=idx)).reindex(idx),
+                "beta_60d":        (beta if beta is not None else pd.Series(index=idx)).reindex(idx),
+                "resid_mom":       (rmom if rmom is not None else pd.Series(index=idx)).reindex(idx),
+                # Round 3: liquidity + behavioral factors
+                "amihud_illiq":    (amihud   if amihud   is not None else pd.Series(index=idx)).reindex(idx),
+                "volume_shift":    (vol_shft if vol_shft is not None else pd.Series(index=idx)).reindex(idx),
+                "price_to_high":   (p2h      if p2h      is not None else pd.Series(index=idx)).reindex(idx),
+                "realized_vol":    (rvol     if rvol     is not None else pd.Series(index=idx)).reindex(idx),
+                "drawdown_peak":   (ddn      if ddn      is not None else pd.Series(index=idx)).reindex(idx),
             }
             # Fundamentals: broadcast the ticker's snapshot scalar to every bar.
             # A missing ticker → NaN series (FactorZScoreTask / sector-median
@@ -482,14 +497,19 @@ class FactorZScoreTask(PanelTask):
             _sector_median_fill,
         )
 
-        raw_cols = ["size", "mom_12_1", "beta_60d", "resid_mom"]
+        raw_cols = [
+            "size", "mom_12_1", "beta_60d", "resid_mom",
+            # Round 3 orthogonal factors (time-series, same treatment as above)
+            "amihud_illiq", "volume_shift", "price_to_high",
+            "realized_vol", "drawdown_peak",
+        ]
         per_col: dict[str, dict[str, pd.Series]] = {}
         for col in raw_cols:
             per_col[col] = {
                 t: df[col] for t, df in ctx.raw_factor_frames.items()
                 if col in df.columns
             }
-        z = {col: cross_sectional_zscore(per_col[col]) for col in raw_cols}
+        z = {col: cross_sectional_zscore(per_col[col]) for col in raw_cols if per_col[col]}
 
         # Fundamentals: static scalar per (ticker, col). Fill missing by
         # sector median, then cross-sectionally z-score across tickers once.
@@ -519,6 +539,11 @@ class FactorZScoreTask(PanelTask):
                 "beta_60d_z":  z["beta_60d"].get(t,  pd.Series(index=idx)).reindex(idx),
                 "resid_mom_z": z["resid_mom"].get(t, pd.Series(index=idx)).reindex(idx),
             }
+            # Round 3: append z-scored orthogonal factors
+            for c in ("amihud_illiq", "volume_shift", "price_to_high",
+                      "realized_vol", "drawdown_peak"):
+                if c in z:
+                    cols[f"{c}_z"] = z[c].get(t, pd.Series(index=idx)).reindex(idx)
             for col in FUNDAMENTAL_COLS:
                 if col in fund_z_by_col:
                     v = fund_z_by_col[col].get(t, float("nan"))

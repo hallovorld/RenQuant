@@ -185,7 +185,7 @@ class TestTickerPanelJobs:
         assert tc.neutralized_frame is not None
         assert tc.neutralized_frame.index.equals(tc.feature_frame.index)
 
-    def test_factor_job_produces_four_columns(self, tmp_path):
+    def test_factor_job_produces_expected_columns(self, tmp_path):
         from training_panel.pp_panel_training import (
             TickerPanelContext, TickerPanelFactorJob,
         )
@@ -197,7 +197,14 @@ class TestTickerPanelJobs:
         )
         TickerPanelFactorJob().run(tc)
         assert tc.raw_factor_frame is not None
-        assert set(tc.raw_factor_frame.columns) == {"size", "mom_12_1", "beta_60d", "resid_mom"}
+        expected = {
+            # Core factors
+            "size", "mom_12_1", "beta_60d", "resid_mom",
+            # Round 3 orthogonal factors
+            "amihud_illiq", "volume_shift", "price_to_high",
+            "realized_vol", "drawdown_peak",
+        }
+        assert set(tc.raw_factor_frame.columns) == expected
 
 
 # ── Phase 3 — PanelAssemblyJob tasks ─────────────────────────────────────────
@@ -217,8 +224,14 @@ class TestFactorZScoreTask:
         _run_through_phase2(ctx)
         FactorZScoreTask().run(ctx)
         assert ctx.factor_frames
+        expected = {
+            "size_z", "mom_12_1_z", "beta_60d_z", "resid_mom_z",
+            # Round 3 orthogonal factor z-scores
+            "amihud_illiq_z", "volume_shift_z", "price_to_high_z",
+            "realized_vol_z", "drawdown_peak_z",
+        }
         for t, df in ctx.factor_frames.items():
-            assert set(df.columns) == {"size_z", "mom_12_1_z", "beta_60d_z", "resid_mom_z"}
+            assert set(df.columns) == expected
 
     def test_skips_when_already_populated(self, tmp_path):
         from training_panel.pp_panel_training import FactorZScoreTask

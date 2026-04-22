@@ -378,8 +378,15 @@
       "resid_mom_z": 1,
       "earnings_yield_z": 1,
       "roe_z": 1,
-      "gross_profitability_z": 1
-    }
+      "gross_profitability_z": 1,
+      "realized_vol_z": -1,
+      "amihud_illiq_z": 1,
+      "price_to_high_z": 1
+    },
+    "drop_cols": [
+      "volume_shift_z",
+      "drawdown_peak_z"
+    ]
   },
   "training": {
     "cadence": "custom",

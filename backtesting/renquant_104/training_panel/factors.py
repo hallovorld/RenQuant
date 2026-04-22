@@ -101,6 +101,109 @@ def compute_size_feature(
     return out
 
 
+# ── Orthogonal factors (Round 3) ─────────────────────────────────────────────
+#
+# All four emit a per-ticker pd.Series aligned to the OHLCV index. Raw values
+# go into `raw_factor_frame`; FactorZScoreTask cross-sectionally z-scores them
+# per date before they enter the panel.
+
+def compute_amihud_illiquidity(
+    ohlcv: dict[str, pd.DataFrame], window: int = 21,
+) -> dict[str, pd.Series]:
+    """Amihud (2002) illiquidity: rolling mean of |return| / dollar_volume.
+
+    Higher values ⇒ less liquid. Well-documented cross-sectional premium
+    (illiquid names compensated with higher expected returns) and
+    largely orthogonal to size once dollar-volume is in the denominator.
+    """
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        close = df["close"].astype(float)
+        vol   = df["volume"].astype(float) if "volume" in df.columns else None
+        if vol is None:
+            out[t] = pd.Series(np.nan, index=close.index)
+            continue
+        dollar_vol = (close * vol).replace(0, np.nan)
+        abs_ret    = close.pct_change().abs()
+        illiq      = (abs_ret / dollar_vol)
+        # Take rolling average × 1e6 for numerical scale
+        out[t] = illiq.rolling(window, min_periods=max(5, window // 2)).mean() * 1e6
+    return out
+
+
+def compute_volume_shift(
+    ohlcv: dict[str, pd.DataFrame],
+    short_window: int = 20,
+    long_window:  int = 60,
+) -> dict[str, pd.Series]:
+    """log(avg_volume_short / avg_volume_long) — picks up trading-interest shifts.
+
+    Rising accumulation / distribution signal. Complements size (level) and
+    Amihud (cost); this is about the CHANGE in trading activity.
+    """
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        vol = df["volume"].astype(float) if "volume" in df.columns else None
+        if vol is None:
+            out[t] = pd.Series(np.nan, index=df.index)
+            continue
+        short = vol.rolling(short_window, min_periods=max(5, short_window // 2)).mean()
+        long  = vol.rolling(long_window,  min_periods=max(10, long_window // 2)).mean()
+        ratio = (short / long.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+        out[t] = np.log(ratio.where(ratio > 0))
+    return out
+
+
+def compute_price_to_high(
+    ohlcv: dict[str, pd.DataFrame], window: int = 252,
+) -> dict[str, pd.Series]:
+    """close / rolling_max(close, 252d) — price relative to 1-year high.
+
+    Values near 1 indicate a stock at/near its recent peak; near 0 means
+    deep underperformance. The 52-week-high anchor is a well-documented
+    behavioral factor (George & Hwang 2004): stocks near their 52w high
+    outperform those far below it, even after controlling for momentum.
+    """
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        close = df["close"].astype(float)
+        hi    = close.rolling(window, min_periods=max(20, window // 4)).max()
+        out[t] = close / hi.replace(0, np.nan)
+    return out
+
+
+def compute_realized_vol(
+    ohlcv: dict[str, pd.DataFrame], window: int = 20,
+) -> dict[str, pd.Series]:
+    """Annualized realized volatility — std of daily returns × √252.
+
+    Complements beta: beta is exposure to market risk; vol is total risk
+    including idiosyncratic. Low-vol anomaly supports negative loading.
+    """
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        ret = df["close"].astype(float).pct_change()
+        out[t] = ret.rolling(window, min_periods=max(5, window // 2)).std() * np.sqrt(252)
+    return out
+
+
+def compute_drawdown_from_peak(
+    ohlcv: dict[str, pd.DataFrame], window: int = 252,
+) -> dict[str, pd.Series]:
+    """Current drawdown from rolling 252-day peak = (close / peak) − 1.
+
+    Always ≤ 0. Distinct from price-to-high by being path-dependent and
+    behavioral: investor reluctance to realize losses creates predictable
+    post-drawdown drift patterns.
+    """
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        close = df["close"].astype(float)
+        peak  = close.rolling(window, min_periods=max(20, window // 4)).max()
+        out[t] = (close / peak.replace(0, np.nan)) - 1.0
+    return out
+
+
 def cross_sectional_zscore(
     feature: dict[str, pd.Series],
 ) -> dict[str, pd.Series]:
@@ -129,6 +232,68 @@ def cross_sectional_zscore(
     return out
 
 
+FUNDAMENTAL_COLS: list[str] = [
+    "earnings_yield",
+    "roe",
+    "gross_profitability",
+    "book_to_price",
+]
+
+
+def _sector_median_fill(
+    values: dict[str, float],
+    sector_map: dict[str, str] | None,
+) -> dict[str, float]:
+    """Fill NaN entries with same-sector median across the remaining tickers.
+
+    Used for fundamentals where point-in-time data is often missing for
+    recent IPOs or sector-thin listings. Tickers without a sector map entry
+    are filled with the global median of the remaining non-NaN values.
+    """
+    out = dict(values)
+    non_nan = {k: v for k, v in values.items() if v == v}  # x != NaN
+    if not non_nan:
+        return out
+
+    sector_non_nan: dict[str, list[float]] = {}
+    if sector_map:
+        for t, v in non_nan.items():
+            sec = sector_map.get(t)
+            if sec:
+                sector_non_nan.setdefault(sec, []).append(v)
+
+    sector_medians: dict[str, float] = {
+        s: float(pd.Series(vs).median()) for s, vs in sector_non_nan.items()
+    }
+    global_median = float(pd.Series(list(non_nan.values())).median())
+
+    for t, v in values.items():
+        if v == v:   # already a finite number
+            continue
+        sec = (sector_map or {}).get(t)
+        if sec and sec in sector_medians:
+            out[t] = sector_medians[sec]
+        else:
+            out[t] = global_median
+    return out
+
+
+def _cross_sectional_zscore_static(
+    values: dict[str, float],
+) -> dict[str, float]:
+    """z-score a {ticker → scalar} map across tickers; NaN input stays NaN."""
+    xs = [v for v in values.values() if v == v]
+    if len(xs) < 2:
+        return {k: 0.0 if v == v else float("nan") for k, v in values.items()}
+    s = pd.Series(xs)
+    mean = float(s.mean())
+    std  = float(s.std())
+    if std <= 0 or std != std:
+        return {k: 0.0 if v == v else float("nan") for k, v in values.items()}
+    return {k: ((v - mean) / std) if v == v else float("nan")
+            for k, v in values.items()}
+
+
 def build_factor_bundle(
     ohlcv: dict[str, pd.DataFrame],
     spy: pd.DataFrame,
@@ -137,8 +302,23 @@ def build_factor_bundle(
     mom_window: int = 252,
     skip: int = 21,
     beta_window: int = 60,
+    fundamentals: dict[str, dict[str, float]] | None = None,
+    sector_map: dict[str, str] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Return {ticker: DataFrame[size_z, mom_12_1_z, beta_60d_z, resid_mom_z]}."""
+    """Return {ticker: DataFrame[<factor_z columns>]}.
+
+    Technical factors always present: size_z, mom_12_1_z, beta_60d_z, resid_mom_z.
+
+    When `fundamentals` is passed as `{ticker: {earnings_yield, roe,
+    gross_profitability, book_to_price}}`, four additional z-scored columns
+    are appended: earnings_yield_z, roe_z, gross_profitability_z,
+    book_to_price_z. Missing values are filled with the sector median
+    (falling back to global median) before z-scoring, so a thin fundamentals
+    cache doesn't torpedo the whole bundle.
+
+    Fundamentals are a time-invariant snapshot in this release — the
+    resulting columns are constant across each ticker's date index.
+    """
     size = compute_size_feature(ohlcv, shares_outstanding)
     mom  = compute_momentum_12_1(ohlcv, mom_window=mom_window, skip=skip)
     beta = compute_rolling_beta(ohlcv, spy, window=beta_window)
@@ -151,14 +331,27 @@ def build_factor_bundle(
     beta_z = cross_sectional_zscore(beta)
     rmom_z = cross_sectional_zscore(rmom)
 
+    # Static fundamental z-scores (one scalar per ticker per column)
+    fund_z: dict[str, dict[str, float]] = {}
+    if fundamentals:
+        for col in FUNDAMENTAL_COLS:
+            raw = {t: float(fundamentals.get(t, {}).get(col, float("nan")))
+                   for t in ohlcv}
+            filled = _sector_median_fill(raw, sector_map)
+            fund_z[col] = _cross_sectional_zscore_static(filled)
+
     out: dict[str, pd.DataFrame] = {}
     for t in ohlcv:
         idx = ohlcv[t].index
-        df = pd.DataFrame({
+        cols = {
             "size_z":      size_z.get(t, pd.Series(index=idx)).reindex(idx),
             "mom_12_1_z":  mom_z.get(t, pd.Series(index=idx)).reindex(idx),
             "beta_60d_z":  beta_z.get(t, pd.Series(index=idx)).reindex(idx),
             "resid_mom_z": rmom_z.get(t, pd.Series(index=idx)).reindex(idx),
-        }, index=idx)
-        out[t] = df
+        }
+        for col in FUNDAMENTAL_COLS:
+            if col in fund_z:
+                v = fund_z[col].get(t, float("nan"))
+                cols[f"{col}_z"] = pd.Series(v, index=idx)
+        out[t] = pd.DataFrame(cols, index=idx)
     return out
