@@ -11,6 +11,7 @@ log = logging.getLogger("kernel.pipeline.candidates")
 
 class EarningsFilterTask(Task):
     def run(self, tc: TickerInferenceContext) -> bool | None:
+        tc.candidate_reject_reason = None
         from kernel.selection import is_earnings_blocked  # noqa: PLC0415
         earnings_buf = int(tc.config.get("regime", {}).get("earnings_buffer_days", 3))
         if is_earnings_blocked(tc.ticker, tc.today, tc.earnings_calendar or {}, earnings_buf):
@@ -113,5 +114,4 @@ class AssembleCandidateTask(Task):
                                f"rs={tc.rs_score:.3f} er={er:+.4f}"),
             expected_return = er,
         )
-        tc.candidate_reject_reason = None
         log.debug("AssembleCandidateTask [%s]: candidate assembled", tc.ticker)

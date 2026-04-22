@@ -125,6 +125,8 @@ class InferencePipeline:
                     ctx.candidates.append(tc.candidate)
                     continue
                 reason = tc.candidate_reject_reason or "unknown"
+                if reason == "unknown":
+                    log.warning("Phase 2b reject reason missing for %s", tc.ticker)
                 rejected[reason] = rejected.get(reason, 0) + 1
                 key = f"candidate_reject_{reason}"
                 ctx.counters[key] = ctx.counters.get(key, 0) + 1
