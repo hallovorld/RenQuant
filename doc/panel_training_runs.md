@@ -23,6 +23,59 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 15:30 PT — NGBoost `score_mode=mu_minus_lambda_sigma` shelved (APY −27 pts)
+
+Purpose: test task #2 (revert `ranking.panel_scoring.ngboost.score_mode` from
+`additive` back to `mu_minus_lambda_sigma` with `lambda_sigma=1.0`) on top of
+the T4 golden config. Required a code refactor first — `ApplyGlobalCalibrationTask`
+used to short-circuit in mu_minus_lambda_sigma mode, which made raw μ−λσ
+values (range ~±0.05) fail the 0.10 tier threshold → zero trades. The
+refactor (commit `339944b`) reordered `PanelScoringJob` so calibration runs
+AFTER NGBoost, letting the isotonic calibrator map μ−λσ → probability.
+
+**Setup:** same panel artifact (today's daily_104 retrain, OOS IC 0.0363,
+CPCV 15-split), same T4 xgb_params, same 27-month OOS window. Only the
+`ranking.panel_scoring.ngboost.{score_mode, lambda_sigma}` pair flipped.
+
+| Metric (after-tax) | Baseline (additive, λ_σ=0) | Variant (μ−λσ, λ_σ=1.0) | Δ |
+|---|---|---|---|
+| Total return | +85.2% | +11.4% | **−74 pts** |
+| **APY** | **+32.0%** | **+5.0%** | **−27 pts** |
+| Buys / sells | 161 / 157 | 29 / 28 | −82% volume |
+| Win rate | 81% | 75% | −6 pts |
+| Avg P&L per trade | +9.0% | +7.0% | −2 pts |
+| Longest no-trade streak | 30 d | 31 d | — |
+
+**Diagnosis:**
+σ-penalty at λ=1.0 is way too aggressive. Observed behavior:
+- Candidate volume collapses (−82%) — σ pushes most candidates below the
+  tier threshold even after calibration.
+- Win rate drops too (81% → 75%), so the σ-penalty isn't just pruning
+  losers — it's filtering out real signal along with noise.
+- The σ ≈ 0.065 observed in training has a similar scale to μ ≈ 0.03,
+  so μ − 1·σ tends to be negative for most tickers, pushing the
+  calibrated probability down uniformly.
+
+**Action taken:**
+- Config kept at `score_mode: additive, lambda_sigma: 0.0`.
+- Code refactor (commit `339944b` — reorder calibration after NGBoost,
+  remove the short-circuit) stays shipped. It's provably a no-op in
+  additive mode AND it enables the λ_σ=0.X sweep as a future
+  experiment without re-touching the pipeline code.
+- σ-aware sizing (`ranking.panel_scoring.sigma_sizing`) is already
+  enabled in golden (floor=0.3, ceiling=1.0) — that path uses σ
+  multiplicatively on position size, not subtractively on rank_score,
+  and is the better way to express σ-awareness given the λ=1.0 result.
+
+**When to revisit:**
+- Before trying λ_σ=1.0 again, sweep lower values (0.1, 0.25, 0.5) to
+  see if there's a non-zero optimum. Needs its own A/B.
+- OR re-fit the global calibrator on μ−λσ values directly (currently
+  fit on raw panel_score) so the mapping is metric-calibrated, not
+  just directionally monotone.
+
+---
+
 ## A/B — 2026-04-23 09:54 PT — Transformer backend shelved (ratio 0.49)
 
 First head-to-head of the XGBoost panel-LTR vs the new `PanelTransformerModel`
