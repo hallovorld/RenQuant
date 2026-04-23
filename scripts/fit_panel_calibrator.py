@@ -78,7 +78,7 @@ def main() -> None:
     from training_panel.context import PanelTrainingContext, TickerPanelContext  # noqa: PLC0415
     from training_panel.pp_panel_training import (                                # noqa: PLC0415
         SectorMomentumTask, TickerPanelNeutralizeJob, TickerPanelFactorJob,
-        LoadFundamentalsTask, NeutralizedFeatureZScoreTask,
+        LoadFundamentalsTask, LoadHourlyBarsTask, NeutralizedFeatureZScoreTask,
     )
     from kernel.panel_pipeline.panel_scorer import PanelScorer                    # noqa: PLC0415
     from kernel.panel_pipeline.feature_matrix import build_inference_matrix       # noqa: PLC0415
@@ -132,6 +132,7 @@ def main() -> None:
     pctx.feature_frames = feature_frames
     SectorMomentumTask().run(pctx)
     LoadFundamentalsTask().run(pctx)
+    LoadHourlyBarsTask().run(pctx)
 
     # Build neutralized + raw factor frames per ticker
     ticker_ctxs = []
@@ -144,6 +145,7 @@ def main() -> None:
             ticker_sectors=pctx.ticker_sectors,
             config=pctx.config,
             fundamentals=pctx.fundamentals,
+            hourly_bars=pctx.hourly_bars,
         )
         tc.feature_frame = pctx.feature_frames[t]
         TickerPanelNeutralizeJob().run(tc)

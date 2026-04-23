@@ -193,5 +193,39 @@ class TestFactorJobWithHourly:
             assert f"{col}_z" in first.columns, f"{col}_z missing"
 
 
+# ── prepare_inference_panel_frames wiring (LEAN/live/sim path) ───────────────
+
+class TestPrepareInferenceFramesHourly:
+    """prepare_inference_panel_frames must run LoadHourlyBarsTask and pass
+    hourly_bars through to each TickerPanelContext — otherwise inference
+    factor frames miss the 6 hourly columns that the retrained panel
+    expects. Source-level wiring check so the test stays fast and
+    independent of indicator fixtures."""
+
+    def test_load_hourly_bars_task_referenced(self):
+        import inspect
+        from training_panel import pipeline as p_mod
+        src = inspect.getsource(p_mod.prepare_inference_panel_frames)
+        assert "LoadHourlyBarsTask" in src, (
+            "prepare_inference_panel_frames must call LoadHourlyBarsTask "
+            "— otherwise hourly flag is honoured at training time but "
+            "silently ignored at inference time"
+        )
+        assert "hourly_bars=ctx.hourly_bars" in src, (
+            "hourly_bars must be forwarded to TickerPanelContext"
+        )
+
+    def test_fit_panel_calibrator_script_wiring(self):
+        """scripts/fit_panel_calibrator.py builds its own ticker contexts
+        and must similarly honour the hourly flag — otherwise the
+        per-regime calibrators are fit on a different feature distribution
+        than production."""
+        script_path = (Path(__file__).resolve().parent.parent
+                        / "scripts" / "fit_panel_calibrator.py")
+        src = script_path.read_text()
+        assert "LoadHourlyBarsTask" in src
+        assert "hourly_bars=pctx.hourly_bars" in src
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
