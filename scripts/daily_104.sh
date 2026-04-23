@@ -82,10 +82,38 @@ print(count)
 " 2>/dev/null || echo "0")
 WATCHLIST_SIZE=$("$PYTHON" -c "import json; print(len(json.loads(open('$REPO_DIR/backtesting/renquant_104/strategy_config.json').read())['watchlist']))" 2>/dev/null || echo "?")
 echo "Models exported: $MODEL_COUNT / $WATCHLIST_SIZE"
+
+# Pull panel + ngboost artifact metadata for the notification body so the
+# alert also surfaces WHEN the panel was last retrained and how it scored.
+# Falls back to "—" when a field is missing.
+PANEL_INFO=$("$PYTHON" -c "
+import json
+from pathlib import Path
+adir = Path('$REPO_DIR/backtesting/renquant_104/artifacts')
+panel_path = adir / 'panel-ltr.json'
+ngb_path   = adir / 'ngboost-head.json'
+try:
+    p = json.loads(panel_path.read_text())
+except Exception:
+    p = {}
+ic  = p.get('oos_mean_ic')
+std = p.get('oos_std_ic')
+td  = p.get('trained_date') or '—'
+ic_str  = f'{ic:+.4f}'  if isinstance(ic,  (int, float)) else '—'
+std_str = f'{std:.4f}' if isinstance(std, (int, float)) else '—'
+try:
+    n = json.loads(ngb_path.read_text())
+    ngb_td = n.get('trained_date') or '—'
+    ngb_n  = n.get('metadata', {}).get('n_rows') or n.get('n_rows') or '—'
+except Exception:
+    ngb_td = '—'; ngb_n = '—'
+print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td} n={ngb_n}')
+" 2>/dev/null || echo "panel info unavailable")
+
 if [ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null; then
-    notify "RenQuant 104 WARN" "Only $MODEL_COUNT models exported (min=$MIN_MODELS) — check OOS Sharpe floor"
+    notify "RenQuant 104 WARN" "Only $MODEL_COUNT models (min=$MIN_MODELS) — $PANEL_INFO"
 else
-    notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready"
+    notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready — $PANEL_INFO"
 fi
 
 # Step 2: Export LEAN data for all watchlist symbols
