@@ -18,16 +18,19 @@ Panel-LTR methodology primer: `doc/panel_ltr_primer.md`.
 
 ## Active queue (next pickup → drop to the bottom)
 
+Ordered top-to-bottom by pickup order. Block letter is just a handle —
+pick the topmost unblocked item when starting the next session.
+
 | # | Item | Priority | Est. | Expected value |
 |---|---|---|---|---|
 | A | Clear stale live_state `high_water_mark` | **HIGH** — blocks live trading | 10 min | Unblocks Alpaca live orders (drawdown halt currently fires every bar on stale $100k HWM vs actual equity) |
-| B | Sustainability watch on T4 golden — 30-day live APY tracker | MED | 2 h | Early-warning if the pre-regression xgb_params don't transfer forward |
-| C | σ-penalty λ sweep: λ ∈ {0.1, 0.25, 0.5} | MED | 1-2 h sim + analysis | Task-#2 A/B showed λ=1.0 crashes APY (32% → 5%); there may be a non-zero optimum. Low-risk because config-flag only (code refactor already shipped). |
-| D | Re-fit global calibrator on μ−λσ distribution | MED | 1 day | If σ-sweep finds a winner, calibrator should be fit on the actual distribution rather than raw-panel distribution. Unlocks cleaner metric-calibrated μ−λσ mode. |
-| E | Item 6 — regime-conditional calibration | MED | 2 days | Per-regime calibrators (BULL_CALM / BULL_VOLATILE / CHOPPY / BEAR each get their own isotonic map). Waits on DB accumulation from Item 3 (already shipped). |
-| F | LightGBM backend A/B vs XGBoost on current golden | MED | 4 h (two retrains + sim) | Item 7 shipped infra but never benchmarked. NDCG@10 objective might lift top-of-list IC; top-8 selection matches panel's NDCG@10 truncation. |
-| G | Item 8 — hourly-bar features (panel feature expansion) | LOW-MED | 2-3 days | +0.01 IC target per roadmap. Depends on Alpaca intraday infra (Item 5, shipped). |
-| H | Revisit transformer when panel grows | LOW, deferred | 1 day | Rerun `scripts/compare_panel_backends.py` once panel ≥ 100k rows (2× universe OR 2× history) or new feature sets land. Current verdict: shelved at ratio 0.49× XGBoost on 47k rows. |
+| B | LightGBM backend A/B vs XGBoost on current golden | MED — cheap A/B | 4 h (two retrains + sim) | Item 7 shipped infra but never benchmarked. NDCG@10 objective matches our top-8 selection. Possible small IC lift with zero config risk (fallback is easy). |
+| C | σ-penalty λ sweep: λ ∈ {0.1, 0.25, 0.5} | MED — fast config test | 1-2 h sim + analysis | Task-#2 A/B showed λ=1.0 crashes APY (32% → 5%); there may be a non-zero optimum. Low-risk because code refactor already shipped; this is config-only. |
+| D | Sustainability watch on T4 golden — 30-day live APY tracker | MED — run in parallel | 2 h | Early-warning if the pre-regression xgb_params don't transfer live. JSONL audit + weekly ntfy alert. Can kick off alongside A/B/C (no sim needed). |
+| E | Re-fit global calibrator on μ−λσ distribution | MED — only if C wins | 1 day | Conditional on C finding a winning λ. Metric-calibrates the μ−λσ mode instead of relying on the directionally-monotone raw-panel calibrator. |
+| F | Item 6 — regime-conditional calibration | MED — waits on DB data | 2 days | Per-regime calibrators (BULL_CALM / BULL_VOLATILE / CHOPPY / BEAR). Wants ≥ 2 months of decision traces in `data/runs.db` first. |
+| G | Item 8 — hourly-bar panel features (keep as eventual, not deferred) | MED — larger build | 2-3 days | +0.01 IC target per Item 8 spec. User wants panel trained on hourly data as a real objective, independent of the transformer track. Does not depend on A-F finishing; can run whenever there's a 2-3 day block. Uses Alpaca intraday fetcher from Item 5. |
+| H | Revisit transformer on the hourly-enhanced panel | downstream of G | 1 day | After G lands, the panel grows in both features AND rows (if we also fetch hourly bars across the full 10yr sample). Rerun `scripts/compare_panel_backends.py`. Current transformer baseline shelved at ratio 0.49× XGBoost on the 47k daily-only panel. |
 
 ---
 
@@ -45,7 +48,23 @@ Panel-LTR methodology primer: `doc/panel_ltr_primer.md`.
 
 **Acceptance:** next `daily_104.sh` invocation shows `DrawdownCircuitTask` log message `drawdown=X.X%` with X well below 35%, and at least one buy order is attempted (market open, no other gates blocking).
 
-### B. Sustainability watch on T4 golden  🟢 MED
+### B. LightGBM backend A/B  🟢 MED
+
+**Problem:** Item 7 shipped `PanelLGBMModel` + `PanelLGBMScorer` + dispatcher but never measured live panel performance. NDCG@10 objective (LightGBM's `lambdarank`) should match the top-8 selection better than XGBoost's `rank:pairwise`.
+
+**Plan:** use `scripts/compare_panel_backends.py --strategy renquant_104` but extend it to accept `--backends xgboost,lightgbm`. Need to pin LightGBM hparams first (current config has `lightgbm_params` populated but untested). Do one warm-up LightGBM retrain, tune if training fails, then A/B.
+
+**Acceptance:** LightGBM reaches OOS IC ≥ 1.10× XGBoost (per ship gate). If yes, flip backend in golden. If 1.00-1.10×, ensemble (infra exists — `kernel/panel_pipeline/ensemble_scorer.py`). If < 1.00×, shelve.
+
+### C. σ-penalty λ sweep  🟢 MED
+
+**Problem:** Task-#2 A/B tested only λ_σ=1.0 and it regressed −27 APY pts. There could be a small-but-positive λ where μ−λσ ranking beats additive. The code refactor (commit `339944b`) already allows flipping `score_mode=mu_minus_lambda_sigma` via config.
+
+**Plan:** same harness as `/tmp/test_pending_reverts.py` but iterate over `lambda_sigma` ∈ {0.0, 0.1, 0.25, 0.5, 1.0}. The 0.0 case ≡ additive (baseline). Keep `score_mode=mu_minus_lambda_sigma` across all runs so calibration-after-NGBoost is consistent.
+
+**Acceptance:** at least one λ beats additive by ≥ 3 APY points on the 27-month OOS window AND doesn't drop win-rate below 80%. If yes → commit + promote golden. If no → lock additive permanently, delete this experiment branch.
+
+### D. Sustainability watch on T4 golden  🟢 MED
 
 **Problem:** T4's panel hyperparameters (depth=3, mcw=60, λ=5, α=2, rounds=300) are historically validated but the current 27-month backtest is largely in-sample for the per-ticker tournament models. The 40.1% APY could be backtest-specific. The golden doc logged a 30-day live-trading guardrail.
 
@@ -56,15 +75,9 @@ Panel-LTR methodology primer: `doc/panel_ltr_primer.md`.
 
 **Acceptance:** audit file populated for ≥ 5 consecutive trading days, alert path manually tested.
 
-### C. σ-penalty λ sweep  🟢 MED
+**Can run in parallel with A/B/C** — no sim dependency; it's a logger + cron.
 
-**Problem:** Task-#2 A/B tested only λ_σ=1.0 and it regressed −27 APY pts. There could be a small-but-positive λ where μ−λσ ranking beats additive. The code refactor (commit `339944b`) already allows flipping `score_mode=mu_minus_lambda_sigma` via config.
-
-**Plan:** same harness as `/tmp/test_pending_reverts.py` but iterate over `lambda_sigma` ∈ {0.0, 0.1, 0.25, 0.5, 1.0}. The 0.0 case ≡ additive (baseline). Keep `score_mode=mu_minus_lambda_sigma` across all runs so calibration-after-NGBoost is consistent.
-
-**Acceptance:** at least one λ beats additive by ≥ 3 APY points on the 27-month OOS window AND doesn't drop win-rate below 80%. If yes → commit + promote golden. If no → lock additive permanently, delete this experiment branch.
-
-### D. Re-fit global calibrator on μ−λσ distribution  🟢 MED
+### E. Re-fit global calibrator on μ−λσ distribution  🟢 MED — conditional on C
 
 **Problem:** Current `scripts/fit_panel_calibrator.py` fits the isotonic head on raw panel scores. In `mu_minus_lambda_sigma` mode, the calibrator's input distribution shifts — μ−λσ has similar scale but different shape vs raw panel scores. Today's A/B reuses the raw-panel calibrator (directionally monotone but not metric-calibrated).
 
@@ -74,7 +87,7 @@ Panel-LTR methodology primer: `doc/panel_ltr_primer.md`.
 
 **Depends on:** C (don't fit a calibrator for a mode we've decided to shelve).
 
-### E. Item 6 — regime-conditional calibration  🟡 partial
+### F. Item 6 — regime-conditional calibration  🟡 partial
 
 **Status:** CPCV 15-split shipped (commit `c5fd154`). Regime-conditional calibrator part is still pending.
 
@@ -87,29 +100,49 @@ Panel-LTR methodology primer: `doc/panel_ltr_primer.md`.
 
 **Depends on:** DB (`data/runs.db` — Item 3 shipped) should have at least 2 months of real-world decision traces before per-regime fitting is data-driven enough.
 
-### F. LightGBM backend A/B  🟢 MED
+### G. Panel trained on hourly data (was Item 8)  🟢 MED — keep in queue, not deferred
 
-**Problem:** Item 7 shipped `PanelLGBMModel` + `PanelLGBMScorer` + dispatcher but never measured live panel performance. NDCG@10 objective (LightGBM's `lambdarank`) should match the top-8 selection better than XGBoost's `rank:pairwise`.
+**User objective:** train the panel model — whether XGBoost or transformer — on
+hourly-bar data, not just daily. This is a real planned item, not a fallback.
+Timing is flexible (no deadline) but it stays on the queue; pick it up after
+A-F when there's a 2-3 day block.
 
-**Plan:** use `scripts/compare_panel_backends.py --strategy renquant_104` but extend it to accept `--backends xgboost,lightgbm`. Need to pin LightGBM hparams first (current config has `lightgbm_params` populated but untested). Do one warm-up LightGBM retrain, tune if training fails, then A/B.
+**Plan:**
+1. Extend `kernel/data.py::fetch_intraday_bars` (Item 5 infra) to cache hourly bars
+   across the full 10yr sample at `data/intraday/{SYMBOL}/1h.parquet`.
+2. Add `training_panel/hourly_features.py` with 6 per-(ticker, date) aggregates:
+   - `morning_drift`   = (hr1_close − open) / open
+   - `afternoon_drift` = (close − hr1_close) / hr1_close
+   - `vwap_premium`    = (close − intraday_vwap) / intraday_vwap
+   - `vol_ratio`       = last-hour volume / first-hour volume
+   - `intraday_realized_vol` = std of 7 hourly returns
+   - `overnight_gap`   = (open − prev_close) / prev_close
+3. New `HourlyFeatureTask` in `PanelDataJob` (runs once per day after close).
+4. Panel feature set grows 25 → ~31 columns.
+5. Retrain + A/B vs daily-only baseline.
 
-**Acceptance:** LightGBM reaches OOS IC ≥ 1.10× XGBoost (per ship gate). If yes, flip backend in golden. If 1.00-1.10×, ensemble (infra exists — `kernel/panel_pipeline/ensemble_scorer.py`). If < 1.00×, shelve.
+**Acceptance:** OOS mean-IC improvement ≥ +0.01 vs current golden (0.0411 → ≥ 0.051).
+Training time stays under 20 min end-to-end. Hourly features together account for
+> 10% of feature importance.
 
-### G. Item 8 — hourly-bar features  🟢 LOW-MED
+**Sequencing note:** H's transformer rerun is a natural follow-on once G lands —
+the enlarged panel is exactly the data-growth condition the transformer was
+waiting on.
 
-**Status:** `doc/improvement_roadmap.md` Item 8 (before this rewrite) spec is complete. No changes.
+### H. Revisit transformer on the hourly-enhanced panel  🟢 downstream of G
 
-**Summary:** 6 new features per (ticker, date) from 7 hourly bars — morning/afternoon drift, VWAP premium, first/last-hour volume ratio, intraday realized vol, overnight gap. Reuses Alpaca intraday fetcher from Item 5.
+**Trigger:** G lands (panel trained on hourly bars → more features + likely more
+rows once the 10yr hourly cache is built).
 
-**Expected value:** design doc estimated +0.01 OOS IC. Non-trivial engineering; prioritize lower than C/D/F unless those exhaust.
+**Plan:** flip `panel_ltr.backend: "transformer"` in config, run
+`python scripts/compare_panel_backends.py --strategy renquant_104 --device mps`.
+Current infra + tests (27 green) are preserved. The transformer's attention
+across a date-group should benefit most from the intraday structure that
+XGBoost's axis-aligned splits can't fully exploit.
 
-### H. Revisit transformer when panel grows  ⚪ deferred
-
-**Trigger:** panel row count ≥ 100k (currently 47k). Possible paths: 2× watchlist, 2× history window, or adding intraday/options data.
-
-**Plan:** flip `panel_ltr.backend: "transformer"` in config, run `python scripts/compare_panel_backends.py --strategy renquant_104 --device mps`. Current infra + tests (27 green) are preserved.
-
-**Ship gate:** transformer OOS IC ≥ 1.30× XGBoost (design doc §5 — unchanged).
+**Ship gate:** transformer OOS IC ≥ 1.30× XGBoost on the hourly-enhanced panel
+(design doc §5 — unchanged). If 1.10-1.30×, ensemble via rank-averaging
+(`kernel/panel_pipeline/ensemble_scorer.py`).
 
 ---
 
