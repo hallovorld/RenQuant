@@ -138,9 +138,22 @@ def _build_date_groups(
     Returns (x, y, pad_mask) each of shape (n_groups, max_tickers, ·).
     x: float32, y: float32, pad_mask: bool.
     Padding rows are zeros with pad_mask=True.
+
+    Input sanitization: NaN / +inf / -inf in feature values are replaced
+    with 0. This keeps the model numerically safe if the caller passes a
+    column with degenerate values (e.g. a constant column that z-scores
+    to NaN/inf) — better than the model producing NaN losses that poison
+    the whole training run. Tree backends like XGBoost don't need this,
+    but the transformer's softmax is sensitive to unbounded inputs.
     """
-    X_flat = panel[feature_cols].to_numpy(dtype=np.float32, copy=True)
-    y_flat = panel[label_col].to_numpy(dtype=np.float32, copy=True)
+    X_flat = np.nan_to_num(
+        panel[feature_cols].to_numpy(dtype=np.float32, copy=True),
+        nan=0.0, posinf=0.0, neginf=0.0,
+    )
+    y_flat = np.nan_to_num(
+        panel[label_col].to_numpy(dtype=np.float32, copy=True),
+        nan=0.0, posinf=0.0, neginf=0.0,
+    )
     n_groups = len(group_sizes)
     n_feat   = X_flat.shape[1]
     x = np.zeros((n_groups, max_tickers, n_feat), dtype=np.float32)

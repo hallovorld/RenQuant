@@ -1,0 +1,181 @@
+"""Global panel-wide calibrator.
+
+Replaces the 38 per-ticker score_calibration objects (fitted on ~2500 OOS
+rows each) with a single calibrator fitted on the pooled panel
+(~80,000 rows). Two heads:
+
+  1. **Probability head** — `rank_score ∈ [0, 1] = P(outperform SPY by threshold%)`
+     via isotonic on (panel_score, future_excess_indicator).
+  2. **Expected-return head** — `E[R_i - R_spy]` over rotation horizon via
+     isotonic on (panel_score, future_excess_return).
+
+Rationale: cross-sectional LTR already produces comparable raw scores;
+fitting 38 separate calibrators wastes data. A single calibrator uses 38×
+more observations for the same statistical quantity.
+
+JSON artifact format, loadable without unpickling:
+    {
+      "version": 1, "kind": "global_panel_calibration",
+      "probability": {"x": [...], "y": [...]},
+      "expected_return": {"x": [...], "y": [...]},
+      "metadata": {...}
+    }
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+from sklearn.isotonic import IsotonicRegression
+
+log = logging.getLogger("training_panel.global_calibrator")
+
+
+@dataclass
+class GlobalPanelCalibration:
+    """Two isotonic maps: raw → P(outperform) and raw → E[R_i - R_spy]."""
+    prob_x: np.ndarray              # knot x's (panel scores, sorted)
+    prob_y: np.ndarray              # knot y's (probabilities, monotone nondecreasing)
+    er_x:   np.ndarray
+    er_y:   np.ndarray
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def calibrate_probability(self, raw_score: float) -> float:
+        """Map a raw panel score → P(outperform SPY by threshold in lookahead_days)."""
+        return float(np.interp(raw_score, self.prob_x, self.prob_y,
+                               left=self.prob_y[0], right=self.prob_y[-1]))
+
+    def expected_return(self, raw_score: float) -> float:
+        """Map a raw panel score → E[R_i - R_spy] over lookahead_days."""
+        return float(np.interp(raw_score, self.er_x, self.er_y,
+                               left=self.er_y[0], right=self.er_y[-1]))
+
+    # Vectorized helpers
+    def calibrate_probability_vec(self, raws: np.ndarray) -> np.ndarray:
+        return np.interp(raws, self.prob_x, self.prob_y,
+                         left=self.prob_y[0], right=self.prob_y[-1])
+
+    def expected_return_vec(self, raws: np.ndarray) -> np.ndarray:
+        return np.interp(raws, self.er_x, self.er_y,
+                         left=self.er_y[0], right=self.er_y[-1])
+
+    def save(self, path: str | Path, metadata: dict | None = None) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "kind": "global_panel_calibration",
+            "trained_date": str(date.today()),
+            "probability": {
+                "x": self.prob_x.tolist(),
+                "y": self.prob_y.tolist(),
+            },
+            "expected_return": {
+                "x": self.er_x.tolist(),
+                "y": self.er_y.tolist(),
+            },
+            "metadata": {**self.metadata, **(metadata or {})},
+        }
+        p.write_text(json.dumps(payload, default=str))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "GlobalPanelCalibration":
+        payload = json.loads(Path(path).read_text())
+        if payload.get("kind") != "global_panel_calibration":
+            raise ValueError(
+                f"Not a global_panel_calibration artifact: {path}",
+            )
+        return cls(
+            prob_x = np.asarray(payload["probability"]["x"], dtype=float),
+            prob_y = np.asarray(payload["probability"]["y"], dtype=float),
+            er_x   = np.asarray(payload["expected_return"]["x"], dtype=float),
+            er_y   = np.asarray(payload["expected_return"]["y"], dtype=float),
+            metadata = payload.get("metadata", {}),
+        )
+
+
+def fit_global_calibrator(
+    panel_scores: dict[str, pd.Series],   # {ticker: series indexed by date → raw panel score}
+    future_returns: dict[str, pd.Series], # {ticker: series → future relative-to-SPY return}
+    *,
+    lookahead_days: int = 10,
+    threshold: float = 0.03,
+    min_rows: int = 1000,
+) -> GlobalPanelCalibration:
+    """Pool all tickers' (panel_score, future_return) pairs; fit one isotonic.
+
+    Returns a `GlobalPanelCalibration` with both heads.
+    Raises ValueError if pooled samples < min_rows (not enough data).
+    """
+    rows_raw: list[float] = []
+    rows_fwd: list[float] = []
+    for t, raw in panel_scores.items():
+        fwd = future_returns.get(t)
+        if fwd is None or raw.empty or fwd.empty:
+            continue
+        idx = raw.index.intersection(fwd.index)
+        if len(idx) == 0:
+            continue
+        r = raw.loc[idx].astype(float).values
+        f = fwd.loc[idx].astype(float).values
+        ok = np.isfinite(r) & np.isfinite(f)
+        rows_raw.append(r[ok])
+        rows_fwd.append(f[ok])
+
+    if not rows_raw:
+        raise ValueError("fit_global_calibrator: no overlapping rows across tickers")
+    raw_all = np.concatenate(rows_raw)
+    fwd_all = np.concatenate(rows_fwd)
+    if len(raw_all) < min_rows:
+        raise ValueError(
+            f"fit_global_calibrator: pooled n={len(raw_all)} < min_rows={min_rows}",
+        )
+
+    # Sanity diagnostic: panel IC on the full pool
+    rho, _ = spearmanr(raw_all, fwd_all)
+
+    # Probability head: indicator of outperforming by threshold
+    prob_labels = (fwd_all >= threshold).astype(float)
+    iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
+
+    # ER head: direct regression
+    iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_all)
+
+    # Extract knots for JSON serialization. Use the isotonic model's own knots.
+    prob_x = np.asarray(iso_p.X_thresholds_, dtype=float)
+    prob_y = np.asarray(iso_p.y_thresholds_, dtype=float)
+    er_x   = np.asarray(iso_er.X_thresholds_, dtype=float)
+    er_y   = np.asarray(iso_er.y_thresholds_, dtype=float)
+
+    metadata = {
+        "n_rows":         int(len(raw_all)),
+        "n_tickers":      int(len(rows_raw)),
+        "pool_ic":        float(rho) if rho == rho else None,
+        "threshold":      float(threshold),
+        "lookahead_days": int(lookahead_days),
+        "prob_base_rate": float(prob_labels.mean()),
+        "er_mean":        float(fwd_all.mean()),
+        "er_std":         float(fwd_all.std()),
+    }
+    log.info(
+        "fit_global_calibrator: n=%d tickers=%d IC=%.4f base_rate=%.3f "
+        "er_mean=%+.4f",
+        metadata["n_rows"], metadata["n_tickers"], rho or 0.0,
+        metadata["prob_base_rate"], metadata["er_mean"],
+    )
+    return GlobalPanelCalibration(
+        prob_x=prob_x, prob_y=prob_y, er_x=er_x, er_y=er_y, metadata=metadata,
+    )
+
+
+__all__ = [
+    "GlobalPanelCalibration",
+    "fit_global_calibrator",
+]
