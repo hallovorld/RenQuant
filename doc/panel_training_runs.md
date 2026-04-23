@@ -23,6 +23,71 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 late PT — Plan F regime-conditional calibration SHELVED
+
+Plan F. Four per-regime calibrators fit via
+`scripts/fit_panel_calibrator.py --regime-conditional`, sourced from
+the 27k sim + 27 live decision traces in `data/runs.db::pipeline_runs`.
+
+**Per-regime pool_IC on pooled training data:**
+
+| Regime         | n      | pool_IC | base_rate |
+|----------------|-------:|--------:|----------:|
+| BULL_CALM      | 18,506 | +0.0765 |     0.301 |
+| BULL_VOLATILE  |  1,102 | +0.0899 |     0.285 |
+| CHOPPY         |    646 | -0.1159 |     0.322 |
+| BEAR           |    988 | +0.3690 |     0.394 |
+| **POOLED**     | 89,671 | +0.0218 |     0.273 |
+
+The per-regime ICs looked 3.5× – 17× the pooled IC. The negative CHOPPY
+IC was even presented as evidence the pooled calibrator "hurt" in that
+regime. But live A/B tells a different story:
+
+**A/B (27-month OOS sim, identical panel+ngboost artifacts, only flag flipped):**
+
+| Run | APY    | Δ     | win | buys | streak |
+|-----|-------:|------:|----:|----:|------:|
+| regime_cond=OFF (pooled) | +40.02% |   —   | 79% | 122 | 25d |
+| regime_cond=ON           | +36.24% | −3.78 | 80% | 132 | 22d |
+
+**Diagnosis (why the in-sample IC lift didn't translate):**
+
+1. Selection bias — fitting isotonic on a narrower regime sub-sample
+   produces extreme knots that don't generalize. BEAR's 988-row fit
+   has a base rate of 0.394 (vs 0.273 pooled), so it systematically
+   predicts higher probabilities than reality.
+2. Concurrent regime labels — the DB records the regime that was
+   CURRENT at the decision bar, but the panel score was computed at
+   the same bar. At production time the regime label may have just
+   flipped; the "right" calibrator isn't what the training label says.
+3. CHOPPY's in-sample negative IC was the warning sign. A robust
+   signal doesn't invert by regime — when it does, it's probably
+   overfitting a tiny subsample.
+4. Extra knots + narrower distributions mean candidate rank_scores
+   are more often just below the 0.10 tier floor — buys get filtered
+   out in the wrong regimes (observed 52d consecutive no-candidate
+   streak in BEAR during run B).
+
+**Action taken:**
+
+- Config flag `ranking.panel_scoring.global_calibration.regime_conditional.enabled`
+  flipped back to `false`. Pooled calibrator remains golden.
+- Per-regime JSON artifacts are kept on disk (they're small) as evidence
+  for future work — e.g. could be revisited with smoothed / shrunk
+  isotonic curves that pull toward the pooled calibrator, or with
+  Platt-scaled heads that generalize better than raw isotonic on small
+  n.
+- Plan F task marked "infra shipped, verdict SHELVED" in roadmap.
+
+**Takeaway for future A/Bs:** in-sample IC is a necessary but not
+sufficient signal. Always run the live-sim A/B before flipping the
+flag — IC is computed on IID samples but trading requires the ranking
+to stay consistent through time *and* regime transitions.
+
+Log: `/tmp/regime_ab.log`.
+
+---
+
 ## A/B — 2026-04-23 eve PT — σ-penalty λ sweep — SHELVED at all λ
 
 Plan C. Kept `score_mode=mu_minus_lambda_sigma` across all runs so the
