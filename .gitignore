@@ -40,6 +40,7 @@ backtesting/*/live_state.json
 # Temporary backup directory produced by scripts/compare_panel_backends.py
 # while swapping backends in-memory during an A/B. Not meant to be versioned.
 backtesting/*/artifacts/.compare_backup/
+backtesting/*/artifacts/.tests_backup/
 
 # Transformer panel artifacts — backend is shelved per
 # doc/panel_training_runs.md::A/B — 2026-04-23 (ratio 0.49 vs XGBoost).

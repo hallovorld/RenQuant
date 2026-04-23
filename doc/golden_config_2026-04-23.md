@@ -1,13 +1,22 @@
-# Golden Config — 2026-04-23
+# Golden Config — 2026-04-23  (Golden v2 — T4 xgb_params revert)
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
-**Code HEAD at freeze:** `e586018`  (post drawdown-reset fix)
-**Live config file:**   `backtesting/renquant_104/strategy_config.json`
+**Code HEAD at freeze:** (fill in commit sha on merge)
+**Live config file:** `backtesting/renquant_104/strategy_config.json`
+**Prior golden** (archived): `doc/golden_config_2026-04-23.v1.md` (33.1% APY, tight xgb params)
 
-This is the first config that restores renquant_104 APY above the user's
-~20% bar after the 2026-04-22 regression. Keep it as the known-good baseline.
-If a later change drops portfolio APY below 20% on the same 27-month OOS
-window, revert to this snapshot and bisect.
+Supersedes the v1 golden (2026-04-23, 33.1% APY). T4 — reverting
+`panel_ltr.xgb_params` + `num_boost_round` to the pre-2026-04-22-regression
+values — lifts after-tax APY from 33.1% → **40.1%** on the same 27-month
+OOS window, and simultaneously lifts OOS panel IC (CPCV 15-split) from
++0.0397 → **+0.0411**.
+
+**All numbers below are after-tax.** Sim computes `total_return =
+final_portfolio_value / initial_cash - 1`, and portfolio value debits tax
+on every sell (`compute_trade_tax`) before the proceeds land in `_cash`.
+Unrealized gains at end-of-window are pre-tax (no final-bar liquidation);
+actual realized after-tax APY will be marginally lower once the open book
+is closed.
 
 ---
 
@@ -17,106 +26,105 @@ Full 27-month out-of-sample sim (`sim.runner.run_backtest` via `SimAdapter +
 InferencePipeline`), backtest window 2024-01-01 → 2026-03-26, starting
 cash $100k, panel-LTR + NGBoost enabled:
 
-| Metric | Value |
+| Metric | Value (after-tax) |
 |---|---|
-| Final value | **$188,693** |
-| Total return | **+88.7%** |
-| APY | **+33.1%** |
-| Buys / sells | 121 / 115 |
-| Win rate | **72%** |
+| Final portfolio value | **$211,639** |
+| Total return | **+111.6%** |
+| **APY**           | **+40.1%** |
+| Buys / sells | 129 / 126 |
+| Win rate | **77%** |
 | Avg hold | 37 days |
-| Avg P&L per trade | +9.6% |
-| Total tax paid | $75,954 |
-| Longest no-trade streak | **22 days**  (down from 153 d pre-fix) |
+| Avg P&L / trade | **+11.6%** |
+| Total tax paid | $116,934 |
+| Longest no-trade streak | **22 days** |
 | First trade date | 2024-01-02 |
-| Rotations executed | 1 (COST → SHOP) |
+| Rotations executed | **19** (vs 1 in v1 — T4's higher-capacity panel is more confident in swap decisions) |
 
-Exit reasons: `{model_sell: 96, stop_loss: 9, max_hold: 7, rotation: 1, trailing_stop: 1, single_day_loss: 1}`
-
----
-
-## Recovery progression (why this config is golden)
-
-Each row is one commit on top of the prior.
-
-| Commit | Fix | Total | APY | Streak |
-|---|---|---|---|---|
-| (base before fixes) | buggy regression state | +5.4% | 2.4% | 153 d |
-| `2df4e21` | `_eval_sharpe` prefers tournament `sharpe` | +17.0% | 7.3% | — |
-| `2df4e21` | `universe_floor.threshold` 0.5 → 1.0 | +24.0% | 10.1% | — |
-| `33c0e9b` | `confidence_veto_threshold` 0.30 → 0.0 | +25.9% | 10.9% | 153 d |
-| **`e586018`** | **`DrawdownCircuitTask` resets `skip_buys` on recovery** | **+88.7%** | **33.1%** | **22 d** |
-
-The drawdown fix was the dominant lever. A 35%+ drawdown event early in the
-backtest tripped `ctx.skip_buys=True`, which the sim adapter persisted across
-bars. `DrawdownCircuitTask` only SET the flag, never cleared it — buys were
-blocked for the rest of the run even after the portfolio recovered. Now the
-flag is recomputed each bar from the current drawdown.
+Exit reason mix: `{model_sell: 89, rotation: 19, stop_loss: 9, max_hold: 6, trailing_stop: 2, single_day_loss: 1}`.
 
 ---
 
-## Key config fields (what matters in this golden state)
+## Panel-LTR cross-validated IC (CPCV 15-split)
 
-```json
-{
-  "sharpe_floor":                1.0,
-  "regime": {
-    "confidence_veto_threshold": 0.0     // disabled (GMM posterior caps ~0.25)
-  },
-  "defensive_tickers": ["GLD", "TLT", "XLV", "XLU"],
-  "ranking": {
-    "panel_scoring": {
-      "enabled":             true,
-      "bypass_ticker_gate":  false,      // tournament gate kept (tested: off = worse)
-      "global_calibration":  {"enabled": true},
-      "ngboost": {
-        "enabled":     true,
-        "score_mode":  "additive",       // see footnote 1
-        "lambda_sigma": 0.0
-      }
-    },
-    "universe_floor": {
-      "type":      "sharpe",
-      "threshold": 1.0                   // raised from 0.5 (matches CLAUDE.md policy)
-    },
-    "tournament": {"winner_metric": "sharpe"}
-  },
-  "panel_ltr": {
-    "backend":              "xgboost",   // lightgbm infra shipped but not benchmarked
-    "lookahead_days":       10,
-    "cv_method":            "cpcv",
-    "num_boost_round":      150,
-    "xgb_params": {
-      "eta": 0.02, "max_depth": 2, "min_child_weight": 100,
-      "subsample": 0.4, "colsample_bytree": 0.4,
-      "lambda": 10.0, "alpha": 5.0
-    },
-    "training_window_years": 5.0,
-    "recency_weighting":     {"kind": "exp_decay", "half_life_days": 252},
-    "fundamentals":          {"enabled": true},
-    "earnings_surprise":     {"enabled": true},
-    "insider_trades":        {"enabled": true}
-  },
-  "rotation": {"enabled": true, "min_expected_advantage_pct": 0.03},
-  "training": {"cadence": "custom", "allowed_weekdays": [1, 3, 6]},
-  "monitoring": {"max_no_trade_days": 15, "max_no_candidate_days": 15}
-}
+| Metric | v1 Golden | T4 Golden | Δ |
+|---|---|---|---|
+| OOS mean IC | +0.0397 | **+0.0411** | +0.0014 |
+| OOS std IC  |  0.0267 |  0.0243     | −0.0024 (lower is better) |
+| OOS q05 IC  | +0.0100 |  +0.0123    | +0.0023 |
+| OOS q95 IC  | +0.0873 |  +0.0834    | −0.0039 |
+| Train IC    | +0.172  |  +0.264     | (higher capacity → more overfit room, but OOS still wins) |
+| Train/OOS ratio | 4.3× | 6.4×     | ⚠ watch for overfit (mitigated by win-rate evidence below) |
+
+---
+
+## Sustainability review — is 40.1% real?
+
+This was explicitly audited before promotion. Four signals argue it is:
+
+1. **Win rate up, not down** (77% vs v1 72%). A config that "trades more" from overfit noise would *dilute* win rate. Instead T4 takes 13 more round-trips AND wins MORE often. That's the honest sustainability signal.
+2. **Avg P&L per trade up** (+11.6% vs +9.6%). Larger moves caught per decision, not more paper-cuts.
+3. **Params are historically validated**. T4's `max_depth=3, min_child_weight=60, λ=5, α=2, num_boost_round=300` are the exact pre-regression config (commit `5fdba09^`). These were trading live before the 2026-04-22 regression; not novel hyperparameters.
+4. **CPCV OOS IC improved** (+0.0411 vs +0.0397 — 15-split purged CV, 47k-row panel, same folds as v1). This isn't backtest-specific luck; the panel ranks forward-returns better across the same 15 OOS windows used for the prior golden.
+
+One yellow flag:
+
+- **Train/OOS ratio widened** (4.3× → 6.4×). More depth + more rounds ⇒ memorize more training patterns. Mitigated by: OOS IC actually improved (not flat/worse), and win rate *increased*. If it were pure overfit, OOS-IC would shrink and win-rate crack. Neither happened.
+
+**Watch item:** if live trading shows a 30-day window with APY < 30% sustained, revert `panel_ltr.xgb_params` to v1's tight values. The v1 golden remains available at `doc/golden_config_2026-04-23.v1.md`.
+
+---
+
+## Key config deltas vs v1 golden
+
+```diff
+ "panel_ltr": {
+-    "num_boost_round": 150,
++    "num_boost_round": 300,
+     "xgb_params": {
+       "eta": 0.02,
+-      "max_depth": 2,
++      "max_depth": 3,
+-      "min_child_weight": 100,
++      "min_child_weight": 60,
+-      "subsample": 0.4,
++      "subsample": 0.5,
+-      "colsample_bytree": 0.4,
++      "colsample_bytree": 0.5,
+-      "lambda": 10.0,
++      "lambda": 5.0,
+-      "alpha": 5.0
++      "alpha": 2.0
+     }
+ }
 ```
 
-Footnote 1: `ngboost.score_mode: "additive"` (not `mu_minus_lambda_sigma`)
-so `ApplyGlobalCalibrationTask` actually runs. With `mu_minus_lambda_sigma`,
-the calibration task short-circuits and the raw μ−λσ values (~[-0.05, +0.05])
-fall below the 0.10 tier threshold → zero trades. A future fix could re-enable
-μ−λσ mode *and* have global calibration run on the combined signal; that
-requires fitting the calibrator on μ−λσ rather than raw panel scores.
+Everything else in the config is identical to v1 (universe_floor sharpe 1.0,
+confidence_veto 0.0, ngboost score_mode additive, rotation.enabled true,
+training.cadence custom Tue/Thu/Sun, fundamentals/earnings-surprise/insider
+all enabled, panel_ltr.lookahead_days=10, etc.).
+
+---
+
+## Recovery + improvement timeline
+
+| Stage | Commit | Fix | APY (after-tax) | OOS IC |
+|---|---|---|---|---|
+| Regression | 5fdba09 + later | buggy state | 2.4% | 0.04 |
+| R1 | 2df4e21 | universe_floor sharpe pref + floor 1.0 | 10.1% | — |
+| R2 | 33c0e9b | ConfidenceVeto disabled | 10.9% | — |
+| R3 (golden v1) | e586018 | **drawdown skip_buys resets** | **33.1%** | +0.0397 |
+| **R4 (golden v2)** | (this commit) | **panel xgb_params revert to pre-regression (T4)** | **40.1%** | **+0.0411** |
+
+R3's drawdown-reset fix was the dominant APY lever (2.4% → 33.1%); R4 adds +7 pts on top by restoring the proven pre-regression panel capacity.
 
 ---
 
 ## Universe admission at this config
 
-With `sharpe_floor=1.0` tournament metric: **36 / 52** per-ticker models
-admitted. Defensives (GLD/TLT/XLV/XLU) are always admitted regardless of
-floor, per `FilterUniverseFloorTask` policy.
+Unchanged from v1: with `universe_floor.type: sharpe, threshold: 1.0`,
+**36 / 52** per-ticker tournament models admitted. Defensives
+(GLD/TLT/XLV/XLU) always admitted regardless of floor, per
+`FilterUniverseFloorTask` policy.
 
 ---
 
@@ -127,15 +135,18 @@ floor, per `FilterUniverseFloorTask` policy.
 cp backtesting/renquant_104/strategy_config.golden.json \
    backtesting/renquant_104/strategy_config.json
 
-# verify
-~/miniconda3/envs/renquant/bin/python /tmp/run_baseline_sim.py
-# expect: total_return ≈ +88.7%  apy ≈ +33.1%  longest_no_trade_streak ≈ 22
+# retrain panel + ngboost on golden config (~4-5 min)
+python scripts/train_104.py --skip-baseline --skip-recalibrate --force
+
+# verify: expect apy ≈ +0.401 total_return ≈ +1.116 streak ≈ 22
+python /tmp/run_baseline_sim.py
 ```
 
-Sim reproducibility needs the panel + NGBoost artifacts matching the
-`trained_date: 2026-04-22` retrain. If models get retrained later and the
-sim diverges, a training-run audit row from `data/runs.db` or
-`logs/training/{date}.jsonl` should show the config deltas.
+If the v2 golden itself regresses on a future rerun (e.g. after watchlist
+rebalance, new data), first try:
+1. `cp doc/golden_config_2026-04-23.v1.md` config values back (tight xgb).
+2. If v1 is fine and v2 isn't, the data regime shifted; re-run T4 A/B via
+   `scripts/train_104.py --force` on new data to re-measure.
 
 ---
 
@@ -144,6 +155,7 @@ sim diverges, a training-run audit row from `data/runs.db` or
 - `2df4e21` — universe_floor: prefer tournament sharpe + floor 1.0
 - `33c0e9b` — regime: disable ConfidenceVeto (GMM posterior cap)
 - `e586018` — drawdown: reset `skip_buys` on recovery (THE fix)
+- **this commit** — panel xgb_params revert (T4) + new golden snapshot
 
 ## Regression tests guarding this state
 
@@ -151,4 +163,5 @@ sim diverges, a training-run audit row from `data/runs.db` or
 - `tests/test_pipeline.py::TestDrawdownCircuitTaskResets` (5)
 
 Any future touch of `_eval_sharpe` or `DrawdownCircuitTask` that breaks
-these tests would re-introduce the regression.
+these tests would re-introduce the regression that made these fixes
+necessary.

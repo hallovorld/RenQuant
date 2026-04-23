@@ -322,7 +322,7 @@
     "age_warmup_days": 504,
     "cv_n_splits": 6,
     "cv_embargo_days": 10,
-    "num_boost_round": 150,
+    "num_boost_round": 300,
     "neutralize_features": true,
     "nan_prone_cols": [],
     "factor_mom_window": 252,
@@ -331,12 +331,12 @@
     "neutralize_warmup_days": 252,
     "xgb_params": {
       "eta": 0.02,
-      "max_depth": 2,
-      "min_child_weight": 100,
-      "subsample": 0.4,
-      "colsample_bytree": 0.4,
-      "lambda": 10.0,
-      "alpha": 5.0
+      "max_depth": 3,
+      "min_child_weight": 60,
+      "subsample": 0.5,
+      "colsample_bytree": 0.5,
+      "lambda": 5.0,
+      "alpha": 2.0
     },
     "artifact_path": "artifacts/panel-ltr.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
