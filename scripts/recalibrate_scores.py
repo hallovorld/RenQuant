@@ -262,17 +262,32 @@ def recalibrate(strategy: str, dry_run: bool = False) -> None:
 
     log.info("Calibration complete: %d ok  %d skipped  %d failed", ok, skipped, failed)
 
-    # Compute and persist blend weights
-    w_rank, w_rs = _compute_blend_weights(symbol_data)
+    # The rs_score blend channel is retired (always zero-weighted in prod),
+    # so we no longer write `ranking.blend_weights`. _compute_blend_weights
+    # stays available for offline diagnostics / backwards-compatible tests.
+    #
+    # Concurrency note (regression 2026-04-22): a previous version of this
+    # script wrote the WHOLE in-memory `config` object back to disk. Since
+    # the config was read at the start and this function takes ~30s of
+    # per-ticker work, any edit landing in that window was silently wiped
+    # on save. The defensive_tickers / confidence_veto fixes landed in
+    # commit 3c366b6 disappeared this way.
+    #
+    # Fix: re-read the config file immediately before writing and merge
+    # only the two keys this script actually owns — blend_updated and
+    # blend_n_symbols. Everything else is preserved as-is. Also drop any
+    # stale blend_weights (same as before, but now scoped to the re-read).
     if not dry_run:
-        config.setdefault("ranking", {})
-        config["ranking"]["blend_weights"]   = [w_rank, w_rs]
-        config["ranking"]["blend_updated"]   = str(date.today())
-        config["ranking"]["blend_n_symbols"] = len(symbol_data)
-        config_path.write_text(json.dumps(config, indent=2))
-        log.info("Updated strategy_config.json: ranking.blend_weights=[%.4f, %.4f]", w_rank, w_rs)
+        latest = json.loads(config_path.read_text())
+        latest.setdefault("ranking", {})
+        latest["ranking"]["blend_updated"]   = str(date.today())
+        latest["ranking"]["blend_n_symbols"] = len(symbol_data)
+        latest["ranking"].pop("blend_weights", None)
+        config_path.write_text(json.dumps(latest, indent=2))
+        log.info("Updated strategy_config.json: ranking.blend_updated=%s (rs blend removed)",
+                 latest["ranking"]["blend_updated"])
     else:
-        log.info("[dry-run] Would write blend_weights=[%.4f, %.4f]", w_rank, w_rs)
+        log.info("[dry-run] Would refresh ranking.blend_updated (rs blend removed)")
 
 
 def main() -> None:
