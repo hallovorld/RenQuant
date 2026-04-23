@@ -42,6 +42,20 @@ class BuildFeaturesTask(Task):
 
 
 class ScoreBuyTask(Task):
+    """Score ticker with per-ticker tournament model.
+
+    Default: drop if `signal != "buy"` — the tournament model acts as a binary
+    admission gate. This was the 103 behavior and is why many watchlists sat
+    in cash for extended periods when per-ticker models got conservative.
+
+    When `ranking.panel_scoring.bypass_ticker_gate == true`, the tournament's
+    signal/threshold is advisory only: we still compute and record raw/rank
+    scores for logging, but do NOT filter on them. Panel-LTR (which is a
+    cross-sectional ranker) then gets to see every admissible ticker and
+    rank them itself. The downstream `min_model_score` tier + panel
+    `buy_floor` + selection-loop tiered thresholds still enforce quality.
+    """
+
     def run(self, tc: TickerInferenceContext) -> bool | None:
         from kernel.models import score_artifact  # noqa: PLC0415
         rotation_horizon = int(tc.config.get("rotation", {}).get("target_horizon_days", 20))
@@ -52,15 +66,41 @@ class ScoreBuyTask(Task):
         tc.model_action = sr.signal
         log.debug("ScoreBuyTask [%s]: action=%s  raw=%.4f  rank=%.4f  er=%.4f",
                   tc.ticker, sr.signal, sr.raw_score, sr.rank_score, sr.expected_return)
-        if sr.signal != "buy":
-            return False
+
+        # Always record scores so downstream tasks + logs have them.
         tc._raw_score       = sr.raw_score          # noqa: SLF001
         tc._rank_score      = sr.rank_score         # noqa: SLF001
         tc._expected_return = sr.expected_return    # noqa: SLF001
 
+        bypass = bool(
+            tc.config.get("ranking", {})
+                      .get("panel_scoring", {})
+                      .get("bypass_ticker_gate", False)
+        )
+        if bypass:
+            return
+        if sr.signal != "buy":
+            return False
+
 
 class ScoreThresholdTask(Task):
+    """Reject candidates whose tournament `rank_score` < regime min_model_score.
+
+    Skipped when `ranking.panel_scoring.bypass_ticker_gate == true` — the
+    tournament's calibrated rank_score is an unreliable admission signal
+    in sparse-buy regimes; Panel-LTR will overwrite rank_score via
+    PanelScoringJob and the selection loop then applies its own tiered
+    thresholds on the panel-calibrated score.
+    """
+
     def run(self, tc: TickerInferenceContext) -> bool | None:
+        bypass = bool(
+            tc.config.get("ranking", {})
+                      .get("panel_scoring", {})
+                      .get("bypass_ticker_gate", False)
+        )
+        if bypass:
+            return
         min_score = float(tc.regime_params.get("min_model_score", 0.10))
         rank      = getattr(tc, "_rank_score", 0.0)
         if rank < min_score:

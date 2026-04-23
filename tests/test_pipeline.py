@@ -287,3 +287,72 @@ class TestChainLogging:
             J().run(_make_ctx())
 
         assert any("chain stopped" in r.message for r in caplog.records)
+
+
+# ── DrawdownCircuitTask reset bug regression ─────────────────────────────────
+
+class TestDrawdownCircuitTaskResets:
+    """Regression: skip_buys must be recomputed each bar, not latched on first fire.
+
+    Before the fix, DrawdownCircuitTask only SET skip_buys=True when drawdown
+    crossed the halt threshold — it never cleared the flag on recovery. The
+    sim adapter persists skip_buys across bars, so a single bar with >35%
+    drawdown jammed the strategy in skip_buys=True for the rest of the
+    backtest, producing 133-153 day no-trade streaks in BULL_CALM.
+    """
+
+    def _ctx(self, portfolio_value: float, hwm: float,
+             skip_buys_prev: bool, halt_pct: float = 0.15,
+             resume_pct: float | None = None):
+        rp = {"drawdown_halt_pct": halt_pct}
+        if resume_pct is not None:
+            rp["drawdown_resume_pct"] = resume_pct
+        return _make_ctx(
+            config={"regime_params": {"BULL_CALM": rp}},
+            portfolio_value=portfolio_value,
+            hwm=hwm,
+            skip_buys=skip_buys_prev,
+            regime="BULL_CALM",
+        )
+
+    def test_halt_fires_when_drawdown_exceeds_threshold(self):
+        from kernel.pipeline.task_drawdown import DrawdownCircuitTask
+        ctx = self._ctx(portfolio_value=80_000, hwm=100_000, skip_buys_prev=False)
+        DrawdownCircuitTask().run(ctx)
+        assert ctx.skip_buys is True, "20% drawdown ≥ 15% halt_pct must trip breaker"
+
+    def test_halt_does_not_fire_below_threshold(self):
+        from kernel.pipeline.task_drawdown import DrawdownCircuitTask
+        ctx = self._ctx(portfolio_value=90_000, hwm=100_000, skip_buys_prev=False)
+        DrawdownCircuitTask().run(ctx)
+        assert ctx.skip_buys is False
+
+    def test_skip_buys_clears_on_recovery(self):
+        """The fix: once portfolio recovers above halt_pct, buys resume.
+
+        Would FAIL before the fix — skip_buys stayed True across bars.
+        """
+        from kernel.pipeline.task_drawdown import DrawdownCircuitTask
+        # Halted in a prior bar; current bar has recovered to 95k vs hwm 100k (5% dd).
+        ctx = self._ctx(portfolio_value=95_000, hwm=100_000, skip_buys_prev=True)
+        DrawdownCircuitTask().run(ctx)
+        assert ctx.skip_buys is False, \
+            "skip_buys must clear when drawdown drops back below halt_pct"
+
+    def test_hysteresis_via_resume_pct(self):
+        """resume_pct < halt_pct requires extra recovery before resuming."""
+        from kernel.pipeline.task_drawdown import DrawdownCircuitTask
+        # Halted previously; drawdown now 12% — below halt (15%) but above resume (10%).
+        ctx = self._ctx(portfolio_value=88_000, hwm=100_000,
+                        skip_buys_prev=True, halt_pct=0.15, resume_pct=0.10)
+        DrawdownCircuitTask().run(ctx)
+        assert ctx.skip_buys is True, \
+            "hysteresis: still halted when drawdown between resume and halt"
+
+    def test_hysteresis_resumes_when_drawdown_below_resume_pct(self):
+        from kernel.pipeline.task_drawdown import DrawdownCircuitTask
+        # Halted previously; drawdown now 7% — below resume_pct 10%.
+        ctx = self._ctx(portfolio_value=93_000, hwm=100_000,
+                        skip_buys_prev=True, halt_pct=0.15, resume_pct=0.10)
+        DrawdownCircuitTask().run(ctx)
+        assert ctx.skip_buys is False

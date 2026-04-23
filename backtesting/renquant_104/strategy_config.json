@@ -283,6 +283,7 @@
     "blend_n_symbols": 38,
     "panel_scoring": {
       "enabled": true,
+      "bypass_ticker_gate": false,
       "artifact_path": "artifacts/panel-ltr.json",
       "nan_prone_cols": [],
       "buy_floor": null,
