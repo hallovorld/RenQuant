@@ -175,7 +175,79 @@ def fit_global_calibrator(
     )
 
 
+def fit_regime_conditional(
+    panel_scores: dict[str, pd.Series],
+    future_returns: dict[str, pd.Series],
+    regime_series: pd.Series,           # indexed by date → regime label
+    *,
+    lookahead_days: int = 10,
+    threshold: float = 0.03,
+    min_rows_per_regime: int = 300,
+    regimes: list[str] | None = None,
+) -> dict[str, GlobalPanelCalibration]:
+    """Fit one `GlobalPanelCalibration` per regime label present in
+    `regime_series`. Rows where regime ∉ `regimes` are dropped.
+
+    A regime with fewer than `min_rows_per_regime` pooled samples is
+    skipped (callers fall back to the pooled calibrator). This is a
+    stricter floor than `fit_global_calibrator.min_rows` — per-regime
+    isotonic needs more points to generalize because each regime sees
+    less data.
+
+    Returns `{regime: GlobalPanelCalibration}`. Metadata includes
+    `regime` + `n_rows` so downstream code can diagnose coverage.
+    """
+    if regimes is None:
+        regimes = ["BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"]
+
+    reg_idx = regime_series.sort_index()
+
+    out: dict[str, GlobalPanelCalibration] = {}
+    for regime in regimes:
+        # Masked scores + returns per ticker: keep only rows whose date's
+        # regime label matches `regime`.
+        masked_scores:  dict[str, pd.Series] = {}
+        masked_returns: dict[str, pd.Series] = {}
+        for t, raw in panel_scores.items():
+            fwd = future_returns.get(t)
+            if fwd is None or raw.empty or fwd.empty:
+                continue
+            # Align regime label to each score row
+            reg_on = reg_idx.reindex(raw.index, method="ffill")
+            keep   = reg_on == regime
+            if not bool(keep.any()):
+                continue
+            masked_scores[t]  = raw.loc[keep]
+            masked_returns[t] = fwd.reindex(raw.index).loc[keep]
+
+        if not masked_scores:
+            log.warning("fit_regime_conditional: no data for regime=%s", regime)
+            continue
+        try:
+            cal = fit_global_calibrator(
+                masked_scores, masked_returns,
+                lookahead_days=lookahead_days,
+                threshold=threshold,
+                min_rows=min_rows_per_regime,
+            )
+        except ValueError as exc:
+            log.warning(
+                "fit_regime_conditional: regime=%s skipped — %s",
+                regime, exc,
+            )
+            continue
+        # Stamp regime into metadata so loaders can verify
+        cal.metadata["regime"] = regime
+        out[regime] = cal
+        log.info("fit_regime_conditional: regime=%s n=%d IC=%+.4f",
+                 regime, cal.metadata["n_rows"],
+                 cal.metadata.get("pool_ic") or 0.0)
+
+    return out
+
+
 __all__ = [
     "GlobalPanelCalibration",
     "fit_global_calibrator",
+    "fit_regime_conditional",
 ]

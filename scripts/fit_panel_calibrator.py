@@ -46,6 +46,18 @@ def main() -> None:
     p.add_argument("--out", type=str, default=None,
                    help="Output artifact path (defaults to "
                         "artifacts/panel-rank-calibration.json).")
+    p.add_argument("--regime-conditional", action="store_true",
+                   help="Also fit one calibrator per regime label and save "
+                        "to artifacts/panel-calibration-{REGIME}.json. "
+                        "Sources the regime series from data/runs.db "
+                        "(pipeline_runs table).")
+    p.add_argument("--regime-db", type=str, default="data/runs.db",
+                   help="SQLite DB with pipeline_runs.run_date + .regime "
+                        "(default data/runs.db).")
+    p.add_argument("--min-regime-rows", type=int, default=300,
+                   help="Per-regime minimum pooled sample count "
+                        "(default 300). Regimes below floor are skipped "
+                        "— runtime falls back to the pooled calibrator.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -207,6 +219,64 @@ def main() -> None:
     log.info("Summary: n=%d tickers=%d pool_IC=%+.4f base_rate=%.3f",
              calib.metadata["n_rows"], calib.metadata["n_tickers"],
              calib.metadata["pool_ic"] or 0.0, calib.metadata["prob_base_rate"])
+
+    # ── Plan F — per-regime calibrators ─────────────────────────────────────
+    if args.regime_conditional:
+        import sqlite3  # noqa: PLC0415
+        from training_panel.global_calibrator import fit_regime_conditional  # noqa: PLC0415
+
+        db_path = REPO_ROOT / args.regime_db if not Path(args.regime_db).is_absolute() \
+            else Path(args.regime_db)
+        if not db_path.exists():
+            log.error("regime_conditional: DB not found at %s — skipping", db_path)
+        else:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                reg_df = pd.read_sql(
+                    "SELECT run_date, regime, run_type FROM pipeline_runs "
+                    "WHERE strategy=? ORDER BY run_date, run_type",
+                    conn, params=(args.strategy,), parse_dates=["run_date"],
+                )
+            finally:
+                conn.close()
+
+            # Prefer live > sim when both exist on the same date.
+            reg_df["_ord"] = reg_df["run_type"].map({"live": 1}).fillna(0)
+            reg_df = (reg_df.sort_values(["run_date", "_ord"])
+                             .drop_duplicates(subset=["run_date"], keep="last"))
+            reg_series = reg_df.set_index("run_date")["regime"]
+            reg_series.index = pd.DatetimeIndex(reg_series.index).normalize()
+            log.info("regime_conditional: regime series n=%d dates from %s → %s",
+                     len(reg_series), reg_series.index.min().date(),
+                     reg_series.index.max().date())
+
+            # Align scores' date index to the regime-series normalisation.
+            norm_scores = {
+                t: s.copy() for t, s in panel_scores.items()
+            }
+            for t, s in norm_scores.items():
+                s.index = pd.DatetimeIndex(s.index).normalize()
+            norm_rets = {t: fwd.copy() for t, fwd in future_returns.items()}
+            for t, s in norm_rets.items():
+                s.index = pd.DatetimeIndex(s.index).normalize()
+
+            per_regime = fit_regime_conditional(
+                norm_scores, norm_rets, reg_series,
+                lookahead_days=lookahead, threshold=threshold,
+                min_rows_per_regime=args.min_regime_rows,
+            )
+            for regime, cal in per_regime.items():
+                rc_path = strategy_dir / "artifacts" / f"panel-calibration-{regime}.json"
+                cal.save(rc_path, metadata={
+                    "scorer_artifact": str(scorer_path),
+                    "scorer_oos_mean_ic": scorer.metadata.get("oos_mean_ic"),
+                    "regime": regime,
+                })
+                log.info("regime=%s → %s  (n=%d IC=%+.4f base_rate=%.3f)",
+                         regime, rc_path, cal.metadata["n_rows"],
+                         cal.metadata.get("pool_ic") or 0.0,
+                         cal.metadata["prob_base_rate"])
+            log.info("regime_conditional: wrote %d calibrator(s)", len(per_regime))
 
 
 if __name__ == "__main__":

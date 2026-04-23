@@ -192,7 +192,17 @@ class VetoWeakBuysTask(Task):
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
 
 class LoadGlobalCalibrationTask(Task):
-    """Load the global panel calibrator artifact if enabled."""
+    """Load the global panel calibrator artifact(s) if enabled.
+
+    Default: loads the pooled calibrator at
+    `artifact_path` into `ctx._global_calibrator`.
+
+    When `regime_conditional.enabled=true` also loads per-regime
+    calibrators from `regime_conditional.artifact_pattern` (with
+    `{regime}` placeholder) into `ctx._regime_calibrators: dict[str,
+    GlobalPanelCalibration]`. Any regime whose file is missing or
+    fails to load falls back to the pooled calibrator at apply time.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         gc_cfg = (ctx.config.get("ranking", {})
@@ -201,24 +211,52 @@ class LoadGlobalCalibrationTask(Task):
         if not gc_cfg.get("enabled", False):
             return
 
-        cached = getattr(ctx, "_global_calibrator", None)
-        if cached is not None:
+        strategy_dir = ctx.config.get("_strategy_dir")
+
+        def _resolve(p: Path) -> Path:
+            return p if p.is_absolute() or not strategy_dir else Path(strategy_dir) / p
+
+        from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
+
+        # Pooled calibrator — always attempted (acts as fallback).
+        if getattr(ctx, "_global_calibrator", None) is None:
+            pooled_path = _resolve(Path(gc_cfg.get(
+                "artifact_path", "artifacts/panel-rank-calibration.json",
+            )))
+            try:
+                ctx._global_calibrator = GlobalPanelCalibration.load(pooled_path)  # noqa: SLF001
+                log.info("LoadGlobalCalibrationTask: loaded pooled (pool_IC=%s)",
+                         ctx._global_calibrator.metadata.get("pool_ic"))
+            except Exception as exc:
+                log.warning("LoadGlobalCalibrationTask: pooled load %s failed — %s",
+                            pooled_path, exc)
+                ctx._global_calibrator = None  # noqa: SLF001
+
+        # Regime-conditional (Plan F) — opt-in.
+        rc_cfg = gc_cfg.get("regime_conditional", {})
+        if not rc_cfg.get("enabled", False):
+            return
+        if getattr(ctx, "_regime_calibrators", None):
             return
 
-        path = Path(gc_cfg.get("artifact_path", "artifacts/panel-rank-calibration.json"))
-        if not path.is_absolute():
-            strategy_dir = ctx.config.get("_strategy_dir")
-            if strategy_dir:
-                path = Path(strategy_dir) / path
-        try:
-            from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
-            ctx._global_calibrator = GlobalPanelCalibration.load(path)  # noqa: SLF001
-        except Exception as exc:
-            log.warning("LoadGlobalCalibrationTask: failed to load %s — %s", path, exc)
-            ctx._global_calibrator = None  # noqa: SLF001
-            return
-        log.info("LoadGlobalCalibrationTask: loaded (pool_IC=%s)",
-                 ctx._global_calibrator.metadata.get("pool_ic"))
+        pattern = rc_cfg.get(
+            "artifact_pattern", "artifacts/panel-calibration-{regime}.json",
+        )
+        regimes = rc_cfg.get(
+            "regimes", ["BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"],
+        )
+        loaded: dict[str, GlobalPanelCalibration] = {}
+        for regime in regimes:
+            p = _resolve(Path(pattern.format(regime=regime)))
+            try:
+                loaded[regime] = GlobalPanelCalibration.load(p)
+            except Exception as exc:
+                log.info("LoadGlobalCalibrationTask: regime=%s artifact %s "
+                         "unavailable — pooled fallback (%s)",
+                         regime, p, exc)
+        ctx._regime_calibrators = loaded  # noqa: SLF001
+        log.info("LoadGlobalCalibrationTask: %d/%d regime calibrators loaded",
+                 len(loaded), len(regimes))
 
 
 class ApplyGlobalCalibrationTask(Task):
@@ -247,7 +285,11 @@ class ApplyGlobalCalibrationTask(Task):
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
         if not panel_cfg.get("global_calibration", {}).get("enabled", False):
             return
-        cal = getattr(ctx, "_global_calibrator", None)
+        # Plan F: prefer per-regime calibrator when one is loaded for the
+        # current regime; pooled calibrator is the universal fallback.
+        regime_map = getattr(ctx, "_regime_calibrators", None) or {}
+        pooled     = getattr(ctx, "_global_calibrator", None)
+        cal = regime_map.get(getattr(ctx, "regime", None)) or pooled
         if cal is None:
             return
 
