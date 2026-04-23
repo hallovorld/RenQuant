@@ -156,6 +156,67 @@ class TestFilterShortCircuits:
         assert FilterUniverseFloorTask().should_skip(uctx) is False
 
 
+# ── Sharpe evaluator prefers tournament sharpe over live_holdout_sharpe ─────
+
+class TestSharpeEvaluatorPrefersTournament:
+    """Regression: _eval_sharpe must prefer tournament `sharpe` (full
+    walk-forward OOS, statistically stable) over `live_holdout_sharpe`
+    (126-day tail, noisy).
+
+    Prior to 2026-04-23 the order was reversed: a single volatile 6-month
+    window pushed ~30 healthy models below the 0.5 floor, gutting the
+    universe (21/52 admitted vs 50/52 by tournament sharpe). APY collapsed
+    from ~20% to ~2% because the per-ticker buy signals never arrived.
+    """
+
+    def test_prefers_sharpe_when_both_present(self, tmp_path: Path):
+        from datetime import date as _date
+        from kernel.pipeline.job_universe import _eval_sharpe
+        meta = {"sharpe": 1.5, "live_holdout_sharpe": -0.5}
+        assert _eval_sharpe(meta) == 1.5, \
+            "tournament sharpe should win when both are present"
+
+    def test_falls_back_to_holdout_when_sharpe_missing(self):
+        from kernel.pipeline.job_universe import _eval_sharpe
+        meta = {"live_holdout_sharpe": 0.8}
+        assert _eval_sharpe(meta) == 0.8
+
+    def test_returns_none_when_neither_present(self):
+        from kernel.pipeline.job_universe import _eval_sharpe
+        assert _eval_sharpe({}) is None
+
+    def test_full_job_admits_ticker_with_good_sharpe_but_bad_holdout(
+        self, tmp_path: Path,
+    ):
+        """End-to-end: AAPL-like ticker (sharpe=1.5, live_holdout_sharpe=-0.5)
+        must pass a sharpe>=1.0 floor — the noisy holdout should not exclude it.
+        """
+        from datetime import date as _date
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        _write_ticker(models_dir, "AAPL", {
+            "trained_date": _date.today().isoformat(),
+            "sharpe": 1.5,
+            "live_holdout_sharpe": -0.5,    # noisy 6-month tail — should be ignored
+        })
+        _write_ticker(models_dir, "BAD", {
+            "trained_date": _date.today().isoformat(),
+            "sharpe": 0.3,                  # genuine tournament failure
+            "live_holdout_sharpe": 1.5,     # would have passed the old order
+        })
+        config = {
+            "watchlist":           ["AAPL", "BAD"],
+            "model_staleness_days": 0,
+            "ranking": {"universe_floor": {"type": "sharpe", "threshold": 1.0}},
+        }
+        uctx = UniverseContext(config=config, strategy_dir=tmp_path)
+        LoadUniverseJob().run(uctx)
+        assert "AAPL" in uctx.loaded_models, \
+            "tournament sharpe 1.5 must admit AAPL despite negative holdout"
+        assert "BAD" not in uctx.loaded_models, \
+            "tournament sharpe 0.3 must drop BAD despite positive holdout"
+
+
 # ── Extensibility — the Task picks up new types from FLOOR_EVALUATORS ───────
 
 class TestExtensibility:

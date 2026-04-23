@@ -103,9 +103,12 @@ class FilterStalenessTask(UniverseTask):
 # ranking.universe_floor.type to the new name.
 
 def _eval_sharpe(meta: dict) -> "float | None":
-    # Prefer live_holdout_sharpe (reflects shipped weights) over tournament
-    # sharpe (algorithm-selection metric).
-    for key in ("live_holdout_sharpe", "sharpe"):
+    # Prefer tournament `sharpe` (full walk-forward OOS, typically ~2yr) over
+    # `live_holdout_sharpe`. The holdout Sharpe uses only ~126 trading days,
+    # which is too short to be statistically stable: a single volatile stretch
+    # flips signs for many tickers. When the holdout Sharpe disagrees sharply
+    # with the tournament Sharpe, the gap is noise, not signal.
+    for key in ("sharpe", "live_holdout_sharpe"):
         v = meta.get(key)
         if v is not None:
             return float(v)

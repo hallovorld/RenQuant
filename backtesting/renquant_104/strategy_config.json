@@ -311,7 +311,7 @@
     },
     "universe_floor": {
       "type": "sharpe",
-      "threshold": 0.5
+      "threshold": 1.0
     }
   },
   "panel_ltr": {
