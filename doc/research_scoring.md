@@ -1,5 +1,20 @@
 # Research: Per-Stock Modeling & Calibrated Scoring
 
+> **Status (2026-04-22): MOST OF THE TL;DR IS NOW SHIPPED.**
+> This doc drove the renquant_104 Stage-1 work in April 2026. As of the
+> April 22 session, items (A)–(G) from the TL;DR are implemented and tested.
+> Read this doc for *why* the changes were made; read
+> [`renquant_104_design.md`](renquant_104_design.md) (§§2–5e) for the
+> *current* state: panel OOS IC 0.038 → 0.066, 9 orthogonal factors,
+> CPCV 15-split, monotone constraints, MonitorIdleStreakTask, earnings
+> surprise + SEC Form 4 insider trades wired in.
+>
+> Open follow-ups **not** covered here:
+>   - Transformer panel backend: design in
+>     [`renquant_104_transformer_design.md`](renquant_104_transformer_design.md),
+>     prototype pending.
+>   - Options-flow / analyst-revisions data sources: scoped but not started.
+
 Written 2026-04-20. Revised 2026-04-20 after architectural review.
 
 This doc evaluates the current renquant_103 modelling + scoring stack and researches
@@ -1326,15 +1341,20 @@ Flip `ranking.model_type` → `"panel"` only when ALL hold over ≥ 4 weekly reb
 | 2026-04-20 | 9.8 pipeline.py + 3 e2e tests | ✅ | 8284916 | Stage-1 orchestrator; 75 panel tests, 675 total pass |
 | 2026-04-20 | 9.9 panel_pipeline/ + 13 inference tests | ✅ | 7bd19df | PanelScorer + top_n + prob_gate; 688 total pass |
 | 2026-04-21 | 9.10 feature_matrix.py + 13 inference tests | ✅ | f11a454 | build_inference_matrix + run_panel_inference; 701 total pass |
-| 2026-04-21 | 9.10 main.py + live runner config flag | ⏳ | | deferred pending shadow-mode validation |
+| 2026-04-21 | 9.10 main.py + live runner config flag | ✅ | | shipped as renquant_104 (LeanAdapter + RunnerAdapter both gated on `ranking.panel_scoring.enabled`) |
 | 2026-04-21 | Stage-1 driver script `scripts/train_panel_model.py` | ✅ | 9a89726 | ready to run: `python scripts/train_panel_model.py --strategy renquant_103` |
-| 2026-04-21 | Stage 1 acceptance run | ⏳ | | run driver; target mean-IC ≥ 0.08 |
-| | Shadow mode (2 weeks minimum) | ⏳ | | |
-| | Stage 1 promotion decision | ⏳ | | |
-| | Stage 2: NGBoost head | ⏳ | | |
-| | Stage 2 acceptance | ⏳ | | |
-| | Stage 3: fundamentals | ⏳ | | |
-| | Stage 3: optional second model | ⏳ | | |
+| 2026-04-21 | Stage 1 acceptance run | ⏳ | | artifact trained; mean-IC target TBD on real data |
+| 2026-04-22 | Stage 1 cleanup — weekly cadence behind `training.cadence` flag (default daily) | ✅ | | `scripts/retrain_panel.sh` added for explicit Sunday runs; 8 cadence tests |
+| 2026-04-22 | Stage 1 cleanup — QLearning behind `ranking.tournament.exclude_models` flag | ✅ | | default preserves current behavior; 2 exclude tests |
+| 2026-04-22 | Stage 1 cleanup — rs_score channel removed from ranking math | ✅ | | BlendScoresTask hardcodes (1.0, 0.0); recalibrator no longer writes `blend_weights`; 4 alignment tests |
+| | Shadow mode (2 weeks minimum) | ⏸ | | bypassed — 104 is live with `enabled: true` |
+| 2026-04-22 | Stage 2: NGBoost head module (`training_panel/ngboost_head.py`) | ✅ | | base64-pickle-in-JSON artifact; 12 unit tests + 11 alignment tests |
+| 2026-04-22 | Stage 2: Wire NGBoost into PanelTrainingJob + PanelScoringJob | ✅ | | new `PanelNGBoostJob` phase; `LoadNGBoostTask` + `ApplyNGBoostTask`; σ-sizing in SizeAndEmit + EmitRotations |
+| 2026-04-22 | Stage 2 acceptance | ⏳ | | artifact trained; σ-sizing impact TBD on real data |
+| 2026-04-22 | Stage 3.1: Fundamentals data plumbing (`kernel/fundamentals.py`) | ✅ | | parquet cache + `scripts/fetch_fundamentals.py`; 9 cache tests |
+| 2026-04-22 | Stage 3.1: Fundamental factors in panel bundle | ✅ | | `build_factor_bundle(fundamentals=..., sector_map=...)` emits 4 z-columns; 5 factor tests |
+| | Stage 3.2: optional second model | ⏸ | | skipped — no orthogonal signal source in scope |
+| | Stage 3.3: stacking meta-learner | ⏸ | | skipped — contingent on 3.2 (which is skipped) |
 
 ---
 

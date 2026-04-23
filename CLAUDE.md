@@ -256,6 +256,17 @@ Volume filter supports two modes via `volume_filter.mode` in `strategy_config.js
 - rs_score is retired from ranking math: `BlendScoresTask` hardcodes `(w_rank, w_rs) = (1.0, 0.0)` and logs a warning if a legacy `ranking.blend_weights` with non-zero rs weight is found. `recalibrate_scores.py` no longer writes that key (but `_compute_blend_weights` remains for offline diagnostics). `rs_score` is still populated on `CandidateResult` for logs.
 - **Universe admission** is consolidated into `kernel/pipeline/job_universe.py::LoadUniverseJob` and driven by `ranking.universe_floor.{type, threshold}`. `type` ∈ `{"none", "sharpe", "ic", ...}` (default `"none"` — admit all models that load). Sharpe reads `live_holdout_sharpe`/`sharpe` from each model's policy-metadata; IC reads `panel_oos_ic`. New floor types register themselves by adding an entry to `FLOOR_EVALUATORS`. LEAN (`main.py`), the live runner (`live/runner.py`), and the notebook sim (`adapters/sim.py`) all call `LoadUniverseJob` — the hand-written per-adapter filter loops have been deleted (test enforcement: `tests/test_universe_alignment.py::TestAdapterParity::test_no_hand_written_filter_loops_remain`).
 - **Legacy sim loop deleted**: `sim/runner.run_backtest` now always drives `SimAdapter + InferencePipeline`. The legacy hand-written loop (`_run_backtest_legacy`) and its helpers (`swap_in_panel_scores`, `apply_ngboost_head`, `_GlobalCalibAdapter`) are gone. LEAN, live, and sim share one decision-logic source of truth (`InferencePipeline`); `run_backtest_via_pipeline` is retained as a back-compat alias for `run_backtest`.
+- **Panel Round 1-5 improvements** (OOS IC 0.038 → 0.066, CPCV 15-split):
+  - *Round 1*: fixed calibration bug (`ApplyGlobalCalibrationTask` used to be a no-op whenever NGBoost enabled — now only defers in `mu_minus_lambda_sigma` mode); fixed inference z-score parity (`prepare_inference_panel_frames` and `scripts/fit_panel_calibrator.py` both call `NeutralizedFeatureZScoreTask` + `LoadFundamentalsTask` so LEAN/live/sim see the same feature distribution the panel was trained on).
+  - *Round 2*: stronger regularisation + CPCV + monotone constraints on economically-signed factors (`beta_60d_z`:-1, `mom_12_1_z`:+1, `resid_mom_z`:+1, `earnings_yield_z`:+1, `roe_z`:+1, `gross_profitability_z`:+1).
+  - *Round 3*: 5 orthogonal factor functions in `training_panel/factors.py` — `compute_amihud_illiquidity`, `compute_volume_shift`, `compute_price_to_high`, `compute_realized_vol`, `compute_drawdown_from_peak`. Weak ones dropped via `panel_ltr.drop_cols`. Strong new factors get monotone constraints too.
+  - *Round 4*: `short_pct_float` from yfinance (`.info.shortPercentOfFloat`) added to `FUNDAMENTAL_COLS` with monotone -1.
+  - *Round 5*: `earnings_surprise_cum` (yfinance `.earnings_dates` → trailing-4Q cum surprise %) via `LoadEarningsSurpriseTask` in PanelDataJob + `compute_earnings_surprise_cum` in `kernel/earnings_surprise.py`; SEC Form 4 executive-only insider trades via `LoadInsiderTradesTask` + `kernel/insider_trades.py` → `insider_net_buy_90d` (trailing-90d net executive buy USD) with monotone +1.
+  - Cache locations: `data/fundamentals/{SYM}.parquet`, `data/earnings_surprise/{SYM}.parquet`, `data/insider_trades/{SYM}.parquet`.
+  - Fetch scripts: `scripts/fetch_fundamentals.py`, `scripts/fetch_earnings_surprise.py`, `scripts/fetch_insider_trades.py` (SEC EDGAR rate-limited to 8 req/sec).
+- **No-trade monitoring** (`kernel/pipeline/task_monitor.py::MonitorIdleStreakTask`): pipeline Task at end of `InferencePipeline` that tracks consecutive days with zero orders/exits and zero candidates. Warns above `monitoring.max_no_trade_days` (default 15) + `max_no_candidate_days` (default 15); ntfy surfaces the WARN via log scraping. State persisted across bars by `SimAdapter._monitor_state` and `RunnerAdapter.live_state.json`. `SimResult.longest_no_trade_streak` available post-backtest; opt-in `RENQUANT_FULL_SIM=1` invariant test asserts < 20d. **Enforces the "it's OK not to trade, but NOT systematically" user contract.**
+- **Defensive-ticker universe exemption**: `FilterUniverseFloorTask` always admits `defensive_tickers` regardless of floor type/threshold — guarantees `bear_only` / `ConfidenceVetoTask` regimes always have something to buy (previously a single weak defensive passed the Sharpe gate → systemic no-trade). Regression tested in `tests/test_universe_alignment.py::TestDefensivesExemptFromFloor`.
+- **Transformer panel backend (design-only, not yet implemented)**: see `doc/renquant_104_transformer_design.md` — cross-sectional attention across the date-group as alternative `panel_ltr.backend`. MPS target. Ship gate: ≥1.3× XGBoost OOS IC.
 
 ### Adding a New Strategy
 
@@ -315,7 +326,15 @@ This applies to:
 - `tests/test_training_cadence.py`: 8 tests — `training.cadence` gate (daily preserves existing behavior, weekly short-circuits off-cadence days, `--force` bypass).
 - `tests/test_fundamentals_cache.py`: 9 tests — `FundamentalsStore` parquet cache + `fetch_fundamentals` with injected provider.
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 922 collected (920 passed + 2 skipped). Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 976 collected (974 passed + 2 skipped, 2 invariants opt-in via `RENQUANT_FULL_SIM=1`). Run `python -m pytest tests/ -v` to verify.
+- `tests/test_no_trade_monitor.py` — 11 tests for MonitorIdleStreakTask + SimResult streak surface + adapter round-trip. Guards the "no systematic no-trade periods" contract (CLAUDE.md 2b).
+- `tests/test_no_trade_invariant.py` — 2 opt-in full-sim tests asserting `longest_no_trade_streak < 20` on current config.
+- `tests/test_earnings_surprise.py` — 9 tests for yfinance-backed surprise cache + trailing-4Q factor.
+- `tests/test_insider_trades.py` — 11 tests for SEC Form 4 parser (executive-only filter, P/S code filter, sign rules) + cache round-trip + trailing-90d net-buy factor.
+- `tests/test_panel_bugfixes.py` — 6 tests guarding three session bugs: ApplyGlobalCalibrationTask additive-mode path, prepare_inference_panel_frames z-score wiring, fit_panel_calibrator z-score wiring.
+- `tests/test_panel_orthogonal_factors.py` — 9 tests for the Round-3 factor functions (Amihud, volume_shift, price_to_high, realized_vol, drawdown_peak).
+- `tests/test_universe_alignment.py` — 18 tests (up from 16): adapter parity, floor dispatch, staleness, defensives exemption, resilience to malformed artifacts.
+- `tests/test_daily_104_e2e.py` — 3 scheduled-run smoke tests.
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.

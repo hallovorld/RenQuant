@@ -290,7 +290,14 @@ renquant_104 additions under `kernel/panel_pipeline/`:
 |------|----------|
 | `panel_scorer.py` | `PanelScorer` — loads `artifacts/panel-ltr.json`, exposes `predict(feature_matrix)` |
 | `feature_matrix.py` | `build_inference_feature_matrix` — stacks today's neutralized feature + factor rows into a single DataFrame keyed by ticker |
-| `job_panel_scoring.py` | `PanelScoringJob` — 4 Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask` |
+| `job_panel_scoring.py` | `PanelScoringJob` — 6 Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask` → `LoadGlobalCalibrationTask` → `ApplyGlobalCalibrationTask` (+ optional `LoadNGBoostTask` → `ApplyNGBoostTask`) |
+
+Universe + monitoring under `kernel/pipeline/`:
+
+| File | Contents |
+|------|----------|
+| `job_universe.py` | `LoadUniverseJob` — 3 Tasks: `LoadArtifactsTask` → `FilterStalenessTask` → `FilterUniverseFloorTask`. Configurable floor (none/sharpe/ic) via `ranking.universe_floor`. Defensive tickers always exempt. One source of truth across LEAN / live / sim adapters. |
+| `task_monitor.py` | `MonitorIdleStreakTask` — runs at end of `InferencePipeline`, tracks consecutive no-trade / no-candidate streaks; WARN when `monitoring.max_no_trade_days` is exceeded. |
 
 `training/pipeline.py` is a thin re-export shim (notebook imports unchanged).
 
