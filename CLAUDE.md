@@ -335,6 +335,9 @@ This applies to:
 - `tests/test_panel_orthogonal_factors.py` — 9 tests for the Round-3 factor functions (Amihud, volume_shift, price_to_high, realized_vol, drawdown_peak).
 - `tests/test_universe_alignment.py` — 18 tests (up from 16): adapter parity, floor dispatch, staleness, defensives exemption, resilience to malformed artifacts.
 - `tests/test_daily_104_e2e.py` — 3 scheduled-run smoke tests.
+- `tests/test_hourly_features.py` — 17 tests for Plan G `compute_hourly_features()` (synthetic-session OHLCV → morning/afternoon_drift, vwap_premium, vol_ratio, intraday_realized_vol, overnight_gap).
+- `tests/test_panel_hourly_wiring.py` — 8 tests for Plan G step 2 (HourlyBarStore parquet cache, LoadHourlyBarsTask flag/load paths, TickerPanelFactorJob merges 6 hourly columns, FactorZScoreTask emits `{col}_z`).
+- `tests/test_regime_calibrator.py` — 10 tests for Plan F (`fit_regime_conditional` split/skip/round-trip, `LoadGlobalCalibrationTask` populates pooled + regime dict, `ApplyGlobalCalibrationTask` dispatches to regime or pooled fallback).
 
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.
