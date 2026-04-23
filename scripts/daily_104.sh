@@ -195,6 +195,78 @@ except Exception:
 " 2>/dev/null || echo "")
     FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
     notify "RenQuant 104" "$FULL_MSG"
+
+    # Sustainability audit (Plan D, 2026-04-23): append one JSONL row
+    # to logs/live_104/audit.jsonl summarizing today's live state.
+    # scripts/weekly_apy_check.py consumes this stream to compute
+    # rolling 30-day APY and fire ntfy alerts when live deviates from
+    # the golden backtest baseline.
+    AUDIT_DIR="$REPO_DIR/logs/live_104"
+    AUDIT_LOG="$AUDIT_DIR/audit.jsonl"
+    mkdir -p "$AUDIT_DIR"
+    "$PYTHON" -c "
+import json, os
+from datetime import datetime
+from pathlib import Path
+
+def _safe(fn, default=None):
+    try: return fn()
+    except Exception: return default
+
+# Account snapshot from Alpaca
+equity = cash = None
+n_positions = 0
+try:
+    from alpaca.trading.client import TradingClient
+    client = TradingClient(os.environ['ALPACA_API_KEY'], os.environ['ALPACA_SECRET_KEY'], paper=False)
+    acct = client.get_account()
+    equity = float(acct.equity)
+    cash   = float(acct.cash)
+    n_positions = len(client.get_all_positions())
+except Exception as exc:
+    pass
+
+# Regime + HWM from live_state.json
+state_path = Path('$REPO_DIR/backtesting/renquant_104/live_state.json')
+hwm = regime = confidence = None
+try:
+    s = json.loads(state_path.read_text())
+    hwm         = float(s.get('high_water_mark', 0) or 0) or None
+    regime      = s.get('regime')
+    confidence  = float(s.get('regime_confidence', 0) or 0) or None
+except Exception:
+    pass
+
+# Count of orders placed THIS run (trade_log entries past the PRE_COUNT snapshot)
+n_orders = 0
+try:
+    tl = Path('$TRADE_LOG')
+    if tl.exists():
+        n_orders = max(0, len(json.loads(tl.read_text())) - $PRE_COUNT)
+except Exception:
+    pass
+
+drawdown = None
+if equity and hwm and hwm > 0:
+    drawdown = round(max(0.0, (hwm - equity) / hwm), 4)
+
+row = {
+    'date':            '$DATE',
+    'timestamp':       datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+    'equity':          round(equity, 2) if equity is not None else None,
+    'cash':            round(cash, 2)   if cash   is not None else None,
+    'hwm':             round(hwm, 2)    if hwm    is not None else None,
+    'drawdown_pct':    drawdown,
+    'n_positions':     n_positions,
+    'n_orders_today':  n_orders,
+    'regime':          regime,
+    'confidence':      round(confidence, 3) if confidence is not None else None,
+}
+with open('$AUDIT_LOG', 'a') as f:
+    f.write(json.dumps(row) + '\n')
+print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today={n_orders}  regime={regime}\")
+" 2>&1 | tee -a "$LOG" || echo "audit write failed (non-fatal)"
+
 else
     echo "=== daily_104 FAILED at $(date) ==="
     notify "RenQuant 104 ERROR" "Live trader failed — check $LOG"

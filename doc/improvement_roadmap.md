@@ -23,10 +23,10 @@ pick the topmost unblocked item when starting the next session.
 
 | # | Item | Priority | Est. | Expected value |
 |---|---|---|---|---|
-| A | Clear stale live_state `high_water_mark` | **HIGH** — blocks live trading | 10 min | Unblocks Alpaca live orders (drawdown halt currently fires every bar on stale $100k HWM vs actual equity) |
-| B | LightGBM backend A/B vs XGBoost on current golden | MED — cheap A/B | 4 h (two retrains + sim) | Item 7 shipped infra but never benchmarked. NDCG@10 objective matches our top-8 selection. Possible small IC lift with zero config risk (fallback is easy). |
+| ~~A~~ | ~~Clear stale live_state `high_water_mark`~~ | ✅ done — `ab1006d` | 10 min | `resolve_hwm()` helper snaps HWM down when stored > 1.5× equity. 10 regression tests. Smoke-tested. Next scheduled daily_104.sh will pick it up. |
+| ~~B~~ | ~~LightGBM backend A/B vs XGBoost on current golden~~ | ❌ shelved — `8d6b08a` | 4 h | LGBM regressed APY 34.4% → 21.7% (−12.7 pts) and win rate 84% → 74%. Per-row-weight bug fixed on the way in (regression test shipped). LGBM infra stays for future rerun (post-G). |
 | C | σ-penalty λ sweep: λ ∈ {0.1, 0.25, 0.5} | MED — fast config test | 1-2 h sim + analysis | Task-#2 A/B showed λ=1.0 crashes APY (32% → 5%); there may be a non-zero optimum. Low-risk because code refactor already shipped; this is config-only. |
-| D | Sustainability watch on T4 golden — 30-day live APY tracker | MED — run in parallel | 2 h | Early-warning if the pre-regression xgb_params don't transfer live. JSONL audit + weekly ntfy alert. Can kick off alongside A/B/C (no sim needed). |
+| ~~D~~ | ~~Sustainability watch on T4 golden — 30-day live APY tracker~~ | ✅ done — (this commit) | 2 h | daily_104.sh appends audit JSONL; `scripts/weekly_apy_check.py` computes rolling 30d APY + drawdown-streak, ntfy alert below 25% / 20% / 5d. Launchd plist loaded Sun 12 PT. Smoke-tested 4 cases. |
 | E | Re-fit global calibrator on μ−λσ distribution | MED — only if C wins | 1 day | Conditional on C finding a winning λ. Metric-calibrates the μ−λσ mode instead of relying on the directionally-monotone raw-panel calibrator. |
 | F | Item 6 — regime-conditional calibration | MED — waits on DB data | 2 days | Per-regime calibrators (BULL_CALM / BULL_VOLATILE / CHOPPY / BEAR). Wants ≥ 2 months of decision traces in `data/runs.db` first. |
 | G | Item 8 — hourly-bar panel features (keep as eventual, not deferred) | MED — larger build | 2-3 days | +0.01 IC target per Item 8 spec. User wants panel trained on hourly data as a real objective, independent of the transformer track. Does not depend on A-F finishing; can run whenever there's a 2-3 day block. Uses Alpaca intraday fetcher from Item 5. |

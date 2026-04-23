@@ -23,6 +23,60 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 late PT — LightGBM backend shelved (APY −12.7 pts)
+
+Task B / plan-A/B. Compared XGBoost (current golden backend) against
+LightGBM LambdaRank on identical panels and the T4 golden xgb_params
+neighborhood (lightgbm_params already populated in strategy_config.json).
+
+Preconditions — found a bug blocking the run on the way in:
+`PanelLGBMModel.train` passed per-GROUP weights to `lgb.Dataset`, but
+LightGBM 4.x takes per-ROW weights even when `group` is set. Fixed in
+commit `8d6b08a` (broadcast group-mean weight back to rows, regression
+test added).
+
+**Results** (27-month OOS sim, same panel data, NGBoost re-fit for each):
+
+| Metric (after-tax) | XGBoost | LightGBM | Δ |
+|---|---|---|---|
+| OOS CPCV mean IC | +0.0409 ± 0.023 | **NaN** (CPCV broke on lgbm preds) | — |
+| Train IC | +0.264 | NaN | — |
+| APY | **+34.4%** | +21.7% | **−12.7 pts** |
+| Total return | +92.9% | +54.6% | −38 pts |
+| Buys / sells | 157 / 156 | 142 / 137 | −9% volume |
+| Win rate | **84%** | 74% | −10 pts |
+| Avg P&L / trade | +10.2% | +8.3% | −2 pts |
+| Longest no-trade streak | 28 d | 28 d | — |
+| Retrain time | 234s | 218s | — |
+
+**Diagnosis:**
+- LightGBM's NDCG@10 objective should have matched our 8-slot selection
+  but in practice produced a weaker per-date signal ordering. Win rate
+  −10 pts means LGBM is picking bad trades, not just filtering.
+- The NaN OOS CV IC is a separate measurement bug (bucketize +
+  CPCV interaction on continuous Gaussianized labels). Since SIM
+  predictions do fire (142 buys executed), the fitted model is
+  producing usable scores; the NaN is in the CV metric computation,
+  not the model itself. Worth fixing if we ever revisit LGBM.
+
+**Action taken:**
+- Config unchanged: `panel_ltr.backend` stays at `"xgboost"`.
+- LGBM infra (model class, scorer, dispatcher) stays shipped — 9
+  regression tests green after the per-row-weight fix. A future rerun
+  (different hyperparams, or after the hourly-panel lands) can flip
+  `panel_ltr.backend: "lightgbm"` in config and re-A/B.
+- Shipped the per-row-weight fix (commit `8d6b08a`) as a standalone
+  patch even though LGBM isn't getting promoted — the bug would have
+  bitten anyone who flipped the backend blind.
+
+**When to revisit:**
+- After G lands (hourly panel features). Bigger feature set might
+  favor LGBM's leaf-count + NDCG@k objective more than daily-only data.
+- OR tune `lightgbm_params.num_leaves`, `max_depth`, `learning_rate`
+  independently — today's A/B used the untouched config default.
+
+---
+
 ## A/B — 2026-04-23 15:30 PT — NGBoost `score_mode=mu_minus_lambda_sigma` shelved (APY −27 pts)
 
 Purpose: test task #2 (revert `ranking.panel_scoring.ngboost.score_mode` from
