@@ -13,6 +13,35 @@ from typing import Any
 log = logging.getLogger("adapters.runner")
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+# Ratio above which a stored high_water_mark is treated as "stale" relative to
+# current account value and snapped down. Chosen so that a real 33% drawdown
+# (hwm/equity ratio = 1.49) is preserved but the typical stale-seed case
+# (hwm=$100k, equity=$10k → ratio 10×) trips the snap.
+_HWM_STALE_RATIO = 1.5
+
+
+def resolve_hwm(stored_hwm: float, account_value: float,
+                stale_ratio: float = _HWM_STALE_RATIO) -> tuple[float, bool]:
+    """Resolve the effective high_water_mark for the current bar.
+
+    The live-trading DrawdownCircuitTask divides `(hwm - equity) / hwm` and
+    compares to `halt_pct`. When `hwm` is stale (e.g. initial-seed $100k
+    from a fresh install, actual Alpaca equity a fraction of that), this
+    ratio blows up and the drawdown halt latches on every bar — exactly
+    the 2026-04-23 "zero orders despite healthy models" bug.
+
+    Rule: if stored_hwm > stale_ratio * account_value, snap to account_value.
+    Otherwise ratchet up to max(stored_hwm, account_value) as before.
+
+    Returns (resolved_hwm, was_snapped).
+    """
+    if account_value > 0 and stored_hwm > stale_ratio * account_value:
+        return float(account_value), True
+    return float(max(stored_hwm, account_value)), False
+
+
 class RunnerAdapter:
     """Translate between the live broker/state and InferenceContext.
 
@@ -70,7 +99,15 @@ class RunnerAdapter:
             cash = broker.get_cash()
         except Exception:
             cash = account_value
-        hwm = max(hwm, account_value)
+
+        # Stale-HWM guard (see `resolve_hwm` docstring above). Snaps when
+        # stored HWM is wildly above current equity, preserves normal
+        # drawdowns otherwise.
+        hwm, snapped = resolve_hwm(hwm, account_value)
+        if snapped:
+            log.warning("Stale HWM: snapped to current equity=%.2f "
+                        "(stored HWM was stale; see adapters.runner.resolve_hwm)",
+                        account_value)
 
         try:
             all_pos = broker.get_all_positions()
