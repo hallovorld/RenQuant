@@ -792,7 +792,18 @@ class BuildPanelTask(PanelTask):
             panel["date"] = pd.to_datetime(panel["date"])
             panel = panel.merge(raw_df, on=["ticker", "date"], how="left")
 
-        drop_cols = set(cfg.get("drop_cols", DEFAULT_DROP_COLS))
+        # User-provided drop_cols augments — does NOT replace — DEFAULT_DROP_COLS.
+        # DEFAULT_DROP_COLS lists columns that are always bad LTR features
+        # (raw levels, or same-value-across-tickers-per-date). Tree backends
+        # are robust to raw `close`, but the transformer backend blew up
+        # with NaN loss when fed the unnormalized close column — its std
+        # is ~40x larger than every other (z-scored) feature, swamping the
+        # attention softmax into overflow. Union ensures every backend sees
+        # the same clean input.
+        user_drop_cols = cfg.get("drop_cols")
+        drop_cols = set(DEFAULT_DROP_COLS)
+        if user_drop_cols is not None:
+            drop_cols |= set(user_drop_cols)
         exclude = {"date", "ticker", "sector", "label",
                    "residual_return_raw",
                    "weight", "weight_concurrency", "weight_age",

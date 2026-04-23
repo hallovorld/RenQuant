@@ -33,6 +33,11 @@ from .job_panel_scoring import (
     LoadScorerTask,
     BuildFeatureMatrixTask,
     ApplyScoresTask,
+    VetoWeakBuysTask,
+    LoadGlobalCalibrationTask,
+    ApplyGlobalCalibrationTask,
+    LoadNGBoostTask,
+    ApplyNGBoostTask,
 )
 
 __all__ = [
@@ -46,4 +51,9 @@ __all__ = [
     "LoadScorerTask",
     "BuildFeatureMatrixTask",
     "ApplyScoresTask",
+    "VetoWeakBuysTask",
+    "LoadGlobalCalibrationTask",
+    "ApplyGlobalCalibrationTask",
+    "LoadNGBoostTask",
+    "ApplyNGBoostTask",
 ]

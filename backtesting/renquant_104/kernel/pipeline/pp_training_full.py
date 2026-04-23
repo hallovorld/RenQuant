@@ -61,6 +61,10 @@ class FullTrainingContext:
     skip_panel:        bool = False
     skip_recalibrate:  bool = False
 
+    # Cadence override: force a full run even if today doesn't match the
+    # configured weekday (used by the dedicated Sunday script + manual runs).
+    force_retrain:     bool = False
+
 
 # ── Task / Job ABCs ─────────────────────────────────────────────────────────
 
@@ -294,10 +298,63 @@ class RecalibrationJob(FullTrainingJob):
 
 # ── Orchestrator ─────────────────────────────────────────────────────────────
 
+def _cadence_allows_today(config: dict[str, Any], today_weekday: int) -> tuple[bool, str]:
+    """Decide whether today's full retrain should run under the configured cadence.
+
+    Returns (allowed, reason). `today_weekday` is Python's Monday=0 … Sunday=6.
+
+    Config block under top-level "training":
+        {
+          "cadence": "daily" | "weekly" | "custom",   # default "daily"
+          "weekly_weekday": 6,                         # used when cadence = "weekly"
+          "allowed_weekdays": [1, 3, 6]                # used when cadence = "custom"
+                                                       # Mon=0 … Sun=6
+        }
+
+    When the cadence gate blocks a run, the orchestrator short-circuits
+    BEFORE touching baseline/panel jobs — no wasted fetches.
+    """
+    cfg = config.get("training", {})
+    cadence = str(cfg.get("cadence", "daily")).strip().lower()
+    if cadence == "daily":
+        return True, "daily cadence"
+    if cadence == "weekly":
+        allowed_day = int(cfg.get("weekly_weekday", 6))  # Sunday default
+        if today_weekday == allowed_day:
+            return True, f"weekly cadence hit on weekday={today_weekday}"
+        return False, (f"weekly cadence skip — today weekday={today_weekday}, "
+                       f"configured weekly_weekday={allowed_day}")
+    if cadence == "custom":
+        raw = cfg.get("allowed_weekdays", [])
+        try:
+            allowed = {int(d) for d in raw}
+        except (TypeError, ValueError):
+            return True, f"malformed allowed_weekdays {raw!r} — defaulting to run"
+        if not allowed:
+            return True, "empty allowed_weekdays — defaulting to run"
+        if today_weekday in allowed:
+            return True, (f"custom cadence hit on weekday={today_weekday}, "
+                          f"allowed={sorted(allowed)}")
+        return False, (f"custom cadence skip — today weekday={today_weekday}, "
+                       f"allowed_weekdays={sorted(allowed)}")
+    # Unknown cadence → fail open (run) to avoid silent outage
+    return True, f"unknown cadence {cadence!r} — defaulting to run"
+
+
 class FullTrainingPipeline:
     """End-to-end renquant_104 retraining: tournament → panel-LTR → recalibrate."""
 
     def run(self, ctx: FullTrainingContext) -> FullTrainingContext:
+        import datetime  # noqa: PLC0415
+        allowed, reason = _cadence_allows_today(ctx.config, datetime.date.today().weekday())
+        if not allowed and not ctx.force_retrain:
+            log.info("FullTrainingPipeline SKIPPED — %s  (use --force to override)", reason)
+            return ctx
+        if not allowed and ctx.force_retrain:
+            log.info("FullTrainingPipeline forced: %s", reason)
+        else:
+            log.debug("Cadence gate: %s", reason)
+
         jobs: list[FullTrainingJob] = [
             BaselineTournamentJob(),
             PanelTrainingJob(),

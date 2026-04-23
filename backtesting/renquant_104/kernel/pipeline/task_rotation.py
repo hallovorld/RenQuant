@@ -286,7 +286,12 @@ class EmitRotationsTask(Task):
 
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.exits  import ExitSignal                              # noqa: PLC0415
-        from kernel.sizing import compute_position_size, conviction_multiplier  # noqa: PLC0415
+        from kernel.sizing import (  # noqa: PLC0415
+            compute_position_size,
+            conviction_multiplier,
+            sigma_multiplier,
+            universe_sigma_median,
+        )
 
         if not ctx.rotations:
             return
@@ -296,6 +301,13 @@ class EmitRotationsTask(Task):
         reserve_pct  = float(regime_p.get("cash_reserve_pct", 0.0))  * ctx.confidence
         sizing_cfg   = (ctx.config.get("ranking", {})
                          .get("panel_scoring", {}).get("sizing", {}))
+        sigma_cfg    = (ctx.config.get("ranking", {})
+                         .get("panel_scoring", {})
+                         .get("sigma_sizing", {}))
+
+        sigma_median = universe_sigma_median(
+            [getattr(c, "sigma", None) for c in ctx.ranked]
+        )
 
         rotated_buys: set[str] = set()
         for pair in ctx.rotations:
@@ -321,7 +333,11 @@ class EmitRotationsTask(Task):
                 getattr(buy_cand, "panel_score", None) if buy_cand else None,
                 sizing_cfg,
             )
-            max_pct = base_max_pct * conv
+            sig_m = sigma_multiplier(
+                getattr(buy_cand, "sigma", None) if buy_cand else None,
+                sigma_median, sigma_cfg,
+            )
+            max_pct = base_max_pct * conv * sig_m
 
             _, shares = compute_position_size(
                 ctx.portfolio_value, ctx.cash,
@@ -342,8 +358,12 @@ class EmitRotationsTask(Task):
                 "target_pct": target_pct,
                 "regime":     ctx.regime,
                 "confidence": ctx.confidence,
+                "conviction": conv,
+                "sigma_mult": sig_m,
                 "rank_score": pair.buy_score,
                 "rs_score":   0.0,
+                "mu":         getattr(buy_cand, "mu", None)    if buy_cand else None,
+                "sigma":      getattr(buy_cand, "sigma", None) if buy_cand else None,
                 "detail":     (f"rotation←{pair.sell_ticker} "
                                f"net_adv={pair.net_advantage:+.4f} "
                                f"horizon={pair.horizon_days}d"),

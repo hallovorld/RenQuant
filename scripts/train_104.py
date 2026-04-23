@@ -38,6 +38,11 @@ def main() -> None:
     p.add_argument("--skip-baseline",     action="store_true")
     p.add_argument("--skip-panel",        action="store_true")
     p.add_argument("--skip-recalibrate",  action="store_true")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore the training.cadence gate (run even on non-cadence days).",
+    )
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -60,6 +65,7 @@ def main() -> None:
         skip_baseline=args.skip_baseline,
         skip_panel=args.skip_panel,
         skip_recalibrate=args.skip_recalibrate,
+        force_retrain=args.force,
     )
     FullTrainingPipeline().run(ctx)
 

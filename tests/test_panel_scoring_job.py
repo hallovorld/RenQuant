@@ -281,17 +281,22 @@ class TestPanelScoringJob:
         ctx = _make_ctx(tmp_path, enabled=True)
         assert PanelScoringJob().should_skip(ctx) is False
 
-    def test_tasks_are_four_in_order(self, tmp_path):
+    def test_tasks_are_eight_in_order(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import (
-            ApplyScoresTask, BuildFeatureMatrixTask, LoadScorerTask,
-            PanelScoringJob, VetoWeakBuysTask,
+            ApplyGlobalCalibrationTask, ApplyNGBoostTask, ApplyScoresTask,
+            BuildFeatureMatrixTask, LoadGlobalCalibrationTask,
+            LoadNGBoostTask, LoadScorerTask, PanelScoringJob, VetoWeakBuysTask,
         )
         tasks = PanelScoringJob().tasks
-        assert len(tasks) == 4
+        assert len(tasks) == 8
         assert isinstance(tasks[0], LoadScorerTask)
         assert isinstance(tasks[1], BuildFeatureMatrixTask)
         assert isinstance(tasks[2], ApplyScoresTask)
         assert isinstance(tasks[3], VetoWeakBuysTask)
+        assert isinstance(tasks[4], LoadGlobalCalibrationTask)
+        assert isinstance(tasks[5], ApplyGlobalCalibrationTask)
+        assert isinstance(tasks[6], LoadNGBoostTask)
+        assert isinstance(tasks[7], ApplyNGBoostTask)
 
     def test_end_to_end_overrides_rank_scores(self, tmp_path):
         """Run the full Job chain — candidate rank_scores change to panel scores."""

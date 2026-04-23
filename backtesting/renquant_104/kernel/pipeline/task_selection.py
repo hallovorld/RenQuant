@@ -86,7 +86,12 @@ class SizeAndEmitTask(Task):
     """Size each selected ticker and emit buy orders → ctx.orders."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
-        from kernel.sizing import compute_position_size, conviction_multiplier  # noqa: PLC0415
+        from kernel.sizing import (  # noqa: PLC0415
+            compute_position_size,
+            conviction_multiplier,
+            sigma_multiplier,
+            universe_sigma_median,
+        )
 
         regime_p      = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         base_max_pct  = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
@@ -95,6 +100,14 @@ class SizeAndEmitTask(Task):
         override_pct  = bear_def_pct if ctx.bear_only else None
         sizing_cfg    = (ctx.config.get("ranking", {})
                           .get("panel_scoring", {}).get("sizing", {}))
+        sigma_cfg     = (ctx.config.get("ranking", {})
+                          .get("panel_scoring", {})
+                          .get("sigma_sizing", {}))
+
+        # Universe σ median over all ranked candidates (σ written by ApplyNGBoostTask).
+        sigma_median = universe_sigma_median(
+            [getattr(c, "sigma", None) for c in ctx.ranked]
+        )
 
         for ticker in ctx._selected:  # noqa: SLF001
             price = ctx.prices.get(ticker)
@@ -106,7 +119,11 @@ class SizeAndEmitTask(Task):
             conv = conviction_multiplier(
                 getattr(c, "panel_score", None) if c else None, sizing_cfg,
             )
-            max_pct = base_max_pct * conv
+            sig_m = sigma_multiplier(
+                getattr(c, "sigma", None) if c else None,
+                sigma_median, sigma_cfg,
+            )
+            max_pct = base_max_pct * conv * sig_m
 
             _, shares = compute_position_size(
                 ctx.portfolio_value, ctx.cash,
@@ -128,12 +145,18 @@ class SizeAndEmitTask(Task):
                 "regime":     ctx.regime,
                 "confidence": ctx.confidence,
                 "conviction": conv,
+                "sigma_mult": sig_m,
                 "rank_score": c.rank_score  if c else 0.0,
                 "rs_score":   c.rs_score    if c else 0.0,
                 "panel_score": getattr(c, "panel_score", None) if c else None,
+                "sigma":      getattr(c, "sigma", None)        if c else None,
+                "mu":         getattr(c, "mu", None)           if c else None,
                 "detail":     c.detail      if c else "",
             })
-            log.info("SizeAndEmitTask: %s BUY %d shares @ %.2f (%.1f%% conv=%.2f)",
-                     ticker, shares, price, target_pct * 100, conv)
+            log.info(
+                "SizeAndEmitTask: %s BUY %d shares @ %.2f "
+                "(%.1f%% conv=%.2f σ_mult=%.2f)",
+                ticker, shares, price, target_pct * 100, conv, sig_m,
+            )
 
         log.info("SizeAndEmitTask: %d orders placed", len(ctx.orders))

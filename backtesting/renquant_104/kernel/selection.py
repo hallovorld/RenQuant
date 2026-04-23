@@ -28,6 +28,8 @@ class CandidateResult:
     detail:          str = ""
     expected_return: float = 0.0   # E[R - SPY] over rotation.target_horizon_days
     panel_score:     float | None = None   # cross-sectional panel-LTR score; None when disabled
+    mu:              float | None = None   # NGBoost μ (residual return forecast)
+    sigma:           float | None = None   # NGBoost σ (predictive stdev)
 
 
 # ── Guard helpers ──────────────────────────────────────────────────────────────

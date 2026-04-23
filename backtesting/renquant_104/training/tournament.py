@@ -58,6 +58,43 @@ def oos_sharpe(prices: pd.Series, signals: pd.Series) -> float:
         return 0.0
 
 
+def oos_single_ticker_ic(
+    raw_scores: pd.Series,
+    prices: pd.Series,
+    spy_prices: pd.Series,
+    lookahead: int = 5,
+) -> float:
+    """Spearman correlation between raw_score and future relative-to-SPY return.
+
+    Single-ticker variant of cross-sectional IC: for each bar, compare
+    today's raw_score with the next `lookahead` days' return net of SPY.
+    Higher = the model's score orders same-ticker bars well.
+
+    Used as an alternative tournament winner-selection metric (`winner_metric=ic`).
+    """
+    try:
+        from scipy.stats import spearmanr
+        if raw_scores is None or raw_scores.empty or prices is None or prices.empty:
+            return 0.0
+        idx = raw_scores.index.intersection(prices.index).intersection(spy_prices.index)
+        if len(idx) < 20:
+            return 0.0
+        p    = prices.reindex(idx).astype(float).replace(0, np.nan)
+        spy  = spy_prices.reindex(idx).astype(float).replace(0, np.nan)
+        rel  = (p / spy).replace([np.inf, -np.inf], np.nan)
+        fwd  = (rel.shift(-lookahead) / rel - 1.0).dropna()
+        raw  = raw_scores.reindex(fwd.index).astype(float).dropna()
+        if len(raw) < 20:
+            return 0.0
+        common = raw.index.intersection(fwd.index)
+        if len(common) < 20:
+            return 0.0
+        rho, _ = spearmanr(raw.loc[common].values, fwd.loc[common].values)
+        return 0.0 if (rho is None or rho != rho) else float(rho)
+    except Exception:
+        return 0.0
+
+
 def run_tournament(
     ticker: str,
     df: pd.DataFrame,
@@ -68,6 +105,8 @@ def run_tournament(
     tax_config: dict,
     nthread: int | None = None,
     oos_cutoff: "pd.Timestamp | str | None" = None,
+    exclude_models: "set[str] | None" = None,
+    winner_metric: str = "sharpe",
 ) -> dict:
     """Train on data before oos_cutoff; evaluate OOS on data on/after; return best.
 
@@ -75,7 +114,15 @@ def run_tournament(
     prices / spy_prices should cover the full df period; OOS slice is derived internally.
     nthread: passed to XGBoostModel to limit CPU usage when running in parallel workers.
     oos_cutoff: explicit cutoff; defaults to today - 2 years.
+    exclude_models: approaches to skip. Accepted values (case-insensitive):
+        "classification", "qlearning", "manual", "xgboost". Defaults to none.
+    winner_metric: "sharpe" (default, legacy) | "ic" (per-ticker Spearman of
+        raw_score vs future relative-to-SPY return, lookahead=5). `passes_floor`
+        always uses Sharpe so existing floors in strategy_config.json still
+        apply regardless of the selection metric.
     """
+    exclude = {str(m).strip().lower() for m in (exclude_models or set())}
+    winner_metric = (winner_metric or "sharpe").strip().lower()
     _log: list[str] = []
 
     feature_cols = model_params["feature_columns"]
@@ -108,74 +155,93 @@ def run_tournament(
     prices_oos     = prices.reindex(oos_df.index)
     spy_prices_oos = spy_prices.reindex(oos_df.index).replace(0, np.nan)
 
-    _seed       = abs(hash(ticker)) % (2 ** 32)
-    best_sharpe = -99.0
-    best_model  = best_name = best_sigs = best_scores = None
+    _seed        = abs(hash(ticker)) % (2 ** 32)
+    best_score   = -99.0   # comparison key — either sharpe or IC based on winner_metric
+    best_sharpe  = -99.0   # always tracked for passes_floor check
+    best_model   = best_name = best_sigs = best_scores = None
+
+    def _evaluate(model, name: str, sigs, raw_scores) -> float:
+        """Compute the metric used for winner selection. Always logs both."""
+        sh = oos_sharpe(prices_oos, sigs)
+        ic = 0.0
+        if winner_metric == "ic" and raw_scores is not None:
+            ic = oos_single_ticker_ic(
+                pd.Series(raw_scores, index=oos_df.index, dtype=float).dropna(),
+                prices_oos, spy_prices_oos, lookahead=lookahead,
+            )
+            _log.append(f"  {ticker} {name:<14s} OOS Sharpe: {sh:+.3f}  IC: {ic:+.4f}")
+        else:
+            _log.append(f"  {ticker} {name:<14s} OOS Sharpe: {sh:+.3f}")
+        return ic if winner_metric == "ic" else sh, sh
 
     # ── Approach 1: Classification ──────────────────────────────────────────────
-    try:
-        np.random.seed(_seed)
-        clf = create_model("classification", feature_columns=feature_cols,
-                           lookahead=lookahead, threshold=threshold,
-                           leaf_size=leaf_size, bags=bags,
-                           buy_threshold=buy_thr, sell_threshold=sell_thr)
-        clf.train(train_df)
-        sigs = clf.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
-        sh   = oos_sharpe(prices_oos, sigs)
-        _log.append(f"  {ticker} Classification OOS Sharpe: {sh:.3f}")
-        if sh > best_sharpe:
-            best_sharpe, best_model, best_name, best_sigs = sh, clf, "Classification", sigs
-            best_scores = clf.predict_score_bulk(oos_df)
-    except Exception as e:
-        _log.append(f"  {ticker} Classification error: {e}")
+    if "classification" not in exclude:
+        try:
+            np.random.seed(_seed)
+            clf = create_model("classification", feature_columns=feature_cols,
+                               lookahead=lookahead, threshold=threshold,
+                               leaf_size=leaf_size, bags=bags,
+                               buy_threshold=buy_thr, sell_threshold=sell_thr)
+            clf.train(train_df)
+            sigs        = clf.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
+            raw_scores  = clf.predict_score_bulk(oos_df)
+            metric, sh  = _evaluate(clf, "Classification", sigs, raw_scores)
+            if metric > best_score:
+                best_score, best_sharpe = metric, sh
+                best_model, best_name, best_sigs, best_scores = clf, "Classification", sigs, raw_scores
+        except Exception as e:
+            _log.append(f"  {ticker} Classification error: {e}")
 
     # ── Approach 2: Q-Learning ──────────────────────────────────────────────────
-    try:
-        import random as _random
-        _random.seed(_seed); np.random.seed(_seed)
-        ql = create_model("qlearning", feature_columns=feature_cols[:5])
-        ql.train(train_df)
-        sigs = ql.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
-        sh   = oos_sharpe(prices_oos, sigs)
-        _log.append(f"  {ticker} QLearning    OOS Sharpe: {sh:.3f}")
-        if sh > best_sharpe:
-            best_sharpe, best_model, best_name, best_sigs = sh, ql, "QLearning", sigs
-            best_scores = ql.predict_score_bulk(oos_df)
-    except Exception as e:
-        _log.append(f"  {ticker} QLearning error: {e}")
+    if "qlearning" not in exclude:
+        try:
+            import random as _random
+            _random.seed(_seed); np.random.seed(_seed)
+            ql = create_model("qlearning", feature_columns=feature_cols[:5])
+            ql.train(train_df)
+            sigs        = ql.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
+            raw_scores  = ql.predict_score_bulk(oos_df)
+            metric, sh  = _evaluate(ql, "QLearning", sigs, raw_scores)
+            if metric > best_score:
+                best_score, best_sharpe = metric, sh
+                best_model, best_name, best_sigs, best_scores = ql, "QLearning", sigs, raw_scores
+        except Exception as e:
+            _log.append(f"  {ticker} QLearning error: {e}")
 
     # ── Approach 3: Manual ──────────────────────────────────────────────────────
-    try:
-        manual = create_model("manual", buy_threshold=2, sell_threshold=-2)
-        manual.train(train_df)
-        sigs = manual.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
-        sh   = oos_sharpe(prices_oos, sigs)
-        _log.append(f"  {ticker} Manual       OOS Sharpe: {sh:.3f}")
-        if sh > best_sharpe:
-            best_sharpe, best_model, best_name, best_sigs = sh, manual, "Manual", sigs
-            best_scores = manual.predict_score_bulk(oos_df)
-    except Exception as e:
-        _log.append(f"  {ticker} Manual error: {e}")
+    if "manual" not in exclude:
+        try:
+            manual = create_model("manual", buy_threshold=2, sell_threshold=-2)
+            manual.train(train_df)
+            sigs        = manual.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
+            raw_scores  = manual.predict_score_bulk(oos_df)
+            metric, sh  = _evaluate(manual, "Manual", sigs, raw_scores)
+            if metric > best_score:
+                best_score, best_sharpe = metric, sh
+                best_model, best_name, best_sigs, best_scores = manual, "Manual", sigs, raw_scores
+        except Exception as e:
+            _log.append(f"  {ticker} Manual error: {e}")
 
     # ── Approach 4: XGBoost ─────────────────────────────────────────────────────
-    try:
-        np.random.seed(_seed)
-        xgb = XGBoostModel(feature_columns=feature_cols,
-                           lookahead=lookahead, threshold=threshold,
-                           buy_threshold=0.1, sell_threshold=0.1,
-                           n_estimators=200, max_depth=4,
-                           learning_rate=0.05, subsample=0.8,
-                           colsample_bytree=0.8, min_child_weight=10,
-                           nthread=nthread)
-        xgb.train(train_df)
-        sigs = xgb.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
-        sh   = oos_sharpe(prices_oos, sigs)
-        _log.append(f"  {ticker} XGBoost      OOS Sharpe: {sh:.3f}")
-        if sh > best_sharpe:
-            best_sharpe, best_model, best_name, best_sigs = sh, xgb, "XGBoost", sigs
-            best_scores = xgb.predict_score_bulk(oos_df)
-    except Exception as e:
-        _log.append(f"  {ticker} XGBoost error: {e}")
+    if "xgboost" not in exclude:
+        try:
+            np.random.seed(_seed)
+            xgb = XGBoostModel(feature_columns=feature_cols,
+                               lookahead=lookahead, threshold=threshold,
+                               buy_threshold=0.1, sell_threshold=0.1,
+                               n_estimators=200, max_depth=4,
+                               learning_rate=0.05, subsample=0.8,
+                               colsample_bytree=0.8, min_child_weight=10,
+                               nthread=nthread)
+            xgb.train(train_df)
+            sigs        = xgb.predict_bulk(oos_df).map({"buy": 1, "hold": 0, "sell": -1}).reindex(oos_df.index)
+            raw_scores  = xgb.predict_score_bulk(oos_df)
+            metric, sh  = _evaluate(xgb, "XGBoost", sigs, raw_scores)
+            if metric > best_score:
+                best_score, best_sharpe = metric, sh
+                best_model, best_name, best_sigs, best_scores = xgb, "XGBoost", sigs, raw_scores
+        except Exception as e:
+            _log.append(f"  {ticker} XGBoost error: {e}")
 
     if best_scores is not None:
         best_scores = pd.Series(best_scores, index=oos_df.index, dtype=float)
@@ -196,11 +262,15 @@ def run_tournament(
             setattr(best_calibration, k, v)
 
     passes = best_sharpe >= sharpe_floor
-    _log.append(f"  → WINNER: {best_name}  Sharpe={best_sharpe:.3f}  "
+    best_metric_s = (f"Sharpe={best_sharpe:.3f}" if winner_metric == "sharpe"
+                     else f"IC={best_score:+.4f} Sharpe={best_sharpe:+.3f}")
+    _log.append(f"  → WINNER: {best_name}  {best_metric_s}  "
                 f"{'✓ PASS' if passes else '✗ FAIL (no model exported)'}\n")
 
     return {
         "sharpe":            best_sharpe,
+        "selection_metric":  winner_metric,
+        "selection_score":   best_score,       # the value used for winner choice (ic or sharpe)
         "best_approach":     best_name,
         "model":             best_model,
         "oos_signals":       best_sigs,
@@ -230,6 +300,12 @@ def run_tournament_all(
     sharpe_floor = float(config.get("sharpe_floor", 0.8))
     tax_config   = config["tax"]
     oos_cutoff   = resolve_oos_cutoff(config)
+
+    # Tournament can skip approaches via config — default behaviour unchanged
+    # (empty exclude set). Values are case-insensitive.
+    tournament_cfg = config.get("ranking", {}).get("tournament", {})
+    exclude_models = set(tournament_cfg.get("exclude_models", []))
+    winner_metric  = tournament_cfg.get("winner_metric", "sharpe")
 
     tickers = [t for t in watchlist if t in feature_frames]
     if not tickers:
@@ -263,6 +339,8 @@ def run_tournament_all(
                 tax_config,
                 xgb_nthread,
                 oos_cutoff,
+                exclude_models,
+                winner_metric,
             ): ticker
             for ticker in tickers
         }

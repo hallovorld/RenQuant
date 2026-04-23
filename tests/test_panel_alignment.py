@@ -382,3 +382,229 @@ class TestPanelRotationAdvantage:
         pairs = self._run_rotation({"rotation_advantage": 0.50},
                                    cand_ps=None, held_ps=0.4)
         assert len(pairs) == 1
+
+
+# ── NGBoost wiring ────────────────────────────────────────────────────────────
+
+def _ngboost_enabled_config(artifact_path: str | None = None) -> dict:
+    cfg = _panel_enabled_config()
+    ngb = {
+        "enabled": True,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0,
+    }
+    if artifact_path is not None:
+        ngb["artifact_path"] = artifact_path
+    cfg["ranking"]["panel_scoring"]["ngboost"] = ngb
+    return cfg
+
+
+def _make_fake_head(feature_cols, mu_map, sigma_map):
+    """Stand-in NGBoostHead whose predict_distribution is deterministic."""
+    class _FakeHead:
+        def __init__(self):
+            self.feature_cols = list(feature_cols)
+        def predict_distribution(self, X):
+            idx = X.index
+            mu    = pd.Series([mu_map.get(t, 0.0)    for t in idx], index=idx)
+            sigma = pd.Series([sigma_map.get(t, 0.1) for t in idx], index=idx)
+            return pd.DataFrame({"mu": mu, "sigma": sigma})
+    return _FakeHead()
+
+
+class TestNGBoostFlagParity:
+    """NGBoost sub-flag is read by PanelScoringJob tasks, not the adapters."""
+
+    def test_panel_job_still_skips_when_outer_flag_off(self):
+        from kernel.panel_pipeline.job_panel_scoring import PanelScoringJob
+        from kernel.selection import CandidateResult
+        cfg = _panel_disabled_config()
+        # Turn ngboost on while outer flag is off — whole job must still skip.
+        cfg["ranking"]["panel_scoring"]["ngboost"] = {"enabled": True}
+        ctx = _make_ctx(cfg)
+        ctx.candidates = [CandidateResult(ticker="AAA", raw_score=0,
+                                          rank_score=0.5, rs_score=0,
+                                          detail="", expected_return=0)]
+        assert PanelScoringJob().should_skip(ctx) is True
+
+    def test_load_ngboost_noop_when_ngboost_disabled(self):
+        from kernel.panel_pipeline.job_panel_scoring import LoadNGBoostTask
+        ctx = _make_ctx(_panel_enabled_config())  # ngboost omitted → disabled
+        out = LoadNGBoostTask().run(ctx)
+        assert out is None
+        assert getattr(ctx, "_ngboost_head", None) is None
+
+    def test_load_ngboost_records_failure_without_raising(self, tmp_path):
+        from kernel.panel_pipeline.job_panel_scoring import LoadNGBoostTask
+        cfg = _ngboost_enabled_config(
+            artifact_path=str(tmp_path / "missing.json"),
+        )
+        cfg["_strategy_dir"] = str(tmp_path)
+        ctx = _make_ctx(cfg)
+        LoadNGBoostTask().run(ctx)  # must not raise
+        assert ctx._ngboost_head is None  # noqa: SLF001
+
+
+class TestApplyNGBoostScoring:
+    """ApplyNGBoostTask writes μ/σ and optionally overrides rank_score."""
+
+    def _ctx_with_matrix(self, feature_cols, tickers):
+        cfg = _ngboost_enabled_config()
+        ctx = _make_ctx(cfg)
+        from kernel.selection import CandidateResult
+        from kernel.exits import HoldingState
+        ctx.candidates = [
+            CandidateResult(ticker=t, raw_score=0, rank_score=0.5,
+                            rs_score=0, detail="", expected_return=0,
+                            panel_score=0.5)
+            for t in tickers
+        ]
+        ctx.holdings = {}
+        X = pd.DataFrame(
+            {c: [0.0] * len(tickers) for c in feature_cols},
+            index=tickers,
+        )
+        ctx._panel_matrix = X  # noqa: SLF001
+        return ctx
+
+    def test_applies_mu_sigma_and_overrides_rank_score_by_default(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
+        feats = ["f1", "f2"]
+        ctx = self._ctx_with_matrix(feats, ["A", "B"])
+        # A: μ=0.08 σ=0.02 → combined 0.06;  B: μ=0.02 σ=0.20 → combined -0.18
+        head = _make_fake_head(feats,
+                               mu_map={"A": 0.08, "B": 0.02},
+                               sigma_map={"A": 0.02, "B": 0.20})
+        ctx._ngboost_head = head  # noqa: SLF001
+
+        ApplyNGBoostTask().run(ctx)
+
+        ca = next(c for c in ctx.candidates if c.ticker == "A")
+        cb = next(c for c in ctx.candidates if c.ticker == "B")
+        assert ca.mu == pytest.approx(0.08)
+        assert ca.sigma == pytest.approx(0.02)
+        assert ca.rank_score  == pytest.approx(0.06)
+        assert ca.panel_score == pytest.approx(0.06)
+        assert cb.rank_score  == pytest.approx(-0.18)
+
+    def test_additive_mode_keeps_rank_score(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
+        feats = ["f1"]
+        ctx = self._ctx_with_matrix(feats, ["A"])
+        ctx.config["ranking"]["panel_scoring"]["ngboost"]["score_mode"] = "additive"
+        head = _make_fake_head(feats, mu_map={"A": 0.05}, sigma_map={"A": 0.1})
+        ctx._ngboost_head = head  # noqa: SLF001
+
+        ApplyNGBoostTask().run(ctx)
+        c = ctx.candidates[0]
+        assert c.mu    == pytest.approx(0.05)
+        assert c.sigma == pytest.approx(0.1)
+        assert c.rank_score  == 0.5   # unchanged
+        assert c.panel_score == 0.5   # unchanged
+
+    def test_lambda_sigma_scales_penalty(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
+        feats = ["f1"]
+        ctx = self._ctx_with_matrix(feats, ["A"])
+        ctx.config["ranking"]["panel_scoring"]["ngboost"]["lambda_sigma"] = 3.0
+        head = _make_fake_head(feats, mu_map={"A": 0.1}, sigma_map={"A": 0.2})
+        ctx._ngboost_head = head  # noqa: SLF001
+
+        ApplyNGBoostTask().run(ctx)
+        # 0.1 - 3.0 * 0.2 = -0.5
+        assert ctx.candidates[0].rank_score == pytest.approx(-0.5)
+
+    def test_noop_when_matrix_missing_features(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
+        feats = ["x_expected"]
+        ctx = self._ctx_with_matrix(["x_different"], ["A"])
+        head = _make_fake_head(feats, mu_map={"A": 0.1}, sigma_map={"A": 0.05})
+        ctx._ngboost_head = head  # noqa: SLF001
+
+        ApplyNGBoostTask().run(ctx)
+        # Because the feature matrix lacks x_expected, predict_distribution
+        # isn't called and candidates keep their original rank_score.
+        assert ctx.candidates[0].rank_score == 0.5
+        assert ctx.candidates[0].mu is None
+
+
+class TestSigmaSizing:
+    """σ-sizing multiplier is plumbed through SizeAndEmitTask."""
+
+    def test_sigma_sizing_reduces_max_pct_for_high_sigma(self):
+        from kernel.sizing import sigma_multiplier
+        cfg = {"enabled": True, "floor": 0.3, "ceiling": 1.0}
+        # σ_median = 0.1, candidate σ = 0.2 → 0.5 multiplier
+        assert sigma_multiplier(0.2, 0.1, cfg) == pytest.approx(0.5)
+
+    def test_sigma_sizing_respects_floor(self):
+        from kernel.sizing import sigma_multiplier
+        cfg = {"enabled": True, "floor": 0.4, "ceiling": 1.0}
+        # σ_median = 0.1, candidate σ = 10.0 → ratio 0.01 → clipped to floor 0.4
+        assert sigma_multiplier(10.0, 0.1, cfg) == 0.4
+
+    def test_sigma_sizing_respects_ceiling(self):
+        from kernel.sizing import sigma_multiplier
+        cfg = {"enabled": True, "floor": 0.3, "ceiling": 1.0}
+        # σ_median = 0.1, candidate σ = 0.01 → ratio 10.0 → clipped to ceiling 1.0
+        assert sigma_multiplier(0.01, 0.1, cfg) == 1.0
+
+    def test_sigma_sizing_disabled_returns_one(self):
+        from kernel.sizing import sigma_multiplier
+        cfg = {"enabled": False, "floor": 0.3, "ceiling": 1.0}
+        assert sigma_multiplier(0.5, 0.1, cfg) == 1.0
+
+    def test_sigma_sizing_none_returns_one(self):
+        from kernel.sizing import sigma_multiplier
+        cfg = {"enabled": True, "floor": 0.3, "ceiling": 1.0}
+        assert sigma_multiplier(None, 0.1, cfg) == 1.0
+        assert sigma_multiplier(0.2, None, cfg) == 1.0
+
+    def test_universe_sigma_median(self):
+        from kernel.sizing import universe_sigma_median
+        assert universe_sigma_median([0.1, 0.3, 0.2]) == pytest.approx(0.2)
+        assert universe_sigma_median([0.2]) == 0.2
+        assert universe_sigma_median([None, 0.0, -1.0]) is None
+        assert universe_sigma_median([]) is None
+
+    def test_size_and_emit_applies_sigma_multiplier(self, monkeypatch):
+        """End-to-end: SizeAndEmitTask reads σ from candidates and scales max_pct."""
+        import datetime as dt
+        from kernel.pipeline.task_selection import SizeAndEmitTask
+        from kernel.pipeline.context import InferenceContext
+        from kernel.selection import CandidateResult
+
+        cfg = _panel_enabled_config()
+        cfg["regime_params"] = {
+            "BULL_CALM": {"max_position_pct": 0.20, "cash_reserve_pct": 0.0},
+        }
+        cfg["ranking"]["panel_scoring"]["sigma_sizing"] = {
+            "enabled": True, "floor": 0.3, "ceiling": 1.0,
+        }
+
+        ctx = InferenceContext(config=cfg, today=dt.date(2026, 4, 20))
+        ctx.regime = "BULL_CALM"
+        ctx.confidence = 1.0
+        ctx.portfolio_value = 100_000.0
+        ctx.cash = 100_000.0
+        low_sigma  = CandidateResult(ticker="LO", raw_score=0, rank_score=0.9,
+                                     rs_score=0, detail="",
+                                     panel_score=0.9, sigma=0.05)
+        high_sigma = CandidateResult(ticker="HI", raw_score=0, rank_score=0.9,
+                                     rs_score=0, detail="",
+                                     panel_score=0.9, sigma=0.20)
+        ctx.ranked = [low_sigma, high_sigma]
+        ctx._selected = ["LO", "HI"]  # noqa: SLF001
+        ctx.prices = {"LO": 100.0, "HI": 100.0}
+
+        SizeAndEmitTask().run(ctx)
+
+        orders = {o["ticker"]: o for o in ctx.orders}
+        assert "LO" in orders and "HI" in orders
+        # σ_median between 0.05 and 0.20 is 0.125.
+        # LO: 0.125 / 0.05 = 2.5, clipped to ceiling 1.0. Max_pct = 0.20 * 1.0 = 0.20.
+        # HI: 0.125 / 0.20 = 0.625. Max_pct = 0.20 * 0.625 = 0.125.
+        assert orders["HI"]["sigma_mult"] == pytest.approx(0.625)
+        assert orders["LO"]["sigma_mult"] == pytest.approx(1.0)
+        # LO should end up larger than HI (same price, same portfolio_value).
+        assert orders["LO"]["shares"] > orders["HI"]["shares"]

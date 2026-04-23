@@ -153,3 +153,78 @@ class TestCrossValidatedIc:
         # Sum of series lengths should equal number of unique dates
         total_test_dates = sum(len(s) for s in out["per_fold_ic_series"])
         assert total_test_dates == panel["date"].nunique()
+
+
+# ── Combinatorial Purged CV ──────────────────────────────────────────────────
+
+from math import comb
+from training_panel.purged_cv import CombinatorialPurgedCV, cross_validated_ic_cpcv
+
+
+class TestCombinatorialPurgedCV:
+    def _panel(self, n_dates=60, n_tickers=8, seed=0):
+        rng = np.random.default_rng(seed)
+        rows = []
+        for d in pd.bdate_range("2024-01-01", periods=n_dates):
+            for i in range(n_tickers):
+                x1 = rng.normal()
+                rows.append({"date": d, "ticker": f"T{i}",
+                             "x1": x1, "x2": rng.normal(),
+                             "label": x1 + 0.2 * rng.normal(),
+                             "weight": 1.0})
+        return pd.DataFrame(rows)
+
+    def test_yields_n_choose_k_splits(self):
+        panel = self._panel(n_dates=60)
+        cv = CombinatorialPurgedCV(n_splits=6, n_test_groups=2,
+                                     embargo_days=2, lookahead_days=5)
+        assert len(list(cv.split(panel))) == comb(6, 2)   # 15
+
+    def test_reduces_to_k_fold_when_n_test_groups_1(self):
+        panel = self._panel(n_dates=40)
+        cv = CombinatorialPurgedCV(n_splits=5, n_test_groups=1,
+                                     embargo_days=2, lookahead_days=5)
+        assert len(list(cv.split(panel))) == 5
+
+    def test_every_row_in_at_least_one_test_fold(self):
+        panel = self._panel(n_dates=30)
+        cv = CombinatorialPurgedCV(n_splits=5, n_test_groups=2,
+                                     embargo_days=1, lookahead_days=3)
+        seen: set[int] = set()
+        for _, test_idx in cv.split(panel):
+            seen.update(int(i) for i in test_idx)
+        assert seen == set(range(len(panel)))
+
+    def test_train_test_disjoint_per_split(self):
+        panel = self._panel(n_dates=30)
+        cv = CombinatorialPurgedCV(n_splits=5, n_test_groups=2,
+                                     embargo_days=1, lookahead_days=3)
+        for train_idx, test_idx in cv.split(panel):
+            assert len(set(train_idx.tolist()) & set(test_idx.tolist())) == 0
+
+    def test_rejects_invalid_n_test_groups(self):
+        panel = self._panel(n_dates=30)
+        with pytest.raises(ValueError, match="n_test_groups"):
+            list(CombinatorialPurgedCV(n_splits=5, n_test_groups=0).split(panel))
+        with pytest.raises(ValueError, match="n_test_groups"):
+            list(CombinatorialPurgedCV(n_splits=5, n_test_groups=5).split(panel))
+
+    def test_cpcv_produces_ic_distribution(self):
+        panel = self._panel(n_dates=60, n_tickers=10, seed=1)
+        cv = CombinatorialPurgedCV(n_splits=6, n_test_groups=2,
+                                     embargo_days=1, lookahead_days=3)
+
+        class _Stub:
+            def fit(self, X, y, sample_weight=None):
+                pass
+            def predict(self, X):
+                return X["x1"].values
+
+        result = cross_validated_ic_cpcv(
+            _Stub, panel, feature_cols=["x1", "x2"], label_col="label", cv=cv,
+        )
+        assert len(result["per_fold_ic"]) == comb(6, 2)
+        assert result["mean_ic"] > 0.2     # x1 is truly predictive
+        assert "quantiles" in result
+        q = result["quantiles"]
+        assert q["q05"] <= q["q50"] <= q["q95"]

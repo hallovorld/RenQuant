@@ -5,6 +5,60 @@ Self-contained: no common/ imports.
 from __future__ import annotations
 
 
+def sigma_multiplier(
+    sigma: float | None,
+    sigma_median: float | None,
+    sigma_cfg: dict | None,
+) -> float:
+    """Scale factor ∈ [floor, ceiling] based on predictive σ.
+
+    High-σ candidates get smaller sizes: `mult = clip(σ_median / σ, floor, ceiling)`.
+    A candidate at the universe median gets multiplier 1.0.
+
+    Returns 1.0 when σ-sizing is disabled, σ is missing, or the median is
+    not a positive finite number (i.e. no change from existing behaviour).
+
+    sigma_cfg keys (all optional):
+      enabled : bool, default False
+      floor   : minimum multiplier, default 0.3
+      ceiling : maximum multiplier, default 1.0  (don't oversize low-σ candidates)
+    """
+    if not sigma_cfg or not sigma_cfg.get("enabled", False):
+        return 1.0
+    if sigma is None or sigma_median is None:
+        return 1.0
+    try:
+        s = float(sigma)
+        med = float(sigma_median)
+    except (TypeError, ValueError):
+        return 1.0
+    if not (s > 0.0 and med > 0.0):
+        return 1.0
+    try:
+        floor = float(sigma_cfg.get("floor", 0.3))
+        ceil  = float(sigma_cfg.get("ceiling", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    if ceil < floor:
+        return 1.0
+    m = med / s
+    return max(floor, min(ceil, m))
+
+
+def universe_sigma_median(sigmas: list[float | None]) -> float | None:
+    """Median over non-None, positive, finite σ values. None if empty."""
+    import math
+    vals = [float(s) for s in sigmas
+            if s is not None and math.isfinite(float(s)) and float(s) > 0.0]
+    if not vals:
+        return None
+    vals.sort()
+    n = len(vals)
+    if n % 2 == 1:
+        return vals[n // 2]
+    return 0.5 * (vals[n // 2 - 1] + vals[n // 2])
+
+
 def conviction_multiplier(panel_score: float | None, sizing_cfg: dict | None) -> float:
     """Scale factor in [min_mult, 1.0] derived from a candidate's panel score.
 

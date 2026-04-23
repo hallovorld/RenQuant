@@ -162,3 +162,99 @@ class TestBuildFactorBundle:
         ohlcv = {"A": _make_ohlcv(n=300, seed=301)}
         bundle = build_factor_bundle(ohlcv, spy)
         assert bundle["A"].index.equals(ohlcv["A"].index)
+
+
+class TestFundamentalFactors:
+    """build_factor_bundle emits fundamental z-columns when fundamentals given."""
+
+    def _make_universe(self, n_tickers: int = 5, n_bars: int = 400):
+        spy = _make_ohlcv(n=n_bars, seed=500)
+        ohlcv = {f"S{i}": _make_ohlcv(n=n_bars, seed=i + 600)
+                 for i in range(n_tickers)}
+        return ohlcv, spy
+
+    def test_no_fundamentals_means_no_extra_columns(self):
+        from training_panel.factors import build_factor_bundle
+        ohlcv, spy = self._make_universe()
+        bundle = build_factor_bundle(ohlcv, spy, fundamentals=None)
+        for df in bundle.values():
+            for col in ("earnings_yield_z", "roe_z", "gross_profitability_z",
+                        "book_to_price_z"):
+                assert col not in df.columns
+
+    def test_fundamentals_add_four_z_columns(self):
+        from training_panel.factors import build_factor_bundle
+        ohlcv, spy = self._make_universe()
+        fundamentals = {
+            "S0": {"earnings_yield": 0.05, "roe": 0.20,
+                   "gross_profitability": 0.30, "book_to_price": 0.25},
+            "S1": {"earnings_yield": 0.03, "roe": 0.15,
+                   "gross_profitability": 0.20, "book_to_price": 0.40},
+            "S2": {"earnings_yield": 0.08, "roe": 0.10,
+                   "gross_profitability": 0.25, "book_to_price": 0.20},
+            "S3": {"earnings_yield": 0.04, "roe": 0.18,
+                   "gross_profitability": 0.35, "book_to_price": 0.30},
+            "S4": {"earnings_yield": 0.06, "roe": 0.22,
+                   "gross_profitability": 0.28, "book_to_price": 0.22},
+        }
+        bundle = build_factor_bundle(ohlcv, spy, fundamentals=fundamentals)
+
+        for t, df in bundle.items():
+            for col in ("earnings_yield_z", "roe_z", "gross_profitability_z",
+                        "book_to_price_z"):
+                assert col in df.columns, f"{t} missing {col}"
+            # Static across each ticker's date index
+            assert df["earnings_yield_z"].nunique(dropna=True) == 1
+
+    def test_fundamental_zscore_cross_sectionally_normalised(self):
+        """Per-column mean across tickers = 0, std = 1 (modulo ddof)."""
+        from training_panel.factors import build_factor_bundle
+        ohlcv, spy = self._make_universe()
+        fundamentals = {
+            "S0": {"earnings_yield": 0.05, "roe": 0.10,
+                   "gross_profitability": 0.30, "book_to_price": 0.25},
+            "S1": {"earnings_yield": 0.03, "roe": 0.20,
+                   "gross_profitability": 0.20, "book_to_price": 0.40},
+            "S2": {"earnings_yield": 0.08, "roe": 0.30,
+                   "gross_profitability": 0.10, "book_to_price": 0.55},
+            "S3": {"earnings_yield": 0.04, "roe": 0.40,
+                   "gross_profitability": 0.40, "book_to_price": 0.30},
+            "S4": {"earnings_yield": 0.06, "roe": 0.50,
+                   "gross_profitability": 0.50, "book_to_price": 0.10},
+        }
+        bundle = build_factor_bundle(ohlcv, spy, fundamentals=fundamentals)
+
+        # Pick the last bar (all tickers have a z value there) and check
+        last_bar_z = [bundle[t]["earnings_yield_z"].iloc[-1] for t in fundamentals]
+        arr = pd.Series(last_bar_z)
+        assert abs(arr.mean()) < 1e-8
+        assert abs(arr.std(ddof=1) - 1.0) < 1e-6
+
+    def test_missing_fundamental_filled_with_sector_median(self):
+        """NaN factor values fill with same-sector median before z-scoring."""
+        from training_panel.factors import build_factor_bundle
+        ohlcv, spy = self._make_universe()
+        fundamentals = {
+            "S0": {"earnings_yield": 0.05},  # tech
+            "S1": {"earnings_yield": 0.07},  # tech
+            "S2": {},                         # tech, missing — filled to tech median 0.06
+            "S3": {"earnings_yield": 0.02},  # fin
+            "S4": {"earnings_yield": 0.04},  # fin
+        }
+        sector_map = {"S0": "tech", "S1": "tech", "S2": "tech",
+                      "S3": "fin",  "S4": "fin"}
+        bundle = build_factor_bundle(
+            ohlcv, spy, fundamentals=fundamentals, sector_map=sector_map,
+        )
+        # Check z values are finite (not NaN) for S2
+        s2 = bundle["S2"]["earnings_yield_z"].iloc[-1]
+        assert pd.notna(s2)
+
+    def test_empty_fundamentals_dict_no_columns(self):
+        """Empty fundamentals dict is treated the same as None."""
+        from training_panel.factors import build_factor_bundle
+        ohlcv, spy = self._make_universe(n_tickers=2)
+        bundle = build_factor_bundle(ohlcv, spy, fundamentals={})
+        for df in bundle.values():
+            for col in ("earnings_yield_z", "roe_z"):
+                assert col not in df.columns

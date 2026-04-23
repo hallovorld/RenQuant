@@ -106,6 +106,60 @@ class TestBlendWeights:
         assert (w_rank, w_rs) == (0.5, 0.5)
 
 
+class TestBlendScoresTaskIgnoresRs:
+    """BlendScoresTask hardcodes (1.0, 0.0) — rs_score is no longer blended."""
+
+    def _make_ctx(self, blend_weights=None):
+        import datetime as dt
+        from kernel.pipeline.context import InferenceContext
+        from kernel.selection import CandidateResult
+        ranking: dict = {}
+        if blend_weights is not None:
+            ranking["blend_weights"] = blend_weights
+        ctx = InferenceContext(config={"ranking": ranking}, today=dt.date(2026, 4, 22))
+        ctx.candidates = [
+            # rank=0.1, rs=0.9 — if rs still counted it'd win. rank=0.9 must win.
+            CandidateResult(ticker="RS_ONLY",   raw_score=0, rank_score=0.1,
+                            rs_score=0.9, detail="", expected_return=0),
+            CandidateResult(ticker="RANK_ONLY", raw_score=0, rank_score=0.9,
+                            rs_score=0.1, detail="", expected_return=0),
+        ]
+        return ctx
+
+    def test_blend_weights_hardcoded(self):
+        from kernel.pipeline.task_ranking import BlendScoresTask
+        ctx = self._make_ctx()
+        BlendScoresTask().run(ctx)
+        assert ctx._blend_w == (1.0, 0.0)  # noqa: SLF001
+
+    def test_ranking_reflects_rank_only(self):
+        """The rank_score ordering must match, regardless of rs_score."""
+        from kernel.pipeline.task_ranking import BlendScoresTask, SortCandidatesTask
+        ctx = self._make_ctx()
+        BlendScoresTask().run(ctx)
+        SortCandidatesTask().run(ctx)
+        assert [c.ticker for c in ctx.ranked] == ["RANK_ONLY", "RS_ONLY"]
+
+    def test_legacy_config_rs_weight_warns_and_ignored(self, caplog):
+        """Stale `blend_weights` with non-zero rs contribution is logged and ignored."""
+        import logging as _l
+        from kernel.pipeline.task_ranking import BlendScoresTask
+        ctx = self._make_ctx(blend_weights=[0.5, 0.5])  # stale
+        with caplog.at_level(_l.WARNING, logger="kernel.pipeline.ranking"):
+            BlendScoresTask().run(ctx)
+        assert any("legacy ranking.blend_weights" in r.message for r in caplog.records)
+        assert ctx._blend_w == (1.0, 0.0)  # noqa: SLF001
+
+    def test_legacy_config_zero_rs_no_warning(self, caplog):
+        """`blend_weights=[1,0]` is the silent no-op case — no warning needed."""
+        import logging as _l
+        from kernel.pipeline.task_ranking import BlendScoresTask
+        ctx = self._make_ctx(blend_weights=[1.0, 0.0])
+        with caplog.at_level(_l.WARNING, logger="kernel.pipeline.ranking"):
+            BlendScoresTask().run(ctx)
+        assert not any("legacy ranking.blend_weights" in r.message for r in caplog.records)
+
+
 # ── predict_score_bulk on all model types ─────────────────────────────────────
 
 class TestPredictScoreBulkAllModels:

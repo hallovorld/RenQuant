@@ -31,6 +31,8 @@ class HoldingState:
     rank_score:      float | None = None   # latest calibrated probability (set by ScoreModelTask)
     expected_return: float | None = None   # latest E[R-SPY] over rotation horizon
     panel_score:     float | None = None   # latest cross-sectional panel-LTR score (set by PanelScoringJob)
+    mu:              float | None = None   # latest NGBoost μ (set by PanelScoringJob)
+    sigma:           float | None = None   # latest NGBoost σ (set by PanelScoringJob)
 
 
 # ── Exit result ────────────────────────────────────────────────────────────────

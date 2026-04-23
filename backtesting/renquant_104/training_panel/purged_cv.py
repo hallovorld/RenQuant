@@ -174,3 +174,114 @@ def cross_validated_ic(
         "per_fold_ic": per_fold_mean,
         "per_fold_ic_series": per_fold_series,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Combinatorial Purged CV (López de Prado AFML §12)
+# Instead of 1 train/test split per fold, we enumerate C(N, k) combinations of
+# k test groups out of N. Result: a richer distribution of OOS IC estimates.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from itertools import combinations
+
+
+@dataclass
+class CombinatorialPurgedCV:
+    """Purged K-fold where each split tests on `n_test_groups` groups.
+
+    With `n_splits=6, n_test_groups=2`, yields C(6, 2) = 15 distinct
+    train/test splits — each a valid OOS estimate. Aggregate mean/std/quantiles
+    give a distribution of IC rather than a single noisy mean.
+
+    When `n_test_groups == 1` this reduces to standard PurgedKFold.
+    """
+    n_splits: int = 6
+    n_test_groups: int = 2
+    embargo_days: int = 5
+    lookahead_days: int = 5
+
+    def split(
+        self, panel: pd.DataFrame, date_col: str = "date",
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        if self.n_splits < 2:
+            raise ValueError("n_splits must be >= 2")
+        if self.n_test_groups < 1 or self.n_test_groups >= self.n_splits:
+            raise ValueError(
+                f"n_test_groups must be in [1, n_splits-1] "
+                f"(got {self.n_test_groups}, n_splits={self.n_splits})",
+            )
+
+        dates = pd.to_datetime(panel[date_col]).values
+        unique_dates = np.array(sorted(set(dates)))
+        n_dates = len(unique_dates)
+        if n_dates < self.n_splits:
+            raise ValueError(
+                f"Not enough unique dates ({n_dates}) for {self.n_splits}-fold CV",
+            )
+
+        fold_edges = np.linspace(0, n_dates, self.n_splits + 1, dtype=int)
+        groups = [unique_dates[fold_edges[k]:fold_edges[k + 1]]
+                  for k in range(self.n_splits)]
+
+        all_idx = np.arange(len(panel), dtype=np.int64)
+
+        for combo in combinations(range(self.n_splits), self.n_test_groups):
+            test_dates = np.concatenate([groups[k] for k in combo])
+            test_mask  = np.isin(dates, test_dates)
+            test_idx   = all_idx[test_mask]
+
+            # Build purge + embargo windows for each contiguous test block.
+            # Since combo might be non-contiguous (e.g. folds 0 and 3),
+            # we apply purge/embargo to each selected group separately.
+            train_mask = ~test_mask
+            for k in combo:
+                block = groups[k]
+                block_start = block[0]
+                block_end   = block[-1]
+                purge_start = pd.Timestamp(block_start) - pd.Timedelta(
+                    days=int(self.lookahead_days) - 1,
+                )
+                embargo_end = pd.Timestamp(block_end) + pd.Timedelta(
+                    days=int(self.embargo_days),
+                )
+                leak_mask = (
+                    (dates >= np.datetime64(purge_start))
+                    & (dates < np.datetime64(block_start))
+                )
+                train_mask &= ~leak_mask
+                emb_mask = (
+                    (dates > np.datetime64(block_end))
+                    & (dates <= np.datetime64(embargo_end))
+                )
+                train_mask &= ~emb_mask
+
+            train_idx = all_idx[train_mask]
+            yield train_idx, test_idx
+
+
+def cross_validated_ic_cpcv(
+    model_factory: Callable,
+    panel: pd.DataFrame,
+    feature_cols: list[str],
+    label_col: str,
+    cv: CombinatorialPurgedCV,
+    weight_col: str | None = "weight",
+) -> dict:
+    """Same as `cross_validated_ic` but returns a distribution of IC.
+
+    Returns dict with:
+      - mean_ic, std_ic   — across splits
+      - quantiles         — dict of {0.05, 0.25, 0.5, 0.75, 0.95}
+      - per_fold_ic       — list of per-split mean ICs
+      - per_fold_ic_series — list of per-date IC Series per split
+    """
+    result = cross_validated_ic(
+        model_factory, panel, feature_cols, label_col, cv, weight_col,
+    )
+    fold_ics = np.asarray(result["per_fold_ic"], dtype=float)
+    qs = np.quantile(fold_ics, [0.05, 0.25, 0.5, 0.75, 0.95]) if len(fold_ics) else np.full(5, np.nan)
+    result["quantiles"] = {
+        "q05": float(qs[0]), "q25": float(qs[1]), "q50": float(qs[2]),
+        "q75": float(qs[3]), "q95": float(qs[4]),
+    }
+    return result

@@ -132,4 +132,88 @@ def fetch_ohlcv(
     return df
 
 
-__all__ = ["LocalStore", "fetch_ohlcv"]
+def fetch_intraday_bars(
+    symbols: list[str] | str,
+    *,
+    timeframe: str = "5Min",
+    start: "datetime.datetime | None" = None,
+    end: "datetime.datetime | None" = None,
+    limit: int = 10_000,
+) -> dict[str, pd.DataFrame]:
+    """Fetch intraday bars via Alpaca's IEX feed (free tier).
+
+    `timeframe` is an Alpaca string: "1Min", "5Min", "15Min", "1Hour", "1Day".
+    `start`/`end` are datetime objects (UTC or naive — Alpaca treats naive as UTC).
+    Returns `{symbol: DataFrame}` with columns [open, high, low, close, volume, ...].
+
+    Credentials are read from the ALPACA_API_KEY / ALPACA_SECRET_KEY env vars
+    (populate via .env before calling).
+    """
+    import datetime as _dt
+    import os
+
+    if isinstance(symbols, str):
+        symbols = [symbols]
+    if not symbols:
+        return {}
+
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from alpaca.data.enums import DataFeed
+    except ImportError as exc:
+        raise RuntimeError("alpaca-py not installed") from exc
+
+    key    = os.environ.get("ALPACA_API_KEY")
+    secret = os.environ.get("ALPACA_SECRET_KEY")
+    if not key or not secret:
+        raise RuntimeError(
+            "fetch_intraday_bars: ALPACA_API_KEY + ALPACA_SECRET_KEY must be set "
+            "(source .env before running)",
+        )
+
+    # Parse timeframe
+    tf_map = {
+        "1Min": TimeFrame(1, TimeFrameUnit.Minute),
+        "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+        "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+        "1Hour": TimeFrame(1, TimeFrameUnit.Hour),
+        "1Day": TimeFrame(1, TimeFrameUnit.Day),
+    }
+    if timeframe not in tf_map:
+        raise ValueError(f"Unknown Alpaca timeframe {timeframe!r}. "
+                          f"Supported: {list(tf_map.keys())}")
+
+    now = _dt.datetime.utcnow()
+    if end is None:
+        end = now
+    if start is None:
+        # Default: last 5 market days
+        start = end - _dt.timedelta(days=7)
+
+    client = StockHistoricalDataClient(api_key=key, secret_key=secret)
+    # Force IEX feed — free tier can't query current-day SIP data
+    req = StockBarsRequest(
+        symbol_or_symbols=symbols,
+        timeframe=tf_map[timeframe],
+        start=start,
+        end=end,
+        limit=limit,
+        feed=DataFeed.IEX,
+    )
+    bars = client.get_stock_bars(req)
+    df_all = bars.df
+
+    out: dict[str, pd.DataFrame] = {}
+    if df_all is None or df_all.empty:
+        return out
+    # Alpaca returns a MultiIndex DataFrame (symbol, timestamp)
+    for sym in symbols:
+        if sym in df_all.index.get_level_values(0):
+            sub = df_all.xs(sym, level=0).copy()
+            out[sym] = sub
+    return out
+
+
+__all__ = ["LocalStore", "fetch_ohlcv", "fetch_intraday_bars"]
