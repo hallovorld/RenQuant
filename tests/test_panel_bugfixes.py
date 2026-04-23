@@ -38,9 +38,17 @@ if str(_STRATEGY_DIR) not in sys.path:
 # ── Bug #1: ApplyGlobalCalibrationTask must run in additive mode ────────────
 
 class TestApplyGlobalCalibrationTask:
-    """ApplyGlobalCalibrationTask should defer to NGBoost only when NGBoost
-    actually overrides rank_score (mu_minus_lambda_sigma mode). In additive
-    mode the global calibrator is responsible for rank_score."""
+    """Per 2026-04-23 task #2 reorder (commit 339944b): calibration ALWAYS
+    runs after ApplyNGBoostTask, regardless of score_mode. So rank_score
+    ends as the calibrated probability in both additive and μ−λσ modes.
+
+    In μ−λσ mode ApplyNGBoostTask writes `μ − λσ` onto panel_score before
+    this task fires, so the calibrator maps `μ − λσ → probability` using
+    the same isotonic (same scale). The original "defers to NGBoost" test
+    reflected pre-reorder semantics where calibration short-circuited in
+    μ−λσ mode — that behavior was removed because it left rank_score as
+    raw μ−λσ ∈ [~-0.06, +0.04], always below the 0.10 tier floor.
+    """
 
     def _make_ctx(self, ngboost_enabled: bool, score_mode: str):
         from kernel.pipeline.context import InferenceContext
@@ -78,15 +86,17 @@ class TestApplyGlobalCalibrationTask:
         ApplyGlobalCalibrationTask().run(ctx)
         assert ctx.candidates[0].rank_score == pytest.approx(0.75)
 
-    def test_mu_minus_lambda_sigma_defers_to_ngboost(self):
-        """In μ−λσ mode, calibration is skipped (NGBoost overrides)."""
+    def test_mu_minus_lambda_sigma_also_runs_calibration(self):
+        """In μ−λσ mode, calibration runs too. NGBoost writes μ−λσ onto
+        panel_score first; the calibrator then maps that through the
+        isotonic (same scale → directionally monotone result)."""
         from kernel.panel_pipeline.job_panel_scoring import ApplyGlobalCalibrationTask
         ctx = self._make_ctx(ngboost_enabled=True, score_mode="mu_minus_lambda_sigma")
         # rank_score starts as 0.02 (raw panel score written by ApplyScoresTask)
         assert ctx.candidates[0].rank_score == pytest.approx(0.02)
         ApplyGlobalCalibrationTask().run(ctx)
-        # μ−λσ mode: calibration skipped, rank_score unchanged
-        assert ctx.candidates[0].rank_score == pytest.approx(0.02)
+        # Post-reorder: calibration runs, rank_score becomes the fake's 0.75
+        assert ctx.candidates[0].rank_score == pytest.approx(0.75)
 
     def test_ngboost_disabled_runs_calibration(self):
         """When NGBoost is disabled entirely, calibration must run."""
