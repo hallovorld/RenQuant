@@ -237,6 +237,7 @@ FUNDAMENTAL_COLS: list[str] = [
     "roe",
     "gross_profitability",
     "book_to_price",
+    "short_pct_float",   # yfinance .info.shortPercentOfFloat — orthogonal sentiment factor
 ]
 
 

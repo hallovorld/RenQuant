@@ -381,7 +381,8 @@
       "gross_profitability_z": 1,
       "realized_vol_z": -1,
       "amihud_illiq_z": 1,
-      "price_to_high_z": 1
+      "price_to_high_z": 1,
+      "short_pct_float_z": -1
     },
     "drop_cols": [
       "volume_shift_z",
