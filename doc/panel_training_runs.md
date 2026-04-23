@@ -23,6 +23,55 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 eve PT — σ-penalty λ sweep — SHELVED at all λ
+
+Plan C. Kept `score_mode=mu_minus_lambda_sigma` across all runs so the
+reordered calibrator (commit `339944b`) actually maps μ−λσ → probability.
+Swept λ ∈ {0.0, 0.1, 0.25, 0.5, 1.0} against an `additive, λ=0` baseline
+reusing the current panel-ltr + ngboost artifacts on disk. No retrains
+needed — only `ranking.panel_scoring.ngboost.{score_mode, lambda_sigma}`
+flipped between runs. All sims were 27-month OOS with
+`fundamentals.allow_fetch=False` (panel was already on disk — stripped
+live fetch only; re-uses baked-in factor z-scores).
+
+**Results:**
+
+| mode                  | λ    | APY    | Δ APY   | win | buys | streak |
+|-----------------------|-----:|-------:|--------:|----:|----:|------:|
+| additive (baseline)   | 0.00 | +31.97% |   —     | 81% | 161 | 30d   |
+| μ−λσ                  | 0.00 | +26.55% |  −5.4  | 74% | 146 | 28d   |
+| μ−λσ                  | 0.10 | +30.55% |  −1.4  | 74% | 146 | 30d   |
+| **μ−λσ**              | 0.25 | +33.94% |  +2.0  | 83% | 129 | 41d   |
+| μ−λσ                  | 0.50 | +15.18% | −16.8  | 85% |  73 | 40d   |
+| μ−λσ                  | 1.00 |  +3.68% | −28.3  | 75% |  17 | 53d   |
+
+**Diagnosis:**
+- λ=0.25 is the only positive delta but only by +2 APY pts — below the
+  +3 pt promotion threshold. Win rate does lift (81% → 83%) but buy
+  count drops 161 → 129, so total compounding is close to flat.
+- Above λ≥0.5 the σ penalty starves the ranker of trades (17 buys
+  at λ=1.0) and the 53-day max-streak becomes unacceptable under the
+  monitoring invariant (< 20 days).
+- The sweep baseline does NOT match the documented T4 golden (+40.1%
+  APY) because the sim disables live-fetch for fundamentals/earnings/
+  insider. Absolute APYs are lower but relative Δs between λ values
+  are still valid.
+
+**Action taken:**
+- Keep `score_mode=additive` as golden (unchanged).
+- Shelve μ−λσ as a ranking-score override at constant λ. May revisit
+  if the σ head is re-fit on a panel with NGBoost's predicted variance
+  better-calibrated (Plan F depends on regime data so is decoupled).
+- σ-sizing multiplier (separate feature, knob is
+  `sigma_sizing.enabled`) is not affected — this was only a study of
+  how σ should bias the *ranking* score.
+- Task E (re-fit global calibrator on μ−λσ distribution) is cancelled
+  — it was conditional on C showing a winner.
+
+Log: `/tmp/sigma_sweep.log` (6 sims, ~7min each).
+
+---
+
 ## A/B — 2026-04-23 late PT — LightGBM backend shelved (APY −12.7 pts)
 
 Task B / plan-A/B. Compared XGBoost (current golden backend) against
