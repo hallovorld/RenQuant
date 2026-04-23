@@ -232,6 +232,18 @@ class PanelTransformerModel:
             except Exception:
                 pass
 
+        # Single-thread CPU guard: PyTorch + OpenMP deadlock in processes
+        # that previously used `fork`-based multiprocessing (e.g. the panel
+        # pipeline's parallel TickerPanelFeatureJob workers). Forcing
+        # set_num_threads(1) here keeps training on the main thread and
+        # avoids the fork/OMP interaction entirely. Performance cost is
+        # minimal for our 47k-row panel; MPS isn't affected (dispatches to
+        # its own backend). Safe to leave on unconditionally.
+        try:
+            torch.set_num_threads(1)
+        except Exception:
+            pass
+
         # Build batches
         xtr, ytr, padtr = _build_date_groups(
             panel, group_sizes, feature_cols, label_col, p.max_tickers,

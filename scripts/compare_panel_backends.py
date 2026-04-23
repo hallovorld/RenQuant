@@ -76,13 +76,35 @@ def _run_one(strategy: str, backend: str, device: str | None,
     # Override backend in-memory; don't write to disk.
     panel_cfg = dict(config.get("panel_ltr", {}))
     panel_cfg["backend"] = backend
+    # Disable NGBoost head during the A/B. It's a separate Normal(μ, σ) head
+    # that doesn't affect the panel CV IC we're comparing, adds ~5-8 min per
+    # backend, and would require a follow-up pass to re-fit on whichever
+    # backend we ship. Keep the comparison focused on panel IC + speed.
+    panel_cfg["ngboost"] = {**panel_cfg.get("ngboost", {}), "enabled": False}
+
+    # Cap CV cost so the A/B finishes in a reasonable wall-clock window.
+    # CrossValidateTask uses num_boost_round // 2 per fold; 15-split CPCV
+    # multiplies by 15. The default (num_boost_round=150, cv_method=cpcv,
+    # cv_n_splits=6 nC2=15) results in 1125 epoch-fits for a transformer
+    # — measured ~40+ min CPU single-thread. We use a 5-fold purged K-fold
+    # CV here instead (cheaper, close enough for a ranking comparison).
+    panel_cfg["cv_method"]     = "purged"
+    panel_cfg["cv_n_splits"]   = 5
+    # Transformer-side round budget: explicit --transformer-epochs beats
+    # config; if not provided, use a modest default. XGBoost keeps its
+    # configured num_boost_round so its baseline isn't crippled.
     if backend == "transformer":
         tf = dict(panel_cfg.get("transformer_params", {}))
         if device:
             tf["device"] = device
         if transformer_epochs:
             tf["max_epochs"] = int(transformer_epochs)
+        else:
+            tf.setdefault("max_epochs", 30)
         panel_cfg["transformer_params"] = tf
+        # Override num_boost_round for the CV adapter too (it reads this
+        # and halves it per fold; keep total CV work ≈ 5 × 15 = 75 epochs).
+        panel_cfg["num_boost_round"] = int(tf.get("max_epochs", 30))
     config["panel_ltr"] = panel_cfg
     # Force the retrain even on non-cadence days.
     config["training"] = {**config.get("training", {}), "cadence": "daily"}
