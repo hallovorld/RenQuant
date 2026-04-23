@@ -35,6 +35,10 @@ class PanelTrainingContext:
     # Earnings surprise history per ticker (sparse — one row per announcement);
     # TickerPanelFactorJob forward-fills to daily via compute_earnings_surprise_cum.
     earnings_surprises: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # SEC Form 4 executive-only insider trades per ticker (sparse — one row
+    # per transaction). TickerPanelFactorJob produces daily trailing-90d net
+    # buy via compute_insider_net_buy_cum.
+    insider_trades: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
@@ -84,6 +88,7 @@ class TickerPanelContext:
     config: dict[str, Any]
     fundamentals: dict[str, dict[str, float]] = field(default_factory=dict)  # shared read-only
     earnings_surprises: dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
+    insider_trades:     dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
 
     # Outputs — written by per-ticker jobs
     feature_frame: pd.DataFrame | None = None

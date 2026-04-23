@@ -281,10 +281,57 @@ class LoadEarningsSurpriseTask(PanelTask):
                  len(out), len(ctx.watchlist))
 
 
-class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum + fundamentals + earnings.
+class LoadInsiderTradesTask(PanelTask):
+    """Populate ctx.insider_trades from the parquet cache (or fetch from SEC).
 
-    Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals → LoadEarningsSurprise
+    No-op when `panel_ltr.insider_trades.enabled` is false. Executive-only
+    (isOfficer=true) Form 4 open-market transactions.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = ctx.config.get("panel_ltr", {}).get("insider_trades", {})
+        if not cfg.get("enabled", False):
+            return
+        if ctx.insider_trades:
+            return
+
+        from kernel.insider_trades import (  # noqa: PLC0415
+            InsiderTradesStore, fetch_insider_trades_watchlist,
+        )
+
+        cache_dir = cfg.get("cache_dir", "data/insider_trades")
+        max_filings = int(cfg.get("max_filings", 200))
+        store = InsiderTradesStore(data_dir=cache_dir)
+
+        out: dict = {}
+        for sym in ctx.watchlist:
+            cached = store.load(sym)
+            if cached is not None and not cached.empty:
+                out[sym] = cached
+        missing = [s for s in ctx.watchlist if s not in out]
+        if missing and cfg.get("allow_fetch", True):
+            log.info("LoadInsiderTradesTask: fetching %d missing tickers (rate-limited SEC)",
+                     len(missing))
+            try:
+                fresh = fetch_insider_trades_watchlist(
+                    missing, max_filings=max_filings,
+                )
+                for sym, df in fresh.items():
+                    if df is not None and not df.empty:
+                        out[sym] = df
+            except Exception as exc:
+                log.warning("LoadInsiderTradesTask: fetch failed — %s", exc)
+
+        ctx.insider_trades = out
+        log.info("LoadInsiderTradesTask: %d / %d tickers with insider rows",
+                 len(out), len(ctx.watchlist))
+
+
+class PanelDataJob(PanelJob):
+    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders.
+
+    Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
+                → LoadEarningsSurprise → LoadInsiderTrades
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -297,6 +344,7 @@ class PanelDataJob(PanelJob):
             SectorMomentumTask(),
             LoadFundamentalsTask(),
             LoadEarningsSurpriseTask(),
+            LoadInsiderTradesTask(),
         ]
 
 
@@ -321,6 +369,7 @@ class PanelFeatureJob(PanelJob):
                 config=ctx.config,
                 fundamentals=ctx.fundamentals,
                 earnings_surprises=ctx.earnings_surprises,
+                insider_trades=ctx.insider_trades,
             )
             for t in ctx.watchlist if t in ctx.ohlcv
         ]
@@ -419,6 +468,7 @@ class TickerPanelFactorJob(PanelTickerJob):
             FUNDAMENTAL_COLS,
         )
         from kernel.earnings_surprise import compute_earnings_surprise_cum
+        from kernel.insider_trades    import compute_insider_net_buy_cum
         try:
             one = {tc.ticker: tc.ohlcv[tc.ticker]}
             size = compute_size_feature(one, None).get(tc.ticker)
@@ -465,6 +515,17 @@ class TickerPanelFactorJob(PanelTickerJob):
                 ).get(tc.ticker)
                 cols["earnings_surprise_cum"] = (
                     surprise_daily if surprise_daily is not None
+                    else pd.Series(float("nan"), index=idx)
+                )
+            # Insider trades: trailing-90d cumulative net executive buy (USD).
+            if tc.insider_trades:
+                insider_daily = compute_insider_net_buy_cum(
+                    {tc.ticker: tc.insider_trades.get(tc.ticker, pd.DataFrame())},
+                    {tc.ticker: tc.ohlcv[tc.ticker]},
+                    trailing_days=90,
+                ).get(tc.ticker)
+                cols["insider_net_buy_90d"] = (
+                    insider_daily if insider_daily is not None
                     else pd.Series(float("nan"), index=idx)
                 )
             tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
@@ -567,6 +628,8 @@ class FactorZScoreTask(PanelTask):
             "realized_vol", "drawdown_peak",
             # Round 4+ time-varying fundamentals (opt-in via config)
             "earnings_surprise_cum",
+            # Round 5: SEC Form 4 executive-only insider trades (opt-in)
+            "insider_net_buy_90d",
         ]
         per_col: dict[str, dict[str, pd.Series]] = {}
         for col in raw_cols:
@@ -607,7 +670,7 @@ class FactorZScoreTask(PanelTask):
             # Round 3+: append z-scored orthogonal factors
             for c in ("amihud_illiq", "volume_shift", "price_to_high",
                       "realized_vol", "drawdown_peak",
-                      "earnings_surprise_cum"):
+                      "earnings_surprise_cum", "insider_net_buy_90d"):
                 if c in z:
                     cols[f"{c}_z"] = z[c].get(t, pd.Series(index=idx)).reindex(idx)
             for col in FUNDAMENTAL_COLS:

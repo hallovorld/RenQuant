@@ -20,6 +20,7 @@ from .pp_panel_training import (
     NeutralizedFeatureZScoreTask,
     LoadFundamentalsTask,
     LoadEarningsSurpriseTask,
+    LoadInsiderTradesTask,
     PanelFeatureJob,
     PanelAssemblyJob,
     PanelModelJob,
@@ -71,6 +72,7 @@ def prepare_inference_panel_frames(
     SectorMomentumTask().run(ctx)
     LoadFundamentalsTask().run(ctx)
     LoadEarningsSurpriseTask().run(ctx)
+    LoadInsiderTradesTask().run(ctx)
 
     ticker_ctxs = [
         TickerPanelContext(
@@ -78,6 +80,7 @@ def prepare_inference_panel_frames(
             ticker_sectors=ctx.ticker_sectors, config=ctx.config,
             fundamentals=ctx.fundamentals,
             earnings_surprises=ctx.earnings_surprises,
+            insider_trades=ctx.insider_trades,
         )
         for t in ctx.watchlist if t in ctx.ohlcv
     ]

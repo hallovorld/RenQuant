@@ -382,7 +382,8 @@
       "realized_vol_z": -1,
       "amihud_illiq_z": 1,
       "price_to_high_z": 1,
-      "short_pct_float_z": -1
+      "short_pct_float_z": -1,
+      "insider_net_buy_90d_z": 1
     },
     "drop_cols": [
       "volume_shift_z",
@@ -392,6 +393,12 @@
       "enabled": true,
       "cache_dir": "data/earnings_surprise",
       "allow_fetch": true
+    },
+    "insider_trades": {
+      "enabled": true,
+      "cache_dir": "data/insider_trades",
+      "allow_fetch": true,
+      "max_filings": 200
     }
   },
   "training": {
