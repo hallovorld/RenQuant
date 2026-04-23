@@ -915,19 +915,35 @@ class CrossValidateTask(PanelTask):
             class _SklearnAdapter:
                 def __init__(self):
                     self._m = PanelTransformerModel(params=tf_params)
+                    self._feature_cols: list[str] | None = None
                 def fit(self, X, y, sample_weight=None):
                     df = X.copy()
                     df["label"] = y
                     df["date"] = panel.loc[X.index, "date"].values
                     df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
                     gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    self._feature_cols = list(X.columns)
                     self._m.train(
-                        df, gs, feature_cols=list(X.columns),
+                        df, gs, feature_cols=self._feature_cols,
                         label_col="label", weight_col=None,
                         num_boost_round=cv_epochs,
                     )
                 def predict(self, X):
-                    return self._m.predict(X.copy()).values
+                    # Transformer predict requires a `date` column (or an
+                    # explicit group_sizes) to batch rows into date-groups.
+                    # The CV caller passes X with no date column, so we
+                    # attach it here from the parent panel, then sort so
+                    # groups are contiguous and aligned with the row order
+                    # the model expects.
+                    df = X.copy()
+                    df["date"] = panel.loc[X.index, "date"].values
+                    df = df.sort_values(["date"], kind="mergesort")
+                    original_index = df.index
+                    df = df.reset_index(drop=True)
+                    preds = self._m.predict(df)
+                    # Realign predictions to X's original index order.
+                    preds.index = original_index
+                    return preds.reindex(X.index).values
         elif backend == "lightgbm":
             from training_panel.lgbm_ltr import PanelLGBMModel
             params = dict(cfg.get("lightgbm_params", {}))

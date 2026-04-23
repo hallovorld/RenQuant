@@ -332,23 +332,64 @@ class PanelTransformerModel:
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
-    def predict(self, panel: pd.DataFrame) -> pd.Series:
+    def predict(
+        self, panel: pd.DataFrame,
+        group_sizes: np.ndarray | None = None,
+    ) -> pd.Series:
+        """Score each panel row. Caller specifies date-groups via either:
+
+          * a `date` column on ``panel`` (groups = same-date rows, in order), OR
+          * the explicit ``group_sizes`` kwarg (per-date row counts aligned
+            with panel's row order, panel must be pre-sorted by date).
+
+        A group larger than ``max_tickers`` is split into ``ceil(n/max_tickers)``
+        chunks processed independently — cross-ticker attention only sees
+        tickers within the same chunk, but this is strictly better than the
+        prior behavior of silently truncating everything past ``max_tickers``
+        to uninitialized memory.
+
+        Raises ValueError if neither a ``date`` column nor explicit
+        ``group_sizes`` is provided (no silent "whole panel = one group"
+        fallback — that was a bug).
+        """
         if self._model is None:
             raise RuntimeError("PanelTransformerModel.predict called before train/load")
-        # Flat panel: one row per (ticker, date). For per-bar inference the
-        # caller passes a single-date slice; the model still wants a
-        # date-group so we infer groups from the panel's `date` column if
-        # present, else treat the whole panel as one group.
-        if "date" in panel.columns:
+
+        if group_sizes is None:
+            if "date" not in panel.columns:
+                raise ValueError(
+                    "PanelTransformerModel.predict requires either a `date` "
+                    "column on the panel or an explicit `group_sizes` array."
+                )
             group_sizes = panel.groupby("date", sort=False).size().to_numpy()
-        else:
-            group_sizes = np.array([len(panel)], dtype=int)
+        group_sizes = np.asarray(group_sizes, dtype=np.int64)
+        if int(group_sizes.sum()) != len(panel):
+            raise ValueError(
+                f"group_sizes.sum()={int(group_sizes.sum())} != len(panel)={len(panel)}"
+            )
+
+        # Split any group that exceeds max_tickers into smaller chunks so no
+        # row is silently dropped. Within each chunk, self-attention still
+        # sees all tickers; across chunks no attention flows (same as across
+        # dates). This is the safe fallback until max_tickers is raised.
+        max_t = int(self.params.max_tickers)
+        expanded: list[int] = []
+        for gs in group_sizes.tolist():
+            if gs <= max_t:
+                expanded.append(gs)
+            else:
+                n_chunks = (gs + max_t - 1) // max_t
+                base = gs // n_chunks
+                rem  = gs - base * n_chunks
+                for i in range(n_chunks):
+                    expanded.append(base + (1 if i < rem else 0))
+        group_sizes_exp = np.array(expanded, dtype=np.int64)
         x, _, pad = _build_date_groups(
-            panel.assign(label=0.0), group_sizes, self.feature_cols, "label",
-            self.params.max_tickers,
+            panel.assign(label=0.0), group_sizes_exp, self.feature_cols, "label",
+            max_t,
         )
         self._model.eval()
-        preds_flat = np.empty(len(panel), dtype=np.float32)
+        preds_flat = np.full(len(panel), np.nan, dtype=np.float32)
         offset = 0
         bs = self.params.batch_size
         with torch.no_grad():

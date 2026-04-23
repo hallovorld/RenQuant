@@ -181,6 +181,63 @@ class TestLearnsSignal:
 
 # ── Early stopping ────────────────────────────────────────────────────────────
 
+class TestPredictRobustness:
+    """Regression: predict() used to silently truncate groups > max_tickers
+    to uninitialized memory (causing NaN IC in CV). Now it either splits
+    the group into chunks or raises when inputs are ambiguous.
+    """
+
+    def _trained_model(self):
+        panel, gs, fc = _make_synthetic_panel(n_dates=20, n_tickers=6, n_features=4)
+        m = PanelTransformerModel(params={
+            "max_epochs": 3, "d_model": 16, "n_heads": 2, "n_layers": 1,
+            "batch_size": 4, "device": "cpu", "seed": 0, "max_tickers": 6,
+        })
+        m.train(panel, gs, fc, num_boost_round=3)
+        return m, fc
+
+    def test_predict_raises_without_date_or_group_sizes(self):
+        m, fc = self._trained_model()
+        rng = np.random.default_rng(0)
+        bad = pd.DataFrame(rng.normal(size=(12, len(fc))).astype(np.float32),
+                           columns=fc)
+        # No `date` column → must raise rather than silently misgroup.
+        with pytest.raises(ValueError, match="date|group_sizes"):
+            m.predict(bad)
+
+    def test_predict_accepts_explicit_group_sizes(self):
+        m, fc = self._trained_model()
+        rng = np.random.default_rng(1)
+        frame = pd.DataFrame(rng.normal(size=(12, len(fc))).astype(np.float32),
+                             columns=fc)
+        # 12 rows arranged as 2 date-groups of 6 tickers each.
+        out = m.predict(frame, group_sizes=np.array([6, 6], dtype=int))
+        assert len(out) == 12
+        assert not np.isnan(out.values).any()
+
+    def test_predict_splits_oversized_groups(self):
+        """A single flat panel of 20 rows with max_tickers=6 must emit 20
+        finite scores (split into chunks) — not 6 valid + 14 NaN."""
+        m, fc = self._trained_model()
+        rng = np.random.default_rng(2)
+        frame = pd.DataFrame(rng.normal(size=(20, len(fc))).astype(np.float32),
+                             columns=fc)
+        out = m.predict(frame, group_sizes=np.array([20], dtype=int))
+        assert len(out) == 20
+        assert not np.isnan(out.values).any(), (
+            "oversized group must be chunk-split, not silently truncated to NaN"
+        )
+
+    def test_predict_detects_group_sizes_sum_mismatch(self):
+        m, fc = self._trained_model()
+        rng = np.random.default_rng(3)
+        frame = pd.DataFrame(rng.normal(size=(10, len(fc))).astype(np.float32),
+                             columns=fc)
+        # Sum 4+3 = 7, but panel has 10 rows. Must raise.
+        with pytest.raises(ValueError, match="group_sizes"):
+            m.predict(frame, group_sizes=np.array([4, 3], dtype=int))
+
+
 class TestEarlyStopping:
     def test_patience_breaks_when_eval_ic_stalls(self):
         panel, gs, fc = _make_synthetic_panel(n_dates=40, n_tickers=6)
