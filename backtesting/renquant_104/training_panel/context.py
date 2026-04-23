@@ -39,6 +39,10 @@ class PanelTrainingContext:
     # per transaction). TickerPanelFactorJob produces daily trailing-90d net
     # buy via compute_insider_net_buy_cum.
     insider_trades: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Raw hourly OHLCV bars per ticker (Plan G). TickerPanelFactorJob
+    # aggregates via `training_panel.hourly_features.compute_hourly_features`
+    # into six daily factor columns. Empty dict → hourly panel features off.
+    hourly_bars: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
@@ -89,6 +93,7 @@ class TickerPanelContext:
     fundamentals: dict[str, dict[str, float]] = field(default_factory=dict)  # shared read-only
     earnings_surprises: dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
     insider_trades:     dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
+    hourly_bars:        dict = field(default_factory=dict)                     # shared read-only {ticker: hourly OHLCV}
 
     # Outputs — written by per-ticker jobs
     feature_frame: pd.DataFrame | None = None

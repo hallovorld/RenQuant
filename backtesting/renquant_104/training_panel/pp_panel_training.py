@@ -327,11 +327,43 @@ class LoadInsiderTradesTask(PanelTask):
                  len(out), len(ctx.watchlist))
 
 
+class LoadHourlyBarsTask(PanelTask):
+    """Populate ctx.hourly_bars from the parquet cache (Plan G).
+
+    No-op when `panel_ltr.hourly.enabled` is false (default). Cache at
+    `data/intraday/{SYMBOL}/1h.parquet`; `scripts/fetch_hourly_bars.py`
+    owns populating the cache from Alpaca IEX. This task never fetches
+    live — training must be reproducible offline.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = ctx.config.get("panel_ltr", {}).get("hourly", {})
+        if not cfg.get("enabled", False):
+            return
+        if ctx.hourly_bars:
+            return
+
+        from kernel.intraday import HourlyBarStore  # noqa: PLC0415
+
+        cache_dir = cfg.get("cache_dir", "data/intraday")
+        store = HourlyBarStore(data_dir=cache_dir)
+
+        out: dict[str, pd.DataFrame] = {}
+        for sym in ctx.watchlist:
+            df = store.load(sym)
+            if df is not None and not df.empty:
+                out[sym] = df
+
+        ctx.hourly_bars = out
+        log.info("LoadHourlyBarsTask: %d / %d tickers with hourly bars",
+                 len(out), len(ctx.watchlist))
+
+
 class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders.
+    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly.
 
     Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
-                → LoadEarningsSurprise → LoadInsiderTrades
+                → LoadEarningsSurprise → LoadInsiderTrades → LoadHourlyBars
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -345,6 +377,7 @@ class PanelDataJob(PanelJob):
             LoadFundamentalsTask(),
             LoadEarningsSurpriseTask(),
             LoadInsiderTradesTask(),
+            LoadHourlyBarsTask(),
         ]
 
 
@@ -370,6 +403,7 @@ class PanelFeatureJob(PanelJob):
                 fundamentals=ctx.fundamentals,
                 earnings_surprises=ctx.earnings_surprises,
                 insider_trades=ctx.insider_trades,
+                hourly_bars=ctx.hourly_bars,
             )
             for t in ctx.watchlist if t in ctx.ohlcv
         ]
@@ -528,6 +562,32 @@ class TickerPanelFactorJob(PanelTickerJob):
                     insider_daily if insider_daily is not None
                     else pd.Series(float("nan"), index=idx)
                 )
+            # Hourly aggregated features (Plan G): morning/afternoon drift,
+            # VWAP premium, vol ratio, intraday realized vol, overnight gap.
+            # Reindex the per-session output onto the ticker's daily index;
+            # missing sessions → NaN (FactorZScoreTask handles globally).
+            if tc.hourly_bars:
+                from training_panel.hourly_features import (  # noqa: PLC0415
+                    HOURLY_FEATURE_COLS, compute_hourly_features,
+                )
+                hourly_df = tc.hourly_bars.get(tc.ticker)
+                if hourly_df is not None and not hourly_df.empty:
+                    h_feats = compute_hourly_features(hourly_df)
+                    # Normalize daily index so join works regardless of tz.
+                    h_feats.index = pd.DatetimeIndex(h_feats.index).normalize()
+                    daily_idx = pd.DatetimeIndex(idx).normalize()
+                    for col in HOURLY_FEATURE_COLS:
+                        series = h_feats[col] if col in h_feats.columns else pd.Series(dtype=float)
+                        # Reindex via normalized daily dates, then re-key onto raw idx.
+                        aligned = series.reindex(daily_idx)
+                        aligned.index = idx
+                        cols[col] = aligned
+                else:
+                    for col in (
+                        "morning_drift", "afternoon_drift", "vwap_premium",
+                        "vol_ratio", "intraday_realized_vol", "overnight_gap",
+                    ):
+                        cols[col] = pd.Series(float("nan"), index=idx)
             tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
         except Exception as exc:
             log.error("  %s: TickerPanelFactorJob failed — %s", tc.ticker, exc)
@@ -630,6 +690,9 @@ class FactorZScoreTask(PanelTask):
             "earnings_surprise_cum",
             # Round 5: SEC Form 4 executive-only insider trades (opt-in)
             "insider_net_buy_90d",
+            # Plan G: hourly-bar aggregates (opt-in via panel_ltr.hourly.enabled)
+            "morning_drift", "afternoon_drift", "vwap_premium",
+            "vol_ratio", "intraday_realized_vol", "overnight_gap",
         ]
         per_col: dict[str, dict[str, pd.Series]] = {}
         for col in raw_cols:
@@ -670,7 +733,10 @@ class FactorZScoreTask(PanelTask):
             # Round 3+: append z-scored orthogonal factors
             for c in ("amihud_illiq", "volume_shift", "price_to_high",
                       "realized_vol", "drawdown_peak",
-                      "earnings_surprise_cum", "insider_net_buy_90d"):
+                      "earnings_surprise_cum", "insider_net_buy_90d",
+                      # Plan G: hourly-bar aggregates
+                      "morning_drift", "afternoon_drift", "vwap_premium",
+                      "vol_ratio", "intraday_realized_vol", "overnight_gap"):
                 if c in z:
                     cols[f"{c}_z"] = z[c].get(t, pd.Series(index=idx)).reindex(idx)
             for col in FUNDAMENTAL_COLS:
