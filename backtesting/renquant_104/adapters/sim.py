@@ -87,6 +87,8 @@ class SimAdapter:
         self._last_sell_date: dict[str, pd.Timestamp] = {}   # ticker → date
         self._regime_state   = RegimeState()
         self._regime_counts  = {r: 0 for r in REGIMES}
+        # Monitor: persist MonitorIdleStreakTask's streak counters across bars.
+        self._monitor_state: dict = {}
 
         # SPY returns buffer (last 100) + previous close for daily return calc
         self._spy_returns: list[float] = []
@@ -257,6 +259,9 @@ class SimAdapter:
             regime_counts    = self._regime_counts,
         )
 
+        # Hand prior streak counters to MonitorIdleStreakTask; it writes back.
+        ctx.monitor_state = dict(self._monitor_state)
+
         # Preload panel scoring artifacts so PanelScoringJob short-circuits
         # its LoadScorerTask / LoadNGBoostTask.
         if self._panel_scorer is not None:
@@ -306,6 +311,7 @@ class SimAdapter:
         self._regime_counts = ctx.regime_counts
         self._hwm           = ctx.hwm
         self._skip_buys     = ctx.skip_buys
+        self._monitor_state = dict(getattr(ctx, "monitor_state", {}) or {})
 
         # ── Equity curve entry ──────────────────────────────────────────────
         pv = self._portfolio_value(ctx.prices)
@@ -463,6 +469,30 @@ class SimAdapter:
                 "tax": s.get("tax", 0.0),
             })
 
+        # Activity-monitoring stats: longest run of consecutive trading days
+        # without any order (buy or sell). Computed post-hoc from the equity
+        # curve + trade log so it always reflects the whole OOS window.
+        trade_dates = {
+            (t["date"].date() if hasattr(t["date"], "date") else t["date"])
+            for t in self._trade_log
+        }
+        eq_dates = [
+            (d.date() if hasattr(d, "date") else d) for d in equity_df.index
+        ] if not equity_df.empty else []
+        longest_streak = 0
+        current_streak = 0
+        first_trade: "str | None" = None
+        last_activity: "str | None" = None
+        for d in eq_dates:
+            if d in trade_dates:
+                current_streak = 0
+                last_activity = str(d)
+                if first_trade is None:
+                    first_trade = str(d)
+            else:
+                current_streak += 1
+                longest_streak = max(longest_streak, current_streak)
+
         return SimResult(
             equity_df     = equity_df,
             trade_log     = self._trade_log,
@@ -476,4 +506,8 @@ class SimAdapter:
             total_tax     = total_tax,
             exit_reasons  = exit_reasons,
             rotations     = rotations,
+            longest_no_trade_streak     = longest_streak,
+            longest_no_candidate_streak = int(self._monitor_state.get("no_candidate_streak", 0)),
+            first_trade_date            = first_trade,
+            last_activity_date          = last_activity,
         )

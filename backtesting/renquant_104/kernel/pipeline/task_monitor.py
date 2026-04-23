@@ -1,0 +1,86 @@
+"""MonitorIdleStreakTask — detect persistent no-trade periods.
+
+Rationale: the user explicitly requires that a systematic no-trade period
+(many consecutive days with zero orders placed AND zero exits) must be
+treated as a failure mode, not a silent state. Silent no-trade spans mean
+some upstream gate is broken (stale calibrator, mis-configured tier
+thresholds, panel feature-frame missing, universe emptied, …) and the
+strategy is just sitting in cash while the market moves.
+
+This Task is a pipeline-level guard that runs AFTER SelectionJob / Rotation.
+It reads the previous streak counter from a config-provided dict (injected
+by the adapter / sim loop) and updates it based on today's activity:
+
+  * `no_trade_streak`       — consecutive days with 0 orders + 0 exits
+  * `no_candidate_streak`   — consecutive days with 0 candidates surviving
+                              CandidateJob (even before ranking)
+  * `first_trade_date`      — the first date an order or exit landed
+  * `last_activity_date`    — the most recent date with any order/exit
+
+Monitor-only: does not block trades. Surfaces counters on `ctx.counters`
+for the adapter to persist or ntfy alert.
+"""
+from __future__ import annotations
+
+import logging
+
+from .context import InferenceContext
+from .pipeline import Task
+
+log = logging.getLogger("kernel.pipeline.monitor")
+
+
+class MonitorIdleStreakTask(Task):
+    """Update and surface the no-trade / no-candidate streak counters.
+
+    Reads `ctx.monitor_state` (dict), writes back updated counters plus
+    emits a WARNING log when any streak exceeds the configured threshold
+    so the scheduled-run ntfy captures it.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        cfg = (ctx.config.get("monitoring", {}) or {})
+        max_idle = int(cfg.get("max_no_trade_days",      15))
+        max_blnk = int(cfg.get("max_no_candidate_days",  15))
+
+        # Prior streak state lives on ctx.monitor_state (persisted by adapter).
+        state: dict = getattr(ctx, "monitor_state", None) or {}
+
+        had_activity   = bool(ctx.orders) or bool(ctx.exits)
+        had_candidates = bool(ctx.candidates)
+
+        new_no_trade = 0 if had_activity   else int(state.get("no_trade_streak",     0)) + 1
+        new_no_cand  = 0 if had_candidates else int(state.get("no_candidate_streak", 0)) + 1
+
+        first_trade = state.get("first_trade_date")
+        last_activity = state.get("last_activity_date")
+        if had_activity:
+            last_activity = str(ctx.today)
+            if first_trade is None:
+                first_trade = str(ctx.today)
+
+        state["no_trade_streak"]     = new_no_trade
+        state["no_candidate_streak"] = new_no_cand
+        state["last_activity_date"]  = last_activity
+        state["first_trade_date"]    = first_trade
+
+        ctx.monitor_state = state
+        ctx.counters["no_trade_streak"]     = new_no_trade
+        ctx.counters["no_candidate_streak"] = new_no_cand
+
+        # Promote to WARN when either streak exceeds the threshold — the
+        # adapter / scheduled run picks this up through its log scraper.
+        if new_no_trade > max_idle:
+            log.warning(
+                "NoTradeAlert: %d consecutive days with zero orders (limit=%d) — "
+                "some upstream gate is blocking. Regime=%s  candidates=%d  holdings=%d",
+                new_no_trade, max_idle, ctx.regime,
+                len(ctx.candidates), len(ctx.holdings),
+            )
+        if new_no_cand > max_blnk:
+            log.warning(
+                "NoCandidateAlert: %d consecutive days with zero candidates "
+                "surviving CandidateJob (limit=%d) — ScoreBuyTask rejecting all. "
+                "Regime=%s  buy_blocked=%s",
+                new_no_cand, max_blnk, ctx.regime, ctx.buy_blocked,
+            )

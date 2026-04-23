@@ -130,6 +130,11 @@ class InferencePipeline:
         RotationJob().run(ctx)
         SelectionJob().run(ctx)
 
+        # Monitor: persistent no-trade periods are treated as a hard signal,
+        # not a silent state. See task_monitor.MonitorIdleStreakTask.
+        from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415
+        MonitorIdleStreakTask().run(ctx)
+
         log.info("InferencePipeline DONE  total=%.2fs  rotations=%d",
                  time.monotonic() - t0, len(ctx.rotations))
 

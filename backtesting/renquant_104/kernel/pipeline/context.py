@@ -75,6 +75,11 @@ class InferenceContext:
     # Telemetry counters — incremented by jobs
     counters: dict = field(default_factory=dict)
 
+    # MonitorIdleStreakTask state — populated by adapter from persisted
+    # state file. The Task reads the prior streak counters, updates them,
+    # and writes back. Adapter persists across bar boundaries.
+    monitor_state: dict = field(default_factory=dict)
+
 
 @dataclass
 class TickerInferenceContext:

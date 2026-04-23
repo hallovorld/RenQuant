@@ -31,12 +31,16 @@ class RunnerAdapter:
         broker: Any,
         strategy_dir: Path,
         sell_only: bool = False,
+        use_intraday_prices: bool = False,
     ) -> None:
-        self._config       = config
-        self._models       = models
-        self._broker       = broker
-        self._strategy_dir = strategy_dir
-        self._sell_only    = sell_only
+        self._config              = config
+        self._models              = models
+        self._broker              = broker
+        self._strategy_dir        = strategy_dir
+        self._sell_only           = sell_only
+        self._use_intraday_prices = use_intraday_prices
+        from kernel.persistence import get_connection  # noqa: PLC0415
+        self._db = get_connection(config, strategy_dir=strategy_dir)
 
     # ── make_context ───────────────────────────────────────────────────────────
 
@@ -124,6 +128,35 @@ class RunnerAdapter:
             except Exception as exc:
                 log.warning("OHLCV fetch failed for %s: %s", sym, exc)
 
+        # ── Intraday price overlay (for intraday sell-only checks) ──────────
+        if self._use_intraday_prices:
+            try:
+                from kernel.data import fetch_intraday_bars  # noqa: PLC0415
+                ibars = fetch_intraday_bars(
+                    list(all_symbols),
+                    timeframe="5Min",
+                    start=datetime.datetime.combine(
+                        today, datetime.datetime.min.time(),
+                    ),
+                )
+                overlaid = 0
+                for sym, idf in ibars.items():
+                    if idf is None or idf.empty:
+                        continue
+                    latest_close = float(idf["close"].iloc[-1])
+                    prices[sym] = latest_close
+                    # Overwrite today's daily bar's close so kernel.exits sees the intraday level
+                    if sym in ohlcv and not ohlcv[sym].empty:
+                        df = ohlcv[sym]
+                        last_day = df.index.max()
+                        if last_day.date() == today:
+                            df.at[last_day, "close"] = latest_close
+                    overlaid += 1
+                log.info("Intraday overlay: %d/%d symbols had fresh minute bars",
+                         overlaid, len(all_symbols))
+            except Exception as exc:
+                log.warning("Intraday overlay failed — falling back to daily closes: %s", exc)
+
         spy_df = ohlcv.get(benchmark)
         spy_returns: list[float] = []
         if spy_df is not None:
@@ -183,6 +216,7 @@ class RunnerAdapter:
             skip_buys         = False,
             regime_state      = RegimeState(),
             regime_counts     = {r: 0 for r in REGIMES},
+            monitor_state     = dict(state.get("monitor_state", {}) or {}),
         )
 
         # ── Panel scoring prep (optional) ────────────────────────────────────
@@ -300,10 +334,67 @@ class RunnerAdapter:
             "sell_streaks":      self._sell_streaks,
             "last_sell_dates":   self._last_sell_dates_str,
             "position_hwm":      self._position_hwm,
+            # MonitorIdleStreakTask counters — persisted across scheduled runs
+            "monitor_state":     dict(getattr(ctx, "monitor_state", {}) or {}),
         })
         state_file = self._strategy_dir / "live_state.json"
         state_file.write_text(json.dumps(self._state, indent=2))
         log.info("State saved → %s", state_file)
+
+        # ── Optional SQLite decision trace ────────────────────────────────
+        if self._db is not None:
+            from kernel.persistence import (  # noqa: PLC0415
+                record_pipeline_run, record_candidate_scores, record_trades,
+            )
+            # Reconstruct trade events from ctx (live path doesn't keep an
+            # in-memory trade list — we synthesise from exits + orders).
+            trade_events: list[dict] = []
+            for t, sig in ctx.exits:
+                hs    = ctx.holdings.get(t)
+                price = ctx.prices.get(t, 0.0)
+                entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
+                trade_events.append({
+                    "ticker":      t,
+                    "action":      "sell",
+                    "price":       price,
+                    "exit_reason": sig.exit_type,
+                    "pnl_pct":     (price - entry_p) / entry_p if entry_p > 0 else 0.0,
+                    "hold_days":   (ctx.today - hs.entry_date).days if hs and hs.entry_date else 0,
+                })
+            for o in ctx.orders:
+                trade_events.append({
+                    "ticker":      o.get("ticker"),
+                    "action":      "buy",
+                    "shares":      o.get("shares"),
+                    "price":       o.get("price"),
+                    "invest":      o.get("invest"),
+                    "target_pct":  o.get("target_pct"),
+                    "rank_score":  o.get("rank_score"),
+                    "conviction":  o.get("conviction"),
+                    "sigma_mult":  o.get("sigma_mult"),
+                    "mu":          o.get("mu"),
+                    "sigma":       o.get("sigma"),
+                })
+            run_id = record_pipeline_run(
+                self._db,
+                run_type        = "live",
+                run_date        = ctx.today,
+                strategy        = str(self._config.get("model_name", "")),
+                regime          = ctx.regime,
+                confidence      = float(ctx.confidence) if ctx.confidence is not None else None,
+                portfolio_value = float(ctx.portfolio_value) if ctx.portfolio_value else None,
+                cash            = float(ctx.cash) if ctx.cash is not None else None,
+                n_candidates    = len(ctx.candidates),
+                n_exits         = len(ctx.exits),
+                n_rotations     = len(ctx.rotations),
+                n_buys          = len(ctx.orders),
+            )
+            selected_tickers = {o["ticker"] for o in ctx.orders}
+            record_candidate_scores(
+                self._db, run_id, ctx.candidates, ctx.holdings,
+                selected_tickers=selected_tickers,
+            )
+            record_trades(self._db, run_id, trade_events)
 
     # ── Trade log ─────────────────────────────────────────────────────────────
 

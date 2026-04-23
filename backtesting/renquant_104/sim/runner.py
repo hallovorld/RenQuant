@@ -39,6 +39,14 @@ class SimResult:
     exit_reasons: dict[str, int]
     rotations:    list[dict]                    # paired sell/buy summary
 
+    # Activity monitoring — see kernel.pipeline.task_monitor.MonitorIdleStreakTask.
+    # These are computed post-hoc from trade_log so they always reflect the
+    # entire run, even if the pipeline's streak counters reset between bars.
+    longest_no_trade_streak:   int = 0          # consecutive days without buy/sell
+    longest_no_candidate_streak: int = 0        # read from ctx.counters if present
+    first_trade_date:          "str | None" = None
+    last_activity_date:        "str | None" = None
+
     @property
     def buys(self) -> list[dict]:
         return [t for t in self.trade_log if t["action"] == "buy"]
@@ -58,6 +66,10 @@ class SimResult:
                   f"Avg P&L/trade: {self.avg_pnl:.1%}  |  "
                   f"Total tax: ${self.total_tax:,.0f}")
             print(f"Exit reasons: {self.exit_reasons}")
+        if self.longest_no_trade_streak:
+            marker = "⚠️  " if self.longest_no_trade_streak > 15 else ""
+            print(f"{marker}Longest no-trade streak: {self.longest_no_trade_streak}d"
+                  f"  |  first trade: {self.first_trade_date or '—'}")
         if self.rotations:
             print(f"\n── Rotations ({len(self.rotations)}) ──")
             for r in self.rotations:
