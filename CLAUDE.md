@@ -360,6 +360,7 @@ After any non-trivial change, run `/update-docs` or manually sync:
 
 | Doc | What it covers |
 |-----|----------------|
+| `doc/golden_config_2026-04-23.md` | **Golden config** snapshot (+88.7% / 33.1% APY baseline). Revert here if a future change drops portfolio APY below 20% on the 27-month OOS window. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
 | `doc/improvement_roadmap.md` | **Living roadmap** — 8 improvement items with action plans, status, and Result sections. Work through top-down. |
 | `doc/panel_training_runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
 | `doc/panel_ltr_primer.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
