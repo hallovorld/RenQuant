@@ -222,28 +222,30 @@ class LoadGlobalCalibrationTask(Task):
 
 
 class ApplyGlobalCalibrationTask(Task):
-    """Transform raw panel_score → calibrated P(outperform) + E[R - SPY].
+    """Transform panel_score → calibrated P(outperform) + E[R - SPY].
 
-    Runs AFTER ApplyScoresTask (which wrote panel_score into rank_score).
-    With calibration enabled:
-      - `rank_score` ← calibrated probability ∈ [0, 1]
-      - `expected_return` ← calibrated E[R_i - R_spy] over lookahead
-    `panel_score` stays the raw LTR output for rotation comparison.
-    Skipped (no-op) when ngboost is enabled — NGBoost's μ-λσ already
-    provides a calibrated comparison-ready score.
+    Per 2026-04-23 task #2 refactor: now always runs, regardless of NGBoost
+    mode. Runs AFTER ApplyNGBoostTask in the PanelScoringJob chain, so:
+
+      - score_mode="additive": NGBoost leaves panel_score untouched →
+        calibrator maps raw panel_score → probability (same behavior as
+        pre-refactor additive mode).
+      - score_mode="mu_minus_lambda_sigma": NGBoost overwrites panel_score
+        with μ−λσ first → calibrator then maps μ−λσ → probability. The
+        isotonic calibrator was fit on raw panel_score, but μ−λσ is the
+        same scale, so the map is directionally correct (not strictly
+        metric-calibrated; acceptable for ranking).
+
+    Previously this task short-circuited when score_mode was
+    "mu_minus_lambda_sigma", which left rank_score as raw μ−λσ ∈
+    [~-0.06, +0.04] — always below the 0.10 tier threshold → zero trades
+    in that mode. Reordering + removing the short-circuit unlocks
+    σ-aware ranking as a live-testable option.
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
         if not panel_cfg.get("global_calibration", {}).get("enabled", False):
-            return
-        # Only defer to NGBoost when NGBoost itself overrides rank_score
-        # (score_mode == "mu_minus_lambda_sigma"). In "additive" mode NGBoost
-        # only writes mu/sigma for sizing — rank_score still needs calibration.
-        ngb_cfg = panel_cfg.get("ngboost", {})
-        if ngb_cfg.get("enabled", False) and \
-                str(ngb_cfg.get("score_mode", "mu_minus_lambda_sigma")) == "mu_minus_lambda_sigma":
-            log.debug("ApplyGlobalCalibrationTask: ngboost μ−λσ active — deferring")
             return
         cal = getattr(ctx, "_global_calibrator", None)
         if cal is None:
@@ -385,7 +387,18 @@ class PanelScoringJob(Job):
 
     Task chain:
       LoadScorer → BuildFeatureMatrix → ApplyScores → VetoWeakBuys
-        → LoadNGBoost → ApplyNGBoost   (no-op when ngboost.enabled is false)
+        → LoadNGBoost → ApplyNGBoost                 (no-op if ngboost.enabled is false)
+        → LoadGlobalCalibration → ApplyGlobalCalibration (always-runs; see below)
+
+    Ordering rationale (task #2, 2026-04-23):
+      NGBoost runs BEFORE global calibration so that when NGBoost's
+      score_mode == "mu_minus_lambda_sigma" it overwrites panel_score
+      with μ−λσ, and the calibrator then maps μ−λσ → probability via its
+      isotonic head. Previously calibration ran first and short-circuited
+      in mu_minus_lambda_sigma mode, leaving rank_score as raw μ−λσ
+      (always < 0.10 tier threshold → zero trades). With this ordering,
+      both additive and mu_minus_lambda_sigma modes produce calibrated
+      rank_score and the tier logic works in either.
     """
 
     def should_skip(self, ctx: InferenceContext) -> bool:
@@ -402,8 +415,8 @@ class PanelScoringJob(Job):
             BuildFeatureMatrixTask(),
             ApplyScoresTask(),
             VetoWeakBuysTask(),
-            LoadGlobalCalibrationTask(),
-            ApplyGlobalCalibrationTask(),
             LoadNGBoostTask(),
             ApplyNGBoostTask(),
+            LoadGlobalCalibrationTask(),
+            ApplyGlobalCalibrationTask(),
         ]

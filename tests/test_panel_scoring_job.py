@@ -282,6 +282,10 @@ class TestPanelScoringJob:
         assert PanelScoringJob().should_skip(ctx) is False
 
     def test_tasks_are_eight_in_order(self, tmp_path):
+        """After the 2026-04-23 task-#2 refactor, NGBoost runs BEFORE
+        calibration so that mu_minus_lambda_sigma mode also ends up
+        calibrated. See PanelScoringJob docstring for rationale.
+        """
         from kernel.panel_pipeline.job_panel_scoring import (
             ApplyGlobalCalibrationTask, ApplyNGBoostTask, ApplyScoresTask,
             BuildFeatureMatrixTask, LoadGlobalCalibrationTask,
@@ -293,10 +297,11 @@ class TestPanelScoringJob:
         assert isinstance(tasks[1], BuildFeatureMatrixTask)
         assert isinstance(tasks[2], ApplyScoresTask)
         assert isinstance(tasks[3], VetoWeakBuysTask)
-        assert isinstance(tasks[4], LoadGlobalCalibrationTask)
-        assert isinstance(tasks[5], ApplyGlobalCalibrationTask)
-        assert isinstance(tasks[6], LoadNGBoostTask)
-        assert isinstance(tasks[7], ApplyNGBoostTask)
+        # NGBoost now runs before calibration:
+        assert isinstance(tasks[4], LoadNGBoostTask)
+        assert isinstance(tasks[5], ApplyNGBoostTask)
+        assert isinstance(tasks[6], LoadGlobalCalibrationTask)
+        assert isinstance(tasks[7], ApplyGlobalCalibrationTask)
 
     def test_end_to_end_overrides_rank_scores(self, tmp_path):
         """Run the full Job chain — candidate rank_scores change to panel scores."""
