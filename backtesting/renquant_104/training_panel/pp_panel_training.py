@@ -907,7 +907,28 @@ class CrossValidateTask(PanelTask):
         panel = ctx.panel
         feature_cols = ctx.feature_cols
 
-        if backend == "lightgbm":
+        if backend == "transformer":
+            from training_panel.transformer_model import PanelTransformerModel
+            tf_params = dict(cfg.get("transformer_params", {}))
+            cv_epochs = max(int(cfg.get("num_boost_round", 50)) // 2, 5)
+
+            class _SklearnAdapter:
+                def __init__(self):
+                    self._m = PanelTransformerModel(params=tf_params)
+                def fit(self, X, y, sample_weight=None):
+                    df = X.copy()
+                    df["label"] = y
+                    df["date"] = panel.loc[X.index, "date"].values
+                    df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
+                    gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    self._m.train(
+                        df, gs, feature_cols=list(X.columns),
+                        label_col="label", weight_col=None,
+                        num_boost_round=cv_epochs,
+                    )
+                def predict(self, X):
+                    return self._m.predict(X.copy()).values
+        elif backend == "lightgbm":
             from training_panel.lgbm_ltr import PanelLGBMModel
             params = dict(cfg.get("lightgbm_params", {}))
 
@@ -990,6 +1011,8 @@ class FinalFitTask(PanelTask):
     Backend selected via `panel_ltr.backend`:
       - `"xgboost"` (default): rank:pairwise via `PanelLTRModel`
       - `"lightgbm"`:            LambdaRank@10 via `PanelLGBMModel`
+      - `"transformer"`:         cross-sectional attention via `PanelTransformerModel`
+                                  (MPS/CUDA/CPU; hparams in `panel_ltr.transformer_params`)
     """
 
     def run(self, ctx: PanelTrainingContext) -> None:
@@ -1002,7 +1025,18 @@ class FinalFitTask(PanelTask):
         num_rounds = int(cfg.get("num_boost_round", 400))
 
         t0 = _time.monotonic()
-        if backend == "lightgbm":
+        if backend == "transformer":
+            from training_panel.transformer_model import PanelTransformerModel
+            tf_params = dict(cfg.get("transformer_params", {}))
+            model = PanelTransformerModel(params=tf_params)
+            fit = model.train(
+                ctx.panel, ctx.group_sizes,
+                feature_cols=ctx.feature_cols,
+                label_col="label", weight_col=None,
+                num_boost_round=int(tf_params.get("max_epochs", 50)),
+            )
+            device_used = str(model._device)    # noqa: SLF001 — surface actual device
+        elif backend == "lightgbm":
             from training_panel.lgbm_ltr import PanelLGBMModel
             params = dict(cfg.get("lightgbm_params", {}))
             model = PanelLGBMModel(params=params, feature_cols=ctx.feature_cols)
@@ -1012,6 +1046,7 @@ class FinalFitTask(PanelTask):
                 label_col="label", weight_col="weight",
                 num_boost_round=num_rounds,
             )
+            device_used = "cpu"
         else:
             from training_panel.ltr_model import PanelLTRModel
             xgb_params = dict(cfg.get("xgb_params", {}))
@@ -1023,13 +1058,14 @@ class FinalFitTask(PanelTask):
                 label_col="label", weight_col="weight",
                 num_boost_round=num_rounds,
             )
+            device_used = "cpu"
         elapsed = _time.monotonic() - t0
         ctx.final_model = model
         ctx._final_fit = fit  # noqa: SLF001 — read by SaveArtifactTask
         ctx._final_fit_elapsed_sec = elapsed  # noqa: SLF001
-        ctx._final_fit_device      = "cpu"    # noqa: SLF001 — XGBoost/LightGBM CPU
-        log.info("FinalFitTask: backend=%s  train_ic=%+.4f  elapsed=%.1fs",
-                 backend, fit.get("train_ic", 0.0), elapsed)
+        ctx._final_fit_device      = device_used  # noqa: SLF001
+        log.info("FinalFitTask: backend=%s  train_ic=%+.4f  elapsed=%.1fs  device=%s",
+                 backend, fit.get("train_ic", 0.0), elapsed, device_used)
 
 
 class SaveArtifactTask(PanelTask):
@@ -1037,8 +1073,18 @@ class SaveArtifactTask(PanelTask):
 
     def run(self, ctx: PanelTrainingContext) -> None:
         cfg = ctx.config.get("panel_ltr", {})
+        backend = str(cfg.get("backend", "xgboost")).strip().lower()
 
-        out_path = Path(cfg.get("artifact_path", "panel-ltr.json"))
+        # Transformer artifacts are .pt + .json sidecar pairs. To avoid
+        # clobbering the XGBoost `panel-ltr.json` when training parallel
+        # backends, route the transformer artifact to a distinct default
+        # path (`panel-transformer.pt`) unless the user explicitly
+        # overrode `panel_ltr.transformer_artifact_path`.
+        if backend == "transformer":
+            default_tf = cfg.get("transformer_artifact_path", "panel-transformer.pt")
+            out_path = Path(default_tf)
+        else:
+            out_path = Path(cfg.get("artifact_path", "panel-ltr.json"))
         if ctx.strategy_dir and not out_path.is_absolute():
             out_path = ctx.strategy_dir / "artifacts" / out_path.name
         out_path.parent.mkdir(parents=True, exist_ok=True)
