@@ -82,7 +82,7 @@
     "earnings_artifact": "earnings-calendar.json",
     "earnings_buffer_days": 3,
     "choppy_hurst_floor": 0.2,
-    "confidence_veto_threshold": 0.55
+    "confidence_veto_threshold": 0.3
   },
   "regime_params": {
     "BULL_CALM": {
@@ -143,6 +143,8 @@
   },
   "defensive_tickers": [
     "GLD",
+    "TLT",
+    "XLV",
     "XLU"
   ],
   "bear_defensive_slots": 2,
