@@ -55,6 +55,31 @@ class TestBucketize:
 
 
 class TestTraining:
+    def test_fits_with_nonuniform_weights(self):
+        """Regression: LightGBM takes PER-ROW weights (length = n_rows), not
+        per-group. Earlier `PanelLGBMModel.train` passed a per-group array
+        and LightGBM rejected it with
+        `LightGBMError: Length of weights differs from the length of #data`.
+        Would fail on the 2026-04-23 daily-104 A/B run. Fix broadcasts the
+        group-mean weight back to per-row so LightGBM's length check passes.
+        """
+        panel, gs = _make_easy_panel(n_dates=10, n_tickers=6, seed=42)
+        # Introduce NON-uniform weights so the broadcast is exercised.
+        panel = panel.copy()
+        panel["weight"] = 1.0 + 0.5 * (panel.index % 3)
+        m = PanelLGBMModel(
+            params={"learning_rate": 0.05, "num_leaves": 7, "min_data_in_leaf": 3,
+                    "verbose": -1},
+        )
+        info = m.train(
+            panel, gs, feature_cols=["x1", "x2"],
+            label_col="label", weight_col="weight", num_boost_round=5,
+        )
+        preds = m.predict(panel)
+        assert preds.shape == (len(panel),)
+        assert not preds.isna().any()
+        assert "train_ic" in info
+
     def test_fits_and_predicts_shape(self):
         panel, gs = _make_easy_panel(n_dates=30, n_tickers=6, seed=2)
         m = PanelLGBMModel(

@@ -105,17 +105,27 @@ class PanelLGBMModel:
         y_raw = panel[label_col].values.astype(float)
         y     = _bucketize_labels(y_raw, n_buckets=11)
 
-        # LightGBM ranking weights are per-group, like XGBoost 3.x.
-        group_weights = None
+        # LightGBM ranking takes PER-ROW weights (length = n_rows),
+        # unlike XGBoost 3.x which takes per-group. To keep parity with
+        # the panel's weighting semantics (where weights are meaningful
+        # at the date-group level), we average each group's weight and
+        # broadcast back to per-row so LightGBM sees a constant
+        # per-group weight expressed at row granularity. Empty/missing
+        # weight column → no weights supplied at all.
+        row_weights = None
         if weight_col and weight_col in panel.columns:
             w_rows = panel[weight_col].values.astype(float)
-            group_weights = np.empty(len(group_sizes), dtype=float)
+            row_weights = np.empty(len(w_rows), dtype=float)
             off = 0
-            for i, gs in enumerate(group_sizes):
-                group_weights[i] = w_rows[off:off + gs].mean()
+            for gs in group_sizes:
+                grp_mean = w_rows[off:off + gs].mean()
+                row_weights[off:off + gs] = grp_mean
                 off += gs
+            assert len(row_weights) == len(X), (
+                f"row_weights len {len(row_weights)} != X rows {len(X)}"
+            )
 
-        dtrain = lgb.Dataset(X, label=y, group=group_sizes, weight=group_weights)
+        dtrain = lgb.Dataset(X, label=y, group=group_sizes, weight=row_weights)
         self.booster = lgb.train(
             self.params, dtrain, num_boost_round=num_boost_round,
         )
