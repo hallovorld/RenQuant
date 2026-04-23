@@ -39,9 +39,36 @@ class PanelScorer:
         self.metadata = metadata or {}
 
     @classmethod
-    def load(cls, path: str | Path) -> "PanelScorer":
+    def load(cls, path: str | Path):
+        """Load a panel artifact — dispatches on `kind` (or file extension).
+
+        Returns a scorer whose class matches the artifact:
+          - `kind: panel_lgbm`       → PanelLGBMScorer       (LightGBM)
+          - `kind: panel_transformer`→ TransformerPanelScorer (PyTorch .pt)
+          - otherwise (legacy)       → PanelScorer            (XGBoost)
+
+        All three expose the same `.feature_cols` attr + `.score(matrix)`
+        method so callers (`PanelScoringJob`, tests, scripts) can treat
+        them interchangeably.
+
+        A `.pt` path is also accepted — we forward to the transformer
+        loader which resolves the paired `.json` sidecar automatically.
+        """
         path = Path(path)
+        if path.suffix == ".pt":
+            from kernel.panel_pipeline.transformer_scorer import TransformerPanelScorer  # noqa: PLC0415
+            return TransformerPanelScorer.load(path)
         payload = json.loads(path.read_text())
+        kind = payload.get("kind")
+        if kind == "panel_transformer":
+            # JSON sidecar was passed; transformer loader will find the .pt.
+            from kernel.panel_pipeline.transformer_scorer import TransformerPanelScorer  # noqa: PLC0415
+            return TransformerPanelScorer.load(path)
+        if kind == "panel_lgbm":
+            # Delay import to keep lightgbm optional.
+            from training_panel.lgbm_ltr import PanelLGBMScorer  # noqa: PLC0415
+            return PanelLGBMScorer.load(path)
+        # Default: XGBoost rank:pairwise artifact
         booster = xgb.Booster()
         booster.load_model(bytearray(payload["booster_raw_json"].encode("utf-8")))
         meta = {k: v for k, v in payload.items() if k != "booster_raw_json"}
