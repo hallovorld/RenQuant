@@ -232,10 +232,19 @@ def main() -> None:
         else:
             conn = sqlite3.connect(str(db_path))
             try:
+                # DB records strategy as either "renquant_104" (underscore,
+                # matches fs) or "renquant-104" (hyphen, legacy). Match both.
+                strat_variants = list({
+                    args.strategy,
+                    args.strategy.replace("_", "-"),
+                    args.strategy.replace("-", "_"),
+                })
+                placeholders = ", ".join("?" for _ in strat_variants)
                 reg_df = pd.read_sql(
-                    "SELECT run_date, regime, run_type FROM pipeline_runs "
-                    "WHERE strategy=? ORDER BY run_date, run_type",
-                    conn, params=(args.strategy,), parse_dates=["run_date"],
+                    f"SELECT run_date, regime, run_type FROM pipeline_runs "
+                    f"WHERE strategy IN ({placeholders}) "
+                    f"ORDER BY run_date, run_type",
+                    conn, params=strat_variants, parse_dates=["run_date"],
                 )
             finally:
                 conn.close()

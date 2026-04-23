@@ -307,7 +307,12 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json"
+        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "regime_conditional": {
+          "enabled": true,
+          "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
+          "regimes": ["BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"]
+        }
       }
     },
     "universe_floor": {
