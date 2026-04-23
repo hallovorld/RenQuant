@@ -991,10 +991,12 @@ class FinalFitTask(PanelTask):
         if ctx.final_model is not None:
             return
 
+        import time as _time
         cfg     = ctx.config.get("panel_ltr", {})
         backend = str(cfg.get("backend", "xgboost")).strip().lower()
         num_rounds = int(cfg.get("num_boost_round", 400))
 
+        t0 = _time.monotonic()
         if backend == "lightgbm":
             from training_panel.lgbm_ltr import PanelLGBMModel
             params = dict(cfg.get("lightgbm_params", {}))
@@ -1016,10 +1018,13 @@ class FinalFitTask(PanelTask):
                 label_col="label", weight_col="weight",
                 num_boost_round=num_rounds,
             )
+        elapsed = _time.monotonic() - t0
         ctx.final_model = model
         ctx._final_fit = fit  # noqa: SLF001 — read by SaveArtifactTask
-        log.info("FinalFitTask: backend=%s  train_ic=%+.4f",
-                 backend, fit.get("train_ic", 0.0))
+        ctx._final_fit_elapsed_sec = elapsed  # noqa: SLF001
+        ctx._final_fit_device      = "cpu"    # noqa: SLF001 — XGBoost/LightGBM CPU
+        log.info("FinalFitTask: backend=%s  train_ic=%+.4f  elapsed=%.1fs",
+                 backend, fit.get("train_ic", 0.0), elapsed)
 
 
 class SaveArtifactTask(PanelTask):
@@ -1066,6 +1071,33 @@ class SaveArtifactTask(PanelTask):
         }
         log.info("SaveArtifactTask: artifact → %s", out_path)
 
+        # Record to training_runs table + JSONL (user spec: track time +
+        # data volume of every retrain for audit/trend analysis).
+        try:
+            from kernel.persistence import get_connection, record_training_run  # noqa: PLC0415
+            conn = get_connection(ctx.config, strategy_dir=ctx.strategy_dir)
+            record_training_run(
+                conn,
+                strategy             = ctx.config.get("_strategy_name", "renquant_104"),
+                artifact_type        = "panel-ltr",
+                config_snapshot      = {"panel_ltr": cfg},
+                oos_mean_ic          = ctx.cv_result.get("mean_ic"),
+                train_ic             = (getattr(ctx, "_final_fit", {}) or {}).get("train_ic"),
+                n_rows               = int(ctx.panel_metadata.get("n_rows", len(ctx.panel))),
+                n_tickers            = int(ctx.panel_metadata.get("n_tickers", 0)),
+                n_dates              = int(ctx.panel_metadata.get("n_dates", 0)),
+                n_features           = len(ctx.feature_cols),
+                feature_cols         = list(ctx.feature_cols),
+                artifact_path        = str(out_path),
+                elapsed_sec          = getattr(ctx, "_final_fit_elapsed_sec", None),
+                trigger              = ctx.config.get("_training_trigger", "manual"),
+                device               = getattr(ctx, "_final_fit_device", "cpu"),
+                deterministic        = bool(cfg.get("deterministic", False)),
+                training_window_years= cfg.get("training_window_years"),
+            )
+        except Exception as exc:
+            log.warning("SaveArtifactTask: record_training_run failed — %s", exc)
+
 
 class PanelModelJob(PanelJob):
     """Phase 4 — cross-validate, fit final, save artifact.
@@ -1108,19 +1140,23 @@ class NGBoostFitTask(PanelTask):
             return
 
         from training_panel.ngboost_head import NGBoostHead
+        import time as _time
 
         params = dict(cfg.get("params", {}))
         head = NGBoostHead(params=params)
+        t0 = _time.monotonic()
         fit = head.train(
             sub,
             feature_cols=ctx.feature_cols,
             label_col="residual_return_raw",
             sample_weight_col="weight" if "weight" in sub.columns else None,
         )
+        elapsed = _time.monotonic() - t0
         ctx.ngboost_head = head
         ctx.ngboost_fit = fit
-        log.info("NGBoostFitTask: trained on %d rows  μ_mean=%.5f  σ_mean=%.5f",
-                 fit["n_rows"], fit["train_mu_mean"], fit["train_sigma_mean"])
+        ctx._ngboost_elapsed_sec = elapsed  # noqa: SLF001
+        log.info("NGBoostFitTask: trained on %d rows  μ_mean=%.5f  σ_mean=%.5f  elapsed=%.1fs",
+                 fit["n_rows"], fit["train_mu_mean"], fit["train_sigma_mean"], elapsed)
 
 
 class NGBoostSaveTask(PanelTask):
@@ -1145,6 +1181,28 @@ class NGBoostSaveTask(PanelTask):
         ctx.ngboost_head.save(out_path, metadata=meta)
         ctx.ngboost_artifact_path = out_path
         log.info("NGBoostSaveTask: artifact → %s", out_path)
+
+        try:
+            from kernel.persistence import get_connection, record_training_run  # noqa: PLC0415
+            conn = get_connection(ctx.config, strategy_dir=ctx.strategy_dir)
+            record_training_run(
+                conn,
+                strategy        = ctx.config.get("_strategy_name", "renquant_104"),
+                artifact_type   = "ngboost-head",
+                config_snapshot = {"ngboost": cfg},
+                n_rows          = ctx.ngboost_fit.get("n_rows"),
+                n_features      = len(ctx.feature_cols),
+                feature_cols    = list(ctx.feature_cols),
+                artifact_path   = str(out_path),
+                elapsed_sec     = getattr(ctx, "_ngboost_elapsed_sec", None),
+                trigger         = ctx.config.get("_training_trigger", "manual"),
+                device          = "cpu",
+                deterministic   = False,  # NGBoost isn't deterministic by default
+                notes           = (f"μ̄={ctx.ngboost_fit.get('train_mu_mean'):+.5f} "
+                                   f"σ̄={ctx.ngboost_fit.get('train_sigma_mean'):.5f}"),
+            )
+        except Exception as exc:
+            log.warning("NGBoostSaveTask: record_training_run failed — %s", exc)
 
 
 class PanelNGBoostJob(PanelJob):
