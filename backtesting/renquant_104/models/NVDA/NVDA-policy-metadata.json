@@ -23,13 +23,13 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/NVDA/NVDA-manual-rules.json"
   },
-  "trained_date": "2026-04-21",
+  "trained_date": "2026-04-23",
   "best_approach": "Manual",
-  "sharpe": 1.5306,
+  "sharpe": 1.4566,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
-  "live_train_end": "2026-04-14",
+  "live_train_end": "2026-04-16",
   "live_holdout_sharpe": 1.3421,
   "live_holdout_days": 126,
   "score_calibration": {
@@ -37,10 +37,10 @@
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2498,
+    "sample_size": 2500,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.31825460368294634,
+    "base_rate": 0.318,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
@@ -51,8 +51,8 @@
       3.0
     ],
     "y_thresholds": [
-      0.2978515625,
-      0.2978515625,
+      0.297270955165692,
+      0.297270955165692,
       0.30303030303030304,
       0.3502906976744186,
       0.48333333333333334
@@ -63,7 +63,7 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.05515695047543748,
+    "er_residual_std": 0.05513503606593525,
     "er_x_thresholds": [
       -1.0,
       1.0,
@@ -71,8 +71,8 @@
       3.0
     ],
     "er_y_thresholds": [
-      0.00859472962862316,
-      0.00859472962862316,
+      0.008590781441028454,
+      0.008590781441028454,
       0.012002458993359546,
       0.024482844441161864
     ],
@@ -80,5 +80,5 @@
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-21"
+  "score_calibration_date": "2026-04-23"
 }
