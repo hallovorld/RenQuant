@@ -1,0 +1,442 @@
+"""PyTorch cross-sectional transformer for the Stage-1 panel.
+
+Alternative ranking backend to :class:`PanelLTRModel` (XGBoost). Mirrors the
+same public surface so the caller can dispatch on `panel_ltr.backend`.
+
+Architecture (see `doc/renquant_104_transformer_design.md` §2):
+
+- Input: panel rows grouped by date → one date-group per sample.
+- Feature encoder: ``Linear(F → d_model)``.
+- N × transformer encoder blocks (self-attention within date-group only).
+- Score head: ``Linear(d_model → 1)`` per ticker.
+- Loss: ListNet over the date-group.
+- Regularization: feature dropout, ticker-conditional dropout, label smoothing,
+  AdamW weight decay, early-stopping.
+
+Public API (same shape as :class:`PanelLTRModel`)::
+
+    m = PanelTransformerModel(params=None)
+    m.train(panel, group_sizes, feature_cols, num_boost_round=..., ...) -> dict
+    m.predict(panel) -> pd.Series
+    m.save(path, metadata=None)
+    PanelTransformerModel.load(path)
+
+The serialized artifact has suffix ``.pt`` (state_dict) paired with a
+``.json`` sidecar holding feature_cols + hparams + training metadata.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import random
+from dataclasses import asdict, dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ── Hyperparameters ────────────────────────────────────────────────────────────
+
+@dataclass
+class TransformerParams:
+    d_model:          int   = 128
+    n_heads:          int   = 4
+    n_layers:         int   = 3
+    feedforward_dim:  int   = 256
+    dropout:          float = 0.3        # attention/FF/residual dropout
+    feature_dropout:  float = 0.2        # zero-out input features
+    ticker_dropout:   float = 0.1        # zero-out whole ticker within group
+    label_smoothing:  float = 0.05       # additive Gaussian noise on labels
+    lr:               float = 1e-4
+    weight_decay:     float = 1e-4
+    max_epochs:       int   = 50
+    batch_size:       int   = 32         # dates per batch
+    patience:         int   = 6          # early-stopping on eval IC, per user pref
+    device:           str   = "mps"      # "mps" | "cuda" | "cpu"
+    deterministic:    bool  = True
+    seed:             int   = 42
+    max_tickers:      int   = 38         # pad groups to this size
+
+
+# ── Module ─────────────────────────────────────────────────────────────────────
+
+class _PanelTransformer(nn.Module):
+    """Per-date self-attention encoder + linear score head.
+
+    Input  : x (B, T, F), pad mask (B, T)  (True = padding)
+    Output : score (B, T) — one per ticker slot
+    """
+
+    def __init__(self, n_features: int, p: TransformerParams):
+        super().__init__()
+        self.p = p
+        self.feature_encoder = nn.Linear(n_features, p.d_model)
+        self.feat_dropout    = nn.Dropout(p.feature_dropout)
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model         = p.d_model,
+            nhead           = p.n_heads,
+            dim_feedforward = p.feedforward_dim,
+            dropout         = p.dropout,
+            batch_first     = True,
+            activation      = "gelu",
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=p.n_layers)
+        self.score_head = nn.Linear(p.d_model, 1)
+
+    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, F). pad_mask: (B, T), True where padding.
+        x = self.feat_dropout(x)
+        h = self.feature_encoder(x)                  # (B, T, d_model)
+        h = self.encoder(h, src_key_padding_mask=pad_mask)
+        s = self.score_head(h).squeeze(-1)           # (B, T)
+        # Push padded scores to -inf so softmax in loss ignores them.
+        s = s.masked_fill(pad_mask, float("-inf"))
+        return s
+
+
+# ── ListNet loss (top-1 softmax cross-entropy over group scores) ──────────────
+
+def _listnet_loss(scores: torch.Tensor, labels: torch.Tensor,
+                  pad_mask: torch.Tensor) -> torch.Tensor:
+    """Cao 2007 top-1 ListNet.
+
+    P(i) = softmax(label_i) over the group; loss = -sum P_label * log P_pred.
+    Padding positions contribute 0.
+    """
+    # Mask padded labels to -inf before softmax → they become 0 probability.
+    label_logits = labels.masked_fill(pad_mask, float("-inf"))
+    p_label = F.softmax(label_logits, dim=-1)
+    log_p_pred = F.log_softmax(scores, dim=-1)
+    # masked_fill NaNs (all-padded rows) with 0 before sum
+    loss_per_row = -(p_label * log_p_pred)
+    loss_per_row = loss_per_row.masked_fill(pad_mask, 0.0)
+    # Mean over non-degenerate groups (at least 2 valid tickers).
+    valid_groups = (~pad_mask).sum(dim=-1) >= 2
+    if valid_groups.any():
+        return loss_per_row.sum(dim=-1)[valid_groups].mean()
+    return scores.sum() * 0.0   # degenerate batch — zero loss
+
+
+# ── Batch builder ──────────────────────────────────────────────────────────────
+
+def _build_date_groups(
+    panel: pd.DataFrame, group_sizes: np.ndarray,
+    feature_cols: list[str], label_col: str,
+    max_tickers: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Turn a flat panel into per-date padded tensors.
+
+    Returns (x, y, pad_mask) each of shape (n_groups, max_tickers, ·).
+    x: float32, y: float32, pad_mask: bool.
+    Padding rows are zeros with pad_mask=True.
+    """
+    X_flat = panel[feature_cols].to_numpy(dtype=np.float32, copy=True)
+    y_flat = panel[label_col].to_numpy(dtype=np.float32, copy=True)
+    n_groups = len(group_sizes)
+    n_feat   = X_flat.shape[1]
+    x = np.zeros((n_groups, max_tickers, n_feat), dtype=np.float32)
+    y = np.zeros((n_groups, max_tickers),         dtype=np.float32)
+    pad = np.ones((n_groups, max_tickers),       dtype=bool)
+    offset = 0
+    for gi, gs in enumerate(group_sizes):
+        take = int(min(gs, max_tickers))
+        x[gi, :take, :] = X_flat[offset:offset + take, :]
+        y[gi, :take]    = y_flat[offset:offset + take]
+        pad[gi, :take]  = False
+        offset += int(gs)
+    return x, y, pad
+
+
+# ── Determinism + device helpers ──────────────────────────────────────────────
+
+def _seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    try:
+        torch.mps.manual_seed(seed)   # torch 2.0+ on macOS
+    except AttributeError:
+        pass
+
+
+def _resolve_device(requested: str) -> torch.device:
+    """Resolve device preference with graceful fallback: mps → cuda → cpu."""
+    if requested == "mps" and torch.backends.mps.is_available():
+        return torch.device("mps")
+    if requested == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+# ── Main model class ──────────────────────────────────────────────────────────
+
+class PanelTransformerModel:
+    """Date-grouped cross-sectional transformer panel ranker.
+
+    Public surface matches :class:`PanelLTRModel` so callers (training /
+    scoring / tests) can dispatch on `panel_ltr.backend`.
+    """
+
+    def __init__(self, params: dict | None = None):
+        merged = asdict(TransformerParams())
+        if params:
+            merged.update(params)
+        self.params: TransformerParams = TransformerParams(**merged)
+        self.feature_cols: list[str] = []
+        self._model: _PanelTransformer | None = None
+        self._device: torch.device = _resolve_device(self.params.device)
+        # Last-epoch training/eval stats (populated in train()).
+        self.history: list[dict] = []
+        self.best_iter: int | None = None
+
+    # ── Training ──────────────────────────────────────────────────────────────
+
+    def train(
+        self,
+        panel: pd.DataFrame,
+        group_sizes: np.ndarray,
+        feature_cols: list[str],
+        label_col: str = "label",
+        weight_col: str | None = "weight",     # unused by transformer (ListNet scale-invariant)
+        num_boost_round: int | None = None,    # alias for max_epochs if provided
+        early_stopping_rounds: int | None = None,  # alias for patience if provided
+        eval_panel: pd.DataFrame | None = None,
+        eval_group_sizes: np.ndarray | None = None,
+    ) -> dict:
+        """Fit the transformer; return train/eval metadata dict."""
+        del weight_col   # ListNet is scale-invariant; group weights not applied here.
+        self.feature_cols = list(feature_cols)
+        p = self.params
+        if num_boost_round is not None:
+            p.max_epochs = int(num_boost_round)
+        if early_stopping_rounds is not None:
+            p.patience = int(early_stopping_rounds)
+
+        # Reproducibility
+        _seed_everything(p.seed)
+        if p.deterministic:
+            # Best-effort: MPS doesn't expose all ops deterministically, but
+            # torch.use_deterministic_algorithms guards the ones that do.
+            os.environ.setdefault("PYTHONHASHSEED", str(p.seed))
+            try:
+                torch.use_deterministic_algorithms(True, warn_only=True)
+            except Exception:
+                pass
+
+        # Build batches
+        xtr, ytr, padtr = _build_date_groups(
+            panel, group_sizes, feature_cols, label_col, p.max_tickers,
+        )
+        xte = yte = padte = None
+        if eval_panel is not None and eval_group_sizes is not None:
+            xte, yte, padte = _build_date_groups(
+                eval_panel, eval_group_sizes, feature_cols, label_col, p.max_tickers,
+            )
+
+        self._model = _PanelTransformer(n_features=len(feature_cols), p=p).to(self._device)
+        opt = torch.optim.AdamW(self._model.parameters(),
+                                lr=p.lr, weight_decay=p.weight_decay)
+
+        best_eval = float("-inf")
+        best_state: dict | None = None
+        bad_epochs = 0
+        gen = torch.Generator(device="cpu").manual_seed(p.seed)
+
+        n_groups = xtr.shape[0]
+        for epoch in range(p.max_epochs):
+            self._model.train()
+            order = torch.randperm(n_groups, generator=gen).numpy()
+            epoch_loss = 0.0
+            for start in range(0, n_groups, p.batch_size):
+                idx = order[start:start + p.batch_size]
+                xb = torch.from_numpy(xtr[idx]).to(self._device)
+                yb = torch.from_numpy(ytr[idx]).to(self._device)
+                mb = torch.from_numpy(padtr[idx]).to(self._device)
+
+                # Label smoothing (Gaussian noise only on non-pad positions)
+                if p.label_smoothing > 0:
+                    noise = torch.randn_like(yb) * p.label_smoothing
+                    yb = yb + noise.masked_fill(mb, 0.0)
+
+                # Ticker-conditional dropout: zero out whole ticker rows occasionally
+                if p.ticker_dropout > 0 and self._model.training:
+                    drop = (torch.rand(xb.shape[:2], device=self._device) < p.ticker_dropout) & (~mb)
+                    xb = xb.masked_fill(drop.unsqueeze(-1), 0.0)
+
+                scores = self._model(xb, mb)
+                loss = _listnet_loss(scores, yb, mb)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                opt.step()
+                epoch_loss += float(loss.item()) * len(idx)
+            epoch_loss /= max(n_groups, 1)
+
+            train_ic = self._ic_on_tensors(xtr, ytr, padtr, panel, label_col, group_sizes)
+
+            if xte is not None:
+                eval_ic = self._ic_on_tensors(
+                    xte, yte, padte, eval_panel, label_col, eval_group_sizes,
+                )
+                improved = eval_ic > best_eval + 1e-6
+                if improved:
+                    best_eval  = eval_ic
+                    best_state = {k: v.detach().cpu().clone()
+                                  for k, v in self._model.state_dict().items()}
+                    bad_epochs = 0
+                    self.best_iter = epoch
+                else:
+                    bad_epochs += 1
+                self.history.append({
+                    "epoch": epoch, "loss": epoch_loss,
+                    "train_ic": train_ic, "eval_ic": eval_ic,
+                })
+                if bad_epochs >= p.patience:
+                    break
+            else:
+                self.history.append({
+                    "epoch": epoch, "loss": epoch_loss, "train_ic": train_ic,
+                })
+
+        if best_state is not None:
+            self._model.load_state_dict(best_state)
+
+        result: dict[str, Any] = {
+            "best_iter": self.best_iter,
+            "epochs_run": len(self.history),
+            "train_ic": float(self.history[-1].get("train_ic", float("nan"))),
+        }
+        if xte is not None:
+            result["eval_ic"] = float(best_eval)
+        return result
+
+    # ── Inference ─────────────────────────────────────────────────────────────
+
+    def predict(self, panel: pd.DataFrame) -> pd.Series:
+        if self._model is None:
+            raise RuntimeError("PanelTransformerModel.predict called before train/load")
+        # Flat panel: one row per (ticker, date). For per-bar inference the
+        # caller passes a single-date slice; the model still wants a
+        # date-group so we infer groups from the panel's `date` column if
+        # present, else treat the whole panel as one group.
+        if "date" in panel.columns:
+            group_sizes = panel.groupby("date", sort=False).size().to_numpy()
+        else:
+            group_sizes = np.array([len(panel)], dtype=int)
+        x, _, pad = _build_date_groups(
+            panel.assign(label=0.0), group_sizes, self.feature_cols, "label",
+            self.params.max_tickers,
+        )
+        self._model.eval()
+        preds_flat = np.empty(len(panel), dtype=np.float32)
+        offset = 0
+        bs = self.params.batch_size
+        with torch.no_grad():
+            for start in range(0, x.shape[0], bs):
+                xb = torch.from_numpy(x[start:start + bs]).to(self._device)
+                mb = torch.from_numpy(pad[start:start + bs]).to(self._device)
+                sb = self._model(xb, mb).detach().cpu().numpy()
+                for gi in range(sb.shape[0]):
+                    take = int((~pad[start + gi]).sum())
+                    preds_flat[offset:offset + take] = sb[gi, :take]
+                    offset += take
+        return pd.Series(preds_flat, index=panel.index, name="panel_score")
+
+    # ── Persistence ───────────────────────────────────────────────────────────
+
+    def save(self, path: str | Path, metadata: dict | None = None) -> None:
+        if self._model is None:
+            raise RuntimeError("PanelTransformerModel.save called before train")
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix != ".pt":
+            path = path.with_suffix(".pt")
+        sidecar = path.with_suffix(".json")
+        torch.save(self._model.state_dict(), path)
+        payload = {
+            "version":      1,
+            "kind":         "panel_transformer",
+            "trained_date": str(date.today()),
+            "feature_cols": list(self.feature_cols),
+            "params":       asdict(self.params),
+            "best_iter":    self.best_iter,
+            "history":      self.history[-min(len(self.history), 50):],
+        }
+        if metadata:
+            payload.update({k: v for k, v in metadata.items() if k not in payload})
+        sidecar.write_text(json.dumps(payload, default=str))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "PanelTransformerModel":
+        path = Path(path)
+        if path.suffix == ".json":
+            pt_path = path.with_suffix(".pt")
+            json_path = path
+        else:
+            pt_path = path if path.suffix == ".pt" else path.with_suffix(".pt")
+            json_path = pt_path.with_suffix(".json")
+        meta = json.loads(json_path.read_text())
+        if meta.get("kind") != "panel_transformer":
+            raise ValueError(f"Not a panel_transformer artifact: {json_path}")
+        m = cls(params=meta["params"])
+        m.feature_cols = list(meta["feature_cols"])
+        m.best_iter = meta.get("best_iter")
+        m._model = _PanelTransformer(
+            n_features=len(m.feature_cols), p=m.params,
+        ).to(m._device)
+        state = torch.load(pt_path, map_location=m._device)
+        m._model.load_state_dict(state)
+        m._model.eval()
+        return m
+
+    # ── Internal IC helper ────────────────────────────────────────────────────
+
+    def _ic_on_tensors(
+        self,
+        x: np.ndarray, y: np.ndarray, pad: np.ndarray,
+        panel: pd.DataFrame, label_col: str, group_sizes: np.ndarray,
+    ) -> float:
+        """Per-date Spearman IC averaged over groups, batched through model."""
+        del label_col   # labels already baked into y
+        self._model.eval()
+        preds_flat = np.empty(len(panel), dtype=np.float32)
+        offset = 0
+        bs = self.params.batch_size
+        with torch.no_grad():
+            for start in range(0, x.shape[0], bs):
+                xb = torch.from_numpy(x[start:start + bs]).to(self._device)
+                mb = torch.from_numpy(pad[start:start + bs]).to(self._device)
+                sb = self._model(xb, mb).detach().cpu().numpy()
+                for gi in range(sb.shape[0]):
+                    take = int((~pad[start + gi]).sum())
+                    preds_flat[offset:offset + take] = sb[gi, :take]
+                    offset += take
+        ics: list[float] = []
+        offset2 = 0
+        y_flat = panel["label"].to_numpy() if "label" in panel.columns else None
+        for gs in group_sizes:
+            gs = int(gs)
+            p_slice = preds_flat[offset2:offset2 + gs]
+            y_slice = (y_flat[offset2:offset2 + gs] if y_flat is not None
+                       else y.reshape(-1)[offset2:offset2 + gs])
+            offset2 += gs
+            if gs < 2 or np.all(p_slice == p_slice[0]) or np.all(y_slice == y_slice[0]):
+                continue
+            rho, _ = spearmanr(p_slice, y_slice)
+            if not np.isnan(rho):
+                ics.append(float(rho))
+        return float(np.mean(ics)) if ics else float("nan")
+
+
+__all__ = [
+    "TransformerParams",
+    "PanelTransformerModel",
+]
