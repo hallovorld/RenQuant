@@ -292,8 +292,21 @@ python scripts/new_strategy.py --name foo --symbol AAPL --type classification
   3. (LEAN / live / sim already all route through `InferencePipeline` — no per-surface mirroring needed.)
   4. Add paired alignment tests in `tests/test_panel_alignment.py` or `tests/test_policy_alignment.py`.
 
-### 2. Tests for Every Feature
-Every policy in notebook and LEAN must have a corresponding test.
+### 2. Tests for Every Feature — and Every Bug
+Every policy in notebook and LEAN must have a corresponding test. **Every bug gets fixed as soon as it's found, and the fix ships with a regression test that would fail before the fix.** A bug without a test is a bug you'll see again.
+
+Bug-fix workflow:
+  1. Reproduce the bug with a failing test (unit or sim-level).
+  2. Commit the test alone if it clarifies the bug scope (optional).
+  3. Land the fix. The test now passes.
+  4. Keep both together in the same branch — never merge a fix without its regression test.
+
+This applies to:
+  - Production incidents (e.g. empty policy-metadata.json crashing daily_104.sh → `tests/test_universe_alignment.py::TestResilience`)
+  - Silent failure modes (e.g. systemic no-trade periods → `tests/test_no_trade_monitor.py` + `tests/test_no_trade_invariant.py`)
+  - Upstream-task ordering bugs (e.g. ApplyGlobalCalibrationTask skipped in additive mode → `tests/test_panel_bugfixes.py`)
+
+
 - Tests live in `tests/` (run with `python -m pytest tests/ -v`).
 - `tests/test_policy_alignment.py`: 18 policy classes (Trailing/Stop/SDL/MaxHold/MinHold/SellStreak/EMA50/Velocity/Transition/Earnings/Tiered/Correlation/Sector/WashSale/MinScore/CombinedRanking/Sizing/**Rotation**), each with at least 6 `test_nb_*` + 6 `test_lean_*` + 1 cross-check. A meta-test enforces equal counts per class.
 - `tests/test_lean_policies.py`: regression tests for LEAN-specific behavior (172 tests).

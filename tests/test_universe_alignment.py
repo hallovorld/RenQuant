@@ -179,6 +179,41 @@ class TestExtensibility:
 
 # ── Staleness ────────────────────────────────────────────────────────────────
 
+class TestDefensivesExemptFromFloor:
+    """Regression: universe_floor must not filter out defensive_tickers.
+
+    If defensives (the only universe allowed during bear_only / ConfidenceVeto)
+    are filtered out by the Sharpe floor, the strategy sits idle for weeks
+    whenever regime confidence dips below the veto threshold. User explicitly
+    flagged this class of systemic no-trade as unacceptable.
+    """
+
+    def test_defensive_below_sharpe_floor_still_admitted(self, tmp_path: Path):
+        # Build 2 tickers: one defensive with sharpe=0.3 (below floor), one
+        # offensive with sharpe=0.3 (below floor). Only the offensive should drop.
+        from datetime import date as _date
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        for ticker, sharpe in [("DEF", 0.3), ("OFF", 0.3)]:
+            _write_ticker(models_dir, ticker, {
+                "trained_date": _date.today().isoformat(),
+                "sharpe": sharpe, "live_holdout_sharpe": sharpe,
+            })
+
+        config = {
+            "watchlist":           ["DEF", "OFF"],
+            "defensive_tickers":   ["DEF"],
+            "model_staleness_days": 0,
+            "ranking": {"universe_floor": {"type": "sharpe", "threshold": 1.0}},
+        }
+        uctx = UniverseContext(config=config, strategy_dir=tmp_path)
+        LoadUniverseJob().run(uctx)
+        assert "DEF" in uctx.loaded_models, \
+            "defensives must be exempt from the Sharpe floor"
+        assert "OFF" not in uctx.loaded_models, \
+            "non-defensives below floor should still be dropped"
+
+
 class TestResilience:
     """A single malformed artifact must not crash the entire LoadArtifactsTask
     (regression — this used to kill daily_104.sh in production)."""

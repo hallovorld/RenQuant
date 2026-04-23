@@ -129,6 +129,13 @@ class FilterUniverseFloorTask(UniverseTask):
     Missing metric values (`None`) are admitted with a warning — "code-ready"
     for floor types whose metric isn't populated yet. Override this policy by
     changing admit_on_missing to False.
+
+    Defensive tickers (`config.defensive_tickers`) are always exempt from
+    the quality floor: they exist specifically to be available when the
+    regime demands them (ConfidenceVetoTask / BEARBranchTask restrict the
+    universe to defensives). Filtering them out here would make the BEAR /
+    bear_only branch structurally unable to buy anything → systemic
+    no-trade periods, which the user explicitly flagged as unacceptable.
     """
     admit_on_missing: bool = True
 
@@ -147,8 +154,11 @@ class FilterUniverseFloorTask(UniverseTask):
             return True
         if threshold <= 0:
             return True
+        defensives = set(uctx.config.get("defensive_tickers", []) or [])
         below: list[tuple[str, str]] = []
         for ticker, art in uctx.loaded_models.items():
+            if ticker in defensives:
+                continue   # always admit defensives — see class docstring
             meta = art.get("_metadata", {})
             value = evaluator(meta)
             if value is None:
