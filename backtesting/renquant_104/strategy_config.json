@@ -399,6 +399,11 @@
       "cache_dir": "data/insider_trades",
       "allow_fetch": true,
       "max_filings": 200
+    },
+    "training_window_years": 5.0,
+    "recency_weighting": {
+      "kind": "exp_decay",
+      "half_life_days": 252
     }
   },
   "training": {

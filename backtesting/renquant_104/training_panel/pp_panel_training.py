@@ -768,6 +768,10 @@ class BuildPanelTask(PanelTask):
             lookahead_days=lookahead,
             age_warmup_days=age_warmup,
             nan_prone_cols=nan_cols,
+            # Round 5: last-N-year slice + exponential recency weighting.
+            # User spec: 5 years + half-life 252 trading days by default.
+            training_window_years=cfg.get("training_window_years"),
+            recency_weighting=cfg.get("recency_weighting"),
         )
         label_mask = panel["label"].notna()
         panel = panel[label_mask].reset_index(drop=True)
@@ -791,7 +795,8 @@ class BuildPanelTask(PanelTask):
         drop_cols = set(cfg.get("drop_cols", DEFAULT_DROP_COLS))
         exclude = {"date", "ticker", "sector", "label",
                    "residual_return_raw",
-                   "weight", "weight_concurrency", "weight_age"} | drop_cols
+                   "weight", "weight_concurrency", "weight_age",
+                   "weight_recency"} | drop_cols
         feature_cols = [c for c in panel.columns if c not in exclude]
         if drop_cols & set(panel.columns):
             log.info("BuildPanelTask: dropped non-ranking cols %s",

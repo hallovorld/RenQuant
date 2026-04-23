@@ -96,6 +96,8 @@ def build_panel_frame(
     age_warmup_days: int = 504,
     nan_prone_cols: list[str] | None = None,
     drop_cols_from_features: tuple[str, ...] = ("fwd_return", "label"),
+    training_window_years: "float | None" = None,
+    recency_weighting: "dict | None" = None,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Assemble the unified panel training frame.
 
@@ -159,6 +161,16 @@ def build_panel_frame(
                 panel[ind] = panel[col].isna().astype(np.int8)
                 missing_cols.append(ind)
 
+    # Round-5: restrict to last N years (default: keep full history).
+    # User spec: 5 years. Applied AFTER concat so all tickers have enough
+    # history for feature computation, but BEFORE weights are computed so
+    # rolling sums reflect the truncated window.
+    if training_window_years is not None and training_window_years > 0:
+        cutoff = panel["date"].max() - pd.Timedelta(days=int(training_window_years * 365.25))
+        n_before = len(panel)
+        panel = panel[panel["date"] >= cutoff].reset_index(drop=True)
+        # Safe to regroup — group_sizes recomputed below.
+
     panel["weight_concurrency"] = compute_concurrency_weight(
         panel["date"], lookahead_days=lookahead_days
     ).values
@@ -167,6 +179,28 @@ def build_panel_frame(
         listing_dates=listing_dates, warmup_days=age_warmup_days,
     ).values
     panel["weight"] = panel["weight_concurrency"] * panel["weight_age"]
+
+    # Round-5: exponential recency weighting — user spec emphasizes
+    # recent samples. Most-recent bar gets weight 1.0; older bars decay.
+    # Composes multiplicatively with existing weights. Off by default
+    # (kind: None); common config `{"kind": "exp_decay", "half_life_days": 252}`.
+    if recency_weighting:
+        kind = str(recency_weighting.get("kind", "none")).lower()
+        if kind == "exp_decay":
+            half_life = float(recency_weighting.get("half_life_days", 252))
+            if half_life > 0:
+                most_recent = panel["date"].max()
+                age_days = (most_recent - panel["date"]).dt.days.astype(float)
+                decay = np.power(0.5, age_days / half_life)
+                panel["weight_recency"] = decay.values
+                panel["weight"] = panel["weight"] * panel["weight_recency"]
+        elif kind in ("none", ""):
+            pass
+        else:
+            import logging as _logging
+            _logging.getLogger("panel_frame").warning(
+                "Unknown recency_weighting.kind=%r — skipping", kind,
+            )
 
     group_sizes = panel.groupby("date", sort=True).size().values.astype(np.int32)
 
