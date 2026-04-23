@@ -326,7 +326,7 @@ This applies to:
 - `tests/test_training_cadence.py`: 8 tests — `training.cadence` gate (daily preserves existing behavior, weekly short-circuits off-cadence days, `--force` bypass).
 - `tests/test_fundamentals_cache.py`: 9 tests — `FundamentalsStore` parquet cache + `fetch_fundamentals` with injected provider.
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 976 collected (974 passed + 2 skipped, 2 invariants opt-in via `RENQUANT_FULL_SIM=1`). Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: 1037 collected (including new suites: `test_panel_transformer.py` 12 + `test_transformer_scorer.py` 5 + `test_transformer_pipeline_integration.py` 4 + `test_ensemble_scorer.py` 6 + `test_recalibrate_scores.py` 2 + universe_floor regression tests + drawdown-reset regression tests). 2 invariants opt-in via `RENQUANT_FULL_SIM=1`. Run `python -m pytest tests/ -v` to verify.
 - `tests/test_no_trade_monitor.py` — 11 tests for MonitorIdleStreakTask + SimResult streak surface + adapter round-trip. Guards the "no systematic no-trade periods" contract (CLAUDE.md 2b).
 - `tests/test_no_trade_invariant.py` — 2 opt-in full-sim tests asserting `longest_no_trade_streak < 20` on current config.
 - `tests/test_earnings_surprise.py` — 9 tests for yfinance-backed surprise cache + trailing-4Q factor.

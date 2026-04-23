@@ -279,7 +279,7 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-22",
+    "blend_updated": "2026-04-23",
     "blend_n_symbols": 38,
     "panel_scoring": {
       "enabled": true,
