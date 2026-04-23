@@ -240,6 +240,13 @@ FUNDAMENTAL_COLS: list[str] = [
     "short_pct_float",   # yfinance .info.shortPercentOfFloat — orthogonal sentiment factor
 ]
 
+# Time-series factors derived from yfinance earnings_dates (updates step-wise
+# at each earnings announcement, ffilled otherwise). Different from
+# FUNDAMENTAL_COLS because these vary within a ticker over time.
+TIMESERIES_EXTRA_COLS: list[str] = [
+    "earnings_surprise_cum",   # trailing-4Q cumulative EPS surprise %
+]
+
 
 def _sector_median_fill(
     values: dict[str, float],

@@ -237,10 +237,54 @@ class LoadFundamentalsTask(PanelTask):
                  len(out), len(ctx.watchlist))
 
 
-class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum + fundamentals.
+class LoadEarningsSurpriseTask(PanelTask):
+    """Populate ctx.earnings_surprises from the parquet cache (or fetch).
 
-    Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
+    No-op when `panel_ltr.earnings_surprise.enabled` is false. Cache at
+    `data/earnings_surprise/{SYMBOL}.parquet` (see
+    `kernel/earnings_surprise.py` + `scripts/fetch_earnings_surprise.py`).
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = ctx.config.get("panel_ltr", {}).get("earnings_surprise", {})
+        if not cfg.get("enabled", False):
+            return
+        if ctx.earnings_surprises:
+            return
+
+        from kernel.earnings_surprise import (  # noqa: PLC0415
+            EarningsSurpriseStore, fetch_earnings_surprise_watchlist,
+        )
+
+        cache_dir = cfg.get("cache_dir", "data/earnings_surprise")
+        store = EarningsSurpriseStore(data_dir=cache_dir)
+
+        out: dict = {}
+        for sym in ctx.watchlist:
+            cached = store.load(sym)
+            if cached is not None and not cached.empty:
+                out[sym] = cached
+        missing = [s for s in ctx.watchlist if s not in out]
+        if missing and cfg.get("allow_fetch", True):
+            log.info("LoadEarningsSurpriseTask: fetching %d missing tickers", len(missing))
+            try:
+                fresh = fetch_earnings_surprise_watchlist(missing)
+                # fresh_df may be empty — store writes only non-empty anyway
+                for sym, df in fresh.items():
+                    if df is not None and not df.empty:
+                        out[sym] = df
+            except Exception as exc:
+                log.warning("LoadEarningsSurpriseTask: fetch failed — %s", exc)
+
+        ctx.earnings_surprises = out
+        log.info("LoadEarningsSurpriseTask: %d / %d tickers with surprise history",
+                 len(out), len(ctx.watchlist))
+
+
+class PanelDataJob(PanelJob):
+    """Phase 1 — gather market data + sector momentum + fundamentals + earnings.
+
+    Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals → LoadEarningsSurprise
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -248,7 +292,12 @@ class PanelDataJob(PanelJob):
 
     @property
     def tasks(self) -> list[PanelTask]:
-        return [FetchOHLCVTask(), SectorMomentumTask(), LoadFundamentalsTask()]
+        return [
+            FetchOHLCVTask(),
+            SectorMomentumTask(),
+            LoadFundamentalsTask(),
+            LoadEarningsSurpriseTask(),
+        ]
 
 
 # ── Phase 2 — PanelFeatureJob (orchestrator) + per-ticker Jobs ───────────────
@@ -271,6 +320,7 @@ class PanelFeatureJob(PanelJob):
                 ticker_sectors=ctx.ticker_sectors,
                 config=ctx.config,
                 fundamentals=ctx.fundamentals,
+                earnings_surprises=ctx.earnings_surprises,
             )
             for t in ctx.watchlist if t in ctx.ohlcv
         ]
@@ -368,6 +418,7 @@ class TickerPanelFactorJob(PanelTickerJob):
             compute_drawdown_from_peak,
             FUNDAMENTAL_COLS,
         )
+        from kernel.earnings_surprise import compute_earnings_surprise_cum
         try:
             one = {tc.ticker: tc.ohlcv[tc.ticker]}
             size = compute_size_feature(one, None).get(tc.ticker)
@@ -404,6 +455,18 @@ class TickerPanelFactorJob(PanelTickerJob):
                 for col in FUNDAMENTAL_COLS:
                     val = ticker_fund.get(col, float("nan"))
                     cols[col] = pd.Series(val, index=idx)
+            # Earnings surprise: trailing-4Q cumulative surprise %, ffilled
+            # to the ticker's daily index. Sparse (one row per announcement)
+            # -> daily step function.
+            if tc.earnings_surprises:
+                surprise_daily = compute_earnings_surprise_cum(
+                    {tc.ticker: tc.earnings_surprises.get(tc.ticker, pd.DataFrame())},
+                    {tc.ticker: tc.ohlcv[tc.ticker]},
+                ).get(tc.ticker)
+                cols["earnings_surprise_cum"] = (
+                    surprise_daily if surprise_daily is not None
+                    else pd.Series(float("nan"), index=idx)
+                )
             tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
         except Exception as exc:
             log.error("  %s: TickerPanelFactorJob failed — %s", tc.ticker, exc)
@@ -502,6 +565,8 @@ class FactorZScoreTask(PanelTask):
             # Round 3 orthogonal factors (time-series, same treatment as above)
             "amihud_illiq", "volume_shift", "price_to_high",
             "realized_vol", "drawdown_peak",
+            # Round 4+ time-varying fundamentals (opt-in via config)
+            "earnings_surprise_cum",
         ]
         per_col: dict[str, dict[str, pd.Series]] = {}
         for col in raw_cols:
@@ -539,9 +604,10 @@ class FactorZScoreTask(PanelTask):
                 "beta_60d_z":  z["beta_60d"].get(t,  pd.Series(index=idx)).reindex(idx),
                 "resid_mom_z": z["resid_mom"].get(t, pd.Series(index=idx)).reindex(idx),
             }
-            # Round 3: append z-scored orthogonal factors
+            # Round 3+: append z-scored orthogonal factors
             for c in ("amihud_illiq", "volume_shift", "price_to_high",
-                      "realized_vol", "drawdown_peak"):
+                      "realized_vol", "drawdown_peak",
+                      "earnings_surprise_cum"):
                 if c in z:
                     cols[f"{c}_z"] = z[c].get(t, pd.Series(index=idx)).reindex(idx)
             for col in FUNDAMENTAL_COLS:

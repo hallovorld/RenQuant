@@ -387,7 +387,12 @@
     "drop_cols": [
       "volume_shift_z",
       "drawdown_peak_z"
-    ]
+    ],
+    "earnings_surprise": {
+      "enabled": true,
+      "cache_dir": "data/earnings_surprise",
+      "allow_fetch": true
+    }
   },
   "training": {
     "cadence": "custom",
