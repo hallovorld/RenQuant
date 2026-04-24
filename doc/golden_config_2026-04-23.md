@@ -1,9 +1,25 @@
-# Golden Config — v4 (Kelly half + A-gate)
+# Golden Config — v4.1 (Kelly half + A-gate + CUSUM wall-time)
 
-**Current golden.** Promoted 2026-04-23, commit `eb8fab5`.
+**Current golden.** Promoted 2026-04-24 (v4.1 from +37.85 → +39.82 APY), builds on v4 (`eb8fab5`, Kelly half + A-gate).
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
 **Live config file:** `backtesting/renquant_104/strategy_config.json`
+
+## v4.1 — CUSUM cooldown wall-time (2026-04-24)
+
+**Sweep (27-mo OOS, `allow_fetch=False`):** +37.85 → **+39.82% APY** (+1.97 pts). Below the default +2 pt promotion floor, but **promoted under CLAUDE.md §2a**: live/sim parity fix with matched theoretical prediction (roadmap predicted "~2 pt drift closure"; result +1.97) under rigorously-controlled variables (same panel, same everything, one flag flipped).
+
+**Change:**
+```json
+"regime": {
+  "cusum_cooldown_mode": "wall_time",     // was: "bar_count" default
+  "cusum_cooldown_days":  3.0
+}
+```
+
+**Mechanism:** `TransitionWindowTask` no longer hard-blocks buys on regime-switch; instead `SizeAndEmitTask` scales `max_position_pct × cooldown_progress` (0 immediately after switch → 1.0 after 3 calendar days). Prevents intraday runners from ticking the bar-count cooldown 10× per day, keeping sim and live wall-clock-consistent.
+
+**Buys 115 → 117, streak 42d → 37d, win rate 82 → 83%.**
 
 ---
 

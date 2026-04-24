@@ -339,6 +339,18 @@ This applies to:
 - `tests/test_panel_hourly_wiring.py` — 8 tests for Plan G step 2 (HourlyBarStore parquet cache, LoadHourlyBarsTask flag/load paths, TickerPanelFactorJob merges 6 hourly columns, FactorZScoreTask emits `{col}_z`).
 - `tests/test_regime_calibrator.py` — 10 tests for Plan F (`fit_regime_conditional` split/skip/round-trip, `LoadGlobalCalibrationTask` populates pooled + regime dict, `ApplyGlobalCalibrationTask` dispatches to regime or pooled fallback).
 
+### 2a. Promotion Thresholds Are Not Floors for Theoretically-Sound Wins
+
+**Default rule:** APY win ≥ +2 pts on 27-mo OOS = promote to golden.
+
+**Exception (user spec 2026-04-24):** when variables are rigorously controlled, **any positive margin is meaningful**. Specifically:
+
+- **Live/sim parity fixes** (e.g. CUSUM-v2 wall_time mode closing known bar-count-vs-calendar-day drift) ship even at < +2 pt — the fix correctness is the point; the APY lift is incidental confirmation.
+- **Theory-aligned wins where the predicted magnitude matches** (e.g. CUSUM-v2 predicted "~2 pt drift closure" in the roadmap, result +1.97) are signal, not noise — theory was specific, result matched.
+- **Mechanism-clean changes** (no hyperparameter drift, same panel, same everything) with positive margin are shipped.
+
+**Not exceptions:** new strategies, hyperparameter sweeps, panel retrains — those need the full +2 pt to clear the promotion floor because they have more ways to accidentally look good.
+
 ### 2b. Unexpected A/B Results = Audit Before Accepting
 
 **When a theory we believed would improve the model produces the OPPOSITE result, the first hypothesis must be: "my implementation has a bug or my assumptions were wrong" — not "the theory is wrong".** Accept the negative result only AFTER the implementation audit.
