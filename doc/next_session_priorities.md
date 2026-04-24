@@ -1,81 +1,108 @@
-# Next Session — Priority TODO (carry forward from 2026-04-23)
+# Next Session — Priority TODO (updated 2026-04-23 late PT)
 
-End of session 2026-04-23. Five bugs shipped today (O / R / T / HWM / stale test); three fresh items discovered. Work top-to-bottom.
+Refreshed at end of second 2026-04-23 session. Kelly sizing + top-up
+landed tonight; the list below excludes things we already did. Work
+top-to-bottom.
 
-## 🔴 P0 — correctness / trust
-
-| # | Item | Why it's P0 | Est. |
-|---|---|---|---|
-| P | Populate `candidate_scores.blocked_by` in DB | Currently all rows have empty `blocked_by`. Impossible to answer "why was XLU not selected?" or "why was X bought?" from audit. Without this, the XLU bug would have been undetectable from DB alone. Write `sector_guard` / `wash_sale` / `correlation_guard` / `tier_threshold` / `defensive_non_bear` from the Selection loop into the column. | 2 h |
-| M⁺ | Training-run audit schema drift fix | `record_training_run` silently swallows `table training_runs has no column named elapsed_sec` → **zero rows** in that table across a week of retrains. Entire training history is ungaudited. Add `elapsed_sec` column + `ALTER TABLE` migration. | 1 h |
-
-## 🧠 P0.5 — decisions / design discussion (block before implementing)
-
-| # | Item | Questions to settle |
-|---|---|---|
-| **AA** | **Decision-factor DB + calibration feedback loop** | (1) Add `ticker_forward_returns(ticker, run_date, fwd_1d/5d/10d, spy_fwd_10d, excess_fwd_10d)` table, populated daily. (2) Write `scripts/analyze_decision_factors.py` to JOIN `candidate_scores` × forward returns → rank-score bucket vs realized outperform curve, per-regime + per-ticker splits. (3) Use output to tune `tiered_thresholds` (currently tier 1=0.10 < base_rate=0.273 → admitting below-chance candidates). Target: set tier 1 ≈ base_rate, tier 2 ≈ +1σ, tier 3 ≈ +2σ. Prerequisite for AB. |
-| **AB** | **Top-up held positions + variable concentration (max_position_pct by conviction)** | User's request 2026-04-23 evening: *"如果 calibrate score 足够好，可以买进已经 hold 的股票！这只股票好的话甚至可以全仓"*. Currently the selection loop ONLY considers tickers NOT in `held_tickers` — no top-up path. Need to decide: (a) **Trigger threshold** — at what panel_score does a held position get topped up? e.g. score ≥ 0.50 AND score gained ≥ 0.15 vs prior bar? (b) **Target size function** — `new_target_pct = f(panel_score)`. Linear? e.g. 15% at score=0.3 → 40% at 0.6 → 100% at 0.9. (c) **Max concentration cap** — really allow 100%? Risk mgmt says no — suggest 35-50% per-ticker ceiling. (d) **Rotation vs top-up interaction** — if held.score lifts and a NEW candidate has higher score, swap or top-up? Default rule of thumb: top-up first if held crosses a tier, then rotate. (e) **Wash-sale & min-hold interplay** — top-up doesn't trigger wash sale (same ticker, no sell) BUT must respect sector guard. (f) **Anti-churn** — need min delta (e.g. `top_up_score_delta ≥ 0.10`) so score noise (IC=0.033) doesn't produce daily top-ups. **Discuss design first, then scope for 2-day build.** |
-
-## 🟠 P1 — performance / structural
-
-| # | Item | Why it's P1 | Est. |
-|---|---|---|---|
-| Q | Rotation hold-days × rotation_advantage 2D sweep | User asked 2026-04-23: "30 天科学吗？14 更好？" Current golden `min_rotation_hold_days=30, rotation_advantage=0.0` validated at +44.20% APY but not sweep-optimised. 3×3 = 9 configs × ~7 min each = 1 h. Pareto-optimal finder for adaptability vs noise churn. | 1 h |
-| J | Hourly-feature pruning sweep | 4/6 hourly features have `|IC| < 0.016` (morning_drift, overnight_gap, vol_ratio, afternoon_drift). Drop weakest 2-3 via `panel_ltr.drop_cols`. Target: OOS IC lifts ≥ +0.005 (0.033 → ≥ 0.038) without APY regression. | 1 day |
-| S | live_state.json → DB `live_state_snapshots` mirror | User's 2026-04-23 Q: "should JSON be replaced by DB?" Keep JSON for bootstrap + human debug; add `live_state_snapshots (run_id, run_date, state_json, created_at)` table appended each bar. Then "what was position_hwm on 2026-04-20?" becomes queryable. | 2 h |
-
-## 🟡 P2 — analysis / documentation
-
-| # | Item | Why it's P2 | Est. |
-|---|---|---|---|
-| K | CHOPPY regime diagnosis | Plan F leftover: per-regime calibrator showed CHOPPY `pool_IC = -0.116` on 646 rows — panel score *anti-predicts* in CHOPPY. Bar-level diagnostic: universal inversion vs ticker-scoped vs feature-scoped. If tractable, derive a CHOPPY-specific ScoreBuyTask tier offset. | 1 day |
-| L | Per-ticker hourly-feature effectiveness | Leave-one-ticker-out on the hourly-enhanced panel → which tickers carry the +4.18 APY gain? Candidates for watchlist re-evaluation. | 1 day |
-| N | Golden config doc consolidation | `doc/golden_config_2026-04-23.md` has v1/v2/v3 inline. Fold v1/v2 into a `## History` section so top of doc reads as current-golden-only (+44.20%). | 30 min |
-
-## 🟢 P3 — passive / hygiene
-
-| # | Item | Why it's P3 | Est. |
-|---|---|---|---|
-| I | Accumulate 4 weeks of live sustainability data | `scripts/weekly_apy_check.py` fires Sun 12 PT. After 4 Sundays we have 4 weekly 30-day APY snapshots to trend. Auto-alert below 25% for 2 consecutive weeks. Just wait. | 0 h |
-
-## ✅ Shipped this session (2026-04-23)
-
-Condensed — full commit trail in `doc/improvement_roadmap.md` History.
-
-| Plan | What | Commit |
-|---|---|---|
-| **G** | **Hourly-bar panel features → PROMOTED TO GOLDEN** (+4.18 APY pts, 40.02 → 44.20%) | `e65b081` |
-| **O** | Defensive-ticker gate in non-BEAR — fixed XLU 2026-04-20 bug | `52bf718` |
-| **R** | CUSUM countdown persistence across live runs — fixed 3-day zero-trade streak | `dc7be6f` |
-| **T** | `entry_dates` fallback persistence — legacy positions no longer show hold_days=0 | `c5a2ff7` |
-| — | `resolve_hwm()` + `live_state_contract` audit — 9-attribute end-to-end review | `ab1006d`, `c5a2ff7` |
-| **F** | Regime-conditional calibration — shelved after live A/B lost −3.78 APY | `7f68a40` |
-| **H** | Transformer on hourly panel — shelved at ratio 0.20× XGB | `c9ee50b` |
-| — | Environment lockfile + versioning doc | `c9ee50b` |
-
-## Current golden state
-
-```
-strategy_config.golden.json  @ commit c5a2ff7
-+44.20% APY after-tax
-82% win rate
-26 d longest no-trade streak
-47k × 31 feature panel (hourly-enhanced)
-OOS mean IC (CPCV 15-split) = +0.0326
-```
+**Current golden:** `c5a2ff7` → now Kelly-capable (`4787825`).
+After-tax **+44.20% APY** (27-mo OOS) on daily-only; Kelly variant
+still under validation (sweep running).
 
 ---
 
-## Quick-start for next session
+## 🔴 P0 — Blockers / trust
 
-```bash
-cd /Users/renhao/git/github/RenQuant
-conda activate renquant
-# Read this file first:
-cat doc/next_session_priorities.md
-# Run tests to confirm golden is green:
-python -m pytest tests/ -q  # expect ~1100 tests green
-# Pick a P0 item (P or M⁺) → ship it → commit → push
+| # | Item | Impact | Est. |
+|---|------|---|---|
+| **AA** | **Decision-factor DB: forward-returns table + analyze script** | 🔥 HIGHEST — foundational. Without it, every threshold / size parameter is tuned blindly. Powers AA → AB-trim → Q. | **1 d** |
+| **P** | Populate `candidate_scores.blocked_by` in DB | HIGH — right now audit can't answer "why XLU?". Part of AA's JOIN surface. | 2 h |
+| **M⁺** | `training_runs.elapsed_sec` schema fix | MEDIUM — silent failure, 0 rows over a week of retrains. 1-line migration. | 1 h |
+
+## 🟠 P1 — Strategic (Kelly completion + short-term wins)
+
+| # | Item | Impact | Est. |
+|---|------|---|---|
+| **AB-trim** | Partial-sell held positions whose Kelly target < current weight | HIGH — completes the Kelly story. Without trim, over-concentrated positions stagnate. Requires partial-exit infrastructure (currently exits = full liquidation). | 4 h |
+| **BC** | Rotation uses Kelly delta instead of raw `panel_score` delta | MEDIUM-HIGH — aligns 3 decision layers on same math. | 2 h |
+| **Q** | `min_rotation_hold_days` × `rotation_advantage` 2D sweep | MEDIUM — user raised 2026-04-23, 30d may be too conservative. 3×3 grid. | 1 h |
+| **Kelly-tier-tune** | Tune `tiered_thresholds` based on tonight's sweep result + AA data | MEDIUM — tier 1 = 0.10 < base_rate=0.273 is "admit below chance". Either drop tier logic and let Kelly min_edge be the gate, or re-anchor to base_rate. | 1-2 h |
+| **J** | Hourly-feature pruning sweep (drop 3 weakest `|IC|<0.016` cols) | MEDIUM — OOS IC possibly lifts +0.005. Tight A/B. | 4 h |
+| **S** | Mirror `live_state.json` → DB `live_state_snapshots` | MEDIUM — audit improvement; history is currently JSON-frozen in time. | 2 h |
+
+## 🟡 P2 — Analysis / diagnostic
+
+| # | Item | Impact | Est. |
+|---|------|---|---|
+| **K** | CHOPPY regime diagnosis (IC=−0.116 inversion) | MEDIUM — understand why panel score is directional-wrong in CHOPPY. Could unlock CHOPPY-specific edge. | 1 d |
+| **L** | Per-ticker hourly-feature effectiveness (leave-one-out) | LOW-MED — which tickers carry the +4.18 APY? Candidates for watchlist review. | 1 d |
+| **N** | Golden-config doc consolidation (v1/v2/v3 → History) | LOW — housekeeping. | 30 min |
+
+## 🟢 P3 — Passive
+
+| # | Item | Impact | Est. |
+|---|------|---|---|
+| **I** | Accumulate 4 weeks of live sustainability data | LOW (passive) | 0 h (wait) |
+
+---
+
+## Total recommended pickup order
+
+Sequenced so each item unlocks the next:
+
+1. **M⁺ (1 h)** — fastest win, unblocks training audit.
+2. **P (2 h)** — unblocks every "why" question downstream.
+3. **AA (1 d)** — produces evidence for Kelly-tier-tune, AB-trim, BC.
+4. **Kelly-tier-tune (1-2 h)** — once AA data is in, tune tier thresholds empirically.
+5. **AB-trim (4 h)** — completes Kelly story.
+6. **BC (2 h)** — rotation uses Kelly delta.
+7. **Q (1 h)** — quick rotation-hold-days sweep.
+8. **J (4 h)** — hourly feature pruning.
+9. **S (2 h)** — live_state DB mirror.
+10. **K (1 d)** — CHOPPY diagnosis.
+11. **L (1 d)** — per-ticker hourly effectiveness.
+12. **N (30 min)** — doc cleanup.
+13. **I** — passive.
+
+**Total next-session budget estimate: ~5-6 full days of work** if every item shipped end-to-end. Realistic one-session goal: items **1-5** (P0 + Kelly completion) = **~2 days effective**.
+
+---
+
+## ✅ Shipped this session (2026-04-23 — 15 commits)
+
+| Item | Result | Commit |
+|---|---|---|
+| **O** | Defensive-ticker gate in non-BEAR (XLU bug) | `52bf718` |
+| **R** | `regime_state.countdown` persisted across live runs | `dc7be6f` |
+| **T** | `entry_dates` fallback persisted (legacy positions unlocked) | `c5a2ff7` |
+| **V** | Held tickers exempt from universe_floor (AMZN unblocked) | `369973b` |
+| **B²** | CUSUM cooldown only on regime SWITCH (not every CUSUM fire) | `013200a` |
+| **W+** | Network-safety layer: per-call + per-ticker + batch timeout | `67b8d64`, `632f3cd` |
+| **Watchlist** | +5 semis (INTC, MPWR, TXN, NVTS, WDC) — SKH delisted, skipped | `73a9327` |
+| **HWM resolver** | Stale-HWM auto-snap on live start (from earlier session) | `ab1006d` |
+| **live_state contract** | 9-attribute audit + contract tests | (earlier session) |
+| **Retrain ntfy** | Fires only Tue/Thu/Sun (true retrain days) | `d302e5a` |
+| **Trade ntfy** | `live/runner.py::_notify_decision` fires every cycle (trade/decision/skip) | `a07f76b`, `d79b6c2` |
+| **ntfy truthfulness** | Reads `orders_placed` (broker-confirmed), not `ctx.orders` (intent) | `3578908` |
+| **Kelly sizing** | `kernel/kelly.py` (f*=μ/σ²) + `ApplyKellySizingTask` + `SizeAndEmitTask` wiring | `4787825` |
+| **Kelly top-up** | `TopUpHeldTask` — add-to-existing when `kelly_target > current_pct` | `4787825` |
+| **Kelly validation** | `scripts/kelly_param_validation.py` with `--quick` / `--full` modes | `4787825` |
+
+**13 real bugs fixed + 2 major features (Kelly + tiered ntfy) + watchlist expansion.**
+
+**Test count tonight:** +60 new (kelly_sizing 23, runner_trade_ntfy 15, universe_held_exemption 9, regime_state_persistence 6, live_state_contract 21, cusum_regime_switch 7, defensive_gate 10, net_safety 13). Full suite estimated ~1150 tests.
+
+## 🧪 Running now (will finish ~22:55)
+
+`scripts/kelly_param_validation.py --quick` (4 configs × ~8 min):
+
+```
+[1/4] GOLDEN             apy=+25.91% win=81% buys=144 streak=25d  ← baseline
+[2/4] A+Kelly(default)   in progress  (fractional=0.25, max_conc=0.35)
+[3/4] A+Kelly(half)      queued       (fractional=0.50, max_conc=0.35)
+[4/4] A+Kelly(tight)     queued       (fractional=0.25, max_conc=0.20)
 ```
 
-User's ongoing ask: when finishing a piece, update this file + `doc/improvement_roadmap.md` + commit same-day.
+Note: sweep APYs lower than documented golden (+44.20%) because
+`allow_fetch=False` disables fundamentals/earnings/insider. Relative
+deltas are still meaningful. If any Kelly variant beats GOLDEN by
+> +3 pts → promote + run `--full` 9-grid tomorrow.
