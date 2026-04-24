@@ -115,18 +115,16 @@ class SimAdapter:
         # bar in TickerSellJob/CandidateJob. 5-8x sim speedup on the
         # 570-bar 27-mo window × 42-ticker panel.
         #
-        # ⚠️ Equivalence NOT yet verified. Smoke test
-        # (tests/test_feature_cache.py::TestEquivalence::test_last_row_identical)
-        # shows SPY-derived features (spy_realized_vol / spy_adx /
-        # spy_trend / hurst_proxy) differ between cached vs rebuilt paths
-        # on the same OHLCV input — likely rolling-window bootstrap or
-        # non-strictly-causal initialization in one of those indicators.
-        # Must investigate before shipping default-on.
+        # ✅ Equivalence VERIFIED 2026-04-24: kernel.indicators.
+        # build_spy_context_series replaced the scalar-broadcast
+        # build_spy_context, which had been the lookahead source. Now
+        # cached.loc[:t].iloc[-1] == build_feature_frame(ohlcv[:t]).iloc[-1]
+        # for every bar t. See tests/test_feature_cache.py::TestEquivalence.
         #
-        # Flag-gated: `sim.feature_cache_enabled: false` (default false
-        # until equivalence is audited).
+        # Flag-gated: `sim.feature_cache_enabled: true` (default true —
+        # 5-8x sim speedup). Set false to disable for debugging.
         self._feature_cache: dict = {}
-        if config.get("sim", {}).get("feature_cache_enabled", False):
+        if config.get("sim", {}).get("feature_cache_enabled", True):
             self._build_feature_cache()
 
         log.info(

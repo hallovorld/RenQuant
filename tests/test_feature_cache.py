@@ -31,24 +31,16 @@ def _synthetic_ohlcv(n: int = 200):
 
 
 class TestEquivalence:
-    """Cached slice vs uncached rebuild — checks correctness of the optimization.
+    """Cached slice vs uncached rebuild — correctness of the optimization.
 
-    KNOWN ISSUE 2026-04-24: SPY-derived features (spy_realized_vol,
-    spy_adx, spy_trend, hurst_proxy) differ between the two paths
-    because their indicators have non-strictly-causal initialization
-    (rolling window bootstrap, EMA warmup sensitivity, or Hurst numerical
-    quirks). This test is marked xfail until we audit + fix the offenders.
+    FIXED 2026-04-24: `build_spy_context_series` replaces the scalar-
+    broadcast `build_spy_context`. SPY regime features now compute
+    strictly-causally per bar, so `build_feature_frame(full_history)`
+    sliced at bar t equals `build_feature_frame(truncated_to_t)`.
 
-    The non-SPY features DO match (rsi, macd_hist, cci, bbp, williams_r,
-    obv_slope), so partial-cache is possible — cache those plus compute
-    SPY features per-bar. Left as a followup.
+    Unlocks `sim.feature_cache_enabled` for 5-8x sim speedup.
     """
 
-    @pytest.mark.xfail(
-        reason="SPY-derived features have non-causal initialization in full- "
-               "vs truncated-series computation. Audit + fix before enabling "
-               "sim.feature_cache_enabled by default."
-    )
     def test_last_row_identical(self):
         """For any bar t, cache.loc[:t].iloc[-1] must equal build_feature_frame
         called on OHLCV truncated to t."""

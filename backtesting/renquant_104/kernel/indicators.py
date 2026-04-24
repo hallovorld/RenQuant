@@ -251,11 +251,18 @@ def build_feature_frame(
     result["rel_mom_20d"] = rel_price.pct_change(20)
     result["rel_mom_60d"] = rel_price.pct_change(60)
 
-    # Regime context — scalar from the latest bar, broadcast over all rows
-    ctx = build_spy_context(spy_rows.loc[common_idx] if common_idx[0] in spy_rows.index else spy_rows,
-                            vol_window=vol_window)
-    for k, v in ctx.items():
-        result[k] = v
+    # Regime context — PER-BAR causal time series (2026-04-24 fix).
+    # Prior scalar broadcast introduced lookahead when callers passed
+    # the full OHLCV range (sim feature cache). Strictly-causal series
+    # makes build_feature_frame(full) equivalent to build_feature_frame
+    # (truncated) when indexed at the same bar.
+    spy_slice = spy_rows.loc[:common_idx[-1]]   # only bars up to the LAST common index
+    ctx_series = build_spy_context_series(spy_slice, vol_window=vol_window)
+    # Reindex to common_idx and forward-fill (rolling windows leave
+    # the first N bars as NaN; downstream dropna handles them).
+    for col in ("spy_realized_vol", "spy_adx", "spy_trend", "hurst_proxy"):
+        if col in ctx_series.columns:
+            result[col] = ctx_series[col].reindex(common_idx).ffill()
 
     result = result.dropna()
     return result if not result.empty else None
