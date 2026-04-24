@@ -238,56 +238,105 @@ def _run_once_multi_pipeline(
     pipeline.run(ctx)
     adapter.commit(ctx)
 
-    # ── Trade-level ntfy (mandatory — user requirement, 2026-04-23) ─────
-    # Any path that places orders MUST notify. Shell wrappers
-    # (daily_104.sh / live_only_104.sh / intraday_sell_104.sh) send
-    # their own wrapper-level ntfy, but direct `python -m live.runner`
-    # invocations previously slipped through silently. This hook
-    # guarantees every real trade surfaces to ntfy, regardless of how
-    # the runner was triggered.
-    _notify_trades(label, run_mode, ctx)
+    # ── Decision-level ntfy (mandatory — user requirement, 2026-04-23) ──
+    # Every decision cycle — whether it placed orders or not — MUST
+    # notify. This lets the user confirm the system is alive + made a
+    # deliberate decision (vs silent hang / crash). Previously we only
+    # notified on actual trades; per 2026-04-23 follow-up: notify always.
+    _notify_decision(label, run_mode, ctx)
 
 
-def _notify_trades(label: str, run_mode: str, ctx) -> None:
-    """Fire ntfy if this cycle placed any buy/sell orders.
+def _notify_decision(label: str, run_mode: str, ctx) -> None:
+    """Fire ntfy on every decision cycle.
 
-    Idempotent + silent on no-trades. Respects optional
-    `RENQUANT_NTFY_TOPIC` env var (defaults to 'renquant').
-    Never raises — network-safety wrapped.
+    - If orders/exits happened: Priority=high, body lists each action.
+    - If zero-trade cycle: Priority=default, body summarises why
+      (regime, transition state, candidate count, slot fill).
+
+    Respects `RENQUANT_NTFY_TOPIC` env var (default 'renquant').
+    Never raises — network failure logs WARNING but doesn't roll back
+    the committed trade state.
     """
-    import os, urllib.request, urllib.parse      # noqa: PLC0415
+    import os, urllib.request  # noqa: PLC0415
     orders = list(getattr(ctx, "orders", []) or [])
     exits  = list(getattr(ctx, "exits",  []) or [])
-    if not orders and not exits:
-        return   # silent when nothing happened
+    regime = getattr(ctx, "regime", None) or "?"
+    conf   = getattr(ctx, "confidence", None)
+    eq     = getattr(ctx, "portfolio_value", None)
+    n_held = len(getattr(ctx, "holdings", {}) or {})
+
+    # Rough "why" rollup for zero-trade summaries. Order the checks so
+    # the MOST specific cause is surfaced first.
+    def _why_no_trade() -> str:
+        if getattr(ctx, "bear_only", False):
+            return "bear_only"
+        rs = getattr(ctx, "regime_state", None)
+        if rs is not None and getattr(rs, "in_transition", False):
+            return "transition_window"
+        if getattr(ctx, "skip_buys", False):
+            return "drawdown_halt"
+        if getattr(ctx, "buy_blocked", False):
+            return "buy_blocked"
+        # Counter-based: if we had candidates but none were selected
+        counters = getattr(ctx, "counters", {}) or {}
+        if counters.get("defensive_non_bear_blocks", 0):
+            return f"defensives_filtered({counters['defensive_non_bear_blocks']})"
+        if counters.get("sector_blocks", 0):
+            return f"sector_full({counters['sector_blocks']})"
+        if counters.get("corr_blocks", 0):
+            return f"correlation({counters['corr_blocks']})"
+        if counters.get("blocked_wash", 0):
+            return f"wash_sale({counters['blocked_wash']})"
+        ranked = getattr(ctx, "ranked", None) or []
+        if len(ranked) == 0:
+            return "no_candidates"
+        return "tier_threshold"
 
     parts: list[str] = []
     for o in orders:
-        tkr    = o.get("ticker")       if isinstance(o, dict) else getattr(o, "ticker", "?")
-        shares = o.get("shares")       if isinstance(o, dict) else getattr(o, "shares", "?")
-        price  = o.get("price")        if isinstance(o, dict) else getattr(o, "price", 0.0)
-        invest = o.get("invest") if isinstance(o, dict) else (shares * price if shares else 0)
+        tkr    = o.get("ticker")  if isinstance(o, dict) else getattr(o, "ticker", "?")
+        shares = o.get("shares")  if isinstance(o, dict) else getattr(o, "shares", "?")
+        price  = o.get("price")   if isinstance(o, dict) else getattr(o, "price", 0.0)
         parts.append(f"BUY {tkr} x{shares} @ ${float(price):.2f}")
     for e in exits:
         tkr    = getattr(e, "ticker", "?")
         reason = getattr(e, "exit_type", getattr(e, "reason", "sell"))
         parts.append(f"EXIT {tkr} ({reason})")
 
-    topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
-    title = f"{label} [{run_mode}] TRADE"
-    body  = " | ".join(parts)
-    url   = f"https://ntfy.sh/{topic}"
+    has_trade = bool(orders or exits)
+    if not has_trade:
+        parts.append(f"no trade ({_why_no_trade()})")
+
+    # Always append system state snapshot for audit visibility
+    ctx_bits: list[str] = [f"regime={regime}"]
+    if conf is not None:
+        try:
+            ctx_bits.append(f"conf={float(conf):.2f}")
+        except (TypeError, ValueError):
+            pass
+    ctx_bits.append(f"held={n_held}")
+    if eq is not None:
+        try:
+            ctx_bits.append(f"eq=${float(eq):,.0f}")
+        except (TypeError, ValueError):
+            pass
+    parts.append(" ".join(ctx_bits))
+
+    topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+    tag      = "TRADE" if has_trade else "DECISION"
+    priority = "high"  if has_trade else "default"
+    title    = f"{label} [{run_mode}] {tag}"
+    body     = " | ".join(parts)
+    url      = f"https://ntfy.sh/{topic}"
     try:
-        data = body.encode("utf-8")
         req = urllib.request.Request(
-            url, data=data, method="POST",
-            headers={"Title": title, "Priority": "high"},
+            url, data=body.encode("utf-8"), method="POST",
+            headers={"Title": title, "Priority": priority},
         )
         urllib.request.urlopen(req, timeout=5.0).read()
         log.info("ntfy sent: %s | %s", title, body)
     except Exception as exc:
-        # Don't let a network blip suppress trade reporting — log loudly.
-        log.warning("ntfy publish FAILED (%s) — trade still executed: %s",
+        log.warning("ntfy publish FAILED (%s) — cycle still committed: %s",
                     exc, body)
 
 
