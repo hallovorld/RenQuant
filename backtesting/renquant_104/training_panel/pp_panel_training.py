@@ -380,11 +380,44 @@ class LoadHourlyBarsTask(PanelTask):
                  len(out), len(ctx.watchlist))
 
 
+class LoadMinuteBarsTask(PanelTask):
+    """Populate ctx.minute_bars from the parquet cache (2026-04-24).
+
+    Parallel to LoadHourlyBarsTask but reads 10-min bars. No-op unless
+    `panel_ltr.minute.enabled` is true. Cache at
+    `data/intraday/{SYMBOL}/10min.parquet`; `scripts/fetch_minute_bars.py`
+    owns populating it from Alpaca IEX. Training never fetches live.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = ctx.config.get("panel_ltr", {}).get("minute", {})
+        if not cfg.get("enabled", False):
+            return
+        if ctx.minute_bars:
+            return
+
+        from kernel.intraday import MinuteBarStore  # noqa: PLC0415
+
+        cache_dir = cfg.get("cache_dir", "data/intraday")
+        store = MinuteBarStore(data_dir=cache_dir)
+
+        out: dict[str, pd.DataFrame] = {}
+        for sym in ctx.watchlist:
+            df = store.load(sym)
+            if df is not None and not df.empty:
+                out[sym] = df
+
+        ctx.minute_bars = out
+        log.info("LoadMinuteBarsTask: %d / %d tickers with 10-min bars",
+                 len(out), len(ctx.watchlist))
+
+
 class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly.
+    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute.
 
     Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
                 → LoadEarningsSurprise → LoadInsiderTrades → LoadHourlyBars
+                → LoadMinuteBars
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -399,6 +432,7 @@ class PanelDataJob(PanelJob):
             LoadEarningsSurpriseTask(),
             LoadInsiderTradesTask(),
             LoadHourlyBarsTask(),
+            LoadMinuteBarsTask(),
         ]
 
 
@@ -425,6 +459,7 @@ class PanelFeatureJob(PanelJob):
                 earnings_surprises=ctx.earnings_surprises,
                 insider_trades=ctx.insider_trades,
                 hourly_bars=ctx.hourly_bars,
+                minute_bars=ctx.minute_bars,
             )
             for t in ctx.watchlist if t in ctx.ohlcv
         ]
@@ -609,6 +644,27 @@ class TickerPanelFactorJob(PanelTickerJob):
                         "vol_ratio", "intraday_realized_vol", "overnight_gap",
                     ):
                         cols[col] = pd.Series(float("nan"), index=idx)
+            # 10-minute aggregated features (2026-04-24). Adds finer-grained
+            # intraday structure on top of the hourly set. Column names use
+            # a `m_` prefix so they don't collide with identically-named
+            # hourly columns (morning_drift etc.) — both can be enabled.
+            if tc.minute_bars:
+                from training_panel.minute_features import (  # noqa: PLC0415
+                    MINUTE_FEATURE_COLS, compute_minute_features,
+                )
+                minute_df = tc.minute_bars.get(tc.ticker)
+                if minute_df is not None and not minute_df.empty:
+                    m_feats = compute_minute_features(minute_df)
+                    m_feats.index = pd.DatetimeIndex(m_feats.index).normalize()
+                    daily_idx = pd.DatetimeIndex(idx).normalize()
+                    for col in MINUTE_FEATURE_COLS:
+                        series = m_feats[col] if col in m_feats.columns else pd.Series(dtype=float)
+                        aligned = series.reindex(daily_idx)
+                        aligned.index = idx
+                        cols[f"m_{col}"] = aligned
+                else:
+                    for col in MINUTE_FEATURE_COLS:
+                        cols[f"m_{col}"] = pd.Series(float("nan"), index=idx)
             tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
         except Exception as exc:
             log.error("  %s: TickerPanelFactorJob failed — %s", tc.ticker, exc)

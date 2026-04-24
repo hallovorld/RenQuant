@@ -370,7 +370,9 @@ def fetch_intraday_bars(
     tf_map = {
         "1Min": TimeFrame(1, TimeFrameUnit.Minute),
         "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+        "10Min": TimeFrame(10, TimeFrameUnit.Minute),
         "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+        "30Min": TimeFrame(30, TimeFrameUnit.Minute),
         "1Hour": TimeFrame(1, TimeFrameUnit.Hour),
         "1Day": TimeFrame(1, TimeFrameUnit.Day),
     }

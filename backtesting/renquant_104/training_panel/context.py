@@ -43,6 +43,10 @@ class PanelTrainingContext:
     # aggregates via `training_panel.hourly_features.compute_hourly_features`
     # into six daily factor columns. Empty dict → hourly panel features off.
     hourly_bars: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Raw 10-min OHLCV bars per ticker (2026-04-24 extension). Aggregated
+    # via `training_panel.minute_features.compute_minute_features` into
+    # ~10 daily factor columns. Empty dict → minute panel features off.
+    minute_bars: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
@@ -94,6 +98,7 @@ class TickerPanelContext:
     earnings_surprises: dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
     insider_trades:     dict = field(default_factory=dict)                     # shared read-only {ticker: DataFrame}
     hourly_bars:        dict = field(default_factory=dict)                     # shared read-only {ticker: hourly OHLCV}
+    minute_bars:        dict = field(default_factory=dict)                     # shared read-only {ticker: 10-min OHLCV}
 
     # Outputs — written by per-ticker jobs
     feature_frame: pd.DataFrame | None = None

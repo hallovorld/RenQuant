@@ -24,16 +24,21 @@ log = logging.getLogger("kernel.intraday")
 
 
 @dataclass
-class HourlyBarStore:
-    """Parquet-backed cache at `data/intraday/{SYMBOL}/1h.parquet`."""
+class _TimeframedBarStore:
+    """Common parquet cache keyed by symbol + a fixed filename suffix.
+
+    Subclasses set `_filename` (e.g. "1h.parquet", "10min.parquet") so
+    every intraday timeframe gets the same dedup/merge semantics.
+    """
     data_dir: Path = Path("data/intraday")
+    _filename: str = "bars.parquet"
 
     def __post_init__(self):
         if not isinstance(self.data_dir, Path):
             self.data_dir = Path(self.data_dir)
 
     def _path(self, symbol: str) -> Path:
-        return self.data_dir / symbol.upper() / "1h.parquet"
+        return self.data_dir / symbol.upper() / self._filename
 
     def load(self, symbol: str) -> pd.DataFrame | None:
         p = self._path(symbol)
@@ -57,4 +62,21 @@ class HourlyBarStore:
         return p
 
 
-__all__ = ["HourlyBarStore"]
+@dataclass
+class HourlyBarStore(_TimeframedBarStore):
+    """Parquet-backed cache at `data/intraday/{SYMBOL}/1h.parquet`."""
+    _filename: str = "1h.parquet"
+
+
+@dataclass
+class MinuteBarStore(_TimeframedBarStore):
+    """Parquet-backed cache for 10-minute bars at `data/intraday/{SYMBOL}/10min.parquet`.
+
+    Added 2026-04-24 to support finer-grained panel features. Expected
+    ~39 bars per session × ~250 trading days × N years ≈ 10k+ bars/ticker,
+    so cache hygiene matters — parquet compression + dedup on save.
+    """
+    _filename: str = "10min.parquet"
+
+
+__all__ = ["HourlyBarStore", "MinuteBarStore"]
