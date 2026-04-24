@@ -41,6 +41,13 @@ Kelly sizing is **LIVE in golden v4**. Remaining work to fully close the loop:
 | **Kelly × conviction** | `SizeAndEmit` currently does `max_pct = kelly_target × conviction_mult × σ_mult`. Kelly already encodes μ (∝ conviction) and σ — multipliers may double-count. Decide: Kelly alone OR careful blend. | design cleanup | 1 h | — |
 | **Multi-entry accumulation** | Allow Kelly target to be approached over **multiple sessions**, not one big buy. Per-entry cap stays 35%; cumulative cap 65%. Needs `SizeAndEmit` to size the *delta* (kelly_target − current_pct) bounded by per-entry cap, repeated over days. | concentration headroom | 2 h | — |
 
+## 🔥 P0 — New from AA data (2026-04-24)
+
+| # | Item | Impact | Est. |
+|---|------|---|---:|
+| **BULL_VOL-reversal** | **BULL_VOLATILE Spearman IC = −0.172 on 445 candidate rows** (from `analyze_decision_factors.py`). Ranker is **direction-wrong** during vol spikes — we're BUYING the worst names. 3 options: (a) flip sign in BULL_VOL, (b) add +0.10 tier offset there so only extreme-signal candidates buy, (c) block all offensive buys in BULL_VOL (treat as near-BEAR). Needs A/B sim to pick. | 🔥 potential +2–5 APY pts | 4 h |
+| **K reframed** | ~~CHOPPY IC=−0.116~~. Live data shows CHOPPY IC **+0.0354** (1366 rows). K premise was based on F's in-sample calibrator fit; real-world decision data disagrees. **Plan K demoted** — pooled calibrator is fine for CHOPPY. | clears a false problem | ✅ resolved (demoted) |
+
 ## 🟠 P1 — Short-term strategic wins (non-Kelly)
 
 | # | Item | Impact | Est. |
@@ -54,7 +61,7 @@ Kelly sizing is **LIVE in golden v4**. Remaining work to fully close the loop:
 
 | # | Item | Impact | Est. | Prereqs |
 |---|------|---|---:|---|
-| **K** | CHOPPY regime diagnosis (pool IC=−0.116 — panel anti-predicts). Derive CHOPPY-specific `ScoreBuyTask` offset if tractable. | maybe unlock CHOPPY edge | 1 day | AA helpful |
+| ~~**K**~~ | ~~CHOPPY regime diagnosis~~ | ✅ resolved 2026-04-24: AA analysis shows CHOPPY IC=+0.0354 (positive, 1366 rows). F's in-sample -0.116 was calibrator-fit artifact, not a real anti-prediction. Demoted. | — | — |
 | **L** | Per-ticker hourly-feature effectiveness (leave-one-out OOS IC) — which tickers carry +4.18 APY from hourly? | watchlist review | 1 day | — |
 | **Panel-IC-drift** | Day-over-day panel IC swings ±0.03 under identical hyperparameters; likely per-ticker tournament drift changing feature frame distribution | stability | 4 h | AA helpful |
 | **BULL_CALM-streak-watch** | Currently alerts at 15d. F's run hit 52d BEAR streak (valid). BULL_CALM should rarely ≥20d — monitor + per-ticker ScoreBuyTask audit. | gate sensitivity | 4 h | — |
