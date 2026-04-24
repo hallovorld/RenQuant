@@ -339,6 +339,27 @@ This applies to:
 - `tests/test_panel_hourly_wiring.py` — 8 tests for Plan G step 2 (HourlyBarStore parquet cache, LoadHourlyBarsTask flag/load paths, TickerPanelFactorJob merges 6 hourly columns, FactorZScoreTask emits `{col}_z`).
 - `tests/test_regime_calibrator.py` — 10 tests for Plan F (`fit_regime_conditional` split/skip/round-trip, `LoadGlobalCalibrationTask` populates pooled + regime dict, `ApplyGlobalCalibrationTask` dispatches to regime or pooled fallback).
 
+### 2b. Unexpected A/B Results = Audit Before Accepting
+
+**When a theory we believed would improve the model produces the OPPOSITE result, the first hypothesis must be: "my implementation has a bug or my assumptions were wrong" — not "the theory is wrong".** Accept the negative result only AFTER the implementation audit.
+
+Typical bugs that masquerade as "theory failed":
+- Ordering bug in the pipeline (Task A overwrites Task B's output)
+- Wrong-sign delta (e.g. `current - target` vs `target - current`)
+- Unit mismatch (fraction vs pct, shares vs dollars)
+- Silent guard fires (new Task blocked by an older flag default)
+- Stale data (config not applied to the sim's retrained panel)
+- Side effects from an upstream flag's default being wrong
+
+**Audit checklist on an unexpected A/B result, before shipping the finding:**
+1. Print a per-bar log of the new Task's inputs on ≥3 sample bars — do they look sane?
+2. Reason through every input/output independently: if everything were correct, what would we *expect*? Compare to what we got.
+3. Re-read the commit's defaults — does the "GOLDEN" variant in the A/B actually preserve v4 behaviour, or did we accidentally turn something on?
+4. Check whether any other task/config reads the same data — possible interaction.
+5. Only after all four → document the audit and shelve the theory with evidence.
+
+Example (2026-04-24): **AB-trim appeared to hurt APY by 12.7 pts**. First response was "trim hurts, default off". Correct response per this rule: audit TrimHeldTask inputs for (a) timing with TopUp, (b) Kelly target volatility causing trim churn, (c) wrong-sign delta, (d) share rounding. The audit may find the theory is fine and the implementation had a bug.
+
 ### 3. Git Commits — Sync Everything, Guard Secrets
 After completing any task, commit and push all changed files so the remote is always up to date.
 

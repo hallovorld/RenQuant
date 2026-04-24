@@ -77,12 +77,31 @@ class TrimHeldTask(Task):
                             if isinstance(o, dict)}
 
         trimmed = 0
+        # Audit (CLAUDE.md 2b) guards against Kelly-target-volatility churn:
+        # * Skip when hs.mu <= 0 — model has turned bearish, use full exit.
+        # * Skip when kelly_target < target_floor — too noisy to drive a trim.
+        # Both prevent spurious trims when the per-bar Kelly input flips
+        # direction; real position-sizing changes should come from regular
+        # exits, not mechanical rebalance noise.
+        target_floor = float(kelly_cfg.get("trim_target_floor", 0.05))
+
         for ticker, hs in ctx.holdings.items():
             if ticker in already_exiting or ticker in rotation_sells \
                or ticker in already_buying:
                 continue
             kelly_target = getattr(hs, "kelly_target_pct", None)
             if kelly_target is None or kelly_target <= 0:
+                continue
+            # Guard: small Kelly target means "don't hold much" — letting
+            # TrimHeldTask sell down to near-zero creates churn. Let the
+            # regular exit path handle conviction loss instead.
+            if kelly_target < target_floor:
+                continue
+            mu = getattr(hs, "mu", None)
+            if mu is not None and mu <= 0:
+                # Model turned bearish on this held ticker. Don't trim;
+                # the sell-side pipeline (stop_loss / model_sell streak /
+                # rotation) will handle full exit on its own schedule.
                 continue
 
             price = ctx.prices.get(ticker)

@@ -226,6 +226,77 @@ class TestTrimEmission:
 
 # ── Multi-ticker mixed scenario ───────────────────────────────────────────────
 
+class TestAuditGuards:
+    """New guards added 2026-04-24 after A/B audit per CLAUDE.md 2b.
+
+    TrimHeldTask must not fire when Kelly target is too noisy to trust:
+      - kelly_target < trim_target_floor (default 0.05)
+      - hs.mu <= 0 (model turned bearish → full exit, not trim)
+    """
+
+    def _hs_with_mu(self, ticker, shares, kelly_target, mu, entry_price=100.0):
+        import datetime
+        from kernel.exits import HoldingState
+        h = HoldingState(
+            entry_price=entry_price,
+            entry_date=datetime.date(2026, 1, 15),
+            shares=shares,
+            high_watermark=entry_price,
+        )
+        h.kelly_target_pct = kelly_target
+        h.mu = mu
+        return h
+
+    def test_skip_when_kelly_target_below_floor(self):
+        ctx = _ctx(
+            holdings  = {"NVDA": self._hs_with_mu(
+                "NVDA", shares=500, kelly_target=0.03, mu=0.04)},
+            prices    = {"NVDA": 100.0},
+            portfolio = 100_000,
+            trim_threshold = 0.10,
+        )
+        TrimHeldTask().run(ctx)
+        assert ctx.exits == []   # kelly 0.03 < floor 0.05 → skip
+
+    def test_skip_when_mu_nonpositive(self):
+        ctx = _ctx(
+            holdings  = {"NVDA": self._hs_with_mu(
+                "NVDA", shares=500, kelly_target=0.20, mu=-0.01)},
+            prices    = {"NVDA": 100.0},
+            portfolio = 100_000,
+            trim_threshold = 0.10,
+        )
+        TrimHeldTask().run(ctx)
+        assert ctx.exits == []   # mu<=0 → let full-exit pipeline handle
+
+    def test_fires_when_mu_positive_kelly_above_floor(self):
+        """Control case — the trim emission path still works."""
+        ctx = _ctx(
+            holdings  = {"NVDA": self._hs_with_mu(
+                "NVDA", shares=500, kelly_target=0.20, mu=0.05)},
+            prices    = {"NVDA": 100.0},
+            portfolio = 100_000,
+            trim_threshold = 0.10,
+        )
+        TrimHeldTask().run(ctx)
+        assert len(ctx.exits) == 1   # over-weight, mu>0, kelly>floor → trim fires
+
+    def test_mu_none_does_not_block(self):
+        """If mu is simply missing (not negative), don't block — the old
+        path where hs.mu was never populated should still allow trims
+        when other signals justify it. Fall-back safety only kicks in
+        on a *negative* mu."""
+        ctx = _ctx(
+            holdings  = {"NVDA": self._hs_with_mu(
+                "NVDA", shares=500, kelly_target=0.20, mu=None)},
+            prices    = {"NVDA": 100.0},
+            portfolio = 100_000,
+            trim_threshold = 0.10,
+        )
+        TrimHeldTask().run(ctx)
+        assert len(ctx.exits) == 1
+
+
 class TestMultiTicker:
     def test_mixed_over_under_on_target(self):
         """Three holdings, only the over-weight one (beyond threshold) is trimmed."""
