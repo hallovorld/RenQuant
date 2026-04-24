@@ -139,16 +139,26 @@ class PanelConvictionExitTask(Task):
 
         panel_floor = float(cfg.get("panel_sell_floor", 0.20))
         mu_ceiling  = float(cfg.get("mu_sell_ceiling", 0.0))
+        # V2 (2026-04-24): trigger mode. Default "and" (both conditions)
+        # preserves V1 behaviour. "or" fires when EITHER condition is
+        # true — useful when panel and μ disagree (e.g. panel still
+        # says okay but μ flipped negative, or vice versa).
+        trigger_mode = str(cfg.get("trigger_mode", "and")).lower()
 
-        if panel_score < panel_floor and mu <= mu_ceiling:
+        if trigger_mode == "or":
+            fires = (panel_score < panel_floor) or (mu <= mu_ceiling)
+        else:
+            fires = (panel_score < panel_floor) and (mu <= mu_ceiling)
+
+        if fires:
             # Build signal via existing ExitSignal dataclass
             from kernel.exits import ExitSignal  # noqa: PLC0415
             tc.exit_signal = ExitSignal(
                 should_exit = True,
                 reason      = (f"panel conviction lost panel={panel_score:.3f} "
                                 f"μ={mu:+.4f} (floor={panel_floor}, "
-                                f"ceiling={mu_ceiling})"),
+                                f"ceiling={mu_ceiling}, mode={trigger_mode})"),
                 exit_type   = "panel_conviction",
             )
-            log.info("PanelConvictionExitTask [%s]: EXIT panel=%.3f μ=%+.4f",
-                     tc.ticker, panel_score, mu)
+            log.info("PanelConvictionExitTask [%s]: EXIT panel=%.3f μ=%+.4f (%s)",
+                     tc.ticker, panel_score, mu, trigger_mode)
