@@ -181,6 +181,22 @@ class SizeAndEmitTask(Task):
             else:
                 max_pct = base_max_pct * conv * sig_m
 
+            # Multi-entry accumulation (user-requested 2026-04-24):
+            # "65% OK, but not from one session — allow model to buy same
+            # stock multiple times". When `per_session_buy_cap` is set,
+            # cap any ONE order's target fraction at that value even if
+            # kelly_target is higher. Over multiple sessions, top-up and
+            # new-buy orders can still build up to the full kelly_target
+            # via TopUpHeldTask. Default None = unchanged behaviour.
+            per_session_cap = kelly_cfg.get("per_session_buy_cap")
+            if per_session_cap is not None:
+                cap = float(per_session_cap)
+                if cap > 0 and max_pct > cap:
+                    log.info("SizeAndEmitTask: %s max_pct %.3f capped to "
+                              "per_session %.3f (multi-entry mode)",
+                              ticker, max_pct, cap)
+                    max_pct = cap
+
             _, shares = compute_position_size(
                 ctx.portfolio_value, ctx.cash,
                 max_pct, reserve_pct, price,

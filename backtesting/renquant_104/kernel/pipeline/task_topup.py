@@ -79,7 +79,15 @@ class TopUpHeldTask(Task):
             if delta < top_up_thresh:
                 continue
 
-            extra_shares = int(delta * portfolio / price)
+            # Multi-entry accumulation — cap top-up delta at per_session_buy_cap.
+            per_session_cap = kelly_cfg.get("per_session_buy_cap")
+            bought_delta = delta
+            if per_session_cap is not None:
+                cap = float(per_session_cap)
+                if cap > 0 and bought_delta > cap:
+                    bought_delta = cap
+
+            extra_shares = int(bought_delta * portfolio / price)
             if extra_shares < 1:
                 continue
 
