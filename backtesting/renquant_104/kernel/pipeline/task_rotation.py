@@ -84,6 +84,13 @@ class BuildPairsTask(Task):
         panel_cfg           = ctx.config.get("ranking", {}).get("panel_scoring", {})
         panel_rot_advantage = float(panel_cfg.get("rotation_advantage", 0.0))
 
+        # BC: Kelly-delta rotation gate. Candidate's kelly_target_pct must
+        # beat held's by this fraction. Unifies swap math with the Kelly
+        # decision surfaces (SelectionJob Kelly sizing, TopUpHeldTask,
+        # TrimHeldTask). 0.0 disables the gate (default).
+        kelly_cfg           = ctx.config.get("ranking", {}).get("kelly_sizing", {})
+        kelly_rot_advantage = float(kelly_cfg.get("rotation_advantage", 0.0))
+
         tax_cfg     = ctx.config.get("tax", {})
         st_rate     = float(tax_cfg.get("short_term_rate", 0.37))
         lt_rate     = float(tax_cfg.get("long_term_rate", 0.20))
@@ -182,6 +189,35 @@ class BuildPairsTask(Task):
             if rejected:
                 ctx.counters["panel_rotation_rejects"] = (
                     ctx.counters.get("panel_rotation_rejects", 0) + rejected
+                )
+            pairs = kept
+
+        # BC: Kelly-delta rotation gate — require cand.kelly_target_pct
+        # to beat held.kelly_target_pct by kelly_rot_advantage. Pairs
+        # with missing Kelly target on either side skip the gate (fall
+        # back to prior decision).
+        if kelly_rot_advantage > 0.0 and pairs:
+            cand_kt = {c.ticker: getattr(c, "kelly_target_pct", None)
+                       for c in eligible_candidates}
+            held_kt = {t: getattr(hs, "kelly_target_pct", None)
+                       for t, hs in ctx.holdings.items()}
+            kept = []
+            rejected = 0
+            for p in pairs:
+                c_kt = cand_kt.get(p.buy_ticker)
+                h_kt = held_kt.get(p.sell_ticker)
+                if (c_kt is None or h_kt is None
+                        or (c_kt - h_kt) >= kelly_rot_advantage):
+                    kept.append(p)
+                else:
+                    rejected += 1
+                    log.info("ROTATION_REJECT  swap=%s→%s  reason=kelly_advantage "
+                             "cand_kt=%.3f  held_kt=%.3f  need=%+.3f",
+                             p.sell_ticker, p.buy_ticker,
+                             c_kt or 0.0, h_kt or 0.0, kelly_rot_advantage)
+            if rejected:
+                ctx.counters["kelly_rotation_rejects"] = (
+                    ctx.counters.get("kelly_rotation_rejects", 0) + rejected
                 )
             pairs = kept
 
