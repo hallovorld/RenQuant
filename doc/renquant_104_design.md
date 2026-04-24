@@ -231,12 +231,92 @@ See `doc/renquant_104_transformer_design.md`. Cross-sectional attention across t
 
 ## 6. Scheduled runs
 
-Daily automation mirrors renquant_103 schedule but drives the 104 scripts:
+Daily + weekly automation mirrors renquant_103 schedule with additional 104-specific jobs:
 
 | Run | Time (PT) | Script | What it does |
 |---|---|---|---|
-| Market open | 6:32 AM | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down positions using today's opening price |
-| Pre-close | 12:44 PM | `live_only_104.sh --sell-only` | Exit intraday stop breaches before close |
-| After close | 1:55 PM | `daily_104.sh` | `FullTrainingPipeline` → `export_lean_watchlist` → `live.runner --broker alpaca --once` |
+| Market open | 6:32 AM Mon-Fri | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down positions |
+| Intraday 5-min | 7:00-12:30 every 30min | `intraday_sell_104.sh` | Alpaca IEX overlay — intraday SDL / trailing-stop |
+| Pre-close | 12:44 PM Mon-Fri | `live_only_104.sh --sell-only` | Exit intraday stop breaches |
+| Conditional retrain | 13:10 PM Mon-Fri (new 2026-04-24) | `conditional_retrain_104.sh` | Fire `train_104.py --force` if SPY \|daily Δ\| > 2% or VIX \|daily Δ\| > 5% |
+| Daily pass | 1:55 PM Mon-Fri | `daily_104.sh` | `FullTrainingPipeline` (cadence-gated) → `export_lean_watchlist` → `backfill_forward_returns` → `compute_portfolio_metrics` → `live.runner --broker alpaca --once` |
+| Weekly APY check | 12:00 PM Sun | `weekly_apy_check.py` | 30-day rolling APY + DD streak; surfaces latest Sharpe |
+| Watchlist screen | 12:05 PM Sun (new 2026-04-24) | `screen_watchlist.py` | 6-month per-ticker Sharpe; flag DROP + ADD candidates |
+| Sunday retrain | 10:00 AM Sun | `retrain_panel.sh` | Forced weekly panel + ngboost retrain |
 
-LaunchAgents installed at `~/Library/LaunchAgents/com.renquant.{open,preclose,daily}104.plist`. Log paths: `logs/daily_104/`, `logs/live_104/`. Lock files under `/tmp/renquant_104_*` prevent concurrent runs. NYSE holiday guard and already-ran-today guard are identical to 103.
+LaunchAgents at `~/Library/LaunchAgents/com.renquant.{open,intraday,preclose,conditional-retrain,daily,weekly-apy,screen-watchlist,retrain-panel}104.plist`. Log paths: `logs/daily_104/`, `logs/live_104/`, `logs/intraday_104/`, `logs/conditional_retrain_104/`, `logs/watchlist_screen/`. Lock files under `/tmp/renquant_104_*` prevent concurrent runs. NYSE holiday guard and already-ran-today guard in every script.
+
+---
+
+## 7. Decision surface symmetry (2026-04-24)
+
+All 5 decision surfaces now consult model + policy together (user spec):
+
+| Surface | Per-ticker tournament | Panel score | NGBoost μ,σ | Kelly target | Notes |
+|---|---|---|---|---|---|
+| **Buy new** | ✓ | ✓ | ✓ (μ→size, σ→size) | ✓ (size cap) | `ScoreBuyTask` + gate chain + `SizeAndEmitTask` |
+| **Sell — price rules** | ✓ (model-streak only) | — | — | — | `trailing_stop`, `stop_loss`, `max_hold`, `sdl` are price-only by design |
+| **Sell — panel conviction** (new) | — | ✓ | ✓ | — | `PanelConvictionExitTask` — tiebreaker when price rules don't fire. Flag `risk.panel_exit.enabled` (default off pending A/B) |
+| **Top-up held** | — | ✓ | ✓ (via kelly_target) | ✓ | `TopUpHeldTask` — when `kelly_target - current > top_up_threshold` |
+| **Trim held** | — | ✓ (mu guard) | ✓ (mu guard) | ✓ | `TrimHeldTask` — when `current - kelly_target > trim_threshold`. Opt-in via `trim_enabled=false` default (A/B regressed). Guards: skip when `kelly_target < 0.05` OR `mu <= 0` per §2b audit |
+| **Rotate (swap)** | — | ✓ | ✓ (via kelly_target) | ✓ | `RotationJob` — three filter layers: `panel_rotation_advantage`, `kelly_rotation_advantage`, thesis-A. Route B alternative: `rotation.mode="thesis_primary"` uses thesis-degradation as primary gate (not filter) |
+
+---
+
+## 8. Kelly sizing stack (2026-04-24)
+
+Continuous-returns Kelly: `f* = μ / σ²`, capped at `max_concentration` + regime `max_position_pct × confidence`. `ApplyKellySizingTask` writes `kelly_target_pct` on every candidate AND holding every bar; four tasks consume it.
+
+Config block (golden v4.1):
+```json
+"ranking.kelly_sizing": {
+  "enabled":           true,
+  "fractional":        0.50,       // half-Kelly (estimation error absorption)
+  "max_concentration": 0.35,
+  "min_edge":          0.0,
+  "top_up_threshold":  0.05,
+  "base_rate":         0.273,
+  "trim_enabled":      false,      // A/B showed regression — opt-in only
+  "trim_threshold":    0.10,
+  "trim_target_floor": 0.05,       // §2b audit guard
+  "rotation_advantage":      0.0,  // BC gate (dormant until model improves)
+  "rotation_target_floor":   0.05, // §2b audit guard
+  "disable_extra_multipliers": false,  // pure-Kelly mode flag
+  "per_session_buy_cap":     null  // multi-entry accumulation (null = off)
+}
+```
+
+Decision math unified — one source of truth for `kelly_target_pct`, consumed by:
+1. `SizeAndEmitTask` — caps new-buy size
+2. `TopUpHeldTask` — triggers top-up
+3. `TrimHeldTask` — triggers trim (opt-in)
+4. `RotationJob.BuildPairsTask` — Kelly-delta gate filter (dormant)
+
+---
+
+## 9. Thesis-degradation rotation (2026-04-24)
+
+User insight: today's Kelly target is noisy. Compare instead against held's FIXED entry-time baseline. `HoldingState` gains 3 entry-stamp fields:
+- `entry_rank_score` — tournament+panel calibrated score at buy
+- `entry_panel_score` — panel score at buy
+- `entry_kelly_target_pct` — Kelly target at buy
+
+Stamped by all 3 adapters (sim, LEAN, live — live persists in `live_state.json::entry_signals`). Cleared on full exit.
+
+Two modes:
+- **Filter mode (default)** — `ranking.thesis_rotation.enabled: true` — runs alongside ER-based rotation, filters pairs. Default OFF pending A/B.
+- **Primary mode (new, Route B)** — `rotation.mode: "thesis_primary"` — bypasses ER discovery entirely, uses thesis-degradation as primary swap criterion. Config in `rotation.thesis.{degradation_pct, uplift_pct}`.
+
+---
+
+## 10. Decision-trace DB (Plan AA, 2026-04-24)
+
+All pipeline decisions written to SQLite for audit + tuning. Split into two roles:
+- `data/runs.db` — live + LEAN (authoritative, permanent)
+- `data/sim_runs.db` — sim (ephemeral; TRUNCATEd at start of each `run_backtest`)
+
+8 tables: `pipeline_runs`, `candidate_scores`, `trades`, `rotations`, `training_runs`, `ticker_forward_returns`, `live_state_snapshots`, `portfolio_daily_metrics`.
+
+Full schema reference: `doc/database.md`. Every row carries `commit_sha` for reproducibility.
+
+Analysis: `scripts/analyze_decision_factors.py` and `scripts/compute_portfolio_metrics.py` produce empirical IC, tier-realization, regime-conditional, Sharpe/VaR reports.
