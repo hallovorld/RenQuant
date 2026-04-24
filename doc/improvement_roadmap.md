@@ -137,6 +137,28 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 | **Kelly × conviction** | `max_pct = kelly × conviction × σ_mult` may double-count μ and σ. Audit + decide. | design cleanup | 1h code | — |
 | **Multi-entry accumulation** | Let Kelly target build up over sessions; per-entry 35%, cumulative 65%. | concentration headroom | 2h code | — |
 
+## 🔴 CRITICAL finding (2026-04-24 late) — rotation currently hurts APY
+
+**A/B result (Route A, lowering rotation ER threshold):**
+
+| Variant | APY | Rot | ΔAPY |
+|---|---:|---:|---:|
+| A_GOLDEN_v4.1 (threshold 0.03) | +39.82% | 0 | — |
+| B_rot_loose_005 (threshold 0.005) | +34.88% | 3 | **−4.93** |
+| D_loose + thesis_loose (0.15/0.05) | +34.80% | 2 | **−5.02** |
+
+**Per-rotation impact: ≈ −2.5 APY pts.** Tax drag + missed continuation on held side outweighs realized advantage from swapping to candidate. The golden's **0 rotations is protective, not a bug** — the strict ER threshold (0.03) is blocking net-negative trades.
+
+**Implication for APY=1.41 goal:** rotation is NOT an APY lever under current model. APY lift must come from:
+1. Better panel/NGBoost predictions (higher-quality μ estimates)
+2. Feature selection (J hourly pruning — pending)
+3. Better exits (panel_conviction_exit — pending A/B)
+4. Ticker rotation (watchlist adds/drops — screen_watchlist shipped)
+
+**What to do with rotation infra:** keep it (it's dormant at threshold 0.03). BC + thesis-A + Kelly-rot-advantage + thesis-primary flags all stay as dormant options. If future panel improvements produce more accurate swap signals, these gates can be activated one at a time and A/B'd.
+
+**Not a shelve — a re-prioritization.** Rotation research is valuable for its audit logs (every swap decision traces to a rationale) even if rotations don't fire. Focus shifts to model + feature + exit improvements.
+
 ## ✅ Resolved from AA data (2026-04-24)
 
 | # | Item | Resolution |
