@@ -249,6 +249,14 @@ def find_rotation_pairs(
     min_raw_adv     = float(rotation_cfg.get("min_raw_advantage_pct", 0.0))
     persistence     = int(rotation_cfg.get("persistence_bars", 0))
     prior_proposals = rotation_cfg.get("_prior_proposals") or []
+    # V3 (2026-04-24): drawdown-of-held gate — protect hot runners.
+    # When set (e.g. 0.05), only holdings whose unrealized_pct <= this
+    # ceiling are eligible to rotate OUT. So positions up ≤5% (including
+    # losers) can swap; positions up >5% are protected. Default None =
+    # no protection (all eligible).
+    held_max_unreal_raw = rotation_cfg.get("held_max_unrealized_pct")
+    held_max_unreal     = (float(held_max_unreal_raw)
+                            if held_max_unreal_raw is not None else None)
 
     st_rate         = float(tax_cfg.get("short_term_rate", 0.37))
     lt_rate         = float(tax_cfg.get("long_term_rate", 0.20))
@@ -275,6 +283,9 @@ def find_rotation_pairs(
             continue
         unreal_pct = (cur_price - entry_price) / entry_price
         if is_lt_protected(unreal_pct, hold_days, lt_threshold, lt_protect):
+            continue
+        # V3 gate: don't rotate out of hot runners
+        if held_max_unreal is not None and unreal_pct > held_max_unreal:
             continue
         eligible[ticker] = {
             "score":      float(score),

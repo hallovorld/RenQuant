@@ -73,6 +73,17 @@ class BuildPairsTask(Task):
         if ctx.bear_only:
             return False
 
+        # V3 (2026-04-24): regime gate. If `rotation.enabled_regimes` is set
+        # to a list, rotation fires ONLY in those regimes. Default None =
+        # no regime filter (current behaviour). Use case: disable rotation
+        # in BULL_VOLATILE where whipsaw dominates; keep it in
+        # BULL_CALM / CHOPPY where trends give rotation a chance.
+        allowed_regimes = rotation_cfg.get("enabled_regimes")
+        if allowed_regimes is not None and ctx.regime not in allowed_regimes:
+            log.info("RotationJob: skipped — regime=%s not in enabled_regimes=%s",
+                     ctx.regime, allowed_regimes)
+            return False
+
         threshold   = float(rotation_cfg.get("min_expected_advantage_pct", 0.03))
         horizon     = int(rotation_cfg.get("target_horizon_days", 20))
         txn_cost    = float(rotation_cfg.get("transaction_cost_pct", 0.0))
