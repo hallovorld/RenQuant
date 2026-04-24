@@ -130,11 +130,21 @@ class RunnerAdapter:
             pos     = positions_cache.get(ticker, {})
             avg_cost = float(pos.get("avg_entry_price", 0.0))
             hwm_pos  = float(position_hwm.get(ticker, avg_cost))
-            entry_str = entry_dates.get(ticker, today.isoformat())
+            # entry_dates lookup with **persistent fallback**: if a position
+            # is held but missing from entry_dates (e.g. inherited from
+            # renquant_103 or manually added), stamp today and persist so
+            # hold_days is measured from first-sighting, not from
+            # today-minus-today (which made hold_days=0 forever → locked all
+            # min_hold_days / rotation gates). Ideally seed from Alpaca's
+            # fill timestamp on migration; today is the least-bad fallback.
+            if ticker not in entry_dates:
+                entry_dates[ticker] = today.isoformat()
+            entry_str = entry_dates[ticker]
             try:
                 entry_dt = datetime.date.fromisoformat(entry_str)
             except ValueError:
                 entry_dt = today
+                entry_dates[ticker] = today.isoformat()
             holdings[ticker] = HoldingState(
                 entry_price    = avg_cost,
                 entry_date     = entry_dt,
