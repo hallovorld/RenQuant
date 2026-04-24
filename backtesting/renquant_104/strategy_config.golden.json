@@ -450,7 +450,7 @@
       3,
       6
     ],
-    "model_ttl_days": 0
+    "model_ttl_days": 1
   },
   "persistence": {
     "enabled": true,
