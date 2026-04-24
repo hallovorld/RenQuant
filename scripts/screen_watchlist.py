@@ -98,6 +98,13 @@ def _correlation_to_spy(closes: "pd.Series", spy_closes: "pd.Series") -> float:
 
 
 def _notify(title: str, body: str) -> None:
+    # Suppress notifications in test runs: RENQUANT_NO_NOTIFY=1
+    # (tests invoke the script end-to-end; without this guard every
+    # pytest run fires a live ntfy and spams the user's phone).
+    import os
+    if os.environ.get("RENQUANT_NO_NOTIFY") == "1":
+        log.info("[ntfy suppressed by RENQUANT_NO_NOTIFY] %s: %s", title, body)
+        return
     try:
         import urllib.request
         req = urllib.request.Request(

@@ -39,6 +39,9 @@ AUDIT_LOG = REPO_ROOT / "logs" / "live_104" / "audit.jsonl"
 def _ntfy(title: str, body: str, topic: str = "renquant") -> None:
     """Best-effort push. Silent on network failure — this is monitoring,
     not the hot path."""
+    import os
+    if os.environ.get("RENQUANT_NO_NOTIFY") == "1":
+        return   # suppressed by tests
     url = f"https://ntfy.sh/{topic}"
     try:
         req = urllib.request.Request(

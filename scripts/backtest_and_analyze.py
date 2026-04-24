@@ -88,6 +88,9 @@ def build_summary_text(stats: dict) -> str:
 
 def notify_local(title: str, body: str) -> None:
     """Send a macOS notification via terminal-notifier (preferred) or osascript."""
+    import os
+    if os.environ.get("RENQUANT_NO_NOTIFY") == "1":
+        return   # tests set this to suppress ntfy + local notifications
     if shutil.which("terminal-notifier"):
         try:
             subprocess.run(
@@ -116,6 +119,9 @@ def notify_local(title: str, body: str) -> None:
 
 def notify_ntfy(title: str, body: str, topic: str) -> None:
     """Send a push notification to iPhone via ntfy.sh."""
+    import os
+    if os.environ.get("RENQUANT_NO_NOTIFY") == "1":
+        return
     url = f"https://ntfy.sh/{topic}"
     req = urllib.request.Request(
         url,
