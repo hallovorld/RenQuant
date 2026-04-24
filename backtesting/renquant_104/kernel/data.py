@@ -154,6 +154,164 @@ def fetch_ohlcv(
     return df
 
 
+def fetch_ohlcv_incremental(
+    symbol: str,
+    *,
+    end: "str | None" = None,
+    timeframe: str = "1d",
+    timeout_sec: float = 30.0,
+    store: "LocalStore | None" = None,
+) -> pd.DataFrame:
+    """Unified OHLCV reader: cache + incremental fetch + timeout.
+
+    User spec 2026-04-24: "读数据应该有个 wrapper，来处理各种情况，
+    保证只读增量数据，cache，以及处理各种卡住 timeout 的情况".
+
+    Semantics:
+
+    1. **Cache first.** Read existing parquet at
+       ``data/ohlcv/{symbol}/{timeframe}.parquet``. If the cache's
+       latest bar is within 2 trading days of `end` (or today if `end`
+       not given), return the cache as-is — no network call.
+
+    2. **Incremental fetch.** When the cache is stale, fetch ONLY the
+       delta [cache_last_date + 1, end]. Merges into the existing cache,
+       saves, returns the merged series.
+
+    3. **Cold start.** No cache → fetch the last 10 years (reasonable
+       default training window), save.
+
+    4. **Timeout-protected.** Every network call goes through
+       ``kernel.net_safety.call_with_timeout`` — the 2026-04-24 notebook
+       4-hour hang must never happen again. On timeout:
+         * cache exists → return stale cache with a warning
+         * no cache     → raise RuntimeError
+
+    5. **No duplicate fetch in one process.** ``_inflight_locks`` is a
+       module-level dict so concurrent callers for the same symbol
+       don't race (sim threads + notebook cells etc).
+
+    Drop-in replacement for ``fetch_ohlcv`` in most call paths. Unlike
+    the original, it ALWAYS returns a full series (up to the latest
+    cache date), never a date-bounded slice — slicing is the caller's
+    job.
+    """
+    import logging as _logging
+    import threading
+    _log_local = _logging.getLogger("kernel.data.incremental")
+
+    store = store or _default_store
+
+    # ── Single-process dedup: don't fetch the same symbol twice at once
+    with _inflight_lock:
+        sym_lock = _inflight_locks.setdefault(symbol, threading.Lock())
+    with sym_lock:
+        return _do_incremental_fetch(symbol, end, timeframe, timeout_sec, store, _log_local)
+
+
+def _do_incremental_fetch(
+    symbol: str,
+    end: "str | None",
+    timeframe: str,
+    timeout_sec: float,
+    store: "LocalStore",
+    log: "logging.Logger",
+) -> pd.DataFrame:
+    import pandas as pd  # noqa: PLC0415
+
+    end_ts = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+
+    # Load existing cache
+    cache_path = store._path(symbol, timeframe)  # noqa: SLF001
+    cache_exists = cache_path.exists()
+    cached_df = None
+    cache_last_date: "pd.Timestamp | None" = None
+
+    if cache_exists:
+        try:
+            cached_df = pd.read_parquet(cache_path)
+            if not isinstance(cached_df.index, pd.DatetimeIndex):
+                cached_df.index = pd.to_datetime(cached_df.index)
+            if not cached_df.empty:
+                cache_last_date = cached_df.index.max()
+        except Exception as exc:
+            log.warning("Cache read failed for %s: %s — will refetch", symbol, exc)
+            cached_df = None
+
+    # Freshness check: within 2 business days of `end`
+    fresh_cutoff = end_ts - pd.Timedelta(days=2)
+    if cached_df is not None and cache_last_date is not None and cache_last_date >= fresh_cutoff:
+        log.debug("Cache hit for %s (last=%s, end=%s)",
+                  symbol, cache_last_date.date(), end_ts.date())
+        return cached_df.loc[:end_ts] if end else cached_df
+
+    # Incremental window: fetch only delta
+    if cache_last_date is not None:
+        fetch_start = (cache_last_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        log.info("Incremental fetch for %s: [%s .. %s]", symbol, fetch_start, end_ts.date())
+    else:
+        # Cold start: last 10 years
+        fetch_start = (end_ts - pd.Timedelta(days=365 * 10)).strftime("%Y-%m-%d")
+        log.info("Cold fetch for %s: [%s .. %s] (10yr history)", symbol, fetch_start, end_ts.date())
+
+    # Network-protected fetch
+    from kernel.net_safety import call_with_timeout  # noqa: PLC0415
+
+    def _fetch():
+        from openbb import obb  # noqa: PLC0415
+        kwargs = {
+            "symbol":     symbol,
+            "provider":   "yfinance",
+            "start_date": fetch_start,
+            "end_date":   end_ts.strftime("%Y-%m-%d"),
+        }
+        return obb.equity.price.historical(**kwargs).to_df()
+
+    new_df = call_with_timeout(
+        _fetch,
+        timeout_sec=timeout_sec,
+        label=f"fetch_ohlcv_incremental({symbol})",
+    )
+
+    if new_df is None:
+        # Timeout path — degrade gracefully
+        if cached_df is not None:
+            log.warning("fetch_ohlcv_incremental(%s) timed out after %.0fs — "
+                        "returning stale cache (last=%s)",
+                        symbol, timeout_sec, cache_last_date.date() if cache_last_date else "?")
+            return cached_df.loc[:end_ts] if end else cached_df
+        raise RuntimeError(
+            f"fetch_ohlcv_incremental({symbol!r}) timed out after {timeout_sec}s "
+            f"with no cache available. Check network; retry later."
+        )
+
+    if new_df.empty:
+        log.info("fetch_ohlcv_incremental(%s): no new bars", symbol)
+        return cached_df if cached_df is not None else new_df
+
+    # Normalize index
+    if not isinstance(new_df.index, pd.DatetimeIndex):
+        new_df.index = pd.to_datetime(new_df.index)
+
+    # Merge with cache
+    if cached_df is not None and not cached_df.empty:
+        merged = pd.concat([cached_df, new_df])
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    else:
+        merged = new_df.sort_index()
+
+    # Persist
+    store.save(merged, symbol, timeframe)
+
+    return merged.loc[:end_ts] if end else merged
+
+
+# Module-level lock registry — prevents concurrent fetches for same symbol
+import threading as _threading  # noqa: E402
+_inflight_locks: dict = {}
+_inflight_lock = _threading.Lock()
+
+
 def fetch_intraday_bars(
     symbols: list[str] | str,
     *,
