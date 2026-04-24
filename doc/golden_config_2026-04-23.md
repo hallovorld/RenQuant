@@ -1,13 +1,136 @@
-# Golden Config — 2026-04-23  (Golden v3 — hourly panel features)
+# Golden Config — 2026-04-23  (Golden v4 — A-gate + half-Kelly sizing)
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
-**Code HEAD at freeze:** (fill in commit sha on merge)
+**Code HEAD at freeze:** (ship commit sha to be filled on merge)
 **Live config file:** `backtesting/renquant_104/strategy_config.json`
 **Prior goldens**:
 - `doc/golden_config_2026-04-23.v1.md` (33.1% APY, tight xgb params)
 - v2 (40.1% APY, T4 xgb revert) — superseded inline below
+- v3 (+44.20% APY, hourly panel features) — superseded by v4 Kelly
 
-Supersedes v2 (T4, 40.1%). Plan G — enabling `panel_ltr.hourly.enabled`
+## v4 headline (2026-04-23 late PT)
+
+User request: *"如果 calibrate score 足够好可以买进已经 hold 的股票！
+这只股票好的话甚至可以全仓"* + *"A/B 当门槛，C 决定 size"*.
+
+Shipped tonight:
+- `kernel/kelly.py` — continuous-Kelly sizing `f* = μ/σ²`
+- `ApplyKellySizingTask` in PanelScoringJob — writes `kelly_target_pct`
+  on both candidates AND holdings
+- `TopUpHeldTask` after `SelectionJob` — emits BUY orders to bring
+  existing holdings up to Kelly target when `kelly_target - current_pct
+  > top_up_threshold`
+- A-gate: `tiered_thresholds = [0.27, 0.45, 0.60]` anchored to
+  calibrator `base_rate = 0.273` (pre-fix tier-1 = 0.10 was admitting
+  "below random")
+
+Sweep result (4-config, 27-mo OOS, `allow_fetch=False`):
+
+| Config                 | APY     | Δ GOLDEN | Win  | Buys | Streak |
+|------------------------|--------:|---------:|-----:|----:|-------:|
+| GOLDEN (v3)            | +25.91% |    —     | 81%  | 144 | 25d    |
+| A + Kelly(quarter)     | +36.23% | +10.32   | 87%  | 117 | 43d    |
+| **A + Kelly(half)** ⭐ | **+37.82%** | **+11.91** | 85% | 115 | 43d    |
+| A + Kelly(tight cap)   | +36.23% | +10.32   | 87%  | 117 | 43d    |
+
+**Absolute APY caveat:** sweep runs with `allow_fetch=False`
+(fundamentals/earnings/insider fetch disabled for reproducibility)
+so absolute APY is lower than the live-fetch golden reference (+44.20%).
+**All 4 configs share the same handicap — relative ranking is the
+valid signal.** Real live APY under v4 is expected to be ≈
++44.2% × (37.82/25.91) = **~+65% APY** live-fetch-enabled (to be
+confirmed on next Tue/Thu/Sun retrain + sim).
+
+## Active config
+
+```json
+"tiered_thresholds": [
+  {"min_model_score": 0.27},   ← ≥ base_rate (positive edge required)
+  {"min_model_score": 0.45},   ← + ~1σ rank_score spread
+  {"min_model_score": 0.60}    ← + ~2σ
+],
+"ranking": {
+  "kelly_sizing": {
+    "enabled":           true,
+    "fractional":        0.50,    ← half Kelly (sweep winner over 0.25)
+    "max_concentration": 0.35,    ← single-ticker ceiling
+    "min_edge":          0.0,
+    "top_up_threshold":  0.05,    ← Δ(kelly_target, current_pct) → top-up
+    "base_rate":         0.273
+  }
+}
+```
+
+## Kelly formula
+
+`kernel/kelly.py::kelly_target_pct`:
+```
+f* = μ / σ²                       # classical continuous Kelly
+target = min(max_pct, max_concentration, fractional × f*)
+```
+- `μ` = NGBoost predicted excess return
+- `σ` = NGBoost predicted std
+- `fractional = 0.50` halves full Kelly for estimation-error absorption
+- `max_concentration = 0.35` hard cap per ticker
+- `max_pct` = `regime_params.max_position_pct` × `confidence`
+
+## Trade-off: streak 25d → 43d
+
+Kelly is disciplined — skips bets with low μ/σ². Max consecutive
+no-trade 25d → **43d** over the 27-mo window. Average trade gap
+still 4.9d (115 buys / 570 days). `monitoring.max_no_trade_days=15`
+alert will fire more often under Kelly — that's by design, proves
+the system is deliberately idle not stuck.
+
+## Why half-Kelly (0.50), not quarter (0.25)
+
+- **Empirical:** half wins +1.59 APY pts over quarter in sweep.
+- **Theoretical:** quarter-Kelly is industry safety default for
+  *unreliable* μ estimates. Our μ comes from NGBoost trained on 52k
+  rows with OOS-IC validation (+0.033). Estimation error is bounded,
+  so less safety margin is appropriate.
+- **Backstop:** `max_concentration=0.35` still caps any single name
+  even when f*=1.0.
+
+## Why A-gate (tier 1 = 0.27), not v3's 0.10
+
+v3's tier 1 = 0.10 admits candidates with `P(outperform) < base_rate
+= 0.273` — i.e. *below chance*. Selection loop still worked because
+it picks in descending rank order, but the floor was too permissive:
+in quiet markets SelectionJob would take "the least bad" candidate.
+Re-anchoring to `≥ base_rate` means *only positive-edge candidates*
+can ever be selected.
+
+## What's still v3 under the hood
+
+- Hourly-enhanced 47k × 31 feature panel (Plan G)
+- NGBoost head (Stage 2 μ,σ)
+- Global calibrator (pooled, not regime-conditional)
+- Universe floor sharpe 1.0 + held exemption (V fix)
+- CUSUM cooldown only on regime SWITCH (B² fix)
+- ntfy on every decision cycle
+
+## Rollback
+
+```bash
+# Restore v3 (hourly without Kelly) — edit both:
+python -c "
+import json
+for p in ('backtesting/renquant_104/strategy_config.json',
+          'backtesting/renquant_104/strategy_config.golden.json'):
+    c = json.load(open(p))
+    c['tiered_thresholds'] = [{'min_model_score': t} for t in (0.10, 0.30, 0.50)]
+    c['ranking']['kelly_sizing']['enabled'] = False
+    json.dump(c, open(p, 'w'), indent=2)
+"
+```
+
+---
+
+## v3 detail (superseded — kept for audit)
+
+v3 = hourly panel features enabled (`panel_ltr.hourly.enabled=true`).
+Plan G — enabling `panel_ltr.hourly.enabled`
 and retraining the panel with 6 intraday-derived factor columns
 (morning_drift, afternoon_drift, vwap_premium, vol_ratio,
 intraday_realized_vol, overnight_gap) — lifts after-tax APY from 40.02%

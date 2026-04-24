@@ -43,8 +43,7 @@
     "MPWR",
     "TXN",
     "NVTS",
-    "WDC",
-    "SKH"
+    "WDC"
   ],
   "benchmark": "SPY",
   "data_src": "yfinance",
@@ -198,8 +197,7 @@
     "MPWR": "tech",
     "TXN": "tech",
     "NVTS": "tech",
-    "WDC": "tech",
-    "SKH": "tech"
+    "WDC": "tech"
   },
   "sector_etf_map": {
     "tech": "XLK",
@@ -260,13 +258,13 @@
   },
   "tiered_thresholds": [
     {
-      "min_model_score": 0.1
+      "min_model_score": 0.27
     },
     {
-      "min_model_score": 0.3
+      "min_model_score": 0.45
     },
     {
-      "min_model_score": 0.5
+      "min_model_score": 0.6
     }
   ],
   "model_params": {
@@ -292,7 +290,7 @@
   },
   "ranking": {
     "blend_updated": "2026-04-23",
-    "blend_n_symbols": 38,
+    "blend_n_symbols": 43,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": false,
@@ -335,6 +333,14 @@
     "universe_floor": {
       "type": "sharpe",
       "threshold": 1.0
+    },
+    "kelly_sizing": {
+      "enabled": true,
+      "fractional": 0.5,
+      "max_concentration": 0.35,
+      "min_edge": 0.0,
+      "top_up_threshold": 0.05,
+      "base_rate": 0.273
     }
   },
   "panel_ltr": {

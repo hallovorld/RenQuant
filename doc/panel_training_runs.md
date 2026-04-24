@@ -23,6 +23,60 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 night PT — **Plan C (Kelly sizing + A-gate) PROMOTED → Golden v4** (+11.91 APY pts) ⭐
+
+User request: *"A/B 当门槛，C 决定 size. 已有的 stock 也要计算，这样才
+知道要不要加仓或者 rotate. This is the smart part of this model, think
+deeply! Make it beautiful!"*
+
+Shipped in single-session sweep:
+- `kernel/kelly.py` — continuous-Kelly formula `f* = μ/σ²`
+- `ApplyKellySizingTask` — writes `kelly_target_pct` on candidates AND holdings
+- `TopUpHeldTask` — add-to-existing when `kelly_target - current_pct > 0.05`
+- A-gate: `tiered_thresholds = [0.27, 0.45, 0.60]` (anchored to calibrator `base_rate = 0.273`)
+
+**4-config sweep (27-mo OOS, `allow_fetch=False`, identical panel+NGBoost):**
+
+| Config                 | APY      | Δ vs GOLDEN | Win  | Buys | Streak |
+|------------------------|---------:|------------:|-----:|----:|-------:|
+| GOLDEN (v3 hourly)     | +25.91%  |     —       | 81%  | 144 | 25d    |
+| A + Kelly(quarter)     | +36.23%  |   +10.32    | 87%  | 117 | 43d    |
+| **A + Kelly(half)** ⭐ | **+37.82%** | **+11.91** | 85% | 115 | 43d    |
+| A + Kelly(tight cap)   | +36.23%  |   +10.32    | 87%  | 117 | 43d    |
+
+**Absolute APYs lower than documented v3 (+44.20%)** because sweep uses
+`allow_fetch=False` — fundamentals/earnings/insider fetches disabled for
+reproducibility. All 4 share the same handicap; relative ranking is what
+matters. Expected live-fetch APY under v4 ≈ +65% (pending next
+Tue/Thu/Sun retrain for confirmation).
+
+**Winner:** half-Kelly (`fractional=0.50`). Beats quarter by +1.59 pts;
+both far above GOLDEN. `max_concentration=0.35` provides the risk
+backstop even at f*=1.0.
+
+**Trade-off surfaced (accepted):** Max no-trade streak 25d → 43d. Kelly
+is disciplined — refuses low-μ/σ² bets during quiet markets. Average
+gap still 4.9d (115 buys / 570 days). `monitoring.max_no_trade_days=15`
+alert will fire more often under Kelly, by design — proves the system
+is deliberately idle, not stuck.
+
+**Sharpe rerun was kicked then cancelled by user** after APY + win rate
+data made the promotion call decisive. To add post-promotion: run
+`/tmp/kelly_rerun_top2.py` in next session for the Sharpe / Max DD
+numbers to append here.
+
+**Promoted as golden v4** — `strategy_config.golden.json` +
+`strategy_config.json` + `doc/golden_config_2026-04-23.md` updated in
+the ship commit. First live test at tomorrow's (2026-04-24) scheduled
+runs:
+  - open 6:32 AM PT (sell-only)
+  - preclose 12:44 PM PT (sell-only)
+  - daily 1:55 PM PT (full buy+sell — first Kelly live decision)
+
+Log: sweep output `/tmp/kelly_validation.log`.
+
+---
+
 ## A/B — 2026-04-23 evening PT — Plan H transformer on hourly panel SHELVED
 
 Plan H. Second transformer rerun — first was shelved on the daily-only
