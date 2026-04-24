@@ -92,6 +92,11 @@ class RunnerAdapter:
         last_sell_dates = state.get("last_sell_dates", {})
         position_hwm    = state.get("position_hwm",    {})
         hwm             = float(state.get("high_water_mark", 0.0))
+        # Persisted RegimeState across live runs. Without this, each fresh
+        # `daily_104.sh` invocation starts countdown=0 → CUSUM re-trips every
+        # bar → `transition_window` stays True forever → buys perpetually
+        # blocked. (Sim doesn't hit this because state lives in-process.)
+        regime_persist  = state.get("regime_state", {}) or {}
 
         # ── Broker account ───────────────────────────────────────────────────
         account_value = broker.get_account_value()
@@ -251,7 +256,14 @@ class RunnerAdapter:
             prices            = prices,
             hwm               = hwm,
             skip_buys         = False,
-            regime_state      = RegimeState(),
+            regime_state      = RegimeState(
+                regime        = regime_persist.get("regime",        "BULL_CALM"),
+                confidence    = float(regime_persist.get("confidence",     0.5)),
+                in_transition = bool(regime_persist.get("in_transition", False)),
+                countdown     = int(regime_persist.get("countdown",          0)),
+                cusum_pos     = float(regime_persist.get("cusum_pos",      0.0)),
+                cusum_neg     = float(regime_persist.get("cusum_neg",      0.0)),
+            ),
             regime_counts     = {r: 0 for r in REGIMES},
             monitor_state     = dict(state.get("monitor_state", {}) or {}),
         )
@@ -363,6 +375,20 @@ class RunnerAdapter:
                 )
 
         # ── Save live_state.json ──────────────────────────────────────────
+        # Snapshot RegimeState (countdown / cusum / in_transition) so the
+        # next live invocation resumes mid-cooldown instead of re-tripping
+        # CUSUM from scratch. Without this, transition_window=True stays
+        # stuck whenever SPY's 20-day window still differs from the 20-day
+        # reference — which can last 20+ bars after a genuine regime shift.
+        rs = getattr(ctx, "regime_state", None)
+        regime_state_out = {
+            "regime":        ctx.regime,
+            "confidence":    round(ctx.confidence, 4),
+            "in_transition": bool(getattr(rs, "in_transition", False)),
+            "countdown":     int(getattr(rs, "countdown", 0)),
+            "cusum_pos":     float(getattr(rs, "cusum_pos", 0.0)),
+            "cusum_neg":     float(getattr(rs, "cusum_neg", 0.0)),
+        } if rs is not None else {}
         self._state.update({
             "regime":            ctx.regime,
             "regime_confidence": round(ctx.confidence, 4),
@@ -371,6 +397,7 @@ class RunnerAdapter:
             "sell_streaks":      self._sell_streaks,
             "last_sell_dates":   self._last_sell_dates_str,
             "position_hwm":      self._position_hwm,
+            "regime_state":      regime_state_out,
             # MonitorIdleStreakTask counters — persisted across scheduled runs
             "monitor_state":     dict(getattr(ctx, "monitor_state", {}) or {}),
         })
