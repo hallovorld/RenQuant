@@ -83,3 +83,65 @@ class EvaluateExitsTask(Task):
 
         log.debug("EvaluateExitsTask [%s]: should_exit=%s  type=%s",
                   tc.ticker, sig.should_exit, getattr(sig, "exit_type", None))
+
+
+class PanelConvictionExitTask(Task):
+    """Exit criterion: panel conviction has degraded (panel/NGBoost agreement).
+
+    User spec 2026-04-24: "买卖换加减仓都要是 model+policy" — sell was
+    the only surface using only per-ticker tournament model + price rules.
+    This task adds a panel-based exit that consults the cross-sectional
+    panel score + NGBoost μ/σ (persisted on HoldingState from the
+    previous bar's PanelScoringJob).
+
+    Fires only when the current priority chain did NOT already fire
+    (checked via tc.exit_signal). That way stop-loss / trailing / max-hold
+    always win first, and this is the tiebreaker for "nothing else said
+    exit but the model has turned bearish".
+
+    Trigger conditions (BOTH must hold when `risk.panel_exit.enabled=true`):
+      * hs.panel_score < panel_sell_floor (default 0.20 — below tier 1
+        A-gate threshold, so the panel now disagrees with the original
+        entry conviction)
+      * hs.mu <= mu_sell_ceiling (default 0.0 — NGBoost says no edge)
+
+    Flag default OFF — user can A/B before flipping.
+    """
+
+    def run(self, tc: TickerInferenceContext) -> bool | None:
+        # Already exiting via higher-priority rule (stop/trailing/max_hold/
+        # model-streak) → don't override with panel exit
+        if getattr(tc, "exit_signal", None) is not None:
+            return
+
+        cfg = tc.config.get("risk", {}).get("panel_exit", {})
+        if not bool(cfg.get("enabled", False)):
+            return
+
+        hs = tc.holding
+        if hs is None:
+            return
+
+        panel_score = getattr(hs, "panel_score", None)
+        mu          = getattr(hs, "mu", None)
+
+        # Fallback: no panel scores on this holding yet (first bar after
+        # purchase, or panel disabled for this run) — don't fire
+        if panel_score is None or mu is None:
+            return
+
+        panel_floor = float(cfg.get("panel_sell_floor", 0.20))
+        mu_ceiling  = float(cfg.get("mu_sell_ceiling", 0.0))
+
+        if panel_score < panel_floor and mu <= mu_ceiling:
+            # Build signal via existing ExitSignal dataclass
+            from kernel.exits import ExitSignal  # noqa: PLC0415
+            tc.exit_signal = ExitSignal(
+                should_exit = True,
+                reason      = (f"panel conviction lost panel={panel_score:.3f} "
+                                f"μ={mu:+.4f} (floor={panel_floor}, "
+                                f"ceiling={mu_ceiling})"),
+                exit_type   = "panel_conviction",
+            )
+            log.info("PanelConvictionExitTask [%s]: EXIT panel=%.3f μ=%+.4f",
+                     tc.ticker, panel_score, mu)
