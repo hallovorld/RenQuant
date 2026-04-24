@@ -93,8 +93,47 @@ def run_backtest(
     panel_factor_frames:  "dict[str, pd.DataFrame] | None" = None,
     backtest_start:       "str | None" = None,
     backtest_end:         "str | None" = None,
+    snapshot:             bool = False,
 ) -> SimResult:
-    """Run the OOS sim through SimAdapter + InferencePipeline."""
+    """Run the OOS sim through SimAdapter + InferencePipeline.
+
+    When ``snapshot=True`` the function snapshots `strategy_dir` into a
+    tmp location (artifacts + models + strategy_config*.json) for the
+    duration of the run, then deletes the snapshot. Use this in
+    notebook sims if you may retrain between sim runs — without
+    snapshotting, a mid-notebook retrain can mutate artifacts live and
+    invalidate the sim's reproducibility.
+    """
+    # Snapshot wrapper — recurse into the same function with snapshot=False
+    # so the core body stays linear. kernel/artifact_snapshot.py handles
+    # the tmp-dir lifecycle.
+    if snapshot:
+        from kernel.artifact_snapshot import snapshot_artifacts_ctx  # noqa: PLC0415
+        import json as _json
+        with snapshot_artifacts_ctx(strategy_dir) as snap_dir:
+            cfg = dict(config)
+            cfg["_strategy_dir"] = str(snap_dir)
+            # Re-load the frozen config if present so the caller's
+            # in-memory mutations of `config` don't leak into the run.
+            snap_cfg_path = Path(snap_dir) / "strategy_config.json"
+            if snap_cfg_path.exists():
+                cfg = _json.loads(snap_cfg_path.read_text())
+                cfg["_strategy_dir"] = str(snap_dir)
+            return run_backtest(
+                config               = cfg,
+                strategy_dir         = Path(snap_dir),
+                ohlcv                = ohlcv,
+                spy_df               = spy_df,
+                sector_etf_map       = sector_etf_map,
+                initial_cash         = initial_cash,
+                fallback_corr        = fallback_corr,
+                panel_feature_frames = panel_feature_frames,
+                panel_factor_frames  = panel_factor_frames,
+                backtest_start       = backtest_start,
+                backtest_end         = backtest_end,
+                snapshot             = False,
+            )
+
     from adapters.sim import SimAdapter  # noqa: PLC0415
     from kernel.pipeline.pp_inference import InferencePipeline  # noqa: PLC0415
 
