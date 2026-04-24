@@ -2,7 +2,23 @@
 
 **Single source of truth for what's next.** Ordered by priority tier (P0 → P3), then by expected value within tier.
 
-Working rhythm: pick topmost unblocked → flip 🟡 → ship smallest reversible step + commit → test vs golden → if APY ≥ +2 pts promote golden in same commit → flip ✅ → drop result + sha → move to History.
+## 🎯 End goal (user spec 2026-04-24)
+
+**Golden config target:** **APY 1.41 (+141%) | Sharpe 2.0**
+
+Current state:
+- Golden v4.1: **+39.82% sweep APY** (`allow_fetch=False` handicap), **~+65% expected live**
+- Sharpe: not yet formally tracked → first 3-day priority is instrumenting it
+
+**Gap:** live APY ~+65% → target +141%. ~2.16× lift. Not achievable via flag flips alone; requires cumulative gains from:
+- Better decision logic (thesis-A if A/B wins, Kelly-full-sweep optimization)
+- Feature enrichment (hourly pruning, future: options flow, analyst revisions)
+- Risk-adjusted optimization (Sharpe 2 requires specifically managing variance, not just mean)
+- Panel model improvements (transformer when data permits)
+
+Every 3-day push item is framed below as "gap closure" toward this target.
+
+Working rhythm: pick topmost unblocked → flip 🟡 → ship smallest reversible step + commit → test vs golden → if APY ≥ +2 pts (or satisfies CLAUDE.md §2a exception) promote golden in same commit → flip ✅ → drop result + sha → move to History.
 
 ---
 
@@ -49,39 +65,42 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 
 ---
 
-## 🎯 Macro plan — 5-tier roadmap (2026-04-24)
+## 🎯 Macro plan — 3-day push (2026-04-24 to 2026-04-27)
 
-### Tier 1 — 今天 / 下次 session finishing
-- ✅ Most Tier 1 done. Remaining (sim-gated):
-- **Thesis-A A/B** — flip thesis_rotation.enabled, pick degradation/uplift thresholds from A/B
-- **J hourly-feature pruning** — drop 3 weakest hourly cols, retrain, A/B
-- **Q rotation hold-days × advantage 2D sweep** — adaptability vs churn
-- **Kelly-full-sweep** — notebook 10-point grid (fractional × max_concentration)
+**Scope clarification (user 2026-04-24):** focus on what's achievable in 3 days. Multi-strategy / covered-call / international / cross-strategy allocation are OUT of scope — "model 还有 100 个 bug 没找到" 先 solidify 现在.
 
-### Tier 2 — Performance + monitoring (short-term, pure code)
-- **Feature cache optimization** (see detailed spec below) — **5-8x sim speedup**, 1-2h refactor
-- **Live sustainability accumulation (Plan I)** — passive, accumulate 4 weeks of Sun 12PT reports
-- **Performance regression test suite** — auto-run full-sim on any golden-touching commit
-- **`archive_runs.py` scaffolding** — prep for when live DB > 5 GB
-- **Flag-drift alert** — warn if a default-off flag is silently enabled in a commit
+### Day 1 (today — remaining)
+- 🟡 **Thesis-A A/B** verdict (sim running, ~20 min more)
+- Plan B AA-calibrated placeholder (roadmap entry only)
 
-### Tier 3 — Strategy evolution (1-3 months, data-driven)
-- **Plan B** — AA-calibrated rotation criterion (needs ~3 months live data for calibration sample)
-- **Plan F retry** — regime-conditional calibrators with real live data support
-- **Portfolio-level risk DB tables** — daily Sharpe / max-DD / VaR
-- **Ticker rotation automation** — weekly watchlist screen, suggest adds/drops on 6-month performance
-- **Sector-guard sub-buckets** — tech → {semis, software, cloud, platforms}
+### Day 2 — Pure-code high-ROI wins
 
-### Tier 4 — Extension capabilities (3-6 months)
-- **Multi-strategy live** — 103 + 104 + 105 side-by-side with allocation split
-- **Real-time retrain triggers** — VIX/SPY anomaly → auto-retrain (infra already sketched in session-handoff history)
-- **Cross-strategy capital allocation** — when multi-strategy, auto-rebalance
+**Priority-reordered to serve APY=1.41 / Sharpe=2 target:**
 
-### Tier 5 — Frontier (future)
-- **Transformer panel backend** (design landed in `doc/renquant_104_transformer_design.md`): SHELVED until panel > 200k rows. Currently 47k. Needs 4× more data (~18 months) OR watchlist 2× expansion.
-- **Covered-call overlay** — sell covered calls on held positions for premium income
-- **Sector-level rotation** — XLK/XLF/XLV regime-conditional allocation
-- **International equities** — currently 100% US; expand to VGK, VWO, VPL
+- **Portfolio-level risk metrics in DB** ⭐ TARGET-CRITICAL — without Sharpe tracking, we can't measure the "Sharpe=2" goal. New `portfolio_daily_metrics` table: daily Sharpe, rolling 3-month Sharpe, max-DD, VaR95/99, realized_vol, beta_to_SPY. Computed from `pipeline_runs.portfolio_value` history. Backfill from existing data → first snapshot of where we stand vs Sharpe=2 target.
+- **Feature cache optimization** — 5-8x sim speedup enables running many more A/B experiments per day → faster convergence to target.
+- **Performance regression test suite** — `tests/test_golden_preservation.py` opt-in `RENQUANT_REGRESSION=1`. Asserts sim APY ≥ 37.0% (v4.1 − 1 pt tolerance). Guards the floor during target push.
+- **J hourly-feature pruning** A/B — one concrete gap-closure experiment: +0.005 OOS IC target if it wins.
+
+### Day 3 — Strategic automations
+- **Ticker rotation automation** ⭐ user approved — `scripts/screen_watchlist.py` weekly cron: 6-month realized Sharpe per watchlist ticker, sector ETF comparison, flag underperformers for drop + high-Sharpe non-watchlist names for add. Output: markdown report + ntfy.
+- **Real-time retrain triggers** ⭐ user approved — `scripts/check_retrain_triggers.py` already sketched in past sessions; implement + plist. `SPY.|daily Δ| > 2%` or `VIX.|daily Δ| > 5%` → `train_104.py --force --trigger=anomaly_{spy,vix}`. Fires at 13:10 PT to let training land before 13:55 PT daily run.
+- **Q rotation 2D sweep** — `{14, 21, 30} × {0.0, 0.02, 0.05}` config matrix
+- **Kelly-full-sweep** — 10-point notebook grid (fractional × max_concentration)
+- **Flag-drift alert** — fail pre-commit hook if any `default-off` flag moved to default-on without explicit promotion commit
+
+### Parked (explicitly out of 3-day scope, per user)
+- ❌ Multi-strategy parallel live — not needed
+- ❌ Cross-strategy capital allocation — not needed
+- ❌ Covered-call overlay — too advanced, "100 bugs first"
+- ❌ International equities — too advanced
+- ❌ Sector-guard sub-buckets — my invention, not validated priority
+
+### Parked (deferred, time-gated)
+- **Plan B** (AA-calibrated rotation) — needs ~3 months live data for sample
+- **Plan F retry** (regime-conditional calibrators) — same data constraint
+- **Transformer panel backend** — until panel > 200k rows (47k now)
+- **Live sustainability accumulation (Plan I)** — passive, Sun 12PT plist already wired; review after 4 Sundays
 
 ---
 
