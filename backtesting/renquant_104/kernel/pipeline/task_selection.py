@@ -64,6 +64,7 @@ class PrepareSelectionTask(Task):
             max_per_sector    = max_per_sector,
             tiered_thresholds = tiered,
             open_slots        = open_slots,
+            bear_only         = bool(ctx.bear_only),
         )
 
 
@@ -80,6 +81,11 @@ class RunSelectionTask(Task):
         ctx.counters["blocked_wash"]  = ctx.counters.get("blocked_wash",  0) + blocks.get("wash_sale",   0)
         ctx.counters["sector_blocks"] = ctx.counters.get("sector_blocks", 0) + blocks.get("sector",      0)
         ctx.counters["corr_blocks"]   = ctx.counters.get("corr_blocks",   0) + blocks.get("correlation", 0)
+        # Plan O — non-BEAR defensive rejections (e.g. XLU in BULL_VOLATILE).
+        ctx.counters["defensive_non_bear_blocks"] = (
+            ctx.counters.get("defensive_non_bear_blocks", 0)
+            + blocks.get("defensive_non_bear", 0)
+        )
 
 
 class SizeAndEmitTask(Task):

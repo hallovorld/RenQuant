@@ -150,6 +150,13 @@ class SelectionContext:
     max_per_sector:     int
     tiered_thresholds:  list[dict]   # [{min_model_score: 0.10}, ...]
     open_slots:         int
+    # Plan O (2026-04-23): defensive tickers are only eligible in the BEAR
+    # branch. When `bear_only=False`, the selection loop rejects any
+    # candidate in `defensive_set` with `blocks["defensive_non_bear"]`.
+    # The pre-Plan-O behavior was a latent design bug: defensives could
+    # compete as regular candidates in BULL_*/CHOPPY regimes AND bypass
+    # the sector guard — e.g. XLU bought on 2026-04-20 at regime=BULL_VOLATILE.
+    bear_only:          bool = False
 
 
 def run_selection_loop(
@@ -162,13 +169,24 @@ def run_selection_loop(
     block_counts keys: "wash_sale", "sector", "correlation", "tier".
     """
     selected: list[str] = []
-    blocks = {"wash_sale": 0, "sector": 0, "correlation": 0, "tier": 0}
+    blocks = {"wash_sale": 0, "sector": 0, "correlation": 0, "tier": 0,
+              "defensive_non_bear": 0}
     slots_filled = 0
 
     for c in ranked:
         if slots_filled >= ctx.open_slots:
             log.info("  %-6s  SKIP   [slots full]", c.ticker)
             break
+
+        # Plan O — defensive tickers only admissible in the BEAR branch.
+        # Non-BEAR regimes: filter them out early so they can't occupy
+        # offensive slots. This also sidesteps the sector_guard bypass
+        # (passes_sector_guard returns True for defensives) — the bypass
+        # was safe in BEAR but a loophole in BULL_*/CHOPPY regimes.
+        if c.ticker in ctx.defensive_set and not ctx.bear_only:
+            blocks["defensive_non_bear"] += 1
+            log.info("  %-6s  SKIP   [defensive — not BEAR regime]", c.ticker)
+            continue
 
         # Tiered threshold — escalating conviction requirement per slot
         if ctx.tiered_thresholds:
