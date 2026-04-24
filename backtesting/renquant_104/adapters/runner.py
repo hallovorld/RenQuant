@@ -105,6 +105,9 @@ class RunnerAdapter:
         sell_streaks    = state.get("sell_streaks",    {})
         last_sell_dates = state.get("last_sell_dates", {})
         position_hwm    = state.get("position_hwm",    {})
+        # Thesis-degradation baselines (Approach A) — per-ticker
+        # {rank_score, panel_score, kelly_target_pct} stamped at buy.
+        entry_signals   = state.get("entry_signals",   {})
         hwm             = float(state.get("high_water_mark", 0.0))
         # Persisted RegimeState across live runs. Without this, each fresh
         # `daily_104.sh` invocation starts countdown=0 → CUSUM re-trips every
@@ -160,12 +163,20 @@ class RunnerAdapter:
                 entry_dt = today
                 entry_dates[ticker] = today.isoformat()
             qty_held = float(pos.get("qty", 0))
+            # Thesis-degradation baselines (Approach A) — hydrate from
+            # persisted entry_signals. Missing keys → None, which the
+            # rotation criterion treats as "no baseline, fall back to
+            # legacy rule".
+            es = entry_signals.get(ticker, {}) if isinstance(entry_signals.get(ticker, {}), dict) else {}
             holdings[ticker] = HoldingState(
                 entry_price    = avg_cost,
                 entry_date     = entry_dt,
                 high_watermark = hwm_pos,
                 sell_streak    = int(sell_streaks.get(ticker, 0)),
                 shares         = qty_held,   # broker qty for Kelly top-up sizing
+                entry_rank_score       = es.get("rank_score"),
+                entry_panel_score      = es.get("panel_score"),
+                entry_kelly_target_pct = es.get("kelly_target_pct"),
             )
 
         # ── Current prices from broker positions ────────────────────────────
@@ -260,6 +271,7 @@ class RunnerAdapter:
         # ── Persisted live state on context for commit() ─────────────────────
         self._state          = state
         self._entry_dates    = entry_dates
+        self._entry_signals  = entry_signals   # Approach A — persisted per-ticker
         self._sell_streaks   = sell_streaks
         self._last_sell_dates_str = last_sell_dates
         self._position_hwm   = position_hwm
@@ -360,6 +372,7 @@ class RunnerAdapter:
             self._last_sell_dates_str[ticker] = today_str
             if not is_partial:
                 self._entry_dates.pop(ticker, None)
+                self._entry_signals.pop(ticker, None)   # Approach A cleanup
                 self._sell_streaks.pop(ticker, None)
                 self._position_hwm.pop(ticker, None)
             self._log_trade(ctx, {
@@ -417,6 +430,16 @@ class RunnerAdapter:
                 self._sell_streaks.pop(ticker, None)
                 self._last_sell_dates_str.pop(ticker, None)
                 self._position_hwm[ticker]      = price
+                # Thesis-degradation baseline (Approach A) — stamp entry
+                # scores ONLY on a fresh buy (not a top-up to an already-
+                # held position). Persist in live_state.json so rotation
+                # checks on future bars see a fixed baseline.
+                if ticker not in self._entry_signals:
+                    self._entry_signals[ticker] = {
+                        "rank_score":       order.get("rank_score"),
+                        "panel_score":      order.get("panel_score"),
+                        "kelly_target_pct": order.get("kelly_target_pct"),
+                    }
                 self._log_trade(ctx, {
                     "action":     "BUY",
                     "symbol":     ticker,
@@ -462,6 +485,7 @@ class RunnerAdapter:
             "regime_confidence": round(ctx.confidence, 4),
             "high_water_mark":   ctx.hwm,
             "entry_dates":       self._entry_dates,
+            "entry_signals":     self._entry_signals,   # Approach A
             "sell_streaks":      self._sell_streaks,
             "last_sell_dates":   self._last_sell_dates_str,
             "position_hwm":      self._position_hwm,

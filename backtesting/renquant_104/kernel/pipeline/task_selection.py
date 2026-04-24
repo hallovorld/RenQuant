@@ -223,6 +223,11 @@ class SizeAndEmitTask(Task):
                 "panel_score": getattr(c, "panel_score", None) if c else None,
                 "sigma":      getattr(c, "sigma", None)        if c else None,
                 "mu":         getattr(c, "mu", None)           if c else None,
+                # Thesis-degradation baseline (Approach A) — carry the
+                # Kelly target THE MODEL COMPUTED for this candidate so
+                # adapters can stamp it as entry_kelly_target_pct. Distinct
+                # from `target_pct` (the actually-sized fraction).
+                "kelly_target_pct": getattr(c, "kelly_target_pct", None) if c else None,
                 "detail":     c.detail      if c else "",
             })
             log.info(

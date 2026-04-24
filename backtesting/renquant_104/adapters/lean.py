@@ -249,6 +249,12 @@ class LeanAdapter:
                 entry_price    = price,
                 entry_date     = ctx.today,
                 high_watermark = price,
+                # Thesis-degradation baselines (Approach A) — stamp entry
+                # signals so future rotation checks can compare today's
+                # scores vs this fixed baseline. Not recomputed per bar.
+                entry_rank_score       = order.get("rank_score"),
+                entry_panel_score      = order.get("panel_score"),
+                entry_kelly_target_pct = order.get("kelly_target_pct"),
             )
             algo._executed_buys += 1
             algo.SetHoldings(sym, target_pct)

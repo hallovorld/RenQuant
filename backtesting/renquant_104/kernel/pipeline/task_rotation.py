@@ -91,6 +91,19 @@ class BuildPairsTask(Task):
         kelly_cfg           = ctx.config.get("ranking", {}).get("kelly_sizing", {})
         kelly_rot_advantage = float(kelly_cfg.get("rotation_advantage", 0.0))
 
+        # Approach A — thesis-degradation rotation gate. Compares today's
+        # candidate to the held's FIXED ENTRY score (not today's held
+        # score, which is noisy). Swap fires only when:
+        #   (1) held has degraded:     held.entry_score - held.today_score >= degradation_pct
+        #   (2) cand beats the baseline: cand.today_score - held.entry_score >= uplift_pct
+        # When either threshold is 0.0 that check is effectively disabled.
+        # When held.entry_rank_score is None (legacy positions without
+        # stamped baseline), the gate falls back to KEEP the pair.
+        thesis_cfg          = ctx.config.get("ranking", {}).get("thesis_rotation", {})
+        thesis_enabled      = bool(thesis_cfg.get("enabled", False))
+        thesis_degradation  = float(thesis_cfg.get("degradation_pct", 0.30))
+        thesis_uplift       = float(thesis_cfg.get("uplift_pct", 0.10))
+
         tax_cfg     = ctx.config.get("tax", {})
         st_rate     = float(tax_cfg.get("short_term_rate", 0.37))
         lt_rate     = float(tax_cfg.get("long_term_rate", 0.20))
@@ -189,6 +202,47 @@ class BuildPairsTask(Task):
             if rejected:
                 ctx.counters["panel_rotation_rejects"] = (
                     ctx.counters.get("panel_rotation_rejects", 0) + rejected
+                )
+            pairs = kept
+
+        # Approach A — thesis-degradation gate BEFORE the Kelly-delta
+        # gate, since Approach A uses fixed baselines (more robust) and
+        # should filter first.
+        if thesis_enabled and pairs:
+            cand_rs = {c.ticker: getattr(c, "rank_score", None)
+                       for c in eligible_candidates}
+            held_entry_rs  = {t: getattr(hs, "entry_rank_score", None)
+                              for t, hs in ctx.holdings.items()}
+            held_today_rs  = {t: getattr(hs, "rank_score", None)
+                              for t, hs in ctx.holdings.items()}
+            kept = []
+            rejected = 0
+            for p in pairs:
+                cand_score  = cand_rs.get(p.buy_ticker)
+                held_entry  = held_entry_rs.get(p.sell_ticker)
+                held_today  = held_today_rs.get(p.sell_ticker)
+                # Fallback: if baseline missing or invalid, preserve the
+                # pair (legacy rule).
+                if (held_entry is None or held_entry <= 0
+                        or held_today is None or cand_score is None):
+                    kept.append(p)
+                    continue
+                degradation = (held_entry - held_today) / held_entry  # + = worse
+                uplift      = cand_score - held_entry                 # + = cand beats baseline
+                if degradation >= thesis_degradation and uplift >= thesis_uplift:
+                    kept.append(p)
+                else:
+                    rejected += 1
+                    log.info("ROTATION_REJECT  swap=%s→%s  reason=thesis  "
+                             "held_entry=%.3f held_today=%.3f deg=%.1f%%  "
+                             "cand_today=%.3f uplift=%+.3f  need deg≥%.1f%% uplift≥%+.3f",
+                             p.sell_ticker, p.buy_ticker,
+                             held_entry, held_today, degradation * 100,
+                             cand_score, uplift,
+                             thesis_degradation * 100, thesis_uplift)
+            if rejected:
+                ctx.counters["thesis_rotation_rejects"] = (
+                    ctx.counters.get("thesis_rotation_rejects", 0) + rejected
                 )
             pairs = kept
 

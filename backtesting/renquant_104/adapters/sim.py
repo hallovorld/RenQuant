@@ -448,6 +448,12 @@ class SimAdapter:
                 high_watermark = price,
                 prev_close     = price,
                 shares         = shares,
+                # Thesis-degradation baseline (Approach A) — snapshot
+                # today's decision signals so future rotation checks
+                # can compare today's scores to THESE fixed anchors.
+                entry_rank_score       = order.get("rank_score"),
+                entry_panel_score      = order.get("panel_score"),
+                entry_kelly_target_pct = order.get("kelly_target_pct"),
             )
             self._pos_shares[ticker] = shares
         self._trade_log.append({

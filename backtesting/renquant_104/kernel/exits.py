@@ -39,6 +39,16 @@ class HoldingState:
     shares:              float = 0.0
     kelly_target_pct:    float | None = None   # set by ApplyScoresTask when kelly_sizing.enabled
 
+    # Thesis-degradation rotation (Approach A, 2026-04-24): snapshot of
+    # the decision signals AT ENTRY, stamped by adapters when a fresh
+    # position is opened. These are FIXED baselines — not recomputed each
+    # bar — so rotation decisions compare "Y today vs Y when we bought"
+    # instead of two noisy Kelly targets. See kernel.rotation for the
+    # decision rule.
+    entry_rank_score:    float | None = None
+    entry_panel_score:   float | None = None
+    entry_kelly_target_pct: float | None = None
+
 
 # ── Exit result ────────────────────────────────────────────────────────────────
 
