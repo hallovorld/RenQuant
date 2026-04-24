@@ -138,15 +138,12 @@ def fetch_earnings_surprise_watchlist(
     cache: bool = True,
     provider_fn: Callable[[str], pd.DataFrame] | None = None,
     total_budget_sec: float = 120.0,
+    per_ticker_sec: float = 25.0,
 ) -> dict[str, pd.DataFrame]:
-    """Fetch earnings surprises for every ticker in `watchlist`. Returns
-    a dict — empty frames signal "no data" and do not raise.
-
-    FetchBudget caps total wall time (default 120 s) so a chain of
-    stalled yfinance calls can't block PanelDataJob indefinitely.
-    """
-    import time
-    from kernel.net_safety import FetchBudget
+    """Per-ticker hard timeout + batch budget. Each ticker's
+    `fetch_earnings_surprise` is wrapped in `call_with_timeout` so a
+    single stalled yf.earnings_dates call can't block the loop."""
+    from kernel.net_safety import FetchBudget, call_with_timeout
     budget = FetchBudget(total_sec=total_budget_sec,
                           label="fetch_earnings_surprise_watchlist")
     out: dict[str, pd.DataFrame] = {}
@@ -155,14 +152,15 @@ def fetch_earnings_surprise_watchlist(
             log.warning("  %-6s — skipping (earnings budget exhausted)", t)
             out[t] = pd.DataFrame(columns=SURPRISE_COLS)
             continue
-        t0 = time.monotonic()
-        try:
-            out[t] = fetch_earnings_surprise(t, cache=cache, provider_fn=provider_fn)
-        except Exception as exc:
-            log.warning("fetch_earnings_surprise(%s) failed — %s", t, exc)
-            out[t] = pd.DataFrame(columns=SURPRISE_COLS)
-        finally:
-            budget.charge(time.monotonic() - t0)
+        result = call_with_timeout(
+            fetch_earnings_surprise, t,
+            timeout_sec = per_ticker_sec,
+            label       = f"earnings.fetch({t})",
+            budget      = budget,
+            cache       = cache,
+            provider_fn = provider_fn,
+        )
+        out[t] = result if result is not None else pd.DataFrame(columns=SURPRISE_COLS)
     return out
 
 

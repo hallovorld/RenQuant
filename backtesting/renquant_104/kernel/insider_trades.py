@@ -304,12 +304,20 @@ def fetch_insider_trades_watchlist(
     max_filings: int = 200,
     provider_fn: "Callable[[str], pd.DataFrame] | None" = None,
     total_budget_sec: float = 240.0,
+    per_ticker_sec: float = 45.0,
 ) -> dict[str, pd.DataFrame]:
-    """FetchBudget caps total wall time (default 240 s for SEC — slower than
-    yfinance due to rate-limit + Form 4 XML parse). When budget exhausted,
-    remaining tickers get empty frames (logged)."""
+    """FetchBudget + per-ticker hard timeout. Each ticker fetch gets at
+    most `per_ticker_sec` seconds (default 45 s), total batch ≤
+    `total_budget_sec` (default 240 s). Prior version only checked the
+    budget at OUTER loop boundaries; a single ticker's Form 4 fetch
+    loop (max_filings=200, _sec_get retry=3 × timeout=15 s per call)
+    could still run **thousands of seconds** before the budget saw it.
+
+    This wraps each ticker's full fetch in `call_with_timeout`, giving
+    up after `per_ticker_sec` even if the inner loop is still chewing.
+    """
     import time
-    from kernel.net_safety import FetchBudget
+    from kernel.net_safety import FetchBudget, call_with_timeout
     budget = FetchBudget(total_sec=total_budget_sec,
                           label="fetch_insider_trades_watchlist")
     out: dict[str, pd.DataFrame] = {}
@@ -319,15 +327,19 @@ def fetch_insider_trades_watchlist(
             out[t] = pd.DataFrame(columns=INSIDER_COLS)
             continue
         t0 = time.monotonic()
-        try:
-            out[t] = fetch_insider_trades(
-                t, cache=cache, max_filings=max_filings, provider_fn=provider_fn,
-            )
-        except Exception as exc:
-            log.warning("fetch_insider_trades(%s) failed — %s", t, exc)
+        result = call_with_timeout(
+            fetch_insider_trades, t,
+            timeout_sec = per_ticker_sec,
+            label       = f"insider.fetch({t})",
+            budget      = budget,
+            cache       = cache,
+            max_filings = max_filings,
+            provider_fn = provider_fn,
+        )
+        if result is None:
             out[t] = pd.DataFrame(columns=INSIDER_COLS)
-        finally:
-            budget.charge(time.monotonic() - t0)
+        else:
+            out[t] = result
     return out
 
 

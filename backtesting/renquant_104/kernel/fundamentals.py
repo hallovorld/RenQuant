@@ -215,22 +215,26 @@ def fetch_fundamentals_watchlist(
     skip (logged). Per-call timeouts still apply within
     `fetch_fundamentals`.
     """
-    from .net_safety import FetchBudget  # noqa: PLC0415
+    from .net_safety import FetchBudget, call_with_timeout  # noqa: PLC0415
     budget = FetchBudget(total_sec=total_budget_sec,
                           label="fetch_fundamentals_watchlist")
     out: dict[str, dict[str, float]] = {}
+    per_ticker_sec = 90.0   # sum of 4 inner calls (each ≤ 20 s) + buffer
     for sym in watchlist:
         if budget.exhausted():
-            log.warning("  %-6s — skipping (fundamentals fetch budget exhausted)", sym)
+            log.warning("  %-6s — skipping (fundamentals budget exhausted)", sym)
             continue
-        t0 = __import__("time").monotonic()
-        try:
-            out[sym] = fetch_fundamentals(sym, cache=cache,
-                                          store=store, provider_fn=provider_fn)
-        except Exception as exc:
-            log.warning("  %-6s fundamentals fetch failed: %s", sym, exc)
-        finally:
-            budget.charge(__import__("time").monotonic() - t0)
+        result = call_with_timeout(
+            fetch_fundamentals, sym,
+            timeout_sec = per_ticker_sec,
+            label       = f"fundamentals.fetch({sym})",
+            budget      = budget,
+            cache       = cache,
+            store       = store,
+            provider_fn = provider_fn,
+        )
+        if result is not None:
+            out[sym] = result
     return out
 
 
