@@ -107,46 +107,62 @@ def _fetch_from_openbb(symbol: str) -> dict[str, float]:
                 return float(v)
         return None
 
+    # All network calls below are timeout-wrapped via
+    # `kernel.net_safety.call_with_timeout`. The 2026-04-23 incident
+    # was a yfinance hang that blocked PanelDataJob for 10+ minutes;
+    # every external call now abandons after 20 s and returns None,
+    # letting the caller continue with whatever metadata it has.
+    from .net_safety import call_with_timeout  # noqa: PLC0415
+
     # Metrics endpoint: trailing-12m snapshot covering EY / ROE / B/P.
-    # OpenBB yfinance returns rows in reverse chronological order (iloc[0] = newest).
-    try:
-        m = obb.equity.fundamental.metrics(symbol=symbol, provider="yfinance").to_df()
-        if m is not None and not m.empty:
-            pe  = _latest_non_nan(m, "pe_ratio")    or _latest_non_nan(m, "peRatio")
-            roe = _latest_non_nan(m, "return_on_equity") or _latest_non_nan(m, "returnOnEquity")
-            bp  = _latest_non_nan(m, "price_to_book") or _latest_non_nan(m, "priceToBook")
-            if pe is not None and pe > 0:
-                out["earnings_yield"] = 1.0 / pe
-            if roe is not None:
-                out["roe"] = roe
-            if bp is not None and bp > 0:
-                out["book_to_price"] = 1.0 / bp
-    except Exception as exc:
-        log.warning("fundamentals.metrics(%s) failed — %s", symbol, exc)
+    m = call_with_timeout(
+        lambda: obb.equity.fundamental.metrics(
+            symbol=symbol, provider="yfinance").to_df(),
+        timeout_sec = 20.0,
+        label       = f"obb.metrics({symbol})",
+    )
+    if m is not None and not m.empty:
+        pe  = _latest_non_nan(m, "pe_ratio")    or _latest_non_nan(m, "peRatio")
+        roe = _latest_non_nan(m, "return_on_equity") or _latest_non_nan(m, "returnOnEquity")
+        bp  = _latest_non_nan(m, "price_to_book") or _latest_non_nan(m, "priceToBook")
+        if pe is not None and pe > 0:
+            out["earnings_yield"] = 1.0 / pe
+        if roe is not None:
+            out["roe"] = roe
+        if bp is not None and bp > 0:
+            out["book_to_price"] = 1.0 / bp
 
     # Novy-Marx gross profitability = gross_profit / total_assets
-    try:
-        bs = obb.equity.fundamental.balance(symbol=symbol, period="annual",
-                                            provider="yfinance").to_df()
-        incs = obb.equity.fundamental.income(symbol=symbol, period="annual",
-                                             provider="yfinance").to_df()
+    bs = call_with_timeout(
+        lambda: obb.equity.fundamental.balance(
+            symbol=symbol, period="annual", provider="yfinance").to_df(),
+        timeout_sec = 20.0,
+        label       = f"obb.balance({symbol})",
+    )
+    incs = call_with_timeout(
+        lambda: obb.equity.fundamental.income(
+            symbol=symbol, period="annual", provider="yfinance").to_df(),
+        timeout_sec = 20.0,
+        label       = f"obb.income({symbol})",
+    )
+    if bs is not None and incs is not None and not bs.empty and not incs.empty:
         ta = _latest_non_nan(bs,   "total_assets")
         gp = _latest_non_nan(incs, "gross_profit")
         if ta is not None and gp is not None and ta > 0:
             out["gross_profitability"] = gp / ta
-    except Exception as exc:
-        log.warning("fundamentals.balance/income(%s) failed — %s", symbol, exc)
 
     # Short interest (yfinance .info). ETFs and some tickers don't report —
     # missing values left unset; z-score step sector-median-fills.
-    try:
+    def _fetch_info():
         import yfinance as yf  # noqa: PLC0415
-        info = yf.Ticker(symbol).info or {}
+        return yf.Ticker(symbol).info or {}
+    info = call_with_timeout(
+        _fetch_info, timeout_sec=15.0, label=f"yf.info({symbol})",
+    )
+    if info:
         sp = info.get("shortPercentOfFloat")
         if sp is not None and pd.notna(sp):
             out["short_pct_float"] = float(sp)
-    except Exception as exc:
-        log.debug("yfinance short interest(%s) failed — %s", symbol, exc)
 
     return out
 
@@ -189,15 +205,32 @@ def fetch_fundamentals_watchlist(
     cache: bool = True,
     provider_fn=None,
     store: FundamentalsStore | None = None,
+    total_budget_sec: float = 180.0,
 ) -> dict[str, dict[str, float]]:
-    """Fetch + cache fundamentals for every ticker. Returns a plain dict."""
+    """Fetch + cache fundamentals for every ticker. Returns a plain dict.
+
+    Wraps the loop in a `FetchBudget` so a chain of slow yfinance
+    responses can't eat more than `total_budget_sec` seconds of wall
+    time. Once the budget is exhausted, remaining tickers silently
+    skip (logged). Per-call timeouts still apply within
+    `fetch_fundamentals`.
+    """
+    from .net_safety import FetchBudget  # noqa: PLC0415
+    budget = FetchBudget(total_sec=total_budget_sec,
+                          label="fetch_fundamentals_watchlist")
     out: dict[str, dict[str, float]] = {}
     for sym in watchlist:
+        if budget.exhausted():
+            log.warning("  %-6s — skipping (fundamentals fetch budget exhausted)", sym)
+            continue
+        t0 = __import__("time").monotonic()
         try:
             out[sym] = fetch_fundamentals(sym, cache=cache,
                                           store=store, provider_fn=provider_fn)
         except Exception as exc:
             log.warning("  %-6s fundamentals fetch failed: %s", sym, exc)
+        finally:
+            budget.charge(__import__("time").monotonic() - t0)
     return out
 
 

@@ -303,9 +303,22 @@ def fetch_insider_trades_watchlist(
     cache: bool = True,
     max_filings: int = 200,
     provider_fn: "Callable[[str], pd.DataFrame] | None" = None,
+    total_budget_sec: float = 240.0,
 ) -> dict[str, pd.DataFrame]:
+    """FetchBudget caps total wall time (default 240 s for SEC — slower than
+    yfinance due to rate-limit + Form 4 XML parse). When budget exhausted,
+    remaining tickers get empty frames (logged)."""
+    import time
+    from kernel.net_safety import FetchBudget
+    budget = FetchBudget(total_sec=total_budget_sec,
+                          label="fetch_insider_trades_watchlist")
     out: dict[str, pd.DataFrame] = {}
     for t in watchlist:
+        if budget.exhausted():
+            log.warning("  %-6s — skipping (insider budget exhausted)", t)
+            out[t] = pd.DataFrame(columns=INSIDER_COLS)
+            continue
+        t0 = time.monotonic()
         try:
             out[t] = fetch_insider_trades(
                 t, cache=cache, max_filings=max_filings, provider_fn=provider_fn,
@@ -313,6 +326,8 @@ def fetch_insider_trades_watchlist(
         except Exception as exc:
             log.warning("fetch_insider_trades(%s) failed — %s", t, exc)
             out[t] = pd.DataFrame(columns=INSIDER_COLS)
+        finally:
+            budget.charge(time.monotonic() - t0)
     return out
 
 

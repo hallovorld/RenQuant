@@ -69,16 +69,21 @@ def _fetch_from_yfinance(symbol: str) -> pd.DataFrame:
     """Fetch past earnings surprises via yfinance `.earnings_dates`.
 
     Returns an empty DataFrame on any failure (offline, rate-limited,
-    unsupported ticker). Caller is expected to tolerate missing values —
-    the z-score step sector-median-fills nulls.
+    unsupported ticker, or Yahoo slow-drip). Caller is expected to
+    tolerate missing values — the z-score step sector-median-fills
+    nulls. The 2026-04-23 incident was a yfinance hang on
+    `.earnings_dates` with no timeout; now wrapped in a 20 s hard
+    timeout via `kernel.net_safety.call_with_timeout`.
     """
-    try:
-        import yfinance as yf  # noqa: PLC0415
-        ed = yf.Ticker(symbol).earnings_dates
-    except Exception as exc:
-        log.warning("yfinance.earnings_dates(%s) failed — %s", symbol, exc)
-        return pd.DataFrame(columns=SURPRISE_COLS)
+    from .net_safety import call_with_timeout  # noqa: PLC0415
 
+    def _fetch():
+        import yfinance as yf  # noqa: PLC0415
+        return yf.Ticker(symbol).earnings_dates
+
+    ed = call_with_timeout(
+        _fetch, timeout_sec=20.0, label=f"yf.earnings_dates({symbol})",
+    )
     if ed is None or ed.empty:
         return pd.DataFrame(columns=SURPRISE_COLS)
 
@@ -132,16 +137,32 @@ def fetch_earnings_surprise_watchlist(
     *,
     cache: bool = True,
     provider_fn: Callable[[str], pd.DataFrame] | None = None,
+    total_budget_sec: float = 120.0,
 ) -> dict[str, pd.DataFrame]:
     """Fetch earnings surprises for every ticker in `watchlist`. Returns
-    a dict — empty frames signal "no data" and do not raise."""
+    a dict — empty frames signal "no data" and do not raise.
+
+    FetchBudget caps total wall time (default 120 s) so a chain of
+    stalled yfinance calls can't block PanelDataJob indefinitely.
+    """
+    import time
+    from kernel.net_safety import FetchBudget
+    budget = FetchBudget(total_sec=total_budget_sec,
+                          label="fetch_earnings_surprise_watchlist")
     out: dict[str, pd.DataFrame] = {}
     for t in watchlist:
+        if budget.exhausted():
+            log.warning("  %-6s — skipping (earnings budget exhausted)", t)
+            out[t] = pd.DataFrame(columns=SURPRISE_COLS)
+            continue
+        t0 = time.monotonic()
         try:
             out[t] = fetch_earnings_surprise(t, cache=cache, provider_fn=provider_fn)
         except Exception as exc:
             log.warning("fetch_earnings_surprise(%s) failed — %s", t, exc)
             out[t] = pd.DataFrame(columns=SURPRISE_COLS)
+        finally:
+            budget.charge(time.monotonic() - t0)
     return out
 
 
