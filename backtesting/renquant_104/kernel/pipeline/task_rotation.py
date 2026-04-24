@@ -112,6 +112,32 @@ class BuildPairsTask(Task):
         # Holdings already exiting today are not eligible to rotate.
         exit_tickers = {t for t, _ in ctx.exits}
 
+        # V2 (2026-04-24) — when `rotation.scoring_mode == "mu_minus_lambda_sigma"`
+        # replace the isotonic-calibrated ER with direct NGBoost μ − λσ as the
+        # decision driver. Threshold semantics stay the same (fraction units).
+        # Falls back to ER on any ticker missing μ/σ so mixed panels still
+        # work. λ defaults to 1.0 (balanced risk), overridable via
+        # `rotation.lambda_` or the panel-wide `ranking.panel_scoring.ngboost.lambda_`.
+        scoring_mode   = str(rotation_cfg.get("scoring_mode", "er"))
+        lam            = float(rotation_cfg.get(
+            "lambda_",
+            ctx.config.get("ranking", {}).get("panel_scoring", {})
+                     .get("ngboost", {}).get("lambda_", 1.0),
+        ))
+
+        def _drive_score(obj) -> "float | None":
+            """Pick the rotation driver score: μ − λσ when enabled + populated;
+            else fall back to expected_return."""
+            if scoring_mode == "mu_minus_lambda_sigma":
+                mu = getattr(obj, "mu", None)
+                sg = getattr(obj, "sigma", None)
+                if mu is not None and sg is not None:
+                    try:
+                        return float(mu) - lam * float(sg)
+                    except (TypeError, ValueError):
+                        pass
+            return getattr(obj, "expected_return", None)
+
         held_scores: dict = {}
         held_er:     dict = {}
         held_meta:   dict = {}
@@ -122,7 +148,7 @@ class BuildPairsTask(Task):
             if ticker in exit_tickers:
                 continue
             score   = getattr(hs, "rank_score", None)
-            er      = getattr(hs, "expected_return", None)
+            er      = _drive_score(hs)
             entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
             cur_p   = ctx.prices.get(ticker, entry_p)
             entry_d = getattr(hs, "entry_date", None)
@@ -225,11 +251,31 @@ class BuildPairsTask(Task):
         else:
             merged_cfg = rotation_cfg
 
+        # V2 (2026-04-24): when μ−λσ scoring mode is on, transiently
+        # override c.expected_return with the μ−λσ driver BEFORE passing
+        # into the kernel primitive. The held-side override was already
+        # applied above via `_drive_score`. Shallow-copy candidates so we
+        # don't permanently mutate their cached state.
+        if scoring_mode == "mu_minus_lambda_sigma":
+            import copy as _copy  # noqa: PLC0415
+            v2_candidates = []
+            for c in eligible_candidates:
+                d = _drive_score(c)
+                if d is None:
+                    v2_candidates.append(c)
+                    continue
+                cc = _copy.copy(c)
+                cc.expected_return = float(d)
+                v2_candidates.append(cc)
+            candidates_for_pairing = v2_candidates
+        else:
+            candidates_for_pairing = eligible_candidates
+
         pairs = find_rotation_pairs(
             held_scores  = held_scores,
             held_er      = held_er,
             held_meta    = held_meta,
-            candidates   = eligible_candidates,
+            candidates   = candidates_for_pairing,
             today        = ctx.today,
             rotation_cfg = merged_cfg,
             tax_cfg      = tax_cfg,
