@@ -30,7 +30,7 @@ pick the topmost unblocked item when starting the next session.
 | ~~E~~ | ~~Re-fit global calibrator on μ−λσ distribution~~ | ❌ cancelled | — | Conditional on C winning; C did not find a winning λ, so cancelled. |
 | ~~F~~ | ~~Item 6 — regime-conditional calibration~~ | ❌ shelved — `26c40ae` | — | Infra + 4 per-regime artifacts shipped. In-sample IC looked great (BULL_CALM 3.5×, BEAR 17× pooled) but live A/B dropped APY −3.78 pts vs pooled. Overfits the narrower regime sub-samples. Flag reverted. Log: `doc/panel_training_runs.md`. |
 | ~~G~~ | ~~Item 8 — hourly-bar panel features~~ | ✅ PROMOTED TO GOLDEN | — | +4.18 APY pts (40.02% → 44.20%), win 79% → 82%. 153k hourly rows cached × 44 syms × 2yr. Panel 25 → 31 features. OOS IC down (0.041 → 0.033) but live APY up — IC/APY divergence note in `doc/panel_training_runs.md`. |
-| H | Revisit transformer on the hourly-enhanced panel | downstream of G | 1 day | After G lands, the panel grows in both features AND rows (if we also fetch hourly bars across the full 10yr sample). Rerun `scripts/compare_panel_backends.py`. Current transformer baseline shelved at ratio 0.49× XGBoost on the 47k daily-only panel. |
+| ~~H~~ | ~~Revisit transformer on the hourly-enhanced panel~~ | ❌ shelved again | — | Ratio 0.20× XGBoost (was 0.49× on daily-only). More features widened the gap, not closed it. Panel needs > 200k rows before revisit. Log: `doc/panel_training_runs.md` 2026-04-23 evening entry. |
 
 ---
 

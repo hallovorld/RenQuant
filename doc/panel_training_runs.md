@@ -23,6 +23,69 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 evening PT — Plan H transformer on hourly panel SHELVED
+
+Plan H. Second transformer rerun — first was shelved on the daily-only
+47k panel (ratio 0.49×). This run uses the same transformer architecture
+on the **hourly-enhanced 47k × 31 panel** — the "more features + same
+rows" condition the transformer design was hoping for.
+
+Both backends trained via `scripts/compare_panel_backends.py --strategy
+renquant_104 --device mps` (MPS with
+`PYTORCH_ENABLE_MPS_FALLBACK=1` for a missing nested_tensor op).
+
+**Results (CPCV 15-split, same folds, same panel):**
+
+| Backend      | mean_ic  | elapsed | device |
+|--------------|---------:|--------:|--------|
+| XGBoost      | +0.0309  |  60.8s  | cpu    |
+| Transformer  | +0.0063  | 148.0s  | mps (+ cpu fallback) |
+| **Ratio**    | **0.20×** |  —      | —      |
+
+**Verdict:** shelve (ship gate was ≥1.30×; even the ensemble gate was ≥1.10×).
+Worse than the daily-only baseline (0.49×).
+
+**Diagnosis:**
+
+Adding 6 hourly feature columns (47k rows × 25 → 31 cols) did not
+close the transformer vs XGBoost gap. In fact the gap widened. Likely
+causes:
+
+1. **Dataset still too small.** Cross-sectional transformers need ≫
+   47k rows before attention out-learns axis-aligned splits. The
+   panel has 1,256 dates — the transformer sees 1,256 cross-sections
+   of ~38 tickers each, which is barely above the underfitting floor.
+2. **Noisy features dilute attention.** XGBoost's L1/L2 penalties +
+   tree splits can ignore noisy features cheaply. Transformer
+   attention distributes gradient across all features and noise
+   creeps in as spurious cross-ticker dependencies.
+3. **More features, same regularisation budget.** Transformer config
+   in `strategy_config.json::panel_ltr.transformer_params` has the
+   same dim/heads/epochs as before — the extra 6 features add
+   parameters to attend to without a compensating capacity bump.
+
+**Action taken:**
+
+- Active backend stays `xgboost` (config unchanged — was never
+  flipped for this run; `compare_panel_backends.py` swaps backends
+  internally and restores the XGBoost artifact from `.compare_backup/`
+  after the comparison).
+- `panel-transformer.pt` + `panel-transformer.json` artifacts exist
+  on disk but are gitignored per the transformer backend shelved
+  note in `.gitignore`.
+- Transformer revisit moves to a later phase: not on the current
+  roadmap. Will revisit only if the panel grows to > 200k rows
+  (roughly 4× current) — e.g. from fetching an additional 5yr of
+  hourly bars plus broadening the watchlist, AND a full
+  transformer_params sweep.
+
+**No regression to golden.** Hourly-enhanced XGBoost panel remains
+the active golden at +44.20% APY.
+
+Log: `/tmp/transformer_ab.log`.
+
+---
+
 ## A/B — 2026-04-23 late PT — Plan G hourly features PROMOTED (+4.18 APY pts)
 
 Plan G. Hourly-bar aggregates (morning/afternoon drift, VWAP premium,
