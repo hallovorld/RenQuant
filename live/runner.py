@@ -238,6 +238,58 @@ def _run_once_multi_pipeline(
     pipeline.run(ctx)
     adapter.commit(ctx)
 
+    # ── Trade-level ntfy (mandatory — user requirement, 2026-04-23) ─────
+    # Any path that places orders MUST notify. Shell wrappers
+    # (daily_104.sh / live_only_104.sh / intraday_sell_104.sh) send
+    # their own wrapper-level ntfy, but direct `python -m live.runner`
+    # invocations previously slipped through silently. This hook
+    # guarantees every real trade surfaces to ntfy, regardless of how
+    # the runner was triggered.
+    _notify_trades(label, run_mode, ctx)
+
+
+def _notify_trades(label: str, run_mode: str, ctx) -> None:
+    """Fire ntfy if this cycle placed any buy/sell orders.
+
+    Idempotent + silent on no-trades. Respects optional
+    `RENQUANT_NTFY_TOPIC` env var (defaults to 'renquant').
+    Never raises — network-safety wrapped.
+    """
+    import os, urllib.request, urllib.parse      # noqa: PLC0415
+    orders = list(getattr(ctx, "orders", []) or [])
+    exits  = list(getattr(ctx, "exits",  []) or [])
+    if not orders and not exits:
+        return   # silent when nothing happened
+
+    parts: list[str] = []
+    for o in orders:
+        tkr    = o.get("ticker")       if isinstance(o, dict) else getattr(o, "ticker", "?")
+        shares = o.get("shares")       if isinstance(o, dict) else getattr(o, "shares", "?")
+        price  = o.get("price")        if isinstance(o, dict) else getattr(o, "price", 0.0)
+        invest = o.get("invest") if isinstance(o, dict) else (shares * price if shares else 0)
+        parts.append(f"BUY {tkr} x{shares} @ ${float(price):.2f}")
+    for e in exits:
+        tkr    = getattr(e, "ticker", "?")
+        reason = getattr(e, "exit_type", getattr(e, "reason", "sell"))
+        parts.append(f"EXIT {tkr} ({reason})")
+
+    topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+    title = f"{label} [{run_mode}] TRADE"
+    body  = " | ".join(parts)
+    url   = f"https://ntfy.sh/{topic}"
+    try:
+        data = body.encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Title": title, "Priority": "high"},
+        )
+        urllib.request.urlopen(req, timeout=5.0).read()
+        log.info("ntfy sent: %s | %s", title, body)
+    except Exception as exc:
+        # Don't let a network blip suppress trade reporting — log loudly.
+        log.warning("ntfy publish FAILED (%s) — trade still executed: %s",
+                    exc, body)
+
 
 def run_once_multi(
     config: dict[str, Any],
