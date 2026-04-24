@@ -231,7 +231,7 @@ def main() -> None:
         total_return = (last_val / first_val) - 1
         apy = (last_val / first_val) ** (365.25 / days_elapsed) - 1
         print(f"\n  Total return:      {total_return:+.2%}")
-        print(f"  APY:               {apy:+.2%}  ← target: +141%")
+        print(f"  APY:               {apy:+.2%}  ← target: +41%")
 
     print(f"\n  {n} rows upserted.")
 

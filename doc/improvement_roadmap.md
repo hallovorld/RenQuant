@@ -4,7 +4,7 @@
 
 ## 🎯 End goal (user spec 2026-04-24)
 
-**Golden config target:** **APY 1.41 (+141%) | Sharpe 2.0**
+**Golden config target:** **APY 41% | Sharpe 2.0**  (user revised down from earlier 141% target on 2026-04-24 PT — current v4.1 sweep ≈ 39.82%, needs +1-2 APY pt)
 
 Current state:
 - Golden v4.1: **+39.82% sweep APY** (`allow_fetch=False` handicap), **~+65% expected live**
