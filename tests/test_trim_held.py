@@ -56,6 +56,7 @@ def _ctx(
         confidence      = 0.8,
         config          = {"ranking": {"kelly_sizing": {
             "enabled":         kelly_enabled,
+            "trim_enabled":    True,    # explicit opt-in; default False per AB-trim A/B
             "trim_threshold":  trim_threshold,
         }}},
     )
@@ -64,6 +65,19 @@ def _ctx(
 # ── Flag gates ────────────────────────────────────────────────────────────────
 
 class TestFlagGates:
+    def test_opt_in_off_by_default(self):
+        """AB-trim A/B shelved: trim_enabled defaults to False."""
+        ctx = _ctx(
+            holdings  = {"NVDA": _hs("NVDA", shares=500, kelly_target=0.10)},
+            prices    = {"NVDA": 100.0},
+            portfolio = 100_000,
+            trim_threshold = 0.10,
+        )
+        # Override to the production default (trim_enabled absent == False)
+        ctx.config["ranking"]["kelly_sizing"].pop("trim_enabled", None)
+        TrimHeldTask().run(ctx)
+        assert ctx.exits == []
+
     def test_disabled_kelly_is_noop(self):
         ctx = _ctx(
             holdings  = {"NVDA": _hs("NVDA", shares=100, kelly_target=0.10)},

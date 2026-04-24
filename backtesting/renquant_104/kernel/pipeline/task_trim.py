@@ -48,6 +48,17 @@ class TrimHeldTask(Task):
         kelly_cfg = ctx.config.get("ranking", {}).get("kelly_sizing", {})
         if not kelly_cfg.get("enabled", False):
             return
+        # AB-trim A/B (2026-04-24, 27-mo OOS):
+        #   A_GOLDEN (trim_threshold=0.10 default)  25.09% APY
+        #   B_hyst (explicit 0.10)                   25.09% APY
+        #   C_tight (trim_threshold=0.0)             34.89% APY (+9.80 vs A)
+        #   Pre-trim v4 golden                       37.82% APY
+        # All three trim settings REGRESS vs pre-trim. The 0.10 default was
+        # especially bad (-12.7 pts) — it trims AFTER big rallies and misses
+        # continuation moves. Default switched to OFF via `trim_enabled=False`;
+        # callers must opt in explicitly.
+        if not bool(kelly_cfg.get("trim_enabled", False)):
+            return
         trim_thresh = float(kelly_cfg.get("trim_threshold", 0.10))
         if trim_thresh < 0:
             return
