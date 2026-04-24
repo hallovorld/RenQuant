@@ -49,7 +49,9 @@ Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are i
 - ✅ **10-min bar infra** — MinuteBarStore + fetch_minute_bars.py + compute_minute_features (10 features w/ `m_` prefix). Default off, flag `panel_ltr.minute.enabled`.
 - ✅ **sim/analysis.strip_top_n_trades** — notebook robustness check for lucky-winner alpha.
 - ✅ **Kelly-pure A/B** — result: **ΔAPY 0** (flag is no-op under current golden; conv/σ_mult already ≈1.0). Verdict: shelve.
-- 🟡 **panel_conviction_exit A/B** — running now (`/tmp/panel_exit_ab.py`).
+- ✅ **panel_conviction_exit A/B** — result: **ΔAPY 0, 0 panel_exits fired**. The gate (panel < 0.20 AND μ ≤ 0.0) is never both true simultaneously on current holdings. Verdict: shelve until gate thresholds tuned — worth revisiting if holdings ever show panel degradation without μ inversion.
+- ✅ **Rotation V1 gates shipped** (`9eb188b`) — `rotation.min_raw_advantage_pct` + `rotation.persistence_bars`, both default off.
+- 🟡 **Rotation V1 A/B** — running now. Compares GOLDEN (threshold 0.03, 0 rot) vs LOOSE (0.005, ~3 rot per roadmap, -4.93 APY) vs V1 (loose + raw_adv≥0.05 + persistence=3).
 
 ### 🔴 Still not shipped — user-prioritized
 
