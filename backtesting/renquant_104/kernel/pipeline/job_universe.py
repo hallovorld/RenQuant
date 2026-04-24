@@ -126,6 +126,34 @@ FLOOR_EVALUATORS: dict[str, Callable[[dict], "float | None"]] = {
 }
 
 
+def _load_held_tickers(strategy_dir: Path) -> set[str]:
+    """Read `live_state.json::position_hwm` → set of currently-held tickers.
+
+    Used by `FilterUniverseFloorTask` to EXEMPT held tickers from the
+    quality floor. Rationale: universe_floor is meant to gate OFFENSIVE
+    new buys from weak models. For already-held positions, filtering out
+    the per-ticker model removes the ONLY source of the
+    `model_sell_streak` exit signal — in `task_sell.py::ScoreModelTask`,
+    `tc.model is None → model_action = "hold"` forever. The position is
+    then stuck until a non-model exit (stop_loss / trailing / max_hold)
+    fires, which may never happen for a flat low-vol holding.
+
+    Real incident (2026-04-23): AMZN held at cost $249, model sharpe
+    slipped 0.668 → below 1.0 floor → model dropped → AMZN became
+    structurally un-exitable via signals.
+    """
+    import json as _j
+    state_file = strategy_dir / "live_state.json"
+    if not state_file.exists():
+        return set()
+    try:
+        data = _j.loads(state_file.read_text())
+    except Exception:
+        return set()
+    # Prefer position_hwm keys (only non-zero positions get entries).
+    return set((data.get("position_hwm") or {}).keys())
+
+
 class FilterUniverseFloorTask(UniverseTask):
     """Drop tickers whose quality metric (per universe_floor.type) < threshold.
 
@@ -133,12 +161,18 @@ class FilterUniverseFloorTask(UniverseTask):
     for floor types whose metric isn't populated yet. Override this policy by
     changing admit_on_missing to False.
 
-    Defensive tickers (`config.defensive_tickers`) are always exempt from
-    the quality floor: they exist specifically to be available when the
-    regime demands them (ConfidenceVetoTask / BEARBranchTask restrict the
-    universe to defensives). Filtering them out here would make the BEAR /
-    bear_only branch structurally unable to buy anything → systemic
-    no-trade periods, which the user explicitly flagged as unacceptable.
+    **Always exempt (admitted regardless of floor):**
+
+      1. `config.defensive_tickers` — they exist specifically to be
+         available when the regime demands them (BEAR / bear_only
+         branch). Filtering them out here would make BEAR buys
+         structurally impossible.
+      2. **Currently-held tickers** (read from `live_state.json`). The
+         floor is designed to gate OFFENSIVE new buys from weak models;
+         dropping a held position's model kills the `model_sell_streak`
+         exit path (ScoreModelTask → tc.model=None → action="hold"
+         forever). 2026-04-23 incident: AMZN sharpe=0.668 got filtered,
+         turning AMZN into a structurally un-sellable position.
     """
     admit_on_missing: bool = True
 
@@ -158,10 +192,21 @@ class FilterUniverseFloorTask(UniverseTask):
         if threshold <= 0:
             return True
         defensives = set(uctx.config.get("defensive_tickers", []) or [])
+        held       = _load_held_tickers(uctx.strategy_dir)
         below: list[tuple[str, str]] = []
+        held_admitted: list[tuple[str, float]] = []
         for ticker, art in uctx.loaded_models.items():
             if ticker in defensives:
                 continue   # always admit defensives — see class docstring
+            if ticker in held:
+                # Always admit held positions so model-sell path stays
+                # armed. Log sharpe for audit (if sub-floor we're keeping
+                # the model anyway but flagging it).
+                meta = art.get("_metadata", {})
+                v = evaluator(meta)
+                if v is not None and v < threshold:
+                    held_admitted.append((ticker, v))
+                continue
             meta = art.get("_metadata", {})
             value = evaluator(meta)
             if value is None:
@@ -180,6 +225,11 @@ class FilterUniverseFloorTask(UniverseTask):
         for ticker, reason in below:
             uctx.loaded_models.pop(ticker, None)
             uctx.rejections.append((ticker, reason))
+        for ticker, v in held_admitted:
+            log.warning(
+                "%s HELD — admitting despite %s=%.3f < %s (so sell path stays armed)",
+                ticker, floor_type, v, threshold,
+            )
         return True
 
 
