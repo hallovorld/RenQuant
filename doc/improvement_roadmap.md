@@ -19,7 +19,7 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 
 ---
 
-## ✅ 2026-04-24 — shipped today (22 commits)
+## ✅ 2026-04-24 — shipped today (30+ commits)
 
 **Day 1 (audit foundation):**
 - ✅ **M⁺** (`3dd903a`) — schema migration for `training_runs` 9 missing columns. Live DB now has 21 cols.
@@ -33,11 +33,77 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 - ✅ **CUSUM-cooldown-v2** (`10f788a`) — Design C confidence-scaled sizing, flag-gated.
 - ✅ **S** (`b07a81c`) — `live_state_snapshots` append-only audit table.
 
-**Cleanup:**
+**Cleanup + architecture:**
 - ✅ **N** (`34ccac2`) — golden doc consolidated (v4 top, v1-v3 history).
 - ✅ Analyzer enhancement (`a42344f`) — tier-usage + selected-bucket diagnostics.
+- ✅ **CUSUM-v2 PROMOTED v4.1** (`1bb5ae1`) — +1.97 APY pts. Live/sim parity fix.
+- ✅ **Thesis-A infra** (`e519177`) — entry-baseline rotation. Flag-gated.
+- ✅ **BC audit guards** (`6b06dcd`) — ported AB-trim lessons preventively.
+- ✅ **DB split** (`56083da`) — runs.db (live permanent) + sim_runs.db (ephemeral).
+- ✅ **doc/database.md** — full schema reference with migration rules.
+- ✅ Docs sweep (`c73a4b5`) — CLAUDE.md test count + models.md Kelly/partial/trim/thesis-A + architecture.md adapter table.
 
-**Tests added:** +65 (3+9+8+9+7+12+8+20+6). Full test count ~1137.
+**Tests added:** +120 (including regression, infra, and audit guards). Full test count ~1307 collected.
+
+**Golden verified intact** at the end: A_GOLDEN_v4 sim = +37.85% APY = pre-session 37.82% (0.03 pt noise). All new code is flag-gated default-off OR routed through the sim DB.
+
+---
+
+## 🎯 Macro plan — 5-tier roadmap (2026-04-24)
+
+### Tier 1 — 今天 / 下次 session finishing
+- ✅ Most Tier 1 done. Remaining (sim-gated):
+- **Thesis-A A/B** — flip thesis_rotation.enabled, pick degradation/uplift thresholds from A/B
+- **J hourly-feature pruning** — drop 3 weakest hourly cols, retrain, A/B
+- **Q rotation hold-days × advantage 2D sweep** — adaptability vs churn
+- **Kelly-full-sweep** — notebook 10-point grid (fractional × max_concentration)
+
+### Tier 2 — Performance + monitoring (short-term, pure code)
+- **Feature cache optimization** (see detailed spec below) — **5-8x sim speedup**, 1-2h refactor
+- **Live sustainability accumulation (Plan I)** — passive, accumulate 4 weeks of Sun 12PT reports
+- **Performance regression test suite** — auto-run full-sim on any golden-touching commit
+- **`archive_runs.py` scaffolding** — prep for when live DB > 5 GB
+- **Flag-drift alert** — warn if a default-off flag is silently enabled in a commit
+
+### Tier 3 — Strategy evolution (1-3 months, data-driven)
+- **Plan B** — AA-calibrated rotation criterion (needs ~3 months live data for calibration sample)
+- **Plan F retry** — regime-conditional calibrators with real live data support
+- **Portfolio-level risk DB tables** — daily Sharpe / max-DD / VaR
+- **Ticker rotation automation** — weekly watchlist screen, suggest adds/drops on 6-month performance
+- **Sector-guard sub-buckets** — tech → {semis, software, cloud, platforms}
+
+### Tier 4 — Extension capabilities (3-6 months)
+- **Multi-strategy live** — 103 + 104 + 105 side-by-side with allocation split
+- **Real-time retrain triggers** — VIX/SPY anomaly → auto-retrain (infra already sketched in session-handoff history)
+- **Cross-strategy capital allocation** — when multi-strategy, auto-rebalance
+
+### Tier 5 — Frontier (future)
+- **Transformer panel backend** (design landed in `doc/renquant_104_transformer_design.md`): SHELVED until panel > 200k rows. Currently 47k. Needs 4× more data (~18 months) OR watchlist 2× expansion.
+- **Covered-call overlay** — sell covered calls on held positions for premium income
+- **Sector-level rotation** — XLK/XLF/XLV regime-conditional allocation
+- **International equities** — currently 100% US; expand to VGK, VWO, VPL
+
+---
+
+## Detailed spec — Feature cache optimization (Tier 2)
+
+**Problem:** Every `InferencePipeline.run()` bar rebuilds per-ticker feature frames from scratch. For each of 570 bars × 42 tickers, `build_feature_frame()` recomputes the FULL indicator history on the OHLCV slice up to that bar. 24k redundant recomputes per sim → 9 min/variant.
+
+**Solution:** Pre-compute per-ticker full-range feature frames ONCE at sim start; per-bar tasks just index by today.
+
+**Design:**
+1. New `SimAdapter.__init__` step: for each ticker in ohlcv, call `build_feature_frame(full_stock, full_spy, spec)` once. Store in `self._feature_cache[ticker] = full_df`.
+2. `TickerInferenceContext` gets optional `feature_cache_frame: pd.DataFrame | None` field.
+3. Adapter's `_make_ticker_ctx` passes the cached frame.
+4. `BuildFeaturesTask.run` — if `tc.feature_cache_frame` is set, `tc.features = tc.feature_cache_frame.loc[:tc.today]`; else fall back to `build_feature_frame(...)` (live runner path, where feature cache isn't prebuilt).
+
+**Correctness test (critical):** Run golden-config sim with cache vs without, assert identical equity curve + trade log. Needs a new `tests/test_feature_cache_equivalence.py`.
+
+**Projected speedup:** Conservative 5x (9 min → 1.8 min/variant). 100 notebook runs/day = 15 hr → 3 hr.
+
+**Risk:** If `build_feature_frame` is NOT fully deterministic from full history (e.g. has lookahead or depends on `today`-specific logic), cache can diverge. Must verify equivalence before shipping.
+
+**Not in this session** — too risky to squeeze in at end of 30-commit sprint. Scheduled for next session with full correctness test + sim verification.
 
 ---
 
