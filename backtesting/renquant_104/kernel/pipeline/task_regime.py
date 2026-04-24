@@ -1,6 +1,7 @@
 """Regime detection tasks: Hurst → CUSUM → GMM → BEAR override → finalize."""
 from __future__ import annotations
 
+import datetime
 import logging
 import math
 
@@ -149,13 +150,41 @@ class RegimeFinalizeTask(Task):
             new_regime = dominant_gmm if dominant_gmm != BEAR else BULL_VOLATILE
 
         # Plan B: cooldown only on actual regime switch.
+        # CUSUM-v2 Design C (user-locked 2026-04-24): also stamp wall-clock
+        # `cooldown_start` so intraday runners can read elapsed time instead
+        # of relying on bar-count alone. Both fields persist in live_state.
         trans_bars = int(ctx.config.get("regime", {})
                          .get("transition_uncertainty_bars", 3))
         if new_regime != prev_regime and state.countdown == 0:
             state.countdown = trans_bars
+            # Record the wall-clock start. Use today's calendar date (sim)
+            # or datetime.now() (live); both are convertible by
+            # cusum_cooldown_progress(). InferenceContext.today is a date
+            # in the sim path and a datetime in live.
+            now = getattr(ctx, "today", None)
+            if isinstance(now, datetime.date) and not isinstance(now, datetime.datetime):
+                state.cooldown_start = datetime.datetime(
+                    now.year, now.month, now.day,
+                )
+            elif isinstance(now, datetime.datetime):
+                state.cooldown_start = now
+            else:
+                state.cooldown_start = datetime.datetime.utcnow()
         state.in_transition = state.countdown > 0
         if state.countdown > 0:
             state.countdown -= 1
+        # Clear cooldown_start once the bar-count window fully elapses (so
+        # wall-clock progress reads 1.0 after recovery even if nobody
+        # retrains the regime). Guard: only clear when we're past the
+        # full cooldown window.
+        if state.countdown == 0 and state.cooldown_start is not None:
+            cd_days = float(ctx.config.get("regime", {})
+                            .get("cusum_cooldown_days", 3.0))
+            now = getattr(ctx, "today", None)
+            if now is not None and cd_days > 0:
+                from kernel.regime import cusum_cooldown_progress  # noqa: PLC0415
+                if cusum_cooldown_progress(now, state.cooldown_start, cd_days) >= 1.0:
+                    state.cooldown_start = None
 
         confidence = compute_regime_confidence(
             new_regime, state.hurst, gmm_probs, state.in_transition, ctx.config

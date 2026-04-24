@@ -110,6 +110,24 @@ class SizeAndEmitTask(Task):
 
         regime_p      = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         base_max_pct  = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
+
+        # CUSUM-v2 Design C (user-locked 2026-04-24): when
+        # `regime.cusum_cooldown_mode == "wall_time"`, scale max_pct by
+        # cooldown_progress (0→1 over cusum_cooldown_days). Default mode
+        # "bar_count" preserves v4 behaviour (hard transition block via
+        # TransitionWindowTask; this path is a no-op).
+        cooldown_mult = 1.0
+        _regime_cfg = ctx.config.get("regime", {})
+        if str(_regime_cfg.get("cusum_cooldown_mode", "bar_count")) == "wall_time":
+            from kernel.regime import cusum_cooldown_progress  # noqa: PLC0415
+            cd_start = getattr(ctx.regime_state, "cooldown_start", None) \
+                       if ctx.regime_state is not None else None
+            cd_days  = float(_regime_cfg.get("cusum_cooldown_days", 3.0))
+            cooldown_mult = cusum_cooldown_progress(ctx.today, cd_start, cd_days)
+            if cooldown_mult < 1.0:
+                log.info("SizeAndEmitTask: CUSUM cooldown active — "
+                         "scaling max_pct × %.3f", cooldown_mult)
+        base_max_pct *= cooldown_mult
         reserve_pct   = float(regime_p.get("cash_reserve_pct", 0.0))  * ctx.confidence
         bear_def_pct  = float(ctx.config.get("bear_defensive_pct", 0.15))
         override_pct  = bear_def_pct if ctx.bear_only else None

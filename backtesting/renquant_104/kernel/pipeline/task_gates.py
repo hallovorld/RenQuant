@@ -21,9 +21,19 @@ class DrawdownGateTask(Task):
 
 
 class TransitionWindowTask(Task):
-    """Gate 1: CUSUM uncertainty window — no new buys during regime transition."""
+    """Gate 1: CUSUM uncertainty window — no new buys during regime transition.
+
+    CUSUM-v2 Design C (user-locked): when `regime.cusum_cooldown_mode`
+    is `"wall_time"`, this gate is a no-op — the cooldown is enforced
+    instead by SizeAndEmitTask via `max_pct × cooldown_progress`.
+    Under Design C, Kelly sizing does the scaling rather than a hard block.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
+        # Design C — soft cooldown (no hard block here)
+        mode = str(ctx.config.get("regime", {}).get("cusum_cooldown_mode", "bar_count"))
+        if mode == "wall_time":
+            return None
         if ctx.regime_state is not None and ctx.regime_state.in_transition:
             ctx.counters["transition_blocks"] = ctx.counters.get("transition_blocks", 0) + 1
             ctx.buy_blocked = True

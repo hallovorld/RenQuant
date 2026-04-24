@@ -22,6 +22,20 @@ log = logging.getLogger("adapters.runner")
 _HWM_STALE_RATIO = 1.5
 
 
+def _parse_iso_dt(s: Any) -> "datetime.datetime | None":
+    """Parse an ISO-formatted datetime string; return None on any failure.
+
+    Used to restore RegimeState.cooldown_start from live_state.json across
+    invocations (CUSUM-v2 Design C).
+    """
+    if s is None or s == "":
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(s))
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_hwm(stored_hwm: float, account_value: float,
                 stale_ratio: float = _HWM_STALE_RATIO) -> tuple[float, bool]:
     """Resolve the effective high_water_mark for the current bar.
@@ -275,6 +289,9 @@ class RunnerAdapter:
                 countdown     = int(regime_persist.get("countdown",          0)),
                 cusum_pos     = float(regime_persist.get("cusum_pos",      0.0)),
                 cusum_neg     = float(regime_persist.get("cusum_neg",      0.0)),
+                # CUSUM-v2 Design C — restore wall-clock cooldown start.
+                # Parse ISO string; None / missing → no cooldown active.
+                cooldown_start = _parse_iso_dt(regime_persist.get("cooldown_start")),
             ),
             regime_counts     = {r: 0 for r in REGIMES},
             monitor_state     = dict(state.get("monitor_state", {}) or {}),
@@ -434,6 +451,11 @@ class RunnerAdapter:
             "countdown":     int(getattr(rs, "countdown", 0)),
             "cusum_pos":     float(getattr(rs, "cusum_pos", 0.0)),
             "cusum_neg":     float(getattr(rs, "cusum_neg", 0.0)),
+            # CUSUM-v2 Design C wall-clock cooldown start (ISO string or null).
+            # Let intraday runs read elapsed time instead of ticking bar-count.
+            "cooldown_start": (getattr(rs, "cooldown_start", None).isoformat()
+                                if getattr(rs, "cooldown_start", None) is not None
+                                else None),
         } if rs is not None else {}
         self._state.update({
             "regime":            ctx.regime,

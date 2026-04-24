@@ -4,6 +4,7 @@ Self-contained: only numpy, json, math.  No common/ imports.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import math
 from dataclasses import dataclass, field
@@ -26,6 +27,12 @@ class RegimeState:
     # mutable; passed in/out so callers persist CUSUM state across bars
     cusum_pos: float = 0.0
     cusum_neg: float = 0.0
+    # CUSUM-cooldown-v2 Design C (user-locked 2026-04-24): wall-clock
+    # start of the regime-switch cooldown window. Stamped at the same
+    # moment `countdown` is set. Persisted alongside `countdown` in
+    # live_state.json + live_state_snapshots so intraday runners don't
+    # tick a bar-based cooldown 10x per day.
+    cooldown_start: "datetime.datetime | None" = None
 
     # Intermediate layer outputs — written by individual tasks, read by later tasks
     hurst: float = 0.5                       # Layer 1 output
@@ -34,6 +41,34 @@ class RegimeState:
     hard_bear: bool = False                  # BEAR hard-override flag
     cusum_triggered: bool = False            # Layer 2 raw flag (diagnostic; cooldown
                                               # armed by RegimeFinalizeTask on regime switch)
+
+
+def cusum_cooldown_progress(
+    now: "datetime.datetime | datetime.date | None",
+    cooldown_start: "datetime.datetime | None",
+    cooldown_days: float,
+) -> float:
+    """Fraction of cooldown elapsed (0.0 = just switched, 1.0 = done).
+
+    Used by Design C confidence-scaled sizing: `max_position_pct *= progress`.
+
+    Returns 1.0 (no penalty) when:
+      * `cooldown_start` is None (no cooldown active), OR
+      * cooldown_days <= 0 (disabled)
+    """
+    if cooldown_start is None or cooldown_days <= 0:
+        return 1.0
+    if now is None:
+        return 1.0
+    # Accept date (sim bars) by midnight-aligning to datetime
+    if isinstance(now, datetime.date) and not isinstance(now, datetime.datetime):
+        now = datetime.datetime(now.year, now.month, now.day)
+    if isinstance(cooldown_start, datetime.date) and not isinstance(cooldown_start, datetime.datetime):
+        cooldown_start = datetime.datetime(cooldown_start.year,
+                                           cooldown_start.month,
+                                           cooldown_start.day)
+    elapsed_days = (now - cooldown_start).total_seconds() / 86400.0
+    return max(0.0, min(1.0, elapsed_days / float(cooldown_days)))
 
 
 # ── Layer 1: Hurst Exponent ───────────────────────────────────────────────────
