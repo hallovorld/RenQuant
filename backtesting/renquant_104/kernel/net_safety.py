@@ -11,8 +11,9 @@ This module wraps any network-touching callable with:
 
   1. Hard per-call timeout (default 20 s) via concurrent.futures.
      Gives up cleanly, returns None, lets caller move on.
-  2. A bounded ThreadPoolExecutor so the inner call's thread doesn't
-     pile up — when the parent process exits, the daemon thread dies.
+  2. A fresh daemon thread per call, so a stuck call can't outlive the
+     parent process (previously a shared ThreadPoolExecutor with
+     non-daemon threads kept pytest-xdist workers alive).
   3. Structured logging with a label so hangs are diagnosable.
   4. Optional global "fetch budget" — cap cumulative fetch time per
      task. Once the budget is consumed, remaining calls short-circuit
@@ -46,16 +47,18 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+from concurrent.futures import TimeoutError as _FutTimeout
 from typing import Any, Callable
 
 log = logging.getLogger("kernel.net_safety")
 
 
-# Single shared executor so we don't spin up a pool per call. One worker is
-# enough — per-call timeout is what matters, not parallelism. Daemon threads
-# die with the parent process so no cleanup burden.
-_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="net-safe")
+# 2026-04-24: one daemon thread per call (no shared pool). Python's
+# ThreadPoolExecutor spawns NON-daemon threads, and a stuck worker kept
+# pytest-xdist processes alive for the full sleep duration. A per-call
+# daemon thread is simpler and ensures the interpreter can exit even
+# when a network call is still blocked inside yfinance / OpenBB.
+# Overhead: ~10 µs per thread spawn — negligible vs 20 s network calls.
 
 
 class FetchBudget:
@@ -113,9 +116,29 @@ def call_with_timeout(
         effective_timeout = min(timeout_sec, max(1.0, budget.remaining()))
 
     t0 = time.monotonic()
-    fut = _EXECUTOR.submit(fn, *args, **kwargs)
+    # Per-call daemon thread — see module docstring. Stops the interpreter
+    # from hanging at shutdown if `fn` is stuck inside a network library.
+    import threading as _th  # noqa: PLC0415
+    result_box: dict = {}
+
+    def _runner():
+        try:
+            result_box["value"] = fn(*args, **kwargs)
+        except Exception as exc:      # noqa: BLE001
+            result_box["exc"] = exc
+
+    worker = _th.Thread(
+        target=_runner, name=f"net-safe-{label or 'anon'}", daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=effective_timeout)
+
     try:
-        result = fut.result(timeout=effective_timeout)
+        if worker.is_alive():
+            raise _FutTimeout
+        if "exc" in result_box:
+            raise result_box["exc"]
+        result = result_box.get("value")
         elapsed = time.monotonic() - t0
         if budget is not None:
             budget.charge(elapsed)
@@ -130,12 +153,9 @@ def call_with_timeout(
             budget.charge(elapsed)
         log.warning(
             "[%s] TIMEOUT after %.1fs (limit=%.1fs) — abandoning; "
-            "thread may still be running in background",
+            "daemon thread may still run briefly in background",
             label or "call_with_timeout", elapsed, effective_timeout,
         )
-        # Cancel signals that we don't want the result, doesn't actually
-        # kill the thread (Python limitation); daemon nature will reap.
-        fut.cancel()
         return None
     except Exception as exc:
         elapsed = time.monotonic() - t0
