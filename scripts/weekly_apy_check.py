@@ -99,6 +99,30 @@ def _compute_rolling_apy(rows: list[dict]) -> tuple[float | None, int]:
     return apy, len(valid)
 
 
+def _latest_sharpe(db_path: Path) -> tuple:
+    """Return (sharpe_21d, sharpe_63d) from the newest portfolio_daily_metrics
+    row for live+renquant-104, or None if table/DB missing.
+
+    Added 2026-04-24 — Sharpe=2.0 target tracking. Surface the latest
+    rolling Sharpe in the weekly ntfy so deviation is visible at a glance.
+    """
+    import sqlite3
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            """SELECT sharpe_21d, sharpe_63d
+                 FROM portfolio_daily_metrics
+                WHERE run_type='live' AND strategy='renquant-104'
+                ORDER BY as_of_date DESC LIMIT 1"""
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return None
+    return row
+
+
 def _drawdown_streak(rows: list[dict], threshold: float) -> int:
     """Return the longest recent-consecutive-day streak with drawdown > threshold."""
     best = cur = 0
@@ -143,6 +167,18 @@ def main() -> int:
         msg_parts.append(f"APY={apy:+.1%}")
     if dd_streak:
         msg_parts.append(f"dd_streak={dd_streak}d")
+
+    # Pull latest Sharpe from portfolio_daily_metrics (target 2.0).
+    # Non-fatal if table/DB missing — keeps backward compat with older
+    # live states.
+    sharpe_info = _latest_sharpe(REPO_ROOT / "data" / "runs.db")
+    if sharpe_info:
+        s21, s63 = sharpe_info
+        if s21 is not None:
+            msg_parts.append(f"Sharpe21d={s21:.2f}")
+        if s63 is not None:
+            msg_parts.append(f"Sharpe63d={s63:.2f}")
+
     summary = " / ".join(msg_parts)
 
     exit_code = 0
