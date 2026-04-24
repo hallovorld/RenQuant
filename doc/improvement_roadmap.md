@@ -1,159 +1,245 @@
 # RenQuant 104 — Planned Work
 
-Single source of truth for what's next. Ordered by expected value.
-When starting an item, flip status to **🟡**. When done, flip to **✅** and drop a
-1-paragraph result + commit sha. Archive anything closed to the History
-section at the bottom.
+**Single source of truth for what's next.** Ordered by priority tier (P0 → P3), then by expected value within tier.
 
-**Current golden state** — `strategy_config.golden.json` @ commit `c9ee50b`:
-after-tax **+44.20% APY** / +125.57% total / **82% win** / 26d longest-no-trade-
-streak on the 27-month 2024-01-01 → 2026-03-26 OOS sim. Panel-LTR is the
-hourly-enhanced 47k × **31** feature panel; OOS mean IC (CPCV 15-split) = +0.0326.
-
-Full golden-config details: `doc/golden_config_2026-04-23.md`.
-Per-run training history: `doc/panel_training_runs.md`.
-Panel-LTR methodology primer: `doc/panel_ltr_primer.md`.
-Environment + lib versions: `doc/environment.md`.
+Working rhythm: pick topmost unblocked → flip 🟡 → ship smallest reversible step + commit → test vs golden → if APY ≥ +2 pts promote golden in same commit → flip ✅ → drop result + sha → move to History.
 
 ---
 
-## Active queue (next pickup → drop to the bottom)
+## Current golden state — v4 (Kelly half + A-gate)  ⭐
 
-Handle letter is arbitrary — pick the topmost unblocked item when starting the next session.
+**Commit:** `eb8fab5` (promote)
+**Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
+**Sweep result (27-mo OOS, `allow_fetch=False` handicap):** **+37.82% APY** vs v3 +25.91% → **+11.91 APY pts**
+**Expected live (fetch-enabled):** ~+65% APY (`+44.2% × (37.82 / 25.91)`) — confirm on next Tue/Thu/Sun retrain
+**Panel:** 47k × 31 hourly-enhanced feature rows, OOS mean IC (CPCV 15) +0.0326, win 85%, max no-trade streak 43d
+**Key config:** `tiered_thresholds = [0.27, 0.45, 0.60]` (A-gate), `kelly_sizing.fractional = 0.5` (half-Kelly), `max_concentration = 0.35`
 
-| # | Item | Priority | Est. | Expected value |
-|---|---|---|---|---|
-| ~~O~~ | ~~Defensive-ticker gate in non-BEAR regimes~~ | ✅ shipped (same session) | 1 h | Cause of 2026-04-20 XLU BUY in BULL_VOLATILE. `run_selection_loop` now rejects defensive candidates unless `bear_only=True`; `blocks["defensive_non_bear"]` counter shipped. 10 regression tests (`tests/test_defensive_gate.py`) including a replay of the 2026-04-20 incident. |
-| Q | Rotation hold-days + rotation_advantage 2D sweep | 🟡 MED | 1 h sim | Current golden: `min_rotation_hold_days=30`, `rotation_advantage=0.0`. User raised 2026-04-23: 30 d is conservative; panel IC=0.033 means <0.01 score differences are noise. Sweep 3×3: {14, 21, 30} × {0.0, 0.02, 0.05}. Goal: find Pareto-optimal adaptability vs noise-churn balance without dropping +44.20% APY. |
-| ~~R~~ | ~~Diagnose stuck `TransitionWindowTask` / CUSUM buy-block~~ | ✅ shipped — `dc7be6f` | 2 h | Root cause: CUSUM fires legitimately every bar (SPY 20-day window shifted -5.3% → +7.7%), and `RegimeState.countdown` wasn't persisted across live invocations → always re-tripped. Fix: `live_state.json["regime_state"]` now carries 6 fields. 6 regression tests in `test_regime_state_persistence.py`. |
-| S | Mirror live_state.json → `data/runs.db::live_state_snapshots` | 🟡 MED | 2 h | User's 2026-04-23 question: "shouldn't this file be replaced by the DB?" Answer: keep JSON for fast bootstrap + human debug editability, but append every bar's snapshot to a new `live_state_snapshots` table so historical "what was position_hwm on 2026-04-20?" is queryable. No schema-shared gain but big audit gain. |
-| T | entry_dates persist fallback for legacy positions | ✅ shipped — (this session) | 30 min | Pre-fix: `entry_dates.get(ticker, today)` returned a fresh today every run but never wrote back. Legacy positions (inherited from renquant_103) had hold_days=0 perpetually → min_hold_days / min_rotation_hold gates locked. Fix: on missing key, stamp today ONCE and persist. |
-| — | Full live_state.json attribute audit | ✅ shipped — (this session) | 1 h | 9 attributes reviewed end-to-end. 3 real bugs + 1 structural issue (JSON/DB schema split → Plan S). New `tests/test_live_state_contract.py` (21 tests) codifies read-site + write-site + per-attribute lifecycle invariants. |
-| P | Populate `candidate_scores.blocked_by` in DB | 🟠 HIGH | 2 h | `blocked_by` column exists but stays empty — impossible to answer "why was X not selected" or "why was Y bought" from audit table. Write `sector_guard` / `wash_sale` / `correlation_guard` / `tier_threshold` / `defensive_non_bear` into the column from the selection loop. |
-| M⁺ | Training-run audit schema fix — `elapsed_sec` column | 🟡 MEDIUM | 1 h | `SaveArtifactTask` + `NGBoostSaveTask` silently swallow write failures: `table training_runs has no column named elapsed_sec`. Add column + `ALTER TABLE` migration in `kernel/persistence.py`. Currently 0 rows in the `training_runs` table → a week of retrain history is missing. |
-| I | Accumulate 4 weeks of live sustainability data | 🟢 passive | 0h (wait) | `scripts/weekly_apy_check.py` fires Sun 12 PT. After 4 runs, we have 4 weekly 30-day APY snapshots to trend against the +44.20% sim baseline. First trigger will be any single weekly APY < 25% for 2 consecutive weeks OR drawdown > 20% for ≥5 days. |
-| J | Hourly-feature pruning sweep | 🟢 MED | 1 day | 4 of 6 hourly features have `|IC| < 0.016` (morning_drift, overnight_gap, vol_ratio, afternoon_drift). Drop the weakest 2–3 via `panel_ltr.drop_cols`, retrain, A/B vs current hourly golden. Accept if OOS IC lifts ≥ +0.005 with no APY drop. |
-| K | CHOPPY regime diagnosis | 🟢 MED | 1 day | F's regime-conditional fit showed CHOPPY IC = −0.116 (direction-wrong). That signal is itself interesting: in CHOPPY the panel score anti-predicts forward excess return on 646 rows. Investigate bar-level which tickers flip sign and whether a CHOPPY-specific buy-filter (e.g. `ScoreBuyTask` threshold+= 0.05 in CHOPPY) could convert the inversion into an edge. |
-| L | Per-ticker hourly effectiveness breakdown | 🟡 LOW | 1 day | Compute per-ticker OOS IC lift from hourly features (on vs off) to see whether some tickers carry all the gain. If yes, consider ticker-scoped hourly enablement or concentrating the Alpaca intraday fetch on the top-N beneficiaries. |
-| M | Training-run audit schema fix | 🟡 LOW | 1 h | `SaveArtifactTask` logs `table training_runs has no column named elapsed_sec` on every panel retrain. Add column + `ALTER TABLE` migration in `kernel/persistence.py`. Eliminates noise from scheduled runs. |
-| N | Golden config doc consolidation | 🟡 LOW | 30 min | v1/v2/v3 are now inline in `doc/golden_config_2026-04-23.md`; fold older tables into a `## History` section so the top reads as "current golden only". |
-
-All previous A–H items are archived below.
+Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_training_runs.md`. Methodology: `doc/panel_ltr_primer.md`. Environment: `doc/environment.md`.
 
 ---
 
-## Detailed specs
+## 🔴 P0 — Blockers / correctness / audit trust
 
-### I. Live sustainability accumulation  🟢 passive
+| # | Item | Impact | Est. |
+|---|------|---|---:|
+| **AA** | **Decision-factor DB** (`ticker_forward_returns` table + `analyze_decision_factors.py`) | 🔥 keystone — data-driven tuning of tiers / Kelly / rotation | 1 day |
+| **P** | Populate `candidate_scores.blocked_by` (`sector_guard` / `wash_sale` / `correlation_guard` / `tier_threshold` / `defensive_non_bear`) | 🟠 audit black-box without it | 2 h |
+| **M⁺** | `training_runs.elapsed_sec` schema fix — `SaveArtifactTask` + `NGBoostSaveTask` silently swallow writes → 0 rows/week of retrain history | 🟡 audit transparency | 1 h |
 
-**Mechanism already shipped** (commit `67e95af`): `scripts/daily_104.sh` appends audit JSONL at `logs/live_104/audit.jsonl`; `scripts/weekly_apy_check.py` computes rolling 30-day APY + drawdown streak and fires ntfy alerts.
+## 🟠 P1 — Kelly completion (close the loop from session 2026-04-23)
 
-**Schedule:** `~/Library/LaunchAgents/com.renquant.weekly-apy104.plist` runs Sun 12 PT.
+Kelly sizing is **LIVE in golden v4**. Remaining work to fully close the loop:
 
-**Decision rule:** if 30-day live APY drops below 25% for 2 consecutive Sundays **or** drawdown exceeds 20% for 5 consecutive days, open a postmortem — golden expected **+44.20% APY** after-tax, so sustained sub-25% is a structural regression worth diagnosing against the +44.20% sim.
+| # | Item | Impact | Est. | Prereqs |
+|---|------|---|---:|---|
+| **Partial-sell infra** | Adapter + broker `place_order` path for "sell N shares, not all" (today's exits = full liquidation) | enables AB-trim | 2 h | — |
+| **AB-trim** | `TrimHeldTask` — partial sell when Kelly target < current weight | closes Kelly loop | 4–6 h | partial-sell infra |
+| **BC** | `RotationJob` compares `kelly_target_pct` delta (not raw `panel_score` delta) — unifies 3 decision surfaces on same math | consistency | 2 h | — |
+| **Kelly-tier-tune** | Re-examine tiers from AA data. Current 0.27/0.45/0.60 anchored to `base_rate=0.273` (theory). AA gives empirical validation. | correctness | 1–2 h | **AA done** |
+| **Kelly-full-sweep** | `--full` 10-point grid (`fractional × max_concentration`), driven from notebook so output is comparable side-by-side | parameter defense | 1 h sim | — |
+| **Kelly × conviction** | `SizeAndEmit` currently does `max_pct = kelly_target × conviction_mult × σ_mult`. Kelly already encodes μ (∝ conviction) and σ — multipliers may double-count. Decide: Kelly alone OR careful blend. | design cleanup | 1 h | — |
+| **Multi-entry accumulation** | Allow Kelly target to be approached over **multiple sessions**, not one big buy. Per-entry cap stays 35%; cumulative cap 65%. Needs `SizeAndEmit` to size the *delta* (kelly_target − current_pct) bounded by per-entry cap, repeated over days. | concentration headroom | 2 h | — |
 
-**Action:** no code change. Each Sunday's alert (or clean run) surfaces via ntfy. Accumulate 4 weeks of data, then review trend.
+## 🟠 P1 — Short-term strategic wins (non-Kelly)
 
-### J. Hourly-feature pruning sweep  🟢 MED
+| # | Item | Impact | Est. |
+|---|------|---|---:|
+| **Q** | `min_rotation_hold_days × rotation_advantage` 2D sweep (3×3: `{14,21,30} × {0.0,0.02,0.05}`) | adaptability vs churn | 1 h sim |
+| **J** | Hourly-feature pruning — drop 3 weakest (`morning_drift_z` / `overnight_gap_z` / `vol_ratio_z`, all `|IC|<0.016`) + A/B retrain | OOS IC maybe +0.005 | 4 h |
+| **S** | Mirror `live_state.json` → DB `live_state_snapshots` (append each bar) | audit history queryable | 2 h |
+| **CUSUM-cooldown-v2** | Design **C** (confidence-scaled sizing, no hard block): `max_position_pct × (1 − cooldown_progress)`, 0→1 over 3 calendar days | live-sim parity, ~2 APY pt | 3 h |
 
-**Motivation:** 4 of 6 hourly feature columns carry |IC| < 0.016 — below the typical noise threshold. Including them adds XGBoost feature interactions that could be overfit-prone. Dropping them may lift OOS IC without hurting APY.
+## 🟡 P2 — Analysis / diagnostic
+
+| # | Item | Impact | Est. | Prereqs |
+|---|------|---|---:|---|
+| **K** | CHOPPY regime diagnosis (pool IC=−0.116 — panel anti-predicts). Derive CHOPPY-specific `ScoreBuyTask` offset if tractable. | maybe unlock CHOPPY edge | 1 day | AA helpful |
+| **L** | Per-ticker hourly-feature effectiveness (leave-one-out OOS IC) — which tickers carry +4.18 APY from hourly? | watchlist review | 1 day | — |
+| **Panel-IC-drift** | Day-over-day panel IC swings ±0.03 under identical hyperparameters; likely per-ticker tournament drift changing feature frame distribution | stability | 4 h | AA helpful |
+| **BULL_CALM-streak-watch** | Currently alerts at 15d. F's run hit 52d BEAR streak (valid). BULL_CALM should rarely ≥20d — monitor + per-ticker ScoreBuyTask audit. | gate sensitivity | 4 h | — |
+
+## 🟡 P2 — Housekeeping
+
+| # | Item | Impact | Est. | Prereqs |
+|---|------|---|---:|---|
+| **N** | Golden config doc consolidation — v1/v2/v3 inline → `## History` section; top reads "current v4 only"; delete v1.md and inline its config block | cleanup | 30 min | — |
+| **sector-guard-review** | `max_positions_per_sector=6` with 22 tech tickers = 27% admission rate (tight). Consider sub-sector buckets (semis / software / cloud). | sector design | 2 h | — |
+
+## 🟢 P3 — Passive / blocked on wall-clock
+
+| # | Item | Impact | Prereqs |
+|---|------|---|---|
+| **I** | Accumulate 4 weeks of live sustainability data (Sun 12 PT plist fires `weekly_apy_check.py`). Decision rule: 30-day live APY < 25% for 2 consecutive Sundays OR drawdown > 20% for 5 consecutive days → postmortem | sustainability trend vs sim | wall-clock (4 weeks) |
+| **Transformer revisit gate** | Shelved until panel > 200k rows (currently 47k). Need 4× more data — hourly growth or watchlist expansion. | — | data growth |
+
+---
+
+## ✋ Open decisions — user answered 2026-04-24
+
+1. ~~SKH alternative ticker~~ — **dropped** per user.
+2. **Max concentration** — 65% OK, but built up via **multiple sessions** (one signal ≠ one 65% buy). Per-entry cap 35%, cumulative cap 65%. → drives new **Multi-entry accumulation** item.
+3. **Kelly sweep comparison** — **run from notebook**; notebook output is the comparison surface.
+4. **AB-trim aggressiveness** — **run both experiments** (tight vs hysteresis), pick empirical winner.
+5. **CUSUM cooldown v2 design** — **C 锁定** (confidence-scaled sizing, no hard block). Full spec under *Detailed specs → CUSUM cooldown v2*.
+
+---
+
+## Recommended sequencing
+
+**Day 1 — data foundation + quick wins**
+1. M⁺ (1 h) — training_runs schema fix
+2. P (2 h) — `blocked_by` DB field
+3. **AA (1 day) — decision-factor DB** ← keystone; unblocks Kelly-tier-tune, K (CHOPPY), Panel-IC-drift
+
+**Day 2 — Kelly loop closes**
+4. Partial-sell infra (2 h)
+5. AB-trim (4–6 h)
+6. BC — Kelly rotation delta (2 h)
+7. Kelly-tier-tune + Kelly-full-sweep (2–3 h) — consumes AA data
+
+**Victory lap (≤1 h):** Q rotation 2D sweep.
+
+**+1 day of buffer:** J (hourly pruning) + S (live_state DB mirror) + CUSUM-v2.
+
+**+1 week:** K (CHOPPY) + L (per-ticker hourly effectiveness).
+
+**Stop rule:** if item's 2× budget blows with no completion path, mark blocked + diagnosis, move to Deferred.
+
+---
+
+## Detailed specs (items needing more than a table row)
+
+### AA. Decision-factor DB  🔥 P0
+
+**Goal:** every candidate the selection loop saw gets its forward 10d return logged, so tiers / Kelly params / rotation thresholds can be tuned from **actual** distributions, not theory.
 
 **Plan:**
-1. Add `panel_ltr.drop_cols` entries for the weakest 2–3: `morning_drift_z`, `overnight_gap_z`, `vol_ratio_z` (keep `intraday_realized_vol_z`, `vwap_premium_z`, `afternoon_drift_z` — the three with |IC| ≥ 0.015).
-2. `python scripts/train_104.py --skip-baseline --skip-recalibrate --force` to retrain.
-3. Run the A/B sim via `/tmp/test_hourly_ab.py` variant.
+1. New SQLite table `ticker_forward_returns` (columns: `run_id, date, ticker, rank_score, panel_score, mu, sigma, kelly_target_pct, rank, fwd_1d, fwd_5d, fwd_10d, fwd_20d, regime, admitted, blocked_by`).
+2. Populated by a new `LogDecisionFactorsTask` at end of `RankingJob` (reads current bar candidates) + a backfill job that computes fwd returns once enough bars have accrued.
+3. `scripts/analyze_decision_factors.py` — quantile-sliced IC, base-rate-by-tier, Kelly-edge realisation, regime-conditional IC breakouts.
 
-**Acceptance:** OOS IC lifts ≥ +0.005 (0.033 → ≥ 0.038) with live-sim APY ≥ 44.20% (no worse than current golden). If yes, promote as golden v4.
+**Acceptance:** one end-to-end run writes ≥ 20 rows, `analyze_decision_factors.py` renders a tier-calibration table showing empirical `P(fwd_10d > 0 | rank_score > tier)` by bucket.
 
-### K. CHOPPY regime diagnosis  🟢 MED
+### AB-trim. Partial Kelly rebalance  🟠 P1
 
-**Motivation:** Plan F's per-regime calibrator fit showed CHOPPY `pool_IC = −0.116` on 646 rows — direction-wrong. The pooled calibrator still works there (per live A/B), but that `−0.116` is a standing anomaly: our panel score's sign is *flipped* in CHOPPY.
+**Goal:** when Kelly target for a held position drops below current weight (e.g. big rally pushed weight to 45% but new Kelly says 20%), trim.
 
-**Hypotheses to test:**
-1. Score inversion is universal in CHOPPY → add a CHOPPY-specific `ScoreBuyTask` tier offset (e.g., `tiered_thresholds` gets +0.05 in CHOPPY so only the strongest panel-score candidates buy).
-2. Score inversion is ticker-dependent (e.g., `SPOT`, `COIN` flip; defensives don't) → per-ticker CHOPPY behavior table.
-3. Score inversion is feature-dependent — `vwap_premium` or `morning_drift` carry the sign flip.
+**Design alternatives (user decision item #3):**
+- **Tight:** trim to exact Kelly target every bar.
+- **Hysteresis:** only trim when `current_pct > kelly_target + 10%`. Reduces churn, accepts mild overweight drift.
 
-**Acceptance:** one of the three hypotheses confirmed + a 1–2 APY pt A/B win from the derived fix. If none is confirmed, document `−0.116` as irreducible noise and move on.
+**Prereq:** partial-sell infra — `AlpacaBroker.place_order` and `PaperBroker.place_order` need a `quantity_override` (sell N shares instead of closing the position).
 
-### L. Per-ticker hourly effectiveness breakdown  🟡 LOW
+**Acceptance:** new `TrimHeldTask` in SelectionJob emits `ExitSignal(exit_type="kelly_trim", quantity=...)`; paired alignment tests in `test_policy_alignment.py::TestAbTrimAlignment` (≥6 each side).
 
-Run CPCV on the hourly-enhanced panel with each ticker masked out (leave-one-ticker-out). Compare each resulting IC to the full-panel IC. Tickers where removing them raises IC are actively hurting the panel → candidates for ticker-scoped hourly disable or watchlist review. Tickers where removing them drops IC are load-bearing → guard against dropping from watchlist.
+### CUSUM cooldown v2  🟠 P1 — design **C** locked
 
-### M. Training-run audit schema fix  🟡 LOW
+Current: `RegimeState.countdown` is bar-based. 3 intraday bars = 1h, not 3 days. Result: live cooldown is far shorter than sim.
 
-`kernel/persistence.py::record_training_run` tries to write `elapsed_sec` but the SQLite schema lacks that column. Log noise only — no data loss. Add the column + `ALTER TABLE` guarded migration. Affects `scripts/daily_104.sh` retrain output.
+**Design C — confidence-scaled sizing (no hard block):**
+- Store `cooldown_start: datetime` in `RegimeState` (persists across runs via `live_state.json`, like other regime fields from R fix `dc7be6f`).
+- `cooldown_progress = min(1.0, (now − cooldown_start) / 3 days)`.
+- In `SizeAndEmit` + `EmitRotationsTask`: multiply `max_position_pct` by `(1 − cooldown_progress)` when cooldown active. Just after switch → ×0 (effectively no buys). 3 days later → ×1 (full size).
+- No hard block on `ScoreBuyTask` — Kelly sizing + confidence scaling does the job together.
 
-### N. Golden config doc consolidation  🟡 LOW
+**Rationale:**
+- Aligns with Kelly philosophy: let size encode uncertainty, not binary gates.
+- Fully reproducible (no probability sampling like B).
+- Live and sim read the same `datetime` field → behaviour identical.
 
-`doc/golden_config_2026-04-23.md` grew through v1 → v2 → v3 inline. Refactor so the top reads "current golden = v3 at +44.20%" and older baselines move to a bottom `## History` section. Keep the v1/v2 detail retrievable for audit, but frontload the latest numbers.
+**Acceptance:** paired alignment tests in `test_policy_alignment.py::TestCusumCooldownAlignment` (≥6 each side); `tests/test_regime_state_persistence.py` extended for `cooldown_start`; expected ~2 APY pt live-sim drift closure.
+
+### K. CHOPPY regime diagnosis  🟡 P2
+
+F's per-regime calibrator fit showed CHOPPY `pool_IC = −0.116` on 646 rows — **direction-wrong**. The pooled calibrator handles it in practice but it's a standing anomaly.
+
+**Hypotheses:**
+1. Universal sign flip → add CHOPPY-specific `tiered_thresholds` offset (+0.05).
+2. Ticker-dependent → per-ticker CHOPPY behavior table, possibly exclude flippers.
+3. Feature-dependent → `vwap_premium` or `morning_drift` carries the inversion.
+
+**Acceptance:** one hypothesis confirmed + 1–2 APY pt A/B win from derived fix. Otherwise, document as irreducible noise.
+
+### J. Hourly-feature pruning  🟠 P1
+
+4 of 6 hourly features have `|IC| < 0.016` (below typical noise). Drop weakest 3 (`morning_drift_z`, `overnight_gap_z`, `vol_ratio_z`); keep `intraday_realized_vol_z`, `vwap_premium_z`, `afternoon_drift_z`.
+
+**Plan:** add to `panel_ltr.drop_cols` → `python scripts/train_104.py --skip-baseline --skip-recalibrate --force` → A/B sim via `/tmp/test_hourly_ab.py` pattern.
+
+**Acceptance:** OOS IC lifts ≥ +0.005 (0.033 → ≥0.038) with live-sim APY ≥ v4 baseline. If yes, promote golden v5.
+
+### I. Live sustainability accumulation  🟢 P3
+
+Already shipped (`67e95af`): `scripts/weekly_apy_check.py` fires Sun 12 PT via `~/Library/LaunchAgents/com.renquant.weekly-apy104.plist`. Computes 30-day APY + drawdown streak, ntfy alert.
+
+**Decision rule:** 30-day live APY < 25% for 2 consecutive Sundays OR drawdown > 20% for ≥5 days → open postmortem against v4 sim baseline (~+65% expected).
+
+**Action:** none. Accumulate 4 weeks, review trend.
+
+### N. Golden config doc consolidation
+
+`doc/golden_config_2026-04-23.md` grew v1 → v2 → v3 → v4 inline. Refactor: top reads "current = v4 @ +37.82% sweep APY"; v1–v3 tables move to bottom `## History`. Also: delete `doc/golden_config_2026-04-23.v1.md` (redundant) and update rollback reference in main golden doc to inline v1 config block.
 
 ---
 
-## Watch items (not planned work, but monitor)
+## Watch items (monitor, not planned work)
 
-- **Training audit `elapsed_sec` column drift.** See Item M. Low-impact noise.
-- **Panel IC variance across daily retrains.** IC swings 0.03–0.04 day-to-day under identical hyperparameters. Largely from per-ticker tournament model drift that changes the feature frame distribution. Acceptable but worth tracking if day-over-day Δ exceeds ±0.01 — investigate feature drift.
-- **`NoCandidateAlert` streaks ≥ 20 days in BULL_CALM.** F's run B showed a 52-day BEAR streak, but BULL_CALM should rarely hit 15d. Current monitoring alerts at 15d. If real BULL_CALM 20d streaks start appearing, ScoreBuyTask per-ticker thresholds may be too conservative.
-- **Transformer revisit gate — panel > 200k rows.** Currently 47k. Would need ~4× more dates (10 yr hourly) OR watchlist expansion to ~100 tickers. Neither is near-term.
-
----
-
-## Working rhythm
-
-1. Pick topmost Active item.
-2. Flip to 🟡, announce in chat.
-3. Ship smallest reversible step + commit before next step.
-4. Test vs golden (sim + sustainability check for any APY-affecting change).
-5. If item lifts APY ≥ 2 pts: promote golden (`strategy_config.golden.json` + `doc/golden_config_*.md`) in same commit.
-6. Flip to ✅ with 1-paragraph result + commit sha.
-7. Move item to History.
-
-**Stop rule:** if an item's 2× cost budget blows and no path to completion, mark as blocked with diagnosis, move to Deferred.
+- **Training audit `elapsed_sec` column drift** — see M⁺. Currently log noise only; eliminated when M⁺ ships.
+- **Panel IC variance across daily retrains** — 0.03–0.04 day-to-day under identical hyperparameters. Acceptable unless day-over-day Δ > ±0.01 — investigate feature drift.
+- **`NoCandidateAlert` streaks ≥ 20 days in BULL_CALM** — F's run showed 52-day BEAR streak (valid); BULL_CALM should rarely hit 15d. Alerts at 15d. Real BULL_CALM 20d streaks → per-ticker `ScoreBuyTask` thresholds may be too tight.
+- **Kelly max-streak 43d vs monitoring threshold 15d** — by design; Kelly is disciplined and skips low-μ/σ² bets. If streaks routinely hit 60d+, investigate `base_rate` or tier-1 threshold.
+- **Transformer revisit gate — panel > 200k rows.** Currently 47k. Would need ~4× more dates or watchlist expansion to ~100 tickers.
 
 ---
 
-## Completed (archive)
+## Completed (archive — condensed)
 
-Condensed summaries. Full spec for each is in the commit body + per-doc trails.
-
-### Session of 2026-04-23 — G promoted, F+H shelved
+### Session of 2026-04-23 (17 commits)
 
 | # | Item | Commit(s) | Result |
-|---|---|---|---|
-| A | Clear stale live_state `high_water_mark` | `ab1006d` | `resolve_hwm()` snaps HWM to equity when stored > 1.5× equity. +10 tests. |
-| B | LightGBM backend A/B | `8d6b08a`, `67e95af` | Shelved: LGBM −12.7 APY pts. Per-row-weight bug fixed on the way in. Infra retained. |
-| C | σ-penalty λ sweep | `0c80443` | Shelved: λ=0.25 +2 APY pts only; λ≥0.5 starves the ranker. Keep `score_mode=additive`. |
-| D | Sustainability watch (30-day live APY tracker) | `67e95af` | JSONL audit + Sun-12-PT plist + 4 smoke tests. Infrastructure for Item I. |
-| E | Re-fit calibrator on μ−λσ distribution | — | Cancelled: conditional on C winning. |
-| **F** | **Regime-conditional calibration** | `26c40ae`, `7f68a40` | **Shelved: −3.78 APY pts live.** In-sample per-regime IC looked great (BULL_CALM 3.5×, BEAR 17× pooled) but didn't survive OOS. Infra kept behind off-by-default flag (10 regression tests). Takeaway: in-sample IC is necessary-not-sufficient — always A/B live. |
-| **G** | **Hourly-bar panel features** | `8c65537`, `f03d1eb`, `0c80443`, `3b1d2e2`, `e65b081` | **✅ PROMOTED. +4.18 APY pts (40.02 → 44.20%), win 79 → 82%.** Panel 25 → 31 features. 153k hourly rows cached × 44 syms × 2 yr. `intraday_realized_vol_z` top-5 by \|IC\|. New golden. |
-| H | Transformer rerun on hourly panel | `c9ee50b` | Shelved again: ratio **0.20×** (was 0.49× on daily-only). More features widened the gap. Panel needs > 200k rows for revisit. |
-| — | Environment lockfile + versioning doc | `c9ee50b` | `requirements.lock.txt` (310 packages) + `doc/environment.md`. Reproducible env: Python 3.10.20, xgboost 3.2, ngboost 0.5.10, torch 2.11, Docker 29.3, LEAN 1.0.225. |
-| — | Stale test reconciliation | `d857195` | `test_mu_minus_lambda_sigma_defers_to_ngboost` rewritten to match post-reorder semantics (calibration always runs). |
+|---|------|---|---|
+| **Golden v4** | **A-gate + half-Kelly** | `eb8fab5` | **+11.91 APY pts over v3 (37.82% sim, ~+65% expected live).** Kelly sizing promoted; tiered_thresholds re-anchored to base_rate 0.273. |
+| Kelly stack | `kernel/kelly.py` + `ApplyKellySizingTask` + `TopUpHeldTask` + `SizeAndEmit` refactor | `4787825`, `7601b5c` | Continuous-Kelly `f* = μ/σ²`, half fractional, top-up when Δ(kelly_target, current_pct) > 5%. |
+| **G** | **Hourly-bar panel features** | `8c65537`, `f03d1eb`, `0c80443`, `3b1d2e2`, `e65b081` | **+4.18 APY pts (40.02 → 44.20% pre-Kelly). Panel 25 → 31 features.** `intraday_realized_vol_z` top-5 by \|IC\|. |
+| A | HWM guard | `ab1006d` | `resolve_hwm()` snaps stale HWM to equity. +10 tests. |
+| B | LightGBM A/B | `8d6b08a`, `67e95af` | Shelved −12.7 APY pts. Per-row-weight bug fixed on way in. |
+| C | σ-penalty sweep | `0c80443` | Shelved — λ=0.25 only +2 pts (below +3 promotion floor). |
+| D | Sustainability watch | `67e95af` | JSONL audit + Sun-12-PT plist. Infra for Plan I. |
+| F | Regime-conditional calibration | `26c40ae`, `7f68a40` | **Shelved −3.78 APY pts.** In-sample IC 3.5×–17× pooled but didn't survive OOS. Kept behind off-by-default flag. |
+| H | Transformer on hourly panel | `c9ee50b` | Shelved again — 0.20× XGBoost (was 0.49× daily-only). Needs > 200k rows. |
+| O | Defensive gate in non-BEAR | `52bf718` | XLU BUY in BULL_VOLATILE fixed. `blocks["defensive_non_bear"]` counter. +10 regression tests. |
+| R | `regime_state` persisted across live runs | `dc7be6f` | CUSUM countdown wasn't persisted → re-tripped every run. `live_state.json["regime_state"]` now carries 6 fields. +6 tests. |
+| T | `entry_dates` fallback persisted | `c5a2ff7` | Legacy positions had hold_days=0 forever — `entry_dates.get(ticker, today)` returned fresh today but never wrote back. Fixed + persisted. |
+| V | Held tickers exempt from universe_floor | `369973b` | AMZN unblocked. |
+| B² | CUSUM cooldown only on regime switch | `013200a` | Moved into pipeline `CUSUMTask` / `RegimeFinalizeTask`. |
+| W / W+ | Network-safety layer (yfinance/OpenBB hangs) | `67b8d64`, `632f3cd` | Per-call + per-ticker + batch timeout. |
+| ntfy | Trade-level + decision-level + truthful + retrain-only-Tue/Thu/Sun | `a07f76b`, `d79b6c2`, `3578908`, `d302e5a` | Every live order notified; no false "trained" ntfy on non-retrain days. |
+| Env | `requirements.lock.txt` + `doc/environment.md` | `c9ee50b` | Python 3.10.20, xgboost 3.2, ngboost 0.5.10, torch 2.11. 310 pinned packages. |
+| — | live_state contract | (earlier) | 9 attributes reviewed end-to-end. `tests/test_live_state_contract.py` (21 tests). |
+| — | Watchlist +5 semis | `73a9327` | INTC/MPWR/TXN/NVTS/WDC added. |
 
-### Prior sessions — condensed
+### Prior sessions (condensed)
 
-| # | Item | Commit(s) | Result |
-|---|---|---|---|
-| — | Run 3 — lookahead=10d + regularization | `5fdba09` prep → T4 | OOS IC 0.025 → 0.040; all 5 folds positive. |
-| — | Global calibrator on panel | (pre-session baseline) | Pool IC 0.071 on 89k rows. |
-| — | SQLite decision-trace database | (pre-session) | 5 tables + sim/live hooks at `data/runs.db`. |
-| — | BaselineTournament winner by IC | (pre-session) | `oos_single_ticker_ic` metric added; default still `sharpe`. |
-| — | Alpaca intraday sell overlay | (pre-session) | IEX feed, 20 slots 07:00-12:30 PT Mon-Fri. |
-| — | Cross-sectional transformer panel backend | `8f38f80` → `908019a` | Infra kept; shelved at 0.49× XGB on daily-only panel (now 0.20× on hourly — Item H). |
-| — | Universe floor regression fix | `2df4e21` | `_eval_sharpe` prefers tournament `sharpe` over noisy `live_holdout_sharpe`. APY 2.4 → 10.1%. |
-| — | ConfidenceVeto disabled | `33c0e9b` | GMM posterior capped at ~0.25; threshold 0.30 → 0 unblocks all offensive buys. |
-| — | DrawdownCircuitTask resets on recovery | `e586018` | THE bug behind the 153-day no-trade streak. APY 10.9 → 33.1%. |
-| — | Golden v1 snapshot (33.1%) | `d3ef68f` | First post-fix golden. |
-| — | T4 — xgb_params revert (40.1%, v2 golden) | `ee4faab` | Reverted to pre-regression panel `xgb_params`; APY 33.1 → 40.1%. |
-| — | recalibrate_scores.py race-condition shield | `bc81360` | Merge-on-write. |
-| — | daily_104.sh panel info in ntfy | `d71ee5d` | `panel@DATE IC` added to retrain notification. |
-| — | PanelScoringJob reorder | `339944b` | NGBoost runs before calibration. |
+| Item | Commit(s) | Result |
+|------|---|---|
+| Run 3 — lookahead=10d + regularization | `5fdba09` → T4 | OOS IC 0.025 → 0.040; all 5 folds positive. |
+| Global calibrator on panel | pre-session baseline | Pool IC 0.071 on 89k rows. |
+| SQLite decision-trace DB | pre-session | 5 tables + sim/live hooks at `data/runs.db`. |
+| BaselineTournament winner by IC | pre-session | `oos_single_ticker_ic` metric; default still `sharpe`. |
+| Alpaca intraday sell overlay | pre-session | IEX feed, 20 slots 07:00–12:30 PT Mon-Fri. |
+| Cross-sectional transformer panel backend | `8f38f80` → `908019a` | Infra kept; shelved at 0.49× XGB daily-only (0.20× hourly — H). |
+| Universe floor regression fix | `2df4e21` | `_eval_sharpe` prefers tournament sharpe over noisy live_holdout_sharpe. APY 2.4 → 10.1%. |
+| ConfidenceVeto disabled | `33c0e9b` | GMM posterior capped ~0.25; threshold 0.30 → 0 unblocks offensive buys. |
+| DrawdownCircuitTask resets on recovery | `e586018` | THE bug behind 153-day no-trade streak. APY 10.9 → 33.1%. |
+| Golden v1 snapshot (33.1%) | `d3ef68f` | First post-fix golden. |
+| T4 — xgb_params revert (40.1% v2) | `ee4faab` | Reverted to pre-regression panel `xgb_params`. |
+| recalibrate_scores.py race shield | `bc81360` | Merge-on-write. |
+| PanelScoringJob reorder | `339944b` | NGBoost before calibration. |
 
 ---
 
 ## Deleted / no-action
 
 - **Revert `lookahead_days` 10 → 5** — prior evidence shows 5d regresses.
-- **E — re-fit calibrator on μ−λσ** — conditional on C winning; C did not.
+- **E — re-fit calibrator on μ−λσ** — conditional on C winning; C shelved.
