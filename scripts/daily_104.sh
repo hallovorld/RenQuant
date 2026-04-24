@@ -113,7 +113,27 @@ print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td} n={ngb_n}')
 if [ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null; then
     notify "RenQuant 104 WARN" "Only $MODEL_COUNT models (min=$MIN_MODELS) — $PANEL_INFO"
 else
-    notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready — $PANEL_INFO"
+    # Only fire the "Models retrained" ntfy on the 3 days/week that
+    # actually retrain (training.cadence="custom", allowed_weekdays=[1,3,6] →
+    # Tue/Thu/Sun). On off-cadence days `train_104.py` short-circuits;
+    # panel-ltr.json `trained_date` stays older than today, so we suppress
+    # the notification to avoid daily spam. The notification still fires
+    # on the 3 retrain days so the user gets the IC / model count.
+    RETRAINED_TODAY=$("$PYTHON" -c "
+import json, datetime
+from pathlib import Path
+p = Path('$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.json')
+try:
+    td = json.loads(p.read_text()).get('trained_date', '')
+    print('yes' if td == str(datetime.date.today()) else 'no')
+except Exception:
+    print('no')
+" 2>/dev/null || echo "no")
+    if [ "$RETRAINED_TODAY" = "yes" ]; then
+        notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready — $PANEL_INFO"
+    else
+        echo "Models retrained: $MODEL_COUNT models (no retrain today — suppressing ntfy)"
+    fi
 fi
 
 # Step 2: Export LEAN data for all watchlist symbols
