@@ -40,6 +40,7 @@ def _fetch_joined(
     import pandas as pd  # noqa: PLC0415
     q = f"""
         SELECT ps.run_date,
+               ps.run_id,
                ps.regime,
                ps.confidence,
                cs.ticker,
@@ -119,6 +120,50 @@ def _print_regime_ic(df: "pd.DataFrame") -> None:
         print(f"  {regime:20} {n:>8} {rho:>+10.4f}")
 
 
+def _print_selected_bucket(df: "pd.DataFrame", cuts: list[float]) -> None:
+    """Realized hit rate + mean fwd for candidates that were actually SELECTED,
+    bucketed by rank_score at select time. Answers: is each tier pulling its
+    weight in realized outcomes, or are lower-score tiers dragging hit rate?"""
+    sel = df[df["selected"] == 1]
+    if sel.empty:
+        print("  (no selected candidates)")
+        return
+    # Add an implicit 1.0 upper bound so the last bucket is closed
+    edges = sorted(set([0.0] + list(cuts) + [1.0001]))
+    rows = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        s = sel[(sel["rank_score"] >= lo) & (sel["rank_score"] < hi)]
+        if s.empty:
+            continue
+        hit = float((s["fwd"] > 0).mean())
+        mean_fwd = float(s["fwd"].mean())
+        rows.append((lo, hi, len(s), hit, mean_fwd))
+    print(f"  {'rank_score':>18} {'n':>6} {'hit':>7} {'mean fwd':>10}")
+    for lo, hi, n, hit, mean_fwd in rows:
+        print(f"  [{lo:>5.3f}, {hi:>5.3f})  {n:>6} {hit:>7.3f} {mean_fwd:>+10.4%}")
+
+
+def _print_slots_filled(df: "pd.DataFrame") -> None:
+    """How many selected candidates per run (bar) — answers whether tier 2/3
+    ever actually get used. Groups by run_id (not run_date — multiple runs
+    can fire on one date during A/B sweeps; each is a distinct decision bar)."""
+    import pandas as pd  # noqa: PLC0415
+    sel = df[df["selected"] == 1]
+    if sel.empty:
+        print("  (no selected candidates)")
+        return
+    per_run = sel.groupby("run_id").size()
+    total_runs = per_run.shape[0]
+    print(f"  runs with ≥1 selected: {total_runs:,}    "
+          f"max selections on one run: {per_run.max()}    "
+          f"median: {int(per_run.median())}")
+    print(f"  {'count':>8} {'runs':>8} {'fraction':>10}")
+    dist = per_run.value_counts().sort_index()
+    for n, cnt in dist.items():
+        frac = cnt / total_runs
+        print(f"  {n:>8} {cnt:>8} {frac:>10.1%}")
+
+
 def _print_block_outcomes(df: "pd.DataFrame") -> None:
     """Did each block reason save us money? fwd_N on blocked-but-unselected
     candidates, grouped by reason."""
@@ -184,6 +229,14 @@ def main() -> None:
 
     print(f"─ 4. Block-reason outcomes: what happened on fwd_{args.horizon}d? ─")
     _print_block_outcomes(df)
+    print()
+
+    print(f"─ 5. Selected-candidate realization by rank_score bucket (Kelly-tier-tune input) ─")
+    _print_selected_bucket(df, args.tier_cuts)
+    print()
+
+    print(f"─ 6. Per-bar selection count — how often does tier 2/3 even fire? ─")
+    _print_slots_filled(df)
 
 
 if __name__ == "__main__":
