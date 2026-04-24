@@ -74,6 +74,10 @@ class TrainingContext:
     results: dict[str, Any] = field(default_factory=dict)
     exported: list[str] = field(default_factory=list)
     calibration_summary: dict[str, Any] = field(default_factory=dict)
+    # Tickers whose per-ticker retrain was skipped by the model-TTL gate
+    # (see `_model_is_fresh` in this module). Surfaced by FeatureJob for
+    # logging + notification bodies.
+    ttl_skipped: list[str] = field(default_factory=list)
 
     # populated by CorrelationJob
     corr_matrix: pd.DataFrame = field(default=None)
@@ -111,6 +115,7 @@ class TickerTrainingContext:
     result: dict | None = None
     exported: bool = False
     calibration: dict | None = None
+    ttl_skipped: bool = False   # True when model-TTL gate skipped this ticker
 
 
 # ── Task + Job ABCs ────────────────────────────────────────────────────────────
@@ -163,10 +168,57 @@ class TrainingTickerJob(ABC):
 
 # ── Parallel runner ────────────────────────────────────────────────────────────
 
+def _model_is_fresh(
+    ticker: str,
+    strategy_dir: "Path | None",
+    ttl_days: int,
+    today: "date | None" = None,
+) -> "tuple[bool, str]":
+    """Return (fresh, reason) — True when a per-ticker retrain can be skipped.
+
+    Reads `{strategy_dir}/models/{TICKER}/{TICKER}-policy-metadata.json`,
+    parses `trained_date`, and compares to today. Any parse failure → not
+    fresh (fail open → retrain).
+    """
+    if ttl_days <= 0 or strategy_dir is None:
+        return False, "ttl disabled"
+    mp = strategy_dir / "models" / ticker / f"{ticker}-policy-metadata.json"
+    if not mp.exists():
+        return False, "no existing model"
+    try:
+        meta = json.loads(mp.read_text())
+        td = meta.get("trained_date")
+        if not td:
+            return False, "no trained_date"
+        trained = date.fromisoformat(td)
+    except Exception as exc:
+        return False, f"metadata parse failed: {exc}"
+    today = today or date.today()
+    age_days = (today - trained).days
+    if age_days <= ttl_days:
+        return True, f"fresh (age={age_days}d ≤ ttl={ttl_days}d)"
+    return False, f"stale (age={age_days}d > ttl={ttl_days}d)"
+
+
 def _run_ticker_chain(tc: TickerTrainingContext) -> None:
     """Run the full per-ticker job chain in one worker thread."""
     tag = f"[{tc.ticker}|{current_thread().name}]"
     t0 = time.monotonic()
+
+    # Per-model TTL check (2026-04-24): when training.model_ttl_days is set
+    # and this ticker's artifact trained_date is within TTL, skip the
+    # tournament and keep the existing artifact. `--force` on train_104.py
+    # bypasses via TrainingContext.force_retrain (propagated into config).
+    ttl_days = int(tc.config.get("training", {}).get("model_ttl_days", 0) or 0)
+    force    = bool(tc.config.get("_force_retrain", False))
+    if ttl_days > 0 and not force:
+        fresh, reason = _model_is_fresh(tc.ticker, tc.strategy_dir, ttl_days)
+        if fresh:
+            log.info("%s TTL skip — %s", tag, reason)
+            tc.exported = True      # treat cached model as "exported"
+            tc.ttl_skipped = True   # surfaced to TrainingContext for metrics
+            return
+
     log.info("%s FeatureJob START", tag)
     TickerFeatureJob().run(tc)
     if tc.feature_frame is None:
@@ -436,6 +488,12 @@ class FeatureJob(TrainingJob):
             tc.ticker: tc.result
             for tc in ticker_ctxs if tc.result
         }
+        ctx.ttl_skipped = [tc.ticker for tc in ticker_ctxs if tc.ttl_skipped]
+        if ctx.ttl_skipped:
+            log.info("FeatureJob: %d tickers TTL-skipped (%s)",
+                     len(ctx.ttl_skipped),
+                     ", ".join(ctx.ttl_skipped[:10])
+                     + (" ..." if len(ctx.ttl_skipped) > 10 else ""))
         ctx.exported = [tc.ticker for tc in ticker_ctxs if tc.exported]
         ctx.calibration_summary = {
             tc.ticker: tc.calibration

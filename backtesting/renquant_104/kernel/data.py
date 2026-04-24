@@ -319,6 +319,8 @@ def fetch_intraday_bars(
     start: "datetime.datetime | None" = None,
     end: "datetime.datetime | None" = None,
     limit: int = 10_000,
+    timeout_sec: float = 30.0,
+    skip_tickers: "list[str] | None" = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch intraday bars via Alpaca's IEX feed (free tier).
 
@@ -328,6 +330,10 @@ def fetch_intraday_bars(
 
     Credentials are read from the ALPACA_API_KEY / ALPACA_SECRET_KEY env vars
     (populate via .env before calling).
+
+    Protections (2026-04-24): wrapped in `call_with_timeout` so a stalled
+    Alpaca response can't hang the caller indefinitely; `skip_tickers`
+    drops permanent-miss symbols before the network call.
     """
     import datetime as _dt
     import os
@@ -336,6 +342,13 @@ def fetch_intraday_bars(
         symbols = [symbols]
     if not symbols:
         return {}
+
+    # Negative cache — skip symbols known to return nothing
+    if skip_tickers:
+        skip_set = {s.upper() for s in skip_tickers}
+        symbols = [s for s in symbols if s.upper() not in skip_set]
+        if not symbols:
+            return {}
 
     try:
         from alpaca.data.historical import StockHistoricalDataClient
@@ -382,7 +395,18 @@ def fetch_intraday_bars(
         limit=limit,
         feed=DataFeed.IEX,
     )
-    bars = client.get_stock_bars(req)
+
+    # Hard timeout: Alpaca can hang under intermittent network; don't let
+    # it block the caller (intraday_sell script, live runner, etc).
+    from kernel.net_safety import call_with_timeout  # noqa: PLC0415
+    bars = call_with_timeout(
+        lambda: client.get_stock_bars(req),
+        timeout_sec=timeout_sec,
+        label=f"alpaca.get_stock_bars(n={len(symbols)}, tf={timeframe})",
+    )
+    if bars is None:
+        log.warning("fetch_intraday_bars: Alpaca timeout after %.0fs — returning empty", timeout_sec)
+        return {}
     df_all = bars.df
 
     out: dict[str, pd.DataFrame] = {}

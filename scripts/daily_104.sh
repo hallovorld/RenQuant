@@ -125,6 +125,12 @@ except Exception:
 print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td} n={ngb_n}')
 " 2>/dev/null || echo "panel info unavailable")
 
+# TTL-skipped count: how many tickers reused their prior artifact today
+# (model_ttl_days gate in pp_training.py). Surfaced in ntfy body so we
+# can see at a glance whether the run exercised the full tournament or
+# reused cached models.
+TTL_SKIPPED=$(grep -c "TTL skip" "$LOG" 2>/dev/null || echo 0)
+
 if [ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null; then
     notify "RenQuant 104 WARN" "Only $MODEL_COUNT models (min=$MIN_MODELS) — $PANEL_INFO"
 else
@@ -145,7 +151,11 @@ except Exception:
     print('no')
 " 2>/dev/null || echo "no")
     if [ "$RETRAINED_TODAY" = "yes" ]; then
-        notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready — $PANEL_INFO"
+        TTL_NOTE=""
+        if [ "${TTL_SKIPPED:-0}" -gt 0 ] 2>/dev/null; then
+            TTL_NOTE=" ($TTL_SKIPPED ticker-TTL skips)"
+        fi
+        notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready${TTL_NOTE} — $PANEL_INFO"
     else
         echo "Models retrained: $MODEL_COUNT models (no retrain today — suppressing ntfy)"
     fi

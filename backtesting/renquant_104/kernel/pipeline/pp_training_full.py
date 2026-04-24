@@ -47,6 +47,7 @@ class FullTrainingContext:
 
     # populated by BaselineTournamentJob
     baseline_exported: list[str] = field(default_factory=list)
+    baseline_ttl_skipped: list[str] = field(default_factory=list)
 
     # populated by PanelTrainingJob
     ohlcv_all:        dict[str, pd.DataFrame] = field(default_factory=dict)
@@ -109,11 +110,17 @@ class RunBaselineTask(FullTrainingTask):
         from kernel.pipeline.pp_training import TrainingPipeline, TrainingContext  # noqa: PLC0415
 
         cfg = dict(ctx.config)
-        cfg["_strategy_dir"] = str(ctx.strategy_dir)
+        cfg["_strategy_dir"]   = str(ctx.strategy_dir)
+        # Propagate --force down to per-ticker TTL check (see pp_training.py
+        # `_model_is_fresh`). When force_retrain is True, TTL is bypassed
+        # and every ticker retrains.
+        cfg["_force_retrain"]  = bool(ctx.force_retrain)
         tctx = TrainingContext(config=cfg)
         TrainingPipeline().run(tctx)
         ctx.baseline_exported = list(tctx.exported)
-        log.info("RunBaselineTask: exported=%d", len(ctx.baseline_exported))
+        ctx.baseline_ttl_skipped = list(tctx.ttl_skipped)
+        log.info("RunBaselineTask: exported=%d  ttl_skipped=%d",
+                 len(ctx.baseline_exported), len(ctx.baseline_ttl_skipped))
 
 
 class BaselineTournamentJob(FullTrainingJob):
