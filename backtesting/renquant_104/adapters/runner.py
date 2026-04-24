@@ -337,6 +337,15 @@ class RunnerAdapter:
             })
 
         # ── Apply buys ───────────────────────────────────────────────────────
+        # Track BUYS as they actually reach the broker vs what the pipeline
+        # merely intended. `ctx.orders_placed` = submitted to Alpaca,
+        # `ctx.orders_skipped` = blocked locally (with reason). The
+        # runner-level ntfy reads these; `ctx.orders` keeps the pipeline
+        # intent unchanged for DB / audit.
+        if not hasattr(ctx, "orders_placed"):
+            ctx.orders_placed = []
+        if not hasattr(ctx, "orders_skipped"):
+            ctx.orders_skipped = []
         if not self._sell_only:
             for order in ctx.orders:
                 ticker = order["ticker"]
@@ -347,6 +356,9 @@ class RunnerAdapter:
                     pending = broker.get_open_orders()
                     if ticker in pending:
                         log.info("BUY skipped: pending order exists for %s", ticker)
+                        ctx.orders_skipped.append({
+                            **order, "skip_reason": "pending_order_exists",
+                        })
                         continue
                 except Exception:
                     pass
@@ -355,7 +367,12 @@ class RunnerAdapter:
                     result = broker.place_order(ticker, "BUY", shares)
                 except Exception as exc:
                     log.error("BUY failed for %s: %s", ticker, exc)
+                    ctx.orders_skipped.append({
+                        **order, "skip_reason": f"broker_error:{type(exc).__name__}",
+                    })
                     continue
+                # Broker accepted — record
+                ctx.orders_placed.append(order)
 
                 invest = shares * price
                 log.info("BUY  %s  %d shares @ %.2f  invest=$%.0f", ticker, shares, price, invest)

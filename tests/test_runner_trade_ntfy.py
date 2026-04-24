@@ -49,6 +49,8 @@ def _stub_ctx(**kwargs) -> SimpleNamespace:
     """Baseline ctx with sensible defaults; override fields via kwargs."""
     defaults: dict = dict(
         orders           = [],
+        orders_placed    = [],   # broker-confirmed (post-guard)
+        orders_skipped   = [],   # pipeline-intent but guard-blocked
         exits            = [],
         regime           = "BULL_CALM",
         confidence       = 0.50,
@@ -84,9 +86,11 @@ class TestAlwaysFiresOnCycle:
         assert req.headers.get("Priority") == "default"
 
     def test_fires_on_buy_order_high_priority(self):
+        """Orders that actually reached the broker — orders_placed."""
         notify = self._import()
         ctx = _stub_ctx(
             orders=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
+            orders_placed=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
         )
         with patch("urllib.request.urlopen") as m:
             notify("RENQUANT-104", "full", ctx)
@@ -95,6 +99,35 @@ class TestAlwaysFiresOnCycle:
         assert "BUY TSM x6" in req.data.decode()
         assert req.headers.get("Title") == "RENQUANT-104 [full] TRADE"
         assert req.headers.get("Priority") == "high"
+
+    def test_skipped_order_reports_skip_not_buy(self):
+        """2026-04-23 incident: pipeline wanted BUY TSM, but
+        duplicate-order guard skipped (pending order exists from
+        earlier bar). ntfy must NOT say "BUY TSM" — that misleads
+        the user into thinking a 2nd fill happened. Must say SKIPPED
+        with reason."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
+            orders_placed=[],
+            orders_skipped=[{
+                "ticker": "TSM", "shares": 6, "price": 382.66,
+                "skip_reason": "pending_order_exists",
+            }],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        title = m.call_args[0][0].headers.get("Title")
+        assert "SKIPPED" in body
+        assert "TSM" in body
+        assert "pending_order_exists" in body
+        assert "BUY TSM x6" not in body, (
+            "Must not report a phantom buy when broker skipped the order"
+        )
+        assert title == "RENQUANT-104 [full] DECISION", (
+            "Title is DECISION (not TRADE) when nothing actually filled"
+        )
 
     def test_fires_on_exit_high_priority(self):
         notify = self._import()
@@ -112,6 +145,7 @@ class TestAlwaysFiresOnCycle:
         exit_sig = SimpleNamespace(ticker="XLU", exit_type="rotation")
         ctx = _stub_ctx(
             orders=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
+            orders_placed=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
             exits=[exit_sig],
         )
         with patch("urllib.request.urlopen") as m:
@@ -194,7 +228,10 @@ class TestFailSafe:
 
     def test_network_failure_does_not_raise(self, caplog):
         notify = self._import()
-        ctx = _stub_ctx(orders=[{"ticker": "TSM", "shares": 6, "price": 382.66}])
+        ctx = _stub_ctx(
+            orders=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
+            orders_placed=[{"ticker": "TSM", "shares": 6, "price": 382.66}],
+        )
         import logging
         caplog.set_level(logging.WARNING)
         with patch("urllib.request.urlopen",
@@ -205,7 +242,10 @@ class TestFailSafe:
 
     def test_respects_topic_env_var(self):
         notify = self._import()
-        ctx = _stub_ctx(orders=[{"ticker": "AAPL", "shares": 1, "price": 100.0}])
+        ctx = _stub_ctx(
+            orders=[{"ticker": "AAPL", "shares": 1, "price": 100.0}],
+            orders_placed=[{"ticker": "AAPL", "shares": 1, "price": 100.0}],
+        )
         with patch("urllib.request.urlopen") as m:
             with patch.dict("os.environ", {"RENQUANT_NTFY_TOPIC": "alt-topic"}):
                 notify("RENQUANT-104", "full", ctx)

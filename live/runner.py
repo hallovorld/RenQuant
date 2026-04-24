@@ -258,9 +258,17 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
     the committed trade state.
     """
     import os, urllib.request  # noqa: PLC0415
-    orders = list(getattr(ctx, "orders", []) or [])
-    exits  = list(getattr(ctx, "exits",  []) or [])
-    regime = getattr(ctx, "regime", None) or "?"
+    # IMPORTANT: read the BROKER-CONFIRMED order list (orders_placed),
+    # populated by adapter.commit AFTER the duplicate-order guard and
+    # broker submission. `ctx.orders` is merely the pipeline intent and
+    # will include orders that the guard blocked (e.g. TSM on 2026-04-23
+    # 21:22 — a pending pre-market order from 21:04 caused a repeat
+    # pipeline cycle to emit a second BUY TSM which the guard correctly
+    # skipped, but the old ntfy misreported it as a trade).
+    orders         = list(getattr(ctx, "orders_placed",  []) or [])
+    orders_skipped = list(getattr(ctx, "orders_skipped", []) or [])
+    exits          = list(getattr(ctx, "exits",          []) or [])
+    regime         = getattr(ctx, "regime", None) or "?"
     conf   = getattr(ctx, "confidence", None)
     eq     = getattr(ctx, "portfolio_value", None)
     n_held = len(getattr(ctx, "holdings", {}) or {})
@@ -304,8 +312,18 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
         parts.append(f"EXIT {tkr} ({reason})")
 
     has_trade = bool(orders or exits)
+    # If the guard blocked every intent (orders all skipped), the cycle
+    # produced no real trade — surface the skip reason prominently so
+    # the user doesn't mistake a blocked-duplicate for a fresh buy.
     if not has_trade:
-        parts.append(f"no trade ({_why_no_trade()})")
+        if orders_skipped:
+            skip_parts = [
+                f"{o.get('ticker', '?')} ({o.get('skip_reason', 'skipped')})"
+                for o in orders_skipped
+            ]
+            parts.append("SKIPPED " + "; ".join(skip_parts))
+        else:
+            parts.append(f"no trade ({_why_no_trade()})")
 
     # Always append system state snapshot for audit visibility
     ctx_bits: list[str] = [f"regime={regime}"]
