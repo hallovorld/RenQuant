@@ -108,6 +108,28 @@ CREATE TABLE IF NOT EXISTS rotations (
 );
 CREATE INDEX IF NOT EXISTS idx_rotations_swap ON rotations(cand_ticker, held_ticker);
 
+-- Plan S — per-bar snapshots of live_state.json for historical audit.
+-- The JSON file is the source of truth for live state (fast bootstrap, human-
+-- editable). These rows are an append-only audit trail: "what did live_state
+-- look like at the close of run R?". Indexed fields allow quick queries
+-- without parsing the blob.
+CREATE TABLE IF NOT EXISTS live_state_snapshots (
+    run_id          TEXT PRIMARY KEY,    -- FK to pipeline_runs.run_id
+    run_date        DATE NOT NULL,
+    strategy        TEXT,
+    regime          TEXT,
+    confidence      REAL,
+    high_water_mark REAL,
+    cash            REAL,
+    portfolio_value REAL,
+    n_holdings      INTEGER,
+    state_json      TEXT NOT NULL,       -- full state blob for later introspection
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lss_date ON live_state_snapshots(run_date);
+CREATE INDEX IF NOT EXISTS idx_lss_strategy ON live_state_snapshots(strategy);
+
 -- Plan AA — forward returns keyed by (date, ticker). Decoupled from the
 -- candidate_scores row so we can backfill out-of-band once N days have
 -- elapsed since the decision. Populated by `scripts/backfill_forward_returns.py`.
@@ -454,6 +476,46 @@ def record_training_run(
     return run_id
 
 
+def record_live_state_snapshot(
+    conn: sqlite3.Connection | None,
+    run_id: str | None,
+    *,
+    run_date: datetime.date,
+    strategy: str = "",
+    state: dict | None = None,
+    cash: float | None = None,
+    portfolio_value: float | None = None,
+    n_holdings: int | None = None,
+) -> None:
+    """Append one row to live_state_snapshots (Plan S).
+
+    `state` is the full dict serialised to `live_state.json`. Common
+    query fields (regime / confidence / high_water_mark) are denormalized
+    into columns; the full blob is stored as JSON for later introspection.
+    """
+    if conn is None or run_id is None:
+        return
+    state = state or {}
+    conn.execute(
+        """INSERT OR REPLACE INTO live_state_snapshots
+              (run_id, run_date, strategy, regime, confidence,
+               high_water_mark, cash, portfolio_value, n_holdings, state_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            run_id,
+            run_date.isoformat(),
+            strategy,
+            state.get("regime"),
+            _none_or_float(state.get("regime_confidence")),
+            _none_or_float(state.get("high_water_mark")),
+            _none_or_float(cash),
+            _none_or_float(portfolio_value),
+            _none_or_int(n_holdings),
+            json.dumps(state, default=str),
+        ),
+    )
+
+
 def record_forward_returns(
     conn: sqlite3.Connection | None,
     rows: Iterable[dict],
@@ -524,4 +586,5 @@ __all__ = [
     "record_trades",
     "record_training_run",
     "record_forward_returns",
+    "record_live_state_snapshot",
 ]

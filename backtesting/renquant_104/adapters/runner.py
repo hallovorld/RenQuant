@@ -455,6 +455,7 @@ class RunnerAdapter:
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
+                record_live_state_snapshot,
             )
             # Reconstruct trade events from ctx (live path doesn't keep an
             # in-memory trade list — we synthesise from exits + orders).
@@ -507,6 +508,19 @@ class RunnerAdapter:
                 blocked_map=blocked_map,
             )
             record_trades(self._db, run_id, trade_events)
+
+            # Plan S — append live_state snapshot. The JSON file is still
+            # the source of truth (fast bootstrap + human edits); this row
+            # is an append-only audit trail for "what was state X on date Y?"
+            record_live_state_snapshot(
+                self._db, run_id,
+                run_date        = ctx.today,
+                strategy        = str(self._config.get("model_name", "")),
+                state           = self._state,
+                cash            = float(ctx.cash) if ctx.cash is not None else None,
+                portfolio_value = float(ctx.portfolio_value) if ctx.portfolio_value else None,
+                n_holdings      = len(ctx.holdings),
+            )
 
     # ── Trade log ─────────────────────────────────────────────────────────────
 
