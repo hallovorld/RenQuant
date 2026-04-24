@@ -89,6 +89,10 @@ class SimAdapter:
         self._regime_counts  = {r: 0 for r in REGIMES}
         # Monitor: persist MonitorIdleStreakTask's streak counters across bars.
         self._monitor_state: dict = {}
+        # Rotation V1 persistence gate (2026-04-24): list of per-bar
+        # proposed (sell, buy) pair sets, oldest first. Only populated
+        # when `rotation.persistence_bars > 0`. Capped at that window.
+        self._rotation_proposals: list = []
 
         # SPY returns buffer (last 100) + previous close for daily return calc
         self._spy_returns: list[float] = []
@@ -314,6 +318,11 @@ class SimAdapter:
         # Hand prior streak counters to MonitorIdleStreakTask; it writes back.
         ctx.monitor_state = dict(self._monitor_state)
 
+        # Rotation V1 persistence gate: hand over the last N bars' proposed
+        # (sell, buy) pair sets. BuildPairsTask reads via rotation_cfg
+        # passthrough. Adapter pushes this bar's proposals in commit().
+        ctx.prior_rotation_proposals = list(self._rotation_proposals)
+
         # Preload panel scoring artifacts so PanelScoringJob short-circuits
         # its LoadScorerTask / LoadNGBoostTask.
         if self._panel_scorer is not None:
@@ -373,6 +382,21 @@ class SimAdapter:
         self._hwm           = ctx.hwm
         self._skip_buys     = ctx.skip_buys
         self._monitor_state = dict(getattr(ctx, "monitor_state", {}) or {})
+
+        # Rotation V1 persistence gate (2026-04-24): push this bar's
+        # proposed (sell, buy) pair set. Cap the history at 2× the
+        # persistence_bars setting (or ≥ 10 if disabled) so memory stays
+        # bounded. Only rotations that were actually proposed (pre-gate)
+        # matter — post-gate filtering happens in task_rotation, so we
+        # stamp ctx.rotations which reflects final pairs.
+        pairs_this_bar: set[tuple[str, str]] = {
+            (p.sell_ticker, p.buy_ticker) for p in getattr(ctx, "rotations", [])
+        }
+        persistence_n = int(self._config.get("rotation", {}).get("persistence_bars", 0))
+        window = max(persistence_n * 2, 10)
+        self._rotation_proposals.append(pairs_this_bar)
+        if len(self._rotation_proposals) > window:
+            self._rotation_proposals = self._rotation_proposals[-window:]
 
         # ── Equity curve entry ──────────────────────────────────────────────
         pv = self._portfolio_value(ctx.prices)

@@ -68,6 +68,11 @@ class InferenceContext:
 
     # RotationJob — list of RotationPair (held → candidate swaps)
     rotations: list = field(default_factory=list)
+    # Rotation V1 persistence gate (2026-04-24): prior bars' proposed
+    # (sell, buy) pair sets. Most recent bar last. Adapter seeds from
+    # persisted state; task_rotation pushes this bar's proposals after
+    # finalizing. Empty when persistence gate disabled.
+    prior_rotation_proposals: list = field(default_factory=list)
 
     # SelectionJob
     orders: list = field(default_factory=list)          # list of order dicts

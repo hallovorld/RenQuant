@@ -213,13 +213,25 @@ class BuildPairsTask(Task):
             ctx.rotations = pairs
             return  # skip ER-based discovery + gates
 
+        # V1 persistence gate: pass the context's prior-bar proposals to
+        # the primitive via a private config key so the kernel stays
+        # stateless.
+        persistence = int(rotation_cfg.get("persistence_bars", 0))
+        if persistence > 0:
+            merged_cfg = dict(rotation_cfg)
+            merged_cfg["_prior_proposals"] = list(
+                getattr(ctx, "prior_rotation_proposals", []) or []
+            )
+        else:
+            merged_cfg = rotation_cfg
+
         pairs = find_rotation_pairs(
             held_scores  = held_scores,
             held_er      = held_er,
             held_meta    = held_meta,
             candidates   = eligible_candidates,
             today        = ctx.today,
-            rotation_cfg = rotation_cfg,
+            rotation_cfg = merged_cfg,
             tax_cfg      = tax_cfg,
         )
 

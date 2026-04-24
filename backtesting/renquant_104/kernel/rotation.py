@@ -233,6 +233,22 @@ def find_rotation_pairs(
     min_hold        = int(rotation_cfg.get("min_rotation_hold_days", 30))
     lt_protect      = int(rotation_cfg.get("lt_protection_days", 30))
     max_per_bar     = int(rotation_cfg.get("max_rotations_per_bar", 2))
+    # Rotation V1 (2026-04-24): two additional depth / persistence gates.
+    # User hypothesis: current rotations lose money because the net-adv
+    # threshold alone can clear on marginal signal-vs-noise edges. Gate
+    # on BOTH raw_advantage depth AND signal persistence to require a
+    # deeper and more stable divergence before firing.
+    #
+    #   min_raw_advantage_pct (default 0.0 = off) — raw_adv (pre-tax,
+    #     pre-cost) must clear this. Default matches original behaviour.
+    #   persistence_bars      (default 0 = off) — the same (sell,buy)
+    #     pair must have been proposed on the prior N bars. State is
+    #     held by the caller (InferenceContext.prior_rotation_proposals
+    #     set) and passed in via rotation_cfg["_prior_proposals"] as a
+    #     list of sets of (sell,buy) tuples (most recent last).
+    min_raw_adv     = float(rotation_cfg.get("min_raw_advantage_pct", 0.0))
+    persistence     = int(rotation_cfg.get("persistence_bars", 0))
+    prior_proposals = rotation_cfg.get("_prior_proposals") or []
 
     st_rate         = float(tax_cfg.get("short_term_rate", 0.37))
     lt_rate         = float(tax_cfg.get("long_term_rate", 0.20))
@@ -296,6 +312,9 @@ def find_rotation_pairs(
             if held_ticker in used_holds:
                 continue
             raw_adv = cand_er - info["er"]
+            # V1 gate 1: raw_advantage depth
+            if min_raw_adv > 0.0 and raw_adv < min_raw_adv:
+                continue
             net_adv = raw_adv - info["tax_drag"] - txn_cost
             if net_adv < threshold:
                 continue
@@ -305,6 +324,21 @@ def find_rotation_pairs(
 
         if best_match is None:
             continue
+
+        # V1 gate 2: persistence — the same pair must have appeared on
+        # the prior `persistence` bars. When fewer than N bars of history
+        # have accumulated, we require all history to contain the pair
+        # (fail-closed on cold start so the gate can't be bypassed by
+        # restarting the sim).
+        if persistence > 0:
+            required = min(persistence, len(prior_proposals))
+            if required < persistence:
+                # Not enough history accumulated yet — skip
+                continue
+            relevant = prior_proposals[-required:]
+            pair_key = (best_match, cand_ticker)
+            if not all(pair_key in bar for bar in relevant):
+                continue
 
         info    = eligible[best_match]
         raw_adv = cand_er - info["er"]
