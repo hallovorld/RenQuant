@@ -138,6 +138,13 @@ class InferencePipeline:
         from .task_topup import TopUpHeldTask  # noqa: PLC0415
         TopUpHeldTask().run(ctx)
 
+        # Plan AB-trim: Kelly-driven partial sell for over-weight holdings
+        # whose current_pct > kelly_target + trim_threshold. Runs AFTER
+        # TopUpHeldTask so trim and top-up are never emitted for the same
+        # ticker in one bar (TopUp skips over-target, Trim skips under).
+        from .task_trim import TrimHeldTask  # noqa: PLC0415
+        TrimHeldTask().run(ctx)
+
         # Monitor: persistent no-trade periods are treated as a hard signal,
         # not a silent state. See task_monitor.MonitorIdleStreakTask.
         from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415
