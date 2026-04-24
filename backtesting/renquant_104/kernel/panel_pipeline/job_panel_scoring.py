@@ -422,6 +422,71 @@ class ApplyNGBoostTask(Task):
                  score_mode, lambda_sigma, len(ctx.candidates), len(ctx.holdings))
 
 
+# ── Kelly sizing (Plan C — the smart part) ───────────────────────────────────
+
+class ApplyKellySizingTask(Task):
+    """Populate `kelly_target_pct` on every candidate AND holding using
+    the classical continuous-returns Kelly: f* = μ/σ².
+
+    Runs LAST in PanelScoringJob — after ApplyNGBoostTask writes μ,σ
+    and ApplyGlobalCalibrationTask settles rank_score. The Kelly
+    target is then consumed by three downstream layers:
+
+      SizeAndEmitTask  — caps new-buy size at `kelly_target_pct`.
+      TopUpHeldTask    — emits a BUY if held.kelly_target exceeds
+                         current weight by `top_up_threshold`.
+      RotationJob      — (future) rotation advantage test in Kelly
+                         units rather than raw rank_score.
+
+    One math, one place, one field. See `kernel/kelly.py` for the
+    full formula + safety discussion.
+    """
+
+    def run(self, ctx: "InferenceContext") -> "bool | None":
+        kelly_cfg = ctx.config.get("ranking", {}).get("kelly_sizing", {})
+        if not kelly_cfg.get("enabled", False):
+            return   # no-op — golden behaviour preserved
+
+        from kernel.kelly import kelly_target_pct      # noqa: PLC0415
+
+        fractional        = float(kelly_cfg.get("fractional",        0.25))
+        min_edge          = float(kelly_cfg.get("min_edge",          0.0))
+        max_concentration = float(kelly_cfg.get("max_concentration", 0.35))
+
+        regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
+        max_pct  = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
+
+        def _kelly(obj):
+            return kelly_target_pct(
+                getattr(obj, "mu",    None),
+                getattr(obj, "sigma", None),
+                max_pct           = max_pct,
+                max_concentration = max_concentration,
+                fractional        = fractional,
+                min_edge          = min_edge,
+            )
+
+        for cand in ctx.candidates:
+            cand.kelly_target_pct = _kelly(cand)
+        for hs in ctx.holdings.values():
+            hs.kelly_target_pct = _kelly(hs)
+
+        # Audit summary — most informative when live.
+        cand_targets = [c.kelly_target_pct for c in ctx.candidates
+                         if c.kelly_target_pct]
+        held_targets = [h.kelly_target_pct for h in ctx.holdings.values()
+                         if h.kelly_target_pct]
+        log.info(
+            "ApplyKellySizingTask: fractional=%.2f max_conc=%.2f  "
+            "cands=%d non-zero (avg=%.1f%%)  holdings=%d non-zero (avg=%.1f%%)",
+            fractional, max_concentration,
+            len(cand_targets),
+            (sum(cand_targets) / len(cand_targets) * 100) if cand_targets else 0,
+            len(held_targets),
+            (sum(held_targets) / len(held_targets) * 100) if held_targets else 0,
+        )
+
+
 # ── Job ──────────────────────────────────────────────────────────────────────
 
 class PanelScoringJob(Job):
@@ -461,4 +526,5 @@ class PanelScoringJob(Job):
             ApplyNGBoostTask(),
             LoadGlobalCalibrationTask(),
             ApplyGlobalCalibrationTask(),
+            ApplyKellySizingTask(),   # Plan C — f*=μ/σ² (no-op unless kelly_sizing.enabled)
         ]

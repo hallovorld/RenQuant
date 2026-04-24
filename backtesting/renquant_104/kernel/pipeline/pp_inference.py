@@ -130,6 +130,14 @@ class InferencePipeline:
         RotationJob().run(ctx)
         SelectionJob().run(ctx)
 
+        # Plan C: Kelly-driven top-up for existing holdings whose panel
+        # score has improved beyond kelly_target_pct. No-op unless
+        # ranking.kelly_sizing.enabled. Runs after SelectionJob so we
+        # don't double-buy a fresh pick — only adds to pre-existing
+        # positions.
+        from .task_topup import TopUpHeldTask  # noqa: PLC0415
+        TopUpHeldTask().run(ctx)
+
         # Monitor: persistent no-trade periods are treated as a hard signal,
         # not a silent state. See task_monitor.MonitorIdleStreakTask.
         from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415

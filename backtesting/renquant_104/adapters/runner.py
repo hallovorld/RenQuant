@@ -145,11 +145,13 @@ class RunnerAdapter:
             except ValueError:
                 entry_dt = today
                 entry_dates[ticker] = today.isoformat()
+            qty_held = float(pos.get("qty", 0))
             holdings[ticker] = HoldingState(
                 entry_price    = avg_cost,
                 entry_date     = entry_dt,
                 high_watermark = hwm_pos,
                 sell_streak    = int(sell_streaks.get(ticker, 0)),
+                shares         = qty_held,   # broker qty for Kelly top-up sizing
             )
 
         # ── Current prices from broker positions ────────────────────────────

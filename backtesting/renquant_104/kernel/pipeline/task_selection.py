@@ -109,6 +109,8 @@ class SizeAndEmitTask(Task):
         sigma_cfg     = (ctx.config.get("ranking", {})
                           .get("panel_scoring", {})
                           .get("sigma_sizing", {}))
+        kelly_on      = bool(ctx.config.get("ranking", {})
+                              .get("kelly_sizing", {}).get("enabled", False))
 
         # Universe σ median over all ranked candidates (σ written by ApplyNGBoostTask).
         sigma_median = universe_sigma_median(
@@ -129,7 +131,17 @@ class SizeAndEmitTask(Task):
                 getattr(c, "sigma", None) if c else None,
                 sigma_median, sigma_cfg,
             )
-            max_pct = base_max_pct * conv * sig_m
+            # Plan C: when kelly_sizing.enabled, the target position
+            # weight is the Kelly number precomputed by
+            # ApplyKellySizingTask (f* = μ/σ², capped at max_pct +
+            # max_concentration). Otherwise: legacy max_pct × conv × σ.
+            if kelly_on and c is not None and getattr(c, "kelly_target_pct", None) is not None:
+                max_pct = float(c.kelly_target_pct) * conv * sig_m
+                if max_pct <= 0:
+                    log.info("SizeAndEmitTask: %s Kelly=0 — skip", ticker)
+                    continue
+            else:
+                max_pct = base_max_pct * conv * sig_m
 
             _, shares = compute_position_size(
                 ctx.portfolio_value, ctx.cash,

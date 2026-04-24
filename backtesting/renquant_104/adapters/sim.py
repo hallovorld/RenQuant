@@ -395,13 +395,26 @@ class SimAdapter:
                         ticker, invest, self._cash)
             return
         self._cash -= invest
-        self._holdings[ticker] = HoldingState(
-            entry_price    = price,
-            entry_date     = today_ts.date(),
-            high_watermark = price,
-            prev_close     = price,
-        )
-        self._pos_shares[ticker] = shares
+        # If this ticker is already held (top-up path), increment shares
+        # and adjust avg entry price. Otherwise fresh position.
+        if ticker in self._holdings:
+            old_shares = float(self._pos_shares.get(ticker, 0))
+            new_shares = old_shares + shares
+            old_entry  = self._holdings[ticker].entry_price
+            new_entry  = (old_entry * old_shares + price * shares) / new_shares if new_shares > 0 else price
+            self._holdings[ticker].entry_price = new_entry
+            self._holdings[ticker].high_watermark = max(self._holdings[ticker].high_watermark, price)
+            self._holdings[ticker].shares = new_shares
+            self._pos_shares[ticker] = new_shares
+        else:
+            self._holdings[ticker] = HoldingState(
+                entry_price    = price,
+                entry_date     = today_ts.date(),
+                high_watermark = price,
+                prev_close     = price,
+                shares         = shares,
+            )
+            self._pos_shares[ticker] = shares
         self._trade_log.append({
             "action":    "buy",
             "ticker":    ticker,

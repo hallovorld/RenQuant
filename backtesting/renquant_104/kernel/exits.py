@@ -33,6 +33,11 @@ class HoldingState:
     panel_score:     float | None = None   # latest cross-sectional panel-LTR score (set by PanelScoringJob)
     mu:              float | None = None   # latest NGBoost μ (set by PanelScoringJob)
     sigma:           float | None = None   # latest NGBoost σ (set by PanelScoringJob)
+    # Shares actually held at broker — populated by adapters from
+    # broker positions cache. Needed to compute current-pct vs
+    # kelly_target_pct for top-up decisions.
+    shares:              float = 0.0
+    kelly_target_pct:    float | None = None   # set by ApplyScoresTask when kelly_sizing.enabled
 
 
 # ── Exit result ────────────────────────────────────────────────────────────────
