@@ -81,6 +81,134 @@ def is_lt_protected(
 
 # ── Pair selection ─────────────────────────────────────────────────────────────
 
+def find_thesis_primary_pairs(
+    held_entry_scores: dict[str, "float | None"],   # ticker → entry-time rank_score (BASELINE)
+    held_today_scores: dict[str, "float | None"],   # ticker → today rank_score
+    held_meta:         dict[str, dict],             # ticker → {entry_date, entry_price, current_price}
+    candidates:        list,                         # CandidateResult-like
+    today:             datetime.date,
+    rotation_cfg:      dict,
+    tax_cfg:           dict,
+) -> list[RotationPair]:
+    """Route B — thesis-degradation as the PRIMARY rotation gate.
+
+    Use this when `rotation.mode == "thesis_primary"`. Bypasses the
+    ER-based pair discovery (which requires `min_expected_advantage_pct`
+    to clear — impossible when realistic ER deltas are smaller than the
+    threshold). Instead emits a pair when:
+
+      * held's thesis has DEGRADED (entry - today >= degradation_pct)
+      * candidate beats held's entry baseline (cand.rank - entry >= uplift_pct)
+
+    Same guardrails as ER mode: min_hold_days, lt_protection_days,
+    max_rotations_per_bar, wash-sale + sector + correlation handled
+    downstream in ValidatePairsTask.
+
+    Still produces RotationPair records with ER/tax_drag/net_advantage
+    fields populated (for log compatibility) even though they don't
+    drive the decision.
+    """
+    if not rotation_cfg.get("enabled", False):
+        return []
+
+    thesis_cfg      = rotation_cfg.get("thesis", {})
+    degradation_pct = float(thesis_cfg.get("degradation_pct", 0.30))
+    uplift_pct      = float(thesis_cfg.get("uplift_pct", 0.10))
+    horizon         = int(rotation_cfg.get("target_horizon_days", 20))
+    txn_cost        = float(rotation_cfg.get("transaction_cost_pct", 0.0))
+    min_hold        = int(rotation_cfg.get("min_rotation_hold_days", 30))
+    lt_protect      = int(rotation_cfg.get("lt_protection_days", 30))
+    max_per_bar     = int(rotation_cfg.get("max_rotations_per_bar", 2))
+
+    st_rate         = float(tax_cfg.get("short_term_rate", 0.37))
+    lt_rate         = float(tax_cfg.get("long_term_rate", 0.20))
+    lt_threshold    = int(tax_cfg.get("long_term_threshold_days", 365))
+
+    eligible: dict[str, dict] = {}
+    for ticker, entry_score in held_entry_scores.items():
+        if entry_score is None or entry_score <= 0:
+            continue
+        today_score = held_today_scores.get(ticker)
+        if today_score is None:
+            continue
+        meta = held_meta.get(ticker)
+        if meta is None:
+            continue
+        entry_date  = meta.get("entry_date")
+        entry_price = float(meta.get("entry_price", 0.0))
+        cur_price   = float(meta.get("current_price", 0.0))
+        if entry_date is None or entry_price <= 0:
+            continue
+        hold_days = (today - entry_date).days
+        if hold_days < min_hold:
+            continue
+        unreal_pct = (cur_price - entry_price) / entry_price
+        if is_lt_protected(unreal_pct, hold_days, lt_threshold, lt_protect):
+            continue
+        degradation = (entry_score - today_score) / entry_score
+        if degradation < degradation_pct:
+            continue   # held thesis still intact
+        eligible[ticker] = {
+            "entry_score": float(entry_score),
+            "today_score": float(today_score),
+            "degradation": degradation,
+            "unreal_pct":  unreal_pct,
+            "tax_drag":    tax_drag(unreal_pct, hold_days,
+                                    st_rate, lt_rate, lt_threshold),
+        }
+
+    if not eligible or not candidates:
+        return []
+
+    used_holds: set[str] = set()
+    pairs: list[RotationPair] = []
+
+    for c in candidates:
+        if len(pairs) >= max_per_bar:
+            break
+        cand_ticker = c.ticker
+        if cand_ticker in held_entry_scores:
+            continue
+        cand_score = float(c.rank_score)
+
+        # Find the most-degraded held whose entry baseline cand also beats
+        best_match: str | None = None
+        best_deg: float = -math.inf
+        for held_ticker, info in eligible.items():
+            if held_ticker in used_holds:
+                continue
+            uplift = cand_score - info["entry_score"]
+            if uplift < uplift_pct:
+                continue
+            if info["degradation"] > best_deg:
+                best_match = held_ticker
+                best_deg   = info["degradation"]
+
+        if best_match is None:
+            continue
+
+        info = eligible[best_match]
+        pairs.append(RotationPair(
+            sell_ticker      = best_match,
+            buy_ticker       = cand_ticker,
+            sell_score       = info["today_score"],
+            buy_score        = cand_score,
+            sell_er          = 0.0,   # N/A in thesis mode
+            buy_er           = 0.0,
+            horizon_days     = horizon,
+            raw_advantage    = cand_score - info["entry_score"],
+            tax_drag         = info["tax_drag"],
+            transaction_cost = txn_cost,
+            net_advantage    = cand_score - info["entry_score"] - info["tax_drag"] - txn_cost,
+            threshold        = uplift_pct,
+            margin_realized  = (cand_score - info["entry_score"]) - uplift_pct,
+        ))
+        used_holds.add(best_match)
+
+    pairs.sort(key=lambda p: p.margin_realized, reverse=True)
+    return pairs
+
+
 def find_rotation_pairs(
     held_scores:    dict[str, float],          # ticker → rank_score (prob)
     held_er:        dict[str, float],          # ticker → E[R - SPY] over horizon

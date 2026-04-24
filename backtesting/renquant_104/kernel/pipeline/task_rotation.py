@@ -168,6 +168,51 @@ class BuildPairsTask(Task):
         held_set = set(ctx.holdings.keys())
         eligible_candidates = [c for c in ctx.ranked if c.ticker not in held_set]
 
+        # Route B — rotation_mode "thesis_primary" bypasses ER-based pair
+        # discovery and uses thesis-degradation + uplift as PRIMARY gate.
+        # Useful when ER magnitudes are systematically smaller than
+        # `min_expected_advantage_pct` (as in current v4.1 golden data
+        # where 0 rotations fire because ER delta never reaches 3%).
+        rotation_mode = str(rotation_cfg.get("mode", "er"))
+        if rotation_mode == "thesis_primary":
+            from kernel.rotation import find_thesis_primary_pairs  # noqa: PLC0415
+            held_entry_rs = {t: getattr(hs, "entry_rank_score", None)
+                             for t, hs in ctx.holdings.items()}
+            held_today_rs = {t: getattr(hs, "rank_score", None)
+                             for t, hs in ctx.holdings.items()}
+            # Build held_meta for anyone past min_hold (thesis_primary
+            # decides eligibility internally — pass everyone through).
+            held_meta_all: dict = {}
+            for t, hs in ctx.holdings.items():
+                entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
+                cur_p   = ctx.prices.get(t, entry_p)
+                held_meta_all[t] = {
+                    "entry_date":    getattr(hs, "entry_date", None),
+                    "entry_price":   entry_p,
+                    "current_price": cur_p,
+                }
+            merged_rot_cfg = {**rotation_cfg}
+            merged_rot_cfg.setdefault("thesis", {}).setdefault(
+                "degradation_pct",
+                ctx.config.get("ranking", {}).get("thesis_rotation", {})
+                                   .get("degradation_pct", 0.30))
+            merged_rot_cfg["thesis"].setdefault(
+                "uplift_pct",
+                ctx.config.get("ranking", {}).get("thesis_rotation", {})
+                                   .get("uplift_pct", 0.10))
+            pairs = find_thesis_primary_pairs(
+                held_entry_scores = held_entry_rs,
+                held_today_scores = held_today_rs,
+                held_meta         = held_meta_all,
+                candidates        = eligible_candidates,
+                today             = ctx.today,
+                rotation_cfg      = merged_rot_cfg,
+                tax_cfg           = tax_cfg,
+            )
+            log.info("RotationJob: thesis_primary mode — %d pair(s)", len(pairs))
+            ctx.rotations = pairs
+            return  # skip ER-based discovery + gates
+
         pairs = find_rotation_pairs(
             held_scores  = held_scores,
             held_er      = held_er,
