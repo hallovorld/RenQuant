@@ -19,27 +19,38 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 
 ---
 
-## 🔴 P0 — Blockers / correctness / audit trust
+## ✅ 2026-04-24 — shipped today (22 commits)
 
-| # | Item | Impact | Est. |
-|---|------|---|---:|
-| **AA** | **Decision-factor DB** (`ticker_forward_returns` table + `analyze_decision_factors.py`) | 🔥 keystone — data-driven tuning of tiers / Kelly / rotation | 1 day |
-| **P** | Populate `candidate_scores.blocked_by` (`sector_guard` / `wash_sale` / `correlation_guard` / `tier_threshold` / `defensive_non_bear`) | 🟠 audit black-box without it | 2 h |
-| **M⁺** | `training_runs.elapsed_sec` schema fix — `SaveArtifactTask` + `NGBoostSaveTask` silently swallow writes → 0 rows/week of retrain history | 🟡 audit transparency | 1 h |
+**Day 1 (audit foundation):**
+- ✅ **M⁺** (`3dd903a`) — schema migration for `training_runs` 9 missing columns. Live DB now has 21 cols.
+- ✅ **P** (`11be4cd`) — per-ticker rejection reason persists in `candidate_scores.blocked_by`.
+- ✅ **AA** (`429298d`) — decision-factor DB + `analyze_decision_factors.py`. Backfilled 15,976 forward returns on 27-mo window. **Tier 1 @ 0.27 empirically validated: 78.9% P(fwd>0) vs v3's 71.1%.**
 
-## 🟠 P1 — Kelly completion (close the loop from session 2026-04-23)
+**Kelly loop closure:**
+- ✅ **Partial-sell infra** (`efcca83`) — `ExitSignal.quantity` + adapter hooks.
+- ✅ **AB-trim** (`6d8a52c`) — `TrimHeldTask` emits partial sells when over-weight. Default hysteresis 0.10.
+- ✅ **BC** (`09468e3`) — Kelly-delta rotation gate alongside panel-delta gate.
+- ✅ **CUSUM-cooldown-v2** (`10f788a`) — Design C confidence-scaled sizing, flag-gated.
+- ✅ **S** (`b07a81c`) — `live_state_snapshots` append-only audit table.
 
-Kelly sizing is **LIVE in golden v4**. Remaining work to fully close the loop:
+**Cleanup:**
+- ✅ **N** (`34ccac2`) — golden doc consolidated (v4 top, v1-v3 history).
+- ✅ Analyzer enhancement (`a42344f`) — tier-usage + selected-bucket diagnostics.
+
+**Tests added:** +65 (3+9+8+9+7+12+8+20+6). Full test count ~1137.
+
+---
+
+## 🟠 P1 — Remaining Kelly completion
 
 | # | Item | Impact | Est. | Prereqs |
 |---|------|---|---:|---|
-| **Partial-sell infra** | Adapter + broker `place_order` path for "sell N shares, not all" (today's exits = full liquidation) | enables AB-trim | 2 h | — |
-| **AB-trim** | `TrimHeldTask` — partial sell when Kelly target < current weight | closes Kelly loop | 4–6 h | partial-sell infra |
-| **BC** | `RotationJob` compares `kelly_target_pct` delta (not raw `panel_score` delta) — unifies 3 decision surfaces on same math | consistency | 2 h | — |
-| **Kelly-tier-tune** | Re-examine tiers from AA data. Current 0.27/0.45/0.60 anchored to `base_rate=0.273` (theory). AA gives empirical validation. | correctness | 1–2 h | **AA done** |
-| **Kelly-full-sweep** | `--full` 10-point grid (`fractional × max_concentration`), driven from notebook so output is comparable side-by-side | parameter defense | 1 h sim | — |
-| **Kelly × conviction** | `SizeAndEmit` currently does `max_pct = kelly_target × conviction_mult × σ_mult`. Kelly already encodes μ (∝ conviction) and σ — multipliers may double-count. Decide: Kelly alone OR careful blend. | design cleanup | 1 h | — |
-| **Multi-entry accumulation** | Allow Kelly target to be approached over **multiple sessions**, not one big buy. Per-entry cap stays 35%; cumulative cap 65%. Needs `SizeAndEmit` to size the *delta* (kelly_target − current_pct) bounded by per-entry cap, repeated over days. | concentration headroom | 2 h | — |
+| **AB-trim A/B** | Run sweep (GOLDEN vs hysteresis 0.10 vs tight 0.0) to pick default | parameter defense | 1h sim | ✅ infra shipped |
+| **CUSUM-v2 A/B** | Run GOLDEN vs `cusum_cooldown_mode: wall_time` to measure ~2 APY pt expected lift | validate design C | 1h sim | ✅ infra shipped |
+| **Kelly-tier-tune A/B** | AA shows [0.35, 0.45) is the 80.7% hit-rate sweet spot. Test raising tier 1 from 0.27 → 0.35. | empirical-driven | 1h sim | ✅ AA data in hand |
+| **Kelly-full-sweep** | 10-point grid on fractional × max_concentration from notebook | parameter defense | 1h sim | — |
+| **Kelly × conviction** | `max_pct = kelly × conviction × σ_mult` may double-count μ and σ. Audit + decide. | design cleanup | 1h code | — |
+| **Multi-entry accumulation** | Let Kelly target build up over sessions; per-entry 35%, cumulative 65%. | concentration headroom | 2h code | — |
 
 ## ✅ Resolved from AA data (2026-04-24)
 
@@ -54,8 +65,8 @@ Kelly sizing is **LIVE in golden v4**. Remaining work to fully close the loop:
 |---|------|---|---:|
 | **Q** | `min_rotation_hold_days × rotation_advantage` 2D sweep (3×3: `{14,21,30} × {0.0,0.02,0.05}`) | adaptability vs churn | 1 h sim |
 | **J** | Hourly-feature pruning — drop 3 weakest (`morning_drift_z` / `overnight_gap_z` / `vol_ratio_z`, all `|IC|<0.016`) + A/B retrain | OOS IC maybe +0.005 | 4 h |
-| **S** | Mirror `live_state.json` → DB `live_state_snapshots` (append each bar) | audit history queryable | 2 h |
-| **CUSUM-cooldown-v2** | Design **C** (confidence-scaled sizing, no hard block): `max_position_pct × (1 − cooldown_progress)`, 0→1 over 3 calendar days | live-sim parity, ~2 APY pt | 3 h |
+| ~~**S**~~ | ~~live_state DB mirror~~ | ✅ shipped `b07a81c` |
+| ~~**CUSUM-cooldown-v2**~~ | ~~Design C confidence-scaled sizing~~ | ✅ infra shipped `10f788a` — needs A/B |
 
 ## 🟡 P2 — Analysis / diagnostic
 
