@@ -32,6 +32,8 @@ class RegimeState:
     hurst_regime: str = "AMBIGUOUS"          # MOMENTUM | REVERSION | AMBIGUOUS
     gmm_probs: dict = field(default_factory=dict)  # Layer 3: P(regime) for each label
     hard_bear: bool = False                  # BEAR hard-override flag
+    cusum_triggered: bool = False            # Layer 2 raw flag (diagnostic; cooldown
+                                              # armed by RegimeFinalizeTask on regime switch)
 
 
 # ── Layer 1: Hurst Exponent ───────────────────────────────────────────────────

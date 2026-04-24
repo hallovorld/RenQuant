@@ -41,7 +41,16 @@ class HurstTask(Task):
 
 
 class CUSUMTask(Task):
-    """Layer 2: CUSUM changepoint detection → state.countdown, state.in_transition."""
+    """Layer 2: CUSUM changepoint detection → `state.cusum_triggered` (flag).
+
+    Plan B (2026-04-23): this task NO LONGER sets `state.countdown`
+    directly. The cooldown is only armed when `RegimeFinalizeTask`
+    determines the *resolved* regime has actually switched
+    (`prev_regime != new_regime`). CUSUM firing inside a stable
+    regime (e.g. SPY 20d window rolling over during a bull recovery)
+    no longer perpetually blocks buys. The raw trigger is kept on
+    `state.cusum_triggered` for downstream diagnostics.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.regime import compute_cusum  # noqa: PLC0415
@@ -50,21 +59,17 @@ class CUSUMTask(Task):
         cusum_lookback = int(cfg.get("cusum_lookback", 20))
         cusum_thresh   = float(cfg.get("cusum_threshold", 5.5))
         cusum_drift    = float(cfg.get("cusum_drift", 0.5))
-        trans_bars     = int(cfg.get("transition_uncertainty_bars", 3))
 
         spy_returns = np.array(ctx.spy_returns)
         state = ctx.regime_state
 
         triggered = compute_cusum(spy_returns, cusum_lookback, cusum_thresh, cusum_drift)
-        if triggered and state.countdown == 0:
-            state.countdown = trans_bars
+        # Stash the raw signal; the countdown arm/decrement happens in
+        # RegimeFinalizeTask once prev_regime / new_regime are known.
+        state.cusum_triggered = bool(triggered)
 
-        state.in_transition = state.countdown > 0
-        if state.countdown > 0:
-            state.countdown -= 1
-
-        log.debug("CUSUMTask: triggered=%s  countdown=%d  in_transition=%s",
-                  triggered, state.countdown, state.in_transition)
+        log.debug("CUSUMTask: triggered=%s (cooldown arming deferred to finalize)",
+                  triggered)
 
 
 class GMMTask(Task):
@@ -110,7 +115,19 @@ class BEAROverrideTask(Task):
 
 
 class RegimeFinalizeTask(Task):
-    """Resolve final regime from all layer outputs → ctx.regime, ctx.confidence."""
+    """Resolve final regime from all layer outputs → ctx.regime, ctx.confidence.
+
+    Plan B owns the cooldown here. After new_regime is resolved:
+      - If `new_regime != prev_regime` AND `countdown == 0`, ARM the
+        cooldown to `transition_uncertainty_bars`.
+      - Compute `in_transition = countdown > 0`.
+      - Decrement `countdown` (so the last bar of the cooldown window
+        still signals `in_transition=True`).
+
+    CUSUM fires (state.cusum_triggered) no longer re-arm the cooldown
+    inside a stable regime — previously that produced the 2026-04-22
+    → 04-23 3-day zero-trade streak.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.regime import compute_regime_confidence  # noqa: PLC0415
@@ -120,6 +137,8 @@ class RegimeFinalizeTask(Task):
         gmm_probs    = state.gmm_probs
         dominant_gmm = max(gmm_probs, key=gmm_probs.get) if gmm_probs else "BULL_CALM"
 
+        prev_regime = state.regime   # snapshot BEFORE mutating
+
         if state.hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
             new_regime = BEAR
         elif state.hurst_regime == "MOMENTUM":
@@ -128,6 +147,15 @@ class RegimeFinalizeTask(Task):
             new_regime = "CHOPPY"
         else:
             new_regime = dominant_gmm if dominant_gmm != BEAR else BULL_VOLATILE
+
+        # Plan B: cooldown only on actual regime switch.
+        trans_bars = int(ctx.config.get("regime", {})
+                         .get("transition_uncertainty_bars", 3))
+        if new_regime != prev_regime and state.countdown == 0:
+            state.countdown = trans_bars
+        state.in_transition = state.countdown > 0
+        if state.countdown > 0:
+            state.countdown -= 1
 
         confidence = compute_regime_confidence(
             new_regime, state.hurst, gmm_probs, state.in_transition, ctx.config
