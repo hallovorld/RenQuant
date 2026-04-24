@@ -38,7 +38,13 @@
     "OXY",
     "GLD",
     "XLU",
-    "XLK"
+    "XLK",
+    "INTC",
+    "MPWR",
+    "TXN",
+    "NVTS",
+    "WDC",
+    "SKH"
   ],
   "benchmark": "SPY",
   "data_src": "yfinance",
@@ -187,7 +193,13 @@
     "OXY": "energy",
     "GLD": "commodity",
     "XLU": "utility",
-    "XLK": "tech"
+    "XLK": "tech",
+    "INTC": "tech",
+    "MPWR": "tech",
+    "TXN": "tech",
+    "NVTS": "tech",
+    "WDC": "tech",
+    "SKH": "tech"
   },
   "sector_etf_map": {
     "tech": "XLK",
@@ -311,7 +323,12 @@
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
-          "regimes": ["BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"]
+          "regimes": [
+            "BULL_CALM",
+            "BULL_VOLATILE",
+            "CHOPPY",
+            "BEAR"
+          ]
         }
       }
     },

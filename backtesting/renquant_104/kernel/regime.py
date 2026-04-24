@@ -277,6 +277,11 @@ def detect_regime(
     if len(spy_returns) < 30:
         return state   # not enough data yet
 
+    prev_regime = state.regime   # snapshot BEFORE mutating — used below for
+                                  # switch detection (Plan B: only trigger
+                                  # the cooldown when regime *actually*
+                                  # changes, not on every CUSUM fire)
+
     # Layer 1 — Hurst
     hurst = compute_hurst(spy_returns, window=hurst_window)
     if hurst > hurst_trend:
@@ -286,10 +291,8 @@ def detect_regime(
     else:
         hurst_regime = "AMBIGUOUS"
 
-    # Layer 2 — CUSUM
+    # Layer 2 — CUSUM (diagnostic only; actual cooldown trigger below)
     triggered = compute_cusum(spy_returns, cusum_lookback, cusum_thresh, cusum_drift)
-    if triggered and state.countdown == 0:
-        state.countdown = trans_bars
 
     # Layer 3 — GMM
     gmm_probs = gmm_predict(gmm_artifact, spy_returns, spy_df, vol_window=vol_window)
@@ -312,6 +315,17 @@ def detect_regime(
         new_regime = CHOPPY
     else:
         new_regime = dominant_gmm if dominant_gmm != BEAR else BULL_VOLATILE
+
+    # Plan B (2026-04-23): CUSUM cooldown only fires on a REGIME SWITCH.
+    # Previously `if triggered and state.countdown == 0: countdown = trans_bars`
+    # would re-arm every time CUSUM flagged a change in the 20-bar SPY
+    # window — but CUSUM detects *any* shift (e.g. bull recovery, vol up/
+    # down) even when the resolved regime stayed BULL_CALM. During the
+    # 2026-04-12 → 04-23 bull recovery that made CUSUM fire 10 bars in a
+    # row → `in_transition=True` locked → all live buys blocked for 3 days.
+    # New rule: cooldown only applies when `prev_regime != new_regime`.
+    if new_regime != prev_regime and state.countdown == 0:
+        state.countdown = trans_bars
 
     # Confidence
     in_transition = state.countdown > 0
