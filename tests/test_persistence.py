@@ -23,10 +23,14 @@ from kernel.persistence import (  # noqa: E402
 
 
 def _cfg(tmp_path: Path, enabled: bool = True) -> dict:
+    # Both db_path (live role) and sim_db_path (sim role) set to distinct
+    # tmp files — SimAdapter uses role="sim" and writes to sim_db_path,
+    # RunnerAdapter uses role="live" and writes to db_path.
     return {
         "persistence": {
-            "enabled": enabled,
-            "db_path": str(tmp_path / "runs.db"),
+            "enabled":     enabled,
+            "db_path":     str(tmp_path / "runs.db"),
+            "sim_db_path": str(tmp_path / "sim_runs.db"),
         },
         "model_name": "renquant-104-test",
     }
@@ -223,8 +227,10 @@ class TestSimAdapterIntegration:
         ctx.orders     = []
         adapter.commit(ctx)
 
+        # SimAdapter writes to sim_runs.db (role="sim") per 2026-04-24
+        # DB separation — NOT to the live runs.db.
         import sqlite3
-        conn = sqlite3.connect(tmp_path / "runs.db")
+        conn = sqlite3.connect(tmp_path / "sim_runs.db")
         n = conn.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
         assert n == 1
         row = conn.execute(
@@ -232,6 +238,9 @@ class TestSimAdapterIntegration:
         ).fetchone()
         assert row == ("sim", "BULL_CALM")
         conn.close()
+        # Live DB should NOT have been touched.
+        assert not (tmp_path / "runs.db").exists(), \
+            "SimAdapter must not write to the live DB"
 
     def test_sim_adapter_noop_when_disabled(self, tmp_path):
         from adapters.sim import SimAdapter

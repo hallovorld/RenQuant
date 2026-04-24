@@ -214,8 +214,32 @@ def _is_enabled(config: dict) -> bool:
     return bool(config.get("persistence", {}).get("enabled", False))
 
 
-def _db_path(config: dict, strategy_dir: Path | None = None) -> Path:
-    raw = config.get("persistence", {}).get("db_path", "data/runs.db")
+def _db_path(
+    config:       dict,
+    strategy_dir: Path | None = None,
+    role:         str = "live",
+) -> Path:
+    """Resolve the SQLite file path for this adapter role.
+
+    Roles (user-driven architecture 2026-04-24):
+      * ``"live"``  — permanent production data (live runner + LEAN).
+                       Path: ``persistence.db_path`` (default ``data/runs.db``).
+      * ``"sim"``   — ephemeral notebook sim data. TRUNCATEd at start
+                       of every ``run_backtest()`` via ``clear_sim_tables()``,
+                       so the 100th sim of the day is the only one that
+                       remains.
+                       Path: ``persistence.sim_db_path`` (default
+                       ``data/sim_runs.db``).
+
+    The split prevents notebook experimentation from polluting live
+    decision-audit statistics: AA analysis defaults to reading the
+    live DB as the source-of-truth.
+    """
+    persistence = config.get("persistence", {})
+    if role == "sim":
+        raw = persistence.get("sim_db_path", "data/sim_runs.db")
+    else:
+        raw = persistence.get("db_path", "data/runs.db")
     p = Path(raw)
     if not p.is_absolute():
         if strategy_dir is not None:
@@ -227,17 +251,57 @@ def _db_path(config: dict, strategy_dir: Path | None = None) -> Path:
     return p
 
 
-def get_connection(config: dict, strategy_dir: Path | None = None) -> sqlite3.Connection | None:
-    """Open (or create) the SQLite DB configured in config. Returns None when disabled."""
+def get_connection(
+    config:       dict,
+    strategy_dir: Path | None = None,
+    *,
+    role:         str = "live",
+) -> sqlite3.Connection | None:
+    """Open (or create) the SQLite DB configured in config. Returns None when disabled.
+
+    See :func:`_db_path` for the live-vs-sim role semantics.
+    """
     if not _is_enabled(config):
         return None
-    path = _db_path(config, strategy_dir)
+    path = _db_path(config, strategy_dir, role=role)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, isolation_level=None)   # autocommit
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     ensure_schema(conn)
     return conn
+
+
+# Tables that carry per-run decision state — wiped at start of each
+# notebook sim via `clear_sim_tables`. Forward returns and training
+# audit are DERIVED data (historical prices, retrain metadata) and
+# survive the reset.
+_SIM_RESET_TABLES = [
+    "candidate_scores",
+    "trades",
+    "rotations",
+    "live_state_snapshots",
+    "pipeline_runs",   # last — has FKs into the other tables above
+]
+
+
+def clear_sim_tables(conn: sqlite3.Connection | None) -> int:
+    """TRUNCATE the decision-trace tables on a sim DB.
+
+    Called from :func:`sim.runner.run_backtest` before a fresh notebook
+    sim populates its rows. Leaves derived tables (`ticker_forward_returns`,
+    `training_runs`) intact — they're reused across sim sessions.
+
+    Returns the total number of rows deleted.
+    """
+    if conn is None:
+        return 0
+    deleted = 0
+    for table in _SIM_RESET_TABLES:
+        cur = conn.execute(f"DELETE FROM {table}")
+        deleted += cur.rowcount
+    conn.commit()
+    return deleted
 
 
 # ── Commit SHA helper (for provenance) ────────────────────────────────────────
@@ -581,6 +645,7 @@ def _none_or_int(v: Any) -> int | None:
 __all__ = [
     "ensure_schema",
     "get_connection",
+    "clear_sim_tables",
     "record_pipeline_run",
     "record_candidate_scores",
     "record_trades",

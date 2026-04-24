@@ -100,8 +100,15 @@ class SimAdapter:
         self._rotation_log: list[dict]  = []
 
         # ── Optional SQLite decision-trace ──────────────────────────────────
+        # sim writes to a SEPARATE DB (persistence.sim_db_path, default
+        # data/sim_runs.db) so notebook experimentation doesn't pollute
+        # the live decision-audit statistics in data/runs.db. The sim DB
+        # is TRUNCATEd at the start of every run_backtest (sim.runner)
+        # so only the most-recent notebook sim's rows remain.
         from kernel.persistence import get_connection  # noqa: PLC0415
-        self._db = get_connection(config, strategy_dir=self._strategy_dir)
+        self._db = get_connection(
+            config, strategy_dir=self._strategy_dir, role="sim",
+        )
 
         log.info(
             "SimAdapter init: models=%d  gmm=%s  corr=%s  earnings=%s  "

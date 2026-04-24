@@ -110,6 +110,16 @@ def run_backtest(
         panel_factor_frames  = panel_factor_frames,
     )
 
+    # DB separation (architecture 2026-04-24): sim runs a TRUNCATE of the
+    # decision-trace tables at the start of each backtest so the 100th
+    # notebook sim of the day is the only one whose rows survive. Keeps
+    # sim_runs.db ephemeral while live/LEAN write to the permanent runs.db.
+    if adapter._db is not None:  # noqa: SLF001
+        from kernel.persistence import clear_sim_tables  # noqa: PLC0415
+        deleted = clear_sim_tables(adapter._db)  # noqa: SLF001
+        if deleted:
+            log.info("run_backtest: cleared %d stale sim-trace rows", deleted)
+
     start = backtest_start or config.get("backtest_start")
     end   = backtest_end   or config.get("backtest_end")
     if start is None or end is None:

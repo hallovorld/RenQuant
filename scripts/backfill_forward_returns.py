@@ -109,13 +109,21 @@ def _rows_needing_backfill(
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strategy", default="renquant_104")
-    p.add_argument("--db", default="data/runs.db")
+    p.add_argument("--source", choices=["live", "sim"], default="live",
+                   help="Backfill the live DB (data/runs.db, default) or the "
+                        "ephemeral notebook-sim DB (data/sim_runs.db). Live is "
+                        "the common case; sim is only useful to analyze a "
+                        "specific notebook session's decisions.")
+    p.add_argument("--db", default=None,
+                   help="Explicit path; bypasses --source mapping.")
     p.add_argument("--since", type=lambda s: datetime.date.fromisoformat(s),
                    default=None,
                    help="Only backfill rows at or after this date (YYYY-MM-DD).")
     p.add_argument("--cache-root", default="data/ohlcv",
                    help="Root of per-ticker parquet cache.")
     args = p.parse_args()
+    if args.db is None:
+        args.db = "data/sim_runs.db" if args.source == "sim" else "data/runs.db"
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
     if str(strategy_dir) not in sys.path:
