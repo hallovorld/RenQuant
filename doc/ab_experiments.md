@@ -12,7 +12,40 @@ Use this log to avoid re-running experiments that already answered a question, a
 
 ---
 
-## 2026-04-24 PT — 5 experiments
+## 2026-04-24 PT — 6 experiments
+
+### 6. Route B — thesis_primary rotation mode
+
+**Hypothesis:** Route A showed rotation hurts APY under ER-based pair discovery. Route B tests whether using thesis-degradation as PRIMARY gate (bypassing ER) picks better pairs by prioritizing swaps OUT of degraded thesis holdings.
+
+**Variants (27-mo OOS, `allow_fetch=False`):**
+- A_GOLDEN_v4.1 — baseline (rotation.mode="er", default)
+- B_thesis_primary_0.30_0.10 — mode="thesis_primary", degradation=0.30 uplift=0.10
+- C_thesis_primary_0.15_0.05 — loose 0.15/0.05
+- D_thesis_primary_0.20_0.07 — medium 0.20/0.07
+
+**Result:**
+
+| Variant | APY | ΔAPY | Rot | Streak |
+|---|---:|---:|---:|---:|
+| A_GOLDEN_v4.1 | **+34.56%** | 0.00 | 0 | 27d |
+| B_thesis_primary 0.30/0.10 | +34.56% | 0.00 | 0 | 27d |
+| C_thesis_primary 0.15/0.05 | +33.51% | −1.05 | 3 | 27d |
+| D_thesis_primary 0.20/0.07 | +29.96% | **−4.60** | 0 | 44d |
+
+**Verdict: SHELVE — consistent with Route A.** Thesis-primary with strict thresholds (0.30/0.10) matches baseline (0 rotations both). Loose (0.15/0.05) fires 3 rotations and regresses by −1.05 pt, same pattern as Route A (rotations cost APY). D's −4.6 pt with 0 rotations is unexplained but likely interaction with streak length.
+
+**🚨 BASELINE SHIFT DETECTED:** Route A's A_GOLDEN_v4.1 = **+39.82%**, Route B's A_GOLDEN_v4.1 = **+34.56%** (−5.26 pt for IDENTICAL config). Two hypotheses:
+1. Notebook running concurrently with Route B introduced non-determinism (shared SQLite, thread ordering)
+2. Commits shipped between Route A and Route B introduced subtle regression
+
+**Mitigation:** isolated baseline re-run in progress. If it returns to 39.82% → notebook concurrency was the cause. If it stays at 34.56% → bisect today's commits.
+
+**Learning:** **Don't run A/B sims concurrently with notebook that touches the same DB.** Use the DB split we shipped today — but also serialize A/B runs.
+
+**Commit:** `cd0c9d5` (thesis_primary infra).
+
+---
 
 ### 5. Route A — rotation ER threshold unlock
 
