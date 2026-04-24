@@ -146,6 +146,13 @@ else
     exit 1
 fi
 
+# Step 2b: Backfill forward returns (yesterday's and older candidates now have
+# enough future bars for fwd_1d / fwd_5d / fwd_10d / fwd_20d) + recompute
+# portfolio risk metrics (Sharpe/DD/VaR tracking → goal: APY=1.41, Sharpe=2.0).
+echo "--- Step 2b: Backfill forward returns + portfolio metrics ---"
+"$PYTHON" scripts/backfill_forward_returns.py --source live 2>&1 | tail -5 || echo "forward_returns backfill failed (non-fatal)"
+"$PYTHON" scripts/compute_portfolio_metrics.py --source live --strategy renquant-104 2>&1 | tail -15 || echo "portfolio metrics compute failed (non-fatal)"
+
 # Step 3: Run live trading (Alpaca, single pass)
 echo "--- Step 3: Running live trader (alpaca) ---"
 TRADE_LOG="$REPO_DIR/live/logs/renquant-104/$DATE.json"
