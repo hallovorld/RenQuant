@@ -51,7 +51,9 @@ Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are i
 - ✅ **Kelly-pure A/B** — result: **ΔAPY 0** (flag is no-op under current golden; conv/σ_mult already ≈1.0). Verdict: shelve.
 - ✅ **panel_conviction_exit A/B** — result: **ΔAPY 0, 0 panel_exits fired**. The gate (panel < 0.20 AND μ ≤ 0.0) is never both true simultaneously on current holdings. Verdict: shelve until gate thresholds tuned — worth revisiting if holdings ever show panel degradation without μ inversion.
 - ✅ **Rotation V1 gates shipped** (`9eb188b`) — `rotation.min_raw_advantage_pct` + `rotation.persistence_bars`, both default off.
-- 🟡 **Rotation V1 A/B** — running now. Compares GOLDEN (threshold 0.03, 0 rot) vs LOOSE (0.005, ~3 rot per roadmap, -4.93 APY) vs V1 (loose + raw_adv≥0.05 + persistence=3).
+- ✅ **Rotation V1 A/B** — result: **ALL variants 0 rotations.** Current panel ER distribution too tight even at threshold=0.005 — can't evaluate V1 on unchanged panel. Diagnosis: previous roadmap data (3 rot @ threshold 0.005 → -4.93 APY) was collected on a pre-retrain panel; user retrained since. Need wider-spread driver.
+- ✅ **Rotation V2 + V3 gates shipped** (`0000b91`, `f674b3f`) — μ−λσ scoring mode + regime gate + held-DD gate. All flag-gated, all compose.
+- 🟡 **Rotation force A/B v2** — running now (`/tmp/rot_v1_ab_v2.py`). Uses μ−λσ scoring (wider spread) + threshold=0.001 to force rotations. Variants: A_GOLDEN / B_FORCE (force only) / C_V1 (+ V1 gates) / D_V3 (+ V3 gates). Goal: measure per-rotation ΔAPY across gate compositions.
 
 ### 🔴 Still not shipped — user-prioritized
 
