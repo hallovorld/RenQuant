@@ -413,6 +413,7 @@ After any non-trivial change, run `/update-docs` or manually sync:
 | `doc/improvement_roadmap.md` | **Living roadmap** — Active queue (pending work) + Completed archive. Work through top-down. |
 | `doc/session_handoff_2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Superseded on 2026-04-24 by roadmap update + 26 commits (M⁺/P/AA/Trim/BC/CUSUM-v2-PROMOTED-v4.1/S/Kelly-pure/Multi-entry/Thesis-A/DB split). |
 | `doc/panel_training_runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
+| `doc/ab_experiments.md` | Per-experiment A/B journal: hypothesis → variants → result → verdict → commit. Prepend new experiments to top. Use to avoid re-running questions already answered + surface cross-experiment patterns. |
 | `doc/panel_ltr_primer.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
 | `doc/environment.md` | Python deps (`requirements.lock.txt`), critical lib versions, non-Python tooling (Docker / LEAN / launchd), env vars. Reproducibility source of truth. |
 | `doc/logic_graph_103.md` | **Complete decision flowchart** — every branch in notebook simulation and LEAN, regime param table, alignment table |
