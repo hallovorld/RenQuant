@@ -326,7 +326,7 @@ This applies to:
 - `tests/test_training_cadence.py`: 8 tests — `training.cadence` gate (daily preserves existing behavior, weekly short-circuits off-cadence days, `--force` bypass).
 - `tests/test_fundamentals_cache.py`: 9 tests — `FundamentalsStore` parquet cache + `fetch_fundamentals` with injected provider.
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: 1037 collected (including new suites: `test_panel_transformer.py` 12 + `test_transformer_scorer.py` 5 + `test_transformer_pipeline_integration.py` 4 + `test_ensemble_scorer.py` 6 + `test_recalibrate_scores.py` 2 + universe_floor regression tests + drawdown-reset regression tests). 2 invariants opt-in via `RENQUANT_FULL_SIM=1`. Run `python -m pytest tests/ -v` to verify.
+- Total test count as of last update: ~1072 collected (Plan G added `test_hourly_features.py` 17 + `test_panel_hourly_wiring.py` 10; Plan F added `test_regime_calibrator.py` 10; previous suites: `test_panel_transformer.py` 12 + `test_transformer_scorer.py` 5 + `test_transformer_pipeline_integration.py` 4 + `test_ensemble_scorer.py` 6 + `test_recalibrate_scores.py` 2 + universe_floor + drawdown-reset regressions). 2 invariants opt-in via `RENQUANT_FULL_SIM=1`. Run `python -m pytest tests/ -v` to verify exact count.
 - `tests/test_no_trade_monitor.py` — 11 tests for MonitorIdleStreakTask + SimResult streak surface + adapter round-trip. Guards the "no systematic no-trade periods" contract (CLAUDE.md 2b).
 - `tests/test_no_trade_invariant.py` — 2 opt-in full-sim tests asserting `longest_no_trade_streak < 20` on current config.
 - `tests/test_earnings_surprise.py` — 9 tests for yfinance-backed surprise cache + trailing-4Q factor.
@@ -363,10 +363,12 @@ After any non-trivial change, run `/update-docs` or manually sync:
 
 | Doc | What it covers |
 |-----|----------------|
-| `doc/golden_config_2026-04-23.md` | **Golden config** snapshot (+88.7% / 33.1% APY baseline). Revert here if a future change drops portfolio APY below 20% on the 27-month OOS window. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
-| `doc/improvement_roadmap.md` | **Living roadmap** — 8 improvement items with action plans, status, and Result sections. Work through top-down. |
+| `doc/golden_config_2026-04-23.md` | **Current golden** — v3 (hourly-enhanced panel, +44.20% APY after-tax). v1/v2 history inline. Revert here if a future change drops portfolio APY below 20% on the 27-month OOS window. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
+| `doc/improvement_roadmap.md` | **Living roadmap** — Active queue (pending work) + Completed archive. Work through top-down. |
+| `doc/session_handoff_2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Short version of the day for the next pickup. |
 | `doc/panel_training_runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
 | `doc/panel_ltr_primer.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
+| `doc/environment.md` | Python deps (`requirements.lock.txt`), critical lib versions, non-Python tooling (Docker / LEAN / launchd), env vars. Reproducibility source of truth. |
 | `doc/logic_graph_103.md` | **Complete decision flowchart** — every branch in notebook simulation and LEAN, regime param table, alignment table |
 | `doc/architecture.md` | Pipeline overview, data stores, indicator registry, model types, strategy list |
 | `doc/models.md` | Model ABC, all model types, exit logic, stop-loss, single-day gate, trailing stop |

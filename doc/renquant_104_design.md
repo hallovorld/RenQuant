@@ -1,9 +1,11 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
-**Status**: Implemented — ready to replace renquant_103 as the active daily strategy.
+**Status**: Active daily strategy. Current golden: **+44.20% APY (after-tax)**, 82% win, 26d max streak over the 27-month OOS sim.
 **Author**: Ren Hao
-**Last updated**: 2026-04-21
+**Last updated**: 2026-04-23
 **Based on**: renquant_103 (adaptive regime multi-stock)
+
+**Active feature set**: panel-LTR on 47k rows × **31 features** (16 neutralized per-ticker indicators + 4 factor z-scores + 5 fundamentals + 6 hourly-bar aggregates). Panel training driven by `scripts/train_104.py`; hourly features sourced from `data/intraday/{SYM}/1h.parquet` via `scripts/fetch_hourly_bars.py` (Alpaca IEX). `panel_ltr.hourly.enabled: true` is golden as of 2026-04-23. Shelved experiments (transformer backend, regime-conditional calibration, LightGBM backend) retain their infra behind off-by-default flags — see `doc/improvement_roadmap.md` History.
 
 ---
 
