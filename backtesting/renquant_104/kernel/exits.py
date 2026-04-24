@@ -46,7 +46,12 @@ class HoldingState:
 class ExitSignal:
     should_exit: bool
     reason:      str
-    exit_type:   str   # "trailing_stop" | "stop_loss" | "single_day_loss" | "max_hold" | "model_sell" | "rotation" | ""
+    exit_type:   str   # "trailing_stop" | "stop_loss" | "single_day_loss" | "max_hold" | "model_sell" | "rotation" | "kelly_trim" | ""
+    # Partial-sell infra (Plan: prereq for AB-trim).
+    # None = full liquidation (default, current behaviour).
+    # float < current_shares = partial sell, keep the position open.
+    # float ≥ current_shares = full liquidation (same as None).
+    quantity:    float | None = None
 
 
 _NO_EXIT = ExitSignal(should_exit=False, reason="", exit_type="")

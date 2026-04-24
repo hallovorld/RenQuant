@@ -310,32 +310,49 @@ class RunnerAdapter:
         pos_cache     = self._positions_cache
 
         # ── Apply exits ──────────────────────────────────────────────────────
+        # Honours optional sig.quantity for partial sells (Kelly trim path).
+        # When quantity is None or ≥ current qty → full liquidation (old
+        # behaviour). When quantity is a positive float < current qty →
+        # partial sell, position stays open with reduced shares; we keep
+        # entry_dates / position_hwm / sell_streaks intact.
         for ticker, sig in ctx.exits:
             pos = pos_cache.get(ticker, {})
             qty = float(pos.get("qty", 0))
             if qty <= 0:
                 continue
+
+            req_qty = getattr(sig, "quantity", None)
+            if req_qty is not None and 0 < req_qty < qty:
+                sell_qty   = float(req_qty)
+                is_partial = True
+            else:
+                sell_qty   = abs(qty)
+                is_partial = False
+
             try:
-                result = broker.place_order(ticker, "SELL", abs(qty))
+                result = broker.place_order(ticker, "SELL", sell_qty)
             except Exception as exc:
                 log.error("SELL failed for %s: %s", ticker, exc)
                 continue
 
-            price  = ctx.prices.get(ticker, 0.0)
-            log.info("SELL  %s  [%s]  %.0f shares @ %.2f  %s",
-                     ticker, sig.exit_type, qty, price, sig.reason)
+            price = ctx.prices.get(ticker, 0.0)
+            tag   = "TRIM" if is_partial else "SELL"
+            log.info("%s  %s  [%s]  %.0f shares @ %.2f  %s",
+                     tag, ticker, sig.exit_type, sell_qty, price, sig.reason)
 
             self._last_sell_dates_str[ticker] = today_str
-            self._entry_dates.pop(ticker, None)
-            self._sell_streaks.pop(ticker, None)
-            self._position_hwm.pop(ticker, None)
+            if not is_partial:
+                self._entry_dates.pop(ticker, None)
+                self._sell_streaks.pop(ticker, None)
+                self._position_hwm.pop(ticker, None)
             self._log_trade(ctx, {
                 "action":    "SELL",
                 "symbol":    ticker,
                 "exit_type": sig.exit_type,
                 "reason":    sig.reason,
                 "price":     price,
-                "qty":       qty,
+                "qty":       sell_qty,
+                "partial":   is_partial,
             })
 
         # ── Apply buys ───────────────────────────────────────────────────────

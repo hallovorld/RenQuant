@@ -286,13 +286,22 @@ class SimAdapter:
         today_ts = pd.Timestamp(ctx.today)
         trade_events_this_bar: list[dict] = []
         len_trade_log_before = len(self._trade_log)
+        # Track which tickers need FULL liquidation vs partial trim. Only
+        # full exits pop from holdings/pos_shares; partial trims update
+        # share count in-place (see _apply_sell).
+        full_exit_tickers: set[str] = set()
         for ticker, sig in ctx.exits:
+            q = getattr(sig, "quantity", None)
+            cur = self._pos_shares.get(ticker, 0)
+            if q is None or q <= 0 or q >= cur:
+                full_exit_tickers.add(ticker)
             self._apply_sell(ticker, sig, today_ts, ctx)
 
-        exit_tickers = {t for t, _ in ctx.exits}
-        for ticker in exit_tickers:
+        for ticker in full_exit_tickers:
             self._holdings.pop(ticker, None)
             self._pos_shares.pop(ticker, None)
+
+        exit_tickers = {t for t, _ in ctx.exits}
 
         # Preserve updated sell_streak / HWM from pipeline's SellJob
         for ticker, hs in ctx.holdings.items():
@@ -350,12 +359,28 @@ class SimAdapter:
     # ── Sim-side execution primitives ───────────────────────────────────────
 
     def _apply_sell(self, ticker: str, sig, today_ts: pd.Timestamp, ctx) -> None:
+        """Apply a sell — full liquidation (default) or partial when sig.quantity set.
+
+        When sig.quantity is None or ≥ current shares, sells everything (caller's
+        commit() then pops the ticker from holdings/pos_shares). When sig.quantity
+        is a positive float < current shares, sells exactly that many shares and
+        reduces _pos_shares in place; the caller then skips the pop step.
+        """
         from kernel.portfolio import compute_trade_tax  # noqa: PLC0415
         if ticker not in self._holdings or ticker not in self._pos_shares:
             return
         hs = self._holdings[ticker]
-        shares = self._pos_shares[ticker]
-        price  = ctx.prices.get(ticker)
+        total_shares = self._pos_shares[ticker]
+
+        req_qty = getattr(sig, "quantity", None)
+        if req_qty is None or req_qty <= 0 or req_qty >= total_shares:
+            sell_shares = total_shares
+            is_partial  = False
+        else:
+            sell_shares = float(req_qty)
+            is_partial  = True
+
+        price = ctx.prices.get(ticker)
         if price is None:
             df = self._ohlcv.get(ticker)
             if df is None or today_ts not in df.index:
@@ -363,7 +388,7 @@ class SimAdapter:
             price = float(df.loc[today_ts, "close"])
 
         hold_days = (today_ts.date() - hs.entry_date).days if hs.entry_date else 0
-        gross_pnl = shares * (price - hs.entry_price)
+        gross_pnl = sell_shares * (price - hs.entry_price)
         tax_cfg   = ctx.config.get("tax", {})
         tax = compute_trade_tax(
             gross_pnl, hold_days,
@@ -371,19 +396,27 @@ class SimAdapter:
             float(tax_cfg.get("long_term_rate", 0.20)),
             int(tax_cfg.get("long_term_threshold_days", 365)),
         )
-        self._cash += shares * price - tax
+        self._cash += sell_shares * price - tax
         self._last_sell_date[ticker] = today_ts
+
+        if is_partial:
+            # Keep the position open with reduced share count. entry_price and
+            # entry_date stay — Kelly trims should not reset cost basis / tenure.
+            self._pos_shares[ticker] = total_shares - sell_shares
+            self._holdings[ticker].shares = total_shares - sell_shares
+
         self._trade_log.append({
             "action":      "sell",
             "ticker":      ticker,
             "date":        today_ts,
             "price":       price,
-            "shares":      shares,
+            "shares":      sell_shares,
             "pnl_pct":     (price - hs.entry_price) / hs.entry_price
                             if hs.entry_price else 0.0,
             "hold_days":   hold_days,
             "tax":         tax,
             "exit_reason": sig.exit_type,
+            "partial":     is_partial,
         })
 
     def _apply_buy(self, order: dict, today_ts: pd.Timestamp, ctx) -> None:
