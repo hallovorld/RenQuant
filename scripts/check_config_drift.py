@@ -81,6 +81,10 @@ def main() -> int:
                    help="Flag numeric changes ≥ this fraction (default 0.10 = 10%%)")
     p.add_argument("--ignore-path", action="append", default=[],
                    help="Dotted config path to skip (can repeat)")
+    # Paths that legitimately change between runs (auto-written by daily
+    # recalibration or training), so they shouldn't trigger drift alerts.
+    p.add_argument("--no-default-ignores", action="store_true",
+                   help="Disable the built-in ignore list (diagnostic only)")
     p.add_argument("--baseline", default="strategy_config.golden.json")
     p.add_argument("--live",     default="strategy_config.json")
     args = p.parse_args()
@@ -102,7 +106,17 @@ def main() -> int:
     b_flat = _walk(baseline)
     l_flat = _walk(live)
 
+    # Default ignore list — fields auto-written by recalibrate_scores.py /
+    # panel trainer / ngboost trainer. These shift daily and aren't real
+    # configuration drift.
+    DEFAULT_IGNORES = {
+        "ranking.blend_n_symbols",       # recalibrate_scores.py (symbol count)
+        "ranking.blend_weights.rank",    # recalibrate_scores.py (weight fit)
+        "ranking.blend_weights.rs",      # recalibrate_scores.py (weight fit)
+    }
     ignored = set(args.ignore_path)
+    if not args.no_default_ignores:
+        ignored |= DEFAULT_IGNORES
     all_keys = sorted(set(b_flat) | set(l_flat))
 
     bool_drifts: list[tuple[str, str]] = []

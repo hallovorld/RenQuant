@@ -59,6 +59,21 @@ sys.exit(0 if len(sched) > 0 else 1)
 fi
 echo "NYSE open today ($TODAY_DATE) — proceeding."
 
+# Drift guard (2026-04-24): alert if strategy_config.json has drifted from
+# strategy_config.golden.json. Non-fatal — the run continues — but WARN
+# ntfy fires so flag regressions are caught before a bad run completes.
+# Common causes: manual edits left behind after an A/B, or a promoted
+# change where golden wasn't updated in the same commit.
+DRIFT_OUT=$("$PYTHON" "$REPO_DIR/scripts/check_config_drift.py" --strategy renquant_104 2>&1 || true)
+if echo "$DRIFT_OUT" | grep -q "drift detected"; then
+    # Only surface booleans + the first 2 numeric lines in ntfy to keep it short
+    SHORT=$(echo "$DRIFT_OUT" | grep -E "→" | head -5 | sed 's/^  *//')
+    notify "RenQuant 104 DRIFT" "strategy_config.json drifted from golden — $SHORT"
+    echo "$DRIFT_OUT"
+else
+    echo "Config drift OK."
+fi
+
 # Step 1: Run FullTrainingPipeline (baseline tournament → panel-LTR → recalibrate)
 echo "--- Step 1: Running renquant_104 FullTrainingPipeline ---"
 cd "$REPO_DIR"

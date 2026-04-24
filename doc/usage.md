@@ -195,13 +195,31 @@ python -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only
 # ~/Library/LaunchAgents/com.renquant.open104.plist
 # ~/Library/LaunchAgents/com.renquant.preclose104.plist
 # ~/Library/LaunchAgents/com.renquant.daily104.plist
+# ~/Library/LaunchAgents/com.renquant.conditional-retrain104.plist  (13:10 PT Mon-Fri, SPY/VIX anomaly → force retrain)
+# ~/Library/LaunchAgents/com.renquant.screen-watchlist.plist        (Sun 12:05 PT, DROP/ADD candidate report)
 # Logs: logs/live_104/{date}-open.log, {date}-preclose.log
 #       logs/daily_104/{date}.log
+#       logs/conditional_retrain_104/{stdout,stderr}.log
+#       logs/watchlist_screen/{stdout,stderr}.log
 
 # Manual runs — 103 (legacy, kept for rollback)
 bash scripts/daily_103.sh
 bash scripts/live_only_103.sh
 python -m live.runner --strategy renquant_103 --broker alpaca --once --sell-only
+```
+
+**One-shot LaunchAgent install** (run once per new plist):
+
+```bash
+# Copy every plist under scripts/launchd/ and load it with launchctl
+for p in /Users/renhao/git/github/RenQuant/scripts/launchd/*.plist; do
+    cp "$p" ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/$(basename "$p")
+done
+
+# To uninstall one:
+#   launchctl unload ~/Library/LaunchAgents/com.renquant.screen-watchlist.plist
+#   rm           ~/Library/LaunchAgents/com.renquant.screen-watchlist.plist
 ```
 
 Alpaca credentials are stored in `.env` (gitignored) as `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Notifications (macOS banner + iPhone via ntfy.sh) are sent on success or failure:
