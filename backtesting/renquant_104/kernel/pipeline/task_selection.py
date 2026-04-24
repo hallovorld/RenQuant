@@ -136,8 +136,14 @@ class SizeAndEmitTask(Task):
         sigma_cfg     = (ctx.config.get("ranking", {})
                           .get("panel_scoring", {})
                           .get("sigma_sizing", {}))
-        kelly_on      = bool(ctx.config.get("ranking", {})
-                              .get("kelly_sizing", {}).get("enabled", False))
+        kelly_cfg     = ctx.config.get("ranking", {}).get("kelly_sizing", {})
+        kelly_on      = bool(kelly_cfg.get("enabled", False))
+        # When Kelly is primary sizer, conviction_multiplier (derived from
+        # panel_score) and sigma_multiplier (inverse of σ) approximately
+        # re-scale the SAME quantities Kelly already encodes (μ and σ²).
+        # Flag lets us test the pure-Kelly hypothesis — no stacked
+        # multipliers. Default False preserves v4 behaviour.
+        kelly_pure    = bool(kelly_cfg.get("disable_extra_multipliers", False))
 
         # Universe σ median over all ranked candidates (σ written by ApplyNGBoostTask).
         sigma_median = universe_sigma_median(
@@ -151,13 +157,18 @@ class SizeAndEmitTask(Task):
                 continue
 
             c = next((c for c in ctx.ranked if c.ticker == ticker), None)
-            conv = conviction_multiplier(
-                getattr(c, "panel_score", None) if c else None, sizing_cfg,
-            )
-            sig_m = sigma_multiplier(
-                getattr(c, "sigma", None) if c else None,
-                sigma_median, sigma_cfg,
-            )
+            if kelly_on and kelly_pure:
+                # Pure-Kelly mode — neutralise extra multipliers that
+                # overlap with Kelly's μ / σ² inputs.
+                conv, sig_m = 1.0, 1.0
+            else:
+                conv = conviction_multiplier(
+                    getattr(c, "panel_score", None) if c else None, sizing_cfg,
+                )
+                sig_m = sigma_multiplier(
+                    getattr(c, "sigma", None) if c else None,
+                    sigma_median, sigma_cfg,
+                )
             # Plan C: when kelly_sizing.enabled, the target position
             # weight is the Kelly number precomputed by
             # ApplyKellySizingTask (f* = μ/σ², capped at max_pct +
