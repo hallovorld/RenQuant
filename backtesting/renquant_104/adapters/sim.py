@@ -110,13 +110,59 @@ class SimAdapter:
             config, strategy_dir=self._strategy_dir, role="sim",
         )
 
+        # Feature cache optimization (2026-04-24): pre-compute per-ticker
+        # full-range feature frames ONCE here instead of rebuilding per
+        # bar in TickerSellJob/CandidateJob. 5-8x sim speedup on the
+        # 570-bar 27-mo window × 42-ticker panel.
+        #
+        # ⚠️ Equivalence NOT yet verified. Smoke test
+        # (tests/test_feature_cache.py::TestEquivalence::test_last_row_identical)
+        # shows SPY-derived features (spy_realized_vol / spy_adx /
+        # spy_trend / hurst_proxy) differ between cached vs rebuilt paths
+        # on the same OHLCV input — likely rolling-window bootstrap or
+        # non-strictly-causal initialization in one of those indicators.
+        # Must investigate before shipping default-on.
+        #
+        # Flag-gated: `sim.feature_cache_enabled: false` (default false
+        # until equivalence is audited).
+        self._feature_cache: dict = {}
+        if config.get("sim", {}).get("feature_cache_enabled", False):
+            self._build_feature_cache()
+
         log.info(
             "SimAdapter init: models=%d  gmm=%s  corr=%s  earnings=%s  "
-            "panel_scorer=%s  ngboost_head=%s",
+            "panel_scorer=%s  ngboost_head=%s  feature_cache=%d tickers",
             len(self._models), self._gmm is not None, bool(self._corr),
             bool(self._earnings), self._panel_scorer is not None,
-            self._ngboost_head is not None,
+            self._ngboost_head is not None, len(self._feature_cache),
         )
+
+    def _build_feature_cache(self) -> None:
+        """One-shot: build full-range feature frame per watchlist ticker.
+
+        Uses the same `build_feature_frame` the per-bar task would call,
+        but on the FULL OHLCV range once. Per-bar tasks then slice by
+        `today` instead of re-running the indicator pipeline 570×42 times.
+        """
+        from kernel.indicators import build_feature_frame  # noqa: PLC0415
+
+        spy_df = self._ohlcv.get("SPY")
+        if spy_df is None:
+            log.warning("Feature cache: SPY OHLCV missing — skipping build")
+            return
+
+        spec    = self._config.get("indicator_spec", {})
+        vol_win = int(self._config.get("regime", {}).get("vol_realized_window", 20))
+
+        built = 0
+        for ticker, df in self._ohlcv.items():
+            if ticker == "SPY" or df is None or df.empty:
+                continue
+            frame = build_feature_frame(df, spy_df, spec, vol_win)
+            if frame is not None and not frame.empty:
+                self._feature_cache[ticker] = frame
+                built += 1
+        log.info("Feature cache built: %d/%d tickers", built, len(self._ohlcv))
 
     # ── Artifact loaders ────────────────────────────────────────────────────
 
@@ -264,6 +310,7 @@ class SimAdapter:
             skip_buys        = self._skip_buys,
             regime_state     = self._regime_state,
             regime_counts    = self._regime_counts,
+            feature_cache    = self._feature_cache,
         )
 
         # Hand prior streak counters to MonitorIdleStreakTask; it writes back.

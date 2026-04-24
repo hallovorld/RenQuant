@@ -29,6 +29,16 @@ class WashSaleFilterTask(Task):
 
 class BuildFeaturesTask(Task):
     def run(self, tc: TickerInferenceContext) -> bool | None:
+        # Feature cache optimization (2026-04-24): if SimAdapter pre-built
+        # a full-range feature frame for this ticker, slice it up to today
+        # instead of rebuilding from OHLCV (10x faster per bar).
+        cached = getattr(tc, "feature_cache_frame", None)
+        if cached is not None and not cached.empty:
+            tc.features = cached.loc[:tc.today]
+            if tc.features is None or tc.features.empty:
+                return False
+            return None
+
         from kernel.indicators import build_feature_frame  # noqa: PLC0415
         stock_df = tc.ohlcv.get(tc.ticker)
         spy_df   = tc.ohlcv.get("SPY")

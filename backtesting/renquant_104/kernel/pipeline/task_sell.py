@@ -44,9 +44,16 @@ class ScoreModelTask(Task):
             tc.model_action = "hold"
             return
 
-        spec    = tc.config.get("indicator_spec", {})
-        vol_win = int(tc.config.get("regime", {}).get("vol_realized_window", 20))
-        tc.features = build_feature_frame(stock_df, spy_df, spec, vol_win)
+        # Feature cache optimization (2026-04-24): use pre-built frame
+        # if available (SimAdapter populates via make_context), otherwise
+        # fall back to per-bar rebuild (live runner path).
+        cached = getattr(tc, "feature_cache_frame", None)
+        if cached is not None and not cached.empty:
+            tc.features = cached.loc[:tc.today]
+        else:
+            spec    = tc.config.get("indicator_spec", {})
+            vol_win = int(tc.config.get("regime", {}).get("vol_realized_window", 20))
+            tc.features = build_feature_frame(stock_df, spy_df, spec, vol_win)
 
         if tc.features is not None and not tc.features.empty:
             rotation_horizon = int(tc.config.get("rotation", {}).get("target_horizon_days", 20))

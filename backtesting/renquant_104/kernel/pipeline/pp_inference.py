@@ -60,6 +60,7 @@ def _make_sell_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
         exit_params=exit_params,
         holding=ctx.holdings[ticker],
         price=ctx.prices.get(ticker, 0.0),
+        feature_cache_frame=ctx.feature_cache.get(ticker) if ctx.feature_cache else None,
     )
 
 
@@ -78,6 +79,7 @@ def _make_cand_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
         price=ctx.prices.get(ticker, 0.0),
         earnings_calendar=ctx.earnings_calendar,
         last_sell_dates=ctx.last_sell_dates,
+        feature_cache_frame=ctx.feature_cache.get(ticker) if ctx.feature_cache else None,
     )
 
 

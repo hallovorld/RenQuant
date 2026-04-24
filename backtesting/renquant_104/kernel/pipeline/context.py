@@ -80,6 +80,14 @@ class InferenceContext:
     # and writes back. Adapter persists across bar boundaries.
     monitor_state: dict = field(default_factory=dict)
 
+    # Feature cache (performance optimization, 2026-04-24): SimAdapter
+    # pre-computes per-ticker full-range feature frames ONCE at init.
+    # Per-bar tasks (BuildFeaturesTask, ScoreModelTask) slice up to
+    # today instead of rebuilding from OHLCV. Live runner leaves this
+    # None (fresh data each bar makes cache stale). Key: ticker; Value:
+    # full feature DataFrame indexed by bar date.
+    feature_cache: dict = field(default_factory=dict)
+
 
 @dataclass
 class TickerInferenceContext:
@@ -110,6 +118,14 @@ class TickerInferenceContext:
     features: Any = None         # built feature DataFrame (shared by sell + candidate tasks)
     model_action: str = "hold"   # scored model signal
     rs_score: float = 0.0        # relative-strength score vs sector ETF
+
+    # Optional pre-built feature cache (performance optimization, 2026-04-24).
+    # SimAdapter pre-computes full-range feature frames ONCE at init and
+    # passes them here. BuildFeaturesTask then slices `[:today]` instead
+    # of rebuilding from OHLCV each bar. Live runner doesn't use this —
+    # each bar has "new" OHLCV so cache would be stale. Cache should be
+    # the FULL feature frame indexed by bar date.
+    feature_cache_frame: Any = None
 
     # Final outputs (written by TickerSellJob or TickerCandidateJob)
     exit_signal: Any = None      # ExitSignal | None
