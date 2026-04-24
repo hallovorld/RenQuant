@@ -108,6 +108,31 @@ CREATE TABLE IF NOT EXISTS rotations (
 );
 CREATE INDEX IF NOT EXISTS idx_rotations_swap ON rotations(cand_ticker, held_ticker);
 
+-- Daily portfolio risk metrics — computed from pipeline_runs.portfolio_value
+-- time series. The user's goal is Sharpe=2.0 on the golden config; without
+-- tracking Sharpe over time we can't measure progress. Backfilled + updated
+-- by scripts/compute_portfolio_metrics.py. Supports both live + sim roles.
+CREATE TABLE IF NOT EXISTS portfolio_daily_metrics (
+    as_of_date      DATE NOT NULL,
+    run_type        TEXT NOT NULL,    -- 'live' | 'sim' | 'lean'
+    strategy        TEXT,
+    portfolio_value REAL,
+    daily_return    REAL,             -- one-day simple return
+    -- Rolling windows (trading days)
+    sharpe_21d      REAL,             -- 1-month rolling Sharpe (annualized)
+    sharpe_63d      REAL,             -- 3-month rolling Sharpe (annualized)
+    sharpe_252d     REAL,             -- 1-year rolling Sharpe (annualized)
+    realized_vol_21d REAL,            -- annualized stdev of daily returns, 21d
+    realized_vol_252d REAL,           -- annualized stdev, 252d
+    max_drawdown_252d REAL,           -- max peak-to-trough drawdown, 252d window
+    var_95_21d      REAL,             -- 95%-VaR (1-day), 21-day empirical
+    var_99_21d      REAL,             -- 99%-VaR
+    beta_spy_252d   REAL,             -- regression beta vs SPY over 252d
+    computed_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (as_of_date, run_type, strategy)
+);
+CREATE INDEX IF NOT EXISTS idx_pdm_date ON portfolio_daily_metrics(as_of_date);
+
 -- Plan S — per-bar snapshots of live_state.json for historical audit.
 -- The JSON file is the source of truth for live state (fast bootstrap, human-
 -- editable). These rows are an append-only audit trail: "what did live_state
@@ -580,6 +605,64 @@ def record_live_state_snapshot(
     )
 
 
+def record_portfolio_metrics(
+    conn: sqlite3.Connection | None,
+    rows: Iterable[dict],
+) -> int:
+    """Upsert portfolio_daily_metrics rows (APY=1.41/Sharpe=2 goal tracker).
+
+    Each row: `{as_of_date, run_type, strategy, portfolio_value, daily_return,
+    sharpe_21d, sharpe_63d, sharpe_252d, realized_vol_21d, realized_vol_252d,
+    max_drawdown_252d, var_95_21d, var_99_21d, beta_spy_252d}`.
+    """
+    if conn is None:
+        return 0
+    payload = []
+    for r in rows:
+        payload.append((
+            r["as_of_date"] if isinstance(r["as_of_date"], str)
+            else r["as_of_date"].isoformat(),
+            r.get("run_type", "sim"),
+            r.get("strategy", ""),
+            _none_or_float(r.get("portfolio_value")),
+            _none_or_float(r.get("daily_return")),
+            _none_or_float(r.get("sharpe_21d")),
+            _none_or_float(r.get("sharpe_63d")),
+            _none_or_float(r.get("sharpe_252d")),
+            _none_or_float(r.get("realized_vol_21d")),
+            _none_or_float(r.get("realized_vol_252d")),
+            _none_or_float(r.get("max_drawdown_252d")),
+            _none_or_float(r.get("var_95_21d")),
+            _none_or_float(r.get("var_99_21d")),
+            _none_or_float(r.get("beta_spy_252d")),
+        ))
+    if not payload:
+        return 0
+    conn.executemany(
+        """INSERT INTO portfolio_daily_metrics
+              (as_of_date, run_type, strategy, portfolio_value, daily_return,
+               sharpe_21d, sharpe_63d, sharpe_252d,
+               realized_vol_21d, realized_vol_252d, max_drawdown_252d,
+               var_95_21d, var_99_21d, beta_spy_252d)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(as_of_date, run_type, strategy) DO UPDATE SET
+              portfolio_value    = COALESCE(excluded.portfolio_value,    portfolio_value),
+              daily_return       = COALESCE(excluded.daily_return,       daily_return),
+              sharpe_21d         = COALESCE(excluded.sharpe_21d,         sharpe_21d),
+              sharpe_63d         = COALESCE(excluded.sharpe_63d,         sharpe_63d),
+              sharpe_252d        = COALESCE(excluded.sharpe_252d,        sharpe_252d),
+              realized_vol_21d   = COALESCE(excluded.realized_vol_21d,   realized_vol_21d),
+              realized_vol_252d  = COALESCE(excluded.realized_vol_252d,  realized_vol_252d),
+              max_drawdown_252d  = COALESCE(excluded.max_drawdown_252d,  max_drawdown_252d),
+              var_95_21d         = COALESCE(excluded.var_95_21d,         var_95_21d),
+              var_99_21d         = COALESCE(excluded.var_99_21d,         var_99_21d),
+              beta_spy_252d      = COALESCE(excluded.beta_spy_252d,      beta_spy_252d),
+              computed_at        = CURRENT_TIMESTAMP""",
+        payload,
+    )
+    return len(payload)
+
+
 def record_forward_returns(
     conn: sqlite3.Connection | None,
     rows: Iterable[dict],
@@ -652,4 +735,5 @@ __all__ = [
     "record_training_run",
     "record_forward_returns",
     "record_live_state_snapshot",
+    "record_portfolio_metrics",
 ]
