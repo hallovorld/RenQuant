@@ -96,8 +96,15 @@ def fetch_ohlcv(
     end: str | None = None,
     provider: str = "yfinance",
     cache: bool = True,
+    timeout_sec: float = 30.0,
 ) -> pd.DataFrame:
-    """Fetch OHLCV data, using a local Parquet cache when possible."""
+    """Fetch OHLCV data, using a local Parquet cache when possible.
+
+    Has a HARD TIMEOUT on the remote fetch (default 30s). If the upstream
+    (yfinance / OpenBB) hangs (classic CLOSE_WAIT socket leak), the call
+    returns None instead of blocking forever. Notebook was observed
+    hanging 4 hours on a yfinance call 2026-04-24 — this prevents that.
+    """
     store = _default_store
 
     if cache and store.has_range(symbol, start=start, end=end):
@@ -106,13 +113,28 @@ def fetch_ohlcv(
             return cached
 
     if provider == "yfinance":
-        from openbb import obb  # lazy import — OpenBB init is slow
-        kwargs: dict = {"symbol": symbol, "provider": "yfinance"}
-        if start:
-            kwargs["start_date"] = start
-        if end:
-            kwargs["end_date"] = end
-        df = obb.equity.price.historical(**kwargs).to_df()
+        def _fetch_yf():
+            from openbb import obb  # lazy import — OpenBB init is slow
+            kwargs: dict = {"symbol": symbol, "provider": "yfinance"}
+            if start:
+                kwargs["start_date"] = start
+            if end:
+                kwargs["end_date"] = end
+            return obb.equity.price.historical(**kwargs).to_df()
+
+        from kernel.net_safety import call_with_timeout  # noqa: PLC0415
+        df = call_with_timeout(
+            _fetch_yf,
+            timeout_sec=timeout_sec,
+            label=f"fetch_ohlcv({symbol})",
+        )
+        if df is None:
+            raise RuntimeError(
+                f"fetch_ohlcv({symbol!r}) timed out after {timeout_sec}s. "
+                f"Upstream yfinance/OpenBB hung (likely CLOSE_WAIT). "
+                f"Rerun after checking network; check data/ohlcv/{symbol}/1d.parquet "
+                f"for cached history."
+            )
     else:
         raise ValueError(f"Unknown provider {provider!r}. Supported: ['yfinance']")
 
