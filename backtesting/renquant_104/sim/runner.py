@@ -93,16 +93,18 @@ def run_backtest(
     panel_factor_frames:  "dict[str, pd.DataFrame] | None" = None,
     backtest_start:       "str | None" = None,
     backtest_end:         "str | None" = None,
-    snapshot:             bool = False,
+    snapshot:             bool = True,
 ) -> SimResult:
     """Run the OOS sim through SimAdapter + InferencePipeline.
 
-    When ``snapshot=True`` the function snapshots `strategy_dir` into a
-    tmp location (artifacts + models + strategy_config*.json) for the
-    duration of the run, then deletes the snapshot. Use this in
-    notebook sims if you may retrain between sim runs — without
-    snapshotting, a mid-notebook retrain can mutate artifacts live and
-    invalidate the sim's reproducibility.
+    ``snapshot`` defaults to True (2026-04-24 policy change): every sim
+    call freezes a copy of `strategy_dir` (artifacts + models +
+    strategy_config*.json) into a tmp location for the duration of the
+    run, then deletes the snapshot. This prevents a concurrent retrain
+    (notebook + daily cron + manual script) from mutating the sim's
+    view mid-run. Pass ``snapshot=False`` to opt out (e.g. automated
+    tests that don't care about isolation, or smoke tests that need
+    sub-millisecond startup).
     """
     # Snapshot wrapper — recurse into the same function with snapshot=False
     # so the core body stays linear. kernel/artifact_snapshot.py handles

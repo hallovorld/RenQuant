@@ -29,7 +29,9 @@ class TestSnapshotFlag:
         from sim.runner import run_backtest
         sig = inspect.signature(run_backtest)
         assert "snapshot" in sig.parameters
-        assert sig.parameters["snapshot"].default is False
+        # Default flipped to True on 2026-04-24 — all sim calls are
+        # isolated against concurrent retrains unless opted out.
+        assert sig.parameters["snapshot"].default is True
 
     def test_snapshot_routes_through_context_manager(self, tmp_path, monkeypatch):
         """snapshot=True must call snapshot_artifacts_ctx at least once."""
