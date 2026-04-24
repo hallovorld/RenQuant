@@ -181,6 +181,44 @@ Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_res
 
 **renquant_104 conviction multiplier**: when `ranking.panel_scoring.sizing.enabled=true`, `max_position_pct` is multiplied by `conviction_multiplier(panel_score)` before sizing. The multiplier maps panel score to a `[min_mult, 1.0]` range using config floor/ceiling bounds — higher-conviction candidates get up to the full `max_position_pct`, weaker ones are sized down to `min_mult × max_position_pct`. See `kernel/sizing.py::conviction_multiplier`.
 
+### Kelly-optimal sizing (golden v4+)
+
+When `ranking.kelly_sizing.enabled=true`, `ApplyKellySizingTask` computes a per-candidate target weight directly from μ/σ² (NGBoost predictions):
+
+```
+f* = μ / σ²
+kelly_target = min(max_position_pct × confidence, max_concentration, fractional × f*)
+```
+
+Three decision surfaces share this target:
+
+1. **`SizeAndEmitTask`** — new-buy size clamped to `kelly_target × conviction × sigma_mult` (or `kelly_target` alone when `disable_extra_multipliers=true`, per 2026-04-24 pure-Kelly flag)
+2. **`TopUpHeldTask`** — adds to under-weight holdings when `kelly_target - current_pct > top_up_threshold` (default 0.05)
+3. **`TrimHeldTask`** (**opt-in, `trim_enabled: false` default after 2026-04-24 A/B showed net regression**) — emits partial sell when `current_pct - kelly_target > trim_threshold`. Audit guards: skip when `kelly_target < trim_target_floor` (default 0.05, kelly signal too noisy) or `hs.mu <= 0` (model turned bearish — use full exit path).
+
+### Multi-entry accumulation (`per_session_buy_cap`)
+
+When set (e.g. 0.35), any single-bar BUY order is capped at that fraction regardless of `kelly_target`. Over multiple sessions, TopUpHeldTask can continue building toward the full target up to `max_concentration`. User spec 2026-04-24: "65% OK, but not from one session".
+
+### Partial-sell infra
+
+`ExitSignal` carries optional `quantity: float | None`:
+- `None` (default) → full liquidation
+- `0 < quantity < current_shares` → partial sell; position stays open with cost basis + tenure preserved
+- `quantity ≥ current_shares` → full liquidation (same as None)
+
+Adapter paths in `sim.py::_apply_sell` and `runner.py` both honour this; live runner also preserves `entry_dates` / `position_hwm` / `sell_streaks` on partial trims.
+
+### Thesis-degradation rotation (opt-in, `thesis_rotation.enabled: false` default)
+
+Rotation comparison of today's candidate vs held position's **fixed entry-time baseline** (not noisy today-vs-today Kelly deltas). Rules:
+
+- `degradation = (held.entry_rank_score − held.today_rank_score) / held.entry_rank_score`
+- `uplift = cand.today_rank_score − held.entry_rank_score`
+- Swap only when `degradation ≥ degradation_pct AND uplift ≥ uplift_pct`
+
+`HoldingState.entry_{rank,panel,kelly_target}_score` fields are stamped at buy time by all three adapters (sim, LEAN, live). Live runner persists them in `live_state.json::entry_signals`.
+
 ## Exit Logic (renquant_103/104 priority order)
 
 1. **Trailing stop** (BULL_CALM only): activates once position's peak gain (HWM-based) reaches ≥20% from entry; then trails 18% below the rolling high-water mark. Stop stays armed even after pullbacks — uses peak gain, not current gain. Allows winners like NVDA/PLTR to run through minor corrections.

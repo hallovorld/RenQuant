@@ -326,7 +326,7 @@ This applies to:
 - `tests/test_training_cadence.py`: 8 tests — `training.cadence` gate (daily preserves existing behavior, weekly short-circuits off-cadence days, `--force` bypass).
 - `tests/test_fundamentals_cache.py`: 9 tests — `FundamentalsStore` parquet cache + `fetch_fundamentals` with injected provider.
 - **When adding any new feature to notebook or LEAN**, add paired tests to `test_policy_alignment.py` before committing. Both sides must be covered with equal test counts.
-- Total test count as of last update: ~1072 collected (Plan G added `test_hourly_features.py` 17 + `test_panel_hourly_wiring.py` 10; Plan F added `test_regime_calibrator.py` 10; previous suites: `test_panel_transformer.py` 12 + `test_transformer_scorer.py` 5 + `test_transformer_pipeline_integration.py` 4 + `test_ensemble_scorer.py` 6 + `test_recalibrate_scores.py` 2 + universe_floor + drawdown-reset regressions). 2 invariants opt-in via `RENQUANT_FULL_SIM=1`. Run `python -m pytest tests/ -v` to verify exact count.
+- Total test count as of last update: **~1307 collected (2026-04-24)** — up from ~1072 on prior. 2026-04-24 session added: test_training_run_audit migration tests (+3), test_blocked_by_population (+9), test_forward_returns_backfill (+8), test_bull_vol_block (+9), test_partial_sell (+7), test_trim_held (+13), test_kelly_rotation_gate (+11), test_kelly_pure_mode (+4), test_cusum_cooldown_v2 (+14), test_live_state_snapshot (+7), test_multi_entry_accumulation (+7), test_thesis_rotation (+8), test_db_separation (+13), test_panel_scoring_job update (+1). Plan G: test_hourly_features (+17), test_panel_hourly_wiring (+10). Plan F: test_regime_calibrator (+10). Other: test_panel_transformer (+12), test_transformer_scorer (+5), test_transformer_pipeline_integration (+4), test_ensemble_scorer (+6), test_recalibrate_scores (+2), universe_floor + drawdown-reset regressions. 2 invariants opt-in via `RENQUANT_FULL_SIM=1`. Run `python -m pytest tests/ --collect-only -q | tail -3` for exact.
 - `tests/test_no_trade_monitor.py` — 11 tests for MonitorIdleStreakTask + SimResult streak surface + adapter round-trip. Guards the "no systematic no-trade periods" contract (CLAUDE.md 2b).
 - `tests/test_no_trade_invariant.py` — 2 opt-in full-sim tests asserting `longest_no_trade_streak < 20` on current config.
 - `tests/test_earnings_surprise.py` — 9 tests for yfinance-backed surprise cache + trailing-4Q factor.
@@ -338,6 +338,18 @@ This applies to:
 - `tests/test_hourly_features.py` — 17 tests for Plan G `compute_hourly_features()` (synthetic-session OHLCV → morning/afternoon_drift, vwap_premium, vol_ratio, intraday_realized_vol, overnight_gap).
 - `tests/test_panel_hourly_wiring.py` — 8 tests for Plan G step 2 (HourlyBarStore parquet cache, LoadHourlyBarsTask flag/load paths, TickerPanelFactorJob merges 6 hourly columns, FactorZScoreTask emits `{col}_z`).
 - `tests/test_regime_calibrator.py` — 10 tests for Plan F (`fit_regime_conditional` split/skip/round-trip, `LoadGlobalCalibrationTask` populates pooled + regime dict, `ApplyGlobalCalibrationTask` dispatches to regime or pooled fallback).
+- `tests/test_blocked_by_population.py` — 9 tests for Plan P — `run_selection_loop` out-param populates per-ticker rejection reason (wash_sale / sector / correlation / tier / defensive_non_bear), adapter plumbing + DB write-through verified.
+- `tests/test_forward_returns_backfill.py` — 8 tests for Plan AA — `ticker_forward_returns` table schema + upsert semantics + `scripts/backfill_forward_returns.py` end-to-end.
+- `tests/test_bull_vol_block.py` — 9 tests for BULL_VOL-reversal gate (flag default off, defensives-only mode, full-cash mode, job ordering).
+- `tests/test_partial_sell.py` — 7 tests for `ExitSignal.quantity` partial-sell infra (enables AB-trim Kelly rebalance).
+- `tests/test_trim_held.py` — 17 tests for `TrimHeldTask` Kelly rebalance trim (opt-in default off per A/B regression; audit guards for Kelly target floor + mu <= 0).
+- `tests/test_kelly_rotation_gate.py` — 11 tests for BC Kelly-delta rotation gate + audit guards (kelly_target_floor, mu <= 0 dispatch).
+- `tests/test_kelly_pure_mode.py` — 4 tests for `disable_extra_multipliers` flag (pure Kelly sizing without conv/sigma_mult stacking).
+- `tests/test_cusum_cooldown_v2.py` — 14 tests for Design C confidence-scaled CUSUM cooldown (wall-time mode promoted to golden v4.1 on 2026-04-24).
+- `tests/test_live_state_snapshot.py` — 7 tests for Plan S — `live_state_snapshots` table, record_live_state_snapshot, state_json roundtrip.
+- `tests/test_multi_entry_accumulation.py` — 7 tests for `per_session_buy_cap` in SizeAndEmitTask + TopUpHeldTask.
+- `tests/test_thesis_rotation.py` — 8 tests for Approach A — thesis-degradation rotation gate (compare today vs fixed entry-time baseline, not noisy kelly deltas).
+- `tests/test_db_separation.py` — 13 tests for sim/live DB split (`get_connection(role=)`, `clear_sim_tables`, per-run TRUNCATE, derived tables preserved).
 
 ### 2a. Promotion Thresholds Are Not Floors for Theoretically-Sound Wins
 
@@ -396,9 +408,10 @@ After any non-trivial change, run `/update-docs` or manually sync:
 
 | Doc | What it covers |
 |-----|----------------|
-| `doc/golden_config_2026-04-23.md` | **Current golden** — v3 (hourly-enhanced panel, +44.20% APY after-tax). v1/v2 history inline. Revert here if a future change drops portfolio APY below 20% on the 27-month OOS window. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
+| `doc/golden_config_2026-04-23.md` | **Current golden = v4.1** (CUSUM wall_time, +39.82% sweep APY, ~+65% expected live). v1 → v2 → v3 → v4 → v4.1 history inline at bottom. Revert here if a future change drops portfolio APY. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
+| `doc/database.md` | **DB reference** — two-file architecture (data/runs.db live + data/sim_runs.db sim), 7 tables × full column schema, common queries, schema migration rules, retention plan. DB is a core asset — consult before adding columns. |
 | `doc/improvement_roadmap.md` | **Living roadmap** — Active queue (pending work) + Completed archive. Work through top-down. |
-| `doc/session_handoff_2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Short version of the day for the next pickup. |
+| `doc/session_handoff_2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Superseded on 2026-04-24 by roadmap update + 26 commits (M⁺/P/AA/Trim/BC/CUSUM-v2-PROMOTED-v4.1/S/Kelly-pure/Multi-entry/Thesis-A/DB split). |
 | `doc/panel_training_runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
 | `doc/panel_ltr_primer.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
 | `doc/environment.md` | Python deps (`requirements.lock.txt`), critical lib versions, non-Python tooling (Docker / LEAN / launchd), env vars. Reproducibility source of truth. |

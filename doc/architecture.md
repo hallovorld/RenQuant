@@ -246,11 +246,11 @@ Each phase is skippable via CLI flag (`--skip-baseline`, `--skip-panel`, `--skip
 
 Both LEAN and the live runner need to translate their own state representations into `InferenceContext` and commit results back. Adapters handle this translation:
 
-| Adapter | Location | Translates |
-|---------|----------|-----------|
-| `LeanAdapter` | `adapters/lean.py` | LEAN `Portfolio`, `Securities`, `History()` → `InferenceContext`; commits via `Liquidate()` / `SetHoldings()` |
-| `RunnerAdapter` | `adapters/runner.py` | Broker account state + parquet OHLCV + `live_state.json` → `InferenceContext`; commits via `broker.place_order()` + state save |
-| `NotebookAdapter` | (inline in notebook) | Pre-loaded OHLCV + simulated portfolio state → `InferenceContext` for backsimulation |
+| Adapter | Location | Translates | DB role |
+|---------|----------|-----------|---------|
+| `LeanAdapter` | `adapters/lean.py` | LEAN `Portfolio`, `Securities`, `History()` → `InferenceContext`; commits via `Liquidate()` / `SetHoldings()` | (none — LEAN backtester currently does not write to DB; see `doc/database.md` future work) |
+| `RunnerAdapter` | `adapters/runner.py` | Broker account state + parquet OHLCV + `live_state.json` → `InferenceContext`; commits via `broker.place_order()` + state save + DB append | `data/runs.db` (authoritative, permanent) |
+| `SimAdapter` | `adapters/sim.py` | Pre-loaded OHLCV + simulated portfolio state → `InferenceContext` for backsimulation (drives notebook + `sim.runner.run_backtest`) | `data/sim_runs.db` (ephemeral; TRUNCATEd at start of every `run_backtest`) |
 
 **Isolation rules:**
 - `kernel/` — no `common/` imports; stdlib + numpy + pandas only (Docker-safe)
