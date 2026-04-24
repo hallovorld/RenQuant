@@ -145,6 +145,65 @@ class TestMissingKellyFalsBack:
         assert len(ctx.rotations) == 1
 
 
+class TestBCAuditGuards:
+    """Ported from AB-trim audit (CLAUDE.md §2b). Kelly target is noisy
+    bar-to-bar; don't filter a swap pair based on kelly delta when the
+    held's Kelly signal is too weak to be meaningful."""
+
+    def test_skip_gate_when_held_kelly_below_floor(self):
+        """Held Kelly 0.03 < floor 0.05 → gate skipped, pair kept."""
+        entry_d = datetime.date(2026, 1, 10)
+        holdings = {"NVDA": _hs(entry_d, kelly_target=0.03, er=0.01)}
+        ranked = [_cand("TSLA", er=0.10, kelly_target=0.30)]
+        ctx = _ctx(holdings, ranked, kelly_rot_advantage=0.10)
+        BuildPairsTask().run(ctx)
+        assert len(ctx.rotations) == 1
+        assert ctx.counters.get("kelly_rotation_guard_skipped", 0) == 1
+        assert ctx.counters.get("kelly_rotation_rejects", 0) == 0
+
+    def test_skip_gate_when_held_mu_nonpositive(self):
+        """Held mu < 0 → model bearish, don't Kelly-gate the swap."""
+        entry_d = datetime.date(2026, 1, 10)
+        # Set mu on the HoldingState explicitly
+        from kernel.exits import HoldingState
+        h = HoldingState(
+            entry_price=100.0, entry_date=entry_d,
+            shares=100, high_watermark=100.0,
+        )
+        h.rank_score = 0.3
+        h.expected_return = 0.02
+        h.panel_score = 0.3
+        h.kelly_target_pct = 0.15
+        h.mu = -0.01   # bearish
+        holdings = {"NVDA": h}
+        ranked = [_cand("TSLA", er=0.10, kelly_target=0.12)]
+        ctx = _ctx(holdings, ranked, kelly_rot_advantage=0.10)
+        BuildPairsTask().run(ctx)
+        assert len(ctx.rotations) == 1
+        assert ctx.counters.get("kelly_rotation_guard_skipped", 0) == 1
+
+    def test_normal_gate_fires_when_signals_healthy(self):
+        """Control: held Kelly 0.10 above floor, mu positive → gate can still filter."""
+        entry_d = datetime.date(2026, 1, 10)
+        from kernel.exits import HoldingState
+        h = HoldingState(
+            entry_price=100.0, entry_date=entry_d,
+            shares=100, high_watermark=100.0,
+        )
+        h.rank_score = 0.3
+        h.expected_return = 0.02
+        h.panel_score = 0.3
+        h.kelly_target_pct = 0.10
+        h.mu = 0.03
+        holdings = {"NVDA": h}
+        ranked = [_cand("TSLA", er=0.10, kelly_target=0.12)]
+        ctx = _ctx(holdings, ranked, kelly_rot_advantage=0.10)
+        BuildPairsTask().run(ctx)
+        assert len(ctx.rotations) == 0
+        assert ctx.counters.get("kelly_rotation_rejects", 0) == 1
+        assert ctx.counters.get("kelly_rotation_guard_skipped", 0) == 0
+
+
 class TestPanelAndKellyGatesCombine:
     """Both gates can run in sequence — each filters independently."""
 

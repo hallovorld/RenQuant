@@ -250,18 +250,48 @@ class BuildPairsTask(Task):
         # to beat held.kelly_target_pct by kelly_rot_advantage. Pairs
         # with missing Kelly target on either side skip the gate (fall
         # back to prior decision).
+        #
+        # Preventive guards (ported from AB-trim audit 2026-04-24,
+        # CLAUDE.md §2b): kelly_target is noisy bar-to-bar. Don't filter
+        # a pair based on NOISE when:
+        #   * held.kelly_target < floor (too small to drive a swap
+        #     decision — let ER-based rule handle it)
+        #   * held.mu <= 0 (model turned bearish; swapping is fine,
+        #     don't block it with a stale Kelly comparison)
+        # Default kelly_target_floor = 0.05.
+        kelly_target_floor = float(kelly_cfg.get("rotation_target_floor", 0.05))
         if kelly_rot_advantage > 0.0 and pairs:
             cand_kt = {c.ticker: getattr(c, "kelly_target_pct", None)
                        for c in eligible_candidates}
             held_kt = {t: getattr(hs, "kelly_target_pct", None)
                        for t, hs in ctx.holdings.items()}
+            held_mu = {t: getattr(hs, "mu", None)
+                       for t, hs in ctx.holdings.items()}
             kept = []
             rejected = 0
+            guard_skipped = 0
             for p in pairs:
                 c_kt = cand_kt.get(p.buy_ticker)
                 h_kt = held_kt.get(p.sell_ticker)
-                if (c_kt is None or h_kt is None
-                        or (c_kt - h_kt) >= kelly_rot_advantage):
+                h_mu = held_mu.get(p.sell_ticker)
+
+                # Fallback: missing Kelly data → keep pair.
+                if c_kt is None or h_kt is None:
+                    kept.append(p)
+                    continue
+                # Guard: held Kelly too small to drive swap decision.
+                if h_kt < kelly_target_floor:
+                    kept.append(p)
+                    guard_skipped += 1
+                    continue
+                # Guard: held mu bearish — don't Kelly-block a rational
+                # swap based on a stale / noisy Kelly target.
+                if h_mu is not None and h_mu <= 0:
+                    kept.append(p)
+                    guard_skipped += 1
+                    continue
+
+                if (c_kt - h_kt) >= kelly_rot_advantage:
                     kept.append(p)
                 else:
                     rejected += 1
@@ -272,6 +302,10 @@ class BuildPairsTask(Task):
             if rejected:
                 ctx.counters["kelly_rotation_rejects"] = (
                     ctx.counters.get("kelly_rotation_rejects", 0) + rejected
+                )
+            if guard_skipped:
+                ctx.counters["kelly_rotation_guard_skipped"] = (
+                    ctx.counters.get("kelly_rotation_guard_skipped", 0) + guard_skipped
                 )
             pairs = kept
 
