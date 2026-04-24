@@ -382,7 +382,8 @@
     "fundamentals": {
       "enabled": true,
       "cache_dir": "data/fundamentals",
-      "allow_fetch": true
+      "allow_fetch": true,
+      "skip_tickers": ["XLF", "XLU", "XLK", "GLD", "TLT", "XLV"]
     },
     "backend": "xgboost",
     "lightgbm_params": {
@@ -425,13 +426,15 @@
     "earnings_surprise": {
       "enabled": true,
       "cache_dir": "data/earnings_surprise",
-      "allow_fetch": true
+      "allow_fetch": true,
+      "skip_tickers": ["XLF", "XLU", "XLK", "GLD", "TLT", "XLV"]
     },
     "insider_trades": {
       "enabled": true,
       "cache_dir": "data/insider_trades",
       "allow_fetch": true,
-      "max_filings": 200
+      "max_filings": 200,
+      "skip_tickers": ["ASML", "SHOP", "NVO", "TSM", "GLD", "XLF", "XLU", "XLK", "TLT", "XLV"]
     },
     "hourly": {
       "enabled": true,

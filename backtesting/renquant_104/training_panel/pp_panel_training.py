@@ -218,12 +218,21 @@ class LoadFundamentalsTask(PanelTask):
         store = FundamentalsStore(data_dir=cache_dir)
         refetch = bool(cfg.get("refetch", False))
 
+        # Negative-cache 2026-04-24: permanently-empty tickers (ETFs
+        # without fundamentals, foreign stocks outside OpenBB coverage)
+        # get skipped to avoid per-run refetch timeouts. User spec:
+        # "本地数据 up to date 的时候不需要再下载了".
+        skip_set = set(cfg.get("skip_tickers", []))
+
         out: dict[str, dict[str, float]] = {}
         for sym in ctx.watchlist:
+            if sym in skip_set:
+                continue
             cached = None if refetch else store.latest(sym)
             if cached is not None:
                 out[sym] = cached
-        missing = [s for s in ctx.watchlist if s not in out]
+        missing = [s for s in ctx.watchlist
+                   if s not in out and s not in skip_set]
         if missing and cfg.get("allow_fetch", True):
             log.info("LoadFundamentalsTask: fetching %d missing tickers", len(missing))
             try:
@@ -233,8 +242,8 @@ class LoadFundamentalsTask(PanelTask):
                 log.warning("LoadFundamentalsTask: fetch_fundamentals_watchlist failed — %s", exc)
 
         ctx.fundamentals = out
-        log.info("LoadFundamentalsTask: %d / %d tickers with fundamentals",
-                 len(out), len(ctx.watchlist))
+        log.info("LoadFundamentalsTask: %d / %d tickers with fundamentals (%d skipped)",
+                 len(out), len(ctx.watchlist), len(skip_set))
 
 
 class LoadEarningsSurpriseTask(PanelTask):
@@ -258,13 +267,19 @@ class LoadEarningsSurpriseTask(PanelTask):
 
         cache_dir = cfg.get("cache_dir", "data/earnings_surprise")
         store = EarningsSurpriseStore(data_dir=cache_dir)
+        # Negative-cache (2026-04-24): skip tickers with no earnings
+        # (ETFs, commodity funds) to avoid per-run retry timeouts.
+        skip_set = set(cfg.get("skip_tickers", []))
 
         out: dict = {}
         for sym in ctx.watchlist:
+            if sym in skip_set:
+                continue
             cached = store.load(sym)
             if cached is not None and not cached.empty:
                 out[sym] = cached
-        missing = [s for s in ctx.watchlist if s not in out]
+        missing = [s for s in ctx.watchlist
+                   if s not in out and s not in skip_set]
         if missing and cfg.get("allow_fetch", True):
             log.info("LoadEarningsSurpriseTask: fetching %d missing tickers", len(missing))
             try:
@@ -302,13 +317,19 @@ class LoadInsiderTradesTask(PanelTask):
         cache_dir = cfg.get("cache_dir", "data/insider_trades")
         max_filings = int(cfg.get("max_filings", 200))
         store = InsiderTradesStore(data_dir=cache_dir)
+        # Negative-cache (2026-04-24): foreign stocks + ETFs have no
+        # SEC Form 4 filings — skip to avoid EDGAR rate-limit burn.
+        skip_set = set(cfg.get("skip_tickers", []))
 
         out: dict = {}
         for sym in ctx.watchlist:
+            if sym in skip_set:
+                continue
             cached = store.load(sym)
             if cached is not None and not cached.empty:
                 out[sym] = cached
-        missing = [s for s in ctx.watchlist if s not in out]
+        missing = [s for s in ctx.watchlist
+                   if s not in out and s not in skip_set]
         if missing and cfg.get("allow_fetch", True):
             log.info("LoadInsiderTradesTask: fetching %d missing tickers (rate-limited SEC)",
                      len(missing))

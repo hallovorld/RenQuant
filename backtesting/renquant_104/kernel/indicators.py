@@ -126,7 +126,14 @@ compute_indicators = compute_all
 # ── Regime-context features added to inference frames ────────────────────────
 
 def build_spy_context(spy_df: pd.DataFrame, vol_window: int = 20) -> dict:
-    """Return SPY regime-context scalar features for the latest bar."""
+    """Return SPY regime-context scalar features for the latest bar.
+
+    Legacy shape — returns scalars from the LAST bar of spy_df. Used by
+    the live runner path which always truncates spy_df to today before
+    calling. The sim cache path should use `build_spy_context_series`
+    for strict causality (scalars from the last bar broadcast across
+    all rows introduces lookahead when the cache holds the full range).
+    """
     spy_close   = spy_df["close"].astype(float)
     spy_returns = spy_close.pct_change().dropna()
     adx_val     = float(compute_adx(
@@ -144,6 +151,57 @@ def build_spy_context(spy_df: pd.DataFrame, vol_window: int = 20) -> dict:
         "hurst_proxy": float(np.corrcoef(spy_returns.values[-20:-1], spy_returns.values[-19:])[0, 1])
             if len(spy_returns) >= 21 else 0.0,
     }
+
+
+def build_spy_context_series(spy_df: pd.DataFrame, vol_window: int = 20) -> pd.DataFrame:
+    """Return SPY regime-context features as PER-BAR time series.
+
+    2026-04-24 audit: the scalar form (`build_spy_context`) computes
+    from the LAST bar and broadcasts. When sim feature-cache holds the
+    full OHLCV range, the "last bar" is 2026-03-26 — future info
+    relative to any prior bar. Strictly-causal rolling version below.
+
+    Each output series is causal (uses only data up to and including
+    time t). Designed so `build_feature_frame(full_history)` sliced at
+    any bar produces the SAME value as building on OHLCV-truncated-to-
+    that-bar.
+    """
+    spy_close   = spy_df["close"].astype(float)
+    spy_returns = spy_close.pct_change()
+
+    # Rolling annualised realised vol (trailing vol_window bars)
+    realized_vol = spy_returns.rolling(vol_window).std() * (252 ** 0.5)
+    realized_vol = realized_vol.fillna(0.0)
+
+    # ADX is already causal (uses only bars up to and including t)
+    adx_series = compute_adx(
+        spy_df["high"].astype(float),
+        spy_df["low"].astype(float),
+        spy_close,
+    ).fillna(25.0)
+
+    # Close-to-EMA50 ratio at each bar — EMA is causal
+    ema50  = spy_close.ewm(span=50, adjust=False).mean()
+    trend  = (spy_close / ema50.replace(0, float("nan"))).fillna(1.0)
+
+    # Hurst proxy: rolling 20-bar AR(1) autocorrelation.
+    # Each bar's value depends only on returns[t-19..t] — strictly causal.
+    def _ar1(window: np.ndarray) -> float:
+        if len(window) < 2:
+            return 0.0
+        a, b = window[:-1], window[1:]
+        if np.std(a) == 0 or np.std(b) == 0:
+            return 0.0
+        return float(np.corrcoef(a, b)[0, 1])
+
+    hurst = spy_returns.rolling(20).apply(_ar1, raw=True).fillna(0.0)
+
+    return pd.DataFrame({
+        "spy_realized_vol": realized_vol,
+        "spy_adx":          adx_series,
+        "spy_trend":        trend,
+        "hurst_proxy":      hurst,
+    })
 
 
 def build_feature_frame(
