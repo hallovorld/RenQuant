@@ -35,6 +35,60 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 
 ---
 
+## 🆕 2026-04-24 PT — late-session pending queue (post-compact)
+
+Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are in flight; ✅ done; ⏳ waiting on A/B or wall-clock; 🔴 not started. Updated at every ship.
+
+### 🟡 In-flight / just shipped (post-compact session)
+- ✅ **TTL gate** `training.model_ttl_days` (per-ticker skip when fresh) — default 1.
+- ✅ **Drift-guard hook** `scripts/install_git_hooks.sh` + daily_104 integration.
+- ✅ **run_backtest(snapshot=True)** default — notebook sims auto-isolate.
+- ✅ **pytest-xdist + OMP=1** — full suite 25 min hang → 14 sec.
+- ✅ **net_safety daemon threads** — no more teardown hangs.
+- ✅ **RENQUANT_NO_NOTIFY** env — tests don't spam user's ntfy.
+- ✅ **10-min bar infra** — MinuteBarStore + fetch_minute_bars.py + compute_minute_features (10 features w/ `m_` prefix). Default off, flag `panel_ltr.minute.enabled`.
+- ✅ **sim/analysis.strip_top_n_trades** — notebook robustness check for lucky-winner alpha.
+- ✅ **Kelly-pure A/B** — result: **ΔAPY 0** (flag is no-op under current golden; conv/σ_mult already ≈1.0). Verdict: shelve.
+- 🟡 **panel_conviction_exit A/B** — running now (`/tmp/panel_exit_ab.py`).
+
+### 🔴 Still not shipped — user-prioritized
+
+| # | Task | Est | Blocker |
+|---|------|---|---|
+| **Rotation V1** | `rotation.min_raw_advantage_pct` + `rotation.persistence_bars` | 1 h | run after panel_exit A/B; user flagged rotation as core APY lever |
+| **Rotation V2** | Direct μ − λσ driver (vs calibrated ER) + σ-alignment gate | 2 h | V1 result |
+| **Rotation V3** | Regime-conditional (disable in BULL_VOLATILE) + drawdown-of-held gate | 1 h | V2 result |
+| **CUSUM-v2 re-confirm** | Isolated A/B under snapshot (re-validate +1.97 under stable artifacts) | 30 min sim | sim queue |
+| **J hourly pruning** | Drop `morning_drift_z` / `overnight_gap_z` / `vol_ratio_z`; retrain + A/B | 4 h | re-train cycle |
+| **AB-trim A/B** | tight vs hysteresis vs GOLDEN-off (previously measured -12.7 pt for default-on, CLAUDE.md §2b audit says "bug, not theory") | 1 h sim + audit | — |
+| **Kelly-tier-tune A/B** | 0.27 → 0.35 tier-1 threshold | 1 h sim | — |
+| **Kelly-full-sweep** | 10-point grid (fractional × max_concentration) | notebook | — |
+| **Multi-entry cap A/B** | `per_session_buy_cap = 0.35`, cumulative 65% | 1 h sim | — |
+| **Q rotation 2D sweep** | `{14,21,30}d × {0.0,0.02,0.05}` matrix | 3 h sim | only if V1/V2/V3 show signal |
+
+### 🔴 User just-now-mentioned big asks
+
+| Task | Scale | Blocker |
+|---|---|---|
+| **10-min panel retrain (end-to-end)** | Fetch 10-min bars (2yr × 44 sym) → retrain panel with `m_*` features → A/B vs hourly | 3-4 h wall (Alpaca IEX pull + retrain) |
+| **Transformer retry** | Panel needs > 200k rows; 10-min retrain gets ~280k. Re-run `TransformerModelJob`, A/B vs XGBoost. | blocked on 10-min fetch landing |
+| **Rotation algorithm review** | V1 → V2 → V3 ladder above. User: "核心可以再提升很多 APY" | in progress |
+
+### 🟡 P2 — analysis / diagnostic (no sim, notebook-friendly)
+
+- **L** per-ticker hourly effectiveness (leave-one-out OOS IC)
+- **Panel-IC-drift** diagnosis (±0.03 day-over-day)
+- **BULL_CALM streak watch** (≥20d audit)
+- **sector sub-buckets** (semis / software / cloud)
+- **K** CHOPPY regime re-diagnosis (in-sample -0.116 vs live +0.0354 — real or calibrator artifact?)
+
+### 🟢 P3 — passive / wall-clock gated
+
+- **I** accumulate 4 weeks of Sun live-sustainability data
+- **Transformer gate re-open** when panel > 200k rows (unlocks via 10-min data)
+
+---
+
 ## ✅ 2026-04-24 — shipped today (30+ commits)
 
 **Day 1 (audit foundation):**
