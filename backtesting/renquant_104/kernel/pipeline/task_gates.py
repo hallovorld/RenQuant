@@ -5,7 +5,7 @@ import logging
 
 from .context import InferenceContext
 from .pipeline import Task
-from kernel.config import BEAR
+from kernel.config import BEAR, BULL_VOLATILE
 
 log = logging.getLogger("kernel.pipeline.gates")
 
@@ -51,6 +51,36 @@ class ConfidenceVetoTask(Task):
             log.info("ConfidenceVetoTask: confidence %.2f < %.2f — defensives only",
                      ctx.confidence, threshold)
             return False
+
+
+class BullVolOffensiveBlockTask(Task):
+    """Gate 1c — AA-surfaced: BULL_VOLATILE ranker Spearman IC = -0.172 on
+    real decision-trace data (445 rows). The panel anti-predicts during
+    vol spikes — we'd be buying the worst names. Block offensive buys in
+    BULL_VOLATILE when `regime.bull_vol_block_offensive` is true.
+
+    When on, behaves like BEARBranchTask for BULL_VOL: flips `bear_only=True`
+    so the selection loop only admits defensive tickers. Set
+    `regime.bull_vol_defensives_too = true` to block defensives as well
+    (pure cash position during BULL_VOL).
+
+    Default OFF to preserve current behaviour until A/B validates.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        if ctx.regime != BULL_VOLATILE:
+            return None
+        regime_cfg = ctx.config.get("regime", {})
+        if not bool(regime_cfg.get("bull_vol_block_offensive", False)):
+            return None
+        ctx.counters["bull_vol_blocks"] = ctx.counters.get("bull_vol_blocks", 0) + 1
+        if bool(regime_cfg.get("bull_vol_defensives_too", False)):
+            ctx.buy_blocked = True
+            log.info("BullVolOffensiveBlockTask: BULL_VOLATILE — all buys blocked")
+            return False
+        ctx.bear_only = True
+        log.info("BullVolOffensiveBlockTask: BULL_VOLATILE — defensives only")
+        return False
 
 
 class BEARBranchTask(Task):
