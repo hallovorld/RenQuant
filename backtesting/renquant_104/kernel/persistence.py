@@ -108,6 +108,22 @@ CREATE TABLE IF NOT EXISTS rotations (
 );
 CREATE INDEX IF NOT EXISTS idx_rotations_swap ON rotations(cand_ticker, held_ticker);
 
+-- Plan AA — forward returns keyed by (date, ticker). Decoupled from the
+-- candidate_scores row so we can backfill out-of-band once N days have
+-- elapsed since the decision. Populated by `scripts/backfill_forward_returns.py`.
+CREATE TABLE IF NOT EXISTS ticker_forward_returns (
+    as_of_date  DATE NOT NULL,   -- decision date (matches pipeline_runs.run_date)
+    ticker      TEXT NOT NULL,
+    close_price REAL,            -- close on as_of_date (base for the % changes)
+    fwd_1d      REAL,            -- close[t+1]/close[t] - 1
+    fwd_5d      REAL,
+    fwd_10d     REAL,
+    fwd_20d     REAL,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (as_of_date, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_tfr_ticker ON ticker_forward_returns(ticker);
+
 CREATE TABLE IF NOT EXISTS training_runs (
     run_id         TEXT PRIMARY KEY,
     run_date       TIMESTAMP NOT NULL,
@@ -438,6 +454,47 @@ def record_training_run(
     return run_id
 
 
+def record_forward_returns(
+    conn: sqlite3.Connection | None,
+    rows: Iterable[dict],
+) -> int:
+    """Upsert ticker_forward_returns rows (Plan AA).
+
+    Each row: `{as_of_date, ticker, close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d}`.
+    Any field except (as_of_date, ticker) can be None. Returns number of rows written.
+    """
+    if conn is None:
+        return 0
+    payload = []
+    for r in rows:
+        payload.append((
+            r["as_of_date"] if isinstance(r["as_of_date"], str)
+            else r["as_of_date"].isoformat(),
+            r["ticker"],
+            _none_or_float(r.get("close_price")),
+            _none_or_float(r.get("fwd_1d")),
+            _none_or_float(r.get("fwd_5d")),
+            _none_or_float(r.get("fwd_10d")),
+            _none_or_float(r.get("fwd_20d")),
+        ))
+    if not payload:
+        return 0
+    conn.executemany(
+        """INSERT INTO ticker_forward_returns
+              (as_of_date, ticker, close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(as_of_date, ticker) DO UPDATE SET
+              close_price = COALESCE(excluded.close_price, close_price),
+              fwd_1d      = COALESCE(excluded.fwd_1d, fwd_1d),
+              fwd_5d      = COALESCE(excluded.fwd_5d, fwd_5d),
+              fwd_10d     = COALESCE(excluded.fwd_10d, fwd_10d),
+              fwd_20d     = COALESCE(excluded.fwd_20d, fwd_20d),
+              updated_at  = CURRENT_TIMESTAMP""",
+        payload,
+    )
+    return len(payload)
+
+
 # ── Small helpers ─────────────────────────────────────────────────────────────
 
 def _none_or_float(v: Any) -> float | None:
@@ -466,4 +523,5 @@ __all__ = [
     "record_candidate_scores",
     "record_trades",
     "record_training_run",
+    "record_forward_returns",
 ]
