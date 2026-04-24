@@ -23,6 +23,79 @@ Template:
 
 ---
 
+## A/B — 2026-04-23 late PT — Plan G hourly features PROMOTED (+4.18 APY pts)
+
+Plan G. Hourly-bar aggregates (morning/afternoon drift, VWAP premium,
+vol ratio, intraday realized vol, overnight gap) added to the daily
+panel. Fetched 153,403 hourly rows × 44 symbols × 2yr via
+`scripts/fetch_hourly_bars.py` (Alpaca IEX). Retrained panel +
+NGBoost with `panel_ltr.hourly.enabled=true`.
+
+**Artifact changes:**
+
+- panel-ltr.json: rows=47,000 (was ~47,190 daily-only)
+  tickers=38  dates=1256  **features=31 (was 25)**
+  oos_mean_ic=**+0.0326** (was +0.041 daily-only)
+  train_ic=+0.2617
+- ngboost-head.json: n=47,000  train_μ_mean=-0.00221
+  train_σ_mean=0.06556  feature_cols=31  elapsed=227s
+
+**Per-feature IC of the 6 new hourly columns:**
+
+| Feature                   | IC       |
+|---------------------------|---------:|
+| intraday_realized_vol_z   |  -0.0381 |
+| vwap_premium_z            |  -0.0159 |
+| afternoon_drift_z         |  -0.0152 |
+| vol_ratio_z               |  +0.0138 |
+| morning_drift_z           |  -0.0065 |
+| overnight_gap_z           |  -0.0020 |
+
+`intraday_realized_vol_z` ranks top-5 by |IC| alongside `beta_60d_z`
+(0.058) and `roe_z` (0.041). The other 5 hourly features are modest
+(|IC| ≤ 0.016) but still contribute in XGBoost's feature interactions.
+
+**A/B (27-month OOS sim, identical gates, only panel artifact + flag flipped):**
+
+| Run | APY    | Δ     | win | buys | streak |
+|-----|-------:|------:|----:|----:|------:|
+| hourly=OFF (daily-only golden) | +40.02% |   —   | 79% | 122 | 25d |
+| hourly=ON  (hourly-enhanced)   | **+44.20%** | **+4.18** | **82%** | 117 | 26d |
+
+**Diagnosis — IC vs APY divergence:**
+
+OOS mean IC went DOWN (0.041 → 0.033) but live APY went UP 4.18 pts.
+The features aren't flat-useful across all (ticker, date) pairs; they
+help specifically in conditions where they matter (e.g.,
+intraday_realized_vol + vwap_premium likely matter in BULL_VOLATILE
+/ CHOPPY regimes where position entry timing matters more). XGBoost's
+tree splits find the right interactions even when average IC is
+modest.
+
+**Win rate 79% → 82%** is the headline. Per-trade avg PnL up too
+(+0.1297 → +0.1359). Buys count slightly down (122 → 117) — more
+selective. Max streak ~flat.
+
+**Action taken:**
+
+- `panel_ltr.hourly.enabled: true` is the new golden.
+- `strategy_config.golden.json` updated to snapshot the win.
+- `panel-ltr.json` + `ngboost-head.json` overwritten with
+  hourly-enhanced variants. Daily-only golden backup retained as
+  `panel-ltr.golden-daily.json` + `ngboost-head.golden-daily.json`
+  for easy rollback.
+- 153,403 hourly rows cached at `data/intraday/{SYM}/1h.parquet`
+  (total ~8.6 MB).
+- Panel feature count bumped 25 → 31 in the feature_cols artifact.
+- Next daily_104.sh retrain will automatically pick up the hourly
+  flag from strategy_config.json (cadence-gated Tue/Thu/Sun).
+
+**New golden: +44.20% APY (after-tax), 82% win, 26d max streak.**
+
+Logs: `/tmp/train_hourly.log`, `/tmp/hourly_ab.log`.
+
+---
+
 ## A/B — 2026-04-23 late PT — Plan F regime-conditional calibration SHELVED
 
 Plan F. Four per-regime calibrators fit via

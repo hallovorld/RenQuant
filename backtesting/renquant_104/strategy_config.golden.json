@@ -307,7 +307,12 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json"
+        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "regime_conditional": {
+          "enabled": false,
+          "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
+          "regimes": ["BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"]
+        }
       }
     },
     "universe_floor": {
@@ -402,6 +407,10 @@
       "cache_dir": "data/insider_trades",
       "allow_fetch": true,
       "max_filings": 200
+    },
+    "hourly": {
+      "enabled": true,
+      "cache_dir": "data/intraday"
     },
     "training_window_years": 5.0,
     "recency_weighting": {

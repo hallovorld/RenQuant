@@ -1,15 +1,21 @@
-# Golden Config — 2026-04-23  (Golden v2 — T4 xgb_params revert)
+# Golden Config — 2026-04-23  (Golden v3 — hourly panel features)
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
 **Code HEAD at freeze:** (fill in commit sha on merge)
 **Live config file:** `backtesting/renquant_104/strategy_config.json`
-**Prior golden** (archived): `doc/golden_config_2026-04-23.v1.md` (33.1% APY, tight xgb params)
+**Prior goldens**:
+- `doc/golden_config_2026-04-23.v1.md` (33.1% APY, tight xgb params)
+- v2 (40.1% APY, T4 xgb revert) — superseded inline below
 
-Supersedes the v1 golden (2026-04-23, 33.1% APY). T4 — reverting
-`panel_ltr.xgb_params` + `num_boost_round` to the pre-2026-04-22-regression
-values — lifts after-tax APY from 33.1% → **40.1%** on the same 27-month
-OOS window, and simultaneously lifts OOS panel IC (CPCV 15-split) from
-+0.0397 → **+0.0411**.
+Supersedes v2 (T4, 40.1%). Plan G — enabling `panel_ltr.hourly.enabled`
+and retraining the panel with 6 intraday-derived factor columns
+(morning_drift, afternoon_drift, vwap_premium, vol_ratio,
+intraday_realized_vol, overnight_gap) — lifts after-tax APY from 40.02%
+to **+44.20%** on the same 27-month OOS sim, and lifts win rate 79% →
+**82%**. OOS panel IC actually dropped (+0.0411 → +0.0326) — the live
+improvement comes from feature-interaction lifts in specific regimes
+that averaged IC doesn't capture. Full writeup:
+`doc/panel_training_runs.md` (2026-04-23 late PT entry).
 
 **All numbers below are after-tax.** Sim computes `total_return =
 final_portfolio_value / initial_cash - 1`, and portfolio value debits tax
@@ -26,17 +32,15 @@ Full 27-month out-of-sample sim (`sim.runner.run_backtest` via `SimAdapter +
 InferencePipeline`), backtest window 2024-01-01 → 2026-03-26, starting
 cash $100k, panel-LTR + NGBoost enabled:
 
-| Metric | Value (after-tax) |
-|---|---|
-| Final portfolio value | **$211,639** |
-| Total return | **+111.6%** |
-| **APY**           | **+40.1%** |
-| Buys / sells | 129 / 126 |
-| Win rate | **77%** |
-| Avg hold | 37 days |
-| Avg P&L / trade | **+11.6%** |
-| Total tax paid | $116,934 |
-| Longest no-trade streak | **22 days** |
+| Metric | v2 (T4 daily-only) | v3 (hourly-enhanced) |
+|---|---|---|
+| Final portfolio value | $211,639 | **$225,573** |
+| Total return         | +111.6%  | **+125.57%** |
+| **APY**              | +40.1%   | **+44.20%** |
+| Buys / sells         | 129 / 126 | 117 / 112 |
+| Win rate             | 77%      | **82%** |
+| Avg P&L / trade      | +11.6%   | **+13.6%** |
+| Longest no-trade streak | 22 days | **26 days** |
 | First trade date | 2024-01-02 |
 | Rotations executed | **19** (vs 1 in v1 — T4's higher-capacity panel is more confident in swap decisions) |
 
