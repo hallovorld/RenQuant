@@ -40,6 +40,85 @@ class TestSchema:
             assert required in cols, f"missing column: {required}"
 
 
+class TestLegacySchemaMigration:
+    """Regression for M⁺: pre-Round-5 training_runs tables are missing 9 columns.
+
+    Before the fix, `record_training_run` silently errored on
+    `table training_runs has no column named elapsed_sec` and 0 rows landed.
+    After the fix, `ensure_schema` adds the missing columns in-place.
+    """
+
+    _LEGACY_SCHEMA = """
+    CREATE TABLE training_runs (
+        run_id         TEXT PRIMARY KEY,
+        run_date       TIMESTAMP NOT NULL,
+        strategy       TEXT,
+        artifact_type  TEXT,
+        config_json    TEXT,
+        oos_mean_ic    REAL,
+        train_ic       REAL,
+        n_rows         INTEGER,
+        feature_cols   TEXT,
+        artifact_path  TEXT,
+        commit_sha     TEXT,
+        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+
+    def _legacy_db(self, tmp_path: Path) -> Path:
+        import sqlite3
+        db = tmp_path / "legacy_runs.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(self._LEGACY_SCHEMA)
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_ensure_schema_adds_missing_columns(self, tmp_path):
+        from kernel.persistence import get_connection
+        db = self._legacy_db(tmp_path)
+        conn = get_connection({"persistence": {"enabled": True, "db_path": str(db)}})
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(training_runs)")}
+        for required in ("elapsed_sec", "trigger", "n_tickers", "n_dates",
+                         "n_features", "device", "deterministic",
+                         "training_window_years", "notes"):
+            assert required in cols, f"migration did not add column: {required}"
+
+    def test_record_training_run_succeeds_on_migrated_legacy_db(self, tmp_path):
+        """End-to-end: legacy DB → migration → write row → row is readable."""
+        from kernel.persistence import get_connection, record_training_run
+        db = self._legacy_db(tmp_path)
+        conn = get_connection({"persistence": {"enabled": True, "db_path": str(db)}})
+        rid = record_training_run(
+            conn,
+            strategy      = "renquant_104",
+            artifact_type = "panel-ltr",
+            n_rows        = 47000,
+            n_features    = 31,
+            elapsed_sec   = 92.7,
+            trigger       = "scheduled_weekly",
+            device        = "cpu",
+            deterministic = True,
+            also_log_jsonl= False,
+        )
+        assert rid is not None
+        row = conn.execute(
+            "SELECT elapsed_sec, trigger, n_features, deterministic FROM training_runs WHERE run_id=?",
+            (rid,),
+        ).fetchone()
+        assert row == (92.7, "scheduled_weekly", 31, 1)
+
+    def test_migration_is_idempotent(self, tmp_path):
+        """Calling ensure_schema twice must not error or duplicate columns."""
+        from kernel.persistence import ensure_schema, get_connection
+        conn = get_connection({"persistence": {"enabled": True,
+                                                "db_path": str(tmp_path / "runs.db")}})
+        ensure_schema(conn)  # second call
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(training_runs)")]
+        # No duplicates
+        assert len(cols) == len(set(cols))
+
+
 class TestRecordTrainingRun:
     def test_sqlite_round_trip_with_new_fields(self, tmp_path):
         from kernel.persistence import record_training_run

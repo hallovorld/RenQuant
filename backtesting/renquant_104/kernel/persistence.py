@@ -136,8 +136,37 @@ CREATE INDEX IF NOT EXISTS idx_training_runs_date ON training_runs(run_date);
 """
 
 
+# Idempotent column migrations for tables created before a column was added.
+# SQLite's `CREATE TABLE IF NOT EXISTS` is a no-op on pre-existing tables, so
+# any column added to _SCHEMA_SQL after first creation must also be listed here.
+_COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "training_runs": [
+        ("elapsed_sec",           "REAL"),
+        ("trigger",               "TEXT"),
+        ("n_tickers",             "INTEGER"),
+        ("n_dates",               "INTEGER"),
+        ("n_features",            "INTEGER"),
+        ("device",                "TEXT"),
+        ("deterministic",         "INTEGER"),
+        ("training_window_years", "REAL"),
+        ("notes",                 "TEXT"),
+    ],
+}
+
+
+def _apply_column_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in _COLUMN_MIGRATIONS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue   # CREATE TABLE IF NOT EXISTS just handled the fresh case
+        for name, typ in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_SQL)
+    _apply_column_migrations(conn)
     conn.commit()
 
 
