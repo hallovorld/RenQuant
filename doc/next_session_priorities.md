@@ -9,6 +9,13 @@ End of session 2026-04-23. Five bugs shipped today (O / R / T / HWM / stale test
 | P | Populate `candidate_scores.blocked_by` in DB | Currently all rows have empty `blocked_by`. Impossible to answer "why was XLU not selected?" or "why was X bought?" from audit. Without this, the XLU bug would have been undetectable from DB alone. Write `sector_guard` / `wash_sale` / `correlation_guard` / `tier_threshold` / `defensive_non_bear` from the Selection loop into the column. | 2 h |
 | M⁺ | Training-run audit schema drift fix | `record_training_run` silently swallows `table training_runs has no column named elapsed_sec` → **zero rows** in that table across a week of retrains. Entire training history is ungaudited. Add `elapsed_sec` column + `ALTER TABLE` migration. | 1 h |
 
+## 🧠 P0.5 — decisions / design discussion (block before implementing)
+
+| # | Item | Questions to settle |
+|---|---|---|
+| **AA** | **Decision-factor DB + calibration feedback loop** | (1) Add `ticker_forward_returns(ticker, run_date, fwd_1d/5d/10d, spy_fwd_10d, excess_fwd_10d)` table, populated daily. (2) Write `scripts/analyze_decision_factors.py` to JOIN `candidate_scores` × forward returns → rank-score bucket vs realized outperform curve, per-regime + per-ticker splits. (3) Use output to tune `tiered_thresholds` (currently tier 1=0.10 < base_rate=0.273 → admitting below-chance candidates). Target: set tier 1 ≈ base_rate, tier 2 ≈ +1σ, tier 3 ≈ +2σ. Prerequisite for AB. |
+| **AB** | **Top-up held positions + variable concentration (max_position_pct by conviction)** | User's request 2026-04-23 evening: *"如果 calibrate score 足够好，可以买进已经 hold 的股票！这只股票好的话甚至可以全仓"*. Currently the selection loop ONLY considers tickers NOT in `held_tickers` — no top-up path. Need to decide: (a) **Trigger threshold** — at what panel_score does a held position get topped up? e.g. score ≥ 0.50 AND score gained ≥ 0.15 vs prior bar? (b) **Target size function** — `new_target_pct = f(panel_score)`. Linear? e.g. 15% at score=0.3 → 40% at 0.6 → 100% at 0.9. (c) **Max concentration cap** — really allow 100%? Risk mgmt says no — suggest 35-50% per-ticker ceiling. (d) **Rotation vs top-up interaction** — if held.score lifts and a NEW candidate has higher score, swap or top-up? Default rule of thumb: top-up first if held crosses a tier, then rotate. (e) **Wash-sale & min-hold interplay** — top-up doesn't trigger wash sale (same ticker, no sell) BUT must respect sector guard. (f) **Anti-churn** — need min delta (e.g. `top_up_score_delta ≥ 0.10`) so score noise (IC=0.033) doesn't produce daily top-ups. **Discuss design first, then scope for 2-day build.** |
+
 ## 🟠 P1 — performance / structural
 
 | # | Item | Why it's P1 | Est. |
