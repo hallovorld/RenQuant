@@ -41,12 +41,12 @@ Kelly sizing is **LIVE in golden v4**. Remaining work to fully close the loop:
 | **Kelly × conviction** | `SizeAndEmit` currently does `max_pct = kelly_target × conviction_mult × σ_mult`. Kelly already encodes μ (∝ conviction) and σ — multipliers may double-count. Decide: Kelly alone OR careful blend. | design cleanup | 1 h | — |
 | **Multi-entry accumulation** | Allow Kelly target to be approached over **multiple sessions**, not one big buy. Per-entry cap stays 35%; cumulative cap 65%. Needs `SizeAndEmit` to size the *delta* (kelly_target − current_pct) bounded by per-entry cap, repeated over days. | concentration headroom | 2 h | — |
 
-## 🔥 P0 — New from AA data (2026-04-24)
+## ✅ Resolved from AA data (2026-04-24)
 
-| # | Item | Impact | Est. |
-|---|------|---|---:|
-| **BULL_VOL-reversal** | **BULL_VOLATILE Spearman IC = −0.172 on 445 candidate rows** (from `analyze_decision_factors.py`). Ranker is **direction-wrong** during vol spikes — we're BUYING the worst names. 3 options: (a) flip sign in BULL_VOL, (b) add +0.10 tier offset there so only extreme-signal candidates buy, (c) block all offensive buys in BULL_VOL (treat as near-BEAR). Needs A/B sim to pick. | 🔥 potential +2–5 APY pts | 4 h |
-| **K reframed** | ~~CHOPPY IC=−0.116~~. Live data shows CHOPPY IC **+0.0354** (1366 rows). K premise was based on F's in-sample calibrator fit; real-world decision data disagrees. **Plan K demoted** — pooled calibrator is fine for CHOPPY. | clears a false problem | ✅ resolved (demoted) |
+| # | Item | Resolution |
+|---|------|---|
+| ~~**BULL_VOL-reversal**~~ | **Shelved.** A/B (commit `efcca83` infra + post-sim): 3 variants (GOLDEN vs defensives_only vs full_cash) on 27-mo OOS. defensives_only wins **+0.44 APY pts** only (below +2 pt promotion floor). full_cash = GOLDEN exactly — the upstream filters (tier + Kelly + universe floor) were already keeping BULL_VOL buys near zero. In-sample IC = -0.17 on 445 rows (0.8% of sample) — too thin to move portfolio APY. Infra kept behind `regime.bull_vol_block_offensive` flag (default off). |
+| ~~**K** (CHOPPY IC)~~ | **Demoted.** ~~CHOPPY IC=−0.116~~ in F's in-sample calibrator fit was an artifact; live data shows CHOPPY IC = **+0.0354** (1366 rows). Pooled calibrator fine for CHOPPY. |
 
 ## 🟠 P1 — Short-term strategic wins (non-Kelly)
 
