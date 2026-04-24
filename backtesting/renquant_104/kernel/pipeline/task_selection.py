@@ -69,14 +69,23 @@ class PrepareSelectionTask(Task):
 
 
 class RunSelectionTask(Task):
-    """Run the greedy selection loop → ctx._selected, ctx._blocks; update counters."""
+    """Run the greedy selection loop → ctx._selected, ctx._blocks; update counters.
+
+    Also populates ctx._blocked_by_ticker (Plan P): per-ticker rejection
+    reason, fed to candidate_scores.blocked_by in the decision-trace DB.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.selection import run_selection_loop  # noqa: PLC0415
 
-        selected, blocks = run_selection_loop(ctx.ranked, ctx._sel_ctx)  # noqa: SLF001
-        ctx._selected = selected  # noqa: SLF001
-        ctx._blocks   = blocks    # noqa: SLF001
+        blocked_by_ticker: dict[str, str] = {}
+        selected, blocks = run_selection_loop(
+            ctx.ranked, ctx._sel_ctx,  # noqa: SLF001
+            blocked_by_ticker=blocked_by_ticker,
+        )
+        ctx._selected          = selected            # noqa: SLF001
+        ctx._blocks            = blocks              # noqa: SLF001
+        ctx._blocked_by_ticker = blocked_by_ticker   # noqa: SLF001
 
         ctx.counters["blocked_wash"]  = ctx.counters.get("blocked_wash",  0) + blocks.get("wash_sale",   0)
         ctx.counters["sector_blocks"] = ctx.counters.get("sector_blocks", 0) + blocks.get("sector",      0)

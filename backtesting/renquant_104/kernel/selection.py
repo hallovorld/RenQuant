@@ -162,16 +162,28 @@ class SelectionContext:
 def run_selection_loop(
     ranked: list[CandidateResult],
     ctx: SelectionContext,
+    blocked_by_ticker: dict[str, str] | None = None,
 ) -> tuple[list[str], dict[str, int]]:
     """Greedy slot-filling with tiered thresholds and all guards.
 
     Returns (selected_tickers, block_counts).
-    block_counts keys: "wash_sale", "sector", "correlation", "tier".
+    block_counts keys: "wash_sale", "sector", "correlation", "tier",
+                       "defensive_non_bear".
+
+    If `blocked_by_ticker` is passed (must be an empty dict), it is
+    populated in-place with per-ticker rejection reasons (ticker →
+    one of the block_counts keys). Used by `RunSelectionTask` to
+    feed `candidate_scores.blocked_by` in the decision-trace DB.
     """
     selected: list[str] = []
     blocks = {"wash_sale": 0, "sector": 0, "correlation": 0, "tier": 0,
               "defensive_non_bear": 0}
     slots_filled = 0
+
+    def _reject(ticker: str, reason: str) -> None:
+        blocks[reason] += 1
+        if blocked_by_ticker is not None:
+            blocked_by_ticker[ticker] = reason
 
     for c in ranked:
         if slots_filled >= ctx.open_slots:
@@ -184,7 +196,7 @@ def run_selection_loop(
         # (passes_sector_guard returns True for defensives) — the bypass
         # was safe in BEAR but a loophole in BULL_*/CHOPPY regimes.
         if c.ticker in ctx.defensive_set and not ctx.bear_only:
-            blocks["defensive_non_bear"] += 1
+            _reject(c.ticker, "defensive_non_bear")
             log.info("  %-6s  SKIP   [defensive — not BEAR regime]", c.ticker)
             continue
 
@@ -193,13 +205,13 @@ def run_selection_loop(
             tier_idx = min(slots_filled, len(ctx.tiered_thresholds) - 1)
             tier_min = float(ctx.tiered_thresholds[tier_idx].get("min_model_score", 0.0))
             if c.rank_score < tier_min:
-                blocks["tier"] += 1
+                _reject(c.ticker, "tier")
                 log.info("  %-6s  SKIP   [tier %d needs %.2f, got %.4f]",
                          c.ticker, tier_idx + 1, tier_min, c.rank_score)
                 continue
 
         if is_wash_sale_blocked(c.ticker, ctx.today, ctx.last_sell_dates, ctx.wash_sale_days):
-            blocks["wash_sale"] += 1
+            _reject(c.ticker, "wash_sale")
             last = ctx.last_sell_dates.get(c.ticker)
             log.info("  %-6s  SKIP   [wash sale — sold %s]", c.ticker, last)
             continue
@@ -208,7 +220,7 @@ def run_selection_loop(
             c.ticker, ctx.held_tickers + selected,
             ctx.sector_map, ctx.max_per_sector, ctx.defensive_set,
         ):
-            blocks["sector"] += 1
+            _reject(c.ticker, "sector")
             sector = ctx.sector_map.get(c.ticker, "other")
             log.info("  %-6s  SKIP   [sector cap — %s at max %d]",
                      c.ticker, sector, ctx.max_per_sector)
@@ -218,7 +230,7 @@ def run_selection_loop(
             c.ticker, ctx.held_tickers + selected,
             ctx.corr_matrix, ctx.corr_threshold,
         ):
-            blocks["correlation"] += 1
+            _reject(c.ticker, "correlation")
             # find which held ticker caused the block
             corr_culprit = ""
             if ctx.corr_matrix:

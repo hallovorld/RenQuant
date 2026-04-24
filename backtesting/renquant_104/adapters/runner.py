@@ -483,9 +483,11 @@ class RunnerAdapter:
                 n_buys          = len(ctx.orders),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}
+            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
             record_candidate_scores(
                 self._db, run_id, ctx.candidates, ctx.holdings,
                 selected_tickers=selected_tickers,
+                blocked_map=blocked_map,
             )
             record_trades(self._db, run_id, trade_events)
 
