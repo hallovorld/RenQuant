@@ -30,7 +30,10 @@ class TestFetchOhlcvTimeout:
         # time, so we patch the call itself by making a slow stand-in.
 
         def _slow(*a, **kw):
-            time.sleep(60)   # longer than our 0.5s test timeout
+            # Just long enough to trigger our 0.5 s test timeout. Was 60 s
+            # originally; that blocked the pytest-xdist worker for a full
+            # minute at teardown because the executor thread was non-daemon.
+            time.sleep(1.5)
             return pd.DataFrame()
 
         # Patch call_with_timeout to actually fire — but keep it cheap.

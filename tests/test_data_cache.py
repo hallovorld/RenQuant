@@ -122,12 +122,12 @@ class TestTimeoutHandling:
         seed.to_parquet(cache_root / "TO.parquet")
 
         def _slow(sym, start=None, end=None):
-            time.sleep(5)
+            time.sleep(0.6)   # just > timeout_sec; keeps test under a second
             return _ts_df("2024-01-16", 5)
 
         store = CachedStore(
             cache_dir=cache_root, file_pattern="{symbol}.parquet",
-            fetch_fn=_slow, timeout_sec=0.3, freshness_days=0.01,
+            fetch_fn=_slow, timeout_sec=0.2, freshness_days=0.01,
         )
         result = store.get("TO", end="2024-02-01")   # far past seed → triggers fetch
         # Timeout → stale cache returned
@@ -138,12 +138,12 @@ class TestTimeoutHandling:
         from kernel.data_cache import CachedStore
 
         def _slow(sym, start=None, end=None):
-            time.sleep(5)
+            time.sleep(0.6)
             return _ts_df("2024-01-16", 5)
 
         store = CachedStore(
             cache_dir=tmp_path, file_pattern="{symbol}.parquet",
-            fetch_fn=_slow, timeout_sec=0.3,
+            fetch_fn=_slow, timeout_sec=0.2,
         )
         result = store.get("NONE")
         assert result is None

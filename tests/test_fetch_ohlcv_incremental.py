@@ -132,9 +132,11 @@ class TestTimeoutHandling:
         existing = _fake_ohlcv("2024-01-02", "2024-01-05")
         store.save(existing, "TIMEOUT_WITH_CACHE")
 
-        # Simulate hang
+        # Simulate hang — just barely longer than the timeout so the
+        # background thread doesn't keep the xdist worker alive for 5 s
+        # on each run.
         def _slow(*a, **kw):
-            time.sleep(5)
+            time.sleep(0.8)
             return MagicMock()
 
         with patch("openbb.obb") as mock_obb:
@@ -154,7 +156,7 @@ class TestTimeoutHandling:
         store = LocalStore(data_dir=tmp_path / "ohlcv")
 
         def _slow(*a, **kw):
-            time.sleep(5)
+            time.sleep(0.8)
             return MagicMock()
 
         with patch("openbb.obb") as mock_obb:
