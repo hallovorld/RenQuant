@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Conditional retrain on SPY/VIX anomalies — 13:10 PT Mon-Fri.
+  Runs 45 minutes BEFORE daily_104.sh (13:55 PT) so a freshly retrained
+  panel+ngboost is ready for that bar's trading decision.
+
+  Triggers:
+    SPY |daily Δ| > 2%   → train_104.py --force --trigger=anomaly_spy_2pct
+    VIX |daily Δ| > 5%   → train_104.py --force --trigger=anomaly_vix_5pct
+
+  Install:
+    cp scripts/launchd/com.renquant.conditional-retrain104.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.renquant.conditional-retrain104.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.conditional-retrain104</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/conditional_retrain_104.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <!-- Mon (2) / Tue (3) / Wed (4) / Thu (5) / Fri (6) at 13:10 PT -->
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>10</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>10</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>10</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>10</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>6</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>10</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/conditional_retrain_104/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/conditional_retrain_104/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/miniconda3/envs/renquant/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

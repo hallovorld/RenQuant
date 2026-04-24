@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly watchlist screen — Sunday 12:05 PT.
+  Runs 5 minutes after weekly_apy_check.py (Sun 12:00 PT) so both
+  reports land in the same window.
+
+  Flags DROP candidates (Sharpe < 0 AND < SPY) and suggests ADD
+  candidates (non-watchlist tickers with Sharpe > median + 0.5σ).
+  Outputs markdown to logs/watchlist_screen/ and ntfy summary.
+
+  Install:
+    cp scripts/launchd/com.renquant.screen-watchlist.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.renquant.screen-watchlist.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.screen-watchlist</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/miniconda3/envs/renquant/bin/python</string>
+        <string>/Users/renhao/git/github/RenQuant/scripts/screen_watchlist.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/renhao/git/github/RenQuant</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>  <!-- Sunday -->
+        <key>Hour</key><integer>12</integer>
+        <key>Minute</key><integer>5</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/watchlist_screen/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/watchlist_screen/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/miniconda3/envs/renquant/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
