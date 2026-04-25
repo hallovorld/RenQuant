@@ -111,10 +111,15 @@ class ScoreThresholdTask(Task):
         )
         if bypass:
             return
+        # Audit fix TC-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+        # rank passed the `< min_score` gate (NaN < x is False) →
+        # candidate proceeded with NaN rank_score. Treat NaN as worst
+        # (= rejected).
+        import math
         min_score = float(tc.regime_params.get("min_model_score", 0.10))
         rank      = getattr(tc, "_rank_score", 0.0)
-        if rank < min_score:
-            log.debug("ScoreThresholdTask [%s]: rank=%.4f < min=%.4f — rejected",
+        if rank is None or not math.isfinite(rank) or rank < min_score:
+            log.debug("ScoreThresholdTask [%s]: rank=%s < min=%.4f — rejected",
                       tc.ticker, rank, min_score)
             return False
 
