@@ -122,6 +122,14 @@ impl TransformerEncoderLayer {
         let v = to_heads(v)?;
 
         // Scores = Q · K^T / sqrt(head_d)   shape (B, H, T, T).
+        // Subagent flagged "f64→f32 silent truncation" — but candle's
+        // Tensor*Mul takes f64 scalar and the output dtype tracks
+        // self.dtype() (f32). Internal multiplication does f64*f32→f32
+        // with the standard IEEE rounding, which matches Python's
+        // f32 path: Python computes `1/sqrt(d) → f64`, multiplies
+        // through `tensor.mul(scale_f32_cast)` → same rounding step.
+        // Keeping f64 here matches Python's effective precision and
+        // avoids the `Tensor: Mul<f32>` trait gap.
         let scale = 1.0_f64 / (self.head_d as f64).sqrt();
         let kt = k.transpose(2, 3)?.contiguous()?;
         let scores = q.matmul(&kt)?;
