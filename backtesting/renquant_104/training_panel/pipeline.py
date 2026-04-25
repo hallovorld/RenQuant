@@ -22,6 +22,7 @@ from .pp_panel_training import (
     LoadEarningsSurpriseTask,
     LoadInsiderTradesTask,
     LoadHourlyBarsTask,
+    LoadMinuteBarsTask,
     PanelFeatureJob,
     PanelAssemblyJob,
     PanelModelJob,
@@ -75,6 +76,11 @@ def prepare_inference_panel_frames(
     LoadEarningsSurpriseTask().run(ctx)
     LoadInsiderTradesTask().run(ctx)
     LoadHourlyBarsTask().run(ctx)
+    # Bug 12 fix (2026-04-24): inference path was missing LoadMinuteBars,
+    # so train has m_* features but inference never populates them →
+    # NaN cols at inference, model predictions wrong on the 10-min half
+    # of the feature space. Added now to keep train ⇌ inference parity.
+    LoadMinuteBarsTask().run(ctx)
 
     ticker_ctxs = [
         TickerPanelContext(
@@ -84,6 +90,7 @@ def prepare_inference_panel_frames(
             earnings_surprises=ctx.earnings_surprises,
             insider_trades=ctx.insider_trades,
             hourly_bars=ctx.hourly_bars,
+            minute_bars=ctx.minute_bars,
         )
         for t in ctx.watchlist if t in ctx.ohlcv
     ]
