@@ -208,11 +208,31 @@ def gmm_predict(
     spy_df: pd.DataFrame | None,
     vol_window: int = 20,
 ) -> dict[str, float]:
-    """Return P(regime) dict using a pre-trained GMM artifact."""
+    """Return P(regime) dict using a pre-trained GMM artifact.
+
+    Audit fix GMM-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN/inf
+    in spy_returns propagated through np.sum / np.std into x → through
+    matrix algebra → into log_probs as NaN. Then np.exp(NaN) = NaN,
+    probs.sum() = NaN, normalisation gave {label: NaN} for every regime.
+    Downstream `max(gmm_probs, key=gmm_probs.get)` then returned an
+    arbitrary key (NaN comparisons unstable) → non-deterministic regime
+    detection on bad SPY data.
+
+    Post-fix: explicit isnan/isinf check; uniform prior on bad data.
+    """
     if gmm_artifact is None or len(spy_returns) < vol_window + 10:
         return {r: 1.0 / len(REGIMES) for r in REGIMES}
 
     recent = spy_returns[-max(vol_window, 11):]
+    if np.isnan(recent).any() or np.isinf(recent).any():
+        # Bad data → uniform prior (no opinion); RegimeFinalizeTask still
+        # gets a usable dict and BEAR override may still fire on its own
+        # signal.
+        import logging  # noqa: PLC0415
+        logging.getLogger("kernel.regime").warning(
+            "gmm_predict: NaN/inf in spy_returns — returning uniform prior",
+        )
+        return {r: 1.0 / len(REGIMES) for r in REGIMES}
     r10d   = float(np.sum(recent[-10:]))
     vol20  = float(np.std(recent[-vol_window:], ddof=1) * math.sqrt(252))
     spy_adx = compute_spy_adx(spy_df) if spy_df is not None else 25.0
