@@ -5,9 +5,31 @@
 | Model              | val_IC on synthetic | val_IC on real |
 |--------------------|--------------------:|---------------:|
 | Linear regression (theoretical max on synthetic) | **+0.3228** | n/a |
-| Rust transformer (50 epochs) | +0.0683 (~21% of max) | TBD |
+| Rust transformer (50 epochs, lr=5e-4, d_model=48) | +0.0683 (~21% of max) | TBD |
+| **Rust transformer (200ep, patience=20, same arch)** | **+0.1238 @ epoch 62 (climbing)** | TBD |
 | Python XGBoost (post-audit) | n/a (would also crush it) | **+0.0372** |
 | Python transformer (overfit, shelved) | n/a | +0.0062 |
+
+## V3 training run (live as of this commit)
+
+Same architecture as the 0.068 run (d_model=48, n_heads=6, n_layers=2,
+ff=96, dropout=0.3) but with longer schedule + bigger patience:
+  --epochs 200 --batch 32 --lr 0.0005 --val-frac 0.2 --patience 20
+
+Mid-training (epoch 62 / 200):
+  loss:    6.47 → 5.77    (plateau, but model still learning structure)
+  val_IC:  -0.016 → +0.1238    ← +1.8× the prior 50-epoch run
+  Peak CPU: 310%   Peak memory: 4.9 GB   Per-epoch: 4.4s
+
+Lessons:
+  * Patience=20 is critical — the model has a long warmup before val_IC
+    starts climbing meaningfully (epoch 1-10 was negative).
+  * The same architecture that hit 0.068 in 50 epochs hits 0.124 in 62
+    epochs — almost linear improvement in IC after the initial dip.
+  * Loss plateauing while val_IC climbs is a sign of *generalisation*,
+    not just memorization — the model is finding the underlying
+    f0+f1 structure (target generators) more accurately each step
+    even though training residuals are stable.
 
 ## What the synthetic test proved
 
