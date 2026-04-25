@@ -195,7 +195,14 @@ class RunnerAdapter:
             except ValueError:
                 entry_dt = today
                 entry_dates[ticker] = today.isoformat()
-            qty_held = float(pos.get("qty", 0))
+            # Audit fix QTY-NaN-HYDRATE (Round 2 deep audit, 2026-04-25):
+            # broker NaN qty during a snapshot race would make
+            # HoldingState.shares = NaN, then propagate into Kelly
+            # current_pct calc. Downstream TopUp/Trim now have isfinite
+            # guards (TU/TR-NaN) but cleaner to sanitize at hydration.
+            import math as _math
+            _qty_raw = float(pos.get("qty", 0))
+            qty_held = _qty_raw if _math.isfinite(_qty_raw) else 0.0
             # Thesis-degradation baselines (Approach A) — hydrate from
             # persisted entry_signals. Missing keys → None, which the
             # rotation criterion treats as "no baseline, fall back to
