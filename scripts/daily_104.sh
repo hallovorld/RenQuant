@@ -171,7 +171,19 @@ print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td} n={ngb_n}')
 # reused cached models.
 TTL_SKIPPED=$(grep -c "TTL skip" "$LOG" 2>/dev/null || echo 0)
 
-if [ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null; then
+# Audit fix DAILY-MODELCOUNT (Round 2 deep audit, 2026-04-25): pre-fix
+# used `[ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null`. The
+# 2>/dev/null suppressed the comparison's exit code itself when
+# MODEL_COUNT was non-numeric (e.g., from a corrupt strategy_config.json
+# breaking the inline Python earlier). The script then treated
+# "comparison failed" as "false" and skipped the WARN, so a config
+# corruption was invisible — the operator only saw "Models retrained"
+# even when the model count was actually undefined. Now: validate
+# MODEL_COUNT is numeric before the comparison; if not, fire a
+# distinct ERROR notification so the corruption surfaces clearly.
+if ! [ "$MODEL_COUNT" -eq "$MODEL_COUNT" ] 2>/dev/null; then
+    notify "RenQuant 104 ERROR" "MODEL_COUNT is non-numeric ('$MODEL_COUNT') — strategy_config.json may be corrupted"
+elif [ "$MODEL_COUNT" -lt "$MIN_MODELS" ]; then
     notify "RenQuant 104 WARN" "Only $MODEL_COUNT models (min=$MIN_MODELS) — $PANEL_INFO"
 else
     # Only fire the "Models retrained" ntfy on the 3 days/week that
