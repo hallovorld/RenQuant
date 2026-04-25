@@ -87,8 +87,25 @@ echo "NYSE open today ($TODAY_DATE) — proceeding."
 # ntfy fires so flag regressions are caught before a bad run completes.
 # Common causes: manual edits left behind after an A/B, or a promoted
 # change where golden wasn't updated in the same commit.
-DRIFT_OUT=$("$PYTHON" "$REPO_DIR/scripts/check_config_drift.py" --strategy renquant_104 2>&1 || true)
-if echo "$DRIFT_OUT" | grep -q "drift detected"; then
+#
+# Audit fix DAILY-DRIFT (Round 2 deep audit, 2026-04-25): pre-fix used
+# `|| true` to suppress the script's exit code. That also masked Python
+# import errors (e.g., a syntax error in check_config_drift.py would
+# silently exit 0 and the run proceeded with NO drift check). Now:
+# capture stdout AND exit code separately. Drift script's documented
+# exit codes:
+#   0 = clean / no drift
+#   1 = drift detected (we look at stdout below for the diff)
+#   2+ = the script itself crashed (import error, missing golden, etc.)
+DRIFT_OUT=$("$PYTHON" "$REPO_DIR/scripts/check_config_drift.py" --strategy renquant_104 2>&1)
+DRIFT_RC=$?
+if [ "$DRIFT_RC" -ge 2 ]; then
+    notify "RenQuant 104 DRIFT-CHECK FAILED" \
+        "check_config_drift.py crashed (rc=$DRIFT_RC) — config NOT validated. First 200 chars: ${DRIFT_OUT:0:200}"
+    echo "$DRIFT_OUT"
+    # Continue the run, but the operator now sees the crash explicitly
+    # instead of silent skip.
+elif [ "$DRIFT_RC" -eq 1 ] || echo "$DRIFT_OUT" | grep -q "drift detected"; then
     # Only surface booleans + the first 2 numeric lines in ntfy to keep it short
     SHORT=$(echo "$DRIFT_OUT" | grep -E "→" | head -5 | sed 's/^  *//')
     notify "RenQuant 104 DRIFT" "strategy_config.json drifted from golden — $SHORT"
