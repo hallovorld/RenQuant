@@ -41,10 +41,24 @@ class _TimeframedBarStore:
         return self.data_dir / symbol.upper() / self._filename
 
     def load(self, symbol: str) -> pd.DataFrame | None:
+        # Audit fix INT-READ-RACE (Round 2 deep audit, 2026-04-25):
+        # other parquet loaders (FundamentalsStore — FU-4) wrap
+        # `pd.read_parquet` in try/except so a corrupt file (truncated
+        # by Ctrl-C mid-write, partial flush after disk-full, or
+        # cross-version pyarrow incompat) is treated as cache-miss
+        # rather than crashing the panel pipeline. This loader was
+        # missing that guard. Now mirror FU-4 + ES-READ-RACE.
         p = self._path(symbol)
         if not p.exists():
             return None
-        df = pd.read_parquet(p)
+        try:
+            df = pd.read_parquet(p)
+        except Exception as exc:
+            log.warning(
+                "%s.load(%s): corrupt parquet — %s; treating as cache-miss",
+                type(self).__name__, symbol, exc,
+            )
+            return None
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df.sort_index()

@@ -262,10 +262,21 @@ class InsiderTradesStore:
         return self.data_dir / f"{symbol.upper()}.parquet"
 
     def load(self, symbol: str) -> pd.DataFrame | None:
+        # Audit fix IT-READ-RACE (Round 2 deep audit, 2026-04-25):
+        # mirror FU-4 / ES-READ-RACE / INT-READ-RACE — corrupt parquet
+        # (truncated, partial flush) treated as cache-miss; SEC re-fetch
+        # then refills cleanly.
         p = self._path(symbol)
         if not p.exists():
             return None
-        df = pd.read_parquet(p)
+        try:
+            df = pd.read_parquet(p)
+        except Exception as exc:
+            log.warning(
+                "InsiderTradesStore.load(%s): corrupt parquet — %s; "
+                "treating as cache-miss", symbol, exc,
+            )
+            return None
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df.sort_index()

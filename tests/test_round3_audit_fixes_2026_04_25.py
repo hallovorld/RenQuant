@@ -1316,6 +1316,53 @@ class TestLEANNaNBuyLoopGuards:
         assert float_val is None
 
 
+# ── *-READ-RACE (Round 2 audit): 3 parquet stores treat corrupt files as miss ─
+
+class TestReadRaceParquetCorruption:
+    """Three parquet caches (intraday, earnings, insider) were missing the
+    try/except around pd.read_parquet that fundamentals already had.
+    A corrupt file (truncated mid-write, partial disk-full flush, or
+    cross-version pyarrow incompat) raised and crashed the caller —
+    LoadHourlyBarsTask, LoadEarningsSurpriseTask, LoadInsiderTradesTask
+    could fail the entire panel pipeline. Now mirror FU-4: corrupt → log
+    + return None → caller refetches."""
+
+    def _setup(self, store_class, tmp_path):
+        store = store_class(data_dir=tmp_path)
+        sym = "TEST"
+        # Write a deliberately corrupt file at the expected path.
+        p = store._path(sym)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"PAR1\xde\xad\xbe\xef this is not a valid parquet")
+        return store, sym
+
+    def test_intraday_corrupt_returns_none(self, tmp_path):
+        from kernel.intraday import HourlyBarStore
+        store, sym = self._setup(HourlyBarStore, tmp_path)
+        result = store.load(sym)
+        assert result is None, "corrupt parquet must return None, not raise"
+
+    def test_earnings_surprise_corrupt_returns_none(self, tmp_path):
+        from kernel.earnings_surprise import EarningsSurpriseStore
+        store, sym = self._setup(EarningsSurpriseStore, tmp_path)
+        result = store.load(sym)
+        assert result is None
+
+    def test_insider_trades_corrupt_returns_none(self, tmp_path):
+        from kernel.insider_trades import InsiderTradesStore
+        store, sym = self._setup(InsiderTradesStore, tmp_path)
+        result = store.load(sym)
+        assert result is None
+
+    def test_intraday_minute_store_corrupt_returns_none(self, tmp_path):
+        """MinuteBarStore subclasses HourlyBarStore — same load path,
+        same fix coverage."""
+        from kernel.intraday import MinuteBarStore
+        store, sym = self._setup(MinuteBarStore, tmp_path)
+        result = store.load(sym)
+        assert result is None
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
