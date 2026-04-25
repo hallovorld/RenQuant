@@ -94,12 +94,20 @@ class TrimHeldTask(Task):
         # exits, not mechanical rebalance noise.
         target_floor = float(kelly_cfg.get("trim_target_floor", 0.05))
 
+        # Audit fix TR-NaN (Round 2 deep audit, 2026-04-25): same NaN-
+        # slip pattern as SE-1 (size task) and TU-1..TU-4 (topup task).
+        # `x is None or x <= 0` lets NaN past (NaN<=0 False) → corrupted
+        # values propagate through trim sizing → bad partial-sell orders.
+        # Mirror the explicit isfinite guards used in TopUp + Size.
+        import math as _math
         for ticker, hs in ctx.holdings.items():
             if ticker in already_exiting or ticker in rotation_sells \
                or ticker in already_buying:
                 continue
             kelly_target = getattr(hs, "kelly_target_pct", None)
-            if kelly_target is None or kelly_target <= 0:
+            if (kelly_target is None
+                    or not _math.isfinite(kelly_target)
+                    or kelly_target <= 0):
                 continue
             # Guard: small Kelly target means "don't hold much" — letting
             # TrimHeldTask sell down to near-zero creates churn. Let the
@@ -107,18 +115,19 @@ class TrimHeldTask(Task):
             if kelly_target < target_floor:
                 continue
             mu = getattr(hs, "mu", None)
-            if mu is not None and mu <= 0:
-                # Model turned bearish on this held ticker. Don't trim;
-                # the sell-side pipeline (stop_loss / model_sell streak /
-                # rotation) will handle full exit on its own schedule.
-                continue
+            if mu is not None:
+                if not _math.isfinite(mu) or mu <= 0:
+                    # Model turned bearish (or μ corrupted). Don't trim;
+                    # the sell-side pipeline (stop_loss / model_sell streak /
+                    # rotation) will handle full exit on its own schedule.
+                    continue
 
             price = ctx.prices.get(ticker)
-            if price is None or price <= 0:
+            if price is None or not _math.isfinite(price) or price <= 0:
                 continue
 
             current_shares = float(getattr(hs, "shares", 0.0))
-            if current_shares <= 0:
+            if not _math.isfinite(current_shares) or current_shares <= 0:
                 continue
             current_pct    = (current_shares * price) / portfolio
             delta          = current_pct - float(kelly_target)   # + = over-weight

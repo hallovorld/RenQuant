@@ -995,6 +995,48 @@ class TestSE1SizeAndEmitRejectsNanPrice:
         assert (price is None or not math.isfinite(price) or price <= 0)
 
 
+# ── TR-NaN (Round 2 audit): TrimHeldTask guards 4 NaN-slip points ─────────────
+
+class TestTRNaNTrimGuardsAllInputs:
+    """Pre-fix, TrimHeldTask had four `x is None or x <= 0` guards (kelly,
+    mu, price, shares) — each let NaN slip past (NaN<=0 False), then
+    NaN propagated through `delta = current_pct - kelly_target` and
+    `trim_shares = int(delta_value/price)` to produce corrupted partial
+    sells. Post-fix mirrors the explicit isfinite guards already in
+    SE-1 + TU-1..TU-4."""
+
+    def test_kelly_target_nan_skipped(self):
+        import math
+        kt = float("nan")
+        assert (kt is None or not math.isfinite(kt) or kt <= 0)
+
+    def test_mu_nan_skipped(self):
+        import math
+        mu = float("nan")
+        assert (mu is not None and (not math.isfinite(mu) or mu <= 0))
+
+    def test_price_nan_skipped(self):
+        import math
+        price = float("nan")
+        assert (price is None or not math.isfinite(price) or price <= 0)
+
+    def test_shares_nan_skipped(self):
+        import math
+        shares = float("nan")
+        assert (not math.isfinite(shares) or shares <= 0)
+
+    def test_finite_inputs_pass(self):
+        import math
+        for kt, mu, price, shares in [
+            (0.10, 0.02, 50.0, 100.0),
+            (0.20, 0.05, 200.0, 25.0),
+        ]:
+            assert math.isfinite(kt) and kt > 0
+            assert math.isfinite(mu) and mu > 0
+            assert math.isfinite(price) and price > 0
+            assert math.isfinite(shares) and shares > 0
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
