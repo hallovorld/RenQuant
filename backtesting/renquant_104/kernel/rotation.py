@@ -146,7 +146,15 @@ def find_thesis_primary_pairs(
         entry_date  = meta.get("entry_date")
         entry_price = float(meta.get("entry_price", 0.0))
         cur_price   = float(meta.get("current_price", 0.0))
-        if entry_date is None or entry_price <= 0:
+        # Audit fix ROT-KERNEL-PRICE-NaN (Round 2 deep audit, 2026-04-25):
+        # NaN current_price slipped past `entry_price <= 0` check, then
+        # unreal_pct = NaN propagated through is_lt_protected() (NaN > 0
+        # False → not LT-protected → swap allowed) and into tax_drag()
+        # which returns 0 on NaN (R-1 fix), so the rotation got compared
+        # at zero-tax-cost when it should have been skipped entirely.
+        # Now: explicit isfinite check on cur_price.
+        if (entry_date is None or entry_price <= 0
+                or not math.isfinite(cur_price) or cur_price <= 0):
             continue
         hold_days = (today - entry_date).days
         if hold_days < min_hold:
@@ -291,7 +299,11 @@ def find_thesis_symmetric_pairs(
         entry_date  = meta.get("entry_date")
         entry_price = float(meta.get("entry_price", 0.0))
         cur_price   = float(meta.get("current_price", 0.0))
-        if entry_date is None or entry_price <= 0:
+        # Audit fix ROT-KERNEL-PRICE-NaN (mirror of fix in
+        # find_thesis_primary_pairs): NaN cur_price → NaN unreal_pct →
+        # NaN tax_drag (returns 0) → swap looks free, gets emitted.
+        if (entry_date is None or entry_price <= 0
+                or not math.isfinite(cur_price) or cur_price <= 0):
             continue
         hold_days = (today - entry_date).days
         if hold_days < min_hold:
@@ -458,7 +470,10 @@ def find_rotation_pairs(
         entry_date  = meta.get("entry_date")
         entry_price = float(meta.get("entry_price", 0.0))
         cur_price   = float(meta.get("current_price", 0.0))
-        if entry_date is None or entry_price <= 0:
+        # Audit fix ROT-KERNEL-PRICE-NaN (mirror of fix in
+        # find_thesis_primary_pairs / find_thesis_symmetric_pairs).
+        if (entry_date is None or entry_price <= 0
+                or not math.isfinite(cur_price) or cur_price <= 0):
             continue
         hold_days = (today - entry_date).days
         if hold_days < min_hold:

@@ -1669,6 +1669,137 @@ class TestQTYNaNExitLoopGuards:
         assert not triggers_partial
 
 
+# ── ROT-KERNEL-PRICE-NaN (Round 2 audit): kernel rotation guards NaN price ────
+
+class TestROTKernelPriceNaN:
+    """Pre-fix, kernel/rotation.py's three pair-finder functions
+    (find_rotation_pairs / find_thesis_primary_pairs /
+    find_thesis_symmetric_pairs) checked `entry_price <= 0` but did
+    not validate `cur_price`. NaN cur_price slipped past, propagated
+    through unreal_pct → is_lt_protected (NaN > 0 = False = not
+    protected) → tax_drag (returns 0 on NaN since R-1 fix) → swap
+    looked free.
+
+    The earlier ROT-NaN-PRICE fix patched EmitRotationsTask in
+    task_rotation.py, but the bug existed at the kernel-pair level
+    too — find_rotation_pairs etc. could emit a pair with NaN
+    unreal_pct that downstream filters didn't catch.
+    """
+
+    def test_find_rotation_pairs_skips_nan_price(self):
+        import datetime
+        import sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from kernel.rotation import find_rotation_pairs
+
+        # One held with NaN current_price; one finite candidate.
+        held_scores = {"BAD": 0.5}
+        held_er     = {"BAD": 0.0}
+        held_meta   = {"BAD": {
+            "entry_date":    datetime.date(2024, 1, 1),
+            "entry_price":   100.0,
+            "current_price": float("nan"),
+        }}
+        from kernel.selection import CandidateResult
+        cand = CandidateResult(
+            ticker="GOOD", raw_score=0.7, rank_score=0.7,
+            rs_score=0.0, expected_return=0.05,
+        )
+        cand.kelly_target_pct = 0.10
+        pairs = find_rotation_pairs(
+            held_scores=held_scores, held_er=held_er, held_meta=held_meta,
+            candidates=[cand], today=datetime.date(2024, 6, 1),
+            rotation_cfg={"enabled": True, "min_expected_advantage_pct": 0.0,
+                           "min_rotation_hold_days": 30, "lt_protection_days": 30},
+            tax_cfg={"short_term_rate": 0.5, "long_term_rate": 0.32,
+                     "long_term_threshold_days": 365},
+        )
+        assert pairs == [], (
+            "ROT-KERNEL-PRICE-NaN regression: NaN cur_price should "
+            "have made BAD ineligible, but pair was emitted: %r" % pairs
+        )
+
+    def test_find_thesis_primary_skips_nan_price(self):
+        import datetime, sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from kernel.rotation import find_thesis_primary_pairs
+        from kernel.selection import CandidateResult
+
+        held_entry  = {"BAD": 0.50}
+        held_today  = {"BAD": 0.30}
+        held_meta   = {"BAD": {
+            "entry_date":    datetime.date(2024, 1, 1),
+            "entry_price":   100.0,
+            "current_price": float("nan"),   # ← the bug
+        }}
+        cand = CandidateResult(
+            ticker="GOOD", raw_score=0.65, rank_score=0.65,
+            rs_score=0.0, expected_return=0.05,
+        )
+        pairs = find_thesis_primary_pairs(
+            held_entry_scores=held_entry, held_today_scores=held_today,
+            held_meta=held_meta, candidates=[cand],
+            today=datetime.date(2024, 6, 1),
+            rotation_cfg={
+                "enabled": True,
+                "thesis": {"degradation_pct": 0.30, "uplift_pct": 0.10},
+                "min_rotation_hold_days": 30, "lt_protection_days": 30,
+            },
+            tax_cfg={"short_term_rate": 0.5, "long_term_rate": 0.32,
+                     "long_term_threshold_days": 365},
+        )
+        assert pairs == [], (
+            "ROT-KERNEL-PRICE-NaN regression in thesis_primary"
+        )
+
+    def test_find_thesis_symmetric_skips_nan_price(self):
+        import datetime, sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from kernel.rotation import find_thesis_symmetric_pairs
+        from kernel.selection import CandidateResult
+
+        held_entry = {"BAD": 0.50}
+        held_today = {"BAD": 0.30}
+        held_meta  = {"BAD": {
+            "entry_date":    datetime.date(2024, 1, 1),
+            "entry_price":   100.0,
+            "current_price": float("nan"),   # ← the bug
+        }}
+        cand = CandidateResult(
+            ticker="GOOD", raw_score=0.65, rank_score=0.65,
+            rs_score=0.0, expected_return=0.05,
+        )
+        entry_lookup = {("GOOD", datetime.date(2024, 1, 1)): 0.40}
+        pairs = find_thesis_symmetric_pairs(
+            held_entry_scores=held_entry, held_today_scores=held_today,
+            held_meta=held_meta, candidates=[cand],
+            entry_day_lookup=entry_lookup,
+            today=datetime.date(2024, 6, 1),
+            rotation_cfg={
+                "enabled": True,
+                "thesis_symmetric": {
+                    "max_a_velocity": 0.10, "min_b_velocity": 0.05,
+                    "min_cross_flip": 0.15,
+                },
+                "min_rotation_hold_days": 30, "lt_protection_days": 30,
+            },
+            tax_cfg={"short_term_rate": 0.5, "long_term_rate": 0.32,
+                     "long_term_threshold_days": 365},
+        )
+        assert pairs == [], (
+            "ROT-KERNEL-PRICE-NaN regression in thesis_symmetric"
+        )
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
