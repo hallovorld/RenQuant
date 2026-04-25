@@ -168,6 +168,28 @@ impl Trainer {
         Ok(())
     }
 
+    /// Predict scores for a list of date-groups WITHOUT updating weights.
+    /// Returns `Vec<(predictions, labels)>` in input order — the labels
+    /// pass through unchanged so callers can compute IC.
+    /// No gradient bookkeeping (skips backward_step entirely), so this
+    /// is what the val-IC code path calls every epoch.
+    pub fn predict_groups(
+        &self,
+        groups: &[(Tensor, Tensor)],
+    ) -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+        let mut out = Vec::with_capacity(groups.len());
+        for (x, y) in groups {
+            // Add batch dim so the encoder sees (1, T, F).
+            let x_b = x.unsqueeze(0)?;
+            let scores = self.model.forward(&x_b, None)?;   // (1, T)
+            let scores = scores.squeeze(0)?;
+            let preds: Vec<f32> = scores.to_vec1()?;
+            let labels: Vec<f32> = y.to_vec1()?;
+            out.push((preds, labels));
+        }
+        Ok(out)
+    }
+
     /// Train one full epoch over a list of variable-length date-groups,
     /// padding each batch to the max group size in that batch. This is
     /// the actual production-shape path: panel size at renquant_104 is

@@ -40,6 +40,7 @@ use std::time::Instant;
 
 use transformer_scorer::config::TransformerParams;
 use transformer_scorer::dataset::Panel;
+use transformer_scorer::metrics::pooled_ic_owned;
 use transformer_scorer::trainer::Trainer;
 
 #[derive(Parser, Debug)]
@@ -85,6 +86,17 @@ struct Args {
 
     #[arg(long, default_value = "cpu")]
     device: String,
+
+    /// Fraction of date-groups held out as validation (final block,
+    /// preserves chronological order — no shuffling). Used for early
+    /// stopping + best-checkpoint selection.
+    #[arg(long = "val-frac", default_value_t = 0.2)]
+    val_frac: f64,
+
+    /// Stop early if val-IC hasn't improved for this many epochs.
+    /// 0 = disabled.
+    #[arg(long = "patience", default_value_t = 5)]
+    patience: usize,
 }
 
 fn main() -> Result<()> {
@@ -119,6 +131,19 @@ fn main() -> Result<()> {
         .context("packing panel into per-date tensor groups")?;
     let n_features = panel.n_features();
 
+    // Chronological train/val split (no shuffle). val_frac is the
+    // tail fraction; preserves the temporal contract that we evaluate
+    // on dates AFTER the training set.
+    let n_groups = groups.len();
+    let n_val = ((n_groups as f64) * args.val_frac).floor() as usize;
+    let n_val = n_val.max(1).min(n_groups.saturating_sub(1));
+    let split = n_groups - n_val;
+    let (train_groups, val_groups) = groups.split_at(split);
+    eprintln!(
+        "[train-panel] split: train={} groups, val={} groups (last {:.0}%)",
+        train_groups.len(), val_groups.len(), args.val_frac * 100.0,
+    );
+
     let params = TransformerParams {
         d_model:         args.d_model,
         n_heads:         args.n_heads,
@@ -138,30 +163,70 @@ fn main() -> Result<()> {
         n_features, params.clone(), args.lr, args.weight_decay, device,
     )?;
 
-    eprintln!("[train-panel] training {} epoch(s), batch={}", args.epochs, args.batch);
+    eprintln!(
+        "[train-panel] training {} epoch(s), batch={}, patience={}",
+        args.epochs, args.batch, args.patience,
+    );
     let t_train = Instant::now();
+    let mut best_val_ic: f32 = f32::NEG_INFINITY;
+    let mut best_epoch: usize = 0;
+    let mut epochs_since_improve: usize = 0;
+    let best_stem = args.output.with_file_name(format!(
+        "{}.best",
+        args.output.file_name().and_then(|s| s.to_str()).unwrap_or("model"),
+    ));
     for epoch in 0..args.epochs {
         let t_ep = Instant::now();
-        let losses = trainer.train_epoch(&groups, args.batch)?;
+        let losses = trainer.train_epoch(train_groups, args.batch)?;
         let mean_loss: f32 = if losses.is_empty() {
             f32::NAN
         } else {
             losses.iter().sum::<f32>() / losses.len() as f32
         };
-        let last_loss = losses.last().copied().unwrap_or(f32::NAN);
+        // Eval on the chronological hold-out.
+        let val_preds = trainer.predict_groups(val_groups)?;
+        let (val_ic, n_valid_groups) = pooled_ic_owned(&val_preds);
         eprintln!(
-            "[train-panel] epoch {:>3}/{}  steps={}  mean_loss={:.6}  last={:.6}  ({:.2}s)",
+            "[train-panel] epoch {:>3}/{}  steps={}  mean_loss={:.6}  val_IC={:+.4} (n={})  ({:.2}s)",
             epoch + 1, args.epochs, losses.len(),
-            mean_loss, last_loss, t_ep.elapsed().as_secs_f64(),
+            mean_loss, val_ic, n_valid_groups, t_ep.elapsed().as_secs_f64(),
         );
+        if val_ic.is_finite() && val_ic > best_val_ic {
+            best_val_ic = val_ic;
+            best_epoch = epoch + 1;
+            epochs_since_improve = 0;
+            // Save the best-so-far checkpoint distinctly so the final
+            // artifact is the best, not the last.
+            trainer.save_safetensors(&best_stem)?;
+        } else {
+            epochs_since_improve += 1;
+            if args.patience > 0 && epochs_since_improve >= args.patience {
+                eprintln!(
+                    "[train-panel] early stop — no val_IC improvement for {} epochs (best={:+.4} @ epoch {})",
+                    args.patience, best_val_ic, best_epoch,
+                );
+                break;
+            }
+        }
     }
     eprintln!(
-        "[train-panel] training done — total {:.1}s",
-        t_train.elapsed().as_secs_f64(),
+        "[train-panel] training done — total {:.1}s. best val_IC={:+.4} @ epoch {}",
+        t_train.elapsed().as_secs_f64(), best_val_ic, best_epoch,
     );
 
-    // Save weights + sidecar.
-    trainer.save_safetensors(&args.output)?;
+    // Use the best-IC checkpoint as the canonical artifact.
+    let best_safetensors = best_stem.with_extension("safetensors");
+    if best_safetensors.exists() {
+        let final_safetensors = args.output.with_extension("safetensors");
+        std::fs::copy(&best_safetensors, &final_safetensors)
+            .with_context(|| format!("copying {} → {}",
+                best_safetensors.display(), final_safetensors.display()))?;
+        let _ = std::fs::remove_file(&best_safetensors);
+        eprintln!("[train-panel] promoted best checkpoint as final artifact");
+    } else {
+        // No improvement ever fired — fall back to the last weights.
+        trainer.save_safetensors(&args.output)?;
+    }
     let sidecar_path = args.output.with_extension("json");
     let sidecar = json!({
         "feature_cols": panel.feature_cols,
