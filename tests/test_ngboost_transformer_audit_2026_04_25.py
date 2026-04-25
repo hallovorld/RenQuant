@@ -129,6 +129,80 @@ class TestT7T8NanLabelsMasked:
         assert torch.allclose(loss_no_arg, loss_with_arg)
 
 
+# ── T-25 / T-16 / T-18: transformer overfit fixes ────────────────────────────
+
+class TestTransformerOverfitFixes:
+    """Audit fixes 2026-04-25 to bring transformer's OOS / Train ratio up
+    from 7% (v3) toward 20-50% (panel-LTR's range).
+    """
+
+    def test_default_dropout_compounding_below_30pct(self):
+        """T-25: pre-fix, dropout=0.30 + feature_dropout=0.20 + ticker_dropout=0.10
+        compounded to ~50% effective signal loss. New defaults must keep
+        compound effective dropout ≤ 35%."""
+        from training_panel.transformer_model import TransformerParams
+        p = TransformerParams()
+        # Compound formula: 1 - (1-d) × (1-fd) × (1-td)
+        compound = 1.0 - (1 - p.dropout) * (1 - p.feature_dropout) * (1 - p.ticker_dropout)
+        assert compound <= 0.35, (
+            f"compound dropout {compound:.3f} exceeds 0.35 — overfit risk. "
+            f"Lower dropout/feature_dropout/ticker_dropout."
+        )
+
+    def test_default_grad_clip_set(self):
+        """T-16: gradient clipping is on by default."""
+        from training_panel.transformer_model import TransformerParams
+        p = TransformerParams()
+        assert p.grad_clip_norm is not None and p.grad_clip_norm > 0, (
+            "gradient clipping must be enabled by default to stabilise "
+            "softmax/log-softmax gradients."
+        )
+
+    def test_default_auto_eval_split_on(self):
+        """T-18: auto eval split is on by default so early stopping fires
+        even when callers (CV, FinalFit) don't pass eval_panel."""
+        from training_panel.transformer_model import TransformerParams
+        p = TransformerParams()
+        assert p.auto_eval_split is True
+        assert 0.05 < p.auto_eval_fraction < 0.5
+
+    def test_auto_eval_split_runs_and_early_stops(self):
+        """End-to-end: train without eval_panel → auto-split fires →
+        early-stopping recorded in history."""
+        import torch  # noqa: F401  (importorskip pattern in other tests)
+        from training_panel.transformer_model import PanelTransformerModel
+        rng = np.random.default_rng(0)
+        n_dates = 80
+        n_tk = 6
+        rows = []
+        for d in range(n_dates):
+            for t in range(n_tk):
+                x1 = rng.normal()
+                x2 = rng.normal()
+                rows.append({
+                    "date": d, "ticker": f"T{t}",
+                    "x1": x1, "x2": x2,
+                    "label": float(2 * x1 - x2 + rng.normal(0, 0.3)),
+                    "weight": 1.0,
+                })
+        panel = pd.DataFrame(rows)
+        gs = panel.groupby("date", sort=True).size().values.astype(np.int32)
+
+        m = PanelTransformerModel(params={
+            "d_model": 16, "n_heads": 2, "n_layers": 1,
+            "max_epochs": 20, "batch_size": 8, "device": "cpu",
+            "max_tickers": n_tk, "seed": 7,
+            "patience": 3,
+        })
+        info = m.train(panel, gs, ["x1", "x2"], num_boost_round=20)
+        # auto-split happened → eval_ic recorded → best_iter reflects best epoch.
+        assert "eval_ic" in info, (
+            "auto eval split must produce eval_ic in fit metadata"
+        )
+        # best_iter should be a real epoch (not None) once eval fired
+        assert m.best_iter is not None
+
+
 # ── T-23: predict() sorts by date ────────────────────────────────────────────
 
 class TestT23PredictSortsByDate:

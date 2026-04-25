@@ -52,15 +52,25 @@ class TransformerParams:
     n_heads:          int   = 4
     n_layers:         int   = 3
     feedforward_dim:  int   = 256
-    dropout:          float = 0.3        # attention/FF/residual dropout
-    feature_dropout:  float = 0.2        # zero-out input features
-    ticker_dropout:   float = 0.1        # zero-out whole ticker within group
+    # Audit fix T-25 (2026-04-25): pre-fix, 0.3+0.2+0.1 dropouts compounded
+    # to ~50% effective (1-(1-.3)(1-.2)(1-.1) = 0.496) which over-regularised
+    # a 121k-row panel and produced train_ic=0.30 vs OOS_ic=0.022 (7%
+    # generalisation). New defaults: 0.20+0.10+0.0 = ~28% effective. Also
+    # bumped weight_decay from 1e-4 → 5e-4 to add explicit L2 regularisation
+    # since dropout was reduced. Reduced max_epochs 50→30 since the loss
+    # curve plateaued ~ epoch 20 in v3.
+    dropout:          float = 0.20       # attention/FF/residual dropout
+    feature_dropout:  float = 0.10       # zero-out input features
+    ticker_dropout:   float = 0.0        # disabled — overlapped with feature_dropout
     label_smoothing:  float = 0.05       # additive Gaussian noise on labels
     lr:               float = 1e-4
-    weight_decay:     float = 1e-4
-    max_epochs:       int   = 50
+    weight_decay:     float = 5e-4
+    max_epochs:       int   = 30
     batch_size:       int   = 32         # dates per batch
     patience:         int   = 6          # early-stopping on eval IC, per user pref
+    grad_clip_norm:   float = 1.0        # T-16 audit fix — clip gradient norm
+    auto_eval_split:  bool  = True       # T-18 — auto last-20% dates as eval if no eval_panel
+    auto_eval_fraction: float = 0.20
     device:           str   = "mps"      # "mps" | "cuda" | "cpu"
     deterministic:    bool  = True
     seed:             int   = 42
@@ -312,6 +322,36 @@ class PanelTransformerModel:
         except Exception:
             pass
 
+        # Audit fix T-18 (2026-04-25): if caller didn't supply eval_panel
+        # but auto_eval_split is on, auto-split the last `auto_eval_fraction`
+        # date-groups into eval. This makes early stopping work without
+        # requiring every caller to plumb explicit eval data — and CV +
+        # FinalFit both benefit. Pre-fix, FinalFit always trained for full
+        # max_epochs with no early stop, contributing to the v3 overfit.
+        if (
+            eval_panel is None
+            and p.auto_eval_split
+            and p.auto_eval_fraction
+            and 0.0 < p.auto_eval_fraction < 1.0
+            and len(group_sizes) >= 5
+        ):
+            n_groups_total = len(group_sizes)
+            n_eval = max(1, int(round(n_groups_total * p.auto_eval_fraction)))
+            n_train = n_groups_total - n_eval
+            if n_train >= 5 and n_eval >= 2:
+                # Slice panel by row offsets corresponding to the
+                # date-group split. group_sizes is contiguous per date.
+                row_split = int(np.array(group_sizes[:n_train]).sum())
+                eval_panel = panel.iloc[row_split:].copy()
+                eval_group_sizes = np.array(group_sizes[n_train:], dtype=np.int64)
+                panel = panel.iloc[:row_split].copy()
+                group_sizes = np.array(group_sizes[:n_train], dtype=np.int64)
+                import logging  # noqa: PLC0415
+                logging.getLogger("panel.transformer").info(
+                    "auto_eval_split: train=%d groups (%d rows) | eval=%d groups (%d rows)",
+                    n_train, row_split, n_eval, len(eval_panel),
+                )
+
         # Build batches
         xtr, ytr, padtr, nantr = _build_date_groups(
             panel, group_sizes, feature_cols, label_col, p.max_tickers,
@@ -358,6 +398,14 @@ class PanelTransformerModel:
                 loss = _listnet_loss(scores, yb, mb, nb)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
+                # Audit fix T-16 (2026-04-25): clip gradient norm before
+                # the optimiser step. AdamW + softmax/log-softmax can spike
+                # gradients when scores diverge; clipping prevents one bad
+                # batch from destabilising training.
+                if p.grad_clip_norm and p.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self._model.parameters(), max_norm=float(p.grad_clip_norm),
+                    )
                 opt.step()
                 epoch_loss += float(loss.item()) * len(idx)
             epoch_loss /= max(n_groups, 1)
