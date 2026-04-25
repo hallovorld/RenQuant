@@ -106,14 +106,28 @@ class BEAROverrideTask(Task):
 
         if len(spy_returns) >= vol_window:
             window = spy_returns[-vol_window:]
-            spy_20d_vol = float(np.std(window, ddof=1) * math.sqrt(252))
-            # Audit #11: prior implementation used np.sum() which approximates
-            # cumulative return only for tiny daily moves. For a real selloff
-            # (e.g. -3% × 5 days), arithmetic sum overestimates the cumulative
-            # drop vs prod(1+r)-1. Use the strict cumulative product so the
-            # threshold matches what "cumulative return < -8%" actually means.
-            spy_20d_ret = float(np.prod(1.0 + window) - 1.0)
-            state.hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
+            # Audit fix RG-1/RG-2 (Round 2 deep audit, 2026-04-25):
+            # pre-fix, NaN in `window` propagated through np.std/np.prod
+            # to NaN. Then `vol > bear_vol_thr` and `ret < bear_ret_thr`
+            # both evaluated False → state.hard_bear = False → BEAR
+            # override silently disabled on bad SPY data. This is a
+            # safety gate; failing silent is unacceptable. Now: on
+            # non-finite vol/ret, fail-SAFE to True (assume BEAR).
+            if np.isnan(window).any() or np.isinf(window).any():
+                state.hard_bear = True
+                log.warning(
+                    "BEAROverrideTask: SPY returns contain NaN/inf — "
+                    "fail-SAFE forcing hard_bear=True (block buys)",
+                )
+            else:
+                spy_20d_vol = float(np.std(window, ddof=1) * math.sqrt(252))
+                # Audit #11: prior implementation used np.sum() which approximates
+                # cumulative return only for tiny daily moves. For a real selloff
+                # (e.g. -3% × 5 days), arithmetic sum overestimates the cumulative
+                # drop vs prod(1+r)-1. Use the strict cumulative product so the
+                # threshold matches what "cumulative return < -8%" actually means.
+                spy_20d_ret = float(np.prod(1.0 + window) - 1.0)
+                state.hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
         else:
             state.hard_bear = False
 
