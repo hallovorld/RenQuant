@@ -16,7 +16,29 @@ import pandas as pd
 # ── Calibration ───────────────────────────────────────────────────────────────
 
 def calibrate_score(raw_score: float, calibration: dict | None) -> float:
-    """Map a raw model score to a calibrated rank_score ∈ [0, 1]."""
+    """Map a raw model score to a calibrated rank_score ∈ [0, 1].
+
+    Audit fix M-1 (Round 6, 2026-04-25): pre-fix, NaN/inf raw_score
+    leaked through every method:
+      - identity:          returned NaN directly
+      - isotonic:          np.interp(NaN, xs, ys) = NaN → clip(NaN) = NaN
+      - platt:             coef*NaN + intercept = NaN → exp(-NaN) = NaN
+        → 1/(1+NaN) = NaN → clip(NaN) = NaN
+    Result: NaN rank_score propagated into tier-threshold gates (NaN <
+    0.10 = False → silent skip, OK), into ranking `sorted(..., key=...)`
+    (raises if mixed with floats), into ranking blend weight ops (NaN
+    spreading), etc.
+
+    Post-fix: explicit non-finite check at the top, fall back to
+    base_rate (default 0.0). All downstream code can rely on rank_score
+    ∈ [0, 1] always being finite.
+    """
+    if raw_score is None or not math.isfinite(float(raw_score)):
+        # Non-finite input: return base_rate if calibration carries one,
+        # else 0.0 (treated as "low conviction" by tier gates).
+        if calibration:
+            return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
+        return 0.0
     if not calibration:
         return float(raw_score)
     method = calibration.get("method", "identity")

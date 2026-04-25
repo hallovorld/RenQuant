@@ -126,6 +126,47 @@ class TestK1KellyRejectsNanInf:
         assert kelly_target_pct(0.02, 0.10, max_pct=0.15, fractional=0.25) == pytest.approx(0.15)
 
 
+# ── M-1 (Round 6 audit): calibrate_score returns finite on NaN raw_score ──────
+
+class TestM1CalibrateScoreRejectsNaN:
+    """Pre-fix, NaN raw_score leaked through every calibration method
+    (identity / isotonic / platt) and produced NaN rank_score, which
+    poisoned downstream ranking + tier-gate logic."""
+
+    def test_nan_with_no_calibration_returns_zero(self):
+        from kernel.models import calibrate_score
+        assert calibrate_score(float("nan"), None) == 0.0
+
+    def test_nan_with_isotonic_falls_back_to_base_rate(self):
+        from kernel.models import calibrate_score
+        cal = {"method": "isotonic",
+               "x_thresholds": [0.0, 1.0], "y_thresholds": [0.0, 1.0],
+               "base_rate": 0.07}
+        assert calibrate_score(float("nan"), cal) == pytest.approx(0.07)
+
+    def test_nan_with_platt_falls_back_to_base_rate(self):
+        from kernel.models import calibrate_score
+        cal = {"method": "platt", "platt_coef": 1.0, "platt_intercept": 0.0,
+               "platt_scale_std": 1.0, "platt_scale_mean": 0.0,
+               "base_rate": 0.04}
+        assert calibrate_score(float("nan"), cal) == pytest.approx(0.04)
+
+    def test_inf_raw_score_handled(self):
+        from kernel.models import calibrate_score
+        cal = {"method": "isotonic",
+               "x_thresholds": [0.0, 1.0], "y_thresholds": [0.0, 1.0],
+               "base_rate": 0.05}
+        assert calibrate_score(float("inf"),  cal) == pytest.approx(0.05)
+        assert calibrate_score(float("-inf"), cal) == pytest.approx(0.05)
+
+    def test_finite_isotonic_still_correct(self):
+        from kernel.models import calibrate_score
+        cal = {"method": "isotonic",
+               "x_thresholds": [0.0, 0.5, 1.0],
+               "y_thresholds": [0.0, 0.4, 1.0]}
+        assert calibrate_score(0.25, cal) == pytest.approx(0.20)
+
+
 # ── E-5 (Round 5 audit): compute_exits doesn't corrupt HWM on NaN price ───────
 
 class TestE5ExitsRejectsNanPrice:
