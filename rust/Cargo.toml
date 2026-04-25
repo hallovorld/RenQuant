@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "transformer_scorer",
+    "transformer_scorer_py",
 ]
 
 [workspace.package]

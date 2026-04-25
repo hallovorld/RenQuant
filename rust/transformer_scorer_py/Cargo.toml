@@ -1,0 +1,20 @@
+[package]
+name = "transformer_scorer_py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "transformer_scorer_py"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+transformer_scorer = { path = "../transformer_scorer" }
+candle-core = { workspace = true }
+ndarray     = { workspace = true }
+pyo3        = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+numpy       = "0.22"
+anyhow      = { workspace = true }
