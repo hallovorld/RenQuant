@@ -59,7 +59,16 @@ def tax_drag(
 
     A 20% gain held short-term at 50% rate → 0.20 * 0.50 = 0.10 of position
     paid in tax.  Losses give zero drag (loss harvesting helps the swap).
+
+    Audit fix R-1 (Round 8, 2026-04-25): pre-fix, NaN unrealized_pnl_pct
+    slipped past `<= 0` and propagated into the multiplication →
+    `tax_drag = NaN` → `effective_swap_margin = base + NaN = NaN` →
+    every rotation pair comparison returned False (NaN < margin is False).
+    Net effect: rotation gate silently rejected all swaps.
     """
+    import math
+    if unrealized_pnl_pct is None or not math.isfinite(float(unrealized_pnl_pct)):
+        return 0.0
     if unrealized_pnl_pct <= 0:
         return 0.0
     rate = long_term_rate if hold_days >= long_term_threshold_days else short_term_rate
