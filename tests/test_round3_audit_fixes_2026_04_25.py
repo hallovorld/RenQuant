@@ -829,6 +829,79 @@ class TestSCPlattMissingScalerFallsBackToBaseRate:
         assert cal.calibrate(0.5) == 0.40
 
 
+# ── G-1 (Round 2 audit): NaN confidence routes to defensives, not fail-open ────
+
+class TestG1ConfidenceVetoFailSafeOnNaN:
+    """Pre-fix, ConfidenceVetoTask checked `confidence < threshold` to set
+    bear_only. NaN < X is False, so a NaN confidence (regime classifier
+    failed, GMM hit uniform prior) silently passed the veto — offensive
+    buys went through in a regime we couldn't classify. The semantics
+    of the veto are 'low/uncertain confidence → defensives only', which
+    means NaN should route to defensives, not pass-through."""
+
+    def _ctx(self, regime, confidence, threshold=0.55):
+        import datetime, sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from kernel.pipeline.context import InferenceContext
+        ctx = InferenceContext(
+            today=datetime.date(2026, 4, 25),
+            config={"regime": {"confidence_veto_threshold": threshold}},
+            ohlcv={}, prices={}, holdings={},
+        )
+        ctx.regime = regime
+        ctx.confidence = confidence
+        return ctx
+
+    def test_normal_high_confidence_passes(self):
+        from kernel.pipeline.task_gates import ConfidenceVetoTask
+        ctx = self._ctx(regime="BULL_CALM", confidence=0.80, threshold=0.55)
+        ConfidenceVetoTask().run(ctx)
+        assert ctx.bear_only is False
+
+    def test_low_confidence_routes_to_bear_only(self):
+        from kernel.pipeline.task_gates import ConfidenceVetoTask
+        ctx = self._ctx(regime="BULL_CALM", confidence=0.30, threshold=0.55)
+        ConfidenceVetoTask().run(ctx)
+        assert ctx.bear_only is True
+
+    def test_nan_confidence_routes_to_bear_only(self):
+        """The bug: pre-fix this would have left bear_only=False because
+        NaN<0.55 is False. Post-fix: explicit isfinite check forces fail-safe."""
+        from kernel.pipeline.task_gates import ConfidenceVetoTask
+        ctx = self._ctx(regime="BULL_CALM", confidence=float("nan"), threshold=0.55)
+        ConfidenceVetoTask().run(ctx)
+        assert ctx.bear_only is True
+
+    def test_inf_confidence_routes_to_bear_only(self):
+        """Defensive: inf is also non-finite — corrupted regime detector
+        output. Treat the same as NaN: defensives only."""
+        from kernel.pipeline.task_gates import ConfidenceVetoTask
+        ctx = self._ctx(regime="BULL_CALM", confidence=float("inf"), threshold=0.55)
+        ConfidenceVetoTask().run(ctx)
+        assert ctx.bear_only is True
+
+    def test_none_confidence_routes_to_bear_only(self):
+        """If confidence is None (uninitialized regime job), fail-safe."""
+        from kernel.pipeline.task_gates import ConfidenceVetoTask
+        ctx = self._ctx(regime="BULL_CALM", confidence=None, threshold=0.55)
+        ConfidenceVetoTask().run(ctx)
+        assert ctx.bear_only is True
+
+    def test_bear_regime_returns_early_regardless_of_confidence(self):
+        """When regime is already BEAR, BEARBranchTask handles it; this
+        task should return None immediately — even on NaN confidence —
+        without touching bear_only (BEARBranchTask sets it later)."""
+        from kernel.pipeline.task_gates import ConfidenceVetoTask
+        ctx = self._ctx(regime="BEAR", confidence=float("nan"), threshold=0.55)
+        ctx.bear_only = False   # explicitly false to detect any spurious touch
+        ConfidenceVetoTask().run(ctx)
+        # Task should have returned early; bear_only unchanged.
+        assert ctx.bear_only is False
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

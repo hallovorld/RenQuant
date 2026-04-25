@@ -60,11 +60,25 @@ class ConfidenceVetoTask(Task):
             return None
         regime_cfg = ctx.config.get("regime", {})
         threshold  = float(regime_cfg.get("confidence_veto_threshold", 0.0))
-        if threshold > 0.0 and ctx.confidence < threshold:
+        # Audit fix G-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+        # ctx.confidence (regime classifier failed / GMM returned uniform
+        # prior) slipped past `confidence < threshold` because NaN < X
+        # is False → veto NOT triggered → offensive buys went through
+        # in a regime we couldn't classify. That's the OPPOSITE of the
+        # intended safety semantics: NaN confidence means "we don't know
+        # the regime", which is precisely when defensives-only is safer
+        # than allowing offensive buys into uncertainty.
+        # Now: NaN/inf confidence routes to the same defensives-only
+        # branch as low confidence (fail-SAFE).
+        import math
+        conf = ctx.confidence
+        non_finite = (conf is None or not math.isfinite(conf))
+        if non_finite or (threshold > 0.0 and conf < threshold):
             ctx.counters["confidence_veto_blocks"] = ctx.counters.get("confidence_veto_blocks", 0) + 1
             ctx.bear_only = True
-            log.info("ConfidenceVetoTask: confidence %.2f < %.2f — defensives only",
-                     ctx.confidence, threshold)
+            log.info("ConfidenceVetoTask: confidence=%s%s — defensives only",
+                     "non-finite" if non_finite else f"{conf:.2f}",
+                     "" if non_finite else f" < {threshold:.2f}")
             # Continue chain so velocity/EMA50 macros can still fire.
 
 
