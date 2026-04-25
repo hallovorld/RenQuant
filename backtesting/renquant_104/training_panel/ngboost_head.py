@@ -68,6 +68,7 @@ class NGBoostHead:
         date_col: str | None = "date",
         val_fraction: float = 0.2,
         early_stopping_rounds: int | None = None,
+        impute_features: bool = True,
     ) -> dict:
         """Fit NGBRegressor(Normal) on the panel.
 
@@ -88,27 +89,36 @@ class NGBoostHead:
                        `early_stopping_rounds=None` to disable.
         """
         self.feature_cols = list(feature_cols)
-        # Build a clean view: finite features, finite label, finite + non-negative weight.
-        feat_arr = panel[feature_cols].to_numpy(dtype=float, copy=False)
-        finite_feat_mask = np.isfinite(feat_arr).all(axis=1)
+        # Build a clean view: ALWAYS drop rows with NaN/inf in label or
+        # bad weight (those can't be imputed). Features get imputed when
+        # `impute_features=True` (default), otherwise dropped.
         label_arr = panel[label_col].to_numpy(dtype=float, copy=False)
-        finite_label_mask = np.isfinite(label_arr)
-        keep = finite_feat_mask & finite_label_mask
+        keep = np.isfinite(label_arr)
         if sample_weight_col and sample_weight_col in panel.columns:
             w_arr = panel[sample_weight_col].to_numpy(dtype=float, copy=False)
             keep = keep & np.isfinite(w_arr) & (w_arr >= 0.0)
+        # Audit fix N-Coverage (2026-04-25): pre-fix, ANY NaN feature in a
+        # row dropped that row. With patchy factor coverage (insider trades
+        # 44/99 tickers, hourly/minute 83/99), this dropped 86.5% of the
+        # panel — biased the fit toward US-domestic large caps with
+        # complete coverage. Post-fix: median-fill features per column,
+        # train_mu_ic + train_sigma_mean still meaningful since the
+        # imputation is neutral (zero-centered features → 0 = neutral).
+        if not impute_features:
+            feat_arr = panel[feature_cols].to_numpy(dtype=float, copy=False)
+            keep = keep & np.isfinite(feat_arr).all(axis=1)
         n_dropped = int(len(panel) - keep.sum())
         if n_dropped:
             import logging  # noqa: PLC0415
             logging.getLogger("ngboost").info(
-                "NGBoostHead.train: dropped %d/%d rows with NaN/inf in "
-                "features/label/weight", n_dropped, len(panel),
+                "NGBoostHead.train: dropped %d/%d rows (label/weight invalid)",
+                n_dropped, len(panel),
             )
         sub = panel.loc[keep]
         if len(sub) < 10:
             raise ValueError(
                 f"NGBoostHead.train: too few clean rows ({len(sub)} after "
-                f"NaN/inf drop). Check feature pipeline."
+                f"label/weight drop). Check feature pipeline."
             )
 
         # ── Audit fix N-2 / N-14: time-ordered train/val split ────────
@@ -152,6 +162,32 @@ class NGBoostHead:
             y_val = sub_val[label_col].to_numpy(dtype=float)
             if sample_weight_col and sample_weight_col in sub_val.columns:
                 sw_val = sub_val[sample_weight_col].to_numpy(dtype=float)
+
+        # Audit fix N-Coverage: median-fill features. Compute medians on the
+        # TRAIN split only (don't leak val into the imputed values).
+        # Persist medians on the head so predict-time can use the same
+        # imputation. ±inf treated as missing.
+        self.feature_medians_ = None
+        if impute_features:
+            X_train_finite = np.where(np.isfinite(X_train), X_train, np.nan)
+            medians = np.nanmedian(X_train_finite, axis=0)
+            # If a column is ALL-NaN on train (rare), fall back to 0.0 so
+            # the imputed value is neutral on z-scored features.
+            medians = np.where(np.isfinite(medians), medians, 0.0)
+            self.feature_medians_ = medians.astype(float)
+            n_imputed_train = int((~np.isfinite(X_train)).sum())
+            X_train = np.where(np.isfinite(X_train), X_train, medians)
+            if X_val is not None:
+                X_val = np.where(np.isfinite(X_val), X_val, medians)
+            if n_imputed_train > 0:
+                import logging  # noqa: PLC0415
+                logging.getLogger("ngboost").info(
+                    "NGBoostHead.train: imputed %d feature cells "
+                    "(%.1f%% of %d×%d train matrix) with column medians",
+                    n_imputed_train,
+                    100.0 * n_imputed_train / max(1, X_train.size),
+                    X_train.shape[0], X_train.shape[1],
+                )
 
         self.regressor = NGBRegressor(Dist=Normal, **self.params)
         fit_kwargs: dict[str, Any] = {}
@@ -219,10 +255,20 @@ class NGBoostHead:
         ApplyNGBoostTask → silent NGBoost no-op. Post-fix, NaN-row
         predictions are returned as NaN (downstream can detect + skip),
         and finite rows score normally.
+
+        Audit fix N-Coverage (2026-04-25): if the head was trained with
+        `impute_features=True` (default), apply the same median imputation
+        at inference so a single missing factor (e.g. insider_net_buy_90d
+        for a foreign ticker) doesn't drop the prediction to NaN. The
+        medians live on `self.feature_medians_` and are persisted in the
+        artifact.
         """
         if self.regressor is None:
             raise RuntimeError("NGBoostHead.predict called before train/load")
-        X = panel[self.feature_cols].to_numpy(dtype=float, copy=False)
+        X = panel[self.feature_cols].to_numpy(dtype=float, copy=False).copy()
+        medians = getattr(self, "feature_medians_", None)
+        if medians is not None:
+            X = np.where(np.isfinite(X), X, medians)
         finite_mask = np.isfinite(X).all(axis=1)
         out = pd.DataFrame(
             {"mu": np.nan, "sigma": np.nan},
@@ -258,6 +304,11 @@ class NGBoostHead:
             "params": self.params,
             "regressor_pickle_b64": blob,
         }
+        # Audit fix N-Coverage (2026-04-25): persist median-imputation
+        # vector so predict-time matches train-time imputation.
+        medians = getattr(self, "feature_medians_", None)
+        if medians is not None:
+            payload["feature_medians"] = list(map(float, medians))
         if metadata:
             payload.update({k: v for k, v in metadata.items() if k not in payload})
         path.write_text(json.dumps(payload, default=str))
@@ -276,6 +327,10 @@ class NGBoostHead:
         head.regressor = pickle.loads(
             base64.b64decode(payload["regressor_pickle_b64"].encode("ascii")),
         )
+        # Audit fix N-Coverage (2026-04-25): restore median vector.
+        medians = payload.get("feature_medians")
+        if medians is not None:
+            head.feature_medians_ = np.asarray(medians, dtype=float)
         return head
 
 

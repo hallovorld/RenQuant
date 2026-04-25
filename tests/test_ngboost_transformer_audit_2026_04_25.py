@@ -210,10 +210,21 @@ class TestN1N13NGBoostNanDropped:
         assert preds.loc[finite_x, "mu"].notna().all()
 
 
-# ── N-5: NGBoost predict returns NaN for NaN-input rows ──────────────────────
+# ── N-5 + N-Coverage: NGBoost imputes NaN at predict-time ────────────────────
 
 class TestN5NGBoostPredictNaNPassthrough:
-    def test_nan_input_rows_get_nan_predictions(self):
+    def test_nan_input_rows_get_imputed_then_predicted(self):
+        """Audit fix N-Coverage (2026-04-25): pre-fix, a single NaN feature
+        cell at predict-time produced NaN output, which downstream
+        ApplyNGBoostTask treated as "no μ/σ available" → silent skip.
+
+        Post-fix, NaN cells are filled with the train-time column median
+        (persisted on the head) so we still produce finite μ/σ estimates
+        for tickers with patchy factor coverage (e.g. foreign stocks
+        with no SEC Form 4 filings, or short-history tickers missing
+        hourly aggregates). This restored 86% of dropped rows in the
+        2026-04-25 retrain.
+        """
         from training_panel.ngboost_head import NGBoostHead
         rng = np.random.default_rng(1)
         n = 150
@@ -224,12 +235,39 @@ class TestN5NGBoostPredictNaNPassthrough:
         })
         m = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
         m.train(df, ["x1", "x2"])
-        # Build a tiny inference frame with one NaN row.
+        # Build a tiny inference frame with one NaN row + one inf row.
         infer = pd.DataFrame({
             "x1": [0.5, np.nan, 1.2],
             "x2": [0.0, 0.7,    np.inf],
         }, index=["AAA", "BBB", "CCC"])
         preds = m.predict_distribution(infer)
+        # All three rows now produce finite μ/σ — NaN/inf cells were
+        # replaced with train-time medians.
+        assert preds.loc["AAA"].notna().all()
+        assert preds.loc["BBB"].notna().all()
+        assert preds.loc["CCC"].notna().all()
+        assert (preds["sigma"] > 0).all()
+
+    def test_impute_features_disabled_drops_nan_rows(self):
+        """When impute_features=False, fall back to old drop-row behavior."""
+        from training_panel.ngboost_head import NGBoostHead
+        rng = np.random.default_rng(2)
+        n = 150
+        df = pd.DataFrame({
+            "x1": rng.normal(size=n),
+            "x2": rng.normal(size=n),
+            "residual_return_raw": rng.normal(size=n),
+        })
+        m = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        m.train(df, ["x1", "x2"], impute_features=False)
+        # impute_features=False → no medians persisted
+        assert getattr(m, "feature_medians_", None) is None
+        infer = pd.DataFrame({
+            "x1": [0.5, np.nan, 1.2],
+            "x2": [0.0, 0.7,    np.inf],
+        }, index=["AAA", "BBB", "CCC"])
+        preds = m.predict_distribution(infer)
+        # Without medians, NaN/inf rows propagate NaN as before.
         assert preds.loc["AAA"].notna().all()
         assert preds.loc["BBB"].isna().all()
         assert preds.loc["CCC"].isna().all()
