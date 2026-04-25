@@ -168,6 +168,19 @@ def compute_position_size(
         shares = int(min(fallback_dollars, investable) / price)
 
     if shares < 1:
+        # Audit fix MIN-1-SHARE (Round 4 deep audit, 2026-04-25, user spec):
+        # the size cap exists to LIMIT exposure, not to BLOCK trades. If
+        # confidence-scaled cap and 25% fallback both produced 0 shares but
+        # we have enough investable cash for at least one share, take the
+        # one share. Pre-fix, low regime confidence (e.g. 0.0041) compounded
+        # with high-priced stocks caused all buys to silently disappear,
+        # which the user identified as the wrong behaviour ("给的额度不够买
+        # 一股的时候就买一股嘛"). Override has a sane upper bound: only
+        # fires when investable >= price (≥1 share affordable).
+        if investable >= price:
+            shares = 1
+
+    if shares < 1:
         return 0.0, 0
 
     actual_pct = (shares * price) / portfolio_value

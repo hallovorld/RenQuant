@@ -108,8 +108,13 @@ class SizeAndEmitTask(Task):
             universe_sigma_median,
         )
 
+        # Audit fix CONF-MULT (2026-04-25): use floored confidence multiplier
+        # so low confidence (e.g. 0.0041 from a Hurst/GMM disagreement) doesn't
+        # collapse position size to ~$0. See kernel/regime.py::confidence_to_size_multiplier.
+        from kernel.regime import confidence_to_size_multiplier  # noqa: PLC0415
+        _conf_mult    = confidence_to_size_multiplier(ctx.confidence)
         regime_p      = ctx.config.get("regime_params", {}).get(ctx.regime, {})
-        base_max_pct  = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
+        base_max_pct  = float(regime_p.get("max_position_pct", 0.15)) * _conf_mult
 
         # CUSUM-v2 Design C (user-locked 2026-04-24): when
         # `regime.cusum_cooldown_mode == "wall_time"`, scale max_pct by
@@ -128,7 +133,7 @@ class SizeAndEmitTask(Task):
                 log.info("SizeAndEmitTask: CUSUM cooldown active — "
                          "scaling max_pct × %.3f", cooldown_mult)
         base_max_pct *= cooldown_mult
-        reserve_pct   = float(regime_p.get("cash_reserve_pct", 0.0))  * ctx.confidence
+        reserve_pct   = float(regime_p.get("cash_reserve_pct", 0.0))  * _conf_mult
         bear_def_pct  = float(ctx.config.get("bear_defensive_pct", 0.15))
         override_pct  = bear_def_pct if ctx.bear_only else None
         sizing_cfg    = (ctx.config.get("ranking", {})

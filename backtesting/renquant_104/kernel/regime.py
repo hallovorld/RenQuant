@@ -290,18 +290,46 @@ def compute_regime_confidence(
     gmm_probs: dict[str, float],
     in_transition: bool,
     config: dict,
+    hurst_regime: str | None = None,
+    hard_bear: bool = False,
 ) -> float:
     """Return confidence ∈ [0, 1] for position-sizing.
 
-    CHOPPY: GMM clusters have ~48/48% weights → structurally ~50% confidence regardless of
-    market state.  Use Hurst distance from 0.45 instead — lower H = stronger mean-reversion
-    = higher CHOPPY confidence.
+    Audit fix RC-MISMATCH (Round 4 deep audit, 2026-04-25, user spec
+    "你那个sizing math靠谱吗？confidence也太低了"): the confidence formula
+    must MATCH the source of the regime decision in `RegimeFinalizeTask`,
+    not blindly query GMM.
 
-    All other regimes: GMM posterior probability for the detected regime.
+    Decision tree (mirrors `RegimeFinalizeTask`):
+      hard_bear OR gmm_probs[BEAR] > 0.5     → BEAR decided definitively → confidence = 1.0
+      hurst_regime == MOMENTUM               → BULL_CALM via Hurst → use Hurst distance from
+                                               trending threshold (deeper into MOMENTUM = higher conf)
+      hurst_regime == REVERSION              → CHOPPY via Hurst → use Hurst distance from
+                                               reversion threshold (existing logic)
+      else (dominant_gmm route)              → use GMM posterior for the regime
+
+    Pre-fix scenario this catches: Hurst MOMENTUM forces BULL_CALM, GMM probability for
+    BULL_CALM is 0.0041 (because GMM dominant cluster is something else), confidence
+    returned 0.0041 → max_position × confidence ≈ $6 → no buys ever fired.
+
     During transition: flat 0.5 (uncertainty window after CUSUM changepoint).
     """
     if in_transition:
         return 0.5
+
+    # BEAR override — if we forced BEAR via hard_bear or GMM-BEAR-dominant,
+    # the decision is definitive.
+    if hard_bear or gmm_probs.get(BEAR, 0.0) > 0.5:
+        if regime == BEAR:
+            return 1.0
+
+    # Hurst-forced regimes: confidence is Hurst-distance-based (matches source).
+    if hurst_regime == "MOMENTUM" and regime == "BULL_CALM":
+        hurst_trend = float(config.get("regime", {}).get("hurst_trending_threshold", 0.65))
+        # Linear ramp from `hurst_trend` (conf=0) to 1.0 (conf=1).
+        # Floor at 0.5: trending Hurst is itself a meaningful signal even at threshold.
+        conf = 0.5 + 0.5 * (hurst - hurst_trend) / max(1.0 - hurst_trend, 1e-6)
+        return float(min(1.0, max(0.5, conf)))
 
     if regime == CHOPPY:
         hurst_floor = float(config.get("regime", {}).get("choppy_hurst_floor", 0.20))
@@ -310,6 +338,24 @@ def compute_regime_confidence(
         return float(min(1.0, max(0.0, conf)))
 
     return float(gmm_probs.get(regime, 0.5))
+
+
+def confidence_to_size_multiplier(confidence: float, floor: float = 0.5) -> float:
+    """Map raw confidence ∈ [0, 1] → size multiplier ∈ [floor, 1.0].
+
+    Audit fix CONF-MULT (Round 4 deep audit, 2026-04-25, user spec
+    "直接*confidence不就是降档么这特么的在搞笑吧"): the previous
+    callsites multiplied `max_position_pct *= ctx.confidence` directly,
+    which has no upside (range [0, 1]) and degenerates to zero on low
+    confidence. Floor at 0.5 means even worst-case confidence still
+    deploys 50% of the max position — risk-aware, not capital-starved.
+
+    Use this everywhere instead of `value * ctx.confidence`.
+    """
+    import math
+    if not math.isfinite(confidence):
+        return float(floor)
+    return float(max(floor, min(1.0, confidence)))
 
 
 # ── Top-level orchestrator ────────────────────────────────────────────────────

@@ -538,8 +538,11 @@ class ApplyKellySizingTask(Task):
         min_edge          = float(kelly_cfg.get("min_edge",          0.0))
         max_concentration = float(kelly_cfg.get("max_concentration", 0.35))
 
+        # Audit fix CONF-MULT (2026-04-25): floored confidence multiplier.
+        from kernel.regime import confidence_to_size_multiplier  # noqa: PLC0415
+        _conf_mult = confidence_to_size_multiplier(ctx.confidence)
         regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
-        max_pct  = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
+        max_pct  = float(regime_p.get("max_position_pct", 0.15)) * _conf_mult
 
         def _kelly(obj):
             return kelly_target_pct(

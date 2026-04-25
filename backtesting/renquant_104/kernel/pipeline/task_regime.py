@@ -207,7 +207,9 @@ class RegimeFinalizeTask(Task):
                     state.cooldown_start = None
 
         confidence = compute_regime_confidence(
-            new_regime, state.hurst, gmm_probs, state.in_transition, ctx.config
+            new_regime, state.hurst, gmm_probs, state.in_transition, ctx.config,
+            hurst_regime=state.hurst_regime,
+            hard_bear=state.hard_bear,
         )
 
         state.regime     = new_regime

@@ -682,8 +682,11 @@ class EmitRotationsTask(Task):
         if not ctx.rotations:
             return
 
+        # Audit fix CONF-MULT (2026-04-25): floored confidence multiplier.
+        from kernel.regime import confidence_to_size_multiplier  # noqa: PLC0415
+        _conf_mult   = confidence_to_size_multiplier(ctx.confidence)
         regime_p     = ctx.config.get("regime_params", {}).get(ctx.regime, {})
-        base_max_pct = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
+        base_max_pct = float(regime_p.get("max_position_pct", 0.15)) * _conf_mult
         # 2026-04-24 sizing parity (#26 #33): apply the same CUSUM
         # wall-time cooldown scaling SizeAndEmitTask uses, so rotation
         # buys aren't oversized while fresh picks are scaled down.
@@ -696,7 +699,7 @@ class EmitRotationsTask(Task):
             cd_days  = float(_regime_cfg.get("cusum_cooldown_days", 3.0))
             cooldown_mult = cusum_cooldown_progress(ctx.today, cd_start, cd_days)
         base_max_pct *= cooldown_mult
-        reserve_pct  = float(regime_p.get("cash_reserve_pct", 0.0))  * ctx.confidence
+        reserve_pct  = float(regime_p.get("cash_reserve_pct", 0.0))  * _conf_mult
         sizing_cfg   = (ctx.config.get("ranking", {})
                          .get("panel_scoring", {}).get("sizing", {}))
         sigma_cfg    = (ctx.config.get("ranking", {})
