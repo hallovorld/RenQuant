@@ -267,6 +267,88 @@ class BuildPairsTask(Task):
             ctx.rotations = pairs
             return  # skip ER-based discovery + gates
 
+        # Route C — rotation_mode "thesis_symmetric" (V4, 2026-04-24).
+        # Full 4-point comparison (A_entry, A_today, B_entry, B_today) via
+        # DB lookup of B's rank on A's entry date. Literature basis
+        # (Avellaneda-Lee pair-trading + Gu-Kelly-Xiu ML ranking) in
+        # doc/rotation_research_2026-04-24.md.
+        if rotation_mode == "thesis_symmetric":
+            from kernel.rotation import find_thesis_symmetric_pairs  # noqa: PLC0415
+            from kernel.persistence import lookup_candidate_scores_on_date  # noqa: PLC0415
+
+            held_entry_rs = {t: getattr(hs, "entry_rank_score", None)
+                             for t, hs in ctx.holdings.items()}
+            held_today_rs = {t: getattr(hs, "rank_score", None)
+                             for t, hs in ctx.holdings.items()}
+            held_meta_all: dict = {}
+            for t, hs in ctx.holdings.items():
+                entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
+                cur_p   = ctx.prices.get(t, entry_p)
+                held_meta_all[t] = {
+                    "entry_date":    getattr(hs, "entry_date", None),
+                    "entry_price":   entry_p,
+                    "current_price": cur_p,
+                }
+
+            # Build entry_day_lookup: (cand_ticker, A_entry_date) → cand's rank
+            # on that date. Query candidate_scores × pipeline_runs for each
+            # unique A_entry_date in the held set.
+            entry_day_lookup: dict = {}
+            db = getattr(ctx, "_db", None)
+            if db is not None:
+                cand_tickers = [c.ticker for c in eligible_candidates]
+                unique_entry_dates = {
+                    meta.get("entry_date")
+                    for meta in held_meta_all.values()
+                    if meta.get("entry_date") is not None
+                }
+                for entry_date in unique_entry_dates:
+                    rows = lookup_candidate_scores_on_date(
+                        db, cand_tickers, entry_date,
+                    )
+                    for ticker, scores in rows.items():
+                        entry_day_lookup[(ticker, entry_date)] = scores.get("rank_score")
+
+            # Optional own-momentum dict (Proposal 1, Moskowitz 2012).
+            # 63d return per ticker; computed from OHLCV close series.
+            own_mom: dict = {}
+            thesis_sym_cfg = rotation_cfg.get("thesis_symmetric", {})
+            if thesis_sym_cfg.get("own_momentum_enabled", False):
+                tickers_to_score = set(held_meta_all.keys()) | {
+                    c.ticker for c in eligible_candidates
+                }
+                ohlcv = getattr(ctx, "ohlcv", {}) or {}
+                for t in tickers_to_score:
+                    df = ohlcv.get(t)
+                    if df is None or len(df) < 64:
+                        continue
+                    try:
+                        today_close = float(df["close"].iloc[-1])
+                        past_close  = float(df["close"].iloc[-64])  # 63 bars back
+                        if past_close > 0:
+                            own_mom[t] = (today_close - past_close) / past_close
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        continue
+
+            pairs = find_thesis_symmetric_pairs(
+                held_entry_scores = held_entry_rs,
+                held_today_scores = held_today_rs,
+                held_meta         = held_meta_all,
+                candidates        = eligible_candidates,
+                entry_day_lookup  = entry_day_lookup,
+                today             = ctx.today,
+                rotation_cfg      = rotation_cfg,
+                tax_cfg           = tax_cfg,
+                own_momentum      = own_mom or None,
+            )
+            log.info(
+                "RotationJob: thesis_symmetric mode — %d pair(s), "
+                "entry_lookup_size=%d own_mom_size=%d",
+                len(pairs), len(entry_day_lookup), len(own_mom),
+            )
+            ctx.rotations = pairs
+            return  # skip ER-based discovery + gates
+
         # V1 persistence gate: pass the context's prior-bar proposals to
         # the primitive via a private config key so the kernel stays
         # stateless.

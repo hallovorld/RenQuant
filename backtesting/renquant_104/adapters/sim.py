@@ -323,6 +323,11 @@ class SimAdapter:
         # passthrough. Adapter pushes this bar's proposals in commit().
         ctx.prior_rotation_proposals = list(self._rotation_proposals)
 
+        # Rotation V4 (thesis_symmetric) needs the sim DB to look up
+        # candidate scores on each held's entry date.
+        if self._db is not None:
+            ctx._db = self._db   # noqa: SLF001
+
         # Preload panel scoring artifacts so PanelScoringJob short-circuits
         # its LoadScorerTask / LoadNGBoostTask.
         if self._panel_scorer is not None:
