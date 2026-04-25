@@ -475,6 +475,89 @@ class TestE5ExitsRejectsNanPrice:
         assert state2.high_watermark == 125.0
 
 
+# ── EX-HWM (Round 2 audit): compute_exits recovers from corrupted HWM ─────────
+
+class TestEXHWMRecoversFromCorruptedState:
+    """E-5 protected against NaN price corrupting HWM going forward.
+    EX-HWM protects the OTHER direction: when stored HWM is already
+    non-finite (e.g. read back from a pre-E5 live_state.json), the
+    next compute_exits call should reset HWM to current_price so
+    trailing-stop tracking restarts cleanly. Pre-EX-HWM, NaN HWM
+    silently disabled trailing-stop forever (peak_gain stays NaN,
+    `peak_gain < ts_trigger` is False, no fire)."""
+
+    def _state(self, hwm, entry=100.0):
+        from kernel.exits import HoldingState
+        import datetime
+        return HoldingState(
+            entry_price=entry,
+            entry_date=datetime.date(2026, 1, 1),
+            high_watermark=hwm,
+        )
+
+    def test_nan_hwm_resets_to_current_price(self):
+        from kernel.exits import compute_exits
+        import datetime, math
+        state = self._state(hwm=float("nan"))
+        _, state2 = compute_exits(
+            current_price=125.0,
+            today=datetime.date(2026, 6, 1),
+            model_action="hold", state=state,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert math.isfinite(state2.high_watermark)
+        assert state2.high_watermark == 125.0
+
+    def test_inf_hwm_resets_to_current_price(self):
+        from kernel.exits import compute_exits
+        import datetime, math
+        state = self._state(hwm=float("inf"))
+        _, state2 = compute_exits(
+            current_price=140.0,
+            today=datetime.date(2026, 6, 1),
+            model_action="hold", state=state,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert math.isfinite(state2.high_watermark)
+        assert state2.high_watermark == 140.0
+
+    def test_after_recovery_trailing_stop_fires_normally(self):
+        """End-to-end: corrupted HWM gets reset, then later bars where
+        peak gain crosses the trigger should arm and fire the trail."""
+        from kernel.exits import compute_exits
+        import datetime
+        # Bar 1: corrupted HWM, current price 100 (entry).
+        state = self._state(hwm=float("nan"), entry=100.0)
+        _, s1 = compute_exits(
+            current_price=100.0, today=datetime.date(2026, 6, 1),
+            model_action="hold", state=state,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert s1.high_watermark == 100.0
+
+        # Bar 2: price spikes to 130 (30% gain — peak_gain > trigger).
+        _, s2 = compute_exits(
+            current_price=130.0, today=datetime.date(2026, 6, 2),
+            model_action="hold", state=s1,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert s2.high_watermark == 130.0
+
+        # Bar 3: price drops to 105 (well below trail floor 130*(1-0.18) = 106.6).
+        sig3, _ = compute_exits(
+            current_price=105.0, today=datetime.date(2026, 6, 3),
+            model_action="hold", state=s2,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert sig3.should_exit is True
+        assert sig3.exit_type == "trailing_stop"
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

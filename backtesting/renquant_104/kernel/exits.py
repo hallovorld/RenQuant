@@ -225,6 +225,18 @@ def compute_exits(
     import math
     if not math.isfinite(current_price):
         return _NO_EXIT, state
+    # Audit fix EX-HWM (Round 2 deep audit, 2026-04-25): defense in
+    # depth on the OTHER side of the HWM update. E-5 protected against
+    # NaN propagating INTO HWM via `max(HWM, NaN_price)`. But HWM could
+    # already be non-finite when we enter this function — e.g. read
+    # back from a corrupted live_state.json that predates E-5, or a
+    # legacy snapshot created when prev_close validation wasn't there.
+    # Once HWM was NaN, peak_gain stayed NaN forever and trailing-stop
+    # silently disabled itself for the lifetime of the position.
+    # Now: when stored HWM is non-finite, reset it to current_price so
+    # tracking restarts cleanly from this bar onward.
+    if not math.isfinite(state.high_watermark):
+        state.high_watermark = current_price
     state.high_watermark = max(state.high_watermark, current_price)
 
     # 1. Trailing stop
