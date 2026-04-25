@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub mod config;
+pub mod loss;
 pub mod transformer_block;
 
 pub use config::{ScorerArtifact, TransformerParams};
