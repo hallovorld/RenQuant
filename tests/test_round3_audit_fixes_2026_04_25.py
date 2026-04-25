@@ -96,6 +96,36 @@ class TestGC1CalibratorSortedInvariant:
         assert cal.calibrate_probability(0.5) == pytest.approx(0.5)
 
 
+# ── K-1 (Round 5 audit): kelly_target_pct rejects NaN/inf inputs ──────────────
+
+class TestK1KellyRejectsNanInf:
+    """Pre-fix, `mu = NaN` or `sigma = NaN` slipped past the guards
+    (NaN comparisons are False) and propagated through the formula → the
+    function returned NaN instead of 0.0. Downstream SizeAndEmitTask then
+    multiplied that NaN into max_pct, producing NaN order sizes."""
+
+    def test_nan_mu_returns_zero(self):
+        from kernel.kelly import kelly_target_pct
+        assert kelly_target_pct(float("nan"), 0.05, max_pct=0.15) == 0.0
+
+    def test_nan_sigma_returns_zero(self):
+        from kernel.kelly import kelly_target_pct
+        assert kelly_target_pct(0.01, float("nan"), max_pct=0.15) == 0.0
+
+    def test_inf_mu_returns_zero(self):
+        from kernel.kelly import kelly_target_pct
+        assert kelly_target_pct(float("inf"), 0.05, max_pct=0.15) == 0.0
+
+    def test_inf_sigma_returns_zero(self):
+        from kernel.kelly import kelly_target_pct
+        assert kelly_target_pct(0.01, float("inf"), max_pct=0.15) == 0.0
+
+    def test_finite_inputs_still_work(self):
+        from kernel.kelly import kelly_target_pct
+        # μ=0.02, σ=0.10 → f*=2.0, fractional 0.25 → 0.5, capped to max_pct 0.15.
+        assert kelly_target_pct(0.02, 0.10, max_pct=0.15, fractional=0.25) == pytest.approx(0.15)
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

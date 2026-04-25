@@ -69,12 +69,29 @@ def kelly_target_pct(
     f* = μ / σ²
     target = min(max_concentration, max_pct, fractional * f*)
 
-    Returns 0 on missing inputs, non-positive σ, or μ ≤ min_edge —
+    Returns 0 on missing inputs, non-positive σ, NaN/inf, or μ ≤ min_edge —
     all signal "don't bet".
+
+    Audit fix K-1 (2026-04-25): pre-fix, `mu = NaN` slipped past `mu <=
+    min_edge` (NaN comparisons are False) → `NaN / σ² = NaN` → `min(...,
+    NaN) = NaN` → `max(0.0, NaN) = NaN`. Result: kelly_target_pct could
+    return NaN, propagating into SizeAndEmitTask's `max_pct = kelly *
+    conv * sig_m = NaN` and ultimately feeding NaN order sizes downstream.
+    Post-fix: explicit `math.isfinite` guards on both inputs.
     """
-    if mu is None or sigma is None or sigma <= 0 or mu <= min_edge:
+    import math
+    if mu is None or sigma is None:
         return 0.0
-    f_kelly = float(mu) / (float(sigma) ** 2)
+    try:
+        mu_f    = float(mu)
+        sigma_f = float(sigma)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (math.isfinite(mu_f) and math.isfinite(sigma_f)):
+        return 0.0
+    if sigma_f <= 0 or mu_f <= min_edge:
+        return 0.0
+    f_kelly = mu_f / (sigma_f ** 2)
     f_frac  = fractional * f_kelly
     # Double cap: regime's `max_pct` AND global `max_concentration`.
     return max(0.0, min(float(max_pct), float(max_concentration), f_frac))
