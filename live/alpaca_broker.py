@@ -93,6 +93,30 @@ class AlpacaBroker(BaseBroker):
         from alpaca.trading.requests import MarketOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
+        # Audit fix ALPACA-ACCT-STATUS (Round 2 deep audit, 2026-04-25):
+        # pre-fix, account status was checked at connect() only — and even
+        # then logged-not-blocked. Alpaca can disable an account mid-day
+        # for PDT violations, settlement issues, margin calls, regulatory
+        # holds, etc. The live runner would keep submitting orders that
+        # all fail at the API layer, with no clear "account is restricted"
+        # signal until the operator looked at logs. Worse: paper accounts
+        # rarely test this path. Now: re-check at every place_order; if
+        # status is not ACTIVE, raise so the adapter's existing
+        # try/except records it as a broker failure (EXITS-FAIL on the
+        # sell side; orders_skipped on the buy side).
+        try:
+            account = self._trading_client.get_account()
+            status = str(getattr(account, "status", ""))
+        except Exception as exc:
+            raise RuntimeError(
+                f"alpaca pre-trade account check failed: {exc}"
+            ) from exc
+        if status not in ("ACTIVE", "AccountStatus.ACTIVE"):
+            raise RuntimeError(
+                f"alpaca account status is '{status}' (not ACTIVE) — refusing to place "
+                f"{action} {symbol} x{quantity}. Operator action required."
+            )
+
         side = OrderSide.BUY if action.upper() == "BUY" else OrderSide.SELL
 
         request = MarketOrderRequest(

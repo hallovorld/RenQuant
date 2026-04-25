@@ -1587,6 +1587,49 @@ class TestEXITSFAILBrokerConfirmedSplit:
                 sys.path.remove(str(Path(__file__).resolve().parent.parent))
 
 
+# ── ALPACA-ACCT-STATUS (Round 2 audit): re-check status at every place_order ──
+
+class TestAlpacaAcctStatusReChecked:
+    """Pre-fix, account status was only checked at connect() — and even
+    there it logged a warning instead of blocking. Alpaca can disable
+    an account mid-trading for PDT violations / margin calls / settlement
+    issues / regulatory holds, and the live runner would have kept
+    submitting orders into the void with no clear signal. Now: every
+    place_order re-fetches account.status and raises if not ACTIVE,
+    routing the failure through the existing broker-error handlers."""
+
+    def test_place_order_pre_check_invokes_get_account(self):
+        """Source-inspect that place_order calls get_account before
+        building the request."""
+        import inspect, sys
+        from pathlib import Path
+        repo = Path(__file__).resolve().parent.parent
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        from live.alpaca_broker import AlpacaBroker
+        src = inspect.getsource(AlpacaBroker.place_order)
+        assert "get_account()" in src, (
+            "ALPACA-ACCT-STATUS regression: place_order skips the pre-trade account check"
+        )
+        assert 'status not in ("ACTIVE"' in src or 'status != "ACTIVE"' in src, (
+            "ALPACA-ACCT-STATUS regression: place_order doesn't validate ACTIVE"
+        )
+
+    def test_place_order_raises_on_non_active_status(self):
+        """Source-inspect: place_order raises (caught upstream as broker failure)."""
+        import inspect, sys
+        from pathlib import Path
+        repo = Path(__file__).resolve().parent.parent
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        from live.alpaca_broker import AlpacaBroker
+        src = inspect.getsource(AlpacaBroker.place_order)
+        # Must `raise` on non-ACTIVE.
+        assert "raise RuntimeError" in src
+        # And the message names the disabled-status case.
+        assert "not ACTIVE" in src or "Operator action required" in src
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
