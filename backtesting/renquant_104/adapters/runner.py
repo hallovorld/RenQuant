@@ -50,7 +50,27 @@ def resolve_hwm(stored_hwm: float, account_value: float,
     Otherwise ratchet up to max(stored_hwm, account_value) as before.
 
     Returns (resolved_hwm, was_snapped).
+
+    Audit fix RU-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+    account_value (broker outage / Alpaca returns NaN equity) slipped
+    past `account_value > 0` (NaN comparisons False), then `max(hwm,
+    NaN) = NaN` → resolved_hwm = NaN → DrawdownCircuitTask's
+    `(NaN - equity) / NaN` = NaN → `NaN >= halt_pct` False → drawdown
+    gate silently disabled in LIVE TRADING for the rest of the run.
+    Post-fix: explicit isfinite check; on bad account_value, fall back
+    to stored_hwm unchanged (fail-SAFE behaviour — keeps the gate
+    armed against the LAST-known good HWM).
     """
+    import math
+    if not math.isfinite(account_value):
+        # Bad broker data → preserve stored HWM intact, no snap.
+        if math.isfinite(stored_hwm):
+            return float(stored_hwm), False
+        return 0.0, False
+    if not math.isfinite(stored_hwm):
+        # Stored HWM is corrupted but account_value is good → reset to
+        # account_value so future drawdown calc is meaningful.
+        return float(account_value), True
     if account_value > 0 and stored_hwm > stale_ratio * account_value:
         return float(account_value), True
     return float(max(stored_hwm, account_value)), False
