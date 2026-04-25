@@ -41,22 +41,37 @@ impl Panel {
         let mut rdr = csv::Reader::from_path(path)
             .with_context(|| format!("opening {}", path.display()))?;
         let header = rdr.headers()?.clone();
-        if header.len() < 4 || header.get(0) != Some("date") || header.get(1) != Some("ticker") {
+        // Audit fix DAT-RUST-BOM (Round 2 deep audit, 2026-04-25):
+        // Excel / Windows CSV exports often include a UTF-8 BOM (\u{FEFF})
+        // at the start of the first cell. csv crate doesn't strip it.
+        // Strip per-cell so all comparisons see clean values; same
+        // applies to whitespace from Excel quoting habits.
+        let strip = |s: &str| -> String {
+            s.trim_start_matches('\u{FEFF}').trim().to_string()
+        };
+        let h0 = header.get(0).map(strip).unwrap_or_default();
+        let h1 = header.get(1).map(strip).unwrap_or_default();
+        if header.len() < 4 || h0 != "date" || h1 != "ticker" {
             return Err(anyhow!(
                 "expected header `date,ticker,<features>,label`, got {:?}",
                 header.iter().take(4).collect::<Vec<_>>(),
             ));
         }
         let last = header.len() - 1;
-        if header.get(last) != Some("label") {
+        let h_last = header.get(last).map(strip).unwrap_or_default();
+        if h_last != "label" {
             return Err(anyhow!(
                 "last header column must be 'label', got '{}'",
                 header.get(last).unwrap_or(""),
             ));
         }
         // feature_cols = everything between ticker and label.
-        let feature_cols: Vec<String> =
-            header.iter().skip(2).take(last - 2).map(String::from).collect();
+        let feature_cols: Vec<String> = header
+            .iter()
+            .skip(2)
+            .take(last - 2)
+            .map(|s| strip(s))
+            .collect();
         let n_feat = feature_cols.len();
 
         let mut by_date: BTreeMap<String, Vec<(String, Vec<f32>, f32)>> = BTreeMap::new();
@@ -70,20 +85,31 @@ impl Panel {
                     row_idx, rec.len(), header.len(),
                 ));
             }
-            let date = rec.get(0).unwrap_or("").to_string();
+            // Audit fix DAT-RUST-WS (Round 2 deep audit, 2026-04-25):
+            // strip leading/trailing whitespace + BOM (the BOM is on the
+            // first cell of the first row only, but defense in depth).
+            // Production CSVs from Excel often have stray spaces around
+            // quoted fields; without trim, the BTreeMap groups
+            // " 2024-01-02" and "2024-01-02" as different dates.
+            let date = rec.get(0)
+                .unwrap_or("")
+                .trim_start_matches('\u{FEFF}')
+                .trim()
+                .to_string();
             if date.is_empty() {
                 return Err(anyhow!("row {}: empty date", row_idx));
             }
-            let ticker = rec.get(1).unwrap_or("").to_string();
+            let ticker = rec.get(1).unwrap_or("").trim().to_string();
             if ticker.is_empty() {
                 return Err(anyhow!("row {}: empty ticker", row_idx));
             }
             // Parse features.
             let mut feats = Vec::with_capacity(n_feat);
             for j in 0..n_feat {
-                let s = rec.get(2 + j).unwrap_or("");
+                let s_raw = rec.get(2 + j).unwrap_or("");
+                let s = s_raw.trim();   // tolerate ' 0.5' and '0.5 '
                 let v: f32 = s.parse().with_context(|| {
-                    format!("row {} col {} ('{}'): not a float", row_idx, j + 3, s)
+                    format!("row {} col {} ('{}'): not a float", row_idx, j + 3, s_raw)
                 })?;
                 // Reject non-finite features. Labels CAN be NaN
                 // (boundary lookahead); features cannot — sanitize
@@ -96,8 +122,10 @@ impl Panel {
                 }
                 feats.push(v);
             }
-            // Parse label — NaN allowed.
-            let label_str = rec.get(last).unwrap_or("");
+            // Parse label — NaN allowed. Trim WS from the cell so a
+            // CRLF leftover or Excel-quoted '  1.0  ' parses cleanly.
+            let label_raw = rec.get(last).unwrap_or("");
+            let label_str = label_raw.trim();
             let label: f32 = label_str.parse().unwrap_or(f32::NAN);
             // Treat empty label string as NaN (boundary rows).
             let label = if label_str.is_empty() { f32::NAN } else { label };
@@ -312,6 +340,55 @@ date,ticker,f0,f1,label
         write_csv(&tmp, "date,ticker,f0,f1\n2024-01-02,AAA,0.1,0.2\n");
         let r = Panel::load_csv(&tmp);
         assert!(r.is_err());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn dat_rust_bom_excel_export_loads_cleanly() {
+        // Audit fix DAT-RUST-BOM: production CSVs from Excel/Windows
+        // include a UTF-8 BOM. csv crate doesn't strip it, so the
+        // first header field reads as "\u{FEFF}date" not "date".
+        // Without the strip, header validation fails.
+        let tmp = std::env::temp_dir().join("rust_panel_bom.csv");
+        let content = "\u{FEFF}date,ticker,f0,label\n2024-01-02,AAA,0.5,1.0\n";
+        write_csv(&tmp, content);
+        let p = Panel::load_csv(&tmp).expect("BOM-prefixed CSV must load");
+        assert_eq!(p.feature_cols, vec!["f0"]);
+        assert_eq!(p.n_dates(), 1);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn dat_rust_ws_dates_grouped_correctly() {
+        // Audit fix DAT-RUST-WS: stray whitespace around dates from
+        // Excel quoting was creating phantom date groups.
+        let tmp = std::env::temp_dir().join("rust_panel_ws.csv");
+        // Note the trailing space after "2024-01-02" — would be a
+        // separate BTreeMap key without the trim.
+        write_csv(&tmp, "\
+date,ticker,f0,label
+2024-01-02,AAA,0.5,1.0
+ 2024-01-02 ,BBB,0.6,1.5
+2024-01-02,CCC,0.7,2.0
+");
+        let p = Panel::load_csv(&tmp).expect("ws-padded dates must group");
+        assert_eq!(p.n_dates(), 1, "all 3 rows on the same trimmed date");
+        assert_eq!(p.n_rows(), 3);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn dat_rust_ws_features_parse() {
+        // Padded numeric cells should still parse as f32.
+        let tmp = std::env::temp_dir().join("rust_panel_ws_feat.csv");
+        write_csv(&tmp, "\
+date,ticker,f0,f1,label
+2024-01-02,AAA, 0.5 , -0.3 , 1.0
+");
+        let p = Panel::load_csv(&tmp).expect("ws-padded features parse");
+        let rows = &p.features_by_date["2024-01-02"];
+        assert_eq!(rows[0].1, vec![0.5_f32, -0.3_f32]);
+        assert_eq!(rows[0].2, 1.0_f32);
         let _ = std::fs::remove_file(&tmp);
     }
 }
