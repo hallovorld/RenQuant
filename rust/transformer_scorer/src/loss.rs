@@ -63,9 +63,45 @@ pub fn listnet_loss(
     let zero = Tensor::zeros_like(&p_target)?;
     let row_terms = (p_target * log_pred)?.neg()?;
     let row_terms = skip_u.where_cond(&zero, &row_terms)?;
-    let row_loss = row_terms.sum_keepdim(candle_core::D::Minus1)?;
-    // Mean across batch dimension.
-    let loss = row_loss.mean_all()?;
+    let row_loss = row_terms.sum(candle_core::D::Minus1)?;   // (B,)
+
+    // Audit fix DIVERGENCE-PY (Round 5 audit, 2026-04-25): match the
+    // Python `_listnet_loss` semantics — average over rows that have
+    // ≥2 valid slots, NOT over all B rows. Without this, fully-padded
+    // or single-valid-slot rows DILUTED the mean (their row_loss = 0
+    // contributed to the numerator but added 1 to the denominator),
+    // so the Rust loss number reported was smaller than Python's on
+    // the same input. Identical training gradients (zero-loss rows
+    // had zero grad anyway), but the loss curve shape on plots
+    // differed and confused operators monitoring training health.
+    //
+    // Implementation: per-row count of valid slots (T - sum(skip)).
+    // Then a mask of rows where count >= 2. Average row_loss over
+    // those rows. If no rows have >= 2 valid → return 0 with the
+    // gradient connection preserved (so backward_step is a no-op,
+    // not an error).
+    // valid = 1 - skip in f32 land. Use affine(-1, 1) to flip.
+    let skip_f = skip_u.to_dtype(DType::F32)?;
+    let valid_counts = skip_f
+        .affine(-1.0_f64, 1.0_f64)?
+        .sum(candle_core::D::Minus1)?;   // (B,)
+    let valid_row_mask_u = valid_counts.ge(2.0_f32)?.to_dtype(DType::U8)?;
+    let n_valid = valid_row_mask_u
+        .to_dtype(DType::F32)?
+        .sum_all()?
+        .to_vec0::<f32>()?;
+    if n_valid < 1.0 {
+        // Degenerate batch — keep a zero-with-grad tensor so backward
+        // is a clean no-op (mirrors Python's `scores.sum() * 0.0`).
+        let zero_scalar = (score.sum_all()? * 0.0)?;
+        return Ok(zero_scalar);
+    }
+    let mask_f = valid_row_mask_u.to_dtype(DType::F32)?;
+    let masked_row_loss = row_loss.mul(&mask_f)?;
+    let total = masked_row_loss.sum_all()?;
+    // candle's `/` impl on Tensor returns Tensor (panics-on-error);
+    // use the `affine` method to scale safely without unwrapping.
+    let loss = total.affine(1.0_f64 / n_valid as f64, 0.0_f64)?;
     Ok(loss)
 }
 
