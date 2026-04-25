@@ -150,10 +150,18 @@ class SizeAndEmitTask(Task):
             [getattr(c, "sigma", None) for c in ctx.ranked]
         )
 
+        # Audit fix SE-1 (Round 2 deep audit, 2026-04-25): pre-fix,
+        # `if price is None or price <= 0` let NaN slip through (NaN<=0
+        # is False), then `int(invest / NaN_price)` propagated NaN into
+        # share counts and order dicts. Fail-SAFE: treat non-finite price
+        # the same as None — skip the ticker, log a warning so operators
+        # see WHICH ticker had bad data.
+        import math as _math
         for ticker in ctx._selected:  # noqa: SLF001
             price = ctx.prices.get(ticker)
-            if price is None or price <= 0:
-                log.warning("SizeAndEmitTask: no price for %s — skipping", ticker)
+            if price is None or not _math.isfinite(price) or price <= 0:
+                log.warning("SizeAndEmitTask: bad price (%s) for %s — skipping",
+                            price, ticker)
                 continue
 
             c = next((c for c in ctx.ranked if c.ticker == ticker), None)

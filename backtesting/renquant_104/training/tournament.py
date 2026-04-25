@@ -44,7 +44,17 @@ _STRATEGY_DIR = str(Path(__file__).parent.parent)
 
 
 def oos_sharpe(prices: pd.Series, signals: pd.Series) -> float:
-    """Annualised Sharpe for a long-only OOS signal series."""
+    """Annualised Sharpe for a long-only OOS signal series.
+
+    Audit fix TOURN-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+    std (empty strat_ret after constant returns + NaN propagation, or
+    a degenerate single-row case) hit `std == 0` which is False on
+    NaN → fell through to division → returned NaN Sharpe. The
+    tournament then ranked NaN as "neither best nor worst" depending
+    on Python's sort behaviour with NaN, occasionally elevating an
+    all-NaN model. Now: explicit isfinite guard on std AND mean —
+    return 0.0 on any non-finite intermediate (signal "no edge").
+    """
     try:
         prices = prices.dropna()
         if len(prices) < 20:
@@ -52,8 +62,11 @@ def oos_sharpe(prices: pd.Series, signals: pd.Series) -> float:
         sigs      = signals.reindex(prices.index).ffill().fillna(0).clip(0, 1)
         daily_ret = prices.pct_change().fillna(0)
         strat_ret = daily_ret * sigs.shift(1).fillna(0)
-        std = strat_ret.std()
-        return 0.0 if std == 0 else float(strat_ret.mean() / std * np.sqrt(252))
+        std  = strat_ret.std()
+        mean = strat_ret.mean()
+        if std == 0 or not np.isfinite(std) or not np.isfinite(mean):
+            return 0.0
+        return float(mean / std * np.sqrt(252))
     except Exception as e:
         return 0.0
 
