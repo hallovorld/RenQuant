@@ -35,6 +35,84 @@ Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_tr
 
 ---
 
+## 🔥 P0 — Honest backtest framework (2026-04-24 PT, blocking all OOS claims)
+
+**Problem (audit 2026-04-24 PT):** every per-ticker model on disk has
+`live_train_end = 2026-04-17`, but the sim runs `2024-01-01 → 2026-03-26`.
+The entire 28-month "OOS" window is **inside** the training set. Every
+APY/Sharpe number we've reported (62.3/2.13, the 39.82 sweep number, every
+A/B comparison) is **pure in-sample**. We have no defensible OOS metric.
+
+**User decision (2026-04-24):** keep the current single-train-many-eval
+workflow as the dev-time sanity check, but build a parallel honest path.
+
+### B1 — Walk-forward sim runner (production-mirroring)  🔴
+Mirror production retrain cadence (Tue/Thu/Sun) inside the sim loop:
+
+```
+sim/walk_forward_runner.py:
+  for today in bt_dates:
+      if _is_retrain_day(today, config):
+          with snapshot_artifacts_ctx(strategy_dir) as snap:
+              cfg = dict(config); cfg["sample_end"] = today.isoformat()
+              FullTrainingPipeline().run(FullTrainingContext(
+                  config=cfg, strategy_dir=snap, force_retrain=True))
+              adapter = SimAdapter(..., strategy_dir=snap)
+      ctx = adapter.make_context(today)
+      InferencePipeline().run(ctx)
+      adapter.commit(ctx)
+```
+
+Required new code:
+- `_is_retrain_day(date, config)` — read `training.cadence`, return True on cadence days
+- `sample_end` plumbed through `FullTrainingContext` → `RunBaselineTask` → `tournament.run_tournament_all` so `train_df.index.max() < sample_end`
+- artifact dir snapshotting per retrain (already exists via `snapshot_artifacts_ctx`)
+- SimAdapter must reload models when artifact dir changes mid-loop (currently artifacts loaded once at init — need a reset)
+
+Cost: ~140 retrain points × 20 min/retrain ≈ 47 hours per backtest. Mitigations:
+- Optional `tournament_cadence` separate from `panel_cadence` — retrain per-ticker tournament monthly, panel-LTR weekly
+- Parallel retraining (multiple retrain points concurrent)
+- `--cache-from previous-walk-forward.pkl` to incremental-extend the curve
+
+### B2 — Hold-out backtest (single-cut sanity check)  🔴
+Cheap version of walk-forward: train once with `sample_end = backtest_start - 1day`,
+then sim. Useful as "does the strategy framework even make sense?" gate
+before investing in walk-forward. Cost: ~30 min per run.
+
+```
+scripts/holdout_backtest.py --train-end 2023-12-31 --sim-start 2024-01-01
+```
+
+Drives FullTrainingPipeline once with the cutoff, then `run_backtest`. Should
+produce a strict lower bound for walk-forward (production retrains see more
+data; hold-out doesn't).
+
+### B3 — Reporting separation  🔴
+Split metric provenance in every doc + every chart caption:
+- `apy_in_sample` — all-data fit + same-data sim, **never quoted as expected return**
+- `apy_holdout` — fixed-cut hold-out, **conservative lower bound**
+- `apy_walk_forward` — production-mirroring, **the real number for committee**
+- `apy_live` — actual deployed, when available
+
+Update `golden_config_*.md`, `panel_training_runs.md`, `ab_experiments.md`
+to use these labels. Drop bare `"APY"` mentions.
+
+### B4 — Hold-out for Round-3 panel audit fixes  🔴
+After the P0 panel-LTR audit fixes (separate section below) ship, re-run
+hold-out as the first honest measurement of whether the fixes helped.
+In-sample 62.3% is **noise** for evaluating strategy changes.
+
+### Why this is P0
+Until B1-B3 ship, we cannot:
+- Tell if panel-LTR helps or hurts (in-sample says doesn't matter)
+- Validate any of Round-3 audit's panel fixes
+- Promote a "v5 golden" honestly
+- Make a defensible claim about live performance
+
+Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** until B1-B3 land.
+
+---
+
 ## 🆕 2026-04-24 PT — late-session pending queue (post-compact)
 
 Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are in flight; ✅ done; ⏳ waiting on A/B or wall-clock; 🔴 not started. Updated at every ship.

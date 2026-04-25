@@ -44,6 +44,34 @@ from .context import PanelTrainingContext, TickerPanelContext
 log = logging.getLogger("training_panel.pipeline")
 
 
+def _resolve_cache_dir(cfg_value: str, ctx_config: dict) -> Path:
+    """Resolve a Load*Task cache_dir to an absolute path.
+
+    Audit P-37 (2026-04-24): two `data/<cache>/` directories existed —
+    one at repo root, one at strategy_dir/data/<cache>/, with different
+    contents. The relative-path resolver picks whichever happens to be
+    under cwd, so notebook/LEAN/live see different data.
+
+    Resolution order:
+      1. cfg_value is absolute → use as-is
+      2. ctx.config has `_strategy_dir` → resolve relative to repo_root
+         (= strategy_dir.parent.parent). This is the canonical location
+         that `scripts/fetch_*.py` writes to.
+      3. fallback: cwd-relative (legacy). Logs warning since result
+         depends on caller cwd.
+    """
+    p = Path(cfg_value)
+    if p.is_absolute():
+        return p
+    strategy_dir = ctx_config.get("_strategy_dir") if isinstance(ctx_config, dict) else None
+    if strategy_dir:
+        repo_root = Path(strategy_dir).parent.parent
+        return repo_root / p
+    log.warning("_resolve_cache_dir: ctx config missing _strategy_dir; "
+                "falling back to cwd-relative path %s", p)
+    return p
+
+
 # ── Task / Job ABCs (self-contained — same shape as pp_training.py) ───────────
 
 class PanelTask(ABC):
@@ -214,7 +242,7 @@ class LoadFundamentalsTask(PanelTask):
             FundamentalsStore, fetch_fundamentals_watchlist,
         )
 
-        cache_dir = cfg.get("cache_dir", "data/fundamentals")
+        cache_dir = _resolve_cache_dir(cfg.get("cache_dir", "data/fundamentals"), ctx.config)
         store = FundamentalsStore(data_dir=cache_dir)
         refetch = bool(cfg.get("refetch", False))
 
@@ -266,7 +294,7 @@ class LoadEarningsSurpriseTask(PanelTask):
             EarningsSurpriseStore, fetch_earnings_surprise_watchlist,
         )
 
-        cache_dir = cfg.get("cache_dir", "data/earnings_surprise")
+        cache_dir = _resolve_cache_dir(cfg.get("cache_dir", "data/earnings_surprise"), ctx.config)
         store = EarningsSurpriseStore(data_dir=cache_dir)
         # Negative-cache (2026-04-24): skip tickers with no earnings
         # (ETFs, commodity funds) to avoid per-run retry timeouts.
@@ -316,7 +344,7 @@ class LoadInsiderTradesTask(PanelTask):
             InsiderTradesStore, fetch_insider_trades_watchlist,
         )
 
-        cache_dir = cfg.get("cache_dir", "data/insider_trades")
+        cache_dir = _resolve_cache_dir(cfg.get("cache_dir", "data/insider_trades"), ctx.config)
         max_filings = int(cfg.get("max_filings", 200))
         store = InsiderTradesStore(data_dir=cache_dir)
         # Negative-cache (2026-04-24): foreign stocks + ETFs have no
@@ -369,7 +397,7 @@ class LoadHourlyBarsTask(PanelTask):
 
         from kernel.intraday import HourlyBarStore  # noqa: PLC0415
 
-        cache_dir = cfg.get("cache_dir", "data/intraday")
+        cache_dir = _resolve_cache_dir(cfg.get("cache_dir", "data/intraday"), ctx.config)
         store = HourlyBarStore(data_dir=cache_dir)
 
         out: dict[str, pd.DataFrame] = {}
@@ -401,7 +429,7 @@ class LoadMinuteBarsTask(PanelTask):
 
         from kernel.intraday import MinuteBarStore  # noqa: PLC0415
 
-        cache_dir = cfg.get("cache_dir", "data/intraday")
+        cache_dir = _resolve_cache_dir(cfg.get("cache_dir", "data/intraday"), ctx.config)
         store = MinuteBarStore(data_dir=cache_dir)
 
         out: dict[str, pd.DataFrame] = {}
@@ -750,7 +778,13 @@ class FactorZScoreTask(PanelTask):
     """
 
     def run(self, ctx: PanelTrainingContext) -> None:
-        if ctx.factor_frames:
+        # Audit P-16: don't early-return on truthy `ctx.factor_frames`.
+        # Previously a partial dict left over from a prior bar would
+        # silently skip this task and use stale data. Now: we only
+        # short-circuit when we have a complete, watchlist-sized result
+        # (one entry per ticker that has a raw_factor_frame). Anything
+        # smaller → recompute fresh.
+        if ctx.factor_frames and len(ctx.factor_frames) >= len(ctx.raw_factor_frames or {}):
             return
         if not ctx.raw_factor_frames:
             return

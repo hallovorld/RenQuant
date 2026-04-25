@@ -143,7 +143,14 @@ class ApplyScoresTask(Task):
         scorer: PanelScorer = getattr(ctx, "_panel_scorer", None)
         X = getattr(ctx, "_panel_matrix", None)
         if scorer is None or X is None or X.empty:
-            return False
+            # Audit P-21: previously `return False` short-circuited the
+            # rest of the chain (VetoWeak, LoadNGBoost, ApplyNGBoost,
+            # LoadGlobalCal, ApplyGlobalCal, ApplyKellySizing). That
+            # meant Kelly target stayed stale on empty-matrix bars and
+            # downstream sizing used last-bar Kelly numbers. Each of
+            # those tasks already has its own None/empty guard, so we
+            # return None (continue) and let them no-op individually.
+            return None
         scores: pd.Series = scorer.score(X)
 
         n_cand_scored = 0
@@ -188,7 +195,19 @@ class VetoWeakBuysTask(Task):
         dropped = 0
         for cand in ctx.candidates:
             ps = cand.panel_score
-            if ps is not None and ps < floor:
+            # Audit P-22: differentiate three states:
+            #   ps is None         → no panel score available (e.g. ticker
+            #                        not in matrix); KEEP — rs_score still
+            #                        ranks it (matches original behavior).
+            #   ps is NaN          → panel scoring ran but produced NaN
+            #                        (missing features, model crash) →
+            #                        DROP. Pre-fix this slipped through
+            #                        because NaN < float is False.
+            #   ps < floor         → DROP (the documented veto).
+            if ps is None:
+                kept.append(cand)
+                continue
+            if pd.isna(ps) or ps < floor:
                 dropped += 1
                 continue
             kept.append(cand)

@@ -107,11 +107,26 @@ def prepare_inference_panel_frames(
         TickerPanelNeutralizeJob().run(tc)
         TickerPanelFactorJob().run(tc)
 
+    # Audit P-9: error isolation. Previously `f.result()` re-raised on
+    # the first failed ticker, killing the entire panel inference for
+    # the bar. Now we log + continue — that ticker silently drops from
+    # neutralized/raw factor frames (cross_sectional_zscore handles the
+    # missing ticker). Mirror's training-side run_panel_ticker_parallel.
+    import logging as _logging
+    _log_inf = _logging.getLogger("training_panel.pipeline")
     n_workers = min(max(1, (os.cpu_count() or 4) - 2), max(1, len(ticker_ctxs)))
     with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="panel-inf") as ex:
-        futs = [ex.submit(_chain, tc) for tc in ticker_ctxs]
+        futs = {ex.submit(_chain, tc): tc.ticker for tc in ticker_ctxs}
         for f in as_completed(futs):
-            f.result()
+            ticker = futs[f]
+            try:
+                f.result()
+            except Exception as exc:
+                _log_inf.error(
+                    "prepare_inference_panel_frames[%s]: chain ERROR — %s: %s "
+                    "(ticker dropped from this bar's panel matrix)",
+                    ticker, type(exc).__name__, exc,
+                )
 
     ctx.neutralized_frames = {
         tc.ticker: tc.neutralized_frame for tc in ticker_ctxs

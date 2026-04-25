@@ -241,11 +241,16 @@ class TestApplyScoresTask:
         BuildFeatureMatrixTask().run(ctx)
         return ctx
 
-    def test_returns_false_without_prereqs(self, tmp_path):
+    def test_returns_none_without_prereqs(self, tmp_path):
+        """Audit P-21 (2026-04-24): when scorer/X are missing, ApplyScoresTask
+        previously returned False (which short-circuited the rest of the chain
+        and left Kelly target stale). Now returns None so downstream tasks
+        (Veto/NGBoost/Calibrator/Kelly) get to run with their own None guards.
+        """
         from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
         ctx = _make_ctx(tmp_path, enabled=True)
         out = ApplyScoresTask().run(ctx)
-        assert out is False
+        assert out is None
 
     def test_overwrites_candidate_rank_scores(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
