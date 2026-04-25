@@ -19,6 +19,10 @@ path = "src/lib.rs"
 name = "score-panel"
 path = "src/main.rs"
 
+[[bin]]
+name = "train-panel"
+path = "src/bin/train_panel.rs"
+
 [dependencies]
 candle-core = { workspace = true }
 candle-nn   = { workspace = true }
