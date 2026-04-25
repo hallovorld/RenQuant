@@ -525,13 +525,29 @@ class RunnerAdapter:
                 })
 
         # ── Persist updated sell streaks from SellJob ─────────────────────
+        # Audit fix LS-HWM-1 (Round 2 deep audit, 2026-04-25): pre-fix,
+        # this loop recomputed position_hwm from `ctx.prices[ticker]`
+        # directly with `max(stored, price)`. That bypassed the EX-HWM
+        # safety net living on hs.high_watermark — if ctx.prices[ticker]
+        # was NaN/inf (one bad OHLCV bar), `max(stored, NaN) = NaN` and
+        # the NaN got SERIALISED into live_state.json, surviving across
+        # process restarts until the next compute_exits could recover it.
+        # Now: prefer hs.high_watermark (already validated by compute_exits
+        # via EX-HWM), fall back to a finite-checked max if hs is missing.
+        import math
         for ticker, hs in ctx.holdings.items():
             self._sell_streaks[ticker] = hs.sell_streak
-            if ticker in ctx.prices:
-                self._position_hwm[ticker] = max(
-                    float(self._position_hwm.get(ticker, 0)),
-                    ctx.prices[ticker],
-                )
+            # Prefer the validated HWM that compute_exits computed for
+            # this bar; only fall back to a price-based max if hs is
+            # somehow missing or non-finite.
+            hs_hwm = getattr(hs, "high_watermark", None)
+            if hs_hwm is not None and math.isfinite(hs_hwm):
+                self._position_hwm[ticker] = float(hs_hwm)
+            elif ticker in ctx.prices and math.isfinite(ctx.prices[ticker]):
+                stored = float(self._position_hwm.get(ticker, 0.0))
+                if not math.isfinite(stored):
+                    stored = 0.0
+                self._position_hwm[ticker] = max(stored, ctx.prices[ticker])
 
         # ── Save live_state.json ──────────────────────────────────────────
         # Snapshot RegimeState (countdown / cusum / in_transition) so the
