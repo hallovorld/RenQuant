@@ -416,14 +416,24 @@ class RunnerAdapter:
             ctx.exits_placed = []
         if not hasattr(ctx, "exits_failed"):
             ctx.exits_failed = []
+        # Audit fix QTY-NaN (Round 2 deep audit, 2026-04-25): same NaN-
+        # slip pattern as SE-1/TR-NaN/ROT-NaN-PRICE. Pre-fix, a broker
+        # response with NaN qty (rare but possible during account
+        # snapshot races) slipped past `qty <= 0` (NaN<=0 False), then
+        # `sell_qty = abs(NaN) = NaN` was passed to broker.place_order
+        # which crashed inside Alpaca's int(quantity). Now: skip with
+        # a clear log on non-finite qty.
+        import math as _math
         for ticker, sig in ctx.exits:
             pos = pos_cache.get(ticker, {})
             qty = float(pos.get("qty", 0))
-            if qty <= 0:
+            if not _math.isfinite(qty) or qty <= 0:
+                if not _math.isfinite(qty):
+                    log.warning("EXIT %s: broker qty=%s non-finite, skipping", ticker, qty)
                 continue
 
             req_qty = getattr(sig, "quantity", None)
-            if req_qty is not None and 0 < req_qty < qty:
+            if req_qty is not None and _math.isfinite(req_qty) and 0 < req_qty < qty:
                 sell_qty   = float(req_qty)
                 is_partial = True
             else:

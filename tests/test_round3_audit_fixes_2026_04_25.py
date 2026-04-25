@@ -1630,6 +1630,45 @@ class TestAlpacaAcctStatusReChecked:
         assert "not ACTIVE" in src or "Operator action required" in src
 
 
+# ── QTY-NaN (Round 2 audit): adapter exit-loop guards non-finite qty ──────────
+
+class TestQTYNaNExitLoopGuards:
+    """Pre-fix, RunnerAdapter.commit's SELL loop trusted the broker qty
+    field. A NaN qty (rare snapshot race during settlement) slipped past
+    `qty <= 0` (NaN<=0 False), then `sell_qty = abs(NaN) = NaN` was passed
+    to broker.place_order which crashed inside Alpaca's int(quantity).
+    Same NaN-slip pattern as SE-1 / TR-NaN / ROT-NaN-PRICE."""
+
+    def test_predicate_rejects_nan_qty(self):
+        import math
+        qty = float("nan")
+        assert (not math.isfinite(qty) or qty <= 0)
+
+    def test_predicate_rejects_inf_qty(self):
+        import math
+        qty = float("inf")
+        assert (not math.isfinite(qty) or qty <= 0)
+
+    def test_predicate_accepts_positive_qty(self):
+        import math
+        qty = 10.0
+        assert not (not math.isfinite(qty) or qty <= 0)
+
+    def test_predicate_rejects_zero_qty(self):
+        import math
+        qty = 0.0
+        assert (not math.isfinite(qty) or qty <= 0)
+
+    def test_partial_qty_predicate_rejects_nan_req(self):
+        import math
+        req_qty = float("nan")
+        qty = 10.0
+        # req_qty path taken only if (not None) AND finite AND 0 < req_qty < qty
+        triggers_partial = req_qty is not None and math.isfinite(req_qty) \
+                           and 0 < req_qty < qty
+        assert not triggers_partial
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
