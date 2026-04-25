@@ -30,6 +30,8 @@ thiserror   = { workspace = true }
 clap        = { workspace = true }
 csv         = { workspace = true }
 ndarray     = { workspace = true }
+rayon       = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 approx = "0.5"

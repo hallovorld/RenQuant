@@ -25,3 +25,8 @@ thiserror   = "1"
 clap        = { version = "=4.5.20", features = ["derive"] }
 csv         = "1.3"
 ndarray     = "0.16"
+# Concurrency primitives — rayon for data-parallel batch scoring,
+# parking_lot for low-overhead mutexes. ML training in Rust would lean
+# on rayon for batch / param-grad parallelism on top of candle's BLAS.
+rayon       = "1.10"
+parking_lot = "0.12"
