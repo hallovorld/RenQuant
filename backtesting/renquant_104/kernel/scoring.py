@@ -74,9 +74,23 @@ class ScoreCalibration:
         if self.method == "platt":
             if self.platt_coef is None or self.platt_intercept is None:
                 return float(np.clip(self.base_rate, 0.0, 1.0))
-            scaled = raw_score
-            if self.platt_scale_std and self.platt_scale_std > 0:
-                scaled = (raw_score - self.platt_scale_mean) / self.platt_scale_std
+            # Audit fix SC-PLATT (Round 2 deep audit, 2026-04-25): pre-fix,
+            # when platt_scale_std was None or 0 (corrupt artifact, or
+            # degenerate fit on constant input), the code silently fell
+            # back to `scaled = raw_score`. But training/scoring.py ALWAYS
+            # fits Platt on standardised inputs (StandardScaler) — so
+            # `coef * raw_score + intercept` produces meaningless log-odds
+            # when the scaler is missing (the coef expects standardized
+            # input ~N(0,1), not raw scores in some arbitrary range).
+            # Now: missing scale params → return base_rate, same as the
+            # other "calibration data missing" branches.
+            if (self.platt_scale_std is None
+                    or not np.isfinite(self.platt_scale_std)
+                    or self.platt_scale_std <= 0
+                    or self.platt_scale_mean is None
+                    or not np.isfinite(self.platt_scale_mean)):
+                return float(np.clip(self.base_rate, 0.0, 1.0))
+            scaled = (raw_score - self.platt_scale_mean) / self.platt_scale_std
             log_odds = self.platt_coef * scaled + self.platt_intercept
             return float(np.clip(1.0 / (1.0 + np.exp(-log_odds)), 0.0, 1.0))
         # Audit #69: unknown method — fall back to base_rate / identity so

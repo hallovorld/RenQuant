@@ -770,6 +770,65 @@ class TestLSHWM1PersistsValidatedHWM:
         )
 
 
+# ── SC-PLATT (Round 2 audit): missing scaler params → base_rate, not raw input
+
+class TestSCPlattMissingScalerFallsBackToBaseRate:
+    """Pre-fix, when ScoreCalibration.calibrate hit method='platt' but
+    platt_scale_std was None or 0, the code fell through to use raw_score
+    unscaled. But Platt is ALWAYS fit on StandardScaler-transformed inputs
+    in training/scoring.py — so feeding raw values into `coef*x + intercept`
+    produces nonsensical log-odds (coef expects ~N(0,1), gets raw range).
+    Post-fix: missing/invalid scaler params → return base_rate (same as
+    other 'calibration data missing' branches)."""
+
+    def _cal(self, **kw):
+        from kernel.scoring import ScoreCalibration
+        defaults = dict(
+            method="platt",
+            score_kind="raw",
+            sample_size=200,
+            base_rate=0.40,
+            platt_coef=0.85,
+            platt_intercept=-0.30,
+            platt_scale_mean=0.0,
+            platt_scale_std=1.0,
+        )
+        defaults.update(kw)
+        return ScoreCalibration(**defaults)
+
+    def test_normal_path_uses_scaler(self):
+        cal = self._cal(platt_scale_mean=0.5, platt_scale_std=0.2)
+        # raw=0.5 → standardized=0.0 → log_odds = 0.85*0 + (-0.30) = -0.30
+        # → sigmoid(-0.30) ≈ 0.4256
+        out = cal.calibrate(0.5)
+        assert 0.40 < out < 0.45
+
+    def test_none_scale_std_returns_base_rate(self):
+        cal = self._cal(platt_scale_std=None)
+        # Pre-fix would use raw_score=0.5 unscaled → wrong log_odds.
+        # Post-fix returns clipped base_rate=0.40.
+        assert cal.calibrate(0.5) == 0.40
+
+    def test_zero_scale_std_returns_base_rate(self):
+        cal = self._cal(platt_scale_std=0.0)
+        # 0.0 is falsy AND not >0 — old code's `if std and std>0` skipped
+        # scaling, but post-fix routes to base_rate.
+        assert cal.calibrate(2.5) == 0.40
+
+    def test_nan_scale_std_returns_base_rate(self):
+        cal = self._cal(platt_scale_std=float("nan"))
+        # NaN slipped past `if std and std>0` (NaN is truthy but NaN>0 is
+        # False → condition False → fall through to unscaled). Post-fix:
+        # explicit isfinite check routes to base_rate.
+        assert cal.calibrate(0.5) == 0.40
+
+    def test_none_scale_mean_returns_base_rate(self):
+        cal = self._cal(platt_scale_mean=None)
+        # Defensive: if mean is None, scaling formula would crash with
+        # `None - 0.5`. Post-fix routes to base_rate.
+        assert cal.calibrate(0.5) == 0.40
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
