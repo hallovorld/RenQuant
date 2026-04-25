@@ -514,7 +514,13 @@ class TestApplyNGBoostScoring:
         # 0.1 - 3.0 * 0.2 = -0.5
         assert ctx.candidates[0].rank_score == pytest.approx(-0.5)
 
-    def test_noop_when_matrix_missing_features(self):
+    def test_fills_missing_columns_with_zero_and_runs(self):
+        """Audit N-25 (2026-04-25): pre-fix this no-op'd the entire NGBoost
+        prediction whenever a single feature column was missing — silently
+        leaving the candidate with no μ/σ. Post-fix, missing columns get
+        filled with 0.0 (z-scored neutral) and predictions still run, so
+        Kelly sizing and σ-sizing can proceed on a partial feature set.
+        """
         from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
         feats = ["x_expected"]
         ctx = self._ctx_with_matrix(["x_different"], ["A"])
@@ -522,10 +528,9 @@ class TestApplyNGBoostScoring:
         ctx._ngboost_head = head  # noqa: SLF001
 
         ApplyNGBoostTask().run(ctx)
-        # Because the feature matrix lacks x_expected, predict_distribution
-        # isn't called and candidates keep their original rank_score.
-        assert ctx.candidates[0].rank_score == 0.5
-        assert ctx.candidates[0].mu is None
+        # μ/σ now populated — pre-fix they would still be None.
+        assert ctx.candidates[0].mu == pytest.approx(0.1)
+        assert ctx.candidates[0].sigma == pytest.approx(0.05)
 
 
 class TestSigmaSizing:

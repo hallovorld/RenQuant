@@ -65,16 +65,23 @@ def _make_synthetic_panel(
 class TestShapeAndPadMask:
     def test_build_date_groups_shapes(self):
         panel, gs, fc = _make_synthetic_panel()
-        x, y, pad = _build_date_groups(panel, gs, fc, "label", max_tickers=10)
+        # Audit T-1 (2026-04-25): _build_date_groups now returns 4-tuple
+        # (x, y, pad_mask, nan_label_mask).
+        x, y, pad, nan_y = _build_date_groups(
+            panel, gs, fc, "label", max_tickers=10,
+        )
         assert x.shape == (len(gs), 10, len(fc))
         assert y.shape == (len(gs), 10)
         assert pad.shape == (len(gs), 10)
+        assert nan_y.shape == (len(gs), 10)
         # Padded positions are zero in x/y and True in pad.
         for gi, g in enumerate(gs):
             assert pad[gi, :g].sum() == 0, "non-pad positions must not be masked"
             assert pad[gi, g:].sum() == 10 - g, "pad positions must all be masked"
             assert np.allclose(x[gi, g:], 0.0)
             assert np.allclose(y[gi, g:], 0.0)
+            # Synthetic panel has no NaN labels → mask all-False.
+            assert nan_y[gi].sum() == 0
 
     def test_pad_mask_excludes_padding_from_softmax(self):
         """ListNet softmax must treat padded positions as zero-weight.

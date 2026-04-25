@@ -64,7 +64,7 @@ class TransformerParams:
     device:           str   = "mps"      # "mps" | "cuda" | "cpu"
     deterministic:    bool  = True
     seed:             int   = 42
-    max_tickers:      int   = 38         # pad groups to this size
+    max_tickers:      int   = 128        # pad groups to this size (≥ watchlist size; was 38, silently truncated 99-ticker groups → audit T-1 2026-04-25)
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -106,21 +106,43 @@ class _PanelTransformer(nn.Module):
 # ── ListNet loss (top-1 softmax cross-entropy over group scores) ──────────────
 
 def _listnet_loss(scores: torch.Tensor, labels: torch.Tensor,
-                  pad_mask: torch.Tensor) -> torch.Tensor:
+                  pad_mask: torch.Tensor,
+                  nan_label_mask: torch.Tensor | None = None,
+                  ) -> torch.Tensor:
     """Cao 2007 top-1 ListNet.
 
     P(i) = softmax(label_i) over the group; loss = -sum P_label * log P_pred.
-    Padding positions contribute 0.
+
+    Audit fix T-8 (2026-04-25): when a row had a NaN label originally
+    (now zero-substituted by ``_build_date_groups``), it must be excluded
+    from BOTH the label softmax and the prediction softmax — same as
+    padding. Without this, NaN-rows had probability `exp(0)/Σ exp(yi)`,
+    pulling predictions toward the median of valid labels.
+
+    Args:
+      scores         : (B, T) raw scores (model output)
+      labels         : (B, T) labels (NaN → 0 substituted upstream)
+      pad_mask       : (B, T) True where the slot is padding
+      nan_label_mask : (B, T) True where the original label was NaN.
+                       If None, treated as all-False (back-compat).
     """
-    # Mask padded labels to -inf before softmax → they become 0 probability.
-    label_logits = labels.masked_fill(pad_mask, float("-inf"))
+    if nan_label_mask is None:
+        nan_label_mask = torch.zeros_like(pad_mask)
+    invalid = pad_mask | nan_label_mask
+    # Mask both padded AND NaN-label positions to -inf before softmax →
+    # zero probability mass. ALSO mask the prediction softmax (so the
+    # model isn't penalised for any score at NaN positions either).
+    minus_inf = float("-inf")
+    label_logits = labels.masked_fill(invalid, minus_inf)
     p_label = F.softmax(label_logits, dim=-1)
-    log_p_pred = F.log_softmax(scores, dim=-1)
-    # masked_fill NaNs (all-padded rows) with 0 before sum
+    score_logits = scores.masked_fill(invalid, minus_inf)
+    log_p_pred = F.log_softmax(score_logits, dim=-1)
+    # masked_fill the per-row contribution to 0 at invalid slots so we
+    # don't sum NaN×anything (log_softmax of -inf is -inf).
     loss_per_row = -(p_label * log_p_pred)
-    loss_per_row = loss_per_row.masked_fill(pad_mask, 0.0)
+    loss_per_row = loss_per_row.masked_fill(invalid, 0.0)
     # Mean over non-degenerate groups (at least 2 valid tickers).
-    valid_groups = (~pad_mask).sum(dim=-1) >= 2
+    valid_groups = (~invalid).sum(dim=-1) >= 2
     if valid_groups.any():
         return loss_per_row.sum(dim=-1)[valid_groups].mean()
     return scores.sum() * 0.0   # degenerate batch — zero loss
@@ -132,41 +154,64 @@ def _build_date_groups(
     panel: pd.DataFrame, group_sizes: np.ndarray,
     feature_cols: list[str], label_col: str,
     max_tickers: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Turn a flat panel into per-date padded tensors.
 
-    Returns (x, y, pad_mask) each of shape (n_groups, max_tickers, ·).
-    x: float32, y: float32, pad_mask: bool.
+    Returns (x, y, pad_mask, nan_label_mask) each of shape
+    (n_groups, max_tickers, ·). x: float32, y: float32, pad_mask: bool,
+    nan_label_mask: bool (True where the original label was NaN — kept
+    so the loss can mask it out without confusing it with padding).
     Padding rows are zeros with pad_mask=True.
 
-    Input sanitization: NaN / +inf / -inf in feature values are replaced
-    with 0. This keeps the model numerically safe if the caller passes a
-    column with degenerate values (e.g. a constant column that z-scores
-    to NaN/inf) — better than the model producing NaN losses that poison
-    the whole training run. Tree backends like XGBoost don't need this,
-    but the transformer's softmax is sensitive to unbounded inputs.
+    Audit fixes (2026-04-25):
+      T-1  ─ raise loud if any group exceeds `max_tickers`. The old
+             code silently truncated to the first `max_tickers` rows
+             per date and advanced offset by the FULL group size, so
+             rows past the cap were dropped entirely (62% of the
+             watchlist on a 99-ticker × 38-cap configuration). Callers
+             that need chunk-splitting (predict path) must do it
+             BEFORE entering this helper.
+      T-7  ─ track which positions had NaN labels separately from
+             padding. Loss masks both.
+
+    Input sanitization (unchanged): NaN/±inf in features → 0 so the
+    model's softmax stays numerically safe. Tree backends like XGBoost
+    don't need this, but the transformer's softmax is sensitive to
+    unbounded inputs.
     """
-    X_flat = np.nan_to_num(
-        panel[feature_cols].to_numpy(dtype=np.float32, copy=True),
-        nan=0.0, posinf=0.0, neginf=0.0,
-    )
-    y_flat = np.nan_to_num(
-        panel[label_col].to_numpy(dtype=np.float32, copy=True),
-        nan=0.0, posinf=0.0, neginf=0.0,
-    )
+    if len(group_sizes):
+        max_gs = int(np.max(group_sizes))
+        if max_gs > max_tickers:
+            raise ValueError(
+                f"_build_date_groups: a group has {max_gs} rows but "
+                f"max_tickers={max_tickers}. Either raise "
+                f"TransformerParams.max_tickers ≥ {max_gs} or chunk-split "
+                f"oversized groups before calling. Silent truncation has "
+                f"been removed (audit T-1 2026-04-25)."
+            )
+
+    X_flat_raw = panel[feature_cols].to_numpy(dtype=np.float32, copy=True)
+    y_flat_raw = panel[label_col].to_numpy(dtype=np.float32, copy=True)
+    nan_label_flat = ~np.isfinite(y_flat_raw)
+
+    X_flat = np.nan_to_num(X_flat_raw, nan=0.0, posinf=0.0, neginf=0.0)
+    y_flat = np.nan_to_num(y_flat_raw, nan=0.0, posinf=0.0, neginf=0.0)
+
     n_groups = len(group_sizes)
     n_feat   = X_flat.shape[1]
     x = np.zeros((n_groups, max_tickers, n_feat), dtype=np.float32)
     y = np.zeros((n_groups, max_tickers),         dtype=np.float32)
     pad = np.ones((n_groups, max_tickers),       dtype=bool)
+    nan_y = np.zeros((n_groups, max_tickers),    dtype=bool)
     offset = 0
     for gi, gs in enumerate(group_sizes):
-        take = int(min(gs, max_tickers))
-        x[gi, :take, :] = X_flat[offset:offset + take, :]
-        y[gi, :take]    = y_flat[offset:offset + take]
-        pad[gi, :take]  = False
-        offset += int(gs)
-    return x, y, pad
+        gs_int = int(gs)
+        x[gi, :gs_int, :]     = X_flat[offset:offset + gs_int, :]
+        y[gi, :gs_int]        = y_flat[offset:offset + gs_int]
+        pad[gi, :gs_int]      = False
+        nan_y[gi, :gs_int]    = nan_label_flat[offset:offset + gs_int]
+        offset += gs_int
+    return x, y, pad, nan_y
 
 
 # ── Determinism + device helpers ──────────────────────────────────────────────
@@ -258,12 +303,12 @@ class PanelTransformerModel:
             pass
 
         # Build batches
-        xtr, ytr, padtr = _build_date_groups(
+        xtr, ytr, padtr, nantr = _build_date_groups(
             panel, group_sizes, feature_cols, label_col, p.max_tickers,
         )
-        xte = yte = padte = None
+        xte = yte = padte = nante = None
         if eval_panel is not None and eval_group_sizes is not None:
-            xte, yte, padte = _build_date_groups(
+            xte, yte, padte, nante = _build_date_groups(
                 eval_panel, eval_group_sizes, feature_cols, label_col, p.max_tickers,
             )
 
@@ -286,11 +331,13 @@ class PanelTransformerModel:
                 xb = torch.from_numpy(xtr[idx]).to(self._device)
                 yb = torch.from_numpy(ytr[idx]).to(self._device)
                 mb = torch.from_numpy(padtr[idx]).to(self._device)
+                nb = torch.from_numpy(nantr[idx]).to(self._device)
+                invalid_b = mb | nb
 
-                # Label smoothing (Gaussian noise only on non-pad positions)
+                # Label smoothing (Gaussian noise only on non-pad+non-nan positions)
                 if p.label_smoothing > 0:
                     noise = torch.randn_like(yb) * p.label_smoothing
-                    yb = yb + noise.masked_fill(mb, 0.0)
+                    yb = yb + noise.masked_fill(invalid_b, 0.0)
 
                 # Ticker-conditional dropout: zero out whole ticker rows occasionally
                 if p.ticker_dropout > 0 and self._model.training:
@@ -298,7 +345,7 @@ class PanelTransformerModel:
                     xb = xb.masked_fill(drop.unsqueeze(-1), 0.0)
 
                 scores = self._model(xb, mb)
-                loss = _listnet_loss(scores, yb, mb)
+                loss = _listnet_loss(scores, yb, mb, nb)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 opt.step()
@@ -308,6 +355,9 @@ class PanelTransformerModel:
             train_ic = self._ic_on_tensors(xtr, ytr, padtr, panel, label_col, group_sizes)
 
             if xte is not None:
+                # nante carries NaN-label mask for parity but is unused by IC
+                # computation (spearman just skips degenerate groups).
+                _ = nante
                 eval_ic = self._ic_on_tensors(
                     xte, yte, padte, eval_panel, label_col, eval_group_sizes,
                 )
@@ -368,12 +418,19 @@ class PanelTransformerModel:
         if self._model is None:
             raise RuntimeError("PanelTransformerModel.predict called before train/load")
 
+        # Audit T-23 (2026-04-25): groupby("date") must see contiguous
+        # rows per date, otherwise group_sizes mismatches the actual
+        # date partitioning. If the caller didn't supply explicit
+        # group_sizes, sort by date here and remember the original
+        # order so we can re-align the output.
+        original_index = panel.index
         if group_sizes is None:
             if "date" not in panel.columns:
                 raise ValueError(
                     "PanelTransformerModel.predict requires either a `date` "
                     "column on the panel or an explicit `group_sizes` array."
                 )
+            panel = panel.sort_values("date", kind="mergesort")
             group_sizes = panel.groupby("date", sort=False).size().to_numpy()
         group_sizes = np.asarray(group_sizes, dtype=np.int64)
         if int(group_sizes.sum()) != len(panel):
@@ -381,23 +438,35 @@ class PanelTransformerModel:
                 f"group_sizes.sum()={int(group_sizes.sum())} != len(panel)={len(panel)}"
             )
 
-        # Split any group that exceeds max_tickers into smaller chunks so no
-        # row is silently dropped. Within each chunk, self-attention still
-        # sees all tickers; across chunks no attention flows (same as across
-        # dates). This is the safe fallback until max_tickers is raised.
+        # Audit T-1/T-2/T-19 (2026-04-25): chunk-splitting at inference
+        # introduced a train≠inference structure mismatch (training never
+        # saw 33-ticker chunks). With max_tickers raised to 128 (≥99
+        # watchlist) chunk-splitting normally never fires, but we keep
+        # the safety net for future watchlist growth. When it DOES fire,
+        # we now warn loudly so the operator can raise max_tickers.
         max_t = int(self.params.max_tickers)
         expanded: list[int] = []
+        chunk_split_fired = False
         for gs in group_sizes.tolist():
             if gs <= max_t:
                 expanded.append(gs)
             else:
+                chunk_split_fired = True
                 n_chunks = (gs + max_t - 1) // max_t
                 base = gs // n_chunks
                 rem  = gs - base * n_chunks
                 for i in range(n_chunks):
                     expanded.append(base + (1 if i < rem else 0))
+        if chunk_split_fired:
+            import logging  # noqa: PLC0415
+            logging.getLogger("panel.transformer").warning(
+                "PanelTransformerModel.predict: a date-group exceeds "
+                "max_tickers=%d → chunk-split fallback. Cross-chunk scores "
+                "lose comparability. Raise max_tickers and retrain.",
+                max_t,
+            )
         group_sizes_exp = np.array(expanded, dtype=np.int64)
-        x, _, pad = _build_date_groups(
+        x, _, pad, _ = _build_date_groups(
             panel.assign(label=0.0), group_sizes_exp, self.feature_cols, "label",
             max_t,
         )
@@ -414,7 +483,9 @@ class PanelTransformerModel:
                     take = int((~pad[start + gi]).sum())
                     preds_flat[offset:offset + take] = sb[gi, :take]
                     offset += take
-        return pd.Series(preds_flat, index=panel.index, name="panel_score")
+        # Re-align preds to caller's original index order.
+        preds = pd.Series(preds_flat, index=panel.index, name="panel_score")
+        return preds.reindex(original_index)
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

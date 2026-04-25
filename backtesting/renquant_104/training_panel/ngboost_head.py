@@ -65,12 +65,42 @@ class NGBoostHead:
         label_col: str = "residual_return_raw",
         sample_weight_col: str | None = "weight",
     ) -> dict:
+        """Fit NGBRegressor(Normal) on the panel.
+
+        Audit fixes (2026-04-25):
+          N-1 / N-13 ─ drop rows with NaN/±inf in any feature column or
+                       in the label. Pre-fix, these slipped through and
+                       NGBoost either segfaulted or fit on garbage.
+          N-22       ─ drop rows whose sample-weight is NaN/non-positive.
+        """
         self.feature_cols = list(feature_cols)
-        X = panel[feature_cols].values.astype(float)
-        y = panel[label_col].values.astype(float)
-        sw = None
+        # Build a clean view: finite features, finite label, finite + non-negative weight.
+        feat_arr = panel[feature_cols].to_numpy(dtype=float, copy=False)
+        finite_feat_mask = np.isfinite(feat_arr).all(axis=1)
+        label_arr = panel[label_col].to_numpy(dtype=float, copy=False)
+        finite_label_mask = np.isfinite(label_arr)
+        keep = finite_feat_mask & finite_label_mask
         if sample_weight_col and sample_weight_col in panel.columns:
-            sw = panel[sample_weight_col].values.astype(float)
+            w_arr = panel[sample_weight_col].to_numpy(dtype=float, copy=False)
+            keep = keep & np.isfinite(w_arr) & (w_arr >= 0.0)
+        n_dropped = int(len(panel) - keep.sum())
+        if n_dropped:
+            import logging  # noqa: PLC0415
+            logging.getLogger("ngboost").info(
+                "NGBoostHead.train: dropped %d/%d rows with NaN/inf in "
+                "features/label/weight", n_dropped, len(panel),
+            )
+        sub = panel.loc[keep]
+        if len(sub) < 10:
+            raise ValueError(
+                f"NGBoostHead.train: too few clean rows ({len(sub)} after "
+                f"NaN/inf drop). Check feature pipeline."
+            )
+        X = sub[feature_cols].to_numpy(dtype=float)
+        y = sub[label_col].to_numpy(dtype=float)
+        sw = None
+        if sample_weight_col and sample_weight_col in sub.columns:
+            sw = sub[sample_weight_col].to_numpy(dtype=float)
 
         self.regressor = NGBRegressor(Dist=Normal, **self.params)
         if sw is not None:
@@ -79,25 +109,50 @@ class NGBoostHead:
             self.regressor.fit(X, y)
 
         preds = self.regressor.pred_dist(X)
+        # Audit N-4 (2026-04-25): also report fit-time IC of μ̂ vs y so
+        # downstream metadata captures one usable signal-quality number
+        # per training run (still no CV — see N-17 for full fix).
+        try:
+            from scipy.stats import spearmanr  # noqa: PLC0415
+            rho, _ = spearmanr(preds.loc, y)
+            train_ic = float(rho) if rho == rho else float("nan")
+        except Exception:
+            train_ic = float("nan")
         return {
             "n_rows": int(len(y)),
+            "n_rows_dropped": n_dropped,
             "n_features": int(len(feature_cols)),
-            "train_mu_mean": float(np.mean(preds.loc)),
+            "train_mu_mean":    float(np.mean(preds.loc)),
             "train_sigma_mean": float(np.mean(preds.scale)),
+            "train_mu_ic":      train_ic,
         }
 
     # ── Prediction ────────────────────────────────────────────────────────
 
     def predict_distribution(self, panel: pd.DataFrame) -> pd.DataFrame:
-        """Return DataFrame[mu, sigma] indexed like `panel`."""
+        """Return DataFrame[mu, sigma] indexed like `panel`.
+
+        Audit fix N-5 (2026-04-25): if any input row has NaN/inf in a
+        feature column, NGBoost will either error or produce garbage
+        predictions. Pre-fix, that exception was swallowed by
+        ApplyNGBoostTask → silent NGBoost no-op. Post-fix, NaN-row
+        predictions are returned as NaN (downstream can detect + skip),
+        and finite rows score normally.
+        """
         if self.regressor is None:
             raise RuntimeError("NGBoostHead.predict called before train/load")
-        X = panel[self.feature_cols].values.astype(float)
-        d = self.regressor.pred_dist(X)
-        return pd.DataFrame(
-            {"mu": d.loc, "sigma": d.scale},
+        X = panel[self.feature_cols].to_numpy(dtype=float, copy=False)
+        finite_mask = np.isfinite(X).all(axis=1)
+        out = pd.DataFrame(
+            {"mu": np.nan, "sigma": np.nan},
             index=panel.index,
+            dtype=float,
         )
+        if finite_mask.any():
+            d = self.regressor.pred_dist(X[finite_mask])
+            out.loc[panel.index[finite_mask], "mu"]    = d.loc
+            out.loc[panel.index[finite_mask], "sigma"] = d.scale
+        return out
 
     def predict_mu(self, panel: pd.DataFrame) -> pd.Series:
         return self.predict_distribution(panel)["mu"].rename("mu")

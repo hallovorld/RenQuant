@@ -317,6 +317,20 @@ class ApplyGlobalCalibrationTask(Task):
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
         if not panel_cfg.get("global_calibration", {}).get("enabled", False):
             return
+        # Note (audit P-37 reconsidered 2026-04-24): the calibrator was
+        # fit on Gaussianized LTR panel_score (range ~ ±3) but in
+        # `score_mode=mu_minus_lambda_sigma` mode panel_score has been
+        # overwritten with `μ−λσ` (range ~ ±0.05). Mapping μ−λσ through
+        # the isotonic compresses output near the central probability,
+        # which is *not* metric-calibrated — but the isotonic is still
+        # MONOTONIC, so the cross-sectional ranking order is preserved.
+        # Without calibration, raw μ−λσ would be entirely below the
+        # 0.10 tier threshold → zero trades. So calibrator wins on
+        # ranking even when it loses on metric meaning. Documented here
+        # so future readers don't try to "fix" this again. R2 audit
+        # task #2 reordered the chain to make this work; that decision
+        # is reaffirmed.
+
         # Plan F: prefer per-regime calibrator when one is loaded for the
         # current regime; pooled calibrator is the universal fallback.
         regime_map = getattr(ctx, "_regime_calibrators", None) or {}
@@ -411,12 +425,21 @@ class ApplyNGBoostTask(Task):
         if head is None or X is None or X.empty:
             return
 
-        # Skip matrix rows missing any head feature — NGBoost won't predict NaN rows.
+        # Audit N-25 (2026-04-25): pre-fix this returned early if ANY
+        # head.feature_cols was missing from X — one missing column killed
+        # the entire bar's NGBoost output. Post-fix, fill missing columns
+        # with 0.0 (z-scored "neutral") and warn loudly so the operator
+        # knows the prediction is using a partial feature set.
         missing = [c for c in head.feature_cols if c not in X.columns]
         if missing:
-            log.warning("ApplyNGBoostTask: feature matrix missing cols %s — skipping",
-                        missing)
-            return
+            log.warning(
+                "ApplyNGBoostTask: feature matrix missing cols %s — filling "
+                "with 0.0 (z-scored neutral). Predictions partial.",
+                missing,
+            )
+            X = X.copy()
+            for c in missing:
+                X[c] = 0.0
 
         try:
             dist = head.predict_distribution(X)
@@ -432,11 +455,19 @@ class ApplyNGBoostTask(Task):
         sigma = dist["sigma"]
         combined = mu - lambda_sigma * sigma
 
+        # Audit N-5 / N-25 (2026-04-25): after the NGBoost head's NaN
+        # passthrough, predict_distribution returns NaN at rows it couldn't
+        # score (NaN/inf input features). Skip those tickers cleanly so
+        # downstream sizers / rotators don't compute Kelly = μ/σ² on NaN.
         for cand in ctx.candidates:
             if cand.ticker not in mu.index:
                 continue
-            cand.mu    = float(mu.loc[cand.ticker])
-            cand.sigma = float(sigma.loc[cand.ticker])
+            mu_val    = mu.loc[cand.ticker]
+            sigma_val = sigma.loc[cand.ticker]
+            if pd.isna(mu_val) or pd.isna(sigma_val):
+                continue
+            cand.mu    = float(mu_val)
+            cand.sigma = float(sigma_val)
             if override:
                 v = float(combined.loc[cand.ticker])
                 cand.rank_score  = v
@@ -445,8 +476,12 @@ class ApplyNGBoostTask(Task):
         for ticker, hs in ctx.holdings.items():
             if ticker not in mu.index:
                 continue
-            hs.mu    = float(mu.loc[ticker])
-            hs.sigma = float(sigma.loc[ticker])
+            mu_val    = mu.loc[ticker]
+            sigma_val = sigma.loc[ticker]
+            if pd.isna(mu_val) or pd.isna(sigma_val):
+                continue
+            hs.mu    = float(mu_val)
+            hs.sigma = float(sigma_val)
             if override:
                 # Audit #40: hold-side rank_score must mirror cand-side.
                 # Without this, rotation comparisons (which use rank_score
