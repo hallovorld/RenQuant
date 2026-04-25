@@ -13,6 +13,22 @@ class HWMUpdateTask(Task):
     """Advance high-water mark: hwm = max(hwm, portfolio_value)."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
+        # Audit fix DC-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN/inf
+        # ctx.portfolio_value silently corrupted hwm via `max(hwm, NaN) =
+        # NaN`. Once hwm = NaN, drawdown calc returned NaN, and
+        # `drawdown >= halt_pct` evaluated False → drawdown circuit
+        # breaker permanently disabled, with NO log signal.
+        # Same pattern as E-5 (kernel/exits.py NaN price → HWM corruption).
+        # Now: skip the update on non-finite portfolio_value; keep prior
+        # hwm intact so the drawdown gate stays armed.
+        import math
+        if not math.isfinite(ctx.portfolio_value):
+            log.warning(
+                "HWMUpdateTask: portfolio_value=%s is non-finite — "
+                "skipping HWM update (kept hwm=%.2f)",
+                ctx.portfolio_value, ctx.hwm,
+            )
+            return
         ctx.hwm = max(ctx.hwm, ctx.portfolio_value)
         log.debug("HWMUpdateTask: hwm=%.2f  portfolio=%.2f", ctx.hwm, ctx.portfolio_value)
 
