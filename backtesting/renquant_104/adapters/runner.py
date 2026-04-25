@@ -582,9 +582,23 @@ class RunnerAdapter:
             # MonitorIdleStreakTask counters — persisted across scheduled runs
             "monitor_state":     dict(getattr(ctx, "monitor_state", {}) or {}),
         })
+        # Audit fix LS-ATOM (Round 2 deep audit, 2026-04-25): same atomic
+        # write pattern as the parquet stores (DC-2-CACHE / FU-1 /
+        # INT-ATOM / etc). Pre-fix, `write_text` opened the file in
+        # truncate mode + wrote in-place. A SIGKILL or kernel panic
+        # mid-write left a truncated/empty live_state.json on disk —
+        # next live run loaded `{}` (default), losing all entry_dates,
+        # position_hwm, sell_streaks, regime cooldown state. Wash-sale
+        # guards then misfired, regime cooldowns reset, holding tenure
+        # reset to today (corrupting tax classification + min_hold).
+        # Now: write to .tmp + atomic rename, so a crash can leave the
+        # .tmp half-written but the canonical file is still the prior
+        # complete snapshot.
         state_file = self._strategy_dir / "live_state.json"
-        state_file.write_text(json.dumps(self._state, indent=2))
-        log.info("State saved → %s", state_file)
+        tmp_path   = state_file.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(self._state, indent=2))
+        tmp_path.replace(state_file)
+        log.info("State saved → %s (atomic)", state_file)
 
         # ── Optional SQLite decision trace ────────────────────────────────
         if self._db is not None:

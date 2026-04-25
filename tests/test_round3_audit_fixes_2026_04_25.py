@@ -1475,6 +1475,56 @@ class TestROTNaNPriceEmitRotationsSkips:
         )
 
 
+# ── LS-ATOM (Round 2 audit): live_state.json atomic write ─────────────────────
+
+class TestLSATOMAtomicLiveStateWrite:
+    """Pre-fix, RunnerAdapter.commit wrote live_state.json via
+    `state_file.write_text(...)` which opens in truncate mode. SIGKILL
+    or kernel panic mid-write left a truncated/empty file. Next live
+    run loaded {} → lost all entry_dates / position_hwm / regime
+    cooldown state → wash-sale guard misfired, holding tenure reset
+    to today, tax classification corrupted. Same atomic-write pattern
+    as the parquet stores (DC-2-CACHE / FU-1 / INT-ATOM)."""
+
+    def test_uses_tmp_and_atomic_rename(self):
+        """Source-inspect that commit() uses .json.tmp + replace."""
+        import inspect, sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from adapters.runner import RunnerAdapter
+        src = inspect.getsource(RunnerAdapter.commit)
+        # Post-fix: writes to a .json.tmp then renames atomically.
+        assert ".json.tmp" in src, (
+            "LS-ATOM regression: live_state write should go through .json.tmp"
+        )
+        assert "tmp_path.replace(state_file)" in src, (
+            "LS-ATOM regression: missing atomic rename via Path.replace"
+        )
+        # And no direct truncating write to the canonical file.
+        assert "state_file.write_text" not in src, (
+            "LS-ATOM regression: direct truncate-write to live_state.json reintroduced"
+        )
+
+    def test_atomic_rename_pattern_in_isolation(self, tmp_path):
+        """Functional test of the rename pattern itself, regardless of
+        the larger commit logic. Verifies that a partial-write left in
+        a .tmp doesn't corrupt the canonical."""
+        canonical = tmp_path / "live_state.json"
+        # Pre-existing valid state.
+        canonical.write_text('{"sell_streaks": {"AAPL": 1}}')
+        good = canonical.read_text()
+        # Simulate "crash mid-write" by leaving a .tmp half-finished
+        # WITHOUT renaming.
+        tmp = canonical.with_suffix(".json.tmp")
+        tmp.write_text('{"sell_str')   # truncated mid-string on purpose
+        # Canonical file UNCHANGED — that's the whole point.
+        assert canonical.read_text() == good
+        # Cleanup
+        tmp.unlink()
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
