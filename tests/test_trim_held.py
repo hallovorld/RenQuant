@@ -192,26 +192,20 @@ class TestTrimEmission:
             prices    = {"NVDA": 100.0},
             portfolio = 100_000,
         )
-        # Pre-seed ctx.exits with a regular stop_loss on the same ticker
+        # Production format: ctx.exits is list[(ticker, ExitSignal)].
+        # Pre-seed a stop-loss for NVDA and assert TrimHeldTask doesn't
+        # append a duplicate trim exit. (Pre-2026-04-24, the guard used
+        # getattr(tuple, "ticker", None) which always returned None, so
+        # the trim could double-sell. Audit fix #21 made the guard tuple-aware.)
         existing = ExitSignal(should_exit=True, reason="stop", exit_type="stop_loss")
-        ctx.exits.append(SimpleNamespace(ticker="NVDA"))   # mimic the tuple's 1st element
-        # Actually the loop reads `e.ticker`, not unpacked tuples. Let's
-        # use the real pair shape:
-        ctx.exits = []
-        ctx.exits.append(("NVDA", existing))
-        # The task reads getattr(e, "ticker") from sigs in the list — with
-        # (ticker, sig) tuples that returns None. So trim *does* still fire
-        # in today's pipeline. To reflect the *actual* safety path, assert
-        # the task doesn't re-emit NVDA if it's already in ctx.exits by
-        # any mechanism (regardless of shape): we inject matching ticker
-        # via an object in the list.
-        ctx.exits = [SimpleNamespace(ticker="NVDA")]
+        ctx.exits = [("NVDA", existing)]
         TrimHeldTask().run(ctx)
-        # Expected: our pre-seeded exit is still there; no additional trim
-        # was appended for NVDA.
+        # The pre-seeded stop-loss should still be the only NVDA exit.
         nvda_emits = [e for e in ctx.exits
                       if isinstance(e, tuple) and e[0] == "NVDA"]
-        assert nvda_emits == []
+        assert len(nvda_emits) == 1
+        assert nvda_emits[0][1].exit_type == "stop_loss", \
+            "trim must not append a second exit when stop-loss already fired"
 
     def test_ticker_already_buying_is_skipped(self):
         ctx = _ctx(
