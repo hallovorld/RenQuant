@@ -69,24 +69,49 @@ fn main() -> Result<()> {
         .map(|s| s.to_string())
         .collect();
 
+    // Audit fix BRIDGE-6 (Round 2 deep audit, 2026-04-25): reject
+    // non-finite feature values at the CLI boundary. Pre-fix, a CSV
+    // containing "nan" or "inf" parsed cleanly via str.parse::<f32>()
+    // and the forward pass produced NaN scores that the CLI happily
+    // wrote to the output CSV. Downstream consumers (LEAN main.py,
+    // live runner, etc.) would then have to filter NaN scores
+    // themselves — failure would be silent. Fail loud here so the
+    // operator knows which row has bad data.
     let mut tickers: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<f32>> = Vec::new();
+    let mut row_idx: usize = 0;
     for rec in rdr.records() {
+        row_idx += 1;
         let rec = rec?;
         if rec.len() != headers.len() {
             return Err(anyhow!(
-                "row width {} != header width {}",
+                "row {} width {} != header width {}",
+                row_idx,
                 rec.len(),
                 headers.len()
             ));
         }
         let ticker = rec.get(0).unwrap_or("").to_string();
-        tickers.push(ticker);
         let row: Result<Vec<f32>> = rec
             .iter()
             .skip(1)
-            .map(|s| s.parse::<f32>().map_err(|e| anyhow!(e)))
+            .enumerate()
+            .map(|(j, s)| {
+                let v: f32 = s.parse().map_err(|e: std::num::ParseFloatError| {
+                    anyhow!("row {} col {} ('{}'): parse error: {}", row_idx, j + 2, s, e)
+                })?;
+                if !v.is_finite() {
+                    return Err(anyhow!(
+                        "row {} col {} ('{}') ticker={}: non-finite feature value — \
+                         refusing to score (would produce NaN output silently). \
+                         Sanitize the CSV upstream.",
+                        row_idx, j + 2, s, ticker,
+                    ));
+                }
+                Ok(v)
+            })
             .collect();
+        tickers.push(ticker);
         rows.push(row?);
     }
 

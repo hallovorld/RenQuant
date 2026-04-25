@@ -58,14 +58,52 @@ def _load_state_dict(pt_path: Path):
 
 
 def _to_contiguous_cpu_dict(state):
-    """safetensors requires contiguous CPU tensors. Return a fresh dict."""
+    """safetensors requires contiguous CPU tensors. Return a fresh dict.
+
+    Audit fix BRIDGE-1/BRIDGE-2 (Round 2 deep audit, 2026-04-25):
+      * BRIDGE-1: refuse to export NaN or inf weights. Pre-fix, a
+        gradient explosion or corrupt checkpoint would silently land
+        NaN weights on disk → Rust forward pass produces NaN scores →
+        downstream pipelines silently degrade with no signal.
+      * BRIDGE-2: cast weights to float32. Rust loader uses DType::F32
+        explicitly; if Python saved float64 (default for some custom
+        layers), candle would either silently downcast or error in a
+        less debuggable way. Cast at export, fail loud on int dtypes
+        (which can't represent the network's continuous weights).
+    """
     import torch  # noqa: PLC0415
     out = {}
+    n_nan = 0
+    n_inf = 0
+    n_cast = 0
     for k, v in state.items():
         if not isinstance(v, torch.Tensor):
             continue
         t = v.detach().to("cpu").contiguous()
+        # BRIDGE-2: dtype enforcement.
+        if t.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            sys.exit(
+                f"error: tensor '{k}' has dtype {t.dtype}; expected a float dtype. "
+                "Refusing to export — would corrupt the Rust loader."
+            )
+        if t.dtype != torch.float32:
+            t = t.to(torch.float32)
+            n_cast += 1
+        # BRIDGE-1: NaN / inf check on the cast tensor.
+        if torch.isnan(t).any().item():
+            n_nan += int(torch.isnan(t).sum().item())
+        if torch.isinf(t).any().item():
+            n_inf += int(torch.isinf(t).sum().item())
         out[k] = t
+    if n_nan > 0 or n_inf > 0:
+        sys.exit(
+            f"error: refusing to export weights — found {n_nan} NaN and "
+            f"{n_inf} inf values across {len(out)} tensors. The model is "
+            "broken upstream (gradient explosion, corrupt checkpoint, or "
+            "bad init); fix the trainer before re-exporting."
+        )
+    if n_cast > 0:
+        print(f"info: cast {n_cast} non-f32 tensor(s) to float32 for Rust compatibility")
     return out
 
 
