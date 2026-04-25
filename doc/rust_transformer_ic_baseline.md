@@ -10,7 +10,36 @@
 | Python XGBoost (post-audit) | n/a (would also crush it) | **+0.0372** |
 | Python transformer (overfit, shelved) | n/a | +0.0062 |
 
-## V3 training run (live as of this commit)
+## A/B run results (loss + arch + schedule)
+
+| Run | arch                 | loss     | schedule           | val_IC final |
+|-----|----------------------|----------|--------------------|-------------:|
+| v3  | d=48 6h 2L ff=96 d=0.3 | ListNet  | 200ep, patience=20 | **+0.2314** |
+| A   | d=48 6h 2L ff=96 d=0.3 | RankNet  | 200ep, patience=20 |    +0.2111  |
+| B   | d=16 4h 1L ff=32 d=0.0 | ListNet  | 300ep, patience=30 |    +0.1367  |
+| C   | d=48 6h 2L ff=96 d=0.2 | ListNet  | 500ep, lr=2e-4     |    +0.2028  |
+| D   | d=48 6h 2L ff=96 d=0.3 | ListNet  | 500ep, patience=80 |  in flight  |
+
+Notable findings:
+
+* **RankNet (Burges 2005, pairwise) UNDERperformed ListNet** on this
+  synthetic — 0.2111 vs 0.2314. Confirms the 2025 CIKM paper "On
+  Evaluating Loss Functions for Stock Ranking" finding that LISTWISE
+  losses tend to beat PAIRWISE on cross-sectional ranking. Pairwise
+  has faster early gradient (epoch 4: 0.0408 vs ListNet 0.011) but
+  plateaus earlier — listwise's softmax-CE keeps tightening the
+  ordering past the point where pairwise has saturated.
+
+* **Smaller architecture lost.** d_model=16 + 1 layer + 0 dropout
+  could not match the d=48 + 2 layer setup. The synthetic signal IS
+  linear, so theory says smaller should work, but the smaller model
+  also has less capacity to compose the GELU-attention-GELU stack
+  into something approximating identity.
+
+* **Lower learning rate (2e-4) is just slower.** Same convergence
+  point, just 2× the wall-time per IC unit. No quality advantage.
+
+## V3 training run
 
 Same architecture as the 0.068 run (d_model=48, n_heads=6, n_layers=2,
 ff=96, dropout=0.3) but with longer schedule + bigger patience:
