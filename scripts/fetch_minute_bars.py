@@ -109,18 +109,29 @@ def main() -> None:
         log.info("[dry-run] symbols=%s", symbols)
         return
 
-    # Skip tickers already fully covered — Alpaca requests are the slow
-    # part, cheap I/O check first.
+    # Skip tickers already fully covered — check BOTH sides of the window.
+    # Bug fix 2026-04-24: old code only checked last-date vs target-end,
+    # missing the case where an earlier smoke-test run had cached a short
+    # recent window but the required lookback extends further back. Now
+    # we require BOTH:
+    #   * cache.first ≤ target.start + 2d     (covers the start)
+    #   * cache.last  ≥ target.end   − 2d     (covers the end)
     skip_covered: set[str] = set()
     if not args.refetch:
+        start_naive = start.replace(tzinfo=None)
+        end_naive   = end.replace(tzinfo=None)
         for sym in symbols:
             existing = store.load(sym)
             if existing is not None and not existing.empty:
-                last = existing.index.max()
+                first = existing.index.min()
+                last  = existing.index.max()
+                if first.tz is not None:
+                    first = first.tz_convert("UTC").tz_localize(None)
                 if last.tz is not None:
                     last = last.tz_convert("UTC").tz_localize(None)
-                # Within 2 trading days of target end — considered covered
-                if (end.replace(tzinfo=None) - last).days <= 2:
+                covers_start = (first - start_naive).days <= 2
+                covers_end   = (end_naive - last).days <= 2
+                if covers_start and covers_end:
                     skip_covered.add(sym)
         if skip_covered:
             log.info("skipping fully-cached symbols: %s",
