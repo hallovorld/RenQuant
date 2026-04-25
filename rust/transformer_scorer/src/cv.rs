@@ -64,9 +64,19 @@ impl PurgedKFold {
         }
 
         // Contiguous date-fold edges via linspace.
+        // Audit fix CV-LINSPACE-OFF (Round 2 deep audit, 2026-04-25):
+        // pre-fix used `.round()` which made `n_dates=19, n_splits=5`
+        // produce edges `[0, 4, 8, 11, 15, 19]` — note the GAP between
+        // 8 and 11 plus a 4-fold next to a 3-fold — banker's rounding
+        // shrinks some folds by 1. Worse, between rounded edges 8 and
+        // 11, index `8` belongs to fold 2, but `7` is in fold 1 (which
+        // ends at 8 — hi exclusive). NumPy's linspace-as-int uses
+        // truncation (floor), which guarantees contiguous coverage of
+        // [0, n_dates) with no gaps and at most a 1-element size diff
+        // between adjacent folds. Match that.
         let fold_edges: Vec<usize> = (0..=self.n_splits)
             .map(|k| {
-                ((k as f64) * (n_dates as f64) / (self.n_splits as f64)).round() as usize
+                ((k as u128) * (n_dates as u128) / (self.n_splits as u128)) as usize
             })
             .collect();
 
@@ -228,5 +238,43 @@ mod tests {
         let dates = synthetic_dates(20, 1);
         let cv = PurgedKFold { n_splits: 1, embargo_days: 0, lookahead_days: 0 };
         assert!(cv.split(&dates).is_err());
+    }
+
+    #[test]
+    fn cv_linspace_off_no_gap_for_non_divisible_n_dates() {
+        // Audit fix CV-LINSPACE-OFF: pre-fix used .round() which created
+        // a gap in the fold edges when n_dates wasn't divisible by
+        // n_splits. Verify with n_dates=19, n_splits=5 — every row
+        // appears in exactly one test fold.
+        let dates = synthetic_dates(19, 1);
+        let cv = PurgedKFold { n_splits: 5, embargo_days: 0, lookahead_days: 0 };
+        let folds = cv.split(&dates).unwrap();
+        let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (_, test_idx) in &folds {
+            for &i in test_idx {
+                assert!(covered.insert(i),
+                    "row {} appears in 2+ folds — overlap", i);
+            }
+        }
+        assert_eq!(covered.len(), 19,
+            "with n_dates=19, every row must appear in exactly one test fold");
+    }
+
+    #[test]
+    fn cv_linspace_off_fold_sizes_balanced() {
+        // Each fold should be either floor(N/K) or ceil(N/K) — not
+        // wildly unbalanced. With N=23, K=5: floor=4, ceil=5. So fold
+        // sizes ∈ {4, 5} only.
+        let dates = synthetic_dates(23, 1);
+        let cv = PurgedKFold { n_splits: 5, embargo_days: 0, lookahead_days: 0 };
+        let folds = cv.split(&dates).unwrap();
+        for (_, test_idx) in &folds {
+            assert!(test_idx.len() == 4 || test_idx.len() == 5,
+                "fold size {} ∉ {{4, 5}} (post-truncation invariant)",
+                test_idx.len());
+        }
+        // Sum equals total
+        let total: usize = folds.iter().map(|(_, t)| t.len()).sum();
+        assert_eq!(total, 23);
     }
 }

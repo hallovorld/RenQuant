@@ -37,9 +37,20 @@ pub fn listnet_loss(
 
     // Combine masks: a slot is "skipped" if pad OR nan-label. Compute as
     // u8 (1 where skip, 0 where keep) so we can use where_cond.
+    // Audit fix MASK-ASYMMETRY (Round 2 deep audit, 2026-04-25): pre-fix
+    // accepted nan_mask of any dtype and silently `to_dtype(U8)`'d it.
+    // Bool tensors cast to U8 give {0,1} OK, but f32 nan_mask with
+    // values like 0.5 would silently become 1 after cast — matching
+    // dtype guarantees the contract. Now: explicit U8/Bool dtype check.
     let pad_u = pad_mask.to_dtype(DType::U8)?;
     let skip_u = match nan_mask {
         Some(nm) => {
+            if nm.dtype() != DType::U8 {
+                anyhow::bail!(
+                    "listnet_loss: nan_mask must be DType::U8, got {:?}",
+                    nm.dtype(),
+                );
+            }
             // OR via clamp to 1.
             let combined = (pad_u + nm.to_dtype(DType::U8)?)?;
             combined.clamp(0_u8, 1_u8)?

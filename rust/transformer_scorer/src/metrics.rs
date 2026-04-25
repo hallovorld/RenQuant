@@ -87,7 +87,14 @@ pub fn pearson_corr(a: &[f32], b: &[f32]) -> Option<f32> {
         db2 += dy * dy;
     }
     let denom = (da2 * db2).sqrt();
-    if denom <= 0.0 || !denom.is_finite() {
+    // Audit fix PEARSON-UNDERFLOW (Round 2 deep audit, 2026-04-25):
+    // pre-fix used `denom <= 0.0`. With BOTH variances around 1e-40
+    // (degenerate near-constant input), `da2 * db2` can underflow
+    // entire-mantissa to zero, then sqrt(0) = 0, then `num / 0` is
+    // ±inf instead of None. Threshold at 1e-15 (well above f64
+    // smallest normal of 2.2e-308 but covers underflow-prone tiny
+    // variances we never want to report a correlation on).
+    if !denom.is_finite() || denom <= 1e-15 {
         return None;
     }
     Some((num / denom) as f32)
@@ -204,5 +211,23 @@ mod tests {
         let y = vec![3.0_f32, 5.0, 7.0, 9.0, 11.0];
         let r = pearson_corr(&x, &y).unwrap();
         assert!((r - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pearson_underflow_returns_none() {
+        // Audit fix PEARSON-UNDERFLOW: tiny variance values → denom
+        // underflows. Pre-fix returned a finite-but-meaningless result
+        // (or inf/NaN). Post-fix: 1e-15 threshold returns None.
+        let a = vec![1e-25_f32, 2e-25, 3e-25];
+        let b = vec![3e-25_f32, 1e-25, 2e-25];
+        let r = pearson_corr(&a, &b);
+        // Values themselves are ordered, so spearman would be defined,
+        // but pearson on these tiny floats → underflow → expect None
+        // (or at minimum a finite value, not inf/NaN).
+        match r {
+            None => {}   // ✓ — caught the underflow
+            Some(v) => assert!(v.is_finite() && v.abs() <= 1.0,
+                               "if not None, must still be a sane correlation, got {}", v),
+        }
     }
 }

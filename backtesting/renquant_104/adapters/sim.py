@@ -436,7 +436,23 @@ class SimAdapter:
                 self._holdings[ticker] = hs
 
         # ── Buys ────────────────────────────────────────────────────────────
+        # Audit fix BUY-DEDUPE (Round 2 deep audit, 2026-04-25): exits
+        # already de-duplicate by ticker (lines 400-414 above) — same
+        # contract should hold for buys. Pre-fix, two independent jobs
+        # nominating the same ticker (e.g. SizeAndEmit + a hypothetical
+        # future TopUp buy emitting a stale order on the same bar)
+        # would each call _apply_buy → cash debited twice, shares doubled,
+        # phantom holding state. Belt-and-braces: even though current
+        # pipeline order makes this hard to trigger, dedupe matches the
+        # exit-side pattern (first-write-wins) and is cheap.
+        seen_buy_tickers: set[str] = set()
         for order in ctx.orders:
+            t = order.get("ticker") if isinstance(order, dict) else getattr(order, "ticker", None)
+            if t is not None and t in seen_buy_tickers:
+                # Same ticker already booked this bar — skip the dup.
+                continue
+            if t is not None:
+                seen_buy_tickers.add(t)
             self._apply_buy(order, today_ts, ctx)
 
         # Collect trade events emitted this bar for the persistence trace
