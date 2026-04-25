@@ -98,10 +98,18 @@ def _fetch_from_openbb(symbol: str) -> dict[str, float]:
     out: dict[str, float] = {c: float("nan") for c in FACTOR_COLS}
 
     def _latest_non_nan(df: pd.DataFrame, col: str) -> float | None:
-        """Return the first non-NaN value of `col` scanning top-down (most recent first)."""
+        """Return the first non-NaN value of `col` scanning top-down.
+
+        Round-3 audit (#R3-42): if df.index is a DatetimeIndex, sort
+        descending first so we deterministically return the MOST-RECENT
+        non-NaN value regardless of the provider's row order.
+        """
         if df is None or df.empty or col not in df.columns:
             return None
         s = df[col]
+        if isinstance(df.index, pd.DatetimeIndex):
+            # Sort by index descending so the first non-NaN is the most recent.
+            s = s.sort_index(ascending=False)
         for v in s:
             if pd.notna(v):
                 return float(v)
@@ -173,25 +181,45 @@ def fetch_fundamentals(
     cache: bool = True,
     store: FundamentalsStore | None = None,
     provider_fn=None,
+    refresh_after_days: float = 90.0,
 ) -> dict[str, float]:
     """Fetch a single snapshot of fundamentals for `symbol` and cache it.
 
     provider_fn: injected for testing; defaults to OpenBB.
+
+    Round-3 audit (#R3-37): cache previously NEVER refreshed once written.
+    Quarterly fundamentals stayed stale forever. Now: when the most-recent
+    cached snapshot is older than `refresh_after_days` (default 90d —
+    quarterly cadence), refetch and append a fresh snapshot.
     """
     store = store or FundamentalsStore()
     if cache:
-        cached = store.latest(symbol)
+        cached_df = store.load(symbol)
+        cached    = store.latest(symbol)
         if cached is not None:
-            return cached
+            latest_idx = (cached_df.index.max()
+                          if cached_df is not None and not cached_df.empty
+                          else None)
+            if latest_idx is not None and isinstance(latest_idx, pd.Timestamp):
+                age_days = (pd.Timestamp.now().normalize() - latest_idx).days
+                if age_days <= refresh_after_days:
+                    return cached
+            else:
+                # Index unparsable — return what we have rather than re-fetch
+                return cached
 
     fetch = provider_fn or _fetch_from_openbb
     fundamentals = fetch(symbol)
 
     if cache and fundamentals:
+        # Use UTC-date but anchored to the trader's local-day for index sanity:
+        # consume modern timezone-aware utcnow.
         row = pd.DataFrame(
             [fundamentals],
             index=pd.DatetimeIndex(
-                [pd.Timestamp(datetime.datetime.utcnow().date())],
+                [pd.Timestamp(
+                    datetime.datetime.now(datetime.timezone.utc).date()
+                )],
                 name="date",
             ),
         )

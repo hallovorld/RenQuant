@@ -55,12 +55,19 @@ class TestEarningsSurpriseStore:
 
 class TestFetchWithInjectedProvider:
     def test_fetch_uses_cache_short_circuit(self, tmp_path):
+        """Fresh cache (within refresh_after_days) skips the provider call.
+
+        Round-3 audit (#R3-36): cache that exceeds the refresh window
+        now refetches automatically. To exercise the short-circuit,
+        seed with a recent date.
+        """
         from kernel.earnings_surprise import (
             fetch_earnings_surprise, EarningsSurpriseStore,
         )
         store = EarningsSurpriseStore(data_dir=tmp_path)
-        # Pre-seed the cache
-        idx = pd.DatetimeIndex([pd.Timestamp("2024-01-30")])
+        # Pre-seed the cache with a RECENT date (within the 30-day window)
+        recent = pd.Timestamp.now().normalize() - pd.Timedelta(days=5)
+        idx = pd.DatetimeIndex([recent])
         pre = pd.DataFrame({"eps_actual": [1.0], "eps_estimate": [0.9],
                             "surprise_abs": [0.1], "surprise_pct": [0.11]}, index=idx)
         store.save(pre, "AAPL")

@@ -155,7 +155,12 @@ def run_tournament(
     prices_oos     = prices.reindex(oos_df.index)
     spy_prices_oos = spy_prices.reindex(oos_df.index).replace(0, np.nan)
 
-    _seed        = abs(hash(ticker)) % (2 ** 32)
+    # Round-3 audit (#R3-23): Python's built-in hash() is salted by
+    # PYTHONHASHSEED (random by default), so `hash("AAPL")` differs
+    # between processes. The tournament was supposed to be reproducible
+    # but the per-ticker seed kept flipping. Use a stable hash instead.
+    import hashlib as _hashlib  # noqa: PLC0415
+    _seed        = int(_hashlib.md5(ticker.encode()).hexdigest()[:8], 16)
     best_score   = -99.0   # comparison key — either sharpe or IC based on winner_metric
     best_sharpe  = -99.0   # always tracked for passes_floor check
     best_model   = best_name = best_sigs = best_scores = None
@@ -319,9 +324,14 @@ def run_tournament_all(
           f"XGBoost nthread={xgb_nthread} per worker")
 
     # Ensure worker processes (spawn) can import training.*
-    existing = os.environ.get("PYTHONPATH", "")
-    if _STRATEGY_DIR not in existing:
-        os.environ["PYTHONPATH"] = _STRATEGY_DIR + (":" + existing if existing else "")
+    # Round-3 audit (#R3-28): previously the env mutation persisted for the
+    # rest of the process. Snapshot + restore on exit so subsequent code in
+    # the same process doesn't see the polluted env.
+    _orig_pythonpath = os.environ.get("PYTHONPATH", "")
+    if _STRATEGY_DIR not in _orig_pythonpath:
+        os.environ["PYTHONPATH"] = _STRATEGY_DIR + (
+            ":" + _orig_pythonpath if _orig_pythonpath else ""
+        )
 
     spy_close = ohlcv["SPY"]["close"]
     results: dict[str, dict] = {}
@@ -358,5 +368,11 @@ def run_tournament_all(
                     "model": None, "oos_signals": None, "oos_raw_scores": None,
                     "score_calibration": None, "train_rows": 0, "oos_rows": 0,
                 }
+
+    # Restore PYTHONPATH (R3-#28).
+    if _orig_pythonpath:
+        os.environ["PYTHONPATH"] = _orig_pythonpath
+    elif "PYTHONPATH" in os.environ:
+        del os.environ["PYTHONPATH"]
 
     return results

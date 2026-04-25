@@ -113,23 +113,46 @@ def fetch_earnings_surprise(
     cache: bool = True,
     store: EarningsSurpriseStore | None = None,
     provider_fn: Callable[[str], pd.DataFrame] | None = None,
+    refresh_after_days: float = 30.0,
 ) -> pd.DataFrame:
     """Load or fetch earnings-surprise history for `symbol`.
 
     Returns the cached DataFrame if available (fast path), else fetches via
     provider_fn (defaults to yfinance) and writes to cache.
+
+    Round-3 audit (#R3-36): cache previously NEVER refreshed once written.
+    New earnings announcements posted after the first cache write were
+    invisible until manual deletion. Now: when the cache's most-recent
+    announcement is older than `refresh_after_days` (default 30d — earnings
+    are quarterly), incremental-fetch fresh history and merge in.
     """
     store = store or EarningsSurpriseStore()
+    cached = None
     if cache:
         cached = store.load(symbol)
         if cached is not None and not cached.empty:
-            return cached
+            latest = cached.index.max() if isinstance(cached.index, pd.DatetimeIndex) else None
+            if latest is not None:
+                age_days = (pd.Timestamp.now().normalize() - latest).days
+                if age_days <= refresh_after_days:
+                    return cached
+            else:
+                return cached
 
     fetch = provider_fn or _fetch_from_yfinance
-    df = fetch(symbol)
-    if cache and not df.empty:
-        store.save(df, symbol)
-    return df
+    new_df = fetch(symbol)
+
+    if cached is not None and not cached.empty and new_df is not None and not new_df.empty:
+        merged = pd.concat([cached, new_df])
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    else:
+        merged = new_df if (new_df is not None and not new_df.empty) else (
+            cached if cached is not None else new_df
+        )
+
+    if cache and merged is not None and not merged.empty:
+        store.save(merged, symbol)
+    return merged if merged is not None else pd.DataFrame(columns=SURPRISE_COLS)
 
 
 def fetch_earnings_surprise_watchlist(
@@ -190,6 +213,15 @@ def compute_earnings_surprise_cum(
         # Trailing-N rolling sum of the last N announcements. Operates on
         # announcement-sampled index first, then reindexed to daily + ffilled.
         trailing = sp.rolling(trailing_quarters, min_periods=1).sum()
+        # Round-3 audit (#R3-35): shift announcement INDEX by +1 calendar day
+        # so the cumulative value first becomes available on the bar AFTER
+        # the announcement. Earnings releases are typically after-market —
+        # using the post-release cumulative on the announcement day itself
+        # would be lookahead. Shift the index (not .shift(1) on values which
+        # produces NaN on the 1-announcement edge case) so the same value
+        # is now associated with the next calendar day. The OHLCV reindex+
+        # ffill below picks up that value on whichever trading day comes next.
+        trailing.index = trailing.index + pd.Timedelta(days=1)
         daily = trailing.reindex(idx, method="ffill")
         out[ticker] = daily
     return out

@@ -90,11 +90,19 @@ class PanelLTRModel:
         label_col: str = "label",
         weight_col: str | None = "weight",
         num_boost_round: int = 400,
-        early_stopping_rounds: int | None = 50,
+        early_stopping_rounds: int | None = None,
         eval_panel: pd.DataFrame | None = None,
         eval_group_sizes: np.ndarray | None = None,
     ) -> dict:
-        """Fit the booster; return train/eval metadata."""
+        """Fit the booster; return train/eval metadata.
+
+        Round-3 audit (#R3-9 #R3-10): the prior signature accepted
+        `early_stopping_rounds` and `eval_panel`/`eval_group_sizes` but
+        the body hardcoded `evals=None, early_stopping_rounds=None` —
+        the parameters were silently ignored. Default is now None
+        (matching the actual behaviour); if the caller passes both
+        a non-None value AND eval data, we wire it through.
+        """
         self.feature_cols = list(feature_cols)
 
         X = panel[feature_cols].values
@@ -110,7 +118,13 @@ class PanelLTRModel:
             group_weights = np.empty(len(group_sizes), dtype=float)
             offset = 0
             for gi, gs in enumerate(group_sizes):
-                group_weights[gi] = w_rows[offset:offset + gs].mean()
+                # Round-3 audit (#R3-11): guard against gs==0 — pre-fix
+                # the .mean() of an empty slice produced NaN with a warning,
+                # which XGBoost then treated as "no weight" silently.
+                if gs <= 0:
+                    group_weights[gi] = 1.0
+                else:
+                    group_weights[gi] = w_rows[offset:offset + gs].mean()
                 offset += gs
             dtrain.set_weight(group_weights)
 
@@ -135,15 +149,22 @@ class PanelLTRModel:
             if any(s != 0 for s in signs):
                 params["monotone_constraints"] = "(" + ",".join(str(s) for s in signs) + ")"
 
-        self.booster = xgb.train(
-            params, dtrain,
-            num_boost_round=num_boost_round,
-            evals=None,
-            early_stopping_rounds=None,
-            verbose_eval=False,
-        )
-        # Without xgboost-side early stopping, best_iter = final round.
-        self.best_iter = num_boost_round - 1
+        # Round-3 audit (#R3-9 #R3-10): plumb the function-arg early stop
+        # through xgb.train when caller actually supplies eval data.
+        train_kwargs: dict[str, Any] = {
+            "num_boost_round": num_boost_round,
+            "verbose_eval":    False,
+        }
+        if (deval is not None
+                and early_stopping_rounds is not None
+                and early_stopping_rounds > 0):
+            train_kwargs["evals"] = [(dtrain, "train"), (deval, "eval")]
+            train_kwargs["early_stopping_rounds"] = int(early_stopping_rounds)
+
+        self.booster = xgb.train(params, dtrain, **train_kwargs)
+        # When xgboost-side early stopping fires, `best_iteration` is set on
+        # the booster. Otherwise final round.
+        self.best_iter = getattr(self.booster, "best_iteration", num_boost_round - 1)
 
         result: dict[str, Any] = {"best_iter": self.best_iter}
         train_preds = self.booster.predict(dtrain)

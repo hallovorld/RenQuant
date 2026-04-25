@@ -53,7 +53,14 @@ INSIDER_COLS: list[str] = [
 
 # ── Rate-limited HTTP (SEC docs: be a good citizen) ─────────────────────────
 
-_USER_AGENT = "RenQuant research renhao.overflow@gmail.com"
+# Round-3 audit (#R3-40): SEC requires a UA but committing a personal
+# email to a public repo leaks PII. Read from env var with a generic
+# fallback. Operators set RENQUANT_SEC_UA to their contact info.
+import os as _os
+_USER_AGENT = _os.environ.get(
+    "RENQUANT_SEC_UA",
+    "RenQuant research https://github.com/RenQuant/renquant",
+)
 _MIN_SLEEP_S = 0.125   # = 8 req/sec — under SEC's 10 req/sec cap
 
 
@@ -77,19 +84,28 @@ def _sec_get(url: str, *, timeout: float = 15.0, retries: int = 3) -> str:
 # ── CIK lookup (cached per-process) ──────────────────────────────────────────
 
 _CIK_MAP: "dict[str, int] | None" = None
+import threading as _threading
+_CIK_LOCK = _threading.Lock()
 
 
 def ticker_to_cik(ticker: str) -> "int | None":
-    """Resolve ticker → CIK via SEC's public company_tickers.json."""
+    """Resolve ticker → CIK via SEC's public company_tickers.json.
+
+    Round-3 audit (#R3-65): added a module lock around lazy init. Two
+    threads racing on first call would both fetch from SEC; harmless but
+    wasteful + extra rate-limit pressure.
+    """
     global _CIK_MAP
     if _CIK_MAP is None:
-        try:
-            raw = _sec_get("https://www.sec.gov/files/company_tickers.json")
-            data = json.loads(raw)
-            _CIK_MAP = {v["ticker"].upper(): int(v["cik_str"]) for v in data.values()}
-        except Exception as exc:
-            log.warning("ticker_to_cik: EDGAR fetch failed — %s", exc)
-            _CIK_MAP = {}
+        with _CIK_LOCK:
+            if _CIK_MAP is None:   # double-checked locking
+                try:
+                    raw = _sec_get("https://www.sec.gov/files/company_tickers.json")
+                    data = json.loads(raw)
+                    _CIK_MAP = {v["ticker"].upper(): int(v["cik_str"]) for v in data.values()}
+                except Exception as exc:
+                    log.warning("ticker_to_cik: EDGAR fetch failed — %s", exc)
+                    _CIK_MAP = {}
     return _CIK_MAP.get(ticker.upper())
 
 

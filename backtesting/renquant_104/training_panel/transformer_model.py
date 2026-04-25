@@ -458,7 +458,16 @@ class PanelTransformerModel:
         m._model = _PanelTransformer(
             n_features=len(m.feature_cols), p=m.params,
         ).to(m._device)
-        state = torch.load(pt_path, map_location=m._device)
+        # Round-3 audit (#R3-14): explicitly set weights_only=True. PyTorch
+        # 2.6 made this the default and PyTorch 2.7+ may make weights_only=False
+        # raise — pinning here is forward-compatible AND prevents arbitrary
+        # code execution from a tampered .pt file. State dicts are pure
+        # tensor data so weights_only=True is correct here.
+        try:
+            state = torch.load(pt_path, map_location=m._device, weights_only=True)
+        except TypeError:
+            # Older torch (<2.0) without weights_only — fall back.
+            state = torch.load(pt_path, map_location=m._device)
         m._model.load_state_dict(state)
         m._model.eval()
         return m

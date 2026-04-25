@@ -58,6 +58,12 @@ class TransformerPanelScorer:
             raise KeyError(
                 f"TransformerPanelScorer.score: feature matrix missing columns: {missing}",
             )
+        # Round-3 audit (#R3-22): empty matrix is a valid no-op (no
+        # candidates this bar). Return an empty Series early to avoid the
+        # zero-row-but-one-column degeneracy of fabricating `date=0` below.
+        if feature_matrix.empty:
+            return pd.Series([], dtype=float, name="panel_score",
+                              index=feature_matrix.index)
         # Single-date-group inference: fabricate a `date` column so the
         # model's predict() groups all rows together.
         frame = feature_matrix[self.feature_cols].copy()

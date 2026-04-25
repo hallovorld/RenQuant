@@ -331,16 +331,29 @@ def clear_sim_tables(conn: sqlite3.Connection | None) -> int:
 
 # ── Commit SHA helper (for provenance) ────────────────────────────────────────
 
+# Round-3 audit (#R3-82 #R3-52): cache once per process so a 700-bar sim
+# doesn't fork git 700 times. Resolved at first call; survives the
+# process. (If the user rewrites history mid-sim, the cached SHA is
+# slightly stale — acceptable.)
+_COMMIT_SHA_RESOLVED: bool = False
+_COMMIT_SHA_VALUE: "str | None" = None
+
+
 def _commit_sha() -> str | None:
+    global _COMMIT_SHA_RESOLVED, _COMMIT_SHA_VALUE
+    if _COMMIT_SHA_RESOLVED:
+        return _COMMIT_SHA_VALUE
     try:
         import subprocess
         sha = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=2,
         ).stdout.strip()
-        return sha or None
+        _COMMIT_SHA_VALUE = sha or None
     except Exception:
-        return None
+        _COMMIT_SHA_VALUE = None
+    _COMMIT_SHA_RESOLVED = True
+    return _COMMIT_SHA_VALUE
 
 
 # ── Recording helpers ─────────────────────────────────────────────────────────
@@ -715,7 +728,13 @@ def _none_or_float(v: Any) -> float | None:
         return None
     try:
         f = float(v)
-        return f if f == f else None   # filter NaN
+        # Round-3 audit (#R3-45): also filter ±inf. SQLite stores them as
+        # REAL but later analytics queries (median, percentile) silently
+        # break. Treat as missing.
+        import math
+        if not math.isfinite(f):
+            return None
+        return f
     except (TypeError, ValueError):
         return None
 
@@ -733,13 +752,20 @@ def lookup_candidate_scores_on_date(
     conn,
     tickers: "list[str]",
     as_of: "datetime.date",
+    role: str = "candidate",
 ) -> dict[str, dict]:
     """Return {ticker: {rank_score, panel_score, mu, sigma}} for the
-    candidate-side snapshot recorded on `as_of`.
+    snapshot recorded on `as_of` with the given `role`.
 
     Used by Rotation V4 (thesis_symmetric) to look up B's score on A's
     entry date. Joins candidate_scores × pipeline_runs to find the run
     that executed on `as_of` and pulls each ticker's scores.
+
+    Round-3 audit (#R3-46): added `role` filter (default "candidate") so
+    the lookup doesn't accidentally pick up a holding-side snapshot when
+    both exist for the same ticker on the same date. Holdings have
+    `raw_score=NULL` (line 418 in record_candidate_scores), which would
+    silently mis-rank rotation pairs.
 
     Returns an empty dict if no run landed on that date (sim hasn't
     processed it yet, or it was pre-sim-start). Callers should treat
@@ -754,9 +780,10 @@ def lookup_candidate_scores_on_date(
         FROM candidate_scores cs
         JOIN pipeline_runs pr ON cs.run_id = pr.run_id
         WHERE pr.run_date = ?
+          AND cs.role     = ?
           AND cs.ticker IN ({placeholders})
         """,
-        (str(as_of), *tickers),
+        (str(as_of), role, *tickers),
     )
     out: dict[str, dict] = {}
     for row in cur:
