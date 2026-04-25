@@ -51,7 +51,13 @@ class LocalStore:
         return df if not df.empty else None
 
     def save(self, df: pd.DataFrame, symbol: str, timeframe: str = "1d") -> Path:
-        """Save (or append) OHLCV data. Deduplicates by index."""
+        """Save (or append) OHLCV data. Deduplicates by index.
+
+        Audit fix DAT-ATOM (Round 2 deep audit, 2026-04-25): atomic
+        write via .tmp + rename. Same as DC-2-CACHE / FU-1. Critical
+        because the OHLCV cache is the FOUNDATION of every other
+        feature — corruption here cascades into everything.
+        """
         path = self._path(symbol, timeframe)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -59,14 +65,21 @@ class LocalStore:
             df.index = pd.to_datetime(df.index)
 
         if path.exists():
-            existing = pd.read_parquet(path)
-            if not isinstance(existing.index, pd.DatetimeIndex):
-                existing.index = pd.to_datetime(existing.index)
-            df = pd.concat([existing, df])
-            df = df[~df.index.duplicated(keep="last")]
-            df = df.sort_index()
+            try:
+                existing = pd.read_parquet(path)
+            except Exception:
+                # Existing cache corrupt — overwrite cleanly with new data.
+                existing = None
+            if existing is not None:
+                if not isinstance(existing.index, pd.DatetimeIndex):
+                    existing.index = pd.to_datetime(existing.index)
+                df = pd.concat([existing, df])
+                df = df[~df.index.duplicated(keep="last")]
+                df = df.sort_index()
 
-        df.to_parquet(path)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        df.to_parquet(tmp)
+        tmp.replace(path)
         return path
 
     def has_range(

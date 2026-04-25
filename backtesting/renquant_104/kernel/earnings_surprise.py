@@ -54,12 +54,16 @@ class EarningsSurpriseStore:
         return df.sort_index()
 
     def save(self, df: pd.DataFrame, symbol: str) -> Path:
+        # Audit fix ES-ATOM (Round 2 deep audit, 2026-04-25): atomic
+        # write via .tmp + rename. Same as DC-2-CACHE / FU-1.
         p = self._path(symbol)
         p.parent.mkdir(parents=True, exist_ok=True)
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         df = df[~df.index.duplicated(keep="last")].sort_index()
-        df.to_parquet(p)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        df.to_parquet(tmp)
+        tmp.replace(p)
         return p
 
 
