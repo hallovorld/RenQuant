@@ -23,7 +23,7 @@
 //! matches the Python golden output bit-for-bit.
 
 use anyhow::Result;
-use candle_core::{Module, Tensor};
+use candle_core::{DType, Module, Tensor};
 use candle_nn::{layer_norm, ops::softmax, LayerNorm, Linear, VarBuilder};
 
 use crate::config::TransformerParams;
@@ -128,13 +128,25 @@ impl TransformerEncoderLayer {
         let scores = (scores * scale)?;
 
         // Apply pad mask: mask shape (B, T), broadcast to (B, 1, 1, T).
+        // Bug-fix: previously did `m * neg_inf_full_scores_shape` which is
+        // element-wise mul requiring matching shapes — m was (B,1,1,T),
+        // neg_inf was (B,H,T,T). Build the (-inf where mask=1, 0 else)
+        // tensor at the mask shape, then broadcast-add into scores.
         let scores = if let Some(m) = pad_mask {
             let m = m
                 .to_dtype(scores.dtype())?
                 .reshape((b, 1, 1, t))?;
-            // mask=1 → set score = -inf; PyTorch convention.
-            let neg_inf = Tensor::full(f32::NEG_INFINITY, scores.shape(), scores.device())?;
-            scores.broadcast_add(&(m * &neg_inf)?)?
+            let neg_inf_small = Tensor::full(
+                f32::NEG_INFINITY, m.shape(), m.device(),
+            )?;
+            // mask=1 → -inf, mask=0 → 0 (since 0 * -inf is NaN, but
+            // candle's `*` here is on equal shapes, so 0.0_f32 * -inf
+            // = NaN. Use where_cond to avoid the trap, same as in
+            // loss.rs).
+            let zero = Tensor::zeros_like(&m)?;
+            let mask_bool = m.to_dtype(DType::U8)?;
+            let bias = mask_bool.where_cond(&neg_inf_small, &zero)?;
+            scores.broadcast_add(&bias)?
         } else {
             scores
         };
