@@ -197,6 +197,70 @@ class TestSC1CalibrationPathConsistency:
         )
 
 
+# ── CAL-7 (Round 2 audit): RefreshPanelCalibratorJob wired into pipeline ─────
+
+class TestCAL7CalibratorRefreshWired:
+    """Pre-fix, panel-rank-calibration.json was rebuilt only by manual
+    `scripts/fit_panel_calibrator.py`. Operators forgot → calibrator went
+    stale relative to retrained panel-LTR. Post-fix, RefreshPanelCalibratorJob
+    runs after PanelNGBoostJob in PanelTrainingPipeline."""
+
+    def test_pipeline_includes_refresh_job_after_ngboost(self):
+        """Verify Job order: PanelNGBoostJob then RefreshPanelCalibratorJob."""
+        # We can't instantiate PanelTrainingPipeline().run(ctx) without a real
+        # context, but we can inspect the static job list it constructs.
+        import inspect
+        from training_panel.pp_panel_training import (
+            PanelTrainingPipeline, PanelNGBoostJob, RefreshPanelCalibratorJob,
+        )
+        src = inspect.getsource(PanelTrainingPipeline.run)
+        # Both classes are referenced in the run() method body.
+        assert "PanelNGBoostJob()" in src
+        assert "RefreshPanelCalibratorJob()" in src
+        # And in the right relative order (calibrator AFTER ngboost).
+        ngb_idx  = src.index("PanelNGBoostJob()")
+        cal_idx  = src.index("RefreshPanelCalibratorJob()")
+        assert ngb_idx < cal_idx, (
+            "RefreshPanelCalibratorJob must run AFTER PanelNGBoostJob so "
+            "both panel-LTR and NGBoost artifacts are stable when the "
+            "calibrator queries them."
+        )
+
+    def test_should_skip_when_global_calibration_disabled(self):
+        """If global_calibration is off, the refresh job no-ops cleanly."""
+        from training_panel.pp_panel_training import RefreshPanelCalibratorJob
+        from training_panel.context import PanelTrainingContext
+        # Minimal context; default global_calibration absent → enabled False.
+        ctx = PanelTrainingContext(
+            config={"panel_ltr": {}}, watchlist=[], ohlcv={},
+            sector_etf_ohlcv={}, ticker_sectors={}, listing_dates=None,
+        )
+        assert RefreshPanelCalibratorJob().should_skip(ctx) is True
+
+    def test_should_skip_when_auto_refresh_disabled(self):
+        from training_panel.pp_panel_training import RefreshPanelCalibratorJob
+        from training_panel.context import PanelTrainingContext
+        ctx = PanelTrainingContext(
+            config={"panel_ltr": {"global_calibration": {
+                "enabled": True, "auto_refresh": False,
+            }}},
+            watchlist=[], ohlcv={}, sector_etf_ohlcv={},
+            ticker_sectors={}, listing_dates=None,
+        )
+        assert RefreshPanelCalibratorJob().should_skip(ctx) is True
+
+    def test_should_run_by_default_when_global_calibration_enabled(self):
+        from training_panel.pp_panel_training import RefreshPanelCalibratorJob
+        from training_panel.context import PanelTrainingContext
+        # Default auto_refresh=True applies when global_calibration.enabled=True.
+        ctx = PanelTrainingContext(
+            config={"panel_ltr": {"global_calibration": {"enabled": True}}},
+            watchlist=[], ohlcv={}, sector_etf_ohlcv={},
+            ticker_sectors={}, listing_dates=None,
+        )
+        assert RefreshPanelCalibratorJob().should_skip(ctx) is False
+
+
 # ── M-4 (Round 6 audit): predict_xgboost honours default_left on NaN ──────────
 
 class TestM4XgboostDefaultLeft:

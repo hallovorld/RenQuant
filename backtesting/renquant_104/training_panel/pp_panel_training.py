@@ -1692,6 +1692,102 @@ class PanelNGBoostJob(PanelJob):
         return [NGBoostFitTask(), NGBoostSaveTask()]
 
 
+# ── Phase 6 — RefreshPanelCalibratorJob ────────────────────────────────────
+
+class RefreshPanelCalibratorTask(PanelTask):
+    """Re-fit the global panel calibrator against the freshly-saved panel-LTR.
+
+    Audit fix CAL-7 (Round 2 deep audit, 2026-04-25): pre-fix, the
+    panel-LTR retrained on every daily_104 / Sunday-retrain cycle, but
+    the panel-rank-calibration.json was a SEPARATE artifact rebuilt
+    only by `scripts/fit_panel_calibrator.py` — a manual script not in
+    the pipeline. Operators forgot to re-run it after panel retrains
+    → calibrator went stale (different ticker count / different model)
+    → ApplyGlobalCalibrationTask received scores from a NEW model
+    distribution mapped through an OLD calibrator → systematic
+    miscalibration of rank_score + expected_return.
+
+    Now: shells out to `scripts/fit_panel_calibrator.py` after
+    PanelModelJob finishes, ensuring the calibrator artifact is always
+    aligned with the panel-LTR artifact it was paired with. Skipped
+    when `panel_ltr.global_calibration.auto_refresh = false`.
+
+    Failure is logged but non-fatal — the existing (stale) calibrator
+    survives, so live trading doesn't crash on a calibrator-refresh
+    error mid-pipeline.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        gc_cfg = (ctx.config.get("panel_ltr", {})
+                            .get("global_calibration", {}))
+        if not bool(gc_cfg.get("auto_refresh", True)):
+            log.info("RefreshPanelCalibratorTask: auto_refresh=false — skipping")
+            return
+        if not gc_cfg.get("enabled", False):
+            # Nothing to refresh if global calibration is off entirely.
+            return
+        if ctx.strategy_dir is None:
+            log.warning("RefreshPanelCalibratorTask: no strategy_dir — skipping")
+            return
+
+        import subprocess as _sub  # noqa: PLC0415
+        import sys as _sys         # noqa: PLC0415
+        import time as _time       # noqa: PLC0415
+        repo_root = ctx.strategy_dir.parent.parent
+        script    = repo_root / "scripts" / "fit_panel_calibrator.py"
+        if not script.exists():
+            log.warning("RefreshPanelCalibratorTask: %s not found — skipping",
+                        script)
+            return
+
+        strategy_name = ctx.config.get("_strategy_name", "renquant_104")
+        cmd = [_sys.executable, str(script), "--strategy", strategy_name]
+        log.info("RefreshPanelCalibratorTask: %s", " ".join(cmd))
+        t0 = _time.monotonic()
+        try:
+            r = _sub.run(cmd, cwd=str(repo_root), capture_output=True,
+                         text=True, timeout=600.0)
+            elapsed = _time.monotonic() - t0
+            if r.returncode == 0:
+                log.info("RefreshPanelCalibratorTask: refreshed  elapsed=%.1fs",
+                         elapsed)
+                # Surface the calibrator's pool_ic in the log for
+                # operator visibility.
+                for line in (r.stdout or "").splitlines():
+                    if "Summary:" in line or "Saved" in line:
+                        log.info("  %s", line.strip())
+            else:
+                log.warning(
+                    "RefreshPanelCalibratorTask: failed rc=%d  elapsed=%.1fs\n"
+                    "  STDERR (tail):\n%s",
+                    r.returncode, elapsed,
+                    "\n".join((r.stderr or "").splitlines()[-15:]),
+                )
+        except _sub.TimeoutExpired:
+            log.warning("RefreshPanelCalibratorTask: timed out after 600s")
+        except Exception as exc:
+            log.warning("RefreshPanelCalibratorTask: %s", exc)
+
+
+class RefreshPanelCalibratorJob(PanelJob):
+    """Phase 6 — refresh panel-rank-calibration.json after panel retrain.
+
+    Skipped when `panel_ltr.global_calibration.{enabled,auto_refresh}`
+    is false. Always runs AFTER PanelNGBoostJob so both the LTR and
+    NGBoost artifacts are stable before the calibrator queries them.
+    """
+
+    def should_skip(self, ctx: PanelTrainingContext) -> bool:
+        gc = (ctx.config.get("panel_ltr", {})
+                        .get("global_calibration", {}))
+        return not bool(gc.get("enabled", False)
+                         and gc.get("auto_refresh", True))
+
+    @property
+    def tasks(self) -> list[PanelTask]:
+        return [RefreshPanelCalibratorTask()]
+
+
 # ── Orchestrator ─────────────────────────────────────────────────────────────
 
 class PanelTrainingPipeline:
@@ -1704,6 +1800,7 @@ class PanelTrainingPipeline:
             PanelAssemblyJob(),   # FactorZScore + Labels + BuildPanel
             PanelModelJob(),      # CrossValidate + FinalFit + SaveArtifact
             PanelNGBoostJob(),    # NGBoostFit + NGBoostSave (optional)
+            RefreshPanelCalibratorJob(),  # CAL-7: refresh calibrator (optional)
         ]
         t0 = time.monotonic()
         log.info("PanelTrainingPipeline START  watchlist=%d", len(ctx.watchlist))
