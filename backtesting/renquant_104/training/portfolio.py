@@ -37,6 +37,13 @@ def compute_portvals(
             if shares == 0:
                 continue
             price = price_frame.at[date, sym]
+            # Audit fix P-1 (Round 8, 2026-04-25): pre-fix, NaN/inf price
+            # silently propagated into cash. Once NaN, every subsequent
+            # cash value was NaN → portfolio_stats returned NaN Sharpe
+            # silently. Skip the trade if price isn't usable; the
+            # notebook caller can flag the missing price separately.
+            if not np.isfinite(price):
+                continue
             if shares > 0:
                 cost = price * shares * (1 + impact) + commission
                 cash.iloc[i] -= cost
