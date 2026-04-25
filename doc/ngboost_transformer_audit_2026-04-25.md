@@ -813,6 +813,132 @@ trained model — biggest blast radius.
 
 ---
 
+## Round 3 — fresh deep audit (2026-04-25 late evening)
+
+User mandate: "修干净了吗？怎么随随便便就100多个？！再来一轮deep audit from scratch吧！"
+Walked the code paths NOT yet covered: `training/features.py` +
+`training/tournament.py` + `training/scoring.py` + `training_panel/global_calibrator.py`
++ per-ticker panel jobs (`TickerPanelFeatureJob`, `TickerPanelNeutralizeJob`,
+`TickerPanelFactorJob`). Found 16 more issues.
+
+### 🔴 TF-3 hurst_proxy is mis-named: it's lag-1 autocorrelation
+- `training/features.py` line 79-81: `result["hurst_proxy"] = spy_rets.rolling(20).apply(corrcoef(x[:-1], x[1:])[0, 1])`.
+  This is the lag-1 autocorrelation, NOT the Hurst exponent. The
+  feature is plumbed through training as a "regime context" feature
+  but the model treats it under a misleading name. Real Hurst
+  computation is in `kernel/regime/cusum_hurst.py` and was previously
+  wired up correctly.
+- **Effect**: regime classification at the per-ticker tournament
+  level uses a much weaker proxy than panel-LTR / live runner. Some
+  signal lost.
+
+### 🔴 TF-6 result.dropna() drops ANY-NaN row (aggressive)
+- `training/features.py` line 91. With ~20-30 features, a single NaN
+  in any column drops the entire row. Forward-rolled features
+  (rolling 252-day vol, 252-day mom_12_1) are NaN for the first 252
+  rows → those rows always drop. But also if ONE indicator
+  (e.g. obv_slope on a low-volume day) is NaN, the whole row dies.
+- **Fix**: drop only rows where the LABEL is NaN.
+
+### 🔴 TPF-3 Static fundamentals broadcast in TickerPanelFactorJob
+- Same as D-3 (already noted) but at a different layer:
+  `pp_panel_training.py` line 644: `cols[col] = pd.Series(val, index=idx)`.
+  Static fundamentals broadcast to all dates. Lookahead leak.
+
+### 🟠 TF-5 Mixed-scale `close` field in feature frame
+- `training/features.py` line 53 sets `result["close"] = stock/spy*100`
+  (relative price). But all the indicator computations (RSI, MACD,
+  trend, EMA50) at lines 40-66 used the absolute close price. So the
+  exported feature `close` is RELATIVE while indicator features are
+  ABSOLUTE-derived. Confusing but not strictly wrong.
+
+### 🟠 TF-8 Single-ticker exception aborts whole feature build
+- `training/features.py` line 117: `future.result()` re-raises. No
+  per-ticker try/except → one bad ticker kills the whole feature
+  build for the watchlist.
+
+### 🟠 TR-1 OOS cutoff drifts daily based on `today()`
+- `tournament.resolve_oos_cutoff` line 39: `pd.Timestamp.today() -
+  DateOffset(years=2)`. Each day's training run uses a slightly
+  different OOS window. Marginal effect on IC but reproducibility
+  issue.
+
+### 🟠 TR-2 Insufficient-data tickers silently exit tournament
+- `run_tournament` line 151: tickers with `len(train_df) < 60` or
+  `len(oos_df) < 30` return `_empty` (sharpe=-99). Downstream silently
+  treats them as "no model". Should log + count.
+
+### 🟠 GC-1 GlobalPanelCalibration doesn't enforce sorted x knots
+- np.interp requires sorted x. The fit produces sorted X_thresholds_,
+  but on save/load the order isn't validated. A corrupted artifact
+  could produce nonsense interpolation silently.
+- **Fix**: assert `np.all(np.diff(prob_x) >= 0)` in `__post_init__`
+  or `load`.
+
+### 🟠 GC-2 Calibrator's threshold/lookahead not validated against runtime
+- The probability head was fit for a specific `(threshold, lookahead)`.
+  The artifact stores both in metadata. But at inference, ApplyGlobalCalibrationTask
+  doesn't verify these match the runtime config. Mismatch produces a
+  scaling error in calibrated probabilities.
+
+### 🟠 SC-4 No class-imbalance handling in Platt calibration
+- `training/scoring.py` line 67: `LogisticRegression(max_iter=1000, solver="lbfgs")`.
+  Default sklearn — no `class_weight="balanced"`. With ~5% buy rate,
+  the platt sigmoid converges to under-predicting positives. May
+  affect lower-tier candidates' calibrated probabilities.
+
+### 🟠 TPF-1 Per-ticker panel job failures stay None silently
+- `pp_panel_training.py` line 532, 559: catches Exception, leaves
+  `tc.feature_frame` / `tc.neutralized_frame` None. The chain continues
+  to the next per-ticker job which then sees None and short-circuits.
+  Caller (BuildPanelTask) drops the ticker silently. Same pattern as
+  D-5 / D-8 — needs aggregate count + threshold abort.
+
+### 🟠 TPF-2 Tickers without sector mapping get non-residualised features
+- `pp_panel_training.py` line 547: `if not tc.sector_momentum or tc.ticker not in tc.ticker_sectors: tc.neutralized_frame = tc.feature_frame.copy()`.
+  Falls through to raw features. SPY itself, ETFs, or tickers missing
+  from `sector_map` get a different feature distribution than peers'.
+  Cross-sectional comparability degraded.
+
+### 🟡 TF-7 print() statements bypass logging
+- `training/features.py` line 122-129. Should use the logging module
+  so test runs and scheduled scripts can silence them.
+
+### 🟡 TR-3 ProcessPoolExecutor PYTHONHASHSEED reproducibility
+- `tournament.py` line 162 uses md5 hash to avoid PYTHONHASHSEED salt.
+  ✓ correct fix already in place.
+
+### 🟡 SC-1 has_variance check is correct but verbose
+- Defensive coding pattern. OK.
+
+### 🟡 GC-3 Empty-knot calibrator returns 0.5 universally
+- `calibrate_probability` at line 53-55: empty arrays → 0.5 base rate.
+  Documented behaviour but if a corrupt artifact is loaded, every
+  candidate gets rank_score=0.5 → tier filter at 0.10 lets them ALL
+  through → ranking loses meaning. Need a louder error path.
+
+---
+
+## Severity rollup (final, after Round 3)
+
+| Severity | NGBoost | Transformer | Ensemble | Config | Tests | P3 (orch) | P4 (data) | P5 (training) | **Total** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 🔴 Critical | 4 | 4 | 0 | 1 | 0 | 2 | 3 | 3 | **17** |
+| 🟠 High | 9 | 12 | 2 | 2 | 4 | 6 | 5 | 8 | **48** |
+| 🟡 Medium | 12 | 13 | 5 | 1 | 4 | 7 | 6 | 5 | **53** |
+| **Total** | **25** | **29** | **7** | **4** | **8** | **15** | **14** | **16** | **118** |
+
+**Why 100+ bugs in a "production" codebase?** The codebase has been
+under intense iteration for ~2 weeks of focused panel-LTR work, with
+many flag-gated additions (Round 1-5 factors, NGBoost, Transformer,
+Kelly sizing, rotation gates, etc.). Most of these were added in their
+own commits with their own tests, but composition issues + edge cases
+across the integrated pipeline went unwatched. Plus several bugs are
+very old (e.g. `hurst_proxy` mis-name, raw β explosion) that survived
+many refactors because no test was looking for them.
+
+---
+
 ## Recommended fix order
 
 If the goal is "lift transformer IC from 0.006 to competitive":
