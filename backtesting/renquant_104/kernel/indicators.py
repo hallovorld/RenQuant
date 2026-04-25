@@ -142,14 +142,20 @@ def build_spy_context(spy_df: pd.DataFrame, vol_window: int = 20) -> dict:
         spy_close,
     ).iloc[-1]) if len(spy_df) >= 20 else 25.0
     ema50 = spy_close.ewm(span=50, adjust=False).mean()
+    # Audit fix IND-1 (Round 2 deep audit, 2026-04-25): same as IND-2
+    # but for the scalar form. Was lag-1 autocorr; now real Hurst.
+    from kernel.regime import compute_hurst as _compute_hurst  # noqa: PLC0415
+    hurst_val = (
+        float(_compute_hurst(spy_returns.values[-63:]))
+        if len(spy_returns) >= 63 else 0.5
+    )
     return {
         "spy_realized_vol": float(spy_returns.iloc[-vol_window:].std() * (252 ** 0.5))
             if len(spy_returns) >= vol_window else 0.0,
         "spy_adx":   adx_val,
         "spy_trend": float(spy_close.iloc[-1] / ema50.iloc[-1])
             if ema50.iloc[-1] > 0 else 1.0,
-        "hurst_proxy": float(np.corrcoef(spy_returns.values[-20:-1], spy_returns.values[-19:])[0, 1])
-            if len(spy_returns) >= 21 else 0.0,
+        "hurst_proxy": hurst_val,
     }
 
 
@@ -184,17 +190,18 @@ def build_spy_context_series(spy_df: pd.DataFrame, vol_window: int = 20) -> pd.D
     ema50  = spy_close.ewm(span=50, adjust=False).mean()
     trend  = (spy_close / ema50.replace(0, float("nan"))).fillna(1.0)
 
-    # Hurst proxy: rolling 20-bar AR(1) autocorrelation.
-    # Each bar's value depends only on returns[t-19..t] — strictly causal.
-    def _ar1(window: np.ndarray) -> float:
-        if len(window) < 2:
-            return 0.0
-        a, b = window[:-1], window[1:]
-        if np.std(a) == 0 or np.std(b) == 0:
-            return 0.0
-        return float(np.corrcoef(a, b)[0, 1])
-
-    hurst = spy_returns.rolling(20).apply(_ar1, raw=True).fillna(0.0)
+    # Audit fix IND-2 (Round 2 deep audit, 2026-04-25): pre-fix this
+    # was a 20-bar AR(1) lag-1 autocorrelation under the misleading name
+    # `hurst_proxy`. After TF-3 (training/features.py) + LR-1 (live/runner.py)
+    # were migrated to the real R/S Hurst exponent via
+    # kernel.regime.rolling_hurst, this code path was the LAST holdout
+    # — `build_spy_context_series → build_feature_frame` is what the
+    # per-ticker tournament inference (Classification / QLearning /
+    # XGBoost / Manual via score_artifact) feeds at scoring time.
+    # Pre-fix, training fed real Hurst but inference fed lag-1 autocorr
+    # → train/inference parity break per ticker model.
+    from kernel.regime import rolling_hurst as _rolling_hurst  # noqa: PLC0415
+    hurst = _rolling_hurst(spy_returns, window=63).fillna(0.0)
 
     return pd.DataFrame({
         "spy_realized_vol": realized_vol,
