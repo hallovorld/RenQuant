@@ -68,6 +68,71 @@ second AI's audit doesn't have to re-discover them.
 
 **Status:** ctx.bear_only check runs BEFORE V3 enabled_regimes check. If `bear_only=True` AND `enabled_regimes=["BEAR"]`, V3 never reaches. Arguably correct behavior (bear_only is an explicit suppression) but worth documenting. Not fixing — bear_only takes precedence by design.
 
+## Bug 8: minute features silently dropped from FactorZScoreTask
+
+**Commits introducing:** `9fba853` (10-min infra)
+
+**Symptom:** `TickerPanelFactorJob` correctly wrote `m_*` columns into
+`raw_factor_frame`, but `FactorZScoreTask.raw_cols` (a hardcoded list
+filtering which raw cols to z-score) DID NOT include `m_*`. Plus the
+output assembly loop also has a hardcoded list — both needed updating.
+
+**Impact:** the entire 10-minute panel infra (fetch + features + cache
++ context wiring) was a no-op. Panel feature_cols stayed 31 (no m_*).
+The "minute panel" we trained was identical to hourly-only with same
+random seeds. My initial -2.50 APY result was variance noise.
+
+**Fix:** `a55df54` — added `m_*` to BOTH lists (raw_cols + output loop)
++ `tests/test_session_silent_bugs.py::TestMinuteFeaturesReachPanel`
+guards against re-introduction.
+
+**Real result post-fix:** minute panel = **+9.57 APY pts vs golden**
+(38.39% vs 28.82% on 27-mo OOS) with minute_cols=10 in feature_cols.
+
+## Bug 9: fetch_minute_bars skip-cached only checked end-of-cache
+
+**Commit introducing:** `9fba853`
+
+**Symptom:** "skip fully-cached symbols" check looked at
+`end_target − cache.last_date ≤ 2 days`. Symbols seeded by an earlier
+90-day smoke-test had recent data and got SKIPPED on the subsequent
+730-day full fetch — leaving NVDA/AAPL/SPY + 10 sector ETFs with
+3 months of 10-min data instead of 2 years.
+
+**Fix:** `49d351f` — require BOTH cache.first ≤ start_target+2d AND
+cache.last ≥ end_target-2d. Re-fetched the 13 affected symbols.
+
+**Lesson:** "fully cached" is a 2-sided check. Don't trust your own
+"last seen" heuristic.
+
+## Bug 10 (deep-audit): non-atomic rotation pair commit
+
+**Discovered:** 2026-04-24 deep audit of rotation pipeline (user prompt).
+
+**Symptom:** `EmitRotationsTask` appended the SELL exit FIRST, then
+constructed the BUY. If the buy failed (`price <= 0` or `shares < 1`),
+the loop hit `continue` — but the sell exit was already on
+`ctx.exits` and would execute downstream. Outcome: held position
+closed for cash, no replacement bought.
+
+**Severity HIGH:** silent capital loss in production. Hard to detect
+because logs read "rotation" exit + sell, but the buy line is
+missing — easy to miss in audit logs.
+
+**Realistic trigger paths:**
+- `price <= 0`: a delisted symbol crossed bars
+- `shares < 1`: rotation triggered with insufficient cash to fund
+  a 1-share replacement (high-priced ticker, low cash)
+
+**Fix:** rearranged loop body — compute price, conviction, sigma_mult,
+shares FIRST. If any check fails, `continue` BEFORE touching
+`ctx.exits`. Sell exit only commits after buy is confirmed.
+
+**Test:** `tests/test_rotation_atomic.py::TestAtomicRotation` (3 tests):
+buy succeeds → exit commits, no price → entire pair skipped, low cash
+→ entire pair skipped. The "no price" and "low cash" cases would
+have failed pre-fix (showing exit committed without order).
+
 ## What I'm NOT claiming
 
 - No guarantee I caught every bug this session. Welcome the second AI's audit.

@@ -647,20 +647,16 @@ class EmitRotationsTask(Task):
 
         rotated_buys: set[str] = set()
         for pair in ctx.rotations:
-            ctx.exits.append((
-                pair.sell_ticker,
-                ExitSignal(
-                    should_exit = True,
-                    reason      = (f"rotation→{pair.buy_ticker} "
-                                   f"net_adv={pair.net_advantage:+.4f} "
-                                   f"horizon={pair.horizon_days}d"),
-                    exit_type   = "rotation",
-                ),
-            ))
+            # 2026-04-24 bug fix: previously the SELL exit was appended
+            # FIRST and the BUY constructed second. If the buy failed
+            # (no price / shares<1), the position closed without a
+            # replacement — the user lost the held but bought nothing.
+            # Now we compute the buy fully BEFORE committing the exit.
 
             price = ctx.prices.get(pair.buy_ticker, 0.0)
             if price <= 0:
-                log.warning("EmitRotationsTask: no price for %s — skipping buy",
+                log.warning("EmitRotationsTask: no price for %s — skip ENTIRE pair "
+                            "(no atomic-rotation orphan exit)",
                             pair.buy_ticker)
                 continue
 
@@ -680,9 +676,22 @@ class EmitRotationsTask(Task):
                 max_pct, reserve_pct, price,
             )
             if shares < 1:
-                log.info("EmitRotationsTask: %s insufficient cash — skip rotation buy",
+                log.info("EmitRotationsTask: %s insufficient cash — skip ENTIRE pair "
+                         "(no atomic-rotation orphan exit)",
                          pair.buy_ticker)
                 continue
+
+            # Buy confirmed; NOW commit the exit.
+            ctx.exits.append((
+                pair.sell_ticker,
+                ExitSignal(
+                    should_exit = True,
+                    reason      = (f"rotation→{pair.buy_ticker} "
+                                   f"net_adv={pair.net_advantage:+.4f} "
+                                   f"horizon={pair.horizon_days}d"),
+                    exit_type   = "rotation",
+                ),
+            ))
 
             invest     = shares * price
             target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
