@@ -70,18 +70,27 @@ class TopUpHeldTask(Task):
         rotation_sells = {p.sell_ticker for p in (getattr(ctx, "rotations", []) or [])}
 
         added = 0
+        # Audit fix TU-1..TU-4 (Round 2 deep audit, 2026-04-25): pre-fix,
+        # NaN kelly_target / price / portfolio slipped past guards
+        # (`<= 0` is False on NaN), then propagated through delta calc,
+        # producing `delta < threshold = False` → silent skip with NO
+        # log signal. Operator couldn't see WHY a holding wasn't being
+        # topped up.
+        import math
         for ticker, hs in ctx.holdings.items():
             if ticker in already_buying or ticker in already_selling \
                or ticker in rotation_sells:
                 continue
             kelly_target = getattr(hs, "kelly_target_pct", None)
-            if kelly_target is None or kelly_target <= 0:
+            if kelly_target is None or not math.isfinite(kelly_target) or kelly_target <= 0:
                 continue
 
             price = ctx.prices.get(ticker)
-            if price is None or price <= 0:
+            if price is None or not math.isfinite(price) or price <= 0:
                 continue
 
+            if not math.isfinite(portfolio) or portfolio <= 0:
+                continue   # zero/NaN portfolio → nothing to top up against
             current_shares = float(getattr(hs, "shares", 0.0))
             current_pct    = (current_shares * price) / portfolio
             delta          = float(kelly_target) - current_pct
@@ -106,6 +115,10 @@ class TopUpHeldTask(Task):
             # space and pollutes audit logs. The panel value is a notional
             # weight target; actual buy must come from real cash.
             cash = float(getattr(ctx, "cash", 0.0))
+            # TU-4 guard: NaN cash → treat as 0 to be safe (would cause
+            # the down-sizing branch to fail otherwise).
+            if not math.isfinite(cash):
+                continue
             invest     = extra_shares * price
             if invest > cash:
                 # Re-size down to available cash (whole shares only)
