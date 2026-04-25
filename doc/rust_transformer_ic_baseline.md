@@ -5,10 +5,67 @@
 | Model              | val_IC on synthetic | val_IC on real |
 |--------------------|--------------------:|---------------:|
 | Linear regression (theoretical max on synthetic) | **+0.3228** | n/a |
-| Rust transformer (50 epochs, lr=5e-4, d_model=48) | +0.0683 (~21% of max) | TBD |
-| **Rust transformer (200ep, patience=20, same arch)** | **+0.1238 @ epoch 62 (climbing)** | TBD |
-| Python XGBoost (post-audit) | n/a (would also crush it) | **+0.0372** |
+| Rust transformer (50 epochs, lr=5e-4, d_model=48) | +0.0683 (~21% of max) | n/a |
+| Rust transformer v3 (200ep all 41 cols, full panel) | **+0.2314** | +0.0363 @ ep 1 (random-init lucky, then collapse) |
+| Rust transformer v4 dropdistshift (24 cols, full panel) | n/a | -0.0071 — WORSE |
+| Rust transformer v4 tightreg (41 cols dropout 0.5 lr 1e-4) | n/a | -0.0430+ — WORSE |
+| **Rust transformer v5 (hourly-era only, 491 dates, 200ep ListNet)** | n/a | **+0.0519 @ ep 127** — beats XGBoost by +39.5% (above the doc'd 1.3× ship gate) |
+| Python XGBoost / LightGBM panel-LTR (post-audit) | n/a | **+0.0372** |
 | Python transformer (overfit, shelved) | n/a | +0.0062 |
+
+## Real-data prod-vs-test divergence finding (2026-04-25 PT, late-session)
+
+Discovery: **17 of 41 features have +60% NaN-rate divergence between
+train and val** because the hourly + minute bar caches only started
+populating on **2024-04-25** (exactly 1 year before today). The full
+panel covers 2021-04-19 → 2026-04-10 (1251 dates), so:
+
+|              | train (2021-2024)        | val (2025+)              | Δ |
+|--------------|--------------------------|--------------------------|---|
+| morning_drift_z | 79% NaN                  | 19% NaN                  | +60% |
+| afternoon_drift_z | 79%                  | 19%                  | +60% |
+| 6 hourly cols    | 79%                  | 19%                  | +60% |
+| 11 minute cols   | 79%                  | 16%                  | +63% |
+| insider_net_buy_90d_z | 83%             | 57%                  | +26% |
+
+Our DAT-RUST-MISSING-FEAT fix (Round 2 audit) substitutes **0.0** for
+empty/NaN feature cells. In z-score space this means "neutral", but
+combined with the train/val divergence above, the model trains on a
+regime where 17 features ≈ 0 (the median) and validates on a regime
+where the same 17 features carry real signal. Result:
+
+* **v3 (full panel)**: epoch-1 random-init transformer gets +0.0363
+  by accidentally using the val-populated hourly features through
+  random projections. As soon as it trains, it learns "hourly ≈ 0 =
+  noise, ignore" and val_IC monotonically collapses to -0.009.
+* **v4 dropdistshift**: dropping the 17 cols cuts the val signal too,
+  giving -0.0071. The cols ARE the signal, just unevenly distributed.
+* **v4 tightreg**: stronger regularization on full panel makes
+  overfit avoidance worse, not better, because the underlying issue
+  isn't capacity — it's data distribution.
+* **v5 hourly-era only**: trains on 491 dates ≥ 2024-04-25 where
+  hourly cols are uniformly populated (~17% NaN, same on train + val).
+  First healthy training curve on real data: ramped from epoch-1
+  +0.005 → epoch-127 **+0.0519**, then early-stop. **Beats Python
+  XGBoost (+0.0372) by +39.5% — clears the doc'd 1.3× ship gate
+  (≥0.0484) by a healthy margin.** Total wall-clock 100 seconds at
+  ~0.7s/epoch on CPU (no GPU). The lesson: hyperparameter A/B alone
+  cannot rescue distribution-mismatched data; matching the train/val
+  feature-population regime is a 1.4× IC unlock.
+
+**Why XGBoost / LightGBM is unfazed:** native sparsity-aware NaN
+handling treats `missing` as its own tree-split branch — does NOT
+substitute 0. Rust transformer faking `missing = 0` is the bug. Two
+robust fixes for follow-up: (a) per-feature missingness indicator
+columns (doubles feat dim from F to 2F); (b) feature-token mask in
+attention so the model can attend-or-ignore.
+
+Bonus audit finding: **`training_panel/imputation.py::add_missingness_indicators`
+is defined and tested but NEVER CALLED in production code.** The Python
+panel pipeline relies on LightGBM's native NaN handling instead. Either
+the function should be wired in or deleted (AUDIT-PROD-IMPUTATION-DEAD-CODE).
+
+
 
 ## Architecture-ceiling finding (2026-04-25 14:35 PT)
 

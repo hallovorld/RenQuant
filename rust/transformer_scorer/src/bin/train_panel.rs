@@ -104,6 +104,14 @@ struct Args {
     /// gradients).
     #[arg(long, default_value = "listnet")]
     loss: String,
+
+    /// Comma-separated list of feature columns to drop after CSV load.
+    /// Use this to remove distribution-shifted cols (e.g. hourly +
+    /// minute features that are +60% NaN in train but populated in val
+    /// — see DAT-RUST-DROP-DISTSHIFT audit fix). Matches semantics of
+    /// Python `panel_ltr.drop_cols` in strategy_config.json.
+    #[arg(long = "drop-cols", default_value = "")]
+    drop_cols: String,
 }
 
 fn main() -> Result<()> {
@@ -123,7 +131,7 @@ fn main() -> Result<()> {
 
     eprintln!("[train-panel] loading {}", args.panel.display());
     let t0 = Instant::now();
-    let panel = Panel::load_csv(&args.panel)
+    let mut panel = Panel::load_csv(&args.panel)
         .with_context(|| format!("loading panel from {}", args.panel.display()))?;
     eprintln!(
         "[train-panel] panel: {} dates × ~{} tickers/date  features={}  rows={}  ({:.1}s)",
@@ -133,6 +141,22 @@ fn main() -> Result<()> {
         panel.n_rows(),
         t0.elapsed().as_secs_f64(),
     );
+
+    // Audit fix DAT-RUST-DROP-DISTSHIFT (Round 3, 2026-04-25): drop
+    // distribution-shifted feature cols at load time. Cf. dataset.rs
+    // doc-comment for full rationale.
+    let drop_list: Vec<String> = args.drop_cols.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !drop_list.is_empty() {
+        let n = panel.drop_columns(&drop_list)
+            .context("applying --drop-cols")?;
+        eprintln!(
+            "[train-panel] dropped {} cols → {} features remain (cols: {:?})",
+            n, panel.n_features(), drop_list,
+        );
+    }
 
     let groups = panel.to_grouped_tensors(&device)
         .context("packing panel into per-date tensor groups")?;

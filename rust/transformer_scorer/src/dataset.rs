@@ -155,6 +155,59 @@ impl Panel {
         self.feature_cols.len()
     }
 
+    /// Drop named columns from the panel in-place. Audit fix
+    /// DAT-RUST-DROP-DISTSHIFT (Round 3 deep audit, 2026-04-25):
+    /// production hourly + minute features have +60% NaN-rate
+    /// divergence between train (2021-2024) and val (2025+) because the
+    /// hourly bar cache only covers recent dates. Filling NaN with 0.0
+    /// then trains a "feature ≈ 0 = noise" detector that catastrophically
+    /// fails on val where the same features ARE populated. Dropping the
+    /// distribution-shifted cols at load time is the minimal fix that
+    /// matches LightGBM's native sparsity-aware NaN handling (which
+    /// the Python panel-LTR uses), modulo the missing-mask approach
+    /// landing in a follow-up.
+    pub fn drop_columns(&mut self, cols_to_drop: &[String]) -> Result<usize> {
+        if cols_to_drop.is_empty() {
+            return Ok(0);
+        }
+        let drop_set: std::collections::HashSet<&str> =
+            cols_to_drop.iter().map(|s| s.as_str()).collect();
+        // Index positions of columns to keep, in order.
+        let keep_idx: Vec<usize> = self.feature_cols.iter()
+            .enumerate()
+            .filter(|(_, c)| !drop_set.contains(c.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        // Validate every requested col actually existed (loud failure
+        // matches Python KeyError on missing drop_cols name).
+        let kept_set: std::collections::HashSet<&str> =
+            self.feature_cols.iter().map(|s| s.as_str()).collect();
+        let missing: Vec<&String> = cols_to_drop.iter()
+            .filter(|c| !kept_set.contains(c.as_str()))
+            .collect();
+        if !missing.is_empty() {
+            return Err(anyhow!(
+                "drop_columns: requested {:?} not in panel (have {} cols)",
+                missing, self.feature_cols.len(),
+            ));
+        }
+        let new_feature_cols: Vec<String> = keep_idx.iter()
+            .map(|&i| self.feature_cols[i].clone())
+            .collect();
+        let n_dropped = self.feature_cols.len() - new_feature_cols.len();
+        // Reslice every per-row feature vector.
+        for rows in self.features_by_date.values_mut() {
+            for (_ticker, feats, _label) in rows.iter_mut() {
+                let new_feats: Vec<f32> = keep_idx.iter()
+                    .map(|&i| feats[i])
+                    .collect();
+                *feats = new_feats;
+            }
+        }
+        self.feature_cols = new_feature_cols;
+        Ok(n_dropped)
+    }
+
     pub fn n_dates(&self) -> usize {
         self.dates.len()
     }
@@ -290,16 +343,45 @@ date,ticker,f0,label
     }
 
     #[test]
-    fn rejects_nan_feature() {
-        let tmp = std::env::temp_dir().join("rust_panel_nan_feature.csv");
+    fn rejects_inf_feature() {
+        // After DAT-RUST-MISSING-FEAT (2026-04-25): the "nan" string is
+        // intentionally treated as 0.0 (matches Python panel pipeline
+        // where NaN cells are sector-median filled at z-score time, with
+        // 0 = neutral in z-space). However, INFINITY values must still
+        // be rejected loudly because the panel exporter never emits inf
+        // — its appearance signals upstream corruption (divide-by-zero
+        // in a factor calculator, etc.) and would poison the loss.
+        let tmp = std::env::temp_dir().join("rust_panel_inf_feature.csv");
+        write_csv(&tmp, "\
+date,ticker,f0,label
+2024-01-02,AAA,inf,1.0
+");
+        let r = Panel::load_csv(&tmp);
+        assert!(r.is_err(), "inf in feature column should fail loud");
+        let err_msg = format!("{}", r.unwrap_err());
+        assert!(err_msg.contains("non-finite"), "error should name non-finite: {}", err_msg);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn nan_string_feature_treated_as_zero() {
+        // DAT-RUST-MISSING-FEAT contract regression test: "nan" string
+        // (and empty cells) → 0.0, NOT a load error. This is the bridge
+        // to Python pandas which writes NaN as the literal string "nan"
+        // by default in CSV output.
+        let tmp = std::env::temp_dir().join("rust_panel_nan_string.csv");
         write_csv(&tmp, "\
 date,ticker,f0,label
 2024-01-02,AAA,nan,1.0
+2024-01-02,BBB,NaN,2.0
+2024-01-02,CCC,,3.0
 ");
-        let r = Panel::load_csv(&tmp);
-        assert!(r.is_err(), "nan in feature column should fail loud");
-        let err_msg = format!("{}", r.unwrap_err());
-        assert!(err_msg.contains("non-finite"), "error should name non-finite: {}", err_msg);
+        let p = Panel::load_csv(&tmp).expect("nan-string features should load as 0.0");
+        let rows = p.features_by_date.get("2024-01-02").unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].1, vec![0.0]);   // "nan"
+        assert_eq!(rows[1].1, vec![0.0]);   // "NaN"
+        assert_eq!(rows[2].1, vec![0.0]);   // empty
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -389,6 +471,58 @@ date,ticker,f0,label
         assert_eq!(p.n_dates(), 1, "all 3 rows on the same trimmed date");
         assert_eq!(p.n_rows(), 3);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn dat_rust_drop_distshift_drops_named_cols() {
+        // Audit fix DAT-RUST-DROP-DISTSHIFT regression test
+        // (2026-04-25): would FAIL pre-fix because Panel had no
+        // drop_columns API. Ensures dropping cols also re-aligns the
+        // per-row feature vectors so to_grouped_tensors still works.
+        let tmp = std::env::temp_dir().join("rust_panel_drop_distshift.csv");
+        write_csv(&tmp, "date,ticker,f0,f1,f2,label
+2024-01-02,AAA,0.1,0.2,0.3,1.0
+2024-01-02,BBB,0.4,0.5,0.6,2.0
+");
+        let mut p = Panel::load_csv(&tmp).unwrap();
+        assert_eq!(p.n_features(), 3);
+        let n = p.drop_columns(&["f1".to_string()]).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(p.n_features(), 2);
+        assert_eq!(p.feature_cols, vec!["f0".to_string(), "f2".to_string()]);
+        // Per-row vectors must shrink to 2 features and KEEP the right
+        // values (not the dropped col).
+        let rows = p.features_by_date.get("2024-01-02").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, vec![0.1, 0.3]);  // f0, f2 (f1 dropped)
+        assert_eq!(rows[1].1, vec![0.4, 0.6]);
+        // to_grouped_tensors must succeed with new shape.
+        let dev = candle_core::Device::Cpu;
+        let groups = p.to_grouped_tensors(&dev).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0.dims(), &[2, 2]);   // (T=2, F=2)
+    }
+
+    #[test]
+    fn dat_rust_drop_distshift_unknown_col_errors() {
+        // Loud error matches Python KeyError on unknown drop_cols name.
+        let tmp = std::env::temp_dir().join("rust_panel_drop_unknown.csv");
+        write_csv(&tmp, "date,ticker,f0,label\n2024-01-02,AAA,0.1,1.0\n");
+        let mut p = Panel::load_csv(&tmp).unwrap();
+        let r = p.drop_columns(&["nope".to_string()]);
+        assert!(r.is_err(), "dropping unknown col must error");
+        assert!(format!("{:?}", r.unwrap_err()).contains("not in panel"));
+    }
+
+    #[test]
+    fn dat_rust_drop_distshift_empty_is_noop() {
+        let tmp = std::env::temp_dir().join("rust_panel_drop_empty.csv");
+        write_csv(&tmp, "date,ticker,f0,label\n2024-01-02,AAA,0.1,1.0\n");
+        let mut p = Panel::load_csv(&tmp).unwrap();
+        let n_before = p.n_features();
+        let n = p.drop_columns(&[]).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(p.n_features(), n_before);
     }
 
     #[test]
