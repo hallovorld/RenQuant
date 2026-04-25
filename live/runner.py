@@ -116,18 +116,24 @@ def _build_relative_features(
     spy_rets_full  = spy_close_full.pct_change()
     spy_ema50_full = spy_close_full.ewm(span=50, adjust=False).mean()
 
-    def _hurst_proxy(x):
-        if len(x) <= 2 or np.std(x) == 0:
-            return 0.0
-        cc = np.corrcoef(x[:-1], x[1:])
-        v = cc[0, 1]
-        return float(v) if not np.isnan(v) else 0.0
+    # Audit fix LR-1 (Round 2 deep audit, 2026-04-25): pre-fix, live
+    # runner / recalibrate_scores.py used a lag-1-autocorrelation
+    # function under the misleading name `hurst_proxy`. After the TF-3
+    # fix replaced the training-side `hurst_proxy` with the real R/S
+    # Hurst exponent (kernel.regime.rolling_hurst), this code path
+    # diverged — train fed real Hurst, live + recalibrate fed lag-1
+    # autocorr. Calibrator was therefore fit on a different feature
+    # distribution than the model expects → rank_score miscalibrated.
+    # Now: use the same kernel.regime.rolling_hurst helper. Match
+    # training/features.py's TF-3 fix.
+    from kernel.regime import rolling_hurst as _rolling_hurst  # noqa: PLC0415
 
     spy_regime_features = {
         "spy_realized_vol": spy_rets_full.rolling(20).std() * np.sqrt(252),
         "spy_adx":   df_spy["adx"],
         "spy_trend": spy_close_full / spy_ema50_full.replace(0, np.nan),
-        "hurst_proxy": spy_rets_full.rolling(20).apply(_hurst_proxy, raw=True),
+        # Real Hurst exponent (R/S, 63-day window). Same as TF-3 fix.
+        "hurst_proxy": _rolling_hurst(spy_rets_full, window=63),
     }
 
     result = pd.DataFrame(index=common_idx)
