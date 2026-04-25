@@ -1,0 +1,16 @@
+# Pinned toolchain — like environment.yml for Python, but Rust.
+#
+# `rustup` reads this file when invoked from anywhere inside the rust/
+# subtree and ensures every contributor uses the same compiler version
+# + components. Fully reproducible build.
+#
+# Bump deliberately: any toolchain change should land in its own commit
+# with a CI-green build, never silently in a feature branch.
+[toolchain]
+channel    = "1.81.0"        # 2024-09 stable — matches candle 0.7 MSRV.
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
+profile    = "default"
+# targets is empty — pure host build. Add cross-compile targets here
+# only when we actually need them (e.g. "x86_64-unknown-linux-gnu" for
+# Linux deploy from macOS dev box).
+targets    = []

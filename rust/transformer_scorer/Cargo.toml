@@ -1,0 +1,35 @@
+[package]
+name = "transformer_scorer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+metal   = ["candle-core/metal", "candle-nn/metal"]
+cpu     = []
+
+[lib]
+name = "transformer_scorer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "score-panel"
+path = "src/main.rs"
+
+[dependencies]
+candle-core = { workspace = true }
+candle-nn   = { workspace = true }
+safetensors = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+clap        = { workspace = true }
+csv         = { workspace = true }
+ndarray     = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"
