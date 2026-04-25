@@ -279,7 +279,7 @@ class SimAdapter:
             if df is not None and today_ts in df.index:
                 prices[t] = float(df.loc[today_ts, "close"])
 
-        pv = self._portfolio_value(prices)
+        pv = self._portfolio_value(prices, today_ts=today_ts)
 
         # last_sell_dates as date objects (pipeline expects datetime.date)
         last_sells_d: dict[str, datetime.date | None] = {}
@@ -404,7 +404,7 @@ class SimAdapter:
             self._rotation_proposals = self._rotation_proposals[-window:]
 
         # ── Equity curve entry ──────────────────────────────────────────────
-        pv = self._portfolio_value(ctx.prices)
+        pv = self._portfolio_value(ctx.prices, today_ts=today_ts)
         self._equity_curve.append({
             "date": today_ts, "portfolio": pv, "regime": ctx.regime,
         })
@@ -552,14 +552,29 @@ class SimAdapter:
             "sigma_mult": order.get("sigma_mult"),
         })
 
-    def _portfolio_value(self, prices: dict[str, float]) -> float:
+    def _portfolio_value(self, prices: dict[str, float], today_ts=None) -> float:
+        """Mark-to-market the held positions.
+
+        Bug 25 fix (2026-04-24): when a holding has no price in the
+        per-bar `prices` dict (delisted / suspended / new IPO not yet
+        trading), we fall back to the last AVAILABLE close ON OR
+        BEFORE today_ts — NOT `df.iloc[-1]` of the full ohlcv (which
+        is the LAST historical bar = future data in a sim).
+        """
         total = self._cash
         for t, shares in self._pos_shares.items():
             p = prices.get(t)
             if p is None:
                 df = self._ohlcv.get(t)
                 if df is not None and not df.empty:
-                    p = float(df["close"].iloc[-1])
+                    if today_ts is not None:
+                        truncated = df.loc[:today_ts]
+                        p = (float(truncated["close"].iloc[-1])
+                              if not truncated.empty else None)
+                    else:
+                        # No truncation hint — caller is responsible
+                        # for not introducing lookahead.
+                        p = float(df["close"].iloc[-1])
             if p is not None:
                 total += shares * p
         return total

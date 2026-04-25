@@ -133,6 +133,105 @@ buy succeeds → exit commits, no price → entire pair skipped, low cash
 → entire pair skipped. The "no price" and "low cash" cases would
 have failed pre-fix (showing exit committed without order).
 
+## Bug 13: earnings-calendar.json not auto-refreshed in training pipeline
+
+**Discovered:** 2026-04-24 audit while 99-ticker retrain ran.
+
+**Symptom:** `earnings-calendar.json` artifact was last written 2026-04-22 (before
+watchlist expansion). After we expanded watchlist 43 → 99 today,
+new tickers had **0 earnings dates** in the artifact. EarningsFilterTask
+gates buys ±3 days around earnings; with no dates, all new tickers
+were trading completely unfiltered through earnings periods.
+
+**Severity HIGH:** in production this would cause NVDA/META-class
+positions to be opened the day before an earnings announcement and
+get blasted by the post-earnings move.
+
+**Fix:** ran `scripts/fetch_earnings_calendar.py` manually for 99
+tickers. `earnings-calendar.json` now has dates for all of them.
+
+**Bug 14 (related):** the fetch script is NOT inside FullTrainingPipeline.
+Other artifact-producing tasks (CorrelationJob, fundamentals, hourly,
+minute) ARE in the pipeline; earnings calendar is asymmetric — must
+remember to run the script after every watchlist change. Recommended
+fix: add `RefreshEarningsCalendarTask` inside `FetchPanelDataTask`
+chain, or reject training start if artifact is older than the
+watchlist's mtime.
+
+## Bug 15: SimAdapter top-up averages entry_price (not FIFO lots)
+
+**Severity LOW (known simplification):** when topping up an existing
+position, `entry_price = (old_shares × old_entry + new_shares × price) /
+total_shares`. IRS lot accounting is FIFO — selling X shares of NVDA
+sells from the OLDEST lot first at OLDEST price. Our average-cost
+approach gives a different tax_drag estimate than reality.
+
+**Not a bug per se** — documented elsewhere. Cost: tax_drag in the
+rotation primitive could be off by 1-3% in cases of multi-lot
+positions held across the LT/ST boundary.
+
+## Bug 16: LoadInsiderTradesTask auto-fetches in training (45-min delay)
+
+**Symptom:** `panel_ltr.insider_trades.allow_fetch: true` (default)
+makes `LoadInsiderTradesTask` fetch missing tickers from SEC during
+training. The 99-ticker retrain blocked for ~45 minutes inside this
+task because each missing ticker timed out at 45s × 59 tickers.
+
+**Severity MEDIUM:** training time bloat, but correctness is fine
+(fail-soft into NaN insider feature, sector-median fill).
+
+**Fix candidate:** flip default to `allow_fetch: false` so training
+ALWAYS reads cache only; require explicit `scripts/fetch_insider_trades.py`
+run before retrain. Same pattern as hourly/minute fetches. Apply for
+LoadEarningsSurpriseTask and LoadFundamentalsTask similarly.
+
+## Bug 17: NOT a bug — Rotation prunes ctx.ranked
+
+Audit confirmed `EmitRotationsTask` correctly prunes `ctx.ranked` to
+exclude rotation buys (line 737 of task_rotation.py), preventing
+SelectionJob from double-buying a candidate that was already
+rotated-into.
+
+## Bug 18: NGBoost train doesn't drop NaN rows
+
+**Discovered:** while watching `RuntimeWarning: overflow encountered
+in square` fire repeatedly during NGBoost training.
+
+**Symptom:** `NGBoostHead.train()` (line 69-70) does
+`X = panel[feature_cols].values.astype(float)` without `.dropna()`.
+If panel has NaN feature values (e.g. a ticker with missing minute
+data on a particular date), NaN propagates into NGBRegressor.fit()
+and σ²calculation, causing the overflow warning + potentially
+degrading the saved σ estimates.
+
+**Severity MEDIUM:** σ used for sigma_multiplier sizing; if some σ's
+are bogus, position sizing for those tickers misallocates.
+
+**Fix candidate:** add `panel.dropna(subset=feature_cols + [label_col])`
+before fit. Or `np.nan_to_num` like transformer_model does.
+
+## Bug 24: `size` factor is log(price) not log(market_cap)
+
+**Discovered:** 2026-04-24 audit while NGBoost trained.
+
+**Symptom:** `compute_size_feature(ohlcv, shares_outstanding)` falls
+back to `log(close_price)` when `shares_outstanding=None`. Our
+TickerPanelFactorJob calls it with None — so the `size` factor is
+actually log(price), not log(market_cap).
+
+**Severity LOW — feature has near-zero IC anyway** (-0.0075 in latest
+99-ticker panel). L1/L2 regularization wipes it out.
+
+**Fix candidate:** either drop `size` from raw_cols, or wire shares_outstanding
+from yfinance .info to compute real market cap.
+
+## Bug 22 (followup): `build_spy_context` is dead code
+
+`kernel/indicators.py:128` defines the SCALAR-broadcast version that
+once introduced lookahead. Now unused — only `build_spy_context_series`
+is called. Should be removed in next-session cleanup to prevent
+accidental future use.
+
 ## What I'm NOT claiming
 
 - No guarantee I caught every bug this session. Welcome the second AI's audit.

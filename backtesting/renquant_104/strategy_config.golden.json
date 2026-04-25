@@ -501,7 +501,7 @@
     "fundamentals": {
       "enabled": true,
       "cache_dir": "data/fundamentals",
-      "allow_fetch": true
+      "allow_fetch": false
     },
     "backend": "xgboost",
     "lightgbm_params": {
@@ -544,12 +544,12 @@
     "earnings_surprise": {
       "enabled": true,
       "cache_dir": "data/earnings_surprise",
-      "allow_fetch": true
+      "allow_fetch": false
     },
     "insider_trades": {
       "enabled": true,
       "cache_dir": "data/insider_trades",
-      "allow_fetch": true,
+      "allow_fetch": false,
       "max_filings": 200
     },
     "hourly": {

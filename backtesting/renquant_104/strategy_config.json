@@ -410,8 +410,8 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-23",
-    "blend_n_symbols": 43,
+    "blend_updated": "2026-04-24",
+    "blend_n_symbols": 99,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": false,
@@ -501,7 +501,7 @@
     "fundamentals": {
       "enabled": true,
       "cache_dir": "data/fundamentals",
-      "allow_fetch": true,
+      "allow_fetch": false,
       "skip_tickers": [
         "XLF",
         "XLU",
@@ -552,7 +552,7 @@
     "earnings_surprise": {
       "enabled": true,
       "cache_dir": "data/earnings_surprise",
-      "allow_fetch": true,
+      "allow_fetch": false,
       "skip_tickers": [
         "XLF",
         "XLU",
@@ -565,7 +565,7 @@
     "insider_trades": {
       "enabled": true,
       "cache_dir": "data/insider_trades",
-      "allow_fetch": true,
+      "allow_fetch": false,
       "max_filings": 200,
       "skip_tickers": [
         "ASML",
