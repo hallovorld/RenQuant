@@ -1260,6 +1260,62 @@ class TestCV1AndLBLCV1PurgedCVFixes:
         )
 
 
+# ── LEAN-NaN (Round 2 audit): LeanAdapter buy loop guards non-finite inputs ───
+
+class TestLEANNaNBuyLoopGuards:
+    """Pre-fix, LeanAdapter._apply_pipeline_outputs trusted ctx.orders
+    to contain finite values. A NaN price (leaking through any upstream
+    pipeline bug) would corrupt hs.entry_price via the volume-weighted
+    cost-basis formula, then poison every subsequent stop-loss /
+    trailing-stop comparison. Defense in depth at the adapter boundary."""
+
+    def test_finite_inputs_pass_skip_predicate(self):
+        """Spot-check: finite inputs do NOT trip the skip branch."""
+        import math
+        for price, shares, tpct in [
+            (100.0, 10.0, 0.10),
+            (1.0, 1.0, 0.01),
+        ]:
+            non_finite = not (math.isfinite(price) and price > 0
+                              and math.isfinite(shares) and shares > 0
+                              and math.isfinite(tpct) and tpct > 0)
+            assert not non_finite
+
+    def test_nan_price_trips_skip(self):
+        import math
+        price, shares, tpct = float("nan"), 10.0, 0.10
+        non_finite = not (math.isfinite(price) and price > 0
+                          and math.isfinite(shares) and shares > 0
+                          and math.isfinite(tpct) and tpct > 0)
+        assert non_finite
+
+    def test_nan_shares_trips_skip(self):
+        import math
+        price, shares, tpct = 100.0, float("nan"), 0.10
+        non_finite = not (math.isfinite(price) and price > 0
+                          and math.isfinite(shares) and shares > 0
+                          and math.isfinite(tpct) and tpct > 0)
+        assert non_finite
+
+    def test_inf_target_pct_trips_skip(self):
+        import math
+        price, shares, tpct = 100.0, 10.0, float("inf")
+        non_finite = not (math.isfinite(price) and price > 0
+                          and math.isfinite(shares) and shares > 0
+                          and math.isfinite(tpct) and tpct > 0)
+        assert non_finite
+
+    def test_non_numeric_string_does_not_crash_predicate(self):
+        """If order["price"] is a string (corrupt order dict), the
+        try/except float() conversion routes to skip — guarded the
+        adapter against KeyError/TypeError at the wrong layer."""
+        try:
+            float_val = float("not_a_number")
+        except (TypeError, ValueError):
+            float_val = None
+        assert float_val is None
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

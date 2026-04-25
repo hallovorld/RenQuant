@@ -9,6 +9,8 @@ import datetime
 import logging
 from typing import Any
 
+import pandas as pd
+
 try:
     from AlgorithmImports import Resolution  # type: ignore[import]  # noqa: F401
 except ImportError:
@@ -39,6 +41,15 @@ class LeanAdapter:
 
     def __init__(self, algo: Any) -> None:
         self._algo = algo
+        # Audit P-3 (2026-04-24): cache panel feature/factor frames so we
+        # only rebuild on a real History-buffer roll-forward, not every
+        # bar. Pre-fix, `prepare_inference_panel_frames` was called per
+        # OnData → 99 tickers × N bars × full feature pipeline = hours of
+        # wasted compute per backtest. Cache is invalidated when the SPY
+        # buffer extends past the last cached date.
+        self._panel_cache_last_date: "pd.Timestamp | None" = None
+        self._panel_cache_ff: "dict | None"  = None
+        self._panel_cache_fac: "dict | None" = None
 
     # ── make_context ───────────────────────────────────────────────────────────
 
@@ -139,19 +150,35 @@ class LeanAdapter:
         )
 
         # ── Panel scoring prep ───────────────────────────────────────────────
+        # Audit P-3: cache panel frames between bars when the underlying
+        # SPY buffer hasn't extended. The full panel pipeline is the
+        # heaviest call in OnData (~99 tickers × N feature steps), and
+        # day-over-day it produces frames that differ only in their
+        # trailing row — not worth a full rebuild every bar.
         if panel_on:
-            try:
-                from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                ff, fac = prepare_inference_panel_frames(
-                    watchlist=config["watchlist"],
-                    ohlcv=ohlcv,
-                    ticker_sectors=config.get("sector_map", {}),
-                    config=config,
-                )
-                ctx._panel_feature_frames = ff  # noqa: SLF001
-                ctx._panel_factor_frames  = fac  # noqa: SLF001
-            except Exception as exc:
-                log.warning("Panel frame prep failed — panel scoring disabled: %s", exc)
+            cache_age_days = int(config.get("panel_cache_age_days", 1))
+            need_rebuild = (
+                self._panel_cache_ff is None
+                or self._panel_cache_last_date is None
+                or (pd.Timestamp(today) - self._panel_cache_last_date).days
+                   >= cache_age_days
+            )
+            if need_rebuild:
+                try:
+                    from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
+                    ff, fac = prepare_inference_panel_frames(
+                        watchlist=config["watchlist"],
+                        ohlcv=ohlcv,
+                        ticker_sectors=config.get("sector_map", {}),
+                        config=config,
+                    )
+                    self._panel_cache_ff = ff
+                    self._panel_cache_fac = fac
+                    self._panel_cache_last_date = pd.Timestamp(today)
+                except Exception as exc:
+                    log.warning("Panel frame prep failed — panel scoring disabled: %s", exc)
+            ctx._panel_feature_frames = self._panel_cache_ff   # noqa: SLF001
+            ctx._panel_factor_frames  = self._panel_cache_fac  # noqa: SLF001
         return ctx
 
     # ── commit ─────────────────────────────────────────────────────────────────
@@ -269,6 +296,16 @@ class LeanAdapter:
         # entry_*_score baselines and only adjust shares + HWM. Resetting
         # entry state on every buy used to corrupt hold-day clocks, tax
         # ST/LT classification, and trailing-stop arming.
+        # Audit fix LEAN-NaN (Round 2 deep audit, 2026-04-25): defense
+        # in depth at the adapter boundary. Pre-fix, no isfinite check
+        # on price/shares before mutating cost-basis or HWM, so a NaN
+        # leaking through SizeAndEmitTask (pre-SE-1) or TopUpHeldTask
+        # (pre-TU-1..TU-4) would corrupt hs.entry_price via the volume-
+        # weighted average formula and propagate forever in stop-loss /
+        # trailing-stop comparisons. Now: skip + warn on non-finite
+        # price, shares, or target_pct so a single bad order doesn't
+        # poison the held state.
+        import math
         for order in ctx.orders:
             ticker     = order["ticker"]
             shares     = order["shares"]
@@ -276,6 +313,21 @@ class LeanAdapter:
             price      = order["price"]
             sym        = algo.symbols.get(ticker)
             if sym is None:
+                continue
+            try:
+                price_f      = float(price)
+                shares_f     = float(shares)
+                target_pct_f = float(target_pct)
+            except (TypeError, ValueError):
+                algo.Debug(f"{ctx.today} {ticker} SKIP — non-numeric order field")
+                continue
+            if not (math.isfinite(price_f) and price_f > 0
+                    and math.isfinite(shares_f) and shares_f > 0
+                    and math.isfinite(target_pct_f) and target_pct_f > 0):
+                algo.Debug(
+                    f"{ctx.today} {ticker} SKIP — non-finite order "
+                    f"(price={price_f} shares={shares_f} target_pct={target_pct_f})"
+                )
                 continue
 
             already_held = ticker in algo._holdings
