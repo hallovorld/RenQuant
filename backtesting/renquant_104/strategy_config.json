@@ -501,7 +501,6 @@
     "fundamentals": {
       "enabled": true,
       "cache_dir": "data/fundamentals",
-      "allow_fetch": false,
       "skip_tickers": [
         "XLF",
         "XLU",
@@ -552,7 +551,6 @@
     "earnings_surprise": {
       "enabled": true,
       "cache_dir": "data/earnings_surprise",
-      "allow_fetch": false,
       "skip_tickers": [
         "XLF",
         "XLU",
@@ -565,7 +563,6 @@
     "insider_trades": {
       "enabled": true,
       "cache_dir": "data/insider_trades",
-      "allow_fetch": false,
       "max_filings": 200,
       "skip_tickers": [
         "ASML",

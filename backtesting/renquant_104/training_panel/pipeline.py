@@ -69,6 +69,11 @@ def prepare_inference_panel_frames(
         sector_etf_ohlcv=sector_etf_ohlcv,
         ticker_sectors=dict(ticker_sectors),
         listing_dates=None,
+        # Bug 16 fix: inference path must NEVER auto-fetch — read cache only.
+        # Training (FullTrainingPipeline) leaves this False so missing
+        # tickers can be fetched fresh. Sim/live invokes this fn for
+        # per-bar feature prep — auto-fetch would block the loop.
+        inference_only=True,
     )
 
     SectorMomentumTask().run(ctx)

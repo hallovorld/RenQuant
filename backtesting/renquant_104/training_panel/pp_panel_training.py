@@ -233,7 +233,8 @@ class LoadFundamentalsTask(PanelTask):
                 out[sym] = cached
         missing = [s for s in ctx.watchlist
                    if s not in out and s not in skip_set]
-        if missing and cfg.get("allow_fetch", True):
+        # Bug 16 fix: inference_only path NEVER fetches — read from cache only.
+        if missing and cfg.get("allow_fetch", True) and not getattr(ctx, "inference_only", False):
             log.info("LoadFundamentalsTask: fetching %d missing tickers", len(missing))
             try:
                 fresh = fetch_fundamentals_watchlist(missing, store=store)
@@ -280,7 +281,8 @@ class LoadEarningsSurpriseTask(PanelTask):
                 out[sym] = cached
         missing = [s for s in ctx.watchlist
                    if s not in out and s not in skip_set]
-        if missing and cfg.get("allow_fetch", True):
+        # Bug 16 fix: inference_only path NEVER fetches — read from cache only.
+        if missing and cfg.get("allow_fetch", True) and not getattr(ctx, "inference_only", False):
             log.info("LoadEarningsSurpriseTask: fetching %d missing tickers", len(missing))
             try:
                 fresh = fetch_earnings_surprise_watchlist(missing)
@@ -330,7 +332,8 @@ class LoadInsiderTradesTask(PanelTask):
                 out[sym] = cached
         missing = [s for s in ctx.watchlist
                    if s not in out and s not in skip_set]
-        if missing and cfg.get("allow_fetch", True):
+        # Bug 16 fix: inference_only path NEVER fetches — read from cache only.
+        if missing and cfg.get("allow_fetch", True) and not getattr(ctx, "inference_only", False):
             log.info("LoadInsiderTradesTask: fetching %d missing tickers (rate-limited SEC)",
                      len(missing))
             try:

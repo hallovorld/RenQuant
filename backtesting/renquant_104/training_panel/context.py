@@ -47,6 +47,11 @@ class PanelTrainingContext:
     # via `training_panel.minute_features.compute_minute_features` into
     # ~10 daily factor columns. Empty dict → minute panel features off.
     minute_bars: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Bug 16 fix (2026-04-24): when set True (inference path), Load*Task
+    # NEVER auto-fetches missing data — read from cache only. Training
+    # path leaves this False so LoadFundamentals/EarningsSurprise/Insider
+    # can fetch new tickers if needed. Inference must remain offline-fast.
+    inference_only: bool = False
 
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
