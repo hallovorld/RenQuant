@@ -97,13 +97,24 @@ def passes_correlation_guard(
     short-circuits to X, so a real zero correlation was discarded in favour
     of the reverse-direction lookup (which might be missing / stale).
     """
+    # Audit fix SL-2 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+    # correlation slipped past `abs(corr) >= threshold` (NaN comparisons
+    # are False) → guard returned True → highly-correlated buy allowed
+    # silently when correlation matrix has NaN cells.
+    import math as _math
     if corr_matrix is None or not held_tickers:
         return True
     for held in held_tickers:
         corr = corr_matrix.get(ticker, {}).get(held)
         if corr is None:
             corr = corr_matrix.get(held, {}).get(ticker)
-        if corr is not None and abs(corr) >= threshold:
+        if corr is None:
+            continue
+        if not _math.isfinite(corr):
+            # Treat NaN/inf correlation as MAX correlation — fail-SAFE
+            # to block the buy when we can't verify independence.
+            return False
+        if abs(corr) >= threshold:
             return False
     return True
 
@@ -207,13 +218,20 @@ def run_selection_loop(
             continue
 
         # Tiered threshold — escalating conviction requirement per slot
+        # Audit fix SL-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+        # rank_score made `c.rank_score < tier_min` evaluate False → the
+        # tier filter let NaN through. Defense in depth (TC-1 should
+        # have already filtered upstream, but selection guards must
+        # also be NaN-safe).
+        import math as _math
         if ctx.tiered_thresholds:
             tier_idx = min(slots_filled, len(ctx.tiered_thresholds) - 1)
             tier_min = float(ctx.tiered_thresholds[tier_idx].get("min_model_score", 0.0))
-            if c.rank_score < tier_min:
+            rs = c.rank_score
+            if rs is None or not _math.isfinite(rs) or rs < tier_min:
                 _reject(c.ticker, "tier")
-                log.info("  %-6s  SKIP   [tier %d needs %.2f, got %.4f]",
-                         c.ticker, tier_idx + 1, tier_min, c.rank_score)
+                log.info("  %-6s  SKIP   [tier %d needs %.2f, got %s]",
+                         c.ticker, tier_idx + 1, tier_min, rs)
                 continue
 
         if is_wash_sale_blocked(c.ticker, ctx.today, ctx.last_sell_dates, ctx.wash_sale_days):
