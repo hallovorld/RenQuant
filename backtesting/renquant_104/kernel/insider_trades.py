@@ -88,24 +88,52 @@ import threading as _threading
 _CIK_LOCK = _threading.Lock()
 
 
+_CIK_FAIL_TS: "float | None" = None
+_CIK_RETRY_INTERVAL_SEC = 3600.0   # retry the EDGAR fetch hourly after a failure
+
+
 def ticker_to_cik(ticker: str) -> "int | None":
     """Resolve ticker → CIK via SEC's public company_tickers.json.
 
     Round-3 audit (#R3-65): added a module lock around lazy init. Two
     threads racing on first call would both fetch from SEC; harmless but
     wasteful + extra rate-limit pressure.
+
+    Audit fix IT-CONC-1 (Round 2 deep audit, 2026-04-25): pre-fix, a
+    single EDGAR 403 / network failure at process start permanently
+    poisoned `_CIK_MAP = {}` — `_CIK_MAP is None` then evaluated False
+    on every subsequent call, so the lazy-init block never re-fired.
+    Effect: insider-trade factor became permanently 0/NaN for the
+    process lifetime even after EDGAR recovered. For long-running
+    daily_104.sh / live_only_104.sh runs this could span entire
+    trading days. Now: track failure timestamp and re-attempt the
+    fetch every `_CIK_RETRY_INTERVAL_SEC` seconds (1 hour).
     """
-    global _CIK_MAP
-    if _CIK_MAP is None:
+    global _CIK_MAP, _CIK_FAIL_TS
+    import time as _time
+    needs_init = _CIK_MAP is None or (
+        len(_CIK_MAP) == 0
+        and _CIK_FAIL_TS is not None
+        and (_time.monotonic() - _CIK_FAIL_TS) > _CIK_RETRY_INTERVAL_SEC
+    )
+    if needs_init:
         with _CIK_LOCK:
-            if _CIK_MAP is None:   # double-checked locking
+            # Re-check inside lock (could have raced)
+            needs_init = _CIK_MAP is None or (
+                len(_CIK_MAP) == 0
+                and _CIK_FAIL_TS is not None
+                and (_time.monotonic() - _CIK_FAIL_TS) > _CIK_RETRY_INTERVAL_SEC
+            )
+            if needs_init:
                 try:
                     raw = _sec_get("https://www.sec.gov/files/company_tickers.json")
                     data = json.loads(raw)
                     _CIK_MAP = {v["ticker"].upper(): int(v["cik_str"]) for v in data.values()}
+                    _CIK_FAIL_TS = None
                 except Exception as exc:
                     log.warning("ticker_to_cik: EDGAR fetch failed — %s", exc)
                     _CIK_MAP = {}
+                    _CIK_FAIL_TS = _time.monotonic()
     return _CIK_MAP.get(ticker.upper())
 
 
