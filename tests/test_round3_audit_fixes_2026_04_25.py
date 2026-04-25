@@ -1398,6 +1398,46 @@ class TestAlpacaStatusComparison:
         assert not is_buy("SELL")
 
 
+# ── TOURN-OOS-LEAK (Round 2 audit): train_df purged of rows that touch OOS ────
+
+class TestTOURNOOSLeakPurgesBoundaryRows:
+    """Pre-fix, run_tournament's train/OOS split was:
+      train_df = df[df.index < oos_cutoff]
+      oos_df   = df[df.index >= oos_cutoff]
+    But the forward-return label at index t spans [t, t+L]. So training
+    row at oos_cutoff-1 has its label reading prices in the first L-1
+    days of the OOS region — direct lookahead leak. Same class of bug
+    as CV-1 but at the train/OOS boundary, not inter-fold.
+
+    Post-fix: training rows satisfy `t < oos_cutoff - L`.
+    """
+
+    def test_train_cutoff_excludes_lookahead_window(self):
+        """Verify the source uses a train_cutoff that subtracts lookahead."""
+        import inspect
+        from training.tournament import run_tournament
+        src = inspect.getsource(run_tournament)
+        # Post-fix uses `train_cutoff = oos_cutoff - pd.Timedelta(...lookahead...)`
+        # and `df[df.index < train_cutoff]`.
+        assert "train_cutoff" in src, (
+            "TOURN-OOS-LEAK regression: the train_cutoff variable went away"
+        )
+        assert "df.index < train_cutoff" in src, (
+            "TOURN-OOS-LEAK regression: train_df is no longer using the purged cutoff"
+        )
+
+    def test_purge_offset_equals_lookahead(self):
+        """The purge subtracts pd.Timedelta(days=int(lookahead)) — verify
+        the literal isn't the wrong constant."""
+        import inspect
+        from training.tournament import run_tournament
+        src = inspect.getsource(run_tournament)
+        assert "pd.Timedelta(days=int(lookahead))" in src, (
+            "TOURN-OOS-LEAK regression: train cutoff subtracts a wrong "
+            "delta or hardcoded number — must be int(lookahead)."
+        )
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

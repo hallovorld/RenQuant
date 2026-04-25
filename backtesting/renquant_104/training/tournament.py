@@ -151,7 +151,16 @@ def run_tournament(
     else:
         oos_cutoff = pd.Timestamp(oos_cutoff)
 
-    train_df = df[df.index < oos_cutoff]
+    # Audit fix TOURN-OOS-LEAK (Round 2 deep audit, 2026-04-25): pre-fix,
+    # `train_df = df[df.index < oos_cutoff]` included training rows at
+    # `oos_cutoff - 1` whose forward-return labels span [oos_cutoff-1,
+    # oos_cutoff-1+L]. With L=5, those labels read OOS prices for
+    # 4 of the 5 days — direct lookahead leak. Same logic as the CV-1
+    # purge fix, just applied at the train/OOS boundary instead of
+    # the inter-fold boundary. Now: training rows must satisfy
+    # `t + L < oos_cutoff` ⇔ `t < oos_cutoff - L`.
+    train_cutoff = oos_cutoff - pd.Timedelta(days=int(lookahead))
+    train_df = df[df.index < train_cutoff]
     oos_df   = df[df.index >= oos_cutoff]
 
     _empty = {
