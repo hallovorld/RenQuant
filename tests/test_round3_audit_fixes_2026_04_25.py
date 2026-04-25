@@ -1123,6 +1123,48 @@ class TestPORTNaNDefenseFixes:
         assert out == 320.0
 
 
+# ── SIZ-1 (Round 2 audit): conviction_multiplier rejects NaN panel_score ──────
+
+class TestSIZ1ConvictionMultiplierRejectsNaN:
+    """Pre-fix, NaN panel_score slipped past `is None` check, then
+    `frac = (NaN - floor) / span` produced NaN, then both `<=0` and
+    `>=1` comparisons returned False, so it fell through to
+    `min_mult + NaN*(1-min_mult)` = NaN. The NaN conviction multiplier
+    poisoned the entire `max_pct = base * conv * sig_m` chain in
+    SizeAndEmitTask. Post-fix: isfinite check returns 1.0 default."""
+
+    def test_nan_panel_score_returns_one(self):
+        from kernel.sizing import conviction_multiplier
+        cfg = {"enabled": True, "floor": 0.10, "ceiling": 0.50, "min_mult": 0.5}
+        out = conviction_multiplier(float("nan"), cfg)
+        assert out == 1.0
+
+    def test_inf_panel_score_returns_one(self):
+        from kernel.sizing import conviction_multiplier
+        cfg = {"enabled": True, "floor": 0.10, "ceiling": 0.50, "min_mult": 0.5}
+        out = conviction_multiplier(float("inf"), cfg)
+        assert out == 1.0
+
+    def test_normal_value_in_band(self):
+        """Score halfway between floor and ceiling → 0.75 mult (between 0.5 and 1.0)."""
+        from kernel.sizing import conviction_multiplier
+        cfg = {"enabled": True, "floor": 0.10, "ceiling": 0.50, "min_mult": 0.5}
+        out = conviction_multiplier(0.30, cfg)   # frac = 0.5
+        assert abs(out - 0.75) < 1e-9
+
+    def test_below_floor_returns_min_mult(self):
+        from kernel.sizing import conviction_multiplier
+        cfg = {"enabled": True, "floor": 0.10, "ceiling": 0.50, "min_mult": 0.5}
+        out = conviction_multiplier(0.05, cfg)
+        assert out == 0.5
+
+    def test_above_ceiling_returns_one(self):
+        from kernel.sizing import conviction_multiplier
+        cfg = {"enabled": True, "floor": 0.10, "ceiling": 0.50, "min_mult": 0.5}
+        out = conviction_multiplier(0.99, cfg)
+        assert out == 1.0
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

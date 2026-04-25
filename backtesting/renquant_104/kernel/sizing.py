@@ -72,9 +72,24 @@ def conviction_multiplier(panel_score: float | None, sizing_cfg: dict | None) ->
       ceiling  : panel_score at/above which we use 1.0
       min_mult : minimum multiplier, default 0.5
     """
+    # Audit fix SIZ-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+    # panel_score slipped past `panel_score is None`, made `frac = NaN`
+    # via `(NaN-floor)/span`, then `frac <= 0.0` and `frac >= 1.0` both
+    # evaluated False on NaN → fell through to `min_mult + NaN*(...)`
+    # = NaN. Conviction multiplier returned NaN, which NaN-poisoned
+    # `max_pct = base * conv * sig_m` downstream in SizeAndEmitTask.
+    # Now: explicit isfinite guard returns 1.0 (safe default — same
+    # treatment as None).
+    import math as _math
     if not sizing_cfg or not sizing_cfg.get("enabled", False):
         return 1.0
     if panel_score is None:
+        return 1.0
+    try:
+        ps_f = float(panel_score)
+    except (TypeError, ValueError):
+        return 1.0
+    if not _math.isfinite(ps_f):
         return 1.0
     try:
         floor    = float(sizing_cfg.get("floor", 0.0))
@@ -85,7 +100,7 @@ def conviction_multiplier(panel_score: float | None, sizing_cfg: dict | None) ->
     if ceiling <= floor:
         return 1.0
     span = ceiling - floor
-    frac = (float(panel_score) - floor) / span
+    frac = (ps_f - floor) / span
     if frac <= 0.0:
         return min_mult
     if frac >= 1.0:
