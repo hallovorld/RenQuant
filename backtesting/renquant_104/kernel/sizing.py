@@ -134,6 +134,19 @@ def compute_position_size(
         return 0.0, 0
     if not math.isfinite(available_cash):
         return 0.0, 0
+    # Audit fix CPS-1 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+    # max_position_pct or cash_reserve_pct (e.g. caller computed
+    # `max_pct * confidence` and confidence was NaN — pre-G-1 leak,
+    # or from bad regime config) propagated through `target_pct =
+    # min(NaN, ...)` into `int(NaN * pv / price)` which raises
+    # ValueError "cannot convert float NaN to integer", crashing the
+    # entire SizeAndEmitTask. Now: validate finite at entry — non-finite
+    # → return (0, 0) clean fallback (skip this ticker; caller logs).
+    if (not math.isfinite(max_position_pct)
+            or not math.isfinite(cash_reserve_pct)):
+        return 0.0, 0
+    if override_pct is not None and not math.isfinite(override_pct):
+        return 0.0, 0
 
     if override_pct is not None:
         investable = available_cash

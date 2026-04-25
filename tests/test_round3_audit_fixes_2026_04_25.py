@@ -1165,6 +1165,59 @@ class TestSIZ1ConvictionMultiplierRejectsNaN:
         assert out == 1.0
 
 
+# ── CPS-1 (Round 2 audit): compute_position_size guards NaN pct knobs ─────────
+
+class TestCPS1ComputePositionSizeRejectsNanPcts:
+    """Pre-fix, S-1 protected NaN price/portfolio/cash but didn't guard
+    NaN max_position_pct or cash_reserve_pct. NaN max_pct slipped through
+    `min(NaN, x) = NaN` → `int(NaN * pv / price)` raised ValueError
+    'cannot convert float NaN to integer', crashing SizeAndEmitTask.
+    Realistic trigger: a pre-G-1 NaN confidence multiplied into
+    base_max_pct upstream."""
+
+    def test_normal_path_works(self):
+        from kernel.sizing import compute_position_size
+        target_pct, shares = compute_position_size(
+            portfolio_value=100_000.0, available_cash=50_000.0,
+            max_position_pct=0.10, cash_reserve_pct=0.05, price=100.0,
+        )
+        assert shares > 0
+        assert 0.0 < target_pct <= 0.10
+
+    def test_nan_max_position_pct_returns_zero(self):
+        from kernel.sizing import compute_position_size
+        target_pct, shares = compute_position_size(
+            portfolio_value=100_000.0, available_cash=50_000.0,
+            max_position_pct=float("nan"), cash_reserve_pct=0.05, price=100.0,
+        )
+        assert (target_pct, shares) == (0.0, 0)
+
+    def test_nan_cash_reserve_pct_returns_zero(self):
+        from kernel.sizing import compute_position_size
+        target_pct, shares = compute_position_size(
+            portfolio_value=100_000.0, available_cash=50_000.0,
+            max_position_pct=0.10, cash_reserve_pct=float("nan"), price=100.0,
+        )
+        assert (target_pct, shares) == (0.0, 0)
+
+    def test_inf_max_pct_returns_zero(self):
+        from kernel.sizing import compute_position_size
+        target_pct, shares = compute_position_size(
+            portfolio_value=100_000.0, available_cash=50_000.0,
+            max_position_pct=float("inf"), cash_reserve_pct=0.05, price=100.0,
+        )
+        assert (target_pct, shares) == (0.0, 0)
+
+    def test_nan_override_pct_returns_zero(self):
+        from kernel.sizing import compute_position_size
+        target_pct, shares = compute_position_size(
+            portfolio_value=100_000.0, available_cash=50_000.0,
+            max_position_pct=0.10, cash_reserve_pct=0.05, price=100.0,
+            override_pct=float("nan"),
+        )
+        assert (target_pct, shares) == (0.0, 0)
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
