@@ -111,6 +111,10 @@ def _topup_ctx(holding_shares, kelly_target, per_session):
         holdings = {"NVDA": _hs(holding_shares, kelly_target)},
         prices = {"NVDA": 100.0},
         portfolio_value = 100_000,
+        # Bug 26 fix in task_topup.py caps orders by available cash. Provide
+        # enough cash to cover the largest test buy so the cap doesn't kick
+        # in (we're testing the per-session-cap logic here, not cash limits).
+        cash = 100_000,
         orders = [], exits = [], rotations = [],
         bear_only = False, skip_buys = False,
         regime = "BULL_CALM", confidence = 1.0,

@@ -116,11 +116,20 @@ class TestV2ScoringMode:
         assert ctx.rotations[0].sell_ticker == "NVDA"
         assert ctx.rotations[0].buy_ticker  == "AMD"
 
-    def test_falls_back_to_er_when_mu_missing(self):
-        """Missing μ → fall back to expected_return; behave like default."""
+    def test_skips_rotation_when_mu_missing_in_sigma_mode(self):
+        """Missing μ in σ-aware mode → row skipped (don't mix units).
+
+        Pre-2026-04-24 the implementation silently fell back to
+        expected_return when μ/σ were missing. That mixed μ−λσ on one
+        side of the comparison with calibrated ER on the other —
+        meaningless arithmetic that produced spurious rotations. The
+        fix in audit #32 returns None from _drive_score on missing μ/σ
+        in σ-aware modes, which makes BuildPairsTask flag the row as
+        no_er and skip the comparison.
+        """
         from kernel.pipeline.task_rotation import BuildPairsTask
 
-        # μ/σ NOT set on either side → fallback path
+        # μ/σ NOT set on either side → both sides flagged "no_er" → no pair
         ctx = _ctx_with_one_held(
             held_attrs = {"ticker": "NVDA", "expected_return": 0.0,
                           "entry_price": 100.0},
@@ -130,8 +139,9 @@ class TestV2ScoringMode:
                          "min_expected_advantage_pct": 0.03},
         )
         BuildPairsTask().run(ctx)
-        # raw_adv = 0.05 - 0.0 = 0.05 ≥ 0.03 → fires via fallback
-        assert len(ctx.rotations) == 1
+        # No pairs — held was skipped because _drive_score returned None
+        # (μ/σ missing in σ-aware mode).
+        assert ctx.rotations == []
 
     def test_default_er_mode_unchanged(self):
         """Default scoring_mode='er' → no μ−λσ computed; uses ER as before."""

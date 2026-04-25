@@ -91,12 +91,18 @@ def passes_correlation_guard(
     corr_matrix: dict[str, dict[str, float]] | None,
     threshold: float,
 ) -> bool:
-    """Return True if ticker is not too correlated with any held position."""
+    """Return True if ticker is not too correlated with any held position.
+
+    2026-04-24 (#28): explicit None check instead of `a or b` — `0.0 or X`
+    short-circuits to X, so a real zero correlation was discarded in favour
+    of the reverse-direction lookup (which might be missing / stale).
+    """
     if corr_matrix is None or not held_tickers:
         return True
     for held in held_tickers:
-        corr = (corr_matrix.get(ticker, {}).get(held)
-                or corr_matrix.get(held, {}).get(ticker))
+        corr = corr_matrix.get(ticker, {}).get(held)
+        if corr is None:
+            corr = corr_matrix.get(held, {}).get(ticker)
         if corr is not None and abs(corr) >= threshold:
             return False
     return True

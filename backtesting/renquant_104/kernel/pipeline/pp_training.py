@@ -215,8 +215,10 @@ def _run_ticker_chain(tc: TickerTrainingContext) -> None:
         fresh, reason = _model_is_fresh(tc.ticker, tc.strategy_dir, ttl_days)
         if fresh:
             log.info("%s TTL skip — %s", tag, reason)
-            tc.exported = True      # treat cached model as "exported"
-            tc.ttl_skipped = True   # surfaced to TrainingContext for metrics
+            # Audit #45: don't claim "exported" — that confuses downstream
+            # counters that interpret "exported" as "wrote a fresh artifact
+            # this run". The cached artifact is reused but no work was done.
+            tc.ttl_skipped = True
             return
 
     log.info("%s FeatureJob START", tag)
@@ -305,8 +307,12 @@ class DataFetchJob(TrainingJob):
         start = cfg["sample_start"]
         end   = cfg["sample_end"]
         sector_etf = cfg.get("sector_etf_map", {})
+        # Audit #46: previously hardcoded "SPY" while pp_training_full
+        # honoured config.benchmark — the two pipelines disagreed when
+        # benchmark != "SPY". Use the config-driven value here too.
+        benchmark = cfg.get("benchmark", "SPY")
         all_tickers = sorted(
-            set(ctx.watchlist) | set(sector_etf.values()) | {"SPY"}
+            set(ctx.watchlist) | set(sector_etf.values()) | {benchmark}
         )
         print(f"DataFetchJob: fetching {len(all_tickers)} tickers {start} → {end}")
         for ticker in all_tickers:
@@ -716,6 +722,10 @@ class TickerCalibrationJob(TrainingTickerJob):
                     meta_path.write_text(_json.dumps(meta, indent=2))
             tc.calibration = {"method": cal.method, "n": len(oos_scores)}
         except Exception as exc:
+            # Audit #50: previously print-only — now also log so production
+            # log scrapers (ntfy, log-watcher) can surface the failure.
+            log.warning("[%s] TickerCalibrationJob failed — %s: %s",
+                        tc.ticker, type(exc).__name__, exc)
             print(f"  {tc.ticker}: TickerCalibrationJob failed — {exc}")
 
 

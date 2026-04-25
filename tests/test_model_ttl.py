@@ -129,7 +129,12 @@ class TestChainRespectsTtl:
         )
         _run_ticker_chain(tc)
         assert tc.ttl_skipped is True
-        assert tc.exported is True   # treated as exported for downstream count
+        # Audit #45 fix (2026-04-24): TTL skip no longer claims `exported=True`
+        # because no fresh artifact was written. Downstream counters that
+        # care about "wrote a fresh model" should count `not ttl_skipped`,
+        # while counters that care about "active model exists" should sum
+        # exported + ttl_skipped.
+        assert tc.exported is False
 
     def test_chain_runs_when_force_retrain(self, tmp_path, monkeypatch):
         """force_retrain=True must bypass the TTL gate."""

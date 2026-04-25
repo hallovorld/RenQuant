@@ -59,7 +59,11 @@ def cusum_cooldown_progress(
     if cooldown_start is None or cooldown_days <= 0:
         return 1.0
     if now is None:
-        return 1.0
+        # Audit #13: failing open (returning 1.0 = no penalty) silently
+        # discards the cooldown when callers forget to pass `now`. Failing
+        # closed (0.0 = full penalty) makes the bug noisy — sizing collapses
+        # immediately and the operator notices.
+        return 0.0
     # Accept date (sim bars) by midnight-aligning to datetime
     if isinstance(now, datetime.date) and not isinstance(now, datetime.datetime):
         now = datetime.datetime(now.year, now.month, now.day)
@@ -74,15 +78,24 @@ def cusum_cooldown_progress(
 # ── Layer 1: Hurst Exponent ───────────────────────────────────────────────────
 
 def compute_hurst(returns: np.ndarray, window: int | None = None) -> float:
-    """Rescaled-range (R/S) Hurst exponent. Returns H ∈ [0, 1]."""
+    """Rescaled-range (R/S) Hurst exponent. Returns H ∈ [0, 1].
+
+    2026-04-24 fixes:
+      - chunk loop was off-by-one (`range(0, n - lag, lag)` skipped the
+        trailing arr[n-lag:n]) — now uses `range(0, n - lag + 1, lag)`.
+      - `lags_used` was regenerated from `range(2, 2+len(rs_vals))`,
+        misaligning when a particular lag produced no chunks. Now we
+        pair (lag, rs) explicitly.
+    """
     arr = returns if window is None else returns[-window:]
     n = len(arr)
     if n < 10:
         return 0.5
     max_lag = min(n // 2, 40)
-    rs_vals: list[float] = []
+    lags_used: list[int] = []
+    rs_vals:   list[float] = []
     for lag in range(2, max_lag):
-        chunks = [arr[i:i + lag] for i in range(0, n - lag, lag)]
+        chunks = [arr[i:i + lag] for i in range(0, n - lag + 1, lag)]
         rs_chunk: list[float] = []
         for chunk in chunks:
             if len(chunk) < 2:
@@ -94,11 +107,11 @@ def compute_hurst(returns: np.ndarray, window: int | None = None) -> float:
             if S > 0:
                 rs_chunk.append(R / S)
         if rs_chunk:
+            lags_used.append(lag)
             rs_vals.append(float(np.mean(rs_chunk)))
     if len(rs_vals) < 2:
         return 0.5
     try:
-        lags_used = list(range(2, 2 + len(rs_vals)))
         poly = np.polyfit(np.log(lags_used), np.log(rs_vals), 1)
         return float(np.clip(poly[0], 0.0, 1.0))
     except Exception:
@@ -337,10 +350,14 @@ def detect_regime(
 
     # BEAR hard override — fire if realized vol or cumulative return cross thresholds
     # regardless of GMM output (GMM alone reacts too slowly to macro shocks)
-    spy_20d_vol = float(np.std(spy_returns[-vol_window:], ddof=1) * math.sqrt(252)) \
-        if len(spy_returns) >= vol_window else 0.0
-    spy_20d_ret = float(np.sum(spy_returns[-vol_window:])) \
-        if len(spy_returns) >= vol_window else 0.0
+    if len(spy_returns) >= vol_window:
+        window = spy_returns[-vol_window:]
+        spy_20d_vol = float(np.std(window, ddof=1) * math.sqrt(252))
+        # Audit #11 — strict cumulative product, not arithmetic sum.
+        spy_20d_ret = float(np.prod(1.0 + window) - 1.0)
+    else:
+        spy_20d_vol = 0.0
+        spy_20d_ret = 0.0
     hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
 
     # Resolve regime

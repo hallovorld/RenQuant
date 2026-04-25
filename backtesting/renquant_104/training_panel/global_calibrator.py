@@ -49,20 +49,30 @@ class GlobalPanelCalibration:
 
     def calibrate_probability(self, raw_score: float) -> float:
         """Map a raw panel score → P(outperform SPY by threshold in lookahead_days)."""
+        # Audit #79: empty knot arrays would IndexError on prob_y[0]; degrade
+        # to base-rate (0.5) instead of crashing.
+        if len(self.prob_x) == 0 or len(self.prob_y) == 0:
+            return 0.5
         return float(np.interp(raw_score, self.prob_x, self.prob_y,
                                left=self.prob_y[0], right=self.prob_y[-1]))
 
     def expected_return(self, raw_score: float) -> float:
         """Map a raw panel score → E[R_i - R_spy] over lookahead_days."""
+        if len(self.er_x) == 0 or len(self.er_y) == 0:
+            return 0.0
         return float(np.interp(raw_score, self.er_x, self.er_y,
                                left=self.er_y[0], right=self.er_y[-1]))
 
     # Vectorized helpers
     def calibrate_probability_vec(self, raws: np.ndarray) -> np.ndarray:
+        if len(self.prob_x) == 0 or len(self.prob_y) == 0:
+            return np.full(np.shape(raws), 0.5, dtype=float)
         return np.interp(raws, self.prob_x, self.prob_y,
                          left=self.prob_y[0], right=self.prob_y[-1])
 
     def expected_return_vec(self, raws: np.ndarray) -> np.ndarray:
+        if len(self.er_x) == 0 or len(self.er_y) == 0:
+            return np.zeros(np.shape(raws), dtype=float)
         return np.interp(raws, self.er_x, self.er_y,
                          left=self.er_y[0], right=self.er_y[-1])
 

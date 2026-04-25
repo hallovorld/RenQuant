@@ -307,8 +307,15 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
         price  = o.get("price")   if isinstance(o, dict) else getattr(o, "price", 0.0)
         parts.append(f"BUY {tkr} x{shares} @ ${float(price):.2f}")
     for e in exits:
-        tkr    = getattr(e, "ticker", "?")
-        reason = getattr(e, "exit_type", getattr(e, "reason", "sell"))
+        # ctx.exits is list[(ticker, ExitSignal)] — unpack the tuple.
+        # getattr(tuple, "ticker") always returned the default, so every
+        # exit historically logged as "EXIT ? (?)" in ntfy.
+        if isinstance(e, tuple) and len(e) == 2:
+            tkr, sig = e
+            reason = getattr(sig, "exit_type", getattr(sig, "reason", "sell"))
+        else:
+            tkr    = getattr(e, "ticker", "?")
+            reason = getattr(e, "exit_type", getattr(e, "reason", "sell"))
         parts.append(f"EXIT {tkr} ({reason})")
 
     has_trade = bool(orders or exits)
@@ -392,8 +399,13 @@ def main():
     parser.add_argument("--intraday", action="store_true",
                         help="Overlay latest Alpaca 5-min close onto today's bar "
                              "(only useful with --sell-only during market hours)")
+    # Audit #84: 86400 (24h) was misleading — production scheduling lives
+    # in macOS launchd, not in this loop. Default kept for back-compat but
+    # the scheduled-mode path emits a warning when a user actually picks it.
     parser.add_argument("--interval", type=int, default=86400,
-                        help="Seconds between runs in scheduled mode (default: 86400)")
+                        help="Seconds between runs in scheduled mode (default: 86400). "
+                             "Production scheduling uses launchd; this loop is intended "
+                             "only for ad-hoc tests.")
     args = parser.parse_args()
 
     config, models, strategy_dir = _load_strategy_multi(args.strategy)
@@ -410,7 +422,9 @@ def main():
         if args.once:
             run_fn()
         else:
-            log.info("Starting scheduled mode (interval=%ds)", args.interval)
+            log.warning("Scheduled mode invoked (interval=%ds). Production "
+                        "scheduling should use macOS launchd; this loop is "
+                        "for ad-hoc testing only (audit #84).", args.interval)
             while True:
                 try:
                     run_fn()

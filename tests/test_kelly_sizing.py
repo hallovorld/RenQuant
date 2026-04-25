@@ -43,7 +43,8 @@ def _held(*, shares=0.0, panel_score=None, kelly_target_pct=None):
 
 def _ctx(*, holdings, orders=None, exits=None, rotations=None,
          portfolio=10000.0, prices=None, kelly_on=True,
-         top_up_threshold=0.05, bear_only=False, skip_buys=False):
+         top_up_threshold=0.05, bear_only=False, skip_buys=False,
+         cash=None):
     kelly_cfg: dict = {"enabled": kelly_on, "top_up_threshold": top_up_threshold}
     return SimpleNamespace(
         config          = {"ranking": {"kelly_sizing": kelly_cfg},
@@ -53,6 +54,9 @@ def _ctx(*, holdings, orders=None, exits=None, rotations=None,
         regime          = "BULL_CALM",
         confidence      = 1.0,
         portfolio_value = portfolio,
+        # Cash defaults to portfolio value when not specified — TopUpHeldTask's
+        # cash-cap guard (Bug 26) requires this to be > 0 for the order to fire.
+        cash            = portfolio if cash is None else cash,
         prices          = prices or {},
         holdings        = holdings,
         orders          = list(orders or []),
@@ -260,8 +264,13 @@ class TestKellyFormula:
 
 class TestPipelineWiring:
     def test_topup_called_after_selection(self):
+        # The Phase-3 jobs (PanelScoring → Ranking → Rotation → Selection)
+        # are dispatched from a tuple loop in pp_inference.py (2026-04-24
+        # rewrite to honour Job.should_skip). The check now confirms that
+        # SelectionJob is registered in that tuple AND TopUpHeldTask runs
+        # after the loop closes.
         src = (_STRATEGY_DIR / "kernel" / "pipeline" / "pp_inference.py").read_text()
-        i_sel = src.find("SelectionJob().run(ctx)")
+        i_sel = src.find("SelectionJob()")
         i_top = src.find("TopUpHeldTask", i_sel)
         assert i_sel > 0
         assert i_top > i_sel

@@ -33,6 +33,7 @@ log = logging.getLogger("kernel.pipeline")
 # ── Context builders ───────────────────────────────────────────────────────────
 
 def _build_exit_params(regime_p: dict, config: dict) -> dict:
+    tax_cfg = config.get("tax", {})
     return {
         "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct", 0),
         "trailing_stop_trail_pct":   regime_p.get("trailing_stop_trail_pct",   0),
@@ -43,6 +44,8 @@ def _build_exit_params(regime_p: dict, config: dict) -> dict:
         "min_hold_days":             int(config.get("min_hold_days", 0)),
         "lt_hold_gate_days":         int(config.get("lt_hold_gate_days", 0)),
         "lt_hold_min_gain":          float(config.get("lt_hold_min_gain", 0.10)),
+        # #18 fix: config-driven LT threshold (not hardcoded 365 in compute_exits).
+        "lt_hold_threshold_days":    int(tax_cfg.get("long_term_threshold_days", 365)),
     }
 
 
@@ -86,8 +89,13 @@ def _make_cand_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
 def _buy_universe(ctx: InferenceContext) -> list[str]:
     held = set(ctx.holdings.keys())
     if ctx.bear_only:
+        # Defensives also need OHLCV — without it BuildFeaturesTask
+        # short-circuits anyway, but earlier tasks (EarningsFilter / WashSale)
+        # would still run on an empty frame and the parallel worker would
+        # spin up uselessly. Match the non-bear branch's gate.
         defensives = set(ctx.config.get("defensive_tickers", []))
-        return [t for t in defensives if t in ctx.models and t not in held]
+        return [t for t in defensives
+                if t in ctx.models and t not in held and t in ctx.ohlcv]
     return [t for t in ctx.models if t not in held and t in ctx.ohlcv]
 
 
@@ -113,7 +121,7 @@ class InferencePipeline:
             ctx.holdings[tc.ticker] = tc.holding
             if tc.exit_signal is not None and tc.exit_signal.should_exit:
                 ctx.exits.append((tc.ticker, tc.exit_signal))
-            elif tc.exit_signal is not None and getattr(tc.exit_signal, "_blocked_streak", False):
+            elif tc.exit_signal is not None and getattr(tc.exit_signal, "blocked_streak", False):
                 ctx.counters["blocked_streak"] = ctx.counters.get("blocked_streak", 0) + 1
         log.info("Phase 2a (sell): %d exits from %d held", len(ctx.exits), len(sell_tctxs))
 
@@ -127,10 +135,21 @@ class InferencePipeline:
             log.info("Phase 2b (buy scan): %d candidates from %d tickers",
                      len(ctx.candidates), len(universe))
 
-        PanelScoringJob().run(ctx)
-        RankingJob().run(ctx)
-        RotationJob().run(ctx)
-        SelectionJob().run(ctx)
+        # 2026-04-24: honour Job.should_skip on the Phase-3 jobs. Each
+        # Job declares should_skip() guards (no candidates, bear_only,
+        # rotation disabled, …) but the framework's Job.run() never
+        # consulted them. Without this, RankingJob runs even when
+        # ctx.candidates is empty and SelectionJob runs even when
+        # ctx.ranked is empty — wasted work, not a correctness break.
+        # Wiring it here keeps the docstring promise. getattr fallback
+        # so tests that monkey-patch Jobs with bare callables (no
+        # should_skip method) still drive the pipeline.
+        for job in (PanelScoringJob(), RankingJob(), RotationJob(), SelectionJob()):
+            skip_fn = getattr(job, "should_skip", None)
+            if callable(skip_fn) and skip_fn(ctx):
+                log.debug("%s skipped by should_skip", type(job).__name__)
+                continue
+            job.run(ctx)
 
         # Plan C: Kelly-driven top-up for existing holdings whose panel
         # score has improved beyond kelly_target_pct. No-op unless
@@ -174,5 +193,12 @@ class SellOnlyPipeline:
             ctx.holdings[tc.ticker] = tc.holding
             if tc.exit_signal is not None and tc.exit_signal.should_exit:
                 ctx.exits.append((tc.ticker, tc.exit_signal))
+
+        # Audit #6: also advance the no-trade monitor on sell-only bars.
+        # An intraday-trip-only window is still an "active" decision —
+        # the streak counter should reflect that we DID trade (or
+        # explicitly chose not to) on this bar.
+        from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415
+        MonitorIdleStreakTask().run(ctx)
 
         log.info("SellOnlyPipeline DONE  total=%.2fs", time.monotonic() - t0)

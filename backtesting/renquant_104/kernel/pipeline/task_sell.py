@@ -85,7 +85,9 @@ class EvaluateExitsTask(Task):
         if sig.should_exit:
             tc.exit_signal = sig
         elif tc.model_action == "sell" and updated_hs.sell_streak > 0:
-            sig._blocked_streak = True   # noqa: SLF001
+            # Use the typed field on ExitSignal (was a dynamic attribute write
+            # before audit #17 — easier for static analysis + tests now).
+            sig.blocked_streak = True
             tc.exit_signal = sig
 
         log.debug("EvaluateExitsTask [%s]: should_exit=%s  type=%s",

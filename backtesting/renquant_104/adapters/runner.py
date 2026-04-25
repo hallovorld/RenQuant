@@ -142,6 +142,19 @@ class RunnerAdapter:
 
         held_set  = set(s for s in config["watchlist"]
                         if float(positions_cache.get(s, {}).get("qty", 0)) > 0)
+        # Audit #59: log positions held outside the watchlist so the operator
+        # knows they exist (the runner won't manage them — exits/buys only
+        # apply to watchlist symbols — but silent invisibility is worse).
+        non_wl_holds = [
+            s for s, pos in positions_cache.items()
+            if s not in held_set
+            and s not in config["watchlist"]
+            and float(pos.get("qty", 0)) > 0
+        ]
+        if non_wl_holds:
+            log.warning("RunnerAdapter: %d position(s) held outside watchlist "
+                        "(unmanaged): %s",
+                        len(non_wl_holds), ", ".join(sorted(non_wl_holds)))
         holdings: dict[str, HoldingState] = {}
         for ticker in held_set:
             pos     = positions_cache.get(ticker, {})
@@ -224,12 +237,17 @@ class RunnerAdapter:
                         continue
                     latest_close = float(idf["close"].iloc[-1])
                     prices[sym] = latest_close
-                    # Overwrite today's daily bar's close so kernel.exits sees the intraday level
+                    # Overwrite today's daily bar's close so kernel.exits sees the intraday level.
+                    # Audit #58: copy the frame before mutating — fetch_ohlcv may
+                    # return a cached reference that other downstream calls (sim,
+                    # training, panel features) would see leak via the in-place
+                    # write. The sliced copy in `ohlcv` is what the pipeline reads.
                     if sym in ohlcv and not ohlcv[sym].empty:
-                        df = ohlcv[sym]
+                        df = ohlcv[sym].copy()
                         last_day = df.index.max()
                         if last_day.date() == today:
                             df.at[last_day, "close"] = latest_close
+                            ohlcv[sym] = df
                     overlaid += 1
                 log.info("Intraday overlay: %d/%d symbols had fresh minute bars",
                          overlaid, len(all_symbols))
@@ -387,8 +405,12 @@ class RunnerAdapter:
             log.info("%s  %s  [%s]  %.0f shares @ %.2f  %s",
                      tag, ticker, sig.exit_type, sell_qty, price, sig.reason)
 
-            self._last_sell_dates_str[ticker] = today_str
+            # Wash-sale clock: stamp ONLY on full liquidation. Partial
+            # trims (Kelly rebalance) intentionally don't block subsequent
+            # top-ups — that would prevent the position from ever growing
+            # back toward the Kelly target after an over-weight trim.
             if not is_partial:
+                self._last_sell_dates_str[ticker] = today_str
                 self._entry_dates.pop(ticker, None)
                 self._entry_signals.pop(ticker, None)   # Approach A cleanup
                 self._sell_streaks.pop(ticker, None)
@@ -442,22 +464,35 @@ class RunnerAdapter:
                 ctx.orders_placed.append(order)
 
                 invest = shares * price
-                log.info("BUY  %s  %d shares @ %.2f  invest=$%.0f", ticker, shares, price, invest)
+                # Top-up detection: a buy on a ticker we already track is
+                # an add-to-existing, not a fresh entry. Preserve entry_date,
+                # entry_signals, sell_streaks, and last_sell_dates so the
+                # original cost-basis tenure / wash-sale state stays intact.
+                # HWM ratchets with current price (whichever is higher).
+                is_topup = ticker in self._entry_dates
+                action_tag = "TOPUP" if is_topup else "BUY"
+                log.info("%s  %s  %d shares @ %.2f  invest=$%.0f",
+                         action_tag, ticker, shares, price, invest)
 
-                self._entry_dates[ticker]       = today_str
-                self._sell_streaks.pop(ticker, None)
-                self._last_sell_dates_str.pop(ticker, None)
-                self._position_hwm[ticker]      = price
-                # Thesis-degradation baseline (Approach A) — stamp entry
-                # scores ONLY on a fresh buy (not a top-up to an already-
-                # held position). Persist in live_state.json so rotation
-                # checks on future bars see a fixed baseline.
-                if ticker not in self._entry_signals:
+                if not is_topup:
+                    self._entry_dates[ticker]       = today_str
+                    self._sell_streaks.pop(ticker, None)
+                    self._last_sell_dates_str.pop(ticker, None)
+                    self._position_hwm[ticker]      = price
+                    # Thesis-degradation baseline (Approach A) — stamp entry
+                    # scores ONLY on a fresh buy (not a top-up to an already-
+                    # held position). Persist in live_state.json so rotation
+                    # checks on future bars see a fixed baseline.
                     self._entry_signals[ticker] = {
                         "rank_score":       order.get("rank_score"),
                         "panel_score":      order.get("panel_score"),
                         "kelly_target_pct": order.get("kelly_target_pct"),
                     }
+                else:
+                    # Top-up: only HWM may need to ratchet up.
+                    self._position_hwm[ticker] = max(
+                        float(self._position_hwm.get(ticker, 0.0)), price,
+                    )
                 self._log_trade(ctx, {
                     "action":     "BUY",
                     "symbol":     ticker,

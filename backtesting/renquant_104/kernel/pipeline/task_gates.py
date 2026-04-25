@@ -48,6 +48,11 @@ class ConfidenceVetoTask(Task):
     buys are blocked and only defensive slots can be filled — same effect as
     BEARBranchTask but driven by uncertainty rather than a detected BEAR label.
     Skipped if the regime is already BEAR (BEARBranchTask handles it).
+
+    2026-04-24: this Task no longer short-circuits the chain — it sets
+    `bear_only=True` and returns None so VelocityCrash + EMA50 still
+    fire (those set `buy_blocked` which combined with `bear_only` means
+    "defensives only AND macro halt").
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
@@ -60,7 +65,7 @@ class ConfidenceVetoTask(Task):
             ctx.bear_only = True
             log.info("ConfidenceVetoTask: confidence %.2f < %.2f — defensives only",
                      ctx.confidence, threshold)
-            return False
+            # Continue chain so velocity/EMA50 macros can still fire.
 
 
 class BullVolOffensiveBlockTask(Task):
@@ -90,17 +95,25 @@ class BullVolOffensiveBlockTask(Task):
             return False
         ctx.bear_only = True
         log.info("BullVolOffensiveBlockTask: BULL_VOLATILE — defensives only")
-        return False
+        # Continue chain so velocity/EMA50 still set buy_blocked when applicable.
 
 
 class BEARBranchTask(Task):
-    """Gate 2: BEAR regime — allow defensive tickers only; stop normal scan."""
+    """Gate 2: BEAR regime — allow defensive tickers only.
+
+    2026-04-24: no longer short-circuits the chain so VelocityCrash +
+    EMA50 still fire (set `buy_blocked` if applicable). Combined with
+    `bear_only=True`, the downstream `_buy_universe` returns defensives
+    when `buy_blocked AND bear_only` — defensives can still be entered
+    in BEAR even during a velocity crash, which is the intended behaviour
+    (defensives like GLD/TLT exist precisely for those conditions).
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         if ctx.regime == BEAR:
             ctx.bear_only = True
             log.info("BEARBranchTask: BEAR regime — defensives only")
-            return False
+            # Continue chain (velocity/EMA macros may still apply).
 
 
 class VelocityCrashTask(Task):
@@ -127,7 +140,11 @@ class EMA50GateTask(Task):
         from kernel.market_gates import check_spy_ema_trend  # noqa: PLC0415
 
         spy_df = ctx.ohlcv.get("SPY")
-        if spy_df is not None and check_spy_ema_trend(spy_df["close"]):
+        if spy_df is None or "close" not in spy_df.columns or spy_df.empty:
+            log.warning("EMA50GateTask: SPY OHLCV missing — macro filter disabled "
+                        "this bar (data outage)")
+            return None
+        if check_spy_ema_trend(spy_df["close"]):
             ctx.buy_blocked = True
             log.info("EMA50GateTask: SPY below EMA50 — buys blocked")
             return False

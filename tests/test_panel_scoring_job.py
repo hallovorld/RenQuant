@@ -174,26 +174,35 @@ class TestBuildFeatureMatrixTask:
         ctx._panel_scorer = PanelScorer.load(artifact)
         return ctx
 
-    def test_returns_false_without_candidates(self, tmp_path):
+    # 2026-04-24 (audit #39): the task no longer halts the chain on empty
+    # inputs — it leaves `_panel_matrix = None` and returns None so the
+    # downstream LoadGlobalCalibration / LoadNGBoost loaders still
+    # initialize. The matrix-consuming tasks (ApplyScores, ApplyNGBoost)
+    # short-circuit individually when the matrix is None.
+
+    def test_returns_none_without_candidates(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import BuildFeatureMatrixTask
         ctx = self._ctx_with_scorer(tmp_path)
         ctx.candidates = []
         out = BuildFeatureMatrixTask().run(ctx)
-        assert out is False
+        assert out is None
+        assert getattr(ctx, "_panel_matrix", None) is None
 
-    def test_returns_false_without_scorer(self, tmp_path):
+    def test_returns_none_without_scorer(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import BuildFeatureMatrixTask
         ctx = self._ctx_with_scorer(tmp_path)
         ctx._panel_scorer = None
         out = BuildFeatureMatrixTask().run(ctx)
-        assert out is False
+        assert out is None
+        assert getattr(ctx, "_panel_matrix", None) is None
 
-    def test_returns_false_when_feature_frames_missing(self, tmp_path):
+    def test_returns_none_when_feature_frames_missing(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import BuildFeatureMatrixTask
         ctx = self._ctx_with_scorer(tmp_path)
         ctx._panel_feature_frames = None
         out = BuildFeatureMatrixTask().run(ctx)
-        assert out is False
+        assert out is None
+        assert getattr(ctx, "_panel_matrix", None) is None
 
     def test_builds_matrix_keyed_by_candidate_ticker(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import BuildFeatureMatrixTask

@@ -58,6 +58,10 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self._skip_buys     = False
 
         # ── Tax config ───────────────────────────────────────────────────────
+        # Audit #87 #92 — every fallback uses the HIGHER bracket (50%/32%)
+        # so a missing tax config block conservatively over-estimates rather
+        # than under-estimates tax drag. Aligned across LEAN, kernel.rotation,
+        # task_rotation, and SimAdapter (2026-04-24).
         tax_cfg               = CONFIG.get("tax", {})
         self._tax_short       = float(tax_cfg.get("short_term_rate", 0.50))
         self._tax_long        = float(tax_cfg.get("long_term_rate", 0.32))

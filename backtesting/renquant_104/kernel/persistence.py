@@ -513,6 +513,10 @@ def record_training_run(
     rd = run_date or datetime.datetime.utcnow()
     run_id = f"{rd.strftime('%Y%m%d%H%M%S')}-{artifact_type}-{uuid.uuid4().hex[:6]}"
 
+    # Audit #71: subprocess to git was being invoked twice (row dict + SQL
+    # VALUES). Resolve once and reuse.
+    sha = _commit_sha()
+
     row = {
         "run_id":                run_id,
         "run_date":              rd.isoformat(),
@@ -530,7 +534,7 @@ def record_training_run(
         "deterministic":         deterministic,
         "training_window_years": training_window_years,
         "artifact_path":         artifact_path,
-        "commit_sha":            _commit_sha(),
+        "commit_sha":            sha,
         "notes":                 notes,
     }
 
@@ -547,7 +551,7 @@ def record_training_run(
              json.dumps(config_snapshot, default=str) if config_snapshot else None,
              oos_mean_ic, train_ic, n_rows,
              json.dumps(feature_cols) if feature_cols is not None else None,
-             artifact_path, _commit_sha(),
+             artifact_path, sha,
              elapsed_sec, trigger, n_tickers, n_dates, n_features, device,
              int(deterministic) if deterministic is not None else None,
              training_window_years, notes),

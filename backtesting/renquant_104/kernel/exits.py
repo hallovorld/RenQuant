@@ -62,6 +62,11 @@ class ExitSignal:
     # float < current_shares = partial sell, keep the position open.
     # float ≥ current_shares = full liquidation (same as None).
     quantity:    float | None = None
+    # Diagnostic: when ScoreModel said "sell" but min_hold_days / streak
+    # rule blocked the exit, EvaluateExitsTask flips this so pp_inference
+    # can increment the blocked_streak counter without resorting to
+    # untyped attribute writes (audit #17).
+    blocked_streak: bool = False
 
 
 _NO_EXIT = ExitSignal(should_exit=False, reason="", exit_type="")
@@ -248,7 +253,9 @@ def compute_exits(
         days_held      = (today - state.entry_date).days
         unrealized_gain = (current_price - state.entry_price) / state.entry_price
         lt_min_gain    = float(params.get("lt_hold_min_gain", 0.10))
-        if lt_gate <= days_held < 365 and unrealized_gain >= lt_min_gain:
+        # Use config'd LT threshold, not hardcoded 365 (#18 in audit).
+        lt_thresh_days = int(params.get("lt_hold_threshold_days", 365))
+        if lt_gate <= days_held < lt_thresh_days and unrealized_gain >= lt_min_gain:
             # Still update sell streak so it's ready when the window passes
             state, _ = check_model_sell(
                 model_action, state,

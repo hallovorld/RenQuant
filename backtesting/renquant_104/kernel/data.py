@@ -4,9 +4,15 @@ Self-contained — no common/ imports.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pandas as pd
+
+# Module-level logger — `fetch_intraday_bars` previously referenced an
+# undefined `log` and would NameError on the timeout path it was supposed
+# to handle gracefully.
+log = logging.getLogger("kernel.data")
 
 
 class LocalStore:

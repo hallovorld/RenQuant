@@ -54,10 +54,19 @@ class TopUpHeldTask(Task):
             return
 
         # Tickers already touched this bar — don't add on top of them.
+        # Production ctx.exits is list[(ticker, ExitSignal)]; some tests
+        # still pass list[SimpleNamespace] / list[ExitSignal-like]. Be
+        # tolerant of both shapes.
         already_buying = {o.get("ticker") for o in getattr(ctx, "orders", [])
                           if isinstance(o, dict)}
-        already_selling = {getattr(e, "ticker", None)
-                            for e in getattr(ctx, "exits", [])}
+        already_selling: set = set()
+        for e in (getattr(ctx, "exits", []) or []):
+            if isinstance(e, tuple) and len(e) == 2:
+                already_selling.add(e[0])
+            else:
+                t = getattr(e, "ticker", None)
+                if t is not None:
+                    already_selling.add(t)
         rotation_sells = {p.sell_ticker for p in (getattr(ctx, "rotations", []) or [])}
 
         added = 0
@@ -105,7 +114,12 @@ class TopUpHeldTask(Task):
                     continue
                 extra_shares = affordable_shares
                 invest = extra_shares * price
-            target_pct = (current_pct + delta)
+            # Audit fix (2026-04-24): use actual bought delta, not the
+            # uncapped Kelly delta. When per_session_buy_cap or cash
+            # constraint trims the order, the recorded target_pct must
+            # reflect the post-fill weight, not the abstract Kelly target.
+            actual_delta = (extra_shares * price) / portfolio if portfolio > 0 else 0.0
+            target_pct = (current_pct + actual_delta)
             ctx.orders.append({
                 "ticker":      ticker,
                 "shares":      extra_shares,

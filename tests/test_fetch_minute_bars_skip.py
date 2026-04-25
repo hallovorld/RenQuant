@@ -80,11 +80,33 @@ class TestSkipCoveredLogic:
                 or "NVDA" not in out.split("skipping fully-cached symbols", 1)[1].split("\n")[0])
 
     def test_cached_full_window_is_skipped(self, tmp_path):
-        """Cache with 730d of data should be skipped on a 730d request."""
+        """Cache with 730d of data should be skipped on a 730d request.
+
+        Pre-fix the cache seeding used `periods=730*39` with `freq=10min`
+        which only spans ~198 calendar days (10min × 28,470 = 4,745h ≈ 198d)
+        because `pd.date_range` doesn't skip overnight gaps. The fix:
+        seed by giving an explicit start AND end so the cache truly spans
+        the full window.
+        """
         today = datetime.date.today()
         start = (today - datetime.timedelta(days=730)).strftime("%Y-%m-%d")
-        # Seed a long cache — enough to pass the start-side check
-        _seed_cache(tmp_path, "NVDA", start, periods=730 * 39)
+        # Bookend the cache: one bar near `start` and one near `today`.
+        # Both endpoints in the parquet are what the skip-cached check
+        # looks at (covers_start uses .first, covers_end uses .last).
+        idx = pd.DatetimeIndex([
+            pd.Timestamp(start),
+            pd.Timestamp(today) - pd.Timedelta(days=1),
+        ])
+        df = pd.DataFrame({
+            "open":   [100.0, 100.0],
+            "high":   [101.0, 101.0],
+            "low":    [ 99.0,  99.0],
+            "close":  [100.5, 100.5],
+            "volume": [10_000, 10_000],
+        }, index=idx)
+        sym_dir = tmp_path / "NVDA"
+        sym_dir.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(sym_dir / "10min.parquet")
 
         # Unfortunately without access to the script's internals, we
         # can only assert logically: with full cache, script should

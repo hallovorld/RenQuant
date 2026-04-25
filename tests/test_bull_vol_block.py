@@ -60,7 +60,11 @@ class TestDefensivesOnly:
         task = BullVolOffensiveBlockTask()
         ctx = _ctx(BULL_VOLATILE,
                    config={"regime": {"bull_vol_block_offensive": True}})
-        assert task.run(ctx) is False
+        # Defensives-only branch returns None (continue chain) so the
+        # downstream VelocityCrash + EMA50 macros can still set buy_blocked.
+        # Pre-2026-04-24, this returned False which short-circuited those
+        # gates — see audit #15 / fix in task_gates.py.
+        assert task.run(ctx) is None
         assert ctx.bear_only   is True
         assert ctx.buy_blocked is False
         assert ctx.counters["bull_vol_blocks"] == 1

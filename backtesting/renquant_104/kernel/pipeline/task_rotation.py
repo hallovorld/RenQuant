@@ -116,8 +116,8 @@ class BuildPairsTask(Task):
         thesis_uplift       = float(thesis_cfg.get("uplift_pct", 0.10))
 
         tax_cfg     = ctx.config.get("tax", {})
-        st_rate     = float(tax_cfg.get("short_term_rate", 0.37))
-        lt_rate     = float(tax_cfg.get("long_term_rate", 0.20))
+        st_rate     = float(tax_cfg.get("short_term_rate", 0.50))
+        lt_rate     = float(tax_cfg.get("long_term_rate", 0.32))
         lt_threshold = int(tax_cfg.get("long_term_threshold_days", 365))
 
         # Holdings already exiting today are not eligible to rotate.
@@ -146,24 +146,31 @@ class BuildPairsTask(Task):
             - "mu_minus_lambda_sigma": NGBoost μ − λσ.
             - "sharpe": μ / max(σ, floor) (Barroso-Santa-Clara 2015).
 
-            Fallback is always expected_return when μ/σ missing.
+            2026-04-24 unit-mismatch guard: when scoring_mode is one of the
+            σ-aware modes but a row is missing μ/σ, return None instead of
+            silently falling back to `expected_return`. Mixing μ−λσ for one
+            side of the comparison and ER for the other made `raw_advantage`
+            meaningless. Callers (the eligible-held loop) treat None as
+            "skip this row" — same effect as `decision == "no_er"`.
             """
             if scoring_mode == "mu_minus_lambda_sigma":
                 mu = getattr(obj, "mu", None)
                 sg = getattr(obj, "sigma", None)
-                if mu is not None and sg is not None:
-                    try:
-                        return float(mu) - lam * float(sg)
-                    except (TypeError, ValueError):
-                        pass
-            elif scoring_mode == "sharpe":
+                if mu is None or sg is None:
+                    return None
+                try:
+                    return float(mu) - lam * float(sg)
+                except (TypeError, ValueError):
+                    return None
+            if scoring_mode == "sharpe":
                 mu = getattr(obj, "mu", None)
                 sg = getattr(obj, "sigma", None)
-                if mu is not None and sg is not None:
-                    try:
-                        return float(mu) / max(float(sg), sharpe_sigma_floor)
-                    except (TypeError, ValueError):
-                        pass
+                if mu is None or sg is None:
+                    return None
+                try:
+                    return float(mu) / max(float(sg), sharpe_sigma_floor)
+                except (TypeError, ValueError):
+                    return None
             return getattr(obj, "expected_return", None)
 
         held_scores: dict = {}
@@ -643,12 +650,28 @@ class EmitRotationsTask(Task):
 
         regime_p     = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         base_max_pct = float(regime_p.get("max_position_pct", 0.15)) * ctx.confidence
+        # 2026-04-24 sizing parity (#26 #33): apply the same CUSUM
+        # wall-time cooldown scaling SizeAndEmitTask uses, so rotation
+        # buys aren't oversized while fresh picks are scaled down.
+        cooldown_mult = 1.0
+        _regime_cfg = ctx.config.get("regime", {})
+        if str(_regime_cfg.get("cusum_cooldown_mode", "bar_count")) == "wall_time":
+            from kernel.regime import cusum_cooldown_progress  # noqa: PLC0415
+            cd_start = (getattr(ctx.regime_state, "cooldown_start", None)
+                        if ctx.regime_state is not None else None)
+            cd_days  = float(_regime_cfg.get("cusum_cooldown_days", 3.0))
+            cooldown_mult = cusum_cooldown_progress(ctx.today, cd_start, cd_days)
+        base_max_pct *= cooldown_mult
         reserve_pct  = float(regime_p.get("cash_reserve_pct", 0.0))  * ctx.confidence
         sizing_cfg   = (ctx.config.get("ranking", {})
                          .get("panel_scoring", {}).get("sizing", {}))
         sigma_cfg    = (ctx.config.get("ranking", {})
                          .get("panel_scoring", {})
                          .get("sigma_sizing", {}))
+        kelly_cfg    = ctx.config.get("ranking", {}).get("kelly_sizing", {})
+        kelly_on     = bool(kelly_cfg.get("enabled", False))
+        kelly_pure   = bool(kelly_cfg.get("disable_extra_multipliers", False))
+        per_session_cap = kelly_cfg.get("per_session_buy_cap")
 
         sigma_median = universe_sigma_median(
             [getattr(c, "sigma", None) for c in ctx.ranked]
@@ -670,15 +693,31 @@ class EmitRotationsTask(Task):
                 continue
 
             buy_cand = next((c for c in ctx.ranked if c.ticker == pair.buy_ticker), None)
-            conv = conviction_multiplier(
-                getattr(buy_cand, "panel_score", None) if buy_cand else None,
-                sizing_cfg,
-            )
-            sig_m = sigma_multiplier(
-                getattr(buy_cand, "sigma", None) if buy_cand else None,
-                sigma_median, sigma_cfg,
-            )
-            max_pct = base_max_pct * conv * sig_m
+            if kelly_on and kelly_pure:
+                conv, sig_m = 1.0, 1.0
+            else:
+                conv = conviction_multiplier(
+                    getattr(buy_cand, "panel_score", None) if buy_cand else None,
+                    sizing_cfg,
+                )
+                sig_m = sigma_multiplier(
+                    getattr(buy_cand, "sigma", None) if buy_cand else None,
+                    sigma_median, sigma_cfg,
+                )
+            # Kelly target if enabled — otherwise legacy regime-cap path.
+            if kelly_on and buy_cand is not None and getattr(buy_cand, "kelly_target_pct", None) is not None:
+                max_pct = float(buy_cand.kelly_target_pct) * conv * sig_m
+                if max_pct <= 0:
+                    log.info("EmitRotationsTask: %s Kelly=0 — skip pair", pair.buy_ticker)
+                    continue
+            else:
+                max_pct = base_max_pct * conv * sig_m
+
+            # Multi-entry cap (matches SizeAndEmitTask).
+            if per_session_cap is not None:
+                cap = float(per_session_cap)
+                if cap > 0 and max_pct > cap:
+                    max_pct = cap
 
             _, shares = compute_position_size(
                 ctx.portfolio_value, ctx.cash,
@@ -716,11 +755,14 @@ class EmitRotationsTask(Task):
                 "sigma_mult": sig_m,
                 "rank_score": pair.buy_score,
                 "rs_score":   0.0,
+                "panel_score": getattr(buy_cand, "panel_score", None) if buy_cand else None,
                 "mu":         getattr(buy_cand, "mu", None)    if buy_cand else None,
                 "sigma":      getattr(buy_cand, "sigma", None) if buy_cand else None,
+                "kelly_target_pct": getattr(buy_cand, "kelly_target_pct", None) if buy_cand else None,
                 "detail":     (f"rotation←{pair.sell_ticker} "
                                f"net_adv={pair.net_advantage:+.4f} "
                                f"horizon={pair.horizon_days}d"),
+                "order_type": "ROTATION",
             })
             rotated_buys.add(pair.buy_ticker)
             ctx.counters["rotations"] = ctx.counters.get("rotations", 0) + 1

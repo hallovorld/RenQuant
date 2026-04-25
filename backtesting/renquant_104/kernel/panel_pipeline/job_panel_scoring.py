@@ -84,17 +84,27 @@ class BuildFeatureMatrixTask(Task):
 
     def run(self, ctx: InferenceContext) -> bool | None:
         if not ctx.candidates and not ctx.holdings:
-            return False
+            # No work to do — but DON'T short-circuit the chain so
+            # downstream calibration / ngboost loaders can still
+            # initialize for next bar's use.
+            ctx._panel_matrix = None  # noqa: SLF001
+            return None
         scorer: PanelScorer = getattr(ctx, "_panel_scorer", None)
         if scorer is None:
-            return False
+            ctx._panel_matrix = None  # noqa: SLF001
+            return None
 
         feature_frames = getattr(ctx, "_panel_feature_frames", None)
         factor_frames  = getattr(ctx, "_panel_factor_frames", None)
         if feature_frames is None:
             log.warning("BuildFeatureMatrixTask: ctx has no _panel_feature_frames "
-                        "(adapter must populate before RankingJob) — skipping")
-            return False
+                        "(adapter must populate) — leaving matrix unset; "
+                        "downstream tasks will no-op individually")
+            # Audit #39: don't kill the chain — let LoadGlobalCalibration /
+            # LoadNGBoost still initialize. ApplyScoresTask checks the matrix
+            # itself and no-ops cleanly when None/empty.
+            ctx._panel_matrix = None  # noqa: SLF001
+            return None
 
         today = ctx.today
         today_ts = pd.Timestamp(today if isinstance(today, datetime.date) else today)
@@ -113,8 +123,9 @@ class BuildFeatureMatrixTask(Task):
             nan_prone_cols=nan_prone,
         )
         if X.empty:
-            log.warning("BuildFeatureMatrixTask: empty inference matrix — skipping")
-            return False
+            log.warning("BuildFeatureMatrixTask: empty inference matrix")
+            ctx._panel_matrix = None  # noqa: SLF001
+            return None
         ctx._panel_matrix = X  # noqa: SLF001
         log.debug("BuildFeatureMatrixTask: matrix %s", X.shape)
 
@@ -182,9 +193,11 @@ class VetoWeakBuysTask(Task):
                 continue
             kept.append(cand)
 
+        # Audit #43: keep the counter present even when nothing was dropped
+        # so downstream readers don't see KeyError on ctx.counters["panel_vetoed"].
+        ctx.counters["panel_vetoed"] = ctx.counters.get("panel_vetoed", 0) + dropped
         if dropped:
             ctx.candidates = kept
-            ctx.counters["panel_vetoed"] = ctx.counters.get("panel_vetoed", 0) + dropped
             log.info("VetoWeakBuysTask: dropped %d candidate(s) below panel_score=%.3f",
                      dropped, floor)
 
@@ -416,7 +429,15 @@ class ApplyNGBoostTask(Task):
             hs.mu    = float(mu.loc[ticker])
             hs.sigma = float(sigma.loc[ticker])
             if override:
-                hs.panel_score = float(combined.loc[ticker])
+                # Audit #40: hold-side rank_score must mirror cand-side.
+                # Without this, rotation comparisons (which use rank_score
+                # on both sides) saw mu-minus-lambda-sigma on cands but
+                # stale per-ticker scores on holds. The downstream
+                # ApplyGlobalCalibrationTask will then map rank_score
+                # through the isotonic head consistently.
+                v = float(combined.loc[ticker])
+                hs.panel_score = v
+                hs.rank_score  = v
 
         log.info("ApplyNGBoostTask: mode=%s  λ=%.2f  n_cands=%d  n_holdings=%d",
                  score_mode, lambda_sigma, len(ctx.candidates), len(ctx.holdings))

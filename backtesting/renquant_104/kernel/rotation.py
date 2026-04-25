@@ -120,8 +120,8 @@ def find_thesis_primary_pairs(
     lt_protect      = int(rotation_cfg.get("lt_protection_days", 30))
     max_per_bar     = int(rotation_cfg.get("max_rotations_per_bar", 2))
 
-    st_rate         = float(tax_cfg.get("short_term_rate", 0.37))
-    lt_rate         = float(tax_cfg.get("long_term_rate", 0.20))
+    st_rate         = float(tax_cfg.get("short_term_rate", 0.50))
+    lt_rate         = float(tax_cfg.get("long_term_rate", 0.32))
     lt_threshold    = int(tax_cfg.get("long_term_threshold_days", 365))
 
     eligible: dict[str, dict] = {}
@@ -264,8 +264,8 @@ def find_thesis_symmetric_pairs(
     txn_cost           = float(rotation_cfg.get("transaction_cost_pct", 0.0))
     horizon            = int(rotation_cfg.get("target_horizon_days", 20))
 
-    st_rate            = float(tax_cfg.get("short_term_rate", 0.37))
-    lt_rate            = float(tax_cfg.get("long_term_rate", 0.20))
+    st_rate            = float(tax_cfg.get("short_term_rate", 0.50))
+    lt_rate            = float(tax_cfg.get("long_term_rate", 0.32))
     lt_threshold       = int(tax_cfg.get("long_term_threshold_days", 365))
 
     # Eligible held positions — past min hold, have entry score, not LT-pinned
@@ -431,8 +431,8 @@ def find_rotation_pairs(
     held_max_unreal     = (float(held_max_unreal_raw)
                             if held_max_unreal_raw is not None else None)
 
-    st_rate         = float(tax_cfg.get("short_term_rate", 0.37))
-    lt_rate         = float(tax_cfg.get("long_term_rate", 0.20))
+    st_rate         = float(tax_cfg.get("short_term_rate", 0.50))
+    lt_rate         = float(tax_cfg.get("long_term_rate", 0.32))
     lt_threshold    = int(tax_cfg.get("long_term_threshold_days", 365))
 
     # Eligible held positions (past min hold, both score + ER available, not LT-pinned)

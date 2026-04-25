@@ -70,7 +70,15 @@ class ScoreCalibration:
                 scaled = (raw_score - self.platt_scale_mean) / self.platt_scale_std
             log_odds = self.platt_coef * scaled + self.platt_intercept
             return float(np.clip(1.0 / (1.0 + np.exp(-log_odds)), 0.0, 1.0))
-        raise ValueError(f"Unknown calibration method: {self.method}")
+        # Audit #69: unknown method — fall back to base_rate / identity so
+        # a typo in metadata ("identy") doesn't crash production retrain.
+        # Log once; downstream caller still gets a sensible probability.
+        import logging
+        logging.getLogger("kernel.scoring").warning(
+            "ScoreCalibration: unknown method %r — returning base_rate %.3f",
+            self.method, float(np.clip(self.base_rate, 0.0, 1.0)),
+        )
+        return float(np.clip(self.base_rate, 0.0, 1.0))
 
     def expected_return(
         self, raw_score: float, *, horizon_days: int | None = None

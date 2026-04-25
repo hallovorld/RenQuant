@@ -352,11 +352,33 @@ class SimAdapter:
         today_ts = pd.Timestamp(ctx.today)
         trade_events_this_bar: list[dict] = []
         len_trade_log_before = len(self._trade_log)
+        # Dedupe ctx.exits per ticker: when TopUp/Trim's "already exiting"
+        # guard misfired (pre-2026-04-24 tuple-attr bug) two exits could
+        # be queued for the same ticker. Even after the guard fix, an
+        # adversarial config could emit a stop_loss + a kelly_trim
+        # simultaneously. Priority: full liquidation over partial trim,
+        # earliest exit signal otherwise.
+        exits_by_ticker: dict[str, tuple] = {}
+        for ticker, sig in (ctx.exits or []):
+            existing = exits_by_ticker.get(ticker)
+            if existing is None:
+                exits_by_ticker[ticker] = (ticker, sig)
+                continue
+            # Prefer the one that's a full exit
+            ex_q = getattr(existing[1], "quantity", None)
+            new_q = getattr(sig, "quantity", None)
+            ex_full = ex_q is None or ex_q <= 0
+            new_full = new_q is None or new_q <= 0
+            if new_full and not ex_full:
+                exits_by_ticker[ticker] = (ticker, sig)
+            # Otherwise keep existing (first-write-wins)
+        deduped_exits = list(exits_by_ticker.values())
+
         # Track which tickers need FULL liquidation vs partial trim. Only
         # full exits pop from holdings/pos_shares; partial trims update
         # share count in-place (see _apply_sell).
         full_exit_tickers: set[str] = set()
-        for ticker, sig in ctx.exits:
+        for ticker, sig in deduped_exits:
             q = getattr(sig, "quantity", None)
             cur = self._pos_shares.get(ticker, 0)
             if q is None or q <= 0 or q >= cur:
@@ -367,11 +389,11 @@ class SimAdapter:
             self._holdings.pop(ticker, None)
             self._pos_shares.pop(ticker, None)
 
-        exit_tickers = {t for t, _ in ctx.exits}
-
-        # Preserve updated sell_streak / HWM from pipeline's SellJob
+        # Preserve updated sell_streak / HWM from pipeline's SellJob.
+        # Exclude only FULL exits — partial trims keep the position open
+        # with original entry_date / entry_price preserved.
         for ticker, hs in ctx.holdings.items():
-            if ticker not in exit_tickers:
+            if ticker not in full_exit_tickers:
                 self._holdings[ticker] = hs
 
         # ── Buys ────────────────────────────────────────────────────────────
@@ -473,12 +495,17 @@ class SimAdapter:
         tax_cfg   = ctx.config.get("tax", {})
         tax = compute_trade_tax(
             gross_pnl, hold_days,
-            float(tax_cfg.get("short_term_rate", 0.37)),
-            float(tax_cfg.get("long_term_rate", 0.20)),
+            float(tax_cfg.get("short_term_rate", 0.50)),
+            float(tax_cfg.get("long_term_rate", 0.32)),
             int(tax_cfg.get("long_term_threshold_days", 365)),
         )
         self._cash += sell_shares * price - tax
-        self._last_sell_date[ticker] = today_ts
+        # Wash-sale clock: stamp ONLY on full liquidation. Partial trims
+        # (Kelly rebalance) intentionally don't block subsequent top-ups —
+        # otherwise the position can never grow back toward Kelly target.
+        # Aligned with LeanAdapter + RunnerAdapter (2026-04-24 fix).
+        if not is_partial:
+            self._last_sell_date[ticker] = today_ts
 
         if is_partial:
             # Keep the position open with reduced share count. entry_price and

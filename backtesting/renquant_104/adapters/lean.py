@@ -166,13 +166,33 @@ class LeanAdapter:
         tax_thresh     = algo._tax_thresh_days
 
         # ── Apply exits ──────────────────────────────────────────────────────
+        # 2026-04-24 partial-sell support: when sig.quantity is set and
+        # < current holding, place a market sell for that quantity instead
+        # of Liquidate (which always closes the entire position).
+        # full_exits tracks tickers that we should actually pop from
+        # algo._holdings + stamp last_sell_dates for wash-sale.
+        full_exits: set[str] = set()
         for ticker, sig in ctx.exits:
             hs        = ctx.holdings.get(ticker)
             sym       = algo.symbols[ticker]
             gross_pnl = float(algo.Portfolio[sym].UnrealizedProfit)
             days_held = (ctx.today - hs.entry_date).days if hs else 0
             is_lt     = days_held >= tax_thresh
-            tax       = compute_trade_tax(gross_pnl, days_held, tax_short, tax_long, tax_thresh)
+
+            req_qty = getattr(sig, "quantity", None)
+            holding_qty = float(algo.Portfolio[sym].Quantity)
+            is_partial = (req_qty is not None and 0 < req_qty < holding_qty)
+
+            if is_partial:
+                # Partial sell: pro-rate tax to fraction sold, keep position.
+                frac = float(req_qty) / max(holding_qty, 1.0)
+                tax  = compute_trade_tax(
+                    gross_pnl * frac, days_held, tax_short, tax_long, tax_thresh,
+                )
+            else:
+                tax = compute_trade_tax(
+                    gross_pnl, days_held, tax_short, tax_long, tax_thresh,
+                )
 
             algo._total_tax     += tax
             algo._executed_sells += 1
@@ -191,21 +211,35 @@ class LeanAdapter:
             elif sig.exit_type == "rotation":
                 algo._rotation_exits += 1
 
+            tag = "TRIM" if is_partial else "SELL"
             algo.Debug(
-                f"{ctx.today} {ticker} SELL pnl=${gross_pnl:.2f} "
+                f"{ctx.today} {ticker} {tag} pnl=${gross_pnl:.2f} "
                 f"held={days_held}d tax=${tax:.2f} "
                 f"({'LT' if is_lt else 'ST'}) {sig.reason}"
             )
-            algo._last_sell_dates[ticker] = ctx.today
-            algo.Liquidate(sym)
 
-        # Remove exited tickers from algo._holdings
-        for ticker, _ in ctx.exits:
+            if is_partial:
+                # Place a market order for -quantity (negative = sell).
+                # MarketOrder API: place exactly N shares, leaves remainder.
+                algo.MarketOrder(sym, -int(req_qty))
+                # DON'T stamp last_sell_dates — partial trim shouldn't
+                # block top-up via wash-sale (matches RunnerAdapter +
+                # SimAdapter behaviour after the 2026-04-24 fix).
+            else:
+                algo._last_sell_dates[ticker] = ctx.today
+                algo.Liquidate(sym)
+                full_exits.add(ticker)
+
+        # Remove fully-exited tickers from algo._holdings (partial trims keep
+        # the position open with original entry_date / entry_price preserved).
+        for ticker in full_exits:
             algo._holdings.pop(ticker, None)
 
         # ── Persist updated HoldingStates (streak, HWM) from SellJob ────────
+        # Skip only fully-exited tickers; partial trims keep the holding
+        # state alive (entry_date / entry_price unchanged).
         for ticker, hs in ctx.holdings.items():
-            if ticker not in [t for t, _ in ctx.exits]:
+            if ticker not in full_exits:
                 algo._holdings[ticker] = hs
 
         # ── Update SPY return buffer and prev closes ──────────────────────
@@ -230,6 +264,11 @@ class LeanAdapter:
                 algo._prev_closes[ticker] = float(df["close"].iloc[-1])
 
         # ── Apply buy orders ──────────────────────────────────────────────────
+        # Top-up support: when ticker already held (TopUpHeldTask emitted
+        # an add-to-existing order), preserve entry_date / entry_price /
+        # entry_*_score baselines and only adjust shares + HWM. Resetting
+        # entry state on every buy used to corrupt hold-day clocks, tax
+        # ST/LT classification, and trailing-stop arming.
         for order in ctx.orders:
             ticker     = order["ticker"]
             shares     = order["shares"]
@@ -239,27 +278,38 @@ class LeanAdapter:
             if sym is None:
                 continue
 
+            already_held = ticker in algo._holdings
+
             algo.Debug(
-                f"{ctx.today} {ticker} BUY regime={order['regime']} "
+                f"{ctx.today} {ticker} {'TOPUP' if already_held else 'BUY'} "
+                f"regime={order['regime']} "
                 f"conf={order['confidence']:.2f} rank={order['rank_score']:.3f} "
                 f"rs={order['rs_score']:.3f} pct={target_pct:.2%} {order['detail']}"
             )
 
-            algo._holdings[ticker] = HoldingState(
-                entry_price    = price,
-                entry_date     = ctx.today,
-                high_watermark = price,
-                # Thesis-degradation baselines (Approach A) — stamp entry
-                # signals so future rotation checks can compare today's
-                # scores vs this fixed baseline. Not recomputed per bar.
-                entry_rank_score       = order.get("rank_score"),
-                entry_panel_score      = order.get("panel_score"),
-                entry_kelly_target_pct = order.get("kelly_target_pct"),
-            )
+            if already_held:
+                hs = algo._holdings[ticker]
+                # Refresh HWM with today's price; keep entry tenure intact.
+                hs.high_watermark = max(hs.high_watermark, price)
+            else:
+                algo._holdings[ticker] = HoldingState(
+                    entry_price    = price,
+                    entry_date     = ctx.today,
+                    high_watermark = price,
+                    # Thesis-degradation baselines (Approach A) — stamp entry
+                    # signals so future rotation checks can compare today's
+                    # scores vs this fixed baseline. Not recomputed per bar.
+                    entry_rank_score       = order.get("rank_score"),
+                    entry_panel_score      = order.get("panel_score"),
+                    entry_kelly_target_pct = order.get("kelly_target_pct"),
+                )
             algo._executed_buys += 1
             algo.SetHoldings(sym, target_pct)
 
         # ── Telemetry counters from pipeline ─────────────────────────────────
+        # Audit #88: also wire blocked_min_hold so OnEndOfAlgorithm displays
+        # the real value (was previously initialised to 0 and never bumped,
+        # always reported as zero in stats).
         c = ctx.counters
         algo._blocked_streak    += c.get("blocked_streak",    0)
         algo._transition_blocks += c.get("transition_blocks", 0)
@@ -268,6 +318,7 @@ class LeanAdapter:
         algo._blocked_wash      += c.get("blocked_wash",      0)
         algo._sector_blocks     += c.get("sector_blocks",     0)
         algo._corr_blocks       += c.get("corr_blocks",       0)
+        algo._blocked_min_hold  += c.get("blocked_min_hold",  0)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

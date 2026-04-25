@@ -113,9 +113,17 @@ def run_parallel(
             try:
                 fut.result(timeout=timeout_seconds)
             except TimeoutError:
-                log.error("run_parallel [%s] %s TIMEOUT after %ss — skipped",
+                # Audit #2: ThreadPoolExecutor can't actually interrupt a
+                # running thread; fut.cancel() is a no-op once the worker
+                # has started. The hung worker keeps consuming CPU until
+                # it returns. Don't pretend we "skipped" it — the result
+                # is still pending; we're only abandoning *this* result
+                # collection. Log accordingly so operators don't expect
+                # the underlying work to stop.
+                fut.cancel()   # only effective if worker hasn't started
+                log.error("run_parallel [%s] %s TIMEOUT after %ss — abandoning "
+                          "result (worker may still be running in background)",
                           ticker, job_name, timeout_seconds)
-                fut.cancel()
             except Exception as e:
                 log.error("run_parallel [%s] %s ERROR — %s: %s",
                           ticker, job_name, type(e).__name__, e)

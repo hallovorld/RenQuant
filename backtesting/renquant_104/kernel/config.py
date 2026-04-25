@@ -22,8 +22,16 @@ def split_date_parts(date_text: str) -> tuple[int, int, int]:
 
 
 def artifact_path(filename: str) -> Path:
-    """Return the canonical path for a strategy artifact (artifacts/ subdir)."""
-    return STRATEGY_DIR / "artifacts" / filename
+    """Return the canonical path for a strategy artifact (artifacts/ subdir).
+
+    Audit #89: tolerate filenames that already include an `artifacts/`
+    prefix (some configs supply "artifacts/spy-gmm-regime.json"). Strip
+    the prefix before joining so we don't end up with `…/artifacts/artifacts/…`.
+    """
+    fn = str(filename)
+    if fn.startswith("artifacts/") or fn.startswith("artifacts\\"):
+        fn = fn[len("artifacts/"):]
+    return STRATEGY_DIR / "artifacts" / fn
 
 
 # ── Aliases for callers migrating from common/ ────────────────────────────────

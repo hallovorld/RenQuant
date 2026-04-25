@@ -70,8 +70,17 @@ class TrimHeldTask(Task):
             return
 
         # Tickers already exiting or rotating this bar — don't trim on top.
-        already_exiting = {getattr(e, "ticker", None)
-                            for e in getattr(ctx, "exits", [])}
+        # Production ctx.exits is list[(ticker, ExitSignal)]; some tests
+        # still pass list[SimpleNamespace] / list[ExitSignal-like]. Be
+        # tolerant of both shapes.
+        already_exiting: set = set()
+        for e in (getattr(ctx, "exits", []) or []):
+            if isinstance(e, tuple) and len(e) == 2:
+                already_exiting.add(e[0])
+            else:
+                t = getattr(e, "ticker", None)
+                if t is not None:
+                    already_exiting.add(t)
         rotation_sells  = {p.sell_ticker for p in (getattr(ctx, "rotations", []) or [])}
         already_buying  = {o.get("ticker") for o in getattr(ctx, "orders", [])
                             if isinstance(o, dict)}
