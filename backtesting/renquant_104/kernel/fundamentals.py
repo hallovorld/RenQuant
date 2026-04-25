@@ -54,15 +54,32 @@ class FundamentalsStore:
         return self.data_dir / f"{symbol.upper()}.parquet"
 
     def load(self, symbol: str) -> pd.DataFrame | None:
+        # Audit fix FU-4 (Round 2 deep audit, 2026-04-25): catch corrupt
+        # parquet (truncated mid-write, truncated by disk full, malformed
+        # by older format). Pre-fix this raised → callers like
+        # FundamentalsStore.latest() crashed → LoadFundamentalsTask
+        # could fail the entire panel pipeline. Now: log + return None
+        # so the caller treats it as cache-miss and refetches.
         p = self._path(symbol)
         if not p.exists():
             return None
-        df = pd.read_parquet(p)
+        try:
+            df = pd.read_parquet(p)
+        except Exception as exc:
+            import logging  # noqa: PLC0415
+            logging.getLogger("kernel.fundamentals").warning(
+                "FundamentalsStore.load(%s): corrupt parquet — %s; "
+                "treating as cache-miss", symbol, exc,
+            )
+            return None
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df.sort_index()
 
     def save(self, df: pd.DataFrame, symbol: str) -> Path:
+        # Audit fix FU-1 (Round 2 deep audit, 2026-04-25): atomic write
+        # via .tmp + rename. Same pattern as DC-2-CACHE — prevent
+        # process-kill mid-write from leaving a truncated parquet.
         p = self._path(symbol)
         p.parent.mkdir(parents=True, exist_ok=True)
         if not isinstance(df.index, pd.DatetimeIndex):
@@ -71,7 +88,9 @@ class FundamentalsStore:
         if existing is not None:
             df = pd.concat([existing, df])
             df = df[~df.index.duplicated(keep="last")].sort_index()
-        df.to_parquet(p)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        df.to_parquet(tmp)
+        tmp.replace(p)
         return p
 
     def latest(self, symbol: str) -> dict[str, float] | None:
