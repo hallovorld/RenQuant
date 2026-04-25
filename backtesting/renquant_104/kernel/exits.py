@@ -209,7 +209,16 @@ def compute_exits(
       consecutive_sell_signals        — model sell streak threshold
       min_hold_days                   — model-sell blocked before N days
     """
-    # Update HWM before any checks
+    # Audit fix E-5 (Round 5, 2026-04-25): pre-fix, a NaN/inf current_price
+    # silently corrupted high_watermark via `max(HWM, NaN) = NaN`. Once HWM
+    # was NaN, every subsequent trailing-stop computation propagated NaN
+    # → no exit ever fires for that position. Now: skip HWM update and
+    # all other exit checks on non-finite price (caller's responsibility
+    # to retry next bar with a valid price). Returning _NO_EXIT is the
+    # safe choice — caller sees no signal vs corrupted state.
+    import math
+    if not math.isfinite(current_price):
+        return _NO_EXIT, state
     state.high_watermark = max(state.high_watermark, current_price)
 
     # 1. Trailing stop

@@ -126,6 +126,66 @@ class TestK1KellyRejectsNanInf:
         assert kelly_target_pct(0.02, 0.10, max_pct=0.15, fractional=0.25) == pytest.approx(0.15)
 
 
+# ── E-5 (Round 5 audit): compute_exits doesn't corrupt HWM on NaN price ───────
+
+class TestE5ExitsRejectsNanPrice:
+    """Pre-fix, `max(HWM, NaN) = NaN` corrupted high_watermark for the
+    rest of the position's life. Trailing-stop and other HWM-based checks
+    then propagated NaN → no exit ever fired."""
+
+    def _state(self, hwm=110.0, entry=100.0):
+        from kernel.exits import HoldingState
+        import datetime
+        return HoldingState(
+            entry_price=entry,
+            entry_date=datetime.date(2026, 1, 1),
+            high_watermark=hwm,
+        )
+
+    def test_nan_price_does_not_corrupt_hwm(self):
+        from kernel.exits import compute_exits
+        import datetime
+        state = self._state(hwm=110.0)
+        sig, state2 = compute_exits(
+            current_price=float("nan"),
+            today=datetime.date(2026, 6, 1),
+            model_action="hold",
+            state=state,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert state2.high_watermark == 110.0, "HWM must NOT be corrupted by NaN price"
+        assert sig.should_exit is False
+
+    def test_inf_price_does_not_corrupt_hwm(self):
+        from kernel.exits import compute_exits
+        import datetime
+        state = self._state(hwm=110.0)
+        _, state2 = compute_exits(
+            current_price=float("inf"),
+            today=datetime.date(2026, 6, 1),
+            model_action="hold",
+            state=state,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert state2.high_watermark == 110.0
+
+    def test_finite_price_still_updates_hwm(self):
+        from kernel.exits import compute_exits
+        import datetime
+        state = self._state(hwm=110.0)
+        _, state2 = compute_exits(
+            current_price=125.0,
+            today=datetime.date(2026, 6, 1),
+            model_action="hold",
+            state=state,
+            params={"trailing_stop_trigger_pct": 0.20,
+                    "trailing_stop_trail_pct": 0.18},
+        )
+        assert state2.high_watermark == 125.0
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
