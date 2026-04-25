@@ -36,12 +36,35 @@ exec >> "$LOG" 2>&1
 echo "=== daily_104 started at $(date) ==="
 
 # ── Lock file — prevent concurrent invocations ────────────────────────────────
+# Audit fix LOCK-STALE (Round 2 deep audit, 2026-04-25): pre-fix, a
+# stale lock with a dead PID (left over after a SIGKILL / kernel panic
+# / hard reboot — when the EXIT trap doesn't fire) blocked every
+# subsequent run silently. After a 6 PM crash, the next morning's
+# 6:32 AM run would see the dead-PID lock, log "Another daily_104 run
+# is active", and exit 0. No models retrained, market opens, positions
+# never exit. Now: when we hit a lock conflict, validate the recorded
+# PID is actually alive via `kill -0`. If not, clear the stale lock
+# and retry once.
 LOCK_FILE="/tmp/renquant_104_daily.lock"
-if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
+_acquire_lock() {
+    ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null
+}
+if ! _acquire_lock; then
     EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
-    echo "Another daily_104 run is active (PID=$EXISTING_PID, lock=$LOCK_FILE) — skipping."
-    notify "RenQuant 104 SKIP" "Duplicate daily run blocked (PID=$EXISTING_PID already running)"
-    exit 0
+    if [ "$EXISTING_PID" != "?" ] && [ -n "$EXISTING_PID" ] && \
+            ! kill -0 "$EXISTING_PID" 2>/dev/null; then
+        echo "Stale lock detected (PID=$EXISTING_PID is dead) — clearing and retrying."
+        rm -f "$LOCK_FILE"
+        if ! _acquire_lock; then
+            echo "Failed to acquire lock after clearing stale — aborting."
+            notify "RenQuant 104 ERROR" "Lock acquire retry failed"
+            exit 1
+        fi
+    else
+        echo "Another daily_104 run is active (PID=$EXISTING_PID, lock=$LOCK_FILE) — skipping."
+        notify "RenQuant 104 SKIP" "Duplicate daily run blocked (PID=$EXISTING_PID already running)"
+        exit 0
+    fi
 fi
 trap "rm -f '$LOCK_FILE'" EXIT
 

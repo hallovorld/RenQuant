@@ -71,11 +71,29 @@ if [ -f "$DONE_FILE" ]; then
 fi
 
 # ── Lock file — prevent concurrent invocations of same tag ───────────────────
+# Audit fix LOCK-STALE (Round 2 deep audit, 2026-04-25): same dead-PID
+# stale-lock recovery as daily_104.sh. Without this, a SIGKILL'd run
+# leaves a dead-PID lockfile that silently blocks every subsequent
+# 30-minute intraday tick — positions never exit on stop-loss until
+# the lock is manually cleared.
 LOCK_FILE="/tmp/renquant_104_${TAG}.lock"
-if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
+_acquire_lock() {
+    ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null
+}
+if ! _acquire_lock; then
     EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "?")
-    echo "live_104 [$TAG] already running (PID=$EXISTING_PID) — skipping."
-    exit 0
+    if [ "$EXISTING_PID" != "?" ] && [ -n "$EXISTING_PID" ] && \
+            ! kill -0 "$EXISTING_PID" 2>/dev/null; then
+        echo "Stale lock (PID=$EXISTING_PID is dead) — clearing and retrying."
+        rm -f "$LOCK_FILE"
+        if ! _acquire_lock; then
+            echo "Failed to acquire lock after clearing stale — aborting."
+            exit 1
+        fi
+    else
+        echo "live_104 [$TAG] already running (PID=$EXISTING_PID) — skipping."
+        exit 0
+    fi
 fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
