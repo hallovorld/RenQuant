@@ -396,6 +396,61 @@ class TestN2N14EarlyStopping:
         # actually fired)
         assert isinstance(info.get("val_mu_ic"), float)
 
+    def test_n17_cpcv_adapter_produces_oos_ic(self):
+        """N-17: NGBoostFitTask.cv adapter wraps NGBoostHead so panel-LTR's
+        purged-CV machinery produces OOS μ-IC for NGBoost too. Pre-fix
+        the artifact had only train_mu_ic; post-fix oos_mean_ic +
+        per-fold values are recorded when `panel_ltr.ngboost.cv.enabled`.
+        """
+        # Standalone test of the adapter pattern — full pipeline test
+        # would need a 1000+ row panel which is too slow for unit tests.
+        from training_panel.ngboost_head import NGBoostHead
+        from training_panel.purged_cv import PurgedKFold, cross_validated_ic
+        rng = np.random.default_rng(0)
+        n_dates = 80
+        rows = []
+        for d in range(n_dates):
+            for t in range(5):
+                x1 = rng.normal()
+                x2 = rng.normal()
+                rows.append({
+                    "date": pd.Timestamp("2024-01-01") + pd.Timedelta(days=d),
+                    "ticker": f"T{t}",
+                    "x1": x1, "x2": x2,
+                    "residual_return_raw": 1.5 * x1 - 0.5 * x2 + rng.normal(0.0, 0.3),
+                    "weight": 1.0,
+                })
+        panel = pd.DataFrame(rows)
+
+        class _Adapter:
+            def __init__(self_a):
+                self_a._head = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+            def fit(self_a, X, y, sample_weight=None):
+                df = X.copy()
+                df["residual_return_raw"] = y
+                if sample_weight is not None:
+                    df["weight"] = sample_weight
+                self_a._head.train(
+                    df, feature_cols=list(X.columns),
+                    label_col="residual_return_raw",
+                    sample_weight_col="weight" if sample_weight is not None else None,
+                )
+            def predict(self_a, X):
+                return self_a._head.predict_distribution(X)["mu"].values
+
+        cv = PurgedKFold(n_splits=3, embargo_days=5, lookahead_days=5)
+        result = cross_validated_ic(
+            _Adapter, panel, ["x1", "x2"], "residual_return_raw", cv,
+            weight_col="weight",
+        )
+        assert "mean_ic" in result
+        # On a synthetic Gaussian panel with strong signal, mean_ic should
+        # be clearly positive (≥0.10 typical with 1.5x1 - 0.5x2 + small noise).
+        assert result["mean_ic"] > 0.05, (
+            f"NGBoost CPCV adapter recovered IC {result['mean_ic']:.3f} on "
+            f"a clean signal — should be ≥0.05. Adapter wiring may be broken."
+        )
+
     def test_early_stop_actually_halts_before_max_iter(self):
         """With low patience, training should stop before n_estimators."""
         from training_panel.ngboost_head import NGBoostHead

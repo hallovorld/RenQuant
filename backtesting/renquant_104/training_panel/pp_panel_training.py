@@ -1495,7 +1495,6 @@ class NGBoostFitTask(PanelTask):
         import time as _time
 
         params = dict(cfg.get("params", {}))
-        head = NGBoostHead(params=params)
         # Audit fix N-2 / N-14 (2026-04-25): enable time-ordered val
         # split + early stopping. Default 20% of distinct dates → val,
         # halt when validation NLL plateaus for `early_stopping_rounds`
@@ -1506,6 +1505,91 @@ class NGBoostFitTask(PanelTask):
         if es_rounds in (0, False):
             es_rounds = None
         val_fraction = float(cfg.get("val_fraction", 0.2))
+
+        # ── N-17 (2026-04-25 autonomous run): CPCV for NGBoost ────────
+        # Pre-fix: NGBoost had NO out-of-sample IC. We persisted only
+        # train_mu_ic + train σ̄ in the artifact, so the operator had no
+        # signal whether μ̂ generalised. This block runs CPCV with the
+        # SAME splitter family used by panel-LTR (CombinatorialPurgedCV
+        # by default; configurable). The resulting `oos_*` metrics are
+        # surfaced via NGBoostSaveTask so they appear in the artifact.
+        # Off by default to keep retrain time bounded; enable via
+        # config `panel_ltr.ngboost.cv.enabled = true`.
+        cv_cfg = cfg.get("cv", {}) or {}
+        cv_enabled = bool(cv_cfg.get("enabled", False))
+        cv_result: dict | None = None
+        if cv_enabled:
+            from training_panel.purged_cv import (
+                CombinatorialPurgedCV, PurgedKFold,
+                cross_validated_ic, cross_validated_ic_cpcv,
+            )
+            cv_method   = str(cv_cfg.get("method", "cpcv")).lower()
+            cv_splits   = int(cv_cfg.get("n_splits", 6))
+            cv_test_grp = int(cv_cfg.get("n_test_groups", 2))
+            cv_embargo  = int(cv_cfg.get("embargo_days", 5))
+            cv_lookahd  = int(cv_cfg.get("lookahead_days", 5))
+            # Use a smaller n_estimators in CV (halve the production
+            # rounds) to keep CV time-bounded — same rationale as the
+            # transformer/lgbm CV adapters.
+            cv_params = dict(params)
+            cv_params["n_estimators"] = max(50, int(params.get("n_estimators", 400)) // 2)
+
+            class _NGBSklearnAdapter:
+                def __init__(self_a):
+                    self_a._head = NGBoostHead(params=cv_params)
+                def fit(self_a, X, y, sample_weight=None):
+                    df = X.copy()
+                    df["residual_return_raw"] = y
+                    if sample_weight is not None:
+                        df["weight"] = sample_weight
+                    self_a._head.train(
+                        df,
+                        feature_cols=list(X.columns),
+                        label_col="residual_return_raw",
+                        sample_weight_col="weight" if sample_weight is not None else None,
+                        early_stopping_rounds=None,  # CV folds are short — skip ES
+                    )
+                def predict(self_a, X):
+                    pred = self_a._head.predict_distribution(pd.DataFrame(
+                        X.values, index=X.index, columns=X.columns,
+                    ))
+                    return pred["mu"].reindex(X.index).values
+
+            t_cv = _time.monotonic()
+            try:
+                if cv_method == "cpcv":
+                    cv = CombinatorialPurgedCV(
+                        n_splits=cv_splits, n_test_groups=cv_test_grp,
+                        embargo_days=cv_embargo, lookahead_days=cv_lookahd,
+                    )
+                    cv_result = cross_validated_ic_cpcv(
+                        _NGBSklearnAdapter, sub, ctx.feature_cols,
+                        "residual_return_raw", cv,
+                        weight_col="weight" if "weight" in sub.columns else None,
+                    )
+                else:
+                    cv = PurgedKFold(
+                        n_splits=cv_splits, embargo_days=cv_embargo,
+                        lookahead_days=cv_lookahd,
+                    )
+                    cv_result = cross_validated_ic(
+                        _NGBSklearnAdapter, sub, ctx.feature_cols,
+                        "residual_return_raw", cv,
+                        weight_col="weight" if "weight" in sub.columns else None,
+                    )
+                log.info(
+                    "NGBoostFitTask[CV %s]: mean=%+.4f std=%.4f n_splits=%d  elapsed=%.1fs",
+                    cv_method, cv_result.get("mean_ic", float("nan")),
+                    cv_result.get("std_ic", float("nan")),
+                    len(cv_result.get("per_fold_ic", [])),
+                    _time.monotonic() - t_cv,
+                )
+            except Exception as exc:
+                log.warning("NGBoostFitTask[CV]: skipped due to %s: %s",
+                            type(exc).__name__, exc)
+                cv_result = None
+
+        head = NGBoostHead(params=params)
         t0 = _time.monotonic()
         fit = head.train(
             sub,
@@ -1515,6 +1599,12 @@ class NGBoostFitTask(PanelTask):
             val_fraction=val_fraction,
             early_stopping_rounds=int(es_rounds) if es_rounds else None,
         )
+        if cv_result is not None:
+            # Make CV metrics available to NGBoostSaveTask.
+            fit["oos_mean_ic"]    = cv_result.get("mean_ic")
+            fit["oos_std_ic"]     = cv_result.get("std_ic")
+            fit["oos_per_fold_ic"] = cv_result.get("per_fold_ic")
+            fit["oos_ic_quantiles"] = cv_result.get("quantiles", {})
         elapsed = _time.monotonic() - t0
         ctx.ngboost_head = head
         ctx.ngboost_fit = fit
@@ -1540,8 +1630,21 @@ class NGBoostSaveTask(PanelTask):
             "training_notes": cfg.get("training_notes", "Stage-2 NGBoost head"),
             "train_mu_mean":   ctx.ngboost_fit.get("train_mu_mean"),
             "train_sigma_mean": ctx.ngboost_fit.get("train_sigma_mean"),
+            "train_mu_ic":     ctx.ngboost_fit.get("train_mu_ic"),
+            "val_mu_ic":       ctx.ngboost_fit.get("val_mu_ic"),
+            "best_iter":       ctx.ngboost_fit.get("best_iter"),
             "n_rows":          ctx.ngboost_fit.get("n_rows"),
+            "n_rows_train":    ctx.ngboost_fit.get("n_rows_train"),
+            "n_rows_val":      ctx.ngboost_fit.get("n_rows_val"),
+            "n_rows_dropped":  ctx.ngboost_fit.get("n_rows_dropped"),
+            # N-17 audit (2026-04-25): CPCV results when ngboost.cv.enabled.
+            "oos_mean_ic":     ctx.ngboost_fit.get("oos_mean_ic"),
+            "oos_std_ic":      ctx.ngboost_fit.get("oos_std_ic"),
+            "oos_per_fold_ic": ctx.ngboost_fit.get("oos_per_fold_ic"),
+            "oos_ic_quantiles": ctx.ngboost_fit.get("oos_ic_quantiles"),
         }
+        # Strip None values to keep the artifact clean.
+        meta = {k: v for k, v in meta.items() if v is not None}
         ctx.ngboost_head.save(out_path, metadata=meta)
         ctx.ngboost_artifact_path = out_path
         log.info("NGBoostSaveTask: artifact → %s", out_path)
