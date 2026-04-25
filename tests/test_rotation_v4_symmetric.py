@@ -196,6 +196,101 @@ class TestMissingEntryLookup:
         assert pairs == []
 
 
+class TestOwnMomentumGate:
+    """Proposal 1 (Moskowitz-Ooi-Pedersen TSMOM) — require A's own
+    momentum to have broken AND B's own momentum to be intact,
+    independent of the cross-sectional rank signal."""
+
+    def test_a_own_momentum_intact_blocks(self):
+        """A is up 20% over 63d (positive own-momentum) → don't rotate OUT
+        even though A's rank has decayed."""
+        from kernel.rotation import find_thesis_symmetric_pairs
+
+        pairs = find_thesis_symmetric_pairs(
+            held_entry_scores = {"A": 0.40},
+            held_today_scores = {"A": 0.20},
+            held_meta         = {"A": _meta()},
+            candidates        = [_Cand("B", rank_score=0.45)],
+            entry_day_lookup  = {("B", datetime.date(2025, 1, 1)): 0.20},
+            today             = datetime.date(2025, 6, 1),
+            rotation_cfg      = _cfg(thesis_symmetric={
+                "max_a_velocity": 0.10, "min_b_velocity": 0.05,
+                "min_cross_flip": 0.15,
+                "own_momentum_enabled": True,
+                "a_own_mom_max": 0.0,     # A must be ≤ 0% 63d return
+                "b_own_mom_min": 0.0,
+            }),
+            tax_cfg           = {},
+            own_momentum      = {"A": +0.20, "B": +0.05},   # A still trending!
+        )
+        assert pairs == []
+
+    def test_b_own_momentum_negative_blocks(self):
+        """B's own 63d return is negative → don't rotate INTO a falling knife."""
+        from kernel.rotation import find_thesis_symmetric_pairs
+
+        pairs = find_thesis_symmetric_pairs(
+            held_entry_scores = {"A": 0.40},
+            held_today_scores = {"A": 0.20},
+            held_meta         = {"A": _meta()},
+            candidates        = [_Cand("B", rank_score=0.45)],
+            entry_day_lookup  = {("B", datetime.date(2025, 1, 1)): 0.20},
+            today             = datetime.date(2025, 6, 1),
+            rotation_cfg      = _cfg(thesis_symmetric={
+                "max_a_velocity": 0.10, "min_b_velocity": 0.05,
+                "min_cross_flip": 0.15,
+                "own_momentum_enabled": True,
+                "a_own_mom_max": 0.0, "b_own_mom_min": 0.0,
+            }),
+            tax_cfg           = {},
+            own_momentum      = {"A": -0.05, "B": -0.10},   # B is falling
+        )
+        assert pairs == []
+
+    def test_both_momentum_right_direction_fires(self):
+        from kernel.rotation import find_thesis_symmetric_pairs
+
+        pairs = find_thesis_symmetric_pairs(
+            held_entry_scores = {"A": 0.40},
+            held_today_scores = {"A": 0.20},
+            held_meta         = {"A": _meta()},
+            candidates        = [_Cand("B", rank_score=0.45)],
+            entry_day_lookup  = {("B", datetime.date(2025, 1, 1)): 0.20},
+            today             = datetime.date(2025, 6, 1),
+            rotation_cfg      = _cfg(thesis_symmetric={
+                "max_a_velocity": 0.10, "min_b_velocity": 0.05,
+                "min_cross_flip": 0.15,
+                "own_momentum_enabled": True,
+                "a_own_mom_max": 0.0, "b_own_mom_min": 0.0,
+            }),
+            tax_cfg           = {},
+            own_momentum      = {"A": -0.08, "B": +0.12},   # A down, B up
+        )
+        assert len(pairs) == 1
+
+    def test_flag_off_ignores_own_momentum(self):
+        """With own_momentum_enabled=False, A's positive momentum
+        doesn't block even when the momentum dict is provided."""
+        from kernel.rotation import find_thesis_symmetric_pairs
+
+        pairs = find_thesis_symmetric_pairs(
+            held_entry_scores = {"A": 0.40},
+            held_today_scores = {"A": 0.20},
+            held_meta         = {"A": _meta()},
+            candidates        = [_Cand("B", rank_score=0.45)],
+            entry_day_lookup  = {("B", datetime.date(2025, 1, 1)): 0.20},
+            today             = datetime.date(2025, 6, 1),
+            rotation_cfg      = _cfg(thesis_symmetric={
+                "max_a_velocity": 0.10, "min_b_velocity": 0.05,
+                "min_cross_flip": 0.15,
+                # own_momentum_enabled default False
+            }),
+            tax_cfg           = {},
+            own_momentum      = {"A": +0.50, "B": -0.20},   # would block if enabled
+        )
+        assert len(pairs) == 1
+
+
 class TestGreedyPairing:
     def test_picks_biggest_cross_flip(self):
         """When multiple holds are swappable for one cand, pick the

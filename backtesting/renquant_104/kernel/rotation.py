@@ -219,6 +219,8 @@ def find_thesis_symmetric_pairs(
     today:             datetime.date,
     rotation_cfg:      dict,
     tax_cfg:           dict,
+    own_momentum:      "dict[str, float] | None" = None,
+                                                        # {ticker: 63d return}
 ) -> list[RotationPair]:
     """Rotation V4 — full 4-point symmetric thesis mode (2026-04-24).
 
@@ -247,6 +249,15 @@ def find_thesis_symmetric_pairs(
     max_a_velocity     = float(thesis_cfg.get("max_a_velocity", 0.10))
     min_b_velocity     = float(thesis_cfg.get("min_b_velocity", 0.05))
     min_cross_flip     = float(thesis_cfg.get("min_cross_flip", 0.15))
+    # Proposal 1 from rotation_research_2026-04-24.md — own time-series
+    # momentum gate (Moskowitz-Ooi-Pedersen 2012). When enabled and
+    # own_momentum dict provided, require A's own 63d return ≤ a_mom_max
+    # (has broken down) AND B's own 63d return ≥ b_mom_min (still trending).
+    # Jegadeesh 1993: winners keep winning; don't rotate out of an asset
+    # whose own time-series momentum is intact.
+    own_mom_enabled    = bool(thesis_cfg.get("own_momentum_enabled", False))
+    a_mom_max          = float(thesis_cfg.get("a_own_mom_max", 0.0))   # A must be ≤ this
+    b_mom_min          = float(thesis_cfg.get("b_own_mom_min", 0.0))   # B must be ≥ this
     min_hold           = int(rotation_cfg.get("min_rotation_hold_days", 30))
     lt_protect         = int(rotation_cfg.get("lt_protection_days", 30))
     max_per_bar        = int(rotation_cfg.get("max_rotations_per_bar", 2))
@@ -282,6 +293,13 @@ def find_thesis_symmetric_pairs(
         a_velocity = float(a_today) - float(a_entry)
         if a_velocity > -max_a_velocity:
             continue   # A hasn't decayed enough
+        # Proposal 1 own-momentum gate — A's OWN time-series momentum
+        # must have also broken (negative or below threshold). Without
+        # this, we'd rotate out of winners that Jegadeesh says keep winning.
+        if own_mom_enabled and own_momentum is not None:
+            a_mom = own_momentum.get(ticker)
+            if a_mom is not None and a_mom > a_mom_max:
+                continue
         eligible[ticker] = {
             "a_entry":   float(a_entry),
             "a_today":   float(a_today),
@@ -320,6 +338,12 @@ def find_thesis_symmetric_pairs(
             b_velocity = b_today - b_entry
             if b_velocity < min_b_velocity:
                 continue
+            # Proposal 1 — B's own momentum must be intact (≥ threshold).
+            # Don't rotate INTO a falling knife just because rank lifted.
+            if own_mom_enabled and own_momentum is not None:
+                b_mom = own_momentum.get(cand_ticker)
+                if b_mom is not None and b_mom < b_mom_min:
+                    continue
             cross_flip = (b_today - info["a_today"]) - (b_entry - info["a_entry"])
             if cross_flip < min_cross_flip:
                 continue
