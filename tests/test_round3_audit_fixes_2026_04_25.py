@@ -1218,6 +1218,48 @@ class TestCPS1ComputePositionSizeRejectsNanPcts:
         assert (target_pct, shares) == (0.0, 0)
 
 
+# ── CV-1 + LBL-CV-1 (Round 2 audit): purge window + NaN-label filter ──────────
+
+class TestCV1AndLBLCV1PurgedCVFixes:
+    """Two related lookahead/contamination bugs in purged_cv.py:
+
+    CV-1: purge window was `lookahead_days - 1`, leaking one bar of
+          forward-return overlap into train. Estimated CV IC inflation
+          ~15-25%. Fix: purge full `lookahead_days`.
+
+    LBL-CV-1: NaN labels (from boundary trim / missing sector mappings)
+          passed to model.fit() unfiltered. Tree models tolerated;
+          transformer cast NaN→0 → trained on fake "zero residual" rows.
+          Fix: filter NaN labels before fit, with weights aligned.
+    """
+
+    def test_cv1_purge_uses_full_lookahead_days(self):
+        """The purge timedelta must equal lookahead_days, not lookahead - 1."""
+        import inspect
+        from training_panel.purged_cv import CombinatorialPurgedCV
+        src = inspect.getsource(CombinatorialPurgedCV.split)
+        # Post-fix should use `lookahead_days` not `lookahead_days - 1`.
+        # The fix lives in the purge_start computation.
+        assert "lookahead_days)" in src
+        assert "lookahead_days) - 1" not in src, (
+            "CV-1 regression: purge window has reverted to lookahead_days - 1, "
+            "which leaks the boundary row into training labels."
+        )
+
+    def test_lbl_cv1_filters_nan_labels_before_fit(self):
+        """cross_validated_ic should not pass NaN labels to model.fit.
+
+        The CV-loop function is `cross_validated_ic`, NOT `evaluate_fold_ic`
+        (which only evaluates a pre-fit model on a test_idx).
+        """
+        import inspect
+        from training_panel.purged_cv import cross_validated_ic
+        src = inspect.getsource(cross_validated_ic)
+        assert "np.isfinite(y_tr)" in src or "valid_label" in src, (
+            "LBL-CV-1 regression: NaN-label filter missing before model.fit."
+        )
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

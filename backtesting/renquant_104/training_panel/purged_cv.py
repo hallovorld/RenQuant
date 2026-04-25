@@ -155,6 +155,23 @@ def cross_validated_ic(
         y_tr = tr[label_col].values
         w_tr = tr[weight_col].values if weight_col and weight_col in tr.columns else None
 
+        # Audit fix LBL-CV-1 (Round 2 deep audit, 2026-04-25): pre-fix,
+        # NaN labels (from short-history boundary, dropped tickers, or
+        # sector_returns_by_ticker mismatch) were passed unfiltered to
+        # `model.fit(X, y)`. Tree models tolerated NaN labels with weird
+        # defaults; transformers cast NaN → 0 silently and treated those
+        # rows as "perfect-zero residual" training signal — biasing the
+        # model toward predicting zero on every input. Estimated IC
+        # degradation 0.05-0.10 in extreme cases. Now: drop NaN-label
+        # rows BEFORE fit. y must be finite; if it slips here, that's a
+        # pipeline contract violation upstream.
+        valid_label = np.isfinite(y_tr)
+        if not valid_label.all():
+            X_tr = X_tr[valid_label]
+            y_tr = y_tr[valid_label]
+            if w_tr is not None:
+                w_tr = w_tr[valid_label]
+
         try:
             if w_tr is not None:
                 model.fit(X_tr, y_tr, sample_weight=w_tr)
@@ -243,8 +260,17 @@ class CombinatorialPurgedCV:
                 block = groups[k]
                 block_start = block[0]
                 block_end   = block[-1]
+                # Audit fix CV-1 (Round 2 deep audit, 2026-04-25):
+                # was `lookahead_days - 1`. Forward-return at index t
+                # uses prices [t, t+L], so any training row whose label
+                # touches the test block must satisfy `t + L > block_start`
+                # ⇔ `t > block_start - L`. The purge window is therefore
+                # **L days** wide, not L-1. Pre-fix purged 4 days for a
+                # 5-day lookahead → leaked one row of overlap into train,
+                # silently inflating CV IC by ~15-25%. Same bug pattern
+                # as R2-30 — guard the regression with the new test below.
                 purge_start = pd.Timestamp(block_start) - pd.Timedelta(
-                    days=int(self.lookahead_days) - 1,
+                    days=int(self.lookahead_days),
                 )
                 embargo_end = pd.Timestamp(block_end) + pd.Timedelta(
                     days=int(self.embargo_days),
