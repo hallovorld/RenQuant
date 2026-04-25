@@ -1496,12 +1496,24 @@ class NGBoostFitTask(PanelTask):
 
         params = dict(cfg.get("params", {}))
         head = NGBoostHead(params=params)
+        # Audit fix N-2 / N-14 (2026-04-25): enable time-ordered val
+        # split + early stopping. Default 20% of distinct dates → val,
+        # halt when validation NLL plateaus for `early_stopping_rounds`
+        # iterations. Config keys under `panel_ltr.ngboost`:
+        #   val_fraction          (float, default 0.2)
+        #   early_stopping_rounds (int,   default 25; 0/null disables)
+        es_rounds = cfg.get("early_stopping_rounds", 25)
+        if es_rounds in (0, False):
+            es_rounds = None
+        val_fraction = float(cfg.get("val_fraction", 0.2))
         t0 = _time.monotonic()
         fit = head.train(
             sub,
             feature_cols=ctx.feature_cols,
             label_col="residual_return_raw",
             sample_weight_col="weight" if "weight" in sub.columns else None,
+            val_fraction=val_fraction,
+            early_stopping_rounds=int(es_rounds) if es_rounds else None,
         )
         elapsed = _time.monotonic() - t0
         ctx.ngboost_head = head

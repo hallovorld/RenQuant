@@ -64,6 +64,10 @@ class NGBoostHead:
         feature_cols: list[str],
         label_col: str = "residual_return_raw",
         sample_weight_col: str | None = "weight",
+        *,
+        date_col: str | None = "date",
+        val_fraction: float = 0.2,
+        early_stopping_rounds: int | None = None,
     ) -> dict:
         """Fit NGBRegressor(Normal) on the panel.
 
@@ -72,6 +76,16 @@ class NGBoostHead:
                        in the label. Pre-fix, these slipped through and
                        NGBoost either segfaulted or fit on garbage.
           N-22       ─ drop rows whose sample-weight is NaN/non-positive.
+          N-2 / N-14 ─ time-ordered train/val split + early stopping on
+                       validation NLL. Pre-fix, n_estimators=400 trained
+                       to completion regardless of overfit; lr=0.01 ×
+                       400 = 4.0 cumulative learning rate easily
+                       overfits. Post-fix, NGBoost's native
+                       `early_stopping_rounds` halts when val NLL
+                       plateaus. The split is by DATE (last 20% of
+                       distinct dates as val) so we don't leak future
+                       observations into early-stop signal. Set
+                       `early_stopping_rounds=None` to disable.
         """
         self.feature_cols = list(feature_cols)
         # Build a clean view: finite features, finite label, finite + non-negative weight.
@@ -96,35 +110,102 @@ class NGBoostHead:
                 f"NGBoostHead.train: too few clean rows ({len(sub)} after "
                 f"NaN/inf drop). Check feature pipeline."
             )
-        X = sub[feature_cols].to_numpy(dtype=float)
-        y = sub[label_col].to_numpy(dtype=float)
-        sw = None
-        if sample_weight_col and sample_weight_col in sub.columns:
-            sw = sub[sample_weight_col].to_numpy(dtype=float)
+
+        # ── Audit fix N-2 / N-14: time-ordered train/val split ────────
+        # Split by date (last `val_fraction` of distinct dates → val) so
+        # NGBoost's early-stop signal is on truly held-out future data.
+        # Falls back to row-based split when no date column or only one
+        # unique date.
+        train_mask = pd.Series(True, index=sub.index)
+        do_eval_split = (
+            early_stopping_rounds is not None
+            and val_fraction is not None
+            and 0.0 < val_fraction < 1.0
+        )
+        if do_eval_split and date_col and date_col in sub.columns:
+            dates = pd.to_datetime(sub[date_col]).dt.normalize()
+            uniq = np.array(sorted(dates.unique()))
+            if len(uniq) >= 5:
+                cutoff_idx = int(len(uniq) * (1.0 - val_fraction))
+                cutoff = uniq[cutoff_idx]
+                train_mask = (dates < cutoff).reindex(sub.index, fill_value=False)
+            else:
+                do_eval_split = False
+        elif do_eval_split:
+            # No date column — fall back to last N% of rows.
+            n_train = int(len(sub) * (1.0 - val_fraction))
+            train_mask = pd.Series(False, index=sub.index)
+            train_mask.iloc[:n_train] = True
+
+        sub_train = sub.loc[train_mask]
+        sub_val   = sub.loc[~train_mask] if do_eval_split else None
+
+        X_train = sub_train[feature_cols].to_numpy(dtype=float)
+        y_train = sub_train[label_col].to_numpy(dtype=float)
+        sw_train = None
+        if sample_weight_col and sample_weight_col in sub_train.columns:
+            sw_train = sub_train[sample_weight_col].to_numpy(dtype=float)
+
+        X_val = y_val = sw_val = None
+        if sub_val is not None and len(sub_val) >= 10:
+            X_val = sub_val[feature_cols].to_numpy(dtype=float)
+            y_val = sub_val[label_col].to_numpy(dtype=float)
+            if sample_weight_col and sample_weight_col in sub_val.columns:
+                sw_val = sub_val[sample_weight_col].to_numpy(dtype=float)
 
         self.regressor = NGBRegressor(Dist=Normal, **self.params)
-        if sw is not None:
-            self.regressor.fit(X, y, sample_weight=sw)
-        else:
-            self.regressor.fit(X, y)
+        fit_kwargs: dict[str, Any] = {}
+        if sw_train is not None:
+            fit_kwargs["sample_weight"] = sw_train
+        if X_val is not None:
+            fit_kwargs["X_val"] = X_val
+            fit_kwargs["Y_val"] = y_val
+            if sw_val is not None:
+                fit_kwargs["val_sample_weight"] = sw_val
+            if early_stopping_rounds:
+                fit_kwargs["early_stopping_rounds"] = int(early_stopping_rounds)
+        self.regressor.fit(X_train, y_train, **fit_kwargs)
 
-        preds = self.regressor.pred_dist(X)
+        # Score predictions on the FULL clean set (train + val) so the
+        # reported μ̄ / σ̄ describe the whole training distribution
+        # NGBoost saw. The early-stopping signal is what changed; the
+        # reporting set is unchanged for back-compat.
+        X_full = sub[feature_cols].to_numpy(dtype=float)
+        y_full = sub[label_col].to_numpy(dtype=float)
+        preds = self.regressor.pred_dist(X_full)
         # Audit N-4 (2026-04-25): also report fit-time IC of μ̂ vs y so
         # downstream metadata captures one usable signal-quality number
         # per training run (still no CV — see N-17 for full fix).
         try:
             from scipy.stats import spearmanr  # noqa: PLC0415
-            rho, _ = spearmanr(preds.loc, y)
+            rho, _ = spearmanr(preds.loc, y_full)
             train_ic = float(rho) if rho == rho else float("nan")
         except Exception:
             train_ic = float("nan")
+        # Audit N-2 / N-14: also report val IC + actual best iteration,
+        # so the operator sees how early stopping kicked in.
+        val_ic = float("nan")
+        if X_val is not None:
+            try:
+                from scipy.stats import spearmanr  # noqa: PLC0415
+                val_preds = self.regressor.pred_dist(X_val)
+                rho_v, _ = spearmanr(val_preds.loc, y_val)
+                val_ic = float(rho_v) if rho_v == rho_v else float("nan")
+            except Exception:
+                pass
+        # NGBoost stores the actual stopped-at iteration on `best_val_loss_itr`.
+        best_iter = getattr(self.regressor, "best_val_loss_itr", None)
         return {
-            "n_rows": int(len(y)),
+            "n_rows": int(len(y_full)),
+            "n_rows_train":   int(len(X_train)),
+            "n_rows_val":     int(len(X_val)) if X_val is not None else 0,
             "n_rows_dropped": n_dropped,
             "n_features": int(len(feature_cols)),
             "train_mu_mean":    float(np.mean(preds.loc)),
             "train_sigma_mean": float(np.mean(preds.scale)),
             "train_mu_ic":      train_ic,
+            "val_mu_ic":        val_ic,
+            "best_iter":        int(best_iter) if best_iter is not None else None,
         }
 
     # ── Prediction ────────────────────────────────────────────────────────
