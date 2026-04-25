@@ -167,6 +167,72 @@ class TestM1CalibrateScoreRejectsNaN:
         assert calibrate_score(0.25, cal) == pytest.approx(0.20)
 
 
+# ── M-4 (Round 6 audit): predict_xgboost honours default_left on NaN ──────────
+
+class TestM4XgboostDefaultLeft:
+    """Pre-fix, pure-Python predict_xgboost used `val <= sc[node]` for all
+    inputs including NaN. NaN <= x is False, so NaN inputs always took
+    the RIGHT path. XGBoost's actual semantics: each split has a
+    `default_left` flag stored in the trained tree that says which
+    branch is the "missing" direction (auto-learned during training).
+    Pre-fix inference therefore diverged from training on NaN inputs —
+    silent train/inference parity bug.
+    """
+
+    def _toy_xgboost_artifact(self, default_left=0):
+        """One-tree binary:logistic XGBoost artifact with a single
+        split on feature index 0 at threshold 0.5."""
+        return {
+            "learner": {
+                "gradient_booster": {
+                    "model": {
+                        "trees": [{
+                            "left_children":   [1, -1, -1],
+                            "right_children":  [2, -1, -1],
+                            "split_conditions": [0.5, 0.0, 0.0],
+                            "split_indices":   [0, 0, 0],
+                            "base_weights":    [0.0, +2.0, -2.0],
+                            "default_left":    [default_left, 0, 0],
+                        }]
+                    }
+                }
+            }
+        }
+
+    def test_finite_routes_left_when_below_threshold(self):
+        from kernel.models import predict_xgboost
+        a = self._toy_xgboost_artifact(default_left=0)
+        # val 0.3 ≤ 0.5 → left → +2 → sigmoid(2) ≈ 0.881
+        assert predict_xgboost(a, [0.3]) == pytest.approx(0.881, rel=1e-2)
+
+    def test_finite_routes_right_when_above_threshold(self):
+        from kernel.models import predict_xgboost
+        a = self._toy_xgboost_artifact(default_left=0)
+        # val 0.7 > 0.5 → right → -2 → sigmoid(-2) ≈ 0.119
+        assert predict_xgboost(a, [0.7]) == pytest.approx(0.119, rel=1e-2)
+
+    def test_nan_routes_via_default_left_true(self):
+        """default_left=1 → NaN goes LEFT (was RIGHT pre-fix)."""
+        from kernel.models import predict_xgboost
+        a = self._toy_xgboost_artifact(default_left=1)
+        # val NaN with default_left=1 → left → +2 → sigmoid(2) ≈ 0.881
+        # Pre-fix would have gone right → -2 → 0.119, so this is the
+        # train/inference parity test.
+        assert predict_xgboost(a, [float("nan")]) == pytest.approx(0.881, rel=1e-2)
+
+    def test_nan_routes_via_default_left_false(self):
+        """default_left=0 → NaN goes RIGHT (matches pre-fix coincidentally)."""
+        from kernel.models import predict_xgboost
+        a = self._toy_xgboost_artifact(default_left=0)
+        assert predict_xgboost(a, [float("nan")]) == pytest.approx(0.119, rel=1e-2)
+
+    def test_missing_feature_index_uses_default_left(self):
+        """When feature index >= len(feat_vals), use default_left."""
+        from kernel.models import predict_xgboost
+        a = self._toy_xgboost_artifact(default_left=1)
+        assert predict_xgboost(a, []) == pytest.approx(0.881, rel=1e-2)
+
+
 # ── E-5 (Round 5 audit): compute_exits doesn't corrupt HWM on NaN price ───────
 
 class TestE5ExitsRejectsNanPrice:

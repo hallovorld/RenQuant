@@ -165,7 +165,23 @@ def predict_manual(artifact: dict, feature_row: pd.Series) -> float:
 
 
 def predict_xgboost(artifact: dict, feat_vals: list[float]) -> float:
-    """Pure-Python XGBoost inference (binary:logistic). Returns P ∈ [0, 1]."""
+    """Pure-Python XGBoost inference (binary:logistic). Returns P ∈ [0, 1].
+
+    Audit fix M-4 (Round 6, 2026-04-25): pre-fix, the loop used
+    `val <= sc[node]` for ALL values including NaN — but `NaN <= x`
+    is False in Python, so NaN inputs always went to the RIGHT child
+    deterministically. XGBoost's actual semantics: each split has a
+    `default_left` flag persisted in the JSON model that says which
+    direction to take on missing values (auto-learned during training).
+    Pre-fix inference therefore diverged from training behavior on any
+    NaN input — explains some of the train/inference parity issues we
+    saw in earlier audits.
+
+    Post-fix: when val is NaN (or feature index out of range), route to
+    the side indicated by `default_left[node]`. Falls back to old
+    behaviour for trees missing the `default_left` field (older
+    artifacts).
+    """
     trees = artifact["learner"]["gradient_booster"]["model"]["trees"]
     total = 0.0
     for tree in trees:
@@ -174,11 +190,21 @@ def predict_xgboost(artifact: dict, feat_vals: list[float]) -> float:
         sc   = tree["split_conditions"]
         si   = tree["split_indices"]
         bw   = tree["base_weights"]
+        dl   = tree.get("default_left")  # may be None on legacy artifacts
         node = 0
         while lc[node] != -1:
             fi  = si[node]
-            val = feat_vals[fi] if fi < len(feat_vals) else 0.0
-            node = lc[node] if val <= sc[node] else rc[node]
+            if fi >= len(feat_vals):
+                # Missing feature — use default_left if available.
+                go_left = bool(dl[node]) if dl is not None else False
+                node = lc[node] if go_left else rc[node]
+                continue
+            val = feat_vals[fi]
+            if val is None or (isinstance(val, float) and math.isnan(val)):
+                go_left = bool(dl[node]) if dl is not None else False
+                node = lc[node] if go_left else rc[node]
+            else:
+                node = lc[node] if val <= sc[node] else rc[node]
         total += bw[node]
     return 1.0 / (1.0 + math.exp(-total))
 
