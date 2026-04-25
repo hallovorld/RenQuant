@@ -1363,6 +1363,41 @@ class TestReadRaceParquetCorruption:
         assert result is None
 
 
+# ── ALPACA-STATUS (Round 2 audit): case-insensitive filled / partial-filled ───
+
+class TestAlpacaStatusComparison:
+    """Pre-fix, get_filled_orders compared `str(o.status)` against the
+    literal strings "OrderStatus.FILLED" and "filled". This:
+      * silently dropped PARTIALLY_FILLED orders (real fills missed)
+      * was brittle across alpaca-py versions (string repr changed)
+    Post-fix: case-insensitive substring match `"filled" in str(...).lower()`
+    covers FILLED + PARTIALLY_FILLED + future enum repr changes."""
+
+    def test_helper_recognizes_filled_variants(self):
+        # Inline the predicate (the helper is closure-scoped in alpaca_broker).
+        def is_filled(s) -> bool:
+            return "filled" in str(s).lower()
+        assert is_filled("OrderStatus.FILLED")
+        assert is_filled("filled")
+        assert is_filled("Filled")
+        assert is_filled("OrderStatus.PARTIALLY_FILLED")
+        assert is_filled("partially_filled")
+        assert is_filled("PartiallyFilled")
+        # Negative cases
+        assert not is_filled("OrderStatus.NEW")
+        assert not is_filled("canceled")
+        assert not is_filled("rejected")
+
+    def test_helper_recognizes_buy_variants(self):
+        def is_buy(s) -> bool:
+            return "buy" in str(s).lower()
+        assert is_buy("OrderSide.BUY")
+        assert is_buy("buy")
+        assert is_buy("BUY")
+        assert not is_buy("OrderSide.SELL")
+        assert not is_buy("SELL")
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

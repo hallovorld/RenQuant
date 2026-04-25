@@ -156,16 +156,37 @@ class AlpacaBroker(BaseBroker):
 
         orders = self._trading_client.get_orders(filter=params)
         result = []
+        # Audit fix ALPACA-STATUS (Round 2 deep audit, 2026-04-25):
+        # pre-fix, brittle string comparison `str(o.status) not in
+        # ("OrderStatus.FILLED", "filled")` only matched two specific
+        # representations. Across alpaca-py versions:
+        #   * <= 0.27 returned "filled"
+        #   * >= 0.28 returned "OrderStatus.FILLED"
+        #   * 0.30+ may add PARTIALLY_FILLED reps; PartiallyFilled etc.
+        # Worse, the filter excluded PARTIALLY_FILLED — partial fills
+        # were silently dropped from the "filled orders" list, so the
+        # pipeline thought no buy/sell happened when in fact some shares
+        # did execute. Reconciliation between live_state.json and the
+        # actual broker position would then drift over time.
+        # Now: case-insensitive substring match on `filled` covers
+        # both FILLED and PARTIALLY_FILLED across versions, and same
+        # for side comparison (BUY/SELL).
+        def _is_filled(s) -> bool:
+            return "filled" in str(s).lower()
+        def _is_buy(s) -> bool:
+            return "buy" in str(s).lower()
         for o in orders:
-            if str(o.status) not in ("OrderStatus.FILLED", "filled"):
+            if not _is_filled(o.status):
                 continue
             filled_at = o.filled_at.isoformat() if o.filled_at else None
             result.append({
-                "symbol": o.symbol,
-                "action": "BUY" if str(o.side) in ("OrderSide.BUY", "buy") else "SELL",
-                "qty": float(o.filled_qty or o.qty or 0),
+                "symbol":    o.symbol,
+                "action":    "BUY" if _is_buy(o.side) else "SELL",
+                "qty":       float(o.filled_qty or o.qty or 0),
                 "filled_at": filled_at,
                 "avg_price": float(o.filled_avg_price or 0),
+                # Surface partial-fill state so callers can branch.
+                "partial":   "partial" in str(o.status).lower(),
             })
         return result
 
