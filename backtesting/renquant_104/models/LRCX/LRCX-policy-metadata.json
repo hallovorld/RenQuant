@@ -21,35 +21,41 @@
   "buy_threshold": 2,
   "sell_threshold": -2,
   "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/LRCX/LRCX-manual-rules.json"
+    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/LRCX/LRCX-manual-rules.json"
   },
-  "trained_date": "2026-04-20",
+  "trained_date": "2026-04-24",
   "best_approach": "Manual",
-  "sharpe": 1.3418,
+  "sharpe": 1.3245,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
-  "live_train_end": "2026-04-13",
+  "live_train_rows": 999,
+  "live_train_end": "2026-04-17",
+  "live_holdout_sharpe": 2.3288,
+  "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 566,
+    "sample_size": 2501,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.3321554770318021,
+    "base_rate": 0.2730907636945222,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
       -1.0,
+      0.0,
+      1.0,
       2.0,
       3.0
     ],
     "y_thresholds": [
-      0.3249097472924188,
-      0.3249097472924188,
-      0.6666666666666666
+      0.23684210526315788,
+      0.25988023952095807,
+      0.26633785450061653,
+      0.2971342383107089,
+      0.3333333333333333
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -57,21 +63,24 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.0528957807968008,
+    "er_residual_std": 0.047058996517737664,
     "er_x_thresholds": [
       -1.0,
+      0.0,
       1.0,
       2.0,
       3.0
     ],
     "er_y_thresholds": [
-      0.007863630075725991,
-      0.007863630075725991,
-      0.009976159098395453,
-      0.0267671874866921
+      0.0012753032851767628,
+      0.0044454530865462505,
+      0.005886454147961294,
+      0.007766104472831831,
+      0.007766104472831831
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
-  }
+  },
+  "score_calibration_date": "2026-04-24"
 }

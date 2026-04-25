@@ -1,52 +1,84 @@
 {
   "model_name": "CRM",
-  "policy_type": "classification",
-  "feature_columns": [
-    "rsi",
-    "macd_hist",
-    "cci",
-    "bbp",
-    "adx",
-    "williams_r",
-    "obv_slope",
-    "spy_realized_vol",
-    "spy_adx",
-    "spy_trend",
-    "hurst_proxy"
+  "policy_type": "manual",
+  "score_rules": [
+    {
+      "col": "rsi",
+      "buy_below": 30,
+      "sell_above": 70
+    },
+    {
+      "col": "macd_hist",
+      "buy_above": 0,
+      "sell_below": 0
+    },
+    {
+      "col": "cci",
+      "buy_below": -100,
+      "sell_above": 50
+    }
   ],
-  "lookahead": 5,
-  "threshold": 0.03,
-  "leaf_size": 25,
-  "bags": 15,
-  "impact": 0.0,
-  "buy_threshold": 0.1,
-  "sell_threshold": -0.1,
+  "buy_threshold": 2,
+  "sell_threshold": -2,
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/CRM/CRM-rf-trees.json"
+    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/CRM/CRM-manual-rules.json"
   },
-  "trained_date": "2026-04-20",
-  "best_approach": "Classification",
-  "sharpe": 1.0503,
+  "trained_date": "2026-04-24",
+  "best_approach": "Manual",
+  "sharpe": -0.1567,
+  "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
-  "live_train_end": "2026-04-13",
+  "live_train_rows": 999,
+  "live_train_end": "2026-04-17",
+  "live_holdout_sharpe": -0.4018,
+  "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
-    "method": "platt",
-    "score_kind": "bag_learner_raw",
+    "method": "isotonic",
+    "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 164,
+    "sample_size": 2501,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.12195121951219512,
-    "raw_min": -0.6666666666666666,
-    "raw_max": 0.2,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": 0.9818854477703062,
-    "platt_intercept": -2.256302196283487,
-    "platt_scale_mean": -0.11707317073170731,
-    "platt_scale_std": 0.17157361140670457
+    "base_rate": 0.15553778488604558,
+    "raw_min": -1.0,
+    "raw_max": 3.0,
+    "x_thresholds": [
+      -1.0,
+      0.0,
+      1.0,
+      2.0,
+      3.0
+    ],
+    "y_thresholds": [
+      0.13676286072772897,
+      0.13676286072772897,
+      0.15945089757127773,
+      0.17040951122853368,
+      0.17040951122853368
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
+    "er_lookahead": 5,
+    "er_residual_std": 0.038600625281141054,
+    "er_x_thresholds": [
+      -1.0,
+      0.0,
+      1.0,
+      3.0
+    ],
+    "er_y_thresholds": [
+      -0.0019034899554680913,
+      -0.0019034899554680913,
+      0.0009592796659022888,
+      0.0009592796659022888
+    ],
+    "er_coef": null,
+    "er_intercept": null,
+    "er_constant": null
   },
-  "score_calibration_date": "2026-04-20"
+  "score_calibration_date": "2026-04-24"
 }

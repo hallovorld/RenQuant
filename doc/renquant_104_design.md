@@ -1,11 +1,13 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
-**Status**: Active daily strategy. Current golden: **+44.20% APY (after-tax)**, 82% win, 26d max streak over the 27-month OOS sim.
+**Status**: Active daily strategy. Current golden: **+30.90% APY (sim, after-tax, 27-mo OOS, 99-ticker watchlist)**, 80.5% win, 33d max no-trade streak. Live expectations scale with `allow_fetch=True` boost.
 **Author**: Ren Hao
-**Last updated**: 2026-04-23
+**Last updated**: 2026-04-24
 **Based on**: renquant_103 (adaptive regime multi-stock)
 
-**Active feature set**: panel-LTR on 47k rows × **31 features** (16 neutralized per-ticker indicators + 4 factor z-scores + 5 fundamentals + 6 hourly-bar aggregates). Panel training driven by `scripts/train_104.py`; hourly features sourced from `data/intraday/{SYM}/1h.parquet` via `scripts/fetch_hourly_bars.py` (Alpaca IEX). `panel_ltr.hourly.enabled: true` is golden as of 2026-04-23. Shelved experiments (transformer backend, regime-conditional calibration, LightGBM backend) retain their infra behind off-by-default flags — see `doc/improvement_roadmap.md` History.
+**Active feature set** (2026-04-24 promote): panel-LTR on **120,597 rows × 41 features** (16 neutralized per-ticker indicators + 4 technical factor z-scores + 5 fundamentals + **6 hourly-bar aggregates** + **10 ten-minute-bar aggregates**). Panel training driven by `scripts/train_104.py`. Hourly features from `data/intraday/{SYM}/1h.parquet` via `scripts/fetch_hourly_bars.py`; **10-min features from `data/intraday/{SYM}/10min.parquet` via `scripts/fetch_minute_bars.py`** (both Alpaca IEX). `panel_ltr.{hourly,minute}.enabled: true` is golden as of 2026-04-24. Strongest single feature: `m_intraday_realized_vol_z` (IC -0.079). Shelved experiments (transformer backend — 0.89× XGBoost on current size, regime-conditional calibration, LightGBM backend) retain their infra behind off-by-default flags. Full session detail: `doc/session_summary_2026-04-24.md`.
+
+**Watchlist** (2026-04-24 expansion): 99 tickers (up from 43). 60 tech split into 4 sub-buckets: `giant_tech` (8), `ai_chip` (18), `datacenter_hw` (10), `software` (24). 39 non-tech across finance/healthcare/industrial/consumer/energy/commodity/utility. Mutual-fund-overlap-weighted curation (VPMAX + FCNTX + AGTHX top holdings prioritized).
 
 ---
 

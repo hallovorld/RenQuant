@@ -23,24 +23,24 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/MRK/MRK-manual-rules.json"
   },
-  "trained_date": "2026-04-23",
+  "trained_date": "2026-04-24",
   "best_approach": "Manual",
   "sharpe": 1.0275,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
-  "live_train_end": "2026-04-16",
-  "live_holdout_sharpe": 2.476,
+  "live_train_rows": 999,
+  "live_train_end": "2026-04-17",
+  "live_holdout_sharpe": 2.5181,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2500,
+    "sample_size": 2501,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.1424,
+    "base_rate": 0.14234306277489003,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
@@ -52,8 +52,8 @@
     "y_thresholds": [
       0.10252808988764045,
       0.10252808988764045,
-      0.15827740492170023,
-      0.15827740492170023
+      0.15818893236444942,
+      0.15818893236444942
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -61,7 +61,7 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.03260470444834562,
+    "er_residual_std": 0.03262178724171021,
     "er_x_thresholds": [
       -1.0,
       0.0,
@@ -72,13 +72,13 @@
     "er_y_thresholds": [
       -0.003159313899854405,
       -0.003159313899854405,
-      0.0006294265215266668,
-      0.0006294265215266668,
+      0.0005965106482221868,
+      0.0005965106482221868,
       0.003253345275051869
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-23"
+  "score_calibration_date": "2026-04-24"
 }

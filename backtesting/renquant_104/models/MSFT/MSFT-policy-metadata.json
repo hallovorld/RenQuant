@@ -22,23 +22,25 @@
   "buy_threshold": 0.1,
   "sell_threshold": -0.1,
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/MSFT/MSFT-rf-trees.json"
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/MSFT/MSFT-rf-trees.json"
   },
-  "trained_date": "2026-04-20",
+  "trained_date": "2026-04-24",
   "best_approach": "Classification",
-  "sharpe": 1.296,
+  "sharpe": 1.1857,
   "strategy": "renquant_103",
-  "live_train_rows": 998,
-  "live_train_end": "2026-04-13",
+  "live_train_rows": 999,
+  "live_train_end": "2026-04-17",
+  "live_holdout_sharpe": -1.4142,
+  "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
     "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 566,
+    "sample_size": 2501,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.061837455830388695,
+    "base_rate": 0.0859656137544982,
     "raw_min": -0.13333333333333333,
     "raw_max": 0.2,
     "x_thresholds": [
@@ -46,14 +48,16 @@
       -0.06666666666666667,
       0.0,
       0.06666666666666667,
+      0.13333333333333333,
       0.2
     ],
     "y_thresholds": [
       0.0,
-      0.05919661733615222,
-      0.05919661733615222,
-      0.07692307692307693,
-      0.07692307692307693
+      0.08318739054290718,
+      0.08318739054290718,
+      0.10614525139664804,
+      0.1875,
+      0.1875
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -61,21 +65,24 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.024644867013279403,
+    "er_residual_std": 0.022613134169663814,
     "er_x_thresholds": [
       -0.13333333333333333,
+      -0.06666666666666667,
       0.0,
-      0.06666666666666667,
+      0.13333333333333333,
       0.2
     ],
     "er_y_thresholds": [
-      -0.00288007120559943,
-      -0.00288007120559943,
-      -0.0022978505106170987,
-      -0.0022978505106170987
+      -0.032183267580630094,
+      0.00014306310748379847,
+      0.00226640926536141,
+      0.00226640926536141,
+      0.009068221461218107
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
-  }
+  },
+  "score_calibration_date": "2026-04-24"
 }

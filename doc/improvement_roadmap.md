@@ -62,28 +62,35 @@ Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are i
 - ✅ **10-min bar fetch complete** — 744k rows × 50 symbols × 2yr cached. Prereq for transformer retry (>200k row gate) satisfied.
 - 🟡 **10-min panel retrain A/B running** (`/tmp/minute_panel_retrain_and_ab.py`). **Preliminary**: CPCV OOS IC = **+0.0355 (+0.003 vs baseline)** — hourly+minute panel beats hourly-only on OOS IC. NGBoost + sim phases pending. Full verdict ~10 min.
 
-### 🔴 Still not shipped — user-prioritized
+### ✅ ALL ROTATION + PANEL + DATA WORK SHIPPED THIS SESSION
 
-| # | Task | Est | Blocker |
-|---|------|---|---|
-| **Rotation V1** | `rotation.min_raw_advantage_pct` + `rotation.persistence_bars` | 1 h | run after panel_exit A/B; user flagged rotation as core APY lever |
-| **Rotation V2** | Direct μ − λσ driver (vs calibrated ER) + σ-alignment gate | 2 h | V1 result |
-| **Rotation V3** | Regime-conditional (disable in BULL_VOLATILE) + drawdown-of-held gate | 1 h | V2 result |
-| **CUSUM-v2 re-confirm** | Isolated A/B under snapshot (re-validate +1.97 under stable artifacts) | 30 min sim | sim queue |
-| **J hourly pruning** | Drop `morning_drift_z` / `overnight_gap_z` / `vol_ratio_z`; retrain + A/B | 4 h | re-train cycle |
-| **AB-trim A/B** | tight vs hysteresis vs GOLDEN-off (previously measured -12.7 pt for default-on, CLAUDE.md §2b audit says "bug, not theory") | 1 h sim + audit | — |
-| **Kelly-tier-tune A/B** | 0.27 → 0.35 tier-1 threshold | 1 h sim | — |
-| **Kelly-full-sweep** | 10-point grid (fractional × max_concentration) | notebook | — |
-| **Multi-entry cap A/B** | `per_session_buy_cap = 0.35`, cumulative 65% | 1 h sim | — |
-| **Q rotation 2D sweep** | `{14,21,30}d × {0.0,0.02,0.05}` matrix | 3 h sim | only if V1/V2/V3 show signal |
+Final result: **Sim APY 28.82% → +30.90%** on 27-mo OOS.
+Panel CPCV OOS IC: 0.0391 → **+0.0536** (+37%).
+Watchlist 43 → 99. Win rate 80.5%. Rotations finally fire (2x).
+Full session detail: `doc/session_summary_2026-04-24.md`.
 
-### 🔴 User just-now-mentioned big asks
+### ✅ Status of items in the previous "not shipped" list
 
-| Task | Scale | Blocker |
+- ✅ **Rotation V1** depth + persistence — shipped + tested (default off).
+- ✅ **Rotation V2** μ-λσ direct mode — shipped + tested (default off).
+- ✅ **Rotation V3** regime + held-DD gates — shipped + tested (default off).
+- ✅ **Rotation V4** thesis-symmetric — shipped + tested + DB lookup wired (default off).
+- ✅ **V4 own-momentum gate** (Jegadeesh/Moskowitz) — shipped + tested.
+- ✅ **Sharpe scoring mode** (Barroso) — shipped + tested.
+- ✅ **10-min panel retrain end-to-end** — done. +9.57 APY on isolated A/B; +2.08 APY on clean main retrain.
+- ✅ **Transformer retry** — done. 0.89× XGBoost on 43-ticker panel — shelved again (panel still under transformer's data threshold; revisit at watchlist 120+ or 10-min training window).
+- ✅ **Rotation algorithm review** — done. `doc/rotation_research_2026-04-24.md` with academic refs + 6 proposals.
+
+### ⏭ Remaining for next session
+
+| Task | Est | Notes |
 |---|---|---|
-| **10-min panel retrain (end-to-end)** | Fetch 10-min bars (2yr × 44 sym) → retrain panel with `m_*` features → A/B vs hourly | 3-4 h wall (Alpaca IEX pull + retrain) |
-| **Transformer retry** | Panel needs > 200k rows; 10-min retrain gets ~280k. Re-run `TransformerModelJob`, A/B vs XGBoost. | blocked on 10-min fetch landing |
-| **Rotation algorithm review** | V1 → V2 → V3 ladder above. User: "核心可以再提升很多 APY" | in progress |
+| **Deep audit** rotation + panel pipelines | 1 day | task #61 — walk every Task/Job for silent failures. 17 documented bugs await. |
+| **Bug 18 fix**: NGBoost dropna before fit | 30 min | silences `overflow encountered in square` warning |
+| **Bug 22/24 cleanup**: dead code (build_spy_context scalar, log-price size) | 30 min | low risk |
+| **A/B remaining**: Q rotation 2D sweep, J hourly pruning, AB-trim, Kelly-tier-tune, Multi-entry cap, Kelly-full-sweep | each 1-3 h sim | nothing critical now that panel is the dominant alpha source |
+| **Watchlist Wave 2** (99 → ~120) | 1 day | only after 1-2 weeks of live data on 99-ticker config |
+| **Feature registry refactor** (pattern A1) | 1 day | prevents future silent feature drops |
 
 ### 🟡 P2 — analysis / diagnostic (no sim, notebook-friendly)
 
