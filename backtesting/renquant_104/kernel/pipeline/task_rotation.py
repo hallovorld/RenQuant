@@ -136,15 +136,32 @@ class BuildPairsTask(Task):
                      .get("ngboost", {}).get("lambda_", 1.0),
         ))
 
+        # Sharpe driver floor — avoid divide-by-zero when σ ~ 0
+        sharpe_sigma_floor = float(rotation_cfg.get("sharpe_sigma_floor", 1e-4))
+
         def _drive_score(obj) -> "float | None":
-            """Pick the rotation driver score: μ − λσ when enabled + populated;
-            else fall back to expected_return."""
+            """Pick the rotation driver score.
+
+            - "er": calibrated expected_return (default, backward compat).
+            - "mu_minus_lambda_sigma": NGBoost μ − λσ.
+            - "sharpe": μ / max(σ, floor) (Barroso-Santa-Clara 2015).
+
+            Fallback is always expected_return when μ/σ missing.
+            """
             if scoring_mode == "mu_minus_lambda_sigma":
                 mu = getattr(obj, "mu", None)
                 sg = getattr(obj, "sigma", None)
                 if mu is not None and sg is not None:
                     try:
                         return float(mu) - lam * float(sg)
+                    except (TypeError, ValueError):
+                        pass
+            elif scoring_mode == "sharpe":
+                mu = getattr(obj, "mu", None)
+                sg = getattr(obj, "sigma", None)
+                if mu is not None and sg is not None:
+                    try:
+                        return float(mu) / max(float(sg), sharpe_sigma_floor)
                     except (TypeError, ValueError):
                         pass
             return getattr(obj, "expected_return", None)
@@ -262,12 +279,11 @@ class BuildPairsTask(Task):
         else:
             merged_cfg = rotation_cfg
 
-        # V2 (2026-04-24): when μ−λσ scoring mode is on, transiently
-        # override c.expected_return with the μ−λσ driver BEFORE passing
-        # into the kernel primitive. The held-side override was already
-        # applied above via `_drive_score`. Shallow-copy candidates so we
-        # don't permanently mutate their cached state.
-        if scoring_mode == "mu_minus_lambda_sigma":
+        # V2 (2026-04-24): when μ−λσ OR sharpe scoring mode is on,
+        # transiently override c.expected_return with the chosen driver
+        # BEFORE passing into the kernel primitive. Shallow-copy
+        # candidates so we don't permanently mutate their cached state.
+        if scoring_mode in ("mu_minus_lambda_sigma", "sharpe"):
             import copy as _copy  # noqa: PLC0415
             v2_candidates = []
             for c in eligible_candidates:

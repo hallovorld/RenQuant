@@ -150,6 +150,46 @@ class TestV2ScoringMode:
         # raw_adv_er = 0.05 - 0.05 = 0.0 < 0.01 threshold → no pair
         assert ctx.rotations == []
 
+    def test_sharpe_mode_prefers_higher_mu_over_sigma(self):
+        """Proposal 2 (Barroso 2015). Scoring mode "sharpe" = μ/σ.
+
+        Held: μ=0.02, σ=0.04 → score = 0.02/0.04 = 0.50
+        Cand: μ=0.03, σ=0.02 → score = 0.03/0.02 = 1.50
+        raw_adv = 1.00, threshold 0.01 → fires.
+        """
+        from kernel.pipeline.task_rotation import BuildPairsTask
+
+        ctx = _ctx_with_one_held(
+            held_attrs = {"ticker": "NVDA", "mu": 0.02, "sigma": 0.04,
+                          "expected_return": 0.0,
+                          "entry_price": 100.0},
+            cand_attrs = {"ticker": "AMD",  "mu": 0.03, "sigma": 0.02,
+                          "expected_return": 0.0},
+            rotation  = {"scoring_mode": "sharpe",
+                         "min_expected_advantage_pct": 0.01},
+        )
+        BuildPairsTask().run(ctx)
+        assert len(ctx.rotations) == 1
+        assert ctx.rotations[0].buy_ticker == "AMD"
+
+    def test_sharpe_mode_guards_against_zero_sigma(self):
+        """σ=0 must not blow up — sharpe_sigma_floor clamps divisor."""
+        from kernel.pipeline.task_rotation import BuildPairsTask
+
+        ctx = _ctx_with_one_held(
+            held_attrs = {"ticker": "NVDA", "mu": 0.02, "sigma": 0.0,
+                          "expected_return": 0.0,
+                          "entry_price": 100.0},
+            cand_attrs = {"ticker": "AMD",  "mu": 0.03, "sigma": 0.0,
+                          "expected_return": 0.0},
+            rotation  = {"scoring_mode": "sharpe",
+                         "sharpe_sigma_floor": 0.01,
+                         "min_expected_advantage_pct": 0.01},
+        )
+        # Doesn't crash; raw_adv = (0.03 - 0.02) / 0.01 = 1.0 → fires
+        BuildPairsTask().run(ctx)
+        assert len(ctx.rotations) == 1
+
     def test_lambda_scaling_changes_outcome(self):
         """High λ penalises σ; with large σ the cand should LOSE the comparison."""
         from kernel.pipeline.task_rotation import BuildPairsTask
