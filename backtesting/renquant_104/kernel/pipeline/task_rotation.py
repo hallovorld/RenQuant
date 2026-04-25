@@ -420,7 +420,17 @@ class BuildPairsTask(Task):
             for p in pairs:
                 c_ps = cand_ps.get(p.buy_ticker)
                 h_ps = held_ps.get(p.sell_ticker)
-                if c_ps is None or h_ps is None or (c_ps - h_ps) >= panel_rot_advantage:
+                # Audit fix RG-NaN (Round 2 deep audit, 2026-04-25):
+                # treat non-finite scores the same as None — fall back to
+                # KEEP. Pre-fix, NaN is not None and `(NaN - X) >= thresh`
+                # is False, so a NaN panel_score silently REJECTED the
+                # pair with a "reason=panel_advantage cand_ps=nan ..."
+                # log line, when the documented intent of the missing-
+                # score branch is "skip gate, preserve pair".
+                if (c_ps is None or h_ps is None
+                        or not math.isfinite(c_ps)
+                        or not math.isfinite(h_ps)
+                        or (c_ps - h_ps) >= panel_rot_advantage):
                     kept.append(p)
                 else:
                     rejected += 1
@@ -450,9 +460,18 @@ class BuildPairsTask(Task):
                 held_entry  = held_entry_rs.get(p.sell_ticker)
                 held_today  = held_today_rs.get(p.sell_ticker)
                 # Fallback: if baseline missing or invalid, preserve the
-                # pair (legacy rule).
-                if (held_entry is None or held_entry <= 0
-                        or held_today is None or cand_score is None):
+                # pair (legacy rule). Audit fix RG-NaN: also fall back on
+                # NaN/inf — pre-fix, a NaN entry_rank_score (stamped during
+                # a corrupted-score bar) bypassed `<= 0` (NaN<=0 is False)
+                # and propagated through the degradation/uplift calc as
+                # NaN, then the final `degradation >= thresh` was False
+                # → pair silently REJECTED. The intent of the missing-
+                # baseline branch is "skip gate, preserve pair".
+                if (held_entry is None or cand_score is None or held_today is None
+                        or not math.isfinite(held_entry)
+                        or not math.isfinite(held_today)
+                        or not math.isfinite(cand_score)
+                        or held_entry <= 0):
                     kept.append(p)
                     continue
                 degradation = (held_entry - held_today) / held_entry  # + = worse
@@ -504,7 +523,15 @@ class BuildPairsTask(Task):
                 h_mu = held_mu.get(p.sell_ticker)
 
                 # Fallback: missing Kelly data → keep pair.
-                if c_kt is None or h_kt is None:
+                # Audit fix RG-NaN: also fall back on NaN/inf — same
+                # pattern as panel + thesis gates. NaN h_kt would slip
+                # past `< floor` (NaN<X False) and past mu guard, then
+                # land in the comparison where `(c_kt - NaN) >= adv` is
+                # False → silent REJECT. Intent is "skip gate when data
+                # missing, including non-finite".
+                if (c_kt is None or h_kt is None
+                        or not math.isfinite(c_kt)
+                        or not math.isfinite(h_kt)):
                     kept.append(p)
                     continue
                 # Guard: held Kelly too small to drive swap decision.
@@ -513,11 +540,18 @@ class BuildPairsTask(Task):
                     guard_skipped += 1
                     continue
                 # Guard: held mu bearish — don't Kelly-block a rational
-                # swap based on a stale / noisy Kelly target.
-                if h_mu is not None and h_mu <= 0:
-                    kept.append(p)
-                    guard_skipped += 1
-                    continue
+                # swap based on a stale / noisy Kelly target. RG-NaN:
+                # NaN mu also routes to "skip gate" so a corrupted μ
+                # doesn't accidentally enforce the gate.
+                if h_mu is not None:
+                    if not math.isfinite(h_mu):
+                        kept.append(p)
+                        guard_skipped += 1
+                        continue
+                    if h_mu <= 0:
+                        kept.append(p)
+                        guard_skipped += 1
+                        continue
 
                 if (c_kt - h_kt) >= kelly_rot_advantage:
                     kept.append(p)
