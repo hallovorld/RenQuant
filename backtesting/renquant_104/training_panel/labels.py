@@ -84,10 +84,27 @@ def compute_residual_returns(
 
         residual = fwd - beta_spy * spy_fwd
         if sec_fwd is not None:
-            beta_sec = _rolling_beta_purged(
-                fwd, sec_fwd, window=beta_window, purge=lookahead_days,
+            # Audit fix LBL-1 (Round 2 deep audit, 2026-04-25):
+            # Pre-fix, beta_sec was fit against raw `fwd` and raw `sec_fwd`.
+            # But sector ETFs are ~85-95% SPY-correlated, so the resulting
+            # β_sec captured *both* the sector AND the SPY-driven component
+            # of sec_fwd. Subtracting `β_spy·spy_fwd` then `β_sec·sec_fwd`
+            # then over-removes the market component by a factor of
+            # ~β·ρ²(spy,sec) — labels were biased systematically lower
+            # for tickers in high-β sectors during up moves.
+            #
+            # Fix: orthogonalize sec_fwd against spy_fwd first
+            # (Frisch-Waugh-Lovell), so β_sec captures only the
+            # sector-specific component net of SPY. Final residual is
+            # then equivalent to a joint OLS residual on [spy, sec].
+            beta_sec_on_spy = _rolling_beta_purged(
+                sec_fwd, spy_fwd, window=beta_window, purge=lookahead_days,
             )
-            residual = residual - beta_sec * sec_fwd
+            sec_fwd_orth = sec_fwd - beta_sec_on_spy * spy_fwd
+            beta_sec = _rolling_beta_purged(
+                fwd, sec_fwd_orth, window=beta_window, purge=lookahead_days,
+            )
+            residual = residual - beta_sec * sec_fwd_orth
 
         out[t] = residual
     return out

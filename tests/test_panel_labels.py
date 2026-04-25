@@ -178,6 +178,10 @@ class TestBuildLabels:
         )
         assert set(labels.keys()) == {"AAA", "BBB"}
         assert len(labels["AAA"]) == 300
-        # Most rows should be finite after warmup
+        # Majority of rows should be finite after warmup. With LBL-1 fix
+        # (FWL: sec orthogonalized against SPY first), warmup roughly
+        # doubles — two sequential rolling betas of window=60+purge=5
+        # stack to ~125 NaN bars. Pre-LBL-1 was ~65 NaN bars. Lowered
+        # threshold from 200→150 to match the corrected (joint OLS) path.
         finite = labels["AAA"].dropna()
-        assert len(finite) > 200
+        assert len(finite) > 150

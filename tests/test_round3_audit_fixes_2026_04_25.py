@@ -261,6 +261,94 @@ class TestCAL7CalibratorRefreshWired:
         assert RefreshPanelCalibratorJob().should_skip(ctx) is False
 
 
+# ── LBL-1 (Round 2 audit): residualize sec_fwd vs spy first (FWL) ─────────────
+
+class TestLBL1SectorOrthogonalToSPY:
+    """Pre-fix, beta_sec was fit on raw fwd against raw sec_fwd. Sector ETFs
+    are ~90% SPY-correlated, so β_sec absorbed the SPY component of
+    sec_fwd, and (β_spy·spy_fwd + β_sec·sec_fwd) double-counted SPY exposure.
+    Post-fix uses Frisch-Waugh-Lovell: orthogonalize sec_fwd vs spy_fwd
+    first, so the final residual matches a joint OLS regression of
+    fwd on [spy_fwd, sec_fwd].
+    """
+
+    def _build_synthetic(self, n=400, beta_spy=1.2, beta_sec=0.4, seed=7):
+        """Synthesize fwd = β_spy·spy + β_sec·(sec_orthogonal_to_spy) + ε.
+
+        sec_fwd is constructed as 0.9·spy + 0.1·sec_specific so it's heavily
+        SPY-correlated. The TRUE residual we want to recover ≈ ε.
+        """
+        import numpy as np, pandas as pd
+        rng = np.random.default_rng(seed)
+        idx = pd.bdate_range("2020-01-01", periods=n)
+        spy = pd.Series(rng.normal(0, 0.01, n), index=idx)
+        sec_specific = pd.Series(rng.normal(0, 0.01, n), index=idx)
+        sec = 0.9 * spy + 0.1 * sec_specific
+        eps = pd.Series(rng.normal(0, 0.005, n), index=idx)
+        fwd = beta_spy * spy + beta_sec * (sec - 0.9 * spy) + eps
+        return fwd, spy, sec, eps
+
+    def test_residual_is_uncorrelated_with_spy_under_correlated_sector(self):
+        """After FWL fix, |corr(residual, spy_fwd)| should be near 0."""
+        from training_panel.labels import compute_residual_returns
+        fwd, spy, sec, _ = self._build_synthetic()
+        out = compute_residual_returns(
+            fwd_returns={"FOO": fwd},
+            spy_returns=spy,
+            sector_returns_by_ticker={"FOO": sec},
+            beta_window=60, lookahead_days=5,
+        )
+        residual = out["FOO"].dropna()
+        spy_aligned = spy.reindex(residual.index)
+        # Joint OLS residual is by construction orthogonal to spy_fwd.
+        # Correlation should be much smaller than the buggy code's leak.
+        corr = float(residual.corr(spy_aligned))
+        assert abs(corr) < 0.10, (
+            f"Residual still correlated with SPY (|corr|={abs(corr):.3f}) — "
+            "FWL orthogonalization did not take effect."
+        )
+
+    def test_residual_is_uncorrelated_with_sector_under_correlated_sector(self):
+        """Joint OLS residual must also be orthogonal to sec_fwd itself."""
+        from training_panel.labels import compute_residual_returns
+        fwd, spy, sec, _ = self._build_synthetic()
+        out = compute_residual_returns(
+            fwd_returns={"FOO": fwd},
+            spy_returns=spy,
+            sector_returns_by_ticker={"FOO": sec},
+            beta_window=60, lookahead_days=5,
+        )
+        residual = out["FOO"].dropna()
+        sec_aligned = sec.reindex(residual.index)
+        corr = float(residual.corr(sec_aligned))
+        assert abs(corr) < 0.10, (
+            f"Residual still correlated with sector (|corr|={abs(corr):.3f})."
+        )
+
+    def test_old_two_step_path_would_double_count_spy(self):
+        """Demonstrate the bug: if we replicate the OLD code path (β_sec
+        fit on raw fwd vs raw sec_fwd), the residual is meaningfully
+        correlated with SPY because of double-counting. This guards
+        against accidentally reverting LBL-1."""
+        import numpy as np, pandas as pd
+        from training_panel.labels import _rolling_beta_purged
+        fwd, spy, sec, _ = self._build_synthetic()
+        beta_spy = _rolling_beta_purged(fwd, spy, window=60, purge=5)
+        residual_after_spy = fwd - beta_spy * spy
+        # OLD buggy step: fit β_sec on raw fwd against raw sec_fwd.
+        beta_sec_buggy = _rolling_beta_purged(fwd, sec, window=60, purge=5)
+        residual_buggy = (residual_after_spy - beta_sec_buggy * sec).dropna()
+        spy_aligned = spy.reindex(residual_buggy.index)
+        corr_buggy = float(residual_buggy.corr(spy_aligned))
+        # The BUGGY residual leaks SPY at materially higher magnitude
+        # than the FWL-fixed path (which we verified < 0.10 above).
+        assert abs(corr_buggy) > 0.20, (
+            f"Old code path corr={abs(corr_buggy):.3f} — expected substantial "
+            "SPY leak; if this is small, the synthetic setup may be too easy "
+            "and the LBL-1 regression test loses its teeth."
+        )
+
+
 # ── M-4 (Round 6 audit): predict_xgboost honours default_left on NaN ──────────
 
 class TestM4XgboostDefaultLeft:
