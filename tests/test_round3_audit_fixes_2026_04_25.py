@@ -1037,6 +1037,92 @@ class TestTRNaNTrimGuardsAllInputs:
             assert math.isfinite(shares) and shares > 0
 
 
+# ── PORT-1/2/3 (Round 2 audit): portfolio.py — three NaN-defense fixes ────────
+
+class TestPORTNaNDefenseFixes:
+    """Three NaN-slip bugs in kernel/portfolio.py, fixed together:
+      PORT-1: max(NaN_hwm, finite_pv) returned NaN → halt false; persists.
+      PORT-2: drawdown = (NaN - pv) / NaN = NaN → comparison False; silent.
+      PORT-3: NaN gross_pnl slipped past `<= 0` → NaN tax propagates.
+    """
+
+    def test_port1_nan_hwm_resets_to_pv(self):
+        from kernel.portfolio import update_drawdown_circuit_breaker
+        import math
+        hwm, halt = update_drawdown_circuit_breaker(
+            portfolio_value=100_000.0,
+            high_water_mark=float("nan"),
+            halt_threshold=0.15,
+        )
+        assert math.isfinite(hwm) and hwm == 100_000.0
+        assert halt is False
+
+    def test_port1_nan_pv_preserves_finite_hwm(self):
+        from kernel.portfolio import update_drawdown_circuit_breaker
+        import math
+        hwm, halt = update_drawdown_circuit_breaker(
+            portfolio_value=float("nan"),
+            high_water_mark=120_000.0,
+            halt_threshold=0.15,
+        )
+        assert math.isfinite(hwm) and hwm == 120_000.0
+        assert halt is False
+
+    def test_port1_both_non_finite_returns_zero(self):
+        from kernel.portfolio import update_drawdown_circuit_breaker
+        import math
+        hwm, halt = update_drawdown_circuit_breaker(
+            portfolio_value=float("inf"),
+            high_water_mark=float("nan"),
+            halt_threshold=0.15,
+        )
+        assert math.isfinite(hwm)   # ratchets to 0 not inf
+        assert halt is False
+
+    def test_port2_normal_path_still_halts(self):
+        """Sanity: post-fix, the normal path still triggers halt correctly."""
+        from kernel.portfolio import update_drawdown_circuit_breaker
+        hwm, halt = update_drawdown_circuit_breaker(
+            portfolio_value=80_000.0,
+            high_water_mark=100_000.0,
+            halt_threshold=0.15,
+        )
+        assert hwm == 100_000.0
+        assert halt is True   # 20% drawdown ≥ 15%
+
+    def test_port3_nan_pnl_returns_zero_tax(self):
+        from kernel.portfolio import compute_trade_tax
+        out = compute_trade_tax(
+            gross_pnl=float("nan"), hold_days=400,
+            short_term_rate=0.50, long_term_rate=0.32,
+        )
+        assert out == 0.0
+
+    def test_port3_inf_pnl_returns_zero_tax(self):
+        from kernel.portfolio import compute_trade_tax
+        out = compute_trade_tax(
+            gross_pnl=float("inf"), hold_days=10,
+            short_term_rate=0.50, long_term_rate=0.32,
+        )
+        assert out == 0.0
+
+    def test_port3_normal_short_term_path(self):
+        from kernel.portfolio import compute_trade_tax
+        out = compute_trade_tax(
+            gross_pnl=1000.0, hold_days=100,
+            short_term_rate=0.50, long_term_rate=0.32,
+        )
+        assert out == 500.0
+
+    def test_port3_normal_long_term_path(self):
+        from kernel.portfolio import compute_trade_tax
+        out = compute_trade_tax(
+            gross_pnl=1000.0, hold_days=400,
+            short_term_rate=0.50, long_term_rate=0.32,
+        )
+        assert out == 320.0
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:
