@@ -567,10 +567,27 @@ class SimAdapter:
         })
 
     def _apply_buy(self, order: dict, today_ts: pd.Timestamp, ctx) -> None:
+        # Audit fix SAB-1..SAB-4 (Round 2 deep audit, 2026-04-25): pre-fix,
+        # NaN price (data outage) or NaN shares could:
+        #   - SAB-3: invest = NaN; `NaN > cash + 1e-6` False → buy "succeeds";
+        #            self._cash -= NaN → cash permanently NaN.
+        #   - SAB-2: old_entry * old_shares + NaN = NaN → new_entry NaN
+        #            → future pnl_pct NaN.
+        #   - SAB-1: max(hwm, NaN) = NaN → trailing stop dead for the position.
+        # Now: explicit isfinite + > 0 guards on price/shares; reject the
+        # order cleanly (log warning) on bad data.
         from kernel.exits import HoldingState  # noqa: PLC0415
+        import math
         ticker = order["ticker"]
         shares = order["shares"]
         price  = order["price"]
+        if not (math.isfinite(price) and math.isfinite(shares)
+                and price > 0 and shares > 0):
+            log.warning(
+                "SimAdapter: rejecting %s buy — bad price/shares (price=%s shares=%s)",
+                ticker, price, shares,
+            )
+            return
         invest = shares * price
         if invest > self._cash + 1e-6:
             log.warning("SimAdapter: insufficient cash for %s (need %.2f, have %.2f)",
@@ -583,9 +600,19 @@ class SimAdapter:
             old_shares = float(self._pos_shares.get(ticker, 0))
             new_shares = old_shares + shares
             old_entry  = self._holdings[ticker].entry_price
-            new_entry  = (old_entry * old_shares + price * shares) / new_shares if new_shares > 0 else price
+            # SAB-2 guard: if old_entry is NaN/inf (corrupted state), use
+            # the current price as entry rather than corrupt new_entry.
+            if not math.isfinite(old_entry):
+                new_entry = price
+            else:
+                new_entry = (old_entry * old_shares + price * shares) / new_shares if new_shares > 0 else price
             self._holdings[ticker].entry_price = new_entry
-            self._holdings[ticker].high_watermark = max(self._holdings[ticker].high_watermark, price)
+            cur_hwm = self._holdings[ticker].high_watermark
+            if math.isfinite(cur_hwm):
+                self._holdings[ticker].high_watermark = max(cur_hwm, price)
+            else:
+                # SAB-1 recovery: corrupted HWM → reset to price.
+                self._holdings[ticker].high_watermark = price
             self._holdings[ticker].shares = new_shares
             self._pos_shares[ticker] = new_shares
         else:
