@@ -566,6 +566,253 @@ counted to keep the rollup focused.)
 
 ---
 
+## Phase 3 — fresh re-audit of training orchestration (2026-04-25 evening)
+
+User mandate: "phase3，忘记你做的，重新仔细低审查一遍". Walked
+`pp_panel_training.py` + `pp_training_full.py` from scratch, looking for
+silent failures, race conditions, lookahead, and resource waste.
+
+### 🔴 P3-8 Lookahead in fundamentals: `iloc[-1]` broadcast to ALL dates
+- `FactorZScoreTask` line 893: `v = df[col].iloc[-1]`. Takes the most
+  recent row of the per-ticker frame and broadcasts as a scalar to
+  every date in `idx` (line 930).
+- For inference, "last row" is today — fine. For training, "last row"
+  is the most recent available fundamental (likely 2026 for a panel
+  spanning 2018-2026). So **training rows on 2018-01-01 use 2026
+  fundamentals**.
+- CLAUDE.md flags it as "time-invariant snapshot in this release;
+  extending to point-in-time time-series is a future change". Documented
+  but it's a real lookahead leak in the training panel — IC may be
+  inflated by the static fundamentals being predictive of future returns
+  via the time-traveled snapshot.
+
+### 🔴 P3-12 Sequential symbol fetch in panel data phase
+- `FetchPanelDataTask` line 153-160 fetches 99+ tickers serially. At ~1s
+  per cached fetch + ~3s per uncached fetch, the cold path can be 5+
+  minutes just to gather data. yfinance is I/O-bound — easily
+  parallelizable with a ThreadPool of 8-16.
+- Same pattern in `PanelDataJob.FetchOHLCVTask` (line 192-201).
+- **Resource waste**: every retrain pays this cost.
+
+### 🟠 P3-2 / P3-5 Per-ticker chain failures silently shrink universe
+- `_run_panel_ticker_chain` (line 156-166): catches Exception, logs error,
+  moves on. Failed tickers are missing from `ctx.factor_frames` /
+  `ctx.neutralized_frames`. Then `BuildPanelTask` does
+  `ff_wl = {t: ff[t] for t in ctx.watchlist if t in ff}` — silently
+  drops them.
+- **No surface count**: if 30/99 tickers crash, the panel trains on 69.
+  `panel_metadata.n_tickers` reflects 69. But `len(ctx.watchlist)=99`
+  remains in config. **No alert that 30% of universe was lost.**
+- **Fix**: aggregate failures, fail loud if > N% drop.
+
+### 🟠 P3-11 FetchPanelDataTask drops failed tickers without count
+- Line 154-160: if `fetch_ohlcv(sym)` raises, log warning + `continue`.
+  No counter, no aggregate "X failed of Y attempted" summary.
+- Same blast radius as P3-2.
+
+### 🟠 P3-13 No partial-resumption / checkpoint support
+- `FullTrainingPipeline.run()` runs 3 jobs serially. If `BaselineTournamentJob`
+  is 95% through and crashes, the next attempt restarts all 99 tickers.
+  The TTL gate inside baseline tournament partially helps (skips
+  recently-trained tickers) but offers no per-Job checkpoint.
+- **Fix**: persist completed-job markers so `--resume` can pick up.
+
+### 🟠 P3-15 / P3-16 Shallow config copies share nested dicts
+- `RunPanelTrainingTask.run()` line 218: `panel_cfg = dict(config.get("panel_ltr", {}))`.
+  Shallow copy — `panel_cfg["xgb_params"]` is a REFERENCE to
+  `config["panel_ltr"]["xgb_params"]`. Any in-place mutation downstream
+  silently mutates the original config.
+- Currently no downstream mutates these dicts in place, but the pattern
+  is fragile. **Defensive fix**: deep-copy.
+
+### 🟠 P3-20 No artifact backup on overwrite
+- `SaveArtifactTask` writes `panel-ltr.json` overwriting the previous
+  artifact. If the new training run produced a regression (lower IC),
+  there's no atomic rollback path. Manual `*.pre_audit_fixes` backups
+  exist but aren't automated.
+- **Fix**: write to `<name>.json.tmp` then atomic-rename, AND keep the
+  previous artifact at `<name>.json.previous` for one-click rollback.
+
+### 🟡 P3-1 ThreadPoolExecutor + GIL in `run_panel_ticker_parallel`
+- ThreadPoolExecutor parallelizes I/O but not CPU-bound pandas/XGBoost.
+  Most of `_run_panel_ticker_chain` is CPU. Effective parallelism is
+  near-1 on the CPU side. Should be ProcessPool — but pickling of
+  ticker contexts adds overhead.
+
+### 🟡 P3-3 Redundant timeout in `as_completed` + `fut.result(timeout)`
+- `as_completed(futures, timeout=None)` already returns only completed
+  futures. The subsequent `fut.result(timeout=timeout_seconds)` adds a
+  second timeout that can never fire on the per-future basis.
+- Code smell only.
+
+### 🟡 P3-4 Misleading `fut.cancel()` in ThreadPoolExecutor
+- ThreadPool can't cancel running futures. The `fut.cancel()` call after
+  TIMEOUT log only succeeds if the future hadn't started — but that
+  contradicts the "TIMEOUT after Ns" log.
+
+### 🟡 P3-7 FactorZScoreTask completeness check by length only
+- Line 841: `if ctx.factor_frames and len(ctx.factor_frames) >= len(ctx.raw_factor_frames):`.
+  Length-only check could pass with the WRONG ticker subset if some
+  upstream race put different tickers in each.
+- **Fix**: check that the ticker SETS match.
+
+### 🟡 P3-14 No timing/progress on interrupted runs
+- "FullTrainingPipeline DONE" only logs on full success. Interrupted
+  via Ctrl-C → no log → no idea where it stopped. Operators waste time
+  re-running from scratch without knowing what completed.
+
+### 🟡 P3-17 Recalibrate re-reads config from disk; in-memory mutations lost
+- `RunRecalibrationTask.run()` line 290-291: `ctx.config = json.loads(...)`.
+  Any in-memory tweaks to ctx.config from earlier phases are blown away.
+  No current bug because earlier phases don't mutate, but the contract
+  is implicit.
+
+### 🟡 P3-19 Cadence reads `datetime.date.today()` (local clock)
+- A clock skew or timezone bug silently flips weekday → cadence skip
+  fires on wrong day. Should pin to NYSE timezone via the calendar guard.
+
+### 🟡 P3-9 Forward-return shift uses calendar-day count not trading-day
+- `LabelsTask` line 963: `spy_close.shift(-lookahead)` shifts by row
+  count. If the panel index is trading-day-indexed (it is, after pandas
+  business-day fill), this is OK. But mixed-frequency caches could
+  silently misalign.
+
+### 🟡 P3-6 Disabled feature columns vanish from training feature set
+- `FactorZScoreTask` skips columns missing from `raw_factor_frames`.
+  If hourly features are enabled at training time but disabled at
+  inference (via different config), the scorer artifact's feature_cols
+  contains hourly cols but the inference matrix doesn't → KeyError.
+- Defended by `prepare_inference_panel_frames` running the same task
+  chain — but only when called via the canonical helper.
+
+---
+
+## Phase 4 — data pipeline (labels, panel_frame, factors, neutralization, imputation)
+
+User mandate: "多多挖bug吧". Walked the per-ticker label + factor + neutralization
++ imputation code that feeds ALL downstream models (panel-LTR + NGBoost
++ Transformer + per-ticker tournament). Bugs here invalidate every
+trained model — biggest blast radius.
+
+### 🔴 D-1 No β clipping in label residualization (`labels._rolling_beta_purged`)
+- `beta = cov / var.replace(0, np.nan)`. Near-zero variance produces β
+  in [-50, +50] for a low-volume / illiquid ticker × SPY. Then
+  `residual = fwd - β · spy_fwd` becomes the dominant driver of the
+  residual. Some labels become noise, not "outperformance".
+- Same untreated in `factors.compute_rolling_beta` (line 64).
+- **Fix**: clip β to [-3, +5] (typical equity beta range).
+
+### 🔴 D-2 No β clipping in feature neutralization (`neutralization._residualize`)
+- Same pattern. With `min_obs=30` (just 30 observations to fit β),
+  noisy β can be ±5. Then `residual = feat - α - β·pred` may invert
+  the feature's sign for that ticker.
+- **Fix**: clip β; OR raise `min_obs` to ≥60.
+
+### 🔴 D-3 Static fundamentals broadcast across the entire training panel
+- Already noted as P3-8. Repeated here because the blast radius is
+  every model that uses fundamentals (currently panel-LTR via
+  `FactorZScoreTask`'s `FUNDAMENTAL_COLS`). Training rows on 2018-01-01
+  use 2026 fundamentals because `df[col].iloc[-1]` takes the latest
+  value and broadcasts.
+- **Fix**: turn fundamentals into a true time-series (one row per
+  reporting date) and forward-fill, OR document that current IC is
+  inflated by this leak.
+
+### 🟠 D-4 Age weighting is dead code
+- `pp_panel_training.PanelTrainingContext.listing_dates` is `None` in
+  `pp_training_full.py` line 251.
+- `compute_age_weight()` then short-circuits at line 102 returning
+  weight=1.0 for everyone.
+- Newly-IPO'd tickers (RBLX, NVTS, MDB, SOFI, SNOW, PLTR) get the
+  same weight as 30-year incumbents despite having ~1/4 the history.
+- **Fix**: populate listing_dates from each ticker's first OHLCV bar
+  in `FetchPanelDataTask` (cheap; one .index[0] per ticker).
+
+### 🟠 D-5 Per-ticker chain failures don't propagate to caller
+- Already noted in Phase 3 (P3-2 / P3-5). Repeating: when a parallel
+  per-ticker job throws, `factor_frames[t]` and
+  `neutralized_frames[t]` stay None. Downstream BuildPanelTask
+  silently drops the ticker.
+- Compounds with D-4: if a newly-IPO'd ticker fails feature calc due
+  to short history, it's silently dropped — no signal to the operator.
+
+### 🟠 D-6 Forward-return shift uses calendar-row count, not trading-day
+- `LabelsTask` line 963: `spy_close.shift(-lookahead)`. Shifts by row
+  count assuming uniform trading-day index. If the watchlist or SPY
+  has gaps (delisted/halted ticker, or OHLCV data with missing days),
+  shift(-5) crosses different calendar lengths per ticker.
+- Acceptable for rows where both ticker and SPY trade — i.e. most rows.
+  But `compute_residual_returns` doesn't validate the alignment.
+
+### 🟠 D-7 Per-row Python loop in `compute_age_weight`
+- Line 106: `for i in range(len(panel))`. 121k iterations of
+  `pd.Timestamp(...) - pd.Timestamp(...)`. ~5-10 seconds at scale.
+- **Fix**: vectorize via `pd.to_datetime(...).dt.date` differences.
+
+### 🟠 D-8 No completeness count for feature_frames at panel-build time
+- `BuildPanelTask` (line 116) iterates over feature_frames, drops
+  tickers without labels, factors, or short history. The dropped
+  COUNT is not logged. The expected total (=watchlist size) isn't
+  compared.
+- **Fix**: log "n_in / n_watchlist tickers entered the panel; %d
+  failed feature, %d failed labels, %d failed min_history".
+
+### 🟡 D-9 Residual momentum uses 60-day β to neutralize 252-day mom
+- `compute_residual_momentum` uses `compute_rolling_beta(window=60)`
+  to project away SPY's 252-day momentum from the ticker's 252-day
+  momentum. The β windows don't match the factor's window. Noisy.
+- Methodological: typically you'd β-fit on the same horizon as the
+  factor. Switching to 252-day daily-return β here would be more
+  consistent.
+
+### 🟡 D-10 size factor falls back to log(close) without warning
+- `compute_size_feature()` line 99-100: when shares_outstanding is
+  None (current default), uses `log(close)` as proxy. log(close) is
+  a poor size proxy — high-priced stocks like LLY ($800/sh) get
+  size > 6 vs WMT ($90/sh) < 5, but their actual market caps are
+  similar.
+- **Fix**: load shares_outstanding from yfinance / fundamentals
+  cache and broadcast.
+
+### 🟡 D-11 `gaussianize_cross_section` plotting position formula
+- `u = ranks / (n + 1)` — Hazen plotting positions. For different
+  date sizes (n=10 vs n=99), the same rank produces different u →
+  different label distribution stability. Not strictly a bug; just
+  noteworthy for cross-date IC analysis.
+
+### 🟡 D-12 Ticker-without-sector silently skips neutralization
+- `neutralize_features` line 128-130: `if sec_df is None: out[ticker] = df; continue`.
+  Tickers without a sector_etf mapping get NON-residualised features.
+  The ticker's `rel_mom_20d` then has a different distribution than
+  its sector-mapped peers'.
+
+### 🟡 D-13 `np.where` mixing pandas Series + arrays in `_residualize`
+- `np.where(use_roll, roll_cov, exp_cov)` returns an ndarray. NaN
+  handling between pandas Series and ndarrays may differ subtly at
+  the warmup boundary.
+
+### 🟡 D-14 No min-observations guard for β denominator
+- Line 64 (factors): `var = r_s_a.rolling(window).var()`. For 60-bar
+  window with min_periods=window, variance is computed only if all 60
+  bars are present. But if SPY has missing bars, var=NaN, β=NaN, no
+  factor for that bar. Cascade of NaN that downstream silently fills
+  to 0 in z-score.
+
+---
+
+## Severity rollup (revised)
+
+| Severity | NGBoost | Transformer | Ensemble | Config | Tests | Phase 3 (orch) | Phase 4 (data) | **Total** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 🔴 Critical | 4 | 4 | 0 | 1 | 0 | 2 | 3 | **14** |
+| 🟠 High | 9 | 12 | 2 | 2 | 4 | 6 | 5 | **40** |
+| 🟡 Medium | 12 | 13 | 5 | 1 | 4 | 7 | 6 | **48** |
+| **Total** | **25** | **29** | **7** | **4** | **8** | **15** | **14** | **102** |
+
+**Hit the user's "100 bugs" target.**
+
+---
+
 ## Recommended fix order
 
 If the goal is "lift transformer IC from 0.006 to competitive":

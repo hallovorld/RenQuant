@@ -50,8 +50,15 @@ def compute_momentum_12_1(
 def compute_rolling_beta(
     ohlcv: dict[str, pd.DataFrame], spy: pd.DataFrame,
     window: int = 60,
+    *, clip_low: float = -3.0, clip_high: float = 5.0,
 ) -> dict[str, pd.Series]:
-    """cov(r_i, r_spy) / var(r_spy) over a rolling `window`-bar window."""
+    """cov(r_i, r_spy) / var(r_spy) over a rolling `window`-bar window.
+
+    Audit fix D-1 (2026-04-25): β clipped to [clip_low, clip_high]
+    (default [-3, +5]). Same rationale as labels._rolling_beta_purged —
+    near-zero variance produces explosive β that dominates the
+    downstream residual_momentum factor.
+    """
     r_spy = spy["close"].astype(float).pct_change()
     out: dict[str, pd.Series] = {}
     for t, df in ohlcv.items():
@@ -62,6 +69,7 @@ def compute_rolling_beta(
         cov = r_i_a.rolling(window, min_periods=window).cov(r_s_a)
         var = r_s_a.rolling(window, min_periods=window).var()
         beta = cov / var.replace(0, np.nan)
+        beta = beta.clip(lower=clip_low, upper=clip_high)
         # Return aligned back to the ticker's original index
         out[t] = beta.reindex(r_i.index)
     return out

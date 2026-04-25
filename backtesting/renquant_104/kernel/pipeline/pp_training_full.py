@@ -150,14 +150,42 @@ class FetchPanelDataTask(FullTrainingTask):
 
         needed = sorted(set(watchlist) | {benchmark} | set(sector_etf.values()))
         log.info("FetchPanelDataTask: fetching %d symbols …", len(needed))
+        # Audit fix D-8 (2026-04-25): aggregate failure / empty counts +
+        # report so the operator sees how many tickers actually entered
+        # the panel. Pre-fix, silent shrinking left training on an
+        # arbitrary universe with no signal.
+        n_fail = 0
+        n_empty = 0
         for sym in needed:
             try:
                 df = fetch_ohlcv(sym, provider=provider)
             except Exception as exc:
+                n_fail += 1
                 log.warning("  %-6s fetch failed — %s", sym, exc)
                 continue
-            if df is not None and not df.empty:
-                ctx.ohlcv_all[sym] = df
+            if df is None or df.empty:
+                n_empty += 1
+                log.warning("  %-6s empty/None", sym)
+                continue
+            ctx.ohlcv_all[sym] = df
+        n_loaded = len(ctx.ohlcv_all)
+        n_missing = len(needed) - n_loaded
+        log.info(
+            "FetchPanelDataTask: loaded %d / %d  (failed=%d empty=%d)",
+            n_loaded, len(needed), n_fail, n_empty,
+        )
+        # Loud-fail when too much of the watchlist was lost — heuristic
+        # threshold: tolerate up to 5% missing, otherwise stop the phase.
+        watchlist_missing = sum(
+            1 for s in watchlist if s not in ctx.ohlcv_all
+        )
+        if watchlist_missing > max(1, len(watchlist) // 20):
+            log.error(
+                "FetchPanelDataTask: %d / %d watchlist tickers missing OHLCV "
+                "(>5%% — training would silently shrink). Aborting panel phase.",
+                watchlist_missing, len(watchlist),
+            )
+            return False
         if benchmark not in ctx.ohlcv_all:
             log.error("FetchPanelDataTask: benchmark %s missing — stopping panel phase",
                       benchmark)
@@ -242,13 +270,24 @@ class RunPanelTrainingTask(FullTrainingTask):
         watchlist_usable = list(ctx.feature_frames.keys())
         ohlcv_wl = {t: ctx.ohlcv_all[t] for t in watchlist_usable if t in ctx.ohlcv_all}
 
+        # Audit fix D-4 (2026-04-25): populate listing_dates from each
+        # ticker's first OHLCV bar so age-weighting is no longer dead
+        # code. Pre-fix, listing_dates=None → compute_age_weight returned
+        # weight=1.0 for everyone → newly-IPO'd tickers (RBLX, NVTS, MDB,
+        # SOFI, SNOW, PLTR) got the same training weight as 30-yr
+        # incumbents despite ~1/4 the history.
+        listing_dates = {
+            t: pd.Timestamp(df.index[0])
+            for t, df in ohlcv_wl.items()
+            if df is not None and not df.empty
+        }
         pctx = PanelTrainingContext(
             config=merged_cfg,
             watchlist=watchlist_usable,
             ohlcv=dict(ohlcv_wl) | {benchmark: spy_df},
             sector_etf_ohlcv=sector_etf_ohlcv,
             ticker_sectors=ticker_sectors,
-            listing_dates=None,
+            listing_dates=listing_dates,
         )
         pctx.feature_frames = ctx.feature_frames
         # strategy_dir is a read-only property on PanelTrainingContext derived

@@ -25,12 +25,19 @@ from scipy.stats import norm
 
 def _rolling_beta_purged(
     y: pd.Series, x: pd.Series, window: int, purge: int,
+    *, clip_low: float = -3.0, clip_high: float = 5.0,
 ) -> pd.Series:
     """Rolling OLS slope of y on x, using only data strictly prior to t.
 
     At time t we fit on the window ending at t-purge (inclusive), so the
     current bar's forward return cannot leak into β. Returns β_t aligned
     to y's index. Rows without enough prior history are NaN.
+
+    Audit fix D-1 (2026-04-25): β is clipped to [clip_low, clip_high]
+    (default [-3, +5], the typical equity β range). Pre-fix, an
+    illiquid/halted ticker × SPY could produce var≈0 → β ∈ [-50, +50]
+    which then dominated `residual = fwd - β · spy_fwd` and turned
+    labels into noise.
     """
     y = y.astype(float)
     x = x.astype(float)
@@ -42,7 +49,7 @@ def _rolling_beta_purged(
     cov = y_s.rolling(window, min_periods=window).cov(x_s)
     var = x_s.rolling(window, min_periods=window).var()
     beta = cov / var.replace(0, np.nan)
-    return beta
+    return beta.clip(lower=clip_low, upper=clip_high)
 
 
 def compute_residual_returns(

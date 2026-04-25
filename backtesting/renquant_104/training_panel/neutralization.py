@@ -98,6 +98,10 @@ def _residualize(
 
     beta  = np.where(use_roll,  roll_cov / roll_var.replace(0, np.nan),
                                 exp_cov  / exp_var.replace(0, np.nan))
+    # Audit fix D-2 (2026-04-25): clip β to typical equity-factor range.
+    # min_obs=30 produces noisy β; without clipping, ±50 spikes inverted
+    # the residualised feature for some tickers.
+    beta  = np.clip(beta, -3.0, 5.0)
     mf    = np.where(use_roll,  roll_mf.values,  exp_mf.values)
     mp    = np.where(use_roll,  roll_mp.values,  exp_mp.values)
     alpha = mf - beta * mp
