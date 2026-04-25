@@ -770,6 +770,14 @@ class FactorZScoreTask(PanelTask):
             # Plan G: hourly-bar aggregates (opt-in via panel_ltr.hourly.enabled)
             "morning_drift", "afternoon_drift", "vwap_premium",
             "vol_ratio", "intraday_realized_vol", "overnight_gap",
+            # 2026-04-24: 10-minute-bar aggregates (opt-in via panel_ltr.minute.enabled).
+            # TickerPanelFactorJob writes these m_*-prefixed columns into
+            # raw_factor_frame; without them in this list they'd silently
+            # drop from feature_cols. See minute_features.py for definitions.
+            "m_morning_drift", "m_morning_30min_drift",
+            "m_afternoon_drift", "m_closing_30min_drift",
+            "m_vwap_premium", "m_vol_ratio", "m_first_hour_vol_pct",
+            "m_intraday_realized_vol", "m_overnight_gap", "m_reversal_ratio",
         ]
         per_col: dict[str, dict[str, pd.Series]] = {}
         for col in raw_cols:
@@ -813,7 +821,16 @@ class FactorZScoreTask(PanelTask):
                       "earnings_surprise_cum", "insider_net_buy_90d",
                       # Plan G: hourly-bar aggregates
                       "morning_drift", "afternoon_drift", "vwap_premium",
-                      "vol_ratio", "intraday_realized_vol", "overnight_gap"):
+                      "vol_ratio", "intraday_realized_vol", "overnight_gap",
+                      # 2026-04-24: 10-minute-bar aggregates (opt-in via
+                      # panel_ltr.minute.enabled). Every m_* z-scored col
+                      # must be listed here OR it silently drops from
+                      # factor_frames — see test_session_silent_bugs.py.
+                      "m_morning_drift", "m_morning_30min_drift",
+                      "m_afternoon_drift", "m_closing_30min_drift",
+                      "m_vwap_premium", "m_vol_ratio", "m_first_hour_vol_pct",
+                      "m_intraday_realized_vol", "m_overnight_gap",
+                      "m_reversal_ratio"):
                 if c in z:
                     cols[f"{c}_z"] = z[c].get(t, pd.Series(index=idx)).reindex(idx)
             for col in FUNDAMENTAL_COLS:

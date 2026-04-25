@@ -206,8 +206,16 @@ def compute_drawdown_from_peak(
 
 def cross_sectional_zscore(
     feature: dict[str, pd.Series],
+    winsorize_clip: float | None = 3.0,
 ) -> dict[str, pd.Series]:
-    """Per date: (value − mean) / std across tickers."""
+    """Per date: (value − mean) / std across tickers.
+
+    2026-04-24: winsorize by default at ±3σ (post z-score). Clipping
+    outliers reduces tree-split influence from extreme values and is
+    standard practice at quant shops — expected +0.002-0.005 OOS IC
+    per doc/panel_ic_improvement_2026-04-24.md. Pass winsorize_clip=None
+    to disable (kept for A/B comparison + backward compat).
+    """
     frames = []
     for t, s in feature.items():
         frames.append(pd.DataFrame({"date": s.index, "ticker": t, "val": s.values}))
@@ -224,6 +232,12 @@ def cross_sectional_zscore(
     )
     # Rows whose original value was NaN should stay NaN
     long.loc[long["val"].isna(), "z"] = np.nan
+
+    # Winsorize z-scores to ±clip (industry standard). A 3σ cap on a
+    # standardized column keeps ~99.7% of a normal tail intact while
+    # preventing a single blown-up outlier from dominating a tree split.
+    if winsorize_clip is not None and winsorize_clip > 0:
+        long["z"] = long["z"].clip(-winsorize_clip, winsorize_clip)
 
     out: dict[str, pd.Series] = {}
     for t, sub in long.groupby("ticker", sort=False):
