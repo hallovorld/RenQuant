@@ -113,6 +113,38 @@ Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** unt
 
 ---
 
+## 🆕 2026-04-25 — long-term training-stack architectural items
+
+User spec 2026-04-25 (post NGBoost+Transformer audit retrain crash):
+"这个要改的！下次优先改！你甚至可以用别的语言写训练算法！"
+
+The current Python+PyTorch training stack hits Apple Silicon (MPS)
+gaps repeatedly + ThreadPool+GIL leaves us at 1-core utilisation
+during per-ticker work. Long-term refactor candidates, in order of
+expected ROI:
+
+- 🔴 **ThreadPool → ProcessPool for `run_panel_ticker_parallel`**
+  (~80 LoC, medium risk). 5-10× wallclock speedup on the 99-ticker
+  per-ticker chain. Breaks the GIL bottleneck (P3-1 in panel-ml audit).
+  Requires picklable TickerPanelContext + worker `sys.path` setup.
+- 🔴 **Vectorize panel build (drop per-ticker loop entirely)**
+  (~300 LoC, high risk). 10-20× speedup; rewrites Feature/Neutralize/Factor
+  as cross-sectional ops on the full panel. Algorithmic change; needs
+  re-validation of every existing factor.
+- 🔴 **Native (Rust/C++/Julia) rewrite of training core**
+  (multi-week, very high risk + reward). Addresses both ThreadPool/GIL
+  AND PyTorch-MPS gaps. Best for the tight numeric loops:
+  transformer attention, NGBoost gradient boosting, panel z-score.
+  Long-term play — also gives clean MPS/Metal Compute Shader path.
+- 🔴 **Replace PyTorch+MPS with mlx (Apple's native ML lib)** —
+  alternative to full native rewrite. mlx has first-class Metal
+  support, no MPS-fallback gaps, similar API. Smaller migration than
+  Rust but still a multi-day effort.
+
+Current shipped workaround: `enable_nested_tensor=False` on
+`nn.TransformerEncoder` (T-MPS-1 fix). Sidesteps one specific MPS
+gap; doesn't address the broader pattern.
+
 ## 🆕 2026-04-24 PT — late-session pending queue (post-compact)
 
 Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are in flight; ✅ done; ⏳ waiting on A/B or wall-clock; 🔴 not started. Updated at every ship.

@@ -813,6 +813,49 @@ trained model — biggest blast radius.
 
 ---
 
+## Round 3.5 — runtime / infrastructure findings during retrain
+
+After kicking off the post-fix transformer retrain, surfaced two
+infrastructure-level issues that aren't bugs in correctness logic but
+materially affect training speed + reliability.
+
+### 🔴 T-MPS-1 PyTorch MPS missing op crashes transformer training
+- Crash: `NotImplementedError: aten::_nested_tensor_from_mask_left_aligned`
+  not implemented for the MPS device. Hit during CrossValidate's
+  per-epoch _ic_on_tensors evaluation.
+- Root cause: `nn.TransformerEncoder` defaults to a nested-tensor
+  fast-path when `src_key_padding_mask` is supplied. MPS hasn't
+  implemented this kernel.
+- **Fix shipped**: `nn.TransformerEncoder(enable_nested_tensor=False)`.
+  Disables the fast-path uniformly across CPU/CUDA/MPS — small perf
+  loss on CPU/CUDA, no loss on MPS (the fast-path didn't run there
+  anyway).
+- **Forward note** (user request 2026-04-25): the training stack
+  routinely bumps into PyTorch-MPS gaps. The per-bar tight numeric
+  loops (transformer attention, NGBoost gradient boosting, panel
+  z-score) may benefit from a Rust/C++/Julia rewrite for both >2-3×
+  perf and to escape MPS gaps. Track as a long-term refactor, not
+  a current commit.
+
+### 🟠 P3-1 reaffirmed — ThreadPoolExecutor + GIL ≈ 1-core training
+- During retrain monitoring, observed `ps -p $PID -o etime,rss,state`:
+  101% CPU, 1.1 GB RAM. ThreadPoolExecutor with 12 workers but only 1
+  core utilised effectively because per-ticker pandas/numpy ops on
+  small dataframes are too short to release the GIL meaningfully.
+- Already in audit catalogue; user explicitly noticed during retrain
+  ("这个训练怎么并没有消耗很大的内存或者cpu呢？没有并发吗？").
+- **Fix options** (not yet shipped, listed by risk):
+    1. ProcessPoolExecutor — medium refactor, ~80 lines, requires
+       picklable TickerPanelContext + spawn worker init for sys.path.
+       5-10× speedup target.
+    2. Vectorize the entire panel build instead of per-ticker —
+       large refactor (~300 lines), changes algorithmic structure,
+       could be 10-20× faster but high risk.
+    3. Native code (Rust/C++) — biggest refactor, also addresses
+       T-MPS-1 long-term. Multiple weeks.
+
+---
+
 ## Round 3 — fresh deep audit (2026-04-25 late evening)
 
 User mandate: "修干净了吗？怎么随随便便就100多个？！再来一轮deep audit from scratch吧！"
