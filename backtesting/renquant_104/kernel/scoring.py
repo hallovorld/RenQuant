@@ -48,8 +48,17 @@ class ScoreCalibration:
     er_constant: float | None = None
 
     def calibrate(self, raw_score: float) -> float:
+        # Audit fix SC-1 (Round 7, 2026-04-25): align NaN behaviour with
+        # kernel/models.py:calibrate_score (which returns base_rate, not
+        # 0.0). Pre-fix, the two calibration paths returned different
+        # values on identical NaN input — kernel/models route returned
+        # base_rate (e.g. 0.05) while this route returned 0.0. Downstream
+        # tier gates compared rank_score < 0.10, so both paths skipped
+        # the candidate, but the mismatch could surface anywhere a
+        # downstream blend / weighted sum / persistence layer reads
+        # rank_score directly.
         if raw_score is None or not np.isfinite(raw_score):
-            return 0.0
+            return float(np.clip(self.base_rate, 0.0, 1.0))
 
         if self.method == "identity":
             return float(raw_score)

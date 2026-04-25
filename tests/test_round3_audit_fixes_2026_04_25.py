@@ -167,6 +167,36 @@ class TestM1CalibrateScoreRejectsNaN:
         assert calibrate_score(0.25, cal) == pytest.approx(0.20)
 
 
+# ── SC-1 (Round 7 audit): two calibration paths agree on NaN ──────────────────
+
+class TestSC1CalibrationPathConsistency:
+    """Pre-fix, ScoreCalibration.calibrate(NaN) returned 0.0 while
+    kernel/models.calibrate_score(NaN, dict) returned base_rate. Two
+    parallel calibration code paths produced different values on
+    identical NaN input — silent inconsistency that could surface in
+    any downstream consumer reading rank_score directly."""
+
+    def test_dataclass_calibrate_uses_base_rate_on_nan(self):
+        from kernel.scoring import ScoreCalibration
+        cal = ScoreCalibration(method="isotonic", base_rate=0.05,
+                                x_thresholds=[0.0, 1.0], y_thresholds=[0.0, 1.0])
+        assert cal.calibrate(float("nan")) == pytest.approx(0.05)
+
+    def test_dataclass_and_function_agree_on_nan(self):
+        from kernel.scoring import ScoreCalibration
+        from kernel.models import calibrate_score as fn_calibrate
+        cal = ScoreCalibration(method="platt", base_rate=0.04,
+                                platt_coef=1.0, platt_intercept=0.0,
+                                platt_scale_std=1.0, platt_scale_mean=0.0)
+        cal_dict = cal.to_dict()
+        # Both paths should now return the same value on NaN.
+        v1 = cal.calibrate(float("nan"))
+        v2 = fn_calibrate(float("nan"), cal_dict)
+        assert v1 == pytest.approx(v2), (
+            f"calibration paths disagree on NaN: dataclass={v1}, fn={v2}"
+        )
+
+
 # ── M-4 (Round 6 audit): predict_xgboost honours default_left on NaN ──────────
 
 class TestM4XgboostDefaultLeft:
