@@ -248,6 +248,65 @@ class UniverseJob(ABC):
                 return
 
 
+class FilterAutoDropTask(UniverseTask):
+    """Drop tickers that have been filtered out for >= N consecutive days.
+
+    User feature 2026-04-24: a ticker that the pipeline filters out (no
+    candidate emerges past A-gate / sector / corr / etc) for 3 months
+    is functionally dead — kicking it from the watchlist saves training
+    compute and panel-feature noise. State is persisted via
+    `monitor_state["filter_streaks"]: dict[ticker, int]`. Each bar:
+
+      * if ticker appears in ctx.candidates (passed at least one filter)
+        → reset to 0
+      * else → increment
+
+    Drop happens at universe-load time when streak >= threshold.
+
+    Config flag: `monitoring.auto_drop_filter_days` (default 0 = off).
+    Per CLAUDE.md §2a, this is a defensive cleanup feature, not an alpha
+    change — defaults preserve existing behaviour.
+    """
+
+    def should_skip(self, uctx: UniverseContext) -> bool:
+        threshold = int(uctx.config.get("monitoring", {})
+                          .get("auto_drop_filter_days", 0) or 0)
+        return threshold <= 0
+
+    def run(self, uctx: UniverseContext) -> "bool | None":
+        threshold = int(uctx.config.get("monitoring", {})
+                          .get("auto_drop_filter_days", 0))
+        # Read streaks from live state file (RunnerAdapter writes this);
+        # SimAdapter passes through monitor_state on each bar.
+        streaks: dict[str, int] = {}
+        if uctx.strategy_dir is not None:
+            ls_path = uctx.strategy_dir / "live_state.json"
+            if ls_path.exists():
+                try:
+                    import json as _json
+                    state = _json.loads(ls_path.read_text())
+                    ms    = state.get("monitor_state", {}) or {}
+                    streaks = ms.get("filter_streaks", {}) or {}
+                except Exception as exc:
+                    log.warning("auto_drop: live_state.json read failed: %s", exc)
+
+        defensives = set(uctx.config.get("defensive_tickers", []) or [])
+        dropped = []
+        for ticker, art in list(uctx.loaded_models.items()):
+            if ticker in defensives:
+                continue
+            n = int(streaks.get(ticker, 0))
+            if n >= threshold:
+                uctx.loaded_models.pop(ticker, None)
+                uctx.rejections.append((ticker, f"auto_drop_{n}d_filter_streak"))
+                dropped.append((ticker, n))
+        if dropped:
+            log.warning("auto_drop: %d ticker(s) dropped for filter-streak >= %dd: %s",
+                        len(dropped), threshold,
+                        ", ".join(f"{t}({n}d)" for t, n in dropped))
+        return True
+
+
 class LoadUniverseJob(UniverseJob):
     """Sequential Task chain producing uctx.loaded_models."""
     @property
@@ -256,4 +315,5 @@ class LoadUniverseJob(UniverseJob):
             LoadArtifactsTask(),
             FilterStalenessTask(),
             FilterUniverseFloorTask(),
+            FilterAutoDropTask(),
         ]

@@ -64,6 +64,24 @@ class MonitorIdleStreakTask(Task):
         state["last_activity_date"]  = last_activity
         state["first_trade_date"]    = first_trade
 
+        # Per-ticker filter streak (used by FilterAutoDropTask).
+        # Watchlist tickers that don't appear in ctx.candidates this bar
+        # had their candidate filtered (volume / earnings / etc). Increment
+        # streak; reset to 0 when ticker reappears.
+        # Only tracked when auto_drop enabled to keep state file slim.
+        auto_drop = int(cfg.get("auto_drop_filter_days", 0) or 0)
+        if auto_drop > 0:
+            cand_set = {getattr(c, "ticker", None) for c in ctx.candidates}
+            cand_set.discard(None)
+            streaks: dict[str, int] = state.get("filter_streaks", {}) or {}
+            watchlist = ctx.config.get("watchlist", []) or []
+            for t in watchlist:
+                if t in cand_set:
+                    streaks[t] = 0
+                else:
+                    streaks[t] = int(streaks.get(t, 0)) + 1
+            state["filter_streaks"] = streaks
+
         ctx.monitor_state = state
         ctx.counters["no_trade_streak"]     = new_no_trade
         ctx.counters["no_candidate_streak"] = new_no_cand
