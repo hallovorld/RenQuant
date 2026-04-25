@@ -28,12 +28,18 @@ from kernel.pipeline.job_sell import TickerSellJob  # noqa: E402
 
 
 def _hs(panel_score: float | None, mu: float | None):
+    """Build a HoldingState. The arg is named `panel_score` for back-compat
+    with existing tests, but post-2026-04-24-audit the task reads
+    `rank_score` (calibrated probability) — set both fields to keep tests
+    descriptive.
+    """
     from kernel.exits import HoldingState
     h = HoldingState(
         entry_price=100.0, entry_date=datetime.date(2026, 1, 15),
         shares=10, high_watermark=100.0,
     )
-    h.panel_score = panel_score
+    h.panel_score = panel_score   # raw LTR (kept for descriptive symmetry)
+    h.rank_score  = panel_score   # calibrated probability — what the task reads
     h.mu = mu
     return h
 
@@ -72,13 +78,13 @@ class TestFlagGating:
 
 class TestTriggerLogic:
     def test_fires_when_panel_low_and_mu_nonpositive(self):
-        """Panel 0.10 < 0.20 AND μ=-0.05 ≤ 0 → fire."""
+        """rank_score 0.10 < 0.20 AND μ=-0.05 ≤ 0 → fire."""
         tc = _tc(panel_score=0.10, mu=-0.05)
         PanelConvictionExitTask().run(tc)
         assert tc.exit_signal is not None
         assert tc.exit_signal.should_exit is True
         assert tc.exit_signal.exit_type == "panel_conviction"
-        assert "panel=0.100" in tc.exit_signal.reason
+        assert "rank=0.100" in tc.exit_signal.reason
         assert "-0.0500" in tc.exit_signal.reason
 
     def test_skips_when_panel_above_floor(self):
@@ -117,6 +123,70 @@ class TestThresholds:
     def test_stricter_mu_ceiling_suppresses_fires(self):
         """mu_ceiling=-0.10 → only fire when μ ≤ -0.10; μ=-0.05 > ceiling → skip."""
         tc = _tc(panel_score=0.10, mu=-0.05, mu_sell_ceiling=-0.10)
+        PanelConvictionExitTask().run(tc)
+        assert tc.exit_signal is None
+
+
+# ── Audit 2026-04-24: scale-correctness regression ───────────────────────────
+
+class TestUnitMismatchAudit:
+    """Pre-fix bug: the task compared `panel_sell_floor=0.20` (probability
+    scale) against `hs.panel_score` (raw LTR ~N(0,1) or μ−λσ ~±0.05).
+
+    In raw-LTR mode that meant ~58% of holdings had panel_score<0.20 and
+    triggered. In NGBoost μ−λσ mode it meant 100% of holdings.
+
+    Post-fix: the task reads `hs.rank_score` (calibrated probability)
+    instead, so the 0.20 floor matches its intended scale.
+    """
+
+    def _build_holding(self, *, raw_panel: float, calibrated: float, mu: float):
+        from kernel.exits import HoldingState
+        h = HoldingState(
+            entry_price=100.0, entry_date=datetime.date(2026, 1, 15),
+            shares=10, high_watermark=100.0,
+        )
+        h.panel_score = raw_panel       # raw LTR scale (~N(0,1))
+        h.rank_score  = calibrated      # calibrated probability (0..1)
+        h.mu = mu
+        return h
+
+    def test_does_not_fire_on_raw_panel_above_calibrated_floor(self):
+        """Raw panel 0.05 (low Z-score) maps to calibrated prob 0.65
+        (high) — pre-fix would have fired (0.05<0.20); post-fix doesn't
+        because rank_score=0.65 > 0.20."""
+        h = self._build_holding(raw_panel=0.05, calibrated=0.65, mu=-0.01)
+        tc = SimpleNamespace(
+            ticker="X", holding=h, exit_signal=None,
+            config={"risk": {"panel_exit": {"enabled": True}}},
+        )
+        PanelConvictionExitTask().run(tc)
+        assert tc.exit_signal is None, (
+            "Pre-fix bug: raw panel < probability-scale floor caused "
+            "spurious exits. Post-fix uses calibrated rank_score."
+        )
+
+    def test_fires_on_low_calibrated_rank(self):
+        """Raw panel can be middling; what matters is the calibrated
+        probability dropping below the (probability-scale) floor."""
+        h = self._build_holding(raw_panel=0.50, calibrated=0.08, mu=-0.02)
+        tc = SimpleNamespace(
+            ticker="X", holding=h, exit_signal=None,
+            config={"risk": {"panel_exit": {"enabled": True}}},
+        )
+        PanelConvictionExitTask().run(tc)
+        assert tc.exit_signal is not None
+        assert tc.exit_signal.exit_type == "panel_conviction"
+
+    def test_ngboost_mu_minus_lambda_sigma_does_not_spuriously_fire(self):
+        """In μ−λσ mode, panel_score is overwritten with μ−λσ in range
+        ~±0.05 — pre-fix this would fire on EVERY holding (always <
+        0.20). Post-fix only the calibrated rank_score matters."""
+        h = self._build_holding(raw_panel=-0.03, calibrated=0.55, mu=0.01)
+        tc = SimpleNamespace(
+            ticker="X", holding=h, exit_signal=None,
+            config={"risk": {"panel_exit": {"enabled": True}}},
+        )
         PanelConvictionExitTask().run(tc)
         assert tc.exit_signal is None
 

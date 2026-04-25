@@ -33,7 +33,10 @@ def _tc(panel_score, mu, trigger_mode=None, floor=0.20, ceiling=0.0,
     if trigger_mode is not None:
         cfg["risk"]["panel_exit"]["trigger_mode"] = trigger_mode
 
-    hs = SimpleNamespace(panel_score=panel_score, mu=mu)
+    # Post-2026-04-24-audit: task reads `rank_score` (calibrated probability),
+    # not `panel_score` (raw LTR). The arg is named `panel_score` for
+    # back-compat — set both fields so test descriptions still read clean.
+    hs = SimpleNamespace(panel_score=panel_score, rank_score=panel_score, mu=mu)
     return SimpleNamespace(
         ticker       = "NVDA",
         config       = cfg,

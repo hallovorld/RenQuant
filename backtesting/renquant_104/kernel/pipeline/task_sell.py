@@ -99,7 +99,7 @@ class PanelConvictionExitTask(Task):
 
     User spec 2026-04-24: "买卖换加减仓都要是 model+policy" — sell was
     the only surface using only per-ticker tournament model + price rules.
-    This task adds a panel-based exit that consults the cross-sectional
+    This task adds a panel-based exit that consults the calibrated
     panel score + NGBoost μ/σ (persisted on HoldingState from the
     previous bar's PanelScoringJob).
 
@@ -108,11 +108,23 @@ class PanelConvictionExitTask(Task):
     always win first, and this is the tiebreaker for "nothing else said
     exit but the model has turned bearish".
 
-    Trigger conditions (BOTH must hold when `risk.panel_exit.enabled=true`):
-      * hs.panel_score < panel_sell_floor (default 0.20 — below tier 1
-        A-gate threshold, so the panel now disagrees with the original
-        entry conviction)
+    Trigger conditions (when `risk.panel_exit.enabled=true`):
+      * hs.rank_score < panel_sell_floor (default 0.20 — below tier 1
+        A-gate threshold, so the calibrated probability now disagrees
+        with the original entry conviction)
       * hs.mu <= mu_sell_ceiling (default 0.0 — NGBoost says no edge)
+
+    Audit (2026-04-24): the comparison is against `rank_score`, NOT
+    `panel_score`. After PanelScoringJob, `rank_score` is the calibrated
+    probability (0..1 range, matching the tier-gate scale that the
+    `panel_sell_floor=0.20` default targets). `panel_score` is the raw
+    LTR output (~N(0,1)) or μ−λσ (~±0.05 in NGBoost mode); comparing
+    those to a probability-scale floor would fire on ~58% of holdings
+    (raw mode) or ALL holdings (μ−λσ mode). Requires
+    `ranking.panel_scoring.global_calibration.enabled=true` for the
+    rank_score field to carry probability-scale values from the panel
+    pipeline; tournament-only (panel disabled) holdings already get
+    probability-scale rank_score from ScoreModelTask.
 
     Flag default OFF — user can A/B before flipping.
     """
@@ -131,12 +143,14 @@ class PanelConvictionExitTask(Task):
         if hs is None:
             return
 
-        panel_score = getattr(hs, "panel_score", None)
-        mu          = getattr(hs, "mu", None)
+        # Use rank_score (calibrated probability, 0..1) — NOT panel_score
+        # which is raw LTR (~N(0,1)) or μ−λσ.
+        prob_score = getattr(hs, "rank_score", None)
+        mu         = getattr(hs, "mu", None)
 
         # Fallback: no panel scores on this holding yet (first bar after
         # purchase, or panel disabled for this run) — don't fire
-        if panel_score is None or mu is None:
+        if prob_score is None or mu is None:
             return
 
         panel_floor = float(cfg.get("panel_sell_floor", 0.20))
@@ -148,19 +162,19 @@ class PanelConvictionExitTask(Task):
         trigger_mode = str(cfg.get("trigger_mode", "and")).lower()
 
         if trigger_mode == "or":
-            fires = (panel_score < panel_floor) or (mu <= mu_ceiling)
+            fires = (prob_score < panel_floor) or (mu <= mu_ceiling)
         else:
-            fires = (panel_score < panel_floor) and (mu <= mu_ceiling)
+            fires = (prob_score < panel_floor) and (mu <= mu_ceiling)
 
         if fires:
             # Build signal via existing ExitSignal dataclass
             from kernel.exits import ExitSignal  # noqa: PLC0415
             tc.exit_signal = ExitSignal(
                 should_exit = True,
-                reason      = (f"panel conviction lost panel={panel_score:.3f} "
+                reason      = (f"panel conviction lost rank={prob_score:.3f} "
                                 f"μ={mu:+.4f} (floor={panel_floor}, "
                                 f"ceiling={mu_ceiling}, mode={trigger_mode})"),
                 exit_type   = "panel_conviction",
             )
-            log.info("PanelConvictionExitTask [%s]: EXIT panel=%.3f μ=%+.4f (%s)",
-                     tc.ticker, panel_score, mu, trigger_mode)
+            log.info("PanelConvictionExitTask [%s]: EXIT rank=%.3f μ=%+.4f (%s)",
+                     tc.ticker, prob_score, mu, trigger_mode)

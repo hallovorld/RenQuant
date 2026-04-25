@@ -237,17 +237,23 @@ Severity:
   handles NaN) or fail loud.
 
 ### 🟡 P-37 NGBoost `score_mode = mu_minus_lambda_sigma` + isotonic calibrator
-- ApplyNGBoost overwrites `panel_score` and `rank_score` with `μ−λσ`.
-- ApplyGlobalCalibration then maps `panel_score` → probability via
-  isotonic head. **But the isotonic was fit on raw LTR panel_score**,
-  whose distribution is approximately N(0, 1). `μ−λσ` distribution is
-  ~N(0.001, 0.02) — entirely inside the fitted training range's center.
-- Calibrator output: nearly all candidates → P(out) ≈ 0.5 (the central
-  isotonic value). Tier thresholds become uniform → no ranking signal.
-- Code comment acknowledges: "not strictly metric-calibrated; acceptable
-  for ranking" — but it actively COMPRESSES the σ-aware ranker's range.
-- **Fix**: when score_mode is mu_minus_lambda_sigma, skip calibrator
-  (use raw μ−λσ as rank), OR fit a separate calibrator on μ−λσ.
+**Reconsidered 2026-04-24**: this is a deliberate trade-off, not a bug.
+- ApplyNGBoost overwrites `panel_score` with `μ−λσ` (range ~ ±0.05).
+- ApplyGlobalCalibration then maps that through the isotonic. **The
+  isotonic was fit on Gaussianized LTR panel_score (~±3 range)** so
+  μ−λσ inputs compress near the central probability ~0.5. Output is
+  NOT metric-calibrated.
+- BUT the isotonic is **monotonic**, so cross-sectional ranking order
+  is preserved — only the absolute values are compressed.
+- Skipping the calibrator (the obvious "fix") would leave raw μ−λσ
+  ∈ [-0.06, +0.04] as the rank_score → entirely below the tier-1
+  threshold of 0.10 → zero trades.
+- Calibrator is the lesser evil: ranking signal preserved, gates still
+  fire on the compressed-but-monotonic output.
+- **Status**: leave as-is. Documented in `ApplyGlobalCalibrationTask.run`
+  comment so future readers don't "re-fix" this. To get strictly
+  metric-calibrated output in σ-aware mode, fit a separate isotonic
+  on the μ−λσ distribution (future work, low priority).
 
 ---
 
@@ -308,14 +314,58 @@ Severity:
 
 ---
 
+## Round-2 finds (downstream-consumer audit — 2026-04-24 evening)
+
+After fixing the panel_pipeline core (P-1 / P-9 / P-15 / P-16 / P-21 / P-22),
+walked the **consumers** of `panel_score` / `rank_score` / μ / σ across LEAN,
+sim, live to confirm the rest of the pipeline is units-correct. Three new
+findings.
+
+### 🔴 P-38 PanelConvictionExitTask unit mismatch
+- File: `kernel/pipeline/task_sell.py:120-167`
+- Bug: read `hs.panel_score` (raw LTR ~N(0,1) **or** μ−λσ ~±0.05) and
+  compared to `panel_sell_floor=0.20` which the docstring describes as
+  "below tier 1 A-gate threshold" — i.e. probability-scale.
+- Effect (when flag enabled, default OFF): in raw-LTR mode ~58% of holdings
+  hit `panel_score < 0.20` → spurious exits; in NGBoost μ−λσ mode 100%.
+- **Fix**: read `hs.rank_score` (calibrated probability after
+  `ApplyGlobalCalibrationTask`). For tournament-only (panel disabled)
+  paths, `rank_score` is already on probability scale via
+  `ScoreModelTask` → `score_artifact`. Test coverage:
+  `tests/test_panel_conviction_exit.py::TestUnitMismatchAudit` (3 new
+  tests: low-raw / low-calibrated / μ−λσ-mode).
+- **Status**: Fixed. Latent — flag was off in golden so no historical
+  effect on backtests.
+
+### 🟡 P-39 conviction_multiplier reads `panel_score` (latent)
+- File: `kernel/sizing.py:62`, called from `task_selection.py:165` and
+  `task_rotation.py:699`.
+- Same pattern as P-38: docstring suggests probability-scale (floor=0.0,
+  ceiling=1.0, min_mult=0.5), but the function reads raw `panel_score`.
+- Currently `panel_scoring.sizing.enabled = false` in golden, so no-op.
+- **Status**: not fixed — risks promoting a sizing change without scale
+  alignment. Either change function to read `rank_score` (semantically
+  correct) or rename param + document raw-scale intent. Logged as Round-3.
+
+### 🟡 P-40 Rotation panel_advantage gate is internally consistent
+- File: `kernel/pipeline/task_rotation.py:413-434`
+- Compares `cand.panel_score - held.panel_score >= panel_rot_advantage`.
+- Both sides on the same scale at any given bar (raw OR μ−λσ) so the
+  *comparison* is internally consistent — but the threshold's
+  interpretation shifts under NGBoost mode (raw σ unit vs μ−λσ unit).
+- Golden default: `rotation_advantage = 0.0` → gate disabled.
+- **Status**: not a bug. Documented for future tuning.
+
+---
+
 ## Severity rollup
 
 | Severity | Count |
 |---|---:|
-| 🔴 Critical | 5 |
+| 🔴 Critical | 6 |
 | 🟠 High | 9 |
-| 🟡 Medium | 23 |
-| **Total** | **37** |
+| 🟡 Medium | 25 |
+| **Total** | **40** |
 
 ---
 
