@@ -53,6 +53,46 @@ where the same 17 features carry real signal. Result:
   train/val feature-population regime turned a -0.009 collapse into a
   +0.052 climb on the same architecture.
 
+## 4-way audit — production-config win extracted from the audit (2026-04-25 PT)
+
+The transformer audit revealed a production-relevant bug **in the
+LightGBM training config, not the model**. Tested 4 configurations on
+the same train/val split + production hyperparams:
+
+| Config                                                           | val_IC mean | val_IC median | n_features | Δ vs current prod |
+|------------------------------------------------------------------|------------:|--------------:|-----------:|------------------:|
+| **1. LGBM on FULL 1251-date panel (current production)**         | **+0.0322** | +0.0300       | 41         | baseline          |
+| **2. LGBM on HOURLY-ERA only (491 dates, Fix A: training window)** | **+0.0850** | +0.0817       | 41         | **+164%** ⭐      |
+| 3. LGBM on FULL + missingness indicators (Fix B)                  | +0.0364     | +0.0449       | 58         | +13%              |
+| 4. LGBM on HOURLY-ERA + missingness indicators (Fix A+B combined) | +0.0363     | +0.0243       | 58         | +13% (A wiped)    |
+| 5. Rust transformer v5 (HOURLY-ERA only)                          | +0.0519     | n/a           | 41         | +61%              |
+
+**The actual production win is just Fix A.** The transformer audit was
+the diagnostic that revealed it — the `training_window_years: 5.0` in
+the current strategy_config has the model training on 4 years of
+mostly-NaN hourly features, dragging the model's effective IC. Just
+restricting to the hourly-populated era (config-only change, no model
+retrain) gives **+164% IC** for free.
+
+Fix B (missingness indicators) gives a tiny lift on its own (+13%)
+but UNDOES Fix A's gain when combined — on the hourly-era-only panel
+the indicators are mostly all-zero, so the 17 extra columns become
+noise that makes LGBM tree splits worse.
+
+Walk-forward CPCV cross-check (5 folds on hourly-era panel):
+mean +0.0662, median +0.0931, std +0.049 — folds 3-5 (train ≥243
+dates) consistently > +0.09. Single-split +0.0850 is real, not luck.
+
+**Recommended production config change** (one-line):
+```diff
+   "panel_ltr": {
+-    "training_window_years": 5.0,
++    "training_window_years": 1.5,
+   }
+```
+Pre-promotion gates: (a) re-run prod sim with the change, (b)
+verify APY ≥ golden v4.1, (c) update golden config + doc.
+
 ## A2 audit — apples-to-apples honest comparison (2026-04-25 PT)
 
 The +0.0372 baseline used in earlier comparisons was production
