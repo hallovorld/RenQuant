@@ -72,14 +72,19 @@ class PurgedKFold:
             test_mask = np.isin(dates, test_dates)
             test_idx = all_idx[test_mask]
 
-            # Purge window: [test_start − L + 1, test_end]
-            purge_start = pd.Timestamp(test_start) - pd.Timedelta(days=int(self.lookahead_days) - 1)
+            # Purge window: a row dated d carries label ret(d → d+L). It
+            # leaks into test when d + L >= test_start, i.e. d >= test_start - L.
+            # Round-2 audit (#R2-30): prior code used `lookahead - 1` which
+            # purged 4 days for L=5, leaving the d = test_start - L row's
+            # label looking forward INTO the test window. Now uses the full L.
+            purge_start = pd.Timestamp(test_start) - pd.Timedelta(days=int(self.lookahead_days))
             # Embargo window: (test_end, test_end + embargo_days]
             embargo_end = pd.Timestamp(test_end) + pd.Timedelta(days=int(self.embargo_days))
 
             train_mask = ~test_mask
             # Drop training rows inside the purge window (before test start,
-            # but whose label window leaks into test)
+            # but whose label window leaks into test) — INCLUSIVE on both ends
+            # so test_start - L is also dropped.
             leak_mask = (dates >= np.datetime64(purge_start)) & (dates < np.datetime64(test_start))
             train_mask &= ~leak_mask
             # Drop embargo rows (after test end, too close to it)

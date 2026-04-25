@@ -178,13 +178,22 @@ class CachedStore:
         # Timeout-protected fetch
         from kernel.net_safety import call_with_timeout  # noqa: PLC0415
         label = f"CachedStore[{self.file_pattern}]({symbol})"
+        # Round-2 audit (#R2-16): the previous `try/except TypeError` was
+        # dead code — call_with_timeout swallows ALL exceptions and
+        # returns None, so the TypeError path was unreachable. Use
+        # signature introspection to decide which call shape to use.
+        import inspect
         try:
+            sig = inspect.signature(self.fetch_fn)
+            takes_start_end = len(sig.parameters) >= 3
+        except (TypeError, ValueError):
+            takes_start_end = True   # built-ins / callables without sig — assume yes
+        if takes_start_end:
             new_df = call_with_timeout(
                 self.fetch_fn, symbol, fetch_start, end_ts.strftime("%Y-%m-%d"),
                 timeout_sec=self.timeout_sec, label=label,
             )
-        except TypeError:
-            # fetch_fn might not accept start/end — fall back to signature (symbol,)
+        else:
             new_df = call_with_timeout(
                 self.fetch_fn, symbol,
                 timeout_sec=self.timeout_sec, label=label,

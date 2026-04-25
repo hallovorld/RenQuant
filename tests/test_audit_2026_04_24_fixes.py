@@ -539,6 +539,27 @@ class TestTtlSkipNotExported:
         assert "tc.exported = True      # treat cached" not in body
 
 
+# ── R1 (round-2): LEAN top-up updates entry_price via volume-weighted avg ──
+
+class TestLeanAdapterTopUpCostBasis:
+    """Round-2 regression: my round-1 fix preserved entry_price on top-up
+    (no longer reset to today's price), but didn't compute the volume-
+    weighted average. SimAdapter does — kernel.exits.check_stop_loss /
+    check_trailing_stop / check_single_day_loss all use HoldingState.entry_price
+    so the two adapters were diverging. Round-2 fix: LEAN top-up does
+    `(old_entry × old_qty + price × shares) / new_qty`, matching SimAdapter."""
+
+    def test_lean_topup_volume_weighted_avg(self):
+        src = (_STRATEGY_DIR / "adapters" / "lean.py").read_text()
+        # Sentinel for the avg-cost computation in the top-up branch.
+        idx = src.find("if already_held:")
+        body = src[idx:idx + 1500]
+        assert "old_qty" in body
+        assert "new_qty = old_qty + shares" in body or "new_qty" in body
+        assert "hs.entry_price" in body and "* old_qty" in body, \
+            "LEAN top-up must volume-weight entry_price (R1)"
+
+
 # ── #58 — RunnerAdapter intraday overlay copies before mutating ─────────
 
 class TestIntradayOverlayCopiesFrame:

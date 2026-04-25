@@ -243,26 +243,52 @@ def fetch_insider_trades(
     store: "InsiderTradesStore | None" = None,
     provider_fn: "Callable[[str], pd.DataFrame] | None" = None,
     max_filings: int = 200,
+    refresh_after_days: float = 7.0,
 ) -> pd.DataFrame:
     """Fetch + cache insider-trade rows for a ticker.
 
     `cache=True` uses a local parquet first; `provider_fn` lets tests
     inject a fake SEC fetcher.
+
+    Round-2 audit (#R2-26): pre-fix the cache was written-once and
+    NEVER refreshed; new Form 4 filings filed after the first cache
+    write were invisible until someone manually deleted the parquet.
+    Now: if the cache's most-recent date is older than `refresh_after_days`,
+    we incremental-fetch fresh filings and merge them in.
     """
     store = store or InsiderTradesStore()
+    cached: "pd.DataFrame | None" = None
     if cache:
         cached = store.load(ticker)
         if cached is not None and not cached.empty:
-            return cached
+            # Refresh if the latest filing in the cache is more than
+            # `refresh_after_days` old vs today. Form 4 filings are
+            # batch-released after market close so a daily refresh is
+            # plenty.
+            latest = cached.index.max() if isinstance(cached.index, pd.DatetimeIndex) else None
+            if latest is None:
+                return cached
+            age_days = (pd.Timestamp.now().normalize() - latest).days
+            if age_days <= refresh_after_days:
+                return cached
+            # else: fall through to refresh path
 
     if provider_fn is not None:
-        df = provider_fn(ticker)
+        new_df = provider_fn(ticker)
     else:
-        df = _fetch_from_sec(ticker, max_filings=max_filings)
+        new_df = _fetch_from_sec(ticker, max_filings=max_filings)
 
-    if cache and not df.empty:
-        store.save(df, ticker)
-    return df
+    if cached is not None and not cached.empty and not new_df.empty:
+        merged = pd.concat([cached, new_df])
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    else:
+        merged = new_df if (new_df is not None and not new_df.empty) else (
+            cached if cached is not None else new_df
+        )
+
+    if cache and merged is not None and not merged.empty:
+        store.save(merged, ticker)
+    return merged if merged is not None else pd.DataFrame(columns=INSIDER_COLS)
 
 
 def _fetch_from_sec(ticker: str, *, max_filings: int = 200) -> pd.DataFrame:

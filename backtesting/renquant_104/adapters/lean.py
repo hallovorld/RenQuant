@@ -289,6 +289,21 @@ class LeanAdapter:
 
             if already_held:
                 hs = algo._holdings[ticker]
+                # Volume-weighted average cost basis on top-up — matches
+                # SimAdapter._apply_buy. Without this, kernel.exits' stop-loss
+                # / trailing-stop / single-day gates compute against the
+                # ORIGINAL entry while the broker's actual cost basis is
+                # the average → exits diverge between LEAN and sim.
+                # Round 2 audit (#R1).
+                try:
+                    old_qty = float(algo.Portfolio[sym].Quantity)
+                except Exception:
+                    old_qty = 0.0
+                new_qty = old_qty + shares
+                if new_qty > 0 and old_qty > 0:
+                    hs.entry_price = (
+                        hs.entry_price * old_qty + price * shares
+                    ) / new_qty
                 # Refresh HWM with today's price; keep entry tenure intact.
                 hs.high_watermark = max(hs.high_watermark, price)
             else:

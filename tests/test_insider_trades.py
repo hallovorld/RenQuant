@@ -115,9 +115,17 @@ class TestInsiderTradesStore:
 
 class TestFetchWithInjectedProvider:
     def test_cache_hit_skips_provider(self, tmp_path):
+        """Fresh cache (within refresh_after_days) skips provider call.
+
+        2026-04-24 round-2 audit (#R2-26): cache that exceeds the
+        staleness window now refetches automatically. To exercise the
+        cache-hit short-circuit, seed with a recent date.
+        """
         from kernel.insider_trades import fetch_insider_trades, InsiderTradesStore
         store = InsiderTradesStore(data_dir=tmp_path)
-        idx = pd.DatetimeIndex([pd.Timestamp("2025-06-10")])
+        # Use yesterday so the cache is well within refresh_after_days=7.
+        recent = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+        idx = pd.DatetimeIndex([recent])
         pre = pd.DataFrame({
             "tx_code": ["P"], "shares": [100.0], "price": [10.0], "dollars": [1000.0],
         }, index=idx)
