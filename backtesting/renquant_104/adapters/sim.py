@@ -74,8 +74,47 @@ class SimAdapter:
         #    LoadScorerTask / LoadNGBoostTask short-circuit) ─────────────────
         self._panel_scorer  = self._try_load_panel_scorer()
         self._ngboost_head  = self._try_load_ngboost_head()
-        self._panel_feature_frames = panel_feature_frames
-        self._panel_factor_frames  = panel_factor_frames
+
+        # ── Panel feature/factor frames (audit P-1, 2026-04-24) ─────────────
+        # Architecture symmetry with LeanAdapter / RunnerAdapter: if the
+        # caller didn't pre-build panel frames AND panel scoring is enabled,
+        # build them here via the same `prepare_inference_panel_frames`
+        # function the other adapters use. Pre-fix the caller had to know
+        # to construct them manually (notebook cell 15 used to fail this);
+        # now SimAdapter is self-sufficient.
+        if panel_feature_frames is not None and panel_factor_frames is not None:
+            self._panel_feature_frames = panel_feature_frames
+            self._panel_factor_frames  = panel_factor_frames
+        elif self._panel_scorer is not None:
+            try:
+                from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
+                benchmark = config.get("benchmark", "SPY")
+                ticker_sectors = {
+                    t: config.get("sector_map", {}).get(t)
+                    for t in config.get("watchlist", [])
+                    if t in config.get("sector_map", {})
+                }
+                # Provide SPY in ohlcv if it's not already there.
+                ohlcv_panel = dict(ohlcv)
+                if benchmark not in ohlcv_panel:
+                    ohlcv_panel[benchmark] = spy_df
+                ff, fac = prepare_inference_panel_frames(
+                    watchlist=list(config.get("watchlist", [])),
+                    ohlcv=ohlcv_panel,
+                    ticker_sectors=ticker_sectors,
+                    config=self._config,
+                )
+                self._panel_feature_frames = ff
+                self._panel_factor_frames  = fac
+                log.info("SimAdapter: built panel frames internally "
+                         "(feat=%d  factor=%d)", len(ff), len(fac))
+            except Exception as exc:
+                log.warning("SimAdapter: panel frame prep failed — %s", exc)
+                self._panel_feature_frames = None
+                self._panel_factor_frames  = None
+        else:
+            self._panel_feature_frames = panel_feature_frames
+            self._panel_factor_frames  = panel_factor_frames
 
         # ── Persistent sim state (emulates broker / LEAN Portfolio) ─────────
         self._cash           = float(initial_cash)
@@ -587,22 +626,35 @@ class SimAdapter:
         trading), we fall back to the last AVAILABLE close ON OR
         BEFORE today_ts — NOT `df.iloc[-1]` of the full ohlcv (which
         is the LAST historical bar = future data in a sim).
+
+        Audit fix SA-1 (Round 9, 2026-04-25): pre-fix, NaN/inf in either
+        `prices.get(t)` or the fallback close silently propagated into
+        `total += shares * NaN = NaN`. Once corrupted, every subsequent
+        `_portfolio_value` call returned NaN — equity curve filled with
+        NaN, total_ret/APY came out NaN. Now: skip non-finite prices
+        (treat as zero contribution) so a single bad bar doesn't poison
+        the rest of the simulation.
         """
+        import math
         total = self._cash
         for t, shares in self._pos_shares.items():
             p = prices.get(t)
-            if p is None:
+            if p is None or not math.isfinite(p):
                 df = self._ohlcv.get(t)
                 if df is not None and not df.empty:
                     if today_ts is not None:
                         truncated = df.loc[:today_ts]
-                        p = (float(truncated["close"].iloc[-1])
-                              if not truncated.empty else None)
+                        if not truncated.empty:
+                            cand = float(truncated["close"].iloc[-1])
+                            p = cand if math.isfinite(cand) else None
+                        else:
+                            p = None
                     else:
                         # No truncation hint — caller is responsible
                         # for not introducing lookahead.
-                        p = float(df["close"].iloc[-1])
-            if p is not None:
+                        cand = float(df["close"].iloc[-1])
+                        p = cand if math.isfinite(cand) else None
+            if p is not None and math.isfinite(p):
                 total += shares * p
         return total
 
