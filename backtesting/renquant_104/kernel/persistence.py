@@ -413,13 +413,25 @@ def record_candidate_scores(
         return
     blocked_map = blocked_map or {}
     rows = []
+    # Audit fix PR-1/PR-2 (Round 9, 2026-04-25): pre-fix, raw_score /
+    # rank_score / rs_score went through `float(... or 0.0)` which
+    # preserved NaN (Python `bool(NaN) = True`, so `NaN or 0.0` = NaN),
+    # while panel_score/mu/sigma already used `_none_or_float`. NaN
+    # raw_scores got persisted into a numeric DB column while NaN
+    # μ/σ was stored as NULL — inconsistent, and analytics queries
+    # (median, percentile) silently broke on the rows with NaN raw_score.
+    # Now: every numeric score uses `_none_or_float` which returns None
+    # on NaN/inf, persisting as SQL NULL.
+    def _safe_float_or_default(v: Any, default: float = 0.0) -> float:
+        f = _none_or_float(v)
+        return default if f is None else f
     for c in candidates:
         rows.append((
             run_id, c.ticker, "candidate",
-            float(getattr(c, "raw_score",  0.0) or 0.0),
-            float(getattr(c, "rank_score", 0.0) or 0.0),
+            _safe_float_or_default(getattr(c, "raw_score",  None)),
+            _safe_float_or_default(getattr(c, "rank_score", None)),
             _none_or_float(getattr(c, "panel_score", None)),
-            float(getattr(c, "rs_score",   0.0) or 0.0),
+            _safe_float_or_default(getattr(c, "rs_score",   None)),
             _none_or_float(getattr(c, "mu",    None)),
             _none_or_float(getattr(c, "sigma", None)),
             1 if c.ticker in selected_tickers else 0,
