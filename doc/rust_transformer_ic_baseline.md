@@ -9,7 +9,8 @@
 | Rust transformer v3 (200ep all 41 cols, full panel) | **+0.2314** | +0.0363 @ ep 1 (random-init lucky, then collapse) |
 | Rust transformer v4 dropdistshift (24 cols, full panel) | n/a | -0.0071 — WORSE |
 | Rust transformer v4 tightreg (41 cols dropout 0.5 lr 1e-4) | n/a | -0.0430+ — WORSE |
-| **Rust transformer v5 (hourly-era only, 491 dates, 200ep ListNet)** | n/a | **+0.0519 @ ep 127** — beats XGBoost by +39.5% (above the doc'd 1.3× ship gate) |
+| **Rust transformer v5 (hourly-era only, 491 dates, 200ep ListNet)** | n/a | **+0.0519 @ ep 127** — first healthy real-data curve |
+| Production LightGBM (DEFAULT_PARAMS, on hourly-era 491-date panel) | n/a | **+0.0850** — the apples-to-apples baseline (LightGBM crushes transformer on the same data window) |
 | Python XGBoost / LightGBM panel-LTR (post-audit) | n/a | **+0.0372** |
 | Python transformer (overfit, shelved) | n/a | +0.0062 |
 
@@ -46,12 +47,50 @@ where the same 17 features carry real signal. Result:
 * **v5 hourly-era only**: trains on 491 dates ≥ 2024-04-25 where
   hourly cols are uniformly populated (~17% NaN, same on train + val).
   First healthy training curve on real data: ramped from epoch-1
-  +0.005 → epoch-127 **+0.0519**, then early-stop. **Beats Python
-  XGBoost (+0.0372) by +39.5% — clears the doc'd 1.3× ship gate
-  (≥0.0484) by a healthy margin.** Total wall-clock 100 seconds at
-  ~0.7s/epoch on CPU (no GPU). The lesson: hyperparameter A/B alone
-  cannot rescue distribution-mismatched data; matching the train/val
-  feature-population regime is a 1.4× IC unlock.
+  +0.005 → epoch-127 **+0.0519**, then early-stop. Total wall-clock
+  100 seconds at ~0.7s/epoch on CPU. The lesson: hyperparameter A/B
+  alone cannot rescue distribution-mismatched data; matching the
+  train/val feature-population regime turned a -0.009 collapse into a
+  +0.052 climb on the same architecture.
+
+## A2 audit — apples-to-apples honest comparison (2026-04-25 PT)
+
+The +0.0372 baseline used in earlier comparisons was production
+LightGBM running on the FULL 1251-date panel (which includes 4 years
+of hourly-feature absence). That number flatters the transformer
+because LightGBM also struggles when ~17 features are mostly NaN
+across the older training rows.
+
+The fair head-to-head is **same panel (491 hourly-era dates) + same
+80/20 chronological split**:
+
+| Model on `/tmp/real_panel_hourly_era.csv` | val_IC mean | val_IC median | wall |
+|-------------------------------------------|------------:|--------------:|-----:|
+| Rust transformer v5 (ListNet 200ep)        | **+0.0519** | (single split) | 100s |
+| **Production LightGBM (DEFAULT_PARAMS, 300 boosts)** | **+0.0850** | +0.0817 | 1.1s |
+| Naive LightGBM (default sklearn ranker, no L1/L2 + tuning) | -0.0359 | -0.0725 | 1.3s |
+
+**Honest verdict:** LightGBM with production hyperparams beats the
+transformer **+0.0850 vs +0.0519 = LightGBM wins by 64%** on the same
+panel, same split, same compute budget (LGBM is 90× faster too).
+
+The transformer is competitive (positive IC, healthy curve) but not
+better. **Do NOT promote to golden v5.** The earlier "+39.5% over
+XGBoost" headline was comparison-bias from using a non-apples baseline.
+
+What the transformer would need to compete:
+* **Missingness indicators**: LGBM's native sparsity-aware splits
+  capture "missing" as its own signal — transformer needs explicit
+  `{col}_is_missing` columns or a feature-token attention mask.
+* **LambdaRank loss**: LGBM uses lambdarank with NDCG@5/10
+  truncation; we use ListNet top-1. Pairwise gradients with
+  truncation match the "top-K matters" inductive bias of cross-sec
+  ranking.
+* **Ensemble of 300 weak learners**: LGBM is implicitly ensembled
+  via boosting; one-shot transformer training has no such free lunch.
+  Stacking 5+ transformer seeds may close some of the gap.
+
+
 
 **Why XGBoost / LightGBM is unfazed:** native sparsity-aware NaN
 handling treats `missing` as its own tree-split branch — does NOT
