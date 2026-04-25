@@ -109,7 +109,15 @@ def compute_position_size(
     Falls back to 25% cap if confidence-scaled pct can't cover 1 share
     (prevents high-priced stocks like LLY from being silently skipped).
     """
-    if price <= 0 or portfolio_value <= 0:
+    # Audit fix S-1 (Round 5, 2026-04-25): pre-fix, NaN price/portfolio
+    # passed `<= 0` (NaN comparisons False) but then `int(NaN)` later in
+    # the function raised ValueError, crashing the whole sizing path.
+    # Post-fix: explicit isfinite + non-positive guard at the top.
+    import math
+    if (not math.isfinite(price) or not math.isfinite(portfolio_value)
+            or price <= 0 or portfolio_value <= 0):
+        return 0.0, 0
+    if not math.isfinite(available_cash):
         return 0.0, 0
 
     if override_pct is not None:
