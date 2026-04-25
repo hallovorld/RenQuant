@@ -509,9 +509,32 @@ class PanelFeatureJob(PanelJob):
             tc.ticker: tc.raw_factor_frame for tc in ticker_ctxs
             if tc.raw_factor_frame is not None
         }
-        log.info("PanelFeatureJob: feat=%d  neutralized=%d  raw_factors=%d",
-                 len(ctx.feature_frames), len(ctx.neutralized_frames),
-                 len(ctx.raw_factor_frames))
+        n_in = len(ticker_ctxs)
+        n_feat   = len(ctx.feature_frames)
+        n_neut   = len(ctx.neutralized_frames)
+        n_factor = len(ctx.raw_factor_frames)
+        log.info(
+            "PanelFeatureJob: in=%d  feat=%d  neutralized=%d  raw_factors=%d",
+            n_in, n_feat, n_neut, n_factor,
+        )
+        # Audit fix TPF-1 (2026-04-25): pre-fix the per-ticker chain
+        # silently dropped tickers on exception. Now: surface the count
+        # AND abort the panel phase if too many failed (>5% threshold).
+        # Prevents training on a depleted universe without operator
+        # awareness — same pattern as D-8 in FetchPanelDataTask.
+        n_failed = n_in - n_factor   # raw_factor_frame is the union of all stages
+        threshold = max(1, n_in // 20)
+        if n_failed > threshold:
+            log.error(
+                "PanelFeatureJob: %d / %d ticker chains failed (>5%% — "
+                "panel would silently shrink). Check per-ticker error "
+                "logs above. Aborting panel phase.",
+                n_failed, n_in,
+            )
+            raise RuntimeError(
+                f"PanelFeatureJob: {n_failed}/{n_in} ticker chains failed; "
+                f"refusing to train on a depleted universe (D-8 / TPF-1 guard)."
+            )
 
 
 class TickerPanelFeatureJob(PanelTickerJob):
@@ -590,6 +613,15 @@ class TickerPanelFactorJob(PanelTickerJob):
         )
         from kernel.earnings_surprise import compute_earnings_surprise_cum
         from kernel.insider_trades    import compute_insider_net_buy_cum
+
+        # Audit P-15 (2026-04-24): granular per-stage try/except. Pre-fix
+        # one blanket `try` swallowed every error → raw_factor_frame stayed
+        # None → ticker silently dropped from the cross-sectional z-score.
+        # Now: stage 1 (core factors) failure drops the ticker; stages 2-6
+        # (fundamentals/earnings/insider/hourly/minute) failures only
+        # NaN-fill those specific columns.
+        idx = tc.ohlcv[tc.ticker].index
+        cols: dict[str, pd.Series] = {}
         try:
             one = {tc.ticker: tc.ohlcv[tc.ticker]}
             size = compute_size_feature(one, None).get(tc.ticker)
@@ -605,8 +637,7 @@ class TickerPanelFactorJob(PanelTickerJob):
             p2h      = compute_price_to_high(one, window=252).get(tc.ticker)
             rvol     = compute_realized_vol(one, window=20).get(tc.ticker)
             ddn      = compute_drawdown_from_peak(one, window=252).get(tc.ticker)
-            idx = tc.ohlcv[tc.ticker].index
-            cols: dict[str, pd.Series] = {
+            cols.update({
                 "size":            (size if size is not None else pd.Series(index=idx)).reindex(idx),
                 "mom_12_1":        (mom  if mom  is not None else pd.Series(index=idx)).reindex(idx),
                 "beta_60d":        (beta if beta is not None else pd.Series(index=idx)).reindex(idx),
@@ -617,7 +648,15 @@ class TickerPanelFactorJob(PanelTickerJob):
                 "price_to_high":   (p2h      if p2h      is not None else pd.Series(index=idx)).reindex(idx),
                 "realized_vol":    (rvol     if rvol     is not None else pd.Series(index=idx)).reindex(idx),
                 "drawdown_peak":   (ddn      if ddn      is not None else pd.Series(index=idx)).reindex(idx),
-            }
+            })
+        except Exception as exc:
+            log.error("  %s: TickerPanelFactorJob[core_factors] failed — %s: %s "
+                      "— ticker dropped from this panel pass",
+                      tc.ticker, type(exc).__name__, exc)
+            return   # without core factors no point continuing
+
+        # Stage 2 — fundamentals (static scalar broadcast)
+        try:
             # Fundamentals: broadcast the ticker's snapshot scalar to every bar.
             # A missing ticker → NaN series (FactorZScoreTask / sector-median
             # fill will handle it globally).
@@ -626,9 +665,14 @@ class TickerPanelFactorJob(PanelTickerJob):
                 for col in FUNDAMENTAL_COLS:
                     val = ticker_fund.get(col, float("nan"))
                     cols[col] = pd.Series(val, index=idx)
-            # Earnings surprise: trailing-4Q cumulative surprise %, ffilled
-            # to the ticker's daily index. Sparse (one row per announcement)
-            # -> daily step function.
+        except Exception as exc:
+            log.warning("  %s: TickerPanelFactorJob[fundamentals] failed — %s",
+                        tc.ticker, exc)
+            for col in FUNDAMENTAL_COLS:
+                cols.setdefault(col, pd.Series(float("nan"), index=idx))
+
+        # Stage 3 — earnings surprise (time-varying)
+        try:
             if tc.earnings_surprises:
                 surprise_daily = compute_earnings_surprise_cum(
                     {tc.ticker: tc.earnings_surprises.get(tc.ticker, pd.DataFrame())},
@@ -638,7 +682,13 @@ class TickerPanelFactorJob(PanelTickerJob):
                     surprise_daily if surprise_daily is not None
                     else pd.Series(float("nan"), index=idx)
                 )
-            # Insider trades: trailing-90d cumulative net executive buy (USD).
+        except Exception as exc:
+            log.warning("  %s: TickerPanelFactorJob[earnings_surprise] failed — %s",
+                        tc.ticker, exc)
+            cols["earnings_surprise_cum"] = pd.Series(float("nan"), index=idx)
+
+        # Stage 4 — insider trades (time-varying, trailing-90d)
+        try:
             if tc.insider_trades:
                 insider_daily = compute_insider_net_buy_cum(
                     {tc.ticker: tc.insider_trades.get(tc.ticker, pd.DataFrame())},
@@ -649,6 +699,13 @@ class TickerPanelFactorJob(PanelTickerJob):
                     insider_daily if insider_daily is not None
                     else pd.Series(float("nan"), index=idx)
                 )
+        except Exception as exc:
+            log.warning("  %s: TickerPanelFactorJob[insider_trades] failed — %s",
+                        tc.ticker, exc)
+            cols["insider_net_buy_90d"] = pd.Series(float("nan"), index=idx)
+
+        # Stage 5 — hourly aggregates (P-13 reindex/tz fragility lives here too)
+        try:
             # Hourly aggregated features (Plan G): morning/afternoon drift,
             # VWAP premium, vol ratio, intraday realized vol, overnight gap.
             # Reindex the per-session output onto the ticker's daily index;
@@ -675,6 +732,15 @@ class TickerPanelFactorJob(PanelTickerJob):
                         "vol_ratio", "intraday_realized_vol", "overnight_gap",
                     ):
                         cols[col] = pd.Series(float("nan"), index=idx)
+        except Exception as exc:
+            log.warning("  %s: TickerPanelFactorJob[hourly] failed — %s",
+                        tc.ticker, exc)
+            for col in ("morning_drift", "afternoon_drift", "vwap_premium",
+                         "vol_ratio", "intraday_realized_vol", "overnight_gap"):
+                cols.setdefault(col, pd.Series(float("nan"), index=idx))
+
+        # Stage 6 — minute aggregates (10-min bars)
+        try:
             # 10-minute aggregated features (2026-04-24). Adds finer-grained
             # intraday structure on top of the hourly set. Column names use
             # a `m_` prefix so they don't collide with identically-named
@@ -696,9 +762,20 @@ class TickerPanelFactorJob(PanelTickerJob):
                 else:
                     for col in MINUTE_FEATURE_COLS:
                         cols[f"m_{col}"] = pd.Series(float("nan"), index=idx)
-            tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
         except Exception as exc:
-            log.error("  %s: TickerPanelFactorJob failed — %s", tc.ticker, exc)
+            log.warning("  %s: TickerPanelFactorJob[minute] failed — %s",
+                        tc.ticker, exc)
+            try:
+                from training_panel.minute_features import MINUTE_FEATURE_COLS as _MFC  # noqa: PLC0415
+                for col in _MFC:
+                    cols.setdefault(f"m_{col}", pd.Series(float("nan"), index=idx))
+            except Exception:
+                pass
+
+        # Final assembly — by this point cols always has at least the
+        # core factors. Build the DataFrame even if some optional stages
+        # NaN-filled; downstream cross-sectional z-score handles NaN cells.
+        tc.raw_factor_frame = pd.DataFrame(cols, index=idx)
 
 
 # ── Phase 3 — PanelAssemblyJob + tasks ───────────────────────────────────────

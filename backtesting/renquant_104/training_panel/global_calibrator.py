@@ -40,12 +40,35 @@ log = logging.getLogger("training_panel.global_calibrator")
 
 @dataclass
 class GlobalPanelCalibration:
-    """Two isotonic maps: raw → P(outperform) and raw → E[R_i - R_spy]."""
+    """Two isotonic maps: raw → P(outperform) and raw → E[R_i - R_spy].
+
+    Audit fix GC-1 (2026-04-25): the `prob_x` and `er_x` arrays must
+    be monotonically non-decreasing — `np.interp` requires it and
+    silently produces garbage if the invariant is violated. We assert
+    on construction (and load).
+    """
     prob_x: np.ndarray              # knot x's (panel scores, sorted)
     prob_y: np.ndarray              # knot y's (probabilities, monotone nondecreasing)
     er_x:   np.ndarray
     er_y:   np.ndarray
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Coerce to ndarray to keep np.interp happy regardless of how
+        # the constructor was called (tests pass lists; load() passes
+        # ndarrays).
+        self.prob_x = np.asarray(self.prob_x, dtype=float)
+        self.prob_y = np.asarray(self.prob_y, dtype=float)
+        self.er_x   = np.asarray(self.er_x,   dtype=float)
+        self.er_y   = np.asarray(self.er_y,   dtype=float)
+        for name, arr in (("prob_x", self.prob_x), ("er_x", self.er_x)):
+            if len(arr) >= 2 and not np.all(np.diff(arr) >= 0):
+                raise ValueError(
+                    f"GlobalPanelCalibration: {name} must be monotonically "
+                    f"non-decreasing for np.interp to work. Got "
+                    f"{len(arr)} knots with first violation at index "
+                    f"{int(np.argmax(np.diff(arr) < 0))}."
+                )
 
     def calibrate_probability(self, raw_score: float) -> float:
         """Map a raw panel score → P(outperform SPY by threshold in lookahead_days)."""

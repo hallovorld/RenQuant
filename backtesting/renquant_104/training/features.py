@@ -76,9 +76,14 @@ def build_training_features(
     result["spy_realized_vol"] = spy_rets.rolling(20).std() * np.sqrt(252)
     result["spy_adx"]          = spy_adx
     result["spy_trend"]        = spy_close_full / spy_ema50.replace(0, np.nan)
-    result["hurst_proxy"]      = spy_rets.rolling(20).apply(
-        lambda x: float(np.corrcoef(x[:-1], x[1:])[0, 1]) if len(x) > 2 else 0.0, raw=True
-    )
+    # Audit fix TF-3 (2026-04-25): pre-fix `hurst_proxy` was just lag-1
+    # autocorrelation under a misleading name. Now compute the real
+    # Hurst exponent (rescaled-range / R/S) over a 63-day window via
+    # the existing kernel.regime helper. Same column name preserved
+    # for backwards-compat with downstream model artifacts'
+    # `feature_columns`. Cleaner regime context = better model.
+    from kernel.regime import rolling_hurst as _rolling_hurst  # noqa: PLC0415
+    result["hurst_proxy"] = _rolling_hurst(spy_rets, window=63).reindex(common_idx)
 
     # Supervised labels: stock outperformance vs SPY over lookahead days
     stock_fwd = ohlcv[ticker]["close"].pct_change(lookahead).shift(-lookahead)
@@ -88,6 +93,15 @@ def build_training_features(
     result["label"] = np.where(result["fwd_return"] >  threshold,  1,
                       np.where(result["fwd_return"] < -threshold, -1, 0))
 
+    # Audit TF-6 reconsidered (2026-04-25): the per-ticker tournament
+    # consumers (Classification / Q-learning / XGBoost) require every
+    # row to have non-NaN features — they have no native imputation
+    # path. The panel pipeline handles its own warm-up via
+    # build_panel_frame's `iloc[min_history_days:]` slice BEFORE
+    # concatenating, so the panel path doesn't pay the dropna cost
+    # twice. Keeping `dropna()` is correct for the tournament path
+    # and harmless for the panel path. Documented here so future
+    # readers don't try to "fix" this again.
     result = result.dropna()
     return result if not result.empty else None
 
