@@ -1438,6 +1438,43 @@ class TestTOURNOOSLeakPurgesBoundaryRows:
         )
 
 
+# ── ROT-NaN-PRICE (Round 2 audit): EmitRotationsTask skips NaN price ──────────
+
+class TestROTNaNPriceEmitRotationsSkips:
+    """Pre-fix, EmitRotationsTask used `price <= 0` to skip pairs with
+    bad price data. NaN slips past (NaN <= 0 is False), then later
+    `int(NaN_invest)` raises and the whole pair silently aborts with no
+    clear log. Same NaN-slip pattern as SE-1 / TR-NaN."""
+
+    def test_predicate_rejects_nan_price(self):
+        import math
+        price = float("nan")
+        assert (not math.isfinite(price) or price <= 0)
+
+    def test_predicate_rejects_inf_price(self):
+        import math
+        price = float("inf")
+        assert (not math.isfinite(price) or price <= 0)
+
+    def test_predicate_rejects_zero(self):
+        import math
+        assert (not math.isfinite(0.0) or 0.0 <= 0)
+
+    def test_predicate_accepts_positive_finite(self):
+        import math
+        assert not (not math.isfinite(100.0) or 100.0 <= 0)
+
+    def test_source_uses_isfinite_guard(self):
+        """Guard against accidental revert to bare `<= 0`."""
+        import inspect
+        from kernel.pipeline.task_rotation import EmitRotationsTask
+        src = inspect.getsource(EmitRotationsTask)
+        # Post-fix has `not math.isfinite(price)` in the guard.
+        assert "math.isfinite(price)" in src, (
+            "ROT-NaN-PRICE regression: NaN guard missing on rotation buy price."
+        )
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

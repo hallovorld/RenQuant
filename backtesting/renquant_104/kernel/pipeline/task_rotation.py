@@ -719,11 +719,19 @@ class EmitRotationsTask(Task):
             # replacement — the user lost the held but bought nothing.
             # Now we compute the buy fully BEFORE committing the exit.
 
+            # Audit fix ROT-NaN-PRICE (Round 2 deep audit, 2026-04-25):
+            # `price <= 0` lets NaN slip through (NaN<=0 is False), then
+            # `int(NaN_invest)` later raises and silently aborts the
+            # whole rotation pair without the operator seeing why.
+            # Same NaN-slip pattern as SE-1 / TR-NaN. Fail-SAFE: skip the
+            # pair on non-finite price too, with a clear log.
             price = ctx.prices.get(pair.buy_ticker, 0.0)
-            if price <= 0:
-                log.warning("EmitRotationsTask: no price for %s — skip ENTIRE pair "
-                            "(no atomic-rotation orphan exit)",
-                            pair.buy_ticker)
+            if not math.isfinite(price) or price <= 0:
+                log.warning(
+                    "EmitRotationsTask: bad price (%s) for %s — skip ENTIRE pair "
+                    "(no atomic-rotation orphan exit)",
+                    price, pair.buy_ticker,
+                )
                 continue
 
             buy_cand = next((c for c in ctx.ranked if c.ticker == pair.buy_ticker), None)
