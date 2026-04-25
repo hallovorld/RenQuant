@@ -28,6 +28,7 @@ pub mod config;
 pub mod cv;
 pub mod dataset;
 pub mod loss;
+pub mod loss_pairwise;
 pub mod metrics;
 pub mod trainer;
 pub mod transformer_block;

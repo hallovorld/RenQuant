@@ -41,7 +41,7 @@ use std::time::Instant;
 use transformer_scorer::config::TransformerParams;
 use transformer_scorer::dataset::Panel;
 use transformer_scorer::metrics::pooled_ic_owned;
-use transformer_scorer::trainer::Trainer;
+use transformer_scorer::trainer::{LossKind, Trainer};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Rust panel-transformer trainer")]
@@ -97,6 +97,13 @@ struct Args {
     /// 0 = disabled.
     #[arg(long = "patience", default_value_t = 5)]
     patience: usize,
+
+    /// Loss function. "listnet" (top-1 listwise CE, matches Python) or
+    /// "ranknet" (Burges 2005 pairwise — Poh-Lim-Zohren 2020 alternative
+    /// for cross-sectional ranking, often gives stronger middle-of-pack
+    /// gradients).
+    #[arg(long, default_value = "listnet")]
+    loss: String,
 }
 
 fn main() -> Result<()> {
@@ -162,6 +169,9 @@ fn main() -> Result<()> {
     let mut trainer = Trainer::new(
         n_features, params.clone(), args.lr, args.weight_decay, device,
     )?;
+    let loss_kind = LossKind::from_str_lossy(&args.loss);
+    trainer.set_loss(loss_kind);
+    eprintln!("[train-panel] loss = {:?}", loss_kind);
 
     eprintln!(
         "[train-panel] training {} epoch(s), batch={}, patience={}",

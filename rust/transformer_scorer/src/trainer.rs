@@ -25,7 +25,26 @@ use std::path::Path;
 
 use crate::config::TransformerParams;
 use crate::loss::listnet_loss;
+use crate::loss_pairwise::ranknet_loss;
 use crate::transformer_block::TransformerEncoderLayer;
+
+/// Loss function variants. ListNet is the default (matches Python).
+/// RankNet is the Burges-2005 pairwise alternative used by
+/// Poh-Lim-Zohren-Roberts 2020 for cross-sectional ranking.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LossKind {
+    ListNet,
+    RankNet,
+}
+
+impl LossKind {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "ranknet" | "pairwise" => LossKind::RankNet,
+            _ => LossKind::ListNet,
+        }
+    }
+}
 
 /// Trainable transformer. Same shape as PanelTransformer but each layer
 /// holds its weights via the VarMap so AdamW can step them.
@@ -77,6 +96,7 @@ pub struct Trainer {
     pub varmap:  VarMap,
     pub opt:     AdamW,
     pub device:  Device,
+    pub loss_kind: LossKind,
 }
 
 impl Trainer {
@@ -99,7 +119,11 @@ impl Trainer {
                 ..Default::default()
             },
         )?;
-        Ok(Self { model, varmap, opt, device })
+        Ok(Self { model, varmap, opt, device, loss_kind: LossKind::ListNet })
+    }
+
+    pub fn set_loss(&mut self, loss_kind: LossKind) {
+        self.loss_kind = loss_kind;
     }
 
     /// One training step. Returns the loss as f32.
@@ -130,7 +154,10 @@ impl Trainer {
             );
         }
         let score = self.model.forward(x, Some(pad_mask))?;
-        let loss  = listnet_loss(&score, label, pad_mask, nan_mask)?;
+        let loss  = match self.loss_kind {
+            LossKind::ListNet => listnet_loss(&score, label, pad_mask, nan_mask)?,
+            LossKind::RankNet => ranknet_loss(&score, label, pad_mask, nan_mask)?,
+        };
 
         // Round-2 audit fix: check loss is finite BEFORE backward_step.
         // NaN/inf loss → NaN gradients → AdamW moments corrupted forever.
