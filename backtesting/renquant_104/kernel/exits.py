@@ -127,7 +127,13 @@ def check_single_day_loss(
     Only meaningful in BULL_CALM (wide 15% cumulative stop).  Other regimes
     use a tight 5% cumulative stop so sdl_pct should be 0 there.
     """
+    # Audit fix EX-LE-5 (Round 2 deep audit, 2026-04-25): defense in
+    # depth — even though PH-1/PH-2 now coerces NaN prev_close to None,
+    # this function should also fail-safe locally on non-finite inputs.
+    import math
     if sdl_pct <= 0 or state.prev_close is None or state.prev_close <= 0:
+        return _NO_EXIT
+    if not math.isfinite(state.prev_close):
         return _NO_EXIT
     daily_drop = (state.prev_close - current_price) / state.prev_close
     if daily_drop >= sdl_pct:
