@@ -91,7 +91,20 @@ class TopUpHeldTask(Task):
             if extra_shares < 1:
                 continue
 
+            # Bug 26 fix (2026-04-24): cap by available cash. Without this
+            # check, TopUp emits orders that the adapter's _apply_buy then
+            # rejects with "insufficient cash" warnings — wastes ctx.orders
+            # space and pollutes audit logs. The panel value is a notional
+            # weight target; actual buy must come from real cash.
+            cash = float(getattr(ctx, "cash", 0.0))
             invest     = extra_shares * price
+            if invest > cash:
+                # Re-size down to available cash (whole shares only)
+                affordable_shares = int(cash // price)
+                if affordable_shares < 1:
+                    continue
+                extra_shares = affordable_shares
+                invest = extra_shares * price
             target_pct = (current_pct + delta)
             ctx.orders.append({
                 "ticker":      ticker,
