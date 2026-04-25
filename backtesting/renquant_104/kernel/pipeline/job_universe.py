@@ -274,8 +274,14 @@ class FilterAutoDropTask(UniverseTask):
         return threshold <= 0
 
     def run(self, uctx: UniverseContext) -> "bool | None":
+        # Audit fix AUTO-DROP-NULL (Round 2 deep audit, 2026-04-25):
+        # pre-fix `int(...get("auto_drop_filter_days", 0))` would raise
+        # TypeError if the config has the key explicitly set to null
+        # (vs. unset). should_skip uses `or 0` fallback consistently;
+        # match it here so explicit-null + explicit-0 + missing-key
+        # all behave the same.
         threshold = int(uctx.config.get("monitoring", {})
-                          .get("auto_drop_filter_days", 0))
+                          .get("auto_drop_filter_days", 0) or 0)
         # Read streaks from live state file (RunnerAdapter writes this);
         # SimAdapter passes through monitor_state on each bar.
         streaks: dict[str, int] = {}

@@ -183,8 +183,18 @@ class VetoWeakBuysTask(Task):
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
+        # Audit fix VETO-EMPTY-CANDS (Round 2 deep audit, 2026-04-25):
+        # pre-fix returned False when ctx.candidates was empty, which
+        # short-circuits the rest of PanelScoringJob's chain
+        # (LoadNGBoost → ApplyNGBoost → ApplyGlobalCalibration →
+        # ApplyKellySizing). On a "holdings-only bar" (zero candidates,
+        # non-empty ctx.holdings), holdings ALSO need their panel scores
+        # calibrated and Kelly-sized for downstream rotation/sell logic.
+        # Pre-fix the chain stopped, leaving holding rank_score / mu /
+        # sigma / kelly_target_pct unset. Now: return None (continue)
+        # so the holding-side branches of the next tasks still fire.
         if not ctx.candidates:
-            return False
+            return None
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
         floor     = panel_cfg.get("buy_floor")
         if floor is None:
