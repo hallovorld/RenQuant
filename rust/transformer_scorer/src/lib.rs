@@ -132,6 +132,24 @@ impl PanelScorer {
         matrix: &ndarray::Array2<f32>,
         feature_names: &[String],
     ) -> Result<Vec<f32>> {
+        // Audit fix RUST-R3-22 (Round 2 deep audit, 2026-04-25): mirror
+        // the Python `TransformerPanelScorer.score()` empty-input early
+        // return. Without this, calling forward on a (0, F) tensor hits
+        // the encoder's softmax-over-empty-axis path and panics with
+        // "empty tensor for reduce". Empty input is a valid no-op (no
+        // candidates this bar); silent zero-row pass-through is the
+        // documented Python behaviour, port it here.
+        if matrix.is_empty() || matrix.shape()[0] == 0 {
+            // Still validate that requested columns exist — fail loud
+            // on bad caller config even when there's no data to score.
+            for want in &self.model.feature_cols {
+                if !feature_names.iter().any(|n| n == want) {
+                    return Err(anyhow!("missing feature column '{}'", want));
+                }
+            }
+            return Ok(Vec::new());
+        }
+
         // Build a column-permutation index.
         let mut idx = Vec::with_capacity(self.model.feature_cols.len());
         for want in &self.model.feature_cols {
