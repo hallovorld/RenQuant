@@ -115,9 +115,21 @@ class CachedStore:
         return df
 
     def _save_cache(self, symbol: str, df: "pd.DataFrame") -> None:
+        # Audit fix DC-2-CACHE (Round 2 deep audit, 2026-04-25): pre-fix,
+        # `df.to_parquet(p)` wrote in place. If the process was killed
+        # mid-write (Ctrl-C, SIGKILL, OOM), the file would be left
+        # truncated/corrupt and subsequent `_load_cache` reads would
+        # `pd.read_parquet` raise → cache treated as missing → cold
+        # refetch every time. Worse, on some platforms the caught read
+        # error returns None silently (line 107-109) so the operator
+        # doesn't even see the corruption.
+        # Now: write to a `.tmp` sibling and atomic-rename. Either the
+        # full new file lands or the old file is preserved.
         p = self._cache_path(symbol)
         p.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(p)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        df.to_parquet(tmp)
+        tmp.replace(p)   # atomic on POSIX, best-effort on Windows
 
     def _get_lock(self, symbol: str) -> threading.Lock:
         with self._lock_mut:
