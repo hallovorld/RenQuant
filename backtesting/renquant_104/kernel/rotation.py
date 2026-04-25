@@ -209,6 +209,155 @@ def find_thesis_primary_pairs(
     return pairs
 
 
+def find_thesis_symmetric_pairs(
+    held_entry_scores: dict[str, "float | None"],       # A's rank at A's entry
+    held_today_scores: dict[str, "float | None"],       # A's rank today
+    held_meta:         dict[str, dict],                 # {entry_date, entry_price, current_price}
+    candidates:        list,                            # CandidateResult-like (today's)
+    entry_day_lookup:  "dict[tuple[str, datetime.date], float | None]",
+                                                        # (B_ticker, A_entry_date) → B's rank on that date
+    today:             datetime.date,
+    rotation_cfg:      dict,
+    tax_cfg:           dict,
+) -> list[RotationPair]:
+    """Rotation V4 — full 4-point symmetric thesis mode (2026-04-24).
+
+    User spec: "综合考虑买进 A 当天 AB 的 decision factor（from DB）和
+    今天 AB 的 scores，来决定是否 rotate". Four-way comparison:
+
+        a_velocity = A_today − A_entry      # held decay (more negative = better to swap)
+        b_velocity = B_today − B_entry      # cand momentum (more positive = better)
+        cross_flip = (B_today − A_today) − (B_entry − A_entry)
+                   = today gap − entry gap  # has B overtaken A since A's entry?
+
+    Thresholds:
+      * a_velocity ≤ −max_a_velocity          (A must have lost >= X)
+      * b_velocity ≥ +min_b_velocity          (B must have gained >= Y)
+      * cross_flip ≥ min_cross_flip           (gap must have widened >= Z)
+
+    All three must hold for a pair to fire. `entry_day_lookup` is a dict
+    keyed by (cand_ticker, A_entry_date) → rank_score at that historical
+    point. When missing, the pair is skipped (no B_entry info → can't
+    decide); downstream can fall back to other rotation modes.
+    """
+    if not rotation_cfg.get("enabled", False):
+        return []
+
+    thesis_cfg         = rotation_cfg.get("thesis_symmetric", {})
+    max_a_velocity     = float(thesis_cfg.get("max_a_velocity", 0.10))
+    min_b_velocity     = float(thesis_cfg.get("min_b_velocity", 0.05))
+    min_cross_flip     = float(thesis_cfg.get("min_cross_flip", 0.15))
+    min_hold           = int(rotation_cfg.get("min_rotation_hold_days", 30))
+    lt_protect         = int(rotation_cfg.get("lt_protection_days", 30))
+    max_per_bar        = int(rotation_cfg.get("max_rotations_per_bar", 2))
+    txn_cost           = float(rotation_cfg.get("transaction_cost_pct", 0.0))
+    horizon            = int(rotation_cfg.get("target_horizon_days", 20))
+
+    st_rate            = float(tax_cfg.get("short_term_rate", 0.37))
+    lt_rate            = float(tax_cfg.get("long_term_rate", 0.20))
+    lt_threshold       = int(tax_cfg.get("long_term_threshold_days", 365))
+
+    # Eligible held positions — past min hold, have entry score, not LT-pinned
+    eligible: dict[str, dict] = {}
+    for ticker, a_entry in held_entry_scores.items():
+        if a_entry is None or a_entry <= 0:
+            continue
+        a_today = held_today_scores.get(ticker)
+        if a_today is None:
+            continue
+        meta = held_meta.get(ticker)
+        if meta is None:
+            continue
+        entry_date  = meta.get("entry_date")
+        entry_price = float(meta.get("entry_price", 0.0))
+        cur_price   = float(meta.get("current_price", 0.0))
+        if entry_date is None or entry_price <= 0:
+            continue
+        hold_days = (today - entry_date).days
+        if hold_days < min_hold:
+            continue
+        unreal_pct = (cur_price - entry_price) / entry_price
+        if is_lt_protected(unreal_pct, hold_days, lt_threshold, lt_protect):
+            continue
+        a_velocity = float(a_today) - float(a_entry)
+        if a_velocity > -max_a_velocity:
+            continue   # A hasn't decayed enough
+        eligible[ticker] = {
+            "a_entry":   float(a_entry),
+            "a_today":   float(a_today),
+            "a_vel":     a_velocity,
+            "entry_date": entry_date,
+            "unreal_pct": unreal_pct,
+            "tax_drag":   tax_drag(unreal_pct, hold_days,
+                                   st_rate, lt_rate, lt_threshold),
+        }
+
+    if not eligible or not candidates:
+        return []
+
+    used_holds: set[str] = set()
+    pairs: list[RotationPair] = []
+
+    for c in candidates:
+        if len(pairs) >= max_per_bar:
+            break
+        cand_ticker = c.ticker
+        if cand_ticker in held_entry_scores:
+            continue
+        b_today = float(getattr(c, "rank_score", 0.0) or 0.0)
+
+        best_match: "str | None" = None
+        best_flip: float = -math.inf
+
+        for held_ticker, info in eligible.items():
+            if held_ticker in used_holds:
+                continue
+            # Look up B's rank_score on A's entry date
+            b_entry = entry_day_lookup.get((cand_ticker, info["entry_date"]))
+            if b_entry is None:
+                continue
+            b_entry = float(b_entry)
+            b_velocity = b_today - b_entry
+            if b_velocity < min_b_velocity:
+                continue
+            cross_flip = (b_today - info["a_today"]) - (b_entry - info["a_entry"])
+            if cross_flip < min_cross_flip:
+                continue
+            # Pick the held with the BIGGEST positive cross_flip — the
+            # pair where B has overtaken A the most.
+            if cross_flip > best_flip:
+                best_match = held_ticker
+                best_flip  = cross_flip
+
+        if best_match is None:
+            continue
+
+        info   = eligible[best_match]
+        b_entry = float(entry_day_lookup[(cand_ticker, info["entry_date"])])
+        b_velocity = b_today - b_entry
+        cross_flip = (b_today - info["a_today"]) - (b_entry - info["a_entry"])
+
+        pairs.append(RotationPair(
+            sell_ticker      = best_match,
+            buy_ticker       = cand_ticker,
+            sell_score       = info["a_today"],
+            buy_score        = b_today,
+            sell_er          = info["a_vel"],       # re-purposed: a_velocity
+            buy_er           = b_velocity,          # re-purposed: b_velocity
+            horizon_days     = horizon,
+            raw_advantage    = cross_flip,          # re-purposed: cross_flip
+            tax_drag         = info["tax_drag"],
+            transaction_cost = txn_cost,
+            net_advantage    = cross_flip - info["tax_drag"] - txn_cost,
+            threshold        = min_cross_flip,
+            margin_realized  = cross_flip - min_cross_flip,
+        ))
+        used_holds.add(best_match)
+
+    pairs.sort(key=lambda p: p.margin_realized, reverse=True)
+    return pairs
+
+
 def find_rotation_pairs(
     held_scores:    dict[str, float],          # ticker → rank_score (prob)
     held_er:        dict[str, float],          # ticker → E[R - SPY] over horizon

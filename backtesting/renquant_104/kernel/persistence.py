@@ -725,6 +725,46 @@ def _none_or_int(v: Any) -> int | None:
         return None
 
 
+def lookup_candidate_scores_on_date(
+    conn,
+    tickers: "list[str]",
+    as_of: "datetime.date",
+) -> dict[str, dict]:
+    """Return {ticker: {rank_score, panel_score, mu, sigma}} for the
+    candidate-side snapshot recorded on `as_of`.
+
+    Used by Rotation V4 (thesis_symmetric) to look up B's score on A's
+    entry date. Joins candidate_scores × pipeline_runs to find the run
+    that executed on `as_of` and pulls each ticker's scores.
+
+    Returns an empty dict if no run landed on that date (sim hasn't
+    processed it yet, or it was pre-sim-start). Callers should treat
+    absence as "skip this pair" rather than "signal=0".
+    """
+    if not tickers:
+        return {}
+    placeholders = ",".join("?" * len(tickers))
+    cur = conn.execute(
+        f"""
+        SELECT cs.ticker, cs.rank_score, cs.panel_score, cs.mu, cs.sigma
+        FROM candidate_scores cs
+        JOIN pipeline_runs pr ON cs.run_id = pr.run_id
+        WHERE pr.run_date = ?
+          AND cs.ticker IN ({placeholders})
+        """,
+        (str(as_of), *tickers),
+    )
+    out: dict[str, dict] = {}
+    for row in cur:
+        out[row[0]] = {
+            "rank_score":  row[1],
+            "panel_score": row[2],
+            "mu":          row[3],
+            "sigma":       row[4],
+        }
+    return out
+
+
 __all__ = [
     "ensure_schema",
     "get_connection",
@@ -736,4 +776,5 @@ __all__ = [
     "record_forward_returns",
     "record_live_state_snapshot",
     "record_portfolio_metrics",
+    "lookup_candidate_scores_on_date",
 ]
