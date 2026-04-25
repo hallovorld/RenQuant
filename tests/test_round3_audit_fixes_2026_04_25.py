@@ -1525,6 +1525,68 @@ class TestLSATOMAtomicLiveStateWrite:
         tmp.unlink()
 
 
+# ── EXITS-FAIL (Round 2 audit): split exits_placed vs exits_failed ────────────
+
+class TestEXITSFAILBrokerConfirmedSplit:
+    """Pre-fix, RunnerAdapter.commit caught broker.place_order failures
+    on the SELL branch with `log.error + continue` but the ntfy code
+    in live/runner.py read ctx.exits (the pipeline INTENT) for "EXIT
+    ticker (reason)" messages. So a broker-rejected sell appeared on
+    the operator's phone as a successful exit — they thought the
+    position closed, but the broker still held it. Now: the adapter
+    populates ctx.exits_placed (broker-confirmed) and ctx.exits_failed
+    (broker error), and the ntfy reads exits_placed by preference."""
+
+    def test_exits_placed_initialized_to_empty(self):
+        """Source-inspect that commit() initialises exits_placed."""
+        import inspect, sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from adapters.runner import RunnerAdapter
+        src = inspect.getsource(RunnerAdapter.commit)
+        assert "ctx.exits_placed = []" in src
+        assert "ctx.exits_failed = []" in src
+
+    def test_failed_sell_appended_to_exits_failed(self):
+        """Source-inspect that the except-clause appends to exits_failed."""
+        import inspect, sys
+        from pathlib import Path
+        sd = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
+        if str(sd) not in sys.path:
+            sys.path.insert(0, str(sd))
+        from adapters.runner import RunnerAdapter
+        src = inspect.getsource(RunnerAdapter.commit)
+        assert "ctx.exits_failed.append" in src
+        # Successful sell branch appends to exits_placed.
+        assert "ctx.exits_placed.append((ticker, sig))" in src
+
+    def test_notify_prefers_exits_placed(self):
+        """Source-inspect that _notify_decision prefers exits_placed
+        when present, falling back to ctx.exits otherwise."""
+        import inspect
+        sys_path_added = False
+        try:
+            import sys
+            from pathlib import Path
+            repo = Path(__file__).resolve().parent.parent
+            if str(repo) not in sys.path:
+                sys.path.insert(0, str(repo))
+                sys_path_added = True
+            from live import runner as live_runner
+            src = inspect.getsource(live_runner._notify_decision)
+            assert 'getattr(ctx, "exits_placed"' in src, (
+                "EXITS-FAIL regression: _notify_decision must prefer exits_placed"
+            )
+            assert "exits_failed" in src, (
+                "EXITS-FAIL regression: _notify_decision must surface failed exits"
+            )
+        finally:
+            if sys_path_added:
+                sys.path.remove(str(Path(__file__).resolve().parent.parent))
+
+
 # ── TPF-1: PanelFeatureJob aborts on >5% chain failures ───────────────────────
 
 class TestTPF1PanelFeatureJobAbortsOnFailure:

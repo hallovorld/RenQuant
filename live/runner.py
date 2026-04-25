@@ -273,7 +273,19 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
     # skipped, but the old ntfy misreported it as a trade).
     orders         = list(getattr(ctx, "orders_placed",  []) or [])
     orders_skipped = list(getattr(ctx, "orders_skipped", []) or [])
-    exits          = list(getattr(ctx, "exits",          []) or [])
+    # Audit fix EXITS-FAIL (Round 2 deep audit, 2026-04-25): prefer
+    # broker-confirmed `exits_placed`; fall back to `ctx.exits` for
+    # adapters that haven't been migrated yet (LeanAdapter still uses
+    # the bare list — sim/LEAN don't talk to a real broker so the
+    # old form is correct there). Read `exits_failed` separately so
+    # the operator sees a distinct "FAILED-EXIT" line on their phone
+    # when a sell didn't actually go through.
+    exits_placed_attr = getattr(ctx, "exits_placed", None)
+    if exits_placed_attr is not None:
+        exits = list(exits_placed_attr or [])
+    else:
+        exits = list(getattr(ctx, "exits", []) or [])
+    exits_failed = list(getattr(ctx, "exits_failed", []) or [])
     regime         = getattr(ctx, "regime", None) or "?"
     conf   = getattr(ctx, "confidence", None)
     eq     = getattr(ctx, "portfolio_value", None)
@@ -323,6 +335,15 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
             tkr    = getattr(e, "ticker", "?")
             reason = getattr(e, "exit_type", getattr(e, "reason", "sell"))
         parts.append(f"EXIT {tkr} ({reason})")
+
+    # EXITS-FAIL: surface failed sells distinctly so the operator
+    # doesn't confuse a broker rejection with a successful exit. Each
+    # entry is a dict with ticker / exit_type / qty / error.
+    for fe in exits_failed:
+        tkr   = fe.get("ticker", "?") if isinstance(fe, dict) else "?"
+        rsn   = (fe.get("exit_type") or fe.get("reason") or "?") if isinstance(fe, dict) else "?"
+        err   = (fe.get("error", "") if isinstance(fe, dict) else "")[:60]
+        parts.append(f"FAILED-EXIT {tkr} ({rsn}: {err})")
 
     has_trade = bool(orders or exits)
     # If the guard blocked every intent (orders all skipped), the cycle

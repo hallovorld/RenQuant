@@ -400,6 +400,22 @@ class RunnerAdapter:
         # behaviour). When quantity is a positive float < current qty →
         # partial sell, position stays open with reduced shares; we keep
         # entry_dates / position_hwm / sell_streaks intact.
+        #
+        # Audit fix EXITS-FAIL (Round 2 deep audit, 2026-04-25): pre-fix,
+        # broker.place_order failures inside the SELL branch logged with
+        # log.error and `continue`d, but ctx.exits was the only list the
+        # ntfy code read for "EXIT ticker (reason)" messages. Result: a
+        # failed sell appeared on the operator's phone as if it had
+        # succeeded — they thought the position closed, but it was still
+        # held at the broker. Now: split ctx.exits → ctx.exits_placed
+        # (broker-confirmed) and ctx.exits_failed (broker error). The
+        # ntfy path will need to read exits_placed (analogous to the
+        # orders_placed/orders_skipped split that already exists for
+        # buys); falls back to ctx.exits when those fields aren't set.
+        if not hasattr(ctx, "exits_placed"):
+            ctx.exits_placed = []
+        if not hasattr(ctx, "exits_failed"):
+            ctx.exits_failed = []
         for ticker, sig in ctx.exits:
             pos = pos_cache.get(ticker, {})
             qty = float(pos.get("qty", 0))
@@ -418,7 +434,16 @@ class RunnerAdapter:
                 result = broker.place_order(ticker, "SELL", sell_qty)
             except Exception as exc:
                 log.error("SELL failed for %s: %s", ticker, exc)
+                ctx.exits_failed.append({
+                    "ticker":     ticker,
+                    "exit_type":  getattr(sig, "exit_type", ""),
+                    "reason":     getattr(sig, "reason", ""),
+                    "qty":        sell_qty,
+                    "is_partial": is_partial,
+                    "error":      str(exc),
+                })
                 continue
+            ctx.exits_placed.append((ticker, sig))
 
             price = ctx.prices.get(ticker, 0.0)
             tag   = "TRIM" if is_partial else "SELL"
