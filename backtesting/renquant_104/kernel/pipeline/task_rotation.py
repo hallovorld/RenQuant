@@ -295,6 +295,15 @@ class BuildPairsTask(Task):
             # unique A_entry_date in the held set.
             entry_day_lookup: dict = {}
             db = getattr(ctx, "_db", None)
+            if db is None:
+                # Surface this loudly — V4 mode without DB will produce
+                # zero rotations regardless of signal quality. LEAN runs
+                # without our SQLite (intentional) so this is the expected
+                # no-op path; live + sim should always have DB.
+                log.warning(
+                    "RotationJob[thesis_symmetric]: ctx._db is None — "
+                    "B_entry_score lookup unavailable; rotation will produce "
+                    "0 pairs this bar (LEAN-style no-op).")
             if db is not None:
                 cand_tickers = [c.ticker for c in eligible_candidates]
                 unique_entry_dates = {

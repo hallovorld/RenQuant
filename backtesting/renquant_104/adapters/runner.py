@@ -309,6 +309,24 @@ class RunnerAdapter:
             monitor_state     = dict(state.get("monitor_state", {}) or {}),
         )
 
+        # Bug 11 fix (2026-04-24): Rotation V4 (thesis_symmetric scoring
+        # mode) needs ctx._db to look up candidate scores on each held's
+        # entry date via lookup_candidate_scores_on_date. Previously this
+        # was wired only on SimAdapter; without it, V4 silently no-ops on
+        # the live runner path. RunnerAdapter writes to runs.db (live);
+        # rotation V4 reads from there for entry-day score lookup.
+        if self._db is not None:
+            ctx._db = self._db   # noqa: SLF001
+
+        # Rotation V1 persistence gate — live runner has no per-bar
+        # state file pinned to rotation_proposals (yet); seed with empty
+        # so the gate fails-closed when persistence_bars > 0. (When the
+        # user enables persistence in production we'll wire it through
+        # live_state.json — same pattern as monitor_state.)
+        ctx.prior_rotation_proposals = list(
+            state.get("rotation_proposals", []) or []
+        )
+
         # ── Panel scoring prep (optional) ────────────────────────────────────
         panel_cfg = config.get("ranking", {}).get("panel_scoring", {})
         if panel_cfg.get("enabled", False) and not self._sell_only:
