@@ -185,7 +185,18 @@ def evaluate_row(
     model: Any, row: pd.Series, calibration: ScoreCalibration | None = None
 ) -> ScoreEvaluation:
     raw_score = extract_raw_score(model, row)
-    rank_score = calibration.calibrate(raw_score) if calibration else float(raw_score)
+    # Audit fix EVAL-NONE-CAL-NaN (Round 2 deep audit, 2026-04-25): when
+    # calibration is None (uncalibrated fallback path used by tests +
+    # the warm-up window before score_calibration is fit), pre-fix
+    # passed raw_score through directly. If the model returned NaN
+    # (extract_raw_score on a model that crashed), rank_score = NaN
+    # propagated downstream and slipped past `< tier_threshold` checks.
+    # The calibrated path already guards via SC-1 (returns base_rate
+    # on NaN); mirror that guard on the None-calibration path.
+    if calibration is not None:
+        rank_score = calibration.calibrate(raw_score)
+    else:
+        rank_score = float(raw_score) if np.isfinite(raw_score) else 0.0
     return ScoreEvaluation(
         signal=model.predict(row),
         raw_score=float(raw_score),
