@@ -7,7 +7,7 @@
 # Bump deliberately: any toolchain change should land in its own commit
 # with a CI-green build, never silently in a feature branch.
 [toolchain]
-channel    = "1.81.0"        # 2024-09 stable — matches candle 0.7 MSRV.
+channel    = "1.85.0"        # 2025-02 stable — has edition2024 for newer transitive deps.
 components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
 profile    = "default"
 # targets is empty — pure host build. Add cross-compile targets here
