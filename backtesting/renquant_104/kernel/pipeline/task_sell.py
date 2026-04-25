@@ -10,14 +10,26 @@ log = logging.getLogger("kernel.pipeline.sell")
 
 
 class PrepareHoldingTask(Task):
-    """Validate holding + price; attach prev_close."""
+    """Validate holding + price; attach prev_close.
+
+    Audit fix PH-1/PH-2 (Round 2 deep audit, 2026-04-25): pre-fix, NaN
+    tc.price slipped past `<= 0` (NaN comparisons False) → downstream
+    exit checks ran on NaN prices and silently failed. Same with
+    prev_close from `iloc[-2]` — could be NaN if data has gaps.
+    Now: explicit isfinite + > 0 guard on price; coerce NaN prev_close
+    to None so check_single_day_loss can short-circuit cleanly.
+    """
 
     def run(self, tc: TickerInferenceContext) -> bool | None:
+        import math
         if tc.holding is None:
             return False
 
-        if tc.price <= 0:
-            log.warning("PrepareHoldingTask: no price for %s — skipping", tc.ticker)
+        if not math.isfinite(tc.price) or tc.price <= 0:
+            log.warning(
+                "PrepareHoldingTask: price=%s for %s — skipping",
+                tc.price, tc.ticker,
+            )
             return False
 
         stock_df = tc.ohlcv.get(tc.ticker)
@@ -25,7 +37,8 @@ class PrepareHoldingTask(Task):
             return False
 
         if len(stock_df) >= 2:
-            tc.holding.prev_close = float(stock_df["close"].iloc[-2])
+            pc = float(stock_df["close"].iloc[-2])
+            tc.holding.prev_close = pc if math.isfinite(pc) else None
         else:
             tc.holding.prev_close = None
 
