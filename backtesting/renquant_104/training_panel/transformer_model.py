@@ -89,7 +89,17 @@ class _PanelTransformer(nn.Module):
             batch_first     = True,
             activation      = "gelu",
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=p.n_layers)
+        # Audit fix T-MPS-1 (2026-04-25): disable nested-tensor optimization.
+        # PyTorch's TransformerEncoder fast-path uses
+        # `aten::_nested_tensor_from_mask_left_aligned` which is NOT
+        # implemented for the MPS backend → retraining crashed mid-CV.
+        # `enable_nested_tensor=False` falls back to the standard path
+        # (slightly slower on CPU/CUDA, equally fast on MPS where the
+        # optimization didn't work anyway).
+        self.encoder = nn.TransformerEncoder(
+            enc_layer, num_layers=p.n_layers,
+            enable_nested_tensor=False,
+        )
         self.score_head = nn.Linear(p.d_model, 1)
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
