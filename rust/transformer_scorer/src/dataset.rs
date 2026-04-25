@@ -104,13 +104,27 @@ impl Panel {
                 return Err(anyhow!("row {}: empty ticker", row_idx));
             }
             // Parse features.
+            // Audit fix DAT-RUST-MISSING-FEAT (Round 2 deep audit,
+            // 2026-04-25): production panel CSVs have empty cells where
+            // a per-ticker feature was NaN before BuildPanelTask ran
+            // (e.g. early-history rows for a recently-listed ticker
+            // before the 252-bar warmup). Pre-fix, dataset.rs rejected
+            // the entire row on empty cell → real panel failed to load.
+            // Now: treat empty / NaN-string features as 0.0, the
+            // post-z-score-neutral value used everywhere else in the
+            // pipeline. Genuinely non-finite NUMERIC values still
+            // reject (avoids infinity poisoning the loss).
             let mut feats = Vec::with_capacity(n_feat);
             for j in 0..n_feat {
                 let s_raw = rec.get(2 + j).unwrap_or("");
-                let s = s_raw.trim();   // tolerate ' 0.5' and '0.5 '
-                let v: f32 = s.parse().with_context(|| {
-                    format!("row {} col {} ('{}'): not a float", row_idx, j + 3, s_raw)
-                })?;
+                let s = s_raw.trim();
+                let v: f32 = if s.is_empty() || s.eq_ignore_ascii_case("nan") {
+                    0.0
+                } else {
+                    s.parse().with_context(|| {
+                        format!("row {} col {} ('{}'): not a float", row_idx, j + 3, s_raw)
+                    })?
+                };
                 // Reject non-finite features. Labels CAN be NaN
                 // (boundary lookahead); features cannot — sanitize
                 // upstream via scripts/sanitize_bridge_csv.py.
