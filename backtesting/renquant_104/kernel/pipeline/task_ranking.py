@@ -45,8 +45,21 @@ class BlendScoresTask(Task):
 
 class SortCandidatesTask(Task):
     def run(self, ctx: InferenceContext) -> bool | None:
+        # Audit fix RA-1 (Round 2 deep audit, 2026-04-25): pre-fix, a
+        # candidate with NaN rank_score caused undefined sort order
+        # (Python's `sorted` is unstable with NaN — comparisons in both
+        # directions return False, so NaN can land anywhere). Different
+        # runs of the same data could produce different rankings.
+        # Now: treat NaN as -inf (worst possible rank) so it always
+        # sinks to the bottom deterministically.
+        import math
+        def _key(c):
+            s = getattr(c, "rank_score", None)
+            if s is None or not math.isfinite(s):
+                return float("-inf")
+            return s
         blended      = getattr(ctx, "_blended", ctx.candidates)
-        ctx.ranked   = sorted(blended, key=lambda c: c.rank_score, reverse=True)
+        ctx.ranked   = sorted(blended, key=_key, reverse=True)
         w_rank, w_rs = getattr(ctx, "_blend_w", (0.5, 0.5))
         log.info("SortCandidatesTask: %d ranked (w_rank=%.2f w_rs=%.2f)",
                  len(ctx.ranked), w_rank, w_rs)
