@@ -309,8 +309,13 @@ class JointActionTask(Task):
                 held_ticker=ticker, held_obj=h,
             ))
 
-        # ROTATE actions — both floors must pass; held must be swap-eligible
-        for h_t, h in ctx.holdings.items():
+        # ROTATE actions — both floors must pass; held must be swap-eligible.
+        # Audit fix JOINT-ROT-QUOTA-ZERO (2026-04-25, edge from Bug MM):
+        # when max_rot_bar=0, no rotation can fire. Skip menu generation
+        # entirely so Bug MM's defer-for-rotate logic doesn't strand a
+        # SELL waiting on an impossible rotation.
+        rotate_holdings = ctx.holdings.items() if max_rot_bar > 0 else []
+        for h_t, h in rotate_holdings:
             if h_t in prior_exit_tickers:
                 continue
             held_score = getattr(h, "rank_score", None)
@@ -355,6 +360,23 @@ class JointActionTask(Task):
         if not actions:
             return
 
+        # Audit fix JOINT-NET-NEG (Bug Q, 2026-04-25): drop BUY/ROTATE
+        # actions with negative net_alpha — accepting them is a
+        # guaranteed loss after fees + slippage + tax.
+        #
+        # SELLs are EXEMPT from this filter: per user spec "被替换的
+        # portfolio 里的 stock 的 score 要低于一个值" the sell trigger
+        # is the score floor, not net_alpha. A weak-score held with
+        # mildly positive expected_return (so net_alpha < 0 after fees)
+        # can still be the right action to exit on conviction grounds —
+        # the model says it's no longer alpha-positive ENOUGH to retain
+        # the slot, and the score-floor gate already filtered out
+        # acceptably-strong holds in the menu-build phase.
+        actions = [a for a in actions
+                   if (a.kind == "sell") or (a.net_alpha > 0.0)]
+        if not actions:
+            return
+
         # Tie-breaking — net_alpha desc; ROTATE before BUY before SELL on ties;
         # then ticker for full determinism.
         _kind_priority = {"rotate": 0, "buy": 1, "sell": 2}
@@ -364,7 +386,27 @@ class JointActionTask(Task):
             (a.held_ticker or "") + "|" + (a.cand_ticker or ""),
         ))
 
-        # ── Greedy fill ─────────────────────────────────────────────────
+        # ── Two-pass greedy fill ───────────────────────────────────────
+        # Audit fix JOINT-GREEDY-SELL-LATE (Bug L, 2026-04-25): pre-fix,
+        # sort by net_alpha asc put SELLs at the end (negative ER on the
+        # held side dominates), so a SELL that would free a slot for a
+        # high-net_alpha BUY/ROTATE was processed AFTER all BUYs/ROTATEs
+        # had already been blocked by the slot budget. Two-pass fix:
+        #   Pass 1: accept all SELLs that pass per-action guards. They
+        #           free slots in `net_position_consumed` for Pass 2.
+        #   Pass 2: process BUY+ROTATE actions in net_alpha-desc order
+        #           against the freshly-freed budget.
+        # Audit fix JOINT-NET-POSITIONS (Bug F, 2026-04-25): track
+        # NET position delta separately from rotation quota. Pre-fix
+        # `slot_budget = open_slots + max_rot_bar` allowed BUYs to
+        # over-fill past max_concurrent_positions when rotations didn't
+        # materialize — a bar with held=8, max_pos=8 would have
+        # slot_budget=2, then 2 BUYs (no offsetting SELLs) ended at
+        # 10 holdings. New bookkeeping:
+        #   net_position_consumed: BUY +1, SELL -1, ROTATE 0 (net-zero
+        #                          swap). Capped by `open_slots`.
+        #   rot_consumed:          ROTATE only. Capped by max_rot_bar.
+        # Both caps respected → portfolio cannot exceed max_concurrent_positions.
         cash_remaining = float(ctx.cash)
         sectors_used: dict[str, int] = {}
         for t in effective_held:
@@ -372,20 +414,106 @@ class JointActionTask(Task):
             sectors_used[sec] = sectors_used.get(sec, 0) + 1
         used_holds: set[str] = set()
         used_cands: set[str] = set()
-        slots_consumed = 0
+        net_position_consumed = 0  # +1 per BUY, -1 per SELL; ROTATE = 0
         rot_consumed   = 0
+        slots_consumed = 0  # tier-escalation index proxy (BUY+ROTATE only)
 
         # Mutable virtual holdings list for sector + correlation guard
         virtual_held: list[str] = list(effective_held)
 
         accepted: list[_Action] = []
 
-        for a in actions:
-            if slots_consumed >= slot_budget:
-                log.debug("JointActionJob: budget exhausted")
-                break
+        # ── Pass 1: SELLs only (with Bug MM joint-optimal deferral) ──
+        # Audit fix JOINT-PASS1-SELL-VS-ROTATE-CONFLICT (Bug MM,
+        # 2026-04-25): when a held has BOTH a SELL action AND a ROTATE
+        # action with HIGHER net_alpha, accepting SELL in Pass 1 would
+        # dedup the ROTATE in Pass 2 — we'd lose the rotation's alpha.
+        # Per user "make it perfect" spec, we defer such SELLs to Pass 3
+        # and let the higher-net_alpha ROTATE try first. If the ROTATE
+        # fails downstream guards (cash, sector, corr), the deferred
+        # SELL fires retroactively in Pass 3 — so we never miss a
+        # legitimate exit signal.
+        sell_actions = [a for a in actions if a.kind == "sell"]
+        non_sell_actions = [a for a in actions if a.kind != "sell"]
 
-            # Per-ticker dedupe — one action per held, one per cand
+        # Build best-rotate-net_alpha per held ticker
+        best_rot_alpha_per_held: dict[str, float] = {}
+        for a in actions:
+            if a.kind == "rotate" and a.held_ticker is not None:
+                cur = best_rot_alpha_per_held.get(a.held_ticker, float("-inf"))
+                if a.net_alpha > cur:
+                    best_rot_alpha_per_held[a.held_ticker] = a.net_alpha
+
+        deferred_sells: list[_Action] = []  # Bug MM — re-tried in Pass 3
+
+        def _accept_sell(a: _Action) -> None:
+            """Common SELL accept body — used by Pass 1 and Pass 3."""
+            nonlocal net_position_consumed
+            accepted.append(a)
+            net_position_consumed -= 1
+            used_holds.add(a.held_ticker)
+            if a.held_ticker in virtual_held:
+                virtual_held.remove(a.held_ticker)
+            ctx.exits.append((
+                a.held_ticker,
+                ExitSignal(
+                    should_exit = True,
+                    reason      = f"joint_sell net_alpha={a.net_alpha:+.4f}",
+                    exit_type   = "joint_sell",
+                ),
+            ))
+            ctx.counters["joint_sells"] = ctx.counters.get("joint_sells", 0) + 1
+            log.info(
+                "JOINT_SELL   %-6s  net_alpha=%+.4f",
+                a.held_ticker, a.net_alpha,
+            )
+
+        for a in sell_actions:
+            if a.held_ticker in used_holds:
+                ctx.counters["joint_blocked_dedup"] = (
+                    ctx.counters.get("joint_blocked_dedup", 0) + 1
+                )
+                continue
+            # Bug MM: defer SELL only if a ROTATE for same held has
+            # higher net_alpha AND swapping (vs selling) wouldn't keep
+            # the portfolio above max_positions. When overfilled
+            # (len(virtual_held) > max_positions) we ALWAYS prefer SELL
+            # because rotation is net-zero on position count and would
+            # leave us still overfilled. Net-zero swap only helps when
+            # we have room to absorb the new ticker.
+            best_rot = best_rot_alpha_per_held.get(a.held_ticker, float("-inf"))
+            can_defer_for_rotate = len(virtual_held) <= max_positions
+            if best_rot > a.net_alpha and can_defer_for_rotate:
+                deferred_sells.append(a)
+                ctx.counters["joint_deferred_sells"] = (
+                    ctx.counters.get("joint_deferred_sells", 0) + 1
+                )
+                log.info(
+                    "JOINT_DEFER  %-6s  sell_net=%+.4f  best_rot_net=%+.4f  → Pass 3",
+                    a.held_ticker, a.net_alpha, best_rot,
+                )
+                continue
+            _accept_sell(a)
+
+        # ── Pass 2: BUYs and ROTATEs ─────────────────────────────────
+        # Audit fix JOINT-NET-POSITIONS (Bug F) + JOINT-OVERFILL-EDGE
+        # (Bug Y, 2026-04-25):
+        #
+        # Capacity constraint: len(virtual_held_after_pass2) <= max_positions.
+        # Equivalently:  net_position_consumed <= open_slots
+        # where open_slots = max_positions - len(effective_held).
+        #
+        # `open_slots` may be negative (over-filled by external path,
+        # e.g. legacy ledger). The cap still holds — over-filled portfolio
+        # can only BUY when prior sells outpace the overflow.
+        #
+        # ROTATE has its own quota (max_rot_bar) and is net-zero on
+        # net_position_consumed, so does NOT count toward open_slots.
+
+        new_buys_consumed = 0  # buys accepted in Pass 2 (= net_position_consumed delta vs Pass-1 end state)
+
+        for a in non_sell_actions:
+            # Per-ticker dedupe
             if a.held_ticker is not None and a.held_ticker in used_holds:
                 ctx.counters["joint_blocked_dedup"] = (
                     ctx.counters.get("joint_blocked_dedup", 0) + 1
@@ -397,84 +525,67 @@ class JointActionTask(Task):
                 )
                 continue
 
-            # ROTATE quota — separate cap on rotation count even in shared mode
-            if a.kind == "rotate" and rot_consumed >= max_rot_bar:
-                ctx.counters["joint_blocked_rot_quota"] = (
-                    ctx.counters.get("joint_blocked_rot_quota", 0) + 1
-                )
-                continue
-
-            # Audit fix JOINT-SLOT-SHARE (Bug B, 2026-04-25): per user
-            # spec "rotate应该跟buy分享那个额度，每天三个slot", rotation
-            # MUST consume from the shared slot budget — pre-fix it only
-            # checked rot_consumed ceiling, never decremented slot budget,
-            # so a bar could fire 3 buys + 2 rotates = 5 actions exceeding
-            # the 3-slot shared cap. Now: rotate counts as +1 (cand
-            # entered new seat); SELL counts as -1 (seat freed) net 0
-            # via existing decrement.
-            _proposed_slot_delta = 1 if a.kind in ("buy", "rotate") else (-1 if a.kind == "sell" else 0)
-            if slots_consumed + _proposed_slot_delta > slot_budget and a.kind != "sell":
-                ctx.counters["joint_blocked_budget"] = (
-                    ctx.counters.get("joint_blocked_budget", 0) + 1
-                )
-                continue
-
-            # Wash-sale check (cand side; SELL has no cand)
-            if a.kind in ("buy", "rotate"):
-                if is_wash_sale_blocked(
-                    a.cand_ticker, ctx.today, ctx.last_sell_dates, wash_days,
-                ):
-                    ctx.counters["joint_blocked_wash"] = (
-                        ctx.counters.get("joint_blocked_wash", 0) + 1
+            # Per-action position-budget gate (Bug F + Bug Y)
+            if a.kind == "buy":
+                if (net_position_consumed + 1) > open_slots:
+                    ctx.counters["joint_blocked_budget"] = (
+                        ctx.counters.get("joint_blocked_budget", 0) + 1
                     )
                     continue
+            else:  # rotate — net-zero on positions, capped only by max_rot_bar
+                if rot_consumed >= max_rot_bar:
+                    ctx.counters["joint_blocked_rot_quota"] = (
+                        ctx.counters.get("joint_blocked_rot_quota", 0) + 1
+                    )
+                    continue
+
+            # Wash-sale check
+            if is_wash_sale_blocked(
+                a.cand_ticker, ctx.today, ctx.last_sell_dates, wash_days,
+            ):
+                ctx.counters["joint_blocked_wash"] = (
+                    ctx.counters.get("joint_blocked_wash", 0) + 1
+                )
+                continue
 
             # Sector + correlation — virtual_held reflects post-action portfolio
-            if a.kind in ("buy", "rotate"):
-                # If rotation, the held seat opens up; treat as removed for
-                # the guard check.
-                tmp_held = virtual_held[:]
-                if a.kind == "rotate":
-                    try:
-                        tmp_held.remove(a.held_ticker)
-                    except ValueError:
-                        pass
-                if not passes_sector_guard(
-                    a.cand_ticker, tmp_held, sector_map,
-                    max_per_sector, defensive_set,
+            tmp_held = virtual_held[:]
+            if a.kind == "rotate":
+                # held seat opens up via the swap → exclude from guard check
+                try:
+                    tmp_held.remove(a.held_ticker)
+                except ValueError:
+                    pass
+            if not passes_sector_guard(
+                a.cand_ticker, tmp_held, sector_map,
+                max_per_sector, defensive_set,
+            ):
+                ctx.counters["joint_blocked_sector"] = (
+                    ctx.counters.get("joint_blocked_sector", 0) + 1
+                )
+                continue
+            # Audit fix JOINT-CORR-NONE (Bug D, 2026-04-25): no-op the
+            # correlation guard when ctx.corr_matrix is None — mirrors
+            # SelectionJob behaviour on missing watchlist-correlation.json.
+            if ctx.corr_matrix is not None:
+                if not passes_correlation_guard(
+                    a.cand_ticker, tmp_held, ctx.corr_matrix, corr_threshold,
                 ):
-                    ctx.counters["joint_blocked_sector"] = (
-                        ctx.counters.get("joint_blocked_sector", 0) + 1
+                    ctx.counters["joint_blocked_corr"] = (
+                        ctx.counters.get("joint_blocked_corr", 0) + 1
                     )
                     continue
-                # Audit fix JOINT-CORR-NONE (Bug D, 2026-04-25): defend
-                # against missing correlation artifact. ctx.corr_matrix
-                # is None when watchlist-correlation.json is missing /
-                # empty (e.g. fresh strategy dir, dev environment). Pre-
-                # fix this would crash inside passes_correlation_guard;
-                # now: skip the guard (let action through) and warn —
-                # mirrors legacy SelectionJob behaviour which also no-ops
-                # the correlation guard on missing matrix.
-                if ctx.corr_matrix is not None:
-                    if not passes_correlation_guard(
-                        a.cand_ticker, tmp_held, ctx.corr_matrix, corr_threshold,
-                    ):
-                        ctx.counters["joint_blocked_corr"] = (
-                            ctx.counters.get("joint_blocked_corr", 0) + 1
-                        )
-                        continue
 
-            # Audit fix JOINT-TIER-ESC (Bug C, 2026-04-25): mirror
-            # SelectionJob's per-slot tier escalation. SelectionJob does
-            # `tier_idx = min(slots_filled, len(tiers) - 1)` so slot 1
-            # uses tier 0 threshold (0.27), slot 2 uses tier 1 (0.45),
-            # slot 3+ uses tier 2 (0.60). Pre-fix joint mode only checked
-            # tier 0 across ALL slots → much looser → over-trade.
-            # Apply the same per-slot escalation here, using
-            # `slots_consumed` as the index. ROTATIONs use the same
-            # escalation since they consume a slot.
-            if a.kind in ("buy", "rotate") and tiered:
-                tier_idx = min(slots_consumed, len(tiered) - 1)
+            # Audit fix JOINT-TIER-ESC (Bug C) + JOINT-TIER-NEGATIVE
+            # (Bug S, 2026-04-25): per-slot tier escalation indexed on
+            # NEW BUYS accepted so far (rotations don't escalate the
+            # tier — they replace an existing position rather than
+            # filling a fresh slot, and our economic constraint is on
+            # net new positions). Clamp index to >=0 so any future
+            # accounting bug that produces a negative index can't
+            # silently wrap around to the toughest tier.
+            if tiered:
+                tier_idx = min(max(new_buys_consumed, 0), len(tiered) - 1)
                 tier_min = float(tiered[tier_idx].get("min_model_score", 0.0))
                 rs = float(getattr(a.cand_obj, "rank_score", 0.0) or 0.0)
                 if not math.isfinite(rs) or rs < tier_min:
@@ -483,45 +594,60 @@ class JointActionTask(Task):
                     )
                     continue
 
-            # Sizing & cash check (BUY + ROTATE only)
-            shares = 0
-            invest = 0.0
-            price = 0.0
-            conv = 1.0
-            sig_m = 1.0
-            if a.kind in ("buy", "rotate"):
-                price = float(ctx.prices.get(a.cand_ticker, 0.0) or 0.0)
-                if not math.isfinite(price) or price <= 0:
-                    ctx.counters["joint_blocked_price"] = (
-                        ctx.counters.get("joint_blocked_price", 0) + 1
-                    )
-                    continue
-                conv = conviction_multiplier(
-                    getattr(a.cand_obj, "panel_score", None), sizing_cfg,
+            # ── Sizing ──────────────────────────────────────────────────
+            price = float(ctx.prices.get(a.cand_ticker, 0.0) or 0.0)
+            if not math.isfinite(price) or price <= 0:
+                ctx.counters["joint_blocked_price"] = (
+                    ctx.counters.get("joint_blocked_price", 0) + 1
                 )
-                sig_m = sigma_multiplier(
-                    getattr(a.cand_obj, "sigma", None), sigma_median, sigma_cfg,
+                continue
+
+            # Audit fix JOINT-ROTATE-CASH (Bug M, 2026-04-25): credit
+            # the sell-leg proceeds to the buy-leg sizing budget. A
+            # rotation IS a paired sell-then-buy executed atomically by
+            # the broker (Alpaca settles the sell-leg's cash to the
+            # account immediately under RegT margin, available for the
+            # buy-leg in the same bar). Pre-fix, the buy-leg only saw
+            # `cash_remaining` (post-prior-buys), so a rotation that
+            # should have funded itself from the held's market value
+            # was undersized — e.g. swap a $20k held for a $20k cand
+            # with $1k cash on hand → buy-leg sized at $1k = $19k of
+            # signal lost. Now: cash_for_sizing includes the held's
+            # mark-to-market value net of fees/slippage on the sell.
+            sell_proceeds = 0.0
+            if a.kind == "rotate":
+                h_shares = int(getattr(a.held_obj, "shares", 0) or 0)
+                h_price  = float(ctx.prices.get(a.held_ticker, 0.0) or 0.0)
+                if h_shares > 0 and math.isfinite(h_price) and h_price > 0:
+                    sell_proceeds = h_shares * h_price * (1.0 - fee_pct - slip_pct)
+            cash_for_sizing = cash_remaining + sell_proceeds
+
+            conv = conviction_multiplier(
+                getattr(a.cand_obj, "panel_score", None), sizing_cfg,
+            )
+            sig_m = sigma_multiplier(
+                getattr(a.cand_obj, "sigma", None), sigma_median, sigma_cfg,
+            )
+            max_pct = base_max_pct * conv * sig_m
+            _, shares = compute_position_size(
+                ctx.portfolio_value, cash_for_sizing,
+                max_pct, reserve_pct, price,
+            )
+            if shares < 1:
+                ctx.counters["joint_blocked_cash"] = (
+                    ctx.counters.get("joint_blocked_cash", 0) + 1
                 )
-                max_pct = base_max_pct * conv * sig_m
-                _, shares = compute_position_size(
-                    ctx.portfolio_value, cash_remaining,
-                    max_pct, reserve_pct, price,
-                )
-                if shares < 1:
-                    ctx.counters["joint_blocked_cash"] = (
-                        ctx.counters.get("joint_blocked_cash", 0) + 1
-                    )
-                    continue
-                invest = shares * price
+                continue
+            invest = shares * price
 
             # ── Accept ──────────────────────────────────────────────────
             accepted.append(a)
             if a.kind == "buy":
-                slots_consumed += 1
+                net_position_consumed += 1
+                new_buys_consumed     += 1
                 cash_remaining -= invest
                 used_cands.add(a.cand_ticker)
                 virtual_held.append(a.cand_ticker)
-                # Emit BUY order
                 target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
                 ctx.orders.append({
                     "ticker":     a.cand_ticker,
@@ -544,49 +670,22 @@ class JointActionTask(Task):
                 })
                 ctx.counters["joint_buys"] = ctx.counters.get("joint_buys", 0) + 1
                 log.info(
-                    "JOINT_BUY    %-6s  shares=%d  net_alpha=%+.4f",
-                    a.cand_ticker, shares, a.net_alpha,
-                )
-            elif a.kind == "sell":
-                # SELL frees a slot — nets to -1 consumption
-                slots_consumed -= 1
-                used_holds.add(a.held_ticker)
-                if a.held_ticker in virtual_held:
-                    virtual_held.remove(a.held_ticker)
-                ctx.exits.append((
-                    a.held_ticker,
-                    ExitSignal(
-                        should_exit = True,
-                        reason      = f"joint_sell net_alpha={a.net_alpha:+.4f}",
-                        exit_type   = "joint_sell",
-                    ),
-                ))
-                ctx.counters["joint_sells"] = ctx.counters.get("joint_sells", 0) + 1
-                log.info(
-                    "JOINT_SELL   %-6s  net_alpha=%+.4f",
-                    a.held_ticker, a.net_alpha,
+                    "JOINT_BUY    %-6s  shares=%d  net_alpha=%+.4f  cash_after=%.0f",
+                    a.cand_ticker, shares, a.net_alpha, cash_remaining,
                 )
             else:  # rotate
-                # Audit fix JOINT-SLOT-SHARE (Bug B, 2026-04-25):
-                # rotation MUST consume from the shared slot budget per
-                # user spec #3 (rotate 跟 buy 分享额度). Pre-fix it counted
-                # only against rot_consumed; slots_consumed stayed flat,
-                # which let a bar fire 3 buys + 2 rotates = 5 actions
-                # against a 3-slot cap. Now: +1 to slots_consumed (the
-                # incoming cand takes a seat); the sold held has already
-                # been removed from `effective_held` via the loop's
-                # bookkeeping — so net-zero PORTFOLIO effect, but +1
-                # slot consumption is correct.
-                slots_consumed += 1
+                # Net-zero on net_position_consumed (sell-leg already
+                # debited in Pass 1 logic if applicable; here the held
+                # was NOT in Pass 1 used_holds so it's still virtually
+                # in the portfolio — we remove it now).
                 rot_consumed += 1
-                cash_remaining -= invest
+                # Credit the sell-leg proceeds, debit the buy-leg invest.
+                cash_remaining = cash_remaining + sell_proceeds - invest
                 used_holds.add(a.held_ticker)
                 used_cands.add(a.cand_ticker)
                 if a.held_ticker in virtual_held:
                     virtual_held.remove(a.held_ticker)
                 virtual_held.append(a.cand_ticker)
-                # Build a RotationPair so downstream telemetry / state stays
-                # parity-compatible with the legacy chain.
                 _hp = float(ctx.prices.get(a.held_ticker, 0.0) or 0.0)
                 pair = RotationPair(
                     sell_ticker      = a.held_ticker,
@@ -601,7 +700,7 @@ class JointActionTask(Task):
                     tax_drag         = _held_tax_drag(a.held_obj, _hp, ctx.today, tax_cfg),
                     transaction_cost = 2.0 * (fee_pct + slip_pct),
                     net_advantage    = a.net_alpha,
-                    threshold        = 0.0,    # joint mode uses net_alpha sort, not a fixed threshold
+                    threshold        = 0.0,
                     margin_realized  = a.net_alpha,
                 )
                 ctx.rotations.append(pair)
@@ -637,14 +736,37 @@ class JointActionTask(Task):
                 })
                 ctx.counters["rotations"] = ctx.counters.get("rotations", 0) + 1
                 log.info(
-                    "JOINT_ROT    %-6s→%-6s  shares=%d  net_alpha=%+.4f",
+                    "JOINT_ROT    %-6s→%-6s  shares=%d  net_alpha=%+.4f  "
+                    "sell_proceeds=%.0f  cash_after=%.0f",
                     a.held_ticker, a.cand_ticker, shares, a.net_alpha,
+                    sell_proceeds, cash_remaining,
                 )
 
-        # Prune ranked so any post-job task (e.g. TopUpHeldTask) doesn't
-        # double-buy a ticker we just placed.
-        if used_cands:
-            ctx.ranked = [c for c in ctx.ranked if c.ticker not in used_cands]
+        # ── Pass 3: deferred SELLs whose ROTATE didn't materialize ──
+        # Bug MM (cont'd): if Pass 2 didn't fire the rotate that beat a
+        # SELL in net_alpha, fire the SELL retroactively so we don't
+        # silently drop a legitimate exit signal.
+        for a in deferred_sells:
+            if a.held_ticker in used_holds:
+                # ROTATE materialized — held already exiting. Skip.
+                continue
+            _accept_sell(a)
+            log.info(
+                "JOINT_PASS3  %-6s  retroactive sell after rotate failed",
+                a.held_ticker,
+            )
+
+        # Audit fix JOINT-PRUNE-USED-HOLDS (Bug DD, 2026-04-25): prune
+        # ranked of any used cand AND used held (the latter was already
+        # excluded from `eligible_cands` but defense in depth — a future
+        # ranked refresh between joint mode and downstream tasks could
+        # re-introduce them, and we don't want TopUpHeldTask to top up a
+        # held we just queued an exit for in this bar).
+        if used_cands or used_holds:
+            ctx.ranked = [
+                c for c in ctx.ranked
+                if c.ticker not in used_cands and c.ticker not in used_holds
+            ]
 
         log.info(
             "JointActionJob: accepted %d action(s)  buys=%d  sells=%d  rotates=%d",

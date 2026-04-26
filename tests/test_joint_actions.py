@@ -392,3 +392,357 @@ class TestJointSpecCoverage:
         # No rotation (held above sell_floor); buy may fire
         n_rots = sum(1 for o in ctx.orders if o.get("order_type") == "ROTATION")
         assert n_rots == 0, "rotation must NOT fire when held above sell_floor"
+
+
+# ── Bug F + Bug Y (JOINT-NET-POSITIONS / JOINT-OVERFILL-EDGE) ─────────────────
+
+class TestJointNetPositionsCap:
+    """Bug F: net new positions must respect max_concurrent_positions.
+
+    Pre-fix `slot_budget = open_slots + max_rot_bar` allowed BUYs to over-fill
+    when no rotations materialised — e.g. held=8, max=8 → slot_budget=2 → 2
+    BUYs (no offsetting SELLs) ended at 10 holdings."""
+
+    def test_full_holdings_no_sells_no_buys(self):
+        """Held = max_pos, no sells available, no rotates → 0 buys allowed."""
+        cfg = _base_config(max_concurrent=4, max_rot=2, sell_floor=-1.0,  # nothing weak
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg)
+        # 4 STRONG holds (no sell signal); 4 cand BUY signals
+        for i in range(4):
+            ctx.holdings[f"H{i}"] = _Hold(rank_score=0.80, expected_return=0.10,
+                                          entry_date=datetime.date(2026, 1, 1))
+            ctx.prices[f"H{i}"] = 100.0
+        for i in range(4):
+            ctx.ranked.append(_Cand(f"C{i}", rank_score=0.50, expected_return=0.05))
+            ctx.prices[f"C{i}"] = 100.0
+        JointActionTask().run(ctx)
+        # All holds strong → no SELL menu entries → no slot freed.
+        # max=4 = held=4 → open_slots=0 → 0 BUYs allowed.
+        n_buys = sum(1 for o in ctx.orders if o["order_type"] == "JOINT_BUY")
+        n_sells = sum(1 for _, s in ctx.exits if s.exit_type == "joint_sell")
+        n_rots  = sum(1 for o in ctx.orders if o["order_type"] == "ROTATION")
+        # net positions = held - sells + buys + (rotates net 0)
+        net_positions = 4 - n_sells + n_buys
+        assert net_positions <= 4, (
+            f"OVER-FILL: net positions {net_positions} > max=4. "
+            f"buys={n_buys} sells={n_sells} rots={n_rots}")
+
+    def test_full_holdings_with_sells_allows_replacement(self):
+        """4 weak holds + 4 strong cands + max=4 → 4 sells + 4 buys ≤ max=4 OK."""
+        cfg = _base_config(max_concurrent=4, max_rot=0,  # no rotations
+                           sell_floor=0.20, buy_floor=0.30,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg)
+        for i in range(4):
+            ctx.holdings[f"W{i}"] = _Hold(rank_score=0.05, expected_return=-0.10,
+                                          entry_date=datetime.date(2026, 1, 1))
+            ctx.prices[f"W{i}"] = 100.0
+        for i in range(4):
+            ctx.ranked.append(_Cand(f"S{i}", rank_score=0.50, expected_return=0.05))
+            ctx.prices[f"S{i}"] = 100.0
+        JointActionTask().run(ctx)
+        n_buys = sum(1 for o in ctx.orders if o["order_type"] == "JOINT_BUY")
+        n_sells = sum(1 for _, s in ctx.exits if s.exit_type == "joint_sell")
+        net_positions = 4 - n_sells + n_buys
+        assert net_positions <= 4, (
+            f"net positions {net_positions} > max=4 — sells freed slots "
+            f"correctly: buys={n_buys} sells={n_sells}")
+        # Sells should fire; buys fill freed slots
+        assert n_sells >= 1
+        assert n_buys <= n_sells, "can't BUY more than sells freed up"
+
+
+class TestJointOverFillEdge:
+    """Bug Y: when len(held) > max (overfilled by external path),
+    open_slots is negative and budget arithmetic must NOT allow re-buy
+    back to over-filled state."""
+
+    def test_overfilled_no_buys_without_excess_sells(self):
+        """5 holds in max=4 portfolio. 1 sell → final 4 ≤ max. 0 buys allowed."""
+        cfg = _base_config(max_concurrent=4, max_rot=2,
+                           sell_floor=0.20, buy_floor=0.30,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg)
+        # 5 holds (overfilled); 1 weak (will sell), 4 strong
+        ctx.holdings["WEAK"] = _Hold(rank_score=0.05, expected_return=-0.10,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.prices["WEAK"] = 100.0
+        for i in range(4):
+            ctx.holdings[f"H{i}"] = _Hold(rank_score=0.80, expected_return=0.10,
+                                          entry_date=datetime.date(2026, 1, 1))
+            ctx.prices[f"H{i}"] = 100.0
+        # 4 strong buy cands
+        for i in range(4):
+            ctx.ranked.append(_Cand(f"C{i}", rank_score=0.50, expected_return=0.05))
+            ctx.prices[f"C{i}"] = 100.0
+        JointActionTask().run(ctx)
+        n_buys = sum(1 for o in ctx.orders if o["order_type"] == "JOINT_BUY")
+        n_sells = sum(1 for _, s in ctx.exits if s.exit_type == "joint_sell")
+        # Started overfilled at 5. Each sell -1, each buy +1.
+        net_positions = 5 - n_sells + n_buys
+        assert net_positions <= 4, (
+            f"OVER-FILL persists: net positions {net_positions} > max=4. "
+            f"buys={n_buys} sells={n_sells}")
+
+
+# ── Bug M (JOINT-ROTATE-CASH) ─────────────────────────────────────────────────
+
+class TestJointRotateCashCredit:
+    """ROTATE buy-leg sizing must credit sell-leg proceeds (RegT same-bar settle).
+
+    Pre-fix, a rotation with $1k cash on hand could only buy 5 shares of a
+    $200 cand — even if the held it was selling was worth $20k. Post-fix,
+    cash_for_sizing = cash + sell_proceeds, so the swap is funded by the
+    held's mark-to-market value."""
+
+    def test_rotate_uses_sell_proceeds_for_buy_sizing(self):
+        cfg = _base_config(max_concurrent=8, max_rot=2,
+                           sell_floor=0.20, buy_floor=0.30,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg, cash=100.0,  # almost no cash
+                   portfolio_value=20_100.0)  # mostly tied up in WEAK
+        ctx.holdings["WEAK"] = _Hold(rank_score=0.05, expected_return=-0.05,
+                                     entry_price=200.0, shares=100,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.prices["WEAK"] = 200.0  # market value = 100 × $200 = $20,000
+        ctx.ranked = [_Cand("STRONG", rank_score=0.50, expected_return=0.10)]
+        ctx.prices["STRONG"] = 200.0
+        JointActionTask().run(ctx)
+        # Without Bug M fix: $100 cash / $200 price = 0 shares → no rotate fires
+        # With Bug M fix: $100 + $20,000 sell proceeds = $20,100 cash budget
+        #                 → max 15% of $20,100 = $3,015 → 15 shares of $200
+        n_rots = sum(1 for o in ctx.orders if o["order_type"] == "ROTATION")
+        assert n_rots == 1, (
+            "rotate must fire — sell-leg proceeds should fund buy-leg "
+            "sizing per Bug M fix")
+        rot_order = next(o for o in ctx.orders if o["order_type"] == "ROTATION")
+        assert rot_order["shares"] >= 1, "rotate buy-leg must have ≥1 share"
+
+
+class TestJointRotateCashDoesNotGoNegative:
+    """After ROTATE, cash_remaining = cash + sell_proceeds - invest. Should
+    stay ≥ 0 since compute_position_size respects available_cash bound."""
+
+    def test_cash_stays_non_negative_after_multiple_rotates(self):
+        cfg = _base_config(max_concurrent=8, max_rot=3,
+                           sell_floor=0.20, buy_floor=0.30,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg, cash=500.0, portfolio_value=60_500.0)
+        for i in range(3):
+            ctx.holdings[f"W{i}"] = _Hold(rank_score=0.05, expected_return=-0.05,
+                                          entry_price=200.0, shares=100,
+                                          entry_date=datetime.date(2026, 1, 1))
+            ctx.prices[f"W{i}"] = 200.0  # each = $20k market value
+        for i in range(3):
+            ctx.ranked.append(_Cand(f"S{i}", rank_score=0.50, expected_return=0.10))
+            ctx.prices[f"S{i}"] = 200.0
+        JointActionTask().run(ctx)
+        # Sum of invested cash must not exceed available cash + sell proceeds
+        # Total cash available = $500 + 3 × $20k × (1-fees) = ~$60,460
+        # max_position_pct = 15% × $60,500 = $9,075 per buy-leg
+        # 3 rotates × $9,075 = $27,225 invested ≪ $60,460 available. OK.
+        n_rots = sum(1 for o in ctx.orders if o["order_type"] == "ROTATION")
+        invested = sum(o["invest"] for o in ctx.orders if o["order_type"] == "ROTATION")
+        # Total invested should be bounded by sells freed up
+        sells_value = 3 * 100 * 200.0  # $60k
+        assert invested <= sells_value + 500, (
+            f"invested ${invested:.0f} > available ${sells_value + 500:.0f}")
+
+
+# ── Bug Q (JOINT-NET-NEG) ─────────────────────────────────────────────────────
+
+class TestJointNetNegFilter:
+    """BUY/ROTATE actions with net_alpha ≤ 0 (lose money after fees) are
+    filtered out before greedy fill. SELLs are EXEMPT (score-driven exit)."""
+
+    def test_buy_with_negative_net_alpha_dropped(self):
+        """Cand passes score floor but expected_return < fees → net_alpha < 0."""
+        cfg = _base_config(buy_floor=0.30, fee=0.01, slip=0.01,  # 2% total cost
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg)
+        # cand passes floor (0.50 > 0.30) but ER (0.01) < fees (0.02)
+        # net_alpha = 0.01 - 0.02 = -0.01 → DROPPED
+        ctx.ranked = [_Cand("LOSER", rank_score=0.50, expected_return=0.01)]
+        ctx.prices["LOSER"] = 100.0
+        JointActionTask().run(ctx)
+        assert ctx.orders == [], (
+            "BUY with net_alpha=-0.01 must be dropped (Bug Q)")
+
+    def test_sell_negative_net_alpha_kept(self):
+        """SELL with net_alpha < 0 is KEPT — score floor is the driver, not net."""
+        cfg = _base_config(sell_floor=0.20, fee=0.01, slip=0.01,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg)
+        # held below sell_floor; expected_return > fees → SELL net_alpha < 0
+        # net_alpha = -0.05 - 0.02 = -0.07 → would be dropped if Q applied to sells
+        ctx.holdings["WEAK"] = _Hold(rank_score=0.05, expected_return=0.05,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.prices["WEAK"] = 100.0
+        JointActionTask().run(ctx)
+        # Per user spec ("score thresholds → sold below X"), SELL fires on
+        # score-floor regardless of net_alpha sign
+        assert len(ctx.exits) == 1
+        assert ctx.exits[0][0] == "WEAK"
+
+
+# ── Bug L (JOINT-GREEDY-SELL-LATE → two-pass) ────────────────────────────────
+
+class TestJointTwoPassSellFirst:
+    """Pass 1 processes ALL eligible SELLs first to free slots for Pass 2
+    BUYs/ROTATEs (modulo Bug MM dominance pruning). Pre-fix, a high-net
+    BUY blocked by full holdings couldn't see the slot freed by a SELL
+    processed later."""
+
+    def test_sell_freed_slot_used_by_buy_in_same_bar(self):
+        """No rotation available (max_rot=0) → SELL frees slot for BUY."""
+        cfg = _base_config(max_concurrent=2, max_rot=0,  # no rotations
+                           sell_floor=0.20, buy_floor=0.30,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg, cash=20_000.0, portfolio_value=40_000.0)
+        # 2 holds (full), 1 weak that will sell, 1 strong hold to keep
+        ctx.holdings["WEAK"] = _Hold(rank_score=0.05, expected_return=0.001,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.holdings["KEEP"] = _Hold(rank_score=0.80, expected_return=0.05,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.prices["WEAK"] = 100.0
+        ctx.prices["KEEP"] = 100.0
+        # One strong cand wants to BUY
+        ctx.ranked = [_Cand("STRONG", rank_score=0.50, expected_return=0.10)]
+        ctx.prices["STRONG"] = 100.0
+        JointActionTask().run(ctx)
+        # Expectation: SELL WEAK (Pass 1) → frees a slot → BUY STRONG (Pass 2)
+        n_buys = sum(1 for o in ctx.orders if o["order_type"] == "JOINT_BUY")
+        n_sells = sum(1 for _, s in ctx.exits if s.exit_type == "joint_sell")
+        assert n_sells == 1, "WEAK should be sold"
+        assert n_buys == 1, "STRONG should be bought (using slot freed by sell)"
+
+    def test_rotation_available_takes_precedence_over_sell_plus_buy(self):
+        """Bug MM joint optimization: when ROTATE available (and held=max),
+        prefer single rotation over SELL+BUY pair (saves 1 transaction).
+        Refers to Garleanu-Pedersen 2013 — joint trade decision dominates
+        sequential greedy."""
+        cfg = _base_config(max_concurrent=2, max_rot=2,  # rotations allowed
+                           sell_floor=0.20, buy_floor=0.30,
+                           tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg, cash=20_000.0, portfolio_value=40_000.0)
+        ctx.holdings["WEAK"] = _Hold(rank_score=0.05, expected_return=0.001,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.holdings["KEEP"] = _Hold(rank_score=0.80, expected_return=0.05,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.prices["WEAK"] = 100.0
+        ctx.prices["KEEP"] = 100.0
+        ctx.ranked = [_Cand("STRONG", rank_score=0.50, expected_return=0.10)]
+        ctx.prices["STRONG"] = 100.0
+        JointActionTask().run(ctx)
+        # Bug MM: ROTATE WEAK→STRONG (1 transaction pair) preferred over
+        # SELL WEAK + BUY STRONG (2 transactions). End state same — 2 holds.
+        n_rots = sum(1 for o in ctx.orders if o["order_type"] == "ROTATION")
+        n_buys = sum(1 for o in ctx.orders if o["order_type"] == "JOINT_BUY")
+        n_sells = sum(1 for _, s in ctx.exits if s.exit_type == "joint_sell")
+        assert n_rots == 1, "ROTATE preferred over SELL+BUY per Bug MM"
+        assert n_buys == 0
+        # The deferred SELL is dropped because ROTATE materialized
+        assert n_sells == 0
+
+
+# ── Bug PR1-CASH (Phase 1 EmitRotationsTask rolling cash) ────────────────────
+
+class TestPhase1RollingCash:
+    """Phase 1 EmitRotationsTask must decrement cash after each rotation
+    AND credit sell-leg proceeds. Pre-fix, every rotation pair was sized
+    against ctx.cash = bar-start cash → second rotation over-claimed."""
+
+    def test_two_rotations_share_cash_budget(self):
+        # Build minimal context for EmitRotationsTask
+        from types import SimpleNamespace
+        from kernel.pipeline.task_rotation import EmitRotationsTask
+        from kernel.rotation import RotationPair
+
+        cfg = {
+            "rotation": {
+                "enabled": True, "max_rotations_per_bar": 2,
+                "transaction_cost_pct": 0.0,
+            },
+            "tax": {},
+            "regime_params": {"BULL_CALM": {"max_position_pct": 0.50,
+                                             "cash_reserve_pct": 0.0}},
+            "ranking": {},
+            "regime": {},
+        }
+        held1 = _Hold(rank_score=0.10, entry_price=100.0, shares=100,
+                      entry_date=datetime.date(2026, 1, 1))
+        held2 = _Hold(rank_score=0.10, entry_price=100.0, shares=100,
+                      entry_date=datetime.date(2026, 1, 1))
+
+        ctx = SimpleNamespace(
+            config=cfg, today=datetime.date(2026, 4, 25),
+            regime="BULL_CALM", confidence=0.8,
+            holdings={"H1": held1, "H2": held2},
+            prices={"H1": 100.0, "H2": 100.0,
+                    "B1": 100.0, "B2": 100.0},
+            cash=500.0, portfolio_value=20_500.0,  # tiny cash, big holdings
+            ranked=[
+                _Cand("B1", rank_score=0.50, expected_return=0.10),
+                _Cand("B2", rank_score=0.50, expected_return=0.10),
+            ],
+            exits=[],
+            orders=[],
+            counters={},
+            rotations=[
+                RotationPair(
+                    sell_ticker="H1", buy_ticker="B1",
+                    sell_score=0.10, buy_score=0.50,
+                    sell_er=0.0, buy_er=0.10,
+                    horizon_days=20,
+                    raw_advantage=0.10, tax_drag=0.0,
+                    transaction_cost=0.0, net_advantage=0.10,
+                    threshold=0.03, margin_realized=0.10,
+                ),
+                RotationPair(
+                    sell_ticker="H2", buy_ticker="B2",
+                    sell_score=0.10, buy_score=0.50,
+                    sell_er=0.0, buy_er=0.10,
+                    horizon_days=20,
+                    raw_advantage=0.10, tax_drag=0.0,
+                    transaction_cost=0.0, net_advantage=0.10,
+                    threshold=0.03, margin_realized=0.10,
+                ),
+            ],
+            regime_state=None,
+        )
+        EmitRotationsTask().run(ctx)
+        # Both rotations should fire (each funded by its own sell-leg)
+        n_rots = sum(1 for o in ctx.orders if o["order_type"] == "ROTATION")
+        assert n_rots == 2, f"expected 2 rotations, got {n_rots}"
+        # Total invested must not exceed cash + total sell proceeds
+        # Each H is worth 100 × $100 = $10,000. Two = $20,000.
+        # Plus $500 cash = $20,500 budget. max_position_pct = 50% × $20,500 = $10,250 each.
+        invested = sum(o["invest"] for o in ctx.orders if o["order_type"] == "ROTATION")
+        sells_value = 2 * 100 * 100.0  # $20,000
+        assert invested <= sells_value + 500, (
+            f"PR1-CASH violation: invested ${invested:.0f} > available "
+            f"${sells_value + 500:.0f}")
+
+
+# ── Bug DD (JOINT-PRUNE-USED-HOLDS) ──────────────────────────────────────────
+
+class TestJointPruneUsedHolds:
+    """ranked is pruned of both used_cands AND used_holds at end of joint
+    mode, so downstream tasks (TopUpHeldTask, etc) don't operate on
+    tickers we just queued for sell."""
+
+    def test_used_holds_pruned_from_ranked(self):
+        cfg = _base_config(sell_floor=0.20, tiered=[{"min_model_score": 0.20}])
+        ctx = _Ctx(config=cfg)
+        ctx.holdings["WEAK"] = _Hold(rank_score=0.05, expected_return=-0.05,
+                                     entry_date=datetime.date(2026, 1, 1))
+        ctx.prices["WEAK"] = 100.0
+        # Note: WEAK is also somehow in ranked (rare edge — defensive cleanup)
+        ctx.ranked = [_Cand("WEAK", rank_score=0.50, expected_return=0.05)]
+        ctx.prices["WEAK"] = 100.0
+        JointActionTask().run(ctx)
+        # After SELL fires, WEAK must be pruned from ranked
+        assert "WEAK" not in [c.ticker for c in ctx.ranked], (
+            "WEAK was sold via joint mode but still in ranked — "
+            "TopUpHeldTask might re-buy it")

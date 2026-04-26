@@ -702,6 +702,9 @@ class EmitRotationsTask(Task):
         if not ctx.rotations:
             return
 
+        # Hoisted for use inside the per-pair loop (PR1-CASH fix).
+        rotation_cfg = ctx.config.get("rotation", {})
+
         # Audit fix CONF-MULT (2026-04-25): floored confidence multiplier.
         from kernel.regime import confidence_to_size_multiplier  # noqa: PLC0415
         _conf_mult   = confidence_to_size_multiplier(ctx.confidence)
@@ -747,6 +750,17 @@ class EmitRotationsTask(Task):
             ctx.rotations_blocked = []
         rotated_buys: set[str] = set()
         rotated_sells: set[str] = set()
+
+        # Audit fix PR1-CASH (Phase 1 rotation rolling cash, 2026-04-25):
+        # pre-fix, every rotation pair was sized against the bar-start
+        # `ctx.cash`. With max_rotations_per_bar=2, both pairs each
+        # believed they had the full cash balance — and when the actual
+        # broker submitted both orders, the second would either over-buy
+        # (margin) or fail (cash account). Now: maintain `cash_remaining`
+        # that decrements after each accepted rotation buy AND credits
+        # the sell-leg's mark-to-market proceeds (RegT same-bar settle).
+        cash_remaining = float(ctx.cash)
+
         for pair in ctx.rotations:
             # 2026-04-24 bug fix: previously the SELL exit was appended
             # FIRST and the BUY constructed second. If the buy failed
@@ -804,14 +818,35 @@ class EmitRotationsTask(Task):
                 if cap > 0 and max_pct > cap:
                     max_pct = cap
 
+            # Audit fix PR1-CASH (2026-04-25): credit sell-leg proceeds
+            # to sizing budget (RegT same-bar settlement on rotation
+            # pairs). Same fix as Bug M in JointActionTask. Pre-fix, the
+            # buy-leg was sized off `ctx.cash` (no held credit, no
+            # rolling decrement) → first rotation under-sized when cash
+            # was tight, AND second+ rotations over-claimed shared cash.
+            # Use defensive getattr — some unit-test mocks pass a
+            # SimpleNamespace ctx without `holdings` set up.
+            _holdings   = getattr(ctx, "holdings", None) or {}
+            held_st     = _holdings.get(pair.sell_ticker) if _holdings else None
+            held_shares = int(getattr(held_st, "shares", 0) or 0) if held_st else 0
+            held_price  = float(ctx.prices.get(pair.sell_ticker, 0.0) or 0.0)
+            sell_proceeds = 0.0
+            if held_shares > 0 and math.isfinite(held_price) and held_price > 0:
+                # Apply transaction-cost haircut to be honest about
+                # realized cash. transaction_cost_pct in rotation_cfg
+                # applies to the round-trip; halve for one leg.
+                _leg_cost = float(rotation_cfg.get("transaction_cost_pct", 0.0)) / 2.0
+                sell_proceeds = held_shares * held_price * (1.0 - _leg_cost)
+            cash_for_sizing = cash_remaining + sell_proceeds
+
             _, shares = compute_position_size(
-                ctx.portfolio_value, ctx.cash,
+                ctx.portfolio_value, cash_for_sizing,
                 max_pct, reserve_pct, price,
             )
             if shares < 1:
                 log.info("EmitRotationsTask: %s insufficient cash — skip ENTIRE pair "
-                         "(no atomic-rotation orphan exit)",
-                         pair.buy_ticker)
+                         "(no atomic-rotation orphan exit)  cash_for_sizing=%.0f",
+                         pair.buy_ticker, cash_for_sizing)
                 ctx.rotations_blocked.append({
                     "sell": pair.sell_ticker, "buy": pair.buy_ticker,
                     "reason": "insufficient_cash",
@@ -854,14 +889,18 @@ class EmitRotationsTask(Task):
                 "order_type": "ROTATION",
             })
             rotated_buys.add(pair.buy_ticker)
+            # PR1-CASH: roll the cash forward — credit sell, debit buy.
+            cash_remaining = cash_remaining + sell_proceeds - invest
             ctx.counters["rotations"] = ctx.counters.get("rotations", 0) + 1
             log.info(
                 "ROTATION_EXEC  swap=%s→%s  shares=%d  net_adv=%+.4f  "
-                "raw_adv=%+.4f  tax=%.4f  cost=%.4f  threshold=%+.4f  horizon=%dd",
+                "raw_adv=%+.4f  tax=%.4f  cost=%.4f  threshold=%+.4f  "
+                "horizon=%dd  sell_proc=%.0f  cash_after=%.0f",
                 pair.sell_ticker, pair.buy_ticker, shares,
                 pair.net_advantage, pair.raw_advantage,
                 pair.tax_drag, pair.transaction_cost,
                 pair.threshold, pair.horizon_days,
+                sell_proceeds, cash_remaining,
             )
 
         if rotated_buys:
