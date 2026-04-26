@@ -998,6 +998,15 @@ class PanelTransformerModel:
     def save(self, path: str | Path, metadata: dict | None = None) -> None:
         if self._model is None:
             raise RuntimeError("PanelTransformerModel.save called before train")
+        # Audit fix #94 (2026-04-26 round-3): validate that feature_cols is
+        # populated. Pre-fix, save() with empty feature_cols would produce
+        # an unloadable artifact (load() requires feature_cols to rebuild
+        # the model). Now: loud error.
+        if not self.feature_cols:
+            raise RuntimeError(
+                "PanelTransformerModel.save: feature_cols is empty. "
+                "Did train() succeed? Cannot save without feature schema."
+            )
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix != ".pt":
