@@ -274,9 +274,14 @@ def main() -> int:
     # under /tmp/. Doesn't affect production runs (which write to the
     # canonical data/runs.db / data/sim_runs.db).
     tag_for_db = _build_tag(args)
-    config.setdefault("persistence", {})["sqlite_path"] = (
-        f"/tmp/sim_{tag_for_db}_{int(__import__('time').time())}.db"
-    )
+    # Audit fix DB-PATH-WRONG-KEY (2026-04-26): the actual key for the
+    # sim DB is `persistence.sim_db_path` (kernel/persistence.py:381),
+    # NOT `sqlite_path`. My previous fix used the wrong key → sims
+    # still contended on data/sim_runs.db → 8× slowdown persisted.
+    _sim_db = f"/tmp/sim_{tag_for_db}_{int(__import__('time').time())}.db"
+    config.setdefault("persistence", {})["sim_db_path"] = _sim_db
+    # Also set db_path in case any code reads it instead — defensive.
+    config["persistence"]["db_path"] = _sim_db
     cfg    = _apply_overrides(
         config,
         baseline         = args.baseline,
