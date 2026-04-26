@@ -25,6 +25,7 @@ from kernel.pipeline.task_panel_veto import (  # noqa: E402
 @dataclass
 class _Hold:
     rank_score: float | None = None
+    sell_streak: int = 0
 
 
 @dataclass
@@ -175,6 +176,79 @@ class TestVetoableSet:
         PanelRankVetoTask().run(ctx)
         # Custom vetoable set → vetoed
         assert len(ctx.exits) == 0
+
+
+class TestStreakCap:
+    """PV-NEW-7: persistent weakness override after N consecutive sell signals."""
+
+    def test_streak_below_cap_vetoed(self):
+        """sell_streak=3, cap=5 → still vetoed."""
+        cfg = {"model_sell": {"panel_veto": {
+            "enabled": True, "min_rank_score": 0.50,
+            "max_streak_to_veto": 5,
+        }}}
+        ctx = _Ctx(config=cfg)
+        ctx.holdings["X"] = _Hold(rank_score=0.85, sell_streak=3)
+        ctx.exits = [("X", _Exit(exit_type="model_sell"))]
+        PanelRankVetoTask().run(ctx)
+        assert len(ctx.exits) == 0, "still under streak cap → veto"
+
+    def test_streak_at_cap_bypasses(self):
+        """sell_streak=5, cap=5 → veto bypassed."""
+        cfg = {"model_sell": {"panel_veto": {
+            "enabled": True, "min_rank_score": 0.50,
+            "max_streak_to_veto": 5,
+        }}}
+        ctx = _Ctx(config=cfg)
+        ctx.holdings["X"] = _Hold(rank_score=0.85, sell_streak=5)
+        ctx.exits = [("X", _Exit(exit_type="model_sell"))]
+        PanelRankVetoTask().run(ctx)
+        assert len(ctx.exits) == 1, "streak hit cap → exit fires"
+        assert ctx.counters.get("model_sell_veto_bypassed") == 1
+
+    def test_streak_above_cap_bypasses(self):
+        """sell_streak=10, cap=5 → veto bypassed (streak >> cap)."""
+        cfg = {"model_sell": {"panel_veto": {
+            "enabled": True, "min_rank_score": 0.50,
+            "max_streak_to_veto": 5,
+        }}}
+        ctx = _Ctx(config=cfg)
+        ctx.holdings["X"] = _Hold(rank_score=0.99, sell_streak=10)
+        ctx.exits = [("X", _Exit(exit_type="model_sell"))]
+        PanelRankVetoTask().run(ctx)
+        assert len(ctx.exits) == 1
+        assert ctx.counters.get("model_sell_veto_bypassed") == 1
+
+    def test_max_streak_zero_disables_cap(self):
+        """max_streak_to_veto=0 → no cap; veto always fires when strong."""
+        cfg = {"model_sell": {"panel_veto": {
+            "enabled": True, "min_rank_score": 0.50,
+            "max_streak_to_veto": 0,
+        }}}
+        ctx = _Ctx(config=cfg)
+        ctx.holdings["X"] = _Hold(rank_score=0.85, sell_streak=999)
+        ctx.exits = [("X", _Exit(exit_type="model_sell"))]
+        PanelRankVetoTask().run(ctx)
+        assert len(ctx.exits) == 0, "cap disabled → veto regardless of streak"
+
+
+class TestVetoableSetStringInput:
+    """PV-NEW-3: defend against operator passing string instead of list."""
+
+    def test_string_vetoable_treated_as_single_element_list(self):
+        ctx = _Ctx(config={"model_sell": {"panel_veto": {
+            "enabled": True, "min_rank_score": 0.50,
+            "vetoable_exit_types": "model_sell",  # STRING, not list
+        }}})
+        ctx.holdings["X"] = _Hold(rank_score=0.95)
+        ctx.exits = [("X", _Exit(exit_type="model_sell"))]
+        PanelRankVetoTask().run(ctx)
+        # If treated as set("model_sell") = {'m','o','d','e','l',...},
+        # the check `exit_type in vetoable_set` would fail and veto NOT fire.
+        # Post-fix: wrapped to single-element list → veto fires.
+        assert len(ctx.exits) == 0, (
+            "string vetoable_exit_types should be treated as single-element list"
+        )
 
 
 class TestPipelineIntegration:
