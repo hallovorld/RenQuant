@@ -378,6 +378,11 @@ def _listnet_loss(scores: torch.Tensor, labels: torch.Tensor,
     loss_per_row = -(p_label * log_p_pred)
     loss_per_row = loss_per_row.masked_fill(invalid, 0.0)
     # Mean over non-degenerate groups (at least 2 valid tickers).
+    # Audit fix #5 (2026-04-26 round-3, design rationale): ≥2 threshold
+    # is intentional. ListNet with 1 valid ticker has degenerate softmax
+    # (single-element distribution = 1.0) → log_p_pred = 0 → loss = 0.
+    # That's a no-op forward pass with no learning signal, so skipping
+    # is mathematically equivalent to including. Documented for clarity.
     valid_groups = (~invalid).sum(dim=-1) >= 2
     if valid_groups.any():
         return loss_per_row.sum(dim=-1)[valid_groups].mean()
@@ -479,6 +484,30 @@ def _build_date_groups(
             "the feature encoder bias and are effectively ungrouped.",
             n_zero_rows,
         )
+
+    # Audit fix #10 (2026-04-26 round-3): warn when an entire group has
+    # ALL-NaN labels. Such a group can't contribute to ListNet (degenerate
+    # softmax → masked entirely) — running forward on it wastes compute.
+    # We don't drop here (would require mutating group_sizes for caller
+    # consistency); just count + warn for diagnostic. Operator-side fix:
+    # filter labels upstream in PanelDataJob.
+    if len(group_sizes):
+        offset_check = 0
+        n_all_nan_groups = 0
+        for gs_check in group_sizes:
+            gs_int_check = int(gs_check)
+            if gs_int_check > 0:
+                slice_nan = nan_label_flat[offset_check:offset_check + gs_int_check]
+                if slice_nan.all():
+                    n_all_nan_groups += 1
+            offset_check += gs_int_check
+        if n_all_nan_groups > 0:
+            log.warning(
+                "_build_date_groups: %d/%d group(s) have ALL-NaN labels. "
+                "These produce zero loss + waste forward passes. "
+                "Filter labels upstream for efficiency.",
+                n_all_nan_groups, len(group_sizes),
+            )
 
     n_groups = len(group_sizes)
     n_feat   = X_flat.shape[1]
