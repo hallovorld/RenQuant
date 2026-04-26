@@ -404,6 +404,21 @@ class JointActionTask(Task):
                 )
                 continue
 
+            # Audit fix JOINT-SLOT-SHARE (Bug B, 2026-04-25): per user
+            # spec "rotate应该跟buy分享那个额度，每天三个slot", rotation
+            # MUST consume from the shared slot budget — pre-fix it only
+            # checked rot_consumed ceiling, never decremented slot budget,
+            # so a bar could fire 3 buys + 2 rotates = 5 actions exceeding
+            # the 3-slot shared cap. Now: rotate counts as +1 (cand
+            # entered new seat); SELL counts as -1 (seat freed) net 0
+            # via existing decrement.
+            _proposed_slot_delta = 1 if a.kind in ("buy", "rotate") else (-1 if a.kind == "sell" else 0)
+            if slots_consumed + _proposed_slot_delta > slot_budget and a.kind != "sell":
+                ctx.counters["joint_blocked_budget"] = (
+                    ctx.counters.get("joint_blocked_budget", 0) + 1
+                )
+                continue
+
             # Wash-sale check (cand side; SELL has no cand)
             if a.kind in ("buy", "rotate"):
                 if is_wash_sale_blocked(
@@ -432,11 +447,39 @@ class JointActionTask(Task):
                         ctx.counters.get("joint_blocked_sector", 0) + 1
                     )
                     continue
-                if not passes_correlation_guard(
-                    a.cand_ticker, tmp_held, ctx.corr_matrix, corr_threshold,
-                ):
-                    ctx.counters["joint_blocked_corr"] = (
-                        ctx.counters.get("joint_blocked_corr", 0) + 1
+                # Audit fix JOINT-CORR-NONE (Bug D, 2026-04-25): defend
+                # against missing correlation artifact. ctx.corr_matrix
+                # is None when watchlist-correlation.json is missing /
+                # empty (e.g. fresh strategy dir, dev environment). Pre-
+                # fix this would crash inside passes_correlation_guard;
+                # now: skip the guard (let action through) and warn —
+                # mirrors legacy SelectionJob behaviour which also no-ops
+                # the correlation guard on missing matrix.
+                if ctx.corr_matrix is not None:
+                    if not passes_correlation_guard(
+                        a.cand_ticker, tmp_held, ctx.corr_matrix, corr_threshold,
+                    ):
+                        ctx.counters["joint_blocked_corr"] = (
+                            ctx.counters.get("joint_blocked_corr", 0) + 1
+                        )
+                        continue
+
+            # Audit fix JOINT-TIER-ESC (Bug C, 2026-04-25): mirror
+            # SelectionJob's per-slot tier escalation. SelectionJob does
+            # `tier_idx = min(slots_filled, len(tiers) - 1)` so slot 1
+            # uses tier 0 threshold (0.27), slot 2 uses tier 1 (0.45),
+            # slot 3+ uses tier 2 (0.60). Pre-fix joint mode only checked
+            # tier 0 across ALL slots → much looser → over-trade.
+            # Apply the same per-slot escalation here, using
+            # `slots_consumed` as the index. ROTATIONs use the same
+            # escalation since they consume a slot.
+            if a.kind in ("buy", "rotate") and tiered:
+                tier_idx = min(slots_consumed, len(tiered) - 1)
+                tier_min = float(tiered[tier_idx].get("min_model_score", 0.0))
+                rs = float(getattr(a.cand_obj, "rank_score", 0.0) or 0.0)
+                if not math.isfinite(rs) or rs < tier_min:
+                    ctx.counters["joint_blocked_tier"] = (
+                        ctx.counters.get("joint_blocked_tier", 0) + 1
                     )
                     continue
 
@@ -524,8 +567,17 @@ class JointActionTask(Task):
                     a.held_ticker, a.net_alpha,
                 )
             else:  # rotate
-                # Rotate is net-zero on slots (free 1, take 1); count only the
-                # rotation quota.
+                # Audit fix JOINT-SLOT-SHARE (Bug B, 2026-04-25):
+                # rotation MUST consume from the shared slot budget per
+                # user spec #3 (rotate 跟 buy 分享额度). Pre-fix it counted
+                # only against rot_consumed; slots_consumed stayed flat,
+                # which let a bar fire 3 buys + 2 rotates = 5 actions
+                # against a 3-slot cap. Now: +1 to slots_consumed (the
+                # incoming cand takes a seat); the sold held has already
+                # been removed from `effective_held` via the loop's
+                # bookkeeping — so net-zero PORTFOLIO effect, but +1
+                # slot consumption is correct.
+                slots_consumed += 1
                 rot_consumed += 1
                 cash_remaining -= invest
                 used_holds.add(a.held_ticker)
