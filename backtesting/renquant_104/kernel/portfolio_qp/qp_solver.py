@@ -65,6 +65,13 @@ def solve_portfolio_qp(
     drawdown_limit: float = 0.20,           # α — DD limit; γ_eff = γ_base / max(eps, 1 - DD/α)
     # Stage 5 — Garlappi-Uppal-Wang 2007 robust μ adjustment
     robust_mu_kappa: float = 0.0,           # μ_robust_i = μ_i - κ · σ_i (worst-case ball)
+    # Stage 7 — Rockafellar-Uryasev 2002 CVaR risk term
+    # When > 0, adds a tail-risk penalty using the Gaussian-CVaR closed
+    # form: CVaR_α(w'r) ≈ -μ'w + φ(z_α)/α · √(w'Σw). For our use case
+    # (intraday position adjustment) we approximate with a per-asset
+    # CVaR contribution proportional to σ_i and a tail multiplier.
+    cvar_lambda:    float = 0.0,            # weight on CVaR term (0 = pure variance)
+    cvar_alpha:     float = 0.05,           # tail probability (e.g. 5%)
 ) -> QPSolution:
     """Solve the single-period Markowitz QP with linear-cost transaction.
 
@@ -149,6 +156,21 @@ def solve_portfolio_qp(
     dd_factor = max(1e-3, 1.0 - dd / dd_lim)
     gamma_eff = float(risk_aversion) / dd_factor
 
+    # Stage 7 — Rockafellar-Uryasev 2002 CVaR tail-risk multiplier.
+    # For Gaussian returns r ~ N(μ, σ²): CVaR_α(-r) = -μ + (φ(z_α)/α)·σ.
+    # Tail multiplier z_α = φ(z_α)/α; e.g. α=0.05 → z_α ≈ 2.063, α=0.01 → 2.665.
+    # We add (cvar_lambda · z_α) to gamma_eff's variance multiplier so
+    # that higher α-tail risk gets penalised proportionally to σ. This
+    # is a simplification of the full 2-stage LP formulation but
+    # captures the same qualitative behaviour (heavier tail penalty).
+    if cvar_lambda > 0.0:
+        from scipy.stats import norm  # noqa: PLC0415
+        # phi(z_α) / α is the conditional Sharpe shortfall multiplier
+        z_alpha = float(norm.ppf(1.0 - cvar_alpha))
+        phi_z   = float(norm.pdf(z_alpha))
+        cvar_mult = phi_z / max(cvar_alpha, 1e-6)
+        gamma_eff = gamma_eff + cvar_lambda * cvar_mult
+
     # Decision variable: Δw ∈ ℝⁿ
     # Bounds: max(w_lower - w_current, -dw_max) ≤ Δw ≤ min(w_upper - w_current, +dw_max)
     lo_bounds = np.maximum(w_lower_arr - w_current, -dw_max_arr)
@@ -216,6 +238,8 @@ def solve_portfolio_qp(
             "dd_factor":       dd_factor,
             "signal_decay":    sd,
             "robust_kappa":    float(robust_mu_kappa),
+            "cvar_lambda":     float(cvar_lambda),
+            "cvar_alpha":      float(cvar_alpha),
             "cost_kappa":      cost_kappa,
             "cash_reserve":    cash_reserve,
             "n_finite_mu":     int(finite_mu.sum()),

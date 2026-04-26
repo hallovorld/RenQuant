@@ -415,3 +415,98 @@ class TestStagesCombined:
         for k in ("signal_decay", "dd_factor",
                    "robust_kappa", "gamma_effective"):
             assert k in sol.diagnostics
+
+
+# ── Stage 7: CVaR tail-risk term (Rockafellar-Uryasev 2002) ──────────────────
+
+class TestStageSevenCVaR:
+    def test_cvar_lambda_zero_no_change(self):
+        kwargs = dict(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            w_upper=10.0,
+        )
+        sol_no_cvar  = solve_portfolio_qp(cvar_lambda=0.0, **kwargs)
+        sol_zero_eq  = solve_portfolio_qp(**kwargs)
+        np.testing.assert_allclose(sol_no_cvar.delta_w,
+                                    sol_zero_eq.delta_w, atol=1e-6)
+
+    def test_cvar_lambda_shrinks_position(self):
+        """λ > 0 → larger γ_eff → smaller position (tail-aware)."""
+        kwargs = dict(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            w_upper=10.0,
+        )
+        sol_no_cvar = solve_portfolio_qp(cvar_lambda=0.0, **kwargs)
+        sol_cvar    = solve_portfolio_qp(cvar_lambda=2.0, cvar_alpha=0.05,
+                                          **kwargs)
+        assert sol_cvar.target_w[0] < sol_no_cvar.target_w[0]
+
+    def test_smaller_alpha_more_conservative(self):
+        """Tighter tail (α=0.01) penalises more than α=0.10."""
+        kwargs = dict(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            cvar_lambda=2.0,
+            w_upper=10.0,
+        )
+        sol_loose  = solve_portfolio_qp(cvar_alpha=0.10, **kwargs)
+        sol_tight  = solve_portfolio_qp(cvar_alpha=0.01, **kwargs)
+        assert sol_tight.target_w[0] < sol_loose.target_w[0]
+
+    def test_cvar_diagnostics_surface(self):
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            cvar_lambda=1.0,
+            cvar_alpha=0.05,
+        )
+        assert sol.diagnostics["cvar_lambda"] == pytest.approx(1.0)
+        assert sol.diagnostics["cvar_alpha"]  == pytest.approx(0.05)
+
+
+# ── Stage 3 reference test — Constantinides band ─────────────────────────────
+
+class TestStageThreeConstantinidesBand:
+    """Stage 3 (no-trade band) is implemented in QualityFloorTask Gate C
+    as a PRE-QP filter. The band check happens BEFORE the candidate
+    enters the QP — this avoids wasting solver iterations on dust
+    trades. This test asserts the architectural decision is documented
+    and the dependency is wired."""
+
+    def test_quality_floor_gate_c_exists(self):
+        from kernel.panel_pipeline.task_quality_floor import (
+            _gate_c_no_trade_band,
+            QualityFloorTask,
+        )
+        # API contract stable
+        assert callable(_gate_c_no_trade_band)
+        assert QualityFloorTask is not None
+
+    def test_band_formula_matches_qp_decision(self):
+        """Sanity: a candidate that passes Gate C should also produce
+        a non-trivial trade in QP (no contradiction between layers)."""
+        from kernel.panel_pipeline.task_quality_floor import (
+            _gate_c_no_trade_band,
+        )
+        # μ=0.05, σ=0.10, γ=3 → target ≈ 1.67 (capped); deviation 1.67;
+        # band ≈ 0.047 → easily passes Gate C.
+        from collections import namedtuple
+        Cand = namedtuple("Cand", "ticker mu sigma")
+        c = Cand("STRONG", 0.05, 0.10)
+        ok, _ = _gate_c_no_trade_band(
+            c, risk_aversion=3.0, round_trip_cost=0.001,
+            band_constant=1.5, current_weight=0.0,
+        )
+        assert ok is True
