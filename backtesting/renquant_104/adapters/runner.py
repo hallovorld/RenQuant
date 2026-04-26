@@ -157,6 +157,41 @@ class RunnerAdapter:
             all_pos = []
         positions_cache = {p["symbol"]: p for p in all_pos}
 
+        # Audit fix ENTRY-DATE-FROM-FILLS (Round 4 deep audit, 2026-04-25):
+        # Pre-fix, an inherited position with no entry_date in state got
+        # stamped to TODAY (line ~191). Result: a position bought 60 days
+        # ago was treated as fresh → min_hold_days=30 lockout started NOW
+        # → user's old position couldn't be sold by the model for another
+        # 30 days. Now: query broker fill history once per cycle, build a
+        # ticker → earliest-BUY-fill-date map; use it as the seed for
+        # missing entry_dates so hold tenure reflects actual cost-basis
+        # tenure, not "first time the runner saw this position".
+        first_fill_map: dict[str, datetime.date] = {}
+        try:
+            fills = broker.get_filled_orders()
+            for f in fills or []:
+                sym = f.get("symbol")
+                if not sym or f.get("action") != "BUY":
+                    continue
+                fa = f.get("filled_at")
+                if not fa:
+                    continue
+                try:
+                    d = datetime.date.fromisoformat(str(fa)[:10])
+                except (ValueError, TypeError):
+                    continue
+                # Earliest BUY for this symbol — only updated when no
+                # SELL has happened in between (we don't currently track
+                # the trip-lifecycle here; conservative: take the OLDEST
+                # buy date so min_hold gives the position max benefit of
+                # the doubt).
+                if sym not in first_fill_map or d < first_fill_map[sym]:
+                    first_fill_map[sym] = d
+        except (AttributeError, NotImplementedError, Exception) as exc:
+            log.info("ENTRY-DATE-FROM-FILLS: broker.get_filled_orders unavailable "
+                     "(%s) — will fall back to sentinel for missing entry dates",
+                     type(exc).__name__)
+
         # ── Holdings from live state + broker positions ─────────────────────
         from kernel.exits import HoldingState  # noqa: PLC0415
 
@@ -175,6 +210,14 @@ class RunnerAdapter:
             log.warning("RunnerAdapter: %d position(s) held outside watchlist "
                         "(unmanaged): %s",
                         len(non_wl_holds), ", ".join(sorted(non_wl_holds)))
+        # Audit fix UNMANAGED-NTFY (Round 4 deep audit, 2026-04-25): surface
+        # non_wl_holds via ctx so live/runner.py::_notify_decision can include
+        # an UNMANAGED line on the operator's phone — pre-fix, this was a
+        # log-only warning that the user only saw if they opened the log file.
+        # Real positions could sit in the broker for weeks with stop-loss /
+        # trailing-stop never firing because the strategy doesn't know they
+        # exist.
+        self._non_wl_holds = list(sorted(non_wl_holds))
         holdings: dict[str, HoldingState] = {}
         for ticker in held_set:
             pos     = positions_cache.get(ticker, {})
@@ -188,7 +231,27 @@ class RunnerAdapter:
             # min_hold_days / rotation gates). Ideally seed from Alpaca's
             # fill timestamp on migration; today is the least-bad fallback.
             if ticker not in entry_dates:
-                entry_dates[ticker] = today.isoformat()
+                # Audit fix ENTRY-DATE-FROM-FILLS (Bug C, 2026-04-25):
+                # use broker fill history if available, else fall back
+                # to a sentinel that's PAST min_hold_days so an inherited
+                # position isn't artificially locked. Pre-fix this stamped
+                # today.isoformat() → hold_days = 0 → 30-day lockout.
+                seeded = first_fill_map.get(ticker)
+                if seeded is not None:
+                    entry_dates[ticker] = seeded.isoformat()
+                    log.info("ENTRY-DATE-SEED %s ← %s (broker fill history)",
+                             ticker, seeded.isoformat())
+                else:
+                    # Sentinel: 31 days ago — past min_hold_days=30 default
+                    # but well within wash-sale (30d) window. The position
+                    # is unlocked for normal model-sell evaluation but
+                    # tax-classification (LT/ST) won't be wrong — that
+                    # uses the actual broker cost-basis date, not state.
+                    sentinel = today - datetime.timedelta(days=31)
+                    entry_dates[ticker] = sentinel.isoformat()
+                    log.warning("ENTRY-DATE-SEED %s ← %s (sentinel — broker had no "
+                                "fill history; manual fix recommended)",
+                                ticker, sentinel.isoformat())
             entry_str = entry_dates[ticker]
             try:
                 entry_dt = datetime.date.fromisoformat(entry_str)
@@ -362,6 +425,9 @@ class RunnerAdapter:
         # rotation V4 reads from there for entry-day score lookup.
         if self._db is not None:
             ctx._db = self._db   # noqa: SLF001
+
+        # UNMANAGED-NTFY: pass through to ntfy decision-summary path.
+        ctx.non_wl_holds = list(self._non_wl_holds)
 
         # Rotation V1 persistence gate — live runner has no per-bar
         # state file pinned to rotation_proposals (yet); seed with empty
@@ -590,6 +656,49 @@ class RunnerAdapter:
                 if not math.isfinite(stored):
                     stored = 0.0
                 self._position_hwm[ticker] = max(stored, ctx.prices[ticker])
+
+        # ── State garbage-collection (Bug A — stale entries) ──────────────
+        # Audit fix STATE-GC (Round 4 deep audit, 2026-04-25): pre-fix,
+        # `commit()` only added to live_state.json on buys/sells; it never
+        # removed entries for tickers no longer held. Result: tickers like
+        # XLU that were once held but later sold (manually or by a previous
+        # version) remained in live_state forever — stale entry_date,
+        # phantom position_hwm, ghost sell_streak — confusing the operator
+        # and bloating state. Now: drop entries for tickers not in current
+        # held_set, EXCEPT keep last_sell_dates entries inside the 30-day
+        # wash-sale window (those are still load-bearing for future buys).
+        currently_held = set(ctx.holdings.keys())
+        wash_sale_window_days = 30
+        cutoff = ctx.today - datetime.timedelta(days=wash_sale_window_days)
+        for store_name, store in (
+            ("entry_dates",   self._entry_dates),
+            ("entry_signals", self._entry_signals),
+            ("sell_streaks",  self._sell_streaks),
+            ("position_hwm",  self._position_hwm),
+        ):
+            stale = [t for t in store if t not in currently_held]
+            for t in stale:
+                store.pop(t, None)
+            if stale:
+                log.info("STATE-GC: dropped %d stale entries from %s: %s",
+                         len(stale), store_name, ", ".join(sorted(stale)))
+        # last_sell_dates: keep if within wash-sale window OR ticker still held.
+        wash_stale = []
+        for t, d_str in list(self._last_sell_dates_str.items()):
+            if t in currently_held:
+                continue
+            try:
+                d_obj = datetime.date.fromisoformat(d_str)
+            except (ValueError, TypeError):
+                wash_stale.append(t)
+                continue
+            if d_obj < cutoff:
+                wash_stale.append(t)
+        for t in wash_stale:
+            self._last_sell_dates_str.pop(t, None)
+        if wash_stale:
+            log.info("STATE-GC: dropped %d expired wash-sale entries: %s",
+                     len(wash_stale), ", ".join(sorted(wash_stale)))
 
         # ── Save live_state.json ──────────────────────────────────────────
         # Snapshot RegimeState (countdown / cusum / in_transition) so the

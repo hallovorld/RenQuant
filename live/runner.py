@@ -345,6 +345,14 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
         err   = (fe.get("error", "") if isinstance(fe, dict) else "")[:60]
         parts.append(f"FAILED-EXIT {tkr} ({rsn}: {err})")
 
+    # UNMANAGED-NTFY (Bug B fix 2026-04-25): surface broker positions held
+    # outside the watchlist so the operator knows they exist. Pre-fix this
+    # was log-only; the operator's phone never saw it and real positions
+    # (e.g. BA in the audit) sat unmanaged with no stop-loss / trailing-stop.
+    non_wl_holds = list(getattr(ctx, "non_wl_holds", []) or [])
+    if non_wl_holds:
+        parts.append(f"UNMANAGED {','.join(non_wl_holds)} (no model — manual exit)")
+
     has_trade = bool(orders or exits)
     # If the guard blocked every intent (orders all skipped), the cycle
     # produced no real trade — surface the skip reason prominently so
