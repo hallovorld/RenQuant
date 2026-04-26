@@ -857,22 +857,33 @@ class PanelTransformerModel:
                     loss = _listnet_loss(scores, yb, mb, nb,
                                          rank_transform=bool(p.rank_transform_labels))
 
-                # Audit fix #88 (2026-04-26): NaN-grad detection. If
-                # forward produced NaN/inf loss (rare but possible from
-                # softmax overflow + extreme features), skip this batch
-                # ENTIRELY rather than corrupt AdamW's exp_avg / exp_avg_sq
-                # state with NaN. Pre-fix, one bad batch poisoned the
-                # optimiser for the rest of training.
-                if not torch.isfinite(loss):
-                    nan_skipped += 1
-                    continue
-
                 # Audit fix #35 (2026-04-26 round-3): gradient accumulation.
                 # When accumulation_steps > 1, scale loss by 1/N so the
                 # accumulated gradient has the same magnitude as a single
                 # large-batch step. Step optimizer only every Nth batch.
                 accum_n = max(1, int(p.grad_accumulation_steps))
                 accum_step = (start // p.batch_size) % accum_n
+
+                # Audit fix #88 (2026-04-26): NaN-grad detection. If
+                # forward produced NaN/inf loss (rare but possible from
+                # softmax overflow + extreme features), skip this batch
+                # rather than corrupt AdamW's exp_avg / exp_avg_sq state.
+                #
+                # Audit fix T-NEW-6 (2026-04-26 round-3): pre-fix,
+                # `continue` interacted badly with grad_accumulation. If
+                # accum_step==0 batch was NaN-skipped, opt.zero_grad
+                # never fired for the cycle — subsequent batches'
+                # backward() accumulated ON TOP of stale grads from the
+                # PREVIOUS optimizer step, corrupting the next step.
+                # Worse: scheduler.step() also never fired → LR schedule
+                # stalled. Fix: zero_grad eagerly on NaN to clear any
+                # partial accumulation, then continue. This sacrifices
+                # the cycle but doesn't corrupt downstream state.
+                if not torch.isfinite(loss):
+                    nan_skipped += 1
+                    opt.zero_grad(set_to_none=True)
+                    continue
+
                 if accum_step == 0:
                     opt.zero_grad(set_to_none=True)
                 (loss / accum_n).backward()
