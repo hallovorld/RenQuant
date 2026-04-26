@@ -1,0 +1,185 @@
+"""Portfolio QP solver — joint Markowitz w/ linear-cost transaction model.
+
+Solves the single-period mean-variance optimization with proportional
+transaction costs:
+
+    max_Δw   r̂' (w + Δw) - γ (w + Δw)' Σ (w + Δw) - κ |Δw|_1
+    s.t.     1' (w + Δw)  ≤ 1 - cash_reserve
+              w_lower    ≤ w + Δw   ≤ w_upper       (per-position cap)
+              -dw_max    ≤ Δw       ≤  dw_max       (slippage cap)
+              Δw[wash]   ≥ 0                         (wash-sale block)
+
+Output: Δw vector — sign IS the action (positive=buy, negative=sell).
+The current `JointActionTask` greedy heap maps to a special case of this
+when Σ is diagonal and κ is small.
+
+References:
+- Markowitz 1952; Pogue 1970 (cost extension); Constantinides 1986
+  (no-trade band); Garleanu-Pedersen 2013 (cost-aware partial moves).
+
+Implementation: scipy.optimize.minimize with method='SLSQP'. For our
+scale (≤101 variables) solves in ~5-10 ms. cvxpy/ECOS would be faster
+on larger problems but requires extra dependency; defer to Stage 1.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Sequence
+
+import numpy as np
+from scipy.optimize import LinearConstraint, minimize
+
+log = logging.getLogger("kernel.portfolio_qp.qp_solver")
+
+
+@dataclass
+class QPSolution:
+    """Output of solve_portfolio_qp."""
+
+    delta_w:        np.ndarray            # n-vector of weight changes
+    target_w:       np.ndarray            # n-vector of post-trade weights
+    objective:      float                  # final objective value
+    n_iter:         int                    # iterations used
+    status:         str                    # "optimal", "infeasible", etc.
+    diagnostics:    dict                   # solver internals (κ, γ, …)
+
+
+def solve_portfolio_qp(
+    *,
+    w_current:      Sequence[float],        # n-vector — current weights
+    mu:             Sequence[float],        # n-vector — predicted returns
+    sigma:          Sequence[float] | None = None,  # n-vector — used to build diagonal Σ if `Sigma` not given
+    Sigma:          np.ndarray | None = None,       # n×n — full covariance (preferred when available)
+    risk_aversion:  float = 3.0,            # γ
+    cost_kappa:     float = 0.0001,         # linear cost coeff
+    cash_reserve:   float = 0.0,            # min fraction held as cash (0 = invest fully)
+    w_upper:        Sequence[float] | float = 0.20,
+    w_lower:        Sequence[float] | float = 0.0,
+    dw_max:         Sequence[float] | float = 0.50,
+    wash_sale_mask: Sequence[bool] | None = None,
+) -> QPSolution:
+    """Solve the single-period Markowitz QP with linear-cost transaction.
+
+    All weights are fractions of total portfolio value. `Sigma` is the
+    forecast covariance matrix. If only `sigma` (the per-asset σ vector)
+    is given, the solver falls back to a diagonal Σ — which discards
+    cross-asset correlation but stays well-defined.
+
+    `wash_sale_mask` (optional, n-bool): True for tickers blocked from
+    going negative (Δw_i ≥ 0 enforced). Used by the wash-sale guard
+    upstream.
+
+    Returns a QPSolution. Raises ValueError on shape mismatch.
+    """
+    w_current = np.asarray(w_current, dtype=float)
+    mu        = np.asarray(mu,        dtype=float)
+    n         = len(w_current)
+    if len(mu) != n:
+        raise ValueError(f"len(mu)={len(mu)} != len(w_current)={n}")
+
+    # Resolve Σ
+    if Sigma is None:
+        if sigma is None:
+            raise ValueError("must provide either Sigma (n×n) or sigma (n-vector)")
+        sigma_arr = np.asarray(sigma, dtype=float)
+        if len(sigma_arr) != n:
+            raise ValueError(f"len(sigma)={len(sigma_arr)} != n={n}")
+        # Floor σ at 1e-6 to keep Σ positive definite even for stale rows
+        sigma_arr = np.clip(sigma_arr, 1e-6, None)
+        Sigma_mat = np.diag(sigma_arr ** 2)
+    else:
+        Sigma_mat = np.asarray(Sigma, dtype=float)
+        if Sigma_mat.shape != (n, n):
+            raise ValueError(
+                f"Sigma shape {Sigma_mat.shape} != (n={n}, n={n})",
+            )
+
+    # Broadcast caps
+    if np.isscalar(w_upper):
+        w_upper_arr = np.full(n, float(w_upper))
+    else:
+        w_upper_arr = np.asarray(w_upper, dtype=float)
+    if np.isscalar(w_lower):
+        w_lower_arr = np.full(n, float(w_lower))
+    else:
+        w_lower_arr = np.asarray(w_lower, dtype=float)
+    if np.isscalar(dw_max):
+        dw_max_arr = np.full(n, float(dw_max))
+    else:
+        dw_max_arr = np.asarray(dw_max, dtype=float)
+
+    # Sanitise NaN/inf in mu — drop rows by setting μ=0 (no signal)
+    finite_mu = np.isfinite(mu)
+    mu_clean  = np.where(finite_mu, mu, 0.0)
+
+    # Decision variable: Δw ∈ ℝⁿ
+    # Bounds: max(w_lower - w_current, -dw_max) ≤ Δw ≤ min(w_upper - w_current, +dw_max)
+    lo_bounds = np.maximum(w_lower_arr - w_current, -dw_max_arr)
+    hi_bounds = np.minimum(w_upper_arr - w_current,  dw_max_arr)
+    if wash_sale_mask is not None:
+        # Wash-sale: recently-sold tickers cannot be BOUGHT (can still
+        # be sold further). Cap Δw_i ≤ 0 for masked positions.
+        wsm = np.asarray(wash_sale_mask, dtype=bool)
+        hi_bounds = np.where(wsm, np.minimum(hi_bounds, 0.0), hi_bounds)
+    # Sanity — feasibility check
+    bad = lo_bounds > hi_bounds + 1e-12
+    if bad.any():
+        # Clip rather than fail — pick the tightest bound
+        lo_bounds[bad] = hi_bounds[bad]
+    bounds = list(zip(lo_bounds.tolist(), hi_bounds.tolist()))
+
+    # Linear constraint: 1' (w_current + Δw) ≤ 1 - cash_reserve
+    #                ⇔ 1' Δw ≤ (1 - cash_reserve - 1' w_current)
+    cash_slack = (1.0 - cash_reserve) - float(np.sum(w_current))
+    cash_constraint = LinearConstraint(
+        A=np.ones((1, n)),
+        lb=-np.inf,
+        ub=cash_slack,
+    )
+
+    def _obj(dw: np.ndarray) -> float:
+        post_w = w_current + dw
+        ret    = float(np.dot(mu_clean, post_w))
+        var    = float(post_w @ Sigma_mat @ post_w)
+        cost   = float(cost_kappa * np.sum(np.abs(dw)))
+        return -(ret - risk_aversion * var - cost)  # minimize -obj
+
+    def _grad(dw: np.ndarray) -> np.ndarray:
+        post_w = w_current + dw
+        # d/d(Δw) of: -(μ'(w+Δw) - γ(w+Δw)'Σ(w+Δw) - κ|Δw|)
+        d_ret  = -mu_clean
+        d_var  =  2.0 * risk_aversion * (Sigma_mat @ post_w)
+        d_cost = cost_kappa * np.sign(dw)
+        return d_ret + d_var + d_cost
+
+    # Initial guess: zero trade
+    dw0 = np.zeros(n)
+
+    res = minimize(
+        _obj, dw0,
+        method="SLSQP",
+        jac=_grad,
+        bounds=bounds,
+        constraints=[cash_constraint],
+        options={"ftol": 1e-9, "maxiter": 200},
+    )
+
+    delta_w = np.asarray(res.x, dtype=float)
+    target_w = w_current + delta_w
+    return QPSolution(
+        delta_w=delta_w,
+        target_w=target_w,
+        objective=-float(res.fun),
+        n_iter=int(res.nit) if hasattr(res, "nit") else 0,
+        status="optimal" if res.success else f"failed:{res.message[:50]}",
+        diagnostics={
+            "n_assets":        n,
+            "risk_aversion":   risk_aversion,
+            "cost_kappa":      cost_kappa,
+            "cash_reserve":    cash_reserve,
+            "n_finite_mu":     int(finite_mu.sum()),
+            "n_wash_blocked":  (int(np.asarray(wash_sale_mask).sum())
+                                  if wash_sale_mask is not None else 0),
+        },
+    )
