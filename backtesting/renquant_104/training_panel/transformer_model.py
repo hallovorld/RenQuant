@@ -245,9 +245,18 @@ def _rank_transform_per_row(labels: torch.Tensor,
     valid_count = valid_count.clamp(min=1.0)
     # Center: subtract per-row mean of valid ranks (mean of 0..n-1 = (n-1)/2)
     mean_rank = (valid_count - 1.0) / 2.0
-    # Std of uniform 0..n-1 ≈ sqrt((n²-1)/12); for n>=2 this is finite.
-    # Use simpler scale: divide by valid_count so output is ~[-0.5, 0.5].
-    out = (ranks - mean_rank) / valid_count.clamp(min=1.0)
+
+    # Audit fix T-NEW-3 (2026-04-26 round-3): use the SAME scale as the
+    # old Python-loop version (sample std of integer ranks 0..n-1).
+    # Pre-fix, dividing by valid_count gave output range ~[-0.5, 0.5];
+    # softmax was 3-30× flatter than the loop version → training signal
+    # weakened. Now: divide by sample std of uniform 0..n-1 which is
+    # √(n(n+1)/12). For n=99 this is ~28.7, matching old version's
+    # `ranks.std()` ≈ 28.7. Output range becomes ~[-1.7, +1.7], same
+    # softmax sharpness as the loop version.
+    rank_std = torch.sqrt(valid_count * (valid_count + 1.0) / 12.0).clamp(min=1e-6)
+    out = (ranks - mean_rank) / rank_std
+
     # Zero out invalid positions; caller masks them to -inf in softmax.
     out = out.masked_fill(invalid, 0.0)
     # Rows with < 2 valid → all-zeros (degenerate, caller skips via valid_groups guard).
