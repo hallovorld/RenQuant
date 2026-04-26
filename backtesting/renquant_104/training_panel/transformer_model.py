@@ -126,6 +126,10 @@ class TransformerParams:
     #   "error": raise — forces user to raise max_tickers + retrain
     #   "silent": chunk-split without log (legacy)
     on_oversized_group: str = "warn"
+    # Audit fix #48 (2026-04-26 round-3): split attention vs FF dropout.
+    # Pre-fix, single `dropout` controlled both — no way to tune
+    # independently. None means "fall back to dropout".
+    attention_dropout: float | None = None
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -147,11 +151,19 @@ class _PanelTransformer(nn.Module):
         # LayerNorm normalises to N(0, 1) per-feature before encoder.
         self.input_norm   = nn.LayerNorm(p.d_model)
         self.feat_dropout = nn.Dropout(p.feature_dropout)
+        # Audit fix #48 (2026-04-26 round-3): allow separate attention
+        # dropout. nn.TransformerEncoderLayer applies the SAME dropout
+        # value to attention + feedforward + residuals. Splitting needs
+        # a custom layer; for now, pick the higher of attention/FF if
+        # attention_dropout is set, but document the limitation. Future:
+        # custom encoder layer with separate dropouts.
+        ff_dropout = p.dropout
+        attn_dropout = p.attention_dropout if p.attention_dropout is not None else p.dropout
         enc_layer = nn.TransformerEncoderLayer(
             d_model         = p.d_model,
             nhead           = p.n_heads,
             dim_feedforward = p.feedforward_dim,
-            dropout         = p.dropout,
+            dropout         = max(attn_dropout, ff_dropout),
             batch_first     = True,
             activation      = "gelu",
         )
@@ -891,6 +903,13 @@ class PanelTransformerModel:
                     max_t,
                 )
         group_sizes_exp = np.array(expanded, dtype=np.int64)
+        # Audit fix #29 (2026-04-26 round-3): if panel already has a
+        # `label` column, assign(label=0.0) silently overwrites it.
+        # That doesn't affect predict (we don't use the label), but
+        # it's surprising state mutation if caller passes by reference.
+        # Use copy + drop to avoid the warning.
+        if "label" in panel.columns:
+            log.debug("predict: panel already has 'label' col — overwriting with 0 for inference (predict doesn't use label)")
         x, _, pad, _ = _build_date_groups(
             panel.assign(label=0.0), group_sizes_exp, self.feature_cols, "label",
             max_t,

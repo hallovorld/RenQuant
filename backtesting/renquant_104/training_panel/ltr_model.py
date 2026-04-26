@@ -189,11 +189,19 @@ class PanelLTRModel:
             signs = [int(self.monotone_constraints.get(c, 0)) for c in feature_cols]
             if any(s != 0 for s in signs):
                 params["monotone_constraints"] = "(" + ",".join(str(s) for s in signs) + ")"
-                resolved = {c: s for c, s in zip(feature_cols, signs) if s != 0}
-                import logging  # noqa: PLC0415
-                logging.getLogger("panel.ltr").info(
-                    "monotone_constraints resolved: %s", resolved,
-                )
+                # Audit fix X13b (2026-04-26 round-3 follow-up): only log
+                # the resolved constraint dict ONCE per train() call, not
+                # once per chunk. Python-level early-stopping (X1+X2 fix)
+                # calls xgb.train() repeatedly inside one user-facing
+                # train() call → naive logging produced N copies of the
+                # same log line. Cache on self to gate.
+                if not getattr(self, "_monotone_logged", False):
+                    resolved = {c: s for c, s in zip(feature_cols, signs) if s != 0}
+                    import logging  # noqa: PLC0415
+                    logging.getLogger("panel.ltr").info(
+                        "monotone_constraints resolved: %s", resolved,
+                    )
+                    self._monotone_logged = True
 
         # Audit fix X1+X2 (2026-04-26, completed): Python-level early
         # stopping. XGBoost 3.x ranking objective auto-enables NDCG which
