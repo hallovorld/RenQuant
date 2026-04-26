@@ -553,13 +553,37 @@ class RunnerAdapter:
                     log.warning("EXIT %s: broker qty=%s non-finite, skipping", ticker, qty)
                 continue
 
+            # Audit fix PLTR-AVAILABLE-QTY (2026-04-26 round-3, e2e finding):
+            # use qty_available (= qty - held_for_orders) so we don't ask
+            # the broker to sell shares locked in pending orders. Alpaca
+            # rejects with available=0 in that case. Pre-fix, e2e round 3
+            # saw PLTR sell fail this way. Falls back to qty when broker
+            # doesn't expose qty_available.
+            qty_avail = float(pos.get("qty_available", qty) or qty)
+            if not _math.isfinite(qty_avail) or qty_avail <= 0:
+                log.warning(
+                    "EXIT %s: qty_available=%s (qty=%s, likely held in pending orders) "
+                    "— skipping. Cancel pending order first.",
+                    qty_avail, qty, ticker,
+                )
+                if not hasattr(ctx, "exits_failed"):
+                    ctx.exits_failed = []
+                ctx.exits_failed.append({
+                    "ticker": ticker, "qty": qty,
+                    "exit_type": getattr(sig, "exit_type", ""),
+                    "reason": getattr(sig, "reason", ""),
+                    "error": f"qty_available={qty_avail}, all locked in pending orders",
+                })
+                continue
+
             req_qty = getattr(sig, "quantity", None)
-            if req_qty is not None and _math.isfinite(req_qty) and 0 < req_qty < qty:
+            if req_qty is not None and _math.isfinite(req_qty) and 0 < req_qty < qty_avail:
                 sell_qty   = float(req_qty)
                 is_partial = True
             else:
-                sell_qty   = abs(qty)
-                is_partial = False
+                # Cap at qty_available (not qty) to avoid broker rejection.
+                sell_qty   = abs(qty_avail)
+                is_partial = (qty_avail < qty)
 
             try:
                 result = broker.place_order(ticker, "SELL", sell_qty)

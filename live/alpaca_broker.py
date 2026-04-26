@@ -151,18 +151,31 @@ class AlpacaBroker(BaseBroker):
             return 0.0
 
     def get_all_positions(self) -> list[dict]:
-        """Return all open positions as a list of dicts."""
+        """Return all open positions as a list of dicts.
+
+        Audit fix BROKER-AVAILABLE-QTY (2026-04-26 round-3): include
+        `qty_available` so SellTask can avoid asking for shares locked
+        in pending orders. Pre-fix, e2e round 3 saw PLTR sell rejected
+        with `available=0, existing_qty=5, held_for_orders=5`. Now we
+        expose qty_available; SellTask uses min(req, qty_available).
+        Falls back to qty when Alpaca SDK doesn't return qty_available
+        (older versions).
+        """
         positions = self._trading_client.get_all_positions()
-        return [
-            {
+        out = []
+        for p in positions:
+            qty = float(p.qty)
+            # qty_available = qty - held_for_orders (str on alpaca-py).
+            qty_avail = float(getattr(p, "qty_available", qty) or qty)
+            out.append({
                 "symbol": p.symbol,
-                "qty": float(p.qty),
+                "qty": qty,
+                "qty_available": qty_avail,
                 "market_value": float(p.market_value),
                 "unrealized_pl": float(p.unrealized_pl),
                 "avg_entry_price": float(p.avg_entry_price),
-            }
-            for p in positions
-        ]
+            })
+        return out
 
     def get_filled_orders(self, after: str | None = None) -> list[dict]:
         """Return filled orders, optionally filtered to those after a date string 'YYYY-MM-DD'.
