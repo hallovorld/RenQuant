@@ -193,13 +193,26 @@ class PanelLTRModel:
                 and early_stopping_rounds is not None
                 and early_stopping_rounds > 0
                 and eval_panel is not None):
-            chunk_size = max(int(early_stopping_rounds), 5)
+            # Audit fix X14 (2026-04-26 round-3): chunk_size MUST be
+            # smaller than early_stopping_rounds so patience can absorb
+            # multiple bad chunks. Pre-fix, chunk == early_stop → patience
+            # of effectively 1 chunk → broke far too aggressively. New:
+            # chunk = max(5, early_stop // 4) so we get up to 4 chances
+            # of no-improvement before stopping.
+            chunk_size = max(5, int(early_stopping_rounds) // 4)
+            # Audit fix X18 (2026-04-26 round-3): tighten improvement
+            # threshold from 1e-4 (noise level — CPCV std ≈ 0.027) to
+            # 1e-3 (one σ ÷ 27 ≈ real signal). Avoids spurious "best"
+            # updates from numerical noise.
+            min_delta_ic  = 1e-3
             best_ic       = float("-inf")
             best_booster  = None
             best_iter     = 0
             patience_left = int(early_stopping_rounds)
             cur_booster   = None
             rounds_done   = 0
+            import logging  # noqa: PLC0415
+            _ltr_log = logging.getLogger("panel.ltr")
             while rounds_done < num_boost_round:
                 this_chunk = min(chunk_size, num_boost_round - rounds_done)
                 cur_booster = xgb.train(
@@ -211,15 +224,27 @@ class PanelLTRModel:
                 rounds_done += this_chunk
                 eval_preds = cur_booster.predict(deval)
                 ic = _mean_ic(eval_panel, eval_preds, label_col)
-                if ic > best_ic + 1e-4:
+                if ic > best_ic + min_delta_ic:
                     best_ic       = ic
                     best_iter     = rounds_done - 1
                     # Persist via byte serialization to immortalize
                     best_booster  = cur_booster.save_raw(raw_format="ubj")
                     patience_left = int(early_stopping_rounds)
+                    _ltr_log.info(
+                        "early-stop: rounds=%d eval_ic=%+.4f (new best)",
+                        rounds_done, ic,
+                    )
                 else:
                     patience_left -= this_chunk
+                    _ltr_log.debug(
+                        "early-stop: rounds=%d eval_ic=%+.4f patience_left=%d",
+                        rounds_done, ic, patience_left,
+                    )
                 if patience_left <= 0:
+                    _ltr_log.info(
+                        "early-stop fired at rounds=%d, best_iter=%d, best_ic=%+.4f",
+                        rounds_done, best_iter, best_ic,
+                    )
                     break
             # Restore best
             if best_booster is not None:
