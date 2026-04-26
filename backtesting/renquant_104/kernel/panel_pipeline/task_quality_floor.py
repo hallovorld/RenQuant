@@ -56,6 +56,56 @@ def _gate_a_distribution_floor(
     return True, None
 
 
+def _gate_c_no_trade_band(
+    cand: Any,
+    *,
+    risk_aversion: float,
+    round_trip_cost: float,
+    band_constant: float,
+    current_weight: float,
+) -> tuple[bool, str | None]:
+    """Constantinides 1986 / Davis-Norman 1990 no-trade region.
+
+    Davis-Norman closed form for log-utility w/ proportional cost τ:
+        band_i = c · (γ · σ_i² · τ)^(1/3)
+
+    Reject when |target_weight - current_weight| < band. The target
+    weight is approximated as `μ_i / (γ · σ_i²)` (single-asset Kelly-
+    equivalent). The combined check:
+
+        admit ⇔ |μ / (γ σ²) - w_current| > c · (γ σ² τ)^(1/3)
+
+    For our parameters (γ=3, σ=0.08, τ=0.001): band ≈ 4% NAV. So a
+    candidate at current weight=0 with target weight 3% (would-be
+    deviation of 3%) is REJECTED — natural "no-trade region" behaviour
+    that prevents fill-empty-slots-with-weak-signal.
+
+    Returns (passes, reject_reason).
+    """
+    mu    = getattr(cand, "mu",    None)
+    sigma = getattr(cand, "sigma", None)
+    if mu is None or sigma is None:
+        return True, None
+    try:
+        mu_f    = float(mu)
+        sigma_f = float(sigma)
+    except (TypeError, ValueError):
+        return True, None
+    if sigma_f <= 0.0 or mu_f != mu_f:
+        return False, "sigma_zero_or_mu_nan"
+    sigma_sq = sigma_f * sigma_f
+    target_w  = mu_f / (risk_aversion * sigma_sq)
+    band      = band_constant * (
+        (risk_aversion * sigma_sq * round_trip_cost) ** (1.0 / 3.0)
+    )
+    deviation = abs(target_w - current_weight)
+    if deviation < band:
+        return False, (
+            f"deviation={deviation:.4f}<band={band:.4f}"
+        )
+    return True, None
+
+
 def _gate_b_edge_sharpe(
     cand: Any,
     threshold: float,
@@ -118,8 +168,26 @@ class QualityFloorTask(Task):
         gate_b_enabled = bool(gate_b_cfg.get("enabled", False))
         gate_b_threshold = float(gate_b_cfg.get("threshold", 0.20))
 
-        if not gate_a_enabled and not gate_b_enabled:
+        # Gate C — Constantinides no-trade band --------------------------
+        gate_c_cfg = cfg.get("no_trade_band", {})
+        gate_c_enabled = bool(gate_c_cfg.get("enabled", False))
+        gate_c_gamma   = float(gate_c_cfg.get("risk_aversion", 3.0))
+        gate_c_tau     = float(gate_c_cfg.get("round_trip_cost", 0.001))
+        gate_c_const   = float(gate_c_cfg.get("band_constant", 1.5))
+
+        if (not gate_a_enabled and not gate_b_enabled and
+                not gate_c_enabled):
             return True
+
+        # Pre-compute holdings weights for Gate C deviation calc.
+        portfolio_value = float(getattr(ctx, "portfolio_value", 0.0) or 0.0)
+        holdings_weights: dict[str, float] = {}
+        if gate_c_enabled and portfolio_value > 0.0:
+            for tk, hs in (ctx.holdings or {}).items():
+                shares = float(getattr(hs, "shares", 0.0) or 0.0)
+                px     = float((ctx.prices or {}).get(tk, 0.0) or 0.0)
+                if px > 0.0 and shares > 0.0:
+                    holdings_weights[tk] = (shares * px) / portfolio_value
 
         kept: list[Any] = []
         rejected: list[tuple[str, str]] = []
@@ -138,6 +206,17 @@ class QualityFloorTask(Task):
                 )
                 if not ok_b:
                     reason = f"gate_b:{reason_b}"
+            if reason is None and gate_c_enabled:
+                w_curr = holdings_weights.get(ticker, 0.0)
+                ok_c, reason_c = _gate_c_no_trade_band(
+                    c,
+                    risk_aversion = gate_c_gamma,
+                    round_trip_cost = gate_c_tau,
+                    band_constant = gate_c_const,
+                    current_weight = w_curr,
+                )
+                if not ok_c:
+                    reason = f"gate_c:{reason_c}"
             if reason is None:
                 kept.append(c)
             else:
