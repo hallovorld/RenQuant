@@ -110,6 +110,20 @@ class EvaluateExitsTask(Task):
 class SellGateBTask(Task):
     """Sell-side Gate B (NGBoost edge-Sharpe guard) — mirror of buy-side Gate B.
 
+    References:
+      Lo, A.W. (2002). "The Statistics of Sharpe Ratios", Financial
+        Analysts Journal 58(4): 36-52. — instantaneous-edge Sharpe
+        criterion μ/σ used by buy-side Gate B; this is the symmetric
+        sell-side analog.
+      Grinold, R.C. & Kahn, R.N. (1999). Active Portfolio Management
+        (2nd ed.), McGraw-Hill. Ch. 5: information ratio = α/ω as the
+        signal-strength threshold for action.
+      Kahneman & Tversky (1979). "Prospect Theory: An Analysis of
+        Decision under Risk", Econometrica 47(2): 263-291. — loss
+        aversion / disposition-effect motivation: sell-side gate
+        balances asymmetric pain of forced exit vs. holding cost.
+
+
     Blocks `model_sell` exit signals when the latest NGBoost edge-Sharpe
     (μ/σ) is NOT sufficiently negative. Path-dependent rules
     (stop_loss, trailing_stop, single_day_loss, max_hold) are EXEMPT —

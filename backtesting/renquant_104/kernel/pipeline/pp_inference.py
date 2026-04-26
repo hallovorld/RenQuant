@@ -136,6 +136,13 @@ class InferencePipeline:
                 ctx.counters["blocked_streak"] = ctx.counters.get("blocked_streak", 0) + 1
         log.info("Phase 2a (sell): %d exits from %d held", len(ctx.exits), len(sell_tctxs))
 
+        # 2026-04-26 round-7 audit fix MAX-SELLS-PER-BAR:
+        # portfolio-level cap on simultaneous model_sell exits. Risk
+        # rules (stop_loss / trailing / SDL / max_hold) exempt — only
+        # model_sell goes through the cap. Default off (knob = 0).
+        from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415
+        LimitSellsPerBarTask().run(ctx)
+
         if not (ctx.buy_blocked and not ctx.bear_only):
             universe   = _buy_universe(ctx)
             cand_tctxs = [_make_cand_tctx(ctx, t) for t in universe]
@@ -242,6 +249,11 @@ class SellOnlyPipeline:
             ctx.holdings[tc.ticker] = tc.holding
             if tc.exit_signal is not None and tc.exit_signal.should_exit:
                 ctx.exits.append((tc.ticker, tc.exit_signal))
+
+        # 2026-04-26 round-7 audit fix MAX-SELLS-PER-BAR:
+        # also cap intraday sell-only bursts. Same task, same config.
+        from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415
+        LimitSellsPerBarTask().run(ctx)
 
         # Audit #6: also advance the no-trade monitor on sell-only bars.
         # An intraday-trip-only window is still an "active" decision —
