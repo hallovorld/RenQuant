@@ -27,6 +27,11 @@ class HoldingState:
     entry_date:     datetime.date
     high_watermark: float   # max close seen since entry (trailing stop trigger)
     sell_streak:     int = 0
+    # Audit fix STREAK-DAY-DEDUP (2026-04-26 round-5): track date of
+    # last streak increment so multiple bars per calendar day (testing,
+    # intraday sell-only runs) don't double-count. None means never
+    # incremented yet.
+    last_streak_inc_date: datetime.date | None = None
     prev_close:      float | None = None
     rank_score:      float | None = None   # latest calibrated probability (set by ScoreModelTask)
     expected_return: float | None = None   # latest E[R-SPY] over rotation horizon
@@ -180,10 +185,20 @@ def check_model_sell(
             # Don't touch streak — can't have earned streak yet
             return state, _NO_EXIT
 
+    # Audit fix STREAK-DAY-DEDUP (2026-04-26): increment AT MOST ONCE per
+    # calendar day. Pre-fix, multiple bars per day (testing or intraday
+    # sell-only runs) inflated streak unrealistically. e2e on 2026-04-26
+    # ran 5 times in one day → GOOG streak went from 1 to 6 in 24 hours,
+    # not 6 trading days. Fix: only += 1 when today != last_streak_inc_date.
+    # Reset still happens immediately on non-sell signal.
     if model_action == "sell":
-        state.sell_streak += 1
+        if state.last_streak_inc_date != today:
+            state.sell_streak += 1
+            state.last_streak_inc_date = today
+        # If same day, leave streak unchanged (idempotent)
     else:
         state.sell_streak = 0
+        # Don't touch last_streak_inc_date on reset — it's only for INC dedup
 
     if state.sell_streak >= consecutive_required:
         return state, ExitSignal(

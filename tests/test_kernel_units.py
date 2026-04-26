@@ -1046,16 +1046,57 @@ class TestTaxHoldGate:
         assert sig.exit_type == "stop_loss"
 
     def test_streak_accumulates_during_gate_window(self):
-        """Sell streak still builds during gate so it fires immediately after window."""
+        """Sell streak still builds during gate so it fires immediately after window.
+
+        Audit fix STREAK-DAY-DEDUP (2026-04-26 round-5): pre-fix used same
+        `today` twice — relied on per-RUN streak increment. Post-fix, streak
+        increments AT MOST once per calendar day, so consecutive bars on
+        DIFFERENT dates required.
+        """
         state = self._state(days_ago=340, entry_price=100.0)
         today = datetime.date.today()
+        yesterday = today - datetime.timedelta(days=1)
         params = self._params(lt_gate=330, lt_min_gain=0.10)
         params["consecutive_sell_signals"] = 2
 
-        # Two sell signals during gate — no exit yet
-        _, state = compute_exits(120.0, today, "sell", state, params)
+        # Two sell signals on TWO different days during gate — no exit yet
+        _, state = compute_exits(120.0, yesterday, "sell", state, params)
         _, state = compute_exits(120.0, today, "sell", state, params)
         assert state.sell_streak == 2
+
+    def test_streak_idempotent_within_same_day(self):
+        """STREAK-DAY-DEDUP regression: multiple bars on the same calendar
+        day must not inflate the streak. Critical for testing scenarios
+        where multiple e2e runs happen the same day, AND for intraday
+        sell-only runs in production (open / 30-min / preclose).
+        """
+        state = self._state(days_ago=340, entry_price=100.0)
+        today = datetime.date.today()
+        params = self._params(lt_gate=330, lt_min_gain=0.10)
+        params["consecutive_sell_signals"] = 99   # don't exit, just count
+
+        # Simulate 5 bars on the SAME day (5 e2e runs in a few hours)
+        for _ in range(5):
+            _, state = compute_exits(120.0, today, "sell", state, params)
+
+        assert state.sell_streak == 1, (
+            f"5 same-day bars should produce streak=1 (per-trading-day), "
+            f"got {state.sell_streak}"
+        )
+
+    def test_streak_resets_on_non_sell_signal(self):
+        """Reset still happens immediately on hold/buy (not gated by date)."""
+        state = self._state(days_ago=340, entry_price=100.0)
+        today = datetime.date.today()
+        yesterday = today - datetime.timedelta(days=1)
+        params = self._params(lt_gate=330, lt_min_gain=0.10)
+        params["consecutive_sell_signals"] = 99
+
+        _, state = compute_exits(120.0, yesterday, "sell", state, params)
+        assert state.sell_streak == 1
+        # Hold signal mid-day — streak resets
+        _, state = compute_exits(120.0, today, "hold", state, params)
+        assert state.sell_streak == 0
 
 
 
