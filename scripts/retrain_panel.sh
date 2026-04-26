@@ -52,12 +52,20 @@ for arg in "$@"; do
     esac
 done
 
-echo "--- Forcing full retrain (strategy=$STRATEGY) ---"
-if "$PYTHON" scripts/train_104.py --strategy "$STRATEGY" --force; then
-    echo "=== retrain_panel finished at $(date) ==="
-    notify "RenQuant 104 panel" "Sunday retrain done ($STRATEGY)"
+echo "--- Sunday multi-backend sweep (strategy=$STRATEGY) ---"
+echo "    backends: xgboost (production) → lightgbm → transformer"
+echo "    expected wall time: ~75-90 min sequential"
+if "$PYTHON" scripts/sunday_panel_sweep.py --strategy "$STRATEGY"; then
+    echo "=== retrain_panel sweep finished at $(date) ==="
+    REPORT_PATH=$(ls -t "$REPO_DIR/doc/panel_sunday_sweep_"*.md 2>/dev/null | head -1)
+    if [ -n "$REPORT_PATH" ]; then
+        BODY="Sunday sweep done — see $(basename "$REPORT_PATH")"
+    else
+        BODY="Sunday sweep done — XGBoost active"
+    fi
+    notify "RenQuant 104 panel" "$BODY"
 else
-    echo "=== retrain_panel FAILED at $(date) ==="
-    notify "RenQuant 104 panel ERROR" "Forced retrain failed — check $LOG"
+    echo "=== retrain_panel sweep FAILED at $(date) ==="
+    notify "RenQuant 104 panel ERROR" "Sunday sweep failed — check $LOG"
     exit 1
 fi
