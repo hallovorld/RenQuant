@@ -148,6 +148,13 @@ class TransformerParams:
     # using more memory. Default 1 (no accumulation). Useful when
     # MPS/CUDA RAM is tight but you want larger effective batch.
     grad_accumulation_steps: int = 1
+    # Audit fix #45/#85/#86 (2026-04-26 round-3): hyperparameters
+    # `n_layers`, `batch_size`, `lr`, `weight_decay` are all config-
+    # driven via TransformerParams. Defaults are tuned for 1.5k-date
+    # panels; larger panels may benefit from bumping n_layers (each
+    # layer adds ~50k params at d_model=128) and lr (warmup helps
+    # higher lr stability). Sunday sweep is the right place to
+    # empirically tune these.
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -224,6 +231,21 @@ class _PanelTransformer(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
+        """Run feature_encoder + LayerNorm + Encoder + score_head.
+
+        Audit fix #101 (2026-04-26 round-3): explicit docstring on
+        forward.
+
+        Args:
+            x: (B, T, F) input feature tensor (B = batch dates, T = max
+               tickers per date with padding, F = feature count).
+            pad_mask: (B, T) bool, True where slot is padding (no
+                      ticker for that date).
+
+        Returns:
+            (B, T) raw scores. Padded slots are -inf so loss/argmax
+            ignore them (also re-masked in _listnet_loss as defense).
+        """
         # x: (B, T, F). pad_mask: (B, T), True where padding.
         x = self.feat_dropout(x)
         h = self.feature_encoder(x)                  # (B, T, d_model)
@@ -586,8 +608,12 @@ class PanelTransformerModel:
         # Reproducibility
         _seed_everything(p.seed)
         if p.deterministic:
-            # Best-effort: MPS doesn't expose all ops deterministically, but
-            # torch.use_deterministic_algorithms guards the ones that do.
+            # Audit fix #16 (2026-04-26 round-3): documented best-effort.
+            # MPS doesn't expose all ops deterministically (per PyTorch
+            # 2.0+ docs §torch.backends.mps), so two consecutive runs on
+            # MPS may differ by ~0.005 OOS IC even with identical seed.
+            # Use `warn_only=True` so non-deterministic ops produce a
+            # warning rather than crash. CUDA/CPU paths are deterministic.
             os.environ.setdefault("PYTHONHASHSEED", str(p.seed))
             try:
                 torch.use_deterministic_algorithms(True, warn_only=True)
@@ -881,6 +907,12 @@ class PanelTransformerModel:
                              epoch, effective_patience, best_eval)
                     break
             else:
+                # Audit fix #42 (2026-04-26 round-3): no eval data → no
+                # early stop available. Training runs full max_epochs.
+                # Documented limitation: a training-loss-based early stop
+                # is fragile (overfit risk); operator should always
+                # provide eval_panel OR enable auto_eval_split for early
+                # stopping to engage.
                 self.history.append({
                     "epoch": epoch, "loss": epoch_loss, "train_ic": train_ic,
                 })

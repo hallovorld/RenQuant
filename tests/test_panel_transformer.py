@@ -360,6 +360,19 @@ class TestAuditRound3Fixes:
         assert "seed" in DEFAULT_PARAMS
         assert DEFAULT_PARAMS["seed"] == 42
 
+    def test_78_cpu_fallback_works(self):
+        """#78: device='cpu' explicit (no MPS/CUDA assumption)."""
+        panel, gs, fc = _make_synthetic_panel(n_dates=10, n_tickers=8)
+        m = PanelTransformerModel(params={
+            "max_epochs": 2, "d_model": 8, "n_heads": 2, "n_layers": 1,
+            "batch_size": 4, "device": "cpu",
+        })
+        m.train(panel, gs, fc, num_boost_round=2)
+        # Predict should work fine on CPU
+        preds = m.predict(panel, group_sizes=gs)
+        assert len(preds) == len(panel)
+        assert preds.notna().all()
+
     def test_x13_monotone_constraints_validates_unknown_keys(self):
         """X13: PanelLTRModel raises on monotone_constraints referencing
         feature names not in feature_cols.
