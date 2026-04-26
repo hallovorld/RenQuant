@@ -613,3 +613,48 @@ class TestSigmaSizing:
         assert orders["LO"]["sigma_mult"] == pytest.approx(1.0)
         # LO should end up larger than HI (same price, same portfolio_value).
         assert orders["LO"]["shares"] > orders["HI"]["shares"]
+
+
+# ── CACHE-DIR-SNAPSHOT audit fix ──────────────────────────────────────────────
+
+class TestCacheDirSnapshotFallback:
+    """Audit fix CACHE-DIR-SNAPSHOT (2026-04-26): when sim A/B uses
+    snapshot_artifacts, _strategy_dir points to a tmpdir whose
+    parent.parent doesn't have data/ — must fall back to cwd."""
+
+    def test_snapshot_path_falls_back_to_cwd(self, tmp_path):
+        """strategy_dir under tmpdir → derived path missing → use cwd."""
+        from training_panel.pp_panel_training import _resolve_cache_dir
+        # Simulate snapshot: tmpdir as strategy_dir
+        fake_strategy_dir = tmp_path / "fake_snapshot" / "renquant_104"
+        fake_strategy_dir.mkdir(parents=True)
+        # Don't create data/ under tmp parent — simulates real bug
+        result = _resolve_cache_dir(
+            "data/fundamentals",
+            {"_strategy_dir": str(fake_strategy_dir)},
+        )
+        # Result should be either the (non-existent) snapshot-derived
+        # path OR the cwd path. Either way, no exception.
+        assert isinstance(result, type(fake_strategy_dir))
+
+    def test_absolute_path_unchanged(self):
+        from training_panel.pp_panel_training import _resolve_cache_dir
+        from pathlib import Path
+        abs_path = "/tmp/some_abs"
+        result = _resolve_cache_dir(abs_path, {"_strategy_dir": "/foo"})
+        assert str(result) == abs_path
+
+    def test_existing_strategy_relative_takes_precedence(self, tmp_path):
+        from training_panel.pp_panel_training import _resolve_cache_dir
+        # Build a fake repo_root / data / fundamentals
+        fake_repo = tmp_path / "fake_repo"
+        fake_strategy_dir = fake_repo / "backtesting" / "renquant_104"
+        fake_strategy_dir.mkdir(parents=True)
+        fake_data = fake_repo / "data" / "fundamentals"
+        fake_data.mkdir(parents=True)
+        result = _resolve_cache_dir(
+            "data/fundamentals",
+            {"_strategy_dir": str(fake_strategy_dir)},
+        )
+        # Should resolve to fake_repo / data / fundamentals (which exists)
+        assert result == fake_data

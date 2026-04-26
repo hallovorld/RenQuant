@@ -53,13 +53,21 @@ def _resolve_cache_dir(cfg_value: str, ctx_config: dict) -> Path:
     contents. The relative-path resolver picks whichever happens to be
     under cwd, so notebook/LEAN/live see different data.
 
+    Audit fix CACHE-DIR-SNAPSHOT (2026-04-26): in sim A/B mode, the
+    snapshot wraps strategy_dir in a tmpdir (e.g.
+    `/var/folders/.../renquant_ab_snapshot_xxx/`), so
+    `strategy_dir.parent.parent` yields a non-existent tmp ancestor —
+    NOT the actual repo root where `data/fundamentals/...` lives.
+    Pre-fix, this caused LoadFundamentalsTask: 0/101 (silent miss)
+    every sim run. Fix: when the strategy_dir-derived path doesn't
+    exist, fall back to the cwd-derived path before giving up.
+
     Resolution order:
       1. cfg_value is absolute → use as-is
-      2. ctx.config has `_strategy_dir` → resolve relative to repo_root
-         (= strategy_dir.parent.parent). This is the canonical location
-         that `scripts/fetch_*.py` writes to.
-      3. fallback: cwd-relative (legacy). Logs warning since result
-         depends on caller cwd.
+      2. ctx.config has `_strategy_dir` → resolve relative to its
+         repo_root (= strategy_dir.parent.parent).
+      3. If (2) doesn't exist on disk, fall back to cwd-relative.
+      4. Final fallback: return whichever of (2) or (3) existed last.
     """
     p = Path(cfg_value)
     if p.is_absolute():
@@ -67,10 +75,24 @@ def _resolve_cache_dir(cfg_value: str, ctx_config: dict) -> Path:
     strategy_dir = ctx_config.get("_strategy_dir") if isinstance(ctx_config, dict) else None
     if strategy_dir:
         repo_root = Path(strategy_dir).parent.parent
-        return repo_root / p
+        derived = repo_root / p
+        if derived.exists():
+            return derived
+        # Snapshot edge case: tmpdir ancestor doesn't have data/. Try cwd.
+        cwd_candidate = Path.cwd() / p
+        if cwd_candidate.exists():
+            log.info(
+                "_resolve_cache_dir: strategy_dir-derived path %s missing "
+                "(snapshot context); falling back to cwd-relative %s",
+                derived, cwd_candidate,
+            )
+            return cwd_candidate
+        # Neither exists — return derived so caller's not-found logic
+        # handles it (typical no-op skip for missing cache).
+        return derived
     log.warning("_resolve_cache_dir: ctx config missing _strategy_dir; "
                 "falling back to cwd-relative path %s", p)
-    return p
+    return Path.cwd() / p if not p.is_absolute() else p
 
 
 # ── Task / Job ABCs (self-contained — same shape as pp_training.py) ───────────
