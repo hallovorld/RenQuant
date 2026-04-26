@@ -110,6 +110,13 @@
   "sharpe_floor": 1.0,
   "wash_sale_days": 30,
   "min_hold_days": 5,
+  "model_sell": {
+    "panel_veto": {
+      "enabled": true,
+      "min_rank_score": 0.50,
+      "max_streak_to_veto": 5
+    }
+  },
   "consecutive_sell_signals": 3,
   "min_hold_profit_days": 20,
   "min_hold_loss_days": 20,

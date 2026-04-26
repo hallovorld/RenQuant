@@ -559,7 +559,13 @@ class RunnerAdapter:
             # rejects with available=0 in that case. Pre-fix, e2e round 3
             # saw PLTR sell fail this way. Falls back to qty when broker
             # doesn't expose qty_available.
-            qty_avail = float(pos.get("qty_available", qty) or qty)
+            # Audit fix PLTR-AVAILABLE-QTY-V2 (2026-04-26 round-4):
+            # `pos.get("qty_available", qty) or qty` collapses 0-available
+            # back to qty (0 is falsy). Pre-fix bug — saw PLTR sell still
+            # fail in e2e round 4 with available=0 because we fell back
+            # to qty=5. Fix: use explicit None check.
+            _qa_raw = pos.get("qty_available", None)
+            qty_avail = qty if _qa_raw is None else float(_qa_raw)
             if not _math.isfinite(qty_avail) or qty_avail <= 0:
                 log.warning(
                     "EXIT %s: qty_available=%s (qty=%s, likely held in pending orders) "

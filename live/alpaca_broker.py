@@ -166,7 +166,12 @@ class AlpacaBroker(BaseBroker):
         for p in positions:
             qty = float(p.qty)
             # qty_available = qty - held_for_orders (str on alpaca-py).
-            qty_avail = float(getattr(p, "qty_available", qty) or qty)
+            # Audit fix PLTR-AVAILABLE-QTY (2026-04-26 round-4):
+            # `getattr(...) or qty` collapses 0-available BACK to qty
+            # because 0.0 is falsy. Pre-fix bug masked the "all locked"
+            # case. Now: explicit None check.
+            _qa_raw = getattr(p, "qty_available", None)
+            qty_avail = qty if _qa_raw is None else float(_qa_raw)
             out.append({
                 "symbol": p.symbol,
                 "qty": qty,
