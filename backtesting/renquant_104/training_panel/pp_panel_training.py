@@ -1033,6 +1033,117 @@ class LabelsTask(PanelTask):
                  len(ctx.labels))
 
 
+class BuildHourlyResolutionPanelTask(PanelTask):
+    """Stage C-2 (2026-04-26): hourly-resolution panel for transformer.
+
+    No-op unless ``panel_ltr.training_resolution == 'hourly'``. When active,
+    builds a panel keyed by (ticker, date, hour) using the Stage C-1
+    scaffold (build_hourly_resolution_panel). Sets ctx.panel directly so
+    BuildPanelTask's early-out skips its daily aggregation.
+
+    Group sizes for the transformer's date-group attention are computed
+    on (date, hour) pairs. Daily-mode group_sizes (just by date) is the
+    default; nothing changes there.
+
+    Reference: doc/transformer_hourly_stage_c2_design.md.
+    """
+
+    def run(self, ctx: "PanelTrainingContext") -> bool | None:
+        cfg = ctx.config.get("panel_ltr", {})
+        if str(cfg.get("training_resolution", "daily")).lower() != "hourly":
+            return True   # daily path active; this task is a no-op
+
+        from kernel.intraday import HourlyBarStore  # noqa: PLC0415
+        from training_panel.hourly_resolution_panel import (  # noqa: PLC0415
+            build_hourly_resolution_panel,
+        )
+
+        cache_dir = _resolve_cache_dir(
+            cfg.get("hourly", {}).get("cache_dir", "data/intraday"),
+            ctx.config,
+        )
+        store = HourlyBarStore(data_dir=cache_dir)
+
+        watchlist = list(ctx.watchlist or [])
+        bars: dict = {}
+        for t in watchlist:
+            df = store.load(t)
+            if df is not None and not df.empty:
+                bars[t] = df
+        if not bars:
+            log.warning(
+                "BuildHourlyResolutionPanelTask: no hourly bars cached "
+                "for any watchlist ticker — falling back to daily panel",
+            )
+            return True
+
+        benchmark = ctx.config.get("benchmark", "SPY")
+        bm_bars = bars.pop(benchmark, None)
+        if bm_bars is None:
+            bm_bars = store.load(benchmark)
+
+        label_horizon = int(
+            cfg.get("hourly", {}).get("label_horizon_bars", 7),
+        )
+        panel = build_hourly_resolution_panel(
+            bars,
+            label_horizon_bars=label_horizon,
+            benchmark_bars=bm_bars,
+            apply_wash=True,
+        )
+        if panel is None or panel.empty:
+            log.warning(
+                "BuildHourlyResolutionPanelTask: build_hourly_resolution_panel "
+                "produced empty panel — falling back to daily",
+            )
+            return True
+
+        # Reset index so 'ticker' + 'date' + 'hour' are columns (downstream
+        # tasks expect long-format with explicit columns, not multi-index).
+        panel = panel.reset_index()
+        # The hourly panel index from build_hourly_resolution_panel is
+        # (ticker, datetime). After reset_index columns become:
+        #   ticker, level_1 (datetime), then feature cols + label.
+        # Rename level_1 → datetime, derive date + hour.
+        if "level_1" in panel.columns:
+            panel = panel.rename(columns={"level_1": "datetime"})
+        if "datetime" in panel.columns:
+            dt_col = panel["datetime"]
+        else:
+            # Fall back: assume index 0/1 was the datetime
+            dt_col = pd.to_datetime(panel.iloc[:, 1])
+            panel["datetime"] = dt_col
+        panel["date"] = pd.to_datetime(dt_col).dt.normalize()
+        panel["hour"] = pd.to_datetime(dt_col).dt.hour
+
+        # Drop rows where label is NaN (warmup at start of each ticker).
+        if "forward_excess_return" in panel.columns:
+            panel = panel.rename(columns={"forward_excess_return": "label"})
+        label_mask = panel["label"].notna() if "label" in panel.columns \
+                     else pd.Series([True] * len(panel))
+        panel = panel[label_mask].reset_index(drop=True)
+
+        # Group_sizes by (date, hour) — transformer's date-group attention
+        # operates on the cross-section at a fixed time slice.
+        ctx.panel = panel
+        ctx.panel_metadata = {
+            "n_rows":    int(len(panel)),
+            "n_tickers": int(panel["ticker"].nunique()) if "ticker" in panel.columns else 0,
+            "n_dates":   int(panel["date"].nunique()) if "date" in panel.columns else 0,
+            "n_hours":   int(panel["hour"].nunique()) if "hour" in panel.columns else 0,
+            "resolution": "hourly",
+            "label_horizon_bars": label_horizon,
+        }
+        log.info(
+            "BuildHourlyResolutionPanelTask: hourly panel rows=%d "
+            "tickers=%d dates=%d hours=%d (label horizon=%dh)",
+            ctx.panel_metadata["n_rows"], ctx.panel_metadata["n_tickers"],
+            ctx.panel_metadata["n_dates"], ctx.panel_metadata["n_hours"],
+            label_horizon,
+        )
+        return True
+
+
 class BuildPanelTask(PanelTask):
     """Assemble long-form panel DataFrame + group_sizes array."""
 
@@ -1176,10 +1287,15 @@ class PanelAssemblyJob(PanelJob):
 
     @property
     def tasks(self) -> list[PanelTask]:
+        # Stage C-2 (2026-04-26): BuildHourlyResolutionPanelTask runs FIRST.
+        # When panel_ltr.training_resolution=='hourly' it sets ctx.panel
+        # directly; BuildPanelTask's early-out then skips daily aggregation.
+        # Default ('daily') preserves bit-for-bit existing behaviour.
         return [
             NeutralizedFeatureZScoreTask(),
             FactorZScoreTask(),
             LabelsTask(),
+            BuildHourlyResolutionPanelTask(),
             BuildPanelTask(),
             FeatureDiagnosticTask(),
         ]

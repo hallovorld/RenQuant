@@ -158,3 +158,58 @@ class TestPanelBuild:
         # Daily would have ~10 rows × 3 tickers = 30 rows
         # Hourly = 70 × 3 = 210 rows ≈ 7×
         assert len(panel) >= 5 * 30
+
+
+# ── Stage C-2 — BuildHourlyResolutionPanelTask wiring ─────────────────────────
+
+class TestBuildHourlyResolutionPanelTaskWiring:
+    """Stage C-2: pipeline integration via PanelAssemblyJob."""
+
+    def test_daily_mode_is_noop(self):
+        """training_resolution='daily' (default) → task is a no-op,
+        ctx.panel stays None, BuildPanelTask handles it."""
+        from training_panel.pp_panel_training import BuildHourlyResolutionPanelTask
+        class _Ctx:
+            config = {"panel_ltr": {"training_resolution": "daily"}}
+            panel = None
+            watchlist = ["AAPL"]
+            panel_metadata = {}
+        ctx = _Ctx()
+        ret = BuildHourlyResolutionPanelTask().run(ctx)
+        assert ret is True
+        assert ctx.panel is None
+
+    def test_panel_assembly_job_includes_task(self):
+        """The new task is wired BEFORE BuildPanelTask."""
+        from training_panel.pp_panel_training import (
+            BuildHourlyResolutionPanelTask, BuildPanelTask, PanelAssemblyJob,
+        )
+        tasks = PanelAssemblyJob().tasks
+        names = [type(t).__name__ for t in tasks]
+        assert "BuildHourlyResolutionPanelTask" in names
+        assert "BuildPanelTask" in names
+        # And it runs BEFORE BuildPanelTask
+        i_h = names.index("BuildHourlyResolutionPanelTask")
+        i_d = names.index("BuildPanelTask")
+        assert i_h < i_d
+
+    def test_hourly_mode_no_bars_falls_back(self, tmp_path):
+        """training_resolution='hourly' but no bar cache → graceful fallback."""
+        from training_panel.pp_panel_training import BuildHourlyResolutionPanelTask
+        class _Ctx:
+            config = {
+                "panel_ltr": {
+                    "training_resolution": "hourly",
+                    "hourly": {"cache_dir": str(tmp_path / "no_bars_here")},
+                },
+                "_strategy_dir": str(tmp_path / "fake_strategy"),
+                "benchmark": "SPY",
+            }
+            panel = None
+            watchlist = ["AAPL", "MSFT"]
+            panel_metadata = {}
+        ctx = _Ctx()
+        # Should not raise, just log and return True (graceful fallback)
+        ret = BuildHourlyResolutionPanelTask().run(ctx)
+        assert ret is True
+        assert ctx.panel is None
