@@ -542,6 +542,19 @@ class PanelTransformerModel:
         merged = asdict(TransformerParams())
         if params:
             merged.update(params)
+        # Audit fix T-NEW-4 (2026-04-26 round-3): drop unknown params
+        # keys before constructing TransformerParams. Pre-fix, loading
+        # an artifact with extra keys (newer version's params) would
+        # TypeError. Now: silently drop unknowns + log so future
+        # version drift is visible.
+        valid_keys = set(TransformerParams.__dataclass_fields__.keys())
+        unknown = [k for k in merged if k not in valid_keys]
+        if unknown:
+            log.warning(
+                "PanelTransformerModel: dropping unknown params keys: %s "
+                "(this code may be older than the artifact)", unknown,
+            )
+            merged = {k: v for k, v in merged.items() if k in valid_keys}
         self.params: TransformerParams = TransformerParams(**merged)
         self.feature_cols: list[str] = []
         self._model: _PanelTransformer | None = None
