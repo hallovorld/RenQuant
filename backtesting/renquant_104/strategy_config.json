@@ -594,7 +594,7 @@
       "enabled": true,
       "cache_dir": "data/intraday"
     },
-    "training_window_years": 1.5,
+    "training_window_years": 3.0,
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
