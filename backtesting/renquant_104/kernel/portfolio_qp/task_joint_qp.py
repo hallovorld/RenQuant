@@ -176,9 +176,18 @@ class JointPortfolioQPTask(Task):
         # Stage 2/4/5 advanced knobs — defaults preserve Stage-1 behavior
         signal_decay     = float(joint_cfg.get("qp_signal_decay", 0.0))
         robust_mu_kappa  = float(joint_cfg.get("qp_robust_mu_kappa", 0.0))
-        # Drawdown — read from regime_state if present
-        rs = getattr(ctx, "regime_state", {}) or {}
-        portfolio_dd = float(rs.get("drawdown", 0.0) or 0.0)
+        # Drawdown — read from regime_state. May be either a RegimeState
+        # dataclass (from kernel.regime) or a plain dict in some test paths.
+        # Audit fix QP-REGIME-STATE-DUCK (2026-04-26): previously used
+        # rs.get() unconditionally → AttributeError on RegimeState
+        # instance, crashing every sim run that activated QP.
+        rs = getattr(ctx, "regime_state", None)
+        if rs is None:
+            portfolio_dd = 0.0
+        elif isinstance(rs, dict):
+            portfolio_dd = float(rs.get("drawdown", 0.0) or 0.0)
+        else:
+            portfolio_dd = float(getattr(rs, "drawdown", 0.0) or 0.0)
         dd_limit = float(joint_cfg.get(
             "qp_drawdown_limit",
             ctx.config.get("regime", {}).get("drawdown_halt_pct", 0.20),

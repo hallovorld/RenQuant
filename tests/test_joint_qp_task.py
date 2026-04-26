@@ -203,3 +203,44 @@ class TestEdgeCases:
         ret = JointPortfolioQPTask().run(ctx)
         assert ret is True
         assert ctx.orders == []
+
+
+# ── QP-REGIME-STATE-DUCK regression ───────────────────────────────────────────
+
+class TestRegimeStateDuckTyping:
+    """Audit fix QP-REGIME-STATE-DUCK (2026-04-26): regime_state can be
+    either a dict (some test ctx) or a RegimeState dataclass (real
+    pipeline ctx). QP task crashed with AttributeError when it was the
+    dataclass. Fix: duck-type via getattr + isinstance."""
+
+    def test_regime_state_as_dict(self):
+        ctx = _Ctx(config=_qp_on())
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.regime_state = {"drawdown": 0.05}
+        ret = JointPortfolioQPTask().run(ctx)
+        assert ret is True
+
+    def test_regime_state_as_dataclass(self):
+        from dataclasses import dataclass
+        @dataclass
+        class _RS:
+            drawdown: float = 0.05
+            regime: str = "BULL_CALM"
+            confidence: float = 0.6
+            in_transition: bool = False
+            countdown: int = 0
+        ctx = _Ctx(config=_qp_on())
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.regime_state = _RS()
+        ret = JointPortfolioQPTask().run(ctx)
+        assert ret is True
+
+    def test_regime_state_none(self):
+        ctx = _Ctx(config=_qp_on())
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.regime_state = None
+        ret = JointPortfolioQPTask().run(ctx)
+        assert ret is True
