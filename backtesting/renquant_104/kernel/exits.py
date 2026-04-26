@@ -13,6 +13,33 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass, field
+from functools import lru_cache
+
+
+@lru_cache(maxsize=4096)
+def _is_nyse_trading_day(d: datetime.date) -> bool:
+    """Return True iff d is a regular NYSE trading day (Mon-Fri, not a US
+    market holiday).
+
+    Uses pandas_market_calendars (already in requirements.lock.txt) for
+    holiday calendar — same source as scripts/daily_104.sh's NYSE guard.
+    Lazy-imported + LRU-cached so the cold-start cost is paid once.
+
+    Audit fix STREAK-TRADING-DAY (2026-04-26 round-7): per user spec,
+    sell streak should ONLY count trading days. Sundays / Saturdays /
+    market holidays do NOT increment the streak.
+    """
+    # Cheap weekday check first
+    if d.weekday() >= 5:   # 5=Sat, 6=Sun
+        return False
+    try:
+        import pandas_market_calendars as mcal  # noqa: PLC0415
+        nyse = mcal.get_calendar("XNYS")
+        sched = nyse.schedule(start_date=d, end_date=d)
+        return not sched.empty
+    except Exception:
+        # Defensive — if pmc unavailable, fall back to weekday-only check.
+        return True   # weekday already passed; assume trading day
 
 
 # ── Per-position mutable state ─────────────────────────────────────────────────
@@ -185,17 +212,26 @@ def check_model_sell(
             # Don't touch streak — can't have earned streak yet
             return state, _NO_EXIT
 
-    # Audit fix STREAK-DAY-DEDUP (2026-04-26): increment AT MOST ONCE per
-    # calendar day. Pre-fix, multiple bars per day (testing or intraday
-    # sell-only runs) inflated streak unrealistically. e2e on 2026-04-26
-    # ran 5 times in one day → GOOG streak went from 1 to 6 in 24 hours,
-    # not 6 trading days. Fix: only += 1 when today != last_streak_inc_date.
-    # Reset still happens immediately on non-sell signal.
-    if model_action == "sell":
+    # Audit fix STREAK-DAY-DEDUP (2026-04-26 round-5): increment AT MOST
+    # ONCE per calendar day.
+    #
+    # Audit fix STREAK-TRADING-DAY (2026-04-26 round-7, after user spec):
+    # ALSO require `today` to be an NYSE TRADING day before incrementing.
+    # Pre-fix, e2e on Sunday 2026-04-26 (calendar day, market closed)
+    # incremented streak from 2 → 3 → triggered model_sell on GOOG/AMZN/BA
+    # within 24 hours. User: "today is not a trading day, streak shouldn't
+    # be > 1!" Fix: skip increment + skip reset on non-trading days. The
+    # streak should reflect TRADING-day signals only.
+    is_trading_day = _is_nyse_trading_day(today)
+    if not is_trading_day:
+        # Sunday / market holiday — leave streak unchanged. Don't reset
+        # either (otherwise a Sun e2e would clear a legitimate streak).
+        pass
+    elif model_action == "sell":
         if state.last_streak_inc_date != today:
             state.sell_streak += 1
             state.last_streak_inc_date = today
-        # If same day, leave streak unchanged (idempotent)
+        # If same trading day, leave streak unchanged (idempotent)
     else:
         state.sell_streak = 0
         # Don't touch last_streak_inc_date on reset — it's only for INC dedup
