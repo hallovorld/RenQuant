@@ -673,6 +673,18 @@ class PanelTransformerModel:
         # silently and log so the next training-set growth doesn't hit
         # the cap. Operator can still set max_tickers manually for
         # consistent inference (the sidecar JSON saves the actual value).
+        #
+        # Audit fix #26 (2026-04-26 round-3): this also MITIGATES the
+        # train≠inference structure mismatch. Pre-fix, max_tickers was
+        # hardcoded; if the watchlist grew past it, inference would
+        # chunk-split (cross-chunk attention severed) while training
+        # had only ever seen single-chunk groups. With auto-bump,
+        # max_tickers grows to fit training data → inference also fits
+        # in a single chunk (no chunk-split fired) → train and inference
+        # use IDENTICAL padding structure. The on_oversized_group="error"
+        # config (added in #27) further prevents accidental chunk-split
+        # if the operator bypasses auto-bump (e.g., loads model with
+        # smaller max_tickers).
         if len(group_sizes):
             max_gs_train = int(np.max(group_sizes))
             if max_gs_train > p.max_tickers:
