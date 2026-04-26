@@ -1718,7 +1718,18 @@ class RefreshPanelCalibratorTask(PanelTask):
     """
 
     def run(self, ctx: PanelTrainingContext) -> None:
-        gc_cfg = (ctx.config.get("panel_ltr", {})
+        # Audit fix CAL-7-PATH (Round 4 deep audit, 2026-04-25): pre-fix,
+        # this read `panel_ltr.global_calibration` but the actual config
+        # lives at `ranking.panel_scoring.global_calibration` (matches
+        # the runtime LoadGlobalCalibrationTask path in job_panel_scoring.py).
+        # The wrong path returned `{}` → `gc_cfg.get("enabled", False)` →
+        # False → silent skip → calibrator never auto-refreshed → calibrator
+        # artifact stayed stale across panel retrains, mapping new model
+        # scores through old-model calibration. THIS WAS WHY no buys fired
+        # despite healthy panel models — calibrated rank_scores were
+        # systematically miscalibrated.
+        gc_cfg = (ctx.config.get("ranking", {})
+                            .get("panel_scoring", {})
                             .get("global_calibration", {}))
         if not bool(gc_cfg.get("auto_refresh", True)):
             log.info("RefreshPanelCalibratorTask: auto_refresh=false — skipping")
@@ -1778,7 +1789,10 @@ class RefreshPanelCalibratorJob(PanelJob):
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
-        gc = (ctx.config.get("panel_ltr", {})
+        # Audit fix CAL-7-PATH (Bug J, 2026-04-25): same wrong path as the
+        # task body above — corrected to ranking.panel_scoring.global_calibration.
+        gc = (ctx.config.get("ranking", {})
+                        .get("panel_scoring", {})
                         .get("global_calibration", {}))
         return not bool(gc.get("enabled", False)
                          and gc.get("auto_refresh", True))
