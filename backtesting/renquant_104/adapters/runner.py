@@ -567,10 +567,13 @@ class RunnerAdapter:
             _qa_raw = pos.get("qty_available", None)
             qty_avail = qty if _qa_raw is None else float(_qa_raw)
             if not _math.isfinite(qty_avail) or qty_avail <= 0:
+                # Audit fix LOG-FORMAT (2026-04-26 round-5): arg order
+                # was swapped — log output showed "qty=PLTR" instead of
+                # "qty=5". Now: ticker first, then qty_avail, then qty.
                 log.warning(
-                    "EXIT %s: qty_available=%s (qty=%s, likely held in pending orders) "
-                    "— skipping. Cancel pending order first.",
-                    qty_avail, qty, ticker,
+                    "EXIT %s: qty_available=%s, qty=%s (likely held in "
+                    "pending orders) — skipping. Cancel pending order first.",
+                    ticker, qty_avail, qty,
                 )
                 if not hasattr(ctx, "exits_failed"):
                     ctx.exits_failed = []
