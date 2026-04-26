@@ -419,15 +419,20 @@ def main():
     if "initial_cash" not in sim_cfg:
         sim_cfg["initial_cash"] = 100_000
 
+    # Audit fix VALIDATE-SNAPSHOT-OVERRIDE (2026-04-26): snapshot=False
+    # so our in-memory config mutations (panel_ltr.artifact_path, etc)
+    # don't get silently overwritten by the disk strategy_config.json.
     log.info("Running sim: baseline …")
     base_sim  = run_backtest(
         config=sim_cfg, strategy_dir=strategy_dir, results=baseline_results,
         ohlcv=ohlcv, spy_df=spy_df, sector_etf_map=sector_etf_map,
+        snapshot=False,
     )
     log.info("Running sim: panel …")
     panel_sim = run_backtest(
         config=sim_cfg, strategy_dir=strategy_dir, results=panel_results,
         ohlcv=ohlcv, spy_df=spy_df, sector_etf_map=sector_etf_map,
+        snapshot=False,
     )
 
     # ── 9. Metrics + chart ─────────────────────────────────────────────────

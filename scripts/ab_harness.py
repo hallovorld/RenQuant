@@ -128,10 +128,16 @@ def run_ab(
             if mutator is not None:
                 mutator(cfg)
             t0 = time.time()
+            # Audit fix VALIDATE-SNAPSHOT-OVERRIDE (2026-04-26):
+            # snapshot=False because we're already INSIDE a
+            # snapshot_artifacts_ctx (line 99) — re-snapshotting would
+            # discard the variant mutator's config flips. Pre-fix,
+            # variants would have all run cfg_base instead of mutator(cfg).
             r = run_backtest(
                 config=cfg, strategy_dir=snap, ohlcv=ohlcv,
                 spy_df=ohlcv["SPY"], sector_etf_map=cfg.get("sector_etf_map", {}),
                 panel_feature_frames=ff, panel_factor_frames=fac,
+                snapshot=False,
             )
             results.append({
                 "label":     label,
