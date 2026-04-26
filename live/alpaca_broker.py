@@ -168,17 +168,55 @@ class AlpacaBroker(BaseBroker):
         """Return filled orders, optionally filtered to those after a date string 'YYYY-MM-DD'.
 
         Each entry: {"symbol", "action" (BUY/SELL), "qty", "filled_at" (ISO string), "avg_price"}
+
+        Audit fix DBT-1 (2026-04-25 followups): pre-fix, single page of
+        100 orders. Long-tenure positions held across many trades had
+        their original BUY paginated past the 100-order cap → ENTRY-DATE-
+        FROM-FILLS would silently fall back to the 31-day sentinel,
+        artificially compressing tenure. Now: paginate via `until`
+        cursor walking backward in time until a page returns < page_size
+        orders OR until we exceed `max_pages` (safety cap to prevent
+        unbounded iteration on accounts with thousands of orders).
         """
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         from datetime import datetime, timezone
 
-        params = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100)
-        if after:
-            # Alpaca expects a timezone-aware datetime
-            params.after = datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
-
-        orders = self._trading_client.get_orders(filter=params)
+        page_size = 500
+        max_pages = 10  # 5000-order cap — covers ≥1y of weekly trading
+        all_orders: list = []
+        until_cursor: "datetime | None" = None
+        after_dt: "datetime | None" = (
+            datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
+            if after else None
+        )
+        for _page in range(max_pages):
+            params = GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED, limit=page_size, direction="desc",
+            )
+            if after_dt is not None:
+                params.after = after_dt
+            if until_cursor is not None:
+                params.until = until_cursor
+            page = self._trading_client.get_orders(filter=params)
+            if not page:
+                break
+            all_orders.extend(page)
+            if len(page) < page_size:
+                break
+            # Cursor for next page: walk backward in time. Use the OLDEST
+            # order's submitted_at minus 1µs to avoid re-fetching it.
+            try:
+                oldest = min(
+                    (o.submitted_at for o in page if o.submitted_at is not None),
+                    default=None,
+                )
+            except Exception:
+                oldest = None
+            if oldest is None:
+                break
+            until_cursor = oldest
+        orders = all_orders
         result = []
         # Audit fix ALPACA-STATUS (Round 2 deep audit, 2026-04-25):
         # pre-fix, brittle string comparison `str(o.status) not in

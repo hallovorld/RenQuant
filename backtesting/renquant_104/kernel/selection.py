@@ -105,6 +105,15 @@ def passes_correlation_guard(
     if corr_matrix is None or not held_tickers:
         return True
     for held in held_tickers:
+        # Audit fix SELF-CORR (2026-04-25): pre-fix, when a candidate
+        # was being considered for slot N AFTER it was already added to
+        # held_tickers + selected via a prior rotation pair (e.g. iter3:
+        # JNJ entered via rotation, then iterated as selection candidate
+        # → corr(JNJ, JNJ) = 1.0 → self-rejected). Skip self-match — a
+        # ticker is by definition perfectly correlated with itself, but
+        # that's irrelevant for the diversification check we're doing.
+        if held == ticker:
+            continue
         corr = corr_matrix.get(ticker, {}).get(held)
         if corr is None:
             corr = corr_matrix.get(held, {}).get(ticker)

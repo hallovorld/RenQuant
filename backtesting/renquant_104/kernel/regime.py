@@ -337,7 +337,11 @@ def compute_regime_confidence(
         conf = (hurst_rev - hurst) / max(hurst_rev - hurst_floor, 1e-6)
         return float(min(1.0, max(0.0, conf)))
 
-    return float(gmm_probs.get(regime, 0.5))
+    # Audit fix DBT-4 (2026-04-25 followups): defensive — floor at 0.0
+    # in case GMM somehow returned a negative posterior for the regime
+    # (shouldn't happen but no defense). Downstream confidence_to_size_multiplier
+    # already clamps to [floor, 1.0]; this just keeps the contract.
+    return float(max(0.0, gmm_probs.get(regime, 0.5)))
 
 
 def confidence_to_size_multiplier(confidence: float | None, floor: float = 0.5) -> float:
