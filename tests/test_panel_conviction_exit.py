@@ -195,11 +195,17 @@ class TestUnitMismatchAudit:
 
 class TestJobWiring:
     def test_panel_conviction_is_last_in_chain(self):
-        """Position matters: must run AFTER EvaluateExitsTask so higher
-        priority rules always win."""
+        """Position matters: must run LAST so higher priority rules always win.
+
+        Round-7 (2026-04-26): SellGateBTask was inserted between
+        EvaluateExitsTask and PanelConvictionExitTask to add a μ/σ guard
+        on model_sell. PCT remains last — when SellGateB clears
+        exit_signal, PCT still gets a chance to evaluate independently.
+        """
         tasks = TickerSellJob().tasks
         types = [type(t).__name__ for t in tasks]
         assert types[-1] == "PanelConvictionExitTask"
-        # Sanity: order is Prepare → Score → Evaluate → PanelConviction
+        # Order: Prepare → Score → Evaluate → SellGateB → PanelConviction
         assert types == ["PrepareHoldingTask", "ScoreModelTask",
-                          "EvaluateExitsTask", "PanelConvictionExitTask"]
+                          "EvaluateExitsTask", "SellGateBTask",
+                          "PanelConvictionExitTask"]
