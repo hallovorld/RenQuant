@@ -59,6 +59,16 @@ DEFAULT_PARAMS: dict[str, Any] = {
 
 def _mean_ic(panel: pd.DataFrame, preds: np.ndarray,
              label_col: str, date_col: str = "date") -> float:
+    # Audit fix X9 (2026-04-26 round-3): defensive guard. Pre-fix,
+    # missing date_col or label_col raised cryptic KeyError. Now: clear
+    # error with hint about which column is missing.
+    for col in (date_col, label_col):
+        if col not in panel.columns:
+            raise KeyError(
+                f"_mean_ic: panel missing required column '{col}'. "
+                f"Available columns: {list(panel.columns)[:10]}"
+                f"{'…' if len(panel.columns) > 10 else ''}"
+            )
     df = pd.DataFrame({
         "date": panel[date_col].values,
         "p":    preds,
@@ -68,7 +78,11 @@ def _mean_ic(panel: pd.DataFrame, preds: np.ndarray,
     for _, g in df.groupby("date", sort=False):
         y = g["y"].values
         p = g["p"].values
-        if len(y) < 2 or np.all(y == y[0]) or np.all(p == p[0]):
+        # Audit fix X14b (2026-04-26 round-3): use np.allclose for
+        # float-equal check (matches transformer #67).
+        if (len(y) < 2
+                or np.allclose(y, y[0], rtol=0, atol=1e-12)
+                or np.allclose(p, p[0], rtol=0, atol=1e-12)):
             continue
         rho, _ = spearmanr(p, y)
         if not np.isnan(rho):
@@ -328,7 +342,14 @@ class PanelLTRModel:
         raw_str = bytes(raw).decode("utf-8")
 
         payload = {
-            "version": 1,
+            # Audit fix X8 (2026-04-26 round-3): bump version to 2 to
+            # mark artifacts produced by the post-batch-1-4 training
+            # path (with seed=42 reproducibility, monotone validation,
+            # Python-level early stop, feature_importances metadata).
+            # v1 artifacts still load fine — schema didn't change, just
+            # the training process improvements are tagged.
+            "version": 2,
+            "kind": "panel_ltr_xgboost",
             "trained_date": str(date.today()),
             "feature_cols": list(self.feature_cols),
             "params": self.params,

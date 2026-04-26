@@ -1011,6 +1011,11 @@ class PanelTransformerModel:
         y_flat = panel["label"].to_numpy() if "label" in panel.columns else None
         if y_flat is None:
             log.debug("_ic_on_tensors: panel has no 'label' col, using in-memory y tensor")
+
+        # Audit fix #69 (2026-04-26 round-3): explicit log when ALL
+        # groups are degenerate (NaN IC returned). Pre-fix, NaN
+        # silently propagated up to history → user sees "NaN train_ic"
+        # without knowing why.
         for gs in group_sizes:
             gs = int(gs)
             p_slice = preds_flat[offset2:offset2 + gs]
@@ -1028,7 +1033,14 @@ class PanelTransformerModel:
             rho, _ = spearmanr(p_slice, y_slice)
             if not np.isnan(rho):
                 ics.append(float(rho))
-        return float(np.mean(ics)) if ics else float("nan")
+        if not ics:
+            log.warning(
+                "_ic_on_tensors: all %d groups were degenerate "
+                "(< 2 valid tickers or all-equal scores/labels) → IC=NaN",
+                len(group_sizes),
+            )
+            return float("nan")
+        return float(np.mean(ics))
 
 
 __all__ = [
