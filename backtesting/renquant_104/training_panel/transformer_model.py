@@ -216,7 +216,7 @@ class _PanelTransformer(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Audit fix #49 (2026-04-26): explicit Xavier init on Linear layers.
+        """Audit fix #49 + #50 + #51 (2026-04-26): explicit Xavier init.
 
         PyTorch defaults to ``kaiming_uniform_(weight, a=sqrt(5))`` for
         Linear which is too aggressive for transformer training stability.
@@ -226,9 +226,17 @@ class _PanelTransformer(nn.Module):
         """
         for m in self.modules():
             if isinstance(m, nn.Linear):
+                # Audit fix #49 — Xavier weight init.
                 nn.init.xavier_uniform_(m.weight)
+                # Audit fix #50/#51 — explicit zero bias (was uniform/sqrt(in))
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                # Audit fix (2026-04-26 round-3): explicit LayerNorm init
+                # — gamma=1, beta=0. Same as PyTorch default but explicit
+                # for transparency.
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
         """Run feature_encoder + LayerNorm + Encoder + score_head.
@@ -738,6 +746,9 @@ class PanelTransformerModel:
                 # Slice panel by row offsets corresponding to the
                 # date-group split. group_sizes is contiguous per date.
                 row_split = int(np.array(group_sizes[:n_train]).sum())
+                # Audit fix #13 (2026-04-26 round-3): .iloc is positional
+                # → safe with any index type (RangeIndex / MultiIndex /
+                # custom). Reset_index avoided to preserve caller's index.
                 eval_panel = panel.iloc[row_split:].copy()
                 eval_group_sizes = np.array(group_sizes[n_train:], dtype=np.int64)
                 panel = panel.iloc[:row_split].copy()
