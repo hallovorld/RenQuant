@@ -1244,12 +1244,26 @@ class PanelTransformerModel:
         # raise — pinning here is forward-compatible AND prevents arbitrary
         # code execution from a tampered .pt file. State dicts are pure
         # tensor data so weights_only=True is correct here.
+        # Audit fix #56 (2026-04-26 round-3): preserve TypeError fallback
+        # for older torch (<2.0) since some test environments pin old.
         try:
             state = torch.load(pt_path, map_location=m._device, weights_only=True)
         except TypeError:
-            # Older torch (<2.0) without weights_only — fall back.
             state = torch.load(pt_path, map_location=m._device)
-        m._model.load_state_dict(state)
+        # Audit fix #57 (2026-04-26 round-3): try strict load first; on
+        # mismatch (architecture change between artifact and code), log a
+        # clear migration message before re-raising. Pre-fix the error was
+        # a cryptic PyTorch dump.
+        try:
+            m._model.load_state_dict(state)
+        except RuntimeError as exc:
+            log.error(
+                "load_state_dict mismatch — artifact (version=%s) "
+                "may predate the current architecture. Re-train and "
+                "re-save to upgrade. PyTorch error: %s",
+                meta.get("version", "?"), exc,
+            )
+            raise
         m._model.eval()
         return m
 
