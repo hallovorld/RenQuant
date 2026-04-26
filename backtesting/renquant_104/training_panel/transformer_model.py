@@ -109,6 +109,19 @@ class TransformerParams:
     # If max_epochs > 50, the early epochs (where the loss curve says the
     # most about overfit risk) were silently truncated.
     save_full_history: bool = True
+    # Audit fix #31/#32 (2026-04-26 batch-3): cosine LR schedule + linear
+    # warmup. Default: 10% of epochs warmup, then cosine decay to lr/100.
+    # Setting `warmup_fraction=0.0` disables warmup; `cosine_decay=False`
+    # disables cosine and uses constant lr.
+    warmup_fraction: float = 0.10
+    cosine_decay:    bool  = True
+    cosine_min_lr_ratio: float = 0.01      # final lr = lr * this
+    # Audit fix #27 (2026-04-26 batch-3): how to handle date groups
+    # exceeding max_tickers at INFERENCE time. Options:
+    #   "warn" (default): chunk-split + log warning
+    #   "error": raise — forces user to raise max_tickers + retrain
+    #   "silent": chunk-split without log (legacy)
+    on_oversized_group: str = "warn"
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -561,6 +574,29 @@ class PanelTransformerModel:
         opt = torch.optim.AdamW(self._model.parameters(),
                                 lr=p.lr, weight_decay=p.weight_decay)
 
+        # Audit fix #31+#32 (2026-04-26 batch-3): cosine LR schedule with
+        # linear warmup. Per Vaswani 2017 §5.3 + Goyal 2017 (large
+        # minibatch SGD), transformers benefit from warmup on the first
+        # ~10% of steps, followed by cosine decay. Constant lr can spike
+        # gradient norms early on and stall progress later.
+        steps_per_epoch = max(1, (xtr.shape[0] + p.batch_size - 1) // p.batch_size)
+        total_steps     = steps_per_epoch * effective_max_epochs
+        warmup_steps    = int(round(total_steps * float(p.warmup_fraction)))
+        min_lr_factor   = float(p.cosine_min_lr_ratio)
+
+        def _lr_factor(step: int) -> float:
+            if warmup_steps > 0 and step < warmup_steps:
+                return float(step + 1) / float(warmup_steps + 1)
+            if not p.cosine_decay:
+                return 1.0
+            denom = max(1, total_steps - warmup_steps)
+            progress = float(step - warmup_steps) / float(denom)
+            progress = max(0.0, min(1.0, progress))
+            cos = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_factor + (1.0 - min_lr_factor) * cos
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=_lr_factor)
+
         best_eval = float("-inf")
         best_state: dict | None = None
         bad_epochs = 0
@@ -615,6 +651,8 @@ class PanelTransformerModel:
                         self._model.parameters(), max_norm=float(p.grad_clip_norm),
                     )
                 opt.step()
+                # Audit fix #31+#32: step the LR scheduler each batch.
+                scheduler.step()
                 epoch_loss += float(loss.item()) * len(idx)
             epoch_loss /= max(n_groups, 1)
             if nan_skipped > 0:
@@ -748,13 +786,24 @@ class PanelTransformerModel:
                 for i in range(n_chunks):
                     expanded.append(base + (1 if i < rem else 0))
         if chunk_split_fired:
-            import logging  # noqa: PLC0415
-            logging.getLogger("panel.transformer").warning(
-                "PanelTransformerModel.predict: a date-group exceeds "
-                "max_tickers=%d → chunk-split fallback. Cross-chunk scores "
-                "lose comparability. Raise max_tickers and retrain.",
-                max_t,
-            )
+            # Audit fix #27 (2026-04-26 batch-3): config-driven response.
+            mode = str(getattr(self.params, "on_oversized_group", "warn")).lower()
+            if mode == "error":
+                raise ValueError(
+                    f"PanelTransformerModel.predict: a date-group exceeds "
+                    f"max_tickers={max_t}. on_oversized_group='error' → "
+                    f"refusing to chunk-split (cross-chunk attention lost). "
+                    f"Raise TransformerParams.max_tickers and retrain."
+                )
+            elif mode == "silent":
+                pass
+            else:  # default "warn"
+                log.warning(
+                    "PanelTransformerModel.predict: a date-group exceeds "
+                    "max_tickers=%d → chunk-split fallback. Cross-chunk scores "
+                    "lose comparability. Raise max_tickers and retrain.",
+                    max_t,
+                )
         group_sizes_exp = np.array(expanded, dtype=np.int64)
         x, _, pad, _ = _build_date_groups(
             panel.assign(label=0.0), group_sizes_exp, self.feature_cols, "label",
@@ -788,12 +837,20 @@ class PanelTransformerModel:
             path = path.with_suffix(".pt")
         sidecar = path.with_suffix(".json")
         torch.save(self._model.state_dict(), path)
+        # Audit fix #52 (2026-04-26 batch-3): omit "device" from saved
+        # params. Pre-fix, device='mps' baked into the artifact would
+        # surprise CI / Linux runs that load the model — _resolve_device
+        # falls back gracefully but the device tag was misleading.
+        # Now: save params WITHOUT device; load() re-resolves on the
+        # target machine.
+        params_to_save = asdict(self.params)
+        params_to_save.pop("device", None)
         payload = {
             "version":      1,
             "kind":         "panel_transformer",
             "trained_date": str(date.today()),
             "feature_cols": list(self.feature_cols),
-            "params":       asdict(self.params),
+            "params":       params_to_save,
             "best_iter":    self.best_iter,
             # Audit fix #53 (2026-04-26): save full history when flag set
             # (default). Pre-fix, last-50 truncation lost early-epoch
@@ -861,14 +918,25 @@ class PanelTransformerModel:
                     offset += take
         ics: list[float] = []
         offset2 = 0
+        # Audit fix #66 (2026-04-26 batch-3): if "label" column missing,
+        # fall back to in-memory y AND log it. Previously silent fallback
+        # made it hard to diagnose why IC was based on stale labels.
         y_flat = panel["label"].to_numpy() if "label" in panel.columns else None
+        if y_flat is None:
+            log.debug("_ic_on_tensors: panel has no 'label' col, using in-memory y tensor")
         for gs in group_sizes:
             gs = int(gs)
             p_slice = preds_flat[offset2:offset2 + gs]
             y_slice = (y_flat[offset2:offset2 + gs] if y_flat is not None
                        else y.reshape(-1)[offset2:offset2 + gs])
             offset2 += gs
-            if gs < 2 or np.all(p_slice == p_slice[0]) or np.all(y_slice == y_slice[0]):
+            # Audit fix #67 (2026-04-26 batch-3): use np.allclose instead
+            # of float == comparison. Pre-fix, p_slice == p_slice[0] for
+            # near-equal floats (e.g. 1e-9 difference) returned False
+            # → spearmanr called on a degenerate slice → NaN result.
+            if (gs < 2
+                    or np.allclose(p_slice, p_slice[0], rtol=0, atol=1e-12)
+                    or np.allclose(y_slice, y_slice[0], rtol=0, atol=1e-12)):
                 continue
             rho, _ = spearmanr(p_slice, y_slice)
             if not np.isnan(rho):

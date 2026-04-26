@@ -48,6 +48,12 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # thread, well below deadlock threshold). Override via xgb_params.nthread.
     "nthread": 4,
     "verbosity": 0,
+    # Audit fix X12 (2026-04-26 batch-3): explicit RNG seed for
+    # reproducibility. Pre-fix, subsample=0.8 and colsample_bytree=0.7
+    # used random sampling without a fixed seed → two consecutive
+    # train() calls produced DIFFERENT models with measurably different
+    # OOS IC (~±0.005). Setting seed=42 makes training bit-reproducible.
+    "seed": 42,
 }
 
 
@@ -150,10 +156,30 @@ class PanelLTRModel:
         # Monotone constraints: build XGBoost-format tuple string matching
         # feature_cols order. Only inject when at least one feature is
         # constrained — otherwise XGBoost's default (unconstrained) applies.
+        #
+        # Audit fix X13 (2026-04-26 batch-3): pre-fix, the dict-to-list
+        # mapping was POSITIONAL — silently produced wrong sign mappings
+        # if `feature_cols` order changed between the constraint dict's
+        # author and the training call. Now: validate that every dict
+        # key maps to a known feature_col + log resolved signs for
+        # transparency. Unknown keys → loud error.
         if self.monotone_constraints:
+            unknown_keys = [k for k in self.monotone_constraints
+                            if k not in feature_cols]
+            if unknown_keys:
+                raise ValueError(
+                    f"PanelLTRModel: monotone_constraints references "
+                    f"feature(s) not in training feature_cols: {unknown_keys}. "
+                    f"Either remove from constraints or add to features."
+                )
             signs = [int(self.monotone_constraints.get(c, 0)) for c in feature_cols]
             if any(s != 0 for s in signs):
                 params["monotone_constraints"] = "(" + ",".join(str(s) for s in signs) + ")"
+                resolved = {c: s for c, s in zip(feature_cols, signs) if s != 0}
+                import logging  # noqa: PLC0415
+                logging.getLogger("panel.ltr").info(
+                    "monotone_constraints resolved: %s", resolved,
+                )
 
         # Audit fix X1+X2 (2026-04-26, completed): Python-level early
         # stopping. XGBoost 3.x ranking objective auto-enables NDCG which
@@ -215,6 +241,24 @@ class PanelLTRModel:
         result: dict[str, Any] = {"best_iter": self.best_iter}
         train_preds = self.booster.predict(dtrain)
         result["train_ic"] = _mean_ic(panel, train_preds, label_col)
+
+        # Audit fix X10 (2026-04-26 batch-3): expose feature importances
+        # in train metadata for downstream debugging. `gain` = average
+        # loss-reduction contribution per feature; the most actionable
+        # importance type for ranking models. Names: f0, f1, ... → map
+        # back to feature_cols.
+        try:
+            scores = self.booster.get_score(importance_type="gain")
+            named: dict[str, float] = {}
+            for k, v in scores.items():
+                if k.startswith("f") and k[1:].isdigit():
+                    idx = int(k[1:])
+                    if 0 <= idx < len(self.feature_cols):
+                        named[self.feature_cols[idx]] = float(v)
+            result["feature_importances"] = named
+        except Exception:
+            result["feature_importances"] = {}
+
         if deval is not None:
             eval_preds = self.booster.predict(deval)
             result["eval_ic"] = _mean_ic(eval_panel, eval_preds, label_col)

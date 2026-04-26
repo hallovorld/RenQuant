@@ -1211,7 +1211,8 @@ class CrossValidateTask(PanelTask):
                     df["label"] = y
                     df["date"] = panel.loc[X.index, "date"].values
                     df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
-                    gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    # Audit fix #60 (2026-04-26 batch-3): .to_numpy() not .values
+                    gs = df.groupby("date", sort=True).size().to_numpy().astype(np.int32)
                     self._feature_cols = list(X.columns)
                     self._m.train(
                         df, gs, feature_cols=self._feature_cols,
@@ -1247,7 +1248,8 @@ class CrossValidateTask(PanelTask):
                     df["date"] = panel.loc[X.index, "date"].values
                     df["weight"] = sample_weight if sample_weight is not None else 1.0
                     df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
-                    gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    # Audit fix #60 (2026-04-26 batch-3): .to_numpy() not .values
+                    gs = df.groupby("date", sort=True).size().to_numpy().astype(np.int32)
                     self._m.train(
                         df, gs, feature_cols=list(X.columns),
                         label_col="label", weight_col="weight",
@@ -1272,7 +1274,8 @@ class CrossValidateTask(PanelTask):
                     df["date"] = panel.loc[X.index, "date"].values
                     df["weight"] = sample_weight if sample_weight is not None else 1.0
                     df = df.sort_values(["date"], kind="mergesort").reset_index(drop=True)
-                    gs = df.groupby("date", sort=True).size().values.astype(np.int32)
+                    # Audit fix #60 (2026-04-26 batch-3): .to_numpy() not .values
+                    gs = df.groupby("date", sort=True).size().to_numpy().astype(np.int32)
                     self._m.train(
                         df, gs, feature_cols=list(X.columns),
                         label_col="label", weight_col="weight",
