@@ -847,6 +847,10 @@ class PanelTransformerModel:
             epoch_loss = 0.0
             nan_skipped = 0
             for start in range(0, n_groups, p.batch_size):
+                # Audit fix #34 (2026-04-26 round-3): document partial-batch
+                # behavior. Last batch may have fewer than batch_size dates.
+                # ListNet loss is mean-over-groups so smaller batch just
+                # contributes proportionally. No drop_last (we want all data).
                 idx = order[start:start + p.batch_size]
                 if p.preload_to_device:
                     idx_t = torch.from_numpy(idx).to(self._device)
@@ -929,6 +933,11 @@ class PanelTransformerModel:
                     # was computed for optimizer steps).
                     scheduler.step()
                 epoch_loss += float(loss.item()) * len(idx)
+            # Audit fix #33 (2026-04-26 round-3): defensive — empty panel
+            # should never reach here (caught by len(panel)==0 in train()),
+            # but if n_groups=0 we'd silently return 0. Guard explicit.
+            if n_groups == 0:
+                log.warning("epoch=%d had n_groups=0 — empty panel?", epoch)
             epoch_loss /= max(n_groups, 1)
             if nan_skipped > 0:
                 log.warning("epoch=%d nan_loss_batches=%d (skipped)",
