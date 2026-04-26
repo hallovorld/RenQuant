@@ -849,7 +849,7 @@ class RunnerAdapter:
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
-                record_live_state_snapshot,
+                record_live_state_snapshot, record_ticker_daily_state,
             )
             # Reconstruct trade events from ctx (live path doesn't keep an
             # in-memory trade list — we synthesise from exits + orders).
@@ -911,12 +911,107 @@ class RunnerAdapter:
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            # Audit fix DB-DECISION-FACTORS (2026-04-26 round-5): include
+            # sector_map + model_types + panel_artifact path so post-hoc
+            # analysis has the FULL decision context per (date, ticker).
+            sector_map  = self._config.get("sector_map", {}) or {}
+            model_types = {}
+            for tk, m in (self._models or {}).items():
+                # PolicyMetadata stores 'model_type' under that key.
+                model_types[tk] = (
+                    getattr(m, "model_type", None)
+                    or (m.metadata.get("model_type") if hasattr(m, "metadata") else None)
+                )
+            panel_artifact = (
+                self._config.get("ranking", {})
+                            .get("panel_scoring", {})
+                            .get("artifact_path")
+            )
             record_candidate_scores(
                 self._db, run_id, ctx.candidates, ctx.holdings,
                 selected_tickers=selected_tickers,
                 blocked_map=blocked_map,
+                sector_map=sector_map,
+                model_types=model_types,
+                panel_artifact=panel_artifact,
             )
             record_trades(self._db, run_id, trade_events)
+
+            # ── ticker_daily_state — every watchlist ticker, every bar ──
+            # Per user spec round-5 (2026-04-26): write a row for EVERY
+            # watchlist ticker at decision time, including those filtered
+            # at universe / broker / no-model gates. Lets post-hoc
+            # analysis answer "what did we KNOW about XYZ on this date
+            # and WHY didn't we trade it?" — instead of just the cands.
+            try:
+                wl = list(self._config.get("watchlist", []) or [])
+                cand_by_t  = {c.ticker: c for c in ctx.candidates}
+                pf_value = float(ctx.portfolio_value) if ctx.portfolio_value else 0.0
+                tds_rows: list[dict] = []
+                for tk in wl:
+                    hs   = ctx.holdings.get(tk)
+                    cand = cand_by_t.get(tk)
+                    has_pos = 1 if hs is not None else 0
+                    pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
+                    px      = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
+                    pos_pct = None
+                    if hs and pf_value > 0 and px:
+                        pos_pct = (pos_qty * px) / pf_value
+                    blocked_str = (blocked_map or {}).get(tk)
+                    if blocked_str is None and tk not in (self._models or {}):
+                        blocked_str = "universe_floor"
+                    if blocked_str is None and tk in pending_broker_tickers:
+                        blocked_str = "broker_pending"
+                    # Source ranking factors from cand (preferred) else hs.
+                    src = cand if cand is not None else hs
+                    panel_score      = getattr(src, "panel_score", None) if src else None
+                    rank_score       = getattr(src, "rank_score",  None) if src else None
+                    expected_return  = getattr(src, "expected_return",  None) if src else None
+                    kelly_target_pct = getattr(src, "kelly_target_pct", None) if src else None
+                    mu               = getattr(src, "mu",    None) if src else None
+                    sigma            = getattr(src, "sigma", None) if src else None
+                    # Per-ticker model_action: cand → "buy"; held with sell
+                    # streak active → "sell"; else "hold". The actual
+                    # exit decision is in trades; this column is the raw
+                    # per-ticker model classification.
+                    if cand is not None:
+                        model_action = "buy"
+                    elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
+                        model_action = "sell"
+                    else:
+                        model_action = "hold"
+                    tds_rows.append({
+                        "ticker":           tk,
+                        "regime":           ctx.regime,
+                        "confidence":       ctx.confidence,
+                        "in_watchlist":     1,
+                        "in_universe":      1 if tk in (self._models or {}) else 0,
+                        "pending_at_broker": 1 if tk in pending_broker_tickers else 0,
+                        "has_position":     has_pos,
+                        "position_qty":     pos_qty,
+                        "position_pct":     pos_pct,
+                        "model_type":       model_types.get(tk),
+                        "model_action":     model_action,
+                        "sell_streak":      int(getattr(hs, "sell_streak", 0)) if hs else None,
+                        "panel_score":      panel_score,
+                        "rank_score":       rank_score,
+                        "expected_return":  expected_return,
+                        "kelly_target_pct": kelly_target_pct,
+                        "mu":               mu,
+                        "sigma":            sigma,
+                        "in_candidates":    1 if cand is not None else 0,
+                        "selected":         1 if tk in selected_tickers else 0,
+                        "blocked_by":       blocked_str,
+                        "sector":           sector_map.get(tk),
+                    })
+                n_tds = record_ticker_daily_state(
+                    self._db, run_date=ctx.today, rows=tds_rows,
+                )
+                log.info("ticker_daily_state: wrote %d row(s) for %s",
+                         n_tds, ctx.today.isoformat())
+            except Exception as exc:
+                # Diagnostic table — never block the bar on a write error.
+                log.warning("ticker_daily_state write failed: %s", exc)
 
             # Plan S — append live_state snapshot. The JSON file is still
             # the source of truth (fast bootstrap + human edits); this row

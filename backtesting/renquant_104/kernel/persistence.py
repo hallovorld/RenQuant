@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS candidate_scores (
     sigma          REAL,
     selected       INTEGER,
     blocked_by     TEXT,
+    -- Audit fix DB-DECISION-FACTORS (2026-04-26 round-5): per user spec
+    -- "每天的所有股票的 decision factor 都要记到数据库里". Capture
+    -- additional factors that drove this bar's decision so post-hoc
+    -- analysis can reconstruct WHY each ticker was selected/blocked.
+    expected_return    REAL,        -- calibrated ER (drives rotation)
+    kelly_target_pct   REAL,        -- Kelly sizing target (μ/σ²)
+    model_type         TEXT,        -- per-ticker model: 'Manual' | 'XGBoost' | 'QLearning' | 'Classification'
+    sector             TEXT,        -- from sector_map, easier than join
+    panel_ltr_artifact TEXT,        -- 'panel-ltr.json' filename or full path
     PRIMARY KEY (run_id, ticker, role),
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
 );
@@ -204,6 +213,48 @@ CREATE INDEX IF NOT EXISTS idx_training_runs_date ON training_runs(run_date);
 --
 -- Each row is one (date, ticker) candidate scored by the panel scorer
 -- in PanelScoringJob. Holdings ARE included (they have rank_score too).
+-- Per-(date, ticker) DAILY DECISION SNAPSHOT for ALL watchlist tickers.
+-- Per user spec 2026-04-26 round-5: "每天所有股票的 decision factor
+-- 都要记到数据库里". Unlike `candidate_scores` (only cands + holdings),
+-- this table covers EVERY watchlist ticker per bar with its FULL
+-- context — even those filtered out by universe/broker-precheck/etc.
+-- Goal: post-hoc analysis can answer "what did we KNOW about XYZ on
+-- 2026-04-26 and WHY didn't we trade it?".
+CREATE TABLE IF NOT EXISTS ticker_daily_state (
+    date              TEXT NOT NULL,
+    ticker            TEXT NOT NULL,
+    -- Bar-level context (joined for query convenience, denormalized)
+    regime            TEXT,
+    confidence        REAL,
+    -- Universe / broker membership
+    in_watchlist      INTEGER,        -- 1 if ticker in strategy_config.watchlist
+    in_universe       INTEGER,        -- 1 if model passed universe floor (Sharpe etc.)
+    pending_at_broker INTEGER,        -- 1 if BROKER-PRECHECK excluded this bar
+    -- Position state
+    has_position      INTEGER,        -- 1 if currently held
+    position_qty      REAL,           -- shares held (NULL if not held)
+    position_pct      REAL,           -- pct of portfolio (NULL if not held)
+    -- Per-ticker model output
+    model_type        TEXT,           -- 'Manual' | 'XGBoost' | 'QLearning' | 'Classification'
+    model_action      TEXT,           -- 'buy' | 'hold' | 'sell'
+    sell_streak       INTEGER,        -- only meaningful when has_position=1
+    -- Panel scores (when computed)
+    panel_score       REAL,
+    rank_score        REAL,
+    expected_return   REAL,
+    kelly_target_pct  REAL,
+    mu                REAL,
+    sigma             REAL,
+    -- Final decision
+    in_candidates     INTEGER,        -- 1 if reached ctx.candidates (per-ticker model said buy)
+    selected          INTEGER,        -- 1 if BUY order placed this bar
+    blocked_by        TEXT,           -- reason if blocked: 'sector_cap'|'corr'|'wash_sale'|'tier'|'universe_floor'|'broker_pending'|'no_model_signal'
+    sector            TEXT,
+    PRIMARY KEY (date, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_tds_date ON ticker_daily_state(date);
+CREATE INDEX IF NOT EXISTS idx_tds_ticker ON ticker_daily_state(ticker);
+
 CREATE TABLE IF NOT EXISTS score_distribution (
     date          TEXT NOT NULL,        -- YYYY-MM-DD (string for sqlite friendliness)
     ticker        TEXT NOT NULL,
@@ -269,6 +320,15 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("deterministic",         "INTEGER"),
         ("training_window_years", "REAL"),
         ("notes",                 "TEXT"),
+    ],
+    # Audit fix DB-DECISION-FACTORS (2026-04-26 round-5): migrate
+    # existing candidate_scores tables to add the new factor columns.
+    "candidate_scores": [
+        ("expected_return",    "REAL"),
+        ("kelly_target_pct",   "REAL"),
+        ("model_type",         "TEXT"),
+        ("sector",             "TEXT"),
+        ("panel_ltr_artifact", "TEXT"),
     ],
 }
 
@@ -453,6 +513,10 @@ def record_candidate_scores(
     holdings: dict[str, Any],
     selected_tickers: set[str],
     blocked_map: dict[str, str] | None = None,
+    *,
+    sector_map:    dict[str, str] | None = None,
+    model_types:   dict[str, str] | None = None,
+    panel_artifact: str | None = None,
 ) -> None:
     """Insert one row per candidate + one per holding.
 
@@ -481,6 +545,8 @@ def record_candidate_scores(
     def _safe_float_or_default(v: Any, default: float = 0.0) -> float:
         f = _none_or_float(v)
         return default if f is None else f
+    sector_map = sector_map or {}
+    model_types = model_types or {}
     for c in candidates:
         rows.append((
             run_id, c.ticker, "candidate",
@@ -492,6 +558,12 @@ def record_candidate_scores(
             _none_or_float(getattr(c, "sigma", None)),
             1 if c.ticker in selected_tickers else 0,
             blocked_map.get(c.ticker),
+            # New decision-factor columns
+            _none_or_float(getattr(c, "expected_return", None)),
+            _none_or_float(getattr(c, "kelly_target_pct", None)),
+            model_types.get(c.ticker),
+            sector_map.get(c.ticker),
+            panel_artifact,
         ))
     for ticker, hs in holdings.items():
         rows.append((
@@ -504,13 +576,20 @@ def record_candidate_scores(
             _none_or_float(getattr(hs, "sigma", None)),
             0,
             None,
+            _none_or_float(getattr(hs, "expected_return", None)),
+            _none_or_float(getattr(hs, "kelly_target_pct", None)),
+            model_types.get(ticker),
+            sector_map.get(ticker),
+            panel_artifact,
         ))
     if rows:
         conn.executemany(
             """INSERT OR REPLACE INTO candidate_scores
                   (run_id, ticker, role, raw_score, rank_score, panel_score, rs_score,
-                   mu, sigma, selected, blocked_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   mu, sigma, selected, blocked_by,
+                   expected_return, kelly_target_pct, model_type, sector,
+                   panel_ltr_artifact)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 
@@ -748,6 +827,73 @@ def record_portfolio_metrics(
     return len(payload)
 
 
+def record_ticker_daily_state(
+    conn: sqlite3.Connection | None,
+    *,
+    run_date: datetime.date,
+    rows: Iterable[dict],
+) -> int:
+    """Upsert ticker_daily_state rows — one per watchlist ticker per bar.
+
+    Per user spec round-5 (2026-04-26): every watchlist ticker gets a row
+    every bar, including those filtered by universe floor / broker
+    pre-check / no-model-signal — so post-hoc analysis can answer "what
+    did we KNOW about XYZ on this date and WHY didn't we trade it?".
+
+    Each row dict supports: regime, confidence, in_watchlist, in_universe,
+    pending_at_broker, has_position, position_qty, position_pct,
+    model_type, model_action, sell_streak, panel_score, rank_score,
+    expected_return, kelly_target_pct, mu, sigma, in_candidates,
+    selected, blocked_by, sector. `ticker` required.
+    """
+    if conn is None:
+        return 0
+    payload = []
+    rd_str = run_date.isoformat() if hasattr(run_date, "isoformat") else str(run_date)
+    for r in rows:
+        if not r.get("ticker"):
+            continue
+        payload.append((
+            rd_str,
+            r["ticker"],
+            r.get("regime"),
+            _none_or_float(r.get("confidence")),
+            _none_or_int(r.get("in_watchlist")),
+            _none_or_int(r.get("in_universe")),
+            _none_or_int(r.get("pending_at_broker")),
+            _none_or_int(r.get("has_position")),
+            _none_or_float(r.get("position_qty")),
+            _none_or_float(r.get("position_pct")),
+            r.get("model_type"),
+            r.get("model_action"),
+            _none_or_int(r.get("sell_streak")),
+            _none_or_float(r.get("panel_score")),
+            _none_or_float(r.get("rank_score")),
+            _none_or_float(r.get("expected_return")),
+            _none_or_float(r.get("kelly_target_pct")),
+            _none_or_float(r.get("mu")),
+            _none_or_float(r.get("sigma")),
+            _none_or_int(r.get("in_candidates")),
+            _none_or_int(r.get("selected")),
+            r.get("blocked_by"),
+            r.get("sector"),
+        ))
+    if not payload:
+        return 0
+    conn.executemany(
+        """INSERT OR REPLACE INTO ticker_daily_state
+              (date, ticker, regime, confidence,
+               in_watchlist, in_universe, pending_at_broker,
+               has_position, position_qty, position_pct,
+               model_type, model_action, sell_streak,
+               panel_score, rank_score, expected_return, kelly_target_pct,
+               mu, sigma, in_candidates, selected, blocked_by, sector)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        payload,
+    )
+    return len(payload)
+
+
 def record_forward_returns(
     conn: sqlite3.Connection | None,
     rows: Iterable[dict],
@@ -875,5 +1021,6 @@ __all__ = [
     "record_forward_returns",
     "record_live_state_snapshot",
     "record_portfolio_metrics",
+    "record_ticker_daily_state",
     "lookup_candidate_scores_on_date",
 ]
