@@ -35,13 +35,17 @@ import argparse
 import datetime as dt
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PYTHON    = "/Users/renhao/miniconda3/envs/renquant/bin/python"
+PYTHON    = os.environ.get("PYTHON", sys.executable)
+# Audit fix HARDCODED-PYTHON (2026-04-26): was hardcoded to renhao's
+# conda env. Now uses sys.executable (current interpreter) by default,
+# overridable via PYTHON env var. Works on any machine + in CI.
 
 logging.basicConfig(
     level=logging.INFO,
