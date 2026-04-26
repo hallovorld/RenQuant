@@ -155,33 +155,62 @@ class PanelLTRModel:
             if any(s != 0 for s in signs):
                 params["monotone_constraints"] = "(" + ",".join(str(s) for s in signs) + ")"
 
-        # Round-3 audit (#R3-9 #R3-10): plumb the function-arg early stop
-        # through xgb.train when caller actually supplies eval data.
-        # Audit fix X1 (2026-04-26, attempted-but-deferred): XGBoost 3.x
-        # ranking objective auto-enables NDCG metric which requires
-        # INTEGER relevance labels. Our Gaussianized labels are
-        # continuous → NDCG raises `label_is_integer` and crashes the
-        # process at the C++ level (not catchable in Python). Workarounds
-        # tried: setting `eval_metric=rmse` or `disable_default_eval_metric=1`
-        # — XGBoost still computes NDCG internally on the ranking
-        # objective. The right fix is **Python-level early stopping**
-        # (compute spearman IC each round, manually break) which is a
-        # bigger refactor. Deferred to a follow-up commit. For now,
-        # XGBoost trains full num_boost_round + relies on monotone
-        # constraints + L1/L2 reg + min_child_weight to constrain.
-        train_kwargs: dict[str, Any] = {
-            "num_boost_round": num_boost_round,
-            "verbose_eval":    False,
-        }
-        # NOTE: eval/early-stop not enabled for XGBoost (see comment above).
-        # LightGBM handles continuous labels via lambdarank without this issue.
-        _ = early_stopping_rounds   # currently unused for XGBoost
-        _ = deval                    # currently unused for XGBoost
-
-        self.booster = xgb.train(params, dtrain, **train_kwargs)
-        # When xgboost-side early stopping fires, `best_iteration` is set on
-        # the booster. Otherwise final round.
-        self.best_iter = getattr(self.booster, "best_iteration", num_boost_round - 1)
+        # Audit fix X1+X2 (2026-04-26, completed): Python-level early
+        # stopping. XGBoost 3.x ranking objective auto-enables NDCG which
+        # requires INTEGER labels — our Gaussianized labels are
+        # continuous → NDCG raises `label_is_integer` (un-catchable C++
+        # crash). Workaround: train in chunks, compute spearman IC per
+        # chunk, manually break on patience. xgboost's incremental
+        # training via `xgb_model=current_booster` lets us continue
+        # training without losing state.
+        if (deval is not None
+                and early_stopping_rounds is not None
+                and early_stopping_rounds > 0
+                and eval_panel is not None):
+            chunk_size = max(int(early_stopping_rounds), 5)
+            best_ic       = float("-inf")
+            best_booster  = None
+            best_iter     = 0
+            patience_left = int(early_stopping_rounds)
+            cur_booster   = None
+            rounds_done   = 0
+            while rounds_done < num_boost_round:
+                this_chunk = min(chunk_size, num_boost_round - rounds_done)
+                cur_booster = xgb.train(
+                    params, dtrain,
+                    num_boost_round = this_chunk,
+                    xgb_model       = cur_booster,
+                    verbose_eval    = False,
+                )
+                rounds_done += this_chunk
+                eval_preds = cur_booster.predict(deval)
+                ic = _mean_ic(eval_panel, eval_preds, label_col)
+                if ic > best_ic + 1e-4:
+                    best_ic       = ic
+                    best_iter     = rounds_done - 1
+                    # Persist via byte serialization to immortalize
+                    best_booster  = cur_booster.save_raw(raw_format="ubj")
+                    patience_left = int(early_stopping_rounds)
+                else:
+                    patience_left -= this_chunk
+                if patience_left <= 0:
+                    break
+            # Restore best
+            if best_booster is not None:
+                self.booster = xgb.Booster()
+                self.booster.load_model(bytearray(best_booster))
+            else:
+                self.booster = cur_booster
+            self.best_iter = best_iter
+        else:
+            train_kwargs: dict[str, Any] = {
+                "num_boost_round": num_boost_round,
+                "verbose_eval":    False,
+            }
+            self.booster = xgb.train(params, dtrain, **train_kwargs)
+            # When xgboost-side early stopping fires, `best_iteration` is set on
+            # the booster. Otherwise final round.
+            self.best_iter = getattr(self.booster, "best_iteration", num_boost_round - 1)
 
         result: dict[str, Any] = {"best_iter": self.best_iter}
         train_preds = self.booster.predict(dtrain)
