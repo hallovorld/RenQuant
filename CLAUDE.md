@@ -454,6 +454,19 @@ After any non-trivial change, run `/update-docs` or manually sync:
 | `doc/unified_portfolio_action_design_2026-04-26.md` | Theory & 7-stage QP design. 35+ literature refs. |
 | `doc/calibrator_saturation_2026-04-26.md` | Calibrator pool/eval IC collapse finding + 4 fixes shipped (CALIB-PER-DATE-IC + CALIB-COLLAPSE-GUARD). |
 | `doc/db_design_decision_factors_2026-04-26.md` | `ticker_daily_state` schema + Tier-2 model registry. Round-5 user spec: every watchlist ticker per bar. |
+| `doc/session_summary_2026-04-26.md` | **End-of-day record** for 2026-04-26 — 41 commits / 19 bug fixes / mega-audit / production turn-on (Gate B + QP). Read this first if returning to repo. |
+| `doc/sim_ab_results_2026-04-26.md` | A/B verdict (gate-b@0.10 wins +26.91% APY). Production decision basis. |
+| `doc/mega_audit_plan_2026-04-26.md` | 6-phase audit master plan. Per-phase findings in `mega_audit_phase{1..6}_findings_2026-04-26.md`. **0 P0 bugs** found across 30k+ LOC. |
+| `doc/session_self_audit_2026-04-26.md` | Self-audit of session work; identified 4 lurking-bug categories. |
+| `doc/calibration_db_design_2026-04-26.md` | Calibration DB design (per user spec — score percentile DB). |
+| `doc/rotate_algorithm_design.md` | Rotation algorithm spec (joint sell/buy + rotation pairs). |
+| `doc/model_training_design.md` | Model training pipeline spec. |
+| `doc/papers_implemented.md` | Cross-reference table — which paper each algo block implements. Use this when reading code references. |
+| `doc/transformer_audit_2026-04-26.md` | Transformer 95% audit (103 issues catalogued). |
+| `doc/post_tier1_followups_2026-04-25.md` | Tier-1 retrain follow-up queue. |
+| `doc/audit_3hour_2026-04-26.md` | 3-hour deep audit findings (precursor to mega-audit). |
+| `doc/session_handoff_2026-04-25.md` | Session-end state 2026-04-25. |
+| `doc/session_handoff_2026-04-23.md` | Session-end state 2026-04-23 (G promoted, F+H shelved). |
 | `doc/database.md` | **DB reference** — two-file architecture (data/runs.db live + data/sim_runs.db sim), 7 tables × full column schema, common queries, schema migration rules, retention plan. DB is a core asset — consult before adding columns. |
 | `doc/improvement_roadmap.md` | **Living roadmap** — Active queue (pending work) + Completed archive. Work through top-down. |
 | `doc/session_handoff_2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Superseded on 2026-04-24 by roadmap update + 26 commits (M⁺/P/AA/Trim/BC/CUSUM-v2-PROMOTED-v4.1/S/Kelly-pure/Multi-entry/Thesis-A/DB split). |

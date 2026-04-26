@@ -372,3 +372,89 @@ class TestSnapshotOverrideWarn:
             if cfg.get(k) != same.get(k):
                 divergent.append(k)
         assert not divergent
+
+
+# ── P1-2 fix: _apply_overrides property-based test ────────────────────────────
+
+class TestApplyOverridesPropertyBased:
+    """Audit fix VALIDATE-OVERRIDES-PROPERTY (2026-04-26): all keys present
+    in input config must still be present in output, with values either
+    preserved or explicitly mutated. Catches accidental key dropping
+    in any nested setdefault chain.
+
+    Files audit P1-2.
+    """
+
+    def _full_prod_config(self):
+        """Realistic config dict mirroring the production strategy_config.json
+        shape: nested rotation/ranking/regime_params/sector_map/etc."""
+        import json
+        from pathlib import Path
+        prod_path = (Path(__file__).resolve().parent.parent
+                      / "backtesting" / "renquant_104"
+                      / "strategy_config.json")
+        if prod_path.exists():
+            return json.loads(prod_path.read_text())
+        # Fallback synthetic config
+        return {
+            "watchlist": ["AAPL", "MSFT"],
+            "sector_map": {"AAPL": "tech"},
+            "rotation": {"joint_actions": {"enabled": True, "solver": "qp"}},
+            "ranking": {"panel_scoring": {"enabled": True}},
+            "regime_params": {"BULL_CALM": {"max_position_pct": 0.20}},
+            "wash_sale_days": 30,
+        }
+
+    def _all_keys(self, d, prefix=""):
+        """Recursively flatten dict keys."""
+        out = set()
+        if isinstance(d, dict):
+            for k, v in d.items():
+                key = f"{prefix}.{k}" if prefix else k
+                out.add(key)
+                out.update(self._all_keys(v, key))
+        return out
+
+    def test_input_keys_preserved_or_added(self):
+        """Every key present in input must still exist in output, or
+        the function must have explicitly added it (not silently dropped)."""
+        cfg = self._full_prod_config()
+        in_keys = self._all_keys(cfg)
+        out = _apply_overrides(cfg, baseline=True)
+        out_keys = self._all_keys(out)
+        dropped = in_keys - out_keys
+        assert not dropped, f"Keys silently dropped: {dropped}"
+
+    def test_baseline_does_not_mutate_input(self):
+        """deepcopy contract — input cfg must NOT be mutated."""
+        cfg = self._full_prod_config()
+        cfg_snapshot = self._all_keys(cfg)
+        original_solver = (cfg.get("rotation", {}).get("joint_actions", {}).get("solver"))
+        _ = _apply_overrides(cfg, baseline=True)
+        # Input config solver should still be 'qp' (not changed to 'greedy')
+        post_solver = (cfg.get("rotation", {}).get("joint_actions", {}).get("solver"))
+        assert original_solver == post_solver, \
+            "_apply_overrides mutated input config (deepcopy broken)"
+        # No keys lost from input
+        assert self._all_keys(cfg) == cfg_snapshot, \
+            "_apply_overrides changed input cfg shape"
+
+    def test_idempotent_under_repeated_baseline(self):
+        """Calling baseline=True twice should produce same output."""
+        cfg = self._full_prod_config()
+        out1 = _apply_overrides(cfg, baseline=True)
+        out2 = _apply_overrides(out1, baseline=True)
+        assert self._all_keys(out1) == self._all_keys(out2)
+        # Specific values stable
+        assert out1["rotation"]["joint_actions"]["solver"] == out2["rotation"]["joint_actions"]["solver"]
+
+    def test_gate_b_does_not_drop_existing_panel_scoring(self):
+        """Adding Gate B must not silently delete other panel_scoring keys
+        (sigma_sizing, ngboost, global_calibration etc)."""
+        cfg = self._full_prod_config()
+        ps_keys_before = set((cfg.get("ranking", {}).get("panel_scoring", {}) or {}).keys())
+        out = _apply_overrides(cfg, gate_b_threshold=0.20)
+        ps_keys_after = set(out["ranking"]["panel_scoring"].keys())
+        # All original keys still there + at least 'quality_floor' added
+        assert ps_keys_before.issubset(ps_keys_after)
+        assert "quality_floor" in ps_keys_after
