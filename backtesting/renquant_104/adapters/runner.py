@@ -230,28 +230,44 @@ class RunnerAdapter:
             # today-minus-today (which made hold_days=0 forever → locked all
             # min_hold_days / rotation gates). Ideally seed from Alpaca's
             # fill timestamp on migration; today is the least-bad fallback.
+            # Audit fix ENTRY-DATE-FROM-FILLS / ENTRY-DATE-BACKFILL
+            # (Bug C extended, 2026-04-25): the broker's first BUY-fill
+            # date is the AUTHORITATIVE entry date (cost-basis tenure
+            # from Alpaca). Three cases:
+            #   1. State has no entry_date → seed from broker fill if
+            #      available, else use sentinel (31d ago).
+            #   2. State has entry_date but broker shows OLDER first
+            #      BUY → broker is correct (state was wrongly stamped
+            #      "today" by a prior runner that didn't have ENTRY-DATE-
+            #      FROM-FILLS). Override state with broker's earlier date.
+            #      This unlocks min_hold_days / rotation tenure that the
+            #      stale state was artificially extending.
+            #   3. State has entry_date and it matches/predates broker →
+            #      preserve (handles top-ups + cost-basis-fifo cases).
+            broker_first = first_fill_map.get(ticker)
             if ticker not in entry_dates:
-                # Audit fix ENTRY-DATE-FROM-FILLS (Bug C, 2026-04-25):
-                # use broker fill history if available, else fall back
-                # to a sentinel that's PAST min_hold_days so an inherited
-                # position isn't artificially locked. Pre-fix this stamped
-                # today.isoformat() → hold_days = 0 → 30-day lockout.
-                seeded = first_fill_map.get(ticker)
-                if seeded is not None:
-                    entry_dates[ticker] = seeded.isoformat()
+                if broker_first is not None:
+                    entry_dates[ticker] = broker_first.isoformat()
                     log.info("ENTRY-DATE-SEED %s ← %s (broker fill history)",
-                             ticker, seeded.isoformat())
+                             ticker, broker_first.isoformat())
                 else:
-                    # Sentinel: 31 days ago — past min_hold_days=30 default
-                    # but well within wash-sale (30d) window. The position
-                    # is unlocked for normal model-sell evaluation but
-                    # tax-classification (LT/ST) won't be wrong — that
-                    # uses the actual broker cost-basis date, not state.
                     sentinel = today - datetime.timedelta(days=31)
                     entry_dates[ticker] = sentinel.isoformat()
                     log.warning("ENTRY-DATE-SEED %s ← %s (sentinel — broker had no "
                                 "fill history; manual fix recommended)",
                                 ticker, sentinel.isoformat())
+            else:
+                # Backfill: broker authority overrides stale state when older.
+                if broker_first is not None:
+                    try:
+                        cur_entry = datetime.date.fromisoformat(entry_dates[ticker])
+                    except (ValueError, TypeError):
+                        cur_entry = today
+                    if broker_first < cur_entry:
+                        log.info("ENTRY-DATE-BACKFILL %s: state=%s → broker=%s "
+                                 "(broker fill is older — stale state corrected)",
+                                 ticker, entry_dates[ticker], broker_first.isoformat())
+                        entry_dates[ticker] = broker_first.isoformat()
             entry_str = entry_dates[ticker]
             try:
                 entry_dt = datetime.date.fromisoformat(entry_str)
