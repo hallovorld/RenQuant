@@ -13,14 +13,15 @@ import time
 
 from .context  import InferenceContext, TickerInferenceContext
 from .pipeline import run_parallel
-from .job_regime     import RegimeJob
-from .job_drawdown   import DrawdownJob
-from .job_gates      import BuyGatesJob
-from .job_sell       import TickerSellJob
-from .job_candidates import TickerCandidateJob
-from .job_ranking    import RankingJob
-from .job_rotation   import RotationJob
-from .job_selection  import SelectionJob
+from .job_regime         import RegimeJob
+from .job_drawdown       import DrawdownJob
+from .job_gates          import BuyGatesJob
+from .job_sell           import TickerSellJob
+from .job_candidates     import TickerCandidateJob
+from .job_ranking        import RankingJob
+from .job_rotation       import RotationJob
+from .job_selection      import SelectionJob
+from .job_joint_actions  import JointActionJob
 
 # PanelScoringJob is imported lazily inside run() to avoid a circular import:
 # kernel.panel_pipeline.__init__ pulls in this module via
@@ -144,7 +145,21 @@ class InferencePipeline:
         # Wiring it here keeps the docstring promise. getattr fallback
         # so tests that monkey-patch Jobs with bare callables (no
         # should_skip method) still drive the pipeline.
-        for job in (PanelScoringJob(), RankingJob(), RotationJob(), SelectionJob()):
+        # Phase 2 (2026-04-25): JointActionJob replaces RotationJob +
+        # SelectionJob when `rotation.joint_actions.enabled = true`. When
+        # the flag is false (default), JointActionJob.should_skip returns
+        # True and the legacy chain runs unchanged. When the flag is
+        # true, the legacy Rotation + Selection Jobs are bypassed in this
+        # bar (their state is already handled by JointActionJob).
+        joint_enabled = bool((ctx.config.get("rotation", {})
+                                       .get("joint_actions", {})
+                                       .get("enabled", False)))
+        if joint_enabled and not ctx.bear_only:
+            phase3_jobs = (PanelScoringJob(), RankingJob(), JointActionJob())
+        else:
+            phase3_jobs = (PanelScoringJob(), RankingJob(),
+                           RotationJob(), SelectionJob())
+        for job in phase3_jobs:
             skip_fn = getattr(job, "should_skip", None)
             if callable(skip_fn) and skip_fn(ctx):
                 log.debug("%s skipped by should_skip", type(job).__name__)
