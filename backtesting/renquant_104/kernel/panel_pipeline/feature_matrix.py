@@ -35,6 +35,13 @@ def _pick_today_row(df: pd.DataFrame, today: pd.Timestamp) -> pd.Series | None:
     """Return the row dated `today`, or the most recent row on-or-before it.
 
     Returns None if the frame has no row on-or-before `today`.
+
+    Audit fix FM-NEW-1 (2026-04-26 round-3): pre-fix, code used
+    `np.where(mask)[0].max()` which picks the LAST POSITION matching
+    the date filter. That assumed df is sorted ascending by date —
+    if not (e.g. shuffled or descending), it picks the wrong row.
+    Now: argmax over the masked DATES gives the LATEST DATE
+    regardless of frame ordering.
     """
     if df is None or df.empty:
         return None
@@ -42,8 +49,13 @@ def _pick_today_row(df: pd.DataFrame, today: pd.Timestamp) -> pd.Series | None:
     mask = idx <= today
     if not mask.any():
         return None
-    last = df.iloc[np.where(mask)[0].max()]
-    return last
+    # Use argmax on the masked dates to find the position with the
+    # latest date. mask is bool numpy; idx[mask] is the subset of dates
+    # ≤ today. The position of the max is what we want.
+    masked_idx = idx[mask]
+    masked_positions = np.where(mask)[0]
+    latest_pos_in_subset = masked_idx.argmax()
+    return df.iloc[masked_positions[latest_pos_in_subset]]
 
 
 def build_inference_matrix(
