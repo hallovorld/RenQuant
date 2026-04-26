@@ -98,6 +98,8 @@ def find_thesis_primary_pairs(
     today:             datetime.date,
     rotation_cfg:      dict,
     tax_cfg:           dict,
+    panel_buy_floor:   "float | None" = None,        # candidate rank_score must be >= this
+    panel_sell_floor:  "float | None" = None,        # held today rank_score must be <= this
 ) -> list[RotationPair]:
     """Route B — thesis-degradation as the PRIMARY rotation gate.
 
@@ -139,6 +141,12 @@ def find_thesis_primary_pairs(
             continue
         today_score = held_today_scores.get(ticker)
         if today_score is None:
+            continue
+        # Phase 1 (2026-04-25): panel_sell_floor — held position only
+        # eligible to rotate OUT when today's calibrated rank_score is
+        # weak enough (<= floor). Spec: 被替换的 portfolio 里的 stock
+        # 的 score 要低于一个值。
+        if panel_sell_floor is not None and float(today_score) > float(panel_sell_floor):
             continue
         meta = held_meta.get(ticker)
         if meta is None:
@@ -187,6 +195,11 @@ def find_thesis_primary_pairs(
         if cand_ticker in held_entry_scores:
             continue
         cand_score = float(c.rank_score)
+        # Phase 1 (2026-04-25): panel_buy_floor — candidate must clear
+        # this calibrated rank_score before it can replace anyone.
+        # Spec: 进到 portfolio 的 stock 的 score 要高于一个值。
+        if panel_buy_floor is not None and cand_score < float(panel_buy_floor):
+            continue
 
         # Find the most-degraded held whose entry baseline cand also beats
         best_match: str | None = None
@@ -238,6 +251,8 @@ def find_thesis_symmetric_pairs(
     tax_cfg:           dict,
     own_momentum:      "dict[str, float] | None" = None,
                                                         # {ticker: 63d return}
+    panel_buy_floor:   "float | None" = None,            # candidate rank_score >= this
+    panel_sell_floor:  "float | None" = None,            # held today rank_score <= this
 ) -> list[RotationPair]:
     """Rotation V4 — full 4-point symmetric thesis mode (2026-04-24).
 
@@ -293,6 +308,9 @@ def find_thesis_symmetric_pairs(
         a_today = held_today_scores.get(ticker)
         if a_today is None:
             continue
+        # Phase 1 (2026-04-25): panel_sell_floor — held weak enough to swap out.
+        if panel_sell_floor is not None and float(a_today) > float(panel_sell_floor):
+            continue
         meta = held_meta.get(ticker)
         if meta is None:
             continue
@@ -344,6 +362,9 @@ def find_thesis_symmetric_pairs(
         if cand_ticker in held_entry_scores:
             continue
         b_today = float(getattr(c, "rank_score", 0.0) or 0.0)
+        # Phase 1 (2026-04-25): panel_buy_floor — candidate strong enough to enter.
+        if panel_buy_floor is not None and b_today < float(panel_buy_floor):
+            continue
 
         best_match: "str | None" = None
         best_flip: float = -math.inf
@@ -411,6 +432,8 @@ def find_rotation_pairs(
     today:          datetime.date,
     rotation_cfg:   dict,
     tax_cfg:        dict,
+    panel_buy_floor:  "float | None" = None,    # candidate rank_score >= this
+    panel_sell_floor: "float | None" = None,    # held rank_score <= this
 ) -> list[RotationPair]:
     """Greedy pairing using expected-return decision rule.
 
@@ -461,6 +484,11 @@ def find_rotation_pairs(
     for ticker, score in held_scores.items():
         if score is None:
             continue
+        # Phase 1 (2026-04-25): panel_sell_floor — held rank_score weak
+        # enough to swap out. Spec: 被替换的 portfolio 里的 stock 的
+        # score 要低于一个值。
+        if panel_sell_floor is not None and float(score) > float(panel_sell_floor):
+            continue
         er = held_er.get(ticker)
         if er is None or not math.isfinite(er):
             continue
@@ -505,6 +533,9 @@ def find_rotation_pairs(
         if cand_ticker in held_scores:
             continue
         cand_score = float(c.rank_score)
+        # Phase 1 (2026-04-25): panel_buy_floor — candidate strong enough.
+        if panel_buy_floor is not None and cand_score < float(panel_buy_floor):
+            continue
         cand_er    = float(getattr(c, "expected_return", 0.0) or 0.0)
         if not math.isfinite(cand_er):
             continue

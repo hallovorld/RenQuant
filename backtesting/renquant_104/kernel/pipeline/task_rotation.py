@@ -90,6 +90,20 @@ class BuildPairsTask(Task):
         min_hold    = int(rotation_cfg.get("min_rotation_hold_days", 30))
         lt_protect  = int(rotation_cfg.get("lt_protection_days", 30))
 
+        # Phase 1 (2026-04-25) — score-threshold double-gate. Calibrated
+        # rank_score floors:
+        #   panel_buy_floor  → candidate must have rank_score >= this
+        #   panel_sell_floor → held must have today rank_score <= this
+        # Default None on both = disabled (current behaviour preserved).
+        # Spec: "被替换的 portfolio 里的 stock 的 score 要低于一个值，
+        # 进到 portfolio 的 stock 的 score 要高于一个值" — both bounds
+        # apply to the calibrated probability that ApplyGlobalCalibrationTask
+        # writes onto holdings + candidates.
+        _bf_raw = rotation_cfg.get("panel_buy_floor")
+        _sf_raw = rotation_cfg.get("panel_sell_floor")
+        panel_buy_floor  = float(_bf_raw) if _bf_raw is not None else None
+        panel_sell_floor = float(_sf_raw) if _sf_raw is not None else None
+
         # Cross-sectional panel gate — candidate panel_score must beat held
         # panel_score by this fraction. 0.0 disables the gate (default).
         panel_cfg           = ctx.config.get("ranking", {}).get("panel_scoring", {})
@@ -269,6 +283,8 @@ class BuildPairsTask(Task):
                 today             = ctx.today,
                 rotation_cfg      = merged_rot_cfg,
                 tax_cfg           = tax_cfg,
+                panel_buy_floor   = panel_buy_floor,
+                panel_sell_floor  = panel_sell_floor,
             )
             log.info("RotationJob: thesis_primary mode — %d pair(s)", len(pairs))
             ctx.rotations = pairs
@@ -356,6 +372,8 @@ class BuildPairsTask(Task):
                 rotation_cfg      = rotation_cfg,
                 tax_cfg           = tax_cfg,
                 own_momentum      = own_mom or None,
+                panel_buy_floor   = panel_buy_floor,
+                panel_sell_floor  = panel_sell_floor,
             )
             log.info(
                 "RotationJob: thesis_symmetric mode — %d pair(s), "
@@ -397,13 +415,15 @@ class BuildPairsTask(Task):
             candidates_for_pairing = eligible_candidates
 
         pairs = find_rotation_pairs(
-            held_scores  = held_scores,
-            held_er      = held_er,
-            held_meta    = held_meta,
-            candidates   = candidates_for_pairing,
-            today        = ctx.today,
-            rotation_cfg = merged_cfg,
-            tax_cfg      = tax_cfg,
+            held_scores      = held_scores,
+            held_er          = held_er,
+            held_meta        = held_meta,
+            candidates       = candidates_for_pairing,
+            today            = ctx.today,
+            rotation_cfg     = merged_cfg,
+            tax_cfg          = tax_cfg,
+            panel_buy_floor  = panel_buy_floor,
+            panel_sell_floor = panel_sell_floor,
         )
 
         # Cross-sectional panel gate: require cand.panel_score to beat

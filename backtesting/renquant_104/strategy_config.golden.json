@@ -346,7 +346,9 @@
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
-    "max_rotations_per_bar": 2
+    "max_rotations_per_bar": 2,
+    "panel_buy_floor": 0.45,
+    "panel_sell_floor": 0.20
   },
   "sample_start": "2016-01-01",
   "sample_end": "2026-06-30",
