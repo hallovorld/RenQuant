@@ -169,27 +169,27 @@
       "max_position_pct": 0.2,
       "cash_reserve_pct": 0.2,
       "stop_loss_pct": 0.05,
-      "max_single_day_loss_pct": 0.0,
+      "max_single_day_loss_pct": 0.10,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.1,
       "entry_mode": "capitulation",
       "min_model_score": 0.15,
       "min_price_move_pct": 0.005,
-      "trailing_stop_trigger_pct": 0.0,
-      "trailing_stop_trail_pct": 0.0
+      "trailing_stop_trigger_pct": 0.20,
+      "trailing_stop_trail_pct": 0.10
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.3,
       "stop_loss_pct": 0.08,
-      "max_single_day_loss_pct": 0.0,
+      "max_single_day_loss_pct": 0.10,
       "max_hold_days": 40,
       "drawdown_halt_pct": 0.08,
       "entry_mode": "divergence",
       "min_model_score": 0.15,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.0,
-      "trailing_stop_trail_pct": 0.0,
+      "trailing_stop_trigger_pct": 0.15,
+      "trailing_stop_trail_pct": 0.10,
       "max_concurrent_positions": 4
     },
     "BEAR": {
@@ -202,8 +202,8 @@
       "entry_mode": "blocked",
       "min_model_score": 0.0,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.0,
-      "trailing_stop_trail_pct": 0.0
+      "trailing_stop_trigger_pct": 0.10,
+      "trailing_stop_trail_pct": 0.05
     }
   },
   "defensive_tickers": [

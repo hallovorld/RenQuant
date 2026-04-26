@@ -32,10 +32,18 @@ of panel rank):
   * kelly_trim    - panel-aware rebalance (μ/σ² target)
 
 **Streak cap** (audit fix PV-NEW-7): when the per-ticker model has been
-signalling SELL for ``max_streak_to_veto`` consecutive days (default
-5), the veto STOPS firing for that held — persistent weakness override.
-Prevents "stuck" scenarios where panel ranks the held strong forever
-but the per-ticker model keeps insisting on exit.
+signalling SELL for ``max_streak_to_veto`` consecutive **trading days**
+(default 5 — about 1 week of trading), the veto STOPS firing for that
+held — persistent weakness override. Prevents "stuck" scenarios where
+panel ranks the held strong forever but the per-ticker model keeps
+insisting on exit. Note: each bar = one trading day; weekends excluded.
+
+**Dependency** (audit fix PV-NEW-9): this task assumes
+``ranking.panel_scoring.global_calibration.enabled = true`` so that
+`held.rank_score` is the calibrated panel-LTR probability. Without
+calibration, `held.rank_score` would be the per-ticker model score
+(which is what we're trying to veto on) — using it as the veto signal
+would be self-contradictory. Run-time check below logs a warning.
 
 **Telemetry**: every veto logged with ticker / score / threshold +
 streak. ctx.counters["model_sell_vetoed"] tracks count. ctx.exits_vetoed
@@ -101,6 +109,25 @@ class PanelRankVetoTask(Task):
             return False
         if not ctx.exits:
             return False
+
+        # Audit fix PV-NEW-9 (2026-04-26 round-3): defensive check that
+        # global_calibration is enabled. Without it, held.rank_score is
+        # the per-ticker model's score (the very thing we're trying to
+        # veto on) — self-contradictory. Log a warning but proceed —
+        # operator may have intentional reasons (e.g., debugging).
+        cal_enabled = bool(
+            (ctx.config.get("ranking", {})
+                       .get("panel_scoring", {})
+                       .get("global_calibration", {})
+                       .get("enabled", False))
+        )
+        if not cal_enabled:
+            log.warning(
+                "PanelRankVetoTask: ranking.panel_scoring.global_calibration "
+                "is DISABLED. held.rank_score will be the per-ticker model "
+                "score (not panel-calibrated). Veto logic may be misleading. "
+                "Enable global_calibration for correct semantics."
+            )
 
         min_rank_score = float(cfg.get("min_rank_score", 0.50))
         # Audit fix PV-NEW-7 (2026-04-26 round-3): streak cap so a held
