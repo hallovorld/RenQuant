@@ -307,7 +307,11 @@ class JointActionTask(Task):
             if ticker in prior_exit_tickers:
                 continue
             held_score = getattr(h, "rank_score", None)
-            if held_score is None:
+            # Audit fix JOINT-NEW-2 (2026-04-26 round-3): explicit NaN
+            # guard. Pre-fix, NaN score passed `is None` check + `> sell_floor`
+            # comparison (NaN > X is False), creating SELL/ROTATE entries
+            # with NaN net_alpha. Filter explicitly.
+            if held_score is None or not math.isfinite(float(held_score)):
                 continue
             if sell_floor is not None and float(held_score) > sell_floor:
                 continue
@@ -332,7 +336,11 @@ class JointActionTask(Task):
             if h_t in prior_exit_tickers:
                 continue
             held_score = getattr(h, "rank_score", None)
-            if held_score is None:
+            # Audit fix JOINT-NEW-2 (2026-04-26 round-3): explicit NaN
+            # guard. Pre-fix, NaN score passed `is None` check + `> sell_floor`
+            # comparison (NaN > X is False), creating SELL/ROTATE entries
+            # with NaN net_alpha. Filter explicitly.
+            if held_score is None or not math.isfinite(float(held_score)):
                 continue
             if sell_floor is not None and float(held_score) > sell_floor:
                 continue
