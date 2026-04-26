@@ -143,6 +143,11 @@ class TransformerParams:
     # Pre-fix, only Spearman IC. Adds Kendall tau as secondary signal
     # — useful for diagnosing whether model captures rank order vs noise.
     log_kendall_tau: bool = False
+    # Audit fix #35 (2026-04-26 round-3): gradient accumulation. Allows
+    # effective batch size = batch_size × accumulation_steps without
+    # using more memory. Default 1 (no accumulation). Useful when
+    # MPS/CUDA RAM is tight but you want larger effective batch.
+    grad_accumulation_steps: int = 1
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -697,9 +702,13 @@ class PanelTransformerModel:
         # minibatch SGD), transformers benefit from warmup on the first
         # ~10% of steps, followed by cosine decay. Constant lr can spike
         # gradient norms early on and stall progress later.
-        steps_per_epoch = max(1, (xtr.shape[0] + p.batch_size - 1) // p.batch_size)
-        total_steps     = steps_per_epoch * effective_max_epochs
-        warmup_steps    = int(round(total_steps * float(p.warmup_fraction)))
+        # Audit fix #35 (2026-04-26 round-3): account for grad accumulation
+        # when computing optimizer steps (one optimizer step per N batches).
+        accum_n = max(1, int(p.grad_accumulation_steps))
+        batches_per_epoch = max(1, (xtr.shape[0] + p.batch_size - 1) // p.batch_size)
+        steps_per_epoch   = max(1, batches_per_epoch // accum_n)
+        total_steps       = steps_per_epoch * effective_max_epochs
+        warmup_steps      = int(round(total_steps * float(p.warmup_fraction)))
         min_lr_factor   = float(p.cosine_min_lr_ratio)
 
         def _lr_factor(step: int) -> float:
@@ -793,19 +802,27 @@ class PanelTransformerModel:
                     nan_skipped += 1
                     continue
 
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                # Audit fix T-16 (2026-04-25): clip gradient norm before
-                # the optimiser step. AdamW + softmax/log-softmax can spike
-                # gradients when scores diverge; clipping prevents one bad
-                # batch from destabilising training.
-                if p.grad_clip_norm and p.grad_clip_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        self._model.parameters(), max_norm=float(p.grad_clip_norm),
-                    )
-                opt.step()
-                # Audit fix #31+#32: step the LR scheduler each batch.
-                scheduler.step()
+                # Audit fix #35 (2026-04-26 round-3): gradient accumulation.
+                # When accumulation_steps > 1, scale loss by 1/N so the
+                # accumulated gradient has the same magnitude as a single
+                # large-batch step. Step optimizer only every Nth batch.
+                accum_n = max(1, int(p.grad_accumulation_steps))
+                accum_step = (start // p.batch_size) % accum_n
+                if accum_step == 0:
+                    opt.zero_grad(set_to_none=True)
+                (loss / accum_n).backward()
+                if accum_step == accum_n - 1:
+                    # Audit fix T-16 (2026-04-25): clip gradient norm before
+                    # the optimiser step.
+                    if p.grad_clip_norm and p.grad_clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self._model.parameters(), max_norm=float(p.grad_clip_norm),
+                        )
+                    opt.step()
+                    # Audit fix #31+#32: step the LR scheduler each
+                    # OPTIMIZER step (not each batch — scheduler total_steps
+                    # was computed for optimizer steps).
+                    scheduler.step()
                 epoch_loss += float(loss.item()) * len(idx)
             epoch_loss /= max(n_groups, 1)
             if nan_skipped > 0:
