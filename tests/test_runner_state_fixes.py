@@ -190,3 +190,41 @@ class TestRotCounter:
         # n_rotations fed from ctx.counters["rotations"] which is incremented
         # only on actual emit
         assert 'ctx.counters.get("rotations", 0)' in RUNNER_SOURCE
+
+
+# ── ticker_daily_state writer (round-5) ───────────────────────────────────────
+
+class TestTickerDailyStateWiring:
+    """Per user spec round-5 (2026-04-26): every watchlist ticker must
+    get a ticker_daily_state row per bar — including those filtered at
+    universe / broker / no-model gates. Validates wiring is in place at
+    source level (the writer's own behavior is covered by
+    test_ticker_daily_state.py)."""
+
+    def test_writer_imported(self):
+        assert "record_ticker_daily_state" in RUNNER_SOURCE
+
+    def test_iterates_full_watchlist_not_just_cands(self):
+        # The wiring loop must iterate config["watchlist"], not just
+        # ctx.candidates — that is the entire point of round-5.
+        assert 'self._config.get("watchlist"' in RUNNER_SOURCE
+        # Loop var `tk` over `wl` for the ticker_daily_state build
+        assert "for tk in wl:" in RUNNER_SOURCE
+
+    def test_blocked_by_falls_back_to_universe_floor(self):
+        # When ticker has no model loaded (failed universe floor) and
+        # blocked_map has no entry, default to "universe_floor".
+        assert '"universe_floor"' in RUNNER_SOURCE
+
+    def test_pending_at_broker_is_recorded(self):
+        # broker_pending must surface as both pending_at_broker=1 AND
+        # blocked_by="broker_pending" when nothing else has blocked.
+        assert "pending_at_broker" in RUNNER_SOURCE
+        assert '"broker_pending"' in RUNNER_SOURCE
+
+    def test_in_universe_uses_models_keys(self):
+        # in_universe = 1 iff ticker passed universe floor (i.e. has a
+        # loaded per-ticker model). Source must reference self._models.
+        assert "in_universe" in RUNNER_SOURCE
+        # The exact membership check used by the writer
+        assert "tk in (self._models or {})" in RUNNER_SOURCE
