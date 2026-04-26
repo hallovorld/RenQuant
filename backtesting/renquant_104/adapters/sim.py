@@ -502,7 +502,7 @@ class SimAdapter:
                 cash            = self._cash,
                 n_candidates    = len(ctx.candidates),
                 n_exits         = len(ctx.exits),
-                n_rotations     = len(ctx.rotations),
+                n_rotations     = int(ctx.counters.get("rotations", 0)),  # ROT-COUNTER fix: emitted, not considered
                 n_buys          = len(ctx.orders),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}

@@ -836,7 +836,12 @@ class RunnerAdapter:
                 cash            = float(ctx.cash) if ctx.cash is not None else None,
                 n_candidates    = len(ctx.candidates),
                 n_exits         = len(exits_for_db),
-                n_rotations     = len(ctx.rotations),
+                # Audit fix ROT-COUNTER (Bug L, 2026-04-25): use EMITTED
+                # rotations count (from EmitRotationsTask via counters dict),
+                # not the considered count (len(ctx.rotations) before
+                # Kelly/cash filters). Stops SQLite analytics from
+                # double-counting rotations that were never executed.
+                n_rotations     = int(ctx.counters.get("rotations", 0)),
                 n_buys          = len(ctx.orders),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}

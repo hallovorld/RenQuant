@@ -714,7 +714,19 @@ class EmitRotationsTask(Task):
             [getattr(c, "sigma", None) for c in ctx.ranked]
         )
 
+        # Audit fix ROT-BLOCKED-NTFY (Bug L, 2026-04-25): pre-fix, when
+        # a rotation pair was found by find_rotation_pairs (counted in
+        # ctx.rotations) but later dropped at emit time (Kelly=0,
+        # bad price, insufficient cash), the operator never saw it.
+        # ntfy showed only successful trades + UNMANAGED; the BLOCKED
+        # rotation was log-only. Now: track blocked pairs on ctx so
+        # live/runner.py::_notify_decision can surface them in the ntfy
+        # body — keeps the operator informed when the system WANTED
+        # to swap but a downstream guard vetoed.
+        if not hasattr(ctx, "rotations_blocked"):
+            ctx.rotations_blocked = []
         rotated_buys: set[str] = set()
+        rotated_sells: set[str] = set()
         for pair in ctx.rotations:
             # 2026-04-24 bug fix: previously the SELL exit was appended
             # FIRST and the BUY constructed second. If the buy failed
@@ -735,6 +747,10 @@ class EmitRotationsTask(Task):
                     "(no atomic-rotation orphan exit)",
                     price, pair.buy_ticker,
                 )
+                ctx.rotations_blocked.append({
+                    "sell": pair.sell_ticker, "buy": pair.buy_ticker,
+                    "reason": f"bad_price({price})",
+                })
                 continue
 
             buy_cand = next((c for c in ctx.ranked if c.ticker == pair.buy_ticker), None)
@@ -754,6 +770,10 @@ class EmitRotationsTask(Task):
                 max_pct = float(buy_cand.kelly_target_pct) * conv * sig_m
                 if max_pct <= 0:
                     log.info("EmitRotationsTask: %s Kelly=0 — skip pair", pair.buy_ticker)
+                    ctx.rotations_blocked.append({
+                        "sell": pair.sell_ticker, "buy": pair.buy_ticker,
+                        "reason": "kelly_zero",
+                    })
                     continue
             else:
                 max_pct = base_max_pct * conv * sig_m
@@ -772,6 +792,10 @@ class EmitRotationsTask(Task):
                 log.info("EmitRotationsTask: %s insufficient cash — skip ENTIRE pair "
                          "(no atomic-rotation orphan exit)",
                          pair.buy_ticker)
+                ctx.rotations_blocked.append({
+                    "sell": pair.sell_ticker, "buy": pair.buy_ticker,
+                    "reason": "insufficient_cash",
+                })
                 continue
 
             # Buy confirmed; NOW commit the exit.

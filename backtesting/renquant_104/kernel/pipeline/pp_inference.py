@@ -171,8 +171,19 @@ class InferencePipeline:
         from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415
         MonitorIdleStreakTask().run(ctx)
 
-        log.info("InferencePipeline DONE  total=%.2fs  rotations=%d",
-                 time.monotonic() - t0, len(ctx.rotations))
+        # Audit fix ROT-COUNTER (Bug L, 2026-04-25): pre-fix this logged
+        # `len(ctx.rotations)` which is "pairs CONSIDERED by find_rotation_pairs",
+        # not "pairs EMITTED to broker". Iter3 produced rotations=1 in the log
+        # while EmitRotationsTask actually skipped the pair (Kelly=0). Now
+        # log both — counters["rotations"] is incremented per EMITTED pair.
+        n_considered = len(ctx.rotations)
+        n_emitted    = int(ctx.counters.get("rotations", 0))
+        n_blocked    = len(getattr(ctx, "rotations_blocked", []) or [])
+        log.info(
+            "InferencePipeline DONE  total=%.2fs  rotations_emitted=%d "
+            "(considered=%d  blocked=%d)",
+            time.monotonic() - t0, n_emitted, n_considered, n_blocked,
+        )
 
 
 # ── SellOnlyPipeline ───────────────────────────────────────────────────────────

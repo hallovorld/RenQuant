@@ -353,6 +353,20 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
     if non_wl_holds:
         parts.append(f"UNMANAGED {','.join(non_wl_holds)} (no model — manual exit)")
 
+    # ROT-BLOCKED-NTFY (Bug L, 2026-04-25): surface rotation pairs that
+    # find_rotation_pairs accepted but EmitRotationsTask later vetoed
+    # (Kelly=0, bad price, insufficient cash). Pre-fix the operator only
+    # saw the resulting buys/exits, so they could not tell whether the
+    # system had ALSO wanted to swap (and what blocked the swap). Each
+    # blocked entry is `{sell, buy, reason}`.
+    rot_blocked = list(getattr(ctx, "rotations_blocked", []) or [])
+    for rb in rot_blocked:
+        if isinstance(rb, dict):
+            sell_t = rb.get("sell", "?")
+            buy_t  = rb.get("buy",  "?")
+            reason = rb.get("reason", "?")
+            parts.append(f"BLOCKED-ROTATION {sell_t}→{buy_t} ({reason})")
+
     has_trade = bool(orders or exits)
     # If the guard blocked every intent (orders all skipped), the cycle
     # produced no real trade — surface the skip reason prominently so
