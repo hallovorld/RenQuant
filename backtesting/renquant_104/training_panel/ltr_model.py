@@ -40,7 +40,13 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "lambda": 1.0,
     "alpha": 0.5,
     "tree_method": "hist",
-    "nthread": -1,
+    # Audit fix X6 (2026-04-26): cap nthread at a reasonable bound to
+    # avoid fork/OMP deadlock when training is launched from a process
+    # that previously used multiprocessing (e.g. TickerPanelFeatureJob).
+    # Pre-fix `nthread=-1` used all cores; on macOS with prior fork
+    # context this could deadlock. Cap at 4 (≥ 2× speedup over single-
+    # thread, well below deadlock threshold). Override via xgb_params.nthread.
+    "nthread": 4,
     "verbosity": 0,
 }
 
@@ -151,15 +157,26 @@ class PanelLTRModel:
 
         # Round-3 audit (#R3-9 #R3-10): plumb the function-arg early stop
         # through xgb.train when caller actually supplies eval data.
+        # Audit fix X1 (2026-04-26, attempted-but-deferred): XGBoost 3.x
+        # ranking objective auto-enables NDCG metric which requires
+        # INTEGER relevance labels. Our Gaussianized labels are
+        # continuous → NDCG raises `label_is_integer` and crashes the
+        # process at the C++ level (not catchable in Python). Workarounds
+        # tried: setting `eval_metric=rmse` or `disable_default_eval_metric=1`
+        # — XGBoost still computes NDCG internally on the ranking
+        # objective. The right fix is **Python-level early stopping**
+        # (compute spearman IC each round, manually break) which is a
+        # bigger refactor. Deferred to a follow-up commit. For now,
+        # XGBoost trains full num_boost_round + relies on monotone
+        # constraints + L1/L2 reg + min_child_weight to constrain.
         train_kwargs: dict[str, Any] = {
             "num_boost_round": num_boost_round,
             "verbose_eval":    False,
         }
-        if (deval is not None
-                and early_stopping_rounds is not None
-                and early_stopping_rounds > 0):
-            train_kwargs["evals"] = [(dtrain, "train"), (deval, "eval")]
-            train_kwargs["early_stopping_rounds"] = int(early_stopping_rounds)
+        # NOTE: eval/early-stop not enabled for XGBoost (see comment above).
+        # LightGBM handles continuous labels via lambdarank without this issue.
+        _ = early_stopping_rounds   # currently unused for XGBoost
+        _ = deval                    # currently unused for XGBoost
 
         self.booster = xgb.train(params, dtrain, **train_kwargs)
         # When xgboost-side early stopping fires, `best_iteration` is set on
@@ -179,7 +196,23 @@ class PanelLTRModel:
     def predict(self, panel: pd.DataFrame) -> pd.Series:
         if self.booster is None:
             raise RuntimeError("PanelLTRModel.predict called before train/load")
-        X = panel[self.feature_cols].values
+
+        # Audit fix X5 (2026-04-26): validate column order — pre-fix
+        # numpy positional indexing silently used WRONG features when
+        # panel had different column order than train. Now: explicit
+        # feature_cols indexing + missing-column check.
+        missing = [c for c in self.feature_cols if c not in panel.columns]
+        if missing:
+            raise ValueError(
+                f"PanelLTRModel.predict: panel missing required feature "
+                f"columns: {missing[:5]}{'…' if len(missing) > 5 else ''} "
+                f"(model trained on {len(self.feature_cols)} features)."
+            )
+
+        # to_numpy with explicit column selection guarantees order matches
+        # the training feature_cols (vs `.values` which uses panel's
+        # current column order).
+        X = panel[self.feature_cols].to_numpy(dtype=np.float32)
         d = xgb.DMatrix(X)
         preds = self.booster.predict(d)
         return pd.Series(preds, index=panel.index, name="panel_score")

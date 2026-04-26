@@ -101,6 +101,14 @@ class TransformerParams:
     # of the probability mass when |label_max - label_mean| > 0.1). Set to
     # False to fall back to raw labels for backward compat.
     rank_transform_labels: bool = True
+    # Audit fix #40 (2026-04-26): minimum epochs before early stopping
+    # can fire. Pre-fix, patience=6 with flat loss-from-start = stop at
+    # epoch 7 with no useful weights. Floor: 5 epochs.
+    min_epochs: int = 5
+    # Audit fix #53 (2026-04-26): keep ALL history rather than last 50.
+    # If max_epochs > 50, the early epochs (where the loss curve says the
+    # most about overfit risk) were silently truncated.
+    save_full_history: bool = True
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -324,12 +332,38 @@ def _build_date_groups(
                 f"been removed (audit T-1 2026-04-25)."
             )
 
+    # Audit fix #22 (2026-04-26): force fp32 on entry. MPS doesn't fully
+    # support fp64; downstream tensor allocs assume fp32.
     X_flat_raw = panel[feature_cols].to_numpy(dtype=np.float32, copy=True)
     y_flat_raw = panel[label_col].to_numpy(dtype=np.float32, copy=True)
     nan_label_flat = ~np.isfinite(y_flat_raw)
 
+    # Audit fix #7 (2026-04-26): pre-fix, ±inf in features were replaced
+    # with 0, conflating "extreme outlier" with "missing data". Now: clip
+    # ±inf to ±5σ (per-column std). Acts as a soft outlier guard while
+    # preserving sign information. NaN still → 0 (genuine missing).
+    n_inf = int(np.isinf(X_flat_raw).sum())
+    if n_inf > 0:
+        col_std = np.nanstd(X_flat_raw, axis=0)
+        col_std = np.where(col_std > 0, col_std, 1.0)
+        clip_hi =  5.0 * col_std
+        clip_lo = -5.0 * col_std
+        X_flat_raw = np.clip(X_flat_raw, clip_lo, clip_hi)
     X_flat = np.nan_to_num(X_flat_raw, nan=0.0, posinf=0.0, neginf=0.0)
     y_flat = np.nan_to_num(y_flat_raw, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Audit fix #9 (2026-04-26): defensive log when feature NaN → 0
+    # substitution affects > 5% of cells. Upstream FactorZScoreTask
+    # should have median-imputed; if we're seeing high NaN here, panel
+    # pipeline didn't run cleanly.
+    n_nan_x = int(np.isnan(panel[feature_cols].to_numpy(dtype=np.float32)).sum())
+    n_total = X_flat_raw.size
+    if n_total > 0 and n_nan_x / n_total > 0.05:
+        log.warning(
+            "_build_date_groups: %.1f%% feature NaN → 0 substitution "
+            "(%d / %d cells); panel pipeline imputation may have failed",
+            100.0 * n_nan_x / n_total, n_nan_x, n_total,
+        )
 
     n_groups = len(group_sizes)
     n_feat   = X_flat.shape[1]
@@ -361,11 +395,22 @@ def _seed_everything(seed: int) -> None:
 
 
 def _resolve_device(requested: str) -> torch.device:
-    """Resolve device preference with graceful fallback: mps → cuda → cpu."""
-    if requested == "mps" and torch.backends.mps.is_available():
-        return torch.device("mps")
-    if requested == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
+    """Resolve device preference with graceful fallback: mps → cuda → cpu.
+
+    Audit fix #83 (2026-04-26): emit warning when fallback to CPU
+    happens — previously silent fallback could surprise CI / Linux runs
+    expecting MPS performance and getting orders-of-magnitude slower CPU.
+    """
+    if requested == "mps":
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        log.warning("device='mps' requested but MPS not available — falling back")
+    if requested == "cuda":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        log.warning("device='cuda' requested but CUDA not available — falling back")
+    if requested != "cpu":
+        log.info("transformer device fallback: %s → cpu", requested)
     return torch.device("cpu")
 
 
@@ -453,6 +498,22 @@ class PanelTransformerModel:
         # requiring every caller to plumb explicit eval data — and CV +
         # FinalFit both benefit. Pre-fix, FinalFit always trained for full
         # max_epochs with no early stop, contributing to the v3 overfit.
+        # Audit fix #11 (2026-04-26): assert that the panel is sorted by
+        # date if a `date` column exists. auto_eval_split takes the
+        # LAST n_eval groups via row offsets, so unsorted dates would
+        # leak future data into train.
+        if eval_panel is None and p.auto_eval_split and "date" in panel.columns:
+            try:
+                _date_col = panel["date"].to_numpy()
+                # contiguous ↔ non-decreasing
+                if len(_date_col) > 1 and not (_date_col[:-1] <= _date_col[1:]).all():
+                    raise ValueError(
+                        "auto_eval_split requires panel sorted by date "
+                        "(future would leak into train)."
+                    )
+            except (KeyError, TypeError):
+                pass
+
         if (
             eval_panel is None
             and p.auto_eval_split
@@ -463,6 +524,15 @@ class PanelTransformerModel:
             n_groups_total = len(group_sizes)
             n_eval = max(1, int(round(n_groups_total * p.auto_eval_fraction)))
             n_train = n_groups_total - n_eval
+            if n_train < 5 or n_eval < 2:
+                # Audit fix #12 (2026-04-26): log when the auto-split
+                # decides to skip due to small panel — pre-fix this was
+                # silent and FinalFit ran without early stop.
+                log.warning(
+                    "auto_eval_split: skipped (n_train=%d need ≥5, n_eval=%d need ≥2). "
+                    "Training will run full max_epochs without early-stop.",
+                    n_train, n_eval,
+                )
             if n_train >= 5 and n_eval >= 2:
                 # Slice panel by row offsets corresponding to the
                 # date-group split. group_sizes is contiguous per date.
@@ -577,7 +647,11 @@ class PanelTransformerModel:
                     "epoch": epoch, "loss": epoch_loss,
                     "train_ic": train_ic, "eval_ic": eval_ic,
                 })
-                if bad_epochs >= effective_patience:
+                # Audit fix #40 (2026-04-26): floor early stop at min_epochs
+                # so a flat loss curve from epoch 0 doesn't kill training
+                # at epoch 6 with no useful weights.
+                if (bad_epochs >= effective_patience
+                        and epoch >= int(p.min_epochs)):
                     log.info("early stop at epoch=%d (patience=%d, best_eval=%.4f)",
                              epoch, effective_patience, best_eval)
                     break
@@ -622,6 +696,17 @@ class PanelTransformerModel:
         """
         if self._model is None:
             raise RuntimeError("PanelTransformerModel.predict called before train/load")
+
+        # Audit fix #X5/#5 (2026-04-26): validate that the panel has
+        # all the feature columns we trained on. Pre-fix, missing
+        # columns would raise a cryptic KeyError deep inside _build_date_groups.
+        missing = [c for c in self.feature_cols if c not in panel.columns]
+        if missing:
+            raise ValueError(
+                f"PanelTransformerModel.predict: panel missing required "
+                f"feature columns: {missing[:5]}{'…' if len(missing) > 5 else ''} "
+                f"(model trained on {len(self.feature_cols)} features)."
+            )
 
         # Audit T-23 (2026-04-25): groupby("date") must see contiguous
         # rows per date, otherwise group_sizes mismatches the actual
@@ -710,7 +795,11 @@ class PanelTransformerModel:
             "feature_cols": list(self.feature_cols),
             "params":       asdict(self.params),
             "best_iter":    self.best_iter,
-            "history":      self.history[-min(len(self.history), 50):],
+            # Audit fix #53 (2026-04-26): save full history when flag set
+            # (default). Pre-fix, last-50 truncation lost early-epoch
+            # diagnostic data on long runs.
+            "history":      (self.history if self.params.save_full_history
+                             else self.history[-50:]),
         }
         if metadata:
             payload.update({k: v for k, v in metadata.items() if k not in payload})

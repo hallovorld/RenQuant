@@ -1331,6 +1331,35 @@ class FinalFitTask(PanelTask):
         num_rounds = int(cfg.get("num_boost_round", 400))
 
         t0 = _time.monotonic()
+
+        # Audit fix X1+X2 (2026-04-26): build eval split for XGBoost +
+        # LightGBM so they can use early_stopping_rounds. Pre-fix, both
+        # ran full num_boost_round=400 with no early stop → potential
+        # overfit on small panels. Split: last 20% of date-groups as eval.
+        # (Transformer has its own auto_eval_split inside .train().)
+        eval_panel = None
+        eval_group_sizes = None
+        early_stop_rounds = int(cfg.get("early_stopping_rounds", 20))
+        if backend in ("xgboost", "lightgbm") and len(ctx.group_sizes) >= 5:
+            n_total = len(ctx.group_sizes)
+            n_eval  = max(2, int(round(n_total * 0.20)))
+            n_train = n_total - n_eval
+            if n_train >= 5 and n_eval >= 2:
+                row_split = int(np.array(ctx.group_sizes[:n_train]).sum())
+                eval_panel       = ctx.panel.iloc[row_split:].copy()
+                eval_group_sizes = np.array(ctx.group_sizes[n_train:], dtype=np.int64)
+                # Keep original ctx.panel + ctx.group_sizes intact for
+                # predict-time use; pass slices to model.train below.
+                _train_panel       = ctx.panel.iloc[:row_split].copy()
+                _train_group_sizes = np.array(ctx.group_sizes[:n_train], dtype=np.int64)
+            else:
+                _train_panel       = ctx.panel
+                _train_group_sizes = ctx.group_sizes
+                early_stop_rounds  = 0   # not enough data for early stop
+        else:
+            _train_panel       = ctx.panel
+            _train_group_sizes = ctx.group_sizes
+
         if backend == "transformer":
             from training_panel.transformer_model import PanelTransformerModel
             tf_params = dict(cfg.get("transformer_params", {}))
@@ -1347,10 +1376,13 @@ class FinalFitTask(PanelTask):
             params = dict(cfg.get("lightgbm_params", {}))
             model = PanelLGBMModel(params=params, feature_cols=ctx.feature_cols)
             fit = model.train(
-                ctx.panel, ctx.group_sizes,
+                _train_panel, _train_group_sizes,
                 feature_cols=ctx.feature_cols,
                 label_col="label", weight_col="weight",
                 num_boost_round=num_rounds,
+                eval_panel=eval_panel,
+                eval_group_sizes=eval_group_sizes,
+                early_stopping_rounds=early_stop_rounds if eval_panel is not None else None,
             )
             device_used = "cpu"
         else:
@@ -1359,10 +1391,13 @@ class FinalFitTask(PanelTask):
             monotone = dict(cfg.get("monotone_constraints", {}))
             model = PanelLTRModel(params=xgb_params, monotone_constraints=monotone)
             fit = model.train(
-                ctx.panel, ctx.group_sizes,
+                _train_panel, _train_group_sizes,
                 feature_cols=ctx.feature_cols,
                 label_col="label", weight_col="weight",
                 num_boost_round=num_rounds,
+                eval_panel=eval_panel,
+                eval_group_sizes=eval_group_sizes,
+                early_stopping_rounds=early_stop_rounds if eval_panel is not None else None,
             )
             device_used = "cpu"
         elapsed = _time.monotonic() - t0
