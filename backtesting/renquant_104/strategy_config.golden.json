@@ -449,8 +449,8 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-24",
-    "blend_n_symbols": 99,
+    "blend_updated": "2026-04-26",
+    "blend_n_symbols": 101,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": false,
