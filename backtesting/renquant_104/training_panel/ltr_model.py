@@ -135,6 +135,17 @@ class PanelLTRModel:
         # each log their resolved constraints once.
         self._monotone_logged = False
 
+        # Audit fix X15 (2026-04-26 round-3): validate group_sizes match
+        # panel length BEFORE handing to XGBoost. Pre-fix, mismatch
+        # bubbled out as a cryptic C++ assertion deep inside DMatrix.
+        gs_sum = int(np.sum(group_sizes))
+        if gs_sum != len(panel):
+            raise ValueError(
+                f"PanelLTRModel.train: sum(group_sizes)={gs_sum} != "
+                f"len(panel)={len(panel)}. Make sure group_sizes is "
+                f"per-date row counts and panel is row-aligned."
+            )
+
         X = panel[feature_cols].values
         y = panel[label_col].values
         dtrain = xgb.DMatrix(X, label=y)

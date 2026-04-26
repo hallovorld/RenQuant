@@ -225,7 +225,7 @@
     "ORCL": "giant_tech",
     "NVDA": "ai_chip",
     "ASML": "ai_chip",
-    "AMD":  "ai_chip",
+    "AMD": "ai_chip",
     "TSM": "ai_chip",
     "MU": "ai_chip",
     "AMAT": "ai_chip",
@@ -354,7 +354,7 @@
     "panel_buy_floor": 0.45,
     "panel_sell_floor": 0.2,
     "joint_actions": {
-      "enabled": false,
+      "enabled": true,
       "fee_pct": 0.0005,
       "slippage_pct": 0.0005,
       "slot_budget_mode": "shared"
@@ -422,8 +422,8 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-25",
-    "blend_n_symbols": 99,
+    "blend_updated": "2026-04-26",
+    "blend_n_symbols": 101,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": false,
