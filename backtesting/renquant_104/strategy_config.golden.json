@@ -344,7 +344,7 @@
     "min_expected_advantage_pct": 0.03,
     "target_horizon_days": 20,
     "transaction_cost_pct": 0.0,
-    "min_rotation_hold_days": 30,
+    "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
     "max_rotations_per_bar": 2
   },
@@ -410,8 +410,8 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-23",
-    "blend_n_symbols": 38,
+    "blend_updated": "2026-04-24",
+    "blend_n_symbols": 99,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": false,
@@ -500,7 +500,15 @@
     },
     "fundamentals": {
       "enabled": true,
-      "cache_dir": "data/fundamentals"
+      "cache_dir": "data/fundamentals",
+      "skip_tickers": [
+        "XLF",
+        "XLU",
+        "XLK",
+        "GLD",
+        "TLT",
+        "XLV"
+      ]
     },
     "backend": "xgboost",
     "lightgbm_params": {
@@ -542,12 +550,32 @@
     ],
     "earnings_surprise": {
       "enabled": true,
-      "cache_dir": "data/earnings_surprise"
+      "cache_dir": "data/earnings_surprise",
+      "skip_tickers": [
+        "XLF",
+        "XLU",
+        "XLK",
+        "GLD",
+        "TLT",
+        "XLV"
+      ]
     },
     "insider_trades": {
       "enabled": true,
       "cache_dir": "data/insider_trades",
-      "max_filings": 200
+      "max_filings": 200,
+      "skip_tickers": [
+        "ASML",
+        "SHOP",
+        "NVO",
+        "TSM",
+        "GLD",
+        "XLF",
+        "XLU",
+        "XLK",
+        "TLT",
+        "XLV"
+      ]
     },
     "hourly": {
       "enabled": true,

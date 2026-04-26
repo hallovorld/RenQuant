@@ -344,7 +344,7 @@
     "min_expected_advantage_pct": 0.03,
     "target_horizon_days": 20,
     "transaction_cost_pct": 0.0,
-    "min_rotation_hold_days": 30,
+    "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
     "max_rotations_per_bar": 2
   },
