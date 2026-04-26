@@ -265,6 +265,15 @@ class NGBoostHead:
         """
         if self.regressor is None:
             raise RuntimeError("NGBoostHead.predict called before train/load")
+        # Audit fix NGB-NEW-1 (2026-04-26 round-3): validate column presence.
+        # Pre-fix, missing columns raised cryptic pandas KeyError.
+        missing = [c for c in self.feature_cols if c not in panel.columns]
+        if missing:
+            raise ValueError(
+                f"NGBoostHead.predict: panel missing required feature "
+                f"columns: {missing[:5]}{'…' if len(missing) > 5 else ''} "
+                f"(model trained on {len(self.feature_cols)} features)."
+            )
         X = panel[self.feature_cols].to_numpy(dtype=float, copy=False).copy()
         medians = getattr(self, "feature_medians_", None)
         if medians is not None:
