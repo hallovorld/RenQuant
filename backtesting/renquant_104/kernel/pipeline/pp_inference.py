@@ -89,6 +89,12 @@ def _make_cand_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
 
 def _buy_universe(ctx: InferenceContext) -> list[str]:
     held = set(ctx.holdings.keys())
+    # Audit fix BROKER-PRECHECK (2026-04-26): exclude tickers with pending
+    # orders at the broker. Pre-fix, these were filtered AT SUBMIT TIME,
+    # AFTER the pipeline already built features + scored + sized them →
+    # wasted compute AND distorted cash budget. Now: never enter the buy
+    # universe if the broker already has a pending order for them.
+    pending_at_broker = set(getattr(ctx, "pending_broker_tickers", None) or [])
     if ctx.bear_only:
         # Defensives also need OHLCV — without it BuildFeaturesTask
         # short-circuits anyway, but earlier tasks (EarningsFilter / WashSale)
@@ -96,8 +102,10 @@ def _buy_universe(ctx: InferenceContext) -> list[str]:
         # spin up uselessly. Match the non-bear branch's gate.
         defensives = set(ctx.config.get("defensive_tickers", []))
         return [t for t in defensives
-                if t in ctx.models and t not in held and t in ctx.ohlcv]
-    return [t for t in ctx.models if t not in held and t in ctx.ohlcv]
+                if t in ctx.models and t not in held
+                and t not in pending_at_broker and t in ctx.ohlcv]
+    return [t for t in ctx.models if t not in held
+            and t not in pending_at_broker and t in ctx.ohlcv]
 
 
 # ── InferencePipeline ──────────────────────────────────────────────────────────

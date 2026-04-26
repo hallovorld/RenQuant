@@ -157,6 +157,33 @@ class RunnerAdapter:
             all_pos = []
         positions_cache = {p["symbol"]: p for p in all_pos}
 
+        # Audit fix BROKER-PRECHECK (2026-04-26): pre-fetch broker's
+        # currently open / pending orders ONCE per bar. Pre-fix, the
+        # adapter called broker.get_open_orders() per-order at submit
+        # time — N API calls per bar, AND the pipeline didn't know
+        # which tickers were going to be rejected as duplicates BEFORE
+        # sizing, so the cash budget assumed all orders fillable. The
+        # e2e on 2026-04-26 03:20 showed 4 buys queued, 2 rejected as
+        # duplicates → cash spent ≠ cash planned. Now: snapshot once,
+        # inject into ctx, let upstream tasks (joint mode, selection,
+        # rotation) skip these tickers BEFORE sizing.
+        pending_broker_tickers: set[str] = set()
+        try:
+            pending_broker_tickers = set(broker.get_open_orders() or [])
+            if pending_broker_tickers:
+                log.info(
+                    "BROKER-PRECHECK: %d pending order(s) at broker → "
+                    "excluded from buy/rotate menus this bar: %s",
+                    len(pending_broker_tickers),
+                    sorted(pending_broker_tickers),
+                )
+        except Exception as exc:
+            log.warning(
+                "BROKER-PRECHECK: get_open_orders failed (%s) — "
+                "duplicate-order guard falls back to per-order check at submit",
+                exc,
+            )
+
         # Audit fix ENTRY-DATE-FROM-FILLS (Round 4 deep audit, 2026-04-25):
         # Pre-fix, an inherited position with no entry_date in state got
         # stamped to TODAY (line ~191). Result: a position bought 60 days
@@ -444,6 +471,11 @@ class RunnerAdapter:
 
         # UNMANAGED-NTFY: pass through to ntfy decision-summary path.
         ctx.non_wl_holds = list(self._non_wl_holds)
+
+        # BROKER-PRECHECK (2026-04-26): expose pending broker orders so
+        # JointActionTask + SelectionJob + RotationJob can pre-filter
+        # candidates BEFORE sizing.
+        ctx.pending_broker_tickers = pending_broker_tickers
 
         # Rotation V1 persistence gate — live runner has no per-bar
         # state file pinned to rotation_proposals (yet); seed with empty

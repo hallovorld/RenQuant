@@ -6,12 +6,12 @@ same public surface so the caller can dispatch on `panel_ltr.backend`.
 Architecture (see `doc/renquant_104_transformer_design.md` §2):
 
 - Input: panel rows grouped by date → one date-group per sample.
-- Feature encoder: ``Linear(F → d_model)``.
+- Feature encoder: ``Linear(F → d_model)`` + LayerNorm (audit fix #43).
 - N × transformer encoder blocks (self-attention within date-group only).
-- Score head: ``Linear(d_model → 1)`` per ticker.
-- Loss: ListNet over the date-group.
+- Score head: 2-layer MLP ``Linear→GELU→Linear(d_model → 1)`` (audit #44).
+- Loss: ListNet over the date-group with rank-transformed labels (audit #1).
 - Regularization: feature dropout, ticker-conditional dropout, label smoothing,
-  AdamW weight decay, early-stopping.
+  AdamW weight decay, early-stopping with min_delta gate (audit #39).
 
 Public API (same shape as :class:`PanelLTRModel`)::
 
@@ -23,10 +23,24 @@ Public API (same shape as :class:`PanelLTRModel`)::
 
 The serialized artifact has suffix ``.pt`` (state_dict) paired with a
 ``.json`` sidecar holding feature_cols + hparams + training metadata.
+
+2026-04-26 audit batch — top-10 fixes from doc/transformer_audit_2026-04-26.md:
+  #1   rank-transform labels in _listnet_loss (eliminates ListNet saturation
+       on raw forward returns)
+  #2   NaN-safe loss masking (clamp log_softmax floor before multiply)
+  #14  CV/FinalFit epoch alignment (no more silent half-epoch CV)
+  #21  set_num_threads(1) gated on CPU device only (don't cripple MPS path)
+  #39  patience min_delta tightened from 1e-6 to 1e-3
+  #43  LayerNorm on input projection (better gradient flow)
+  #44  2-layer score head with GELU
+  #49  Xavier init on Linear layers (transformer-stability standard)
+  #87  no mutation of self.params from inside train()
+  #88  NaN-grad detection — skip optimizer step rather than corrupt AdamW state
 """
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import random
@@ -42,6 +56,9 @@ from scipy.stats import spearmanr
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Audit fix #91 (2026-04-26): module-level logger instead of import-in-function.
+log = logging.getLogger("panel.transformer")
 
 
 # ── Hyperparameters ────────────────────────────────────────────────────────────
@@ -68,6 +85,10 @@ class TransformerParams:
     max_epochs:       int   = 30
     batch_size:       int   = 32         # dates per batch
     patience:         int   = 6          # early-stopping on eval IC, per user pref
+    # Audit fix #39 (2026-04-26): tighten min_delta from 1e-6 to 1e-3 so
+    # noisy float-rounding "improvements" don't reset the patience counter
+    # — only real ≥0.001 IC gains count.
+    early_stop_min_delta: float = 1e-3
     grad_clip_norm:   float = 1.0        # T-16 audit fix — clip gradient norm
     auto_eval_split:  bool  = True       # T-18 — auto last-20% dates as eval if no eval_panel
     auto_eval_fraction: float = 0.20
@@ -75,6 +96,11 @@ class TransformerParams:
     deterministic:    bool  = True
     seed:             int   = 42
     max_tickers:      int   = 128        # pad groups to this size (≥ watchlist size; was 38, silently truncated 99-ticker groups → audit T-1 2026-04-25)
+    # Audit fix #1 (2026-04-26): rank-transform labels in ListNet loss so
+    # raw forward returns don't saturate the softmax (top-1 dominates 99%
+    # of the probability mass when |label_max - label_mean| > 0.1). Set to
+    # False to fall back to raw labels for backward compat.
+    rank_transform_labels: bool = True
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -90,7 +116,12 @@ class _PanelTransformer(nn.Module):
         super().__init__()
         self.p = p
         self.feature_encoder = nn.Linear(n_features, p.d_model)
-        self.feat_dropout    = nn.Dropout(p.feature_dropout)
+        # Audit fix #43 (2026-04-26): LayerNorm on input projection.
+        # Pre-fix, raw projected features fed unbounded activations into
+        # the encoder → gradient instability + slower convergence. Now:
+        # LayerNorm normalises to N(0, 1) per-feature before encoder.
+        self.input_norm   = nn.LayerNorm(p.d_model)
+        self.feat_dropout = nn.Dropout(p.feature_dropout)
         enc_layer = nn.TransformerEncoderLayer(
             d_model         = p.d_model,
             nhead           = p.n_heads,
@@ -110,12 +141,38 @@ class _PanelTransformer(nn.Module):
             enc_layer, num_layers=p.n_layers,
             enable_nested_tensor=False,
         )
-        self.score_head = nn.Linear(p.d_model, 1)
+        # Audit fix #44 (2026-04-26): 2-layer score head with GELU.
+        # Pre-fix, single Linear(d_model→1) gave the model no nonlinear
+        # capacity to combine encoder features. 2-layer MLP captures
+        # interactions while keeping output a scalar score.
+        self.score_head = nn.Sequential(
+            nn.Linear(p.d_model, p.d_model // 2),
+            nn.GELU(),
+            nn.Dropout(p.dropout),
+            nn.Linear(p.d_model // 2, 1),
+        )
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        """Audit fix #49 (2026-04-26): explicit Xavier init on Linear layers.
+
+        PyTorch defaults to ``kaiming_uniform_(weight, a=sqrt(5))`` for
+        Linear which is too aggressive for transformer training stability.
+        Xavier (Glorot) init is the literature-standard choice for
+        attention models — see Vaswani 2017 §5.4 + Goyal 2017 (large
+        minibatch SGD).
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
         # x: (B, T, F). pad_mask: (B, T), True where padding.
         x = self.feat_dropout(x)
         h = self.feature_encoder(x)                  # (B, T, d_model)
+        h = self.input_norm(h)                       # audit #43
         h = self.encoder(h, src_key_padding_mask=pad_mask)
         s = self.score_head(h).squeeze(-1)           # (B, T)
         # Push padded scores to -inf so softmax in loss ignores them.
@@ -125,9 +182,44 @@ class _PanelTransformer(nn.Module):
 
 # ── ListNet loss (top-1 softmax cross-entropy over group scores) ──────────────
 
+def _rank_transform_per_row(labels: torch.Tensor,
+                            invalid: torch.Tensor) -> torch.Tensor:
+    """Convert labels to per-row ranks centred at 0, scaled to ~unit range.
+
+    Audit fix #1 (2026-04-26): pre-fix, ListNet softmax over RAW forward
+    returns saturated when any row had |label| > 0.1 — top-1 took 99% of
+    the probability mass and the model was trained as a multinomial
+    classifier on the single best ticker per date. New behaviour: replace
+    each row's labels with their ranks (1, 2, ..., n_valid), centred and
+    scaled. Softmax then produces a smooth distribution proportional to
+    rank, which is the actual ListNet semantics intended by Cao 2007.
+
+    Invalid positions retain their pre-existing value (will be masked to
+    -inf by caller anyway).
+    """
+    out = torch.zeros_like(labels)
+    for i in range(labels.shape[0]):
+        valid_idx = (~invalid[i]).nonzero(as_tuple=True)[0]
+        if valid_idx.numel() < 2:
+            continue
+        valid_labels = labels[i, valid_idx]
+        # argsort gives the position each label takes in sorted order;
+        # second argsort converts to rank (0..n-1).
+        order = torch.argsort(valid_labels, descending=False)
+        ranks = torch.empty_like(order, dtype=torch.float32)
+        ranks[order] = torch.arange(order.numel(), dtype=torch.float32,
+                                     device=labels.device)
+        # Center + scale: subtract mean rank, divide by std so distribution
+        # is ~ N(0, 1). Stable across group sizes.
+        ranks = (ranks - ranks.mean()) / max(ranks.std().item(), 1e-6)
+        out[i, valid_idx] = ranks
+    return out
+
+
 def _listnet_loss(scores: torch.Tensor, labels: torch.Tensor,
                   pad_mask: torch.Tensor,
                   nan_label_mask: torch.Tensor | None = None,
+                  rank_transform: bool = True,
                   ) -> torch.Tensor:
     """Cao 2007 top-1 ListNet.
 
@@ -139,16 +231,33 @@ def _listnet_loss(scores: torch.Tensor, labels: torch.Tensor,
     padding. Without this, NaN-rows had probability `exp(0)/Σ exp(yi)`,
     pulling predictions toward the median of valid labels.
 
+    Audit fix #1 (2026-04-26): rank-transform labels before softmax
+    when ``rank_transform=True`` (default). Pre-fix, raw forward
+    returns saturated softmax → loss collapsed to a single-target
+    classifier. With rank transform, labels become smooth distributions
+    that ListNet was actually designed for.
+
+    Audit fix #2 (2026-04-26): clamp log_softmax floor before multiply.
+    Pre-fix, ``0 * log(0) = 0 * -inf = NaN`` (produced before masked_fill
+    to 0), polluting the gradient. Now: clamp ``log_p_pred`` to a finite
+    floor (-1e30) so the multiply never produces NaN.
+
     Args:
       scores         : (B, T) raw scores (model output)
       labels         : (B, T) labels (NaN → 0 substituted upstream)
       pad_mask       : (B, T) True where the slot is padding
       nan_label_mask : (B, T) True where the original label was NaN.
                        If None, treated as all-False (back-compat).
+      rank_transform : if True, replace labels with per-row ranks before
+                       softmax. Default True per audit #1.
     """
     if nan_label_mask is None:
         nan_label_mask = torch.zeros_like(pad_mask)
     invalid = pad_mask | nan_label_mask
+
+    if rank_transform:
+        labels = _rank_transform_per_row(labels, invalid)
+
     # Mask both padded AND NaN-label positions to -inf before softmax →
     # zero probability mass. ALSO mask the prediction softmax (so the
     # model isn't penalised for any score at NaN positions either).
@@ -157,8 +266,13 @@ def _listnet_loss(scores: torch.Tensor, labels: torch.Tensor,
     p_label = F.softmax(label_logits, dim=-1)
     score_logits = scores.masked_fill(invalid, minus_inf)
     log_p_pred = F.log_softmax(score_logits, dim=-1)
-    # masked_fill the per-row contribution to 0 at invalid slots so we
-    # don't sum NaN×anything (log_softmax of -inf is -inf).
+
+    # Audit fix #2 (2026-04-26): clamp -inf to a finite floor BEFORE the
+    # multiply, so 0 * -inf doesn't produce NaN. The masked_fill below
+    # zeroes the contribution at invalid positions either way, but NaN
+    # in the intermediate tensor can still corrupt backward.
+    log_p_pred = log_p_pred.clamp(min=-1e30)
+
     loss_per_row = -(p_label * log_p_pred)
     loss_per_row = loss_per_row.masked_fill(invalid, 0.0)
     # Mean over non-degenerate groups (at least 2 valid tickers).
@@ -293,11 +407,17 @@ class PanelTransformerModel:
         """Fit the transformer; return train/eval metadata dict."""
         del weight_col   # ListNet is scale-invariant; group weights not applied here.
         self.feature_cols = list(feature_cols)
+
+        # Audit fix #87 (2026-04-26): don't mutate self.params from inside
+        # train(). Pre-fix, calling train() with num_boost_round=N
+        # permanently overwrote self.params.max_epochs — a second call
+        # without num_boost_round would inherit N from the prior call
+        # (silent stateful bug). New: use local effective_* variables.
         p = self.params
-        if num_boost_round is not None:
-            p.max_epochs = int(num_boost_round)
-        if early_stopping_rounds is not None:
-            p.patience = int(early_stopping_rounds)
+        effective_max_epochs = (int(num_boost_round) if num_boost_round is not None
+                                else int(p.max_epochs))
+        effective_patience   = (int(early_stopping_rounds) if early_stopping_rounds is not None
+                                else int(p.patience))
 
         # Reproducibility
         _seed_everything(p.seed)
@@ -314,13 +434,18 @@ class PanelTransformerModel:
         # that previously used `fork`-based multiprocessing (e.g. the panel
         # pipeline's parallel TickerPanelFeatureJob workers). Forcing
         # set_num_threads(1) here keeps training on the main thread and
-        # avoids the fork/OMP interaction entirely. Performance cost is
-        # minimal for our 47k-row panel; MPS isn't affected (dispatches to
-        # its own backend). Safe to leave on unconditionally.
-        try:
-            torch.set_num_threads(1)
-        except Exception:
-            pass
+        # avoids the fork/OMP interaction entirely.
+        #
+        # Audit fix #21 (2026-04-26): gate on CPU device only. On MPS the
+        # tensor compute dispatches to Apple's GPU backend and CPU thread
+        # count is irrelevant. On CPU fallback this previously crippled
+        # PyTorch parallelism unnecessarily. Now: only single-thread when
+        # we're actually running on CPU.
+        if self._device.type == "cpu":
+            try:
+                torch.set_num_threads(1)
+            except Exception:
+                pass
 
         # Audit fix T-18 (2026-04-25): if caller didn't supply eval_panel
         # but auto_eval_split is on, auto-split the last `auto_eval_fraction`
@@ -346,8 +471,8 @@ class PanelTransformerModel:
                 eval_group_sizes = np.array(group_sizes[n_train:], dtype=np.int64)
                 panel = panel.iloc[:row_split].copy()
                 group_sizes = np.array(group_sizes[:n_train], dtype=np.int64)
-                import logging  # noqa: PLC0415
-                logging.getLogger("panel.transformer").info(
+                # Audit fix #91 (2026-04-26): module-level logger.
+                log.info(
                     "auto_eval_split: train=%d groups (%d rows) | eval=%d groups (%d rows)",
                     n_train, row_split, n_eval, len(eval_panel),
                 )
@@ -372,10 +497,11 @@ class PanelTransformerModel:
         gen = torch.Generator(device="cpu").manual_seed(p.seed)
 
         n_groups = xtr.shape[0]
-        for epoch in range(p.max_epochs):
+        for epoch in range(effective_max_epochs):
             self._model.train()
             order = torch.randperm(n_groups, generator=gen).numpy()
             epoch_loss = 0.0
+            nan_skipped = 0
             for start in range(0, n_groups, p.batch_size):
                 idx = order[start:start + p.batch_size]
                 xb = torch.from_numpy(xtr[idx]).to(self._device)
@@ -395,7 +521,19 @@ class PanelTransformerModel:
                     xb = xb.masked_fill(drop.unsqueeze(-1), 0.0)
 
                 scores = self._model(xb, mb)
-                loss = _listnet_loss(scores, yb, mb, nb)
+                loss = _listnet_loss(scores, yb, mb, nb,
+                                     rank_transform=bool(p.rank_transform_labels))
+
+                # Audit fix #88 (2026-04-26): NaN-grad detection. If
+                # forward produced NaN/inf loss (rare but possible from
+                # softmax overflow + extreme features), skip this batch
+                # ENTIRELY rather than corrupt AdamW's exp_avg / exp_avg_sq
+                # state with NaN. Pre-fix, one bad batch poisoned the
+                # optimiser for the rest of training.
+                if not torch.isfinite(loss):
+                    nan_skipped += 1
+                    continue
+
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 # Audit fix T-16 (2026-04-25): clip gradient norm before
@@ -409,6 +547,9 @@ class PanelTransformerModel:
                 opt.step()
                 epoch_loss += float(loss.item()) * len(idx)
             epoch_loss /= max(n_groups, 1)
+            if nan_skipped > 0:
+                log.warning("epoch=%d nan_loss_batches=%d (skipped)",
+                            epoch, nan_skipped)
 
             train_ic = self._ic_on_tensors(xtr, ytr, padtr, panel, label_col, group_sizes)
 
@@ -419,7 +560,11 @@ class PanelTransformerModel:
                 eval_ic = self._ic_on_tensors(
                     xte, yte, padte, eval_panel, label_col, eval_group_sizes,
                 )
-                improved = eval_ic > best_eval + 1e-6
+                # Audit fix #39 (2026-04-26): tighten min_delta from 1e-6
+                # to early_stop_min_delta (default 1e-3) so noisy
+                # float-rounding "improvements" don't reset the patience
+                # counter.
+                improved = eval_ic > best_eval + p.early_stop_min_delta
                 if improved:
                     best_eval  = eval_ic
                     best_state = {k: v.detach().cpu().clone()
@@ -432,7 +577,9 @@ class PanelTransformerModel:
                     "epoch": epoch, "loss": epoch_loss,
                     "train_ic": train_ic, "eval_ic": eval_ic,
                 })
-                if bad_epochs >= p.patience:
+                if bad_epochs >= effective_patience:
+                    log.info("early stop at epoch=%d (patience=%d, best_eval=%.4f)",
+                             epoch, effective_patience, best_eval)
                     break
             else:
                 self.history.append({

@@ -237,8 +237,21 @@ class JointActionTask(Task):
         )
 
         # ── Build action menu ───────────────────────────────────────────
+        # BROKER-PRECHECK (2026-04-26): exclude tickers with pending
+        # orders at the broker — pre-fix these were sized in then
+        # rejected at submit time, distorting cash budget.
+        pending_at_broker: set[str] = set(
+            getattr(ctx, "pending_broker_tickers", None) or []
+        )
         eligible_cands = [c for c in ctx.ranked
-                          if c.ticker not in held_set]
+                          if c.ticker not in held_set
+                          and c.ticker not in pending_at_broker]
+        if pending_at_broker:
+            log.info(
+                "JointActionJob: BROKER-PRECHECK excluded %d cand(s) "
+                "with pending broker orders",
+                len([c for c in ctx.ranked if c.ticker in pending_at_broker]),
+            )
 
         # Sizing helpers (computed once, used per BUY / ROTATE leg)
         _conf_mult    = confidence_to_size_multiplier(ctx.confidence)
@@ -378,11 +391,45 @@ class JointActionTask(Task):
             return
 
         # Tie-breaking — net_alpha desc; ROTATE before BUY before SELL on ties;
+        # then RAW PANEL SCORE desc (tiebreaker for calibrator-saturated ties);
+        # then NGBoost μ desc (further tiebreaker when panel_score also tied);
         # then ticker for full determinism.
+        #
+        # Audit fix JOINT-NET-ALPHA-SAT (2026-04-26): pre-fix, tied net_alpha
+        # (extremely common when calibrator's isotonic top-bin saturates 4-N
+        # candidates to identical rank_score) made the choice fall through to
+        # the alphabetical ticker tiebreaker — choice driven by alphabet, not
+        # signal quality. Live e2e showed JNJ/NET/NVDA/RTX all picked at
+        # net_alpha=+0.1446. New cascade uses raw `panel_score` (pre-calibration,
+        # full granularity) and then NGBoost μ — both bypass the calibrator
+        # bottleneck and provide signal-driven tiebreaks.
         _kind_priority = {"rotate": 0, "buy": 1, "sell": 2}
+
+        def _tiebreak_score(a: _Action) -> float:
+            """Signal-driven tiebreak. Higher = better."""
+            # Sells don't have a candidate object; tiebreak on held's panel_score.
+            obj = a.cand_obj if a.cand_obj is not None else a.held_obj
+            if obj is None:
+                return 0.0
+            ps = getattr(obj, "panel_score", None)
+            if ps is not None and math.isfinite(float(ps)):
+                return float(ps)
+            return 0.0
+
+        def _mu_tiebreak(a: _Action) -> float:
+            obj = a.cand_obj if a.cand_obj is not None else a.held_obj
+            if obj is None:
+                return 0.0
+            mu = getattr(obj, "mu", None)
+            if mu is not None and math.isfinite(float(mu)):
+                return float(mu)
+            return 0.0
+
         actions.sort(key=lambda a: (
             -a.net_alpha,
             _kind_priority[a.kind],
+            -_tiebreak_score(a),     # primary tiebreak: raw panel_score desc
+            -_mu_tiebreak(a),        # secondary tiebreak: NGBoost μ desc
             (a.held_ticker or "") + "|" + (a.cand_ticker or ""),
         ))
 

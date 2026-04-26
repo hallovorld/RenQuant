@@ -1195,7 +1195,12 @@ class CrossValidateTask(PanelTask):
         if backend == "transformer":
             from training_panel.transformer_model import PanelTransformerModel
             tf_params = dict(cfg.get("transformer_params", {}))
-            cv_epochs = max(int(cfg.get("num_boost_round", 50)) // 2, 5)
+            # Audit fix #14 (2026-04-26): align CV epochs with FinalFit.
+            # Pre-fix, CV used `num_boost_round // 2` while FinalFit used
+            # the full count → CV's IC ≠ FinalFit's IC because they
+            # trained for different durations. Now: identical epoch
+            # budgets so CV reflects what the final model will look like.
+            cv_epochs = int(cfg.get("num_boost_round", 50))
 
             class _SklearnAdapter:
                 def __init__(self):
