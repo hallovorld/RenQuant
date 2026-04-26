@@ -149,6 +149,14 @@ def fit_global_calibrator(
     """
     rows_raw: list[float] = []
     rows_fwd: list[float] = []
+    # Audit fix CALIB-PER-DATE-IC (2026-04-26): compute per-date cross-
+    # sectional IC alongside the pooled IC. The pooled IC is dominated
+    # by time-varying market effects (regime, beta) and looks ~50× smaller
+    # than the panel scorer's CPCV `oos_mean_ic` — which IS per-date.
+    # Storing both lets metadata accurately surface signal quality.
+    per_date_rhos: list[float] = []
+    # Index-keyed pool so we can do per-date groupby on the assembled frame.
+    rows_keys: list[tuple] = []
     for t, raw in panel_scores.items():
         fwd = future_returns.get(t)
         if fwd is None or raw.empty or fwd.empty:
@@ -161,6 +169,9 @@ def fit_global_calibrator(
         ok = np.isfinite(r) & np.isfinite(f)
         rows_raw.append(r[ok])
         rows_fwd.append(f[ok])
+        # Persist (date, ticker) keys for the per-date rollup.
+        for d in idx[ok]:
+            rows_keys.append((d, t))
 
     if not rows_raw:
         raise ValueError("fit_global_calibrator: no overlapping rows across tickers")
@@ -171,8 +182,30 @@ def fit_global_calibrator(
             f"fit_global_calibrator: pooled n={len(raw_all)} < min_rows={min_rows}",
         )
 
-    # Sanity diagnostic: panel IC on the full pool
+    # Sanity diagnostic 1: panel IC on the full pool (mixes time × cross-section)
     rho, _ = spearmanr(raw_all, fwd_all)
+
+    # Sanity diagnostic 2 (CALIB-PER-DATE-IC): mean per-date cross-sectional
+    # IC, matching the panel scorer's CPCV methodology. This is the
+    # apples-to-apples comparison vs `scorer_oos_mean_ic` and gives a
+    # truthful picture of calibrator-input signal quality.
+    per_date_ic_mean: float | None = None
+    n_dates_eval = 0
+    if len(rows_keys) == len(raw_all):
+        df_pool = pd.DataFrame({
+            "date":  [k[0] for k in rows_keys],
+            "raw":   raw_all,
+            "fwd":   fwd_all,
+        })
+        for d, grp in df_pool.groupby("date", sort=False):
+            if len(grp) < 5:
+                continue
+            rh, _ = spearmanr(grp["raw"].values, grp["fwd"].values)
+            if rh == rh:    # not NaN
+                per_date_rhos.append(float(rh))
+        if per_date_rhos:
+            per_date_ic_mean = float(np.mean(per_date_rhos))
+            n_dates_eval = len(per_date_rhos)
 
     # Probability head: indicator of outperforming by threshold
     prob_labels = (fwd_all >= threshold).astype(float)
@@ -187,21 +220,42 @@ def fit_global_calibrator(
     er_x   = np.asarray(iso_er.X_thresholds_, dtype=float)
     er_y   = np.asarray(iso_er.y_thresholds_, dtype=float)
 
+    # Audit fix CALIB-COLLAPSE-GUARD (2026-04-26): refuse to ship a
+    # calibrator where the probability head has < 3 unique y values.
+    # That's a fully-collapsed calibrator (all inputs map to base rate
+    # or one of two values) — downstream rank_score becomes constant,
+    # which silently breaks rotation tiebreaks + score_distribution
+    # percentile lookup. Today's LightGBM run produced unique_y=1
+    # (constant base_rate); this guard would have rejected it.
+    n_unique_prob_y = int(len(set(np.round(prob_y, 8))))
+    if n_unique_prob_y < 3:
+        raise ValueError(
+            f"fit_global_calibrator: probability head collapsed to "
+            f"{n_unique_prob_y} unique y values (need ≥3). pool_ic="
+            f"{rho:+.4f} per_date_ic={per_date_ic_mean if per_date_ic_mean is not None else 'n/a'}. "
+            f"This usually means the scorer's signal is below the noise "
+            f"floor for the calibrator pool — fix scorer or threshold first.",
+        )
+
     metadata = {
-        "n_rows":         int(len(raw_all)),
-        "n_tickers":      int(len(rows_raw)),
-        "pool_ic":        float(rho) if rho == rho else None,
-        "threshold":      float(threshold),
-        "lookahead_days": int(lookahead_days),
-        "prob_base_rate": float(prob_labels.mean()),
-        "er_mean":        float(fwd_all.mean()),
-        "er_std":         float(fwd_all.std()),
+        "n_rows":             int(len(raw_all)),
+        "n_tickers":          int(len(rows_raw)),
+        "pool_ic":            float(rho) if rho == rho else None,
+        "per_date_ic_mean":   per_date_ic_mean,
+        "n_dates_eval":       int(n_dates_eval),
+        "n_unique_prob_y":    n_unique_prob_y,
+        "threshold":          float(threshold),
+        "lookahead_days":     int(lookahead_days),
+        "prob_base_rate":     float(prob_labels.mean()),
+        "er_mean":            float(fwd_all.mean()),
+        "er_std":             float(fwd_all.std()),
     }
     log.info(
-        "fit_global_calibrator: n=%d tickers=%d IC=%.4f base_rate=%.3f "
-        "er_mean=%+.4f",
+        "fit_global_calibrator: n=%d tickers=%d pool_ic=%+.4f "
+        "per_date_ic=%s base_rate=%.3f er_mean=%+.4f n_unique_y=%d",
         metadata["n_rows"], metadata["n_tickers"], rho or 0.0,
-        metadata["prob_base_rate"], metadata["er_mean"],
+        f"{per_date_ic_mean:+.4f}" if per_date_ic_mean is not None else "n/a",
+        metadata["prob_base_rate"], metadata["er_mean"], n_unique_prob_y,
     )
     return GlobalPanelCalibration(
         prob_x=prob_x, prob_y=prob_y, er_x=er_x, er_y=er_y, metadata=metadata,

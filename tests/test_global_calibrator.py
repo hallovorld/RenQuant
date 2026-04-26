@@ -73,12 +73,15 @@ class TestFit:
             fit_global_calibrator(ps, fr, min_rows=1000)
 
     def test_ignores_tickers_missing_from_future_returns(self):
-        ps = {"T0": pd.Series([0.5] * 200,
-                              index=pd.bdate_range("2024-01-02", periods=200)),
-              "T1": pd.Series([0.3] * 200,
-                              index=pd.bdate_range("2024-01-02", periods=200))}
-        fr = {"T0": pd.Series([0.02] * 200,
-                              index=pd.bdate_range("2024-01-02", periods=200))}
+        idx = pd.bdate_range("2024-01-02", periods=200)
+        rng = np.random.default_rng(0)
+        # Use varied scores + matching forward-return signal so the
+        # CALIB-COLLAPSE-GUARD (>=3 unique y) doesn't trip on this
+        # ticker-skipping smoke test.
+        ps = {"T0": pd.Series(rng.normal(0, 0.5, size=200), index=idx),
+              "T1": pd.Series(rng.normal(0, 0.5, size=200), index=idx)}
+        fr = {"T0": pd.Series(0.5 * ps["T0"].values
+                              + rng.normal(0, 0.05, size=200), index=idx)}
         cal = fit_global_calibrator(ps, fr, min_rows=100)
         # Only T0 contributed
         assert cal.metadata["n_rows"] == 200
@@ -279,3 +282,104 @@ class TestEndToEndWithNGBoost:
             "rank_score should be calibrated probability, not raw μ−λσ"
         # And A (higher μ) should rank at least as high as B (lower μ):
         assert a.rank_score >= b.rank_score
+
+
+# ── CALIB-PER-DATE-IC + CALIB-COLLAPSE-GUARD ──────────────────────────────────
+
+class TestCalibratorPoolDiagnostics:
+    """Audit fixes CALIB-PER-DATE-IC + CALIB-COLLAPSE-GUARD (2026-04-26).
+
+    pool_ic mixes time × cross-section so it underreports cross-sectional
+    signal. fit_global_calibrator should ALSO compute per-date cross-
+    sectional IC and stamp both in metadata.
+
+    Calibrators with < 3 unique y values are degenerate (collapsed) and
+    should be REJECTED at fit time, not silently shipped to production.
+    """
+
+    def _per_date_panel(self, n_dates=30, n_tickers=20, signal=0.5,
+                        seed=0):
+        """Build a panel with per-date cross-sectional structure."""
+        import numpy as _np
+        import pandas as _pd
+        rng = _np.random.default_rng(seed)
+        dates = _pd.date_range("2023-01-01", periods=n_dates, freq="D")
+        scores: dict[str, _pd.Series] = {}
+        rets:   dict[str, _pd.Series] = {}
+        for i in range(n_tickers):
+            t = f"T{i:02d}"
+            # Each ticker's score has a fixed component +
+            # cross-sectional noise; future return correlates with score
+            # within each date with `signal` strength.
+            base = rng.normal(0, 0.1)
+            raw = _pd.Series(
+                base + rng.normal(0, 0.02, size=n_dates),
+                index=dates, name=t,
+            )
+            fwd = signal * (raw - raw.mean()) + rng.normal(
+                0, 0.03, size=n_dates,
+            )
+            fwd = _pd.Series(fwd, index=dates, name=t)
+            scores[t] = raw
+            rets[t]   = fwd
+        return scores, rets
+
+    def test_per_date_ic_recorded(self):
+        from training_panel.global_calibrator import (  # noqa: PLC0415
+            fit_global_calibrator,
+        )
+        scores, rets = self._per_date_panel()
+        cal = fit_global_calibrator(scores, rets, threshold=0.0,
+                                    min_rows=200)
+        assert "per_date_ic_mean" in cal.metadata
+        assert "n_dates_eval" in cal.metadata
+        assert "n_unique_prob_y" in cal.metadata
+        assert cal.metadata["n_dates_eval"] >= 25
+        # With cross-sectional structure, per-date IC should be material
+        assert cal.metadata["per_date_ic_mean"] > 0.05
+
+    def test_pool_ic_lower_than_per_date_ic_when_cross_sectional(self):
+        """When signal is purely cross-sectional, pooled IC ≪ per-date IC."""
+        from training_panel.global_calibrator import (  # noqa: PLC0415
+            fit_global_calibrator,
+        )
+        scores, rets = self._per_date_panel(signal=0.7)
+        cal = fit_global_calibrator(scores, rets, threshold=0.0,
+                                    min_rows=200)
+        pool_ic    = cal.metadata["pool_ic"]
+        per_date   = cal.metadata["per_date_ic_mean"]
+        # Both should be positive but per-date should be at least as high
+        assert per_date is not None
+        assert per_date >= pool_ic - 0.02  # allow small noise
+
+    def test_collapse_guard_rejects_degenerate_calibrator(self):
+        """Constant scores + constant labels → isotonic 1 unique y → reject."""
+        from training_panel.global_calibrator import (  # noqa: PLC0415
+            fit_global_calibrator,
+        )
+        import pandas as _pd
+        dates = _pd.date_range("2023-01-01", periods=30, freq="D")
+        scores: dict[str, _pd.Series] = {}
+        rets:   dict[str, _pd.Series] = {}
+        # All tickers have CONSTANT score (no marginal info) AND constant
+        # forward returns → isotonic must collapse to 1 unique y. This
+        # is the LightGBM-2026-04-26 failure mode: pool_ic ~ 0,
+        # isotonic emits y = base_rate everywhere.
+        for i in range(20):
+            t = f"T{i:02d}"
+            scores[t] = _pd.Series([0.05] * 30, index=dates, name=t)
+            rets[t]   = _pd.Series([0.01] * 30, index=dates, name=t)
+        with pytest.raises(ValueError, match="collapsed to"):
+            fit_global_calibrator(scores, rets, threshold=0.005,
+                                  min_rows=200)
+
+    def test_collapse_guard_passes_healthy_calibrator(self):
+        """A healthy panel with cross-sectional signal must NOT raise."""
+        from training_panel.global_calibrator import (  # noqa: PLC0415
+            fit_global_calibrator,
+        )
+        scores, rets = self._per_date_panel(n_dates=60, n_tickers=30,
+                                            signal=0.5, seed=42)
+        cal = fit_global_calibrator(scores, rets, threshold=0.0,
+                                    min_rows=200)
+        assert cal.metadata["n_unique_prob_y"] >= 3
