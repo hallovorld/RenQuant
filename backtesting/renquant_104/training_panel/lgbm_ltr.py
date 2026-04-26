@@ -124,6 +124,19 @@ class PanelLGBMModel:
             assert len(row_weights) == len(X), (
                 f"row_weights len {len(row_weights)} != X rows {len(X)}"
             )
+            # Audit fix LGB-WEIGHT-NORM (2026-04-25): production panel
+            # weights are concurrency × age products — total mass ~10^-4.
+            # XGBoost auto-normalizes per-group; LightGBM uses raw weights
+            # in `sum_of_gradients × weight`. With weight ≈ 0.0003 the
+            # effective gradient signal collapses → lambdarank converges
+            # at iter 1, train_ic=NaN, panel-ltr.json saved with 5.5kB
+            # of nothing (observed in T2-1 retrain, 2026-04-25 20:33).
+            # Fix: rescale so mean(row_weights) = 1.0 — preserves the
+            # RELATIVE per-group weight ratio that the panel encodes,
+            # while keeping LightGBM's gradient signal normalised.
+            mean_w = float(row_weights.mean())
+            if mean_w > 0:
+                row_weights = row_weights / mean_w
 
         dtrain = lgb.Dataset(X, label=y, group=group_sizes, weight=row_weights)
         self.booster = lgb.train(
