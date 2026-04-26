@@ -22,6 +22,7 @@ from .job_ranking        import RankingJob
 from .job_rotation       import RotationJob
 from .job_selection      import SelectionJob
 from .job_joint_actions  import JointActionJob
+from .job_panel_veto     import PanelRankVetoJob
 
 # PanelScoringJob is imported lazily inside run() to avoid a circular import:
 # kernel.panel_pipeline.__init__ pulls in this module via
@@ -162,10 +163,16 @@ class InferencePipeline:
         joint_enabled = bool((ctx.config.get("rotation", {})
                                        .get("joint_actions", {})
                                        .get("enabled", False)))
+        # PanelRankVetoJob runs after PanelScoringJob (so rank_score is
+        # on holdings) but BEFORE the action jobs so vetoed exits are
+        # already removed from ctx.exits by the time joint/rotate/select
+        # see them. Default off — opt-in via model_sell.panel_veto.enabled.
         if joint_enabled and not ctx.bear_only:
-            phase3_jobs = (PanelScoringJob(), RankingJob(), JointActionJob())
+            phase3_jobs = (PanelScoringJob(), PanelRankVetoJob(),
+                           RankingJob(), JointActionJob())
         else:
-            phase3_jobs = (PanelScoringJob(), RankingJob(),
+            phase3_jobs = (PanelScoringJob(), PanelRankVetoJob(),
+                           RankingJob(),
                            RotationJob(), SelectionJob())
         for job in phase3_jobs:
             skip_fn = getattr(job, "should_skip", None)
