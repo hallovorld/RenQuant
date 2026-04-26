@@ -119,7 +119,29 @@ def run_backtest(
             # in-memory mutations of `config` don't leak into the run.
             snap_cfg_path = Path(snap_dir) / "strategy_config.json"
             if snap_cfg_path.exists():
-                cfg = _json.loads(snap_cfg_path.read_text())
+                # Audit fix SNAPSHOT-OVERRIDE-WARN (2026-04-26):
+                # Detect callers passing in-memory config mutations that
+                # diverge from disk — they're about to be silently
+                # discarded. Warn loudly so future writers (validate
+                # script, notebook A/B cells) don't repeat the bug.
+                disk_cfg = _json.loads(snap_cfg_path.read_text())
+                _dir_hint_keys_to_skip = {"_strategy_dir", "_strategy_name"}
+                divergent: list[str] = []
+                for k in set(config.keys()) | set(disk_cfg.keys()):
+                    if k in _dir_hint_keys_to_skip:
+                        continue
+                    if config.get(k) != disk_cfg.get(k):
+                        divergent.append(k)
+                if divergent:
+                    import logging as _logging
+                    _logging.getLogger("sim.runner").warning(
+                        "snapshot=True is about to OVERRIDE in-memory config "
+                        "mutations with disk values. Diverged keys: %s. "
+                        "If you're doing A/B with config flips, pass "
+                        "snapshot=False instead.",
+                        sorted(divergent)[:5],
+                    )
+                cfg = disk_cfg
                 cfg["_strategy_dir"] = str(snap_dir)
             return run_backtest(
                 config               = cfg,
