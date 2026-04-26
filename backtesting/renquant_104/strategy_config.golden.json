@@ -101,7 +101,9 @@
     "WMT",
     "XOM",
     "ZM",
-    "ZS"
+    "ZS",
+    "LITE",
+    "COHR"
   ],
   "benchmark": "SPY",
   "data_src": "yfinance",
@@ -329,7 +331,9 @@
     "GLD": "commodity",
     "XLU": "utility",
     "NEE": "utility",
-    "XLK": "giant_tech"
+    "XLK": "giant_tech",
+    "LITE": "datacenter_hw",
+    "COHR": "datacenter_hw"
   },
   "sector_etf_map": {
     "tech": "XLK",
@@ -670,6 +674,11 @@
       "date": "2026-04-26",
       "change": "enable QP solver + Gate B (\u03c4=0.10)",
       "rollback": "set rotation.joint_actions.solver=\"greedy\" + ranking.panel_scoring.quality_floor.enabled=false"
+    },
+    {
+      "date": "2026-04-26",
+      "change": "add LITE + COHR to watchlist (datacenter_hw / optical-comms exposure)",
+      "rollback": "remove from watchlist + sector_map; revert this commit"
     }
   ]
 }
