@@ -428,8 +428,8 @@
       "ngboost": {
         "enabled": true,
         "artifact_path": "artifacts/ngboost-head.json",
-        "score_mode": "mu_minus_lambda_sigma",
-        "lambda_sigma": 1.0
+        "score_mode": "additive",
+        "lambda_sigma": 0.0
       },
       "sigma_sizing": {
         "enabled": true,
