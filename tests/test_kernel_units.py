@@ -944,10 +944,21 @@ class TestBearHardOverride:
 # ── kernel.exits: tax-aware hold gate ────────────────────────────────────────
 
 class TestTaxHoldGate:
-    """Tax-aware hold gate suppresses model-sell near the 1-year LT threshold."""
+    """Tax-aware hold gate suppresses model-sell near the 1-year LT threshold.
+
+    Audit fix STREAK-TRADING-DAY (2026-04-26 round-7): tests now pin
+    `today` to a fixed NYSE trading day (Mon 2026-04-27) rather than
+    `date.today()`. The new streak rule rejects non-trading days, so
+    a Sunday `date.today()` would silently break model_sell tests.
+    Tests are about LT-tax timing, not the actual calendar — pinning
+    is the more correct semantic anyway.
+    """
+
+    # Fixed Monday — guaranteed NYSE trading day.
+    _TRADING_DAY = datetime.date(2026, 4, 27)
 
     def _state(self, days_ago: int, entry_price=100.0) -> HoldingState:
-        entry = datetime.date.today() - datetime.timedelta(days=days_ago)
+        entry = self._TRADING_DAY - datetime.timedelta(days=days_ago)
         return HoldingState(
             entry_price=entry_price,
             entry_date=entry,
@@ -972,7 +983,7 @@ class TestTaxHoldGate:
         state = self._state(days_ago=340, entry_price=100.0)
         sig, _ = compute_exits(
             current_price=120.0,  # 20% gain
-            today=datetime.date.today(),
+            today=self._TRADING_DAY,
             model_action="sell",
             state=state,
             params=self._params(lt_gate=330, lt_min_gain=0.10),
@@ -984,7 +995,7 @@ class TestTaxHoldGate:
         state = self._state(days_ago=300, entry_price=100.0)
         sig, _ = compute_exits(
             current_price=120.0,
-            today=datetime.date.today(),
+            today=self._TRADING_DAY,
             model_action="sell",
             state=state,
             params=self._params(lt_gate=330, lt_min_gain=0.10),
@@ -997,7 +1008,7 @@ class TestTaxHoldGate:
         state = self._state(days_ago=366, entry_price=100.0)
         sig, _ = compute_exits(
             current_price=120.0,
-            today=datetime.date.today(),
+            today=self._TRADING_DAY,
             model_action="sell",
             state=state,
             params=self._params(lt_gate=330, lt_min_gain=0.10),
@@ -1010,7 +1021,7 @@ class TestTaxHoldGate:
         state = self._state(days_ago=340, entry_price=100.0)
         sig, _ = compute_exits(
             current_price=105.0,  # only 5% gain
-            today=datetime.date.today(),
+            today=self._TRADING_DAY,
             model_action="sell",
             state=state,
             params=self._params(lt_gate=330, lt_min_gain=0.10),
@@ -1023,7 +1034,7 @@ class TestTaxHoldGate:
         state = self._state(days_ago=340, entry_price=100.0)
         sig, _ = compute_exits(
             current_price=120.0,
-            today=datetime.date.today(),
+            today=self._TRADING_DAY,
             model_action="sell",
             state=state,
             params=self._params(lt_gate=0, lt_min_gain=0.10),
@@ -1036,7 +1047,7 @@ class TestTaxHoldGate:
         state = self._state(days_ago=340, entry_price=100.0)
         sig, _ = compute_exits(
             current_price=80.0,   # 20% loss → triggers stop
-            today=datetime.date.today(),
+            today=self._TRADING_DAY,
             model_action="hold",
             state=state,
             params={**self._params(lt_gate=330, lt_min_gain=0.10),
@@ -1052,16 +1063,19 @@ class TestTaxHoldGate:
         `today` twice — relied on per-RUN streak increment. Post-fix, streak
         increments AT MOST once per calendar day, so consecutive bars on
         DIFFERENT dates required.
+
+        Round-7 (2026-04-26): also requires both days be NYSE trading
+        days. Use Fri 2026-04-24 + Mon 2026-04-27 (both trading days).
         """
         state = self._state(days_ago=340, entry_price=100.0)
-        today = datetime.date.today()
-        yesterday = today - datetime.timedelta(days=1)
+        # Two consecutive trading days (Fri + Mon).
+        friday = datetime.date(2026, 4, 24)
+        monday = self._TRADING_DAY
         params = self._params(lt_gate=330, lt_min_gain=0.10)
         params["consecutive_sell_signals"] = 2
 
-        # Two sell signals on TWO different days during gate — no exit yet
-        _, state = compute_exits(120.0, yesterday, "sell", state, params)
-        _, state = compute_exits(120.0, today, "sell", state, params)
+        _, state = compute_exits(120.0, friday, "sell", state, params)
+        _, state = compute_exits(120.0, monday, "sell", state, params)
         assert state.sell_streak == 2
 
     def test_streak_idempotent_within_same_day(self):
@@ -1071,7 +1085,7 @@ class TestTaxHoldGate:
         sell-only runs in production (open / 30-min / preclose).
         """
         state = self._state(days_ago=340, entry_price=100.0)
-        today = datetime.date.today()
+        today = self._TRADING_DAY
         params = self._params(lt_gate=330, lt_min_gain=0.10)
         params["consecutive_sell_signals"] = 99   # don't exit, just count
 
@@ -1085,17 +1099,18 @@ class TestTaxHoldGate:
         )
 
     def test_streak_resets_on_non_sell_signal(self):
-        """Reset still happens immediately on hold/buy (not gated by date)."""
+        """Reset still happens immediately on hold/buy on a trading day."""
         state = self._state(days_ago=340, entry_price=100.0)
-        today = datetime.date.today()
-        yesterday = today - datetime.timedelta(days=1)
+        # Two consecutive trading days (Fri + Mon).
+        friday = datetime.date(2026, 4, 24)
+        monday = self._TRADING_DAY
         params = self._params(lt_gate=330, lt_min_gain=0.10)
         params["consecutive_sell_signals"] = 99
 
-        _, state = compute_exits(120.0, yesterday, "sell", state, params)
+        _, state = compute_exits(120.0, friday, "sell", state, params)
         assert state.sell_streak == 1
-        # Hold signal mid-day — streak resets
-        _, state = compute_exits(120.0, today, "hold", state, params)
+        # Hold signal next trading day — streak resets
+        _, state = compute_exits(120.0, monday, "hold", state, params)
         assert state.sell_streak == 0
 
 
