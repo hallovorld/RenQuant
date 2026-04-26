@@ -140,16 +140,48 @@ def _build_tag(args) -> str:
 
 
 def _summarise(result, tag: str) -> dict:
-    """Distil SimResult into a comparable dict."""
+    """Distil SimResult into a comparable dict.
+
+    SimResult fields actually exposed: equity_df, trade_log, final_value,
+    total_return, apy, win_rate, avg_hold, avg_pnl, total_tax, exit_reasons,
+    rotations, longest_no_trade_streak. `buys` / `sells` are @property —
+    list, not callable. sharpe + max_dd computed here from equity_df.
+    """
+    import numpy as _np
+    apy   = float(getattr(result, "apy", 0.0) or 0.0)
+    total_return = float(getattr(result, "total_return", 0.0) or 0.0)
+
+    # Sharpe + max_dd from equity_df
+    sharpe = 0.0
+    max_dd = 0.0
+    eq = getattr(result, "equity_df", None)
+    if eq is not None and len(eq) > 1 and "portfolio" in eq.columns:
+        port = eq["portfolio"].astype(float)
+        rets = port.pct_change().dropna()
+        if len(rets) > 1:
+            std = float(rets.std())
+            if std > 0:
+                sharpe = float(rets.mean() / std * (252 ** 0.5))
+        # Max DD = max peak-to-trough fraction
+        cum_max = port.cummax()
+        dd = (port - cum_max) / cum_max
+        max_dd = float(abs(dd.min())) if len(dd) else 0.0
+
+    trade_log = getattr(result, "trade_log", []) or []
+    n_buys  = sum(1 for t in trade_log if t.get("action") == "buy")
+    n_sells = sum(1 for t in trade_log if t.get("action") == "sell")
+
     out = {
-        "tag":         tag,
-        "apy":         float(getattr(result, "apy", 0.0) or 0.0),
-        "total_return": float(getattr(result, "total_return", 0.0) or 0.0),
-        "sharpe":      float(getattr(result, "sharpe", 0.0) or 0.0),
-        "max_dd":      float(getattr(result, "max_dd", 0.0) or 0.0),
-        "n_trades":    int(getattr(result, "n_trades", 0) or 0),
-        "n_buys":      len(result.buys()) if hasattr(result, "buys") else 0,
-        "n_sells":     len(result.sells()) if hasattr(result, "sells") else 0,
+        "tag":          tag,
+        "apy":          apy,
+        "total_return": total_return,
+        "sharpe":       sharpe,
+        "max_dd":       max_dd,
+        "n_trades":     len(trade_log),
+        "n_buys":       n_buys,
+        "n_sells":      n_sells,
+        "win_rate":     float(getattr(result, "win_rate", 0.0) or 0.0),
+        "final_value":  float(getattr(result, "final_value", 0.0) or 0.0),
         "longest_no_trade_streak": int(
             getattr(result, "longest_no_trade_streak", 0) or 0,
         ),
