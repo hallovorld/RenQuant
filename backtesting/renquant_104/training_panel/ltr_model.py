@@ -130,6 +130,10 @@ class PanelLTRModel:
         a non-None value AND eval data, we wire it through.
         """
         self.feature_cols = list(feature_cols)
+        # Audit fix X13b (2026-04-26 round-3): reset monotone-log gate
+        # at start of each train() call so consecutive .train() invocations
+        # each log their resolved constraints once.
+        self._monotone_logged = False
 
         X = panel[feature_cols].values
         y = panel[label_col].values

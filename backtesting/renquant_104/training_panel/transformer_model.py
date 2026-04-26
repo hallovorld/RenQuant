@@ -130,6 +130,10 @@ class TransformerParams:
     # Pre-fix, single `dropout` controlled both — no way to tune
     # independently. None means "fall back to dropout".
     attention_dropout: float | None = None
+    # Audit fix #36 (2026-04-26 round-3): opt-in mixed precision.
+    # Default False (fp32) for safety; flip to True on MPS/CUDA for
+    # ~1.5-2x speedup on attention. Disabled on CPU (no AMP gain).
+    use_amp: bool = False
 
 
 # ── Module ─────────────────────────────────────────────────────────────────────
@@ -724,9 +728,20 @@ class PanelTransformerModel:
                     drop = (torch.rand(xb.shape[:2], device=self._device) < p.ticker_dropout) & (~mb)
                     xb = xb.masked_fill(drop.unsqueeze(-1), 0.0)
 
-                scores = self._model(xb, mb)
-                loss = _listnet_loss(scores, yb, mb, nb,
-                                     rank_transform=bool(p.rank_transform_labels))
+                # Audit fix #36 (2026-04-26 round-3): opt-in mixed precision.
+                # autocast wraps the forward+loss in fp16/bf16 where
+                # supported. AdamW master weights stay fp32. Default off
+                # for backward compat.
+                if p.use_amp and self._device.type in ("cuda", "mps"):
+                    amp_device = self._device.type
+                    with torch.autocast(device_type=amp_device, dtype=torch.float16):
+                        scores = self._model(xb, mb)
+                        loss = _listnet_loss(scores, yb, mb, nb,
+                                             rank_transform=bool(p.rank_transform_labels))
+                else:
+                    scores = self._model(xb, mb)
+                    loss = _listnet_loss(scores, yb, mb, nb,
+                                         rank_transform=bool(p.rank_transform_labels))
 
                 # Audit fix #88 (2026-04-26): NaN-grad detection. If
                 # forward produced NaN/inf loss (rare but possible from
