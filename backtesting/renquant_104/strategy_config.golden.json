@@ -428,8 +428,8 @@
       "ngboost": {
         "enabled": true,
         "artifact_path": "artifacts/ngboost-head.json",
-        "score_mode": "additive",
-        "lambda_sigma": 0.0
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
       },
       "sigma_sizing": {
         "enabled": true,
@@ -535,9 +535,6 @@
       "beta_60d_z": -1,
       "mom_12_1_z": 1,
       "resid_mom_z": 1,
-      "earnings_yield_z": 1,
-      "roe_z": 1,
-      "gross_profitability_z": 1,
       "realized_vol_z": -1,
       "amihud_illiq_z": 1,
       "price_to_high_z": 1,
