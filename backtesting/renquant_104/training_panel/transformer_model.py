@@ -545,6 +545,13 @@ class PanelTransformerModel:
         Pre-fix, train required explicit group_sizes; predict accepted
         either. Now both behave identically.
         """
+        # Audit fix #15 (2026-04-26 round-3): weight_col is intentionally
+        # ignored. ListNet's softmax over labels is scale-invariant;
+        # multiplying labels by a per-row weight just rescales the
+        # softmax distribution. To respect weights properly we'd need
+        # to weight the LOSS per-group (e.g. via group concurrency) —
+        # not implemented because group concurrency is constant in our
+        # date-grouped panel. Documented to avoid surprise.
         del weight_col   # ListNet is scale-invariant; group weights not applied here.
 
         if feature_cols is None:
@@ -1151,6 +1158,15 @@ class PanelTransformerModel:
             rho, _ = spearmanr(p_slice, y_slice)
             if not np.isnan(rho):
                 ics.append(float(rho))
+            # Audit fix #82 (2026-04-26 round-3): optional kendall tau
+            # for cross-check. Only log; not used for IC return value.
+            if self.params.log_kendall_tau:
+                try:
+                    tau, _ = kendalltau(p_slice, y_slice)
+                    if not np.isnan(tau):
+                        log.debug("group kendall_tau=%+.4f spearman=%+.4f", tau, rho)
+                except Exception:
+                    pass
         if not ics:
             log.warning(
                 "_ic_on_tensors: all %d groups were degenerate "
