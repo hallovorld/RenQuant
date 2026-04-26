@@ -605,6 +605,11 @@ class PanelScoringJob(Job):
 
     @property
     def tasks(self) -> list[Task]:
+        # Lazy import — avoids a circular import that fires when
+        # job_panel_scoring is imported by InferencePipeline init.
+        from kernel.panel_pipeline.task_quality_floor import (  # noqa: PLC0415
+            QualityFloorTask,
+        )
         return [
             LoadScorerTask(),
             BuildFeatureMatrixTask(),
@@ -615,4 +620,9 @@ class PanelScoringJob(Job):
             LoadGlobalCalibrationTask(),
             ApplyGlobalCalibrationTask(),
             ApplyKellySizingTask(),   # Plan C — f*=μ/σ² (no-op unless kelly_sizing.enabled)
+            # Buy-logic redesign Stage 0 (2026-04-26): quality gates
+            # filter weak-signal candidates AFTER all scoring + sizing.
+            # All gates default OFF — bit-for-bit parity preserved.
+            # See doc/buy_logic_redesign_2026-04-26.md for theory.
+            QualityFloorTask(),
         ]
