@@ -196,6 +196,62 @@ CREATE TABLE IF NOT EXISTS training_runs (
     notes          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_training_runs_date ON training_runs(run_date);
+
+-- Calibration score database (2026-04-26 round-5).
+-- Per user spec: "建立 calibrate 数据库, 这样才知道什么 score value 是 top 5%"
+-- Phase 1: collect score distribution per bar; phase 2 will use these
+-- to drive percentile-based admission in JointActionTask.
+--
+-- Each row is one (date, ticker) candidate scored by the panel scorer
+-- in PanelScoringJob. Holdings ARE included (they have rank_score too).
+CREATE TABLE IF NOT EXISTS score_distribution (
+    date          TEXT NOT NULL,        -- YYYY-MM-DD (string for sqlite friendliness)
+    ticker        TEXT NOT NULL,
+    raw_panel     REAL,                 -- pre-calibration scorer output (panel_score)
+    rank_score    REAL,                 -- post-calibration probability
+    mu            REAL,                 -- NGBoost μ if active
+    sigma         REAL,                 -- NGBoost σ if active
+    regime        TEXT,                 -- BULL_CALM / etc.
+    is_holding    INTEGER DEFAULT 0,    -- 0 = candidate, 1 = held
+    PRIMARY KEY (date, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_score_dist_date ON score_distribution(date);
+
+-- Daily aggregated percentiles for fast threshold lookup.
+-- Computed at end of each bar from that day's score_distribution rows.
+-- Phase 2 JointAction reads this to convert "top X%" → absolute threshold.
+CREATE TABLE IF NOT EXISTS score_percentiles_daily (
+    date          TEXT PRIMARY KEY,
+    n_cands       INTEGER NOT NULL,
+    p01           REAL,
+    p05           REAL,
+    p10           REAL,
+    p25           REAL,
+    p50           REAL,
+    p75           REAL,
+    p85           REAL,                 -- "top 15%"
+    p90           REAL,                 -- "top 10%"
+    p95           REAL,                 -- "top 5%"
+    p99           REAL,
+    score_min     REAL,
+    score_max     REAL,
+    score_mean    REAL,
+    score_std     REAL,
+    regime        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pctiles_date ON score_percentiles_daily(date);
+
+-- Calibrator drift tracking — 1 row per training run.
+-- Operator dashboard can plot pool_ic / scorer_oos_ic over time.
+CREATE TABLE IF NOT EXISTS score_distribution_meta (
+    date              TEXT PRIMARY KEY,
+    calibrator_pool_ic REAL,
+    scorer_oos_ic     REAL,
+    base_rate         REAL,
+    threshold         REAL,
+    n_features        INTEGER,
+    artifact_path     TEXT
+);
 """
 
 

@@ -117,6 +117,10 @@
       "max_streak_to_veto": 5
     }
   },
+  "score_db": {
+    "enabled": true,
+    "comment": "Phase 1 collect-only. Phase 2 will add percentile-based admission via panel_buy_pctile."
+  },
   "consecutive_sell_signals": 3,
   "min_hold_profit_days": 20,
   "min_hold_loss_days": 20,

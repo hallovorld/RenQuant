@@ -23,6 +23,7 @@ from .job_rotation       import RotationJob
 from .job_selection      import SelectionJob
 from .job_joint_actions  import JointActionJob
 from .job_panel_veto     import PanelRankVetoJob
+from .job_score_distribution import ScoreDistributionJob
 
 # PanelScoringJob is imported lazily inside run() to avoid a circular import:
 # kernel.panel_pipeline.__init__ pulls in this module via
@@ -167,13 +168,20 @@ class InferencePipeline:
         # on holdings) but BEFORE the action jobs so vetoed exits are
         # already removed from ctx.exits by the time joint/rotate/select
         # see them. Default off — opt-in via model_sell.panel_veto.enabled.
+        # ScoreDistributionJob (2026-04-26 round-5) runs LAST in Phase 3
+        # so it captures FINAL rank_score values (post-calibration, post-
+        # NGBoost). Default off — opt-in via score_db.enabled. Doesn't
+        # affect decisions; only persists the distribution to runs.db
+        # for percentile-based admission in a future Phase 2.
         if joint_enabled and not ctx.bear_only:
             phase3_jobs = (PanelScoringJob(), PanelRankVetoJob(),
-                           RankingJob(), JointActionJob())
+                           RankingJob(), JointActionJob(),
+                           ScoreDistributionJob())
         else:
             phase3_jobs = (PanelScoringJob(), PanelRankVetoJob(),
                            RankingJob(),
-                           RotationJob(), SelectionJob())
+                           RotationJob(), SelectionJob(),
+                           ScoreDistributionJob())
         for job in phase3_jobs:
             skip_fn = getattr(job, "should_skip", None)
             if callable(skip_fn) and skip_fn(ctx):
