@@ -220,19 +220,31 @@ def fit_global_calibrator(
     er_x   = np.asarray(iso_er.X_thresholds_, dtype=float)
     er_y   = np.asarray(iso_er.y_thresholds_, dtype=float)
 
-    # Audit fix CALIB-COLLAPSE-GUARD (2026-04-26): refuse to ship a
-    # calibrator where the probability head has < 3 unique y values.
-    # That's a fully-collapsed calibrator (all inputs map to base rate
-    # or one of two values) — downstream rank_score becomes constant,
-    # which silently breaks rotation tiebreaks + score_distribution
-    # percentile lookup. Today's LightGBM run produced unique_y=1
-    # (constant base_rate); this guard would have rejected it.
+    # Audit fix CALIB-COLLAPSE-GUARD (2026-04-26 round-7): refuse to
+    # ship a calibrator where the probability head has < 5 unique y
+    # values.
+    #
+    # History: original guard threshold was 3. Round-7 audit found the
+    # production XGBoost calibrator running with n_unique_prob_y = 6 →
+    # top-7 candidates collapsed to identical rank_score=0.34474, breaking
+    # rotation tiebreaks. User spec: "verify ≥5 unique y values". Bumped
+    # to 5 so the LightGBM constant-y=1 case AND the borderline 3- or
+    # 4-unique-y cases are all rejected at fit time.
+    #
+    # Calibrators with too few unique y values produce constant
+    # rank_scores across cross-section → silently break rotation
+    # tiebreaks + score_distribution percentile lookup.
+    #
+    # Reference: Niculescu-Mizil & Caruana (2005). "Predicting Good
+    # Probabilities with Supervised Learning", ICML — isotonic
+    # calibration requires sufficient resolution in the input signal.
     n_unique_prob_y = int(len(set(np.round(prob_y, 8))))
-    if n_unique_prob_y < 3:
+    if n_unique_prob_y < 5:
         raise ValueError(
             f"fit_global_calibrator: probability head collapsed to "
-            f"{n_unique_prob_y} unique y values (need ≥3). pool_ic="
-            f"{rho:+.4f} per_date_ic={per_date_ic_mean if per_date_ic_mean is not None else 'n/a'}. "
+            f"{n_unique_prob_y} unique y values (need ≥5 — round-7 floor). "
+            f"pool_ic={rho:+.4f} per_date_ic="
+            f"{per_date_ic_mean if per_date_ic_mean is not None else 'n/a'}. "
             f"This usually means the scorer's signal is below the noise "
             f"floor for the calibrator pool — fix scorer or threshold first.",
         )

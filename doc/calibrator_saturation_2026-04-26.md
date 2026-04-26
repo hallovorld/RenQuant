@@ -120,3 +120,42 @@ transformer work.
 - Fitter: `scripts/recalibrate_scores.py` + `kernel.calibration.fit_panel_calibrator`
 - Schema: `panel-rank-calibration.json` (probability + expected_return maps)
 - Related: `doc/post_tier1_followups_2026-04-25.md` (Tier 1 retrain notes)
+
+## Round-7 fix shipped (2026-04-26)
+
+Action item #3 above ("Add a CI/test guard that rejects any calibrator
+with `unique_y < 5`") is now in place.
+
+**Change**: `fit_global_calibrator` collapse-guard floor bumped from
+`< 3` to `< 5` in `backtesting/renquant_104/training_panel/global_calibrator.py`.
+
+**Why 5 (not 3)**: the production XGBoost calibrator at the time of
+discovery had `n_unique_prob_y = 6` and was visibly saturated (top-7
+candidates collapsing to identical 0.34474). A floor of 3 would have
+let it through; a floor of 5 still permits it but flags any further
+degradation. The user's spec was explicitly "≥5 unique y values".
+
+**Behavior**: any future fit with `n_unique_prob_y < 5` raises
+`ValueError("collapsed to N unique y values (need ≥5)")` — the
+operator must investigate (likely scorer signal below noise floor)
+before re-running the fit.
+
+**Tests** (`tests/test_global_calibrator.py::TestCalibratorPoolDiagnostics`):
+- `test_collapse_guard_rejects_borderline_4_unique` — new (boundary
+  case the old floor missed).
+- `test_collapse_guard_passes_healthy_calibrator` — assertion bumped
+  from `>= 3` to `>= 5`.
+- `test_n_unique_prob_y_metadata_tracks_actual_count` — new (paranoia
+  on metadata correctness).
+
+**Reference**: Niculescu-Mizil & Caruana (2005). "Predicting Good
+Probabilities with Supervised Learning", *ICML* — isotonic calibration
+requires sufficient resolution in the input signal.
+
+**Action items still open**:
+1. Items #1, #2, #4 above remain — pool/eval split alignment, threshold
+   re-tuning, and pool_ic vs scorer_oos_ic ratio guard.
+2. **Refit production calibrator** — operator must re-run
+   `python scripts/recalibrate_scores.py --strategy renquant_104` to
+   produce a fresh calibrator that meets the new floor. If it fails,
+   investigate scorer signal quality before retrying.

@@ -293,8 +293,13 @@ class TestCalibratorPoolDiagnostics:
     signal. fit_global_calibrator should ALSO compute per-date cross-
     sectional IC and stamp both in metadata.
 
-    Calibrators with < 3 unique y values are degenerate (collapsed) and
+    Calibrators with < 5 unique y values are degenerate (collapsed) and
     should be REJECTED at fit time, not silently shipped to production.
+
+    Round-7 audit (2026-04-26): bumped guard from 3 to 5 after the
+    production XGBoost calibrator ran with n_unique_prob_y=6 and showed
+    rank_score saturation across the top tier (top-7 candidates
+    collapsing to 0.34474). User spec: "verify ≥5 unique y values".
     """
 
     def _per_date_panel(self, n_dates=30, n_tickers=20, signal=0.5,
@@ -382,4 +387,50 @@ class TestCalibratorPoolDiagnostics:
                                             signal=0.5, seed=42)
         cal = fit_global_calibrator(scores, rets, threshold=0.0,
                                     min_rows=200)
-        assert cal.metadata["n_unique_prob_y"] >= 3
+        assert cal.metadata["n_unique_prob_y"] >= 5
+
+    def test_collapse_guard_rejects_borderline_4_unique(self):
+        """4 unique y values used to pass (old floor=3); round-7 raised
+        floor to 5 so this should now be rejected.
+
+        Tactic: build a panel where forward returns are near-constant
+        with only 4 distinct values; isotonic regresses to ≤4 unique y.
+        """
+        from training_panel.global_calibrator import (  # noqa: PLC0415
+            fit_global_calibrator,
+        )
+        import pandas as _pd
+        import numpy as _np
+        rng = _np.random.default_rng(0)
+        dates = _pd.date_range("2023-01-01", periods=60, freq="D")
+        scores: dict[str, _pd.Series] = {}
+        rets:   dict[str, _pd.Series] = {}
+        # 4 quartile buckets — gives at most 4 unique probability values
+        for i in range(20):
+            t = f"T{i:02d}"
+            raw_vals = rng.uniform(-0.05, 0.05, size=60)
+            # Snap forward returns to 4 buckets — isotonic on indicator
+            # against this gives ≤4 distinct y.
+            fwd_vals = _np.where(raw_vals > 0.025, 0.05,
+                          _np.where(raw_vals > 0.0,    0.02,
+                          _np.where(raw_vals > -0.025, 0.0, -0.02)))
+            scores[t] = _pd.Series(raw_vals, index=dates, name=t)
+            rets[t]   = _pd.Series(fwd_vals, index=dates, name=t)
+        with pytest.raises(ValueError, match="collapsed to|need ≥5"):
+            fit_global_calibrator(scores, rets, threshold=0.01,
+                                  min_rows=200)
+
+    def test_n_unique_prob_y_metadata_tracks_actual_count(self):
+        """Metadata field must be populated correctly for downstream
+        score_db percentile fallback decisions."""
+        from training_panel.global_calibrator import (  # noqa: PLC0415
+            fit_global_calibrator,
+        )
+        scores, rets = self._per_date_panel(n_dates=80, n_tickers=30,
+                                            signal=0.7, seed=7)
+        cal = fit_global_calibrator(scores, rets, threshold=0.0,
+                                    min_rows=200)
+        # Cross-check metadata vs actual array uniqueness
+        import numpy as _np
+        actual_unique = int(len(set(_np.round(cal.prob_y, 8))))
+        assert cal.metadata["n_unique_prob_y"] == actual_unique
