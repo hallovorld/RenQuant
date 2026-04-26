@@ -1126,6 +1126,21 @@ class BuildHourlyResolutionPanelTask(PanelTask):
         # Group_sizes by (date, hour) — transformer's date-group attention
         # operates on the cross-section at a fixed time slice.
         ctx.panel = panel
+        # Audit fix C2-FEATURE-COLS-EMPTY (2026-04-26): downstream
+        # CrossValidateTask + FinalFitTask read ctx.feature_cols to know
+        # which columns are inputs (vs. label/metadata). Pre-fix, we
+        # only set ctx.panel and ctx.panel_metadata → ctx.feature_cols
+        # stayed empty → transformer.fit raised
+        # 'PanelTransformerModel.train: feature_cols is empty'.
+        # Fix: set feature_cols to all panel columns except the known
+        # non-feature ones (ticker, date, hour, datetime, label,
+        # _sample_weight). The HOURLY_RES_FEATURE_COLS list from
+        # hourly_resolution_panel is the canonical input set, but use
+        # actual panel columns to be defensive.
+        non_feature = {"ticker", "date", "hour", "datetime",
+                       "label", "_sample_weight",
+                       "forward_excess_return"}
+        ctx.feature_cols = [c for c in panel.columns if c not in non_feature]
         ctx.panel_metadata = {
             "n_rows":    int(len(panel)),
             "n_tickers": int(panel["ticker"].nunique()) if "ticker" in panel.columns else 0,
@@ -1133,6 +1148,7 @@ class BuildHourlyResolutionPanelTask(PanelTask):
             "n_hours":   int(panel["hour"].nunique()) if "hour" in panel.columns else 0,
             "resolution": "hourly",
             "label_horizon_bars": label_horizon,
+            "n_features": len(ctx.feature_cols),
         }
         log.info(
             "BuildHourlyResolutionPanelTask: hourly panel rows=%d "
