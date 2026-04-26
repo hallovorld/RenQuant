@@ -683,7 +683,20 @@ class RunnerAdapter:
         # and bloating state. Now: drop entries for tickers not in current
         # held_set, EXCEPT keep last_sell_dates entries inside the 30-day
         # wash-sale window (those are still load-bearing for future buys).
+        #
+        # Audit fix STATE-GC-NEWBUYS (Bug K2, 2026-04-25): pre-fix, ctx.holdings
+        # was captured at start-of-bar (broker positions BEFORE today's buys
+        # executed). New buys added entries to entry_dates via the buy loop,
+        # then GC immediately dropped them because they weren't in
+        # ctx.holdings. The state was self-correcting next iter (broker fills
+        # would re-seed) but the immediate write was wrong. Fix: extend
+        # currently_held with tickers from ctx.orders_placed (broker-confirmed
+        # buys) so GC preserves them.
         currently_held = set(ctx.holdings.keys())
+        for o in getattr(ctx, "orders_placed", []) or []:
+            t = o.get("ticker") if isinstance(o, dict) else None
+            if t:
+                currently_held.add(t)
         wash_sale_window_days = 30
         cutoff = ctx.today - datetime.timedelta(days=wash_sale_window_days)
         for store_name, store in (
