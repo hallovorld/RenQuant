@@ -283,11 +283,66 @@ class JointActionTask(Task):
 
         actions: list[_Action] = []
 
-        # BUY actions — candidate must clear panel_buy_floor (when set)
+        # Audit fix BUY-FLOOR-RANK-FALLBACK (2026-04-26 round-5):
+        # absolute panel_buy_floor (default 0.45) is too aggressive when
+        # calibrator's pool_ic is low — score distribution compresses near
+        # base_rate (~0.27), few/no cands cross 0.45, BUY menu always
+        # empty, portfolio bleeds via sells-only. Per user spec: "结合
+        # rank based" — use TOP-N rank fallback.
+        #
+        # Logic:
+        #   1. Sort eligible_cands by rank_score DESC.
+        #   2. For each cand: ABSOLUTE pass requires rank_score >= buy_floor.
+        #   3. RANK fallback: if cand is in top-N AND rank_score >= rank_floor
+        #      (a looser absolute floor, default 0.20 ≈ base_rate-ish), allow.
+        #   4. Both gates use the SAME tier escalation downstream — quality
+        #      filter at greedy_loop is unchanged.
+        #
+        # Default: top_n=3 (one slot of guaranteed quality), rank_floor=0.20.
+        # When buy_floor is None, only rank fallback gates the menu.
+        rotation_cfg_full = ctx.config.get("rotation", {})
+        rank_top_n_raw  = rotation_cfg_full.get("panel_buy_top_n", 3)
+        rank_floor_raw  = rotation_cfg_full.get("panel_buy_rank_floor", 0.20)
+        rank_top_n  = max(0, int(rank_top_n_raw)) if rank_top_n_raw is not None else 0
+        rank_floor  = float(rank_floor_raw) if rank_floor_raw is not None else 0.0
+
+        # Pre-sort eligible_cands by rank_score desc for the rank-fallback gate.
+        ranked_cands = sorted(
+            eligible_cands,
+            key=lambda c: float(getattr(c, "rank_score", 0.0) or 0.0),
+            reverse=True,
+        )
+        cand_index = {id(c): i for i, c in enumerate(ranked_cands)}
+
+        n_pass_floor = 0
+        n_pass_rank  = 0
+
+        # BUY actions — candidate must clear panel_buy_floor OR be in top-N
         for c in eligible_cands:
             cand_score = float(getattr(c, "rank_score", 0.0) or 0.0)
-            if buy_floor is not None and cand_score < buy_floor:
+            # Absolute floor pass
+            passes_absolute = (
+                buy_floor is None or cand_score >= buy_floor
+            )
+            # Rank fallback pass: top-N AND above rank_floor
+            cand_rank = cand_index.get(id(c), len(ranked_cands))
+            passes_rank = (
+                rank_top_n > 0
+                and cand_rank < rank_top_n
+                and cand_score >= rank_floor
+            )
+            if not (passes_absolute or passes_rank):
                 continue
+            if passes_absolute:
+                n_pass_floor += 1
+            elif passes_rank:
+                n_pass_rank += 1
+                log.info(
+                    "RANK-FALLBACK admitted %-6s rank=%d/N=%d score=%.3f "
+                    "(below buy_floor=%.2f but in top-%d above rank_floor=%.2f)",
+                    c.ticker, cand_rank + 1, len(ranked_cands), cand_score,
+                    buy_floor or 0.0, rank_top_n, rank_floor,
+                )
             # Plan O — no defensives in non-BEAR offensive regimes
             if c.ticker in defensive_set:
                 continue

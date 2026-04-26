@@ -358,8 +358,10 @@
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
     "max_rotations_per_bar": 2,
-    "panel_buy_floor": 0.45,
+    "panel_buy_floor": 0.30,
     "panel_sell_floor": 0.2,
+    "panel_buy_top_n": 3,
+    "panel_buy_rank_floor": 0.20,
     "joint_actions": {
       "enabled": true,
       "fee_pct": 0.0005,

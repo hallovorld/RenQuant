@@ -147,12 +147,45 @@ class TestJointActionScoreFloors:
     """User spec #5: only buy if score > buy_floor; only sell if score < sell_floor."""
 
     def test_buy_below_floor_rejected(self):
+        """Below buy_floor AND below rank_floor → rejected."""
         cfg = _base_config(buy_floor=0.50)
+        # Audit fix BUY-FLOOR-RANK-FALLBACK (2026-04-26 round-5):
+        # need to disable rank fallback for this test to keep its
+        # "below floor → rejected" semantics. With rank_top_n=3
+        # default, single cand (rank=1/1) above 0.20 would be admitted
+        # via rank fallback.
+        cfg["rotation"]["panel_buy_top_n"] = 0
         ctx = _Ctx(config=cfg)
         ctx.ranked = [_Cand("NVDA", rank_score=0.40, expected_return=0.05)]
         ctx.prices = {"NVDA": 200.0}
         JointActionTask().run(ctx)
-        assert ctx.orders == [], "below buy_floor must not fire"
+        assert ctx.orders == [], "below buy_floor must not fire when rank fallback disabled"
+
+    def test_buy_below_floor_admitted_via_rank_fallback(self):
+        """Below buy_floor BUT in top-N AND above rank_floor → admitted."""
+        cfg = _base_config(buy_floor=0.50, tiered=[{"min_model_score": 0.10}])
+        cfg["rotation"]["panel_buy_top_n"] = 3
+        cfg["rotation"]["panel_buy_rank_floor"] = 0.20
+        ctx = _Ctx(config=cfg)
+        ctx.ranked = [_Cand("NVDA", rank_score=0.40, expected_return=0.05)]
+        ctx.prices = {"NVDA": 200.0}
+        JointActionTask().run(ctx)
+        # NVDA is rank 1/1, score 0.40 > rank_floor 0.20, top_n=3 → admitted
+        assert len(ctx.orders) == 1
+        assert ctx.orders[0]["ticker"] == "NVDA"
+
+    def test_buy_below_rank_floor_rejected(self):
+        """Below buy_floor AND below rank_floor → rejected even in top-N."""
+        cfg = _base_config(buy_floor=0.50)
+        cfg["rotation"]["panel_buy_top_n"] = 3
+        cfg["rotation"]["panel_buy_rank_floor"] = 0.30
+        ctx = _Ctx(config=cfg)
+        ctx.ranked = [_Cand("NVDA", rank_score=0.10, expected_return=0.05)]
+        ctx.prices = {"NVDA": 200.0}
+        JointActionTask().run(ctx)
+        assert ctx.orders == [], (
+            "below both buy_floor AND rank_floor → rejected even in top-N"
+        )
 
     def test_buy_above_floor_fires(self):
         cfg = _base_config(buy_floor=0.30, tiered=[{"min_model_score": 0.20}])
