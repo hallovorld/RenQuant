@@ -29,6 +29,7 @@ Job structure::
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -1498,6 +1499,35 @@ class SaveArtifactTask(PanelTask):
             "feature_cols":   ctx.feature_cols,
         }
         log.info("SaveArtifactTask: artifact → %s", out_path)
+
+        # Audit fix TRANSFORMER-PANEL-LTR-SHIM (2026-04-26): when backend=transformer,
+        # `final_model.save()` writes panel-transformer.pt + panel-transformer.json
+        # but does NOT update panel-ltr.json. Downstream fit_panel_calibrator.py
+        # reads panel-ltr.json (hardcoded) and on a transformer-backend run
+        # ends up reading the STALE LightGBM/XGBoost JSON from a prior backend.
+        # Today's Sunday sweep crashed with SIGSEGV in this path (panel-ltr.json
+        # was an LGBM tree dump, calibrator scored against transformer features
+        # against LGBM trees → undefined behaviour).
+        # Fix: write a thin pointer JSON to panel-ltr.json so PanelScorer.load()
+        # auto-dispatches to TransformerPanelScorer via `kind` field.
+        if backend == "transformer" and ctx.strategy_dir is not None:
+            try:
+                shim_path = ctx.strategy_dir / "artifacts" / "panel-ltr.json"
+                pt_relative = out_path.name   # "panel-transformer.pt"
+                shim = {
+                    "kind": "panel_transformer",
+                    "artifact_path": pt_relative,
+                    "feature_cols": ctx.feature_cols,
+                    "metadata": meta,
+                    "shim_for_calibrator": True,
+                }
+                shim_path.write_text(json.dumps(shim, default=str))
+                log.info("SaveArtifactTask: wrote panel-ltr.json shim → %s "
+                         "(kind=panel_transformer, points to %s)",
+                         shim_path, pt_relative)
+            except Exception as exc:
+                log.warning("SaveArtifactTask: panel-ltr.json shim failed — %s",
+                            exc)
 
         # Record to training_runs table + JSONL (user spec: track time +
         # data volume of every retrain for audit/trend analysis).

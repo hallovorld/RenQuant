@@ -205,18 +205,26 @@ def solve_portfolio_qp(
         ub=cash_slack,
     )
 
+    # Audit fix QP-MATMUL-WARN (2026-04-26): Apple Silicon Accelerate
+    # BLAS emits spurious 'divide by zero' / 'overflow' RuntimeWarnings
+    # during matmul when matrices have many zero entries (which is
+    # exactly our case — post_w starts at zero, Σ_mat is diagonal).
+    # The warnings don't reflect numerical issues — the math is fine.
+    # Suppress them locally to keep logs clean.
     def _obj(dw: np.ndarray) -> float:
         post_w = w_current + dw
-        ret    = float(np.dot(mu_clean, post_w))
-        var    = float(post_w @ Sigma_mat @ post_w)
-        cost   = float(cost_kappa * np.sum(np.abs(dw)))
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            ret  = float(np.dot(mu_clean, post_w))
+            var  = float(post_w @ Sigma_mat @ post_w)
+        cost = float(cost_kappa * np.sum(np.abs(dw)))
         return -(ret - gamma_eff * var - cost)  # minimize -obj
 
     def _grad(dw: np.ndarray) -> np.ndarray:
         post_w = w_current + dw
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            d_var = 2.0 * gamma_eff * (Sigma_mat @ post_w)
         # d/d(Δw) of: -(μ'(w+Δw) - γ_eff(w+Δw)'Σ(w+Δw) - κ|Δw|)
         d_ret  = -mu_clean
-        d_var  =  2.0 * gamma_eff * (Sigma_mat @ post_w)
         d_cost = cost_kappa * np.sign(dw)
         return d_ret + d_var + d_cost
 
