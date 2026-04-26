@@ -267,6 +267,16 @@ def main() -> int:
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
     config = json.loads((strategy_dir / "strategy_config.json").read_text())
+    # Audit fix VALIDATE-DB-CONTENTION (2026-04-26): when running
+    # multiple sims in parallel with snapshot=False, all 4 sims write
+    # to the same `data/sim_runs.db` → SQLite WAL serializes writes →
+    # 8× slowdown. Fix: each sim gets its own ephemeral DB path
+    # under /tmp/. Doesn't affect production runs (which write to the
+    # canonical data/runs.db / data/sim_runs.db).
+    tag_for_db = _build_tag(args)
+    config.setdefault("persistence", {})["sqlite_path"] = (
+        f"/tmp/sim_{tag_for_db}_{int(__import__('time').time())}.db"
+    )
     cfg    = _apply_overrides(
         config,
         baseline         = args.baseline,
