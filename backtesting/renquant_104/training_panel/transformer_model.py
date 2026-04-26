@@ -718,6 +718,12 @@ class PanelTransformerModel:
         best_eval = float("-inf")
         best_state: dict | None = None
         bad_epochs = 0
+        # Audit fix #19 (2026-04-26 round-3): single Generator instance
+        # advanced across epochs. Each `randperm(..., generator=gen)`
+        # consumes randomness, so consecutive epochs see DIFFERENT
+        # shuffles — but the sequence is fully reproducible from p.seed.
+        # Intentional design (vs reseeding per epoch which would give
+        # the same shuffle every epoch).
         gen = torch.Generator(device="cpu").manual_seed(p.seed)
 
         # Audit fix #71+#72 (2026-04-26 round-3): opt-in pre-load whole
@@ -822,6 +828,11 @@ class PanelTransformerModel:
                 improved = eval_ic > best_eval + p.early_stop_min_delta
                 if improved:
                     best_eval  = eval_ic
+                    # Audit fix #38 (2026-04-26 round-3): force best_state
+                    # to CPU storage. ~1.3 MB per clone for our 320k-param
+                    # model. Storing on GPU would consume MPS memory
+                    # for the lifetime of training; CPU residency is
+                    # cheap and still fast to restore at end.
                     best_state = {k: v.detach().cpu().clone()
                                   for k, v in self._model.state_dict().items()}
                     bad_epochs = 0
