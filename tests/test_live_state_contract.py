@@ -111,11 +111,27 @@ class TestEntryDatesPersistenceFallback:
 
     def test_runner_writes_fallback_into_dict(self):
         """The fallback for a missing ticker must be stamped INTO
-        entry_dates so subsequent loads see a stable date."""
-        assert 'if ticker not in entry_dates:\n                entry_dates[ticker]' in SOURCE, (
+        entry_dates so subsequent loads see a stable date.
+
+        Audit fix ENTRY-DATE-FROM-FILLS (2026-04-25): the fallback path
+        was extended to seed from broker fill history when available, with
+        a sentinel-31-days-ago fallback otherwise. The original brittle
+        string assertion no longer matches; updated to verify the
+        underlying contract (entry_dates is mutated in the missing path)
+        via two now-stable substrings instead.
+        """
+        # Branch entry: the conditional that detects a missing ticker.
+        assert "if ticker not in entry_dates:" in SOURCE, (
+            "entry_dates missing-ticker branch must exist"
+        )
+        # Effect: SOMETHING is written to entry_dates[ticker] inside that
+        # branch (broker-fill seed OR sentinel). Both call sites in the
+        # post-fix code use the literal `entry_dates[ticker] = `.
+        assert SOURCE.count("entry_dates[ticker] =") >= 2, (
             "entry_dates fallback for legacy positions must be persisted "
-            "into the dict, not just returned — otherwise hold_days "
-            "always shows 0 for pre-104 positions"
+            "into the dict (broker-fill OR sentinel branch), not just "
+            "returned — otherwise hold_days always shows 0 for pre-104 "
+            "positions"
         )
 
 

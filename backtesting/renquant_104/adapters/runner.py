@@ -788,8 +788,18 @@ class RunnerAdapter:
             )
             # Reconstruct trade events from ctx (live path doesn't keep an
             # in-memory trade list — we synthesise from exits + orders).
+            #
+            # Audit fix EXITS-FAIL-DB (Round 4 deep audit, 2026-04-25):
+            # pre-fix, this used `ctx.exits` (pipeline intent) instead of
+            # `ctx.exits_placed` (broker-confirmed). Failed sells (caught
+            # into `ctx.exits_failed` when broker rejected) silently were
+            # written to `trades` table as successful — distorting PnL
+            # analytics + n_exits count. Match the ntfy logic at
+            # live/runner.py which already prefers exits_placed.
+            exits_for_db = list(getattr(ctx, "exits_placed", None)
+                                or ctx.exits or [])
             trade_events: list[dict] = []
-            for t, sig in ctx.exits:
+            for t, sig in exits_for_db:
                 hs    = ctx.holdings.get(t)
                 price = ctx.prices.get(t, 0.0)
                 entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
@@ -825,7 +835,7 @@ class RunnerAdapter:
                 portfolio_value = float(ctx.portfolio_value) if ctx.portfolio_value else None,
                 cash            = float(ctx.cash) if ctx.cash is not None else None,
                 n_candidates    = len(ctx.candidates),
-                n_exits         = len(ctx.exits),
+                n_exits         = len(exits_for_db),
                 n_rotations     = len(ctx.rotations),
                 n_buys          = len(ctx.orders),
             )

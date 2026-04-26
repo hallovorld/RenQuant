@@ -1756,8 +1756,14 @@ class RefreshPanelCalibratorTask(PanelTask):
         log.info("RefreshPanelCalibratorTask: %s", " ".join(cmd))
         t0 = _time.monotonic()
         try:
+            # Audit fix CAL-7-TIMEOUT (2026-04-25): pre-fix timeout=600s
+            # was hit on the production panel run today (2494 dates × 99
+            # tickers = 247K-row CPCV-15 fit takes 10-15 min). Result:
+            # calibrator artifact stayed paired with the OLD panel-LTR
+            # while panel itself was retrained. Bump to 1800s (30 min)
+            # to give CPCV the headroom it needs.
             r = _sub.run(cmd, cwd=str(repo_root), capture_output=True,
-                         text=True, timeout=600.0)
+                         text=True, timeout=1800.0)
             elapsed = _time.monotonic() - t0
             if r.returncode == 0:
                 log.info("RefreshPanelCalibratorTask: refreshed  elapsed=%.1fs",
@@ -1775,7 +1781,7 @@ class RefreshPanelCalibratorTask(PanelTask):
                     "\n".join((r.stderr or "").splitlines()[-15:]),
                 )
         except _sub.TimeoutExpired:
-            log.warning("RefreshPanelCalibratorTask: timed out after 600s")
+            log.warning("RefreshPanelCalibratorTask: timed out after 1800s")
         except Exception as exc:
             log.warning("RefreshPanelCalibratorTask: %s", exc)
 

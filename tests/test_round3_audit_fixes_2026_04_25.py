@@ -232,7 +232,8 @@ class TestCAL7CalibratorRefreshWired:
         from training_panel.context import PanelTrainingContext
         # Minimal context; default global_calibration absent → enabled False.
         ctx = PanelTrainingContext(
-            config={"panel_ltr": {}}, watchlist=[], ohlcv={},
+            config={"ranking": {"panel_scoring": {}}},
+            watchlist=[], ohlcv={},
             sector_etf_ohlcv={}, ticker_sectors={}, listing_dates=None,
         )
         assert RefreshPanelCalibratorJob().should_skip(ctx) is True
@@ -240,10 +241,14 @@ class TestCAL7CalibratorRefreshWired:
     def test_should_skip_when_auto_refresh_disabled(self):
         from training_panel.pp_panel_training import RefreshPanelCalibratorJob
         from training_panel.context import PanelTrainingContext
+        # Audit fix CAL-7-PATH (2026-04-25): config key path corrected from
+        # `panel_ltr.global_calibration` to `ranking.panel_scoring.global_calibration`
+        # to match the runtime LoadGlobalCalibrationTask reader. This test
+        # was updated to use the new path.
         ctx = PanelTrainingContext(
-            config={"panel_ltr": {"global_calibration": {
+            config={"ranking": {"panel_scoring": {"global_calibration": {
                 "enabled": True, "auto_refresh": False,
-            }}},
+            }}}},
             watchlist=[], ohlcv={}, sector_etf_ohlcv={},
             ticker_sectors={}, listing_dates=None,
         )
@@ -254,7 +259,7 @@ class TestCAL7CalibratorRefreshWired:
         from training_panel.context import PanelTrainingContext
         # Default auto_refresh=True applies when global_calibration.enabled=True.
         ctx = PanelTrainingContext(
-            config={"panel_ltr": {"global_calibration": {"enabled": True}}},
+            config={"ranking": {"panel_scoring": {"global_calibration": {"enabled": True}}}},
             watchlist=[], ohlcv={}, sector_etf_ohlcv={},
             ticker_sectors={}, listing_dates=None,
         )

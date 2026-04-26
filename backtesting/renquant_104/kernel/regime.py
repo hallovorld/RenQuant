@@ -340,7 +340,7 @@ def compute_regime_confidence(
     return float(gmm_probs.get(regime, 0.5))
 
 
-def confidence_to_size_multiplier(confidence: float, floor: float = 0.5) -> float:
+def confidence_to_size_multiplier(confidence: float | None, floor: float = 0.5) -> float:
     """Map raw confidence ∈ [0, 1] → size multiplier ∈ [floor, 1.0].
 
     Audit fix CONF-MULT (Round 4 deep audit, 2026-04-25, user spec
@@ -351,11 +351,21 @@ def confidence_to_size_multiplier(confidence: float, floor: float = 0.5) -> floa
     deploys 50% of the max position — risk-aware, not capital-starved.
 
     Use this everywhere instead of `value * ctx.confidence`.
+
+    Audit fix CONF-MULT-NONE (2026-04-25 follow-up): pre-fix, calling
+    with confidence=None raised TypeError because `math.isfinite(None)`
+    crashes. Now: None coerces to floor (same as NaN/inf handling).
     """
     import math
-    if not math.isfinite(confidence):
+    if confidence is None:
         return float(floor)
-    return float(max(floor, min(1.0, confidence)))
+    try:
+        c = float(confidence)
+    except (TypeError, ValueError):
+        return float(floor)
+    if not math.isfinite(c):
+        return float(floor)
+    return float(max(floor, min(1.0, c)))
 
 
 # ── Top-level orchestrator ────────────────────────────────────────────────────

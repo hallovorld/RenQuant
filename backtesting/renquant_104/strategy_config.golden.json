@@ -536,14 +536,26 @@
       "mom_12_1_z": 1,
       "resid_mom_z": 1,
       "realized_vol_z": -1,
-      "amihud_illiq_z": 1,
       "price_to_high_z": 1,
       "short_pct_float_z": -1,
-      "insider_net_buy_90d_z": 1
+      "book_to_price_z": -1
     },
     "drop_cols": [
       "volume_shift_z",
-      "drawdown_peak_z"
+      "drawdown_peak_z",
+      "earnings_yield_z",
+      "rsi",
+      "macd_hist",
+      "amihud_illiq_z",
+      "obv_slope",
+      "vol_ratio_z",
+      "m_vol_ratio_z",
+      "m_morning_drift_z",
+      "m_afternoon_drift_z",
+      "m_closing_30min_drift_z",
+      "m_first_hour_vol_pct_z",
+      "overnight_gap_z",
+      "insider_net_buy_90d_z"
     ],
     "earnings_surprise": {
       "enabled": true,
@@ -582,7 +594,7 @@
       "enabled": true,
       "cache_dir": "data/intraday"
     },
-    "training_window_years": 5.0,
+    "training_window_years": 1.5,
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
