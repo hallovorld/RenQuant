@@ -510,7 +510,7 @@
         "XLV"
       ]
     },
-    "backend": "xgboost",
+    "backend": "lightgbm",
     "lightgbm_params": {
       "objective": "lambdarank",
       "metric": "ndcg",
