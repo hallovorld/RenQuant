@@ -43,10 +43,17 @@ def main() -> None:
         action="store_true",
         help="Ignore the training.cadence gate (run even on non-cadence days).",
     )
+    p.add_argument(
+        "--strategy-config-name",
+        default="strategy_config.json",
+        help="Filename of the strategy config (default: strategy_config.json). "
+             "Use a side config like strategy_config.hourly_transformer.json "
+             "for ablations / Stage C-3 experiments without touching production.",
+    )
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
-    config_path  = strategy_dir / "strategy_config.json"
+    config_path  = strategy_dir / args.strategy_config_name
     if not config_path.exists():
         log.error("Strategy config not found: %s", config_path)
         sys.exit(1)
