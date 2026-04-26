@@ -107,6 +107,103 @@ class EvaluateExitsTask(Task):
                   tc.ticker, sig.should_exit, getattr(sig, "exit_type", None))
 
 
+class SellGateBTask(Task):
+    """Sell-side Gate B (NGBoost edge-Sharpe guard) — mirror of buy-side Gate B.
+
+    Blocks `model_sell` exit signals when the latest NGBoost edge-Sharpe
+    (μ/σ) is NOT sufficiently negative. Path-dependent rules
+    (stop_loss, trailing_stop, single_day_loss, max_hold) are EXEMPT —
+    they always fire. Only the streak-based model exit goes through
+    Gate B, mirroring the asymmetric rule on the buy side where path
+    rules don't see Gate B either.
+
+    User spec 2026-04-26 round-7: "你的 portfolio manager不管卖吗？"
+    Pre-fix the sell path had only per-ticker model + path rules. Buy
+    path has Gate A/B/C as a quality floor; sell side had no analog —
+    so a single-day model spike could exit a holding the panel/μ still
+    likes. This task adds the symmetric guard.
+
+    Semantics:
+      * Reads `hs.mu`, `hs.sigma` (set by PanelScoringJob in the previous
+        bar; persists on HoldingState).
+      * If `μ/σ > -threshold`, blocks model_sell. (Buy gate uses
+        `μ/σ ≥ +threshold`; sell mirror requires `μ/σ ≤ -threshold` to
+        proceed.)
+      * Doesn't touch the streak — model can keep accumulating sell
+        signals; once edge-Sharpe drops below the floor, the existing
+        streak fires immediately.
+      * On block, clears tc.exit_signal so PanelConvictionExitTask gets
+        a chance to run (panel_conviction has its own μ check inside).
+
+    Pre-conditions:
+      * `ranking.panel_scoring.sell_gate_b.enabled = true`
+      * NGBoost μ/σ available on the holding (from prior PanelScoringJob)
+      * exit_signal is `model_sell` (NOT a path rule)
+
+    Falls through gracefully (no block) when:
+      * Flag off (default)
+      * No exit_signal, or signal is not should_exit
+      * exit_type is not "model_sell"
+      * μ or σ unavailable (panel disabled / first bar after entry / warmup)
+      * σ <= 0 or NaN (defensive — same as buy-side)
+    """
+
+    name = "SellGateBTask"
+
+    def run(self, tc: TickerInferenceContext) -> bool | None:
+        cfg = (tc.config.get("ranking", {})
+                          .get("panel_scoring", {})
+                          .get("sell_gate_b", {}))
+        if not bool(cfg.get("enabled", False)):
+            return
+
+        sig = getattr(tc, "exit_signal", None)
+        if sig is None or not sig.should_exit:
+            return
+
+        if sig.exit_type != "model_sell":
+            return  # path rules exempt
+
+        hs = tc.holding
+        if hs is None:
+            return
+
+        mu    = getattr(hs, "mu", None)
+        sigma = getattr(hs, "sigma", None)
+        if mu is None or sigma is None:
+            return  # panel scores unavailable → don't block
+
+        try:
+            mu_f    = float(mu)
+            sigma_f = float(sigma)
+        except (TypeError, ValueError):
+            return
+
+        if sigma_f <= 0.0 or mu_f != mu_f or sigma_f != sigma_f:
+            return  # defensive — bad μ/σ → don't block
+
+        threshold = float(cfg.get("threshold", 0.10))   # symmetric to buy default
+        edge_sharpe = mu_f / sigma_f
+
+        # Block if μ/σ is NOT sufficiently negative.
+        # (To proceed with sell, we need edge_sharpe ≤ -threshold.)
+        if edge_sharpe > -threshold:
+            log.info(
+                "SellGateBTask [%s]: BLOCKED model_sell  μ=%+.4f σ=%.4f "
+                "edge_sharpe=%+.3f > %+.3f",
+                tc.ticker, mu_f, sigma_f, edge_sharpe, -threshold,
+            )
+            # Clear so PanelConvictionExit can still consider firing.
+            # Don't touch streak — once μ/σ drops below floor, the
+            # accumulated streak fires immediately on the next bar.
+            tc.exit_signal = None
+            # Increment counter so adapter logs visibility (mirrors
+            # buy-side QualityFloorTask blocked-by-ticker semantics).
+            blocked = getattr(tc, "_sell_gate_b_blocked", False)
+            tc._sell_gate_b_blocked = True   # noqa: SLF001 — diagnostic flag
+            del blocked   # silence ruff
+
+
 class PanelConvictionExitTask(Task):
     """Exit criterion: panel conviction has degraded (panel/NGBoost agreement).
 
