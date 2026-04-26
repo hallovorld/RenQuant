@@ -50,3 +50,6 @@ backtesting/*/artifacts/.lightgbm_ab_backup/
 # change flipping panel_ltr.backend = "transformer".
 backtesting/*/artifacts/panel-transformer.pt
 backtesting/*/artifacts/panel-transformer.json
+
+# Local archive (notebook snapshots, etc — not tracked)
+archive/
