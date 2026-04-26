@@ -58,6 +58,13 @@ def solve_portfolio_qp(
     w_lower:        Sequence[float] | float = 0.0,
     dw_max:         Sequence[float] | float = 0.50,
     wash_sale_mask: Sequence[bool] | None = None,
+    # Stage 2 — Garleanu-Pedersen 2013 partial-move (signal-decay-aware)
+    signal_decay:   float = 0.0,            # φ ∈ [0, 1); 0 = no decay (myopic Markowitz)
+    # Stage 4 — Grossman-Zhou 1993 drawdown scaler
+    drawdown:       float = 0.0,            # current DD as positive fraction (e.g. 0.05 = 5%)
+    drawdown_limit: float = 0.20,           # α — DD limit; γ_eff = γ_base / max(eps, 1 - DD/α)
+    # Stage 5 — Garlappi-Uppal-Wang 2007 robust μ adjustment
+    robust_mu_kappa: float = 0.0,           # μ_robust_i = μ_i - κ · σ_i (worst-case ball)
 ) -> QPSolution:
     """Solve the single-period Markowitz QP with linear-cost transaction.
 
@@ -113,6 +120,35 @@ def solve_portfolio_qp(
     finite_mu = np.isfinite(mu)
     mu_clean  = np.where(finite_mu, mu, 0.0)
 
+    # Stage 2 — Garleanu-Pedersen 2013: pre-discount the signal by
+    # (1 - φ) where φ is the per-bar autocorrelation. Persistent
+    # signals (φ→1) shrink slowly and amortize cost; one-shot
+    # signals (φ=0) keep full magnitude (myopic Markowitz). The
+    # scale `1/(1-φ_decay)` reflects the cumulative future value of
+    # the signal under exponential decay. Keep φ < 0.99 to avoid
+    # numerical blow-up; clamp here defensively.
+    sd = float(signal_decay)
+    if sd > 0.0:
+        sd = min(sd, 0.99)
+        mu_clean = mu_clean * (1.0 / (1.0 - sd))
+
+    # Stage 5 — Garlappi-Uppal-Wang 2007 robust μ: subtract κ·σ_i to
+    # represent worst-case under uncertainty ellipsoid. Scaled Sharpe
+    # penalty per asset; with κ=1 this is equivalent to a 1-σ
+    # confidence band on the mean estimate.
+    if robust_mu_kappa != 0.0:
+        # Use diagonal of Σ as σ_i² → σ_i
+        sigma_diag = np.sqrt(np.maximum(np.diag(Sigma_mat), 0.0))
+        mu_clean = mu_clean - float(robust_mu_kappa) * sigma_diag
+
+    # Stage 4 — Grossman-Zhou 1993 DD scaler:
+    # γ_eff = γ_base / max(eps, 1 - DD/α)
+    # When DD → α, γ_eff → ∞ (forces Δw → 0; risk shrinkage).
+    dd = float(max(0.0, drawdown))
+    dd_lim = float(max(1e-6, drawdown_limit))
+    dd_factor = max(1e-3, 1.0 - dd / dd_lim)
+    gamma_eff = float(risk_aversion) / dd_factor
+
     # Decision variable: Δw ∈ ℝⁿ
     # Bounds: max(w_lower - w_current, -dw_max) ≤ Δw ≤ min(w_upper - w_current, +dw_max)
     lo_bounds = np.maximum(w_lower_arr - w_current, -dw_max_arr)
@@ -143,13 +179,13 @@ def solve_portfolio_qp(
         ret    = float(np.dot(mu_clean, post_w))
         var    = float(post_w @ Sigma_mat @ post_w)
         cost   = float(cost_kappa * np.sum(np.abs(dw)))
-        return -(ret - risk_aversion * var - cost)  # minimize -obj
+        return -(ret - gamma_eff * var - cost)  # minimize -obj
 
     def _grad(dw: np.ndarray) -> np.ndarray:
         post_w = w_current + dw
-        # d/d(Δw) of: -(μ'(w+Δw) - γ(w+Δw)'Σ(w+Δw) - κ|Δw|)
+        # d/d(Δw) of: -(μ'(w+Δw) - γ_eff(w+Δw)'Σ(w+Δw) - κ|Δw|)
         d_ret  = -mu_clean
-        d_var  =  2.0 * risk_aversion * (Sigma_mat @ post_w)
+        d_var  =  2.0 * gamma_eff * (Sigma_mat @ post_w)
         d_cost = cost_kappa * np.sign(dw)
         return d_ret + d_var + d_cost
 
@@ -176,6 +212,10 @@ def solve_portfolio_qp(
         diagnostics={
             "n_assets":        n,
             "risk_aversion":   risk_aversion,
+            "gamma_effective": gamma_eff,
+            "dd_factor":       dd_factor,
+            "signal_decay":    sd,
+            "robust_kappa":    float(robust_mu_kappa),
             "cost_kappa":      cost_kappa,
             "cash_reserve":    cash_reserve,
             "n_finite_mu":     int(finite_mu.sum()),

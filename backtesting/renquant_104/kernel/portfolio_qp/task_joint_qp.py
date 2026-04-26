@@ -167,6 +167,16 @@ class JointPortfolioQPTask(Task):
         kappa = float(joint_cfg.get("qp_cost_kappa",
                                      joint_cfg.get("fee_pct", 0.0005)))
         dw_max_arr = np.full(n, float(joint_cfg.get("qp_dw_max", 0.50)))
+        # Stage 2/4/5 advanced knobs — defaults preserve Stage-1 behavior
+        signal_decay     = float(joint_cfg.get("qp_signal_decay", 0.0))
+        robust_mu_kappa  = float(joint_cfg.get("qp_robust_mu_kappa", 0.0))
+        # Drawdown — read from regime_state if present
+        rs = getattr(ctx, "regime_state", {}) or {}
+        portfolio_dd = float(rs.get("drawdown", 0.0) or 0.0)
+        dd_limit = float(joint_cfg.get(
+            "qp_drawdown_limit",
+            ctx.config.get("regime", {}).get("drawdown_halt_pct", 0.20),
+        ))
 
         sol = solve_portfolio_qp(
             w_current      = w_current,
@@ -179,6 +189,10 @@ class JointPortfolioQPTask(Task):
             w_lower        = 0.0,
             dw_max         = dw_max_arr,
             wash_sale_mask = wash_mask,
+            signal_decay     = signal_decay,
+            drawdown         = portfolio_dd,
+            drawdown_limit   = dd_limit,
+            robust_mu_kappa  = robust_mu_kappa,
         )
         if sol.status != "optimal":
             log.warning(

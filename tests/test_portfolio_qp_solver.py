@@ -272,3 +272,146 @@ class TestPerformance:
         # Generous bound — production target <100ms; CI/test must hold <500ms
         assert elapsed_ms < 500, f"QP took {elapsed_ms:.0f}ms — too slow"
         assert sol.status == "optimal"
+
+
+# ── Stage 2: Garleanu-Pedersen partial-move (signal_decay) ────────────────────
+
+class TestStageTwoGarleanuPedersen:
+    def test_persistent_signal_trades_more(self):
+        """φ → 1 (persistent) → larger trade than φ = 0 (one-shot)."""
+        kwargs = dict(
+            w_current=[0.0],
+            mu=[0.005],            # weak so neither hits cap
+            sigma=[0.10],
+            risk_aversion=10.0,    # high so γ_eff dominates
+            cost_kappa=0.001,
+            cash_reserve=0.0,
+            w_upper=10.0,
+        )
+        sol_decay_low  = solve_portfolio_qp(signal_decay=0.0,  **kwargs)
+        sol_decay_high = solve_portfolio_qp(signal_decay=0.8,  **kwargs)
+        assert sol_decay_high.target_w[0] > sol_decay_low.target_w[0]
+
+    def test_signal_decay_clipped_at_099(self):
+        """φ ≥ 0.99 → clamped (avoid div-by-zero)."""
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            signal_decay=1.5,   # invalid → clipped
+        )
+        assert sol.status == "optimal"
+
+
+# ── Stage 4: Grossman-Zhou drawdown scaler ────────────────────────────────────
+
+class TestStageFourDrawdownScaler:
+    def test_higher_dd_smaller_position(self):
+        """As DD approaches limit, position shrinks (γ_eff grows)."""
+        kwargs = dict(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            cash_reserve=0.0,
+            drawdown_limit=0.20,
+            w_upper=10.0,        # large enough for γ_eff to matter
+        )
+        sol_no_dd  = solve_portfolio_qp(drawdown=0.0,  **kwargs)
+        sol_at_dd  = solve_portfolio_qp(drawdown=0.18, **kwargs)
+        assert sol_no_dd.target_w[0] > sol_at_dd.target_w[0]
+
+    def test_dd_at_limit_forces_zero_position(self):
+        """DD ≈ α → γ_eff → very large → target_w → 0."""
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            drawdown=0.20,
+            drawdown_limit=0.20,
+            w_upper=10.0,
+        )
+        assert sol.target_w[0] < 0.05
+        assert sol.diagnostics["dd_factor"] < 0.01
+
+    def test_dd_diagnostics_surface(self):
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            drawdown=0.05,
+            drawdown_limit=0.20,
+        )
+        assert "gamma_effective" in sol.diagnostics
+        assert "dd_factor" in sol.diagnostics
+        assert sol.diagnostics["dd_factor"] == pytest.approx(0.75, rel=1e-6)
+
+
+# ── Stage 5: Garlappi-Uppal-Wang robust μ ─────────────────────────────────────
+
+class TestStageFiveRobustMu:
+    def test_robust_mu_shrinks_position(self):
+        """κ > 0 reduces effective μ → smaller position."""
+        kwargs = dict(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            cash_reserve=0.0,
+            w_upper=10.0,
+        )
+        sol_no_robust = solve_portfolio_qp(robust_mu_kappa=0.0,  **kwargs)
+        sol_robust    = solve_portfolio_qp(robust_mu_kappa=0.5,  **kwargs)
+        assert sol_robust.target_w[0] < sol_no_robust.target_w[0]
+
+    def test_robust_kappa_one_neutralises_one_sigma(self):
+        """κ=1 + μ=σ → effective μ ≈ 0 → trade ≈ 0."""
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.10],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0,
+            robust_mu_kappa=1.0,
+            cash_reserve=0.0,
+            w_upper=10.0,
+        )
+        assert abs(sol.delta_w[0]) < 0.01
+
+    def test_robust_diagnostics_surface(self):
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            robust_mu_kappa=0.5,
+        )
+        assert sol.diagnostics["robust_kappa"] == pytest.approx(0.5)
+
+
+# ── Stages combined ───────────────────────────────────────────────────────────
+
+class TestStagesCombined:
+    def test_all_stages_compose(self):
+        """Stages 2 + 4 + 5 stack: persistent signal + DD halt + robust μ."""
+        sol = solve_portfolio_qp(
+            w_current=[0.0],
+            mu=[0.05],
+            sigma=[0.10],
+            risk_aversion=3.0,
+            cost_kappa=0.0001,
+            cash_reserve=0.0,
+            signal_decay=0.5,
+            drawdown=0.10,
+            drawdown_limit=0.20,
+            robust_mu_kappa=0.3,
+            w_upper=10.0,
+        )
+        assert sol.status == "optimal"
+        # Each knob's diagnostic surfaced
+        for k in ("signal_decay", "dd_factor",
+                   "robust_kappa", "gamma_effective"):
+            assert k in sol.diagnostics
