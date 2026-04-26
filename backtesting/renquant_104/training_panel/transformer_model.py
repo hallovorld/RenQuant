@@ -973,12 +973,25 @@ class PanelTransformerModel:
     @classmethod
     def load(cls, path: str | Path) -> "PanelTransformerModel":
         path = Path(path)
+        # Audit fix #55 (2026-04-26 round-3): clear error messages when
+        # either .pt or .json is missing. Pre-fix, you'd get a cryptic
+        # FileNotFoundError or PyTorch error far from the load() call.
         if path.suffix == ".json":
             pt_path = path.with_suffix(".pt")
             json_path = path
         else:
             pt_path = path if path.suffix == ".pt" else path.with_suffix(".pt")
             json_path = pt_path.with_suffix(".json")
+        if not json_path.exists():
+            raise FileNotFoundError(
+                f"PanelTransformerModel.load: sidecar JSON not found: {json_path} "
+                f"(was looking next to {pt_path})"
+            )
+        if not pt_path.exists():
+            raise FileNotFoundError(
+                f"PanelTransformerModel.load: weights file not found: {pt_path} "
+                f"(was looking next to {json_path})"
+            )
         meta = json.loads(json_path.read_text())
         if meta.get("kind") != "panel_transformer":
             raise ValueError(f"Not a panel_transformer artifact: {json_path}")
@@ -1062,6 +1075,14 @@ class PanelTransformerModel:
             # of float == comparison. Pre-fix, p_slice == p_slice[0] for
             # near-equal floats (e.g. 1e-9 difference) returned False
             # → spearmanr called on a degenerate slice → NaN result.
+            #
+            # Audit fix #68 (2026-04-26 round-3): also detect NaN in
+            # predictions (model can output NaN if upstream features
+            # are pathological). Pre-fix, NaN propagated silently into
+            # spearman; now log + skip group.
+            if np.any(~np.isfinite(p_slice)):
+                log.debug("_ic_on_tensors: skipping group with non-finite predictions")
+                continue
             if (gs < 2
                     or np.allclose(p_slice, p_slice[0], rtol=0, atol=1e-12)
                     or np.allclose(y_slice, y_slice[0], rtol=0, atol=1e-12)):
