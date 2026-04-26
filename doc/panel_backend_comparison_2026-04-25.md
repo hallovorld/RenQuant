@@ -22,11 +22,62 @@ expanded panel (more dates + new fundamentals).
 
 ## Headline Results
 
-| Backend       | OOS scorer_mean_ic | OOS pool_ic | Train IC | Train→OOS gap | Wall time | Verdict |
-|---------------|-------------------:|------------:|---------:|--------------:|----------:|---------|
-| **XGBoost**   |             TBD    |      TBD    |    TBD   |       TBD     |    TBD    | TBD     |
-| **LightGBM**  |          0.0269    |    0.0291   |  0.1465  |     0.1196    |   ~30 min | overfit |
-| **Transformer** |           TBD    |      TBD    |    TBD   |       TBD     |    TBD    | TBD     |
+| Backend       | CPCV mean IC | CPCV std | OOS pool_ic | Train IC | Train→OOS gap | Wall time | Verdict |
+|---------------|-------------:|---------:|------------:|---------:|--------------:|----------:|---------|
+| **XGBoost**   |   **+0.0476** ⭐ |  0.0267 |  **0.0308**  |  0.1548  |        3.25×  |  32 min   | **WINNER** |
+| **LightGBM**  |   +0.0269    |    —    |    0.0291   |  0.1465  |        5.40×  |  33 min   | overfit |
+| **Transformer** |  +0.0136   |  0.0434 |     —       |  0.1762  |       13×    |  17 min (killed) | severe overfit + unstable |
+
+CPCV (Combinatorial Purged CV, 15 splits) stability:
+- XGBoost: q05=+0.0093, q50=+0.0490, q95=+0.0859 → **always positive across folds**
+- Transformer: q05=−0.0672, q50=+0.0178, q95=+0.0642 → **can be NEGATIVE on some folds** (anti-predicts)
+- LightGBM: not measured (single split)
+
+XGBoost final calibrator: scorer_oos_mean_ic = 0.04764 → matches Tier 1.5 baseline 0.0476 exactly. Confirms LGBM swap was a regression and reverting to XGBoost restores the prior winner.
+
+## Decision: XGBoost is the WINNER
+
+XGBoost CPCV mean IC `+0.0476` beats LightGBM by **+77%** and Transformer by **+250%** (3.5×).
+
+Even more decisive: XGBoost's CPCV variance (`std=0.0267`) is **39% lower** than Transformer's (`0.0434`), and XGBoost is positive across ALL folds while Transformer can be negative on the 5%-tail fold. This means Transformer is not just less accurate but also **less reliable per period**.
+
+This corroborates the prior 2026-04-23 A/B finding that on the current panel
+size (~1,500 dates × 99 tickers = ~225k rows), XGBoost dominates both
+LightGBM and Transformer. The new fundamentals + EDGAR factors tightened the
+Transformer gap (5× → 3.5×) but did not flip the result.
+
+### Why XGBoost wins
+
+Per **Catania-Politis 2020** (J. Risk):
+- L1/L2 + tree splits cheaply ignore noisy features → low SNR panel friendly.
+- Level-wise growth is naturally regularised vs LightGBM's leaf-wise (which
+  memorises faster).
+- Monotone constraints encode economic priors (β:−1, momentum:+1, EY:+1, etc.)
+  directly — neither LGBM nor Transformer support this cleanly.
+
+Per **Chen-Pelger-Zhu 2024** (Mgmt Sci):
+- Cross-sectional Transformers need **>5,000 dates** to consistently beat trees.
+- We have 1,500 dates → still in the small-data regime.
+
+## Action Taken
+
+1. Restored `panel-ltr.json` + `ngboost-head.json` + `panel-rank-calibration.json`
+   from `*.xgboost.bak.json`.
+2. `strategy_config.json`: `panel_ltr.backend: lightgbm → xgboost`.
+3. `strategy_config.golden.json`: `panel_ltr.backend: lightgbm → xgboost`.
+
+This restores the Tier 1.5 baseline (OOS IC 0.0476) as the active golden.
+
+## Next Roadmap (T2-2 onwards)
+
+Backend optimisation is exhausted on this panel size. Future improvements
+should focus on:
+
+- **T2-2**: drop noise features (top low-IC features pruning)
+- **T2-3**: training window tuning (1.5y / 3y / 5y comparison)
+- **T2-5**: revisit Transformer when panel reaches >5k dates (~3.5 more years
+  of data accumulation)
+- **T2-4**: Boyd convex MPC for joint rotation (Phase 3 of rotate algo)
 
 ## Configuration
 

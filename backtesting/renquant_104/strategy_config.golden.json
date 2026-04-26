@@ -348,7 +348,13 @@
     "lt_protection_days": 30,
     "max_rotations_per_bar": 2,
     "panel_buy_floor": 0.45,
-    "panel_sell_floor": 0.20
+    "panel_sell_floor": 0.20,
+    "joint_actions": {
+      "enabled": false,
+      "fee_pct": 0.0005,
+      "slippage_pct": 0.0005,
+      "slot_budget_mode": "shared"
+    }
   },
   "sample_start": "2016-01-01",
   "sample_end": "2026-06-30",
@@ -512,7 +518,7 @@
         "XLV"
       ]
     },
-    "backend": "lightgbm",
+    "backend": "xgboost",
     "lightgbm_params": {
       "objective": "lambdarank",
       "metric": "ndcg",
