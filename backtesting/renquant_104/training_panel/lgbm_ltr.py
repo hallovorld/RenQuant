@@ -99,7 +99,16 @@ class PanelLGBMModel:
         label_col: str = "label",
         weight_col: str | None = "weight",
         num_boost_round: int = 300,
+        eval_panel: pd.DataFrame | None = None,
+        eval_group_sizes: np.ndarray | None = None,
+        early_stopping_rounds: int | None = None,
     ) -> dict:
+        """Audit fix LGB-EVAL (2026-04-26 round-3): wire eval_panel +
+        early_stopping_rounds so the FinalFitTask path (which now
+        provides them per the X1+X2 fix) doesn't TypeError. LightGBM's
+        lambdarank handles continuous labels via _bucketize_labels →
+        integer relevance, so NDCG eval works (unlike XGBoost ranking).
+        """
         self.feature_cols = list(feature_cols)
         X = panel[feature_cols].values
         y_raw = panel[label_col].values.astype(float)
@@ -139,8 +148,31 @@ class PanelLGBMModel:
                 row_weights = row_weights / mean_w
 
         dtrain = lgb.Dataset(X, label=y, group=group_sizes, weight=row_weights)
+
+        # Audit fix LGB-EVAL (2026-04-26 round-3): wire eval set + early
+        # stopping when caller provides eval data.
+        valid_sets = [dtrain]
+        valid_names = ["train"]
+        callbacks: list = []
+        if eval_panel is not None and eval_group_sizes is not None:
+            Xe = eval_panel[feature_cols].values
+            ye_raw = eval_panel[label_col].values.astype(float)
+            ye = _bucketize_labels(ye_raw, n_buckets=11)
+            deval = lgb.Dataset(Xe, label=ye, group=eval_group_sizes,
+                                reference=dtrain)
+            valid_sets.append(deval)
+            valid_names.append("eval")
+            if early_stopping_rounds is not None and early_stopping_rounds > 0:
+                callbacks.append(
+                    lgb.early_stopping(int(early_stopping_rounds), verbose=False)
+                )
+
         self.booster = lgb.train(
-            self.params, dtrain, num_boost_round=num_boost_round,
+            self.params, dtrain,
+            num_boost_round=num_boost_round,
+            valid_sets=valid_sets,
+            valid_names=valid_names,
+            callbacks=callbacks or None,
         )
         self.best_iter = self.booster.current_iteration()
 
