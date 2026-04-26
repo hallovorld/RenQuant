@@ -60,6 +60,7 @@ log = logging.getLogger("validate-buy-logic")
 
 
 def _apply_overrides(cfg: dict, *,
+                     baseline: bool = False,
                      gate_a_pct: int | None = None,
                      gate_a_lookback: int = 20,
                      gate_b_threshold: float | None = None,
@@ -69,8 +70,34 @@ def _apply_overrides(cfg: dict, *,
                      qp_signal_decay: float = 0.0,
                      qp_robust_kappa: float = 0.0,
                      qp_cvar_lambda: float = 0.0) -> dict:
-    """Mutate a config copy with the requested gate / QP flag flips."""
+    """Mutate a config copy with the requested gate / QP flag flips.
+
+    Special case: baseline=True forces ALL new flags OFF (regardless of
+    what the disk config has), so the result is the v4.1 OLD logic
+    (greedy heap, no quality gates) — clean reference for A/B.
+    """
     cfg = deepcopy(cfg)
+
+    # Baseline mode: explicitly DISABLE all new logic so we get a true
+    # v4.1 reference, even if the disk config has new flags ON.
+    # Audit fix VALIDATE-BASELINE-OFF (2026-04-26): pre-fix, --baseline
+    # passed cfg through unchanged → with disk config now having QP+Gate
+    # B ON, --baseline ran the SAME thing as variants → identical A/B.
+    if baseline:
+        ja = cfg.setdefault("rotation", {}).setdefault("joint_actions", {})
+        ja["solver"] = "greedy"
+        # Also explicitly disable all stage-2-7 QP knobs in case they
+        # were on in the disk config:
+        for k in ("qp_signal_decay", "qp_robust_mu_kappa", "qp_cvar_lambda"):
+            ja[k] = 0.0
+        qf = (cfg.setdefault("ranking", {})
+                  .setdefault("panel_scoring", {})
+                  .setdefault("quality_floor", {}))
+        qf["enabled"] = False
+        # And nested gate enables = False (defensive)
+        for gate in ("edge_sharpe_floor", "distribution_floor", "no_trade_band"):
+            qf.setdefault(gate, {})["enabled"] = False
+        return cfg
 
     # Quality-floor gates A/B/C
     qf = (cfg.setdefault("ranking", {})
@@ -242,6 +269,7 @@ def main() -> int:
     config = json.loads((strategy_dir / "strategy_config.json").read_text())
     cfg    = _apply_overrides(
         config,
+        baseline         = args.baseline,
         gate_a_pct       = args.gate_a_pct,
         gate_b_threshold = args.gate_b,
         gate_c_gamma     = args.gate_c_gamma,
@@ -278,6 +306,15 @@ def main() -> int:
 
     from sim.runner import run_backtest  # noqa: PLC0415
     log.info("Running sim — this takes ~10-30 min depending on universe size")
+    # CRITICAL (audit fix VALIDATE-SNAPSHOT-OVERRIDE 2026-04-26):
+    # snapshot=True re-reads strategy_config.json from disk into the
+    # snapshot dir AND THEN loads it back — wiping our in-memory
+    # config overrides. Pre-fix, all 4 A/B variants produced
+    # IDENTICAL results because they all ran the disk config.
+    # Fix: snapshot=False. We accept the (small) risk that a
+    # concurrent retraining mutates artifacts during the 30-min sim.
+    # For Sunday/off-hours validation runs (our case), no concurrent
+    # writers exist anyway.
     result = run_backtest(
         config         = cfg,
         strategy_dir   = strategy_dir,
@@ -287,7 +324,7 @@ def main() -> int:
         initial_cash   = 100_000.0,
         backtest_start = args.start,
         backtest_end   = args.end,
-        snapshot       = True,
+        snapshot       = False,
     )
     summary = _summarise(result, tag)
     log.info("Sim done: APY=%+.4f Sharpe=%+.3f DD=%.2f%% trades=%d",

@@ -267,3 +267,70 @@ class TestBuildTag:
         ))
         for substr in ("gate-b0.2", "gate-a-p85", "gate-c-g3", "qp", "qp-decay0.5"):
             assert substr in tag
+
+
+# ── VALIDATE-BASELINE-OFF + VALIDATE-SNAPSHOT-OVERRIDE regressions ────────────
+
+class TestBaselineForcesOff:
+    """Audit fix VALIDATE-BASELINE-OFF (2026-04-26): with QP+Gate B
+    enabled in disk config, --baseline must EXPLICITLY turn them off
+    to give a true v4.1 reference. Pre-fix, --baseline ran whatever
+    was in the disk config → identical to variants → broken A/B."""
+
+    def test_baseline_forces_solver_greedy(self):
+        cfg_with_qp = {
+            "rotation": {"joint_actions": {"solver": "qp", "enabled": True}},
+            "ranking": {"panel_scoring": {"quality_floor": {
+                "enabled": True,
+                "edge_sharpe_floor": {"enabled": True, "threshold": 0.10},
+            }}},
+        }
+        out = _apply_overrides(cfg_with_qp, baseline=True)
+        assert out["rotation"]["joint_actions"]["solver"] == "greedy"
+        assert out["ranking"]["panel_scoring"]["quality_floor"]["enabled"] is False
+        assert out["ranking"]["panel_scoring"]["quality_floor"]["edge_sharpe_floor"]["enabled"] is False
+
+    def test_baseline_zeroes_qp_advanced_knobs(self):
+        cfg_with_qp = {
+            "rotation": {"joint_actions": {
+                "solver": "qp",
+                "qp_signal_decay": 0.5,
+                "qp_robust_mu_kappa": 0.3,
+                "qp_cvar_lambda": 1.0,
+            }},
+            "ranking": {},
+        }
+        out = _apply_overrides(cfg_with_qp, baseline=True)
+        ja = out["rotation"]["joint_actions"]
+        assert ja["qp_signal_decay"] == 0.0
+        assert ja["qp_robust_mu_kappa"] == 0.0
+        assert ja["qp_cvar_lambda"] == 0.0
+
+    def test_baseline_disables_all_3_gates(self):
+        cfg = {
+            "rotation": {},
+            "ranking": {"panel_scoring": {"quality_floor": {
+                "enabled": True,
+                "edge_sharpe_floor": {"enabled": True, "threshold": 0.10},
+                "distribution_floor": {"enabled": True, "percentile": 85},
+                "no_trade_band": {"enabled": True, "risk_aversion": 3.0},
+            }}},
+        }
+        out = _apply_overrides(cfg, baseline=True)
+        qf = out["ranking"]["panel_scoring"]["quality_floor"]
+        for gate in ("edge_sharpe_floor", "distribution_floor", "no_trade_band"):
+            assert qf[gate]["enabled"] is False, f"baseline must disable {gate}"
+
+    def test_non_baseline_does_not_force_off(self):
+        """Without baseline=True, _apply_overrides preserves disk config
+        for unspecified flags."""
+        cfg_with_qp = {
+            "rotation": {"joint_actions": {"solver": "qp", "enabled": True}},
+            "ranking": {"panel_scoring": {"quality_floor": {
+                "enabled": True,
+                "edge_sharpe_floor": {"enabled": True, "threshold": 0.10},
+            }}},
+        }
+        out = _apply_overrides(cfg_with_qp)   # no baseline=True
+        # solver stays qp (preserved)
+        assert out["rotation"]["joint_actions"]["solver"] == "qp"
