@@ -113,6 +113,43 @@ Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** unt
 
 ---
 
+## 🆕 2026-04-25 — Panel-LTR ceiling: 4 promising upgrades + 2 research items
+
+**Context:** Today's deep audit of renquant_104 panel-LTR cross-sectional ranking found 12+ implementation bugs (committed separately, not in roadmap scope) and identified that **the panel-LTR XGBoost backend has reached a ceiling around OOS IC ~0.066**. Web research surfaced four evidence-backed upgrade paths and two longer-horizon research items. Tier 1 (config-only changes) executed today; Tier 2-4 (real engineering) tracked here.
+
+**Theoretical references** (cite when justifying experiments):
+- Bagnara 2024 (Journal of Economic Surveys, "ML in asset pricing — a critical review") — documents weaknesses: data quality, overfitting, regime instability, statistical-vs-economic gap.
+- Gu-Kelly-Xiu 2020 (RFS, "Empirical Asset Pricing via Machine Learning") — NN > trees > linear; key drivers momentum/liquidity/volatility.
+- Poh-Lim-Zohren-Roberts 2020 (arXiv 2012.07149) — cross-sectional learning-to-rank, listwise > pairwise.
+- CIKM 2025 (arXiv 2510.14156, "On Evaluating Loss Functions for Stock Ranking") — confirms listwise > pairwise.
+
+### Tier 2 — 2-4 weeks, evidence-backed wins
+
+| # | Item | Evidence | ETA | Status |
+|---|------|---|---:|---|
+| **T2-1** | **LightGBM LTR replacement for XGBoost panel** — apples-to-apples test on 491-date hourly-era panel showed **LightGBM IC=+0.0850 vs XGBoost IC=+0.0322 (+128%)**. `training_panel/lgbm_ltr.py::PanelLGBMModel` already implemented. Needs: (a) wire as `panel_ltr.backend` option alongside `xgboost`/`transformer`, (b) sim parity tests in `tests/test_panel_alignment.py`, (c) golden-config A/B before promotion. Reference: `scripts/audit_transformer_vs_lgbm_4way.py`. | +128% backend IC | 2 weeks | 🔴 |
+| **T2-2** | **Contrastive asset embeddings as features** — Dolphin et al. 2024 KDD ("Contrastive Learning of Asset Embeddings from Financial Time Series", arXiv 2407.18645). Pairwise-correlation contrastive learning yields per-asset embeddings; +3 pts F1 on sector classification, 19% volatility reduction in hedging. Plan: train 16-dim embeddings on watchlist OHLCV history → use as additional input features to existing XGBoost panel-LTR (no architecture change). Lowest-risk win. | +3 pts F1 sector / -19% vol hedging | 1-2 weeks | 🔴 |
+| **T2-3** | **Regime-conditional ensemble (mixture of experts)** — Two Sigma 2024 (https://www.twosigma.com/articles/a-machine-learning-approach-to-regime-modeling/) documented 4-state t-distributed mixture model on macro+style factors. Plan: train separate panel-LTR per regime (BULL_CALM / BULL_VOLATILE / CHOPPY / BEAR), select at inference via existing `ctx.regime`. `regime_state` infra already in place. Note: prior Plan F (regime-conditional calibration) shelved at -3.78 APY pts due to in-sample overfit; this is a **separate model per regime**, not just per-regime calibration — different failure mode. | qualitative (Two Sigma case study) | 1 week | 🔴 |
+
+### Tier 3 — Research project, 2+ months, speculative
+
+| # | Item | Evidence | Risk | Status |
+|---|------|---|---|---|
+| **T3-1** | **TGNS (Transformer + Graph Neural Network)** — claims +12-22% IC over SOTA on Chinese A-share data. Concept Graph Attention + Stock Graph Attention modules. Reference: https://www.sciencedirect.com/science/article/abs/pii/S0020025525006887. **Risk:** validated on Chinese A-share, not US equity; may not transfer. Also needs the data-volume gate that's blocked Plan H (transformer panel) — currently 47k rows, transformer needs >200k. | +12-22% IC (CN A-share only) | High (geo + data) | 🔴 |
+| **T3-2** | **FASCL (Future-Aligned Soft Contrastive Learning)** — Feb 2026 paper (arXiv 2602.10711), 4229 US equities, "outperforms 13 baselines across all future-behavior metrics". Pairwise future return correlations as continuous supervision. **US equity validation makes this higher-priority than T3-1 once code releases** ("available soon" per paper). Action: monitor arxiv listing + GitHub releases; revisit when reference implementation appears. | qualitative US equity claims | Medium (waiting on code) | 🔴 (waiting) |
+
+### Tier 4 — Speculative, infra-heavy
+
+| # | Item | Evidence | Cost | Status |
+|---|------|---|---|---|
+| **T4-1** | **LLM-generated factor features** — ICLR/NeurIPS 2025 trend. Use LLMs to generate trading factors from news/earnings text. Requires NLP infra (text data ingestion, prompt engineering, factor backtesting). Mixed historical results in literature. Probably not worth it until at least one of T2/T3 lands and we've squeezed numerical-feature alpha. | Mixed (paper trend) | 2+ months infra | 🔴 |
+
+### Sequencing note
+
+T2-1 (LightGBM) is the highest-confidence win — apples-to-apples 4-way audit already done, code already written, just needs wiring + A/B. Recommend shipping T2-1 first, then T2-2 (asset embeddings) as a feature-only add (no backend swap risk), then T2-3 (regime ensemble) once T2-1's lift is locked. T3-1/T3-2 are research bets — don't start until Tier 2 saturates or a clear data-volume unblock (panel > 200k rows) lands. T4-1 deferred indefinitely.
+
+---
+
 ## 🆕 2026-04-25 — long-term training-stack architectural items
 
 User spec 2026-04-25 (post NGBoost+Transformer audit retrain crash):
