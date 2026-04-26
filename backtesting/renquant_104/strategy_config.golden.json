@@ -113,7 +113,7 @@
   "model_sell": {
     "panel_veto": {
       "enabled": true,
-      "min_rank_score": 0.50,
+      "min_rank_score": 0.5,
       "max_streak_to_veto": 5
     }
   },
@@ -180,27 +180,27 @@
       "max_position_pct": 0.2,
       "cash_reserve_pct": 0.2,
       "stop_loss_pct": 0.05,
-      "max_single_day_loss_pct": 0.10,
+      "max_single_day_loss_pct": 0.1,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.1,
       "entry_mode": "capitulation",
       "min_model_score": 0.15,
       "min_price_move_pct": 0.005,
-      "trailing_stop_trigger_pct": 0.20,
-      "trailing_stop_trail_pct": 0.10
+      "trailing_stop_trigger_pct": 0.2,
+      "trailing_stop_trail_pct": 0.1
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.3,
       "stop_loss_pct": 0.08,
-      "max_single_day_loss_pct": 0.10,
+      "max_single_day_loss_pct": 0.1,
       "max_hold_days": 40,
       "drawdown_halt_pct": 0.08,
       "entry_mode": "divergence",
       "min_model_score": 0.15,
       "min_price_move_pct": 0.0,
       "trailing_stop_trigger_pct": 0.15,
-      "trailing_stop_trail_pct": 0.10,
+      "trailing_stop_trail_pct": 0.1,
       "max_concurrent_positions": 4
     },
     "BEAR": {
@@ -213,7 +213,7 @@
       "entry_mode": "blocked",
       "min_model_score": 0.0,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.10,
+      "trailing_stop_trigger_pct": 0.1,
       "trailing_stop_trail_pct": 0.05
     }
   },
@@ -236,7 +236,7 @@
     "ORCL": "giant_tech",
     "NVDA": "ai_chip",
     "ASML": "ai_chip",
-    "AMD":  "ai_chip",
+    "AMD": "ai_chip",
     "TSM": "ai_chip",
     "MU": "ai_chip",
     "AMAT": "ai_chip",
@@ -362,15 +362,25 @@
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
     "max_rotations_per_bar": 2,
-    "panel_buy_floor": 0.30,
-    "panel_sell_floor": 0.20,
+    "panel_buy_floor": 0.3,
+    "panel_sell_floor": 0.2,
     "panel_buy_top_n": 3,
-    "panel_buy_rank_floor": 0.20,
+    "panel_buy_rank_floor": 0.2,
     "joint_actions": {
-      "enabled": false,
+      "enabled": true,
       "fee_pct": 0.0005,
       "slippage_pct": 0.0005,
-      "slot_budget_mode": "shared"
+      "slot_budget_mode": "shared",
+      "solver": "qp",
+      "qp_risk_aversion": 3.0,
+      "qp_cost_kappa": 0.0001,
+      "qp_dw_max": 0.5,
+      "qp_min_dw_pct": 0.005,
+      "default_sigma": 0.05,
+      "qp_signal_decay": 0.0,
+      "qp_robust_mu_kappa": 0.0,
+      "qp_cvar_lambda": 0.0,
+      "qp_drawdown_limit": 0.2
     }
   },
   "sample_start": "2016-01-01",
@@ -473,6 +483,19 @@
             "CHOPPY",
             "BEAR"
           ]
+        }
+      },
+      "quality_floor": {
+        "enabled": true,
+        "edge_sharpe_floor": {
+          "enabled": true,
+          "threshold": 0.1
+        },
+        "distribution_floor": {
+          "enabled": false
+        },
+        "no_trade_band": {
+          "enabled": false
         }
       }
     },
@@ -641,5 +664,12 @@
   "monitoring": {
     "max_no_trade_days": 15,
     "max_no_candidate_days": 15
-  }
+  },
+  "_activation_log": [
+    {
+      "date": "2026-04-26",
+      "change": "enable QP solver + Gate B (\u03c4=0.10)",
+      "rollback": "set rotation.joint_actions.solver=\"greedy\" + ranking.panel_scoring.quality_floor.enabled=false"
+    }
+  ]
 }
