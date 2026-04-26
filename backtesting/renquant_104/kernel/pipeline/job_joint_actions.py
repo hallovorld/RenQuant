@@ -34,4 +34,11 @@ class JointActionJob(Job):
 
     @property
     def tasks(self) -> list[Task]:
-        return [JointActionTask()]
+        # JointPortfolioQPTask runs FIRST. It's a no-op unless
+        # rotation.joint_actions.solver == "qp" (default "greedy").
+        # When active, it owns the bar (returns True) and JointActionTask
+        # short-circuits via the same flag check at the top of its run().
+        from kernel.portfolio_qp.task_joint_qp import (  # noqa: PLC0415
+            JointPortfolioQPTask,
+        )
+        return [JointPortfolioQPTask(), JointActionTask()]

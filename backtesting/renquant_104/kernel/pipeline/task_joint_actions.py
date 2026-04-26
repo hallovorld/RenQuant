@@ -176,6 +176,12 @@ class JointActionTask(Task):
                               .get("joint_actions", {}))
         if not joint_cfg.get("enabled", False):
             return False  # short-circuit: the legacy chain owns this bar
+        # When solver=qp, JointPortfolioQPTask already ran and emitted
+        # orders/exits. Skip the greedy path entirely.
+        solver = str(joint_cfg.get("solver", "greedy")).lower()
+        if solver == "qp":
+            log.info("JointActionTask: solver=qp — already handled by QP task")
+            return False
 
         rotation_cfg = ctx.config.get("rotation", {})
         if ctx.bear_only:
