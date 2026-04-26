@@ -1207,6 +1207,17 @@ class CrossValidateTask(PanelTask):
                     self._m = PanelTransformerModel(params=tf_params)
                     self._feature_cols: list[str] | None = None
                 def fit(self, X, y, sample_weight=None):
+                    # Audit fix #58 (2026-04-26 round-3): assert that X
+                    # index aligns with parent panel index. Pre-fix, if
+                    # sklearn CV passed a re-indexed X, the .loc lookup
+                    # silently produced WRONG dates → wrong group_sizes.
+                    missing_idx = X.index.difference(panel.index)
+                    if len(missing_idx) > 0:
+                        raise KeyError(
+                            f"_SklearnAdapter.fit: X has indices not in parent "
+                            f"panel: {list(missing_idx)[:5]}"
+                            f"{'…' if len(missing_idx) > 5 else ''}"
+                        )
                     df = X.copy()
                     df["label"] = y
                     df["date"] = panel.loc[X.index, "date"].values
@@ -1243,6 +1254,17 @@ class CrossValidateTask(PanelTask):
                 def __init__(self):
                     self._m = PanelLGBMModel(params=params, feature_cols=feature_cols)
                 def fit(self, X, y, sample_weight=None):
+                    # Audit fix #58 (2026-04-26 round-3): assert that X
+                    # index aligns with parent panel index. Pre-fix, if
+                    # sklearn CV passed a re-indexed X, the .loc lookup
+                    # silently produced WRONG dates → wrong group_sizes.
+                    missing_idx = X.index.difference(panel.index)
+                    if len(missing_idx) > 0:
+                        raise KeyError(
+                            f"_SklearnAdapter.fit: X has indices not in parent "
+                            f"panel: {list(missing_idx)[:5]}"
+                            f"{'…' if len(missing_idx) > 5 else ''}"
+                        )
                     df = X.copy()
                     df["label"] = y
                     df["date"] = panel.loc[X.index, "date"].values
@@ -1269,6 +1291,17 @@ class CrossValidateTask(PanelTask):
                         monotone_constraints=monotone,
                     )
                 def fit(self, X, y, sample_weight=None):
+                    # Audit fix #58 (2026-04-26 round-3): assert that X
+                    # index aligns with parent panel index. Pre-fix, if
+                    # sklearn CV passed a re-indexed X, the .loc lookup
+                    # silently produced WRONG dates → wrong group_sizes.
+                    missing_idx = X.index.difference(panel.index)
+                    if len(missing_idx) > 0:
+                        raise KeyError(
+                            f"_SklearnAdapter.fit: X has indices not in parent "
+                            f"panel: {list(missing_idx)[:5]}"
+                            f"{'…' if len(missing_idx) > 5 else ''}"
+                        )
                     df = X.copy()
                     df["label"] = y
                     df["date"] = panel.loc[X.index, "date"].values

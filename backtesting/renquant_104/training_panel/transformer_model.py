@@ -503,8 +503,8 @@ class PanelTransformerModel:
     def train(
         self,
         panel: pd.DataFrame,
-        group_sizes: np.ndarray,
-        feature_cols: list[str],
+        group_sizes: np.ndarray | None = None,
+        feature_cols: list[str] | None = None,
         label_col: str = "label",
         weight_col: str | None = "weight",     # unused by transformer (ListNet scale-invariant)
         num_boost_round: int | None = None,    # alias for max_epochs if provided
@@ -512,8 +512,27 @@ class PanelTransformerModel:
         eval_panel: pd.DataFrame | None = None,
         eval_group_sizes: np.ndarray | None = None,
     ) -> dict:
-        """Fit the transformer; return train/eval metadata dict."""
+        """Fit the transformer; return train/eval metadata dict.
+
+        Audit fix #28 (2026-04-26 round-3): symmetric API with predict().
+        Both can now derive group_sizes from a `date` column on the
+        panel — eliminates the predict-vs-train signature mismatch.
+        Pre-fix, train required explicit group_sizes; predict accepted
+        either. Now both behave identically.
+        """
         del weight_col   # ListNet is scale-invariant; group weights not applied here.
+
+        if feature_cols is None:
+            raise ValueError("PanelTransformerModel.train: feature_cols required")
+        # Audit fix #28: derive group_sizes from `date` column when not given.
+        if group_sizes is None:
+            if "date" not in panel.columns:
+                raise ValueError(
+                    "PanelTransformerModel.train requires either explicit "
+                    "`group_sizes` OR a `date` column on the panel."
+                )
+            panel = panel.sort_values("date", kind="mergesort").reset_index(drop=True)
+            group_sizes = panel.groupby("date", sort=False).size().to_numpy()
         self.feature_cols = list(feature_cols)
 
         # Audit fix #87 (2026-04-26): don't mutate self.params from inside
@@ -609,6 +628,23 @@ class PanelTransformerModel:
                     "auto_eval_split: train=%d groups (%d rows) | eval=%d groups (%d rows)",
                     n_train, row_split, n_eval, len(eval_panel),
                 )
+
+        # Audit fix #84 (2026-04-26 round-3): auto-bump max_tickers
+        # when training data has more rows-per-date than the configured
+        # cap. Pre-fix, training would raise from inside _build_date_groups
+        # — operator had to manually edit config + retrain. Now: bump
+        # silently and log so the next training-set growth doesn't hit
+        # the cap. Operator can still set max_tickers manually for
+        # consistent inference (the sidecar JSON saves the actual value).
+        if len(group_sizes):
+            max_gs_train = int(np.max(group_sizes))
+            if max_gs_train > p.max_tickers:
+                log.info(
+                    "auto-bump max_tickers: %d → %d (train data has %d rows in "
+                    "largest date-group)",
+                    p.max_tickers, max_gs_train, max_gs_train,
+                )
+                p.max_tickers = max_gs_train
 
         # Build batches
         xtr, ytr, padtr, nantr = _build_date_groups(
