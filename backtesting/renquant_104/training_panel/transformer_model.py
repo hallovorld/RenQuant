@@ -596,6 +596,20 @@ class PanelTransformerModel:
 
         if feature_cols is None:
             raise ValueError("PanelTransformerModel.train: feature_cols required")
+        # Audit fix T-NEW-5 (2026-04-26 round-3): defensive checks.
+        # Pre-fix, empty list / empty panel produced cryptic
+        # nn.Linear(0, ...) error or 0-batch silent training.
+        if len(feature_cols) == 0:
+            raise ValueError("PanelTransformerModel.train: feature_cols is empty")
+        if len(panel) == 0:
+            raise ValueError("PanelTransformerModel.train: panel is empty")
+        # Validate feature columns present in panel
+        missing_cols = [c for c in feature_cols if c not in panel.columns]
+        if missing_cols:
+            raise ValueError(
+                f"PanelTransformerModel.train: panel missing feature_cols: "
+                f"{missing_cols[:5]}{'…' if len(missing_cols) > 5 else ''}"
+            )
         # Audit fix #28: derive group_sizes from `date` column when not given.
         if group_sizes is None:
             if "date" not in panel.columns:
