@@ -174,3 +174,89 @@ class TestWeighted:
         preds = m.predict_distribution(df.iloc[:poison_start])
         # Predicted μ on clean rows shouldn't be pulled toward 10
         assert preds["mu"].mean() < 3.0
+
+
+class TestSigmaOverflowClamp:
+    """Audit fix NGB-OVERFLOW (2026-04-26) — predict_distribution
+    must clamp pathological sigma values to a sane range and never
+    propagate inf/NaN downstream.
+
+    Triggered by `RuntimeWarning: overflow encountered in square` from
+    ngboost.distns.normal:72 (`self.var = self.scale**2`) seen in the
+    transformer Sunday sweep — internal NGBoost gradient excursions
+    can produce huge `scale` values.
+    """
+
+    def test_sigma_clamped_to_5(self, monkeypatch):
+        df, feats = _gaussian_panel(n=120, sigma=0.2, seed=1)
+        m = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        m.train(df, feats)
+
+        # Patch the regressor's pred_dist to simulate a blow-up: emit a
+        # sigma of 1e10 for half the rows and inf for the rest.
+        class _Stub:
+            def __init__(self, n):
+                import numpy as _np
+                self.loc   = _np.zeros(n)
+                self.scale = _np.full(n, 1e10)
+                self.scale[: n // 2] = float("inf")
+
+        original_pred = m.regressor.pred_dist
+        monkeypatch.setattr(m.regressor, "pred_dist",
+                            lambda X: _Stub(len(X)))
+        out = m.predict_distribution(df.iloc[:50])
+        # All sigmas in the finite, output range
+        assert out["sigma"].max() <= 5.0
+        assert out["sigma"].min() >= 1e-6
+        assert out["sigma"].notna().all()
+
+    def test_mu_clamped_when_extreme(self, monkeypatch):
+        df, feats = _gaussian_panel(n=120, sigma=0.2, seed=1)
+        m = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        m.train(df, feats)
+
+        class _StubMu:
+            def __init__(self, n):
+                import numpy as _np
+                self.loc   = _np.full(n, 1e6)        # absurd mean
+                self.scale = _np.full(n, 0.1)
+
+        monkeypatch.setattr(m.regressor, "pred_dist",
+                            lambda X: _StubMu(len(X)))
+        out = m.predict_distribution(df.iloc[:50])
+        assert out["mu"].max() <= 1.0
+        assert out["mu"].min() >= -1.0
+
+    def test_normal_predictions_unchanged(self):
+        """Sanity — normal predictions don't get accidentally clamped."""
+        df, feats = _gaussian_panel(n=200, sigma=0.2, seed=7)
+        m = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        m.train(df, feats)
+        out = m.predict_distribution(df)
+        # Normal sigma should be in [0.05, 1.0] for this data
+        assert 0.05 < out["sigma"].mean() < 1.0
+        # And in any case not at the floor or ceiling
+        assert (out["sigma"] >= 1e-6).all()
+        assert (out["sigma"] <= 5.0).all()
+
+    def test_warning_when_many_clipped(self, monkeypatch, caplog):
+        """When >1% of rows hit the ceiling, emit a warning log."""
+        import logging
+        df, feats = _gaussian_panel(n=120, sigma=0.2, seed=1)
+        m = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        m.train(df, feats)
+
+        class _StubAllHigh:
+            def __init__(self, n):
+                import numpy as _np
+                self.loc   = _np.zeros(n)
+                self.scale = _np.full(n, 100.0)   # all > ceil
+
+        monkeypatch.setattr(m.regressor, "pred_dist",
+                            lambda X: _StubAllHigh(len(X)))
+        with caplog.at_level(logging.WARNING, logger="ngboost"):
+            m.predict_distribution(df.iloc[:50])
+        msgs = [rec.message for rec in caplog.records
+                if rec.name == "ngboost"]
+        assert any("clipped to ceil" in m for m in msgs), \
+            f"expected clipping warning, got {msgs}"

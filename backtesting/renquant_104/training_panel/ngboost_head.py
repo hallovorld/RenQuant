@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import pickle
 from dataclasses import dataclass
 from datetime import date
@@ -286,8 +287,43 @@ class NGBoostHead:
         )
         if finite_mask.any():
             d = self.regressor.pred_dist(X[finite_mask])
-            out.loc[panel.index[finite_mask], "mu"]    = d.loc
-            out.loc[panel.index[finite_mask], "sigma"] = d.scale
+            mu_arr    = np.asarray(d.loc, dtype=float)
+            sigma_arr = np.asarray(d.scale, dtype=float)
+            # Audit fix NGB-OVERFLOW (2026-04-26): clamp pathological
+            # sigma values that NGBoost can occasionally emit when the
+            # gradient drives `scale` toward extreme magnitudes
+            # (manifests as `RuntimeWarning: overflow encountered in
+            # square` from ngboost.distns.normal:72 — `self.var =
+            # self.scale**2` overflows float when scale > ~1e154).
+            #
+            # Daily-return σ of 8% ≈ 0.08 is typical; even BULL_VOLATILE
+            # tails rarely exceed 0.5. A predicted σ > 5.0 is broken
+            # output — likely a numeric blow-up. We clamp to [1e-6, 5.0]
+            # and log if more than 1% of rows hit the ceiling, which
+            # signals an upstream training/feature issue.
+            SIGMA_FLOOR, SIGMA_CEIL = 1e-6, 5.0
+            n_clipped_high = int(np.sum(sigma_arr > SIGMA_CEIL))
+            n_clipped_low  = int(np.sum(sigma_arr < SIGMA_FLOOR))
+            n_nan          = int(np.sum(~np.isfinite(sigma_arr)))
+            sigma_arr = np.clip(sigma_arr, SIGMA_FLOOR, SIGMA_CEIL)
+            sigma_arr = np.where(np.isfinite(sigma_arr),
+                                 sigma_arr, SIGMA_CEIL)
+            n_total = len(sigma_arr)
+            if n_clipped_high + n_nan > max(1, n_total // 100):
+                logging.getLogger("ngboost").warning(
+                    "NGBoostHead.predict: %d/%d sigma clipped to ceil "
+                    "(%.0e), %d to floor, %d non-finite — possible "
+                    "upstream blow-up; check feature distribution",
+                    n_clipped_high, n_total, SIGMA_CEIL,
+                    n_clipped_low, n_nan,
+                )
+            # Also clamp extreme μ — same logic applies to predicted
+            # mean. A daily expected return > 1.0 (100%) is broken.
+            MU_CEIL = 1.0
+            mu_arr = np.where(np.isfinite(mu_arr), mu_arr, np.nan)
+            mu_arr = np.clip(mu_arr, -MU_CEIL, MU_CEIL)
+            out.loc[panel.index[finite_mask], "mu"]    = mu_arr
+            out.loc[panel.index[finite_mask], "sigma"] = sigma_arr
         return out
 
     def predict_mu(self, panel: pd.DataFrame) -> pd.Series:
