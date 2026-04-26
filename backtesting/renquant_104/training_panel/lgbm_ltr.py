@@ -53,26 +53,76 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "lambda_l2":         5.0,
     "lambdarank_truncation_level": 10,     # optimize NDCG@10
     "verbose":           -1,
-    "num_threads":       -1,
+    # Audit fix LGB-NEW-5 (2026-04-26 round-3): cap num_threads to 4
+    # to avoid fork/OMP deadlock with multiprocessing parents (same
+    # rationale as XGBoost X6).
+    "num_threads":       4,
+    # Audit fix LGB-NEW-4 (2026-04-26 round-3): explicit seeds for
+    # reproducibility. bagging_fraction + feature_fraction use random
+    # sampling; without seed, two runs differ. Multiple seed knobs
+    # because LightGBM has separate bagging_seed / feature_fraction_seed.
+    "seed":              42,
+    "bagging_seed":      42,
+    "feature_fraction_seed": 42,
+    "data_random_seed":  42,
+    "deterministic":     True,
 }
 
 
-def _bucketize_labels(y: np.ndarray, n_buckets: int = 11) -> np.ndarray:
-    """Map continuous labels to integer gains [0 … n_buckets-1] via rank.
+def _bucketize_labels(
+    y: np.ndarray, n_buckets: int = 11,
+    group_sizes: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map continuous labels to integer gains [0 … n_buckets-1] via PER-GROUP rank.
 
-    LambdaRank needs integer relevance; we rank-transform Gaussianized
-    labels on each group (date) and assign bucket = int((rank - 1) / size × n).
+    Audit fix LGB-NEW-1 (2026-04-26 round-3, 🔴 CRITICAL): pre-fix, this
+    function used GLOBAL quantile bucketing across the whole panel. For
+    cross-sectional ranking via LightGBM lambdarank, labels must be
+    relative WITHIN a group (date) — global bucketing destroys most of
+    the ranking signal:
+      - Date A with returns in [-0.05, +0.05] → all in median bucket
+      - Date B with returns in [+0.10, +0.30] → all in top buckets
+    Within-date rank is what lambdarank's pairwise loss compares. Pre-fix
+    LightGBM was effectively trained to predict GLOBAL bucket position
+    rather than per-date rank — explains why it underperformed XGBoost
+    so badly even with proper weights.
+
+    Now: when `group_sizes` is provided, rank labels WITHIN each group,
+    map to integer buckets per group. When not provided (legacy callers),
+    fall back to global quantile bucketing with a warning.
+
+    LambdaRank needs integer relevance; we rank-transform per-date
+    labels and assign bucket = int(rank / group_size × n_buckets).
     Returns int32 array of the same length as y.
     """
-    out = np.zeros(len(y), dtype=np.int32)
-    # Can't rank per-group here — caller bucketizes globally; we rely on the
-    # labels already being Gaussianized per-date so a global bucketize is fine.
-    # Use quantile bucketing across the whole series.
-    if len(y) < n_buckets:
+    if group_sizes is None:
+        # Fallback path — log warning at caller site.
+        out = np.zeros(len(y), dtype=np.int32)
+        if len(y) < n_buckets:
+            return out
+        quantiles = np.quantile(y, np.linspace(0, 1, n_buckets + 1))
+        out = np.clip(np.digitize(y, quantiles[1:-1]), 0, n_buckets - 1).astype(np.int32)
         return out
-    quantiles = np.quantile(y, np.linspace(0, 1, n_buckets + 1))
-    # np.digitize gives 0..n_buckets (1-indexed right-open intervals).
-    out = np.clip(np.digitize(y, quantiles[1:-1]), 0, n_buckets - 1).astype(np.int32)
+
+    # Per-group rank-bucketing
+    out = np.zeros(len(y), dtype=np.int32)
+    offset = 0
+    for gs in group_sizes:
+        gs_int = int(gs)
+        if gs_int <= 0:
+            offset += gs_int
+            continue
+        slice_y = y[offset:offset + gs_int]
+        # argsort.argsort gives rank within slice (0..gs-1)
+        ranks = np.argsort(np.argsort(slice_y, kind="stable"), kind="stable")
+        # Scale to 0..n_buckets-1 inclusive
+        if gs_int >= n_buckets:
+            buckets = (ranks * n_buckets) // gs_int
+        else:
+            # Group smaller than buckets — preserve ranks linearly
+            buckets = ranks
+        out[offset:offset + gs_int] = np.clip(buckets, 0, n_buckets - 1).astype(np.int32)
+        offset += gs_int
     return out
 
 
@@ -110,9 +160,19 @@ class PanelLGBMModel:
         integer relevance, so NDCG eval works (unlike XGBoost ranking).
         """
         self.feature_cols = list(feature_cols)
+        # Audit fix LGB-NEW-2 (2026-04-26 round-3): validate group_sizes
+        # match panel length. Same as XGBoost X15.
+        gs_sum = int(np.sum(group_sizes))
+        if gs_sum != len(panel):
+            raise ValueError(
+                f"PanelLGBMModel.train: sum(group_sizes)={gs_sum} != "
+                f"len(panel)={len(panel)}."
+            )
         X = panel[feature_cols].values
         y_raw = panel[label_col].values.astype(float)
-        y     = _bucketize_labels(y_raw, n_buckets=11)
+        # Audit fix LGB-NEW-1 (CRITICAL): pass group_sizes for PER-DATE
+        # rank bucketing. Pre-fix global bucketing destroyed signal.
+        y = _bucketize_labels(y_raw, n_buckets=11, group_sizes=group_sizes)
 
         # LightGBM ranking takes PER-ROW weights (length = n_rows),
         # unlike XGBoost 3.x which takes per-group. To keep parity with
@@ -157,7 +217,9 @@ class PanelLGBMModel:
         if eval_panel is not None and eval_group_sizes is not None:
             Xe = eval_panel[feature_cols].values
             ye_raw = eval_panel[label_col].values.astype(float)
-            ye = _bucketize_labels(ye_raw, n_buckets=11)
+            # Audit fix LGB-NEW-1: per-date rank bucketing on eval too.
+            ye = _bucketize_labels(ye_raw, n_buckets=11,
+                                   group_sizes=eval_group_sizes)
             deval = lgb.Dataset(Xe, label=ye, group=eval_group_sizes,
                                 reference=dtrain)
             valid_sets.append(deval)
@@ -185,7 +247,17 @@ class PanelLGBMModel:
     def predict(self, panel: pd.DataFrame) -> pd.Series:
         if self.booster is None:
             raise RuntimeError("PanelLGBMModel.predict called before train/load")
-        X = panel[self.feature_cols].values
+        # Audit fix LGB-NEW-3 (2026-04-26 round-3): validate column
+        # presence (mirror XGBoost X5). Pre-fix, missing column raised
+        # cryptic KeyError deep in pandas.
+        missing = [c for c in self.feature_cols if c not in panel.columns]
+        if missing:
+            raise ValueError(
+                f"PanelLGBMModel.predict: panel missing required feature "
+                f"columns: {missing[:5]}{'…' if len(missing) > 5 else ''} "
+                f"(model trained on {len(self.feature_cols)} features)."
+            )
+        X = panel[self.feature_cols].to_numpy(dtype=np.float32)
         preds = self.booster.predict(X)
         return pd.Series(preds, index=panel.index, name="panel_score")
 
@@ -225,6 +297,14 @@ class PanelLGBMModel:
 
 def _per_date_ic(panel: pd.DataFrame, preds: np.ndarray,
                  label_col: str, date_col: str = "date") -> float:
+    # Audit fix LGB-NEW-6 (2026-04-26 round-3): defensive column guard.
+    for col in (date_col, label_col):
+        if col not in panel.columns:
+            raise KeyError(
+                f"_per_date_ic: panel missing required column '{col}'. "
+                f"Available: {list(panel.columns)[:10]}"
+                f"{'…' if len(panel.columns) > 10 else ''}"
+            )
     df = pd.DataFrame({
         "date": panel[date_col].values,
         "p":    preds,
@@ -234,10 +314,15 @@ def _per_date_ic(panel: pd.DataFrame, preds: np.ndarray,
     for _, g in df.groupby("date", sort=False):
         y = g["y"].values
         p = g["p"].values
-        if len(y) < 2 or np.all(y == y[0]) or np.all(p == p[0]):
+        # Audit fix LGB-NEW-7 (2026-04-26 round-3): np.allclose for float
+        # equality (matches transformer #67).
+        if (len(y) < 2
+                or np.allclose(y, y[0], rtol=0, atol=1e-12)
+                or np.allclose(p, p[0], rtol=0, atol=1e-12)):
             continue
         rho, _ = spearmanr(p, y)
-        if rho is not None and rho == rho:
+        # Audit fix LGB-NEW-8 (2026-04-26 round-3): use np.isnan idiom.
+        if rho is not None and not np.isnan(rho):
             ics.append(float(rho))
     return float(np.mean(ics)) if ics else float("nan")
 
