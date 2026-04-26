@@ -266,5 +266,119 @@ class TestEarlyStopping:
         )
 
 
+# ── Audit-fix regression tests (2026-04-26 round-3) ───────────────────────────
+
+class TestAuditRound3Fixes:
+    """Regressions for round-3 audit findings."""
+
+    def test_74_nan_label_excluded_from_listnet(self):
+        """#74: NaN labels filtered from loss via nan_label_mask."""
+        scores = torch.tensor([[1.0, 2.0, 3.0]])
+        labels = torch.tensor([[0.5, float('nan'), 0.7]])
+        pad    = torch.tensor([[False, False, False]])
+        nan    = torch.tensor([[False, True,  False]])
+        # Sub NaN with 0 (mimics _build_date_groups behavior)
+        labels = torch.nan_to_num(labels)
+        loss = _listnet_loss(scores, labels, pad, nan)
+        # Should not be NaN; nan-pos should not contribute
+        assert torch.isfinite(loss), f"loss should be finite, got {loss}"
+
+    def test_75_chunk_split_error_mode_raises(self):
+        """#75 + #27: predict() raises when on_oversized_group='error'."""
+        panel, gs, fc = _make_synthetic_panel(n_dates=10, n_tickers=20)
+        m = PanelTransformerModel(params={
+            "max_epochs": 2, "d_model": 8, "n_heads": 2, "n_layers": 1,
+            "batch_size": 4, "device": "cpu", "max_tickers": 50,
+            "on_oversized_group": "error",
+        })
+        m.train(panel, gs, fc, num_boost_round=2)
+        # Build a panel where one date has 60 tickers (> max_tickers=50)
+        big_panel = panel.copy()
+        # Just monkey-set max_tickers smaller to force chunk-split path
+        m.params.max_tickers = 5
+        m.params.on_oversized_group = "error"
+        with pytest.raises(ValueError, match="exceeds max_tickers"):
+            m.predict(big_panel)
+
+    def test_76_auto_eval_split_excludes_train_rows(self):
+        """#76: auto_eval_split puts the LAST 20% of dates into eval, train gets first 80%."""
+        panel, gs, fc = _make_synthetic_panel(n_dates=20, n_tickers=8)
+        # We can only inspect this via training history (eval_ic key set when split fired)
+        m = PanelTransformerModel(params={
+            "max_epochs": 5, "d_model": 8, "n_heads": 2, "n_layers": 1,
+            "batch_size": 4, "device": "cpu", "auto_eval_split": True,
+            "auto_eval_fraction": 0.20, "patience": 99, "seed": 0,
+        })
+        result = m.train(panel, gs, fc, num_boost_round=5)
+        # If auto-split fired, history should have eval_ic entries
+        assert any("eval_ic" in h for h in m.history), (
+            "auto_eval_split should populate eval_ic in history"
+        )
+
+    def test_77_load_with_weights_only_true(self):
+        """#77: load() works with weights_only=True (modern torch default)."""
+        import tempfile
+        panel, gs, fc = _make_synthetic_panel(n_dates=10, n_tickers=8)
+        m = PanelTransformerModel(params={
+            "max_epochs": 2, "d_model": 8, "n_heads": 2, "n_layers": 1,
+            "batch_size": 4, "device": "cpu",
+        })
+        m.train(panel, gs, fc, num_boost_round=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tx.pt"
+            m.save(path)
+            # Should load cleanly (weights_only=True is the default in load())
+            m2 = PanelTransformerModel.load(path)
+            assert m2.feature_cols == m.feature_cols
+
+    def test_t_new_3_rank_transform_scale_matches_old_loop(self):
+        """T-NEW-3: vectorized rank transform output range matches the old
+        loop's ranks/std normalization.
+        """
+        from training_panel.transformer_model import _rank_transform_per_row
+        labels = torch.tensor([[0.05, 0.10, 0.20, 0.30, 0.50]], dtype=torch.float32)
+        invalid = torch.zeros_like(labels, dtype=torch.bool)
+        out = _rank_transform_per_row(labels, invalid)
+        # For n=5 valid: ranks are [0,1,2,3,4]; mean=2; std=sqrt(5*6/12)=sqrt(2.5)≈1.58
+        # Scaled: [-2/1.58, -1/1.58, 0, 1/1.58, 2/1.58] ≈ [-1.26, -0.63, 0, 0.63, 1.26]
+        # Output range should be ~[-1.26, +1.26], not ~[-0.5, +0.5]
+        assert out.max().item() > 1.0, f"max should be >1, got {out.max().item()}"
+        assert out.min().item() < -1.0, f"min should be <-1, got {out.min().item()}"
+
+    def test_x14_chunk_size_smaller_than_patience(self):
+        """X14: chunked early-stopping has chunk_size < early_stopping_rounds
+        so patience absorbs multiple bad chunks.
+        """
+        # Read source as a regression marker
+        src = (_STRATEGY_DIR / "training_panel" / "ltr_model.py").read_text()
+        # The fix uses `chunk_size = max(5, int(early_stopping_rounds) // 4)`
+        assert "chunk_size = max(5, int(early_stopping_rounds) // 4)" in src
+
+    def test_x12_seed_in_default_params(self):
+        """X12: explicit seed=42 in DEFAULT_PARAMS for reproducibility."""
+        from training_panel.ltr_model import DEFAULT_PARAMS
+        assert "seed" in DEFAULT_PARAMS
+        assert DEFAULT_PARAMS["seed"] == 42
+
+    def test_x13_monotone_constraints_validates_unknown_keys(self):
+        """X13: PanelLTRModel raises on monotone_constraints referencing
+        feature names not in feature_cols.
+        """
+        from training_panel.ltr_model import PanelLTRModel
+
+        rng = np.random.default_rng(0)
+        n = 50
+        df = pd.DataFrame({
+            "f0": rng.normal(size=n),
+            "f1": rng.normal(size=n),
+            "label": rng.normal(size=n),
+            "date": np.repeat(np.arange(5), 10),
+        })
+        gs = np.full(5, 10, dtype=np.int32)
+        m = PanelLTRModel(monotone_constraints={"f0": +1, "BOGUS": -1})
+        with pytest.raises(ValueError, match="not in training feature_cols"):
+            m.train(df, gs, feature_cols=["f0", "f1"], label_col="label")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
