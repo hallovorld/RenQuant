@@ -152,9 +152,15 @@ class JointPortfolioQPTask(Task):
             "max_position_pct",
             ctx.config.get("max_position_pct", 0.20),
         ))
-        # Confidence scaling — same shape as JointActionTask uses
-        conf_scale = float(getattr(ctx, "confidence", 0.5) or 0.5)
-        conf_scale = max(0.5, min(1.0, conf_scale))
+        # Confidence scaling — call the canonical helper so the floor
+        # logic, NaN handling, and behaviour match JointActionTask exactly.
+        # (audit fix QP-CONF-CONSISTENCY 2026-04-26: pre-fix, this used
+        # an open-coded floor at 0.5 which DID match by accident, but a
+        # different `floor` config or NaN behavior would have diverged.)
+        from kernel.regime import confidence_to_size_multiplier  # noqa: PLC0415
+        conf_scale = confidence_to_size_multiplier(
+            getattr(ctx, "confidence", None),
+        )
         w_upper_arr = np.full(n, max_pos_pct * conf_scale)
 
         cash_reserve = float(regime_params.get(

@@ -7,7 +7,7 @@ transaction costs:
     s.t.     1' (w + Δw)  ≤ 1 - cash_reserve
               w_lower    ≤ w + Δw   ≤ w_upper       (per-position cap)
               -dw_max    ≤ Δw       ≤  dw_max       (slippage cap)
-              Δw[wash]   ≥ 0                         (wash-sale block)
+              Δw[wash]   ≤ 0                         (wash-sale: cannot re-buy)
 
 Output: Δw vector — sign IS the action (positive=buy, negative=sell).
 The current `JointActionTask` greedy heap maps to a special case of this
@@ -80,9 +80,9 @@ def solve_portfolio_qp(
     is given, the solver falls back to a diagonal Σ — which discards
     cross-asset correlation but stays well-defined.
 
-    `wash_sale_mask` (optional, n-bool): True for tickers blocked from
-    going negative (Δw_i ≥ 0 enforced). Used by the wash-sale guard
-    upstream.
+    `wash_sale_mask` (optional, n-bool): True for tickers recently sold
+    (within wash-sale window) — Δw_i ≤ 0 is enforced so they cannot be
+    re-bought. Selling further is still permitted.
 
     Returns a QPSolution. Raises ValueError on shape mismatch.
     """
@@ -180,10 +180,19 @@ def solve_portfolio_qp(
         # be sold further). Cap Δw_i ≤ 0 for masked positions.
         wsm = np.asarray(wash_sale_mask, dtype=bool)
         hi_bounds = np.where(wsm, np.minimum(hi_bounds, 0.0), hi_bounds)
-    # Sanity — feasibility check
+    # Sanity — feasibility check (audit fix QP-INFEASIBLE-WARN, 2026-04-26):
+    # When per-asset bounds are inconsistent (e.g. current weight already
+    # outside the cap, AND slippage band can't reach back inside in one
+    # bar), we clip rather than fail — pick the tightest bound. Pre-fix,
+    # this happened silently. Now log a warning so the operator notices.
     bad = lo_bounds > hi_bounds + 1e-12
     if bad.any():
-        # Clip rather than fail — pick the tightest bound
+        n_bad = int(bad.sum())
+        log.warning(
+            "QP: %d/%d asset bound(s) clipped due to infeasibility — "
+            "current weight may be outside cap by more than dw_max",
+            n_bad, n,
+        )
         lo_bounds[bad] = hi_bounds[bad]
     bounds = list(zip(lo_bounds.tolist(), hi_bounds.tolist()))
 

@@ -96,3 +96,47 @@ class TestCombineSignals:
         a = np.array([float("nan"), float("nan")])
         c, _ = combine_signals({"A": a})
         np.testing.assert_allclose(c, [0.0, 0.0])
+
+
+# ── SC-NEG-IC audit fix ────────────────────────────────────────────────────────
+
+class TestNegativeICFlipping:
+    """Audit fix SC-NEG-IC (2026-04-26): a source with IC<0 is BIASED
+    (signal points wrong direction). Pre-fix, IR² dropped the sign and
+    propagated the wrong direction. Post-fix, we flip the source vector
+    when its IC is negative."""
+
+    def test_negative_ic_signal_flipped(self):
+        """A -0.05 IC source should contribute with reversed sign."""
+        a = np.array([1.0, -1.0, 0.5])
+        c, w = combine_signals(
+            {"NEG": a},
+            ic_means={"NEG": -0.05},
+            ic_stds={"NEG": 0.10},
+        )
+        # Single source → weight 1.0; flipped because IC<0
+        np.testing.assert_allclose(c, -a)
+
+    def test_pos_and_neg_ic_blend_with_flip(self):
+        """Positive and negative IC sources both contribute correctly."""
+        pos = np.array([1.0, -1.0])
+        neg = np.array([-1.0, 1.0])    # SAME info as `pos` but flipped
+        # If both have IC magnitudes equal, the two should reinforce
+        # (not cancel) after sign-flip on the negative-IC source.
+        c, w = combine_signals(
+            {"POS": pos, "NEG": neg},
+            ic_means={"POS": 0.05, "NEG": -0.05},
+            ic_stds={"POS": 0.10, "NEG": 0.10},
+        )
+        # weights both ≈ 0.5; combined = 0.5*pos + 0.5*(-1)*neg = pos
+        np.testing.assert_allclose(c, pos)
+
+    def test_zero_ic_source_keeps_sign_one(self):
+        """IC=0 → sign treated as +1 (no flip)."""
+        a = np.array([1.0, -1.0])
+        c, w = combine_signals(
+            {"ZERO": a},
+            ic_means={"ZERO": 0.0},
+        )
+        # IC=0 → IR²=0 → fallback to equal weight (1.0); no sign flip
+        np.testing.assert_allclose(c, a)

@@ -137,9 +137,13 @@ def _gate_b_edge_sharpe(
 class QualityFloorTask(Task):
     """Filter ctx.candidates by quality gates A/B/C (each flag-controlled).
 
-    Stage 0: only Gate B (Edge-Sharpe) is implemented. Gates A and C are
-    placeholders for future commits — the flag schema is in place so
-    enabling them later doesn't churn config files.
+    All three gates are implemented (Stage 1 complete, 2026-04-26):
+      Gate A — Distribution-relative percentile floor (reads score_db)
+      Gate B — Edge-Sharpe floor (Lo 2002 → μ/σ > τ_S)
+      Gate C — No-trade band (Constantinides 1986 / Davis-Norman 1990)
+
+    Each gate is independently flag-controlled. With every gate disabled
+    (the default) ctx.candidates is left bit-for-bit untouched.
 
     Doesn't touch ctx.holdings — quality floors are buy-side gates.
     Sells / rotations have their own (path-dependent) controls.

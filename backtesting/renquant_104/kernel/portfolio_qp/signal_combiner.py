@@ -77,7 +77,13 @@ def combine_signals(
     ic_stds  = ic_stds  or {}
 
     # IR² = (IC / std(IC))² → inverse-variance proxy
+    # Audit fix SC-NEG-IC (2026-04-26): negative-IC sources are
+    # BIASED (point in the wrong direction). Squaring IC drops the
+    # sign so a -0.05 IC source would get the same weight as +0.05 —
+    # propagating the wrong direction into the combined signal. Fix:
+    # track sign separately and FLIP the source vector when summing.
     raw_weights: dict[str, float] = {}
+    sign_per_src: dict[str, float] = {}
     for k in arrs:
         ic_m = float(ic_means.get(k, 1.0))
         ic_s = float(ic_stds.get(k, 1.0))
@@ -87,6 +93,7 @@ def combine_signals(
             ic_m = 0.0
         ir_sq = (ic_m / ic_s) ** 2
         raw_weights[k] = ir_sq
+        sign_per_src[k] = 1.0 if ic_m >= 0.0 else -1.0
 
     total = float(sum(raw_weights.values()))
     if total <= 0.0:
@@ -100,7 +107,7 @@ def combine_signals(
     combined = np.zeros(n)
     for k, a in arrs.items():
         a_clean = np.where(np.isfinite(a), a, 0.0)
-        combined = combined + weights[k] * a_clean
+        combined = combined + weights[k] * sign_per_src[k] * a_clean
 
     log.debug(
         "combine_signals: %d sources, weights=%s",
