@@ -4,15 +4,21 @@
 
 | Layer | Tool | Role |
 |-------|------|------|
-| Data | OpenBB + yfinance | OHLCV and financial data fetching |
-| Data cache | Parquet (pyarrow) | Local storage for fetched data |
-| Research | JupyterLab | Interactive development and model training |
-| ML | XGBoost + scikit-learn | Q-value estimation, classification, preprocessing |
-| Learners | RTLearner, BagLearner, TabularQLearner | Custom tree ensemble and Q-learning primitives |
-| Optimization | SciPy (Nelder-Mead) | Indicator parameter search |
-| Portfolio sim | common/portfolio.py | Local portfolio simulation for quick iteration |
-| Final backtest | QuantConnect LEAN | Rigorous, production-grade event-driven backtesting |
-| Live trading | Alpaca (via alpaca-py) + IBKR (stub) | Real-time order execution |
+| Data | yfinance + OpenBB + Alpaca IEX (intraday) | OHLCV + intraday bars + macro factors |
+| Data cache | Parquet (pyarrow) | Local storage for fetched data (`data/ohlcv/`, `data/intraday/`, `data/macro/`) |
+| Research | JupyterLab + `scripts/train_104.py` | Interactive 101/102/103; CLI-driven for 104 (`FullTrainingPipeline`) |
+| Panel ranker | XGBoost (rank:pairwise), LightGBM (lambdarank), Stage C-3 PyTorch transformer | Cross-sectional learning-to-rank backends (104) |
+| Probabilistic head | NGBoost (Normal distn) | μ/σ residual estimator on top of panel scorer |
+| Calibration | scikit-learn isotonic regression | Score-DB global calibrator with non-collapse gate |
+| Per-symbol learners | RTLearner, BagLearner, TabularQLearner, XGBoost (`XGBClassifier`) | 101/102/103 tournament backends + 104 baseline |
+| Portfolio QP | cvxpy + OSQP solver | Rotation under correlation + sector + concentration constraints (104) |
+| Optimization | SciPy (Nelder-Mead) | Indicator parameter search (legacy 101) |
+| State store | SQLite (runs.db) + parquet | pipeline_runs / candidate_scores / trades / training_runs / challenger_decisions / etc. |
+| Native acceleration | Rust (rust/transformer_scorer/) | Hourly transformer inference with parity test vs PyTorch |
+| Calendar | pandas-market-calendars | NYSE holiday + early-close awareness for cron + trading-day math |
+| Final backtest | QuantConnect LEAN (Docker) | Industrial-grade event-driven backtesting |
+| Live trading | Alpaca (alpaca-py) + IBKR (stub) | Real-time order execution |
+| Notifications | macOS osascript + ntfy.sh | Banner + iPhone push for trade summaries / acceptance failures |
 | Runtime | Miniconda (arm64) | Apple Silicon-native Python environment |
 | Containers | Docker Desktop | LEAN engine isolation |
 
@@ -36,18 +42,28 @@ JupyterLab provides an interactive environment for the entire research pipeline:
 
 ---
 
-## ML: XGBoost + Custom Learners
+## ML: XGBoost + LightGBM + NGBoost + Transformer
 
-**XGBoost** is used in two ways:
-- **XGBoostModel** (renquant_103 tournament): two `XGBClassifier` instances (buy-vs-rest, sell-vs-rest) with L1/L2 regularisation, residual boosting, and native JSON serialisation for LEAN compatibility.
-- **FQIModel** Q-value estimators (renquant_101/102 only): `XGBRegressor` per action in Fitted Q-Iteration.
+**Per-symbol learners** (101/102/103 tournament, 104 baseline):
+- **XGBoostModel**: two `XGBClassifier` instances (buy-vs-rest, sell-vs-rest) with L1/L2 regularisation, residual boosting, native JSON serialisation
+- **FQIModel** Q-value estimators (101/102 only): `XGBRegressor` per action in Fitted Q-Iteration
+- **RTLearner / BagLearner / TabularQLearner**: ported from ML4T, cleaned up — Random tree, bagging wrapper (Random Forest when wrapping RTLearner), Q-table with epsilon-greedy + optional Dyna experience replay
 
-**Custom learners** (ported from ML4T, cleaned up):
-- **RTLearner**: Random decision tree for classification (leaf nodes store majority class)
-- **BagLearner**: Bootstrap aggregation wrapper (Random Forest when wrapping RTLearner)
-- **TabularQLearner**: Q-table with epsilon-greedy exploration and optional Dyna experience replay
+**Cross-sectional panel-LTR backends** (104 active):
+- **XGBoost** (`rank:pairwise`, default): current production. `eta=0.02`, `max_depth=3`, `min_child_weight=60`. Trained CPCV (6 splits, 2 test groups, 10d embargo). Artifact at `panel-ltr.json`.
+- **LightGBM** (`lambdarank`, NDCG@5/10 metric): alternative backend. Switch via `panel_ltr.backend: "lightgbm"`. Artifact at `panel-ltr.lgbm.bak.json`.
+- **PyTorch transformer** (Stage C-3, daily + hourly): self-attention encoder over (ticker × time × features). Artifact at `panel-ltr.transformer.bak.json` + `panel-transformer.pt` weights. Inference runs through native **Rust scorer** (`rust/transformer_scorer/`) with Python parity test in `tests/test_rust_transformer_parity.py`.
 
-Why XGBoost over alternatives:
+**Probabilistic head** (104):
+- **NGBoost** (Normal distribution): trained on top of the panel scorer's output to estimate per-prediction μ and σ. Used by `mu_minus_lambda_sigma` score mode for risk-adjusted ranking + edge-Sharpe sell gates.
+
+**Calibration** (104):
+- **scikit-learn isotonic regression**: monotonic mapping from raw panel scores → `rank_score ∈ [0, 1]`. Defended by acceptance gates G2 (≥5 unique probabilities) and G3 (pool_ic > 0).
+
+**Portfolio optimization** (104):
+- **cvxpy + OSQP**: QP solver for rotation under correlation, sector-concentration, and per-position Kelly constraints.
+
+Why this mix:
 - **Interpretable**: tree-based models support feature importance, partial dependence plots, and SHAP values — fits the glass-box design goal
 - **Tabular data performance**: outperforms neural networks on small tabular datasets (typical for daily OHLCV strategies with limited history)
 - **JSON serialization**: XGBoost natively exports/loads models as JSON, which is required for LEAN compatibility (LEAN runs in Docker and cannot access pickle files from the host)
@@ -119,7 +135,8 @@ All model artifacts are saved as `.json` files rather than `.pkl`.
 | Tool | Reason not used |
 |------|-----------------|
 | FinRL | End-to-end RL framework — black box, hard to debug, contradicts glass-box goal |
-| Deep learning (LSTM, Transformer) | Requires much more data than daily OHLCV; prone to overfitting on small datasets |
 | Zipline | Unmaintained; poor Apple Silicon support |
 | pickle for model serialization | Python/library version-sensitive; incompatible with LEAN Docker environment |
 | Two conda environments | Eliminated — OpenBB and ML stack coexist fine in one environment |
+
+> **Note** — earlier versions of this doc said "Deep learning not used; prone to overfitting on small datasets". That was true for renquant_101/102 (per-symbol scope). Stage C-3 of renquant_104 (2026-04-26 round-7) ships a daily + hourly transformer backend with native Rust scorer for inference parity. See [`../components/transformer.md`](../components/transformer.md). The general claim still holds: don't use deep nets where the panel is small (< ~50K rows); for the cross-sectional 99-ticker × 753-day panel (~75K rows) it's borderline-acceptable behind acceptance gates.
