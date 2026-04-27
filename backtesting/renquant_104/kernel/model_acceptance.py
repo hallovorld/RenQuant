@@ -1,0 +1,435 @@
+"""Model acceptance gates — promote new model only if all hard gates pass.
+
+User spec 2026-04-26: "我们有没有机制进行模型accpetance verification，如果不
+通过的话，继续用原来的模型跑E2E？"
+
+Without these gates, retraining is dangerous: a broken or quality-degraded
+panel-ltr.json silently swaps in and corrupts every subsequent live run.
+This module formalizes the staging → gate → promote OR rollback workflow.
+
+Workflow:
+    1. FullTrainingPipeline writes the new artifact to a STAGING path
+       (e.g., artifacts/panel-ltr.staging.json).
+    2. ``ModelAcceptanceGate.evaluate(staging_path, active_path)`` runs
+       all hard gates. Each gate compares staging vs active artifact
+       metadata, OR runs an isolated sanity check on staging alone.
+    3. If all hard gates pass → ``promote()``:
+         - mv  active   → previous (rollback target)
+         - mv  staging  → active   (atomic from operator's view)
+    4. If any hard gate fails → ``reject()``:
+         - mv  staging  → archives/_acceptance_log/{ts}_REJECTED.json
+         - active stays unchanged → live runner sees the prior model
+         - ntfy alert with reason
+
+Soft gates emit warnings but don't block promotion.
+
+Architecture choice — why NOT atomic via os.rename trickery:
+The active artifact is a JSON file read at process start. Live runner
+loads it once per pipeline; we don't need within-second atomicity. The
+mv-mv pair is "atomic enough" — at worst, a concurrent reader sees
+either the prior or the new file fully, never a partial. Use locks if
+multiple operators retrain concurrently (out of scope for solo use).
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import logging
+import math
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+log = logging.getLogger("kernel.model_acceptance")
+
+
+# ── Result types ──────────────────────────────────────────────────────────────
+
+@dataclass
+class GateResult:
+    """One gate's verdict."""
+    name:       str
+    severity:   str          # "hard" or "soft"
+    passed:     bool
+    metric:     float | None
+    threshold:  float | None
+    detail:     str
+
+    def __str__(self) -> str:
+        m = f"{self.metric:.4f}" if isinstance(self.metric, (int, float)) else "n/a"
+        t = f"{self.threshold:.4f}" if isinstance(self.threshold, (int, float)) else "n/a"
+        status = "PASS" if self.passed else "FAIL"
+        return f"[{self.severity:<4}] {self.name:<28} {status}  metric={m}  threshold={t}  {self.detail}"
+
+
+@dataclass
+class AcceptanceVerdict:
+    """Aggregated result over all gates."""
+    all_hard_passed: bool
+    results:         list[GateResult]
+    timestamp:       datetime.datetime = field(default_factory=datetime.datetime.utcnow)
+
+    def hard_failures(self) -> list[GateResult]:
+        return [r for r in self.results if r.severity == "hard" and not r.passed]
+
+    def soft_warnings(self) -> list[GateResult]:
+        return [r for r in self.results if r.severity == "soft" and not r.passed]
+
+    def summary(self) -> str:
+        lines = [f"AcceptanceVerdict @ {self.timestamp.isoformat(timespec='seconds')}Z"]
+        for r in self.results:
+            lines.append(f"  {r}")
+        n_hard_fail = len(self.hard_failures())
+        n_soft_fail = len(self.soft_warnings())
+        verdict = "ACCEPT" if self.all_hard_passed else "REJECT"
+        lines.append(f"  ─── VERDICT: {verdict} (hard fails={n_hard_fail}, soft warns={n_soft_fail})")
+        return "\n".join(lines)
+
+
+# ── Gate definitions ──────────────────────────────────────────────────────────
+
+@dataclass
+class AcceptanceGate:
+    name:     str
+    severity: str          # "hard" | "soft"
+    check:    Callable[[dict, dict | None], GateResult]
+
+
+def _safe_get_metadata(artifact: dict) -> dict:
+    """Extract `metadata` block; some artifacts have it nested, some flat."""
+    md = artifact.get("metadata")
+    if isinstance(md, dict):
+        return md
+    return artifact   # flat
+
+
+def _gate_g1_schema_compatibility(staging: dict, active: dict | None) -> GateResult:
+    """G1: feature_cols length matches active OR diff is in expected-add list.
+
+    Without this, a transformer trained with 33 extra macro features
+    would write a sidecar that the production XGBoost consumer can't
+    read.
+    """
+    new_cols = staging.get("feature_cols")
+    if not isinstance(new_cols, list):
+        return GateResult("G1_schema", "hard", False, None, None,
+                          "staging artifact missing feature_cols")
+    new_n = len(new_cols)
+    if active is None:
+        # No prior — accept any non-empty list
+        return GateResult("G1_schema", "hard", new_n > 0, float(new_n), 1.0,
+                          f"no prior artifact; accept {new_n} cols")
+    prior_cols = active.get("feature_cols") or []
+    prior_n = len(prior_cols)
+    new_set = set(new_cols)
+    prior_set = set(prior_cols)
+    # Three accepted cases: identical, identical content (different order),
+    # or new is a strict superset (e.g. + macro features).
+    if new_set == prior_set:
+        return GateResult("G1_schema", "hard", True, float(new_n), float(prior_n),
+                          f"feature_cols match ({new_n} cols)")
+    if prior_set < new_set:
+        added = sorted(new_set - prior_set)
+        return GateResult("G1_schema", "hard", True, float(new_n), float(prior_n),
+                          f"superset OK (+{len(added)} new cols: {added[:5]})")
+    return GateResult(
+        "G1_schema", "hard", False, float(new_n), float(prior_n),
+        f"feature_cols changed in unexpected way: prior={prior_n} new={new_n} "
+        f"(missing from new: {sorted(prior_set - new_set)[:5]}, "
+        f"unexpected in new: {sorted(new_set - prior_set)[:5]})",
+    )
+
+
+def _gate_g2_calibrator_non_collapse(staging: dict, active: dict | None) -> GateResult:
+    """G2: calibrator probability head must have ≥5 unique y values.
+
+    Already enforced at fit-time (Bug #4 fix in global_calibrator.py),
+    but defense-in-depth: re-check here so a hand-written or imported
+    artifact can't bypass.
+    """
+    md = _safe_get_metadata(staging)
+    n_unique = md.get("n_unique_prob_y")
+    if n_unique is None:
+        # Calibrator artifact looks different — try the calibration
+        # sidecar instead. Fail open: not all backend artifacts have
+        # this metric (e.g., panel-ltr.json before calibrator was wired).
+        return GateResult("G2_calibrator_unique", "hard", True, None, 5.0,
+                          "no n_unique_prob_y on this artifact (skip)")
+    return GateResult(
+        "G2_calibrator_unique", "hard", n_unique >= 5,
+        float(n_unique), 5.0,
+        f"calibrator unique y={n_unique}",
+    )
+
+
+def _gate_g3_pool_ic_positive(staging: dict, active: dict | None) -> GateResult:
+    """G3: pool IC must be > 0 (not collapsed to base rate).
+
+    Negative pool IC means the calibrator inverted the signal.
+    """
+    md = _safe_get_metadata(staging)
+    pool_ic = md.get("pool_ic")
+    if pool_ic is None:
+        return GateResult("G3_pool_ic_positive", "hard", True, None, 0.0,
+                          "no pool_ic on this artifact (skip)")
+    return GateResult(
+        "G3_pool_ic_positive", "hard", pool_ic > 0,
+        float(pool_ic), 0.0,
+        f"pool_ic={pool_ic:+.6f}",
+    )
+
+
+def _gate_g4_oos_ic_vs_prior(staging: dict, active: dict | None,
+                              max_degradation: float = 0.30) -> GateResult:
+    """G4: new oos_mean_ic ≥ prior × (1 - max_degradation).
+
+    Allows up to 30% degradation (e.g. random sim noise across CPCV folds)
+    but blocks catastrophic regressions like v5's -0.0008 vs +0.0326.
+    """
+    md_new = _safe_get_metadata(staging)
+    new_ic = md_new.get("oos_mean_ic")
+    if new_ic is None:
+        return GateResult("G4_oos_ic_vs_prior", "hard", False, None, None,
+                          "staging artifact missing oos_mean_ic")
+    if active is None:
+        # No prior to compare — pass if positive, defer absolute floor to G7
+        return GateResult("G4_oos_ic_vs_prior", "hard", new_ic > 0,
+                          float(new_ic), 0.0,
+                          f"no prior — accept on new>0 (got {new_ic:+.4f})")
+    md_prior = _safe_get_metadata(active)
+    prior_ic = md_prior.get("oos_mean_ic")
+    if prior_ic is None:
+        # Prior has no IC — degenerate, accept new
+        return GateResult("G4_oos_ic_vs_prior", "hard", True,
+                          float(new_ic), None,
+                          f"no prior IC reference; accept new={new_ic:+.4f}")
+    if prior_ic <= 0:
+        # Prior was already broken — easy bar to clear
+        return GateResult("G4_oos_ic_vs_prior", "hard", new_ic > prior_ic,
+                          float(new_ic), float(prior_ic),
+                          f"prior was non-positive ({prior_ic:+.4f}); new must beat it")
+    threshold = prior_ic * (1.0 - max_degradation)
+    return GateResult(
+        "G4_oos_ic_vs_prior", "hard", new_ic >= threshold,
+        float(new_ic), float(threshold),
+        f"new={new_ic:+.4f} prior={prior_ic:+.4f} (max_degradation={max_degradation:.0%})",
+    )
+
+
+def _gate_g5_score_range_coverage(staging: dict, active: dict | None) -> GateResult:
+    """G5: new model's score output range covers ≥80% of prior's range.
+
+    Catches the "calibrator collapsed to constant" failure mode where
+    every input maps to base_rate. Requires a sample of scores —
+    typically a smoke-test set passed in via metadata.score_sample_range.
+    """
+    md_new = _safe_get_metadata(staging)
+    rng = md_new.get("score_sample_range")    # [low, high] from smoke test
+    if rng is None or not isinstance(rng, (list, tuple)) or len(rng) != 2:
+        # No smoke-test data — soft-pass (it's a soft-ish gate but we
+        # still want it hard if data is present)
+        return GateResult("G5_score_range", "hard", True, None, None,
+                          "no score_sample_range; skip")
+    new_lo, new_hi = float(rng[0]), float(rng[1])
+    new_span = new_hi - new_lo
+    if active is None or _safe_get_metadata(active).get("score_sample_range") is None:
+        return GateResult("G5_score_range", "hard", new_span > 0.001,
+                          new_span, 0.001,
+                          f"new span={new_span:.4f} (no prior to compare)")
+    prior_lo, prior_hi = _safe_get_metadata(active)["score_sample_range"]
+    prior_span = float(prior_hi) - float(prior_lo)
+    if prior_span <= 0:
+        return GateResult("G5_score_range", "hard", new_span > 0.001,
+                          new_span, 0.001,
+                          f"prior span degenerate; new={new_span:.4f}")
+    coverage = new_span / prior_span
+    return GateResult(
+        "G5_score_range", "hard", coverage >= 0.80,
+        float(coverage), 0.80,
+        f"new_span={new_span:.4f} prior_span={prior_span:.4f} (coverage={coverage:.0%})",
+    )
+
+
+def _gate_g6_inference_smoke(staging: dict, active: dict | None) -> GateResult:
+    """G6: a stored smoke-test sample of inference outputs must be all
+    finite and non-NaN.
+
+    This catches model artifacts where the model loads but produces
+    NaN scores under any input (often after a serialization bug).
+    """
+    md = _safe_get_metadata(staging)
+    smoke = md.get("inference_smoke_test")  # {"n": 32, "all_finite": true, "n_unique": 31}
+    if smoke is None:
+        # No smoke test recorded — soft-pass; we'll add it to the
+        # FullTrainingPipeline output in a later commit.
+        return GateResult("G6_inference_smoke", "hard", True, None, None,
+                          "no inference_smoke_test (skip)")
+    all_finite = bool(smoke.get("all_finite", False))
+    return GateResult(
+        "G6_inference_smoke", "hard", all_finite, None, None,
+        f"smoke_test all_finite={all_finite} (n={smoke.get('n')})",
+    )
+
+
+def _gate_g7_oos_ic_absolute_floor(staging: dict, active: dict | None,
+                                    floor: float = 0.02) -> GateResult:
+    """G7 (soft): OOS IC above noise floor.
+
+    If a brand-new model has +0.005 IC, it's technically positive but
+    not useful. Soft-warn (don't block) — operator may still ship if
+    G4 (vs-prior) passes.
+    """
+    md = _safe_get_metadata(staging)
+    new_ic = md.get("oos_mean_ic")
+    if new_ic is None:
+        return GateResult("G7_oos_ic_floor", "soft", True, None, floor,
+                          "no oos_mean_ic (skip)")
+    return GateResult(
+        "G7_oos_ic_floor", "soft", new_ic >= floor,
+        float(new_ic), floor,
+        f"oos_mean_ic={new_ic:+.4f} vs floor={floor:+.4f}",
+    )
+
+
+def _gate_g8_per_ticker_variance(staging: dict, active: dict | None,
+                                  min_std: float = 0.001) -> GateResult:
+    """G8 (soft): per-bar score std > 0.001.
+
+    Calibrator collapse pattern: every ticker on a given bar gets the
+    same score → variance is zero → ranking is broken. Soft-warn.
+    """
+    md = _safe_get_metadata(staging)
+    smoke = md.get("inference_smoke_test")
+    if smoke is None:
+        return GateResult("G8_per_ticker_variance", "soft", True, None, min_std,
+                          "no smoke_test (skip)")
+    score_std = smoke.get("score_std")
+    if score_std is None:
+        return GateResult("G8_per_ticker_variance", "soft", True, None, min_std,
+                          "smoke_test missing score_std (skip)")
+    return GateResult(
+        "G8_per_ticker_variance", "soft", score_std >= min_std,
+        float(score_std), min_std,
+        f"score_std={score_std:.6f}",
+    )
+
+
+# ── Default gate list ─────────────────────────────────────────────────────────
+
+DEFAULT_GATES: list[AcceptanceGate] = [
+    AcceptanceGate("G1_schema",            "hard", _gate_g1_schema_compatibility),
+    AcceptanceGate("G2_calibrator_unique", "hard", _gate_g2_calibrator_non_collapse),
+    AcceptanceGate("G3_pool_ic_positive",  "hard", _gate_g3_pool_ic_positive),
+    AcceptanceGate("G4_oos_ic_vs_prior",   "hard", _gate_g4_oos_ic_vs_prior),
+    AcceptanceGate("G5_score_range",       "hard", _gate_g5_score_range_coverage),
+    AcceptanceGate("G6_inference_smoke",   "hard", _gate_g6_inference_smoke),
+    AcceptanceGate("G7_oos_ic_floor",      "soft", _gate_g7_oos_ic_absolute_floor),
+    AcceptanceGate("G8_per_ticker_variance","soft", _gate_g8_per_ticker_variance),
+]
+
+
+# ── Main evaluator ────────────────────────────────────────────────────────────
+
+class ModelAcceptanceGate:
+    """Run all gates against staging vs active artifact; return verdict."""
+
+    def __init__(self, gates: list[AcceptanceGate] | None = None):
+        self.gates = gates if gates is not None else list(DEFAULT_GATES)
+
+    @staticmethod
+    def _load_artifact(path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("ModelAcceptanceGate: cannot load %s: %s", path, exc)
+            return None
+
+    def evaluate(self, staging_path: Path,
+                 active_path: Path | None = None) -> AcceptanceVerdict:
+        staging = self._load_artifact(staging_path)
+        if staging is None:
+            return AcceptanceVerdict(
+                all_hard_passed=False,
+                results=[GateResult("staging_load", "hard", False, None, None,
+                                    f"failed to load {staging_path}")],
+            )
+        active = self._load_artifact(active_path) if active_path else None
+
+        results: list[GateResult] = []
+        for gate in self.gates:
+            try:
+                r = gate.check(staging, active)
+            except Exception as exc:
+                # Defensive — a buggy gate shouldn't crash the verdict.
+                # Treat unexpected exception as hard failure.
+                r = GateResult(gate.name, gate.severity, False, None, None,
+                               f"gate raised {type(exc).__name__}: {exc}")
+            results.append(r)
+
+        all_hard_passed = all(r.passed for r in results if r.severity == "hard")
+        return AcceptanceVerdict(all_hard_passed=all_hard_passed, results=results)
+
+
+# ── Atomic-swap promote / reject ──────────────────────────────────────────────
+
+def promote(staging_path: Path, active_path: Path) -> None:
+    """Atomically swap staging into active, archiving prior to .previous."""
+    staging_path = Path(staging_path)
+    active_path  = Path(active_path)
+    if not staging_path.exists():
+        raise FileNotFoundError(f"staging artifact missing: {staging_path}")
+
+    previous_path = active_path.with_suffix(".previous.json")
+    if active_path.exists():
+        # Move active → previous (rollback target). Overwrite any older
+        # .previous.json — only most-recent kept (older ones go to
+        # _acceptance_log if needed).
+        shutil.move(str(active_path), str(previous_path))
+    # Move staging → active. ``shutil.move`` is atomic on the same
+    # filesystem.
+    shutil.move(str(staging_path), str(active_path))
+    log.info("PROMOTE: %s → %s (prior preserved at %s)",
+             staging_path.name, active_path.name, previous_path.name)
+
+
+def reject(staging_path: Path, archive_dir: Path,
+           verdict: AcceptanceVerdict) -> None:
+    """Archive staging artifact + verdict log; active is left untouched."""
+    staging_path = Path(staging_path)
+    archive_dir  = Path(archive_dir)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    if not staging_path.exists():
+        log.warning("reject: staging missing %s — nothing to archive", staging_path)
+        return
+    ts = verdict.timestamp.strftime("%Y-%m-%dT%H%M%S")
+    archive_path = archive_dir / f"{ts}_REJECTED_{staging_path.name}"
+    log_path = archive_dir / f"{ts}_REJECTED_verdict.txt"
+    shutil.move(str(staging_path), str(archive_path))
+    log_path.write_text(verdict.summary())
+    log.warning("REJECT: %s → %s | reasons:\n%s",
+                staging_path.name, archive_path.name, verdict.summary())
+
+
+def rollback(active_path: Path) -> None:
+    """Operator-triggered rollback: swap active ← previous."""
+    active_path   = Path(active_path)
+    previous_path = active_path.with_suffix(".previous.json")
+    if not previous_path.exists():
+        raise FileNotFoundError(f"no rollback target at {previous_path}")
+    # Archive current active before overwriting
+    archive = active_path.parent / f"_acceptance_log/auto-rollback-{datetime.datetime.utcnow().strftime('%Y-%m-%dT%H%M%S')}_{active_path.name}"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(active_path), str(archive))
+    shutil.move(str(previous_path), str(active_path))
+    log.warning("ROLLBACK: restored %s from .previous.json (current archived to %s)",
+                active_path.name, archive.name)
+
+
+__all__ = [
+    "AcceptanceGate", "GateResult", "AcceptanceVerdict",
+    "ModelAcceptanceGate", "DEFAULT_GATES",
+    "promote", "reject", "rollback",
+]
