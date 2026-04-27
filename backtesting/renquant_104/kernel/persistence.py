@@ -303,6 +303,29 @@ CREATE TABLE IF NOT EXISTS score_distribution_meta (
     n_features        INTEGER,
     artifact_path     TEXT
 );
+
+-- Phase 4 (model-selection 2026-04-26): challenger / shadow-mode log.
+-- A row per (run_id, ticker, decision_date) when a challenger artifact
+-- is enabled. Stores both the challenger's hypothetical decision and the
+-- live runner's actual decision so `compare_window()` can compute
+-- agreement / score correlation / disagreement-on-buy after a shadow
+-- period. Wired into live runner / sim in Phase 4b — schema first so
+-- the production DB is ready.
+CREATE TABLE IF NOT EXISTS challenger_decisions (
+    decision_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id                 TEXT    NOT NULL,
+    decision_date          TEXT    NOT NULL,
+    ticker                 TEXT    NOT NULL,
+    challenger_name        TEXT    NOT NULL,
+    challenger_score       REAL,
+    challenger_rank_score  REAL,
+    challenger_action      TEXT,
+    actual_score           REAL,
+    actual_action          TEXT,
+    created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_challenger_run    ON challenger_decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_challenger_window ON challenger_decisions(challenger_name, decision_date);
 """
 
 

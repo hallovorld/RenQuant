@@ -707,7 +707,14 @@
     "g10_severity": "hard",
     "g11_max_multiplier": 1.5,
     "g11_severity": "soft",
-    "run_sim_smoke": false
+    "run_sim_smoke": false,
+    "challenger": {
+      "_doc": "Phase 4 — shadow-mode infrastructure (platform only; live wiring in Phase 4b).",
+      "enabled": false,
+      "artifact_path": null,
+      "name": null,
+      "shadow_period_days": 0
+    }
   },
   "persistence": {
     "enabled": true,
