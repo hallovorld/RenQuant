@@ -1137,10 +1137,35 @@ class BuildHourlyResolutionPanelTask(PanelTask):
         # _sample_weight). The HOURLY_RES_FEATURE_COLS list from
         # hourly_resolution_panel is the canonical input set, but use
         # actual panel columns to be defensive.
-        non_feature = {"ticker", "date", "hour", "datetime",
+        # Bug #24 fix (TRANSFORMER-TIMESTAMP-LEAK, 2026-04-26 round-7):
+        # feature_cols must EXCLUDE every non-numeric column, not just
+        # the explicit name list. v5 hourly transformer trained with
+        # `timestamp` (datetime64[ns]) as a feature because HourlyBarStore
+        # named its index "timestamp" and reset_index turned it into a
+        # column not covered by the original non_feature set. PyTorch
+        # silently cast datetime64 → float (Unix epoch ns) → look-ahead
+        # bias + garbage signal → OOS IC = -0.0008 (vs XGBoost +0.0326).
+        #
+        # Defensive fix: explicit name-list AND dtype filter. Any
+        # non-numeric or bool column is dropped regardless of name. Same
+        # belt-and-suspenders pattern as Bug #21 in FeatureDiagnosticTask.
+        non_feature = {"ticker", "date", "hour", "datetime", "timestamp",
                        "label", "_sample_weight",
                        "forward_excess_return"}
-        ctx.feature_cols = [c for c in panel.columns if c not in non_feature]
+        candidate_cols = [c for c in panel.columns if c not in non_feature]
+        ctx.feature_cols = [
+            c for c in candidate_cols
+            if pd.api.types.is_numeric_dtype(panel[c].dtype)
+            and not pd.api.types.is_bool_dtype(panel[c].dtype)
+        ]
+        dropped_non_numeric = [c for c in candidate_cols if c not in ctx.feature_cols]
+        if dropped_non_numeric:
+            log.warning(
+                "BuildHourlyResolutionPanelTask: dropped %d non-numeric "
+                "feature_cols (would corrupt training): %s",
+                len(dropped_non_numeric),
+                ", ".join(f"{c}({panel[c].dtype})" for c in dropped_non_numeric[:8]),
+            )
         ctx.panel_metadata = {
             "n_rows":    int(len(panel)),
             "n_tickers": int(panel["ticker"].nunique()) if "ticker" in panel.columns else 0,
