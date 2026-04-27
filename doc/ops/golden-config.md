@@ -1,9 +1,46 @@
-# Golden Config — v4.1 (Kelly half + A-gate + CUSUM wall-time)
+# Golden Config — v4.1 (Kelly half + A-gate + CUSUM wall-time) + round-7 acceptance block
 
-**Current golden.** Promoted 2026-04-24 (v4.1 from +37.85 → +39.82 APY), builds on v4 (`eb8fab5`, Kelly half + A-gate).
+**Current golden.** Promoted 2026-04-24 (v4.1 from +37.85 → +39.82 APY), builds on v4 (`eb8fab5`, Kelly half + A-gate). Round-7 additions on 2026-04-26 (acceptance gates Phase 1+2, challenger infra) added to the golden snapshot but do NOT change measured APY — they are infrastructure for future safe retrains.
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
 **Live config file:** `backtesting/renquant_104/strategy_config.json`
+
+**Pre-commit drift check** (`scripts/check_config_drift.py`) refuses commits that leave `strategy_config.json` and `strategy_config.golden.json` out of sync. To intentionally promote a config change to golden: edit BOTH files in the same commit.
+
+---
+
+## Round-7 (2026-04-26) — model-selection block added
+
+Single new top-level block (`acceptance`) gates retraining via the 11-gate `ModelAcceptanceGate`. SOP: [`../components/model-selection.md`](../components/model-selection.md). Snapshot from `strategy_config.golden.json`:
+
+```json
+"acceptance": {
+  "enabled": true,
+  "g4_max_degradation": 0.05,
+  "g4_severity": "hard",
+  "g7_floor": 0.02,
+  "g7_severity": "hard",
+  "g8_min_std": 0.001,
+  "g8_severity": "soft",
+  "g9_max_pp_drop": 1.0,
+  "g9_severity": "hard",
+  "g10_max_sharpe_drop": 0.1,
+  "g10_severity": "hard",
+  "g11_max_multiplier": 1.5,
+  "g11_severity": "soft",
+  "run_sim_smoke": false,
+  "challenger": {
+    "enabled": false,
+    "artifact_path": null,
+    "name": null,
+    "shadow_period_days": 0
+  }
+}
+```
+
+`run_sim_smoke=false` keeps Phase 2 sim-based gates (G9/G10/G11) in skip-pass mode (operator opts in by populating sim metrics via `kernel.sim_smoke.add_smoke_metrics_to_artifact`). `challenger.enabled=false` keeps Phase 4a infra dormant (live wiring is deferred to Phase 4b). Bypass per-run with `--skip-acceptance` or set `acceptance.enabled: false`.
+
+---
 
 ## v4.1 — CUSUM cooldown wall-time (2026-04-24)
 

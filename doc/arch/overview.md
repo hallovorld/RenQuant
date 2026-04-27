@@ -6,7 +6,62 @@ RenQuant is built around **strict layer decoupling**. Each layer has one job, co
 
 ---
 
-## Four-Layer Pipeline
+## Current architecture (renquant_104, 2026-04-26)
+
+The active strategy is `renquant_104`. Its inference and training are organized as **Pipelines composed of Jobs composed of Tasks** (see CLAUDE.md §1b "Every Logical Unit Is a Task, Job, or Pipeline"). Adapters bridge the kernel to LEAN / live runner / sim.
+
+```
+                          ┌──────── runs.db (SQLite, source of truth) ────────┐
+                          │  pipeline_runs · candidate_scores · trades         │
+                          │  rotations · training_runs · training_run_gates    │
+                          │  challenger_decisions · ticker_forward_returns     │
+                          └──────────────────────────────────────────────────┘
+                                  ▲                              ▲
+                                  │                              │
+        ┌─────────────────────────┴────────┐       ┌────────────┴──────────────┐
+        │ kernel/pipeline/ (inference)     │       │ kernel/pipeline/          │
+        │   InferencePipeline              │       │   FullTrainingPipeline    │
+        │   ├ RegimeJob                    │       │   ├ BaselineTournamentJob │
+        │   ├ DrawdownJob                  │       │   ├ PanelTrainingJob      │
+        │   ├ BuyGatesJob                  │       │   │   (calls PanelTrainingPipeline
+        │   ├ TickerSellJob (parallel)     │       │   │    in training_panel/)│
+        │   ├ LimitSellsPerBarTask         │       │   └ RecalibrationJob      │
+        │   ├ TickerCandidateJob (parallel)│       │                           │
+        │   ├ PanelScoringJob              │       │ kernel/model_acceptance.py│
+        │   │   (kernel/panel_pipeline/)   │       │   11-gate validator       │
+        │   ├ RankingJob                   │       │   promote/reject/rollback │
+        │   ├ RotationJob                  │       │                           │
+        │   └ SelectionJob                 │       │ kernel/sim_smoke.py       │
+        └────┬─────────────┬───────┬───────┘       │   sim-based gate metrics  │
+             │             │       │               │                           │
+             v             v       v               │ kernel/challenger.py      │
+       ┌─────────┐ ┌──────────┐ ┌─────────┐        │   shadow-mode infra       │
+       │LeanAdptr│ │RunnerAdpr│ │SimAdptr │        └───────────────────────────┘
+       └─────────┘ └──────────┘ └─────────┘
+            │            │           │
+            v            v           v
+        backtest      Alpaca      notebook
+        (Docker)     (live)        (sim)
+```
+
+**Key pipelines** (file → contains):
+- `kernel/pipeline/pp_inference.py` — `InferencePipeline`, `SellOnlyPipeline`. The same instances run for LEAN, live, and sim — adapter difference only.
+- `kernel/pipeline/pp_training_full.py` — `FullTrainingPipeline` orchestrates baseline tournament + panel training + recalibration.
+- `training_panel/pp_panel_training.py` — `PanelTrainingPipeline` (PanelDataJob → PanelFeatureJob → PanelAssemblyJob → PanelModelJob → PanelNGBoostJob → RefreshPanelCalibratorJob).
+- `kernel/panel_pipeline/job_panel_scoring.py` — `PanelScoringJob` (LoadScorer → BuildInferenceMatrix → ApplyScores → ApplyNGBoost → ApplyGlobalCalibration).
+- `kernel/model_acceptance.py` — 11-gate `ModelAcceptanceGate`, `promote()`/`reject()`/`rollback()`.
+
+**Critical files for new contributors**:
+- `scripts/train_104.py` — entry point for retraining (with acceptance gates wired in)
+- `scripts/select_best_model.py` — backend tournament + promote
+- `scripts/model_dashboard.py` — operator state-of-the-world
+- `scripts/finalize_challenger.py` — shadow-window verdict generator
+
+The "Four-Layer Pipeline" section below documents the original (renquant_101/102) architecture for reference; renquant_103/104 evolved into the kernel-based form above. The 4-layer mental model still applies as a loose grouping (data → models → execution → analysis), but the implementation is no longer a strict layer cake.
+
+---
+
+## Four-Layer Pipeline (legacy mental model — 101/102)
 
 ```
 ┌─────────────────────────────────────────────────────┐

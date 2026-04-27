@@ -1,13 +1,28 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
-**Status**: Active daily strategy. Current golden: **+30.90% APY (sim, after-tax, 27-mo OOS, 99-ticker watchlist)**, 80.5% win, 33d max no-trade streak. Live expectations scale with `allow_fetch=True` boost.
+**Status**: Active daily strategy.
 **Author**: Ren Hao
-**Last updated**: 2026-04-24
+**Last updated**: 2026-04-26 (round-7 + model-selection systematization)
 **Based on**: renquant_103 (adaptive regime multi-stock)
 
-**Active feature set** (2026-04-24 promote): panel-LTR on **120,597 rows × 41 features** (16 neutralized per-ticker indicators + 4 technical factor z-scores + 5 fundamentals + **6 hourly-bar aggregates** + **10 ten-minute-bar aggregates**). Panel training driven by `scripts/train_104.py`. Hourly features from `data/intraday/{SYM}/1h.parquet` via `scripts/fetch_hourly_bars.py`; **10-min features from `data/intraday/{SYM}/10min.parquet` via `scripts/fetch_minute_bars.py`** (both Alpaca IEX). `panel_ltr.{hourly,minute}.enabled: true` is golden as of 2026-04-24. Strongest single feature: `m_intraday_realized_vol_z` (IC -0.079). Shelved experiments (transformer backend — 0.89× XGBoost on current size, regime-conditional calibration, LightGBM backend) retain their infra behind off-by-default flags. Full session detail: `doc/archives/sessions/2026-04-24.md`.
+**Current production artifact** (`artifacts/panel-ltr.json`, 2026-04-26):
+- Backend: XGBoost rank:pairwise (`kind: panel_ltr_xgboost`)
+- 28 feature_cols (per-ticker indicators + factor z-scores + fundamentals)
+- Panel: 74,547 rows × 99 tickers × 753 dates
+- OOS mean IC: **0.0482** (q25 0.028 / q50 0.055 / q95 0.082, std 0.025)
+- best_iter 9, params `eta=0.02 max_depth=3 min_child_weight=60 ss=cs=0.5 λ=5 α=2 seed=42`
 
-**Watchlist** (2026-04-24 expansion): 99 tickers (up from 43). 60 tech split into 4 sub-buckets: `giant_tech` (8), `ai_chip` (18), `datacenter_hw` (10), `software` (24). 39 non-tech across finance/healthcare/industrial/consumer/energy/commodity/utility. Mutual-fund-overlap-weighted curation (VPMAX + FCNTX + AGTHX top holdings prioritized).
+**Round-7 additions** (2026-04-26):
+- **Macro factor frame** (VXX/HYG/UUP/DBC/GLD/TLT/XLV/XLU/KRE/MTUM/USMV × {level_z, chg_5d_z, chg_20d_z}, `kernel/macro.py`). Default OFF in prod; macro-enabled XGBoost variant (61 features, OOS IC 0.0393) preserved at `panel-ltr.macro-enabled.bak.json` but NOT promoted (-18% IC vs prod). LGBM-with-macro experiment (2026-04-26 evening) confirmed macro reduces IC further to 0.0224. See [`../components/macro-factor-frame-design.md`](../components/macro-factor-frame-design.md).
+- **Model-selection 4-tier SOP** ([`../components/model-selection.md`](../components/model-selection.md)): 11 acceptance gates (G1-G11), backend tournament (`scripts/select_best_model.py`), shadow/challenger infrastructure (`kernel/challenger.py`).
+- **Atomic-swap promote** with staging→`.previous.json` rollback target.
+- **Operator UX**: `scripts/model_dashboard.py`, `scripts/finalize_challenger.py`, `scripts/check_challenger_window.sh`.
+
+**Watchlist** (99 tickers): 60 tech split into 4 sub-buckets: `giant_tech` (8), `ai_chip` (18), `datacenter_hw` (10), `software` (24). 39 non-tech across finance/healthcare/industrial/consumer/energy/commodity/utility. Mutual-fund-overlap-weighted curation (VPMAX + FCNTX + AGTHX top holdings prioritized).
+
+**Open questions** (as of 2026-04-26):
+- The 41-feature golden documented at session 2026-04-24 (16 indicators + 4 factors + 5 fundamentals + 6 hourly + 10 minute = 41) regressed to 28 features in current production despite `panel_ltr.{hourly,minute}.enabled: true` in config. Either the hourly/minute pipelines are silently dropped during PanelAssembly, or the config flags don't propagate. **Investigate before next major retrain.**
+- Sim APY/Sharpe metrics from the prior 30.90% APY golden have not been re-measured against the current 28-feature artifact. Run `scripts/sim_smoke.py`-style verification before quoting any APY number against current prod.
 
 ---
 
