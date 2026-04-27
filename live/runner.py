@@ -249,10 +249,16 @@ def _run_once_multi_pipeline(
     # notify. This lets the user confirm the system is alive + made a
     # deliberate decision (vs silent hang / crash). Previously we only
     # notified on actual trades; per 2026-04-23 follow-up: notify always.
-    _notify_decision(label, run_mode, ctx)
+    #
+    # EXCEPTION (2026-04-27): the every-30-min intraday sell-only cycle
+    # fires up to 12× per day and is dominated by no-op cycles. Per user
+    # follow-up that day, suppress ntfy on those when the cycle produced
+    # nothing actionable — keep ntfy for actual trades + failed exits.
+    silent_if_quiet = bool(sell_only and use_intraday_prices)
+    _notify_decision(label, run_mode, ctx, silent_if_quiet=silent_if_quiet)
 
 
-def _notify_decision(label: str, run_mode: str, ctx) -> None:
+def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = False) -> None:
     """Fire ntfy on every decision cycle.
 
     - If orders/exits happened: Priority=high, body lists each action.
@@ -262,6 +268,12 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
     Respects `RENQUANT_NTFY_TOPIC` env var (default 'renquant').
     Never raises — network failure logs WARNING but doesn't roll back
     the committed trade state.
+
+    `silent_if_quiet=True` (used by the every-30-min intraday sell-only
+    cycle) suppresses the ntfy entirely when the cycle had no real
+    operation — no order placed, no exit executed, no failed exit, no
+    unmanaged broker position to surface. Kept LOUD for trades + any
+    failure mode the operator should see.
     """
     import os, urllib.request  # noqa: PLC0415
     # IMPORTANT: read the BROKER-CONFIRMED order list (orders_placed),
@@ -368,6 +380,16 @@ def _notify_decision(label: str, run_mode: str, ctx) -> None:
             parts.append(f"BLOCKED-ROTATION {sell_t}→{buy_t} ({reason})")
 
     has_trade = bool(orders or exits)
+    # Anything the operator should see counts as "actionable" for the
+    # silent-if-quiet gate. A bare-quiet cycle = no orders, no exits, no
+    # failed exits, no unmanaged broker position, no rotation block, no
+    # skipped intent. When silent_if_quiet=True (intraday sell-only),
+    # those cycles return without sending ntfy.
+    if silent_if_quiet and not (
+        has_trade or exits_failed or non_wl_holds or rot_blocked or orders_skipped
+    ):
+        log.info("ntfy suppressed (silent intraday no-op): %s [%s]", label, run_mode)
+        return
     # If the guard blocked every intent (orders all skipped), the cycle
     # produced no real trade — surface the skip reason prominently so
     # the user doesn't mistake a blocked-duplicate for a fresh buy.

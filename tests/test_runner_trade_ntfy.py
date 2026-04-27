@@ -221,6 +221,85 @@ class TestBodyIncludesContextSnapshot:
         assert "eq=$10,071" in body
 
 
+class TestSilentIntradayNoOp:
+    """User rule (2026-04-27): the every-30-min intraday sell-only cycle
+    must NOT ntfy on no-op cycles (would push 12× per day with nothing
+    actionable). Trades + failed exits + unmanaged + rotation-blocks +
+    skipped intents still notify so anything the operator should see
+    still reaches their phone."""
+
+    def _import(self):
+        from live.runner import _notify_decision
+        return _notify_decision
+
+    def test_silent_when_quiet_intraday(self):
+        notify = self._import()
+        ctx = _stub_ctx()  # no orders, no exits, no failures
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
+        m.assert_not_called()
+
+    def test_loud_when_silent_flag_off_default(self):
+        """Backward-compat: callers that don't pass silent_if_quiet still
+        get a ntfy on every cycle (full / open / preclose / EOD)."""
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        m.assert_called_once()
+
+    def test_loud_on_trade_even_when_silent_flag(self):
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders=[{"ticker": "AAPL", "shares": 5, "price": 200.0}],
+            orders_placed=[{"ticker": "AAPL", "shares": 5, "price": 200.0}],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
+        m.assert_called_once()
+        assert m.call_args[0][0].headers.get("Title").endswith("TRADE")
+
+    def test_loud_on_exit_even_when_silent_flag(self):
+        notify = self._import()
+        exit_sig = SimpleNamespace(ticker="XLU", exit_type="trailing_stop")
+        ctx = _stub_ctx(exits=[exit_sig])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
+        m.assert_called_once()
+        body = m.call_args[0][0].data.decode()
+        assert "EXIT XLU" in body
+
+    def test_loud_on_failed_exit_even_when_silent_flag(self):
+        """Broker rejected a sell — operator MUST see it."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            exits_failed=[{"ticker": "AAPL", "exit_type": "stop_loss",
+                            "qty": 5, "error": "insufficient_qty"}],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
+        m.assert_called_once()
+        body = m.call_args[0][0].data.decode()
+        assert "FAILED-EXIT AAPL" in body
+
+    def test_loud_on_unmanaged_even_when_silent_flag(self):
+        notify = self._import()
+        ctx = _stub_ctx(non_wl_holds=["BA"])
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
+        m.assert_called_once()
+        assert "UNMANAGED BA" in m.call_args[0][0].data.decode()
+
+    def test_pipeline_passes_flag_only_for_intraday_sell_only(self):
+        """The runner wiring must only set silent_if_quiet when BOTH
+        sell_only=True AND use_intraday_prices=True."""
+        src = (REPO_ROOT / "live" / "runner.py").read_text()
+        assert "silent_if_quiet = bool(sell_only and use_intraday_prices)" in src, (
+            "_run_once_multi_pipeline must scope the silent flag exactly to "
+            "the every-30-min intraday sell-only cycle"
+        )
+
+
 class TestFailSafe:
     def _import(self):
         from live.runner import _notify_decision
