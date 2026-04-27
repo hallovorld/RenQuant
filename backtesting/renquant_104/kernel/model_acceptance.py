@@ -181,11 +181,15 @@ def _gate_g3_pool_ic_positive(staging: dict, active: dict | None) -> GateResult:
 
 
 def _gate_g4_oos_ic_vs_prior(staging: dict, active: dict | None,
-                              max_degradation: float = 0.30) -> GateResult:
+                              max_degradation: float = 0.05) -> GateResult:
     """G4: new oos_mean_ic ≥ prior × (1 - max_degradation).
 
-    Allows up to 30% degradation (e.g. random sim noise across CPCV folds)
-    but blocks catastrophic regressions like v5's -0.0008 vs +0.0326.
+    Default 5% (Phase 1 tightening 2026-04-26): the old 30% default
+    would have ACCEPTED the macro-enabled XGBoost (0.0393) vs the prior
+    non-macro (0.0482) at -18.5% degradation. 5% rejects anything worse
+    than 0.0482 × 0.95 = 0.0458, forcing operator review on regressions.
+
+    Configurable per `acceptance.g4_max_degradation` in strategy_config.json.
     """
     md_new = _safe_get_metadata(staging)
     new_ic = md_new.get("oos_mean_ic")
@@ -274,19 +278,23 @@ def _gate_g6_inference_smoke(staging: dict, active: dict | None) -> GateResult:
 
 def _gate_g7_oos_ic_absolute_floor(staging: dict, active: dict | None,
                                     floor: float = 0.02) -> GateResult:
-    """G7 (soft): OOS IC above noise floor.
+    """G7: OOS IC above absolute noise floor.
 
-    If a brand-new model has +0.005 IC, it's technically positive but
-    not useful. Soft-warn (don't block) — operator may still ship if
-    G4 (vs-prior) passes.
+    Phase 1 (2026-04-26): hardened from soft → hard. A model with +0.005
+    IC is technically positive but not useful — soft-warn alone doesn't
+    prevent it from shipping. Configurable via `acceptance.g7_floor`;
+    set `acceptance.g7_severity = "soft"` to revert to warn-only.
+
+    Skips (passes-open) when staging artifact lacks oos_mean_ic
+    (e.g., a non-panel sidecar artifact wired through the same gate).
     """
     md = _safe_get_metadata(staging)
     new_ic = md.get("oos_mean_ic")
     if new_ic is None:
-        return GateResult("G7_oos_ic_floor", "soft", True, None, floor,
+        return GateResult("G7_oos_ic_floor", "hard", True, None, floor,
                           "no oos_mean_ic (skip)")
     return GateResult(
-        "G7_oos_ic_floor", "soft", new_ic >= floor,
+        "G7_oos_ic_floor", "hard", new_ic >= floor,
         float(new_ic), floor,
         f"oos_mean_ic={new_ic:+.4f} vs floor={floor:+.4f}",
     )
@@ -324,9 +332,52 @@ DEFAULT_GATES: list[AcceptanceGate] = [
     AcceptanceGate("G4_oos_ic_vs_prior",   "hard", _gate_g4_oos_ic_vs_prior),
     AcceptanceGate("G5_score_range",       "hard", _gate_g5_score_range_coverage),
     AcceptanceGate("G6_inference_smoke",   "hard", _gate_g6_inference_smoke),
-    AcceptanceGate("G7_oos_ic_floor",      "soft", _gate_g7_oos_ic_absolute_floor),
+    AcceptanceGate("G7_oos_ic_floor",      "hard", _gate_g7_oos_ic_absolute_floor),
     AcceptanceGate("G8_per_ticker_variance","soft", _gate_g8_per_ticker_variance),
 ]
+
+
+def build_gates_from_config(config: dict) -> list[AcceptanceGate]:
+    """Build gate list with thresholds + severities sourced from config.
+
+    Config keys (all optional — defaults match DEFAULT_GATES):
+        g4_max_degradation:  float (0.05 default)
+        g4_severity:         "hard"|"soft" ("hard" default)
+        g7_floor:            float (0.02 default)
+        g7_severity:         "hard"|"soft" ("hard" default)
+        g8_min_std:          float (0.001 default)
+        g8_severity:         "hard"|"soft" ("soft" default)
+
+    Phase 1 (2026-04-26): added so operators can tune per environment
+    without forking the gate code (e.g., loosen G4 for an exploratory
+    panel rebuild known to drift under noise).
+    """
+    g4_md   = float(config.get("g4_max_degradation", 0.05))
+    g4_sev  = str(config.get("g4_severity",         "hard"))
+    g7_fl   = float(config.get("g7_floor",          0.02))
+    g7_sev  = str(config.get("g7_severity",         "hard"))
+    g8_min  = float(config.get("g8_min_std",        0.001))
+    g8_sev  = str(config.get("g8_severity",         "soft"))
+
+    def _g4(s, a, _md=g4_md): return _gate_g4_oos_ic_vs_prior(s, a, max_degradation=_md)
+    def _g7(s, a, _fl=g7_fl, _sev=g7_sev):
+        r = _gate_g7_oos_ic_absolute_floor(s, a, floor=_fl)
+        # Override severity (gate fn hard-codes "hard" — config can downgrade).
+        return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
+    def _g8(s, a, _min=g8_min, _sev=g8_sev):
+        r = _gate_g8_per_ticker_variance(s, a, min_std=_min)
+        return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
+
+    return [
+        AcceptanceGate("G1_schema",            "hard", _gate_g1_schema_compatibility),
+        AcceptanceGate("G2_calibrator_unique", "hard", _gate_g2_calibrator_non_collapse),
+        AcceptanceGate("G3_pool_ic_positive",  "hard", _gate_g3_pool_ic_positive),
+        AcceptanceGate("G4_oos_ic_vs_prior",   g4_sev, _g4),
+        AcceptanceGate("G5_score_range",       "hard", _gate_g5_score_range_coverage),
+        AcceptanceGate("G6_inference_smoke",   "hard", _gate_g6_inference_smoke),
+        AcceptanceGate("G7_oos_ic_floor",      g7_sev, _g7),
+        AcceptanceGate("G8_per_ticker_variance",g8_sev, _g8),
+    ]
 
 
 # ── Main evaluator ────────────────────────────────────────────────────────────
@@ -334,8 +385,14 @@ DEFAULT_GATES: list[AcceptanceGate] = [
 class ModelAcceptanceGate:
     """Run all gates against staging vs active artifact; return verdict."""
 
-    def __init__(self, gates: list[AcceptanceGate] | None = None):
-        self.gates = gates if gates is not None else list(DEFAULT_GATES)
+    def __init__(self, gates: list[AcceptanceGate] | None = None,
+                 config: dict | None = None):
+        if gates is not None:
+            self.gates = gates
+        elif config is not None:
+            self.gates = build_gates_from_config(config)
+        else:
+            self.gates = list(DEFAULT_GATES)
 
     @staticmethod
     def _load_artifact(path: Path) -> dict | None:

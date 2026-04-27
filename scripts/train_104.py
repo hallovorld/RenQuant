@@ -125,7 +125,9 @@ def main() -> None:
         if pre_train_snapshot is not None and pre_train_snapshot.exists():
             shutil.copy2(str(pre_train_snapshot), str(active_path))
 
-        verdict = ModelAcceptanceGate().evaluate(staging_path, active_path)
+        # Phase 1 (2026-04-26): pass acceptance config so operator can
+        # tune G4 max_degradation, G7 floor, severities without forking gate code.
+        verdict = ModelAcceptanceGate(config=acceptance_cfg).evaluate(staging_path, active_path)
         log.info("\n%s", verdict.summary())
 
         archive_dir = strategy_dir / "artifacts" / "_acceptance_log"

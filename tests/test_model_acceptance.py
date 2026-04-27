@@ -155,13 +155,25 @@ class TestG4VsPrior:
         g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
         assert not g4.passed
 
-    def test_30pct_degradation_passes(self, tmp_path):
-        """Prior 0.05, new 0.035 → 30% drop = at threshold."""
-        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.0351)
+    def test_5pct_degradation_passes(self, tmp_path):
+        """Phase 1 (2026-04-26): default tightened 30% → 5%.
+        Prior 0.05, new 0.0476 → 4.8% drop (just under 5% threshold)."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.0476)
         a = _write_artifact(tmp_path / "a.json", oos_mean_ic=0.05)
         v = ModelAcceptanceGate().evaluate(s, a)
         g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
         assert g4.passed
+
+    def test_18pct_degradation_fails_at_5pct_default(self, tmp_path):
+        """Phase 1 case: this is the actual macro-vs-prod case
+        (0.0482 → 0.0393, -18.5%). Pre-Phase-1 (30% default) ACCEPTED
+        this; Phase 1 (5% default) REJECTS — protecting prod from a
+        worse model auto-promoting."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.0393)
+        a = _write_artifact(tmp_path / "a.json", oos_mean_ic=0.0482)
+        v = ModelAcceptanceGate().evaluate(s, a)
+        g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
+        assert not g4.passed
 
     def test_50pct_degradation_fails(self, tmp_path):
         s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.025)
@@ -214,14 +226,88 @@ class TestVerdictAggregation:
         assert v.all_hard_passed
         assert len(v.hard_failures()) == 0
 
-    def test_soft_warn_doesnt_block_promotion(self, tmp_path):
-        """G7 floor=0.02. New IC=0.005 fails G7 (soft) but passes G4 (hard)."""
+    def test_g7_below_floor_blocks_promotion(self, tmp_path):
+        """Phase 1 (2026-04-26): G7 hardened from soft → hard. IC below
+        floor (0.02) now BLOCKS — pre-Phase-1 it passed with soft warning."""
         s = _write_artifact(tmp_path / "s.json",
                              oos_mean_ic=0.005, n_unique_prob_y=10, pool_ic=0.001)
         v = ModelAcceptanceGate().evaluate(s)
-        assert v.all_hard_passed
-        soft_warns = v.soft_warnings()
-        assert any(r.name == "G7_oos_ic_floor" for r in soft_warns)
+        assert not v.all_hard_passed
+        g7 = next(r for r in v.results if r.name == "G7_oos_ic_floor")
+        assert g7.severity == "hard"
+        assert not g7.passed
+
+    def test_g8_still_soft_by_default(self, tmp_path):
+        """G8 (per-bar variance) remains soft. Phase 1 only hardened G7."""
+        g8 = next(g for g in DEFAULT_GATES if g.name == "G8_per_ticker_variance")
+        assert g8.severity == "soft"
+
+
+# ── Phase 1: config-driven thresholds ─────────────────────────────────────────
+
+class TestConfigDrivenThresholds:
+    """Phase 1 (2026-04-26): operators can override gate thresholds via
+    `acceptance` config block in strategy_config.json without forking
+    gate code. Used during exploratory rebuilds (relax G4) or strict
+    promotion windows (raise G7 floor)."""
+
+    def test_g4_max_degradation_configurable(self, tmp_path):
+        """Loosen G4 to 25%: macro-vs-prod (-18.5%) now passes."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.0393)
+        a = _write_artifact(tmp_path / "a.json", oos_mean_ic=0.0482)
+        # Default 5% → fails
+        v_default = ModelAcceptanceGate().evaluate(s, a)
+        g4_default = next(r for r in v_default.results if r.name == "G4_oos_ic_vs_prior")
+        assert not g4_default.passed
+        # Configured 25% → passes
+        v_loose = ModelAcceptanceGate(config={"g4_max_degradation": 0.25}).evaluate(s, a)
+        g4_loose = next(r for r in v_loose.results if r.name == "G4_oos_ic_vs_prior")
+        assert g4_loose.passed
+
+    def test_g7_severity_configurable_to_soft(self, tmp_path):
+        """Operator can downgrade G7 to soft for an exploratory run."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.005)
+        v = ModelAcceptanceGate(config={"g7_severity": "soft"}).evaluate(s)
+        g7 = next(r for r in v.results if r.name == "G7_oos_ic_floor")
+        assert g7.severity == "soft"
+        assert not g7.passed   # still failing — but as a soft warning
+        # G7 soft means it's not in hard_failures
+        hard_fails = v.hard_failures()
+        assert not any(r.name == "G7_oos_ic_floor" for r in hard_fails)
+
+    def test_g7_floor_configurable_higher(self, tmp_path):
+        """Raise G7 floor to 0.05: previously-passing 0.03 now fails."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.03)
+        v_default = ModelAcceptanceGate().evaluate(s)
+        g7_default = next(r for r in v_default.results if r.name == "G7_oos_ic_floor")
+        assert g7_default.passed
+        v_strict = ModelAcceptanceGate(config={"g7_floor": 0.05}).evaluate(s)
+        g7_strict = next(r for r in v_strict.results if r.name == "G7_oos_ic_floor")
+        assert not g7_strict.passed
+
+    def test_empty_config_uses_defaults(self, tmp_path):
+        """An empty acceptance config block must NOT crash; falls back
+        to Phase-1 hardened defaults."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.04)
+        v = ModelAcceptanceGate(config={}).evaluate(s)
+        # G4 + G7 should both pass (0.04 > 0.02 floor, no prior)
+        g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
+        g7 = next(r for r in v.results if r.name == "G7_oos_ic_floor")
+        assert g4.passed and g7.passed
+        assert g7.severity == "hard"   # Phase 1 default
+
+    def test_strategy_config_block_loadable(self):
+        """The acceptance block we wrote into strategy_config.json must
+        be loadable + valid (no typos in keys / values)."""
+        config_path = REPO_ROOT / "backtesting" / "renquant_104" / "strategy_config.json"
+        cfg = json.loads(config_path.read_text())
+        acc = cfg.get("acceptance", {})
+        assert acc.get("enabled") is True
+        assert acc.get("g4_max_degradation") == 0.05
+        assert acc.get("g7_severity") == "hard"
+        # Sanity: building gates from this config doesn't crash
+        gates = ModelAcceptanceGate(config=acc).gates
+        assert len(gates) == 8
 
 
 # ── Atomic swap (promote / reject / rollback) ─────────────────────────────────
