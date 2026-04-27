@@ -88,6 +88,29 @@ array, not calendar-day Timedeltas. Same for embargo_days (line 82, 275).
 **Invalidates**: every IC in the 8-variant tournament. Re-run after fix
 required to get true OOS numbers.
 
+### 🟠 HIGH-2 — FinalFitTask eval split leak (early stopping)
+
+**File:line**: `training_panel/pp_panel_training.py:1886-1897`
+
+The eval split for early-stopping in FinalFit is the LAST 20% of
+date-groups. With `lookahead=10`, the most-recent 10 training dates have
+labels using prices that reach INTO the eval window:
+
+- Training: date-groups `[0, n_train)` where n_train = 0.8 × n_total
+- Eval:     date-groups `[n_train, n_total)`
+- Last training date n_train-1: labels use prices `[n_train-1, n_train+9]`
+- This OVERLAPS with the first 10 eval date-groups
+
+Effect: early-stop sees an artificially inflated eval IC because the
+model has memorized the labels of the leak rows during training.
+Causes early stopping to fire too early → undertrained model.
+
+**Severity**: MED-HIGH. Doesn't invalidate CV IC (which uses purged_cv,
+now fixed). But does affect the FINAL artifact (suboptimal stopping
+point). Magnitude: ~10 dates × ~99 tickers = ~1% of training rows leak.
+
+**Fix**: insert a `lookahead`-bar gap between train end and eval start.
+
 
 
 ## Re-experiment plan

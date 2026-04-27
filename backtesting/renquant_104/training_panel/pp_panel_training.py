@@ -1883,17 +1883,26 @@ class FinalFitTask(PanelTask):
         eval_panel = None
         eval_group_sizes = None
         early_stop_rounds = int(cfg.get("early_stopping_rounds", 20))
-        if backend in ("xgboost", "lightgbm") and len(ctx.group_sizes) >= 5:
+        # Audit fix HIGH-2 (2026-04-27): purge `lookahead` date-groups
+        # between train and eval. Pre-fix, the last `lookahead` training
+        # dates carried labels that reach into the eval window — early
+        # stop saw an inflated eval IC and stopped sooner than ideal.
+        lookahead_for_purge = int(cfg.get("lookahead_days", 5))
+        if backend in ("xgboost", "lightgbm") and len(ctx.group_sizes) >= 5 + lookahead_for_purge:
             n_total = len(ctx.group_sizes)
             n_eval  = max(2, int(round(n_total * 0.20)))
-            n_train = n_total - n_eval
+            n_train_raw = n_total - n_eval
+            # Drop the last lookahead_for_purge training dates so labels
+            # don't reach into eval (HIGH-2 fix).
+            n_train = max(0, n_train_raw - lookahead_for_purge)
             if n_train >= 5 and n_eval >= 2:
-                row_split = int(np.array(ctx.group_sizes[:n_train]).sum())
-                eval_panel       = ctx.panel.iloc[row_split:].copy()
-                eval_group_sizes = np.array(ctx.group_sizes[n_train:], dtype=np.int64)
-                # Keep original ctx.panel + ctx.group_sizes intact for
-                # predict-time use; pass slices to model.train below.
-                _train_panel       = ctx.panel.iloc[:row_split].copy()
+                row_split_train = int(np.array(ctx.group_sizes[:n_train]).sum())
+                row_split_eval  = int(np.array(ctx.group_sizes[:n_train_raw]).sum())
+                # Eval still starts at n_train_raw (last 20% of dates),
+                # but train ends at n_train (lookahead dates earlier).
+                eval_panel       = ctx.panel.iloc[row_split_eval:].copy()
+                eval_group_sizes = np.array(ctx.group_sizes[n_train_raw:], dtype=np.int64)
+                _train_panel       = ctx.panel.iloc[:row_split_train].copy()
                 _train_group_sizes = np.array(ctx.group_sizes[:n_train], dtype=np.int64)
             else:
                 _train_panel       = ctx.panel
