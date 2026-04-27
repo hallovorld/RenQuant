@@ -86,7 +86,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "seed":              42,
     "bagging_seed":      42,
     "feature_fraction_seed": 42,
-    "data_random_seed":  42,
+    # Audit #12 fix (2026-04-27): `data_random_seed` only affects
+    # GOSS / random-forest sampling; lambdarank with gbdt + bagging
+    # ignores it. Removed to avoid the false impression of an extra
+    # determinism control. The above three seeds cover the actual paths.
     "deterministic":     True,
 }
 

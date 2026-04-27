@@ -15,8 +15,22 @@ if str(_STRATEGY_DIR) not in sys.path:
 
 pytest.importorskip("lightgbm")
 from training_panel.lgbm_ltr import (  # noqa: E402
-    PanelLGBMModel, PanelLGBMScorer, _bucketize_labels,
+    DEFAULT_PARAMS, PanelLGBMModel, PanelLGBMScorer, _bucketize_labels,
 )
+
+
+class TestDefaultParams:
+    def test_audit_12_no_unused_data_random_seed(self):
+        """Audit #12 fix (2026-04-27): `data_random_seed` only takes effect
+        for GOSS / random-forest sampling — neither is enabled. Setting it
+        gave a false sense of an extra determinism control. The remaining
+        seed/bagging_seed/feature_fraction_seed cover the lambdarank+gbdt
+        path. Remove it to keep DEFAULT_PARAMS honest."""
+        assert "data_random_seed" not in DEFAULT_PARAMS
+        # The actually-effective seeds must remain
+        assert DEFAULT_PARAMS.get("seed") == 42
+        assert DEFAULT_PARAMS.get("bagging_seed") == 42
+        assert DEFAULT_PARAMS.get("feature_fraction_seed") == 42
 
 
 def _make_easy_panel(n_dates: int = 40, n_tickers: int = 8, seed: int = 0):
