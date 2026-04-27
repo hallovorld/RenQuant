@@ -90,6 +90,7 @@ def build_panel_frame(
     labels: dict[str, pd.Series],
     ticker_sectors: dict[str, str],
     factor_frames: dict[str, pd.DataFrame] | None = None,
+    macro_frame: pd.DataFrame | None = None,
     listing_dates: dict[str, pd.Timestamp] | None = None,
     min_history_days: int = 252,
     lookahead_days: int = 5,
@@ -100,6 +101,11 @@ def build_panel_frame(
     recency_weighting: "dict | None" = None,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Assemble the unified panel training frame.
+
+    Phase 1C (2026-04-26): added optional `macro_frame` parameter.
+    When provided (non-empty DataFrame indexed by date with macro
+    feature columns), each macro column is broadcast to every panel
+    row via date merge. See doc/components/macro-factor-frame-design.md.
 
     Returns:
         panel_df    — sorted by (date, ticker), columns include:
@@ -152,6 +158,45 @@ def build_panel_frame(
 
     panel = pd.concat(rows, ignore_index=True)
     panel = panel.sort_values(["date", "ticker"], kind="mergesort").reset_index(drop=True)
+
+    # Phase 1C (2026-04-26): broadcast macro frame onto panel by date.
+    # macro_frame is date-indexed; columns are macro features (e.g.,
+    # vix_level_z, hyg_chg_5d_z). Each panel row gets the value for
+    # its date. Forward-fill within ticker handles weekend gaps in
+    # macro data (NYSE-holiday + weekend mismatches with equity calendar).
+    # Trailing NaN (warmup for rolling-z) → 0.0 (z-scored mean — same
+    # convention as factor_frames handling above).
+    macro_cols: list[str] = []
+    if macro_frame is not None and not macro_frame.empty:
+        # Ensure macro_frame index is datetime for clean merge
+        if not isinstance(macro_frame.index, pd.DatetimeIndex):
+            macro_frame = macro_frame.copy()
+            macro_frame.index = pd.to_datetime(macro_frame.index)
+        macro_cols = list(macro_frame.columns)
+        # Sanity: safety harness §11.2 — macro col names must not
+        # collide with existing panel columns (would cause merge ambiguity).
+        existing = set(panel.columns)
+        collisions = [c for c in macro_cols if c in existing]
+        if collisions:
+            import logging as _logging
+            _logging.getLogger("panel_frame").warning(
+                "build_panel_frame: macro frame columns collide with "
+                "existing panel columns: %s — using suffix '_macro'",
+                collisions,
+            )
+            rename_map = {c: f"{c}_macro" for c in collisions}
+            macro_frame = macro_frame.rename(columns=rename_map)
+            macro_cols = [rename_map.get(c, c) for c in macro_cols]
+        # Merge on date — left join preserves all panel rows.
+        panel = panel.merge(
+            macro_frame, left_on="date", right_index=True, how="left",
+        )
+        # Forward-fill within ticker (weekend / holiday alignment).
+        panel[macro_cols] = panel.groupby(
+            "ticker", group_keys=False,
+        )[macro_cols].ffill()
+        # Trailing NaN (rolling-z warmup) → 0.0 (z-scored mean).
+        panel[macro_cols] = panel[macro_cols].fillna(0.0)
 
     missing_cols: list[str] = []
     if nan_prone_cols:
@@ -220,6 +265,7 @@ def build_panel_frame(
                        str(pd.Timestamp(panel["date"].max()).date())],
         "feature_cols": sorted(feature_cols_set),
         "factor_cols":  sorted(factor_cols_set),
+        "macro_cols":   sorted(macro_cols),
         "missing_cols": missing_cols,
         "per_ticker":   per_ticker,
     }
