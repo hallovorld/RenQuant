@@ -96,6 +96,10 @@ class TransformerParams:
     grad_clip_norm:   float = 1.0        # T-16 audit fix — clip gradient norm
     auto_eval_split:  bool  = True       # T-18 — auto last-20% dates as eval if no eval_panel
     auto_eval_fraction: float = 0.20
+    # Audit HIGH-4 (2026-04-27): purge between train/eval split must
+    # match the label horizon so labels at train-end don't reach into
+    # eval-start. Default matches PROD config lookahead_days=10.
+    lookahead_days:   int   = 10
     device:           str   = "mps"      # "mps" | "cuda" | "cpu"
     deterministic:    bool  = True
     seed:             int   = 42
@@ -743,20 +747,29 @@ class PanelTransformerModel:
                     n_train, n_eval,
                 )
             if n_train >= 5 and n_eval >= 2:
-                # Slice panel by row offsets corresponding to the
-                # date-group split. group_sizes is contiguous per date.
-                row_split = int(np.array(group_sizes[:n_train]).sum())
-                # Audit fix #13 (2026-04-26 round-3): .iloc is positional
-                # → safe with any index type (RangeIndex / MultiIndex /
-                # custom). Reset_index avoided to preserve caller's index.
-                eval_panel = panel.iloc[row_split:].copy()
+                # Audit fix HIGH-4 (2026-04-27): purge `lookahead_days`
+                # date-groups between train end and eval start. Same
+                # bug pattern as HIGH-1/2/3 — pre-fix the last `lookahead`
+                # training dates carried labels reaching into eval window
+                # → biased early-stop signal → undertrained transformer.
+                lookahead_purge = int(p.lookahead_days) if hasattr(p, "lookahead_days") else 10
+                n_train_clean = max(0, n_train - lookahead_purge)
+                if n_train_clean < 5:
+                    # Not enough room for purge; skip purge but log
+                    n_train_clean = n_train
+                    lookahead_purge = 0
+                row_split_train = int(np.array(group_sizes[:n_train_clean]).sum())
+                row_split_eval  = int(np.array(group_sizes[:n_train]).sum())
+                # Audit fix #13 (2026-04-26 round-3): .iloc is positional.
+                eval_panel = panel.iloc[row_split_eval:].copy()
                 eval_group_sizes = np.array(group_sizes[n_train:], dtype=np.int64)
-                panel = panel.iloc[:row_split].copy()
-                group_sizes = np.array(group_sizes[:n_train], dtype=np.int64)
-                # Audit fix #91 (2026-04-26): module-level logger.
+                panel = panel.iloc[:row_split_train].copy()
+                group_sizes = np.array(group_sizes[:n_train_clean], dtype=np.int64)
                 log.info(
-                    "auto_eval_split: train=%d groups (%d rows) | eval=%d groups (%d rows)",
-                    n_train, row_split, n_eval, len(eval_panel),
+                    "auto_eval_split: train=%d groups (%d rows) | eval=%d groups "
+                    "(%d rows) | purged %d-bar gap (HIGH-4 fix)",
+                    n_train_clean, row_split_train, n_eval, len(eval_panel),
+                    lookahead_purge,
                 )
 
         # Audit fix #84 (2026-04-26 round-3): auto-bump max_tickers

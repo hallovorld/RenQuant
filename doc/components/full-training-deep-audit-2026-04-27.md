@@ -129,6 +129,25 @@ Fix: insert `lookahead_days` purge gap between train end and val
 start. Caller in `pp_panel_training.py::NGBoostFitTask` passes
 `lookahead_days` from config.
 
+### 🟠 HIGH-4 — Transformer auto_eval_split — same lookahead-bar leak
+
+**File:line**: `training_panel/transformer_model.py:745-760`
+
+Fourth instance of the same bar/calendar leak pattern. Transformer
+splits the panel into train/eval by date-group count for
+auto-early-stopping; pre-fix, train ends at `n_train` and eval starts
+immediately at `n_train` with NO purge. Labels at the most-recent
+`lookahead` training dates reach into eval window → eval IC
+artificially inflated → early-stop fires too soon → undertrained
+transformer artifact.
+
+Effect: same pattern as HIGH-2/HIGH-3. Affects transformer's saved
+weights when transformer backend is used (currently shelved at
+0.89× XGBoost on 43-ticker panel; would re-bite on revisit).
+
+Fix: insert `lookahead_days` purge gap. Added `lookahead_days=10`
+default to `TransformerParams`. Same purge semantics as HIGH-2/HIGH-3.
+
 ### 🟡 LATENT-1 — Inference path drops asset_embeddings
 
 **File:line**: `training_panel/pipeline.py:111` (loads embeddings) +
