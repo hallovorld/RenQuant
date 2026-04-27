@@ -111,6 +111,44 @@ point). Magnitude: ~10 dates × ~99 tickers = ~1% of training rows leak.
 
 **Fix**: insert a `lookahead`-bar gap between train end and eval start.
 
+### 🟡 LATENT-1 — Inference path drops asset_embeddings
+
+**File:line**: `training_panel/pipeline.py:111` (loads embeddings) +
+`pipeline.py:154-161` (returns frames without embeddings) + 
+`kernel/panel_pipeline/feature_matrix.py:61-133` (build_inference_matrix
+takes no embeddings arg)
+
+`prepare_inference_panel_frames` calls `LoadAssetEmbeddingsTask` (correct
+for symmetry-guard test) but the loaded `ctx.asset_embeddings` is never
+broadcast into the returned frames. Training passes embeddings to
+`build_panel_frame` which adds `emb_0…emb_{D-1}` columns; inference path
+never produces these columns.
+
+**Effect**: dormant. T2-2 isn't trained / wired into PROD yet, so the
+asymmetry doesn't bite. But when embeddings are added to a model,
+inference will silently fill `emb_*` with NaN → wrong predictions.
+
+**Fix needed BEFORE enabling T2-2**: extend `build_inference_matrix` to
+accept `asset_embeddings` and broadcast per ticker.
+
+### Tier A audit summary so far
+
+| File | Findings | Status |
+|------|----------|--------|
+| `training_panel/labels.py` | 0 new (LBL-1 already fixed) | clean |
+| `training_panel/purged_cv.py` | 1 HIGH (HIGH-1) | fixed |
+| `training_panel/pp_panel_training.py` (CrossValidate + FinalFit + BuildPanel) | 1 HIGH (HIGH-2) | fixed |
+| `training_panel/panel_frame.py` | 0 new | clean |
+| `training_panel/ltr_model.py` | 0 new (X1-X18 already fixed) | clean |
+| `training_panel/pipeline.py` | 1 LATENT (LATENT-1, embeddings) | noted |
+| `kernel/panel_pipeline/feature_matrix.py` | 1 LATENT (same as above) | noted |
+| `kernel/panel_pipeline/panel_scorer.py` | TBD | pending |
+| `kernel/pipeline/pp_training_full.py` | TBD | pending |
+| `training_panel/lgbm_ltr.py` | already 12-bug audit done | partial |
+| `training_panel/global_calibrator.py` | TBD | pending |
+| `training_panel/transformer_model.py` | TBD | pending |
+| `training_panel/ngboost_head.py` | TBD | pending |
+
 
 
 ## Re-experiment plan
