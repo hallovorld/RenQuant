@@ -1201,6 +1201,41 @@ class BuildHourlyResolutionPanelTask(PanelTask):
                      else pd.Series([True] * len(panel))
         panel = panel[label_mask].reset_index(drop=True)
 
+        # Phase 1D (2026-04-26): broadcast macro frame onto hourly panel.
+        # Same logic as the daily path in build_panel_frame, but inlined
+        # here because the hourly path doesn't go through build_panel_frame.
+        # Each hourly row gets the macro value for its DATE (same value
+        # across all hours of a given trading day, by design — macro is
+        # daily-resolution).
+        macro_frame = ctx.macro_factor_frame
+        if macro_frame is not None and not macro_frame.empty:
+            if not isinstance(macro_frame.index, pd.DatetimeIndex):
+                macro_frame = macro_frame.copy()
+                macro_frame.index = pd.to_datetime(macro_frame.index)
+            macro_cols = list(macro_frame.columns)
+            existing = set(panel.columns)
+            collisions = [c for c in macro_cols if c in existing]
+            if collisions:
+                log.warning(
+                    "BuildHourlyResolutionPanelTask: macro frame columns "
+                    "collide with existing panel columns: %s — using "
+                    "suffix '_macro'", collisions,
+                )
+                rename_map = {c: f"{c}_macro" for c in collisions}
+                macro_frame = macro_frame.rename(columns=rename_map)
+                macro_cols = [rename_map.get(c, c) for c in macro_cols]
+            panel = panel.merge(
+                macro_frame, left_on="date", right_index=True, how="left",
+            )
+            panel[macro_cols] = panel.groupby(
+                "ticker", group_keys=False,
+            )[macro_cols].ffill()
+            panel[macro_cols] = panel[macro_cols].fillna(0.0)
+            log.info(
+                "BuildHourlyResolutionPanelTask: broadcast %d macro features "
+                "(rows unchanged: %d)", len(macro_cols), len(panel),
+            )
+
         # Group_sizes by (date, hour) — transformer's date-group attention
         # operates on the cross-section at a fixed time slice.
         ctx.panel = panel
@@ -1287,9 +1322,15 @@ class BuildPanelTask(PanelTask):
         sec_wl = {t: sec[t] for t in ctx.watchlist if t in sec}
         fac_wl = {t: fac[t] for t in ctx.watchlist if t in fac}
 
+        # Phase 1D (2026-04-26): pass ctx.macro_factor_frame so each
+        # panel row gets the broadcast macro features (VIX, HYG, ...).
+        # ctx.macro_factor_frame is None (no-op) unless config flag
+        # `panel_ltr.macro.enabled` is true AND LoadMacroFactorsTask
+        # found cached macro symbols.
         panel, group_sizes, meta = build_panel_frame(
             ff_wl, lab_wl, sec_wl,
             factor_frames=fac_wl,
+            macro_frame=ctx.macro_factor_frame,
             listing_dates=ctx.listing_dates,
             min_history_days=min_history,
             lookahead_days=lookahead,
