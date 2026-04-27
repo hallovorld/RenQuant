@@ -947,6 +947,17 @@ class RunnerAdapter:
                 wl = list(self._config.get("watchlist", []) or [])
                 cand_by_t  = {c.ticker: c for c in ctx.candidates}
                 pf_value = float(ctx.portfolio_value) if ctx.portfolio_value else 0.0
+                # Bug #20 fix (2026-04-26): pending_broker_tickers is a local
+                # of make_context() (line 170), not visible in commit()'s
+                # scope. It IS persisted onto ctx at line 478 — read from
+                # there. Pre-fix, the bare-name reference raised NameError
+                # → swallowed by the outer try/except → ticker_daily_state
+                # silently dropped EVERY bar. Defensive default to set()
+                # so a sell-only path that didn't run BROKER-PRECHECK still
+                # writes the row (with pending_at_broker=0).
+                pending_broker_tickers: set = set(
+                    getattr(ctx, "pending_broker_tickers", None) or set()
+                )
                 tds_rows: list[dict] = []
                 for tk in wl:
                     hs   = ctx.holdings.get(tk)
