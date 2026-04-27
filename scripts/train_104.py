@@ -50,6 +50,12 @@ def main() -> None:
              "Use a side config like strategy_config.hourly_transformer.json "
              "for ablations / Stage C-3 experiments without touching production.",
     )
+    p.add_argument(
+        "--skip-acceptance",
+        action="store_true",
+        help="Bypass acceptance gates for this run (operator override). "
+             "DANGEROUS — only use for known-broken-but-recoverable cases.",
+    )
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -65,8 +71,34 @@ def main() -> None:
         FullTrainingPipeline,
     )
 
+    config = json.loads(config_path.read_text())
+    # Audit fix #152 (2026-04-26 round-7): acceptance gates wrap the
+    # FullTrainingPipeline output. If the new artifact fails any hard
+    # gate, the prior production artifact is preserved at panel-ltr.json
+    # — live runner sees no change → ZERO downtime on bad retrain.
+    #
+    # User spec: "我们有没有机制进行模型accpetance verification，如果不
+    # 通过的话，继续用原来的模型跑E2E？这关系到工程稳定性和可用性！"
+    #
+    # Disable via `acceptance.enabled = false` in strategy_config.json
+    # (default ON). Operator can also pass --skip-acceptance to bypass
+    # for one run.
+    acceptance_cfg = config.get("acceptance", {})
+    acceptance_enabled = bool(acceptance_cfg.get("enabled", True)) and not args.skip_acceptance
+
+    # Snapshot the active panel-ltr.json BEFORE training runs (so if
+    # training overwrites it via SaveArtifactTask shim, we have the
+    # prior content for gate G4 (vs-prior IC) and recovery).
+    active_path = strategy_dir / "artifacts" / "panel-ltr.json"
+    pre_train_snapshot = None
+    if acceptance_enabled and active_path.exists():
+        import shutil
+        pre_train_snapshot = active_path.with_suffix(".pre-train.json")
+        shutil.copy2(str(active_path), str(pre_train_snapshot))
+        log.info("Acceptance: snapshotted active artifact to %s", pre_train_snapshot.name)
+
     ctx = FullTrainingContext(
-        config=json.loads(config_path.read_text()),
+        config=config,
         strategy=args.strategy,
         strategy_dir=strategy_dir,
         skip_baseline=args.skip_baseline,
@@ -75,6 +107,50 @@ def main() -> None:
         force_retrain=args.force,
     )
     FullTrainingPipeline().run(ctx)
+
+    if acceptance_enabled:
+        from kernel.model_acceptance import (  # noqa: PLC0415
+            ModelAcceptanceGate, promote, reject,
+        )
+        # The pipeline writes new content to the SAME path (panel-ltr.json)
+        # via SaveArtifactTask + shim. So at this point, panel-ltr.json
+        # = NEW (staging), pre-train snapshot = PRIOR.
+        # Move new content to .staging.json so the gate APIs match
+        # (separate staging vs active paths).
+        staging_path = active_path.with_suffix(".staging.json")
+        if active_path.exists():
+            import shutil
+            shutil.move(str(active_path), str(staging_path))
+        # Restore prior at active for gate evaluation context.
+        if pre_train_snapshot is not None and pre_train_snapshot.exists():
+            shutil.copy2(str(pre_train_snapshot), str(active_path))
+
+        verdict = ModelAcceptanceGate().evaluate(staging_path, active_path)
+        log.info("\n%s", verdict.summary())
+
+        archive_dir = strategy_dir / "artifacts" / "_acceptance_log"
+        if verdict.all_hard_passed:
+            log.info("Acceptance: ALL HARD GATES PASSED → promoting new model")
+            promote(staging_path, active_path)
+            # Clean up snapshot — promote() already moved active to .previous
+            if pre_train_snapshot and pre_train_snapshot.exists():
+                pre_train_snapshot.unlink()
+        else:
+            log.error("Acceptance: HARD GATE FAILED → keeping prior model")
+            reject(staging_path, archive_dir, verdict)
+            # Try ntfy alert (best-effort, do not block on failure)
+            try:
+                import subprocess
+                msg = f"RENQUANT-104 RETRAIN REJECTED: {len(verdict.hard_failures())} hard gate(s) failed. Prior model preserved. See {archive_dir}/"
+                subprocess.run(
+                    ["curl", "-sf", "-H", f"Title: RenQuant 104 RETRAIN REJECTED",
+                     "-d", msg, "https://ntfy.sh/renquant"],
+                    timeout=10, check=False,
+                )
+            except Exception:
+                pass
+            # Exit non-zero so the operator script sees the failure.
+            sys.exit(2)
 
 
 if __name__ == "__main__":
