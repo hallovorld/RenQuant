@@ -236,6 +236,20 @@ def check_model_sell(
         state.sell_streak = 0
         # Don't touch last_streak_inc_date on reset — it's only for INC dedup
 
+    # Audit fix STREAK-TRADING-DAY ROUND 2 (2026-04-26 round-7, after user
+    # spec round 2: "怎么他妈的还有streak sell！"). Strengthening: model_sell
+    # must NOT FIRE on a non-trading day either. The original fix prevented
+    # INCREMENT on Sunday; today's e2e showed that doesn't help when the
+    # streak was already at threshold from a buggy prior run — fire still
+    # happened. This guard makes the rule symmetric: no streak movement
+    # AND no streak fire on non-trading days.
+    #
+    # Path-dependent rules (stop_loss, trailing, SDL, max_hold) are NOT
+    # affected — those go through compute_exits's other branches and
+    # represent risk management that must always fire.
+    if not is_trading_day:
+        return state, _NO_EXIT
+
     if state.sell_streak >= consecutive_required:
         return state, ExitSignal(
             should_exit=True,

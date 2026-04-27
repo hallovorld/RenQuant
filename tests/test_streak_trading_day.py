@@ -136,3 +136,86 @@ class TestStreakTradingDay:
                 "sell", state, 3, 30, d,
             )
         assert state.sell_streak == 1
+
+
+# ── STREAK-TRADING-DAY ROUND 2 — model_sell does NOT fire on non-trading day
+#    even when streak is already ≥ required (user spec: "还有streak sell")
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestStreakTradingDayRound2:
+    """User spec 2026-04-26 round-7 (round 2): "怎么他妈的还有streak sell！"
+
+    The original STREAK-TRADING-DAY fix prevented INCREMENT on non-trading
+    days but didn't prevent FIRING when the streak was already at threshold
+    (e.g. 3) from a prior buggy run that incorrectly bumped it on a Sunday.
+
+    The 2026-04-26 17:18 live e2e demonstrated the gap: streak=3 was already
+    persisted in live_state.json from a 16:31 e2e BEFORE the fix landed at
+    16:42. The 17:18 run correctly didn't bump streak (still 3) but
+    model_sell fired because streak ≥ required.
+
+    Strengthening: model_sell must NOT FIRE on a non-trading day, period.
+    Symmetric with the increment guard. Path rules (stop_loss/trailing/
+    SDL/max_hold) are unaffected — they go through other branches in
+    compute_exits and represent risk management that must always fire.
+    """
+
+    def test_sunday_with_streak_at_threshold_does_not_fire(self):
+        """The bug seen live on 2026-04-26: streak=3 persisted, Sun fires."""
+        sunday = datetime.date(2026, 4, 26)
+        state = _holding(sell_streak=3, last_inc=datetime.date(2026, 4, 24))
+        new_state, exit_sig = decide_model_exit(
+            "sell", state, 3, 30, sunday,
+        )
+        assert exit_sig.should_exit is False, (
+            "Sunday must NOT fire model_sell even with streak=3 (live bug "
+            "from 2026-04-26 17:18 e2e — GOOG/PLTR sold despite Sunday)"
+        )
+        assert new_state.sell_streak == 3, "streak preserved for Mon"
+
+    def test_saturday_with_streak_at_threshold_does_not_fire(self):
+        saturday = datetime.date(2026, 4, 25)
+        state = _holding(sell_streak=3, last_inc=datetime.date(2026, 4, 24))
+        new_state, exit_sig = decide_model_exit(
+            "sell", state, 3, 30, saturday,
+        )
+        assert exit_sig.should_exit is False
+        assert new_state.sell_streak == 3
+
+    def test_holiday_with_streak_at_threshold_does_not_fire(self):
+        christmas = datetime.date(2026, 12, 25)   # NYSE closed
+        state = _holding(sell_streak=3, last_inc=datetime.date(2026, 12, 24))
+        new_state, exit_sig = decide_model_exit(
+            "sell", state, 3, 30, christmas,
+        )
+        assert exit_sig.should_exit is False
+        assert new_state.sell_streak == 3
+
+    def test_monday_with_streak_at_threshold_DOES_fire(self):
+        """Regression: real trading day fires on accumulated streak."""
+        monday = datetime.date(2026, 4, 27)
+        state = _holding(sell_streak=3, last_inc=datetime.date(2026, 4, 24))
+        new_state, exit_sig = decide_model_exit(
+            "sell", state, 3, 30, monday,
+        )
+        assert exit_sig.should_exit is True
+        assert exit_sig.exit_type == "model_sell"
+
+    def test_streak_above_required_also_blocked_on_sunday(self):
+        """If streak somehow exceeded required (>3), Sunday still blocks."""
+        sunday = datetime.date(2026, 4, 26)
+        state = _holding(sell_streak=10, last_inc=datetime.date(2026, 4, 24))
+        new_state, exit_sig = decide_model_exit(
+            "sell", state, 3, 30, sunday,
+        )
+        assert exit_sig.should_exit is False
+
+    def test_hold_signal_on_sunday_with_streak_no_fire_no_reset(self):
+        """Sunday hold: streak preserved, no fire (was already true)."""
+        sunday = datetime.date(2026, 4, 26)
+        state = _holding(sell_streak=3, last_inc=datetime.date(2026, 4, 24))
+        new_state, exit_sig = decide_model_exit(
+            "hold", state, 3, 30, sunday,
+        )
+        assert exit_sig.should_exit is False
+        assert new_state.sell_streak == 3   # not reset (Sun=non-trading)
