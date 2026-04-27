@@ -194,6 +194,22 @@ accept `asset_embeddings` and broadcast per ticker.
 | `training_panel/ngboost_head.py` | TBD | pending |
 | `training_panel/lgbm_ltr.py` (post fix re-check) | pending | partial |
 
+## 🔥 Empirical confirmation of HIGH-1 — XGB no-macro retrain
+
+**Result (2026-04-27 10:20 PT)**: XGB rank:pairwise no-macro post HIGH-1 + HIGH-2 fix, OOS IC = **+0.0411** (CPCV mean, std 0.0238, n_splits=15).
+
+| Metric | Pre-fix | Post-fix | Δ |
+|--------|---------|----------|---|
+| OOS mean IC | +0.0482 | **+0.0411** | **−0.0071 (−15%)** |
+| std | 0.0247 | 0.0238 | similar |
+| q05 / q95 | +0.0010 / +0.0691 | +0.0024 / +0.0726 | similar shape |
+
+The −15% drop **exactly matches the predicted 10-25% inflation range**. This confirms HIGH-1 was a real bug, not theoretical. **TRUE PROD IC = +0.0411**, not +0.0482.
+
+The post-fix artifact is now PROD (panel-ltr.json md5 589e5b95). The pre-audit baseline is archived at `panel-ltr.xgboost-pre-audit.bak.json` for forensics.
+
+**ALL OTHER 8-variant tournament IC numbers** are similarly inflated. They need re-running to get true OOS values.
+
 ## Audit summary as of 10:11 PT
 
 - **2 HIGH bugs found and fixed**:
