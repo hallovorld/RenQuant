@@ -769,6 +769,69 @@ def record_live_state_snapshot(
     )
 
 
+def load_latest_live_state(
+    conn: sqlite3.Connection | None,
+    *,
+    strategy: str = "",
+    max_age_days: int | None = None,
+) -> dict | None:
+    """Load the most recent live_state_snapshots row as a dict (#144).
+
+    Returns the JSON-decoded `state_json` blob (suitable for writing
+    back to live_state.json) or None if no snapshot exists / db is
+    missing / snapshot is older than `max_age_days`.
+
+    Per user spec 2026-04-26: "live state json应该至少备份在db里" —
+    db is now the canonical store; live_state.json is a fast cache.
+    On startup, if the JSON file is missing or stale, the runner
+    falls back to db via this function.
+
+    Args:
+        conn: open sqlite connection (may be None — degrades to None return)
+        strategy: filter by strategy name (e.g. "renquant_104"); empty
+            means any
+        max_age_days: if set, return None when snapshot is older than
+            this many days (defensive — prevents resurrecting ancient
+            state). None = no age check.
+
+    Returns:
+        dict from state_json column, OR None.
+    """
+    if conn is None:
+        return None
+    try:
+        if strategy:
+            row = conn.execute(
+                """SELECT state_json, run_date FROM live_state_snapshots
+                   WHERE strategy = ? ORDER BY run_date DESC, created_at DESC
+                   LIMIT 1""",
+                (strategy,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT state_json, run_date FROM live_state_snapshots
+                   ORDER BY run_date DESC, created_at DESC LIMIT 1""",
+            ).fetchone()
+    except sqlite3.OperationalError:
+        # Table missing (fresh db) → no snapshot to load.
+        return None
+    if row is None:
+        return None
+    state_json, run_date_str = row
+    if max_age_days is not None and run_date_str:
+        try:
+            run_date = datetime.date.fromisoformat(str(run_date_str))
+            age = (datetime.date.today() - run_date).days
+            if age > max_age_days:
+                return None
+        except (ValueError, TypeError):
+            pass   # bad date format → fail open (return what we have)
+    try:
+        return json.loads(state_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def record_portfolio_metrics(
     conn: sqlite3.Connection | None,
     rows: Iterable[dict],
@@ -1020,6 +1083,7 @@ __all__ = [
     "record_training_run",
     "record_forward_returns",
     "record_live_state_snapshot",
+    "load_latest_live_state",
     "record_portfolio_metrics",
     "record_ticker_daily_state",
     "lookup_candidate_scores_on_date",

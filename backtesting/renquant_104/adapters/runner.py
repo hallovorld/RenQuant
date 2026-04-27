@@ -118,8 +118,58 @@ class RunnerAdapter:
         broker  = self._broker
 
         # ── Load persisted live state ────────────────────────────────────────
+        # Plan #144 (2026-04-26 round-7): db is canonical, JSON is cache.
+        # Read JSON first (fast). On JSON missing/corrupt, fall back to
+        # the latest live_state_snapshots row (per-bar mirror).
+        # Per user spec: "live state json应该至少备份在db里" — db wins
+        # on conflict between JSON and db.
         state_file = self._strategy_dir / "live_state.json"
-        state      = json.loads(state_file.read_text()) if state_file.exists() else {}
+        state: dict = {}
+        json_loaded = False
+        if state_file.exists():
+            try:
+                state = json.loads(state_file.read_text()) or {}
+                json_loaded = True
+            except (json.JSONDecodeError, OSError) as exc:
+                log.warning(
+                    "live_state.json unreadable (%s) — falling back to db",
+                    exc,
+                )
+        if not json_loaded:
+            try:
+                from kernel.persistence import (  # noqa: PLC0415
+                    get_connection, load_latest_live_state,
+                )
+                conn = get_connection(config, strategy_dir=self._strategy_dir)
+                strategy_name = config.get("_strategy_name", "renquant_104")
+                # max_age_days=14 — defensive: don't resurrect ancient state
+                # (e.g. from a 6-month-old test db). 14d aligns with the
+                # max plausible gap before a sim/restore is needed.
+                db_state = load_latest_live_state(
+                    conn, strategy=strategy_name, max_age_days=14,
+                )
+                if db_state:
+                    log.warning(
+                        "RESTORE-FROM-DB (#144): live_state.json missing/"
+                        "corrupt — restored from live_state_snapshots "
+                        "(strategy=%s). Writing JSON cache now.",
+                        strategy_name,
+                    )
+                    state = db_state
+                    # Write the recovered state back to JSON so subsequent
+                    # bars see a hot cache (no need to re-query db).
+                    try:
+                        state_file.write_text(json.dumps(state, default=str))
+                    except OSError as exc:
+                        log.warning(
+                            "RESTORE-FROM-DB: JSON write-back failed (%s) "
+                            "— state recovered in-memory only", exc,
+                        )
+            except Exception as exc:
+                log.warning(
+                    "RESTORE-FROM-DB: db load failed (%s) — proceeding "
+                    "with empty state", exc,
+                )
 
         entry_dates     = state.get("entry_dates",     {})
         sell_streaks    = state.get("sell_streaks",    {})
