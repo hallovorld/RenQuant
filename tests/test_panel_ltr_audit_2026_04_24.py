@@ -147,14 +147,61 @@ class TestPanelFrameInferenceErrorIsolation:
 
 
 # ── P-37: cache_dir resolves via _strategy_dir, not cwd ────────────────────
+#
+# Audit fix #142 (2026-04-26 round-7): the original P-37 tests assumed
+# the resolver returns strategy_dir.parent.parent / p UNCONDITIONALLY,
+# and a bare relative path on missing _strategy_dir. Both assumptions
+# conflict with the CACHE-DIR-SNAPSHOT fix (2026-04-26 earlier) which:
+#   - falls back to cwd when the strategy_dir-derived path doesn't
+#     exist (snapshot mode safety — sims wrap strategy_dir in tmpdir)
+#   - returns absolute cwd-resolved path on missing _strategy_dir so
+#     callers can stat() / read_text() without prepending cwd themselves
+#
+# Tests rewritten to match the CURRENT (snapshot-aware) contract.
 
 class TestCacheDirResolution:
-    def test_resolve_cache_dir_with_strategy_dir(self):
+    def test_resolve_cache_dir_with_strategy_dir(self, tmp_path):
+        """When the strategy_dir-derived cache exists, use it.
+
+        Pre-CACHE-DIR-SNAPSHOT: returned strategy_dir.parent.parent / cfg
+        unconditionally. Now: prefers derived if it exists; falls back
+        to cwd otherwise.
+        """
         from training_panel.pp_panel_training import _resolve_cache_dir
-        ctx_config = {"_strategy_dir": "/Users/x/repo/backtesting/renquant_104"}
-        # Relative path → resolved against repo root (strategy_dir.parent.parent)
+        # Build a real strategy_dir layout in tmp so derived path exists.
+        repo_root = tmp_path
+        (repo_root / "backtesting" / "renquant_104").mkdir(parents=True)
+        (repo_root / "data" / "fundamentals").mkdir(parents=True)
+        ctx_config = {"_strategy_dir": str(repo_root / "backtesting" / "renquant_104")}
         result = _resolve_cache_dir("data/fundamentals", ctx_config)
-        assert str(result) == "/Users/x/repo/data/fundamentals"
+        assert result == repo_root / "data" / "fundamentals"
+
+    def test_resolve_cache_dir_snapshot_falls_back_to_cwd(self, tmp_path):
+        """Snapshot edge case (CACHE-DIR-SNAPSHOT): when strategy_dir
+        is in a tmpdir without the data/ hierarchy, the resolver falls
+        back to cwd so the real cache is found.
+
+        This is the load-bearing test for the snapshot-fix —
+        previously sim A/B silently saw 0 fundamentals.
+        """
+        from training_panel.pp_panel_training import _resolve_cache_dir
+        from pathlib import Path
+        snap_dir = tmp_path / "snapshot" / "renquant_104"
+        snap_dir.mkdir(parents=True)
+        ctx_config = {"_strategy_dir": str(snap_dir)}
+        # data/ohlcv exists in repo cwd; the snapshot tmpdir doesn't
+        # have a data/ subdir at all.
+        result = _resolve_cache_dir("data/ohlcv", ctx_config)
+        cwd_candidate = Path.cwd() / "data" / "ohlcv"
+        if cwd_candidate.exists():
+            assert result == cwd_candidate, (
+                "snapshot fallback should return cwd-resolved cache, "
+                "not the missing strategy_dir-derived path"
+            )
+        else:
+            # No cache to fall back to — resolver returns derived
+            # (caller's not-found logic handles it).
+            assert "snapshot" in str(result)
 
     def test_resolve_cache_dir_absolute_passthrough(self):
         from training_panel.pp_panel_training import _resolve_cache_dir
@@ -163,10 +210,18 @@ class TestCacheDirResolution:
         assert str(result) == "/abs/cache"
 
     def test_resolve_cache_dir_no_strategy_dir_fallback(self):
+        """Without _strategy_dir, resolver returns cwd-resolved
+        ABSOLUTE path so callers can stat() against it.
+
+        Pre-CACHE-DIR-SNAPSHOT: returned bare relative string.
+        Now: returns Path.cwd() / cfg with a warning. Live runner
+        always sets _strategy_dir; this branch only fires in
+        ad-hoc test/debug contexts.
+        """
         from training_panel.pp_panel_training import _resolve_cache_dir
-        # Falls back to cwd-relative with a warning
+        from pathlib import Path
         result = _resolve_cache_dir("data/fundamentals", {})
-        assert str(result) == "data/fundamentals"  # legacy behaviour
+        assert result == Path.cwd() / "data" / "fundamentals"
 
     def test_all_load_tasks_use_resolver(self):
         """Sentinel: every Load*Task with a cache_dir must call _resolve_cache_dir."""
