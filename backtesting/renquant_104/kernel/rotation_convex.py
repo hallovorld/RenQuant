@@ -118,9 +118,43 @@ class ConvexRotationSolver:
             raise ValueError("ConvexRotationSolver.solve: empty current_weights")
 
         w = current_weights.values.astype(float)
-        mu = expected_returns.reindex(tickers).fillna(0.0).values.astype(float)
+
+        # Audit T1 + T2 fix (2026-04-27): strict-mode reindex.
+        # Pre-fix: silent fillna(0) treated missing tickers as μ=0 / σ²=0
+        # → "risk-free" candidates. The solver would happily allocate to
+        # tickers with no model coverage.
+        missing_mu = [t for t in tickers if t not in expected_returns.index]
+        if missing_mu:
+            raise ValueError(
+                f"ConvexRotationSolver.solve: missing μ for "
+                f"{len(missing_mu)} tickers: {missing_mu[:5]}"
+                f"{'…' if len(missing_mu) > 5 else ''}. "
+                f"Caller must supply expected_returns for every ticker in "
+                f"current_weights, or pre-filter current_weights."
+            )
+        mu = expected_returns.reindex(tickers).values.astype(float)
+        if np.isnan(mu).any():
+            raise ValueError(
+                f"ConvexRotationSolver.solve: NaN in expected_returns for "
+                f"tickers {[tickers[i] for i in np.where(np.isnan(mu))[0][:5]]}. "
+                f"Caller must supply non-NaN μ for every ticker."
+            )
+
+        missing_sig_rows = [t for t in tickers if t not in cov_matrix.index]
+        missing_sig_cols = [t for t in tickers if t not in cov_matrix.columns]
+        if missing_sig_rows or missing_sig_cols:
+            raise ValueError(
+                f"ConvexRotationSolver.solve: cov_matrix missing rows "
+                f"{missing_sig_rows[:5]} or cols {missing_sig_cols[:5]}. "
+                f"Caller must supply cov_matrix covering every ticker."
+            )
+        sigma = cov_matrix.reindex(index=tickers, columns=tickers).values.astype(float)
+        if np.isnan(sigma).any():
+            raise ValueError(
+                "ConvexRotationSolver.solve: NaN in cov_matrix. "
+                "Caller must supply non-NaN covariance estimates."
+            )
         # Σ — symmetrize defensively (numerical noise can break PSD)
-        sigma = cov_matrix.reindex(index=tickers, columns=tickers).fillna(0.0).values
         sigma = 0.5 * (sigma + sigma.T)
         # Add small ridge for numerical PSD
         sigma = sigma + 1e-8 * np.eye(n)
@@ -221,7 +255,11 @@ class ConvexRotationSolver:
         # would require LP; for SLSQP we use a soft penalty in the objective via
         # cost_coef + an additional constraint sqrt(delta·delta + eps) ≤ turnover_cap
 
-        bounds = Bounds(lb=-w, ub=np.full(n, self.leverage_cap))   # delta in [-w, lev_cap]
+        # Audit T8 fix (2026-04-27): per-position upper bound = sector_max_pct,
+        # not leverage_cap. Pre-fix `ub=leverage_cap` (1.0) let a single
+        # ticker take 100% NAV in a fresh portfolio. Bound by the same
+        # concentration limit applied at the sector level.
+        bounds = Bounds(lb=-w, ub=np.full(n, self.sector_max_pct))   # delta in [-w, sec_cap]
         sum_w = float(np.sum(w))
 
         constraints = [
@@ -286,6 +324,7 @@ def quantize_to_whole_shares(
     prices: pd.Series,
     portfolio_value: float,
     available_cash: float,
+    current_holdings: dict[str, int] | pd.Series | None = None,
 ) -> pd.Series:
     """Convert fractional Δw into integer share counts respecting cash budget.
 
@@ -293,10 +332,22 @@ def quantize_to_whole_shares(
     permits, round-down otherwise. Track running cash; reject any trade
     that would overdraw.
 
+    Audit T6 fix (2026-04-27): when `current_holdings` is provided, sells
+    are CAPPED at the current position count — never issue an order that
+    would create a negative position (no short-selling).
+
     Returns pd.Series of int share deltas (positive = buy, negative = sell).
     """
     notional_delta = (delta_weights * portfolio_value).reindex(prices.index).fillna(0.0)
     out = pd.Series(0, index=delta_weights.index, dtype=int)
+
+    # Normalize current_holdings to dict[ticker, int]
+    holdings: dict[str, int] = {}
+    if current_holdings is not None:
+        if isinstance(current_holdings, pd.Series):
+            holdings = {str(t): int(v) for t, v in current_holdings.items()}
+        else:
+            holdings = {str(t): int(v) for t, v in dict(current_holdings).items()}
 
     cash = float(available_cash)
     # Sort by abs(notional) descending — handle largest moves first
@@ -316,9 +367,21 @@ def quantize_to_whole_shares(
             out[ticker] = shares
             cash -= cost
         elif notional < 0:
-            # Sell — always OK (cash increases)
-            shares = -int(abs(notional) / price)   # negative
-            proceeds = -shares * price             # positive
+            # Sell — cap at current holdings (no short-sell — Audit T6)
+            requested = int(abs(notional) / price)
+            current = holdings.get(str(ticker), 0)
+            if current_holdings is not None:
+                actual = min(requested, max(0, current))
+                if actual < requested:
+                    log.info(
+                        "quantize_to_whole_shares: %s sell capped — "
+                        "requested %d, holding %d (no short-sell)",
+                        ticker, requested, current,
+                    )
+            else:
+                actual = requested  # legacy path: caller responsible
+            shares = -actual
+            proceeds = -shares * price
             out[ticker] = shares
             cash += proceeds
         # notional == 0 → no trade
