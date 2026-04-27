@@ -653,6 +653,30 @@
       "enabled": true,
       "cache_dir": "data/intraday"
     },
+    "macro": {
+      "enabled": false,
+      "cache_dir": "data/macro",
+      "symbols": [
+        "VXX",
+        "HYG",
+        "UUP",
+        "DBC",
+        "GLD",
+        "TLT",
+        "XLV",
+        "XLU",
+        "KRE",
+        "MTUM",
+        "USMV"
+      ],
+      "transforms": [
+        "level_z",
+        "chg_5d_z",
+        "chg_20d_z"
+      ],
+      "rolling_window": 252,
+      "min_window_overlap_pct": 0.95
+    },
     "training_window_years": 3.0,
     "recency_weighting": {
       "kind": "exp_decay",
