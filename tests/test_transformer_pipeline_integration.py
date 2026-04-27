@@ -141,26 +141,53 @@ class TestTransformerModelJob:
         assert len(scores) == 8
         assert not scores.isna().any()
 
-    def test_backend_transformer_does_not_clobber_xgboost_artifact(self, tmp_path: Path):
-        """Transformer run must not overwrite `panel-ltr.json`.
+    def test_backend_transformer_preserves_prior_artifact_via_autobak(self, tmp_path: Path):
+        """Transformer run MAY overwrite `panel-ltr.json` with a shim
+        (intentional, so calibrator finds the new backend), but MUST
+        first auto-back-up the existing artifact to
+        `panel-ltr.{prev_kind}.bak.json`.
 
-        We pre-seed a sentinel XGBoost-shaped file at the XGBoost default
-        path, then run the transformer pipeline and assert the sentinel
-        is untouched.
+        Audit fix #141 TRANSFORMER-CLOBBER-AUTOBAK (2026-04-26): pre-fix,
+        the shim wrote panel-ltr.json with no auto-backup — `train_104.py
+        --strategy-config strategy_config.hourly_transformer.json`
+        directly clobbered the production XGBoost artifact, with
+        recovery only via the .xgboost.bak.json from a prior
+        sunday_panel_sweep.py run (if one ever ran). Post-fix, the
+        backup is automatic.
         """
         artifacts_dir = tmp_path / "artifacts"
         artifacts_dir.mkdir()
         xgb_art = artifacts_dir / "panel-ltr.json"
-        xgb_art.write_text('{"kind": "sentinel", "do_not_touch": true}')
-        mtime_before = xgb_art.stat().st_mtime
+        # Use a realistic XGBoost-kind artifact so the auto-bak labels it.
+        sentinel = '{"kind": "panel_ltr_xgboost", "do_not_touch": true}'
+        xgb_art.write_text(sentinel)
 
         ctx = _build_synthetic_panel_ctx(tmp_path, backend="transformer")
         PanelModelJob().run(ctx)
 
-        assert xgb_art.read_text() == '{"kind": "sentinel", "do_not_touch": true}', (
-            "transformer run clobbered the XGBoost artifact path"
+        # The shim is now at panel-ltr.json (intentional — this is the
+        # behavior after TRANSFORMER-PANEL-LTR-SHIM landed 2026-04-26).
+        new_content = xgb_art.read_text()
+        import json as _json
+        new_obj = _json.loads(new_content)
+        assert new_obj.get("kind") == "panel_transformer", (
+            "transformer run should write a shim to panel-ltr.json so "
+            "fit_panel_calibrator can dispatch to the transformer scorer"
         )
-        assert xgb_art.stat().st_mtime == mtime_before
+        # The PRIOR XGBoost artifact must be preserved at the .bak path
+        # (Audit fix #141): the original content is recoverable.
+        bak = artifacts_dir / "panel-ltr.xgboost.bak.json"
+        assert bak.exists(), (
+            "auto-bak failed — pre-existing panel-ltr.json content is "
+            "now unrecoverable. The .bak file is the audit-#141 "
+            "safety net before clobbering with the transformer shim."
+        )
+        assert bak.read_text() == sentinel, (
+            "auto-bak content mismatch — must preserve the EXACT prior "
+            "panel-ltr.json content so `cp panel-ltr.xgboost.bak.json "
+            "panel-ltr.json` is a clean restore."
+        )
+        # And the transformer-specific artifact lives separately.
         tf_art = artifacts_dir / "panel-transformer.pt"
         assert tf_art.exists(), "transformer artifact missing at expected default path"
 

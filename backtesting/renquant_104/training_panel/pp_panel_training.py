@@ -1705,6 +1705,47 @@ class SaveArtifactTask(PanelTask):
         if backend == "transformer" and ctx.strategy_dir is not None:
             try:
                 shim_path = ctx.strategy_dir / "artifacts" / "panel-ltr.json"
+
+                # Audit fix #141 TRANSFORMER-CLOBBER-AUTOBAK (2026-04-26
+                # round-7): before overwriting panel-ltr.json with the
+                # transformer shim, snapshot the existing file to
+                # panel-ltr.{prev_kind}.bak.json so the prior backend's
+                # artifact is recoverable via cp without manual sweep
+                # script. Pre-fix, only sunday_panel_sweep.py created
+                # .bak files; a direct `train_104.py --strategy-config
+                # strategy_config.hourly_transformer.json` run silently
+                # destroyed the production XGBoost panel-ltr.json with
+                # only the prior sweep's .xgboost.bak.json as recovery.
+                # If the user had manually edited panel-ltr.json since
+                # the last sweep, those edits would be lost.
+                if shim_path.exists():
+                    try:
+                        prev = json.loads(shim_path.read_text())
+                        prev_kind = str(prev.get("kind", "unknown"))
+                        # Map kernel kinds to short backend labels.
+                        bak_label = {
+                            "panel_ltr_xgboost":     "xgboost",
+                            "panel_ltr_lightgbm":    "lightgbm",
+                            "panel_transformer":     "transformer",
+                        }.get(prev_kind, prev_kind.replace("panel_", "").replace("_", "-"))
+                        bak_path = shim_path.parent / f"panel-ltr.{bak_label}.bak.json"
+                        # Only overwrite the .bak if it doesn't already match
+                        # (avoid clobbering an older bak with a newer-but-shim variant).
+                        if not bak_path.exists() or bak_path.read_text() != shim_path.read_text():
+                            bak_path.write_text(shim_path.read_text())
+                            log.info(
+                                "SaveArtifactTask: pre-shim backup → %s "
+                                "(prev_kind=%s)",
+                                bak_path.name, prev_kind,
+                            )
+                    except Exception as bak_exc:
+                        log.warning(
+                            "SaveArtifactTask: pre-shim backup failed — %s "
+                            "(continuing; .xgboost.bak.json from sweep "
+                            "may still be available)",
+                            bak_exc,
+                        )
+
                 pt_relative = out_path.name   # "panel-transformer.pt"
                 shim = {
                     "kind": "panel_transformer",
