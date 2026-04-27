@@ -91,6 +91,7 @@ def build_panel_frame(
     ticker_sectors: dict[str, str],
     factor_frames: dict[str, pd.DataFrame] | None = None,
     macro_frame: pd.DataFrame | None = None,
+    asset_embeddings: dict[str, "np.ndarray"] | None = None,
     listing_dates: dict[str, pd.Timestamp] | None = None,
     min_history_days: int = 252,
     lookahead_days: int = 5,
@@ -106,6 +107,13 @@ def build_panel_frame(
     When provided (non-empty DataFrame indexed by date with macro
     feature columns), each macro column is broadcast to every panel
     row via date merge. See doc/components/macro-factor-frame-design.md.
+
+    T2-2 (2026-04-27): added optional `asset_embeddings` dict (per
+    ticker → np.ndarray of shape (D,)). When provided, each ticker's
+    rows in the panel get its embedding broadcast as columns
+    `emb_0..emb_{D-1}`. Within-date variance preserved because each
+    ticker has a different embedding. See
+    doc/components/asset-embeddings-design.md.
 
     Returns:
         panel_df    — sorted by (date, ticker), columns include:
@@ -198,6 +206,32 @@ def build_panel_frame(
         # Trailing NaN (rolling-z warmup) → 0.0 (z-scored mean).
         panel[macro_cols] = panel[macro_cols].fillna(0.0)
 
+    # T2-2 (2026-04-27): broadcast per-ticker asset embeddings as
+    # additional columns. Each ticker's rows get its D-dim embedding
+    # vector broadcast — within-date variance preserved because each
+    # ticker has a different embedding. Different from macro broadcast:
+    # macro varies across DATE only; embeddings vary across TICKER only.
+    embedding_cols: list[str] = []
+    if asset_embeddings is not None and len(asset_embeddings) > 0:
+        # Determine embedding dim from first non-empty entry
+        first_emb = next(iter(asset_embeddings.values()))
+        if first_emb is not None and len(first_emb) > 0:
+            d = len(first_emb)
+            embedding_cols = [f"emb_{i}" for i in range(d)]
+            # Build a DataFrame indexed by ticker
+            emb_df = pd.DataFrame.from_dict(
+                {t: list(v) for t, v in asset_embeddings.items() if v is not None and len(v) == d},
+                orient="index",
+                columns=embedding_cols,
+            )
+            emb_df.index.name = "ticker"
+            # Merge — broadcasts per-ticker rows
+            panel = panel.merge(
+                emb_df, left_on="ticker", right_index=True, how="left",
+            )
+            # Tickers without embeddings → fill with zeros (neutral)
+            panel[embedding_cols] = panel[embedding_cols].fillna(0.0)
+
     missing_cols: list[str] = []
     if nan_prone_cols:
         for col in nan_prone_cols:
@@ -266,6 +300,7 @@ def build_panel_frame(
         "feature_cols": sorted(feature_cols_set),
         "factor_cols":  sorted(factor_cols_set),
         "macro_cols":   sorted(macro_cols),
+        "embedding_cols": sorted(embedding_cols),
         "missing_cols": missing_cols,
         "per_ticker":   per_ticker,
     }
