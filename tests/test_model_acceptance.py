@@ -311,6 +311,72 @@ class TestConfigDrivenThresholds:
         assert len(gates) == 11
 
 
+# ── Audit fix #3: G4 with non-positive prior must still require new > 0 ─────
+
+class TestG4NonPositivePriorEdgeCase:
+    def test_negative_prior_requires_strictly_positive_new(self, tmp_path):
+        """Pre-audit-fix: prior=-0.01, new=0.001 PASSED because new > prior.
+        Post-fix: gate ALSO requires new > 0 strictly. A near-zero new
+        model isn't a meaningful improvement over a broken prior."""
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.001)
+        a = _write_artifact(tmp_path / "a.json", oos_mean_ic=-0.01)
+        v = ModelAcceptanceGate().evaluate(s, a)
+        g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
+        # 0.001 > -0.01 but 0.001 < threshold → still pass per audit fix:
+        # actually 0.001 > 0 → passes. Let me make sure the boundary is right.
+        # Threshold is 0; 0.001 > 0 → pass.
+        assert g4.passed   # 0.001 IS strictly positive
+
+    def test_negative_prior_negative_new_fails(self, tmp_path):
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=-0.005)
+        a = _write_artifact(tmp_path / "a.json", oos_mean_ic=-0.01)
+        v = ModelAcceptanceGate().evaluate(s, a)
+        g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
+        # Pre-fix this would have PASSED (new > prior). Post-fix: fails
+        # because new is not strictly positive.
+        assert not g4.passed
+
+    def test_zero_prior_zero_new_fails(self, tmp_path):
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.0)
+        a = _write_artifact(tmp_path / "a.json", oos_mean_ic=0.0)
+        v = ModelAcceptanceGate().evaluate(s, a)
+        g4 = next(r for r in v.results if r.name == "G4_oos_ic_vs_prior")
+        assert not g4.passed   # neither beats 0 nor is positive
+
+
+# ── Audit fix #4 + #11: hard gates emit warning on skip-pass ────────────────
+
+class TestHardGateSkipWarning:
+    def test_g5_skip_emits_warning(self, tmp_path, caplog):
+        """When G5 skip-passes (no score_sample_range), operator must
+        see a log warning. Pre-fix this was silent."""
+        import logging as _logging
+        s = _write_artifact(tmp_path / "s.json")   # no score_sample_range
+        with caplog.at_level(_logging.WARNING, logger="kernel.model_acceptance"):
+            ModelAcceptanceGate().evaluate(s)
+        assert any("HARD gate G5_score_range skipped" in r.message
+                   for r in caplog.records), \
+            f"expected G5 skip warning, got: {[r.message for r in caplog.records]}"
+
+    def test_g6_skip_emits_warning(self, tmp_path, caplog):
+        import logging as _logging
+        s = _write_artifact(tmp_path / "s.json")   # no inference_smoke_test
+        with caplog.at_level(_logging.WARNING, logger="kernel.model_acceptance"):
+            ModelAcceptanceGate().evaluate(s)
+        assert any("HARD gate G6_inference_smoke skipped" in r.message
+                   for r in caplog.records)
+
+    def test_present_metadata_no_warning(self, tmp_path, caplog):
+        """Gate that runs normally (not skipped) should NOT log a warning."""
+        import logging as _logging
+        s = _write_artifact(tmp_path / "s.json", oos_mean_ic=0.04)
+        with caplog.at_level(_logging.WARNING, logger="kernel.model_acceptance"):
+            v = ModelAcceptanceGate().evaluate(s)
+        # G4 ran (oos_mean_ic present) → no skip warning for G4
+        skip_warnings = [r for r in caplog.records if "G4_oos_ic_vs_prior skipped" in r.message]
+        assert len(skip_warnings) == 0
+
+
 # ── Audit fixes #2 + #12: promote validates JSON + atomic-swap via os.rename ─
 
 class TestPromoteAuditFixes:

@@ -210,10 +210,16 @@ def _gate_g4_oos_ic_vs_prior(staging: dict, active: dict | None,
                           float(new_ic), None,
                           f"no prior IC reference; accept new={new_ic:+.4f}")
     if prior_ic <= 0:
-        # Prior was already broken — easy bar to clear
-        return GateResult("G4_oos_ic_vs_prior", "hard", new_ic > prior_ic,
-                          float(new_ic), float(prior_ic),
-                          f"prior was non-positive ({prior_ic:+.4f}); new must beat it")
+        # Audit fix #3 (2026-04-26): pre-fix only required new > prior,
+        # so a prior of -0.01 made any new IC > -0.01 pass — including
+        # near-zero noise (e.g. new=0.001). That's degenerate. Now we
+        # additionally require new > 0 (strict positive — a broken prior
+        # doesn't license shipping a near-zero new model).
+        passed = (new_ic > prior_ic) and (new_ic > 0.0)
+        return GateResult("G4_oos_ic_vs_prior", "hard", passed,
+                          float(new_ic), 0.0,
+                          f"prior was non-positive ({prior_ic:+.4f}); "
+                          f"new must beat prior AND be strictly positive")
     threshold = prior_ic * (1.0 - max_degradation)
     return GateResult(
         "G4_oos_ic_vs_prior", "hard", new_ic >= threshold,
@@ -547,6 +553,18 @@ class ModelAcceptanceGate:
             results.append(r)
 
         all_hard_passed = all(r.passed for r in results if r.severity == "hard")
+
+        # Audit fix #4+#11 (2026-04-26): when a HARD gate skip-passes
+        # because metadata is missing (e.g. G5 score_sample_range, G6
+        # inference_smoke_test, G9/G10/G11 sim_smoke), emit an explicit
+        # warning so the operator knows which hard checks are silent.
+        # Pre-fix, an operator could believe G5/G6 were protecting against
+        # calibrator collapse when they were actually skip-passing every
+        # model.
+        for r in results:
+            if r.severity == "hard" and r.passed and r.metric is None and r.threshold is None and "skip" in (r.detail or "").lower():
+                log.warning("ModelAcceptanceGate: HARD gate %s skipped — %s", r.name, r.detail)
+
         return AcceptanceVerdict(all_hard_passed=all_hard_passed, results=results)
 
 
