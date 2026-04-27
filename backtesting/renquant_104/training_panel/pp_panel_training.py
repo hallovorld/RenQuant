@@ -595,12 +595,55 @@ class LoadMacroPerTickerBetasTask(PanelTask):
         return True
 
 
+class LoadAssetEmbeddingsTask(PanelTask):
+    """T2-2 (2026-04-27): load pre-trained asset embeddings.
+
+    Reads `artifacts/asset-embeddings.json` (produced by
+    scripts/train_asset_embeddings.py — runs weekly via cron). Skipped
+    when `panel_ltr.asset_embeddings.enabled` is not true OR the
+    artifact doesn't exist (no-op; no-feature case).
+
+    See doc/components/asset-embeddings-design.md.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> bool:
+        cfg = ctx.config.get("panel_ltr", {}).get("asset_embeddings", {})
+        if not cfg.get("enabled", False):
+            return True
+        from pathlib import Path as _Path  # noqa: PLC0415
+        strategy_dir = ctx.config.get("_strategy_dir")
+        if strategy_dir is None:
+            return True
+        path = _Path(strategy_dir) / cfg.get(
+            "artifact_path", "artifacts/asset-embeddings.json"
+        )
+        if not path.exists():
+            log.info("LoadAssetEmbeddingsTask: artifact missing at %s; "
+                     "pipeline proceeds without embeddings", path)
+            return True
+        try:
+            from training_panel.asset_embeddings import (  # noqa: PLC0415
+                load_embeddings_for_inference,
+            )
+            ctx.asset_embeddings = load_embeddings_for_inference(
+                path, max_age_days=int(cfg.get("max_age_days", 14)),
+            )
+            log.info("LoadAssetEmbeddingsTask: loaded embeddings for %d tickers",
+                     len(ctx.asset_embeddings))
+        except Exception as exc:
+            log.warning("LoadAssetEmbeddingsTask: load failed — %s. "
+                        "Pipeline proceeds with asset_embeddings={}", exc)
+            ctx.asset_embeddings = {}
+        return True
+
+
 class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute + macro.
+    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute + macro + asset_embeddings.
 
     Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
                 → LoadEarningsSurprise → LoadInsiderTrades → LoadHourlyBars
                 → LoadMinuteBars → LoadMacroFactors → LoadMacroPerTickerBetas
+                → LoadAssetEmbeddings
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -618,6 +661,7 @@ class PanelDataJob(PanelJob):
             LoadMinuteBarsTask(),
             LoadMacroFactorsTask(),
             LoadMacroPerTickerBetasTask(),
+            LoadAssetEmbeddingsTask(),
         ]
 
 
@@ -1410,6 +1454,7 @@ class BuildPanelTask(PanelTask):
             ff_wl, lab_wl, sec_wl,
             factor_frames=fac_wl,
             macro_frame=ctx.macro_factor_frame,
+            asset_embeddings=ctx.asset_embeddings or None,
             listing_dates=ctx.listing_dates,
             min_history_days=min_history,
             lookahead_days=lookahead,

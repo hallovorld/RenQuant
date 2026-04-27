@@ -102,8 +102,13 @@ def prepare_inference_panel_frames(
 
     # Macro v2 (2026-04-27): per-ticker β. Must mirror PanelDataJob.tasks
     # order — the symmetry guard test enforces this.
-    from training_panel.pp_panel_training import LoadMacroPerTickerBetasTask  # noqa: PLC0415
+    from training_panel.pp_panel_training import (  # noqa: PLC0415
+        LoadMacroPerTickerBetasTask,
+        LoadAssetEmbeddingsTask,
+    )
     LoadMacroPerTickerBetasTask().run(ctx)
+    # T2-2 (2026-04-27): asset embeddings — same symmetry requirement.
+    LoadAssetEmbeddingsTask().run(ctx)
 
     ticker_ctxs = [
         TickerPanelContext(

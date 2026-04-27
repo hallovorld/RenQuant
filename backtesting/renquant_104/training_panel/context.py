@@ -69,6 +69,14 @@ class PanelTrainingContext:
     # doc/components/macro-factor-frame-redesign.md.
     macro_betas: dict[str, "pd.DataFrame"] = field(default_factory=dict)
 
+    # T2-2 (2026-04-27): per-ticker asset embeddings (Dolphin 2024).
+    # dict[ticker, np.ndarray of shape (D,)]. Loaded by
+    # LoadAssetEmbeddingsTask from artifacts/asset-embeddings.json
+    # (produced by scripts/train_asset_embeddings.py). Broadcast as
+    # emb_0..emb_{D-1} columns in build_panel_frame when
+    # `panel_ltr.asset_embeddings.enabled` is true.
+    asset_embeddings: dict[str, "np.ndarray"] = field(default_factory=dict)
+
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
     neutralized_frames: dict[str, pd.DataFrame] = field(default_factory=dict)   # post-neutralize
