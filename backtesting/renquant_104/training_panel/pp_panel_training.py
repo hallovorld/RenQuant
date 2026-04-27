@@ -543,6 +543,111 @@ class LoadMacroFactorsTask(PanelTask):
         return True
 
 
+class LoadFredMacroTask(PanelTask):
+    """Tier 2 macro expansion (2026-04-27): FRED API ingestion.
+
+    Reads `panel_ltr.fred_macro.enabled` (default False — opt-in). When
+    on, builds a FRED-derived feature frame using
+    `kernel.fred_macro.build_fred_frame` and concatenates its columns
+    into `ctx.macro_factor_frame`. Downstream `LoadMacroPerTickerBetasTask`
+    then computes per-ticker β to FRED returns alongside ETF returns
+    without any further changes.
+
+    Data layout: 22 default series × 3 transforms (level_z, chg_5d_z,
+    chg_20d_z) = 66 broadcast cols. Merged onto the existing macro
+    frame by date — no rename needed since FRED column names are
+    series IDs lowercased (no overlap with ETF symbols).
+
+    Look-ahead safety: `build_fred_frame` applies release-lag shifts
+    in TRADING DAYS via `_to_daily_bars` (mirrors the HIGH-1 lesson
+    of bar-based shifts, never calendar-day Timedelta). Monthly series
+    lag 5 trading days, weekly 2.
+
+    Quietly no-ops if config disabled, the FRED key is absent, or the
+    cache is empty — so CI/test runs without a key still pass.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> bool | None:
+        cfg = ctx.config.get("panel_ltr", {}).get("fred_macro", {})
+        if not cfg.get("enabled", False):
+            return True
+        try:
+            from kernel.fred_macro import (   # noqa: PLC0415
+                FredMacroStore, build_fred_frame, DEFAULT_FRED_SERIES,
+                DEFAULT_ROLLING_WINDOW, _resolve_api_key,
+            )
+        except ImportError as exc:
+            log.warning("LoadFredMacroTask: import failed (%s) — skip", exc)
+            return True
+
+        if _resolve_api_key() is None:
+            log.info("LoadFredMacroTask: no FRED API key (env var or "
+                     "~/.fred_api_key) — skip; cache-only path requires "
+                     "data/fred/*.parquet to exist")
+
+        cache_dir = _resolve_cache_dir(cfg.get("cache_dir", "data/fred"), ctx.config)
+        # Pass api_key=None so the store loads cached parquet without
+        # requiring a key. Fetching is a separate operator step
+        # (scripts/fetch_fred_macro.py).
+        store = FredMacroStore(cache_dir=cache_dir, api_key=None)
+
+        # Determine target index: union of all OHLCV trading days, or
+        # SPY's index as proxy if available.
+        spy = ctx.spy_df
+        if spy is None or spy.empty:
+            log.warning("LoadFredMacroTask: no SPY index available — skip")
+            return True
+        target_index = pd.DatetimeIndex(spy.index)
+
+        rolling_window = int(cfg.get("rolling_window", DEFAULT_ROLLING_WINDOW))
+        min_overlap = float(cfg.get("min_window_overlap_pct", 0.95))
+        training_end = pd.Timestamp(target_index.max())
+
+        # Allow operator to override the series catalog
+        cfg_series = cfg.get("series")
+        if cfg_series:
+            # cfg_series is list[str] of just IDs. Pad with default freq/lag.
+            id_to_spec = {s[0]: s for s in DEFAULT_FRED_SERIES}
+            specs = [id_to_spec.get(sid, (sid, sid, "daily", 0)) for sid in cfg_series]
+        else:
+            specs = list(DEFAULT_FRED_SERIES)
+
+        try:
+            fred_frame, fred_meta = build_fred_frame(
+                store, target_index,
+                series_specs=specs,
+                rolling_window=rolling_window,
+                min_window_overlap_pct=min_overlap,
+                training_end=training_end,
+            )
+        except Exception as exc:
+            log.warning("LoadFredMacroTask: build_fred_frame failed (%s) — skip", exc)
+            return True
+
+        if fred_frame.empty or fred_frame.shape[1] == 0:
+            log.info("LoadFredMacroTask: empty FRED frame — skip")
+            return True
+
+        # Merge into ctx.macro_factor_frame so downstream macro v2 path
+        # picks up the FRED columns automatically.
+        if ctx.macro_factor_frame is None or ctx.macro_factor_frame.empty:
+            ctx.macro_factor_frame = fred_frame
+        else:
+            existing = ctx.macro_factor_frame
+            # Align on the union of dates; FRED frame already on target_index
+            existing = existing.reindex(target_index).ffill()
+            fred_aligned = fred_frame.reindex(target_index)
+            ctx.macro_factor_frame = pd.concat([existing, fred_aligned], axis=1)
+
+        log.info(
+            "LoadFredMacroTask: merged %d FRED features (%d series used, %d skipped)",
+            fred_meta.get("n_features", 0),
+            len(fred_meta.get("series_used", [])),
+            len(fred_meta.get("series_skipped", [])),
+        )
+        return True
+
+
 class LoadMacroPerTickerBetasTask(PanelTask):
     """Macro v2 (2026-04-27): compute per-ticker rolling β to macro factors.
 
@@ -692,6 +797,7 @@ class PanelDataJob(PanelJob):
             LoadHourlyBarsTask(),
             LoadMinuteBarsTask(),
             LoadMacroFactorsTask(),
+            LoadFredMacroTask(),               # Tier 2 (2026-04-27)
             LoadMacroPerTickerBetasTask(),
             LoadAssetEmbeddingsTask(),
         ]

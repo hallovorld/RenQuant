@@ -102,10 +102,15 @@ def prepare_inference_panel_frames(
 
     # Macro v2 (2026-04-27): per-ticker β. Must mirror PanelDataJob.tasks
     # order — the symmetry guard test enforces this.
+    # Tier 2 FRED (2026-04-27): runs BETWEEN LoadMacroFactorsTask and
+    # LoadMacroPerTickerBetasTask so the β computation picks up FRED
+    # columns alongside ETF columns from the merged macro frame.
     from training_panel.pp_panel_training import (  # noqa: PLC0415
+        LoadFredMacroTask,
         LoadMacroPerTickerBetasTask,
         LoadAssetEmbeddingsTask,
     )
+    LoadFredMacroTask().run(ctx)
     LoadMacroPerTickerBetasTask().run(ctx)
     # T2-2 (2026-04-27): asset embeddings — same symmetry requirement.
     LoadAssetEmbeddingsTask().run(ctx)
