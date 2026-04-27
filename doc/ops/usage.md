@@ -249,7 +249,7 @@ Then:
 4. **Analyze** — run `python scripts/analyze_backtest.py --strategy nvda_rf`
 5. **Live trade** — `python -m live.runner --strategy nvda_rf --broker paper --once`
 
-Available model types: `manual`, `classification`, `qlearning`, `fqi`, `optimization`, `xgboost` (see [doc/models.md](models.md)).
+Available model types: `manual`, `classification`, `qlearning`, `fqi`, `optimization`, `xgboost` (see [doc/arch/models.md](models.md)).
 
 ---
 

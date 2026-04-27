@@ -354,7 +354,7 @@ drop modestly while realized Sharpe rises — that's the win.
 
 ## 9. Cross-reference
 
-- Calibrator pool collapse — `doc/calibrator_saturation_2026-04-26.md`
+- Calibrator pool collapse — `doc/components/calibration-saturation.md`
 - Joint action / net_α — `kernel/pipeline/task_joint_actions.py`
 - NGBoost μ,σ — `training_panel/ngboost_head.py`
 - Score distribution — `kernel/pipeline/task_score_distribution.py`

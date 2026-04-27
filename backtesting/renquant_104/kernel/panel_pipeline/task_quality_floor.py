@@ -13,7 +13,7 @@ A candidate must pass ALL enabled gates. Disabled gates are skipped.
 With every gate disabled (the Stage-0 default) ctx.candidates is left
 untouched — bit-for-bit parity with current behaviour.
 
-Reference: ``doc/buy_logic_redesign_2026-04-26.md``.
+Reference: ``doc/components/buy-logic-design.md``.
 """
 from __future__ import annotations
 

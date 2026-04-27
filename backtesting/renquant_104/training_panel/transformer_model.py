@@ -3,7 +3,7 @@
 Alternative ranking backend to :class:`PanelLTRModel` (XGBoost). Mirrors the
 same public surface so the caller can dispatch on `panel_ltr.backend`.
 
-Architecture (see `doc/renquant_104_transformer_design.md` §2):
+Architecture (see `doc/components/transformer-104.md` §2):
 
 - Input: panel rows grouped by date → one date-group per sample.
 - Feature encoder: ``Linear(F → d_model)`` + LayerNorm (audit fix #43).
@@ -24,7 +24,7 @@ Public API (same shape as :class:`PanelLTRModel`)::
 The serialized artifact has suffix ``.pt`` (state_dict) paired with a
 ``.json`` sidecar holding feature_cols + hparams + training metadata.
 
-2026-04-26 audit batch — top-10 fixes from doc/transformer_audit_2026-04-26.md:
+2026-04-26 audit batch — top-10 fixes from doc/archives/audits/2026-04-26-transformer.md:
   #1   rank-transform labels in _listnet_loss (eliminates ListNet saturation
        on raw forward returns)
   #2   NaN-safe loss masking (clamp log_softmax floor before multiply)

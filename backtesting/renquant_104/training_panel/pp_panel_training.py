@@ -1045,7 +1045,7 @@ class BuildHourlyResolutionPanelTask(PanelTask):
     on (date, hour) pairs. Daily-mode group_sizes (just by date) is the
     default; nothing changes there.
 
-    Reference: doc/transformer_hourly_stage_c2_design.md.
+    Reference: doc/components/transformer-hourly-stage-c2.md.
     """
 
     def run(self, ctx: "PanelTrainingContext") -> bool | None:

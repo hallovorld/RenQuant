@@ -294,7 +294,7 @@ class BuildPairsTask(Task):
         # Full 4-point comparison (A_entry, A_today, B_entry, B_today) via
         # DB lookup of B's rank on A's entry date. Literature basis
         # (Avellaneda-Lee pair-trading + Gu-Kelly-Xiu ML ranking) in
-        # doc/rotation_research_2026-04-24.md.
+        # doc/research/rotation-research.md.
         if rotation_mode == "thesis_symmetric":
             from kernel.rotation import find_thesis_symmetric_pairs  # noqa: PLC0415
             from kernel.persistence import lookup_candidate_scores_on_date  # noqa: PLC0415

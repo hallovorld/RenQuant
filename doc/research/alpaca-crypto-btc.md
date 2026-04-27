@@ -253,7 +253,7 @@ single-share buy = $90k  ← impossible
 1. **用户决定**：要不要做？做的话 standalone (renquant_105_crypto)
    还是 blend (renquant_105_eq_crypto)?
 2. 如果 yes：
-   - 在 `doc/improvement_roadmap.md` 顶部加这个 task
+   - 在 `doc/roadmap.md` 顶部加这个 task
    - 起 PR 1（AlpacaCryptoSource）开发分支
 3. 如果 no / defer：留这个文档作为参考
 

@@ -148,7 +148,7 @@ Then retrain panel: `python scripts/train_104.py --skip-baseline --skip-recalibr
 
 ### v3 — hourly panel features (+4.18 APY pts)
 
-Shipped 2026-04-23 as part of Plan G (`e65b081`). Enabling `panel_ltr.hourly.enabled` and retraining with 6 intraday-derived factor columns (morning_drift, afternoon_drift, vwap_premium, vol_ratio, intraday_realized_vol, overnight_gap) lifted after-tax APY **40.02% → +44.20%** on the same 27-month OOS sim, and lifted win rate 79% → **82%**. OOS panel IC actually dropped (+0.0411 → +0.0326) — the live improvement came from feature-interaction lifts in specific regimes that averaged IC doesn't capture. Full writeup: `doc/panel_training_runs.md` (2026-04-23 late PT).
+Shipped 2026-04-23 as part of Plan G (`e65b081`). Enabling `panel_ltr.hourly.enabled` and retraining with 6 intraday-derived factor columns (morning_drift, afternoon_drift, vwap_premium, vol_ratio, intraday_realized_vol, overnight_gap) lifted after-tax APY **40.02% → +44.20%** on the same 27-month OOS sim, and lifted win rate 79% → **82%**. OOS panel IC actually dropped (+0.0411 → +0.0326) — the live improvement came from feature-interaction lifts in specific regimes that averaged IC doesn't capture. Full writeup: `doc/experiments/panel-training-runs.md` (2026-04-23 late PT).
 
 | Metric | v2 | v3 (hourly-enhanced) |
 |---|---|---|

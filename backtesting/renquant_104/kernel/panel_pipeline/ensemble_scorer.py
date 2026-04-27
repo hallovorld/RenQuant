@@ -1,6 +1,6 @@
 """Ensemble panel scorer — average per-bar ranks of two backend scorers.
 
-Per `doc/renquant_104_transformer_design.md §5` ship-gate: when the
+Per `doc/components/transformer-104.md §5` ship-gate: when the
 transformer's OOS IC is within [1.10, 1.30)× XGBoost's, ensemble (rather
 than replace). Rank averaging is scale-invariant, so a transformer model
 whose raw scores sit on a different scale than XGBoost's composes

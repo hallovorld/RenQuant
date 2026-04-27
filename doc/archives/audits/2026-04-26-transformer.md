@@ -203,7 +203,7 @@ audit completeness; the "fixed" tag indicates a prior audit fix).
 
 | # | Severity | Issue |
 |---|----------|-------|
-| 79 | 🟢 | `doc/renquant_104_transformer_design.md` referenced in module docstring may not reflect the T-25 dropout audit. |
+| 79 | 🟢 | `doc/components/transformer-104.md` referenced in module docstring may not reflect the T-25 dropout audit. |
 | 80 | 🟢 | `T-1`, `T-7`, `T-8`, `T-16`, `T-18`, `T-19`, `T-23`, `T-25`, `T-MPS-1`, `R3-14` audit tags reference unspecified locations. A central audit ledger would be cleaner. |
 
 ## Score-IC computation correctness

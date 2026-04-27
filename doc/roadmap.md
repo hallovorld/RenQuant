@@ -31,7 +31,7 @@ Working rhythm: pick topmost unblocked → flip 🟡 → ship smallest reversibl
 **Panel:** 47k × 31 hourly-enhanced feature rows, OOS mean IC (CPCV 15) +0.0326, win 85%, max no-trade streak 43d
 **Key config:** `tiered_thresholds = [0.27, 0.45, 0.60]` (A-gate), `kelly_sizing.fractional = 0.5` (half-Kelly), `max_concentration = 0.35`
 
-Full details: `doc/golden_config_2026-04-23.md`. Training history: `doc/panel_training_runs.md`. Methodology: `doc/panel_ltr_primer.md`. Environment: `doc/environment.md`.
+Full details: `doc/ops/golden-config.md`. Training history: `doc/experiments/panel-training-runs.md`. Methodology: `doc/components/panel-ltr.md`. Environment: `doc/ops/environment.md`.
 
 ---
 
@@ -119,7 +119,7 @@ Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** unt
 28天后可以re evaluate我的trade的合理性，用这个数据来校验我的model，用点
 强化学习的概念理解我的需求"*
 
-**Status:** 🔴 Design only. Full spec: `doc/trade_evaluation_rl_design_2026-04-26.md`.
+**Status:** 🔴 Design only. Full spec: `doc/components/trade-evaluation.md`.
 Treats trades as RL `(s, a, r)` tuples; uses off-policy evaluation
 (Sutton-Barto, Jiang-Li 2016, Doroudi-Thomas-Brunskill 2017,
 López de Prado 2018) for time-delayed validation.
@@ -355,7 +355,7 @@ Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are i
 - ✅ **Panel exit V2** shipped (`b022ad6`) — `risk.panel_exit.trigger_mode` = "and" (default) | "or". V1 AND never fired; OR mode queued for A/B (`/tmp/panel_exit_v2_ab.py`).
 - ✅ **Feature-parity invariant test** (`58abd05`) — pins notebook / LEAN / live all use `kernel.indicators.build_feature_frame`; 4 tests guard against accidental fork (user contract: 保证 notebook feature integrity with lean).
 - ✅ **Rotation V4 thesis-symmetric** (`709032d`) — full 4-point (A_entry+A_today+B_entry+B_today) via DB lookup of candidate_scores on A's entry date. User's own design. Lit-grounded (Avellaneda-Lee pair-trading, Gu-Kelly-Xiu ML ranking). 6 tests; default off; wiring deferred until A/B can fire.
-- ✅ **Rotation research doc** (`709032d`) — `doc/rotation_research_2026-04-24.md` — literature review: Jegadeesh-Titman, Moskowitz TSMOM, Barroso-Santa-Clara, Daniel-Moskowitz crashes, Avellaneda-Lee pairs, Grinold-Kahn breadth, López de Prado ML. 6 ranked implementation proposals.
+- ✅ **Rotation research doc** (`709032d`) — `doc/research/rotation-research.md` — literature review: Jegadeesh-Titman, Moskowitz TSMOM, Barroso-Santa-Clara, Daniel-Moskowitz crashes, Avellaneda-Lee pairs, Grinold-Kahn breadth, López de Prado ML. 6 ranked implementation proposals.
 - ✅ **V4 own-momentum gate** (`9463e4c`) — Proposal 1 shipped: A's own 63d return must have broken AND B's must be intact before rotating. Jegadeesh-Moskowitz compliance. 4 new tests.
 - ✅ **10-min bar fetch complete** — 744k rows × 50 symbols × 2yr cached. Prereq for transformer retry (>200k row gate) satisfied.
 - 🟡 **10-min panel retrain A/B running** (`/tmp/minute_panel_retrain_and_ab.py`). **Preliminary**: CPCV OOS IC = **+0.0355 (+0.003 vs baseline)** — hourly+minute panel beats hourly-only on OOS IC. NGBoost + sim phases pending. Full verdict ~10 min.
@@ -365,7 +365,7 @@ Ordered roughly by my own recommended shipping sequence. Items marked 🟡 are i
 Final result: **Sim APY 28.82% → +30.90%** on 27-mo OOS.
 Panel CPCV OOS IC: 0.0391 → **+0.0536** (+37%).
 Watchlist 43 → 99. Win rate 80.5%. Rotations finally fire (2x).
-Full session detail: `doc/session_summary_2026-04-24.md`.
+Full session detail: `doc/archives/sessions/2026-04-24.md`.
 
 ### ✅ Status of items in the previous "not shipped" list
 
@@ -377,7 +377,7 @@ Full session detail: `doc/session_summary_2026-04-24.md`.
 - ✅ **Sharpe scoring mode** (Barroso) — shipped + tested.
 - ✅ **10-min panel retrain end-to-end** — done. +9.57 APY on isolated A/B; +2.08 APY on clean main retrain.
 - ✅ **Transformer retry** — done. 0.89× XGBoost on 43-ticker panel — shelved again (panel still under transformer's data threshold; revisit at watchlist 120+ or 10-min training window).
-- ✅ **Rotation algorithm review** — done. `doc/rotation_research_2026-04-24.md` with academic refs + 6 proposals.
+- ✅ **Rotation algorithm review** — done. `doc/research/rotation-research.md` with academic refs + 6 proposals.
 
 ### ⏭ Remaining for next session
 
@@ -426,7 +426,7 @@ Full session detail: `doc/session_summary_2026-04-24.md`.
 - ✅ **Thesis-A infra** (`e519177`) — entry-baseline rotation. Flag-gated.
 - ✅ **BC audit guards** (`6b06dcd`) — ported AB-trim lessons preventively.
 - ✅ **DB split** (`56083da`) — runs.db (live permanent) + sim_runs.db (ephemeral).
-- ✅ **doc/database.md** — full schema reference with migration rules.
+- ✅ **doc/components/databases.md** — full schema reference with migration rules.
 - ✅ Docs sweep (`c73a4b5`) — CLAUDE.md test count + models.md Kelly/partial/trim/thesis-A + architecture.md adapter table.
 
 **Tests added:** +120 (including regression, infra, and audit guards). Full test count ~1307 collected.
@@ -674,7 +674,7 @@ Already shipped (`67e95af`): `scripts/weekly_apy_check.py` fires Sun 12 PT via `
 
 ### N. Golden config doc consolidation
 
-`doc/golden_config_2026-04-23.md` grew v1 → v2 → v3 → v4 inline. Refactor: top reads "current = v4 @ +37.82% sweep APY"; v1–v3 tables move to bottom `## History`. Also: delete `doc/golden_config_2026-04-23.v1.md` (redundant) and update rollback reference in main golden doc to inline v1 config block.
+`doc/ops/golden-config.md` grew v1 → v2 → v3 → v4 inline. Refactor: top reads "current = v4 @ +37.82% sweep APY"; v1–v3 tables move to bottom `## History`. Also: delete `doc/golden_config_2026-04-23.v1.md` (redundant) and update rollback reference in main golden doc to inline v1 config block.
 
 ---
 
@@ -710,7 +710,7 @@ Already shipped (`67e95af`): `scripts/weekly_apy_check.py` fires Sun 12 PT via `
 | B² | CUSUM cooldown only on regime switch | `013200a` | Moved into pipeline `CUSUMTask` / `RegimeFinalizeTask`. |
 | W / W+ | Network-safety layer (yfinance/OpenBB hangs) | `67b8d64`, `632f3cd` | Per-call + per-ticker + batch timeout. |
 | ntfy | Trade-level + decision-level + truthful + retrain-only-Tue/Thu/Sun | `a07f76b`, `d79b6c2`, `3578908`, `d302e5a` | Every live order notified; no false "trained" ntfy on non-retrain days. |
-| Env | `requirements.lock.txt` + `doc/environment.md` | `c9ee50b` | Python 3.10.20, xgboost 3.2, ngboost 0.5.10, torch 2.11. 310 pinned packages. |
+| Env | `requirements.lock.txt` + `doc/ops/environment.md` | `c9ee50b` | Python 3.10.20, xgboost 3.2, ngboost 0.5.10, torch 2.11. 310 pinned packages. |
 | — | live_state contract | (earlier) | 9 attributes reviewed end-to-end. `tests/test_live_state_contract.py` (21 tests). |
 | — | Watchlist +5 semis | `73a9327` | INTC/MPWR/TXN/NVTS/WDC added. |
 

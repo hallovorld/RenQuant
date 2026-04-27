@@ -283,7 +283,7 @@ Volume filter supports two modes via `volume_filter.mode` in `strategy_config.js
 - `"percentile"` (default): Adaptive per-stock filter. Triggers when today's volume is in the top N% of the lookback window (default: P85 = top 15%). Self-calibrates for each stock's own volume distribution, so stable large-caps and volatile small-caps are held to the same relative standard.
 - `"zscore"` (legacy): Fixed z-score threshold across all stocks. Uses `volume_zscore_threshold` (default: 1.5).
 
-**Panel-LTR cross-sectional ranking** (renquant_104): Extends 103 by replacing each candidate's per-ticker `rank_score` with a cross-sectional panel-LTR score computed via a single XGBoost learning-to-rank model fitted on the whole watchlist panel. Enabled via `ranking.panel_scoring.enabled: true` (config block also includes `artifact_path`, `nan_prone_cols`). Panel training labels use beta-neutralized + sector-/size-neutralized forward excess returns; `PanelScoringJob` (four Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask`) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and short-circuits via `should_skip()` when the flag is off so 103 behavior is preserved. `ApplyScoresTask` writes `panel_score` onto both candidates (and overwrites `rank_score`) and holdings so rotation can compare apples-to-apples. Three additional knobs under `ranking.panel_scoring`: `buy_floor` drops candidates below a panel-score threshold (`VetoWeakBuysTask`), `sizing.{enabled,floor,ceiling,min_mult}` drives `conviction_multiplier()` which scales `max_position_pct` in `SizeAndEmitTask` + `EmitRotationsTask`, and `rotation_advantage` requires a candidate's panel score to beat a held position's by at least that fraction before a rotation pair is emitted. Training is driven by `scripts/train_104.py` (thin entrypoint) backed by `kernel/pipeline/pp_training_full.py::FullTrainingPipeline` (`BaselineTournamentJob` → `PanelTrainingJob` → `RecalibrationJob`) — no notebook dependency. Inference requires 520 bars of history (vs 60 for 103) to warm up neutralization + factor windows; both `LeanAdapter` (LEAN main.py path) and `RunnerAdapter` (live runner path) read the flag and call `prepare_inference_panel_frames()` before running the pipeline, and each adapter injects `config["_strategy_dir"]` so `LoadScorerTask` can resolve the artifact path from the strategy directory (not CWD). The 104 notebook lives at `backtesting/renquant_104/renquant_104.ipynb` (parallel to the 103 notebook layout). Full spec: `doc/renquant_104_design.md`.
+**Panel-LTR cross-sectional ranking** (renquant_104): Extends 103 by replacing each candidate's per-ticker `rank_score` with a cross-sectional panel-LTR score computed via a single XGBoost learning-to-rank model fitted on the whole watchlist panel. Enabled via `ranking.panel_scoring.enabled: true` (config block also includes `artifact_path`, `nan_prone_cols`). Panel training labels use beta-neutralized + sector-/size-neutralized forward excess returns; `PanelScoringJob` (four Tasks: `LoadScorerTask` → `BuildFeatureMatrixTask` → `ApplyScoresTask` → `VetoWeakBuysTask`) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and short-circuits via `should_skip()` when the flag is off so 103 behavior is preserved. `ApplyScoresTask` writes `panel_score` onto both candidates (and overwrites `rank_score`) and holdings so rotation can compare apples-to-apples. Three additional knobs under `ranking.panel_scoring`: `buy_floor` drops candidates below a panel-score threshold (`VetoWeakBuysTask`), `sizing.{enabled,floor,ceiling,min_mult}` drives `conviction_multiplier()` which scales `max_position_pct` in `SizeAndEmitTask` + `EmitRotationsTask`, and `rotation_advantage` requires a candidate's panel score to beat a held position's by at least that fraction before a rotation pair is emitted. Training is driven by `scripts/train_104.py` (thin entrypoint) backed by `kernel/pipeline/pp_training_full.py::FullTrainingPipeline` (`BaselineTournamentJob` → `PanelTrainingJob` → `RecalibrationJob`) — no notebook dependency. Inference requires 520 bars of history (vs 60 for 103) to warm up neutralization + factor windows; both `LeanAdapter` (LEAN main.py path) and `RunnerAdapter` (live runner path) read the flag and call `prepare_inference_panel_frames()` before running the pipeline, and each adapter injects `config["_strategy_dir"]` so `LoadScorerTask` can resolve the artifact path from the strategy directory (not CWD). The 104 notebook lives at `backtesting/renquant_104/renquant_104.ipynb` (parallel to the 103 notebook layout). Full spec: `doc/arch/strategy-104.md`.
 
 **renquant_104 Stage 2 — NGBoost μ,σ head** (default off): `training_panel/ngboost_head.py` fits a separate NGBoost Normal(μ, σ) regressor on raw (pre-Gaussianized) residual forward returns. When `ranking.panel_scoring.ngboost.enabled` is true, `PanelScoringJob` appends `LoadNGBoostTask` + `ApplyNGBoostTask` (6-task chain total): μ,σ are written to both `CandidateResult` and `HoldingState`, and in the default `score_mode=mu_minus_lambda_sigma` the combined score `μ − λσ` overrides `rank_score` + `panel_score` (set `score_mode=additive` to leave rank_score untouched and only populate μ,σ for sizing). `ranking.panel_scoring.sigma_sizing.{enabled,floor,ceiling}` drives `sigma_multiplier()` which scales `max_position_pct` by `σ_median / σ_i` (clipped) in both `SizeAndEmitTask` and `EmitRotationsTask`. Training adds `PanelNGBoostJob` as Phase 5 of `PanelTrainingPipeline`. Artifact is a self-contained JSON with a base64-encoded pickle (ngboost has no pure-JSON serializer).
 
@@ -306,7 +306,7 @@ Volume filter supports two modes via `volume_filter.mode` in `strategy_config.js
   - Fetch scripts: `scripts/fetch_fundamentals.py`, `scripts/fetch_earnings_surprise.py`, `scripts/fetch_insider_trades.py` (SEC EDGAR rate-limited to 8 req/sec).
 - **No-trade monitoring** (`kernel/pipeline/task_monitor.py::MonitorIdleStreakTask`): pipeline Task at end of `InferencePipeline` that tracks consecutive days with zero orders/exits and zero candidates. Warns above `monitoring.max_no_trade_days` (default 15) + `max_no_candidate_days` (default 15); ntfy surfaces the WARN via log scraping. State persisted across bars by `SimAdapter._monitor_state` and `RunnerAdapter.live_state.json`. `SimResult.longest_no_trade_streak` available post-backtest; opt-in `RENQUANT_FULL_SIM=1` invariant test asserts < 20d. **Enforces the "it's OK not to trade, but NOT systematically" user contract.**
 - **Defensive-ticker universe exemption**: `FilterUniverseFloorTask` always admits `defensive_tickers` regardless of floor type/threshold — guarantees `bear_only` / `ConfidenceVetoTask` regimes always have something to buy (previously a single weak defensive passed the Sharpe gate → systemic no-trade). Regression tested in `tests/test_universe_alignment.py::TestDefensivesExemptFromFloor`.
-- **Transformer panel backend (design-only, not yet implemented)**: see `doc/renquant_104_transformer_design.md` — cross-sectional attention across the date-group as alternative `panel_ltr.backend`. MPS target. Ship gate: ≥1.3× XGBoost OOS IC.
+- **Transformer panel backend (design-only, not yet implemented)**: see `doc/components/transformer-104.md` — cross-sectional attention across the date-group as alternative `panel_ltr.backend`. MPS target. Ship gate: ≥1.3× XGBoost OOS IC.
 
 ### Adding a New Strategy
 
@@ -326,7 +326,7 @@ python scripts/new_strategy.py --name foo --symbol AAPL --type classification
 ## Development Rules (mandatory, always follow)
 
 ### 1. Logic Graph is the Source of Truth
-`doc/logic_graph_103.md` is the canonical decision flowchart for renquant_103.
+`doc/arch/decision-graph-103.md` is the canonical decision flowchart for renquant_103.
 - **Whenever the notebook simulation cell (657a4a6c) changes**, update the logic graph first, then verify LEAN matches every node.
 - **Whenever LEAN main.py changes**, check it against the logic graph and update if LEAN is intentionally extended.
 - The logic graph covers: regime detection → mark-to-market → drawdown breaker → sell loop (all 5 exits in priority order) → buy gates (transition window, BEAR branch, velocity crash, EMA50) → candidate scan (all filters) → ranking → selection loop (tiered thresholds, sector guard, correlation guard, position sizing).
@@ -437,52 +437,52 @@ After completing any task, commit and push all changed files so the remote is al
 
 ### 4. Always Keep Docs Up to Date
 After any non-trivial change, run `/update-docs` or manually sync:
-- `doc/logic_graph_103.md` — decision flowchart (update before LEAN changes)
-- `doc/architecture.md` — overall pipeline and data flow
-- `doc/models.md` — model types, exit logic, stop-loss params
-- `doc/renquant_103_design.md` — full 103 strategy spec including test counts
-- `doc/renquant_104_design.md` — renquant_104 panel-LTR spec (diff vs 103, FullTrainingPipeline, panel flag wiring, test coverage)
+- `doc/arch/decision-graph-103.md` — decision flowchart (update before LEAN changes)
+- `doc/arch/overview.md` — overall pipeline and data flow
+- `doc/arch/models.md` — model types, exit logic, stop-loss params
+- `doc/arch/strategy-103.md` — full 103 strategy spec including test counts
+- `doc/arch/strategy-104.md` — renquant_104 panel-LTR spec (diff vs 103, FullTrainingPipeline, panel flag wiring, test coverage)
 - `CLAUDE.md` — this file; keep test counts and rule set current
 
 ### 4. Documentation Index
 
 | Doc | What it covers |
 |-----|----------------|
-| `doc/golden_config_2026-04-23.md` | **Current golden = v4.1** (CUSUM wall_time, +39.82% sweep APY, ~+65% expected live). v1 → v2 → v3 → v4 → v4.1 history inline at bottom. Revert here if a future change drops portfolio APY. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
-| `doc/buy_logic_portman_ops_2026-04-26.md` | **Operator runbook** — buy-logic 3 gates + portfolio-QP 7 stages. Where the code lives, every config flag, rollback procedures, observability, common failure modes, promotion path. **Read this first when debugging trade decisions.** Activation log: 2026-04-26 enabled QP solver + Gate B (τ=0.10). |
-| `doc/buy_logic_redesign_2026-04-26.md` | Theory & 3-gate design (Lo 2002 / Garleanu-Pedersen / Constantinides). 14 literature refs. |
-| `doc/unified_portfolio_action_design_2026-04-26.md` | Theory & 7-stage QP design. 35+ literature refs. |
-| `doc/calibrator_saturation_2026-04-26.md` | Calibrator pool/eval IC collapse finding + 4 fixes shipped (CALIB-PER-DATE-IC + CALIB-COLLAPSE-GUARD). |
-| `doc/db_design_decision_factors_2026-04-26.md` | `ticker_daily_state` schema + Tier-2 model registry. Round-5 user spec: every watchlist ticker per bar. |
-| `doc/session_summary_2026-04-26.md` | **End-of-day record** for 2026-04-26 — 41 commits / 19 bug fixes / mega-audit / production turn-on (Gate B + QP). Read this first if returning to repo. |
-| `doc/sim_ab_results_2026-04-26.md` | A/B verdict (gate-b@0.10 wins +26.91% APY). Production decision basis. |
-| `doc/mega_audit_plan_2026-04-26.md` | 6-phase audit master plan. Per-phase findings in `mega_audit_phase{1..6}_findings_2026-04-26.md`. **0 P0 bugs** found across 30k+ LOC. |
-| `doc/session_self_audit_2026-04-26.md` | Self-audit of session work; identified 4 lurking-bug categories. |
-| `doc/calibration_db_design_2026-04-26.md` | Calibration DB design (per user spec — score percentile DB). |
-| `doc/rotate_algorithm_design.md` | Rotation algorithm spec (joint sell/buy + rotation pairs). |
-| `doc/model_training_design.md` | Model training pipeline spec. |
-| `doc/papers_implemented.md` | Cross-reference table — which paper each algo block implements. Use this when reading code references. |
-| `doc/transformer_audit_2026-04-26.md` | Transformer 95% audit (103 issues catalogued). |
-| `doc/post_tier1_followups_2026-04-25.md` | Tier-1 retrain follow-up queue. |
-| `doc/audit_3hour_2026-04-26.md` | 3-hour deep audit findings (precursor to mega-audit). |
-| `doc/session_handoff_2026-04-25.md` | Session-end state 2026-04-25. |
-| `doc/session_handoff_2026-04-23.md` | Session-end state 2026-04-23 (G promoted, F+H shelved). |
-| `doc/database.md` | **DB reference** — two-file architecture (data/runs.db live + data/sim_runs.db sim), 7 tables × full column schema, common queries, schema migration rules, retention plan. DB is a core asset — consult before adding columns. |
-| `doc/improvement_roadmap.md` | **Living roadmap** — Active queue (pending work) + Completed archive. Work through top-down. |
-| `doc/session_handoff_2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Superseded on 2026-04-24 by roadmap update + 26 commits (M⁺/P/AA/Trim/BC/CUSUM-v2-PROMOTED-v4.1/S/Kelly-pure/Multi-entry/Thesis-A/DB split). |
-| `doc/panel_training_runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
-| `doc/ab_experiments.md` | Per-experiment A/B journal: hypothesis → variants → result → verdict → commit. Prepend new experiments to top. Use to avoid re-running questions already answered + surface cross-experiment patterns. |
-| `doc/panel_ltr_primer.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
-| `doc/environment.md` | Python deps (`requirements.lock.txt`), critical lib versions, non-Python tooling (Docker / LEAN / launchd), env vars. Reproducibility source of truth. |
-| `doc/logic_graph_103.md` | **Complete decision flowchart** — every branch in notebook simulation and LEAN, regime param table, alignment table |
-| `doc/architecture.md` | Pipeline overview, data stores, indicator registry, model types, strategy list |
-| `doc/models.md` | Model ABC, all model types, exit logic, stop-loss, single-day gate, trailing stop |
-| `doc/renquant_103_design.md` | Full renquant_103 design spec: regime layers, stock selection pipeline, artifact list, key implementation details |
-| `doc/renquant_104_design.md` | renquant_104 panel-LTR design: cross-sectional ranking, FullTrainingPipeline, panel flag wiring across LEAN/live/sim |
-| `doc/indicators.md` | All registered indicators and their parameters |
-| `doc/usage.md` | CLI commands, live runner flags, scheduled runs |
-| `doc/setup.md` | Environment setup, Docker, credentials |
-| `doc/tech-stack.md` | Technology choices and rationale |
+| `doc/ops/golden-config.md` | **Current golden = v4.1** (CUSUM wall_time, +39.82% sweep APY, ~+65% expected live). v1 → v2 → v3 → v4 → v4.1 history inline at bottom. Revert here if a future change drops portfolio APY. Frozen copy at `backtesting/renquant_104/strategy_config.golden.json`. |
+| `doc/components/buy-logic-ops.md` | **Operator runbook** — buy-logic 3 gates + portfolio-QP 7 stages. Where the code lives, every config flag, rollback procedures, observability, common failure modes, promotion path. **Read this first when debugging trade decisions.** Activation log: 2026-04-26 enabled QP solver + Gate B (τ=0.10). |
+| `doc/components/buy-logic-design.md` | Theory & 3-gate design (Lo 2002 / Garleanu-Pedersen / Constantinides). 14 literature refs. |
+| `doc/components/portfolio-qp.md` | Theory & 7-stage QP design. 35+ literature refs. |
+| `doc/components/calibration-saturation.md` | Calibrator pool/eval IC collapse finding + 4 fixes shipped (CALIB-PER-DATE-IC + CALIB-COLLAPSE-GUARD). |
+| `doc/components/db-design-decision-factors.md` | `ticker_daily_state` schema + Tier-2 model registry. Round-5 user spec: every watchlist ticker per bar. |
+| `doc/archives/sessions/2026-04-26.md` | **End-of-day record** for 2026-04-26 — 41 commits / 19 bug fixes / mega-audit / production turn-on (Gate B + QP). Read this first if returning to repo. |
+| `doc/experiments/sim-ab-results.md` | A/B verdict (gate-b@0.10 wins +26.91% APY). Production decision basis. |
+| `doc/archives/audits/2026-04-26-mega-plan.md` | 6-phase audit master plan. Per-phase findings in `mega_audit_phase{1..6}_findings_2026-04-26.md`. **0 P0 bugs** found across 30k+ LOC. |
+| `doc/archives/sessions/2026-04-26-self-audit.md` | Self-audit of session work; identified 4 lurking-bug categories. |
+| `doc/components/calibration-db-design.md` | Calibration DB design (per user spec — score percentile DB). |
+| `doc/components/rotation.md` | Rotation algorithm spec (joint sell/buy + rotation pairs). |
+| `doc/components/training-pipeline.md` | Model training pipeline spec. |
+| `doc/research/papers-implemented.md` | Cross-reference table — which paper each algo block implements. Use this when reading code references. |
+| `doc/archives/audits/2026-04-26-transformer.md` | Transformer 95% audit (103 issues catalogued). |
+| `doc/experiments/post-tier1-followups.md` | Tier-1 retrain follow-up queue. |
+| `doc/archives/audits/2026-04-26-3hour.md` | 3-hour deep audit findings (precursor to mega-audit). |
+| `doc/archives/sessions/2026-04-25.md` | Session-end state 2026-04-25. |
+| `doc/archives/sessions/2026-04-23.md` | Session-end state 2026-04-23 (G promoted, F+H shelved). |
+| `doc/components/databases.md` | **DB reference** — two-file architecture (data/runs.db live + data/sim_runs.db sim), 7 tables × full column schema, common queries, schema migration rules, retention plan. DB is a core asset — consult before adding columns. |
+| `doc/roadmap.md` | **Living roadmap** — Active queue (pending work) + Completed archive. Work through top-down. |
+| `doc/archives/sessions/2026-04-23.md` | Session-end state for 2026-04-23 (G promoted, F+H shelved). Superseded on 2026-04-24 by roadmap update + 26 commits (M⁺/P/AA/Trim/BC/CUSUM-v2-PROMOTED-v4.1/S/Kelly-pure/Multi-entry/Thesis-A/DB split). |
+| `doc/experiments/panel-training-runs.md` | Per-run training log (config diffs, IC, feature importance, verdict). Prepend new runs to top. |
+| `doc/experiments/ab-journal.md` | Per-experiment A/B journal: hypothesis → variants → result → verdict → commit. Prepend new experiments to top. Use to avoid re-running questions already answered + surface cross-experiment patterns. |
+| `doc/components/panel-ltr.md` | Tutorial on Panel-LTR + NGBoost training methodology + abbreviation glossary. |
+| `doc/ops/environment.md` | Python deps (`requirements.lock.txt`), critical lib versions, non-Python tooling (Docker / LEAN / launchd), env vars. Reproducibility source of truth. |
+| `doc/arch/decision-graph-103.md` | **Complete decision flowchart** — every branch in notebook simulation and LEAN, regime param table, alignment table |
+| `doc/arch/overview.md` | Pipeline overview, data stores, indicator registry, model types, strategy list |
+| `doc/arch/models.md` | Model ABC, all model types, exit logic, stop-loss, single-day gate, trailing stop |
+| `doc/arch/strategy-103.md` | Full renquant_103 design spec: regime layers, stock selection pipeline, artifact list, key implementation details |
+| `doc/arch/strategy-104.md` | renquant_104 panel-LTR design: cross-sectional ranking, FullTrainingPipeline, panel flag wiring across LEAN/live/sim |
+| `doc/arch/indicators.md` | All registered indicators and their parameters |
+| `doc/ops/usage.md` | CLI commands, live runner flags, scheduled runs |
+| `doc/ops/setup.md` | Environment setup, Docker, credentials |
+| `doc/ops/tech-stack.md` | Technology choices and rationale |
 | `doc/renquant_102_vs_103_report.md` | Comparison report between strategies |
 | `tests/test_policy_alignment.py` | 235 paired NB/LEAN alignment tests (18 policies, including TestRotationAlignment) |
 | `tests/test_lean_policies.py` | LEAN regression tests (172 tests) |

@@ -20,7 +20,7 @@ Use one of these prompts when you want this workflow run again:
 
 - `Run the renquant maintenance workflow for 104.`
 - `Do the renquant_104 review/alignment workflow, then validate, commit, and push.`
-- `Run the workflow from doc/renquant_103_maintenance_workflow.md against renquant_104.`
+- `Run the workflow from doc/ops/maintenance-103.md against renquant_104.`
 
 If you want only part of it, say which phase to skip. When targeting 103 (reference/rollback) instead of 104, swap every `_104` path for its `_103` counterpart.
 
@@ -39,7 +39,7 @@ Primary files and areas touched by this workflow (swap `_104` ↔ `_103` dependi
 - `scripts/train_104.py`, `scripts/train_panel_model.py`, `scripts/recalibrate_scores.py`
 - `tests/test_policy_alignment.py`, `tests/test_panel_alignment.py`, `tests/test_simulation_policies.py`, `tests/test_strategy_ledger_parity.py`, `tests/test_runner_ranking.py`, `tests/test_training_modules.py`, `tests/test_panel_scoring_job.py`, `tests/test_panel_training_pipeline.py`
 - `README.md`, `CLAUDE.md`
-- `doc/architecture.md`, `doc/logic_graph_103.md` (shared trunk), `doc/renquant_103_design.md`, `doc/renquant_104_design.md`
+- `doc/arch/overview.md`, `doc/arch/decision-graph-103.md` (shared trunk), `doc/arch/strategy-103.md`, `doc/arch/strategy-104.md`
 - `doc/deep_review_YYYY-MM-DD.md` when a formal audit/report is requested
 
 ## Definition Of Done
@@ -121,11 +121,11 @@ At minimum, review and update these when semantics changed:
 
 - `README.md`
 - `CLAUDE.md`
-- `doc/architecture.md`
-- `doc/logic_graph_103.md` (shared trunk for 103 and 104)
-- `doc/models.md` when scoring/calibration/sizing semantics changed
+- `doc/arch/overview.md`
+- `doc/arch/decision-graph-103.md` (shared trunk for 103 and 104)
+- `doc/arch/models.md` when scoring/calibration/sizing semantics changed
 
-Update `doc/renquant_103_design.md` if renquant_103 semantics changed, or `doc/renquant_104_design.md` if any panel-LTR layer (training, scoring, veto, conviction sizing, rotation advantage) changed.
+Update `doc/arch/strategy-103.md` if renquant_103 semantics changed, or `doc/arch/strategy-104.md` if any panel-LTR layer (training, scoring, veto, conviction sizing, rotation advantage) changed.
 
 ### Phase 7: Validate
 

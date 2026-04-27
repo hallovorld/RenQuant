@@ -70,7 +70,7 @@ Likely explanation:
 
 **Action**: do NOT roll back from 0.10. The 26.91 vs 39.82 gap is
 likely artifact freshness (today's calibrator pool_ic = 0.001 — see
-`doc/calibrator_saturation_2026-04-26.md`). Calibrator quality is
+`doc/components/calibration-saturation.md`). Calibrator quality is
 the bottleneck, not the gate threshold.
 
 ## Next experiments (queued)

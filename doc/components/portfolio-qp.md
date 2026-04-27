@@ -461,9 +461,9 @@ commit is independently shippable (defaults OFF preserve behaviour).
 
 ## 11. Cross-reference
 
-- Component fixes (sub-design) — `doc/buy_logic_redesign_2026-04-26.md` (3-gate quality floor, kept as a Stage-1 fallback if QP rollout slips)
-- Calibrator pool collapse — `doc/calibrator_saturation_2026-04-26.md`
-- Current architecture — `doc/logic_graph_103.md`, `doc/renquant_104_design.md`
+- Component fixes (sub-design) — `doc/components/buy-logic-design.md` (3-gate quality floor, kept as a Stage-1 fallback if QP rollout slips)
+- Calibrator pool collapse — `doc/components/calibration-saturation.md`
+- Current architecture — `doc/arch/decision-graph-103.md`, `doc/arch/strategy-104.md`
 - Existing rotation primitive — `kernel/rotation.py`, `kernel/pipeline/task_rotation.py`
 - Existing joint action — `kernel/pipeline/task_joint_actions.py`
 

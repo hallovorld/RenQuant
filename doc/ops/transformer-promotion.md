@@ -87,7 +87,7 @@ ensemble third backend (NGBoost is the second).
   same-cal calibration). Hedges against single-model drift.
 - [ ] **C3 — Golden v5 promotion.** If C1 or C2 wins:
   - Update `backtesting/renquant_104/strategy_config.golden.json`
-  - Update `doc/golden_config_2026-04-23.md` history table
+  - Update `doc/ops/golden-config.md` history table
   - Frozen artifact: `artifacts/panel-transformer.golden-v5.safetensors`
   - Test count update in CLAUDE.md
 - [ ] **C4 — Cron wiring.** If transformer becomes the active backend,
@@ -97,7 +97,7 @@ ensemble third backend (NGBoost is the second).
 
 ### Phase D — Docs + reports
 
-- [ ] **D1 — Papers report.** Write `doc/papers_implemented.md`
+- [ ] **D1 — Papers report.** Write `doc/research/papers-implemented.md`
   catalogue:
   - Vaswani 2017 — base transformer architecture
   - Poh-Lim-Zohren-Roberts 2020 — listwise > pairwise on cross-sec ranking
@@ -110,7 +110,7 @@ ensemble third backend (NGBoost is the second).
   - sparsity-aware NaN handling (XGBoost/LightGBM)
 - [ ] **D2 — Update CLAUDE.md** with: transformer backend mention in
   renquant_104 spec + golden v5 reference + new test counts.
-- [ ] **D3 — Update `doc/rust_transformer_ic_baseline.md`** with final
+- [ ] **D3 — Update `doc/experiments/rust-transformer-ic.md`** with final
   CPCV + ensemble + sim numbers (replacing the single-split +0.0519
   headline).
 

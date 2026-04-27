@@ -504,7 +504,7 @@ the dominant lever for Kelly sizing.
 
 ### 🟠 C-3 No `ensemble.enabled` flag
 - `EnsemblePanelScorer` is fully implemented but no Job loads it. The
-  ship-gate path described in `doc/renquant_104_transformer_design.md`
+  ship-gate path described in `doc/components/transformer-104.md`
   has no runtime hook.
 
 ### 🟡 C-4 NGBoost `lambda_sigma=0.0` + `score_mode=additive` is dead-config

@@ -501,5 +501,5 @@ If negative: keep code merged (defenses against future regression), keep flag of
 - `doc/components/panel-ltr.md` — primer for the consuming model
 - `doc/components/training-pipeline.md` — where this fits in the data flow
 - `doc/arch/strategy-104.md` — overall strategy where macro features compose with ticker features
-- `doc/improvement_roadmap.md` — schedule + ROI for this work
+- `doc/roadmap.md` — schedule + ROI for this work
 - This doc itself: `doc/components/macro-factor-frame-design.md`

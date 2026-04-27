@@ -16,7 +16,7 @@ renquant_104 trains **two layers** of machine-learning models:
    features. Output is the `panel_score` and (optionally) Kelly-sizing
    `μ, σ` from a NGBoost head.
 
-Both layers feed the rotation algorithm (see `doc/rotate_algorithm_design.md`).
+Both layers feed the rotation algorithm (see `doc/components/rotation.md`).
 
 ## Layer 1 — Per-Ticker Models (`training/models.py`)
 
@@ -345,7 +345,7 @@ Per-ticker training in parallel via `multiprocessing.Pool` (capped at
 
 ### Backend Comparison (this session)
 
-See `doc/panel_backend_comparison_2026-04-25.md` for the latest 3-way head-to-head.
+See `doc/experiments/panel-backend-comparison.md` for the latest 3-way head-to-head.
 
 ### Per-Ticker Model Type Distribution (latest training)
 

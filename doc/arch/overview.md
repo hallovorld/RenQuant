@@ -202,7 +202,7 @@ Phase 3: Global sequential
   RankingJob → RotationJob → SelectionJob
 ```
 
-In renquant_104 (active strategy), a `PanelScoringJob` is slotted **between Phase 2b and Phase 3** — it re-scores both candidates and holdings with the cross-sectional panel-LTR model so rotation and selection compare everything on the same scale. It short-circuits via `should_skip()` when `ranking.panel_scoring.enabled=false`, in which case the pipeline behaves identically to 103. See `doc/renquant_104_design.md` for the full spec.
+In renquant_104 (active strategy), a `PanelScoringJob` is slotted **between Phase 2b and Phase 3** — it re-scores both candidates and holdings with the cross-sectional panel-LTR model so rotation and selection compare everything on the same scale. It short-circuits via `should_skip()` when `ranking.panel_scoring.enabled=false`, in which case the pipeline behaves identically to 103. See `doc/arch/strategy-104.md` for the full spec.
 
 **`SellOnlyPipeline`** — intraday sell-only variant (used on market-open and pre-close runs). Runs Phase 1 (RegimeJob → DrawdownJob) then parallel `TickerSellJob` — no buy phase.
 
@@ -248,7 +248,7 @@ Both LEAN and the live runner need to translate their own state representations 
 
 | Adapter | Location | Translates | DB role |
 |---------|----------|-----------|---------|
-| `LeanAdapter` | `adapters/lean.py` | LEAN `Portfolio`, `Securities`, `History()` → `InferenceContext`; commits via `Liquidate()` / `SetHoldings()` | (none — LEAN backtester currently does not write to DB; see `doc/database.md` future work) |
+| `LeanAdapter` | `adapters/lean.py` | LEAN `Portfolio`, `Securities`, `History()` → `InferenceContext`; commits via `Liquidate()` / `SetHoldings()` | (none — LEAN backtester currently does not write to DB; see `doc/components/databases.md` future work) |
 | `RunnerAdapter` | `adapters/runner.py` | Broker account state + parquet OHLCV + `live_state.json` → `InferenceContext`; commits via `broker.place_order()` + state save + DB append | `data/runs.db` (authoritative, permanent) |
 | `SimAdapter` | `adapters/sim.py` | Pre-loaded OHLCV + simulated portfolio state → `InferenceContext` for backsimulation (drives notebook + `sim.runner.run_backtest`) | `data/sim_runs.db` (ephemeral; TRUNCATEd at start of every `run_backtest`) |
 
@@ -492,7 +492,7 @@ Each symbol's best model may be a different type. The daily automation retrains 
 
 ### renquant_104 — Panel-LTR Cross-Sectional Ranking (active)
 
-Successor to 103, now the active daily strategy. Inherits the entire 103 decision graph — regime detection, sell priority, buy gates, sector/wash-sale guards, rotation — and replaces per-ticker `rank_score` with a cross-sectional panel-LTR score. See full design: [`doc/renquant_104_design.md`](renquant_104_design.md).
+Successor to 103, now the active daily strategy. Inherits the entire 103 decision graph — regime detection, sell priority, buy gates, sector/wash-sale guards, rotation — and replaces per-ticker `rank_score` with a cross-sectional panel-LTR score. See full design: [`doc/arch/strategy-104.md`](renquant_104_design.md).
 
 Key differences from 103:
 - **Cross-sectional panel-LTR ranker**: single XGBoost ranker trained on the whole watchlist panel each day. `PanelScoringJob` (4 Tasks) is slotted between `CandidateJob` and `RankingJob` in `InferencePipeline`, and scores both candidates and current holdings so rotation/sizing compare apples-to-apples.
@@ -506,7 +506,7 @@ Key differences from 103:
 
 ### renquant_103 — Adaptive Regime Multi-Stock (reference / rollback)
 
-Still supported and usable for rollback. See full design: [`doc/renquant_103_design.md`](renquant_103_design.md).
+Still supported and usable for rollback. See full design: [`doc/arch/strategy-103.md`](renquant_103_design.md).
 
 Key differences from 102:
 - **3-layer regime detection** always running on SPY: Hurst (slow baseline) + CUSUM (fast transition trigger) + GMM (continuous confidence)

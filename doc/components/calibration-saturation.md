@@ -119,7 +119,7 @@ transformer work.
 - Implementation: `backtesting/renquant_104/kernel/panel_pipeline/scoring.py::ApplyGlobalCalibrationTask`
 - Fitter: `scripts/recalibrate_scores.py` + `kernel.calibration.fit_panel_calibrator`
 - Schema: `panel-rank-calibration.json` (probability + expected_return maps)
-- Related: `doc/post_tier1_followups_2026-04-25.md` (Tier 1 retrain notes)
+- Related: `doc/experiments/post-tier1-followups.md` (Tier 1 retrain notes)
 
 ## Round-7 fix shipped (2026-04-26)
 

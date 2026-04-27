@@ -4,7 +4,7 @@
 Trains each backend on the exact same panel (same feature frames, same
 CV splits, same labels) and reports OOS mean-IC + per-fold IC side by
 side. Writes a markdown summary that can be appended to
-``doc/panel_training_runs.md``.
+``doc/experiments/panel-training-runs.md``.
 
 Does NOT touch ``strategy_config.json`` — backend is swapped in-memory.
 Existing ``artifacts/panel-ltr.json`` is restored from a backup at the
@@ -17,7 +17,7 @@ Usage::
     python scripts/compare_panel_backends.py --strategy renquant_104 \
         --transformer-epochs 30 --device mps
 
-Ship-gate from `doc/renquant_104_transformer_design.md §5`:
+Ship-gate from `doc/components/transformer-104.md §5`:
     transformer mean-IC >= 1.30 x xgboost mean-IC  → candidate to ship
     transformer mean-IC >= 1.10 x xgboost mean-IC  → ensemble
 

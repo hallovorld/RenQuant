@@ -16,7 +16,7 @@ Two distinct failure modes:
 
 1. **Asymmetric protection**: the BUY path has a quality floor (Gate A
    distribution / Gate B edge-Sharpe / Gate C no-trade band) — see
-   `doc/buy_logic_redesign_2026-04-26.md`. The SELL path had only
+   `doc/components/buy-logic-design.md`. The SELL path had only
    per-ticker model + path-dependent rules. A single-day model spike
    could exit a position the panel + NGBoost μ/σ still liked.
 2. **Portfolio-level invisibility**: per-ticker rules can't see how many
@@ -256,7 +256,7 @@ higher Sharpe (>= +0.05) and similar APY (-1 to +1 pp range).
 
 If hypothesis confirmed:
 - Promote `sell_gate_b.enabled=true` + `max_sells_per_bar=2` to golden.
-- Update `doc/golden_config_2026-04-23.md` → v4.2 entry.
+- Update `doc/ops/golden-config.md` → v4.2 entry.
 - Sync `strategy_config.golden.json` to live values in same commit.
 
 If APY drops > 2 pp, this is per CLAUDE.md §2b "unexpected A/B result"

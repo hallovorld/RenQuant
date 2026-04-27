@@ -14,7 +14,7 @@ Why we wash hourly bars:
 3. Tail outliers (FOMC bars, single-name news): extreme moves can
    dominate loss; should be capped, not deleted.
 
-Reference: ``doc/buy_logic_redesign_2026-04-26.md`` §hourly-wash.
+Reference: ``doc/components/buy-logic-design.md`` §hourly-wash.
 
 Wash steps (all default-off; opt-in via config flag):
 

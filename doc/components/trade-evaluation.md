@@ -339,7 +339,7 @@ without it.
 
 - **Existing**: `ticker_forward_returns` table (used for panel labels);
   `candidate_scores` (decision-time features); `trades` (action record).
-- **Related design docs**: `doc/improvement_roadmap.md` §B1-B4 (honest
+- **Related design docs**: `doc/roadmap.md` §B1-B4 (honest
   backtest framework — the same problem from the SIM side); `doc/
   database.md` (current schema).
 - **Adjacent open work**: roadmap §144 (streak → db migration —

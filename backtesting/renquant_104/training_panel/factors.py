@@ -221,7 +221,7 @@ def cross_sectional_zscore(
     2026-04-24: winsorize by default at ±3σ (post z-score). Clipping
     outliers reduces tree-split influence from extreme values and is
     standard practice at quant shops — expected +0.002-0.005 OOS IC
-    per doc/panel_ic_improvement_2026-04-24.md. Pass winsorize_clip=None
+    per doc/experiments/panel-ic-improvement.md. Pass winsorize_clip=None
     to disable (kept for A/B comparison + backward compat).
     """
     frames = []

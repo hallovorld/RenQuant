@@ -6,7 +6,7 @@
 > **Shared 103/104 trunk.** This decision graph is the inference trunk for both strategies.
 > renquant_104 (active) inserts a single `PanelScoringJob` node between `CandidateJob` and
 > `RankingJob` and adds three panel-driven policy knobs (`buy_floor`, sizing conviction,
-> `rotation_advantage`). See `doc/renquant_104_design.md` for the diff. Everything else below
+> `rotation_advantage`). See `doc/arch/strategy-104.md` for the diff. Everything else below
 > applies verbatim to both strategies.
 
 ---

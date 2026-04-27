@@ -432,5 +432,5 @@ N 默认等于 lookahead_days = 5。
 
 - 配置文件:`backtesting/renquant_104/strategy_config.json` → `panel_ltr` + `ranking.panel_scoring` 两块
 - 训练脚本:`python scripts/train_104.py --force`
-- 运行记录:`doc/panel_training_runs.md`(每次重训追加一条)
+- 运行记录:`doc/experiments/panel-training-runs.md`(每次重训追加一条)
 - 调度:Tue/Thu after-close 1:55 PM PT + Sunday 10:00 AM PT(launchd plists 在 `~/Library/LaunchAgents/com.renquant.*104.plist`)

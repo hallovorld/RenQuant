@@ -5,7 +5,7 @@
 **Last updated**: 2026-04-24
 **Based on**: renquant_103 (adaptive regime multi-stock)
 
-**Active feature set** (2026-04-24 promote): panel-LTR on **120,597 rows × 41 features** (16 neutralized per-ticker indicators + 4 technical factor z-scores + 5 fundamentals + **6 hourly-bar aggregates** + **10 ten-minute-bar aggregates**). Panel training driven by `scripts/train_104.py`. Hourly features from `data/intraday/{SYM}/1h.parquet` via `scripts/fetch_hourly_bars.py`; **10-min features from `data/intraday/{SYM}/10min.parquet` via `scripts/fetch_minute_bars.py`** (both Alpaca IEX). `panel_ltr.{hourly,minute}.enabled: true` is golden as of 2026-04-24. Strongest single feature: `m_intraday_realized_vol_z` (IC -0.079). Shelved experiments (transformer backend — 0.89× XGBoost on current size, regime-conditional calibration, LightGBM backend) retain their infra behind off-by-default flags. Full session detail: `doc/session_summary_2026-04-24.md`.
+**Active feature set** (2026-04-24 promote): panel-LTR on **120,597 rows × 41 features** (16 neutralized per-ticker indicators + 4 technical factor z-scores + 5 fundamentals + **6 hourly-bar aggregates** + **10 ten-minute-bar aggregates**). Panel training driven by `scripts/train_104.py`. Hourly features from `data/intraday/{SYM}/1h.parquet` via `scripts/fetch_hourly_bars.py`; **10-min features from `data/intraday/{SYM}/10min.parquet` via `scripts/fetch_minute_bars.py`** (both Alpaca IEX). `panel_ltr.{hourly,minute}.enabled: true` is golden as of 2026-04-24. Strongest single feature: `m_intraday_realized_vol_z` (IC -0.079). Shelved experiments (transformer backend — 0.89× XGBoost on current size, regime-conditional calibration, LightGBM backend) retain their infra behind off-by-default flags. Full session detail: `doc/archives/sessions/2026-04-24.md`.
 
 **Watchlist** (2026-04-24 expansion): 99 tickers (up from 43). 60 tech split into 4 sub-buckets: `giant_tech` (8), `ai_chip` (18), `datacenter_hw` (10), `software` (24). 39 non-tech across finance/healthcare/industrial/consumer/energy/commodity/utility. Mutual-fund-overlap-weighted curation (VPMAX + FCNTX + AGTHX top holdings prioritized).
 
@@ -27,7 +27,7 @@ logic graph is unchanged.
 | History lookback (inference) | 60 daily bars | **520 bars** when panel scoring is enabled (neutralization + factor windows need ≥504) |
 
 Everything else — exits, selection ledger, tiered thresholds, rotation — is
-identical. The logic graph in `doc/logic_graph_103.md` continues to apply
+identical. The logic graph in `doc/arch/decision-graph-103.md` continues to apply
 after inserting a single node between CandidateScan and Ranking:
 
 ```
@@ -221,7 +221,7 @@ Companion structural fix: `FilterUniverseFloorTask` always admits `defensive_tic
 
 ## 5e. Future: transformer panel backend
 
-See `doc/renquant_104_transformer_design.md`. Cross-sectional attention across the date-group as an alternative `panel_ltr.backend`. MPS-targeted. Ship gate: ≥1.3× XGBoost OOS IC.
+See `doc/components/transformer-104.md`. Cross-sectional attention across the date-group as an alternative `panel_ltr.backend`. MPS-targeted. Ship gate: ≥1.3× XGBoost OOS IC.
 
 ## 5c. Stage 1 cleanups (all behind flags, defaults preserve existing behaviour)
 
@@ -330,6 +330,6 @@ All pipeline decisions written to SQLite for audit + tuning. Split into two role
 
 8 tables: `pipeline_runs`, `candidate_scores`, `trades`, `rotations`, `training_runs`, `ticker_forward_returns`, `live_state_snapshots`, `portfolio_daily_metrics`.
 
-Full schema reference: `doc/database.md`. Every row carries `commit_sha` for reproducibility.
+Full schema reference: `doc/components/databases.md`. Every row carries `commit_sha` for reproducibility.
 
 Analysis: `scripts/analyze_decision_factors.py` and `scripts/compute_portfolio_metrics.py` produce empirical IC, tier-realization, regime-conditional, Sharpe/VaR reports.

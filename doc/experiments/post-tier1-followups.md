@@ -55,7 +55,7 @@ fit) computing OOS pool_IC.
 | **V-2** | Run iter3 (live --once full E2E) with new artifacts. Compare candidate ranks for NVDA/MSFT/MU vs JNJ vs RTX between iter1/iter2/iter3. | 5-10 min compute |
 | **V-3** | Sim verification: run `sim/runner.py` 27-mo OOS with new panel + new calibrator. Compare APY vs golden v4.1 (+39.82% APY baseline). Per CLAUDE.md §2a: if APY ≥ baseline, promote; otherwise audit before accepting (§2b). | ~30-60 min sim |
 
-### 📚 Roadmap items (longer horizon, in `doc/improvement_roadmap.md`)
+### 📚 Roadmap items (longer horizon, in `doc/roadmap.md`)
 
 - **T2-1** LightGBM LTR backend swap (highest-confidence: +128% IC validated 4-way audit)
 - **T2-2** Contrastive asset embeddings as features (Dolphin 2024 KDD)

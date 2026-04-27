@@ -7,7 +7,7 @@ measured.
 
 This is the receipt for the user's "你要给我出一份报告，实现了哪些论文的什么
 理论" request. **Honest framing**: we implemented all the listed methods; their
-empirical benefit on real data was mixed (see `doc/rust_transformer_ic_baseline.md`
+empirical benefit on real data was mixed (see `doc/experiments/rust-transformer-ic.md`
 for the head-to-head — production LightGBM still wins +0.0850 vs transformer
 +0.0519 on identical data).
 
@@ -130,7 +130,7 @@ Standard dropout in attention output and FFN.
 * **What we ported:** training-time-only dropout via candle's `dropout()`. At
   inference dropout is identity (eval mode).
 
-### 10. ApxML transformer regularization survey (referenced in [doc/rust_transformer_ic_baseline.md](rust_transformer_ic_baseline.md))
+### 10. ApxML transformer regularization survey (referenced in [doc/experiments/rust-transformer-ic.md](rust_transformer_ic_baseline.md))
 
 Recommendations for small-data transformer training: dropout 0.3-0.5,
 weight_decay 0.05-0.1, layer freezing, aggressive early stopping.
@@ -253,7 +253,7 @@ Pairwise gradient weighted by NDCG@K change. Used by production LightGBM
 (it's the `lambdarank` objective with `lambdarank_truncation_level: 10`).
 
 * **Did NOT implement in the transformer.** Identified as a likely
-  improvement path in `doc/transformer_promotion_plan.md` — when revisited,
+  improvement path in `doc/ops/transformer-promotion.md` — when revisited,
   this is the loss to test before any architectural changes (transformer
   uses ListNet currently).
 

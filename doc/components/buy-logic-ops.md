@@ -246,7 +246,7 @@ intervention).
 
 **Cause**: post-training calibrator collapsed to single y value. Not
 a buy-logic bug — calibrator-side issue.
-**Diagnose**: `doc/calibrator_saturation_2026-04-26.md` covers the
+**Diagnose**: `doc/components/calibration-saturation.md` covers the
 fix; CALIB-COLLAPSE-GUARD now refuses to ship a unique_y < 3 calibrator.
 **Fix**: rerun calibrator with `scripts/fit_panel_calibrator.py`.
 
@@ -323,10 +323,10 @@ Expected: ~370+ pass, 0 fail.
 
 ## 9. References
 
-- `doc/buy_logic_redesign_2026-04-26.md` — theory & 3-gate design
-- `doc/unified_portfolio_action_design_2026-04-26.md` — 7-stage QP design
-- `doc/calibrator_saturation_2026-04-26.md` — separate calibrator issue
-- `doc/golden_config_2026-04-23.md` — pre-this-commit baseline (v4.1)
+- `doc/components/buy-logic-design.md` — theory & 3-gate design
+- `doc/components/portfolio-qp.md` — 7-stage QP design
+- `doc/components/calibration-saturation.md` — separate calibrator issue
+- `doc/ops/golden-config.md` — pre-this-commit baseline (v4.1)
 - CLAUDE.md §2a — promotion criteria
 - CLAUDE.md §1b — every logical unit is a Task/Job/Pipeline (architectural rule)
 

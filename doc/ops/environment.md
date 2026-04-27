@@ -88,7 +88,7 @@ After installing or upgrading any package:
 ```bash
 conda activate renquant
 pip freeze > requirements.lock.txt
-git add requirements.lock.txt doc/environment.md
+git add requirements.lock.txt doc/ops/environment.md
 git commit -m "env: pin <packages>"
 ```
 

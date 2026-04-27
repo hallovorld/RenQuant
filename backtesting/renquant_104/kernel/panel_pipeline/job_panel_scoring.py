@@ -623,6 +623,6 @@ class PanelScoringJob(Job):
             # Buy-logic redesign Stage 0 (2026-04-26): quality gates
             # filter weak-signal candidates AFTER all scoring + sizing.
             # All gates default OFF — bit-for-bit parity preserved.
-            # See doc/buy_logic_redesign_2026-04-26.md for theory.
+            # See doc/components/buy-logic-design.md for theory.
             QualityFloorTask(),
         ]

@@ -27,7 +27,7 @@ This keeps one champion model per symbol while putting mixed model families onto
 
 ### renquant_104 — Panel-LTR override
 
-In renquant_104 the per-ticker `rank_score` above is **overwritten cross-sectionally** by `PanelScoringJob` (see `doc/renquant_104_design.md`) whenever `ranking.panel_scoring.enabled=true` in `strategy_config.json`. A single XGBoost learning-to-rank model, trained on neutralized forward excess returns across the whole watchlist, emits `panel_score` — which is also written into `rank_score` so every downstream consumer (ranking blend, tier thresholds, rotation advantage) sees a directly comparable cross-sectional score. Short-circuits to the per-ticker calibrated score when the flag is off.
+In renquant_104 the per-ticker `rank_score` above is **overwritten cross-sectionally** by `PanelScoringJob` (see `doc/arch/strategy-104.md`) whenever `ranking.panel_scoring.enabled=true` in `strategy_config.json`. A single XGBoost learning-to-rank model, trained on neutralized forward excess returns across the whole watchlist, emits `panel_score` — which is also written into `rank_score` so every downstream consumer (ranking blend, tier thresholds, rotation advantage) sees a directly comparable cross-sectional score. Short-circuits to the per-ticker calibrated score when the flag is off.
 
 ## Manual Model — Dual Momentum + Trend Following
 

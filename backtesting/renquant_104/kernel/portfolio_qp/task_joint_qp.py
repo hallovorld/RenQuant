@@ -27,7 +27,7 @@ NOT yet implemented (Stages 4-7):
   - Signal combination (Treynor-Black)   — Stage 6
   - CVaR risk term (Rockafellar-Uryasev) — Stage 7
 
-Reference: ``doc/unified_portfolio_action_design_2026-04-26.md``.
+Reference: ``doc/components/portfolio-qp.md``.
 """
 from __future__ import annotations
 

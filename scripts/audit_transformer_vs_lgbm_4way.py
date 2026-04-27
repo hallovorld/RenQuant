@@ -14,7 +14,7 @@ Usage:
 
 Reproduces the headline finding: Fix A alone gives +164% IC over
 current production, beating the transformer (which only gives +61%
-over current production). See doc/rust_transformer_ic_baseline.md
+over current production). See doc/experiments/rust-transformer-ic.md
 for the full analysis.
 
 The transformer score CSV is optional (skipped gracefully if missing).

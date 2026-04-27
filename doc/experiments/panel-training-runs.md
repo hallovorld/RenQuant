@@ -66,7 +66,7 @@ data made the promotion call decisive. To add post-promotion: run
 numbers to append here.
 
 **Promoted as golden v4** — `strategy_config.golden.json` +
-`strategy_config.json` + `doc/golden_config_2026-04-23.md` updated in
+`strategy_config.json` + `doc/ops/golden-config.md` updated in
 the ship commit. First live test at tomorrow's (2026-04-24) scheduled
 runs:
   - open 6:32 AM PT (sell-only)
@@ -464,7 +464,7 @@ for both.
 - Dropout=0.3 + feature_dropout=0.2 + ticker_dropout=0.1 didn't tame it enough. Would need deeper data (more years of history, or adding ETF-adjacent universe) before the transformer has a shot.
 
 **Action taken:**
-- **Shelved transformer backend** per `doc/renquant_104_transformer_design.md §5` ship-gate (ratio 0.49 well below the 1.10 ensemble threshold).
+- **Shelved transformer backend** per `doc/components/transformer-104.md §5` ship-gate (ratio 0.49 well below the 1.10 ensemble threshold).
 - Kept the transformer code shipped in the repo — 27/27 transformer / scorer / integration / ensemble tests still green. Future experiments (more data, richer features, or a different backbone) can pick up the infra without re-implementing.
 - Skipped step 2e (ensemble Task wiring into `PanelScoringJob`) — at ratio 0.49 an ensemble would drag composite IC down vs XGBoost alone.
 - XGBoost remains the production panel backend. `panel_ltr.backend` defaults to `"xgboost"` in the golden config.
@@ -645,7 +645,7 @@ Feature-importance breakdown:
 - Fundamentals (4 cols): **17.4% of gain**
 - Technical factors (4 cols): **17.2% of gain**
 
-**Key insight:** The 4 fundamental z-columns (`earnings_yield_z`, `roe_z`, `gross_profitability_z`, `book_to_price_z`) are **time-invariant per ticker** in this release — we only have a single static OpenBB snapshot, which is broadcast to every bar. So the model isn't learning "low earnings yield → future outperformance"; it's learning **"this constant 0.34 value = this is AAPL"** — covertly memorizing ticker identity through the fundamentals channel. This is the failure mode flagged in `doc/research_scoring.md §3.5` ("cross-sectional rank imputation on the feature itself — creates artificial clustering that trees latch onto as spurious signal"), which was not enforced when fundamentals were wired in this session.
+**Key insight:** The 4 fundamental z-columns (`earnings_yield_z`, `roe_z`, `gross_profitability_z`, `book_to_price_z`) are **time-invariant per ticker** in this release — we only have a single static OpenBB snapshot, which is broadcast to every bar. So the model isn't learning "low earnings yield → future outperformance"; it's learning **"this constant 0.34 value = this is AAPL"** — covertly memorizing ticker identity through the fundamentals channel. This is the failure mode flagged in `doc/research/scoring-research.md §3.5` ("cross-sectional rank imputation on the feature itself — creates artificial clustering that trees latch onto as spurious signal"), which was not enforced when fundamentals were wired in this session.
 
 **Action taken:** → Move to Run 2 with three changes:
 1. **Disable fundamentals** (`panel_ltr.fundamentals.enabled = false`). Keep the module + cache for the future time-series build-out.
