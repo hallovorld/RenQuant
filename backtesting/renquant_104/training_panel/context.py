@@ -53,6 +53,14 @@ class PanelTrainingContext:
     # can fetch new tickers if needed. Inference must remain offline-fast.
     inference_only: bool = False
 
+    # Macro factor frame (Phase 1B, 2026-04-26 round-7). Date-indexed
+    # DataFrame with z-scored macro features (VIX, HYG, UUP, ...). When
+    # populated, BuildPanelTask broadcasts these per-date values to every
+    # row of the panel. None → no-macro mode (default; ships off-by-flag).
+    # See doc/components/macro-factor-frame-design.md.
+    macro_factor_frame: pd.DataFrame | None = None
+    macro_metadata: dict = field(default_factory=dict)
+
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
     neutralized_frames: dict[str, pd.DataFrame] = field(default_factory=dict)   # post-neutralize

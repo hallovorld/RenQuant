@@ -466,12 +466,89 @@ class LoadMinuteBarsTask(PanelTask):
                  len(out), len(ctx.watchlist))
 
 
+class LoadMacroFactorsTask(PanelTask):
+    """Populate ctx.macro_factor_frame from the macro parquet cache.
+
+    Phase 1B (2026-04-26 round-7) of the macro_factor_frame project.
+    See doc/components/macro-factor-frame-design.md for full design.
+
+    No-op when `panel_ltr.macro.enabled` is false (default — ships off).
+    Cache at `data/macro/{SYMBOL}.parquet`; `scripts/fetch_macro_factors.py`
+    populates from yfinance. This task never fetches live — training
+    must be reproducible offline.
+
+    Safety harness applied:
+    - F1 per-symbol load isolation (build_macro_frame uses try/except)
+    - F4 short-window dropping via min_window_overlap_pct
+    - F5 z-score zero-variance clamp inside _rolling_z
+    - F9 corrupt parquet → cache-miss
+
+    On any exception at the task level, logs WARN and leaves
+    ctx.macro_factor_frame as None — pipeline proceeds in no-macro mode.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> bool | None:
+        cfg = ctx.config.get("panel_ltr", {}).get("macro", {})
+        if not cfg.get("enabled", False):
+            return True   # default off
+        if ctx.macro_factor_frame is not None and not ctx.macro_factor_frame.empty:
+            return True   # pre-populated (testing path or inference cache)
+
+        try:
+            from kernel.macro import (  # noqa: PLC0415
+                MacroFactorStore, build_macro_frame,
+                DEFAULT_MACRO_SYMBOLS, DEFAULT_TRANSFORMS,
+                DEFAULT_ROLLING_WINDOW,
+            )
+
+            cache_dir = _resolve_cache_dir(
+                cfg.get("cache_dir", "data/macro"), ctx.config,
+            )
+            store = MacroFactorStore(data_dir=cache_dir)
+
+            symbols = cfg.get("symbols", DEFAULT_MACRO_SYMBOLS)
+            transforms = cfg.get("transforms", DEFAULT_TRANSFORMS)
+            rolling_window = int(cfg.get("rolling_window", DEFAULT_ROLLING_WINDOW))
+            min_overlap = float(cfg.get("min_window_overlap_pct", 0.95))
+
+            # Compute training_end from panel data — use the latest date
+            # we have for the SPY benchmark as a proxy.
+            training_end = None
+            spy = ctx.spy_df
+            if spy is not None and not spy.empty:
+                training_end = pd.Timestamp(spy.index.max())
+
+            frame, metadata = build_macro_frame(
+                store,
+                symbols=symbols,
+                transforms=transforms,
+                rolling_window=rolling_window,
+                min_window_overlap_pct=min_overlap,
+                training_end=training_end,
+            )
+            ctx.macro_factor_frame = frame
+            ctx.macro_metadata = metadata
+            log.info(
+                "LoadMacroFactorsTask: %d features (%d symbols used, %d skipped)",
+                metadata.get("n_features", 0),
+                len(metadata.get("symbols_used", [])),
+                len(metadata.get("symbols_skipped", [])),
+            )
+        except Exception as exc:
+            log.warning(
+                "LoadMacroFactorsTask: load failed (%s) — proceeding in no-macro "
+                "mode (ctx.macro_factor_frame stays None)", exc,
+            )
+            ctx.macro_factor_frame = None
+        return True
+
+
 class PanelDataJob(PanelJob):
-    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute.
+    """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute + macro.
 
     Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
                 → LoadEarningsSurprise → LoadInsiderTrades → LoadHourlyBars
-                → LoadMinuteBars
+                → LoadMinuteBars → LoadMacroFactors
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -487,6 +564,7 @@ class PanelDataJob(PanelJob):
             LoadInsiderTradesTask(),
             LoadHourlyBarsTask(),
             LoadMinuteBarsTask(),
+            LoadMacroFactorsTask(),
         ]
 
 
