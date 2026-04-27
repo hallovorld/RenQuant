@@ -197,6 +197,17 @@ class PanelLGBMModel:
         integer relevance, so NDCG eval works (unlike XGBoost ranking).
         """
         self.feature_cols = list(feature_cols)
+        # Audit LGBM #7 fix (2026-04-27): validate feature_cols ⊆ panel.columns
+        # at train time. Pre-fix, missing column raised cryptic KeyError
+        # deep inside pandas. Mirror predict()'s validation.
+        missing_train_cols = [c for c in feature_cols if c not in panel.columns]
+        if missing_train_cols:
+            raise ValueError(
+                f"PanelLGBMModel.train: panel missing required feature "
+                f"columns: {missing_train_cols[:5]}"
+                f"{'…' if len(missing_train_cols) > 5 else ''} "
+                f"(of {len(feature_cols)} expected)."
+            )
         # Audit fix LGB-NEW-2 (2026-04-26 round-3): validate group_sizes
         # match panel length. Same as XGBoost X15.
         gs_sum = int(np.sum(group_sizes))
@@ -205,7 +216,10 @@ class PanelLGBMModel:
                 f"PanelLGBMModel.train: sum(group_sizes)={gs_sum} != "
                 f"len(panel)={len(panel)}."
             )
-        X = panel[feature_cols].values
+        # Audit LGBM #4 fix (2026-04-27): unify train/predict dtype to
+        # float32. Pre-fix train used default (float64), predict used
+        # float32 → precision drift on tiny splits.
+        X = panel[feature_cols].to_numpy(dtype=np.float32)
         y_raw = panel[label_col].values.astype(float)
         # Audit fix LGB-NEW-1 (CRITICAL): pass group_sizes for PER-DATE
         # rank bucketing. Pre-fix global bucketing destroyed signal.
@@ -267,7 +281,8 @@ class PanelLGBMModel:
         valid_names = ["train"]
         callbacks: list = []
         if eval_panel is not None and eval_group_sizes is not None:
-            Xe = eval_panel[feature_cols].values
+            # Audit LGBM #4 fix: same float32 cast as train.
+            Xe = eval_panel[feature_cols].to_numpy(dtype=np.float32)
             ye_raw = eval_panel[label_col].values.astype(float)
             # Audit fix LGB-NEW-1: per-date rank bucketing on eval too.
             ye = _bucketize_labels(ye_raw, n_buckets=11,
