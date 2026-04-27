@@ -1,8 +1,38 @@
 # Macro Factor Frame — Redesign (v2)
 
-**Status**: Design / not yet implemented (2026-04-27).
+**Status**: ⚠️ Implemented + tested (2026-04-27); SAME IC as v1 broadcast — diagnosis was incomplete.
 **Trigger**: User direction "你的代码设计有缺陷，找点参考文献或者开源代码" after the v1 macro design produced consistently negative IC across both XGBoost (-18%) and LightGBM (-53%) backends.
 **Supersedes**: `macro-factor-frame-design.md` (v1, broadcast-per-date design).
+
+---
+
+## 🚨 v2 retrain result (2026-04-27)
+
+| Backend | Macro design | Features | OOS IC | Notes |
+|---|---|---|---|---|
+| XGB (PROD) | OFF | 28 | **+0.0482** | baseline |
+| XGB | v1 broadcast | 61 | +0.0393 (-18%) | predicted bug — passed |
+| **XGB** | **v2 per-ticker β** | **61** | **+0.0393 (-18%)** | **IDENTICAL to v1!** |
+
+The within-date-invariance hypothesis was correct in principle but didn't
+explain the IC penalty. Per-ticker β has within-date variance (verified at
+training: PanelFeatureJob[macro v2] merged β into 103/103 tickers), yet
+produces the same IC as v1 broadcast. The 33 extra features themselves
+are **just noise relative to existing 28 features** — they crowd out the
+booster's `colsample_bytree=0.5` random sampling regardless of whether they
+have within-date variance or not.
+
+Conclusion: macro factors (VIX/HYG/UUP/etc) on this panel + XGBoost
+rank:pairwise objective don't add cross-sectional ranking signal. Could
+still help via:
+- Two-stage: macro predicts equity premium time-series, applied as
+  regime gate (NOT a ranker feature). Goyal-Welch 2008.
+- Regime-conditional ensemble (T2-3): train 4 panels per regime, route
+  by macro state.
+- Macro × ticker interaction features: e.g. `mom_12_1_z × VIX_state`.
+  Forces conditional cross-sectional effect.
+
+Artifact preserved at `panel-ltr.macro-v2.bak.json` (61 features, 0.0393 IC).
 
 ---
 

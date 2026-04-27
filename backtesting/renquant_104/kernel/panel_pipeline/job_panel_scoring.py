@@ -98,7 +98,16 @@ class BuildFeatureMatrixTask(Task):
         factor_frames  = getattr(ctx, "_panel_factor_frames", None)
         # Bug #25 fix: macro frame is per-DATE (not per-ticker), broadcast
         # by build_inference_matrix to every row at scoring time.
-        macro_frame    = getattr(ctx, "_panel_macro_frame", None)
+        # Audit XM1+XM4 fix (2026-04-27): when macro v2 (per-ticker β) is
+        # active, the v1 broadcast path is silenced — β columns flow
+        # through factor_frames instead. Otherwise broadcasting v1 macro
+        # PLUS v2 β is double-injection.
+        macro_cfg = ctx.config.get("panel_ltr", {}).get("macro", {})
+        macro_version = str(macro_cfg.get("version", "v1")).lower()
+        if macro_version == "v2":
+            macro_frame = None   # v2 routes through factor_frames; broadcast OFF
+        else:
+            macro_frame = getattr(ctx, "_panel_macro_frame", None)
         if feature_frames is None:
             log.warning("BuildFeatureMatrixTask: ctx has no _panel_feature_frames "
                         "(adapter must populate) — leaving matrix unset; "
