@@ -778,15 +778,26 @@ class PanelTransformerModel:
         # config (added in #27) further prevents accidental chunk-split
         # if the operator bypasses auto-bump (e.g., loads model with
         # smaller max_tickers).
+        # Bug #23 fix (2026-04-26 round-7): auto-bump must consider BOTH
+        # train AND eval group sizes. Pre-fix, only train was checked.
+        # Stage C-3 v3 hourly transformer crashed at _build_date_groups
+        # for the eval panel: train max=604 (so max_tickers stayed 604),
+        # eval max=616 → ValueError on first eval batch. Now: take max
+        # across both splits before bumping.
+        all_sizes: list[int] = []
         if len(group_sizes):
-            max_gs_train = int(np.max(group_sizes))
-            if max_gs_train > p.max_tickers:
+            all_sizes.append(int(np.max(group_sizes)))
+        if eval_group_sizes is not None and len(eval_group_sizes):
+            all_sizes.append(int(np.max(eval_group_sizes)))
+        if all_sizes:
+            max_gs = max(all_sizes)
+            if max_gs > p.max_tickers:
                 log.info(
-                    "auto-bump max_tickers: %d → %d (train data has %d rows in "
-                    "largest date-group)",
-                    p.max_tickers, max_gs_train, max_gs_train,
+                    "auto-bump max_tickers: %d → %d (largest date-group "
+                    "across train+eval has %d rows)",
+                    p.max_tickers, max_gs, max_gs,
                 )
-                p.max_tickers = max_gs_train
+                p.max_tickers = max_gs
 
         # Build batches
         xtr, ytr, padtr, nantr = _build_date_groups(
