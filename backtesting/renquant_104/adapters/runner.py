@@ -702,15 +702,26 @@ class RunnerAdapter:
                     self._position_hwm[ticker] = max(
                         float(self._position_hwm.get(ticker, 0.0)), price,
                     )
+                # Bug #22 fix (2026-04-26 round-7): defensive .get() on
+                # order keys. The QP solver path (task_joint_qp.py) emits
+                # order dicts WITHOUT rs_score / regime — they're produced
+                # by SizeAndEmitTask but not by JointPortfolioQPTask.
+                # Pre-fix the bare order["rs_score"] raised KeyError →
+                # commit() crashed AFTER orders were submitted to Alpaca,
+                # leaving live state inconsistent (orders filled but trade
+                # log not written). Now: defensive get with safe defaults
+                # so all order producers (selection / rotation / topup /
+                # qp / future) are tolerated. rs_score is retired from
+                # ranking math anyway (CLAUDE.md), so 0.0 is correct.
                 self._log_trade(ctx, {
                     "action":     "BUY",
                     "symbol":     ticker,
                     "shares":     shares,
                     "price":      price,
                     "invest":     invest,
-                    "rank_score": order["rank_score"],
-                    "rs_score":   order["rs_score"],
-                    "regime":     order["regime"],
+                    "rank_score": order.get("rank_score", 0.0) or 0.0,
+                    "rs_score":   order.get("rs_score",   0.0) or 0.0,
+                    "regime":     order.get("regime",     ctx.regime),
                 })
 
         # ── Persist updated sell streaks from SellJob ─────────────────────
