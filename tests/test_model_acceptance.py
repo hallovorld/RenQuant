@@ -307,7 +307,8 @@ class TestConfigDrivenThresholds:
         assert acc.get("g7_severity") == "hard"
         # Sanity: building gates from this config doesn't crash
         gates = ModelAcceptanceGate(config=acc).gates
-        assert len(gates) == 8
+        # Phase 1 had 8 gates; Phase 2 added G9/G10/G11 → 11
+        assert len(gates) == 11
 
 
 # ── Atomic swap (promote / reject / rollback) ─────────────────────────────────

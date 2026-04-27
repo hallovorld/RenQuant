@@ -300,6 +300,105 @@ def _gate_g7_oos_ic_absolute_floor(staging: dict, active: dict | None,
     )
 
 
+def _gate_g9_sim_apy_vs_prior(staging: dict, active: dict | None,
+                               max_pp_drop: float = 1.0) -> GateResult:
+    """G9 (Phase 2): sim APY ≥ prior APY − max_pp_drop percentage points.
+
+    Catches the "looks good in OOS IC, falls apart in actual sim" case
+    that pure-IC gates can't see. Reads from `metadata.sim_smoke.apy`
+    populated by `kernel.sim_smoke.add_smoke_metrics_to_artifact`.
+
+    Skip-pass when sim_smoke metrics absent on staging — this gate is
+    only meaningful when both staging AND prior have run smoke tests.
+    """
+    md_new = _safe_get_metadata(staging)
+    smoke_new = md_new.get("sim_smoke") or {}
+    new_apy = smoke_new.get("apy")
+    if new_apy is None:
+        return GateResult("G9_sim_apy", "hard", True, None, None,
+                          "no sim_smoke.apy on staging (skip)")
+    if active is None:
+        return GateResult("G9_sim_apy", "hard", new_apy > -0.10,
+                          float(new_apy), -0.10,
+                          f"no prior — accept if apy > -10% (got {new_apy:+.2%})")
+    md_prior = _safe_get_metadata(active)
+    smoke_prior = md_prior.get("sim_smoke") or {}
+    prior_apy = smoke_prior.get("apy")
+    if prior_apy is None:
+        return GateResult("G9_sim_apy", "hard", True, None, None,
+                          "no sim_smoke.apy on prior (skip)")
+    threshold = float(prior_apy) - (max_pp_drop / 100.0)
+    return GateResult(
+        "G9_sim_apy", "hard", new_apy >= threshold,
+        float(new_apy), float(threshold),
+        f"new={new_apy:+.2%} prior={prior_apy:+.2%} (max_pp_drop={max_pp_drop:.1f}pp)",
+    )
+
+
+def _gate_g10_sim_sharpe_vs_prior(staging: dict, active: dict | None,
+                                   max_drop: float = 0.1) -> GateResult:
+    """G10 (Phase 2): sim Sharpe ≥ prior Sharpe − max_drop.
+
+    A model with the same APY but much lower Sharpe is risk-degraded.
+    Skip-pass when smoke metrics absent.
+    """
+    md_new = _safe_get_metadata(staging)
+    smoke_new = md_new.get("sim_smoke") or {}
+    new_sharpe = smoke_new.get("sharpe")
+    if new_sharpe is None:
+        return GateResult("G10_sim_sharpe", "hard", True, None, None,
+                          "no sim_smoke.sharpe on staging (skip)")
+    if active is None:
+        return GateResult("G10_sim_sharpe", "hard", new_sharpe > 0.0,
+                          float(new_sharpe), 0.0,
+                          f"no prior — accept on sharpe > 0 (got {new_sharpe:+.2f})")
+    md_prior = _safe_get_metadata(active)
+    smoke_prior = md_prior.get("sim_smoke") or {}
+    prior_sharpe = smoke_prior.get("sharpe")
+    if prior_sharpe is None:
+        return GateResult("G10_sim_sharpe", "hard", True, None, None,
+                          "no sim_smoke.sharpe on prior (skip)")
+    threshold = float(prior_sharpe) - max_drop
+    return GateResult(
+        "G10_sim_sharpe", "hard", new_sharpe >= threshold,
+        float(new_sharpe), float(threshold),
+        f"new={new_sharpe:+.2f} prior={prior_sharpe:+.2f} (max_drop={max_drop:.2f})",
+    )
+
+
+def _gate_g11_turnover_ratio(staging: dict, active: dict | None,
+                              max_multiplier: float = 1.5) -> GateResult:
+    """G11 (Phase 2): turnover_ratio ≤ prior × max_multiplier.
+
+    A model that triples turnover for the same returns is paying more
+    in slippage/tax — net real performance is worse even if gross
+    APY/Sharpe look the same. Configurable via `g11_max_multiplier`.
+
+    Skip-pass when smoke metrics absent.
+    """
+    md_new = _safe_get_metadata(staging)
+    smoke_new = md_new.get("sim_smoke") or {}
+    new_to = smoke_new.get("turnover_ratio")
+    if new_to is None:
+        return GateResult("G11_turnover", "soft", True, None, None,
+                          "no sim_smoke.turnover_ratio on staging (skip)")
+    if active is None:
+        return GateResult("G11_turnover", "soft", True, None, None,
+                          "no prior — accept any turnover")
+    md_prior = _safe_get_metadata(active)
+    smoke_prior = md_prior.get("sim_smoke") or {}
+    prior_to = smoke_prior.get("turnover_ratio")
+    if prior_to is None or prior_to <= 0:
+        return GateResult("G11_turnover", "soft", True, None, None,
+                          "no prior turnover (skip)")
+    threshold = float(prior_to) * max_multiplier
+    return GateResult(
+        "G11_turnover", "soft", new_to <= threshold,
+        float(new_to), float(threshold),
+        f"new={new_to:.2f}x prior={prior_to:.2f}x (max_multiplier={max_multiplier:.2f})",
+    )
+
+
 def _gate_g8_per_ticker_variance(staging: dict, active: dict | None,
                                   min_std: float = 0.001) -> GateResult:
     """G8 (soft): per-bar score std > 0.001.
@@ -334,6 +433,9 @@ DEFAULT_GATES: list[AcceptanceGate] = [
     AcceptanceGate("G6_inference_smoke",   "hard", _gate_g6_inference_smoke),
     AcceptanceGate("G7_oos_ic_floor",      "hard", _gate_g7_oos_ic_absolute_floor),
     AcceptanceGate("G8_per_ticker_variance","soft", _gate_g8_per_ticker_variance),
+    AcceptanceGate("G9_sim_apy",           "hard", _gate_g9_sim_apy_vs_prior),
+    AcceptanceGate("G10_sim_sharpe",       "hard", _gate_g10_sim_sharpe_vs_prior),
+    AcceptanceGate("G11_turnover",         "soft", _gate_g11_turnover_ratio),
 ]
 
 
@@ -352,20 +454,34 @@ def build_gates_from_config(config: dict) -> list[AcceptanceGate]:
     without forking the gate code (e.g., loosen G4 for an exploratory
     panel rebuild known to drift under noise).
     """
-    g4_md   = float(config.get("g4_max_degradation", 0.05))
-    g4_sev  = str(config.get("g4_severity",         "hard"))
-    g7_fl   = float(config.get("g7_floor",          0.02))
-    g7_sev  = str(config.get("g7_severity",         "hard"))
-    g8_min  = float(config.get("g8_min_std",        0.001))
-    g8_sev  = str(config.get("g8_severity",         "soft"))
+    g4_md    = float(config.get("g4_max_degradation",  0.05))
+    g4_sev   = str(  config.get("g4_severity",          "hard"))
+    g7_fl    = float(config.get("g7_floor",             0.02))
+    g7_sev   = str(  config.get("g7_severity",          "hard"))
+    g8_min   = float(config.get("g8_min_std",           0.001))
+    g8_sev   = str(  config.get("g8_severity",          "soft"))
+    g9_pp    = float(config.get("g9_max_pp_drop",       1.0))
+    g9_sev   = str(  config.get("g9_severity",          "hard"))
+    g10_drop = float(config.get("g10_max_sharpe_drop",  0.1))
+    g10_sev  = str(  config.get("g10_severity",         "hard"))
+    g11_mult = float(config.get("g11_max_multiplier",   1.5))
+    g11_sev  = str(  config.get("g11_severity",         "soft"))
 
     def _g4(s, a, _md=g4_md): return _gate_g4_oos_ic_vs_prior(s, a, max_degradation=_md)
     def _g7(s, a, _fl=g7_fl, _sev=g7_sev):
         r = _gate_g7_oos_ic_absolute_floor(s, a, floor=_fl)
-        # Override severity (gate fn hard-codes "hard" — config can downgrade).
         return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
     def _g8(s, a, _min=g8_min, _sev=g8_sev):
         r = _gate_g8_per_ticker_variance(s, a, min_std=_min)
+        return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
+    def _g9(s, a, _pp=g9_pp, _sev=g9_sev):
+        r = _gate_g9_sim_apy_vs_prior(s, a, max_pp_drop=_pp)
+        return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
+    def _g10(s, a, _drop=g10_drop, _sev=g10_sev):
+        r = _gate_g10_sim_sharpe_vs_prior(s, a, max_drop=_drop)
+        return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
+    def _g11(s, a, _mult=g11_mult, _sev=g11_sev):
+        r = _gate_g11_turnover_ratio(s, a, max_multiplier=_mult)
         return GateResult(r.name, _sev, r.passed, r.metric, r.threshold, r.detail)
 
     return [
@@ -377,6 +493,9 @@ def build_gates_from_config(config: dict) -> list[AcceptanceGate]:
         AcceptanceGate("G6_inference_smoke",   "hard", _gate_g6_inference_smoke),
         AcceptanceGate("G7_oos_ic_floor",      g7_sev, _g7),
         AcceptanceGate("G8_per_ticker_variance",g8_sev, _g8),
+        AcceptanceGate("G9_sim_apy",           g9_sev, _g9),
+        AcceptanceGate("G10_sim_sharpe",       g10_sev,_g10),
+        AcceptanceGate("G11_turnover",         g11_sev,_g11),
     ]
 
 

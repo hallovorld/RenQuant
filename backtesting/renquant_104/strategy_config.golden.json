@@ -693,14 +693,21 @@
     "model_ttl_days": 1
   },
   "acceptance": {
-    "_doc": "Model acceptance gates (Phase 1+ 2026-04-26). See doc/components/model-selection.md.",
+    "_doc": "Model acceptance gates (Phase 1+2 2026-04-26). See doc/components/model-selection.md.",
     "enabled": true,
     "g4_max_degradation": 0.05,
     "g4_severity": "hard",
     "g7_floor": 0.02,
     "g7_severity": "hard",
     "g8_min_std": 0.001,
-    "g8_severity": "soft"
+    "g8_severity": "soft",
+    "g9_max_pp_drop": 1.0,
+    "g9_severity": "hard",
+    "g10_max_sharpe_drop": 0.1,
+    "g10_severity": "hard",
+    "g11_max_multiplier": 1.5,
+    "g11_severity": "soft",
+    "run_sim_smoke": false
   },
   "persistence": {
     "enabled": true,
