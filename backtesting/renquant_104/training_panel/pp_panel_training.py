@@ -543,12 +543,64 @@ class LoadMacroFactorsTask(PanelTask):
         return True
 
 
+class LoadMacroPerTickerBetasTask(PanelTask):
+    """Macro v2 (2026-04-27): compute per-ticker rolling β to macro factors.
+
+    Reads `ctx.ohlcv` + `ctx.macro_factor_frame` (already populated by
+    LoadMacroFactorsTask). For each ticker, produces a DataFrame of
+    rolling 60d β to each macro factor — values DIFFER per ticker on
+    same date so they enter the cross-sectional rank loss properly.
+
+    No-op when `panel_ltr.macro.version != "v2"` (default v1 → broadcast).
+    Also no-op when macro_factor_frame is None / empty (covers default
+    `panel_ltr.macro.enabled: false` case).
+
+    See doc/components/macro-factor-frame-redesign.md.
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> bool:
+        cfg = ctx.config.get("panel_ltr", {}).get("macro", {})
+        version = str(cfg.get("version", "v1")).lower()
+        if version != "v2":
+            return True
+        if ctx.macro_factor_frame is None or ctx.macro_factor_frame.empty:
+            return True
+        try:
+            from kernel.macro_per_ticker import (  # noqa: PLC0415
+                compute_per_ticker_macro_betas,
+                macro_levels_to_returns,
+            )
+            macro_returns = macro_levels_to_returns(ctx.macro_factor_frame)
+            if macro_returns.empty:
+                log.warning("LoadMacroPerTickerBetasTask: macro_levels_to_returns "
+                            "produced empty DataFrame — skipping (likely no "
+                            "*_level_z columns in v1 macro frame)")
+                return True
+            window = int(cfg.get("rolling_window", 60))
+            betas = compute_per_ticker_macro_betas(
+                ctx.ohlcv, macro_returns,
+                rolling_window=window,
+                min_window=int(cfg.get("min_window", 30)),
+            )
+            ctx.macro_betas = betas
+            n_cols = len(next(iter(betas.values())).columns) if betas else 0
+            log.info("LoadMacroPerTickerBetasTask: built per-ticker β for "
+                     "%d/%d tickers (%d cols each, window=%dd)",
+                     len(betas), len(ctx.ohlcv), n_cols, window)
+        except Exception as exc:
+            log.warning("LoadMacroPerTickerBetasTask: failed — %s. "
+                        "Pipeline proceeds with macro_betas={} (no v2 features)",
+                        exc)
+            ctx.macro_betas = {}
+        return True
+
+
 class PanelDataJob(PanelJob):
     """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute + macro.
 
     Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
                 → LoadEarningsSurprise → LoadInsiderTrades → LoadHourlyBars
-                → LoadMinuteBars → LoadMacroFactors
+                → LoadMinuteBars → LoadMacroFactors → LoadMacroPerTickerBetas
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -565,6 +617,7 @@ class PanelDataJob(PanelJob):
             LoadHourlyBarsTask(),
             LoadMinuteBarsTask(),
             LoadMacroFactorsTask(),
+            LoadMacroPerTickerBetasTask(),
         ]
 
 
@@ -610,6 +663,32 @@ class PanelFeatureJob(PanelJob):
             tc.ticker: tc.raw_factor_frame for tc in ticker_ctxs
             if tc.raw_factor_frame is not None
         }
+
+        # Macro v2 (2026-04-27): merge per-ticker β into raw_factor_frames
+        # so they go through FactorZScoreTask (cross-sectional z-score per
+        # date) along with size_z / mom_12_1_z / etc. β values DIFFER per
+        # ticker on same date → enter rank loss properly.
+        if ctx.macro_betas:
+            n_merged = 0
+            for ticker, beta_df in ctx.macro_betas.items():
+                if ticker not in ctx.raw_factor_frames or beta_df.empty:
+                    continue
+                fac = ctx.raw_factor_frames[ticker]
+                # Reindex β to factor frame's index then concat columns
+                beta_aligned = beta_df.reindex(fac.index)
+                # Drop columns whose names already exist (collision guard)
+                existing = set(fac.columns)
+                new_cols = [c for c in beta_aligned.columns if c not in existing]
+                if new_cols:
+                    ctx.raw_factor_frames[ticker] = pd.concat(
+                        [fac, beta_aligned[new_cols]], axis=1, copy=False,
+                    )
+                    n_merged += 1
+            log.info(
+                "PanelFeatureJob[macro v2]: merged per-ticker β into %d/%d "
+                "raw_factor_frames", n_merged, len(ctx.raw_factor_frames),
+            )
+
         n_in = len(ticker_ctxs)
         n_feat   = len(ctx.feature_frames)
         n_neut   = len(ctx.neutralized_frames)

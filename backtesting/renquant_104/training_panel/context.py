@@ -61,6 +61,14 @@ class PanelTrainingContext:
     macro_factor_frame: pd.DataFrame | None = None
     macro_metadata: dict = field(default_factory=dict)
 
+    # Macro v2 (2026-04-27): per-ticker rolling β to macro factors.
+    # dict[ticker, DataFrame] indexed by date; columns are
+    # `beta_<factor>_<window>d`. Computed by LoadMacroPerTickerBetasTask
+    # and merged into factor_frames by BuildPanelTask when
+    # `panel_ltr.macro.version` == "v2". See
+    # doc/components/macro-factor-frame-redesign.md.
+    macro_betas: dict[str, "pd.DataFrame"] = field(default_factory=dict)
+
     # ── Phase 2 collected from per-ticker contexts ────────────────────────
     feature_frames: dict[str, pd.DataFrame] = field(default_factory=dict)       # pre-neutralize
     neutralized_frames: dict[str, pd.DataFrame] = field(default_factory=dict)   # post-neutralize

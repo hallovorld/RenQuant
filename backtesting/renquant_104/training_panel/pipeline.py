@@ -100,6 +100,11 @@ def prepare_inference_panel_frames(
     # chain must mirror it OR a symmetry guard test fails.
     LoadMacroFactorsTask().run(ctx)
 
+    # Macro v2 (2026-04-27): per-ticker β. Must mirror PanelDataJob.tasks
+    # order — the symmetry guard test enforces this.
+    from training_panel.pp_panel_training import LoadMacroPerTickerBetasTask  # noqa: PLC0415
+    LoadMacroPerTickerBetasTask().run(ctx)
+
     ticker_ctxs = [
         TickerPanelContext(
             ticker=t, ohlcv=ctx.ohlcv, sector_momentum=ctx.sector_momentum,
@@ -149,6 +154,25 @@ def prepare_inference_panel_frames(
         tc.ticker: tc.raw_factor_frame for tc in ticker_ctxs
         if tc.raw_factor_frame is not None
     }
+
+    # Macro v2 (2026-04-27): merge per-ticker β into raw_factor_frames
+    # — same protocol as training-side PanelFeatureJob.
+    if ctx.macro_betas:
+        n_merged = 0
+        for ticker, beta_df in ctx.macro_betas.items():
+            if ticker not in ctx.raw_factor_frames or beta_df.empty:
+                continue
+            fac = ctx.raw_factor_frames[ticker]
+            beta_aligned = beta_df.reindex(fac.index)
+            existing = set(fac.columns)
+            new_cols = [c for c in beta_aligned.columns if c not in existing]
+            if new_cols:
+                ctx.raw_factor_frames[ticker] = pd.concat(
+                    [fac, beta_aligned[new_cols]], axis=1, copy=False,
+                )
+                n_merged += 1
+        log.info("prepare_inference_panel_frames[macro v2]: merged β into "
+                 "%d/%d raw_factor_frames", n_merged, len(ctx.raw_factor_frames))
 
     # Cross-sectional z-score per-ticker indicators so inference distribution
     # matches training. Must run BEFORE FactorZScoreTask so order matches
