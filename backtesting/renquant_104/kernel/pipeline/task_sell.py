@@ -211,11 +211,9 @@ class SellGateBTask(Task):
             # Don't touch streak — once μ/σ drops below floor, the
             # accumulated streak fires immediately on the next bar.
             tc.exit_signal = None
-            # Increment counter so adapter logs visibility (mirrors
-            # buy-side QualityFloorTask blocked-by-ticker semantics).
-            blocked = getattr(tc, "_sell_gate_b_blocked", False)
-            tc._sell_gate_b_blocked = True   # noqa: SLF001 — diagnostic flag
-            del blocked   # silence ruff
+            # Note: visibility comes from the log.info above; no per-task
+            # counter needed here (round-7 audit removed dead diagnostic
+            # write of `_sell_gate_b_blocked` that nothing read).
 
 
 class PanelConvictionExitTask(Task):
