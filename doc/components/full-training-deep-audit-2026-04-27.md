@@ -223,6 +223,34 @@ inflated because the macro v2 features themselves were near-zero
 signal — leaks of zero signal don't move IC much. **Verdict on macro
 v2 holds: 11 per-ticker β features don't beat 28-feature no-macro.**
 
+### Tier 1 macro expansion verdict (30 ETFs, 2026-04-27 10:58 PT)
+
+| Variant | post-fix IC | Δ vs PROD | Δ vs 11-sym macro v2 |
+|---|---|---|---|
+| XGB no-macro (PROD) | **+0.0411** | — | — |
+| XGB+macro v2 (11 sym) | +0.0373 | −9.2% | — |
+| XGB+macro v2 (**30 sym**) | **+0.0370** | −10.0% | −0.0003 (noise) |
+
+**Tripling the macro ETF count (11 → 30) did NOT help.** Adding 19 new
+ETFs covering defense, oil, semis, banks, biotech, gold miners, SaaS,
+China, EM, Europe, Japan, FX, vol-regimes, long Treasury, IG credit,
+agri, TIPS produced essentially zero change in OOS IC.
+
+**Implications**:
+1. The macro β features are NOT the bottleneck. Adding more cross-asset
+   ETFs doesn't add new orthogonal signal beyond what VXX/HYG/UUP/etc.
+   already capture.
+2. Tier 2 (FRED rates / inflation / activity) might still help — those
+   capture different information channels (yield curve, real rates,
+   labor) that ETFs only proxy indirectly. Worth testing once user
+   provides FRED API key.
+3. More likely: panel-LTR macro signal is **saturated** at this panel
+   size (99 tickers × 753 dates = 75K rows). Per Grinold-Kahn, IR ∝
+   IC × √breadth. The constraint is breadth, not feature count.
+4. Recommended next: expand watchlist to 200 tickers (the breadth
+   lever), or try Tier 2 FRED if the user wants to confirm that
+   ETFs/FRED are equivalent or complementary.
+
 ## Audit summary as of 10:11 PT
 
 - **2 HIGH bugs found and fixed**:
