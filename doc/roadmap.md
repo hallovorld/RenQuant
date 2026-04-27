@@ -141,6 +141,35 @@ SIM side), §144 (streak → db — same "db is canonical" theme).
 
 ---
 
+## 📦 2026-04-26 — Model metadata DB + artifact cloud backup (DEFERRED)
+
+**User ask 2026-04-26 evening**: "每个模型的metadata应该进数据库，模型artifact应该有云备份".
+
+**Status**: ⏸️ DEFERRED — full plan written (`doc/components/metadata-db-and-backup-plan.md`), implementation moved to next session per user direction "下次再处理".
+
+**What's already designed** (ready to implement):
+- 7 columns added to `training_runs`: sim_apy/sharpe/calmar/max_dd/turnover, promoted_at, demoted_at, replaced_run_id, sha256_hex, cloud_backup_url
+- 2 new tables: `training_run_gates` (per-gate verdicts), `tournament_rankings`
+- Cloud backup tiers: Hot (per-promote, immutable run_id), Warm (daily db backup), Cold (weekly tar)
+- Recommended provider: Backblaze B2 (~$0.50/year for everything, S3-compatible API)
+
+**Implementation phases** (~6 hours total):
+1. Phase A (1.5h): schema migration + write-path in `record_training_run` and `model_acceptance.promote()`
+2. Phase B (1h): backfill from existing `panel-ltr*.json` artifacts
+3. Phase C (30min): `scripts/model_history.py` CLI
+4. Phase D (1h): `kernel/cloud_backup.py` B2 client
+5. Phase E (30min): `promote()` upload integration
+6. Phase F (1h): daily/weekly cron + restore script
+
+**Decisions still needed from operator** (block implementation):
+- Provider confirmation (B2 default? alternative?)
+- Bucket name (`renquant-models` default?)
+- Retention agreement (keep tier 1 forever, ~$1/decade)
+- Trigger: only-promoted vs all-trained
+- Encryption: server-side only vs client-side keys
+
+---
+
 ## 🛡 2026-04-26 — Cloud backup plan (operational hygiene)
 
 **User ask 2026-04-26:**
