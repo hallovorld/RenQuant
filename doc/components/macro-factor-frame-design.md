@@ -41,9 +41,10 @@ The frame is **broadcast** at panel-build time: each row inherits the macro valu
 
 **What stays in `sector_etf_map` as RS comparators:** sector ETFs that map a watchlist ticker to its sector benchmark (XLK for tech, XLI for industrials, etc.). The map's purpose is per-ticker RS scoring, **distinct** from macro broadcast.
 
-**What MIGRATES from `watchlist` → macro frame:**
-- `defensive_tickers = [GLD, TLT, XLV, XLU]` → all four become macro features.
-- `BEAR` regime currently slots a defensive — needs a successor. **Recommendation:** in BEAR, hold cash + add a hedge ETF if equity exposure > 0. The hedge ETF would be a SINGLE explicit holding (e.g., `bear_hedge_ticker = SH` — inverse SPY) rather than picking among defensives.
+**What APPEARS IN BOTH `watchlist` AND macro frame** (per user 2026-04-26):
+- `defensive_tickers = [GLD, TLT, XLV, XLU]` STAY in watchlist — they're tradable in BEAR.
+- They ALSO appear as macro features for cross-section info-density.
+- Small redundancy is intentional: one role (tradability) does not preclude the other (cross-section info).
 
 ---
 
@@ -496,7 +497,59 @@ If negative: keep code merged (defenses against future regression), keep flag of
 - **Asness, Frazzini, Pedersen (2019)** — *Quality minus Junk* — defensive factor (low-vol) as risk premium
 - **López de Prado (2018)** — *Advances in Financial ML* Ch. 8 (Feature Importance) — methodology to validate the proposed monotone constraints empirically
 
-## 11. Cross-references
+## 11. Safety harness (added 2026-04-26 round-7 per user spec)
+
+User concern: *"我对你的工程质量非常担忧，我认为这个feature会导致你根本做不出
+模型或者模型质量严重下降"* — adding macros could break model generation OR
+silently degrade quality. These rigorous defenses make both impossible.
+
+### 11.1 Failure modes + defenses (F1–F10)
+
+| # | Failure mode | Defense |
+|---|---|---|
+| F1 | yfinance fetch fails (network / throttling / API change) | `LoadMacroFactorsTask` returns `True` on any exception → `ctx.macro_factor_frame is None` → `BuildPanelTask` skips merge → training proceeds **identically to today's flow**. Test: `test_macro_load_failure_falls_back_to_no_macro` |
+| F2 | Macro symbol delisted / ticker rename (e.g., GBTC → IBIT) | Per-symbol try/except — one missing symbol doesn't kill others. Log WARN with sym name + skip |
+| F3 | Macro data has weekend gaps / NYSE-holiday mismatches | Forward-fill within ticker after merge; trailing NaN → `0.0` (z-scored mean). Standard pandas merge with `how="left"` ensures panel rows are never dropped |
+| F4 | Rolling window too short for some macros (new ETF, KRE listed 2011) | New `min_window_overlap_pct` knob (default 0.95). If z-score warmup covers <95% of training window, drop that macro for THIS run only (logged) |
+| F5 | Macro z-score produces inf (zero variance period e.g. 2020 vol-suppression) | `np.where(np.isfinite, z, 0.0)` clamp inside z-score logic. Test: `test_macro_zero_variance_clamped` |
+| F6 | Schema mismatch between train and inference (added macro mid-config) | Artifact stamps `feature_cols` in metadata. Inference asserts current `feature_cols == artifact.feature_cols`. Mismatch → fall back to no-macro path |
+| F7 | Adding macro features ALONE drops OOS IC (33 noise features) | **Acceptance Gate G4** (vs-prior IC, 30% degradation tolerance) blocks promotion. If macro-enabled retrain produces lower IC, prior is preserved automatically |
+| F8 | Rust scorer trained without macro can't load macro-trained .pt | Artifact JSON sidecar contains `feature_cols` + `n_features`. Rust loader validates name list AND count match its panel CSV header. Mismatch → loud error, not silent miscalibration. Test: `rust/transformer_scorer/tests/macro_parity.rs` |
+| F9 | Cache corruption (parquet partial write) | `MacroFactorStore.load()` wraps `read_parquet` in try/except → returns None → F1 path |
+| F10 | Defensive tickers migrated to macro but old BEAR regime references them | KEEP `defensive_tickers` in watchlist (per user 2026-04-26: tradable in BEAR). Macro frame ALSO includes them (small redundancy is intentional — one for tradability, one for cross-section info). No deprecation needed |
+
+### 11.2 Hard prerequisites BEFORE any sim/live use
+
+These tests must ALL pass before macro-enabled config is exercised against real data:
+
+1. **Schema parity**: `len(ctx.feature_cols) == panel-ltr.json.metadata.n_features` after train. Asserted by `assert_post_train_schema_parity()` in `kernel/model_acceptance.py::G1`.
+2. **NaN audit**: training_panel logs `% NaN per feature`. Macro features must have <2% NaN over the training window OR get auto-dropped (with operator-visible WARN).
+3. **Sanity unit test**: `tests/test_macro_e2e_smoke.py` — synthetic 100-day panel with macro merged; train 2-epoch transformer; assert model produces non-NaN scores for 100% of test rows.
+4. **Z-score sanity**: every macro feature on every date in `[-5, 5]` (5σ winsorization). Outliers → clamped, logged, counted.
+5. **Acceptance gates**: macro-enabled retrain must clear G1-G6 BEFORE the artifact lands in production. Per `kernel/model_acceptance.py::ModelAcceptanceGate`.
+
+### 11.3 Engineering protocol
+
+Per CLAUDE.md §2 (every feature gets a test, every bug a regression test):
+
+1. **No flag-flip without sim A/B**. Macro-enabled config sits at `panel_ltr.macro.enabled=false` until `scripts/validate_buy_logic.py` shows positive APY margin OR neutral with theory-aligned mechanism (CLAUDE.md §2a).
+2. **Hourly + daily must both work**. The macro merge integrates into BOTH `BuildPanelTask` (daily path) and `BuildHourlyResolutionPanelTask` (hourly path). Per-resolution unit tests required.
+3. **Backend agnosticism**. XGBoost / LightGBM / NGBoost / Transformer (Python) / Transformer (Rust) all consume `feature_cols` blindly. Each backend gets a smoke test that loads a macro-trained artifact and produces sensible scores.
+4. **Default OFF on day 1**. Even after all phases ship, `panel_ltr.macro.enabled` defaults to `false` in production config. Operator must explicitly flip after sim A/B confirms uplift.
+5. **Acceptance gates protect every flip**. Even an operator who flips the flag in production gets the gates as a safety net — bad model = bug-trapped, prior-preserved, ntfy alert.
+
+### 11.4 Rollback procedure
+
+If macro-enabled retrain ships AND ALSO clears acceptance gates AND THEN shows live degradation (caught by `weekly_apy_check.py`):
+
+1. Operator runs `python scripts/rollback_to_xgboost.py` (to be added in implementation phase 4).
+2. This sets `panel_ltr.backend = "xgboost"` AND `panel_ltr.macro.enabled = false` in production config.
+3. Active artifact swapped from `panel-ltr.json` → `panel-ltr.xgboost.bak.json` via `kernel.model_acceptance.rollback()`.
+4. Next live run reverts to pre-macro state. Logged in `_acceptance_log/`.
+
+---
+
+## 12. Cross-references
 
 - `doc/components/panel-ltr.md` — primer for the consuming model
 - `doc/components/training-pipeline.md` — where this fits in the data flow
