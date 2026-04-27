@@ -167,13 +167,16 @@ class PanelLGBMModel:
         # Audit LGBM #11 fix (2026-04-27): validate objective is a
         # lambdarank-family loss. Pre-fix any objective string was
         # accepted; passing "regression" + bucketized integer labels
-        # would learn nonsense. Now: assert at construction.
+        # would learn nonsense. Audit 2nd-round #11 tightening: use
+        # explicit whitelist (was startswith("lambda") which would
+        # accept typos like "lambdarank_truncation").
+        ALLOWED_OBJECTIVES = {"lambdarank", "rank_xendcg"}
         obj = str(self.params.get("objective", "lambdarank")).lower()
-        if not (obj.startswith("lambda") or obj == "rank_xendcg"):
+        if obj not in ALLOWED_OBJECTIVES:
             raise ValueError(
-                f"PanelLGBMModel: objective={obj!r} is not a lambdarank-"
-                f"family loss. Bucketized integer labels assume listwise "
-                f"ranking semantics. Use 'lambdarank' or 'rank_xendcg'."
+                f"PanelLGBMModel: objective={obj!r} not in allowed set "
+                f"{ALLOWED_OBJECTIVES}. Bucketized integer labels assume "
+                f"listwise ranking semantics."
             )
         self.feature_cols = list(self.feature_cols or [])
 

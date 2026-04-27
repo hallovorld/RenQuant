@@ -392,7 +392,13 @@ def main() -> int:
     if not db_path.exists():
         log.error("runs.db missing: %s", db_path); return 3
 
-    end_date = pd.Timestamp(args.end_date) if args.end_date else pd.Timestamp.utcnow().normalize()
+    # Audit 2nd-round #1 fix (2026-04-27): TZ-naive throughout to avoid
+    # tz-aware vs tz-naive comparison errors. Pre-fix utcnow() is tz-aware
+    # but CLI args are tz-naive — comparison raised TypeError.
+    end_date = (
+        pd.Timestamp(args.end_date) if args.end_date
+        else pd.Timestamp.utcnow().tz_localize(None).normalize()
+    )
     if args.start_date:
         start_date = pd.Timestamp(args.start_date)
     else:
@@ -427,6 +433,18 @@ def main() -> int:
         # Best-effort: try the .bak.json convention
         guess = strategy_dir / "artifacts" / f"panel-ltr.{challenger_name}.bak.json"
         challenger_md = _load_artifact_metadata(guess)
+
+    # Audit 2nd-round #15 fix (2026-04-27): surface artifact load errors
+    # to operator. Pre-fix, _load_artifact_metadata returned dict with
+    # _error key but render_report never checked it → silent corruption.
+    for label, md in [("live", live_md), ("challenger", challenger_md)]:
+        if "_error" in md:
+            log.error("%s artifact load FAILED at %s: %s",
+                      label, md.get("_path"), md["_error"])
+            return 3
+        if md.get("_missing"):
+            log.warning("%s artifact MISSING at %s — report will show '—' "
+                        "for this side", label, md.get("_path"))
 
     # ── Read decisions + compute verdict ──
     with sqlite3.connect(str(db_path)) as conn:

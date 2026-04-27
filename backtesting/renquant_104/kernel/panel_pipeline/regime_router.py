@@ -87,8 +87,15 @@ class RegimeRouter:
         regime_path = self._regime_artifact_path(regime)
         if regime_path.exists():
             return regime_path
-        log.info("RegimeRouter: no artifact for regime %s at %s — "
-                 "using default panel-ltr.json", regime, regime_path)
+        # Audit 2nd-round #6 fix (2026-04-27): elevate fallback to WARNING.
+        # When operator enabled regime ensemble but artifacts missing,
+        # silent INFO log can hide degradation. Now: WARN every fallback.
+        log.warning(
+            "RegimeRouter: regime ensemble ENABLED but no artifact for "
+            "%s at %s — falling back to default panel-ltr.json. Run "
+            "per-regime training before relying on routed scores.",
+            regime, regime_path,
+        )
         return self._default_artifact_path()
 
     def load_scorer_for_regime(self, regime: str) -> Any:

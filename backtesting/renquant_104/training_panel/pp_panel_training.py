@@ -623,16 +623,44 @@ class LoadAssetEmbeddingsTask(PanelTask):
             return True
         try:
             from training_panel.asset_embeddings import (  # noqa: PLC0415
+                AssetEmbeddingTrainer,
                 load_embeddings_for_inference,
             )
-            ctx.asset_embeddings = load_embeddings_for_inference(
-                path, max_age_days=int(cfg.get("max_age_days", 14)),
-            )
+            # Audit 2nd-round #2 fix (2026-04-27): expose staleness as a
+            # ctx field so acceptance gates / dashboard can surface to
+            # operator. Pre-fix, only logged warning was emitted.
+            max_age_days = int(cfg.get("max_age_days", 14))
+            try:
+                trainer = AssetEmbeddingTrainer.load(path)
+                if trainer.trained_date:
+                    age_days = (
+                        pd.Timestamp.utcnow().tz_localize(None).date()
+                        - pd.Timestamp(trainer.trained_date).date()
+                    ).days
+                    ctx.asset_embeddings_age_days = int(age_days)  # type: ignore
+                    if age_days > max_age_days:
+                        log.warning(
+                            "LoadAssetEmbeddingsTask: embeddings STALE "
+                            "(%dd old > %dd threshold) — features may be "
+                            "miscalibrated; re-run scripts/train_asset_embeddings.py",
+                            age_days, max_age_days,
+                        )
+                ctx.asset_embeddings = trainer.embeddings
+            except Exception:
+                # Fallback to legacy loader without staleness exposure
+                ctx.asset_embeddings = load_embeddings_for_inference(
+                    path, max_age_days=max_age_days,
+                )
             log.info("LoadAssetEmbeddingsTask: loaded embeddings for %d tickers",
                      len(ctx.asset_embeddings))
         except Exception as exc:
-            log.warning("LoadAssetEmbeddingsTask: load failed — %s. "
-                        "Pipeline proceeds with asset_embeddings={}", exc)
+            # Audit 2nd-round #10 fix (2026-04-27): elevate to ERROR log
+            # so operator can't miss corrupted artifact. Pipeline still
+            # proceeds (degraded gracefully), but error is loud.
+            log.error("LoadAssetEmbeddingsTask: load FAILED — %s. "
+                      "Pipeline proceeds without embeddings (DEGRADED). "
+                      "Check artifact integrity at %s",
+                      exc, path)
             ctx.asset_embeddings = {}
         return True
 
@@ -714,6 +742,7 @@ class PanelFeatureJob(PanelJob):
         # ticker on same date → enter rank loss properly.
         if ctx.macro_betas:
             n_merged = 0
+            n_collision = 0
             for ticker, beta_df in ctx.macro_betas.items():
                 if ticker not in ctx.raw_factor_frames or beta_df.empty:
                     continue
@@ -723,6 +752,18 @@ class PanelFeatureJob(PanelJob):
                 # Drop columns whose names already exist (collision guard)
                 existing = set(fac.columns)
                 new_cols = [c for c in beta_aligned.columns if c not in existing]
+                # Audit 2nd-round #3 fix (2026-04-27): warn on collision —
+                # silently dropped columns hide misconfig (v1 + v2 both
+                # adding beta_*).
+                dropped = [c for c in beta_aligned.columns if c in existing]
+                if dropped:
+                    n_collision += 1
+                    log.warning(
+                        "PanelFeatureJob[macro v2]: %s — dropped %d β columns "
+                        "due to name collision: %s. Verify FactorZScoreTask "
+                        "isn't already producing same-named columns.",
+                        ticker, len(dropped), dropped[:3],
+                    )
                 if new_cols:
                     ctx.raw_factor_frames[ticker] = pd.concat(
                         [fac, beta_aligned[new_cols]], axis=1, copy=False,
@@ -730,7 +771,8 @@ class PanelFeatureJob(PanelJob):
                     n_merged += 1
             log.info(
                 "PanelFeatureJob[macro v2]: merged per-ticker β into %d/%d "
-                "raw_factor_frames", n_merged, len(ctx.raw_factor_frames),
+                "raw_factor_frames (collisions on %d)",
+                n_merged, len(ctx.raw_factor_frames), n_collision,
             )
 
         n_in = len(ticker_ctxs)
