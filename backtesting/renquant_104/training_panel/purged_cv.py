@@ -66,30 +66,29 @@ class PurgedKFold:
         for k in range(self.n_splits):
             lo, hi = fold_edges[k], fold_edges[k + 1]
             test_dates = unique_dates[lo:hi]
-            test_start = test_dates[0]
-            test_end   = test_dates[-1]
 
             test_mask = np.isin(dates, test_dates)
             test_idx = all_idx[test_mask]
 
-            # Purge window: a row dated d carries label ret(d → d+L). It
-            # leaks into test when d + L >= test_start, i.e. d >= test_start - L.
-            # Round-2 audit (#R2-30): prior code used `lookahead - 1` which
-            # purged 4 days for L=5, leaving the d = test_start - L row's
-            # label looking forward INTO the test window. Now uses the full L.
-            purge_start = pd.Timestamp(test_start) - pd.Timedelta(days=int(self.lookahead_days))
-            # Embargo window: (test_end, test_end + embargo_days]
-            embargo_end = pd.Timestamp(test_end) + pd.Timedelta(days=int(self.embargo_days))
+            # Audit fix HIGH-1 (2026-04-27): purge in BARS, not calendar days.
+            # Pre-fix used `pd.Timedelta(days=L)` which counts calendar days.
+            # But labels are constructed by `c.shift(-lookahead)` (BAR shift),
+            # so a label spans `lookahead` trading days = ~lookahead × 7/5
+            # calendar days. With L=10, the calendar-day purge of 10 days is
+            # only ~7 trading days — the missing ~3 trading days of training
+            # rows carry labels reaching into the test window. Fix: purge
+            # exactly L positions on the unique-dates array (which contains
+            # only trading days), so we purge the right number of bars.
+            purge_lo  = max(0,       lo - int(self.lookahead_days))
+            embargo_hi = min(n_dates, hi + int(self.embargo_days))
+            purge_dates   = unique_dates[purge_lo:lo]      # before test
+            embargo_dates = unique_dates[hi:embargo_hi]    # after test
 
             train_mask = ~test_mask
-            # Drop training rows inside the purge window (before test start,
-            # but whose label window leaks into test) — INCLUSIVE on both ends
-            # so test_start - L is also dropped.
-            leak_mask = (dates >= np.datetime64(purge_start)) & (dates < np.datetime64(test_start))
-            train_mask &= ~leak_mask
-            # Drop embargo rows (after test end, too close to it)
-            emb_mask = (dates > np.datetime64(test_end)) & (dates <= np.datetime64(embargo_end))
-            train_mask &= ~emb_mask
+            if len(purge_dates) > 0:
+                train_mask &= ~np.isin(dates, purge_dates)
+            if len(embargo_dates) > 0:
+                train_mask &= ~np.isin(dates, embargo_dates)
 
             train_idx = all_idx[train_mask]
             yield train_idx, test_idx
@@ -252,39 +251,22 @@ class CombinatorialPurgedCV:
             test_mask  = np.isin(dates, test_dates)
             test_idx   = all_idx[test_mask]
 
-            # Build purge + embargo windows for each contiguous test block.
-            # Since combo might be non-contiguous (e.g. folds 0 and 3),
-            # we apply purge/embargo to each selected group separately.
+            # Audit fix HIGH-1 (2026-04-27): purge in BARS, not calendar days.
+            # See PurgedKFold.split for the full reasoning. Same bug pattern
+            # here — `pd.Timedelta(days=L)` under-purges by ~30% when label
+            # horizon is L bars (~1.4·L calendar days for daily panels).
             train_mask = ~test_mask
             for k in combo:
-                block = groups[k]
-                block_start = block[0]
-                block_end   = block[-1]
-                # Audit fix CV-1 (Round 2 deep audit, 2026-04-25):
-                # was `lookahead_days - 1`. Forward-return at index t
-                # uses prices [t, t+L], so any training row whose label
-                # touches the test block must satisfy `t + L > block_start`
-                # ⇔ `t > block_start - L`. The purge window is therefore
-                # **L days** wide, not L-1. Pre-fix purged 4 days for a
-                # 5-day lookahead → leaked one row of overlap into train,
-                # silently inflating CV IC by ~15-25%. Same bug pattern
-                # as R2-30 — guard the regression with the new test below.
-                purge_start = pd.Timestamp(block_start) - pd.Timedelta(
-                    days=int(self.lookahead_days),
-                )
-                embargo_end = pd.Timestamp(block_end) + pd.Timedelta(
-                    days=int(self.embargo_days),
-                )
-                leak_mask = (
-                    (dates >= np.datetime64(purge_start))
-                    & (dates < np.datetime64(block_start))
-                )
-                train_mask &= ~leak_mask
-                emb_mask = (
-                    (dates > np.datetime64(block_end))
-                    & (dates <= np.datetime64(embargo_end))
-                )
-                train_mask &= ~emb_mask
+                lo = fold_edges[k]
+                hi = fold_edges[k + 1]
+                purge_lo  = max(0,       lo - int(self.lookahead_days))
+                embargo_hi = min(n_dates, hi + int(self.embargo_days))
+                purge_dates   = unique_dates[purge_lo:lo]
+                embargo_dates = unique_dates[hi:embargo_hi]
+                if len(purge_dates) > 0:
+                    train_mask &= ~np.isin(dates, purge_dates)
+                if len(embargo_dates) > 0:
+                    train_mask &= ~np.isin(dates, embargo_dates)
 
             train_idx = all_idx[train_mask]
             yield train_idx, test_idx

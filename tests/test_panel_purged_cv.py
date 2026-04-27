@@ -82,6 +82,102 @@ class TestPurgedKFoldSplit:
             list(cv.split(panel))
 
 
+class TestAuditHigh1PurgeInBars:
+    """Audit HIGH-1 (2026-04-27): pre-fix used pd.Timedelta(days=L) which
+    purges CALENDAR days. Labels are constructed by `c.shift(-lookahead)`
+    which is BAR shift. With L=10, calendar-day purge of 10d = ~7 trading
+    days but the label spans ~14 calendar days → ~3 trading days of
+    training rows reach into the test window. Pin the new BAR-based
+    semantics."""
+
+    def test_purge_count_matches_lookahead_in_bars(self):
+        """For lookahead_days=L on a business-day panel, exactly L bars
+        of training rows immediately before the test fold must be purged
+        — regardless of what calendar-day delta those L bars span."""
+        from training_panel.purged_cv import PurgedKFold
+        # 60 business days
+        panel = _make_panel(n_dates=60, n_tickers=3, seed=99)
+        L = 10  # PROD value
+        cv = PurgedKFold(n_splits=5, embargo_days=0, lookahead_days=L)
+
+        unique_dates = sorted(set(pd.to_datetime(panel["date"]).values))
+        for train_idx, test_idx in cv.split(panel):
+            test_dates = sorted(set(pd.to_datetime(panel.iloc[test_idx]["date"]).values))
+            train_dates = set(pd.to_datetime(panel.iloc[train_idx]["date"]).values)
+            test_start_pos = unique_dates.index(test_dates[0])
+            # The L bars immediately before test_start MUST be purged
+            for k in range(1, L + 1):
+                pos = test_start_pos - k
+                if pos < 0:
+                    continue
+                purged_date = unique_dates[pos]
+                assert purged_date not in train_dates, (
+                    f"BAR-{k} before test_start ({purged_date}) leaked into train; "
+                    f"this is the HIGH-1 leak — purge must count BARS not calendar days"
+                )
+
+    def test_combinatorial_purges_l_bars_before_each_block(self):
+        from training_panel.purged_cv import CombinatorialPurgedCV
+        panel = _make_panel(n_dates=60, n_tickers=3, seed=100)
+        L = 10
+        cv = CombinatorialPurgedCV(
+            n_splits=6, n_test_groups=2,
+            embargo_days=0, lookahead_days=L,
+        )
+        unique_dates = sorted(set(pd.to_datetime(panel["date"]).values))
+        seen = 0
+        for train_idx, test_idx in cv.split(panel):
+            test_dates = sorted(set(pd.to_datetime(panel.iloc[test_idx]["date"]).values))
+            train_dates = set(pd.to_datetime(panel.iloc[train_idx]["date"]).values)
+            # Find each contiguous block in the test set
+            test_dates_arr = np.array(test_dates, dtype="datetime64[ns]")
+            block_starts = [test_dates[0]]
+            for i in range(1, len(test_dates)):
+                pos_curr = unique_dates.index(test_dates[i])
+                pos_prev = unique_dates.index(test_dates[i - 1])
+                if pos_curr - pos_prev > 1:
+                    block_starts.append(test_dates[i])
+            for bs in block_starts:
+                bs_pos = unique_dates.index(bs)
+                for k in range(1, L + 1):
+                    pos = bs_pos - k
+                    if pos < 0:
+                        continue
+                    purged_date = unique_dates[pos]
+                    assert purged_date not in train_dates, (
+                        f"BAR-{k} before block_start ({purged_date}) "
+                        f"leaked into train (CPCV HIGH-1 regression)"
+                    )
+            seen += 1
+        assert seen > 0, "CPCV produced no splits"
+
+    def test_no_calendar_day_undercount_for_l10(self):
+        """The bug scenario: lookahead=10 with business-day panel.
+        Pre-fix: `Timedelta(days=10)` only covered the most recent 6-7
+        business days. Post-fix: covers exactly 10 business days. Verify
+        the 8th-most-recent business day (which leaked pre-fix) is now
+        purged."""
+        from training_panel.purged_cv import PurgedKFold
+        panel = _make_panel(n_dates=80, n_tickers=2, seed=101)
+        cv = PurgedKFold(n_splits=4, embargo_days=0, lookahead_days=10)
+        unique_dates = sorted(set(pd.to_datetime(panel["date"]).values))
+        for train_idx, test_idx in cv.split(panel):
+            test_dates = sorted(set(pd.to_datetime(panel.iloc[test_idx]["date"]).values))
+            train_dates = set(pd.to_datetime(panel.iloc[train_idx]["date"]).values)
+            test_start_pos = unique_dates.index(test_dates[0])
+            # The 8th business day before test_start was the "leaker"
+            # in the pre-fix code (calendar-day purge of 10d ≈ 6-7
+            # business days, so 8th was just outside the purge window
+            # despite its label reaching into the test window).
+            leaker_pos = test_start_pos - 8
+            if leaker_pos >= 0:
+                leaker_date = unique_dates[leaker_pos]
+                assert leaker_date not in train_dates, (
+                    f"Pre-fix leaker date {leaker_date} (8 BARS before "
+                    f"test_start) is in train — HIGH-1 NOT FIXED"
+                )
+
+
 class _PerfectModel:
     """Model that predicts y exactly — for testing IC=1."""
     def fit(self, X, y, sample_weight=None): pass
