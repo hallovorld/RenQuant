@@ -113,6 +113,128 @@ Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** unt
 
 ---
 
+## 🛡 2026-04-26 — Cloud backup plan (operational hygiene)
+
+**User ask 2026-04-26:**
+1. "统计一下需要备份的文件和信息，制定一个云备份的计划" — inventory + cloud plan
+2. Clarification: "live_state.json应该至少备份在db里，而且类似的关键文件和artifacts应该有云备份" — db mirror for state + cloud for artifacts
+
+**Status:** 🔴 Not started — designed only. P1 because total data loss = months of state gone.
+
+### Current state (2026-04-26)
+
+- ✅ **DB write-path exists**: `live_state_snapshots` table in `runs.db` is populated by `record_live_state_snapshot` (kernel/persistence.py:732) on every bar via `adapters/runner.py:1041`. Per-bar full `state_json` blob + indexed columns (regime, equity, drawdown).
+- ❌ **DB read-path missing**: if `live_state.json` is corrupt/missing on startup, runner has NO fallback to db. Today, missing JSON = reset to defaults (lose streak, HWM, regime).
+- ❌ **No off-machine backup** for `runs.db` itself — db is the canonical store of state, but it lives only on this laptop.
+
+### B-Tier 1 — DB-canonical state (P0, ~2 hours)
+
+The db is already the WRITE-side mirror; close the loop with a READ-side restore.
+
+1. **`scripts/restore_live_state_from_db.py`** — read latest `live_state_snapshots` row for renquant_104, write `live_state.json`.
+2. **Runner startup hook** (`adapters/runner.py::__init__`): if `live_state.json` missing OR `last_bar_date < today - 7d` (stale), auto-restore from db before initializing.
+3. **`tests/test_live_state_db_recovery.py`** — delete json, run runner once, assert state recovered correctly.
+4. **Stop using JSON as source of truth — db wins on conflict.**
+
+This makes `runs.db` the authoritative store. The JSON becomes a fast cache + human-readable view, but loss of JSON ≠ loss of state.
+
+### Inventory (sizes as of 2026-04-26 17:45 PT)
+
+| File / dir | Size | Category | Replaceable? |
+|---|---|---|---|
+| `data/runs.db` | 45 MB | Live trade DB (tds, score_dist, calibration, snapshots) | ❌ NO — irreplaceable historical |
+| `backtesting/renquant_104/live_state.json` | 4 KB | Sell streaks, regime, HWM, entry_dates | ❌ NO — current portfolio state |
+| `live/logs/renquant-104/{date}.json` | 492 KB cum | Per-trade log (fills, signals, prices) | ❌ NO — audit trail |
+| `logs/live_104/audit.jsonl` | <1 KB | Sustainability stream → ntfy alerts | ❌ NO — drives weekly_apy_check |
+| `.env` | 4 KB | Alpaca API keys | ❌ NO — but **must be encrypted vault, NOT cloud** |
+| `data/sim_runs.db` | 3 MB | Sim A/B journal | 🟡 Partial — sims could re-run but $$$ |
+| `backtesting/renquant_104/artifacts/*.json` | 22 MB | panel-ltr, ngboost-head, calibrator, .pt | 🟡 Reproducible — Sun retrain ~30 min |
+| `backtesting/renquant_104/models/{T}/*.json` | 535 MB | Per-ticker tournament artifacts (in git) | 🟡 Reproducible — Tue/Thu/Sun retrain |
+| `data/ohlcv/` | 12 MB | yfinance daily bars | ✅ Re-fetchable from yfinance |
+| `data/intraday/` | 83 MB | yfinance hourly bars | ✅ Re-fetchable (slow) |
+| `data/{fundamentals,earnings_surprise,insider_trades}/` | 2 MB | OpenBB / yfinance / SEC | ✅ Re-fetchable |
+| `backtesting/data/equity/usa/` | 229 MB | LEAN data zips | ✅ Derivable from data/ohlcv |
+
+**Tier classification:**
+
+- **Tier 1 — daily backup, irreplaceable:** ~50 MB delta/day, 30-day retention → **~1.5 GB/month**
+  - `data/runs.db`, `live_state.json`, `live/logs/`, `logs/live_104/audit.jsonl`
+- **Tier 2 — weekly backup, reproducible-but-expensive:** ~600 MB/week, 5-week retention → **~3 GB/month**
+  - `data/sim_runs.db`, `artifacts/`, `models/` (dedupe-friendly via restic)
+- **Tier 3 — never back up, derivable from source:** 326 MB on disk
+  - `data/ohlcv/`, `data/intraday/`, `data/fundamentals/`, `data/earnings_surprise/`, `data/insider_trades/`, `backtesting/data/equity/usa/`
+- **Credentials separately:** `.env` → 1Password CLI vault (NOT in cloud bucket)
+
+### Cloud provider comparison
+
+| Provider | Storage | Egress | Total est | Verdict |
+|---|---|---|---|---|
+| AWS S3 Standard | $0.023/GB | $0.09/GB | ~$0.12/mo | OK; egress hostile if restoring |
+| AWS S3 Glacier IR | $0.004/GB | $0.03/GB | ~$0.05/mo | Cheap but 90-day min charge |
+| Backblaze B2 | $0.005/GB | $0.01/GB | **~$0.05/mo** | ✅ Recommended |
+| Cloudflare R2 | $0.015/GB | $0 (free) | ~$0.07/mo | Free egress good for restore drills |
+| GitHub LFS | $0.07/GB | $0.07/GB | ~$0.35/mo | Bundled but expensive |
+| iCloud 50GB | $0.99/mo flat | included | $0.99/mo | Manual, no API; useful as 2nd target |
+
+**Recommendation:** **Backblaze B2 + restic** (client-side AES-256 encryption + deduplication).
+- ~$0.05/mo at projected 5 GB/month volumes
+- restic dedupe means weekly model snapshots only store deltas (~10 MB after 1st week)
+- 3-2-1 rule: B2 primary + iCloud secondary (manual quarterly) + local Time Machine
+
+### Implementation phases
+
+**Phase 1 — Tier 1 nightly (P1, ~2 hours)**
+- `scripts/backup_tier1.sh` — restic to B2, runs nightly via launchd at 02:00 PT (after daily_104 + intraday wraps)
+- Source list: `data/runs.db`, `backtesting/renquant_104/live_state.json`, `live/logs/`, `logs/live_104/audit.jsonl`
+- Encryption key in 1Password (separate from B2 app key)
+- `scripts/restore_tier1.sh` — interactive restore from latest snapshot
+- ntfy alert on backup failure (silent on success per ops contract)
+
+**Phase 2 — Tier 2 weekly (P1, ~1 hour)**
+- `scripts/backup_tier2.sh` — same restic repo (deduplicates against Tier 1)
+- Source list: `data/sim_runs.db`, `backtesting/renquant_104/artifacts/`, `backtesting/renquant_104/models/`
+- Sunday 02:30 PT (after retrain_panel.sh completes at Sun 10:00 PT… actually run BEFORE so we capture pre-retrain state)
+- Reframe: Sun 09:55 PT (catches the previous week's models before they're overwritten)
+
+**Phase 3 — Credentials to 1Password (P0, ~30 min)**
+- `op` CLI install + login
+- Move `.env` contents to 1Password "RenQuant Alpaca Live" item
+- `scripts/load_env_from_1password.sh` — sources at runtime
+- `.env` stays as a fallback during transition; remove after 2 weeks confirmed working
+
+**Phase 4 — Restore drill (P1, ~2 hours)**
+- Quarterly: spin up empty dir, restore Tier 1 + Tier 2, verify daily_104 runs end-to-end against restored state
+- Document drill output in `doc/backup_drill_{date}.md`
+
+**Phase 5 — Monitoring (P2, ~1 hour)**
+- `scripts/check_backup_freshness.py` — daily cron, fires ntfy WARN if latest Tier 1 snapshot >36h old or Tier 2 >9d old
+- Append snapshot age to weekly sustainability ntfy
+
+### Files to create
+
+- `scripts/backup_tier1.sh`
+- `scripts/backup_tier2.sh`
+- `scripts/restore_tier1.sh`
+- `scripts/load_env_from_1password.sh`
+- `scripts/check_backup_freshness.py`
+- `doc/backup_runbook.md` — operator restore procedures + key location
+
+### Out of scope (explicitly not backed up)
+
+- `data/ohlcv/`, `data/intraday/`, `data/{fundamentals,earnings_surprise,insider_trades}/` — re-fetchable (CLAUDE.md path)
+- `backtesting/data/equity/usa/` — derivable via `export_lean_watchlist.py`
+- `backtesting/renquant_104/img/` — chart PNGs, regenerate via analyze_backtest
+- `data/intraday_wash/`, `data/intraday_wash_panel/` — derived caches
+- Test artifacts under `/tmp/`
+
+### Manual interim (until Phase 1 ships)
+
+- Daily `cp data/runs.db /tmp/runs_$(date +%F).db` (manual; user runs)
+- Weekly `cp -r backtesting/renquant_104/artifacts /tmp/artifacts_$(date +%F)` (manual)
+- `.env` already secure on local laptop; copy to encrypted USB drive
+
+---
+
 ## 🆕 2026-04-25 — Panel-LTR ceiling: 4 promising upgrades + 2 research items
 
 **Context:** Today's deep audit of renquant_104 panel-LTR cross-sectional ranking found 12+ implementation bugs (committed separately, not in roadmap scope) and identified that **the panel-LTR XGBoost backend has reached a ceiling around OOS IC ~0.066**. Web research surfaced four evidence-backed upgrade paths and two longer-horizon research items. Tier 1 (config-only changes) executed today; Tier 2-4 (real engineering) tracked here.
