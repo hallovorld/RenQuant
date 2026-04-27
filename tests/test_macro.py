@@ -239,10 +239,26 @@ class TestBuildMacroFrame:
 
 class TestDefaults:
     def test_default_symbols_match_design(self):
-        """The 11 symbols in design doc §2 must match DEFAULT_MACRO_SYMBOLS."""
-        expected = ["VXX", "HYG", "UUP", "DBC", "GLD", "TLT", "XLV", "XLU",
-                    "KRE", "MTUM", "USMV"]
+        """Macro symbol set: original 11 (vol/rates/credit/factor/sector
+        core) + 18 Tier 1 expansion (defense, oil, semis, banks, biotech,
+        gold miners, SaaS, China, EM, Europe, Japan, FX, vol-regime,
+        long Treasury, IG credit, agri, TIPS). Total 29 symbols.
+
+        Per `doc/research/macro-data-expansion-plan-2026-04-27.md`,
+        ingested as per-ticker β features only (broadcast adds 0
+        within-date variance — proven by 8-variant tournament)."""
+        expected_core = ["VXX", "HYG", "UUP", "DBC", "GLD", "TLT", "XLV",
+                          "XLU", "KRE", "MTUM", "USMV"]
+        expected_tier1 = [
+            "ITA", "USO", "XLE", "SMH", "KBE", "XBI", "GDX", "WCLD",
+            "FXI", "EEM", "VGK", "EWJ", "FXE", "FXY",
+            "VIXY", "EDV", "LQD", "DBA", "TIP",
+        ]
+        expected = expected_core + expected_tier1
         assert DEFAULT_MACRO_SYMBOLS == expected
+        assert len(DEFAULT_MACRO_SYMBOLS) == 30  # 11 core + 19 tier1
+        # No duplicates check — sanity guard against accidental re-add
+        assert len(set(DEFAULT_MACRO_SYMBOLS)) == len(DEFAULT_MACRO_SYMBOLS)
 
     def test_default_transforms_match_design(self):
         assert DEFAULT_TRANSFORMS == ["level_z", "chg_5d_z", "chg_20d_z"]

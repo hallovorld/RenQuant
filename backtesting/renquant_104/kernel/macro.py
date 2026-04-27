@@ -38,18 +38,50 @@ log = logging.getLogger("kernel.macro")
 # Note: VXX is the tradable VIX-proxy ETF. ^VIX is the index itself
 # (some yfinance versions return raw, some return normalized — VXX is
 # more reliable). Operator can override via config.
+#
+# Tier 1 expansion (2026-04-27, per `doc/research/macro-data-expansion-
+# plan-2026-04-27.md`): added 18 ETF symbols covering defense, oil,
+# semis, banks, biotech, gold miners, SaaS, China, EM, Europe, Japan,
+# FX, vol regimes, long Treasury, IG credit, broader commodities, TIPS.
+# These get ingested as per-ticker β features (NOT raw broadcast — the
+# 8-variant tournament showed pure broadcast adds 0 within-date variance
+# on the cross-sectional rank loss). Total 11 + 18 = 29 macro symbols.
 DEFAULT_MACRO_SYMBOLS: list[str] = [
-    "VXX",   # volatility regime
-    "HYG",   # credit spread / risk-on-off
-    "UUP",   # dollar strength (DXY proxy)
-    "DBC",   # broad commodities (inflation/growth)
-    "GLD",   # gold (safe-haven)
-    "TLT",   # long-bond rates
-    "XLV",   # healthcare (defensive)
-    "XLU",   # utilities (low-beta defensive)
-    "KRE",   # regional banks (credit health)
-    "MTUM",  # momentum factor crowdedness
-    "USMV",  # low-vol factor
+    # ── Original 11 (vol/rates/credit/factor/sector core) ─────────
+    "VXX",    # volatility regime
+    "HYG",    # credit spread / risk-on-off
+    "UUP",    # dollar strength (DXY proxy)
+    "DBC",    # broad commodities (inflation/growth)
+    "GLD",    # gold (safe-haven)
+    "TLT",    # long-bond rates
+    "XLV",    # healthcare (defensive)
+    "XLU",    # utilities (low-beta defensive)
+    "KRE",    # regional banks (credit health)
+    "MTUM",   # momentum factor crowdedness
+    "USMV",   # low-vol factor
+    # ── Tier 1 expansion: sector / industry ETFs (paper refs in
+    #     doc/research/macro-data-expansion-plan-2026-04-27.md) ──
+    "ITA",    # US Aerospace & Defense (geopolitical risk)
+    "USO",    # crude oil ETF (Driesprong et al. 2008)
+    "XLE",    # energy SPDR (oil-price exposure)
+    "SMH",    # semiconductors (semi-cycle exposure)
+    "KBE",    # bank ETF (yield-curve sensitivity)
+    "XBI",    # biotech ETF (FDA / pharma cycle)
+    "GDX",    # gold miners (inflation hedge β)
+    "WCLD",   # cloud/SaaS (tech subsegment)
+    # ── Tier 1: international / FX ───────────────────────────────
+    "FXI",    # China large-cap (CNY exposure)
+    "EEM",    # emerging markets (EM growth)
+    "VGK",    # Europe (European cycle)
+    "EWJ",    # Japan (JPY/Nikkei)
+    "FXE",    # EUR/USD (FX exposure)
+    "FXY",    # JPY/USD
+    # ── Tier 1: rates / credit / vol / commodities / TIPS ─────────
+    "VIXY",   # VIX-tracking ETF (vol-regime)
+    "EDV",    # Vanguard Extended Duration Treasury (>20y)
+    "LQD",    # IG corporate bonds (credit spread vs HYG)
+    "DBA",    # agriculture (Boons 2016)
+    "TIP",    # TIPS (real-rate exposure, breakeven inflation)
 ]
 
 DEFAULT_TRANSFORMS: list[str] = ["level_z", "chg_5d_z", "chg_20d_z"]
