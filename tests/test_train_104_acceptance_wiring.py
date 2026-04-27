@@ -103,12 +103,21 @@ class TestStagingActiveFlow:
         assert "strategy_dir / \"artifacts\" / \"panel-ltr.json\"" in SCRIPT_SRC
 
     def test_pre_train_cleanup_after_promote(self):
-        """After successful promote, the .pre-train.json snapshot is
-        removed (no orphan files accumulating)."""
+        """Audit fix #9 (2026-04-26): cleanup MUST run on both success
+        AND rejection. Pre-fix, .pre-train.json files lingered after
+        rejected retrains, confusing operators investigating failures.
+        Post-fix: cleanup is in a finally: block."""
+        # The cleanup must be in a finally: block, not just the success path.
+        assert "finally:" in SCRIPT_SRC
+        # And the unlink call must reference pre_train_snapshot
+        assert "pre_train_snapshot.unlink()" in SCRIPT_SRC
+        # Sanity: the finally is in the acceptance flow (after the
+        # ALL HARD GATES PASSED branch)
         idx = SCRIPT_SRC.find("ALL HARD GATES PASSED")
         assert idx >= 0
-        block = SCRIPT_SRC[idx:idx + 500]
-        assert "pre_train_snapshot.unlink()" in block
+        finally_idx = SCRIPT_SRC.find("finally:", idx)
+        unlink_idx  = SCRIPT_SRC.find("pre_train_snapshot.unlink", finally_idx)
+        assert finally_idx > 0 and unlink_idx > finally_idx
 
 
 class TestSkipAcceptanceBypass:

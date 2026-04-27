@@ -122,6 +122,23 @@ class InferencePipeline:
         t0 = time.monotonic()
         log.info("InferencePipeline START  date=%s", ctx.today)
 
+        # Audit fix #8 (2026-04-26): if challenger.enabled=true in
+        # strategy_config but the live wiring (Phase 4b) hasn't landed
+        # yet, an operator could believe shadow-mode is active when
+        # nothing is being recorded. Surface this once per run start.
+        try:
+            ch_cfg = (ctx.config.get("acceptance") or {}).get("challenger") or {}
+            if ch_cfg.get("enabled") and not getattr(ctx, "_challenger_warned_once", False):
+                log.warning(
+                    "acceptance.challenger.enabled=true BUT live wiring not yet "
+                    "in pp_inference.py (Phase 4b deferred). Shadow scoring will "
+                    "not record decisions to challenger_decisions table this run. "
+                    "See doc/components/model-selection.md §Tier 4."
+                )
+                ctx._challenger_warned_once = True   # noqa: SLF001
+        except Exception:
+            pass    # never let observability break the pipeline
+
         RegimeJob().run(ctx)
         DrawdownJob().run(ctx)
         BuyGatesJob().run(ctx)

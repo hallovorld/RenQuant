@@ -68,6 +68,24 @@ DEFAULT_TOP_N_DISAGREEMENTS = 10
 
 # ── Loading helpers ───────────────────────────────────────────────────────────
 
+def _pick(md: dict, top: dict, key: str):
+    """Audit fix #6 (2026-04-26): pre-fix used `md.get(key) or top.get(key)`,
+    which silently dropped the second value when both existed and disagreed
+    (or when `md.get(key)` was 0/None-falsy). Now: prefer the metadata
+    block (the canonical layout); warn if both exist with different
+    non-None values; fall back to top-level only if metadata key missing."""
+    md_v = md.get(key)
+    tp_v = top.get(key)
+    if md_v is not None and tp_v is not None and md_v != tp_v:
+        log.warning(
+            "_load_artifact_metadata: '%s' present in BOTH metadata (%r) "
+            "and top-level (%r); using metadata block (canonical)",
+            key, md_v, tp_v,
+        )
+        return md_v
+    return md_v if md_v is not None else tp_v
+
+
 def _load_artifact_metadata(path: Path) -> dict:
     """Parse the relevant fields from a panel-ltr artifact for the report."""
     if not path.exists():
@@ -76,18 +94,18 @@ def _load_artifact_metadata(path: Path) -> dict:
         d = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError) as exc:
         return {"_error": str(exc), "_path": str(path)}
-    md = d.get("metadata") or d
+    md = d.get("metadata") if isinstance(d.get("metadata"), dict) else {}
     smoke = (md.get("sim_smoke") or {}) if isinstance(md.get("sim_smoke"), dict) else {}
     panel_shape = md.get("panel_shape") or d.get("panel_shape") or {}
     return {
-        "trained_date":  md.get("trained_date") or d.get("trained_date"),
+        "trained_date":  _pick(md, d, "trained_date"),
         "feature_count": len(d.get("feature_cols") or md.get("feature_cols") or []),
         "panel_rows":    panel_shape.get("rows"),
         "panel_tickers": panel_shape.get("tickers"),
         "panel_dates":   panel_shape.get("dates"),
-        "oos_mean_ic":   md.get("oos_mean_ic")  or d.get("oos_mean_ic"),
-        "oos_std_ic":    md.get("oos_std_ic")   or d.get("oos_std_ic"),
-        "best_iter":     d.get("best_iter")     or md.get("best_iter"),
+        "oos_mean_ic":   _pick(md, d, "oos_mean_ic"),
+        "oos_std_ic":    _pick(md, d, "oos_std_ic"),
+        "best_iter":     _pick(md, d, "best_iter"),
         "sim_apy":       smoke.get("apy"),
         "sim_sharpe":    smoke.get("sharpe"),
         "sim_calmar":    smoke.get("calmar"),

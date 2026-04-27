@@ -74,6 +74,28 @@ def _populate_forward_returns(conn):
 
 # ── Loading helpers ───────────────────────────────────────────────────────────
 
+class TestArtifactLoadAuditFix6:
+    def test_metadata_takes_precedence_with_warning_on_conflict(self, tmp_path, caplog):
+        """Audit fix #6 (2026-04-26): when both metadata.X and top-level X
+        exist with DIFFERENT values, prefer metadata (canonical) and warn.
+        Pre-fix, the `or` fallback silently dropped the second value."""
+        import logging as _logging
+        path = tmp_path / "panel-ltr.json"
+        path.write_text(json.dumps({
+            "trained_date":  "2026-04-26",       # top-level
+            "feature_cols":  ["a"],
+            "oos_mean_ic":   0.05,                # top-level disagreeing
+            "metadata": {
+                "oos_mean_ic": 0.04,              # canonical
+                "trained_date": "2026-04-26",
+            },
+        }))
+        with caplog.at_level(_logging.WARNING, logger="finalize-challenger"):
+            md = fc._load_artifact_metadata(path)
+        assert md["oos_mean_ic"] == 0.04   # metadata wins
+        assert any("present in BOTH metadata" in r.message for r in caplog.records)
+
+
 class TestArtifactLoad:
     def test_missing_artifact_marked(self, tmp_path):
         md = fc._load_artifact_metadata(tmp_path / "absent.json")

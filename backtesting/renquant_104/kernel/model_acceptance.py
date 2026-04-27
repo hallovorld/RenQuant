@@ -430,6 +430,13 @@ def _gate_g8_per_ticker_variance(staging: dict, active: dict | None,
 
 
 # ── Default gate list ─────────────────────────────────────────────────────────
+#
+# IMPORTANT (audit fix #7, 2026-04-26): DEFAULT_GATES is a fallback-only
+# reference. PRODUCTION CALL PATH goes through `build_gates_from_config(cfg)`
+# which honors per-gate severity overrides from strategy_config.json. If you
+# read DEFAULT_GATES directly (bypassing config), you get the hardcoded
+# severities here, NOT what the operator configured. New CLIs should call
+# `ModelAcceptanceGate(config=acc_cfg)` instead of `ModelAcceptanceGate()`.
 
 DEFAULT_GATES: list[AcceptanceGate] = [
     AcceptanceGate("G1_schema",            "hard", _gate_g1_schema_compatibility),

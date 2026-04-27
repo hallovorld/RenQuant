@@ -201,6 +201,34 @@ class TestChallengerDB:
         # Score corr should be positive (both rise/fall together-ish)
         assert v["score_corr"] is not None
 
+    def test_compare_window_score_rank_corr_audit_fix_5(self, tmp_path):
+        """Audit fix #5 (2026-04-26): pre-fix, score_rank_corr was always
+        returned as None despite the docstring promise. Now: computes
+        Spearman corr between challenger_rank_score and rank(actual_score)."""
+        conn = self._open_db(tmp_path)
+        # Build a window where rank_score correlates positively with actual.
+        # 6 decisions with monotone-aligned ranks → Spearman ≈ +1.
+        rows = [
+            ("2026-04-12", "A", "BUY",  "BUY",  0.10, 0.20, 0.10),
+            ("2026-04-13", "B", "BUY",  "BUY",  0.20, 0.30, 0.20),
+            ("2026-04-14", "C", "BUY",  "BUY",  0.30, 0.40, 0.30),
+            ("2026-04-15", "D", "HOLD", "HOLD", 0.40, 0.50, 0.40),
+            ("2026-04-16", "E", "HOLD", "HOLD", 0.50, 0.60, 0.50),
+            ("2026-04-17", "F", "HOLD", "HOLD", 0.60, 0.70, 0.60),
+        ]
+        for d, t, ca, aa, cs, asc, crs in rows:
+            log_decision(conn, run_id="r", decision_date=pd.Timestamp(d),
+                         ticker=t, challenger_name="x",
+                         challenger_score=cs, challenger_rank_score=crs,
+                         challenger_action=ca,
+                         actual_score=asc, actual_action=aa)
+        conn.commit()
+        v = compare_window(conn, challenger_name="x",
+                           start_date=pd.Timestamp("2026-04-01"),
+                           end_date=pd.Timestamp("2026-04-30"))
+        assert v["score_rank_corr"] is not None
+        assert v["score_rank_corr"] > 0.95   # nearly perfect monotone
+
     def test_compare_window_filters_by_name(self, tmp_path):
         conn = self._open_db(tmp_path)
         # Two challengers — compare_window should only see the named one

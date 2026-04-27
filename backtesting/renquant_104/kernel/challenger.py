@@ -218,17 +218,28 @@ def compare_window(conn: sqlite3.Connection, *,
     ch_only = ((df["challenger_action"] == "BUY") & (df["actual_action"] != "BUY")).sum()
     li_only = ((df["actual_action"]    == "BUY") & (df["challenger_action"] != "BUY")).sum()
     score_corr = None
-    rank_corr = None
+    rank_corr  = None
     pair = df[["challenger_score", "actual_score"]].dropna()
     if len(pair) >= 3 and pair["challenger_score"].std() > 0 and pair["actual_score"].std() > 0:
         score_corr = float(pair["challenger_score"].corr(pair["actual_score"]))
+    # Audit fix #5 (2026-04-26): pre-fix, rank_corr was always returned
+    # as None — function docstring promised Spearman corr but never
+    # computed it. Now we compute Spearman between challenger_rank_score
+    # and the rank of actual_score (best proxy for live rank, since live
+    # rank isn't recorded as a separate column today).
+    rank_pair = df[["challenger_rank_score", "actual_score"]].dropna()
+    if len(rank_pair) >= 3:
+        ch_rank   = rank_pair["challenger_rank_score"]
+        live_rank = rank_pair["actual_score"].rank()
+        if ch_rank.std() > 0 and live_rank.std() > 0:
+            rank_corr = float(ch_rank.corr(live_rank, method="spearman"))
     return {
         "n_decisions":          int(len(df)),
         "agreement_rate":       float(agree),
         "challenger_only_buy":  int(ch_only),
         "live_only_buy":        int(li_only),
         "score_corr":           score_corr,
-        "score_rank_corr":      rank_corr,   # populated when we record live rank too
+        "score_rank_corr":      rank_corr,
     }
 
 
