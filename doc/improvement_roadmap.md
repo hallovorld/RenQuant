@@ -113,6 +113,34 @@ Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** unt
 
 ---
 
+## 🧠 2026-04-26 — Trade-evaluation DB + RL off-policy evaluation
+
+**User ask 2026-04-26:** *"我想要一个db，来存储我的trade，这样7天，14天，
+28天后可以re evaluate我的trade的合理性，用这个数据来校验我的model，用点
+强化学习的概念理解我的需求"*
+
+**Status:** 🔴 Design only. Full spec: `doc/trade_evaluation_rl_design_2026-04-26.md`.
+Treats trades as RL `(s, a, r)` tuples; uses off-policy evaluation
+(Sutton-Barto, Jiang-Li 2016, Doroudi-Thomas-Brunskill 2017,
+López de Prado 2018) for time-delayed validation.
+
+**6 phases:**
+1. Schema + write-path (P1, ~3h) — 3 new tables: `trade_outcomes`,
+   `policy_versions`, `policy_evaluations`.
+2. Nightly backfill at 1d/5d/7d/14d/28d horizons (P1, ~2h).
+3. Weekly rollup + ntfy on >1σ degradation (P1, ~3h).
+4. OPE estimators: importance sampling + doubly robust (P2, ~5h).
+5. Dashboard (P2, ~2h).
+6. **Closed-loop policy improvement** (P3, weeks) — auto-nominate
+   config changes that beat golden via OPE. Deferred until 6+ months
+   of trade data. Requires safe-RL constraints + confidence bounds
+   (Bottou et al. 2013).
+
+**Cross-refs:** roadmap §B1-B4 (honest backtest — same problem from
+SIM side), §144 (streak → db — same "db is canonical" theme).
+
+---
+
 ## 🛡 2026-04-26 — Cloud backup plan (operational hygiene)
 
 **User ask 2026-04-26:**
