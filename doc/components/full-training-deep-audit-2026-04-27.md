@@ -210,6 +210,19 @@ The post-fix artifact is now PROD (panel-ltr.json md5 589e5b95). The pre-audit b
 
 **ALL OTHER 8-variant tournament IC numbers** are similarly inflated. They need re-running to get true OOS values.
 
+### Post-fix tournament so far (all with HIGH-1 + HIGH-2 fixes)
+
+| Variant | Pre-fix IC | Post-fix IC | Δ vs PROD post-fix |
+|---|---|---|---|
+| **XGB no-macro (PROD)** | +0.0482 | **+0.0411** | — |
+| XGB + macro v2 (per-ticker β) | +0.0371 | +0.0373 | −9.2% |
+
+XGB+macro v2 with clean CV came in at 0.0373 — basically identical to
+the pre-fix 0.0371 (within noise). The pre-fix run wasn't materially
+inflated because the macro v2 features themselves were near-zero
+signal — leaks of zero signal don't move IC much. **Verdict on macro
+v2 holds: 11 per-ticker β features don't beat 28-feature no-macro.**
+
 ## Audit summary as of 10:11 PT
 
 - **2 HIGH bugs found and fixed**:
