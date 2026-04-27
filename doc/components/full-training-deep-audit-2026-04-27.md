@@ -251,6 +251,39 @@ agri, TIPS produced essentially zero change in OOS IC.
    lever), or try Tier 2 FRED if the user wants to confirm that
    ETFs/FRED are equivalent or complementary.
 
+### Tier 2 macro v3 verdict — **definitively negative** (2026-04-27 11:24 PT)
+
+| Variant | Per-ticker β count | post-fix IC | Δ vs PROD no-macro |
+|---|---|---|---|
+| **XGB no-macro (PROD)** | 0 | **+0.0411** | — |
+| XGB+macro v2 (11 sym ETF) | 11 | +0.0373 | −9.2% |
+| XGB+macro v2 (30 sym ETF) | 30 | +0.0370 | −10.0% |
+| XGB+macro v3 (30 ETF + 22 FRED) | **52** | **+0.0344** | **−16.3%** |
+
+**Adding 22 FRED series (yield curve, inflation, activity) made things
+WORSE by -0.0026** vs 30-sym ETF. This is a definitive negative result:
+
+1. Yield curve / inflation / labor data did NOT carry orthogonal signal
+   for cross-sectional XGBoost ranking.
+2. Going from 11 → 30 → 52 macro β features shows monotone IC
+   degradation: each batch of additions hurts more than the last.
+3. The XGBoost rank:pairwise + Gaussianized residual labels +
+   28-feature no-macro setup is at the IC ceiling for this panel
+   architecture.
+
+**Definitive conclusion**: panel-LTR macro signal is fully exhausted on
+this 99-ticker × 753-date panel. The IC ceiling is the **panel breadth
+constraint** (Grinold-Kahn), not feature count. Any further IC gain
+must come from:
+- **Watchlist expansion** (99 → 200 tickers, true breadth lever)
+- **Asset embeddings** (T2-2, learns latent ticker similarity from raw
+  OHLCV — different mechanism from macro β)
+- **Regime ensemble** (T2-3, 4 separate models per regime)
+- NOT more macro features.
+
+PROD remains XGB no-macro post-fix +0.0411. macro v3 artifact archived
+at `panel-ltr.macro-v3-etf-fred.bak.json` for forensics.
+
 ## Audit summary as of 10:11 PT
 
 - **2 HIGH bugs found and fixed**:
