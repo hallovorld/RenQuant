@@ -111,6 +111,24 @@ point). Magnitude: ~10 dates × ~99 tickers = ~1% of training rows leak.
 
 **Fix**: insert a `lookahead`-bar gap between train end and eval start.
 
+### 🟠 HIGH-3 — NGBoostHead train/val split — same lookahead-bar leak
+
+**File:line**: `training_panel/ngboost_head.py:137-149`
+
+NGBoost head splits panel into train/val by date (last 20% → val) for
+early stopping. Same bar/calendar pattern as HIGH-2: pre-fix the last
+`lookahead` training dates carry labels reaching into val window →
+val NLL artificially good → early-stop fires too soon → undertrained
+NGBoost head.
+
+Effect: μ/σ predictions used for buy gate B + sell gate B + portfolio
+QP are slightly biased. Magnitude: same as HIGH-2 (~10 dates × 99
+tickers ≈ 1% leak).
+
+Fix: insert `lookahead_days` purge gap between train end and val
+start. Caller in `pp_panel_training.py::NGBoostFitTask` passes
+`lookahead_days` from config.
+
 ### 🟡 LATENT-1 — Inference path drops asset_embeddings
 
 **File:line**: `training_panel/pipeline.py:111` (loads embeddings) +

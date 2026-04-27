@@ -2253,6 +2253,9 @@ class NGBoostFitTask(PanelTask):
 
         head = NGBoostHead(params=params)
         t0 = _time.monotonic()
+        # Audit fix HIGH-3 (2026-04-27): pass lookahead_days so the
+        # train/val date split purges leakage between segments.
+        lookahead_for_purge = int(ctx.config.get("panel_ltr", {}).get("lookahead_days", 5))
         fit = head.train(
             sub,
             feature_cols=ctx.feature_cols,
@@ -2260,6 +2263,7 @@ class NGBoostFitTask(PanelTask):
             sample_weight_col="weight" if "weight" in sub.columns else None,
             val_fraction=val_fraction,
             early_stopping_rounds=int(es_rounds) if es_rounds else None,
+            lookahead_days=lookahead_for_purge,
         )
         if cv_result is not None:
             # Make CV metrics available to NGBoostSaveTask.

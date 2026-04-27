@@ -70,6 +70,7 @@ class NGBoostHead:
         val_fraction: float = 0.2,
         early_stopping_rounds: int | None = None,
         impute_features: bool = True,
+        lookahead_days: int = 10,
     ) -> dict:
         """Fit NGBRegressor(Normal) on the panel.
 
@@ -136,10 +137,23 @@ class NGBoostHead:
         if do_eval_split and date_col and date_col in sub.columns:
             dates = pd.to_datetime(sub[date_col]).dt.normalize()
             uniq = np.array(sorted(dates.unique()))
-            if len(uniq) >= 5:
+            if len(uniq) >= 5 + lookahead_days:
                 cutoff_idx = int(len(uniq) * (1.0 - val_fraction))
+                # Audit fix HIGH-3 (2026-04-27): purge `lookahead_days`
+                # bars between train end and val start. Pre-fix train end
+                # bar's label reached `lookahead` forward into val → val
+                # NLL was artificially good → early-stop fired too soon.
+                # Same pattern as HIGH-2 (FinalFitTask).
+                purge_cutoff_idx = max(0, cutoff_idx - int(lookahead_days))
+                purge_cutoff = uniq[purge_cutoff_idx]
                 cutoff = uniq[cutoff_idx]
-                train_mask = (dates < cutoff).reindex(sub.index, fill_value=False)
+                # Train: dates < purge_cutoff (= cutoff - lookahead bars)
+                # Val:   dates >= cutoff
+                # Gap [purge_cutoff, cutoff) is dropped from both.
+                train_mask = (dates < purge_cutoff).reindex(sub.index, fill_value=False)
+                val_mask   = (dates >= cutoff).reindex(sub.index, fill_value=False)
+                # Override sub_val below via val_mask
+                self._val_mask_override = val_mask  # noqa: SLF001
             else:
                 do_eval_split = False
         elif do_eval_split:
@@ -149,7 +163,15 @@ class NGBoostHead:
             train_mask.iloc[:n_train] = True
 
         sub_train = sub.loc[train_mask]
-        sub_val   = sub.loc[~train_mask] if do_eval_split else None
+        # Audit fix HIGH-3: when date-based purge is in effect, use the
+        # explicit val_mask (drops the leak gap from BOTH train and val).
+        # Otherwise fall back to ~train_mask (legacy row-based split).
+        val_mask_override = getattr(self, "_val_mask_override", None)
+        if val_mask_override is not None:
+            sub_val = sub.loc[val_mask_override] if do_eval_split else None
+            self._val_mask_override = None  # noqa: SLF001 — clear for next call
+        else:
+            sub_val = sub.loc[~train_mask] if do_eval_split else None
 
         X_train = sub_train[feature_cols].to_numpy(dtype=float)
         y_train = sub_train[label_col].to_numpy(dtype=float)
