@@ -227,6 +227,9 @@
   ],
   "bear_defensive_slots": 2,
   "bear_defensive_pct": 0.15,
+  "risk": {
+    "max_sells_per_bar": 2
+  },
   "sector_map": {
     "AAPL": "giant_tech",
     "AMZN": "giant_tech",
@@ -501,6 +504,10 @@
         "no_trade_band": {
           "enabled": false
         }
+      },
+      "sell_gate_b": {
+        "enabled": true,
+        "threshold": 0.1
       }
     },
     "universe_floor": {
