@@ -567,6 +567,8 @@ class LoadMacroPerTickerBetasTask(PanelTask):
             return True
         try:
             from kernel.macro_per_ticker import (  # noqa: PLC0415
+                DEFAULT_MIN_WINDOW,
+                DEFAULT_ROLLING_WINDOW,
                 compute_per_ticker_macro_betas,
                 macro_levels_to_returns,
             )
@@ -576,11 +578,13 @@ class LoadMacroPerTickerBetasTask(PanelTask):
                             "produced empty DataFrame — skipping (likely no "
                             "*_level_z columns in v1 macro frame)")
                 return True
-            window = int(cfg.get("rolling_window", 60))
+            # Audit M3 fix (2026-04-27): reference module-level defaults so
+            # the cfg fallback can't drift from the function's own default.
+            window = int(cfg.get("rolling_window", DEFAULT_ROLLING_WINDOW))
             betas = compute_per_ticker_macro_betas(
                 ctx.ohlcv, macro_returns,
                 rolling_window=window,
-                min_window=int(cfg.get("min_window", 30)),
+                min_window=int(cfg.get("min_window", DEFAULT_MIN_WINDOW)),
             )
             ctx.macro_betas = betas
             n_cols = len(next(iter(betas.values())).columns) if betas else 0

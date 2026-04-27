@@ -20,6 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 from kernel.macro_per_ticker import (   # noqa: E402
+    DEFAULT_MIN_WINDOW,
+    DEFAULT_ROLLING_WINDOW,
     compute_per_ticker_macro_betas,
     macro_levels_to_returns,
 )
@@ -113,6 +115,49 @@ class TestPerTickerMacroBetas:
         # Either skipped (empty result) or all NaN
         if "X" in result:
             assert result["X"]["beta_vix_chg_60d"].dropna().empty
+
+    def test_audit_M3_default_constants_exported(self):
+        """Audit M3 fix: callers reference DEFAULT_MIN_WINDOW /
+        DEFAULT_ROLLING_WINDOW so the function signature default and the
+        cfg fallback can't drift independently."""
+        assert DEFAULT_ROLLING_WINDOW == 60
+        assert DEFAULT_MIN_WINDOW == 30
+
+    def test_audit_M4_skipped_tickers_logged(self, caplog):
+        """Audit M4 fix: tickers skipped due to missing close column or
+        insufficient history must surface in logs (pre-fix they were
+        silent and got 0.0-filled in build_panel_frame, masking real
+        upstream gaps)."""
+        import logging
+        caplog.set_level(logging.WARNING, logger="kernel.macro_per_ticker")
+        rng = np.random.default_rng(42)
+        dates_full  = pd.bdate_range("2024-01-02", periods=200)
+        dates_short = pd.bdate_range("2024-01-02", periods=25)  # < min_window
+        ohlcv = {
+            "GOODA": pd.DataFrame(
+                {"close": 100 * np.cumprod(1 + rng.normal(0, 0.01, 200))},
+                index=dates_full,
+            ),
+            "NOCLOSE": pd.DataFrame({"open": [1.0] * 200}, index=dates_full),
+            "SHORT": pd.DataFrame(
+                {"close": 100 * np.cumprod(1 + rng.normal(0, 0.01, 25))},
+                index=dates_short,
+            ),
+            "EMPTY": pd.DataFrame(),
+        }
+        macro = pd.DataFrame(
+            {"vix_chg": rng.normal(0, 0.03, 200)}, index=dates_full,
+        )
+        compute_per_ticker_macro_betas(ohlcv, macro,
+                                       rolling_window=60, min_window=30)
+        text = "\n".join(rec.message for rec in caplog.records)
+        # NOCLOSE / EMPTY should surface in the no-close log
+        assert "NOCLOSE" in text
+        assert "EMPTY"   in text
+        # SHORT should surface in the short-history log
+        assert "SHORT"   in text
+        # Warns must mention the count + reason
+        assert "no close column" in text or "no_close" in text or "empty df" in text.lower()
 
 
 class TestMacroLevelsToReturns:

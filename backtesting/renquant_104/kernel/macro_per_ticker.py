@@ -47,13 +47,18 @@ import pandas as pd
 
 log = logging.getLogger("kernel.macro_per_ticker")
 
+# Single source of truth for rolling-β defaults so the pipeline caller
+# in pp_panel_training.py and the function default can't drift.
+DEFAULT_ROLLING_WINDOW = 60
+DEFAULT_MIN_WINDOW = 30
+
 
 def compute_per_ticker_macro_betas(
     ohlcv: dict[str, pd.DataFrame],
     macro_returns: pd.DataFrame,
     *,
-    rolling_window: int = 60,
-    min_window: int = 30,
+    rolling_window: int = DEFAULT_ROLLING_WINDOW,
+    min_window: int = DEFAULT_MIN_WINDOW,
 ) -> dict[str, pd.DataFrame]:
     """Per-ticker rolling β to each macro factor.
 
@@ -96,20 +101,19 @@ def compute_per_ticker_macro_betas(
         return out
 
     macro_cols = list(macro_returns.columns)
+    skipped_no_close: list[str] = []
+    skipped_short:    list[tuple[str, int]] = []
 
     for ticker, df in ohlcv.items():
         if df is None or df.empty or "close" not in df.columns:
+            skipped_no_close.append(ticker)
             continue
 
         # Per-ticker daily returns (close-to-close)
         ticker_returns = df["close"].pct_change()
 
         if len(ticker_returns) < min_window:
-            log.debug(
-                "compute_per_ticker_macro_betas: %s has only %d bars, "
-                "below min_window=%d — skipping",
-                ticker, len(ticker_returns), min_window,
-            )
+            skipped_short.append((ticker, len(ticker_returns)))
             continue
 
         cols: dict[str, pd.Series] = {}
@@ -135,6 +139,25 @@ def compute_per_ticker_macro_betas(
 
         out[ticker] = pd.DataFrame(cols, index=ticker_returns.index)
 
+    # Audit M4 fix (2026-04-27): silent skips were hiding watchlist members
+    # that would silently get the missing→0.0 fill in build_panel_frame —
+    # making it look like a working β when really we never computed one.
+    # Surface skips so operators can fix the underlying data gap.
+    if skipped_no_close:
+        log.warning(
+            "compute_per_ticker_macro_betas: %d ticker(s) skipped (no close column / empty df): %s",
+            len(skipped_no_close), ",".join(sorted(skipped_no_close)),
+        )
+    if skipped_short:
+        log.warning(
+            "compute_per_ticker_macro_betas: %d ticker(s) skipped (< min_window=%d bars): %s",
+            len(skipped_short), min_window,
+            ",".join(f"{t}({n})" for t, n in sorted(skipped_short)),
+        )
+    log.info(
+        "compute_per_ticker_macro_betas: produced β for %d/%d tickers (window=%dd, min=%d)",
+        len(out), len(ohlcv), rolling_window, min_window,
+    )
     return out
 
 
