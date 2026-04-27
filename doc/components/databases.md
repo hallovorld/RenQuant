@@ -50,9 +50,23 @@ Config example:
 
 ---
 
-## Tables — 7 tables, 1 DB per role
+## Tables — 11 tables, 1 DB per role
 
-Both DBs have the same schema. Rows differ.
+| # | Table | Purpose | Owner |
+|---|---|---|---|
+| 1 | `pipeline_runs` | One row per `InferencePipeline.run()` invocation | `RunnerAdapter`, `LeanAdapter`, `SimAdapter` |
+| 2 | `candidate_scores` | Per-(run, ticker, role) decision telemetry | `RankingJob`, `CandidateJob` |
+| 3 | `trades` | Per-fill execution log | `RunnerAdapter` |
+| 4 | `rotations` | Sell-paired-with-buy rotation events | `RotationJob` |
+| 5 | `training_runs` | One row per `FullTrainingPipeline.run()` | `record_training_run()` |
+| 6 | `ticker_forward_returns` | as_of_date × ticker fwd_1d/5d/10d/20d | `scripts/backfill_forward_returns.py` |
+| 7 | `live_state_snapshots` | Per-bar `live_state.json` audit | `record_live_state_snapshot()` |
+| 8 | `ticker_daily_state` | Daily per-ticker streak/HWM/has_position | `RunnerAdapter` (Bug #144 migration) |
+| 9 | `score_distribution` + `score_percentiles_daily` + `score_distribution_meta` | Calibrator drift tracking — 1 row per training run + per-day distribution shapes | `RefreshPanelCalibratorJob` |
+| 10 | `challenger_decisions` | **Phase 4a (2026-04-26)** — shadow-mode challenger vs live decision log | `kernel.challenger.log_decision()` (Phase 4b will wire in pp_inference) |
+| 11 | _planned_ `training_run_gates` | **Per-gate verdict per training run** (deferred — see [`metadata-db-and-backup-plan.md`](metadata-db-and-backup-plan.md)) | `ModelAcceptanceGate.evaluate()` |
+
+Both DBs (`runs.db` + `sim_runs.db`) have the same schema. Rows differ.
 
 ### 1. `pipeline_runs`
 
@@ -222,6 +236,69 @@ Answers historical queries like "what was `high_water_mark` on 2026-04-20?" with
 SELECT high_water_mark FROM live_state_snapshots
 WHERE run_date = '2026-04-20' AND strategy = 'renquant_104';
 ```
+
+### 8. `ticker_daily_state`
+
+Per-(run_date, ticker, strategy) snapshot. Bug #144 migration moved `sell_streak` from `live_state.json` into the DB.
+
+| Column | Type | Notes |
+|---|---|---|
+| `run_date` | DATE | Trading day |
+| `ticker` | TEXT | |
+| `strategy` | TEXT | |
+| `has_position` | INTEGER | 0/1 |
+| `sell_streak` | INTEGER | Consecutive sell-signal days (only meaningful when has_position=1) |
+| `entry_date` | DATE | When current position was opened |
+| `entry_signal` | TEXT | Signal type that opened the position |
+| `…` | | Other per-ticker daily state |
+| `created_at` | TIMESTAMP | |
+
+Indexes: `(run_date, strategy)`, `(ticker)`.
+
+### 9. Calibrator drift tracking — `score_distribution` + `score_percentiles_daily` + `score_distribution_meta`
+
+Trio of tables populated by `RefreshPanelCalibratorJob`:
+- `score_distribution_meta` (1 row per training run): `date`, `calibrator_pool_ic`, `scorer_oos_ic`, `base_rate`, `threshold`, `n_features`, `artifact_path`
+- `score_distribution`: histogram bins of raw scores
+- `score_percentiles_daily`: per-day p05/p50/p95 of raw scores for drift dashboard
+
+### 10. `challenger_decisions`
+
+**Phase 4a (2026-04-26).** One row per (run_id, ticker, decision_date) when a challenger artifact is enabled via `acceptance.challenger.enabled=true`. Stores both the challenger's hypothetical decision and the live runner's actual decision so `compare_window()` can compute agreement / score correlation / disagreement-on-buy after a shadow window.
+
+| Column | Type | Notes |
+|---|---|---|
+| `decision_id` | INTEGER PK AUTOINCREMENT | |
+| `run_id` | TEXT | FK → `pipeline_runs.run_id` |
+| `decision_date` | TEXT (ISO) | Trading day this decision applied to |
+| `ticker` | TEXT | |
+| `challenger_name` | TEXT | e.g. `"macro-enabled"`, `"transformer-v6"` |
+| `challenger_score` | REAL | Raw panel score from challenger model |
+| `challenger_rank_score` | REAL | Post-calibration rank score |
+| `challenger_action` | TEXT | `"BUY"` / `"SELL"` / `"HOLD"` / `"PASS"` |
+| `actual_score` | REAL | Live model's score for the same (date, ticker) |
+| `actual_action` | TEXT | What live actually did |
+| `created_at` | TIMESTAMP | |
+
+Indexes: `idx_challenger_run (run_id)`, `idx_challenger_window (challenger_name, decision_date)`.
+
+Live wiring (per-bar challenger scoring + log_decision call) is **Phase 4b** — schema landed in Phase 4a so the production DB is migration-ready.
+
+### 11. _planned_ `training_run_gates`
+
+Per-gate verdict per training run — see [`metadata-db-and-backup-plan.md`](metadata-db-and-backup-plan.md). Schema designed; implementation deferred.
+
+| Column | Type | Notes |
+|---|---|---|
+| `run_id` | TEXT FK | → `training_runs` |
+| `gate_name` | TEXT | `G1_schema`, `G4_oos_ic_vs_prior`, … |
+| `severity` | TEXT | `"hard"` / `"soft"` |
+| `passed` | INTEGER | 0/1 |
+| `metric` | REAL | Computed value |
+| `threshold` | REAL | Configured floor |
+| `detail` | TEXT | Free-form explanation from gate |
+
+PK `(run_id, gate_name)`.
 
 ---
 

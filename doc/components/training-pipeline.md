@@ -1,6 +1,6 @@
 # Model Training — Design + References
 
-**Last updated**: 2026-04-25.
+**Last updated**: 2026-04-26 (round-7 acceptance gate flow).
 
 ## Overview
 
@@ -17,6 +17,45 @@ renquant_104 trains **two layers** of machine-learning models:
    `μ, σ` from a NGBoost head.
 
 Both layers feed the rotation algorithm (see `doc/components/rotation.md`).
+
+---
+
+## Round-7 (2026-04-26) — acceptance-gated retrain flow
+
+`scripts/train_104.py` wraps `FullTrainingPipeline` in an 11-gate
+`ModelAcceptanceGate` (`kernel/model_acceptance.py`):
+
+```
+1. Snapshot active panel-ltr.json → .pre-train.json (rollback safety)
+2. Run FullTrainingPipeline (writes new artifact to panel-ltr.json)
+3. Move new content → panel-ltr.staging.json
+4. Restore prior content from .pre-train.json → panel-ltr.json (so the
+   gate sees prior=active, candidate=staging)
+5. ModelAcceptanceGate(config=acceptance_cfg).evaluate(staging, active)
+   — runs G1-G11 and returns AcceptanceVerdict
+6. PASS  → promote(staging, active):
+              JSON validation (audit fix #2) → atomic os.replace via
+              .incoming.json (audit fix #12, no missing-active window)
+              prior preserved at panel-ltr.previous.json
+   FAIL  → reject(staging, _acceptance_log/, verdict):
+              archives staging + verdict.txt
+              ntfy push to "renquant"
+              sys.exit(2)
+7. finally: clean up .pre-train.json snapshot (success OR rejection;
+   audit fix #9 always-clean)
+```
+
+Operator overrides (dangerous):
+- `--skip-acceptance` flag → bypass gates for one run
+- `acceptance.enabled: false` in strategy_config → disable globally
+- `--skip-acceptance` AND `--skip-baseline --skip-recalibrate` is the
+  pattern used by `strategy_config.lgbm_macro.json` and similar
+  experimental configs (writes directly to artifacts/ — be ready to
+  restore from `.<backend>.bak.json` afterwards)
+
+Full SOP: [`model-selection.md`](model-selection.md).
+
+---
 
 ## Layer 1 — Per-Ticker Models (`training/models.py`)
 

@@ -1,5 +1,9 @@
 # Model Types
 
+> This doc focuses on **per-symbol learners** (101/102/103 tournament + 104 baseline tournament). For the **cross-sectional panel-LTR** layer that defines renquant_104's primary scorer, see [`../components/panel-ltr.md`](../components/panel-ltr.md) and [`../components/training-pipeline.md`](../components/training-pipeline.md). The panel-LTR layer (XGBoost / LightGBM / Transformer + NGBoost head + isotonic calibrator) does NOT implement the `BaseModel` interface below — it has its own `PanelScorer` API.
+
+## Per-symbol learners
+
 All models implement `BaseModel` with a common interface:
 - `train(df, **kwargs)` — train on indicator-enriched OHLCV data
 - `predict(state)` — return `"hold"`, `"buy"`, or `"sell"` (string) for a single row or DataFrame (only processes row 0)
@@ -237,3 +241,26 @@ All models export to JSON (no pickle) for LEAN compatibility. Each model writes:
   - Q-Learning: `{name}-qtable.json` + `{name}-bin-edges.json`
   - Manual: `{name}-manual-rules.json`
   - XGBoost: `{name}-xgb-buy.json` + `{name}-xgb-sell.json`
+
+---
+
+## Cross-sectional panel-LTR layer (104 only)
+
+Separate from the per-symbol models above. The panel layer is invoked
+by `PanelScoringJob` in the inference pipeline, after per-symbol
+candidates have been scored. It produces a single cross-sectional
+ranking that overrides per-ticker `rank_score` when `panel_scoring.enabled=true`.
+
+| Backend | Artifact | API | Activation |
+|---|---|---|---|
+| XGBoost (default) | `panel-ltr.json` (kind=`panel_ltr_xgboost`) | `panel_pipeline.PanelScorer.load(path).score(X)` | `panel_ltr.backend: "xgboost"` |
+| LightGBM | `panel-ltr.json` (kind=`panel_ltr_lightgbm`) | same | `panel_ltr.backend: "lightgbm"` |
+| Transformer (Stage C-3) | `panel-ltr.json` + `panel-transformer.pt` | same; native Rust scorer for inference | `panel_ltr.backend: "transformer"` (also enables hourly bars) |
+
+Sidecars (always written):
+- `ngboost-head.json` — μ/σ residual head trained on top of panel score
+- `panel-rank-calibration.json` — isotonic regression mapping raw → `rank_score ∈ [0,1]`
+
+Backups (per-experiment): `panel-ltr.{xgboost,lightgbm,transformer,macro-enabled,...}.bak.json` + matching sidecar `.bak`s. Tournament via `scripts/select_best_model.py`.
+
+Full design: [`../components/panel-ltr.md`](../components/panel-ltr.md), [`../components/training-pipeline.md`](../components/training-pipeline.md), [`../components/transformer.md`](../components/transformer.md), [`../components/calibration.md`](../components/calibration.md), [`../components/model-selection.md`](../components/model-selection.md).
