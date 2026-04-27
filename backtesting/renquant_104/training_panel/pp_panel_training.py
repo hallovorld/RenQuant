@@ -1257,12 +1257,36 @@ class FeatureDiagnosticTask(PanelTask):
         if ctx.panel is None or not ctx.feature_cols:
             return
         from scipy.stats import spearmanr
-
+        # Bug #21 fix (2026-04-26 round-7): the hourly transformer's
+        # Stage C-3 v2 crashed here with
+        #   DTypePromotionError: DateTime64 could not be promoted by Float64
+        # when a non-numeric column (datetime / object) leaked into
+        # ctx.feature_cols. Defensive: filter to columns whose dtype is
+        # numeric BEFORE computing any spearman/std. Non-numeric features
+        # are not a meaningful diagnostic anyway — just log + skip.
         panel = ctx.panel
+        numeric_feature_cols: list[str] = []
+        skipped_non_numeric: list[tuple[str, str]] = []
+        for col in ctx.feature_cols:
+            if col not in panel.columns:
+                continue
+            dt = panel[col].dtype
+            if pd.api.types.is_numeric_dtype(dt) and not pd.api.types.is_bool_dtype(dt):
+                numeric_feature_cols.append(col)
+            else:
+                skipped_non_numeric.append((col, str(dt)))
+        if skipped_non_numeric:
+            log.warning(
+                "FeatureDiagnosticTask: skipping %d non-numeric feature_cols "
+                "(would crash spearmanr): %s",
+                len(skipped_non_numeric),
+                ", ".join(f"{c}({d})" for c, d in skipped_non_numeric[:8]),
+            )
+
         dates = panel["date"].values
         label = panel["label"].values
         rows: list[tuple[str, float, float]] = []
-        for col in ctx.feature_cols:
+        for col in numeric_feature_cols:
             vals = panel[col].values
             # Within-date std, averaged across dates (pandas is slow per-group;
             # use a group-by-transform once)
@@ -1278,7 +1302,21 @@ class FeatureDiagnosticTask(PanelTask):
                 p = g[col].values
                 if len(y) < 2 or (y == y[0]).all() or (p == p[0]).all():
                     continue
-                rho, _ = spearmanr(p, y)
+                # Bug #21 defense in depth (2026-04-26): coerce to float
+                # explicitly so a stray non-numeric column that slipped past
+                # the upfront filter still degrades to a logged warning,
+                # not a hard crash. Skip the column entirely if coercion
+                # raises (caller can investigate the panel).
+                try:
+                    p_f = np.asarray(p, dtype=float)
+                    y_f = np.asarray(y, dtype=float)
+                except (TypeError, ValueError) as exc:
+                    log.warning(
+                        "FeatureDiagnosticTask: column %s skipped — "
+                        "spearmanr coercion failed: %s", col, exc,
+                    )
+                    break   # this col is broken; abandon and move on
+                rho, _ = spearmanr(p_f, y_f)
                 if not np.isnan(rho):
                     ics.append(float(rho))
             mean_ic = float(np.mean(ics)) if ics else 0.0
