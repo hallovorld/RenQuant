@@ -90,6 +90,9 @@ class TestTrainInferenceSymmetry:
             "LoadHourlyBarsTask",
             "LoadMinuteBarsTask",
             "LoadMacroFactorsTask",
+            "LoadFredMacroTask",          # Tier 2 macro (2026-04-27)
+            "LoadMacroPerTickerBetasTask",
+            "LoadAssetEmbeddingsTask",
         }
         missing = expected_at_least - train_tasks
         assert not missing, (
