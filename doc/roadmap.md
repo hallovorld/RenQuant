@@ -302,6 +302,18 @@ This makes `runs.db` the authoritative store. The JSON becomes a fast cache + hu
 - Poh-Lim-Zohren-Roberts 2020 (arXiv 2012.07149) — cross-sectional learning-to-rank, listwise > pairwise.
 - CIKM 2025 (arXiv 2510.14156, "On Evaluating Loss Functions for Stock Ranking") — confirms listwise > pairwise.
 
+**A3 (XGBoost rank:ndcg listwise) — BLOCKED on implementation work (2026-04-27)**:
+A3 retrain crashed with `XGBoostError: When using relevance degree as target,
+label must be either 0 or positive integer.` XGBoost's `rank:ndcg` objective
+requires integer non-negative relevance labels, but our pipeline passes
+continuous forward returns. Same issue LightGBM already solves via
+`lgbm_ltr.py::_bucketize_labels` (per-date rank bucketization 0-10). To
+unblock A3: copy that helper into the XGBoost FinalFitTask path
+(`pp_panel_training.py::FinalFitTask`) and apply when `objective` starts with
+`rank:ndcg` or `rank:map`. ~30 LoC, low risk. Then re-run A3 with --force.
+Artifact preserved at `strategy_config.xgb_listwise.json`; production
+unaffected (XGBoost crashed before SaveArtifactTask).
+
 ### Tier 2 — 2-4 weeks, evidence-backed wins
 
 | # | Item | Evidence | ETA | Status |
