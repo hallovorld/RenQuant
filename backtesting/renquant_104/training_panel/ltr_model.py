@@ -30,6 +30,40 @@ import xgboost as xgb
 from scipy.stats import spearmanr
 
 
+def _bucketize_labels_per_group(
+    y: np.ndarray, group_sizes: np.ndarray, n_buckets: int = 11,
+) -> np.ndarray:
+    """Map continuous labels to integer relevance [0 … n_buckets-1] via
+    PER-GROUP rank.
+
+    Required by XGBoost 3.x rank:ndcg / rank:map / rank:gain (listwise
+    objectives) which assert `label_is_integer` and reject continuous
+    labels. Mirror of `lgbm_ltr.py::_bucketize_labels` so both backends
+    use identical relevance semantics when configured for listwise loss.
+
+    For each group (date), rank the labels within the group and assign
+    bucket = int(rank / group_size × n_buckets). Returns int32 array.
+
+    `rank:pairwise` does NOT need this and continues to receive raw
+    continuous labels (caller decides via objective check).
+    """
+    out = np.zeros(len(y), dtype=np.int32)
+    offset = 0
+    for gs in group_sizes:
+        gs_int = int(gs)
+        if gs_int <= 0:
+            continue
+        slice_y = y[offset:offset + gs_int]
+        ranks = np.argsort(np.argsort(slice_y, kind="stable"), kind="stable")
+        if gs_int >= n_buckets:
+            buckets = (ranks * n_buckets) // gs_int
+        else:
+            buckets = ranks
+        out[offset:offset + gs_int] = np.clip(buckets, 0, n_buckets - 1).astype(np.int32)
+        offset += gs_int
+    return out
+
+
 DEFAULT_PARAMS: dict[str, Any] = {
     "objective": "rank:pairwise",
     "eta": 0.05,
@@ -147,7 +181,19 @@ class PanelLTRModel:
             )
 
         X = panel[feature_cols].values
-        y = panel[label_col].values
+        y_raw = panel[label_col].values.astype(float)
+
+        # 2026-04-27 A3 unblock: rank:ndcg / rank:map / rank:gain require
+        # integer relevance labels. Bucketize per-date when objective is
+        # listwise. Mirrors lgbm_ltr.py::_bucketize_labels semantics so
+        # both backends produce comparable rank scores when configured
+        # for listwise loss.
+        objective = str(self.params.get("objective", "rank:pairwise")).lower()
+        if objective in ("rank:ndcg", "rank:map", "rank:gain"):
+            y = _bucketize_labels_per_group(y_raw, group_sizes, n_buckets=11)
+        else:
+            y = y_raw
+
         dtrain = xgb.DMatrix(X, label=y)
         dtrain.set_group(group_sizes)
         # XGBoost 3.x ranking: weights are per-group (one per query), not per-row.
@@ -172,7 +218,12 @@ class PanelLTRModel:
         deval: xgb.DMatrix | None = None
         if eval_panel is not None and eval_group_sizes is not None:
             Xe = eval_panel[feature_cols].values
-            ye = eval_panel[label_col].values
+            ye_raw = eval_panel[label_col].values.astype(float)
+            # Same listwise bucketization for eval set
+            if objective in ("rank:ndcg", "rank:map", "rank:gain"):
+                ye = _bucketize_labels_per_group(ye_raw, eval_group_sizes, n_buckets=11)
+            else:
+                ye = ye_raw
             deval = xgb.DMatrix(Xe, label=ye)
             deval.set_group(eval_group_sizes)
 
