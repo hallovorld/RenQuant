@@ -131,18 +131,22 @@ def _bucketize_labels(
     offset = 0
     for gs in group_sizes:
         gs_int = int(gs)
+        # Audit LGBM #8 fix (2026-04-27): skip degenerate (don't add to
+        # offset when negative — would corrupt subsequent slices).
         if gs_int <= 0:
-            offset += gs_int
             continue
         slice_y = y[offset:offset + gs_int]
-        # argsort.argsort gives rank within slice (0..gs-1)
-        ranks = np.argsort(np.argsort(slice_y, kind="stable"), kind="stable")
-        # Scale to 0..n_buckets-1 inclusive
-        if gs_int >= n_buckets:
-            buckets = (ranks * n_buckets) // gs_int
+        # Audit LGBM #3 fix (2026-04-27): tied labels must get the SAME
+        # bucket. Pre-fix `argsort.argsort` gave unique ranks even for
+        # ties → trains lambdarank to enforce arbitrary tie-breaks.
+        # Now: pandas Series.rank(method="dense") gives ties the same rank.
+        ranks_s = pd.Series(slice_y).rank(method="dense").values - 1.0
+        max_rank = float(ranks_s.max()) if len(ranks_s) > 0 else 0.0
+        if max_rank > 0 and gs_int >= n_buckets:
+            buckets = (ranks_s * (n_buckets - 1) / max_rank).astype(np.int32)
         else:
-            # Group smaller than buckets — preserve ranks linearly
-            buckets = ranks
+            # Either tiny group or all-ties: linear ranks
+            buckets = ranks_s.astype(np.int32)
         out[offset:offset + gs_int] = np.clip(buckets, 0, n_buckets - 1).astype(np.int32)
         offset += gs_int
     return out
@@ -160,6 +164,17 @@ class PanelLGBMModel:
         if lgb is None:
             raise RuntimeError("lightgbm is not installed")
         self.params = {**DEFAULT_PARAMS, **(self.params or {})}
+        # Audit LGBM #11 fix (2026-04-27): validate objective is a
+        # lambdarank-family loss. Pre-fix any objective string was
+        # accepted; passing "regression" + bucketized integer labels
+        # would learn nonsense. Now: assert at construction.
+        obj = str(self.params.get("objective", "lambdarank")).lower()
+        if not (obj.startswith("lambda") or obj == "rank_xendcg"):
+            raise ValueError(
+                f"PanelLGBMModel: objective={obj!r} is not a lambdarank-"
+                f"family loss. Bucketized integer labels assume listwise "
+                f"ranking semantics. Use 'lambdarank' or 'rank_xendcg'."
+            )
         self.feature_cols = list(self.feature_cols or [])
 
     # ── Training ───────────────────────────────────────────────────────────
@@ -206,12 +221,27 @@ class PanelLGBMModel:
         row_weights = None
         if weight_col and weight_col in panel.columns:
             w_rows = panel[weight_col].values.astype(float)
+            # Audit LGBM #1 fix (2026-04-27): NaN guard. Pre-fix, NaN
+            # weights from concurrency × age product (early dates) would
+            # silently propagate to LightGBM with undefined behavior.
+            n_nan = int(np.isnan(w_rows).sum())
+            if n_nan > 0:
+                log.warning(
+                    "PanelLGBMModel.train: replacing %d NaN weights with 1.0 "
+                    "(typically early-date age-weight warmup)", n_nan,
+                )
+                w_rows = np.nan_to_num(w_rows, nan=1.0)
             row_weights = np.empty(len(w_rows), dtype=float)
             off = 0
             for gs in group_sizes:
-                grp_mean = w_rows[off:off + gs].mean()
-                row_weights[off:off + gs] = grp_mean
-                off += gs
+                # Audit LGBM #6 fix (2026-04-27): skip degenerate groups
+                # to avoid empty-slice .mean() RuntimeWarning.
+                gs_int = int(gs)
+                if gs_int <= 0:
+                    continue
+                grp_mean = float(w_rows[off:off + gs_int].mean())
+                row_weights[off:off + gs_int] = grp_mean
+                off += gs_int
             assert len(row_weights) == len(X), (
                 f"row_weights len {len(row_weights)} != X rows {len(X)}"
             )
@@ -258,10 +288,20 @@ class PanelLGBMModel:
             valid_names=valid_names,
             callbacks=callbacks or None,
         )
-        self.best_iter = self.booster.current_iteration()
+        # Audit LGBM #2 fix (2026-04-27): prefer best_iteration when
+        # early stopping fired. Pre-fix `current_iteration()` returned
+        # the LAST round (= best + early_stopping_patience), misreporting
+        # peak.
+        best_iter_attr = getattr(self.booster, "best_iteration", 0) or 0
+        if best_iter_attr > 0:
+            self.best_iter = int(best_iter_attr)
+        else:
+            self.best_iter = int(self.booster.current_iteration())
 
-        # Per-date Spearman IC against the original (non-bucketed) label
-        preds = self.booster.predict(X)
+        # Per-date Spearman IC against the original (non-bucketed) label.
+        # Audit LGBM #9 fix (2026-04-27): explicit num_iteration so older
+        # LightGBM versions also use the best round.
+        preds = self.booster.predict(X, num_iteration=self.best_iter)
         ic = _per_date_ic(panel, preds, label_col, date_col="date")
         return {"best_iter": self.best_iter, "train_ic": ic}
 
