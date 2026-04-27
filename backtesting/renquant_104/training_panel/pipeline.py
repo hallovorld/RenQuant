@@ -86,6 +86,22 @@ def prepare_inference_panel_frames(
     # NaN cols at inference, model predictions wrong on the 10-min half
     # of the feature space. Added now to keep train ⇌ inference parity.
     LoadMinuteBarsTask().run(ctx)
+    # Bug #25 (TRAIN-INFERENCE-MACRO-ASYMMETRY, 2026-04-26 round-7):
+    # When `panel_ltr.macro.enabled=true`, the training PanelDataJob
+    # calls LoadMacroFactorsTask but this inference path doesn't
+    # propagate macro_frame to the InferenceContext. Macro flag held
+    # OFF in production until the proper architectural fix lands:
+    #
+    # 1. Single source of truth for feature-builder list (use
+    #    PanelDataJob.tasks instead of hand-written chain here).
+    # 2. Return ctx.macro_factor_frame from this function alongside
+    #    (ff, fac).
+    # 3. Plumb macro_frame from adapters/runner.py + adapters/sim.py
+    #    onto the InferenceContext.
+    # 4. PanelScoringJob's feature-matrix builder must merge the
+    #    macro_frame into the per-ticker rows before scoring.
+    #
+    # Same recurring pattern as Bug 12 (minute bars). Roadmap item.
 
     ticker_ctxs = [
         TickerPanelContext(
