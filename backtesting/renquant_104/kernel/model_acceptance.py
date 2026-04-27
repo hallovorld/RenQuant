@@ -36,6 +36,7 @@ import datetime
 import json
 import logging
 import math
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -552,21 +553,62 @@ class ModelAcceptanceGate:
 # ── Atomic-swap promote / reject ──────────────────────────────────────────────
 
 def promote(staging_path: Path, active_path: Path) -> None:
-    """Atomically swap staging into active, archiving prior to .previous."""
+    """Atomically swap staging into active, archiving prior to .previous.
+
+    Audit fix #2 (2026-04-26): validate staging JSON BEFORE swapping.
+    select_best_model.py --promote can copy a corrupted .bak.json into
+    staging; without validation, promote() blindly moves it into active
+    and the live runner crashes at first load. We re-parse the file
+    and require the basic schema (kind + feature_cols) before swapping.
+
+    Audit fix #12 (2026-04-26): use a temp-file + os.rename idiom so
+    the active_path is never missing during the swap. Pre-fix, two
+    shutil.move calls left a window where active didn't exist; a
+    concurrent live-runner load would fail. Now: move staging → temp
+    next to active first, then atomically rename active → previous,
+    then rename temp → active. On the same filesystem, os.rename is
+    atomic (POSIX); the active path is always EITHER the prior OR the
+    new file, never absent.
+    """
     staging_path = Path(staging_path)
     active_path  = Path(active_path)
     if not staging_path.exists():
         raise FileNotFoundError(f"staging artifact missing: {staging_path}")
 
+    # ── Audit fix #2: validate staging JSON before any move ──
+    try:
+        data = json.loads(staging_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(
+            f"promote: staging artifact is not valid JSON ({staging_path}): {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"promote: staging artifact is not a JSON object: {staging_path}")
+    if "kind" not in data and "feature_cols" not in data:
+        # A panel artifact must have at least one of these — protects
+        # against the file existing but being totally wrong shape.
+        raise ValueError(
+            f"promote: staging artifact missing both 'kind' and 'feature_cols' "
+            f"({staging_path}); refusing to swap into active"
+        )
+
     previous_path = active_path.with_suffix(".previous.json")
+    # ── Audit fix #12: stage the new file next to active first so
+    # the rename swap can be atomic. Same-filesystem rename is POSIX-
+    # atomic; live runner reading active_path always sees prior or new,
+    # never empty.
+    temp_active = active_path.with_suffix(".incoming.json")
+    shutil.copy2(str(staging_path), str(temp_active))
     if active_path.exists():
-        # Move active → previous (rollback target). Overwrite any older
-        # .previous.json — only most-recent kept (older ones go to
-        # _acceptance_log if needed).
-        shutil.move(str(active_path), str(previous_path))
-    # Move staging → active. ``shutil.move`` is atomic on the same
-    # filesystem.
-    shutil.move(str(staging_path), str(active_path))
+        # Step 1: rotate the current active to .previous (rollback target)
+        os.replace(str(active_path), str(previous_path))
+    # Step 2: rename incoming → active (atomic on same filesystem)
+    os.replace(str(temp_active), str(active_path))
+    # Step 3: drop the staging copy now that the active rotation is done
+    try:
+        staging_path.unlink()
+    except FileNotFoundError:
+        pass
     log.info("PROMOTE: %s → %s (prior preserved at %s)",
              staging_path.name, active_path.name, previous_path.name)
 

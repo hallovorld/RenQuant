@@ -311,6 +311,67 @@ class TestConfigDrivenThresholds:
         assert len(gates) == 11
 
 
+# ── Audit fixes #2 + #12: promote validates JSON + atomic-swap via os.rename ─
+
+class TestPromoteAuditFixes:
+    """Audit findings #2 (validate staging JSON) + #12 (atomic swap)."""
+
+    def test_promote_rejects_corrupt_json(self, tmp_path):
+        """#2 — corrupted staging artifact must be REFUSED, not silently
+        promoted. Pre-fix: a malformed .bak.json copied to staging by
+        select_best_model.py would be moved into active and crash the
+        live runner at next load."""
+        active = tmp_path / "panel-ltr.json"
+        active.write_text(json.dumps({"kind": "good", "feature_cols": ["a"]}))
+        staging = tmp_path / "panel-ltr.staging.json"
+        staging.write_text("{not valid json")
+        with pytest.raises(ValueError, match="not valid JSON"):
+            promote(staging, active)
+        # Active must be untouched
+        assert json.loads(active.read_text())["kind"] == "good"
+
+    def test_promote_rejects_non_object_json(self, tmp_path):
+        """#2 — JSON array or scalar shouldn't pass validation."""
+        active = tmp_path / "a.json"
+        active.write_text(json.dumps({"kind": "good", "feature_cols": ["a"]}))
+        staging = tmp_path / "s.json"
+        staging.write_text("[1, 2, 3]")
+        with pytest.raises(ValueError, match="not a JSON object"):
+            promote(staging, active)
+
+    def test_promote_rejects_object_missing_required_keys(self, tmp_path):
+        """#2 — must have 'kind' or 'feature_cols' to be a panel artifact."""
+        active = tmp_path / "a.json"
+        active.write_text(json.dumps({"kind": "good", "feature_cols": ["a"]}))
+        staging = tmp_path / "s.json"
+        staging.write_text(json.dumps({"random": "data"}))
+        with pytest.raises(ValueError, match="missing both 'kind' and 'feature_cols'"):
+            promote(staging, active)
+
+    def test_promote_atomic_active_path_never_missing(self, tmp_path):
+        """#12 — between the two file ops, active path must always exist
+        with valid content. Pre-fix the two-shutil.move sequence had a
+        window where active was absent. Post-fix uses os.replace via a
+        temp file."""
+        active = tmp_path / "panel-ltr.json"
+        active.write_text(json.dumps({"kind": "old", "feature_cols": ["a"]}))
+        staging = tmp_path / "panel-ltr.staging.json"
+        staging.write_text(json.dumps({"kind": "new", "feature_cols": ["a", "b"]}))
+        # Promote should leave active in good state
+        promote(staging, active)
+        assert active.exists()
+        d = json.loads(active.read_text())
+        assert d["kind"] == "new"
+        # Prior preserved
+        prev = active.with_suffix(".previous.json")
+        assert prev.exists() and json.loads(prev.read_text())["kind"] == "old"
+        # Staging consumed
+        assert not staging.exists()
+        # Temp file must have been cleaned up
+        incoming = active.with_suffix(".incoming.json")
+        assert not incoming.exists()
+
+
 # ── Atomic swap (promote / reject / rollback) ─────────────────────────────────
 
 class TestAtomicSwap:

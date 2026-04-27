@@ -131,28 +131,37 @@ def main() -> None:
         log.info("\n%s", verdict.summary())
 
         archive_dir = strategy_dir / "artifacts" / "_acceptance_log"
-        if verdict.all_hard_passed:
-            log.info("Acceptance: ALL HARD GATES PASSED → promoting new model")
-            promote(staging_path, active_path)
-            # Clean up snapshot — promote() already moved active to .previous
+        try:
+            if verdict.all_hard_passed:
+                log.info("Acceptance: ALL HARD GATES PASSED → promoting new model")
+                promote(staging_path, active_path)
+            else:
+                log.error("Acceptance: HARD GATE FAILED → keeping prior model")
+                reject(staging_path, archive_dir, verdict)
+                # Try ntfy alert (best-effort, do not block on failure)
+                try:
+                    import subprocess
+                    msg = f"RENQUANT-104 RETRAIN REJECTED: {len(verdict.hard_failures())} hard gate(s) failed. Prior model preserved. See {archive_dir}/"
+                    subprocess.run(
+                        ["curl", "-sf", "-H", f"Title: RenQuant 104 RETRAIN REJECTED",
+                         "-d", msg, "https://ntfy.sh/renquant"],
+                        timeout=10, check=False,
+                    )
+                except Exception:
+                    pass
+                # Exit non-zero so the operator script sees the failure.
+                sys.exit(2)
+        finally:
+            # Audit fix #9 (2026-04-26): always clean up the pre-train
+            # snapshot, success or rejection. Pre-fix, rejection path
+            # left .pre-train.json files lingering in artifacts/, which
+            # confused operators investigating failures.
             if pre_train_snapshot and pre_train_snapshot.exists():
-                pre_train_snapshot.unlink()
-        else:
-            log.error("Acceptance: HARD GATE FAILED → keeping prior model")
-            reject(staging_path, archive_dir, verdict)
-            # Try ntfy alert (best-effort, do not block on failure)
-            try:
-                import subprocess
-                msg = f"RENQUANT-104 RETRAIN REJECTED: {len(verdict.hard_failures())} hard gate(s) failed. Prior model preserved. See {archive_dir}/"
-                subprocess.run(
-                    ["curl", "-sf", "-H", f"Title: RenQuant 104 RETRAIN REJECTED",
-                     "-d", msg, "https://ntfy.sh/renquant"],
-                    timeout=10, check=False,
-                )
-            except Exception:
-                pass
-            # Exit non-zero so the operator script sees the failure.
-            sys.exit(2)
+                try:
+                    pre_train_snapshot.unlink()
+                except OSError as exc:
+                    log.warning("could not remove pre-train snapshot %s: %s",
+                                pre_train_snapshot, exc)
 
 
 if __name__ == "__main__":
