@@ -160,11 +160,13 @@ class TestPrepareInferenceFramesZScoring:
             "indicator_spec": {},  # defaults
             "_strategy_dir": str(_STRATEGY_DIR),
         }
-        ff, fac = prepare_inference_panel_frames(
+        ff, fac, macro = prepare_inference_panel_frames(
             watchlist=["AAA", "BBB", "CCC"], ohlcv=ohlcv,
             ticker_sectors={"AAA": "tech", "BBB": "tech", "CCC": "tech"},
             config=cfg,
         )
+        # Bug #25 contract: 3rd return value is macro_frame (None when disabled)
+        assert macro is None, "macro frame should be None when flag disabled"
         # For each date where all 3 tickers have RSI, cross-sectional mean of
         # the post-z-score value should be near 0 (perfect only with infinite
         # precision; allow slack).

@@ -166,7 +166,7 @@ class LeanAdapter:
             if need_rebuild:
                 try:
                     from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                    ff, fac = prepare_inference_panel_frames(
+                    ff, fac, macro = prepare_inference_panel_frames(
                         watchlist=config["watchlist"],
                         ohlcv=ohlcv,
                         ticker_sectors=config.get("sector_map", {}),
@@ -174,11 +174,13 @@ class LeanAdapter:
                     )
                     self._panel_cache_ff = ff
                     self._panel_cache_fac = fac
+                    self._panel_cache_macro = macro   # Bug #25
                     self._panel_cache_last_date = pd.Timestamp(today)
                 except Exception as exc:
                     log.warning("Panel frame prep failed — panel scoring disabled: %s", exc)
             ctx._panel_feature_frames = self._panel_cache_ff   # noqa: SLF001
             ctx._panel_factor_frames  = self._panel_cache_fac  # noqa: SLF001
+            ctx._panel_macro_frame    = getattr(self, "_panel_cache_macro", None)  # noqa: SLF001
         return ctx
 
     # ── commit ─────────────────────────────────────────────────────────────────

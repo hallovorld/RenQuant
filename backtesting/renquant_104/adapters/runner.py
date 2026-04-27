@@ -541,7 +541,7 @@ class RunnerAdapter:
         if panel_cfg.get("enabled", False) and not self._sell_only:
             try:
                 from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                ff, fac = prepare_inference_panel_frames(
+                ff, fac, macro = prepare_inference_panel_frames(
                     watchlist=config["watchlist"],
                     ohlcv=ohlcv,
                     ticker_sectors=config.get("sector_map", {}),
@@ -549,8 +549,10 @@ class RunnerAdapter:
                 )
                 ctx._panel_feature_frames = ff  # noqa: SLF001
                 ctx._panel_factor_frames  = fac  # noqa: SLF001
-                log.info("Panel frames prepared: feat=%d  factor=%d",
-                         len(ff), len(fac))
+                ctx._panel_macro_frame    = macro  # noqa: SLF001 (Bug #25)
+                log.info("Panel frames prepared: feat=%d  factor=%d  macro=%s",
+                         len(ff), len(fac),
+                         "None" if macro is None else f"{len(macro.columns)}cols")
             except Exception as exc:
                 log.warning("Panel frame prep failed — panel scoring will be skipped: %s",
                             exc)

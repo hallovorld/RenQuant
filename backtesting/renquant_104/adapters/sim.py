@@ -98,7 +98,7 @@ class SimAdapter:
                 ohlcv_panel = dict(ohlcv)
                 if benchmark not in ohlcv_panel:
                     ohlcv_panel[benchmark] = spy_df
-                ff, fac = prepare_inference_panel_frames(
+                ff, fac, macro = prepare_inference_panel_frames(
                     watchlist=list(config.get("watchlist", [])),
                     ohlcv=ohlcv_panel,
                     ticker_sectors=ticker_sectors,
@@ -106,15 +106,20 @@ class SimAdapter:
                 )
                 self._panel_feature_frames = ff
                 self._panel_factor_frames  = fac
+                self._panel_macro_frame    = macro   # Bug #25
                 log.info("SimAdapter: built panel frames internally "
-                         "(feat=%d  factor=%d)", len(ff), len(fac))
+                         "(feat=%d  factor=%d  macro=%s)",
+                         len(ff), len(fac),
+                         "None" if macro is None else f"{len(macro.columns)}cols")
             except Exception as exc:
                 log.warning("SimAdapter: panel frame prep failed — %s", exc)
                 self._panel_feature_frames = None
                 self._panel_factor_frames  = None
+                self._panel_macro_frame    = None
         else:
             self._panel_feature_frames = panel_feature_frames
             self._panel_factor_frames  = panel_factor_frames
+            self._panel_macro_frame    = None
 
         # ── Persistent sim state (emulates broker / LEAN Portfolio) ─────────
         self._cash           = float(initial_cash)
@@ -382,6 +387,9 @@ class SimAdapter:
                 ctx._panel_factor_frames = {                            # noqa: SLF001
                     t: df.loc[:today_ts] for t, df in self._panel_factor_frames.items()
                 }
+        # Bug #25: also propagate macro frame, sliced to today_ts
+        if getattr(self, "_panel_macro_frame", None) is not None:
+            ctx._panel_macro_frame = self._panel_macro_frame.loc[:today_ts]  # noqa: SLF001
 
         return ctx
 

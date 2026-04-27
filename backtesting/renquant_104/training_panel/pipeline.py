@@ -23,6 +23,7 @@ from .pp_panel_training import (
     LoadInsiderTradesTask,
     LoadHourlyBarsTask,
     LoadMinuteBarsTask,
+    LoadMacroFactorsTask,
     PanelFeatureJob,
     PanelAssemblyJob,
     PanelModelJob,
@@ -40,16 +41,24 @@ def prepare_inference_panel_frames(
     ohlcv: dict[str, pd.DataFrame],
     ticker_sectors: dict[str, str],
     config: dict[str, Any],
-) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
-    """Build neutralized feature frames + z-scored factor frames for live inference.
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], "pd.DataFrame | None"]:
+    """Build neutralized feature frames + z-scored factor frames + macro frame for live inference.
 
-    Mirrors Phase 1 (SectorMomentum) + Phase 2 (per-ticker Feature+Neutralize+Factor)
-    + FactorZScoreTask of PanelTrainingPipeline, but without building labels /
-    panel frame / training.
+    Mirrors Phase 1 (SectorMomentum + Load* tasks) + Phase 2 (per-ticker
+    Feature+Neutralize+Factor) + FactorZScoreTask of PanelTrainingPipeline,
+    but without building labels / panel frame / training.
 
-    Returns (neutralized_frames, factor_frames_z) — attach to InferenceContext
-    as `_panel_feature_frames` and `_panel_factor_frames` before running
+    Returns ``(neutralized_frames, factor_frames_z, macro_frame)``. Adapters
+    attach all three to the InferenceContext (as `_panel_feature_frames`,
+    `_panel_factor_frames`, `_panel_macro_frame`) before running
     PanelScoringJob.
+
+    Bug #25 fix (2026-04-26 round-7): macro_frame added as third return
+    value. When `panel_ltr.macro.enabled=true`, training builds a panel
+    with broadcast macro features; inference must produce a matching
+    feature_cols set. The symmetry guard test
+    `tests/test_train_inference_symmetry.py` enforces that every Load*Task
+    in `PanelDataJob.tasks` is also exercised here.
 
     `ohlcv` must already contain the benchmark (SPY) and every sector ETF
     referenced by `sector_etf_map` in config.
@@ -86,22 +95,10 @@ def prepare_inference_panel_frames(
     # NaN cols at inference, model predictions wrong on the 10-min half
     # of the feature space. Added now to keep train ⇌ inference parity.
     LoadMinuteBarsTask().run(ctx)
-    # Bug #25 (TRAIN-INFERENCE-MACRO-ASYMMETRY, 2026-04-26 round-7):
-    # When `panel_ltr.macro.enabled=true`, the training PanelDataJob
-    # calls LoadMacroFactorsTask but this inference path doesn't
-    # propagate macro_frame to the InferenceContext. Macro flag held
-    # OFF in production until the proper architectural fix lands:
-    #
-    # 1. Single source of truth for feature-builder list (use
-    #    PanelDataJob.tasks instead of hand-written chain here).
-    # 2. Return ctx.macro_factor_frame from this function alongside
-    #    (ff, fac).
-    # 3. Plumb macro_frame from adapters/runner.py + adapters/sim.py
-    #    onto the InferenceContext.
-    # 4. PanelScoringJob's feature-matrix builder must merge the
-    #    macro_frame into the per-ticker rows before scoring.
-    #
-    # Same recurring pattern as Bug 12 (minute bars). Roadmap item.
+    # Bug #25 fix (2026-04-26 round-7): inference symmetry on macros.
+    # PanelDataJob.tasks lists LoadMacroFactorsTask; this hand-written
+    # chain must mirror it OR a symmetry guard test fails.
+    LoadMacroFactorsTask().run(ctx)
 
     ticker_ctxs = [
         TickerPanelContext(
@@ -159,7 +156,9 @@ def prepare_inference_panel_frames(
     NeutralizedFeatureZScoreTask().run(ctx)
     FactorZScoreTask().run(ctx)
 
-    return ctx.neutralized_frames, ctx.factor_frames
+    # Bug #25 fix: return macro_frame too so adapters can attach to
+    # InferenceContext for cross-section broadcast at scoring time.
+    return ctx.neutralized_frames, ctx.factor_frames, ctx.macro_factor_frame
 
 
 def train_panel_model(

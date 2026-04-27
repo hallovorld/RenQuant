@@ -96,6 +96,9 @@ class BuildFeatureMatrixTask(Task):
 
         feature_frames = getattr(ctx, "_panel_feature_frames", None)
         factor_frames  = getattr(ctx, "_panel_factor_frames", None)
+        # Bug #25 fix: macro frame is per-DATE (not per-ticker), broadcast
+        # by build_inference_matrix to every row at scoring time.
+        macro_frame    = getattr(ctx, "_panel_macro_frame", None)
         if feature_frames is None:
             log.warning("BuildFeatureMatrixTask: ctx has no _panel_feature_frames "
                         "(adapter must populate) — leaving matrix unset; "
@@ -121,6 +124,7 @@ class BuildFeatureMatrixTask(Task):
             ff_subset, fac_subset, today_ts,
             feature_cols=scorer.feature_cols,
             nan_prone_cols=nan_prone,
+            macro_frame=macro_frame,    # Bug #25 fix: same broadcast as training
         )
         if X.empty:
             log.warning("BuildFeatureMatrixTask: empty inference matrix")

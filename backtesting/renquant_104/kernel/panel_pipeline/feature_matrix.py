@@ -64,14 +64,17 @@ def build_inference_matrix(
     today: str | _dt.date | pd.Timestamp,
     feature_cols: list[str],
     nan_prone_cols: list[str] | None = None,
+    macro_frame: "pd.DataFrame | None" = None,
 ) -> pd.DataFrame:
     """One row per ticker × len(feature_cols) columns, aligned to the artifact.
 
     For each ticker:
       1. Pick today's row from `feature_frames[ticker]` (or most recent ≤ today)
       2. Append today's row from `factor_frames[ticker]` if provided
-      3. Append `{col}_is_missing` indicator for each `col` in `nan_prone_cols`
-      4. Select and order columns per `feature_cols`
+      3. **Bug #25 fix**: append today's macro features (broadcast — same
+         value for every ticker on this date) if `macro_frame` provided
+      4. Append `{col}_is_missing` indicator for each `col` in `nan_prone_cols`
+      5. Select and order columns per `feature_cols`
 
     Tickers with no row on-or-before `today` are skipped. Missing columns
     are filled with NaN so the resulting matrix has the exact shape the
@@ -79,6 +82,14 @@ def build_inference_matrix(
     """
     today_ts = pd.Timestamp(today)
     rows: dict[str, dict] = {}
+
+    # Bug #25 fix: pre-pick the macro values for today (or most-recent ≤ today),
+    # then broadcast to every ticker. Same date → same macro values.
+    macro_values: dict | None = None
+    if macro_frame is not None and not macro_frame.empty:
+        macro_row = _pick_today_row(macro_frame, today_ts)
+        if macro_row is not None:
+            macro_values = dict(macro_row)
 
     for ticker, ff in feature_frames.items():
         ff_row = _pick_today_row(ff, today_ts)
@@ -90,6 +101,15 @@ def build_inference_matrix(
             fac_row = _pick_today_row(factor_frames[ticker], today_ts)
             if fac_row is not None:
                 for k, v in fac_row.items():
+                    row[k] = v
+
+        if macro_values is not None:
+            for k, v in macro_values.items():
+                # Don't let macro overwrite an existing column from per-ticker
+                # data (matches build_panel_frame's collision rule, suffix '_macro').
+                if k in row:
+                    row[f"{k}_macro"] = v
+                else:
                     row[k] = v
 
         if nan_prone_cols:

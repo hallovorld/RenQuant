@@ -122,12 +122,15 @@ class TestAdapterPanelPrep:
 
         with patch("kernel.data.fetch_ohlcv", return_value=_tiny_ohlcv()), \
              patch("training_panel.pipeline.prepare_inference_panel_frames",
-                   return_value=(sentinel_ff, sentinel_fac)) as prep_mock:
+                   return_value=(sentinel_ff, sentinel_fac, None)) as prep_mock:
             ctx = adapter.make_context()
 
         assert prep_mock.called
         assert getattr(ctx, "_panel_feature_frames", None) is sentinel_ff
         assert getattr(ctx, "_panel_factor_frames", None) is sentinel_fac
+        # Bug #25: macro frame is None in this test (no macros) but the
+        # _panel_macro_frame attribute should be populated.
+        assert getattr(ctx, "_panel_macro_frame", "MISSING") is None
 
     def test_runner_adapter_skips_prep_when_disabled(self):
         from adapters.runner import RunnerAdapter
