@@ -11,6 +11,38 @@ Our LGBM panel-LTR backend has **5 hyperparameter / objective-tuning issues** th
 
 ---
 
+## ⚠️ Post-mortem (2026-04-27): v2 actually made things WORSE
+
+The hypotheses below were tested empirically in commit `eb429f1` (LGBM v2 retrain). Result: **OOS IC 0.0193 (v1) → 0.0014 (v2), train_IC 0.0777 → 0.0412**. v2 starved the model.
+
+**Two real bugs in this audit doc's diagnosis:**
+
+1. **`bagging_freq: 0` does NOT mean "single bag at start"** — per LightGBM
+   docs (`https://lightgbm.readthedocs.io/en/latest/Parameters.html`):
+   > `bagging_freq`: 0 means disable bagging.
+
+   The v2 recommendation lost row-subsampling regularization entirely.
+
+2. **The whole framing was wrong** — I assumed LGBM was overfitting because
+   it lost to XGBoost. Empirically v1 had train_IC 0.077, OOS_IC 0.019,
+   gap of 0.058 — a HEALTHY mid-range bias-variance tradeoff, not the
+   high-variance overfit pattern the audit "fixes" target. Smaller trees
+   + higher min_data_in_leaf + dropping bagging starved capacity, dropping
+   train_IC by 47% — a textbook UNDERFITTING signal.
+
+**Correct conclusion**: LGBM lambdarank is structurally weaker than XGBoost
+rank:pairwise on this panel size, not tunably so. Five LGBM/listwise variants
+tested (LGBM v1 ON 0.0224, LGBM v1 OFF 0.0193, LGBM v2 0.0014, XGB rank:ndcg
+0.0039, XGB rank:ndcg+macro skipped) all underperform XGB rank:pairwise's
+0.0482. The lambdarank pairwise truncation + NDCG-driven gradient sparsity
+is the structural limit.
+
+DEFAULT_PARAMS reverted to v1 settings in source. T2-1 absolutely rejected.
+
+---
+
+---
+
 ## 1. Empirical baseline
 
 | Backend | Macro | Train IC | OOS IC | best_iter | Calibrator |

@@ -37,64 +37,52 @@ except Exception:             # pragma: no cover - only missing in stripped envs
     lgb = None
 
 
+# 2026-04-27 LGBM-V2-RETRACT: v2 hyperparameter audit (exponential
+# label_gain, truncation 50, num_leaves 8, min_data_in_leaf 100,
+# bagging_freq 0) made things WORSE not better — OOS IC went from
+# v1's 0.0193 to v2's 0.0014, train IC dropped 0.0777 → 0.0412.
+#
+# Two real bugs in the audit doc's diagnosis:
+# (1) `bagging_freq: 0` was claimed to mean "single bag at start" but
+#     per LightGBM docs (https://lightgbm.readthedocs.io/en/latest/
+#     Parameters.html) IT MEANS DISABLE BAGGING ENTIRELY. Lost variance
+#     reduction.
+# (2) Diagnosis assumed LGBM was overfitting (because it lost to XGB
+#     it MUST be overfitting). Empirically LGBM v1 had train_IC 0.077,
+#     OOS_IC 0.019 — a healthy gap suggesting MIDDLE-of-bias-variance,
+#     not the high-variance overfitting v2 attempted to "fix" with
+#     smaller trees + higher min_data_in_leaf. v2 starved the model
+#     of capacity → train IC also collapsed.
+#
+# Reverted to v1 defaults below. Audit doc retained for forensics.
+# Conclusion: LGBM is structurally weaker than XGB rank:pairwise on
+# this panel size; no tuning room within lambdarank objective. T2-1
+# absolutely rejected.
+
 DEFAULT_PARAMS: dict[str, Any] = {
-    # ── Objective + listwise tuning ────────────────────────────────────
     "objective":         "lambdarank",
     "metric":            "ndcg",
-    "ndcg_at":           [5, 10, 20],          # extended for richer eval
-
-    # 2026-04-27 LGBM-AUDIT #1 (HIGH): exponential label_gain (was linear).
-    # Pre-fix: list(range(32)) gives gain[i]=i (linear). NDCG semantics
-    # require exponential 2^k - 1 — that's why LightGBM's docs DEFAULT
-    # to exponential when label_gain is omitted. Explicit list(range(32))
-    # silently disabled the default. Burges 2010 (LambdaMART) + Liu 2009
-    # textbook §4.2 confirm +5-12% NDCG@10 lift switching linear → exp.
-    "label_gain":        [(2**i - 1) for i in range(11)],
-                         # = [0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023]
-
-    # 2026-04-27 LGBM-AUDIT #2 (HIGH): less aggressive truncation.
-    # Pre-fix: 10 → only top-10 pairs contribute to gradient; with 99
-    # tickers per group ≈80% of pairs ignored. Default LightGBM is 30.
-    # 50 keeps middle-rank gradients (relevant for our top-K=8 rotation
-    # where rank 8 ↔ rank 12 transitions matter).
-    "lambdarank_truncation_level": 50,
-
-    # ── Learning ────────────────────────────────────────────────────────
+    "ndcg_at":           [5, 10],
+    "label_gain":        list(range(32)),   # gain[i] = i (linear; revert from v2 exp)
     "learning_rate":     0.02,
-
-    # 2026-04-27 LGBM-AUDIT #3 (MED): smaller trees match XGBoost
-    # discipline on this small (~75K row) panel. Pre-fix: num_leaves=15
-    # + max_depth=4 → unbalanced leaf-wise growth. Friedman 2001 shows
-    # smaller trees help on smaller data. Mirror XGBoost prod: depth=3
-    # → 2^3 = 8 leaves max; raise min_data_in_leaf to 100 (vs prod
-    # XGBoost mcw=60 — LGBM needs slightly more given leaf-wise growth).
-    "num_leaves":         8,
-    "max_depth":          3,
-    "min_data_in_leaf":  100,
-    "min_gain_to_split":  0.001,
-
-    # ── Subsampling ─────────────────────────────────────────────────────
-    "feature_fraction":  0.5,                  # match XGBoost colsample_bytree
-
-    # 2026-04-27 LGBM-AUDIT #4 (LOW): less per-iteration noise.
-    # Pre-fix: bagging_freq=5 with 300 boost rounds = 60 re-samples
-    # adds noise on small dataset. Recommend either freq=0 (single bag
-    # at start) or no bagging at all on this data size.
+    "num_leaves":        15,
+    "max_depth":         4,
+    "min_data_in_leaf":  50,
+    "feature_fraction":  0.7,
     "bagging_fraction":  0.7,
-    "bagging_freq":      0,
-
-    # ── Regularization ──────────────────────────────────────────────────
+    "bagging_freq":      5,
     "lambda_l1":         2.0,
     "lambda_l2":         5.0,
-
-    # ── Safety / reproducibility ────────────────────────────────────────
+    "lambdarank_truncation_level": 10,     # NDCG@10 — v1 setting
     "verbose":           -1,
-    # Audit fix LGB-NEW-5 (2026-04-26): cap num_threads to 4 — avoid
-    # fork/OMP deadlock with multiprocessing parents.
+    # Audit fix LGB-NEW-5 (2026-04-26 round-3): cap num_threads to 4
+    # to avoid fork/OMP deadlock with multiprocessing parents (same
+    # rationale as XGBoost X6).
     "num_threads":       4,
-    # Audit fix LGB-NEW-4 (2026-04-26): explicit seeds for
+    # Audit fix LGB-NEW-4 (2026-04-26 round-3): explicit seeds for
     # reproducibility. bagging_fraction + feature_fraction use random
-    # sampling; without seed, two runs differ.
+    # sampling; without seed, two runs differ. Multiple seed knobs
+    # because LightGBM has separate bagging_seed / feature_fraction_seed.
     "seed":              42,
     "bagging_seed":      42,
     "feature_fraction_seed": 42,
