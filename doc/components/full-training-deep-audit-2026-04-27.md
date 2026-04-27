@@ -143,11 +143,30 @@ accept `asset_embeddings` and broadcast per ticker.
 | `training_panel/pipeline.py` | 1 LATENT (LATENT-1, embeddings) | noted |
 | `kernel/panel_pipeline/feature_matrix.py` | 1 LATENT (same as above) | noted |
 | `kernel/panel_pipeline/panel_scorer.py` | TBD | pending |
-| `kernel/pipeline/pp_training_full.py` | TBD | pending |
+| `kernel/pipeline/pp_training_full.py` | 0 new (well-structured) | clean |
 | `training_panel/lgbm_ltr.py` | already 12-bug audit done | partial |
-| `training_panel/global_calibrator.py` | TBD | pending |
+| `training_panel/global_calibrator.py` | 0 new (CALIB-COLLAPSE-GUARD already in place) | clean |
+| `training_panel/factors.py` | 0 new (math correct, β clipped, strict-prior shifts) | clean |
+| `training_panel/neutralization.py` | 0 new (correct expanding→rolling switch + shift(1) for strict prior) | clean |
+| `training_panel/imputation.py` | 0 new (calendar-day age weight is by-design) | clean |
+| `training_panel/panel_frame.py` (compute_concurrency_weight) | 0 new (AFML ch.4 weight correct, uses bar positions) | clean |
+| `kernel/pipeline/task_sell.py` | 0 new (well-audited PH/SellGateB/PanelConvictionExit) | clean |
+| `kernel/pipeline/task_candidates.py` | 0 new (NaN guards in place TC-1) | clean |
+| `kernel/pipeline/task_rotation.py` (sample) | 0 new in opening 100 lines | partial |
 | `training_panel/transformer_model.py` | TBD | pending |
 | `training_panel/ngboost_head.py` | TBD | pending |
+| `training_panel/lgbm_ltr.py` (post fix re-check) | pending | partial |
+
+## Audit summary as of 10:11 PT
+
+- **2 HIGH bugs found and fixed**:
+  - HIGH-1: `purged_cv.py` calendar-day vs bar-shift mismatch
+  - HIGH-2: FinalFitTask eval split allows lookahead-bar leak
+- **1 LATENT bug noted** (asset_embeddings inference path drop, dormant)
+- 11 files audited clean (no new bugs)
+- 3 files pending detailed audit (transformer / ngboost / lgbm post-fix recheck)
+- All 8-variant tournament IC numbers are INVALIDATED by HIGH-1 — re-run
+  needed to get true OOS values. XGB no-macro retrain in flight.
 
 
 
