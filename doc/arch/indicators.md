@@ -1,13 +1,16 @@
 # Indicator Library
 
-## Two implementations
+## Three implementations
 
 | Module | Used by | Imports |
 |--------|---------|---------|
-| `common/indicators/` | renquant_101, renquant_102, notebooks, live runner | pandas, numpy, scikit-learn |
-| `backtesting/renquant_103/kernel/indicators.py` | LEAN Docker, renquant_103 notebook + live runner | numpy, pandas only (no common/) |
+| `common/indicators/` | renquant_101, renquant_102, notebooks (legacy) | pandas, numpy, scikit-learn |
+| `backtesting/renquant_103/kernel/indicators.py` | renquant_103 LEAN + live + sim | numpy, pandas only (no common/) |
+| `backtesting/renquant_104/kernel/indicators.py` | **renquant_104 (active) LEAN + live + sim + panel-LTR training** | numpy, pandas only (no common/) |
 
-Both implement the same indicators with identical semantics. The kernel version is LEAN-safe (zero `common/` imports). Always use the kernel version inside `backtesting/renquant_103/`.
+All three implement the same indicators with identical semantics. The kernel versions are LEAN-safe (zero `common/` imports). **Always use the kernel version of the strategy you're working in** — `common/indicators/` is for the legacy 101/102 path only.
+
+Note (2026-04-25 Tier 1 cleanup): the 104 panel-LTR model intentionally drops `rsi`, `macd_hist`, and `obv_slope` from its `feature_cols` via `panel_ltr.drop_cols` — they're computed but excluded from the cross-sectional ranker because per-ticker IC was too low. They remain available to per-symbol models in the baseline tournament. See [strategy-104.md §S1 resolution](strategy-104.md).
 
 ## Usage (common/)
 
