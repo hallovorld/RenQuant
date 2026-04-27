@@ -20,9 +20,13 @@
 
 **Watchlist** (99 tickers): 60 tech split into 4 sub-buckets: `giant_tech` (8), `ai_chip` (18), `datacenter_hw` (10), `software` (24). 39 non-tech across finance/healthcare/industrial/consumer/energy/commodity/utility. Mutual-fund-overlap-weighted curation (VPMAX + FCNTX + AGTHX top holdings prioritized).
 
-**Open questions** (as of 2026-04-26):
-- The 41-feature golden documented at session 2026-04-24 (16 indicators + 4 factors + 5 fundamentals + 6 hourly + 10 minute = 41) regressed to 28 features in current production despite `panel_ltr.{hourly,minute}.enabled: true` in config. Either the hourly/minute pipelines are silently dropped during PanelAssembly, or the config flags don't propagate. **Investigate before next major retrain.**
-- Sim APY/Sharpe metrics from the prior 30.90% APY golden have not been re-measured against the current 28-feature artifact. Run `scripts/sim_smoke.py`-style verification before quoting any APY number against current prod.
+**Resolved on 2026-04-27 (S1 investigation)** — the apparent 41→28 "regression" was a **deliberate cleanup**:
+- Commit `e9d71e6` (2026-04-25 18:46 PT, "Tier 1 batch: drop 13 noise/sparse features") explicitly dropped 13 columns flagged as low-IC or sparse by `FeatureDiagnosticTask`: `earnings_yield_z` (IC=−0.0009), `rsi`, `macd_hist`, `amihud_illiq_z`, `obv_slope`, `vol_ratio_z`, `m_vol_ratio_z`, `m_morning_drift_z`, `m_afternoon_drift_z`, `m_closing_30min_drift_z`, `m_first_hour_vol_pct_z`, `overnight_gap_z`, `insider_net_buy_90d_z` (80/99 tickers >50% NaN). Same commit added `book_to_price_z: -1` monotone constraint (data-driven sign reversal: actual IC=−0.0474 → low B/P / growth wins in current regime).
+- Result is a feature-quality win, not a regression: prod OOS IC moved from PRE-MINUTE era's 0.0391 (31 features) to current 0.0482 (28 features) — **+23% IC despite fewer columns**.
+- The doc's prior "41-feature, +30.90% APY" line was from a never-shipped earlier configuration. The current 28-feature artifact is the cleaned model.
+
+**Open questions remaining**:
+- Sim APY/Sharpe metrics for the current 28-feature artifact have not been re-measured. Run `scripts/sim_smoke.py`-style verification before quoting any APY number against current prod.
 
 ---
 
