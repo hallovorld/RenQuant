@@ -140,3 +140,113 @@ Residual IC 显著高于 Raw IC → embedding 与传统特征正交，携带**�
 | `doc/research/macro-data-expansion-plan-2026-04-27.md` | Macro Tier 2 扩展计划（已关闭） |
 | `doc/experiments/ab-journal.md` | 所有 A/B 实验记录 |
 | `doc/roadmap.md` | 当前 Roadmap（权威来源） |
+
+---
+
+## 🌙 2026-04-27 晚间补充 — embeddings/macro 决定性 A/B + 生产事故修复
+
+> 上面（白天部分）写的"OOS IC 0.0482"是 **stale**。当天晚间用修过 bug 的 code + rank:pairwise 重训复现，**真正的 baseline OOS IC = +0.0418**（15-fold CPCV）。
+
+### 1. 今天盘中 0 buy 的根因：NGBoost feature drift（生产事故）
+
+**现象：** 2026-04-27 daily_104 跑出 41/103 in-universe → 10 candidates → **0 selected**，唯一成交是 `qp_sell TSM 3 shares`。
+
+**直接症状：** 10 candidates 全部被 `quality_floor:gate_b` 砍（edge_sharpe < 0.10 阈值）。Top 4：JNJ +0.078 / APP +0.041 / LMT +0.036 / GLD +0.031。
+
+**根因（数字证据）：**
+- 部署的 `ngboost-head.json` 是某次 macro v3 实验的产物，含 **184 feature_cols**
+- 当前 panel pipeline 只产出 **28 cols**（macro v3 关闭后不再有 vxx_*/hyg_*/dgs10_*/cpiaucsl_*/... 等 156 列）
+- ApplyNGBoostTask 默认行为：缺失列**静默零填充**（"z-scored neutral"）→ **84.8% 输入是 0**
+- σ 预测彻底是噪声 → `edge_sharpe = μ/σ` 全部被压扁到 < 0.10
+
+**修复（commit `68b1c03` + `63e8aee`，已 push）：**
+1. 用当前 code 重训 panel-LTR + NGBoost head：
+   - `panel-ltr.json`：27 features，OOS IC = **+0.0400**（vs baseline +0.0418，within noise）
+   - `ngboost-head.json`：27/27 feature_cols 完美对齐（0 drift）
+   - `panel-rank-calibration.json`：22:41 同步刷新
+2. config 漂移回退：
+   - `panel_ltr.xgb_params.objective`: `rank:ndcg` → `rank:pairwise`（chat 改了 ndcg 但配套 hypers eta=0.05/num_boost=800/early_stop=100 从未落下，残废 ndcg 跑出 OOS IC=0.005）
+   - `panel_ltr.asset_embeddings.enabled`: `true` → `false`（见下面 A/B 决议）
+   - `strategy_config.golden.json` 同步 `strategy_config.json`
+3. **NGBoost feature drift detector（防再犯）：** ApplyNGBoostTask 现在硬阈值检查，缺失列 > `ngboost.max_feature_drift_pct`（默认 5%）就 SKIP NGBoost 而非静默零填充，并 log.error 引导重训命令。
+
+**端到端验证（V3 smoke 22:51）：**
+
+| | PRE-FIX (14:05 daily) | POST-FIX (22:51 smoke) |
+|---|---|---|
+| candidates | 10 | 11 |
+| Gate B rejected | **10 / 10** | **8 / 11** |
+| selected | **0** | **3** |
+| top edge_sharpe | JNJ +0.078 | **SMCI +0.1928** |
+| #2 | APP +0.041 | FTNT +0.1180 |
+| #3 | LMT +0.036 | NET +0.1068 |
+| ApplyNGBoostTask warning | "missing cols [...140 cols]" | clean (0 missing) |
+
+3 个票首次过 Gate B（SMCI / FTNT / NET），σ 分布回到合理区间。**修复端到端可观测有效。**
+
+### 2. T2-2 Asset Embeddings — DEFINITIVE NEGATIVE
+
+之前 dispatch agent 给的 GO 判断（基于 OLS A/B + per-feature IC 单变量正交，预期 OOS IC 0.043–0.047）在 XGB rank 树模型下不成立。**重训 + 修 2 个 bug 后实测：**
+
+| Bug 修过的 | 内容 |
+|---|---|
+| 1 | `pd.Timestamp.utcnow()` 是 tz-aware；OHLCV parquet index 是 tz-naive → `<=` 比较 TypeError。strip tz |
+| 2 | `LocalStore` 默认 `backtesting/renquant_104/data/ohlcv/` 只有 56/104 ticker → 加 fallback 到 repo root `data/ohlcv/`（114 ticker） |
+
+修后重训 embeddings：104 ticker 全覆盖，loss=0.21，无 collapse。
+
+**Paired CPCV A/B（15 folds，所有臂 rank:pairwise）：**
+
+| Arm | Setup | OOS IC | Δ vs A | paired t | 决策 |
+|---|---|---|---|---|---|
+| A | 27 features，0 emb | **+0.0418** | — | — | baseline |
+| B | + 16D embeddings (104 ticker 全覆盖) | +0.0341 | **−18.5%** | −1.45 | **NO-GO** |
+
+每个 emb_i 单独的 IC 在树模型 splits 里看着健康（emb_5 IC=+0.0364，emb_6 +0.0258），但**作为 16 维新特征整体加入后，模型 OOS 反而退化** —— 树模型的 noise-variable detection 不如线性模型，容易在 16 维上过拟合 CV training fold。
+
+`asset_embeddings.enabled=false` 已落到 production config。`asset-embeddings.json` 留在 artifacts 里，将来 watchlist 扩大或换 backend 后可重新评估，**当前不接入**。
+
+### 3. Macro-as-panel-row v4 — DEFINITIVE NEGATIVE（再加一票）
+
+之前 macro 的 v1 (broadcast 零梯度) / v2 (per-ticker β −23%) / v3 (Tier 1+Tier 2 单调递减) 都被否决，理由总结为"broadcast 列加成对 panel-LTR 不友好"。今晚做了 v4：**macro 不再作为 broadcast feature，而是直接作为 panel rows**（把 GLD/TLT/XLU/XLV/XLE/XLF/XLI/XLK/XLY 共 8 个 ETF 加进 watchlist，让它们跟 stocks 一样被 cross-sectional ranker 排）。
+
+| Arm | OOS IC | Δ vs A | t | 决策 |
+|---|---|---|---|---|
+| C (watchlist + 8 macro panel rows + emb) | +0.0298 | **−28.8%** | −1.98 | **NO-GO** |
+
+`best_iter` 只有 4（A=19，B=24），跟早些时候 rank:ndcg 崩盘的特征一样 —— 说明 ETF 行的 forward-return 分布跟 stock 行差太多，rank:pairwise 早停直接放弃学习。**Macro 与 stock 在 panel ranker 里的混合是结构性问题，不是哪个 bug 能修的。**
+
+四代 macro 实验全部否决：v1（broadcast 零梯度）→ v2（per-ticker β −23%）→ v3（30 ETF + 22 FRED 单调递减）→ v4（panel rows −29%）。**等 watchlist 扩到 200+ 再重评**。
+
+### 4. 还没修但已诊断的次级问题
+
+| # | 问题 | 路径 | 状态 |
+|---|---|---|---|
+| E1 | 57/103 票被 universe_floor 卡 + NVDA/AMD per-ticker 模型说 "hold"（NVDA 选中 QLearning sharpe=1.46，AMD 选中 Manual rules sharpe=1.05）→ Panel-LTR 看不到这些票 | 写了 `scripts/ab_bypass_ticker_gate.py`，sim 验证 `bypass_ticker_gate=true` 是否提升 APY | **待跑 sim 决策** |
+| E2 | Watchlist 99→200 breadth 扩展（+42% IR ceiling 是当前最有希望的 lever） | 调研中 | 待启动 |
+| E3 | NVDA / LITE / COHR 缺真正的 XGB 模型；AMD 的 XGB 是 Apr 13 老的；这些 ticker 的 per-ticker tournament 选了非 XGB 模型 | 如果 E1 通过则不需要修；否则要重训 | 待 E1 决定 |
+
+### 5. 备份层级（"保护好模型和 golden conf"）
+
+5 层防护：
+
+1. **read-only 文件权限** (`chmod 444`) on bak + checkpoint
+2. **Local immutable checkpoint dir** `backtesting/renquant_104/artifacts/checkpoint_2026-04-27_22h28/` + SHA256 manifest + RESTORE.md
+3. **Local pre-fix bak files** `panel-ltr.pre-fix-2026-04-27.bak.json` + `ngboost-head.pre-fix-2026-04-27.bak.json`（可回滚到出 bug 状态做 forensics）
+4. **Git local commit** `68b1c03` + `63e8aee`
+5. **Git remote** github.com/hallovorld/RenQuant push 完成
+
+### 6. 下一会话直接读这一段
+
+**生产模型（截至 2026-04-27 22:28）：**
+- Panel-LTR：rank:pairwise，27 features，无 emb，无 macro，OOS IC = +0.0400
+- NGBoost head：27 features，跟 panel 完美对齐
+- Asset embeddings 关闭（实测 −18.5%）
+- Macro 关闭（v1-v4 全 NEGATIVE）
+- Drift detector 已上线（5% 阈值硬失败）
+
+**优先顺序：**
+1. ~~V3 inference smoke 验证 edge_sharpe 真的恢复~~ ✅ 22:51 PASS（3 candidates 过 Gate B）
+2. E1 `bypass_ticker_gate=true` sim A/B → NVDA/AMD 解决方案
+3. E2 watchlist 99→200（最有希望的 lever）
+4. T2-3 Regime Ensemble（等面板 > 150k rows）
