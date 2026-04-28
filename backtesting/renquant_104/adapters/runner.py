@@ -102,6 +102,21 @@ class RunnerAdapter:
         self._strategy_dir        = strategy_dir
         self._sell_only           = sell_only
         self._use_intraday_prices = use_intraday_prices
+
+        # 2026-04-27: broker-isolated state. paper / alpaca-paper / alpaca
+        # each get their own live_state.{broker}.json + runs.{broker}.db so
+        # a paper smoke can never contaminate alpaca-live state. See
+        # kernel/state_paths.py for the path convention.
+        self._broker_name: str | None = getattr(broker, "broker_name", None)
+
+        # Mutate config.persistence.db_path to broker-specific BEFORE
+        # constructing the DB connection (kernel.persistence reads it).
+        if self._broker_name:
+            from kernel.state_paths import runs_db_path  # noqa: PLC0415
+            persist_cfg = config.setdefault("persistence", {})
+            base_db = persist_cfg.get("db_path", "data/runs.db")
+            persist_cfg["db_path"] = str(runs_db_path(base_db, self._broker_name))
+
         from kernel.persistence import get_connection  # noqa: PLC0415
         self._db = get_connection(config, strategy_dir=strategy_dir)
 
@@ -123,7 +138,18 @@ class RunnerAdapter:
         # the latest live_state_snapshots row (per-bar mirror).
         # Per user spec: "live state json应该至少备份在db里" — db wins
         # on conflict between JSON and db.
-        state_file = self._strategy_dir / "live_state.json"
+        from kernel.state_paths import resolve_live_state_read  # noqa: PLC0415
+        state_file, used_legacy = resolve_live_state_read(
+            self._strategy_dir, self._broker_name,
+        )
+        if used_legacy:
+            log.warning(
+                "BROKER-ISOLATION: live_state.{broker}.json missing for "
+                "broker=%s — reading legacy live_state.json (one-time "
+                "migration fallback). Future writes go to broker-specific "
+                "path. Verify this state belongs to broker '%s'.",
+                self._broker_name, self._broker_name,
+            )
         state: dict = {}
         json_loaded = False
         if state_file.exists():
@@ -132,7 +158,7 @@ class RunnerAdapter:
                 json_loaded = True
             except (json.JSONDecodeError, OSError) as exc:
                 log.warning(
-                    "live_state.json unreadable (%s) — falling back to db",
+                    "live_state read failed (%s) — falling back to db",
                     exc,
                 )
         if not json_loaded:
@@ -482,6 +508,7 @@ class RunnerAdapter:
         ctx = InferenceContext(
             config            = config,
             today             = today,
+            broker_name       = self._broker_name,
             ohlcv             = ohlcv,
             spy_returns       = spy_returns,
             models            = self._models,
@@ -541,18 +568,20 @@ class RunnerAdapter:
         if panel_cfg.get("enabled", False) and not self._sell_only:
             try:
                 from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                ff, fac, macro = prepare_inference_panel_frames(
+                ff, fac, macro, emb = prepare_inference_panel_frames(
                     watchlist=config["watchlist"],
                     ohlcv=ohlcv,
                     ticker_sectors=config.get("sector_map", {}),
                     config=config,
                 )
-                ctx._panel_feature_frames = ff  # noqa: SLF001
-                ctx._panel_factor_frames  = fac  # noqa: SLF001
-                ctx._panel_macro_frame    = macro  # noqa: SLF001 (Bug #25)
-                log.info("Panel frames prepared: feat=%d  factor=%d  macro=%s",
+                ctx._panel_feature_frames   = ff    # noqa: SLF001
+                ctx._panel_factor_frames    = fac   # noqa: SLF001
+                ctx._panel_macro_frame      = macro  # noqa: SLF001 (Bug #25)
+                ctx._panel_asset_embeddings = emb   # noqa: SLF001 (T2-2)
+                log.info("Panel frames prepared: feat=%d  factor=%d  macro=%s  emb=%d",
                          len(ff), len(fac),
-                         "None" if macro is None else f"{len(macro.columns)}cols")
+                         "None" if macro is None else f"{len(macro.columns)}cols",
+                         len(emb) if emb else 0)
             except Exception as exc:
                 log.warning("Panel frame prep failed — panel scoring will be skipped: %s",
                             exc)
@@ -902,11 +931,16 @@ class RunnerAdapter:
         # Now: write to .tmp + atomic rename, so a crash can leave the
         # .tmp half-written but the canonical file is still the prior
         # complete snapshot.
-        state_file = self._strategy_dir / "live_state.json"
+        from kernel.state_paths import live_state_path  # noqa: PLC0415
+        # Always write to broker-specific path. Legacy live_state.json is
+        # never overwritten — it stays as a frozen pre-isolation snapshot
+        # for forensics until the operator manually retires it.
+        state_file = live_state_path(self._strategy_dir, self._broker_name)
         tmp_path   = state_file.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(self._state, indent=2))
         tmp_path.replace(state_file)
-        log.info("State saved → %s (atomic)", state_file)
+        log.info("State saved → %s (atomic, broker=%s)",
+                 state_file, self._broker_name)
 
         # ── Optional SQLite decision trace ────────────────────────────────
         if self._db is not None:

@@ -163,7 +163,9 @@ def _build_relative_features(
     return result.dropna()
 
 
-def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path]:
+def _load_strategy_multi(
+    strategy_name: str, broker_name: str | None = None,
+) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock kernel model artifacts."""
     strategy_dir = REPO_ROOT / "backtesting" / strategy_name
     config_path = strategy_dir / "strategy_config.json"
@@ -178,13 +180,56 @@ def _load_strategy_multi(strategy_name: str) -> tuple[dict[str, Any], dict, Path
         log.error("Strategy %s does not have a kernel/ package", strategy_name)
         sys.exit(1)
 
-    from kernel.pipeline.job_universe import UniverseContext, LoadUniverseJob  # noqa: PLC0415
+    # renquant_104+ has job_universe.py (LoadUniverseJob handles admission).
+    # renquant_103 predates that module — fall back to direct artifact loading.
+    job_universe_path = strategy_dir / "kernel" / "pipeline" / "job_universe.py"
+    if job_universe_path.exists():
+        from kernel.pipeline.job_universe import UniverseContext, LoadUniverseJob  # noqa: PLC0415
 
-    uctx = UniverseContext(config=config, strategy_dir=strategy_dir)
-    LoadUniverseJob().run(uctx)
-    models = uctx.loaded_models
-    for ticker, reason in uctx.rejections:
-        log.warning("%s %s, skipping", ticker, reason)
+        # 2026-04-27: pass broker tag so UniverseContext reads broker-isolated
+        # live_state.{broker}.json (FilterUniverseFloorTask + FilterAutoDropTask).
+        # broker_name comes from caller (main()): translation of args.broker
+        # into a state-isolation tag. None falls back to legacy live_state.json.
+        uctx = UniverseContext(
+            config=config, strategy_dir=strategy_dir, broker_name=broker_name,
+        )
+        LoadUniverseJob().run(uctx)
+        models = uctx.loaded_models
+        for ticker, reason in uctx.rejections:
+            log.warning("%s %s, skipping", ticker, reason)
+    else:
+        # Legacy loader for renquant_103-era kernels (no job_universe.py).
+        import datetime as _dt  # noqa: PLC0415
+        from kernel.models import load_artifact as _kernel_load_artifact  # noqa: PLC0415
+
+        staleness_days = int(config.get("model_staleness_days", 30))
+        sharpe_floor   = float(config.get("sharpe_floor", 0.8))
+        models_dir     = strategy_dir / "models"
+        models: dict   = {}
+        for symbol in config["watchlist"]:
+            meta_path = models_dir / symbol / f"{symbol}-policy-metadata.json"
+            if not meta_path.exists():
+                log.warning("%s no_artifact, skipping", symbol)
+                continue
+            metadata = json.loads(meta_path.read_text())
+            trained_date = metadata.get("trained_date")
+            if trained_date and staleness_days > 0:
+                from datetime import date as _date  # noqa: PLC0415
+                age = (_date.today() - _dt.datetime.strptime(trained_date, "%Y-%m-%d").date()).days
+                if age > staleness_days:
+                    log.warning("%s model is %d days old (limit=%d), skipping",
+                                symbol, age, staleness_days)
+                    continue
+            model_sharpe = float(metadata.get("sharpe", 0.0))
+            if sharpe_floor > 0 and model_sharpe < sharpe_floor:
+                log.warning("%s sharpe_%.3f_below_%.1f, skipping",
+                            symbol, model_sharpe, sharpe_floor)
+                continue
+            artifact = _kernel_load_artifact(models_dir / symbol, symbol)
+            if artifact is None:
+                log.warning("Kernel load failed for %s, skipping", symbol)
+                continue
+            models[symbol] = artifact
 
     log.info("Loaded models for %d/%d symbols: %s",
              len(models), len(config["watchlist"]), sorted(models.keys()))
@@ -479,7 +524,12 @@ def main():
                              "only for ad-hoc tests.")
     args = parser.parse_args()
 
-    config, models, strategy_dir = _load_strategy_multi(args.strategy)
+    # 2026-04-27: thread broker tag through to UniverseContext for
+    # broker-isolated live_state read. args.broker is the canonical name
+    # used as the state-file suffix (paper / alpaca / alpaca-paper / ibkr).
+    config, models, strategy_dir = _load_strategy_multi(
+        args.strategy, broker_name=args.broker,
+    )
     initial_cash = config.get("initial_cash", 100_000)
     broker = _get_broker(args.broker, initial_cash=initial_cash)
     broker.connect()

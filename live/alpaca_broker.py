@@ -35,6 +35,10 @@ class AlpacaBroker(BaseBroker):
         self._trading_client = None
         self._order_counter = 0
 
+    @property
+    def broker_name(self) -> str:  # state-file isolation tag (see kernel.state_paths)
+        return "alpaca-paper" if self._paper else "alpaca"
+
     def connect(self) -> None:
         try:
             from alpaca.trading.client import TradingClient

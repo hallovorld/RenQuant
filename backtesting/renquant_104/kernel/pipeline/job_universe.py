@@ -33,6 +33,9 @@ log = logging.getLogger("kernel.pipeline.universe")
 class UniverseContext:
     config:         dict[str, Any]
     strategy_dir:   Path
+    # Broker tag for state-file isolation (mirrors InferenceContext.broker_name).
+    # None for sim/lean paths; live runs set it from broker.broker_name.
+    broker_name:    str | None              = None
     loaded_models:  dict[str, dict]          = field(default_factory=dict)
     rejections:     list[tuple[str, str]]    = field(default_factory=list)
 
@@ -126,8 +129,10 @@ FLOOR_EVALUATORS: dict[str, Callable[[dict], "float | None"]] = {
 }
 
 
-def _load_held_tickers(strategy_dir: Path) -> set[str]:
-    """Read `live_state.json::position_hwm` → set of currently-held tickers.
+def _load_held_tickers(
+    strategy_dir: Path, broker_name: str | None = None,
+) -> set[str]:
+    """Read ``live_state.{broker}.json::position_hwm`` → set of currently-held tickers.
 
     Used by `FilterUniverseFloorTask` to EXEMPT held tickers from the
     quality floor. Rationale: universe_floor is meant to gate OFFENSIVE
@@ -141,9 +146,15 @@ def _load_held_tickers(strategy_dir: Path) -> set[str]:
     Real incident (2026-04-23): AMZN held at cost $249, model sharpe
     slipped 0.668 → below 1.0 floor → model dropped → AMZN became
     structurally un-exitable via signals.
+
+    2026-04-27: switched to broker-isolated path so paper smoke positions
+    don't contaminate alpaca-live admission. Falls back to the legacy
+    ``live_state.json`` when the broker-specific file does not yet exist
+    (one-time read during migration).
     """
     import json as _j
-    state_file = strategy_dir / "live_state.json"
+    from kernel.state_paths import resolve_live_state_read  # noqa: PLC0415
+    state_file, _legacy = resolve_live_state_read(strategy_dir, broker_name)
     if not state_file.exists():
         return set()
     try:
@@ -192,7 +203,7 @@ class FilterUniverseFloorTask(UniverseTask):
         if threshold <= 0:
             return True
         defensives = set(uctx.config.get("defensive_tickers", []) or [])
-        held       = _load_held_tickers(uctx.strategy_dir)
+        held       = _load_held_tickers(uctx.strategy_dir, uctx.broker_name)
         below: list[tuple[str, str]] = []
         held_admitted: list[tuple[str, float]] = []
         for ticker, art in uctx.loaded_models.items():
@@ -286,7 +297,10 @@ class FilterAutoDropTask(UniverseTask):
         # SimAdapter passes through monitor_state on each bar.
         streaks: dict[str, int] = {}
         if uctx.strategy_dir is not None:
-            ls_path = uctx.strategy_dir / "live_state.json"
+            from kernel.state_paths import resolve_live_state_read  # noqa: PLC0415
+            ls_path, _legacy = resolve_live_state_read(
+                uctx.strategy_dir, uctx.broker_name,
+            )
             if ls_path.exists():
                 try:
                     import json as _json
@@ -294,7 +308,7 @@ class FilterAutoDropTask(UniverseTask):
                     ms    = state.get("monitor_state", {}) or {}
                     streaks = ms.get("filter_streaks", {}) or {}
                 except Exception as exc:
-                    log.warning("auto_drop: live_state.json read failed: %s", exc)
+                    log.warning("auto_drop: live_state read failed: %s", exc)
 
         defensives = set(uctx.config.get("defensive_tickers", []) or [])
         dropped = []

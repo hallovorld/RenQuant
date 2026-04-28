@@ -10,6 +10,8 @@ log = logging.getLogger(__name__)
 
 
 class PaperBroker(BaseBroker):
+    broker_name = "paper"  # state-file isolation tag (see kernel.state_paths)
+
     """Simulates order fills locally.  No real money is involved.
 
     Round-2 audit (#R2-7..10): now tracks cash, average cost basis, and

@@ -330,8 +330,12 @@ try:
 except Exception as exc:
     pass
 
-# Regime + HWM from live_state.json
-state_path = Path('$REPO_DIR/backtesting/renquant_104/live_state.json')
+# Regime + HWM from broker-isolated live_state file
+# (daily_104 always runs --broker alpaca, so use the alpaca-tagged path;
+# fall back to legacy live_state.json during the migration window)
+_alpaca = Path('$REPO_DIR/backtesting/renquant_104/live_state.alpaca.json')
+_legacy = Path('$REPO_DIR/backtesting/renquant_104/live_state.json')
+state_path = _alpaca if _alpaca.exists() else _legacy
 hwm = regime = confidence = None
 try:
     s = json.loads(state_path.read_text())

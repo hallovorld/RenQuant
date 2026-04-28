@@ -6,6 +6,13 @@ from abc import ABC, abstractmethod
 class BaseBroker(ABC):
     """Interface for order execution backends."""
 
+    # Broker tag for state-file isolation. Each subclass overrides via
+    # class attribute or @property. Used by adapters/runner.py to compute
+    # broker-specific paths for live_state.json and runs.db so a paper
+    # smoke can never contaminate alpaca live state. See
+    # kernel/state_paths.py for the path convention.
+    broker_name: str = "unknown"
+
     @abstractmethod
     def connect(self) -> None: ...
 

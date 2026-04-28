@@ -22,6 +22,11 @@ class InferenceContext:
     config: dict
     today: datetime.date
 
+    # Broker-isolation tag (set by RunnerAdapter from broker.broker_name).
+    # None for sim/lean paths. When None the legacy live_state.json is read.
+    # See kernel/state_paths.py for the path convention.
+    broker_name: str | None = None
+
     # Market data — ticker → pd.DataFrame (open/high/low/close/volume)
     ohlcv: dict = field(default_factory=dict)
     # Recent SPY daily returns as plain floats (most recent last)
