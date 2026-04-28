@@ -135,15 +135,22 @@ def _load_panel_matrix(config: dict, lookahead: int):
         ticker_sectors=ticker_sectors, config=cfg_run,
     )
 
-    # Build labels (forward return at our blender's target horizon = 20d)
+    # Build labels (realized forward 20d return — the blender's regression target).
+    # Simple log-style return: close[t+20] / close[t] - 1, NaN at the tail
+    # (last 20 bars have no realized future). Caller drops NaN downstream.
+    # 2026-04-28 audit fix: pre-fix this called a non-existent
+    # `training.features.build_labels_from_returns`, so the M2 chain phase
+    # silently failed at runtime. Inlined here — no external dep needed for
+    # a simple forward return.
     import pandas as pd  # noqa: PLC0415
-    from training.features import build_labels_from_returns  # type: ignore  # noqa: PLC0415
+    LOOKAHEAD = 20
 
     labels = {}
     for tk, frame in ff.items():
         if frame is None or frame.empty or "close" not in frame.columns:
             continue
-        labels[tk] = build_labels_from_returns(frame["close"], lookahead=20, threshold=0.0)
+        c = frame["close"].astype(float)
+        labels[tk] = c.shift(-LOOKAHEAD) / c - 1.0
 
     panel, _w, _meta = build_panel_frame(
         ff, labels, fac, macro_frame=None, asset_embeddings=None,

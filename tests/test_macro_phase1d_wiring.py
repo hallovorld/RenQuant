@@ -22,9 +22,18 @@ class TestDailyPathWiring:
         anchor = "Phase 1D (2026-04-26): pass ctx.macro_factor_frame"
         assert anchor in src, "Audit tag for Phase 1D daily wiring missing"
         idx = src.find(anchor)
-        block = src[idx:idx + 1200]
-        assert "macro_frame=ctx.macro_factor_frame" in block, (
-            "BuildPanelTask must pass ctx.macro_factor_frame as macro_frame= arg"
+        block = src[idx:idx + 1500]
+        # Either direct (macro_frame=ctx.macro_factor_frame) or via the
+        # v2-mode opt-out variable (macro_frame=macro_frame_for_panel
+        # where macro_frame_for_panel is set from ctx.macro_factor_frame).
+        # Both ship ctx.macro_factor_frame into build_panel_frame for v1.
+        direct = "macro_frame=ctx.macro_factor_frame" in block
+        via_var = ("macro_frame=macro_frame_for_panel" in block
+                   and "macro_frame_for_panel" in block
+                   and "ctx.macro_factor_frame" in block)
+        assert direct or via_var, (
+            "BuildPanelTask must pass ctx.macro_factor_frame to build_panel_frame "
+            "(directly or via the v2-opt-out indirection)"
         )
 
 
@@ -82,10 +91,15 @@ class TestBackwardsCompat:
         """When ctx.macro_factor_frame is None (default), the macro_frame=
         kwarg passes None — build_panel_frame's None-handling kicks in."""
         # Defensive: this is a contract — we don't synthesize a fake
-        # macro frame somewhere; we always pass ctx's actual value.
+        # macro frame somewhere; we always pass ctx's actual value
+        # (directly, or via the v2-opt-out variable that is set from
+        # ctx.macro_factor_frame).
         src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
-        # The daily path call should look like: macro_frame=ctx.macro_factor_frame
-        assert "macro_frame=ctx.macro_factor_frame" in src
+        direct = "macro_frame=ctx.macro_factor_frame" in src
+        via_var = ("macro_frame=macro_frame_for_panel" in src
+                   and "macro_frame_for_panel" in src
+                   and "ctx.macro_factor_frame" in src)
+        assert direct or via_var
 
     def test_hourly_path_no_op_when_macro_frame_empty(self):
         """if ctx.macro_factor_frame is None or empty → broadcast block skipped"""

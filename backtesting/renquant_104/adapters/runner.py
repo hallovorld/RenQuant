@@ -858,6 +858,31 @@ class RunnerAdapter:
             t = o.get("ticker") if isinstance(o, dict) else None
             if t:
                 currently_held.add(t)
+
+        # ── Manual / external disposition detection (Z2, 2026-04-28) ──────
+        # Invariant: ANY position that disappears between bars must stamp
+        # last_sell_dates, regardless of who sold it. Pre-fix, only sells
+        # the runner itself executed got the wash-sale clock; manual sells
+        # via the Alpaca app, broker-side liquidations (margin calls,
+        # end-of-day flats), and IBKR-side closes were INVISIBLE to the
+        # wash-sale guard — the bot could re-buy a hand-sold ticker the
+        # next bar. NVTS post-mortem (2026-04-28): user manually exited
+        # NVTS after the bot bought a parabolic top; with the old logic
+        # NVTS could have been re-bought before the 30-day clock ran.
+        # Heuristic: ticker was in entry_dates at start-of-bar AND is not
+        # currently held AND wasn't stamped as a runner-sell today
+        # → treat as external disposition, stamp today.
+        disappeared = [t for t in self._entry_dates
+                       if t not in currently_held
+                       and self._last_sell_dates_str.get(t) != today_str]
+        for t in disappeared:
+            self._last_sell_dates_str[t] = today_str
+            log.warning(
+                "STATE-EXT-SELL: %s disappeared from broker without runner sell — "
+                "stamping wash-sale clock today (%s) to prevent re-entry within 30d",
+                t, today_str,
+            )
+
         wash_sale_window_days = 30
         cutoff = ctx.today - datetime.timedelta(days=wash_sale_window_days)
         for store_name, store in (

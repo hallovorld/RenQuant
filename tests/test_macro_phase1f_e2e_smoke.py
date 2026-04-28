@@ -136,11 +136,16 @@ class TestE2EEnabled:
                   for t in ff.keys()}
         sectors = {t: "tech" for t in ff.keys()}
 
-        # Step 3: build_panel_frame WITH macro
+        # Step 3: build_panel_frame WITH macro.
+        # Bug-1 fix (2026-04-27) made v1 broadcast a no-op by default
+        # (within-date variance = 0 → zero gradient + dilutes feature
+        # set). force_broadcast=True opts back in to exercise the merge
+        # path that this E2E smoke is verifying.
         panel, _, meta = build_panel_frame(
             ff, labels, sectors,
             macro_frame=ctx.macro_factor_frame,
             min_history_days=200,
+            force_broadcast=True,
         )
 
         # Verify macro cols are in panel

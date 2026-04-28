@@ -228,3 +228,53 @@ class TestTickerDailyStateWiring:
         assert "in_universe" in RUNNER_SOURCE
         # The exact membership check used by the writer
         assert "tk in (self._models or {})" in RUNNER_SOURCE
+
+
+# ── STATE-EXT-SELL: external/manual disposition stamps wash-sale clock ────
+
+class TestExternalSellWashSaleClock:
+    """Z2 (2026-04-28 NVTS post-mortem): a position that disappears from
+    the broker between bars must stamp last_sell_dates regardless of who
+    sold it. Pre-fix the runner only stamped its own SELLs; manual sells
+    via Alpaca app or broker-side liquidations let the bot re-buy the
+    same ticker the next bar within the 30-day wash-sale window.
+    """
+
+    def test_audit_tag_present(self):
+        assert "STATE-EXT-SELL" in RUNNER_SOURCE
+
+    def test_disappeared_iterates_entry_dates(self):
+        # The fix scans entry_dates for tickers no longer in currently_held
+        assert "disappeared = [t for t in self._entry_dates" in RUNNER_SOURCE
+        assert "if t not in currently_held" in RUNNER_SOURCE
+
+    def test_excludes_runner_initiated_sells_today(self):
+        # Tickers we already stamped today (runner-side full sells) must
+        # not be double-stamped — they got their date in the SELL loop.
+        assert (
+            "self._last_sell_dates_str.get(t) != today_str"
+            in RUNNER_SOURCE
+        )
+
+    def test_stamps_today_str(self):
+        # External-sell ticker gets `last_sell_dates_str[t] = today_str`
+        assert "self._last_sell_dates_str[t] = today_str" in RUNNER_SOURCE
+
+    def test_warns_loudly_so_operator_sees_it(self):
+        # Use log.warning, not log.info — manual sells should be
+        # surfaced clearly so the operator knows the clock started.
+        assert (
+            "STATE-EXT-SELL" in RUNNER_SOURCE
+            and "log.warning" in RUNNER_SOURCE
+        )
+
+    def test_ordering_external_sell_runs_before_gc_pop(self):
+        # External-sell stamping must happen BEFORE the GC pops the
+        # entry from entry_dates — otherwise we lose the "ticker was
+        # held last bar" signal.
+        ext_idx = RUNNER_SOURCE.index("STATE-EXT-SELL")
+        gc_pop_idx = RUNNER_SOURCE.index("STATE-GC: dropped")
+        assert ext_idx < gc_pop_idx, (
+            "External-sell detection must run before STATE-GC pops "
+            "entry_dates, or the disappeared list will already be empty."
+        )

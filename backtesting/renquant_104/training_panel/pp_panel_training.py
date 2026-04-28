@@ -1597,6 +1597,11 @@ class BuildPanelTask(PanelTask):
         sec_wl = {t: sec[t] for t in ctx.watchlist if t in sec}
         fac_wl = {t: fac[t] for t in ctx.watchlist if t in fac}
 
+        # Phase 1D (2026-04-26): pass ctx.macro_factor_frame into
+        # build_panel_frame so the daily training panel sees the broadcast
+        # macro factor block. Symmetric with the inference path
+        # (kernel/panel_pipeline/feature_matrix.py). v2 (per-ticker β)
+        # mode opts out — see Bug-2 below.
         # Bug-2 fix (2026-04-27): v2 mode uses per-ticker β features
         # (already merged into factor_frames by PanelFeatureJob), so the
         # broadcast macro_frame must NOT be injected at training time —

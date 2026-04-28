@@ -15,6 +15,32 @@ import pandas as pd
 log = logging.getLogger("kernel.data")
 
 
+# 2026-04-28 audit fix (Z3): yfinance uses `BRK-B` (dash) for class shares
+# but the canonical / Alpaca / config form is `BRK.B` (dot). Pre-fix this
+# mismatch produced "$BRK.B: possibly delisted; no timezone found" errors
+# every single bar (4× per cron tick × 30-min cadence). Apply at the
+# upstream-fetch boundary ONLY — cache keys, watchlist, and downstream
+# code all stay on the dot form so callers do not see the dash leak out.
+#
+# Invariant: any ticker with a `.{single-letter-class}` suffix is rewritten
+# to dash form before going to yfinance. The cache + LocalStore + config
+# remain on dot form.
+def _yf_translate(symbol: str) -> str:
+    """Map dot-class tickers to dash form for yfinance only.
+
+    BRK.B → BRK-B, BF.A → BF-A. Idempotent: BRK-B → BRK-B.
+    Safe for unaffected tickers: AAPL → AAPL.
+    """
+    if "." not in symbol:
+        return symbol
+    head, _, tail = symbol.rpartition(".")
+    # Only translate single-letter class suffix (avoid stomping foreign
+    # exchange suffixes like .TO / .L / .SS / .HK).
+    if head and len(tail) == 1 and tail.isalpha():
+        return f"{head}-{tail}"
+    return symbol
+
+
 class LocalStore:
     """Read/write OHLCV data as Parquet files.
 
@@ -132,9 +158,10 @@ def fetch_ohlcv(
             return cached
 
     if provider == "yfinance":
+        yf_symbol = _yf_translate(symbol)
         def _fetch_yf():
             from openbb import obb  # lazy import — OpenBB init is slow
-            kwargs: dict = {"symbol": symbol, "provider": "yfinance"}
+            kwargs: dict = {"symbol": yf_symbol, "provider": "yfinance"}
             if start:
                 kwargs["start_date"] = start
             if end:
@@ -276,10 +303,12 @@ def _do_incremental_fetch(
     # Network-protected fetch
     from kernel.net_safety import call_with_timeout  # noqa: PLC0415
 
+    yf_symbol = _yf_translate(symbol)
+
     def _fetch():
         from openbb import obb  # noqa: PLC0415
         kwargs = {
-            "symbol":     symbol,
+            "symbol":     yf_symbol,
             "provider":   "yfinance",
             "start_date": fetch_start,
             "end_date":   end_ts.strftime("%Y-%m-%d"),

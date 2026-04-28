@@ -183,6 +183,44 @@ After any non-trivial change, sync these:
 - [`doc/roadmap.md`](doc/roadmap.md) — living roadmap
 - This file — keep test counts and rule set current
 
+### 5. Engineering Principles (mandatory, adopted 2026-04-28 after deep-audit + NVTS post-mortem)
+
+These are not "nice to haves" — they're the response to a single 24h period where we shipped a stub as if it worked, ran a 10h experiment whose chain script was edited mid-run, reported a +54% IC win that was selection bias, and bought NVTS at +91%/20d on a model that had no parabolic-regime samples. Source: [`doc/archives/audits/2026-04-28-deep-audit.md`](doc/archives/audits/2026-04-28-deep-audit.md), [`doc/archives/audits/2026-04-28-nvts-buy-postmortem.md`](doc/archives/audits/2026-04-28-nvts-buy-postmortem.md).
+
+**5.1 Run relevant tests before every commit/push.**
+- `git push` is not a probe. Before any push, run `pytest` on at least the file(s) you touched + their tests.
+- Even "obviously correct" scripts get a dry-run import check (`python -c "import the_module"`) before they run overnight. M2 blender shipped with a wrong function name and silently failed the whole 10h chain because nobody did the 1-second import check.
+- If a test suite for the touched area doesn't exist, write a minimal one *before* shipping the change.
+
+**5.2 Every new number ships with at least one sanity check.**
+- "+54% IC" or "edge_sharpe = +0.139" with no falsification check is not a result, it's a guess.
+- Mandatory minimum sanity tests for any new metric:
+  - **A/A test**: same data, randomly resplit — does the lift persist? (catches selection bias)
+  - **Shuffled-label test**: shuffle y, retrain — IC should be ≈ 0
+  - **Placebo / time-shift**: shift labels by 1y, retrain — IC should not match
+- Pick the one most relevant to the failure mode you're worried about. Without it, the number is not a finding.
+
+**5.3 Every "fix" must name the invariant that prevents the entire class of bug.**
+- Single-bug patches breed: same class returns under a new name. Always ask: *what invariant would have made this impossible?*
+- NGBoost feature drift wasn't fixed by retraining the head — that's a patch. The fix is the `max_feature_drift_pct` hard guard + config-fingerprint stamping that makes silent train/inference column drift architecturally impossible.
+- NVTS wasn't fixed by selling NVTS — that's a patch. The fix is `ParabolicExhaustionGateTask` that rejects *all* parabolic-top candidates regardless of edge_sharpe.
+- If you can't name the invariant in one sentence, you wrote a patch, not a fix.
+
+**5.4 Don't edit on-disk files of running scripts.**
+- A running cron, a 10h overnight chain, a launchd-spawned job — its files are read-only until it finishes.
+- Mid-run edits to chain scripts are silent failures. The 2026-04-28 chain skipped its M2 phase because phase-4 was appended to the script *after* it started executing.
+- If you need to change behavior of a running job: schedule a wakeup with `ScheduleWakeup` (which restarts cleanly), or stop+restart the job. Never `Edit`/`Write` a file that has a live reader.
+
+**5.5 Any production-touching change must rehearse its rollback.**
+- "We have an auto-revert script" is not the same as "rollback works". The 2026-04-28 auto-revert restored the model checkpoint but *not* `strategy_config.json` — the watchlist stayed at 227 while the model knew about 103. Result: another fingerprint mismatch at the next cron tick.
+- Rollback rehearsal = manually trigger the rollback path on a non-prod copy and verify the post-rollback state is fully self-consistent (config + model + state files all aligned).
+- Production-touching includes: `strategy_config.json`, `strategy_config.golden.json`, models in `artifacts/`, anything launchd reads, anything live runner reads.
+
+**5.6 Definition of "fixed" = full 24h audit clean.**
+- A bug is not "fixed" until: (a) it's patched, (b) the regression test is green, (c) every file you touched in the last 24h has been re-audited end-to-end, (d) every upstream/downstream pipeline that consumes those files has been re-audited end-to-end, and (e) no remaining issues are open in any of those files.
+- "I think it's done" is not done. Show the audit log.
+- This is the gate before re-running any experiment after a fix-up cycle. Experiments run on broken infra produce broken results — fix infra first, *then* re-run.
+
 ### Documentation Index (canonical pointers)
 
 **Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)
