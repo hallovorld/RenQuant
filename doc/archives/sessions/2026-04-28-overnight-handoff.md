@@ -2,6 +2,34 @@
 
 > Read this first when you're back. Status of every in-flight task.
 
+## ⚠️ EARLY UPDATE 01:15 — B1 regressed IC, auto-revert armed
+
+**B1 retrain on 227-watchlist landed CV OOS IC = +0.0234 (vs +0.0418 baseline, −44%).**
+
+Production `panel-ltr.json` got overwritten at 01:13 because B1 ran with
+`--skip-acceptance`. Possible causes: heterogeneous panel (sectors more
+spread out), best_iter crashed to 4 (early-stop too aggressive for the
+larger panel), need different hypers.
+
+**Action taken without your input:**
+- `scripts/auto_revert_b1_regression.sh` watching B1 to fully complete.
+- When B1 done, if final OOS IC < 0.040 → restore panel-ltr.json +
+  ngboost-head.json from `checkpoint_2026-04-27_22h28/` (chmod 444 + SHA
+  verified). The regressed B1 outputs get backed up to
+  `artifacts/b1_regressed_<ts>/` for later inspection / hyperparam tweak.
+- Push notification sent to your phone.
+- M1 chain continues — 20d/60d panels go to side paths and may show
+  the watchlist-227 paying off at longer horizons.
+
+**You'll wake up to**:
+- Production triplet restored to the 22:28 checkpoint (IC ≈ +0.0400)
+- M1 ensemble side artifacts (panel-ltr.{20d,60d}.json) showing whether
+  longer horizons rescued the 227 watchlist
+- A B1 backup dir with the regressed artifacts in case you want to
+  retry with `num_boost_round=600` / `min_child_weight=120` / similar
+
+---
+
 ## TL;DR — Everything still in motion is autonomous + safely scoped
 
 | In flight | ETA | Risk |
