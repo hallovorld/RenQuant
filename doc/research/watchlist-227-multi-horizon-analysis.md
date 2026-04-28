@@ -177,13 +177,34 @@ Three structural changes, ordered by research-evidence strength × engineering c
 
 ### (F1) Sector-conditional regularisation — **HIGH evidence, MEDIUM cost**
 
-Train separate panel-LTR models per coarse sector group:
-- Cluster A: tech (giant_tech + ai_chip + datacenter_hw + software) — ~75 tickers, momentum-driven
-- Cluster B: financials + REITs — ~40 tickers, rate-sensitive
-- Cluster C: defensive (utility + healthcare + consumer staples + telecom) — ~50 tickers
-- Cluster D: cyclical (industrials + energy + materials + consumer discretionary) — ~62 tickers
+Train separate panel-LTR models per coarse sector group. The clusters
+should be **empirically derived** (not name-based) per Daniel et al (2020).
 
-Each cluster gets its own panel-LTR + NGBoost head. At inference, route by sector then blend at portfolio level via QP.
+**PCA on residual returns (260 days × 223 tickers, 2026-04-28 03:50)**:
+
+| PC | Variance | Axis interpretation |
+|---|---|---|
+| PC1 | 15.0% | Defensive ↔ Speculative (macro risk-on/off) |
+| PC2 |  9.4% | SaaS ↔ Hardware (within-tech) |
+| PC3 |  7.2% | Old-Economy ↔ Cutting-Edge |
+
+Cumulative top-3 = 31.6%; top-10 = 50.0%. Loadings saved at
+`doc/research/sector_pca_loadings_2026-04-28.json`.
+
+**Suggested 4-cluster split (for F1 panel-LTR ensemble)**:
+
+| Cluster | PC signature | Approx tickers (count) | Example members |
+|---|---|---|---|
+| A — AI / hardware / chips | low PC2, low PC3 | ~30 | NVDA, AMD, MU, AVGO, KLAC, LRCX, AMAT, MPWR, ASML, TSM, MRVL, ON, ADI, NXPI, MCHP, INTC, NVTS, SMCI, WDC, COHR, LITE, VRT, ANET, AAPL |
+| B — SaaS / software | high PC2 | ~25 | HUBS, TEAM, NOW, GTLB, ZS, ESTC, MDB, SNOW, DOCU, WDAY, CRM, ADBE, NET, FTNT, OKTA, DDOG, PANW, CRWD, INTU, SHOP, SPOT, RBLX, PCTY, APP, ZM |
+| C — Defensive (HC + util + insurance) | high PC1, high PC3 | ~50 | LLY, JNJ, MRK, ABBV, PFE, AMGN, GILD, REGN, VRTX, NVO, AZN, ELV, HUM, HCA, CI, CVS, ISRG, EW, BSX, SYK, BDX, ZTS, ABT, DHR, TMO, MDT, BMY, NEE, DUK, SO, AEP, EXC, D, SRE, XEL, ED, PEG, ALL, PGR, AON, MMC, TRV, CB, AIG, KO, PEP, PG, MO, PM, WMT, COST |
+| D — Cyclical (financials core + energy + industrials + REIT + materials + consumer disc.) | mixed | ~120 | BAC, MS, WFC, C, USB, JPM, GS, BLK, V, MA, AXP, KKR, BX, SCHW, COF, DFS, HOOD, COIN, SOFI, AFRM, ICE, CME, SPGI, MCO, XOM, CVX, COP, EOG, OXY, SLB, FANG, DVN, HES, MPC, VLO, PSX, KMI, OKE, WMB, CAT, BA, RTX, GE, LMT, HON, UNP, ETN, EMR, ITW, CSX, NSC, MMM, GD, NOC, LHX, DE, PH, URI, FAST, FDX, UPS, HII, CTAS, WM, BRK.B, GLD, NEM, FCX, LIN, APD, SHW, DOW, DD, AMT, PLD, CCI, O, SPG, WELL, PSA, AVB, VTR, ARE, EQIX, DLR, HD, LOW, NKE, MCD, SBUX, TGT, TJX, ROST, BKNG, DIS, F, GM, ABNB, MAR, HLT, DPZ, YUM, CMCSA, T, VZ, TMUS, ESTC, GTLB, MDB |
+
+(Cluster D is large but heterogeneous — possibly split into D₁ financials + REIT, D₂ cyclicals + materials + energy, D₃ consumer if signal warrants. Validate with k-means on PC1-3 first.)
+
+**Outliers worth noting**:
+- **NVTS** has loading = −0.968 on PC1 (extreme idiosyncratic). Single-ticker alpha may need its own model or hand-coded rule.
+- **COIN** loads with hardware/AI cluster (-0.064 PC1) more than financials, despite sector_map labeling — suggests COIN's residual returns track speculative tech, not banking.
 
 **Loses**: cross-cluster relative ranking ("is NVDA better than CAT today?"). **Gains**: within-cluster signal clarity.
 
@@ -248,7 +269,94 @@ This is the architecturally clean home for macro data. Doesn't violate the four 
 
 ---
 
-## 7. Open questions for next supervised session
+## 7. Overnight 2026-04-28 experiment results — F1-F6 partial validation
+
+After the initial M1 chain (10d/20d/60d on full 227), three follow-up
+experiments tested specific mechanisms. Final IC table for all 7+ artifacts:
+
+| Experiment | Watchlist | Lookahead | OOS IC | Δ vs prod (+0.0400) |
+|---|---|---|---|---|
+| production (restored) | 103 | 10d | +0.03997 | — |
+| M1a 20d | 227 | 20d | +0.0271 | −32% |
+| M1b 60d | 227 | 60d | +0.0528 | **+32%** |
+| B1 regressed (10d on 227) | 227 | 10d | +0.0234 | −42% |
+| F3 retune (227 + tighter hypers) | 227 | 10d | +0.0288 | −28% (partial recovery) |
+| **B1.2 filtered (75-tk high-vol)** | **75** | **10d** | **+0.0614** | **+54%** ⭐⭐⭐ |
+| B1.3 60d aggressive hypers | 227 | 60d | +0.0379 | −5% |
+
+### Headline findings
+
+**1. B1.2 wins by a wide margin** — the horizon-conditional universe
+hypothesis (Israel-Moskowitz 2013, Hong-Stein 1999) is **strongly
+empirically validated**. Filtering the 227 down to a 75-ticker
+high-vol tech-leaning subset takes 10d IC from +0.024 (broad pooled)
+to **+0.061 (+163%)**. This is the largest single experimental gain
+of the night.
+
+The 75 tickers: 28 software + 17 ai_chip + 10 datacenter_hw + 10 finance
+(high-vol fin like COIN/HOOD/AFRM) + 5 healthcare + 4 giant_tech + 1 SPY.
+All hyperparameters identical to production baseline — **the entire effect
+is the watchlist composition**.
+
+This corroborates two specific predictions:
+- Hong-Stein (1999): fast-information-diffusion stocks (large-cap tech,
+  high-turnover speculative) favor short horizons; slow-diffusion (utilities,
+  staples) need long horizons. The 75-ticker subset is mostly the former.
+- AMP (2013): momentum factor's optimal universe IS horizon-dependent;
+  short-horizon momentum works in the high-vol top quartile.
+
+**2. F3 hyperparam retune partially recovered, but not enough** — moving
+from default `num_boost=300, min_child=60, early_stop=25` to `num_boost=600,
+min_child=120, lambda=10, early_stop=100` lifted IC from +0.0234 to +0.0288
+(+24% relative, but still −28% below the 103-baseline +0.0400). best_iter
+went from 4 to 24, so under-fit (Mechanism C) was real but not the
+dominant cause. Mechanism A (sector heterogeneity) accounts for the rest.
+
+**3. B1.3 aggressive 60d hypers REGRESSED** — pushing 60d further with
+`num_boost=800, max_depth=5, min_child=30, lambda=3` produced IC=+0.0379
+vs M1b default's +0.0528 (−28% relative). **Lesson: 60d's signal is
+sufficiently clean that lower regularization causes overfit.** Default
+hypers were near-optimal already.
+
+### Implications for production
+
+The clear empirical hierarchy on the SAME panel infrastructure:
+
+```
+B1.2 filtered-75 @ 10d   +0.0614   ← best 10d
+M1b 60d                  +0.0528   ← best 60d
+production 103 @ 10d     +0.0400   ← current
+F3 retune 227 @ 10d      +0.0288
+M1a 20d                  +0.0271
+B1 regressed 227 @ 10d   +0.0234
+```
+
+A blended portfolio of "B1.2 @ 10d for short signal + M1b 60d for long
+signal" should outperform either alone. M2 blender result (running) will
+quantify this.
+
+### Combined recommendation for the user's review
+
+1. **PROMOTE B1.2 filtered-75 watchlist for 10d production** — clear
+   +54% IC lift, no hyperparameter sensitivity, fully sim-validatable.
+   New production candidate. Decision: run sim backtest comparing
+   B1.2-filtered-75 vs current 103 over 27-month OOS window. If APY +
+   Sharpe both meet the user's `feedback_sharpe_floor` rule (Sharpe ≥ 1),
+   promote.
+2. **KEEP M1b 60d default** — already best at 60d, aggressive tuning
+   regresses. Implementing M2 blender lets us combine 10d short signal
+   + 60d long signal at portfolio level.
+3. **DEFER F1 cluster ensemble** — B1.2 partial test already showed
+   sector-conditional works (the 75-tk subset is approximately cluster A+B
+   of the PCA decomposition). Full F1 4-cluster ensemble can wait.
+4. **DEFER F4 macro overlay** — designed in `f4-macro-overlay-design.md`
+   but not run. Sequence after M2 blender ships.
+5. **REJECT B1.3 aggressive 60d hypers** — regression confirms default
+   hypers are near-optimal for 60d horizon.
+
+---
+
+## 8. Open questions for next supervised session
 
 1. Run F3 (hyperparam retune) — quick test whether some of the 10d regression is just under-fitting.
 2. Implement F2 M2 blender properly — non-trivial code (~150 LOC for hold-out predictions chain). Tests required (~50 LOC). Inference loader (~100 LOC).

@@ -97,8 +97,29 @@ def _load_panel_matrix(config: dict, lookahead: int):
     benchmark = config.get("benchmark", "SPY")
     needed = sorted(set(watchlist) | {benchmark} | set(config.get("sector_etf_map", {}).values()))
     log.info("Loading OHLCV for %d symbols...", len(needed))
-    ohlcv = {t: fetch_ohlcv(t) for t in needed}
-    ohlcv = {t: df for t, df in ohlcv.items() if df is not None and not df.empty}
+    # 2026-04-28 fix: BRK.B (dot) and similar special tickers fail yfinance
+    # because yfinance uses BRK-B convention. Try LocalStore first (cache-only),
+    # fall back to fetch_ohlcv (network); skip on any failure rather than
+    # aborting the whole blender training.
+    from kernel.data import LocalStore  # noqa: PLC0415
+    store = LocalStore(data_dir=REPO_ROOT / "data" / "ohlcv")
+    ohlcv = {}
+    skipped = []
+    for t in needed:
+        try:
+            df = store.load(t)
+            if df is None or df.empty:
+                df = fetch_ohlcv(t)
+            if df is not None and not df.empty:
+                ohlcv[t] = df
+            else:
+                skipped.append(t)
+        except Exception as exc:
+            log.warning("  %s skipped: %s", t, type(exc).__name__)
+            skipped.append(t)
+    if skipped:
+        log.warning("OHLCV unavailable for %d tickers (skipping in panel): %s",
+                    len(skipped), skipped[:10])
     log.info("  loaded %d/%d", len(ohlcv), len(needed))
 
     ticker_sectors = {t: config.get("sector_map", {}).get(t) for t in watchlist}
