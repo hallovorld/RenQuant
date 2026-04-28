@@ -103,22 +103,31 @@ def build_holdout_predictions(
 
     X rows = one per (ticker, date) in the hold-out window.
     Each row's 6 horizon predictions come from running the trained panel
-    models on the full panel matrix (kernel.panel_pipeline.feature_matrix),
-    sliced to dates >= train_end_iso.
+    models on the full panel matrix, sliced to dates >= train_end_iso.
+
+    STUB-1 self-audit fix 2026-04-28: was an empty-return stub with TODO
+    comments. Now raises NotImplementedError with a clear message — running
+    the script aborts with actionable info instead of silently writing
+    nothing. Implementation deferred until M1 produces the 3 horizon panel
+    artifacts (panel-ltr.{10d,20d,60d}.json + ngboost-head.{...}.json).
+    Tracked in roadmap.md "M2 — Learned regime-conditional blender".
     """
-    log.warning("build_holdout_predictions: full implementation depends on "
-                "the panel feature_matrix builder + per-horizon scorer chain. "
-                "STUB — actual run is gated on M1 panel completion.")
-    # TODO when M1 panels exist:
-    #   1. Load panel feature matrix (training_panel.panel_frame.build_panel_frame
-    #      with sample_end=today, sample_start=train_end_iso).
-    #   2. For each horizon h: load panel_ltr_h.json + ngboost_head_h.json.
-    #      Compute panel_score → ApplyNGBoost → (μ_h, σ_h) for every row.
-    #   3. Join with regime time-series (data/runs.alpaca.db::pipeline_runs)
-    #      to get regime per date.
-    #   4. Compute realized_vol_z from SPY rolling vol.
-    #   5. Build features + label rows.
-    return [], []
+    raise NotImplementedError(
+        "M2 blender hold-out predictions not yet implemented. Required steps "
+        "(see doc/roadmap.md::M2 spec):\n"
+        "  1. Load panel feature matrix via training_panel.panel_frame.build_panel_frame "
+        "with sample_end=today, sample_start=train_end_iso.\n"
+        "  2. For each horizon h ∈ {10, 20, 60}: load panel-ltr.{h}d.json + "
+        "ngboost-head.{h}d.json. Compute panel_score → ApplyNGBoost → "
+        "(μ_h, σ_h) for every row.\n"
+        "  3. Join with regime time-series from data/runs.alpaca.db::pipeline_runs "
+        "to get regime per date.\n"
+        "  4. Compute realized_vol_z from SPY rolling vol.\n"
+        "  5. Build features + forward_20d_relative_return label rows.\n"
+        f"\nM1 horizon meta currently loaded: {sorted(horizon_meta.keys())}d. "
+        "Once the 3 panels are trained, replace this NotImplementedError "
+        "with the implementation above."
+    )
 
 
 def train_blender(

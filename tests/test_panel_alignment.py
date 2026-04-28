@@ -122,7 +122,9 @@ class TestAdapterPanelPrep:
 
         with patch("kernel.data.fetch_ohlcv", return_value=_tiny_ohlcv()), \
              patch("training_panel.pipeline.prepare_inference_panel_frames",
-                   return_value=(sentinel_ff, sentinel_fac, None)) as prep_mock:
+                   # T2-2 (2026-04-27): function now returns 4-tuple
+                   # (ff, fac, macro, emb). 4th value None when embeddings disabled.
+                   return_value=(sentinel_ff, sentinel_fac, None, None)) as prep_mock:
             ctx = adapter.make_context()
 
         assert prep_mock.called
@@ -523,10 +525,19 @@ class TestApplyNGBoostScoring:
         leaving the candidate with no μ/σ. Post-fix, missing columns get
         filled with 0.0 (z-scored neutral) and predictions still run, so
         Kelly sizing and σ-sizing can proceed on a partial feature set.
+
+        2026-04-28 self-audit (CRIT-1): the new drift detector hard-fails
+        when >5% of cols missing (default), to prevent silent macro-residual
+        regressions. This test exercises the zero-fill path (intended
+        behaviour for SMALL drift), so set the threshold to 1.0 for the
+        single-feature 100%-missing case to keep the soft path active.
         """
         from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
         feats = ["x_expected"]
         ctx = self._ctx_with_matrix(["x_different"], ["A"])
+        # CRIT-1: opt-out of the hard-fail for this fixture (single-col
+        # panel where 1/1 missing would otherwise trigger drift fail-safe).
+        ctx.config["ranking"]["panel_scoring"]["ngboost"]["max_feature_drift_pct"] = 1.0
         head = _make_fake_head(feats, mu_map={"A": 0.1}, sigma_map={"A": 0.05})
         ctx._ngboost_head = head  # noqa: SLF001
 

@@ -107,7 +107,11 @@ class RunnerAdapter:
         # each get their own live_state.{broker}.json + runs.{broker}.db so
         # a paper smoke can never contaminate alpaca-live state. See
         # kernel/state_paths.py for the path convention.
-        self._broker_name: str | None = getattr(broker, "broker_name", None)
+        # 2026-04-28 self-audit (TEST-2 follow-up): require str to avoid
+        # Mock objects in tests (or any non-str caller) tripping the
+        # allowlist check inside state_paths._safe_broker.
+        _bn = getattr(broker, "broker_name", None)
+        self._broker_name: str | None = _bn if isinstance(_bn, str) else None
 
         # Mutate config.persistence.db_path to broker-specific BEFORE
         # constructing the DB connection (kernel.persistence reads it).

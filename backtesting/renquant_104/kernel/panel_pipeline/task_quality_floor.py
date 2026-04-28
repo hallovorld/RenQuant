@@ -18,6 +18,7 @@ Reference: ``doc/components/buy-logic-design.md``.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from kernel.pipeline.context import InferenceContext
@@ -256,17 +257,26 @@ class QualityFloorTask(Task):
     def _gate_b_conformal_tau(
         ctx: InferenceContext, regime: str | None,
     ) -> float | None:
-        """Read regime-keyed τ from artifacts/gate_b_thresholds.json.
+        """Read regime-keyed τ from ``artifacts/gate_b_thresholds.json``.
 
         Produced by ``scripts/fit_conformal_gate_b.py``. Returns None when
-        the file is absent / the regime is missing / parsing fails — caller
-        then falls back to the static config threshold.
+        any of the following — caller then falls back to the static config
+        threshold:
+
+          * regime is None / missing in artifact
+          * artifact file absent / unreadable
+          * artifact too stale (older than ``conformal_max_age_days``)
+            — STALE-1 self-audit fix 2026-04-28
+          * τ is non-finite / outside [0.0, 1.0]
+          * thresholds dict is the wrong type
         """
         if regime is None:
             return None
         try:
-            from pathlib import Path  # noqa: PLC0415
+            import datetime as _dt    # noqa: PLC0415
             import json as _j         # noqa: PLC0415
+            import math as _m         # noqa: PLC0415
+
             strategy_dir = Path(ctx.config.get("_strategy_dir", ""))
             if not strategy_dir.is_absolute():
                 return None
@@ -274,10 +284,64 @@ class QualityFloorTask(Task):
             if not path.exists():
                 return None
             data = _j.loads(path.read_text())
-            tau = (data.get("thresholds") or {}).get(regime)
+            if not isinstance(data, dict):
+                log.warning("Conformal Gate B: artifact is not a dict — skip")
+                return None
+
+            # STALE-1: max-age check. Default 7 days; operator can extend or
+            # disable via gate_b.conformal_max_age_days = 0.
+            max_age_days = int(
+                ctx.config.get("ranking", {})
+                          .get("panel_scoring", {})
+                          .get("quality_floor", {})
+                          .get("edge_sharpe_floor", {})
+                          .get("conformal_max_age_days", 7)
+            )
+            if max_age_days > 0:
+                fitted_at = data.get("fitted_at")
+                if fitted_at:
+                    try:
+                        # Accept ISO with or without timezone
+                        dt = _dt.datetime.fromisoformat(fitted_at.replace("Z", "+00:00"))
+                        # Strip tz for naive subtraction
+                        if dt.tzinfo is not None:
+                            dt = dt.replace(tzinfo=None)
+                        age_days = (_dt.datetime.utcnow() - dt).total_seconds() / 86400
+                        if age_days > max_age_days:
+                            log.warning(
+                                "Conformal Gate B artifact is %.1f days old "
+                                "(max %d). Falling back to config τ. "
+                                "Refresh: scripts/fit_conformal_gate_b.py",
+                                age_days, max_age_days,
+                            )
+                            return None
+                    except (ValueError, TypeError):
+                        log.warning("Conformal Gate B: unparseable fitted_at=%r", fitted_at)
+                        return None
+
+            thresholds = data.get("thresholds")
+            if not isinstance(thresholds, dict):
+                log.warning("Conformal Gate B: thresholds is not a dict — skip")
+                return None
+            tau = thresholds.get(regime)
             if tau is None:
                 return None
-            return float(tau)
+            tau_f = float(tau)
+            if not _m.isfinite(tau_f) or tau_f < 0.0 or tau_f > 1.0:
+                log.warning(
+                    "Conformal Gate B: τ=%r for regime=%s outside [0,1] — skip",
+                    tau, regime,
+                )
+                return None
+            log.info(
+                "Conformal Gate B: regime=%s τ=%.4f (artifact age %.1fd)",
+                regime, tau_f,
+                ((_dt.datetime.utcnow() - _dt.datetime.fromisoformat(
+                    data.get("fitted_at", "1970-01-01T00:00:00").replace("Z", "+00:00")
+                ).replace(tzinfo=None)).total_seconds() / 86400)
+                if data.get("fitted_at") else float("nan"),
+            )
+            return tau_f
         except Exception as exc:
             log.warning("Conformal Gate B read failed: %s — using config τ", exc)
             return None

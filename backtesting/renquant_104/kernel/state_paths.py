@@ -23,11 +23,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# VAL-1 (2026-04-28 self-audit): allowlist of broker tags. Centralised here
+# so a typo / malicious caller cannot path-traverse via broker_name. Add
+# new brokers here when wiring them through live/runner.py.
+ALLOWED_BROKERS: frozenset[str] = frozenset({
+    "paper", "alpaca", "alpaca-paper",
+    "alpaca_paper",   # post-replace form (allow both)
+    "ibkr",
+})
+
 
 def _safe_broker(broker_name: str | None) -> str:
-    """Sanitise broker name for use in a filename ('-' is illegal in some FS chains)."""
+    """Sanitise broker name for use in a filename.
+
+    Replaces '-' with '_' (some downstream tools mishandle hyphens in stems)
+    and validates against ALLOWED_BROKERS. Returns ``"unknown"`` for
+    None / empty (treated as a non-fatal fallback). Raises ValueError when
+    the broker_name is non-empty but not in the allowlist — this prevents
+    a directory-traversal attack via crafted broker_name.
+    """
     if not broker_name:
         return "unknown"
+    if broker_name not in ALLOWED_BROKERS:
+        raise ValueError(
+            f"Unknown broker_name {broker_name!r}; expected one of "
+            f"{sorted(ALLOWED_BROKERS)}. Add new brokers to ALLOWED_BROKERS "
+            f"in kernel/state_paths.py before using."
+        )
     return broker_name.replace("-", "_")
 
 
@@ -62,9 +84,20 @@ def runs_db_path(base_path: Path | str, broker_name: str | None) -> Path:
     """Append broker tag before the .db suffix.
 
     e.g. ``data/runs.db`` + ``alpaca`` → ``data/runs.alpaca.db``.
+
+    Idempotent: if the base path already ends with ``.{broker}.db`` (i.e.
+    a previously-tagged path is passed in by mistake), the broker tag is
+    NOT doubled. ``data/runs.alpaca.db`` + ``alpaca`` → ``data/runs.alpaca.db``.
     """
     p = Path(base_path)
-    return p.with_stem(f"{p.stem}.{_safe_broker(broker_name)}")
+    safe = _safe_broker(broker_name)
+    # TEST-1 idempotence: detect existing broker tag in stem (e.g.
+    # "runs.alpaca" → don't append again). The stem is the last
+    # extension-less component; we check whether it already ends in
+    # ``.{safe}``.
+    if p.stem.endswith(f".{safe}"):
+        return p
+    return p.with_stem(f"{p.stem}.{safe}")
 
 
 def runs_db_legacy_path(base_path: Path | str) -> Path:

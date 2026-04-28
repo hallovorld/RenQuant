@@ -480,14 +480,33 @@ class ApplyNGBoostTask(Task):
                     "inference panel — exceeds max_feature_drift_pct=%.2f. "
                     "NGBoost head was likely trained with features that the "
                     "current panel pipeline no longer produces (e.g. macro "
-                    "block disabled after head was trained). Skipping NGBoost "
-                    "scoring for this bar — rank_score / panel_score will "
-                    "fall back to LTR-only. RETRAIN the head: "
-                    "`python scripts/train_104.py --skip-baseline "
-                    "--skip-recalibrate --force`. First 10 missing: %s",
+                    "block disabled after head was trained). FAIL-SAFE: "
+                    "writing NaN μ/σ on every candidate + holding so Gate B "
+                    "rejects them all + clearing ctx.candidates to block "
+                    "buys outright. RETRAIN: `python scripts/train_104.py "
+                    "--skip-baseline --skip-recalibrate --force`. First 10 "
+                    "missing: %s",
                     n_missing, n_total, pct_miss * 100, drift_thr,
                     missing[:10],
                 )
+                # CRIT-1 fix (2026-04-28 self-audit): pre-fix, returning here
+                # left every cand.mu / cand.sigma as None. Gate B's
+                # `_gate_b_edge_sharpe` PASSES None-μ/σ ("no NGBoost → no
+                # signal to gate; pass") so drift hard-fail silently
+                # promoted ALL candidates through the quality floor — the
+                # opposite of fail-safe. Now: stamp NaN so Gate B rejects
+                # ("mu_nan" reason) AND clear candidate list to block buys.
+                # Holdings keep their None μ/σ so SellGateB also no-ops
+                # (path rules continue to govern exits).
+                _nan = float("nan")
+                for cand in ctx.candidates:
+                    cand.mu    = _nan
+                    cand.sigma = _nan
+                ctx.candidates = []   # block all buys this bar
+                if hasattr(ctx, "counters"):
+                    ctx.counters["ngb_drift_fail"] = (
+                        ctx.counters.get("ngb_drift_fail", 0) + 1
+                    )
                 return
             log.warning(
                 "ApplyNGBoostTask: feature matrix missing %d/%d cols (%.1f%%, "

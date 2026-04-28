@@ -84,6 +84,11 @@ class TestMacroBroadcast:
         macro = _macro_frame(n_days=400)
         panel, _, meta = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         for col in macro.columns:
             assert col in panel.columns, f"macro col {col} missing from panel"
@@ -95,6 +100,11 @@ class TestMacroBroadcast:
         macro = _macro_frame(n_days=400)
         panel, _, _ = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         # Pick any date; assert all 3 tickers have same vix_level_z
         sample_date = panel["date"].iloc[100]
@@ -112,6 +122,11 @@ class TestMacroBroadcast:
         )
         macro_panel, _, _ = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         assert len(no_macro_panel) == len(macro_panel)
 
@@ -131,6 +146,11 @@ class TestForwardFill:
         )
         panel, _, _ = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         # No NaN in macro col — all forward-filled
         # (trailing NaN goes to 0.0, not missing)
@@ -149,6 +169,11 @@ class TestTrailingNaN:
         macro.iloc[:100, macro.columns.get_loc("vix_level_z")] = np.nan
         panel, _, _ = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         # NO NaN should remain
         assert not panel["vix_level_z"].isna().any(), \
@@ -168,6 +193,11 @@ class TestColumnCollision:
         )
         panel, _, meta = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         # Original 'rsi' should still be the per-ticker feature (not overwritten)
         # Renamed 'rsi_macro' should be the broadcast macro
@@ -199,5 +229,10 @@ class TestIndexNormalization:
         # Should not raise
         panel, _, _ = build_panel_frame(
             ff, lab, sec, macro_frame=macro, min_history_days=252,
+            # 2026-04-28 self-audit: v1 broadcast was disabled by default
+            # (zero-gradient bug fix). These tests cover the broadcast path
+            # — keep them green by passing the escape hatch. Not opt-in to
+            # production: production stays macro-disabled.
+            force_broadcast=True,
         )
         assert "vix_level_z" in panel.columns
