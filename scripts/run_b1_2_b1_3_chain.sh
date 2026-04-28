@@ -68,7 +68,20 @@ if [[ $B1_3_RC -ne 0 ]]; then
 fi
 echo "[chain] $(date) — B1.3 finished"
 
-# Phase 4 — final summary
+# Phase 4 — F2 M2 blender (depends on B1.0/B1 backup + M1 panels)
+write_status "f2_blender_running" "Training M2 horizon blender"
+echo "[chain] $(date) — starting M2 blender (Lasso + regime interactions)"
+bash -c "$CONDA_ACT && python scripts/train_horizon_blender_v2.py --hold-out-frac 0.25" \
+    > "$LOG_DIR/m2_blender_v2.log" 2>&1
+F2_RC=$?
+if [[ $F2_RC -ne 0 ]]; then
+    echo "[chain] M2 blender FAILED (rc=$F2_RC) — non-fatal, continuing"
+    write_status "m2_failed_non_fatal" "M2 blender returned $F2_RC; continuing"
+else
+    echo "[chain] M2 blender done"
+fi
+
+# Phase 5 — final summary
 write_status "summarising" "Building final IC summary"
 echo "[chain] $(date) — generating final IC summary"
 
@@ -89,6 +102,16 @@ artifacts = [
     ('panel-ltr.b1_2_filtered_10d.json',                     'B1.2 filtered','75',  10),
     ('panel-ltr.b1_3_60d_tuned.json',                        'B1.3 60d-tuned','227', 60),
 ]
+# Print blender result if available
+import json as _j
+try:
+    bl = _j.load(open('backtesting/renquant_104/artifacts/horizon-blender-v2.json'))
+    print(f'\\n=== F2 M2 blender (Lasso + regime interactions) ===')
+    print(f'  hold-out spearman IC = {bl[\\\"val_spearman_ic\\\"]:+.5f}')
+    print(f'  best alpha = {bl[\\\"best_alpha\\\"]:.6f}')
+    print(f'  n_train={bl[\\\"n_train\\\"]} n_holdout={bl[\\\"n_holdout\\\"]}')
+except Exception as e:
+    print(f'\\n=== F2 M2 blender: not run / failed ({e}) ===')
 production_ic = 0.0400
 for fn, label, wl, h in artifacts:
     try:
