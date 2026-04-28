@@ -2,6 +2,63 @@
 
 > Read this first when you're back. Status of every in-flight task.
 
+## 🌅 LATE UPDATE 04:10 — chain auto-running F3 → B1.2 → B1.3 → M2; F4 designed
+
+**Two handoffs received** ("继续推进所有有意义的实验" + "F1-F6 全可以做"). Set up
+an autonomous experiment chain that should produce **8 panel artifacts +
+1 blender artifact + 2 design docs** by ~06:30 PT.
+
+### Tonight's experiment plan (chain auto-running)
+
+| Stage | Tests hypothesis | ETA | Status |
+|---|---|---|---|
+| F3 — hypers retune (227, 10d, num_boost=600/min_child=120/lambda=10) | Mechanism C — under-fit explains 10d regression | ~04:15 | running (PID 5269) |
+| B1.2 — filtered 75-ticker 10d (high-vol tech-leaning) | Horizon-conditional universe (Israel-Moskowitz 2013) | ~05:00 | queued |
+| B1.3 — 60d aggressive hypers (227, max_depth=5, num_boost=800) | Push 60d IC ceiling toward +0.06 | ~06:00 | queued |
+| F2 — M2 horizon blender (Lasso + regime interactions) | Does learned blend > best single horizon? | ~06:30 | queued |
+
+After all 4 done, the chain writes a unified IC summary table to
+`logs/ablation_2026-04-27/b1_chain_dispatch.log`. Final commit + push happen
+automatically.
+
+### What's in roadmap docs (not running tonight)
+
+- `doc/research/watchlist-227-multi-horizon-analysis.md` — 4-mechanism root
+  cause analysis + 14 paper citations + F1-F7 fix matrix.
+- `doc/research/f4-macro-overlay-design.md` — 3-layer macro architecture
+  (regime sub-features / position sizing / sector tilt). Implementation
+  ~1 week, each layer independently rollback-able. Sequenced for next
+  supervised session.
+- `doc/research/sector_pca_loadings_2026-04-28.json` — empirical 4-cluster
+  loadings (PC1=defensive↔speculative, PC2=SaaS↔hardware, PC3=old↔new
+  economy). Input for F1 sector-conditional ensemble.
+
+### Skipped tonight (rationale)
+
+- **F1 cluster ensemble**: requires 4 separate panel trainings (~3 hr
+  total). Approximated by B1.2 (cluster A subset). Full impl deferred.
+- **F6 international ADRs**: would push chain past 07:30 PT (user wake
+  time). Marginal expected gain. Deferred.
+- **F7 random sample expansion**: REJECTED per Lo (2002) evidence.
+
+### What you wake up to
+
+1. **Production model**: panel-ltr.json restored to 22:28 checkpoint
+   (IC=+0.0400 on 103 watchlist). Tomorrow's daily run uses this.
+2. **8 alpaca orders queued** for 6:30 PT open: BUY MU/NET/NVDA/NVTS/SMCI,
+   TRIM BA/TSM, EXIT CAT. ~$3.4k buy / $1.7k sell. (User declined to
+   manually cancel last night.)
+3. **Chain results** in `logs/ablation_2026-04-27/b1_chain_dispatch.log`
+   showing all 7+ panel artifact ICs + M2 blender result.
+4. **Decision points** for you:
+   - Promote 60d artifact as production? (depends on B1.3 result + sim sharpe)
+   - Promote filtered-75 watchlist for 10d? (depends on B1.2 result vs 0.040 baseline)
+   - Promote M2 blender? (depends on hold-out IC vs best single horizon)
+   - Greenlight F4 macro overlay implementation? (~1 week)
+   - Greenlight F1 cluster-conditional impl? (~3-5 days)
+
+---
+
 ## ⚠️ EARLY UPDATE 01:15 — B1 regressed IC, auto-revert armed
 
 **B1 retrain on 227-watchlist landed CV OOS IC = +0.0234 (vs +0.0418 baseline, −44%).**
