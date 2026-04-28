@@ -1597,15 +1597,22 @@ class BuildPanelTask(PanelTask):
         sec_wl = {t: sec[t] for t in ctx.watchlist if t in sec}
         fac_wl = {t: fac[t] for t in ctx.watchlist if t in fac}
 
-        # Phase 1D (2026-04-26): pass ctx.macro_factor_frame so each
-        # panel row gets the broadcast macro features (VIX, HYG, ...).
-        # ctx.macro_factor_frame is None (no-op) unless config flag
-        # `panel_ltr.macro.enabled` is true AND LoadMacroFactorsTask
-        # found cached macro symbols.
+        # Bug-2 fix (2026-04-27): v2 mode uses per-ticker β features
+        # (already merged into factor_frames by PanelFeatureJob), so the
+        # broadcast macro_frame must NOT be injected at training time —
+        # the inference side already passes None in v2 mode.  Passing the
+        # broadcast frame during training while omitting it at inference
+        # creates a training/inference feature-set asymmetry that silently
+        # degrades OOS IC.
+        macro_version = cfg.get("macro", {}).get("version", "v1")
+        macro_frame_for_panel = (
+            None if macro_version == "v2"
+            else ctx.macro_factor_frame
+        )
         panel, group_sizes, meta = build_panel_frame(
             ff_wl, lab_wl, sec_wl,
             factor_frames=fac_wl,
-            macro_frame=ctx.macro_factor_frame,
+            macro_frame=macro_frame_for_panel,
             asset_embeddings=ctx.asset_embeddings or None,
             listing_dates=ctx.listing_dates,
             min_history_days=min_history,
@@ -2110,6 +2117,21 @@ class SaveArtifactTask(PanelTask):
             "cv_n_test_groups": cfg.get("cv_n_test_groups"),
             "cv_embargo_days": cfg.get("cv_embargo_days", cfg.get("lookahead_days", 5)),
         }
+        # 2026-04-28: stamp config fingerprint so RunnerAdapter can detect
+        # config/model drift at inference startup. See
+        # kernel/config_consistency.py for the spec. Three incidents in
+        # 24h (NGBoost macro drift / ndcg config flip / watchlist 227
+        # mismatch) all of the form "config changed but model wasn't
+        # retrained / vice versa". This guard catches the next one.
+        try:
+            from kernel.config_consistency import (  # noqa: PLC0415
+                fingerprint_config, _model_relevant_fields,
+            )
+            meta["config_fingerprint"]        = fingerprint_config(ctx.config)
+            meta["config_fingerprint_fields"] = _model_relevant_fields(ctx.config)
+        except Exception as exc:
+            log.warning("Config-consistency stamp failed: %s — artifact lacks "
+                        "fingerprint, will trip backwards-compat path on load", exc)
         ctx.final_model.save(out_path, metadata=meta)
         ctx.artifact_path = out_path
         ctx.summary = {

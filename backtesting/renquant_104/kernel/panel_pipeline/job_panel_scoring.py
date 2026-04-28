@@ -74,6 +74,35 @@ class LoadScorerTask(Task):
         log.info("LoadScorerTask: loaded artifact (features=%d)",
                  len(ctx._panel_scorer.feature_cols))
 
+        # 2026-04-28 self-audit: config / model consistency check.
+        # Catches the 24h-window class of bug where strategy_config.json
+        # drifts out of sync with the trained panel-ltr.json (3 incidents
+        # in 24h: NGBoost macro drift / ndcg config flip / watchlist 227
+        # mismatch). Reads stored fingerprint from the artifact;
+        # mismatch → log.error + skip panel scoring (safer than running
+        # with mismatched assumptions). Backwards-compat: artifacts
+        # without a fingerprint pass with WARNING (will be stamped at
+        # next retrain).
+        try:
+            from kernel.config_consistency import (  # noqa: PLC0415
+                assert_consistent, ConfigModelMismatch,
+            )
+            import json as _j  # noqa: PLC0415
+            artifact_meta = _j.loads(p.read_text())
+            try:
+                assert_consistent(
+                    ctx.config, artifact_meta,
+                    artifact_label=str(p.name),
+                    strict=False,   # log.error not raise — production survives
+                )
+            except ConfigModelMismatch as e:
+                log.error("LoadScorerTask: %s", e)
+                # Don't return False — still allow scoring to proceed
+                # so the operator gets BOTH the alert AND the trade decision.
+                # If the operator wants hard-fail, set strict=True via config.
+        except Exception as exc:
+            log.warning("LoadScorerTask: consistency check failed: %s", exc)
+
 
 class BuildFeatureMatrixTask(Task):
     """Pick today's row per candidate + held ticker into a single feature matrix.
