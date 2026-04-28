@@ -781,3 +781,61 @@ Already shipped (`67e95af`): `scripts/weekly_apy_check.py` fires Sun 12 PT via `
 
 - **Revert `lookahead_days` 10 → 5** — prior evidence shows 5d regresses.
 - **E — re-fit calibrator on μ−λσ** — conditional on C winning; C shelved.
+
+---
+
+## 🌙 2026-04-28 — M-Series structural fixes (response to 2026-04-27 ridiculous trades)
+
+**Context:** 2026-04-27 daily run produced unreasonable trades (CAT closed mid-trend, NET bought with 20d -1.5% return, TSM trimmed at 52w high). Root cause: model has a single 5d horizon + uniform Gate B threshold + momentum-blind QP solver. User explicitly rejected hardcoded-threshold band-aids in favor of structural / data-driven solutions.
+
+**Roadmap items: M1, M2, M3 in progress (2026-04-28). M4 deferred.**
+
+### M1 — Multi-horizon panel-LTR ensemble (5d / 20d / 60d) — IN PROGRESS
+
+Train three independent panel-LTR + NGBoost models at lookahead_days = {5, 20, 60} on the 227-ticker watchlist. Inference loads all three.
+
+Why: a single 5d horizon over-weights short-term mean reversion, mis-rates trending stocks. 20d/60d horizons learn trend persistence directly from data — no hardcoded "20d ≥ 0" gate needed. NET (20d −1.5%) gets a NEGATIVE μ from the 20d/60d head, dragging blended μ below Gate B. CAT/TSM (positive 20d) get supported.
+
+ETA: 1-2 days post-B1. Three side configs writing to `panel-ltr.{5d,20d,60d}.json` + `ngboost-head.{5d,20d,60d}.json`.
+
+### M2 — Learned regime-conditional blender — IN PROGRESS (after M1)
+
+Small MLP (3-layer, 32 hidden, dropout 0.3) takes [μ_5, σ_5, μ_20, σ_20, μ_60, σ_60, regime_one_hot, recent_realized_vol_z, hwm_drawdown] → final (μ, σ).
+
+Trained on ~75k panel rows × 4 regimes against forward-20d realized return. Replaces hand-tuned blend weights — the data tells us which horizon matters most in each regime.
+
+ETA: 0.5 day post-M1.
+
+### M3 — Conformal-calibrated Gate B (per-regime dynamic τ) — IN PROGRESS
+
+Replace fixed `gate_b_τ=0.10` with conformal prediction calibrated per regime. For each regime r:
+- history = past 252 bars in r
+- For each candidate threshold τ: count {candidates with edge_sharpe ≥ τ that produced negative 5d return}
+- τ_r = smallest τ such that FDR(τ_r) ≤ target (e.g. 30%)
+
+Result: BULL_CALM might land τ ≈ 0.08 (FDR forgiving), CHOPPY ≈ 0.15 (FDR strict), BEAR ≈ 0.25 (very strict). Threshold adapts to regime stress automatically — no hardcoded gate.
+
+ETA: 0.3 day. Code path: `kernel/panel_pipeline/task_quality_floor.py::_gate_b_edge_sharpe` — read τ from a regime-keyed JSON, fitted nightly.
+
+### M4 — DEFERRED — End-to-end RL portfolio policy
+
+**Status: ROADMAP ONLY. Not implementing now.**
+
+**Sketch:**
+- Replace QP solver with a small policy network: `state = [panel features, current weights, regime, market state] → action = Δw vector`.
+- Reward: forward 20d portfolio return − transaction cost − drawdown penalty.
+- Train via PPO or off-policy with replay buffer of historical bars.
+- Self-learns: "don't churn trending positions", "only enter on confirmed momentum", "size up in BULL_CALM, size down in CHOPPY".
+
+**Why deferred:**
+- 75k panel rows is dangerously small for stable RL convergence.
+- M1+M2+M3 should already address most of the 2026-04-27 ridiculous-trade root causes structurally.
+- If M1+M2+M3 don't fully fix the trend-blind QP behaviour, revisit M4 with synthetic data augmentation + transformer-based policy.
+
+**Required infra (when we revive M4):**
+- Off-policy evaluation harness (already partial via doc/components/trade-evaluation.md).
+- Replay buffer in runs.db schema.
+- Small GPU (M-series MPS or cloud A100 spot) for PPO update steps.
+- Behavior cloning warmup against current QP outputs.
+
+**Decision criterion to revive:** if post-M1+M2+M3 OOS Sharpe < 1.5 OR live trades still mismatch market intuition on >20% of bars, revisit M4.

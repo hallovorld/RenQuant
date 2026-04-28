@@ -170,7 +170,15 @@ class QualityFloorTask(Task):
         # Gate B — Edge Sharpe -------------------------------------------
         gate_b_cfg = cfg.get("edge_sharpe_floor", {})
         gate_b_enabled = bool(gate_b_cfg.get("enabled", False))
+        # M3 (2026-04-28): regime-conditional conformal-fitted τ overrides
+        # the static config value when an artifact is present. Falls back
+        # to config threshold for unfit regimes (e.g. BEAR with no live
+        # history yet). Disable via gate_b.use_conformal=false.
         gate_b_threshold = float(gate_b_cfg.get("threshold", 0.20))
+        if gate_b_enabled and gate_b_cfg.get("use_conformal", True):
+            tau = self._gate_b_conformal_tau(ctx, getattr(ctx, "regime", None))
+            if tau is not None:
+                gate_b_threshold = float(tau)
 
         # Gate C — Constantinides no-trade band --------------------------
         gate_c_cfg = cfg.get("no_trade_band", {})
@@ -243,6 +251,36 @@ class QualityFloorTask(Task):
             )
         ctx.candidates = kept
         return True
+
+    @staticmethod
+    def _gate_b_conformal_tau(
+        ctx: InferenceContext, regime: str | None,
+    ) -> float | None:
+        """Read regime-keyed τ from artifacts/gate_b_thresholds.json.
+
+        Produced by ``scripts/fit_conformal_gate_b.py``. Returns None when
+        the file is absent / the regime is missing / parsing fails — caller
+        then falls back to the static config threshold.
+        """
+        if regime is None:
+            return None
+        try:
+            from pathlib import Path  # noqa: PLC0415
+            import json as _j         # noqa: PLC0415
+            strategy_dir = Path(ctx.config.get("_strategy_dir", ""))
+            if not strategy_dir.is_absolute():
+                return None
+            path = strategy_dir / "artifacts" / "gate_b_thresholds.json"
+            if not path.exists():
+                return None
+            data = _j.loads(path.read_text())
+            tau = (data.get("thresholds") or {}).get(regime)
+            if tau is None:
+                return None
+            return float(tau)
+        except Exception as exc:
+            log.warning("Conformal Gate B read failed: %s — using config τ", exc)
+            return None
 
     @staticmethod
     def _gate_a_threshold(
