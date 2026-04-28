@@ -4,26 +4,29 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-04-27 更新）
+## 🗂 项目状态速览（2026-04-27 晚间更新 — embeddings/macro A/B 决定性结果 + 今日交易事故根因）
 
 > 每次进入此项目时先读这段，5 分钟上下文。详细记录见 [`doc/archives/sessions/2026-04-27-decisions.md`](doc/archives/sessions/2026-04-27-decisions.md)。
 
-**生产模型：** XGBoost rank:pairwise，28 特征，无 macro，CPCV OOS IC = 0.0482
-**实盘：** Alpaca ~$10k，持仓 PLTR / CAT / AMZN / GOOG / XLU，真实回撤 ~0.12%
-**Watchlist：** 99 ticker，面板 ~75k rows
+**生产模型：** XGBoost rank:pairwise，27 特征，无 macro，无 embedding，**CPCV OOS IC = +0.0418**（15-fold，2026-04-27 重训复现）
+**实盘：** Alpaca ~$10k，持仓 PLTR / TSM / CAT / AMZN / GOOG / XLU，真实回撤 ~0.17%
+**Watchlist：** 103 ticker，面板 ~77k rows
 
 **已关闭（不要再讨论）：**
-- **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减。等 watchlist 扩到 200+ 再重评。代码已关闭，无需重新实验。
+- **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减。**v4 macro-as-panel-row** 实测 OOS IC −28.8%（2026-04-27 paired t=−1.98）。所有 macro 形式都被否决。等 watchlist 扩到 200+ 再重评。
+- **Asset Embeddings (T2-2)** — **2026-04-27 NO-GO**：16D embeddings 全 watchlist 重训覆盖 104 ticker，paired CPCV 实测 OOS IC = +0.0341 vs baseline +0.0418（−18.5%, t=−1.45）。早先 dispatch agent 的 "GO" 判断（基于 OLS A/B + per-feature IC 单变量正交）在 XGB rank 树模型下不成立。`asset_embeddings.enabled` 已设回 `false`。
 - **LightGBM 替换**：在当前面板 −60% IC，已拒绝（2026-04-27）。
 - **T2-4 Boyd Rotation / rotation 作为 APY 杠杆**：rotation 每次 −2.5 APY pts，基础设施保留但默认关闭。
 
 **当前优先顺序：**
-1. 🟡 **T2-2 Asset Embeddings** — artifact 已在 `artifacts/asset-embeddings.json`，启用 `panel_ltr.asset_embeddings.enabled: true` + 重训即可；预期 OOS IC 0.043–0.047（+5%～+14%）
-2. 🔴 **Watchlist 99→200**（breadth 扩展，+42% IR ceiling）
-3. 🔴 **T2-3 Regime Ensemble**（等面板 > 150k rows）
-4. 🔴 **OOS Backtest 基础设施 B1-B3**（等 live 数据积累）
+1. 🔴 **Watchlist 99→200**（breadth 扩展，+42% IR ceiling — 现在是最有希望的 lever）
+2. 🔴 **T2-3 Regime Ensemble**（等面板 > 150k rows）
+3. 🔴 **OOS Backtest 基础设施 B1-B3**（等 live 数据积累）
+4. 🟡 **`bypass_ticker_gate=true` 实验**：今天 41 个 in-universe 票里只有 10 个进 candidate（NVDA/AMD 都被 per-ticker model 预筛掉），让 Panel-LTR 真正成为主控可能能多放出 candidates；先在 sim 验证。
 
 **评估基准共识：** CPCV OOS IC 可信（轻微虚高不影响相对比较）。Sim backtest 泄漏是独立的 Roadmap P0 问题，当前阶段不处理——不需要每次解释。
+
+**🚨 2026-04-27 已修复事故 — NGBoost feature drift：** 今日盘中 0 buy。根因是部署的 `ngboost-head.json` 是某次 macro v3 实验时训出，含 140+ macro feature cols（vxx/hyg/dgs10/cpiaucsl/...）；而当前 inference panel 不再产生这些列（macro 已关），ApplyNGBoostTask 把缺失列零填充 → σ 失真 → 所有 candidate 的 `edge_sharpe` 被压到 < 0.10 阈值 → Gate B 全否。修复：(a) 已重训 panel + NGBoost head 与当前 panel 对齐；(b) 已加 `max_feature_drift_pct` 硬阈值（默认 5%），缺失超过就 SKIP NGBoost 而不是静默零填充。
 
 ---
 

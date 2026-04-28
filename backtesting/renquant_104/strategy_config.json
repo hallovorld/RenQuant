@@ -533,6 +533,11 @@
     "num_boost_round": 300,
     "neutralize_features": true,
     "nan_prone_cols": [],
+    "asset_embeddings": {
+      "enabled": false,
+      "artifact_path": "artifacts/asset-embeddings.json",
+      "max_age_days": 30
+    },
     "factor_mom_window": 252,
     "factor_skip": 21,
     "neutralize_rolling_window": 252,
@@ -544,7 +549,8 @@
       "subsample": 0.5,
       "colsample_bytree": 0.5,
       "lambda": 5.0,
-      "alpha": 2.0
+      "alpha": 2.0,
+      "objective": "rank:pairwise"
     },
     "artifact_path": "artifacts/panel-ltr.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
@@ -614,7 +620,8 @@
       "m_closing_30min_drift_z",
       "m_first_hour_vol_pct_z",
       "overnight_gap_z",
-      "insider_net_buy_90d_z"
+      "insider_net_buy_90d_z",
+      "morning_drift_z"
     ],
     "earnings_surprise": {
       "enabled": true,

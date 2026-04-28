@@ -128,12 +128,18 @@ class BuildFeatureMatrixTask(Task):
 
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
         nan_prone = list(panel_cfg.get("nan_prone_cols", []))
+        # T2-2 fix: pass per-ticker asset embeddings (emb_0..emb_{D-1}) so
+        # inference feature matrix matches training. Previously the embeddings
+        # were loaded by LoadAssetEmbeddingsTask inside prepare_inference_panel_frames
+        # but discarded on return — emb_* cols fell back to NaN at inference.
+        asset_embeddings = getattr(ctx, "_panel_asset_embeddings", None)
 
         X = build_inference_matrix(
             ff_subset, fac_subset, today_ts,
             feature_cols=scorer.feature_cols,
             nan_prone_cols=nan_prone,
-            macro_frame=macro_frame,    # Bug #25 fix: same broadcast as training
+            macro_frame=macro_frame,        # Bug #25 fix: same broadcast as training
+            asset_embeddings=asset_embeddings,  # T2-2 fix: real embeddings at inference
         )
         if X.empty:
             log.warning("BuildFeatureMatrixTask: empty inference matrix")
@@ -453,12 +459,42 @@ class ApplyNGBoostTask(Task):
         # the entire bar's NGBoost output. Post-fix, fill missing columns
         # with 0.0 (z-scored "neutral") and warn loudly so the operator
         # knows the prediction is using a partial feature set.
+        #
+        # 2026-04-27 incident: NGBoost head was trained with 140+ macro
+        # cols (vxx/hyg/dgs10/cpiaucsl/...) but inference panel no longer
+        # produces them after macro was disabled. 140/167 cols zero-filled
+        # → σ corrupted → all live edge_sharpe scores compressed below
+        # Gate B threshold → 0 buy candidates all day. The warning fired
+        # but was buried under 100 PerformanceWarnings and missed.
+        # Hard-fail when too many cols missing so the operator can't
+        # silently keep trading on a degraded NGBoost head.
         missing = [c for c in head.feature_cols if c not in X.columns]
         if missing:
+            n_total   = len(head.feature_cols)
+            n_missing = len(missing)
+            pct_miss  = n_missing / max(1, n_total)
+            drift_thr = float(ngb_cfg.get("max_feature_drift_pct", 0.05))
+            if pct_miss > drift_thr:
+                log.error(
+                    "ApplyNGBoostTask: %d/%d (%.1f%%) feature cols MISSING from "
+                    "inference panel — exceeds max_feature_drift_pct=%.2f. "
+                    "NGBoost head was likely trained with features that the "
+                    "current panel pipeline no longer produces (e.g. macro "
+                    "block disabled after head was trained). Skipping NGBoost "
+                    "scoring for this bar — rank_score / panel_score will "
+                    "fall back to LTR-only. RETRAIN the head: "
+                    "`python scripts/train_104.py --skip-baseline "
+                    "--skip-recalibrate --force`. First 10 missing: %s",
+                    n_missing, n_total, pct_miss * 100, drift_thr,
+                    missing[:10],
+                )
+                return
             log.warning(
-                "ApplyNGBoostTask: feature matrix missing cols %s — filling "
-                "with 0.0 (z-scored neutral). Predictions partial.",
-                missing,
+                "ApplyNGBoostTask: feature matrix missing %d/%d cols (%.1f%%, "
+                "below %.0f%% hard-fail threshold) — filling with 0.0 (z-scored "
+                "neutral). Predictions partial. First 10 missing: %s",
+                n_missing, n_total, pct_miss * 100, drift_thr * 100,
+                missing[:10],
             )
             X = X.copy()
             for c in missing:

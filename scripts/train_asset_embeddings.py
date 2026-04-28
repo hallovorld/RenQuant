@@ -50,13 +50,15 @@ def main() -> int:
                         "(default: artifacts/asset-embeddings.json under strategy dir)")
     p.add_argument("--no-smoke-fail", action="store_true",
                    help="Persist artifact even if smoke test fails (debugging)")
+    p.add_argument("--strategy-config-name", default="strategy_config.json",
+                   help="Filename of the strategy config under the strategy dir.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
     if str(strategy_dir) not in sys.path:
         sys.path.insert(0, str(strategy_dir))
 
-    config_path = strategy_dir / "strategy_config.json"
+    config_path = strategy_dir / args.strategy_config_name
     if not config_path.exists():
         log.error("strategy config missing: %s", config_path)
         return 2
@@ -65,7 +67,7 @@ def main() -> int:
 
     # Load OHLCV via the same data layer the panel pipeline uses
     import pandas as pd  # noqa: PLC0415
-    from kernel.data import fetch_ohlcv  # noqa: PLC0415
+    from kernel.data import LocalStore, fetch_ohlcv  # noqa: PLC0415
     from training_panel.asset_embeddings import AssetEmbeddingTrainer  # noqa: PLC0415
 
     watchlist = list(config.get("watchlist", []))
@@ -74,10 +76,21 @@ def main() -> int:
         watchlist = watchlist + [benchmark]
 
     log.info("Fetching OHLCV for %d tickers (watchlist + benchmark)", len(watchlist))
+    # BUG FIX (T2-2): original call used unsupported kwargs `config=` and
+    # `allow_fetch=False` which don't exist in fetch_ohlcv's signature.
+    # Use LocalStore.load() directly for cache-only access (no network fetch).
+    # 2026-04-27: fall back to repo-root data/ohlcv when the strategy-local
+    # cache is missing tickers (the strategy cache only covers the original
+    # 56-ticker watchlist, but the canonical cache at REPO_ROOT/data/ohlcv
+    # has the full 114).
+    primary_store = LocalStore(data_dir=strategy_dir / "data" / "ohlcv")
+    fallback_store = LocalStore(data_dir=REPO_ROOT / "data" / "ohlcv")
     ohlcv: dict[str, pd.DataFrame] = {}
     for ticker in watchlist:
         try:
-            df = fetch_ohlcv(ticker, config=config, allow_fetch=False)
+            df = primary_store.load(ticker)
+            if (df is None or df.empty) and fallback_store.data_dir != primary_store.data_dir:
+                df = fallback_store.load(ticker)
             if df is not None and not df.empty:
                 ohlcv[ticker] = df
         except Exception as exc:
@@ -89,7 +102,11 @@ def main() -> int:
         log.error("Too few tickers (%d) — refusing to train embeddings", len(ohlcv))
         return 2
 
-    as_of_date = pd.Timestamp(args.as_of) if args.as_of else pd.Timestamp.utcnow()
+    # BUG FIX (2026-04-27): pd.Timestamp.utcnow() is tz-aware; the OHLCV
+    # parquet index is tz-naive — comparison raises TypeError. Strip tz.
+    as_of_date = pd.Timestamp(args.as_of) if args.as_of else pd.Timestamp.now()
+    if getattr(as_of_date, "tz", None) is not None:
+        as_of_date = as_of_date.tz_localize(None)
 
     log.info("Training %dD embeddings (lookback %dd, epochs %d, as_of %s)",
              args.embedding_dim, args.lookback_days, args.epochs,
