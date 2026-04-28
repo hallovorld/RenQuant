@@ -69,3 +69,48 @@ class BaseBroker(ABC):
             Order confirmation dict with at least ``{"order_id", "status"}``.
         """
         ...
+
+    # ── Broker-side stop orders (Z9, 2026-04-28) ─────────────────────────────
+    # Invariant: stops live broker-side, not in our polling loop.
+    # NVTS post-mortem: 30-min cron lag let −12% drop happen between
+    # ticks. Broker-side stops trigger in ms regardless of our poll
+    # cadence. Default impls raise NotImplementedError so brokers that
+    # don't support stops fail loudly rather than silently no-op.
+
+    def supports_broker_side_stops(self) -> bool:
+        """Whether this broker supports broker-side stop orders.
+
+        Brokers that do (Alpaca, IBKR, Paper-with-simulator) override and
+        return True. Brokers that don't return False so the runner falls
+        back to polled stop_loss without needing per-broker code paths.
+        """
+        return False
+
+    def place_stop_order(
+        self, symbol: str, quantity: float, stop_price: float,
+    ) -> dict:
+        """Place a sell-stop order at *stop_price* for *quantity* shares of *symbol*.
+
+        Stops are GTC (good-til-canceled). Caller is responsible for
+        cancelling the stop when the position is sold or replaced.
+
+        Returns dict with at least ``{"order_id", "status"}``.
+
+        Default raises NotImplementedError — supporters override.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support broker-side stop orders. "
+            "Check supports_broker_side_stops() before calling."
+        )
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a previously-placed order by id.
+
+        Returns True if cancellation accepted (not necessarily filled-cancel
+        round-trip), False if the order was unknown or already filled.
+
+        Default raises NotImplementedError — supporters override.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement cancel_order."
+        )

@@ -153,7 +153,8 @@ def _load_panel_matrix(config: dict, lookahead: int):
         labels[tk] = c.shift(-LOOKAHEAD) / c - 1.0
 
     panel, _w, _meta = build_panel_frame(
-        ff, labels, fac, macro_frame=None, asset_embeddings=None,
+        ff, labels, ticker_sectors,
+        factor_frames=fac, macro_frame=None, asset_embeddings=None,
         min_history_days=252,
     )
     log.info("Panel: %d rows × %d tickers × %d dates",

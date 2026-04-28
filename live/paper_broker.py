@@ -29,6 +29,10 @@ class PaperBroker(BaseBroker):
         self._last_price: dict[str, float] = {}
         self._order_counter = 0
         self._connected = False
+        # Z9: broker-side stop simulation. {order_id: {symbol, qty, stop_price}}.
+        # Triggers happen via _check_stops() which the runner / tests can
+        # call after set_price to simulate broker-side fills.
+        self._stop_orders: dict[str, dict] = {}
 
     def connect(self) -> None:
         self._connected = True
@@ -142,3 +146,84 @@ class PaperBroker(BaseBroker):
                  f"{price:.2f}" if price is not None else "?")
         return {"order_id": oid, "status": "filled", "action": action_u,
                 "symbol": symbol, "quantity": quantity, "price": price}
+
+    # ── Broker-side stop simulation (Z9) ─────────────────────────────────
+
+    def supports_broker_side_stops(self) -> bool:
+        return True
+
+    def place_stop_order(
+        self, symbol: str, quantity: float, stop_price: float,
+    ) -> dict:
+        if quantity <= 0:
+            raise ValueError(f"place_stop_order: quantity must be positive (got {quantity})")
+        if stop_price <= 0:
+            raise ValueError(f"place_stop_order: stop_price must be positive (got {stop_price})")
+        held = self._positions.get(symbol, 0.0)
+        if quantity > held + 1e-9:
+            raise ValueError(
+                f"place_stop_order: qty={quantity} exceeds held={held} for {symbol}"
+            )
+        self._order_counter += 1
+        oid = f"PAPER-STP-{self._order_counter:04d}"
+        self._stop_orders[oid] = {
+            "symbol":     symbol,
+            "quantity":   float(quantity),
+            "stop_price": float(stop_price),
+        }
+        log.info("Stop order %s: SELL %s %.0f @ stop=$%.2f (queued)",
+                 oid, symbol, quantity, stop_price)
+        return {"order_id": oid, "status": "accepted", "symbol": symbol,
+                "quantity": float(quantity), "stop_price": float(stop_price)}
+
+    def cancel_order(self, order_id: str) -> bool:
+        if order_id in self._stop_orders:
+            self._stop_orders.pop(order_id, None)
+            log.info("Cancelled stop order %s", order_id)
+            return True
+        log.warning("cancel_order(%s): unknown order id", order_id)
+        return False
+
+    def _check_stops(self) -> list[dict]:
+        """Trigger any stop whose stop_price is at-or-above the symbol's
+        current last_price. Mimics broker-side fills.
+
+        Returns a list of dicts describing executed fills. Tests + the
+        runner can call this after set_price() to simulate the broker
+        firing the stop in real time. Each fill reduces the position and
+        increases cash like a SELL market order.
+        """
+        triggered: list[dict] = []
+        for oid in list(self._stop_orders.keys()):
+            spec = self._stop_orders[oid]
+            sym = spec["symbol"]
+            stop_p = spec["stop_price"]
+            qty = spec["quantity"]
+            last = self._last_price.get(sym)
+            if last is None:
+                continue
+            # Sell-stop fires when last_price <= stop_price
+            if last <= stop_p:
+                # Execute as market sell at last_price (a real broker
+                # might fill below the stop on a gap; we keep it simple)
+                fill_price = float(last)
+                held = self._positions.get(sym, 0.0)
+                exec_qty = min(qty, held)
+                if exec_qty <= 0:
+                    self._stop_orders.pop(oid, None)
+                    continue
+                self._positions[sym] = held - exec_qty
+                if self._positions[sym] == 0:
+                    self._avg_cost.pop(sym, None)
+                self._cash += exec_qty * fill_price
+                self._stop_orders.pop(oid, None)
+                triggered.append({
+                    "order_id":   oid,
+                    "symbol":     sym,
+                    "quantity":   exec_qty,
+                    "fill_price": fill_price,
+                    "stop_price": stop_p,
+                })
+                log.info("Stop %s TRIGGERED: SOLD %s %.0f @ %.2f (stop=%.2f)",
+                         oid, sym, exec_qty, fill_price, stop_p)
+        return triggered

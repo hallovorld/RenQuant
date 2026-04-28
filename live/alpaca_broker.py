@@ -146,6 +146,73 @@ class AlpacaBroker(BaseBroker):
             "quantity": int(quantity),
         }
 
+    # ── Broker-side stop orders (Z9, 2026-04-28) ────────────────────────────
+    # Invariant: stops live broker-side. NVTS post-mortem: 30-min cron
+    # cadence let −12% drop happen between polled stop checks. Broker-side
+    # stops trigger in ms.
+
+    def supports_broker_side_stops(self) -> bool:
+        return True
+
+    def place_stop_order(
+        self, symbol: str, quantity: float, stop_price: float,
+    ) -> dict:
+        """Place a GTC sell-stop at stop_price."""
+        from alpaca.trading.requests import StopOrderRequest  # noqa: PLC0415
+        from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: PLC0415
+
+        if quantity <= 0:
+            raise ValueError(f"place_stop_order: quantity must be positive (got {quantity})")
+        if stop_price <= 0:
+            raise ValueError(f"place_stop_order: stop_price must be positive (got {stop_price})")
+
+        # Account-status check (mirrors place_order — see ALPACA-ACCT-STATUS).
+        try:
+            account = self._trading_client.get_account()
+            status = str(getattr(account, "status", ""))
+        except Exception as exc:
+            raise RuntimeError(
+                f"alpaca pre-stop account check failed: {exc}"
+            ) from exc
+        if status not in ("ACTIVE", "AccountStatus.ACTIVE"):
+            raise RuntimeError(
+                f"alpaca account status is '{status}' (not ACTIVE) — refusing to place "
+                f"stop {symbol} x{quantity} @ ${stop_price:.2f}."
+            )
+
+        # GTC so the stop survives across days (matches the invariant —
+        # we want the stop active until either it triggers or we cancel).
+        request = StopOrderRequest(
+            symbol=symbol,
+            qty=int(quantity),
+            side=OrderSide.SELL,
+            stop_price=round(float(stop_price), 2),
+            time_in_force=TimeInForce.GTC,
+        )
+        order = self._trading_client.submit_order(request)
+        log.info(
+            "Stop order %s: SELL %s %d @ stop=$%.2f — status=%s",
+            order.id, symbol, int(quantity), stop_price, order.status,
+        )
+        return {
+            "order_id":  str(order.id),
+            "status":    str(order.status),
+            "symbol":    symbol,
+            "quantity":  int(quantity),
+            "stop_price": float(stop_price),
+        }
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a pending order. Returns False on already-filled / unknown id."""
+        from alpaca.common.exceptions import APIError  # noqa: PLC0415
+        try:
+            self._trading_client.cancel_order_by_id(order_id)
+            log.info("Cancelled order %s", order_id)
+            return True
+        except APIError as exc:
+            log.warning("cancel_order(%s) failed: %s", order_id, exc)
+            return False
+
     def get_avg_cost(self, symbol: str) -> float:
         from alpaca.common.exceptions import APIError
         try:
