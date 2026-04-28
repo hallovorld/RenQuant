@@ -80,17 +80,52 @@ The 27 features encode tech-momentum priors:
 
 ## 2. Empirical evidence from tonight's M1 chain
 
-| Arm | Setup | OOS IC | Panel rows | Δ vs 10d |
-|---|---|---|---|---|
-| 10d production | rank:pairwise, 27 features, 227 tickers | +0.0400 | 77,559 | — |
-| 20d | same, lookahead=20 | +0.0271 | 167,473 | −32% |
-| 60d | same, lookahead=60 | +0.0528 | 167,473 | **+32%** |
+### Important — watchlist clarification
 
-(The 10d IC of +0.0400 above is from the AUTO-REVERTED checkpoint that survived the night. The B1 retrain at lookahead=10 on 227 tickers landed +0.0234 (−44%) — this matches the post-revert backup at `artifacts/b1_regressed_20260428_020304/panel-ltr.json`. The +0.0400 is the **prior production model**, untouched.)
+Three artifacts exist after the M1 chain. They are NOT all on the same watchlist:
 
-The 32% gap between 10d (regression) and 60d (improvement) on the same panel composition is direct evidence that the issue is horizon-specific, not data-quality.
+| Artifact | Watchlist | Tickers | Lookahead | OOS IC | Notes |
+|---|---|---|---|---|---|
+| `panel-ltr.json` (production, restored) | **103 (old)** | 103 | 10d | +0.0400 | auto-reverted from 22:28 checkpoint |
+| `b1_regressed_20260428_020304/panel-ltr.json` | **227 (new)** | 223 | 10d | **+0.0234** | B1 retrain that triggered auto-revert |
+| `panel-ltr.20d.json` | **227 (new)** | 223 | 20d | +0.0271 | M1a |
+| `panel-ltr.60d.json` | **227 (new)** | 223 | 60d | **+0.0528** | M1b |
 
-20d falling between (slightly worse than 10d, much worse than 60d) is a no-man's-land effect — too long for micro signals, too short for trend-persistence to dominate. This is consistent with the AMP (2013) finding that momentum is most reliable at 12-1 month horizons (~252-21 trading days).
+(223 = 227 minus 4 dropped for insufficient history.)
+
+### Apples-to-apples on the SAME 227 watchlist (3 horizons)
+
+| Lookahead | OOS IC | Δ vs 10d | Folds where horizon wins |
+|---|---|---|---|
+| 10d | +0.0234 | — | (baseline) |
+| 20d | +0.0271 | +16% | n/a |
+| 60d | **+0.0528** | **+126%** | **12/15** |
+
+### Paired CPCV statistical test — 60d vs 10d on same 227 watchlist
+
+```
+n         = 15 folds
+mean diff = +0.0295
+std diff  = 0.0299
+SE        = 0.00771
+t-stat    = +3.82  (p < 0.001)
+```
+
+**The horizon effect is highly significant.** 60d outperforms 10d by 126% with t > 3, well past the +1.5 t-stat threshold normally used for promotion decisions. Mechanism A (sector heterogeneity) hits hardest at 10d when micro-signals dominate; at 60d the trend-persistence + quality factors are universal across sectors and the bigger universe contributes positive breadth (Grinold-Kahn IR formula, applied where the per-name signals ARE independent).
+
+20d falling between confirms a no-man's-land between mean-reversion (sub-10d) and trend-following (60d+). This is consistent with **Asness-Moskowitz-Pedersen (2013)** finding that momentum is most reliable at 12-1 month horizons (~252-21 trading days; 60d sits in that window, 20d is below it).
+
+### Comparison to the (smaller) 103 production baseline
+
+The production model is +0.0400 on 103 tickers at 10d. The 60d 227-ticker model is +0.0528 → +32% above the prior production baseline. Worth noting:
+
+- 60d trades less (~50% turnover of 10d), so dollar-IR has to be discounted vs. 10d for an apples-to-apples portfolio Sharpe comparison.
+- 60d alone may still be worth promoting as the production model — the IC lift more than compensates for ½× turnover by Grinold-Kahn arithmetic, IF the per-trade alpha decays over the 60d holding window the way the in-sample CPCV implies.
+
+Validation work needed before promotion (deferred per user direction):
+- Full sim backtest with 60d artifact (~30 min) over the 27-month OOS window.
+- Compare APY, max drawdown, turnover, Sharpe vs. current 10d production.
+- If sim Sharpe ≥ 1.0 AND APY ≥ prior production: promote.
 
 ---
 
