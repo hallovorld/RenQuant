@@ -2,9 +2,9 @@
 
 **Single source of truth for what's next.** Ordered by priority tier (P0 → P3), then by expected value within tier.
 
-## 🔴 BLOCKER
+## ✅ RESOLVED (2026-04-28)
 
-- [ ] BUG-CV-1/2/3: CPCV fold leakage + early stopping misalignment (discovered 2026-04-28) — IC baseline UNTRUSTWORTHY until fixed
+- [x] BUG-CV-1/2/3: FIXED 2026-04-28 — integer div, best_iter guard, eval-set alignment
 
 ## 🎯 End goal (user spec 2026-04-24)
 
