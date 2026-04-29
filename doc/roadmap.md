@@ -941,7 +941,7 @@ Phase 2 ──→ 盘前刷新 A/B ──→ APY 提升 > +1 pt → 升级为默
 
 Phase 3 ──→ 需要 Alpaca WebSocket infra，评估建设成本 vs 收益
 
-Phase 4 ──→ 数据量门（panel > 150k rows）达到后再评估
+Phase 4 (renquant_105) ──→ 独立策略版本，见 renquant_105 设计文档
 ```
 
 ---
@@ -952,4 +952,18 @@ Phase 4 ──→ 数据量门（panel > 150k rows）达到后再评估
 2. **[30 min]** pre-flight 加 `trained_date` 检查：`today - trained_date ≤ 2 trading days`（超过则告警但不阻止）
 3. **[1h]** `--once` dry-run 验证：候选股生成 → Gate A/B 通过 → 订单正确路由 → 不实际下单
 4. **[视情况]** 在 Z9 alpaca-paper 验证通过后，paper 账户先跑 5 天，再切 live
+
+
+---
+
+### 版本边界说明（2026-04-29）
+
+**renquant_104**（当前）：日线 OHLCV 信号，Panel-LTR 排名。盘中执行仅限"在最优时点执行日线信号"，不引入分钟级特征训练。Phase 1-3 均在 104 框架内完成。
+
+**renquant_105**（下一版本）：30min 级别模型。独立训练 pipeline，独立特征体系，独立 IC/APY 评估基准。前提条件：
+- renquant_104 Phase 1-3 稳定运行 ≥ 3 个月（建立基准）
+- 分钟级面板 > 1M 行（103 ticker × 2 年 × 16 bars/日）
+- 独立 `backtesting/renquant_105/` 目录，不复用 104 的 strategy_config.json
+
+**105 的设计工作从 104 Phase 3 稳定后启动。**
 
