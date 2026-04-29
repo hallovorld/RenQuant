@@ -111,7 +111,7 @@
   "model_staleness_days": 60,
   "sharpe_floor": 1.0,
   "wash_sale_days": 30,
-  "min_hold_days": 5,
+  "min_hold_days": 20,
   "model_sell": {
     "panel_veto": {
       "enabled": true,
@@ -124,7 +124,7 @@
     "comment": "Phase 1 collect-only. Phase 2 will add percentile-based admission via panel_buy_pctile."
   },
   "consecutive_sell_signals": 3,
-  "min_hold_profit_days": 20,
+  "min_hold_profit_days": 45,
   "min_hold_loss_days": 20,
   "max_hold_days": 500,
   "train_split": 0.7,
@@ -515,7 +515,7 @@
       "threshold": 1.0
     },
     "kelly_sizing": {
-      "enabled": true,
+      "enabled": false,
       "fractional": 0.5,
       "max_concentration": 0.35,
       "min_edge": 0.0,
@@ -744,5 +744,6 @@
       "change": "add LITE + COHR to watchlist (datacenter_hw / optical-comms exposure)",
       "rollback": "remove from watchlist + sector_map; revert this commit"
     }
-  ]
+  ],
+  "_experiment_id": "E-60d-sim"
 }
