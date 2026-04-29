@@ -675,3 +675,22 @@ The original guard threshold `min_best_iter ≥ 20` was too aggressive — based
 
 **复现**：`python scripts/train_104.py --strategy-config-name strategy_config.emb_h60.json --skip-baseline --skip-recalibrate --force`
 
+
+---
+
+## E21: wl174（178 去 4 ETF，clean CV）— 2026-04-29
+
+**假设**：wl178 IC 低的主因是 4 个行业 ETF（XLE/XLI/XLK/XLY）污染横截面归一化。去掉后应恢复到接近基准水平。
+
+**实现**：`strategy_config.wl174.json`，174 ticker = 178 - 4 ETF，early_stopping_rounds=null，clean CV。
+
+**结果**：CPCV mean_ic = **+0.0094**（vs wl178 +0.007, vs prod 103 +0.035）。平均每 ticker 751 日，与 prod 103 完全相同，排除数据稀疏假设。
+
+**结论**：ETF 不是主因，是次因。真正问题是"横截面排名模型扩容悖论"：原 103 ticker 是精选的高 IC 集合，加入 71 个风格不同的 ticker（商品/公用事业/银行）后：(1) 横截面 z-score 基准改变；(2) Gaussian rank label 映射变化；(3) 新 ticker 特征分布稀释原有训练模式。随机扩容 = IC 下降。
+
+**实验设计缺陷**：watchlist 扩容应先做 ticker 筛选（与现有 103 特征分布相似度测试），而不是直接加入所有待选 ticker。
+
+**下一步**：设计 ticker screening 步骤：逐一测试新 ticker 的 IC 贡献（leave-one-in 测试或 per-ticker IC 诊断），只保留 IC 中性或正向的 ticker。
+
+**复现**：`python scripts/train_104.py --strategy-config-name strategy_config.wl174.json --skip-baseline --skip-recalibrate --force`
+
