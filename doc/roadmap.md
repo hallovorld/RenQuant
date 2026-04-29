@@ -2,6 +2,10 @@
 
 **Single source of truth for what's next.** Ordered by priority tier (P0 → P3), then by expected value within tier.
 
+## 🔴 BLOCKER
+
+- [ ] BUG-CV-1/2/3: CPCV fold leakage + early stopping misalignment (discovered 2026-04-28) — IC baseline UNTRUSTWORTHY until fixed
+
 ## 🎯 End goal (user spec 2026-04-24)
 
 **Golden config target:** **APY 41% | Sharpe 2.0**  (user revised down from earlier 141% target on 2026-04-24 PT — current v4.1 sweep ≈ 39.82%, needs +1-2 APY pt)
@@ -839,3 +843,113 @@ ETA: 0.3 day. Code path: `kernel/panel_pipeline/task_quality_floor.py::_gate_b_e
 - Behavior cloning warmup against current QP outputs.
 
 **Decision criterion to revive:** if post-M1+M2+M3 OOS Sharpe < 1.5 OR live trades still mismatch market intuition on >20% of bars, revisit M4.
+
+---
+
+## 🕐 盘中买入路线图 (Intraday Buy Execution) — 2026-04-29
+
+**背景**：当前所有市场时段 cron（开盘/盘中/收盘前）均运行 `--sell-only`，系统从未执行买入。模型信号基于日线 OHLCV，"算法买入还是要看日线，所以不能盘中交易"——这是当前阶段的正确约束，但阻止了所有新仓建立。本路线图规划如何在日线信号框架内安全启用买入。
+
+**设计原则**：
+1. 买入信号仍基于 T-1 日线 OHLCV（前一交易日收盘后计算），不引入实时定价假设
+2. 执行时点选择：最大化信号有效性 vs 执行质量的权衡
+3. 每阶段独立可验证，后阶段不依赖前阶段的强假设
+
+---
+
+### Phase 1 — 最小改动：开盘执行 T-1 信号 (P0，~1 day)
+
+**目标**：恢复买入，使用昨日收盘后计算的面板分数，在今日开盘执行。
+
+**信号有效性**：
+- 面板 LTR 分数在每日 retrain 后（当晚或隔日 6:00 PT 前）计算完毕
+- 60d horizon 信号：60 天内的排名稳定性高，T+0 开盘执行 T-1 信号完全合理
+- 10d horizon 信号：T-1 排名在 T+0 仍有效（1 天衰减可忽略）
+
+**实现**：
+1. 移除 `com.renquant.open104.plist` 中的 `--sell-only` 标志
+2. 确保 retrain plist（`retrain-panel104.plist`）在 open plist 之前完成（当前已是当晚运行，无需改动）
+3. pre-flight 检查模型 `trained_date` 是否为 T-1 或更新（防止 stale 信号进场）
+
+**风险与缓解**：
+- Gap risk（隔夜跳空）：面板分数不含隔夜信息。缓解：`max_position_size` 已设 35%，regime 门已启用
+- 信号 stale：pre-flight `trained_date` 检查（已有 P-MODEL-ARTIFACT 检查，扩展日期验证即可）
+
+**验收标准**：`--once` dry-run 产生 ≥1 个 candidate，无 pre-flight 报错。
+
+---
+
+### Phase 2 — 预市信号刷新 + 开盘执行 (P1，~3 days)
+
+**目标**：在市场开盘前，用最新 OHLCV 数据（含 T 日盘前价）刷新面板分数，减少隔夜信息损失。
+
+**背景**：yfinance / Alpaca 提供盘前数据（6:00-6:30 PT），可将面板分数更新到 T 日盘前。
+
+**实现**：
+1. 新 cron `retrain-intraday-panel104.plist`：每日 6:00 PT，仅跑 `PanelDataJob + PanelFeatureJob + PanelModelJob`（不跑 NGBoost/calibrator，约 7 min）
+2. 使用 side config `strategy_config.intraday_signal.json`，artifact 路径隔离，不覆盖 production
+3. 开盘 cron 优先读取盘前刷新的 artifact（如存在且日期为今日），fallback 到前晚 artifact
+
+**关键判断**：盘前刷新 CPCV IC 提升幅度 vs 7min 延迟成本。需要 A/B sim 验证（盘前刷新 vs 前晚信号 APY 差异）。
+
+---
+
+### Phase 3 — 信号热度检测 + 动态执行时点 (P2，~1 week)
+
+**目标**：根据信号强度和市场微结构，选择最优盘中执行时点（不只是固定 6:30 开盘）。
+
+**设计**：
+- `SignalFreshnessScore`：panel_score 在过去 3 日的稳定性（rank 变化幅度）
+- 高稳定性信号：在 VWAP 附近分批成交（减少冲击）
+- 低稳定性信号：等待开盘后 30min 价格稳定再执行
+- 结合 `intraday_realized_vol_z`（已有特征）判断当日波动率状态
+
+**注意**：这阶段开始引入盘中数据依赖，需要 Alpaca WebSocket 实时 feed 或高频 polling。
+
+---
+
+### Phase 4 — 真正盘中信号（长期，T2/T3 级别）
+
+**目标**：基于分钟/小时级特征的盘中排名模型，支持真正的日内信号更新。
+
+**前提条件**：
+- 面板 > 150k 行（当前 ~75k，需 watchlist 扩到 200+ 或积累 2+ 年日内数据）
+- Phase 1-3 稳定运行 ≥3 个月，建立基准
+- 独立的分钟级 panel-LTR 训练 pipeline（与日线模型完全解耦）
+
+**模型选型备选**：
+- Transformer（hourly feature panel，T2 级别）
+- TGNS（图注意力 + 分钟级，T3，参见路线图 T3-1）
+
+**执行架构**：
+- `InferencePipeline` 增加 `IntradaySignalJob`：每 30min 刷新分钟特征 → 更新 candidates
+- 信号变化超过阈值才触发换仓（避免过度交易）
+
+---
+
+### 决策树（何时推进各阶段）
+
+```
+[当前: sell-only]
+       ↓
+Phase 1 ──→ 开盘买入恢复 ──→ 观察 5-10 交易日买入质量
+                              ├── OK → 推进 Phase 2（盘前刷新）
+                              └── 问题 → 诊断后再推进
+
+Phase 2 ──→ 盘前刷新 A/B ──→ APY 提升 > +1 pt → 升级为默认
+                              └── 无提升 → 保留 Phase 1，Phase 2 作 fallback
+
+Phase 3 ──→ 需要 Alpaca WebSocket infra，评估建设成本 vs 收益
+
+Phase 4 ──→ 数据量门（panel > 150k rows）达到后再评估
+```
+
+---
+
+### 当前 Action Items（Phase 1，随时可做）
+
+1. **[5 min]** 在 `com.renquant.open104.plist` 移除 `--sell-only`，改为完整推断模式
+2. **[30 min]** pre-flight 加 `trained_date` 检查：`today - trained_date ≤ 2 trading days`（超过则告警但不阻止）
+3. **[1h]** `--once` dry-run 验证：候选股生成 → Gate A/B 通过 → 订单正确路由 → 不实际下单
+4. **[视情况]** 在 Z9 alpaca-paper 验证通过后，paper 账户先跑 5 天，再切 live
+
