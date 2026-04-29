@@ -476,7 +476,149 @@ Panel < 150k rows; insufficient samples per regime. Deferred until watchlist 200
 
 ---
 
-## Lessons distilled from the failures
+## E17. wl178 quality-filter expansion — eval IC NEGATIVE across all rounds
+
+**Date**: 2026-04-28 (evening, post P0 fixes + threshold lowered to 5)
+**Type**: structural negative — second confirmation that universe expansion fails on this model architecture
+**Production impact**: never deployed (guard fired, artifact NOT saved)
+
+### Hypothesis
+B1 (227 mutual-fund spec) failed because the selection method picked tickers based on fundamental criteria, not on signal quality. A quality-first 4-filter selection (liquidity ≥ \$50M median DV, history ≥ 504 days, vol ∈ [15%, 85%], 1y Sharpe ≥ 0.5) on the local OHLCV cache should give a watchlist where the cross-sectional ranker can extract signal.
+
+### Implementation
+- 4 filters applied to 235 tickers in local OHLCV cache → 75 new candidates
+- Combined with current 103 → 178-ticker watchlist
+- Trained with all P0 fixes in place (commit `abac170`)
+- Side artifact paths so production was untouched
+
+### Data (full per-round IC trajectory, post-BUG-CV-3 eval set)
+
+| round | eval IC | train IC | gap |
+|---|---|---|---|
+| 5  | **−0.0383** ← "best" (still negative) | +0.0852 | +0.124 |
+| 10 | −0.0741 | +0.0860 | +0.160 |
+| 15 | −0.0627 | +0.0873 | +0.150 |
+| 20 | −0.0549 | +0.0901 | +0.145 |
+| 25 | −0.0524 | +0.0901 | +0.143 |
+
+best_iter = 4, best_ic = −0.0383.
+
+Critically: **train IC is also depressed** (+0.085 vs prod103's +0.118) — the model can't even fit training data well. Combined with the negative eval IC, this is structural breakage, not just poor generalization.
+
+### Comparison to E5 (B1 227)
+
+| Experiment | Selection method | New tickers | Resulting IC |
+|---|---|---|---|
+| E5 (B1 227) | Mutual fund top holdings (VPMAX/FCNTX) | +124 | +0.0234 (−44%) |
+| **E17 (wl178)** | **Quality 4-filter (liquidity / history / vol / Sharpe)** | **+75** | **eval IC negative across all rounds** |
+
+Two completely different selection methods, both failed. **This rules out "selection error" as the root cause.**
+
+### Why expansion fails structurally
+
+Hypothesis: panel-LTR with cross-sectional rank:pairwise loss assumes some homogeneity in feature distribution across the universe. The original 103 watchlist is tech-heavy (and was implicitly curated to be a homogeneous set over time). Both expansions added significant cross-sector variance:
+
+- B1 added VPMAX/FCNTX holdings spanning all 11 GICS sectors
+- wl178 added financials (C, MS), industrials (FDX, CSX, PH), consumer staples (ROST, MAR)
+
+Cross-sectional rank loss on a heterogeneous universe degrades because:
+1. Per-ticker feature distributions differ → rank-pairwise loss compares apples to oranges
+2. Forward-return distributions differ across sectors → label noise dominates
+3. The same z-scoring + neutralization that works on tech-heavy can't normalize across sectors
+
+### Confirmed by training-loss signature
+The train IC at +0.085 (vs +0.118 on 103) shows the model can't even fit training data on the heterogeneous panel. This rules out "evaluation-set artifact" as the cause — the issue is at training time.
+
+### Conclusion
+**Watchlist expansion path closed for the current architecture.** Two independent attempts at expansion (different selection methods) both failed. The cross-sectional rank model on this feature set is bounded by the original 103 watchlist's homogeneity.
+
+To unblock expansion would require an architectural change:
+- Per-sector sub-models (each ranker on a homogeneous sector)
+- OR sector-conditional features (sector-specific feature transforms)
+- OR an embedding-based architecture that handles heterogeneity (but T2-2 embeddings already failed for this panel — see E13)
+
+These are major architecture changes, not parameter tweaks.
+
+### Reproduction
+1. Build the wl178 config: `scripts/screen_watchlist_v2.py --top 100`
+2. Run: `python scripts/train_104.py --strategy-config-name strategy_config.wl178.json --skip-baseline --skip-recalibrate --force`
+3. Inspect `logs/ablation_2026-04-28/wl178_retrain_v2.log` — every per-chunk eval IC should be negative
+
+### Files
+- `backtesting/renquant_104/strategy_config.wl178.json` (the config)
+- `doc/research/watchlist-200-v2-candidates.json` (the 75 candidates)
+- `logs/ablation_2026-04-28/wl178_retrain_v2.log` (the run log)
+
+### Status
+**Closed.** Universe expansion not pursued further until per-sector or sector-aware architecture is built.
+
+---
+
+## E18. Round-9 saturation diagnostic — by design, not a bug
+
+**Date**: 2026-04-28 (evening)
+**Type**: diagnostic, NOT a failed experiment — confirmed model behavior is structural
+
+### Hypothesis
+On 2026-04-28 the production retrain (and wl178 retrain) showed XGBoost rank early-stop firing at very low best_iter (4-9) with eval IC peaking and then declining. Three competing hypotheses:
+1. eval set too small → noise dominates after early peak
+2. structural saturation → model capacity reached
+3. residual train→eval leakage → early IC inflated
+
+### Implementation
+Diagnostic side config with `min_best_iter=0` (disable guard), `num_boost_round=200`, `early_stopping_rounds=100` (force long training to see full curve), patched `panel.ltr` logger to emit per-chunk eval IC + train IC + gap (not just "new best").
+
+### Data (full IC trajectory, 103 watchlist, post-P0 fixes)
+
+| round | eval IC | train IC | gap |
+|---|---|---|---|
+| 25 | **+0.0445** ← peak | +0.1183 | +0.07 |
+| 50 | +0.0313 | +0.1205 | +0.09 |
+| 75 | +0.0158 | +0.1247 | +0.11 |
+| 100 | +0.0060 | +0.1242 | +0.12 |
+| 125 | **−0.0021** ← early-stop fires | +0.1271 | +0.13 |
+
+CPCV mean across 15 folds: **+0.0356**.
+
+### Hypothesis verdict
+- Hyp 1 (eval set too small): ✅ **confirmed**
+- Hyp 2 (structural saturation): ❌ ruled out — train IC keeps rising
+- Hyp 3 (leakage): ❌ ruled out — train and eval **diverge** (would converge if leakage)
+
+### Why eval set is too small
+- 6-fold CPCV → eval = 1/6 of dates ≈ 125 dates
+- 125 dates × 103 tickers ≈ 12k pair-observations
+- 27 features × tree depth 7 → high effective capacity
+- eta=0.02 step size means accumulated capacity catches up by round ~10
+- After ~10 rounds the model has more capacity than the eval set can constrain → fits noise, eval IC degrades
+
+### What this is NOT
+- NOT a CV implementation bug (BUG-CV-1/2/3 already fixed)
+- NOT a label leakage bug (purge + embargo present and verified)
+- NOT a feature engineering bug (train and eval features identical)
+
+This is the **expected behavior of a tree-boosting ranker on a small eval set**. The fix is not code; it is data (more dates, more tickers, larger training panel) — and that fix path itself is closed (see E17).
+
+### Operational implication
+The original guard threshold `min_best_iter ≥ 20` was too aggressive — based on the assumption "eta × best_iter ≥ 0.4 = healthy capacity", which empirically fails on this panel. Threshold lowered to 5: catches catastrophic eval-set breakage (best_iter=2/3) without blocking healthy fast-converging models (best_iter=9-25).
+
+### Reproduction
+1. Build diagnostic side config (set `min_best_iter=0`, `num_boost_round=200`, `early_stopping_rounds=100`, side artifact path)
+2. Patch `panel.ltr` early-stop logger to emit per-chunk eval IC + train IC + gap (commit `abac170`)
+3. Run: `python scripts/train_104.py --strategy-config-name strategy_config.diag.json --skip-baseline --skip-recalibrate --force --skip-acceptance`
+4. Confirm: train IC monotonically rises, eval IC peaks at round ~24 then declines, gap monotonically widens
+
+### Files
+- `logs/ablation_2026-04-28/diag_retrain.log` (the run log)
+- `backtesting/renquant_104/training_panel/ltr_model.py` (per-chunk logger patch)
+- `backtesting/renquant_104/strategy_config.diag.json` (the diagnostic config)
+
+### Status
+**Closed by design.** Operating point best_iter ∈ [9, 25] is healthy; guard at 5 protects against catastrophic best_iter=2/3 breakage.
+
+---
+
+## Lessons distilled from the failures (updated 2026-04-28 evening)
 
 1. **OLS / linear A/B tests can mislead about tree-model behavior** (E13). Always paired CPCV on the actual model.
 2. **Selection bias is the silent killer** (E6). Universe selection must use only pre-window information.
@@ -484,4 +626,7 @@ Panel < 150k rows; insufficient samples per regime. Deferred until watchlist 200
 4. **Correlated signals don't blend usefully** (E1). Per-horizon predictions correlate >0.7; blending adds noise.
 5. **NVTS-style left-tail events are not panel signals** (E3, E4). Don't build panel rules from N=1 observations.
 6. **Hyperparameter retune doesn't fix structural problems** (E7, E8). If the universe is wrong, no tree depth helps.
-7. **Macro signals on this watchlist + 10d horizon are absent or harmful** (E9–E12). Untested at long horizon × broader universe — keep that experiment open.
+7. **Macro signals on this watchlist + 10d horizon are absent or harmful** (E9–E12). Untested at long horizon × broader universe — but expansion path itself is now closed (E17).
+8. **Universe expansion fails on the current architecture regardless of selection method** (E5, E17). Need per-sector sub-models or sector-conditional features to scale beyond ~100 homogeneous tickers.
+9. **CV bugs corrupt every IC measurement, not just one** (today's BUG-CV-1/2/3). After every CV-side code change, re-run paired comparisons before trusting any closure.
+10. **A guard threshold derived from theory must be empirically validated** (today's `min_best_iter=20` was over-aggressive). Set guards from data, not from "should-be" arithmetic.
