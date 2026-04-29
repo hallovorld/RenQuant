@@ -134,8 +134,11 @@ class JointPortfolioQPTask(Task):
         # cached correlation artifact and compute Σ_ij = ρ_ij × σ_i × σ_j.
         Sigma_full = None
         use_full_sigma = bool(joint_cfg.get("qp_use_full_sigma", True))
-        if use_full_sigma and ctx.strategy_dir is not None:
-            corr_path = (ctx.strategy_dir / "artifacts" /
+        # InferenceContext uses ctx.config["_strategy_dir"], not ctx.strategy_dir.
+        _strategy_dir_str = ctx.config.get("_strategy_dir", "")
+        _strategy_dir = Path(_strategy_dir_str) if _strategy_dir_str else None
+        if use_full_sigma and _strategy_dir is not None:
+            corr_path = (_strategy_dir / "artifacts" /
                          "watchlist-correlation.json")
             if corr_path.exists():
                 try:
