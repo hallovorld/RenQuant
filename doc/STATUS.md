@@ -21,9 +21,21 @@ The system is healthy. Today's 9 commits resolved every P0 bug we knew about, an
 
 ---
 
-## §0. Top-line model finding (2026-04-29 早间)
+## §0. Top-line model findings (2026-04-29 早间)
 
-**60d horizon swap on 103 watchlist** — first clean test post P0 fixes:
+### Finding 1: macro v2 + embeddings closures may be P0-bug artifacts (preliminary)
+
+Re-running closed experiments under fixed CV (BUG-CV-1/2/3 patched):
+
+| Experiment | Old claim | Re-measured CPCV | Verdict |
+|---|---|---|---|
+| 10d production (no macro, no emb) | +0.0418 (corrupted) | **+0.0350** | True baseline |
+| **macro v2** (per-ticker β features) | "−23% vs baseline" → ~+0.032 | **+0.0345** | **essentially neutral** (−1.4%) — previous closure was P0-bug artifact |
+| asset embeddings (16D) | "−18.5%" → ~+0.034 | (in flight) | TBD — C retest running |
+
+**Important caveat**: paired-t comparisons across runs aren't statistically rigorous (different fold seeds). But the magnitude swing (from −23% to ~0%) on macro v2 is too large to be sampling noise. The "macro path closed" verdict deserves re-examination.
+
+### Finding 2: 60d horizon swap on 103 watchlist** — first clean test post P0 fixes:
 
 | Model | best_iter | CPCV 跨折均值 |
 |---|---|---|
