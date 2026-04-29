@@ -452,7 +452,7 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-29",
+    "blend_updated": "2026-04-28",
     "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
@@ -530,7 +530,7 @@
     "age_warmup_days": 504,
     "cv_n_splits": 6,
     "cv_embargo_days": 10,
-    "num_boost_round": 300,
+    "num_boost_round": 200,
     "neutralize_features": true,
     "nan_prone_cols": [],
     "asset_embeddings": {
@@ -552,7 +552,7 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.json",
+    "artifact_path": "artifacts/panel-ltr.diag.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
@@ -688,7 +688,9 @@
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
-    }
+    },
+    "min_best_iter": 0,
+    "early_stopping_rounds": 100
   },
   "training": {
     "cadence": "custom",

@@ -452,12 +452,12 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-29",
+    "blend_updated": "2026-04-28",
     "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.json",
+      "artifact_path": "artifacts/panel-ltr.h60_103.json",
       "nan_prone_cols": [],
       "buy_floor": null,
       "rotation_advantage": 0.0,
@@ -469,7 +469,7 @@
       },
       "ngboost": {
         "enabled": true,
-        "artifact_path": "artifacts/ngboost-head.json",
+        "artifact_path": "artifacts/ngboost-head.emb_h60.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -524,7 +524,7 @@
     }
   },
   "panel_ltr": {
-    "lookahead_days": 10,
+    "lookahead_days": 60,
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
@@ -534,7 +534,7 @@
     "neutralize_features": true,
     "nan_prone_cols": [],
     "asset_embeddings": {
-      "enabled": false,
+      "enabled": true,
       "artifact_path": "artifacts/asset-embeddings.json",
       "max_age_days": 30
     },
@@ -552,11 +552,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.json",
+    "artifact_path": "artifacts/panel-ltr.emb_h60.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.json",
+      "artifact_path": "artifacts/ngboost-head.h60_103.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -688,7 +688,9 @@
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
-    }
+    },
+    "calibrator_threshold_mode": "crosssectional",
+    "early_stopping_rounds": null
   },
   "training": {
     "cadence": "custom",
@@ -742,5 +744,6 @@
       "change": "add LITE + COHR to watchlist (datacenter_hw / optical-comms exposure)",
       "rollback": "remove from watchlist + sector_map; revert this commit"
     }
-  ]
+  ],
+  "_experiment_id": "E3-60d-emb"
 }
