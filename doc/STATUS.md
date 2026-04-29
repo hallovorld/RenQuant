@@ -21,6 +21,30 @@ The system is healthy. Today's 9 commits resolved every P0 bug we knew about, an
 
 ---
 
+## §0. Top-line model finding (2026-04-29 早间)
+
+**60d horizon swap on 103 watchlist** — first clean test post P0 fixes:
+
+| Model | best_iter | CPCV 跨折均值 |
+|---|---|---|
+| 10d (today's healthy retrain) | 19 | **+0.0350** |
+| **60d** (same 103 watchlist, side path) | 4 | **+0.0738** ← +110% over 10d |
+
+The +0.0738 is computed by `CrossValidateTask` (15-fold CPCV with fixed BUG-CV-1/2/3) on the same panel, same features, same ticker universe — only the lookahead label changes (10d → 60d returns).
+
+**This validates the long-standing hypothesis** that on this 103-watchlist panel, 60d signal is genuinely stronger than 10d. Earlier 227-watchlist comparison showed paired t=+3.82 for 60d vs 10d but couldn't be acted on because that panel was structurally regressed. Now we have the clean comparison on the production-ready panel.
+
+**Caveat**: the `fit_panel_calibrator` subprocess failed for 60d because the 0.03 binary threshold collapses to 1 class on 60d returns (mostly positive in bull market). Calibrator needs threshold or method change for 60d. Panel-LTR + NGBoost saved correctly to side paths; production unaffected.
+
+**Implication**: horizon swap is a real lever. But before deploying:
+1. Fix calibrator threshold/method for 60d
+2. Sim-validate: 6× holding period × current cost model still net-positive?
+3. Decide entry/exit logic adaptation (hold 60d not 10d)
+
+This is the most actionable model-performance finding from today.
+
+---
+
 ## §1. Issues resolved today (2026-04-28)
 
 These were documented in scattered places (`doc/archives/audits/2026-04-28-deep-audit.md`, `doc/archives/audits/2026-04-28-nvts-buy-postmortem.md`, in-line in `CLAUDE.md`). All resolved.
