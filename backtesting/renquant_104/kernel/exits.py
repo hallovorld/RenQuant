@@ -106,6 +106,33 @@ _NO_EXIT = ExitSignal(should_exit=False, reason="", exit_type="")
 
 # ── Individual exit checks ─────────────────────────────────────────────────────
 
+def check_take_profit(
+    current_price: float,
+    state: HoldingState,
+    take_profit_pct: float,  # e.g. 0.25 (exit at +25% gain)
+) -> ExitSignal:
+    """Hard take-profit — exits unconditionally once cumulative gain ≥ threshold.
+
+    Audit 2026-04-29: the exit chain had no take-profit rule. Positions with
+    +30%+ gain held indefinitely unless the model reversed or max_hold fired,
+    leaving them exposed to mean reversion. Hard take-profit locks in gains
+    at a configurable threshold.
+
+    Configured via regime_params.take_profit_pct (default 0 = disabled).
+    Runs BEFORE trailing stop so it fires on the way up, not only on pullback.
+    """
+    if take_profit_pct <= 0 or state.entry_price <= 0:
+        return _NO_EXIT
+    gain = (current_price - state.entry_price) / state.entry_price
+    if gain >= take_profit_pct:
+        return ExitSignal(
+            should_exit=True,
+            reason=f"take_profit gain={gain:.1%} >= threshold={take_profit_pct:.1%}",
+            exit_type="take_profit",
+        )
+    return _NO_EXIT
+
+
 def check_trailing_stop(
     current_price: float,
     state: HoldingState,
@@ -303,6 +330,14 @@ def compute_exits(
     if not math.isfinite(state.high_watermark):
         state.high_watermark = current_price
     state.high_watermark = max(state.high_watermark, current_price)
+
+    # 0. Take-profit (hard ceiling on gain — runs before trailing stop)
+    sig = check_take_profit(
+        current_price, state,
+        float(params.get("take_profit_pct", 0)),
+    )
+    if sig.should_exit:
+        return sig, state
 
     # 1. Trailing stop
     sig = check_trailing_stop(

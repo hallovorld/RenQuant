@@ -31,10 +31,17 @@ class RotationJob(Job):
 
     def should_skip(self, ctx: InferenceContext) -> bool:
         rcfg = ctx.config.get("rotation", {})
-        return (not rcfg.get("enabled", False)
-                or not ctx.ranked
-                or not ctx.holdings
-                or ctx.bear_only)
+        if not rcfg.get("enabled", False) or not ctx.ranked or not ctx.holdings:
+            return True
+        if ctx.bear_only:
+            return True
+        # Audit fix 2026-04-29: rotation fires in BULL_VOLATILE causing whipsaw
+        # (-2.5 APY per event recorded in CLAUDE.md). Only run in regimes where
+        # rotation is declared profitable (default: BULL_CALM only).
+        allowed = rcfg.get("enabled_regimes")
+        if allowed is not None and ctx.regime not in allowed:
+            return True
+        return False
 
     @property
     def tasks(self) -> list[Task]:

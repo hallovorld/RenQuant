@@ -176,7 +176,8 @@
       "trailing_stop_trigger_pct": 0.2,
       "trailing_stop_trail_pct": 0.18,
       "spy_velocity_halt_pct": 0.03,
-      "spy_velocity_lookback_days": 3
+      "spy_velocity_lookback_days": 3,
+      "take_profit_pct": 0.25
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -189,7 +190,8 @@
       "min_model_score": 0.15,
       "min_price_move_pct": 0.005,
       "trailing_stop_trigger_pct": 0.2,
-      "trailing_stop_trail_pct": 0.1
+      "trailing_stop_trail_pct": 0.1,
+      "take_profit_pct": 0.2
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
@@ -203,7 +205,8 @@
       "min_price_move_pct": 0.0,
       "trailing_stop_trigger_pct": 0.15,
       "trailing_stop_trail_pct": 0.1,
-      "max_concurrent_positions": 4
+      "max_concurrent_positions": 4,
+      "take_profit_pct": 0.15
     },
     "BEAR": {
       "max_position_pct": 0.0,
@@ -216,7 +219,8 @@
       "min_model_score": 0.0,
       "min_price_move_pct": 0.0,
       "trailing_stop_trigger_pct": 0.1,
-      "trailing_stop_trail_pct": 0.05
+      "trailing_stop_trail_pct": 0.05,
+      "take_profit_pct": 0
     }
   },
   "defensive_tickers": [
@@ -363,12 +367,12 @@
   "lt_hold_min_gain": 0.1,
   "rotation": {
     "enabled": true,
-    "min_expected_advantage_pct": 0.03,
+    "min_expected_advantage_pct": 0.06,
     "target_horizon_days": 20,
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
-    "max_rotations_per_bar": 2,
+    "max_rotations_per_bar": 1,
     "panel_buy_floor": 0.3,
     "panel_sell_floor": 0.2,
     "panel_buy_top_n": 3,
@@ -388,7 +392,10 @@
       "qp_robust_mu_kappa": 0.0,
       "qp_cvar_lambda": 0.0,
       "qp_drawdown_limit": 0.2
-    }
+    },
+    "enabled_regimes": [
+      "BULL_CALM"
+    ]
   },
   "sample_start": "2016-01-01",
   "sample_end": "2026-06-30",
@@ -459,7 +466,7 @@
       "bypass_ticker_gate": true,
       "artifact_path": "artifacts/panel-ltr.json",
       "nan_prone_cols": [],
-      "buy_floor": null,
+      "buy_floor": 0.3,
       "rotation_advantage": 0.0,
       "sizing": {
         "enabled": false,
