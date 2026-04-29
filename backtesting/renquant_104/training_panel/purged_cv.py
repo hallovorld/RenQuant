@@ -59,7 +59,17 @@ class PurgedKFold:
             )
 
         # Contiguous date folds
-        fold_edges = np.linspace(0, n_dates, self.n_splits + 1, dtype=int)
+        # BUG-CV-1 fix (2026-04-28): integer division instead of
+        # np.linspace(...).astype(int). linspace + int-cast produces
+        # position drift when n_dates changes by 1-2 (daily window roll):
+        # e.g. for n_dates=753 → edges may differ by 1 vs n_dates=751,
+        # so the same calendar date can fall into a different fold.
+        # Result: silent in-sample → OOS leakage on fold boundaries.
+        # Fix: integer division gives stable edges; remainder added to
+        # the last fold so total coverage is exact.
+        fold_size = n_dates // self.n_splits
+        fold_edges = [k * fold_size for k in range(self.n_splits + 1)]
+        fold_edges[-1] = n_dates  # ensure exact total coverage
 
         all_idx = np.arange(len(panel), dtype=np.int64)
 
@@ -240,7 +250,17 @@ class CombinatorialPurgedCV:
                 f"Not enough unique dates ({n_dates}) for {self.n_splits}-fold CV",
             )
 
-        fold_edges = np.linspace(0, n_dates, self.n_splits + 1, dtype=int)
+        # BUG-CV-1 fix (2026-04-28): integer division instead of
+        # np.linspace(...).astype(int). linspace + int-cast produces
+        # position drift when n_dates changes by 1-2 (daily window roll):
+        # e.g. for n_dates=753 → edges may differ by 1 vs n_dates=751,
+        # so the same calendar date can fall into a different fold.
+        # Result: silent in-sample → OOS leakage on fold boundaries.
+        # Fix: integer division gives stable edges; remainder added to
+        # the last fold so total coverage is exact.
+        fold_size = n_dates // self.n_splits
+        fold_edges = [k * fold_size for k in range(self.n_splits + 1)]
+        fold_edges[-1] = n_dates  # ensure exact total coverage
         groups = [unique_dates[fold_edges[k]:fold_edges[k + 1]]
                   for k in range(self.n_splits)]
 

@@ -67,6 +67,10 @@ def _make_synthetic_cohort(n_tickers: int = 6, n_bars: int = 500):
         "neutralize_features": True,
         "nan_prone_cols": ["cci", "williams_r"],
         "training_notes": "e2e test",
+        # BUG-CV-2 (2026-04-28): synthetic panels are too small to reach
+        # best_iter ≥ 20. Disable the guard for fixtures.
+        "panel_ltr": {"min_best_iter": 0},
+        "min_best_iter": 0,   # also at top level in case flat-config path is used
     }
     return {
         "watchlist": tickers,

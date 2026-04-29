@@ -73,6 +73,10 @@ def _make_context(tmp_path, ticker_count=5):
             "factor_skip": 5,
             "neutralize_rolling_window": 60,
             "neutralize_warmup_days": 60,
+            # BUG-CV-2 (2026-04-28): synthetic test data is too small for
+            # best_iter ≥ 20. Disable the guard for fixture; production
+            # configs leave min_best_iter at default 20.
+            "min_best_iter": 0,
         },
         "_strategy_dir": str(tmp_path),
     }

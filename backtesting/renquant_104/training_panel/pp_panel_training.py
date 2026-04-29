@@ -2008,7 +2008,14 @@ class FinalFitTask(PanelTask):
         lookahead_for_purge = int(cfg.get("lookahead_days", 5))
         if backend in ("xgboost", "lightgbm") and len(ctx.group_sizes) >= 5 + lookahead_for_purge:
             n_total = len(ctx.group_sizes)
-            n_eval  = max(2, int(round(n_total * 0.20)))
+            # BUG-CV-3 fix (2026-04-28): align early-stop eval to the last
+            # CPCV fold's date-group count (1/cv_n_splits), so early-stop
+            # and CPCV IC measure the SAME data slice. Pre-fix used a
+            # hardcoded 20% which differs from CPCV folds (e.g. cv_n_splits=6
+            # → 1/6 ≈ 16.7%). Different slices → early stop can fire on a
+            # "bad" 20% while CPCV IC reports on a different period.
+            cv_splits_for_eval = int(cfg.get("cv_n_splits", 6))
+            n_eval = max(2, n_total // max(2, cv_splits_for_eval))
             n_train_raw = n_total - n_eval
             # Drop the last lookahead_for_purge training dates so labels
             # don't reach into eval (HIGH-2 fix).
@@ -2077,6 +2084,26 @@ class FinalFitTask(PanelTask):
         ctx._final_fit_device      = device_used  # noqa: SLF001
         log.info("FinalFitTask: backend=%s  train_ic=%+.4f  elapsed=%.1fs  device=%s",
                  backend, fit.get("train_ic", 0.0), elapsed, device_used)
+
+        # BUG-CV-2 hard guard (2026-04-28): refuse to save the artifact if
+        # XGBoost early stopping fired before min_best_iter rounds. With
+        # eta=0.02 and best_iter=4 (the production case discovered today),
+        # total shrinkage is 4 × 0.02 = 0.08 — model is essentially
+        # untrained. Pre-fix this saved silently and the model rode into
+        # production with random-walk-level signal.
+        # Skip for transformer (best_iter semantics differ).
+        if backend in ("xgboost", "lightgbm"):
+            min_best_iter = int(cfg.get("min_best_iter", 20))
+            best_iter = fit.get("best_iter")
+            if best_iter is not None and int(best_iter) < min_best_iter:
+                raise RuntimeError(
+                    f"FinalFit early_stopping fired at round {best_iter} "
+                    f"(< min_best_iter={min_best_iter}). Eval-set is pathological — "
+                    f"the model is undertrained (eta×best_iter={float(cfg.get('xgb_params', {}).get('eta', cfg.get('xgb_params', {}).get('learning_rate', 0.02))) * int(best_iter):.4f} total shrinkage). "
+                    f"Artifact NOT saved. Check eval-set alignment with CPCV folds "
+                    f"(see BUG-CV-3 in CLAUDE.md). To bypass for diagnostic runs only, "
+                    f"set panel_ltr.min_best_iter to a smaller value in config."
+                )
 
 
 class SaveArtifactTask(PanelTask):
@@ -2389,15 +2416,45 @@ class NGBoostFitTask(PanelTask):
         # Audit fix HIGH-3 (2026-04-27): pass lookahead_days so the
         # train/val date split purges leakage between segments.
         lookahead_for_purge = int(ctx.config.get("panel_ltr", {}).get("lookahead_days", 5))
-        fit = head.train(
-            sub,
-            feature_cols=ctx.feature_cols,
-            label_col="residual_return_raw",
-            sample_weight_col="weight" if "weight" in sub.columns else None,
-            val_fraction=val_fraction,
-            early_stopping_rounds=int(es_rounds) if es_rounds else None,
-            lookahead_days=lookahead_for_purge,
-        )
+        try:
+            fit = head.train(
+                sub,
+                feature_cols=ctx.feature_cols,
+                label_col="residual_return_raw",
+                sample_weight_col="weight" if "weight" in sub.columns else None,
+                val_fraction=val_fraction,
+                early_stopping_rounds=int(es_rounds) if es_rounds else None,
+                lookahead_days=lookahead_for_purge,
+            )
+        except Exception as exc:
+            # Audit fix NGB-OVERFLOW-TRAIN (2026-04-28): NGBoost fit can fail
+            # hard (numerical blow-up, memory, etc.) even after the input-clip
+            # guard in NGBoostHead.train. Keep the pipeline alive:
+            #   • If a previous ngboost-head.json artifact exists on disk,
+            #     log a warning and return without touching ctx.ngboost_head.
+            #     NGBoostSaveTask checks `if ctx.ngboost_head is None: return`,
+            #     so the old artifact is preserved and inference continues.
+            #   • If no previous artifact exists (first-ever run), log an
+            #     error and return — NGBoost simply won't run today.
+            # Either way the XGBoost panel-LTR artifact is unaffected.
+            cfg_inner = ctx.config.get("panel_ltr", {}).get("ngboost", {})
+            _art_name = cfg_inner.get("artifact_path", "ngboost-head.json")
+            _art_path = Path(_art_name)
+            if ctx.strategy_dir and not _art_path.is_absolute():
+                _art_path = ctx.strategy_dir / "artifacts" / _art_path.name
+            if _art_path.exists():
+                log.warning(
+                    "NGBoostFitTask: fit raised %s: %s — keeping previous "
+                    "artifact at %s; XGBoost path unaffected",
+                    type(exc).__name__, exc, _art_path,
+                )
+            else:
+                log.error(
+                    "NGBoostFitTask: fit raised %s: %s — no previous artifact "
+                    "at %s; NGBoost will be skipped this run",
+                    type(exc).__name__, exc, _art_path,
+                )
+            return
         if cv_result is not None:
             # Make CV metrics available to NGBoostSaveTask.
             fit["oos_mean_ic"]    = cv_result.get("mean_ic")

@@ -86,10 +86,17 @@ def main() -> None:
     acceptance_cfg = config.get("acceptance", {})
     acceptance_enabled = bool(acceptance_cfg.get("enabled", True)) and not args.skip_acceptance
 
-    # Snapshot the active panel-ltr.json BEFORE training runs (so if
-    # training overwrites it via SaveArtifactTask shim, we have the
-    # prior content for gate G4 (vs-prior IC) and recovery).
-    active_path = strategy_dir / "artifacts" / "panel-ltr.json"
+    # Snapshot the active panel-ltr artifact BEFORE training runs.
+    # BUG-G7 fix (2026-04-28): respect `panel_ltr.artifact_path` from
+    # config instead of hardcoding `panel-ltr.json`. Pre-fix, side
+    # configs (like strategy_config.wl178.json) wrote new artifacts to
+    # configured side paths but the acceptance gate evaluated PROD
+    # (panel-ltr.json) → reported "PASS metric=0.0400" when the new
+    # model actually had mean_ic=+0.0067. The "PASS" was the prior
+    # production model passing against itself, not the new model.
+    panel_cfg = config.get("panel_ltr", {})
+    artifact_rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    active_path = strategy_dir / artifact_rel
     pre_train_snapshot = None
     if acceptance_enabled and active_path.exists():
         import shutil

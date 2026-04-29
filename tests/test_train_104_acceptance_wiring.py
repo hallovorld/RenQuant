@@ -98,9 +98,19 @@ class TestStagingActiveFlow:
         """Convention: staging artifact at panel-ltr.staging.json."""
         assert '.staging.json' in SCRIPT_SRC
 
-    def test_active_path_resolved_from_strategy_dir(self):
-        """No hardcoded paths — must resolve from strategy_dir/artifacts/."""
-        assert "strategy_dir / \"artifacts\" / \"panel-ltr.json\"" in SCRIPT_SRC
+    def test_active_path_resolved_from_config(self):
+        """BUG-G7 fix (2026-04-28): active_path comes from
+        config.panel_ltr.artifact_path (default `artifacts/panel-ltr.json`),
+        NOT a hardcoded literal. This lets side configs (wl178, ablations)
+        write to side paths and have the acceptance gate evaluate the
+        correct artifact, not the production prior.
+        """
+        # The default fallback string still appears (inside .get(...))
+        assert '"artifacts/panel-ltr.json"' in SCRIPT_SRC
+        # Resolution must come from config, not hardcoded composition
+        assert 'panel_cfg.get("artifact_path"' in SCRIPT_SRC
+        # And the OLD hardcoded line must be gone
+        assert 'active_path = strategy_dir / "artifacts" / "panel-ltr.json"' not in SCRIPT_SRC
 
     def test_pre_train_cleanup_after_promote(self):
         """Audit fix #9 (2026-04-26): cleanup MUST run on both success
