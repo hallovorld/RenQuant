@@ -2000,7 +2000,11 @@ class FinalFitTask(PanelTask):
         # (Transformer has its own auto_eval_split inside .train().)
         eval_panel = None
         eval_group_sizes = None
-        early_stop_rounds = int(cfg.get("early_stopping_rounds", 20))
+        # Allow null/0 in config to disable early stopping (needed for long
+        # horizons where the eval set's last N bars have NaN labels — early
+        # stopping fires immediately because it can't compute IC on NaN).
+        _es_cfg = cfg.get("early_stopping_rounds", 20)
+        early_stop_rounds = int(_es_cfg) if _es_cfg is not None and int(_es_cfg) > 0 else 0
         # Audit fix HIGH-2 (2026-04-27): purge `lookahead` date-groups
         # between train and eval. Pre-fix, the last `lookahead` training
         # dates carried labels that reach into the eval window — early
@@ -2059,7 +2063,7 @@ class FinalFitTask(PanelTask):
                 num_boost_round=num_rounds,
                 eval_panel=eval_panel,
                 eval_group_sizes=eval_group_sizes,
-                early_stopping_rounds=early_stop_rounds if eval_panel is not None else None,
+                early_stopping_rounds=(early_stop_rounds if early_stop_rounds > 0 else None) if eval_panel is not None else None,
             )
             device_used = "cpu"
         else:
@@ -2074,7 +2078,7 @@ class FinalFitTask(PanelTask):
                 num_boost_round=num_rounds,
                 eval_panel=eval_panel,
                 eval_group_sizes=eval_group_sizes,
-                early_stopping_rounds=early_stop_rounds if eval_panel is not None else None,
+                early_stopping_rounds=(early_stop_rounds if early_stop_rounds > 0 else None) if eval_panel is not None else None,
             )
             device_used = "cpu"
         elapsed = _time.monotonic() - t0

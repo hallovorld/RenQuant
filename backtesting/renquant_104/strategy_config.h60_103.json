@@ -689,8 +689,8 @@
       "kind": "exp_decay",
       "half_life_days": 252
     },
-    "min_best_iter": 0,
-    "calibrator_threshold_mode": "crosssectional"
+    "calibrator_threshold_mode": "crosssectional",
+    "early_stopping_rounds": null
   },
   "training": {
     "cadence": "custom",
