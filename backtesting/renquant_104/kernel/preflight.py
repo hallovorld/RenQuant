@@ -129,7 +129,7 @@ def _check_best_iter(config: dict, strategy_dir: Path) -> PreflightCheck:
             "P-BEST-ITER", "soft", True,
             "best_iter not stamped in artifact (legacy pre-2026-04-28); skip",
         )
-    min_bi = int(panel_cfg.get("min_best_iter", 20))
+    min_bi = int(panel_cfg.get("min_best_iter", 5))
     if int(bi) < min_bi:
         return PreflightCheck(
             "P-BEST-ITER", "hard", False,

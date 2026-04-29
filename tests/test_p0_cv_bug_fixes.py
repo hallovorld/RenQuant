@@ -100,7 +100,12 @@ class TestBugCV2BestIterGuard:
         # The raise statement must mention the early-stop semantics
         assert "FinalFit early_stopping fired at round" in src
         assert "Artifact NOT saved" in src
-        assert 'cfg.get("min_best_iter", 20)' in src
+        # 2026-04-28 evening: threshold lowered 20 → 5 after the round-9
+        # saturation diagnostic confirmed XGBoost rank:pairwise on this
+        # panel naturally peaks at best_iter ∈ [9, 25]. 5 still catches
+        # the catastrophic best_iter=2/3 case without blocking healthy
+        # fast-converging models.
+        assert 'cfg.get("min_best_iter", 5)' in src
 
     def test_guard_skipped_for_transformer_backend(self):
         """Transformer has different best_iter semantics; guard must skip."""

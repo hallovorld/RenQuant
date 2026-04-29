@@ -2092,8 +2092,16 @@ class FinalFitTask(PanelTask):
         # untrained. Pre-fix this saved silently and the model rode into
         # production with random-walk-level signal.
         # Skip for transformer (best_iter semantics differ).
+        # 2026-04-28 evening update: threshold lowered 20 → 5 after the
+        # round-9-saturation diagnostic confirmed XGBoost rank:pairwise on
+        # this panel naturally peaks at best_iter ∈ [9, 25] with healthy
+        # eval IC (+0.04 to +0.07). The original 20 was pulled from the
+        # "eta×best_iter ≥ 0.4 = healthy" assumption, falsified empirically.
+        # 5 still protects against the pre-fix pathology (best_iter=4) and
+        # any regression that drives best_iter to 0-3 (catastrophic eval
+        # set issue), without blocking healthy fast-converging models.
         if backend in ("xgboost", "lightgbm"):
-            min_best_iter = int(cfg.get("min_best_iter", 20))
+            min_best_iter = int(cfg.get("min_best_iter", 5))
             best_iter = fit.get("best_iter")
             if best_iter is not None and int(best_iter) < min_best_iter:
                 raise RuntimeError(
