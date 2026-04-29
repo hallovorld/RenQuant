@@ -228,7 +228,10 @@
   "bear_defensive_slots": 2,
   "bear_defensive_pct": 0.15,
   "risk": {
-    "max_sells_per_bar": 2
+    "max_sells_per_bar": 2,
+    "panel_exit": {
+      "enabled": true
+    }
   },
   "sector_map": {
     "AAPL": "giant_tech",
@@ -363,12 +366,12 @@
   "lt_hold_min_gain": 0.1,
   "rotation": {
     "enabled": true,
-    "min_expected_advantage_pct": 0.03,
+    "min_expected_advantage_pct": 0.06,
     "target_horizon_days": 20,
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
-    "max_rotations_per_bar": 2,
+    "max_rotations_per_bar": 1,
     "panel_buy_floor": 0.3,
     "panel_sell_floor": 0.2,
     "panel_buy_top_n": 3,
@@ -512,7 +515,7 @@
     },
     "universe_floor": {
       "type": "sharpe",
-      "threshold": 1.0
+      "threshold": 0.5
     },
     "kelly_sizing": {
       "enabled": true,
