@@ -72,6 +72,12 @@ def main() -> None:
     )
 
     config = json.loads(config_path.read_text())
+    # 2026-04-28 evening: stamp the active strategy_config filename into
+    # the in-memory ctx.config so downstream tasks (RefreshPanelCalibratorTask
+    # and any future subprocess-spawning task) can forward it via
+    # --strategy-config-name. Without this, side-config retrains silently
+    # touched production calibrator + NGBoost paths.
+    config["_strategy_config_name"] = args.strategy_config_name
     # Audit fix #152 (2026-04-26 round-7): acceptance gates wrap the
     # FullTrainingPipeline output. If the new artifact fails any hard
     # gate, the prior production artifact is preserved at panel-ltr.json

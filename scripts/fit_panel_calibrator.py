@@ -38,6 +38,19 @@ log = logging.getLogger("fit-panel-calibrator")
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strategy", default="renquant_104")
+    p.add_argument(
+        "--strategy-config-name",
+        default="strategy_config.json",
+        help="Filename of the strategy config to read (default: "
+             "strategy_config.json). Use a side config name (e.g. "
+             "strategy_config.h60_103.json) so the calibrator is fit "
+             "against the matching panel-LTR / NGBoost artifacts AND "
+             "writes the calibrator to the side path — never touching "
+             "the production calibrator. (2026-04-28 evening fix: "
+             "without this, RefreshPanelCalibratorTask invoked from "
+             "side-config training runs silently corrupted production "
+             "panel-rank-calibration.json.)",
+    )
     p.add_argument("--threshold", type=float, default=None,
                    help="Outperform threshold for the probability head "
                         "(defaults to config.panel_ltr.threshold or 0.03).")
@@ -63,15 +76,29 @@ def main() -> None:
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
     if str(strategy_dir) not in sys.path:
         sys.path.insert(0, str(strategy_dir))
-    config = json.loads((strategy_dir / "strategy_config.json").read_text())
+    config = json.loads((strategy_dir / args.strategy_config_name).read_text())
     panel_cfg = config.get("panel_ltr", {})
     lookahead = args.lookahead or int(panel_cfg.get("lookahead_days", 10))
     threshold = args.threshold if args.threshold is not None \
         else float(config.get("model_params", {}).get("threshold", 0.03))
 
-    out_path = Path(args.out) if args.out else (
-        strategy_dir / "artifacts" / "panel-rank-calibration.json"
-    )
+    # Default output path also routes via config so side configs land in
+    # side paths, not production. Convention: derive by replacing
+    # "panel-ltr" stem with "panel-rank-calibration" if a side artifact
+    # path is set, else use canonical default.
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        # If config says panel-ltr lives at artifacts/panel-ltr.h60.json,
+        # the calibrator goes to artifacts/panel-rank-calibration.h60.json.
+        panel_artifact = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+        panel_path = Path(panel_artifact)
+        if panel_path.stem == "panel-ltr":
+            out_path = strategy_dir / "artifacts" / "panel-rank-calibration.json"
+        else:
+            # panel_path.stem like "panel-ltr.h60_103" → suffix is ".h60_103"
+            suffix = panel_path.stem.replace("panel-ltr", "", 1)
+            out_path = strategy_dir / "artifacts" / f"panel-rank-calibration{suffix}.json"
 
     # ── Load OHLCV + build neutralized frames (mirror notebook cell 21) ─────
     from kernel.data import fetch_ohlcv  # noqa: PLC0415
