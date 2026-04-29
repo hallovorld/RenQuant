@@ -127,6 +127,86 @@ class JointPortfolioQPTask(Task):
                 except (TypeError, ValueError):
                     pass
 
+        # Stage 8 (2026-04-29): build full Σ from rolling correlation matrix.
+        # Pre-fix QP used diagonal Σ (independence assumption) — tech mega-caps
+        # got over-allocated since the optimizer didn't see they share factor risk.
+        # When `qp_use_full_sigma=true` (default true post-2026-04-29), load the
+        # cached correlation artifact and compute Σ_ij = ρ_ij × σ_i × σ_j.
+        Sigma_full = None
+        use_full_sigma = bool(joint_cfg.get("qp_use_full_sigma", True))
+        if use_full_sigma and ctx.strategy_dir is not None:
+            corr_path = (ctx.strategy_dir / "artifacts" /
+                         "watchlist-correlation.json")
+            if corr_path.exists():
+                try:
+                    import json as _json  # noqa: PLC0415
+                    corr_data = _json.loads(corr_path.read_text())
+                    Sigma_full = np.zeros((n, n))
+                    for i, ti in enumerate(tickers):
+                        for j, tj in enumerate(tickers):
+                            if i == j:
+                                Sigma_full[i, j] = sigma[i] ** 2
+                                continue
+                            rho = corr_data.get(ti, {}).get(tj)
+                            if rho is None:
+                                rho = corr_data.get(tj, {}).get(ti, 0.0)
+                            try:
+                                rho_f = float(rho)
+                            except (TypeError, ValueError):
+                                rho_f = 0.0
+                            # Defensive bounds: empirical correlations in [-1, 1].
+                            rho_f = max(-0.99, min(0.99, rho_f))
+                            Sigma_full[i, j] = rho_f * sigma[i] * sigma[j]
+                    # Add small diagonal regularizer for PSD safety
+                    Sigma_full += 1e-8 * np.eye(n)
+                except Exception as exc:
+                    log.warning(
+                        "JointPortfolioQPTask: failed to load correlation matrix "
+                        "(%s) — falling back to diagonal Σ", exc,
+                    )
+                    Sigma_full = None
+            else:
+                log.info(
+                    "JointPortfolioQPTask: correlation artifact not found at %s — "
+                    "using diagonal Σ", corr_path,
+                )
+
+        # Stage 8 (2026-04-29): per-position tax-cost vector.
+        # For each held position with unrealized gain, compute the per-unit-sell
+        # tax drag: gain_pct × tax_rate × position_share_of_NAV. New positions
+        # (zero held) have zero tax cost. Cost is in NAV-fraction units, matching
+        # the rest of the QP objective.
+        tax_cost_vec = np.zeros(n)
+        if joint_cfg.get("qp_tax_aware", True):
+            st_rate = float(joint_cfg.get("qp_tax_rate_st", 0.30))   # short-term federal+state proxy
+            lt_rate = float(joint_cfg.get("qp_tax_rate_lt", 0.15))   # long-term
+            lt_threshold_days = int(joint_cfg.get("qp_lt_threshold_days", 365))
+            today = ctx.today
+            for i, t in enumerate(tickers):
+                hs = (ctx.holdings or {}).get(t)
+                if hs is None or w_current[i] <= 0:
+                    continue
+                entry_price = float(getattr(hs, "entry_price", 0.0) or 0.0)
+                entry_date  = getattr(hs, "entry_date", None)
+                if entry_price <= 0 or entry_date is None:
+                    continue
+                price = prices.get(t, 0.0)
+                if price <= 0:
+                    continue
+                gain_pct = (price - entry_price) / entry_price
+                if gain_pct <= 0:
+                    continue   # no taxable gain → no drag
+                try:
+                    days_held = (today - entry_date).days
+                except Exception:
+                    days_held = 0
+                rate = lt_rate if days_held >= lt_threshold_days else st_rate
+                # Tax drag per unit of weight sold = gain_pct × rate.
+                # When Δw_i = -1 (theoretical full liquidation), realized gain
+                # in NAV units = w_i × gain_pct, taxed at `rate`. Expressed as
+                # a coefficient on |Δw_i|, the per-unit drag is gain_pct × rate.
+                tax_cost_vec[i] = gain_pct * rate
+
         # Wash-sale: recently sold tickers cannot be re-bought
         wash_days  = int(ctx.config.get("wash_sale_days", 0))
         last_sells = ctx.last_sell_dates or {}
@@ -193,10 +273,21 @@ class JointPortfolioQPTask(Task):
             ctx.config.get("regime", {}).get("drawdown_halt_pct", 0.20),
         ))
 
+        # Stage 9 (2026-04-29): turnover hard cap. Default 0.30 = at most
+        # 30% of NAV traded per bar — prevents the optimizer from churning
+        # in response to small μ fluctuations.
+        turnover_max = joint_cfg.get("qp_turnover_max", 0.30)
+        if turnover_max is not None:
+            try:
+                turnover_max = float(turnover_max) if turnover_max else None
+            except (TypeError, ValueError):
+                turnover_max = None
+
         sol = solve_portfolio_qp(
             w_current      = w_current,
             mu             = mu,
             sigma          = sigma,
+            Sigma          = Sigma_full,
             risk_aversion  = gamma,
             cost_kappa     = kappa,
             cash_reserve   = cash_reserve,
@@ -208,6 +299,8 @@ class JointPortfolioQPTask(Task):
             drawdown         = portfolio_dd,
             drawdown_limit   = dd_limit,
             robust_mu_kappa  = robust_mu_kappa,
+            tax_cost_per_sell = tax_cost_vec,
+            turnover_max     = turnover_max,
         )
         if sol.status != "optimal":
             log.warning(

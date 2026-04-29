@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from scipy.optimize import LinearConstraint, minimize
+from scipy.optimize import LinearConstraint, NonlinearConstraint, minimize
 
 log = logging.getLogger("kernel.portfolio_qp.qp_solver")
 
@@ -72,6 +72,19 @@ def solve_portfolio_qp(
     # CVaR contribution proportional to σ_i and a tail multiplier.
     cvar_lambda:    float = 0.0,            # weight on CVaR term (0 = pure variance)
     cvar_alpha:     float = 0.05,           # tail probability (e.g. 5%)
+    # Stage 8 (2026-04-29) — Tax-basis aware cost. Per-asset additional
+    # cost on SELLS (Δw_i < 0) reflecting realized-gain tax drag. Fixes
+    # the "QP doesn't see tax basis" structural bug — pre-fix high-gain
+    # positions looked as cheap to liquidate as zero-gain positions.
+    # Caller passes one cost-per-unit-sell value per asset, in same units
+    # as the rest of the objective (NAV-fraction). Cost only applied to
+    # the sell side: cost_i × max(0, -Δw_i).
+    tax_cost_per_sell: Sequence[float] | None = None,
+    # Stage 9 (2026-04-29) — Turnover hard constraint. Σ |Δw_i| ≤ τ_max.
+    # Pre-fix the only churn brake was the soft cost penalty κ·‖Δw‖₁ which
+    # at κ=0.0001 was negligible vs typical μ. With turnover_max set, the
+    # solver can never trade more than τ_max NAV-fraction per bar.
+    turnover_max:   float | None = None,
 ) -> QPSolution:
     """Solve the single-period Markowitz QP with linear-cost transaction.
 
@@ -211,32 +224,64 @@ def solve_portfolio_qp(
     # exactly our case — post_w starts at zero, Σ_mat is diagonal).
     # The warnings don't reflect numerical issues — the math is fine.
     # Suppress them locally to keep logs clean.
+    # Tax-basis cost vector — only applies to sells (max(0, -Δw_i)).
+    # If not supplied, zero (preserves Stage-1 behaviour).
+    if tax_cost_per_sell is not None:
+        tax_arr = np.asarray(tax_cost_per_sell, dtype=float)
+        if len(tax_arr) != n:
+            raise ValueError(
+                f"tax_cost_per_sell length {len(tax_arr)} != n={n}",
+            )
+        tax_arr = np.maximum(tax_arr, 0.0)  # never reward negative cost
+    else:
+        tax_arr = np.zeros(n)
+
     def _obj(dw: np.ndarray) -> float:
         post_w = w_current + dw
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
             ret  = float(np.dot(mu_clean, post_w))
             var  = float(post_w @ Sigma_mat @ post_w)
         cost = float(cost_kappa * np.sum(np.abs(dw)))
-        return -(ret - gamma_eff * var - cost)  # minimize -obj
+        # Tax cost only on sells: cost_i × max(0, -Δw_i)
+        sell_amt = np.maximum(-dw, 0.0)
+        tax_cost = float(np.sum(tax_arr * sell_amt))
+        return -(ret - gamma_eff * var - cost - tax_cost)  # minimize -obj
 
     def _grad(dw: np.ndarray) -> np.ndarray:
         post_w = w_current + dw
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
             d_var = 2.0 * gamma_eff * (Sigma_mat @ post_w)
-        # d/d(Δw) of: -(μ'(w+Δw) - γ_eff(w+Δw)'Σ(w+Δw) - κ|Δw|)
+        # Minimizing  f(Δw) = -ret + γ·var + κ|Δw| + tax × max(0, -Δw)
+        #   d_ret  = -μ
+        #   d_var  = 2γ·Σ·(w + Δw)
+        #   d_cost = κ·sign(Δw)
+        #   d_tax  = -tax_i × 1[Δw_i < 0]   (max is non-smooth at 0; subgradient = 0)
         d_ret  = -mu_clean
         d_cost = cost_kappa * np.sign(dw)
-        return d_ret + d_var + d_cost
+        d_tax  = -tax_arr * (dw < 0).astype(float)
+        return d_ret + d_var + d_cost + d_tax
 
     # Initial guess: zero trade
     dw0 = np.zeros(n)
+
+    constraints: list = [cash_constraint]
+    # Stage 9: turnover hard constraint Σ|Δw| ≤ τ_max
+    if turnover_max is not None and float(turnover_max) > 0:
+        tau = float(turnover_max)
+        turnover_constraint = NonlinearConstraint(
+            fun=lambda dw: float(np.sum(np.abs(dw))),
+            lb=-np.inf,
+            ub=tau,
+            jac=lambda dw: np.sign(dw),
+        )
+        constraints.append(turnover_constraint)
 
     res = minimize(
         _obj, dw0,
         method="SLSQP",
         jac=_grad,
         bounds=bounds,
-        constraints=[cash_constraint],
+        constraints=constraints,
         options={"ftol": 1e-9, "maxiter": 200},
     )
 
@@ -262,5 +307,10 @@ def solve_portfolio_qp(
             "n_finite_mu":     int(finite_mu.sum()),
             "n_wash_blocked":  (int(np.asarray(wash_sale_mask).sum())
                                   if wash_sale_mask is not None else 0),
+            "tax_cost_max":    float(tax_arr.max()) if tax_arr.size else 0.0,
+            "tax_cost_mean":   float(tax_arr.mean()) if tax_arr.size else 0.0,
+            "turnover_max":    float(turnover_max) if turnover_max is not None else None,
+            "actual_turnover": float(np.sum(np.abs(delta_w))),
+            "sigma_off_diag_nonzero": int((np.abs(Sigma_mat) > 1e-12).sum() - np.count_nonzero(np.diag(Sigma_mat))),
         },
     )
