@@ -278,6 +278,45 @@ def _run_once_multi_pipeline(
     log.info("%s  %s  [%s]", label, datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
+    # Pre-flight smoke test (2026-04-28): catch model/config/state drift
+    # BEFORE constructing the adapter or executing any pipeline. Each check
+    # ≤ 1 second; total <= 5 seconds. HARD failures raise PreflightFailed
+    # which we convert into a high-priority ntfy + abort. Refer to
+    # backtesting/renquant_104/kernel/preflight.py for the full list.
+    # Disable via config: live.preflight.enabled = false (default true).
+    preflight_cfg = config.get("live", {}).get("preflight", {})
+    if preflight_cfg.get("enabled", True):
+        try:
+            from kernel.preflight import run_preflight, PreflightFailed  # noqa: PLC0415
+            run_preflight(
+                config, broker=broker, strategy_dir=strategy_dir,
+                broker_name=getattr(broker, "broker_name", None),
+                strict=bool(preflight_cfg.get("strict", True)),
+            )
+        except PreflightFailed as exc:
+            log.error("PRE-FLIGHT FAILED — aborting cron, no orders placed:\n%s", exc)
+            try:
+                import os as _os, urllib.request as _ureq  # noqa: PLC0415
+                topic = _os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+                req = _ureq.Request(
+                    f"https://ntfy.sh/{topic}",
+                    data=str(exc).encode("utf-8"), method="POST",
+                    headers={"Title": f"{label} [{run_mode}] PREFLIGHT-FAIL",
+                             "Priority": "urgent"},
+                )
+                _ureq.urlopen(req, timeout=5.0).read()
+            except Exception:
+                pass
+            raise SystemExit(2) from exc
+        except ImportError:
+            # preflight module not yet on PYTHONPATH (during a transitional
+            # commit). Log and proceed — the legacy guards still apply.
+            log.warning("preflight module not importable; proceeding without")
+        except Exception as exc:
+            # An unexpected check exception should not block cron; degrade
+            # to soft warn and continue.
+            log.warning("preflight raised unexpectedly: %s — proceeding", exc)
+
     adapter  = RunnerAdapter(
         config, models, broker, strategy_dir,
         sell_only=sell_only,
