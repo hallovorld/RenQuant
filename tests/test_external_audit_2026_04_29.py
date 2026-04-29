@@ -149,3 +149,67 @@ class TestNGBoostStaging:
         block = src[idx:idx + 6000]
         # Prior snapshot is unlinked on both paths (success + reject)
         assert block.count("prior_snapshot.unlink()") >= 2
+
+
+# ── 60d calibrator: crosssectional threshold mode ───────────────────────────
+
+class TestCalibratorCrossSectional:
+    """Regression tests for the crosssectional threshold mode fix."""
+
+    def _make_bull_market_data(self):
+        """60d bull-market scenario: all returns >> 0.03 → absolute mode collapses."""
+        import numpy as np
+        import pandas as pd
+        rng = np.random.default_rng(42)
+        dates = pd.date_range("2023-01-01", periods=300, freq="B")
+        tickers = [f"T{i}" for i in range(20)]
+        panel_scores, future_returns = {}, {}
+        for t in tickers:
+            scores = rng.uniform(0, 1, len(dates))
+            # Extreme bull: all returns are uniformly +10–30%, never below 0.03
+            # so absolute threshold=0.03 → 100% label=1 → isotonic collapses.
+            rets = 0.10 + rng.uniform(0, 0.20, len(dates))
+            panel_scores[t] = pd.Series(scores, index=dates)
+            future_returns[t] = pd.Series(rets, index=dates)
+        return panel_scores, future_returns
+
+    def test_absolute_collapses_on_bull_market(self):
+        """Sanity: old absolute=0.03 mode collapses to <5 unique y in bull market."""
+        import numpy as np
+        from training_panel.global_calibrator import fit_global_calibrator
+        ps, fr = self._make_bull_market_data()
+        with pytest.raises(ValueError, match="collapsed"):
+            fit_global_calibrator(ps, fr, threshold=0.03, threshold_mode="absolute")
+
+    def test_crosssectional_survives_bull_market(self):
+        """crosssectional mode succeeds regardless of market direction."""
+        from training_panel.global_calibrator import fit_global_calibrator
+        ps, fr = self._make_bull_market_data()
+        calib = fit_global_calibrator(ps, fr, threshold_mode="crosssectional")
+        assert calib is not None
+        # ~50% base rate by construction
+        assert abs(calib.metadata["prob_base_rate"] - 0.5) < 0.10
+
+    def test_crosssectional_mode_stored_in_metadata(self):
+        """threshold_mode is stamped in the artifact metadata."""
+        from training_panel.global_calibrator import fit_global_calibrator
+        ps, fr = self._make_bull_market_data()
+        calib = fit_global_calibrator(ps, fr, threshold_mode="crosssectional")
+        assert calib.metadata["threshold_mode"] == "crosssectional"
+
+    def test_absolute_still_works_for_10d(self):
+        """Regression: default absolute mode is unchanged for 10d panel."""
+        import numpy as np
+        import pandas as pd
+        from training_panel.global_calibrator import fit_global_calibrator
+        rng = np.random.default_rng(7)
+        dates = pd.date_range("2022-01-01", periods=400, freq="B")
+        tickers = [f"S{i}" for i in range(15)]
+        ps, fr = {}, {}
+        for t in tickers:
+            ps[t] = pd.Series(rng.uniform(0, 1, len(dates)), index=dates)
+            # Mixed returns around 0 — typical 10d relative-to-SPY
+            fr[t] = pd.Series(rng.normal(0, 0.02, len(dates)), index=dates)
+        calib = fit_global_calibrator(ps, fr, threshold=0.03, threshold_mode="absolute")
+        assert calib.metadata["threshold_mode"] == "absolute"
+        assert calib.metadata["threshold"] == 0.03

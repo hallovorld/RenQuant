@@ -2724,6 +2724,13 @@ class RefreshPanelCalibratorTask(PanelTask):
         scn = ctx.config.get("_strategy_config_name")
         if scn and scn != "strategy_config.json":
             cmd.extend(["--strategy-config-name", scn])
+        # Forward threshold_mode from config so the calibrator subprocess
+        # picks it up without requiring a separate CLI override.
+        calib_threshold_mode = ctx.config.get("panel_ltr", {}).get(
+            "calibrator_threshold_mode"
+        )
+        if calib_threshold_mode:
+            cmd.extend(["--threshold-mode", calib_threshold_mode])
         log.info("RefreshPanelCalibratorTask: %s", " ".join(cmd))
         t0 = _time.monotonic()
         try:

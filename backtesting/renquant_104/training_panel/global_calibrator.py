@@ -140,12 +140,24 @@ def fit_global_calibrator(
     *,
     lookahead_days: int = 10,
     threshold: float = 0.03,
+    threshold_mode: str = "absolute",
     min_rows: int = 1000,
 ) -> GlobalPanelCalibration:
     """Pool all tickers' (panel_score, future_return) pairs; fit one isotonic.
 
     Returns a `GlobalPanelCalibration` with both heads.
     Raises ValueError if pooled samples < min_rows (not enough data).
+
+    threshold_mode:
+      "absolute"       — classic: outperform if fwd_return >= threshold (default).
+                         Works for 10d on typical panels. Collapses to 1 class on
+                         long horizons (60d+) in bull markets where almost every
+                         stock beats threshold.
+      "crosssectional" — per-date: outperform if fwd_return >= that date's median
+                         across tickers. Guaranteed ~50% base rate regardless of
+                         horizon or market regime. Correct for cross-sectional
+                         ranking models where the label is inherently relative.
+                         `threshold` parameter is ignored in this mode.
     """
     rows_raw: list[float] = []
     rows_fwd: list[float] = []
@@ -207,8 +219,30 @@ def fit_global_calibrator(
             per_date_ic_mean = float(np.mean(per_date_rhos))
             n_dates_eval = len(per_date_rhos)
 
-    # Probability head: indicator of outperforming by threshold
-    prob_labels = (fwd_all >= threshold).astype(float)
+    # Probability head: indicator of outperforming.
+    # "absolute" mode: outperform if fwd_return >= threshold (default, 10d).
+    # "crosssectional" mode: outperform if fwd_return >= that date's median.
+    #   Guaranteed ~50% base rate regardless of horizon/regime — correct for
+    #   cross-sectional ranking where the label is inherently relative to peers.
+    #   Fixes 60d calibrator collapse: in a bull market, nearly all 60d returns
+    #   exceed 0.03, collapsing prob_labels to all-1 → < 5 unique y → ValueError.
+    threshold_mode = threshold_mode.lower()
+    if threshold_mode == "crosssectional":
+        if len(rows_keys) == len(raw_all):
+            df_prob = pd.DataFrame({
+                "date": [k[0] for k in rows_keys],
+                "fwd":  fwd_all,
+            })
+            per_date_median = df_prob.groupby("date")["fwd"].transform("median")
+            prob_labels = (fwd_all >= per_date_median.values).astype(float)
+        else:
+            log.warning(
+                "fit_global_calibrator: threshold_mode=crosssectional requires "
+                "rows_keys to be parallel to raw_all/fwd_all; falling back to absolute."
+            )
+            prob_labels = (fwd_all >= threshold).astype(float)
+    else:
+        prob_labels = (fwd_all >= threshold).astype(float)
     iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
 
     # ER head: direct regression
@@ -257,6 +291,7 @@ def fit_global_calibrator(
         "n_dates_eval":       int(n_dates_eval),
         "n_unique_prob_y":    n_unique_prob_y,
         "threshold":          float(threshold),
+        "threshold_mode":     threshold_mode,
         "lookahead_days":     int(lookahead_days),
         "prob_base_rate":     float(prob_labels.mean()),
         "er_mean":            float(fwd_all.mean()),

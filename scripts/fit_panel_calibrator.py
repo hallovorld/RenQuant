@@ -54,6 +54,11 @@ def main() -> None:
     p.add_argument("--threshold", type=float, default=None,
                    help="Outperform threshold for the probability head "
                         "(defaults to config.panel_ltr.threshold or 0.03).")
+    p.add_argument("--threshold-mode", type=str, default=None,
+                   help="'absolute' (default) or 'crosssectional'. "
+                        "crosssectional: outperform = above per-date median. "
+                        "Fixes 60d+ calibrator collapse in bull markets. "
+                        "Also reads from config.panel_ltr.calibrator_threshold_mode.")
     p.add_argument("--lookahead", type=int, default=None,
                    help="Lookahead days (defaults to config.panel_ltr.lookahead_days).")
     p.add_argument("--out", type=str, default=None,
@@ -81,6 +86,10 @@ def main() -> None:
     lookahead = args.lookahead or int(panel_cfg.get("lookahead_days", 10))
     threshold = args.threshold if args.threshold is not None \
         else float(config.get("model_params", {}).get("threshold", 0.03))
+    threshold_mode = (
+        args.threshold_mode
+        or str(panel_cfg.get("calibrator_threshold_mode", "absolute"))
+    )
 
     # Default output path also routes via config so side configs land in
     # side paths, not production. Convention: derive by replacing
@@ -239,6 +248,7 @@ def main() -> None:
     calib = fit_global_calibrator(
         panel_scores, future_returns,
         lookahead_days=lookahead, threshold=threshold,
+        threshold_mode=threshold_mode,
     )
     calib.save(out_path, metadata={
         "scorer_artifact": str(scorer_path),
