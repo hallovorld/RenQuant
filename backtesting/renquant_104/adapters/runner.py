@@ -208,6 +208,11 @@ class RunnerAdapter:
         # Thesis-degradation baselines (Approach A) — per-ticker
         # {rank_score, panel_score, kelly_target_pct} stamped at buy.
         entry_signals   = state.get("entry_signals",   {})
+        # Z9 (2026-04-28): broker-side stop orders. Per-ticker
+        # {order_id, stop_price, qty, stamped_at}. GTC at the broker
+        # so they survive cron restarts. Local cache; broker.get_open_orders()
+        # is the source of truth (we reconcile on every commit).
+        stop_orders     = state.get("stop_orders",     {})
         hwm             = float(state.get("high_water_mark", 0.0))
         # Persisted RegimeState across live runs. Without this, each fresh
         # `daily_104.sh` invocation starts countdown=0 → CUSUM re-trips every
@@ -506,6 +511,7 @@ class RunnerAdapter:
         self._sell_streaks   = sell_streaks
         self._last_sell_dates_str = last_sell_dates
         self._position_hwm   = position_hwm
+        self._stop_orders    = stop_orders     # Z9: per-ticker stop_order metadata
         self._positions_cache = positions_cache
         self._account_value  = account_value
 
@@ -591,6 +597,86 @@ class RunnerAdapter:
                             exc)
 
         return ctx
+
+    # ── Z9: broker-side stop helpers ────────────────────────────────────────
+    # Invariants:
+    #   • stops live broker-side (GTC), not in our polling loop
+    #   • single stop per ticker; stamped at BUY, replaced on TOPUP, cancelled
+    #     on full SELL or external disposition (Z2 STATE-EXT-SELL)
+    #   • new_stop_price ≤ existing_stop_price (never loosen on TOPUP)
+    #   • disabled by default; enable via live.broker_side_stops.enabled=true
+    #   • broker must support — silently skipped if broker.supports_broker_side_stops()=false
+
+    def _z9_enabled(self, ctx) -> bool:  # noqa: ANN001
+        cfg = ctx.config.get("live", {}).get("broker_side_stops", {})
+        if not cfg.get("enabled", False):
+            return False
+        broker = self._broker
+        if not getattr(broker, "supports_broker_side_stops", lambda: False)():
+            log.debug("Z9: broker %s does not support broker-side stops — skip",
+                      type(broker).__name__)
+            return False
+        return True
+
+    @staticmethod
+    def _z9_stop_pct(ctx) -> float:  # noqa: ANN001
+        """Per-regime intraday loss cap. Default 6% in BULL_*/CHOPPY (set
+        2026-04-28 after NVTS post-mortem). BEAR=0 means no buys, so no
+        stops needed."""
+        regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
+        return float(regime_p.get("max_single_day_loss_pct", 0.06))
+
+    def _z9_place_or_replace_stop(
+        self, ticker: str, qty: float, reference_price: float, today_str: str,
+    ) -> None:
+        """Place a stop at reference × (1 - pct). If a stop already exists for
+        this ticker, cancel it first; the new stop_price is the MIN of
+        (existing, new) so we never loosen.
+        """
+        if qty <= 0 or reference_price <= 0:
+            return
+        broker = self._broker
+        ctx_pct = getattr(self, "_last_ctx_stop_pct", 0.06)
+        target = reference_price * (1.0 - ctx_pct)
+
+        existing = self._stop_orders.get(ticker)
+        if existing is not None:
+            # Never loosen — pick the tighter of current vs proposed.
+            target = min(target, float(existing.get("stop_price", target)))
+            try:
+                broker.cancel_order(existing.get("order_id", ""))
+            except Exception as exc:
+                log.warning("Z9: cancel existing stop %s for %s failed: %s",
+                            existing.get("order_id"), ticker, exc)
+            self._stop_orders.pop(ticker, None)
+
+        try:
+            result = broker.place_stop_order(ticker, qty, target)
+        except Exception as exc:
+            log.warning("Z9: place_stop_order(%s, qty=%s, stop=%.2f) failed: %s",
+                        ticker, qty, target, exc)
+            return
+        self._stop_orders[ticker] = {
+            "order_id":   result.get("order_id"),
+            "stop_price": float(target),
+            "qty":        float(qty),
+            "stamped_at": today_str,
+        }
+        log.info("Z9: %s stop placed @ $%.2f × %s shares (order=%s)",
+                 ticker, target, int(qty), result.get("order_id"))
+
+    def _z9_cancel_stop(self, ticker: str, reason: str = "") -> None:
+        """Cancel and forget the stop for a ticker. No-op if none exists."""
+        existing = self._stop_orders.pop(ticker, None)
+        if existing is None:
+            return
+        try:
+            self._broker.cancel_order(existing.get("order_id", ""))
+            log.info("Z9: cancelled stop %s for %s (%s)",
+                     existing.get("order_id"), ticker, reason or "no reason")
+        except Exception as exc:
+            log.warning("Z9: cancel stop %s for %s failed: %s",
+                        existing.get("order_id"), ticker, exc)
 
     # ── commit ─────────────────────────────────────────────────────────────────
 
@@ -709,6 +795,27 @@ class RunnerAdapter:
                 self._entry_signals.pop(ticker, None)   # Approach A cleanup
                 self._sell_streaks.pop(ticker, None)
                 self._position_hwm.pop(ticker, None)
+                # Z9: cancel broker-side stop on full liquidation.
+                if self._z9_enabled(ctx):
+                    self._z9_cancel_stop(ticker, reason="full liquidation")
+            else:
+                # TRIM (partial): replace stop with reduced qty at the same
+                # stop_price (never loosens; see _z9_place_or_replace_stop).
+                if self._z9_enabled(ctx):
+                    held_now = (
+                        broker.get_position(ticker)
+                        if hasattr(broker, "get_position") else 0.0
+                    )
+                    if held_now > 0:
+                        # Use the current price as reference; the helper
+                        # min's against existing stop_price so the stop
+                        # never moves up after a trim.
+                        self._last_ctx_stop_pct = self._z9_stop_pct(ctx)
+                        self._z9_place_or_replace_stop(
+                            ticker, float(held_now), float(price), today_str,
+                        )
+                    else:
+                        self._z9_cancel_stop(ticker, reason="trim → flat")
             self._log_trade(ctx, {
                 "action":    "SELL",
                 "symbol":    ticker,
@@ -786,6 +893,21 @@ class RunnerAdapter:
                     # Top-up: only HWM may need to ratchet up.
                     self._position_hwm[ticker] = max(
                         float(self._position_hwm.get(ticker, 0.0)), price,
+                    )
+                # Z9 (2026-04-28): place / replace broker-side stop. Default
+                # OFF; honors `live.broker_side_stops.enabled` config flag and
+                # the broker's supports_broker_side_stops() capability.
+                # On TOPUP: invariant is "never loosen" — handled by
+                # _z9_place_or_replace_stop (it min's against existing stop).
+                if self._z9_enabled(ctx):
+                    self._last_ctx_stop_pct = self._z9_stop_pct(ctx)
+                    # Total post-trade qty = previous + new shares.
+                    held_now = (
+                        broker.get_position(ticker)
+                        if hasattr(broker, "get_position") else float(shares)
+                    )
+                    self._z9_place_or_replace_stop(
+                        ticker, float(held_now), float(price), today_str,
                     )
                 # Bug #22 fix (2026-04-26 round-7): defensive .get() on
                 # order keys. The QP solver path (task_joint_qp.py) emits
@@ -882,6 +1004,11 @@ class RunnerAdapter:
                 "stamping wash-sale clock today (%s) to prevent re-entry within 30d",
                 t, today_str,
             )
+            # Z9: cancel any orphan broker-side stop for this ticker.
+            # The position is already gone; the stop on broker side is now
+            # for 0 shares — Alpaca would auto-cancel, but be explicit.
+            if self._z9_enabled(ctx):
+                self._z9_cancel_stop(t, reason="external disposition")
 
         wash_sale_window_days = 30
         cutoff = ctx.today - datetime.timedelta(days=wash_sale_window_days)
@@ -897,6 +1024,18 @@ class RunnerAdapter:
             if stale:
                 log.info("STATE-GC: dropped %d stale entries from %s: %s",
                          len(stale), store_name, ", ".join(sorted(stale)))
+        # Z9: stop_orders GC. Orphan stops (no longer held) get cancelled
+        # at the broker too — the position is gone so the stop is for 0
+        # shares; Alpaca would no-op but be explicit.
+        z9_stale = [t for t in self._stop_orders if t not in currently_held]
+        for t in z9_stale:
+            if self._z9_enabled(ctx):
+                self._z9_cancel_stop(t, reason="stop_orders GC")
+            else:
+                self._stop_orders.pop(t, None)
+        if z9_stale:
+            log.info("STATE-GC: dropped %d stale stop_orders entries: %s",
+                     len(z9_stale), ", ".join(sorted(z9_stale)))
         # last_sell_dates: keep if within wash-sale window OR ticker still held.
         wash_stale = []
         for t, d_str in list(self._last_sell_dates_str.items()):
@@ -944,6 +1083,7 @@ class RunnerAdapter:
             "sell_streaks":      self._sell_streaks,
             "last_sell_dates":   self._last_sell_dates_str,
             "position_hwm":      self._position_hwm,
+            "stop_orders":       self._stop_orders,    # Z9
             "regime_state":      regime_state_out,
             # MonitorIdleStreakTask counters — persisted across scheduled runs
             "monitor_state":     dict(getattr(ctx, "monitor_state", {}) or {}),

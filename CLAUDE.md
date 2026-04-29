@@ -30,6 +30,47 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
+## 🔴 P0 BUGS — Fix Before Next Retrain (discovered 2026-04-28)
+
+These three bugs corrupt every IC measurement. Fix in this order before trusting any CPCV IC numbers.
+
+### BUG-CV-1: linspace fold boundary drift (P0 — data leakage)
+**File:** `backtesting/renquant_104/training_panel/cv_splitter.py`
+**Line:** wherever `np.linspace(0, n_dates, n_splits + 1)` appears
+**Problem:** Fold boundaries are position-based and float-rounded. When `n_dates` changes by 1-2 (daily window roll), fold edges shift by 1-2 positions, causing in-sample dates to silently enter the OOS test set. This inflated IC=0.040 by approximately +0.005 via Fold 15 leakage.
+**Fix:** Replace `np.linspace` with integer division:
+```python
+# BROKEN (current):
+fold_edges = np.linspace(0, n_dates, n_splits + 1, dtype=int)
+# FIXED:
+fold_size = n_dates // n_splits
+fold_edges = [k * fold_size for k in range(n_splits + 1)]
+fold_edges[-1] = n_dates  # ensure last edge = n_dates exactly
+```
+**Test:** Run CPCV twice with n_dates=753 and n_dates=751. Fold 15 test date range must be identical (same calendar dates) in both runs.
+
+### BUG-CV-2: best_iter guard missing (P1 — undertrained model)
+**File:** `backtesting/renquant_104/training_panel/pp_panel_training.py`
+**Location:** `FinalFitTask.run()` or wherever the XGBoost final model is saved
+**Problem:** Early stopping fires at round 4 (out of potentially 500+) with eta=0.02. 4 × 0.02 = 0.08 total shrinkage — the model is effectively untrained. This happens silently; the artifact is saved and promoted.
+**Fix:** Add after training:
+```python
+if best_iter < 20:
+    raise RuntimeError(
+        f"FinalFit early_stopping fired at round {best_iter} — eval set is pathological. "
+        f"Check early stopping eval set alignment with CPCV splits. Artifact NOT saved."
+    )
+```
+**Test:** Verify best_iter ≥ 20 on a normal retrain run.
+
+### BUG-CV-3: early stopping eval set misaligned with CPCV (P2 — disconnected signals)
+**File:** `backtesting/renquant_104/training_panel/pp_panel_training.py`
+**Problem:** The eval set for XGBoost early stopping is a separately sliced 20% holdout (last 20% of dates), computed independently of the CPCV fold structure. This means early stopping optimizes on a different data slice than what CPCV reports as IC. The two metrics are measuring different things; early stopping can fire based on a "bad" 20% slice while the CPCV IC is measuring a completely different period.
+**Fix:** Early stopping eval set should use the MOST RECENT CPCV fold's validation set (Fold 15 test data), not an independently sliced 20% holdout. This ensures early stopping and IC evaluation are aligned on the same data.
+**Test:** Confirm that `evals` passed to `xgb.train()` uses the same date range as Fold 15's test set.
+
+---
+
 ## Project
 
 RenQuant — personal quantitative trading workstation for Apple Silicon. Glass-box pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live trading (Alpaca/IBKR). Statistically interpretable, strictly decoupled.
@@ -220,6 +261,12 @@ These are not "nice to haves" — they're the response to a single 24h period wh
 - A bug is not "fixed" until: (a) it's patched, (b) the regression test is green, (c) every file you touched in the last 24h has been re-audited end-to-end, (d) every upstream/downstream pipeline that consumes those files has been re-audited end-to-end, and (e) no remaining issues are open in any of those files.
 - "I think it's done" is not done. Show the audit log.
 - This is the gate before re-running any experiment after a fix-up cycle. Experiments run on broken infra produce broken results — fix infra first, *then* re-run.
+
+**5.7 Every failed experiment must be documented in `doc/research/failed-experiments-log.md`.**
+- Hypothesis, implementation, exact numbers, sanity check, conclusion, reproduction recipe — all required. Without the recipe an independent agent (Codex / a future Claude session) cannot verify the result and the team will re-run it 6 months later.
+- Write the entry the same day as the result lands, before moving on. Memory of "why we didn't do X" decays fast; the entry is the durable record.
+- Why this is load-bearing: 6 months from now, "should we try blending horizons?" will come up again. If `failed-experiments-log.md` doesn't have an answer, we will burn 3-6 hours of compute re-discovering. The log is cheaper than the rerun.
+- A failed experiment is not a failure of the team — failing fast and recording why is the engine of progress. The failure mode is *not recording* it.
 
 ### Documentation Index (canonical pointers)
 
