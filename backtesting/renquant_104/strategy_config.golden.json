@@ -453,7 +453,7 @@
   },
   "ranking": {
     "blend_updated": "2026-04-28",
-    "blend_n_symbols": 223,
+    "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,

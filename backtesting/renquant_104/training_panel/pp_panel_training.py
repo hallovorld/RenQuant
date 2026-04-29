@@ -2483,35 +2483,33 @@ class NGBoostSaveTask(PanelTask):
     def run(self, ctx: PanelTrainingContext) -> None:
         if ctx.ngboost_head is None:
             return
-        # 2026-04-28 evening fix: side configs that set the inference-side
-        # NGBoost path (`ranking.panel_scoring.ngboost.artifact_path`) but
-        # NOT the training-side path (`panel_ltr.ngboost.artifact_path`)
-        # used to save the artifact to the production path silently — that
-        # caused two contamination incidents today (diag + h60_103). Now
-        # we read BOTH locations: training-side has priority, inference-
-        # side is the fallback. They MUST point to the same file or one
-        # is a typo. If both empty, default to artifacts/ngboost-head.json.
-        cfg_train = ctx.config.get("panel_ltr", {}).get("ngboost", {})
+        # 2026-04-28 evening fix (revised): side configs that set the
+        # inference-side NGBoost path (`ranking.panel_scoring.ngboost.
+        # artifact_path`) but inherit the training-side default
+        # `artifacts/ngboost-head.json` from the prod template were
+        # mis-saved to production. Initial fix preferred training-side
+        # which made this worse (training-side was silently inherited).
+        # Revised: **inference-side wins** when both are set differently
+        # — the live runner reads from inference-side, so writing where
+        # the runner reads is the only correct semantics. Training-side
+        # is the fallback only when inference-side is unset.
+        cfg = ctx.config.get("panel_ltr", {}).get("ngboost", {})
         cfg_infer = (ctx.config.get("ranking", {})
                                 .get("panel_scoring", {})
                                 .get("ngboost", {}))
-        out_name_train = cfg_train.get("artifact_path")
+        out_name_train = cfg.get("artifact_path")
         out_name_infer = cfg_infer.get("artifact_path")
         if out_name_train and out_name_infer and out_name_train != out_name_infer:
             log.warning(
                 "NGBoostSaveTask: training-side path %s != inference-side path %s. "
-                "Using training-side; please reconcile in config.",
+                "Using inference-side (where the live runner reads); "
+                "please reconcile in config.",
                 out_name_train, out_name_infer,
             )
-        out_name = out_name_train or out_name_infer or "ngboost-head.json"
+        out_name = out_name_infer or out_name_train or "ngboost-head.json"
         out_path = Path(out_name)
         if ctx.strategy_dir and not out_path.is_absolute():
-            # Preserve the relative path AS WRITTEN (prior code did
-            # `out_path.name` which stripped any directory prefix → side
-            # paths like "artifacts/ngboost-head.h60.json" still landed
-            # in the canonical artifacts/ dir but with original filename).
-            # Now: if path already has a directory, use it as-is under
-            # strategy_dir; if no directory, default to artifacts/.
+            # Preserve the relative path AS WRITTEN.
             if out_path.parent == Path("."):
                 out_path = ctx.strategy_dir / "artifacts" / out_path
             else:

@@ -30,14 +30,15 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 # ── NGBoost save reads from EITHER config location ──────────────────────────
 
 class TestNGBoostSavePathRouting:
-    def test_training_side_path_used_when_set(self):
-        """If `panel_ltr.ngboost.artifact_path` is set, use it (priority)."""
+    def test_inference_side_priority(self):
+        """If `ranking.panel_scoring.ngboost.artifact_path` is set,
+        it wins — that's where the live runner reads from."""
         src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
-        # The fix introduces a fallback — both locations are read
-        assert 'cfg_train = ctx.config.get("panel_ltr", {}).get("ngboost", {})' in src
+        # Both locations are read
+        assert 'cfg = ctx.config.get("panel_ltr", {}).get("ngboost", {})' in src
         assert 'cfg_infer = (ctx.config.get("ranking", {})' in src
-        # Training-side has priority
-        assert "out_name = out_name_train or out_name_infer" in src
+        # Inference-side has priority (where the live runner reads)
+        assert "out_name = out_name_infer or out_name_train" in src
 
     def test_inference_side_path_used_when_only_it_is_set(self):
         """Side configs that set ONLY the inference path now route NGBoost
