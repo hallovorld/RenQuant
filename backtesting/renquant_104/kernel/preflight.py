@@ -356,6 +356,54 @@ def _check_broker_connect(broker: Any) -> PreflightCheck:
         )
 
 
+def _check_artifact_run_id_alignment(
+    config: dict, strategy_dir: Path
+) -> PreflightCheck:
+    """P-RUN-ID: panel-ltr and ngboost-head share the same train_run_id.
+
+    External audit fix #2 (2026-04-29): without run_id, one artifact can
+    silently come from a different training run (e.g. a side-config retrain
+    overwriting production NGBoost). A mismatch means μ/σ was fit on a
+    different panel feature distribution than the scorer — Kelly sizing
+    corrupted. Soft check (old artifacts don't have run_id yet).
+    """
+    panel_cfg  = config.get("panel_ltr", {})
+    ltr_rel    = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    ngb_cfg    = (config.get("ranking", {}).get("panel_scoring", {})
+                  .get("ngboost", {}))
+    ngb_rel    = ngb_cfg.get("artifact_path", "artifacts/ngboost-head.json")
+    ltr_path   = strategy_dir / ltr_rel
+    ngb_path   = strategy_dir / ngb_rel
+    for p in (ltr_path, ngb_path):
+        if not p.exists():
+            return PreflightCheck(
+                "P-RUN-ID", "soft", True, f"artifact missing: {p} — skip",
+            )
+    try:
+        ltr_id = json.loads(ltr_path.read_text()).get("train_run_id")
+        ngb_id = json.loads(ngb_path.read_text()).get("train_run_id")
+    except Exception as exc:
+        return PreflightCheck(
+            "P-RUN-ID", "soft", True, f"unreadable: {exc}",
+        )
+    if ltr_id is None or ngb_id is None:
+        return PreflightCheck(
+            "P-RUN-ID", "soft", True,
+            "run_id not stamped (pre-2026-04-29 artifact) — skip",
+        )
+    if ltr_id != ngb_id:
+        return PreflightCheck(
+            "P-RUN-ID", "soft", False,
+            f"run_id mismatch: panel-ltr={ltr_id} ngboost={ngb_id}. "
+            f"NGBoost μ/σ may be from a different training run — Kelly "
+            f"sizing potentially corrupted. Retrain recommended.",
+        )
+    return PreflightCheck(
+        "P-RUN-ID", "soft", True,
+        f"run_id aligned ({ltr_id})",
+    )
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 ALL_CHECKS = (
@@ -366,6 +414,7 @@ ALL_CHECKS = (
     _check_feature_coverage,
     _check_state_file,
     _check_broker_connect,
+    _check_artifact_run_id_alignment,  # audit fix #2 — soft check
 )
 
 

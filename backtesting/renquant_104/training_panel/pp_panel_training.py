@@ -2180,6 +2180,10 @@ class SaveArtifactTask(PanelTask):
             "cv_n_splits":     cfg.get("cv_n_splits", 5),
             "cv_n_test_groups": cfg.get("cv_n_test_groups"),
             "cv_embargo_days": cfg.get("cv_embargo_days", cfg.get("lookahead_days", 5)),
+            # External audit fix #2 (2026-04-29): run_id ties panel-ltr, ngboost,
+            # and calibrator artifacts from the same train run together. Preflight
+            # warns when run_ids don't match (stale artifact from different run).
+            "train_run_id":    ctx.config.get("_train_run_id"),
         }
         # 2026-04-28: stamp config fingerprint so RunnerAdapter can detect
         # config/model drift at inference startup. See
@@ -2541,6 +2545,7 @@ class NGBoostSaveTask(PanelTask):
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         meta = {
+            "train_run_id":    ctx.config.get("_train_run_id"),  # audit fix #2
             "training_notes": cfg.get("training_notes", "Stage-2 NGBoost head"),
             "train_mu_mean":   ctx.ngboost_fit.get("train_mu_mean"),
             "train_sigma_mean": ctx.ngboost_fit.get("train_sigma_mean"),
