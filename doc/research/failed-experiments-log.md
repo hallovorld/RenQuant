@@ -630,3 +630,48 @@ The original guard threshold `min_best_iter ≥ 20` was too aggressive — based
 8. **Universe expansion fails on the current architecture regardless of selection method** (E5, E17). Need per-sector sub-models or sector-conditional features to scale beyond ~100 homogeneous tickers.
 9. **CV bugs corrupt every IC measurement, not just one** (today's BUG-CV-1/2/3). After every CV-side code change, re-run paired comparisons before trusting any closure.
 10. **A guard threshold derived from theory must be empirically validated** (today's `min_best_iter=20` was over-aggressive). Set guards from data, not from "should-be" arithmetic.
+
+---
+
+## E18: LightGBM 10d（clean CV）— 2026-04-29
+
+**假设**：LightGBM rank:pairwise 替代 XGBoost，可获得更高 IC（早期 A/B 在 buggy CV 下为 −60%，clean CV 可能翻案）。
+
+**实现**：`strategy_config.lgbm_no_macro.json`，早停禁用（防 NaN label 早停），10d lookahead，同 27 特征。
+
+**结果**：CPCV 15-fold mean_ic = **+0.018**（XGBoost baseline +0.035，差距 −49%）。
+
+**Sanity check**：早停修复后模型正常训练（train_ic=+0.141），非退化模型，IC 差距是真实的。
+
+**结论**：LightGBM 在此面板配置下明显落后 XGBoost rank:pairwise。关闭方向，clean CV 否决。
+
+**复现**：`python scripts/train_104.py --strategy-config-name strategy_config.lgbm_no_macro.json --skip-baseline --skip-recalibrate --force`
+
+---
+
+## E19: 60d+macro v2（clean CV）— 2026-04-29
+
+**假设**：macro 在 10d 中性（E14 重测 −1.4%），在 60d 长 horizon 下可能有效（文献：macro 在季度+ horizon 有预测力）。
+
+**实现**：`strategy_config.macro_h60.json`，60d lookahead + macro v2 per-ticker β features。
+
+**结果**：CPCV mean_ic = **+0.074**（60d baseline +0.074，差距 0%）。
+
+**结论**：macro v2 per-ticker β features 在 60d 同样中性。文献预测的"macro 在长 horizon 有效"在跨截面特征形式下不成立；可能需要以时序 regime gate 形式才有效。
+
+**复现**：`python scripts/train_104.py --strategy-config-name strategy_config.macro_h60.json --skip-baseline --skip-recalibrate --force`
+
+---
+
+## E20: 60d+emb 16D（clean CV）— 2026-04-29
+
+**假设**：embedding 在 10d 负向（E16 重测 −12%），理论受益在 long horizon + large universe，60d 可能翻案。
+
+**实现**：`strategy_config.emb_h60.json`，60d lookahead + asset embeddings 16D enabled。
+
+**结果**：CPCV mean_ic = **+0.034**（60d baseline +0.074，差距 **−54%**）。
+
+**结论**：embedding 在 60d 比 10d 更有害（10d −12% vs 60d −54%）。理论预期未被实验支持。结构性解释：embeddings 捕获行业协方差，在 60d 上与趋势/动量信号冲突更强，噪声被放大。BFI 2025 理论预期（universe 扩大后受益）仍需在 200+ watchlist 验证。
+
+**复现**：`python scripts/train_104.py --strategy-config-name strategy_config.emb_h60.json --skip-baseline --skip-recalibrate --force`
+

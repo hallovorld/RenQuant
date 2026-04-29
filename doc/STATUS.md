@@ -21,43 +21,34 @@ The system is healthy. Today's 9 commits resolved every P0 bug we knew about, an
 
 ---
 
-## §0. Top-line model findings (2026-04-29 早间)
+## §0. Top-line model findings (2026-04-29 最终)
 
-### Finding 1: closed-experiment retest (macro v2 + embeddings) under clean CV
+### 完整实验矩阵 — 9 个实验 clean CV 结果
 
-Re-running 3 closed experiments under fixed CV (BUG-CV-1/2/3 patched):
+All experiments run under fixed CV (BUG-CV-1/2/3 patched, 2026-04-28/29).
 
-| Experiment | Old (buggy CV) | New (clean CV) | Re-verdict |
+| 实验 | CPCV IC | vs 10d XGB +0.035 | 结论 |
 |---|---|---|---|
-| 10d production (no macro, no emb) | +0.0418 (corrupted) | **+0.0350** | true baseline |
-| **macro v2** per-ticker β | "−23%" (≈ +0.032) | **+0.0345** | **essentially neutral** (−1.4%) — closure was P0-bug artifact, can be reopened |
-| **asset embeddings 16D** | "−18.5%" (≈ +0.034) | **+0.0308** | still negative (−12%) — closure direction correct, magnitude was inflated |
+| **10d XGBoost**（生产基准） | **+0.035** | — | 真实基准（buggy CV 时 +0.042 虚高） |
+| macro v2 per-ticker β | +0.034 | −3% | **中性** — 之前 −23% 是 P0 bug 造成的 |
+| emb 16D | +0.031 | −12% | **否决** — 方向对，幅度被高估 |
+| LightGBM 10d | +0.018 | **−49%** | **否决** — clean CV 下大幅落后 |
+| **60d XGBoost** | **+0.074** | **+110%** | ← 唯一正向 lever，主线 |
+| 60d + macro v2 | +0.074 | 0% | macro 在长 horizon 同样中性 |
+| 60d + emb 16D | +0.034 | −54% | emb 在 60d 比 10d 更有害 |
 
-The previous "macro v2 closed at −23%" verdict was the worst of the three — it was almost entirely P0-bug-induced. Embeddings closure direction stands but magnitude was overstated.
+**结论**（一句话）：60d XGBoost 是唯一经 clean CV 验证的正向信号，其余 6 个方向全部否决或中性。
 
-Implication for future work:
-- Macro v2: keep open as "neutral, may help when combined with longer horizon / wider universe"
-- Embeddings: still rejected on this panel, but reconsider once we have a substantially larger panel (T2-2 effect grows with universe size)
+**60d 主线已完成**（2026-04-29）：
+- 早停修复（eval set 末 60 bar 全 NaN → 禁用早停）
+- 校准器修复（crosssectional 模式，base_rate=50.4%，25 unique y）
+- acceptance gate PASSED，side artifact 已 promote
+- NGBoost val_mu_ic=−0.034（60d 上 NGBoost σ 不可靠，Kelly 定仓需绕开）
 
-### Finding 2: 60d horizon swap on 103 watchlist** — first clean test post P0 fixes:
-
-| Model | best_iter | CPCV 跨折均值 |
-|---|---|---|
-| 10d (today's healthy retrain) | 19 | **+0.0350** |
-| **60d** (same 103 watchlist, side path) | 4 | **+0.0738** ← +110% over 10d |
-
-The +0.0738 is computed by `CrossValidateTask` (15-fold CPCV with fixed BUG-CV-1/2/3) on the same panel, same features, same ticker universe — only the lookahead label changes (10d → 60d returns).
-
-**This validates the long-standing hypothesis** that on this 103-watchlist panel, 60d signal is genuinely stronger than 10d. Earlier 227-watchlist comparison showed paired t=+3.82 for 60d vs 10d but couldn't be acted on because that panel was structurally regressed. Now we have the clean comparison on the production-ready panel.
-
-**Caveat**: the `fit_panel_calibrator` subprocess failed for 60d because the 0.03 binary threshold collapses to 1 class on 60d returns (mostly positive in bull market). Calibrator needs threshold or method change for 60d. Panel-LTR + NGBoost saved correctly to side paths; production unaffected.
-
-**Implication**: horizon swap is a real lever. But before deploying:
-1. Fix calibrator threshold/method for 60d
-2. Sim-validate: 6× holding period × current cost model still net-positive?
-3. Decide entry/exit logic adaptation (hold 60d not 10d)
-
-This is the most actionable model-performance finding from today.
+**待验证**（60d 升 golden 前必须）：
+1. 27mo OOS sim：APY ≥ golden +39.82%？成本模型在 6× 持有期下净正？
+2. 进出逻辑适配：min_hold / wash-sale / QP turnover penalty 按 60d 重设
+3. Kelly 定仓替代方案（Panel-LTR 分数直接定仓，绕开 NGBoost μ/σ）
 
 ---
 

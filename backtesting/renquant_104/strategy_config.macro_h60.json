@@ -167,7 +167,7 @@
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
-      "max_single_day_loss_pct": 0.1,
+      "max_single_day_loss_pct": 0.06,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
       "entry_mode": "momentum",
@@ -182,7 +182,7 @@
       "max_position_pct": 0.2,
       "cash_reserve_pct": 0.2,
       "stop_loss_pct": 0.05,
-      "max_single_day_loss_pct": 0.1,
+      "max_single_day_loss_pct": 0.06,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.1,
       "entry_mode": "capitulation",
@@ -195,7 +195,7 @@
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.3,
       "stop_loss_pct": 0.08,
-      "max_single_day_loss_pct": 0.1,
+      "max_single_day_loss_pct": 0.06,
       "max_hold_days": 40,
       "drawdown_halt_pct": 0.08,
       "entry_mode": "divergence",
@@ -452,12 +452,12 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-26",
-    "blend_n_symbols": 101,
+    "blend_updated": "2026-04-28",
+    "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
-      "bypass_ticker_gate": false,
-      "artifact_path": "artifacts/panel-ltr.json",
+      "bypass_ticker_gate": true,
+      "artifact_path": "artifacts/panel-ltr.h60_103.json",
       "nan_prone_cols": [],
       "buy_floor": null,
       "rotation_advantage": 0.0,
@@ -469,7 +469,7 @@
       },
       "ngboost": {
         "enabled": true,
-        "artifact_path": "artifacts/ngboost-head.lgbm_no_macro.json",
+        "artifact_path": "artifacts/ngboost-head.macro_h60.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -524,7 +524,7 @@
     }
   },
   "panel_ltr": {
-    "lookahead_days": 10,
+    "lookahead_days": 60,
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
@@ -533,6 +533,11 @@
     "num_boost_round": 300,
     "neutralize_features": true,
     "nan_prone_cols": [],
+    "asset_embeddings": {
+      "enabled": false,
+      "artifact_path": "artifacts/asset-embeddings.json",
+      "max_age_days": 30
+    },
     "factor_mom_window": 252,
     "factor_skip": 21,
     "neutralize_rolling_window": 252,
@@ -544,13 +549,14 @@
       "subsample": 0.5,
       "colsample_bytree": 0.5,
       "lambda": 5.0,
-      "alpha": 2.0
+      "alpha": 2.0,
+      "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.lgbm_no_macro.json",
+    "artifact_path": "artifacts/panel-ltr.macro_h60.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.json",
+      "artifact_path": "artifacts/ngboost-head.h60_103.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -569,7 +575,7 @@
         "XLV"
       ]
     },
-    "backend": "lightgbm",
+    "backend": "xgboost",
     "lightgbm_params": {
       "objective": "lambdarank",
       "metric": "ndcg",
@@ -614,7 +620,8 @@
       "m_closing_30min_drift_z",
       "m_first_hour_vol_pct_z",
       "overnight_gap_z",
-      "insider_net_buy_90d_z"
+      "insider_net_buy_90d_z",
+      "morning_drift_z"
     ],
     "earnings_surprise": {
       "enabled": true,
@@ -654,34 +661,15 @@
       "cache_dir": "data/intraday"
     },
     "macro": {
-      "enabled": false,
-      "cache_dir": "data/macro",
-      "symbols": [
-        "VXX",
-        "HYG",
-        "UUP",
-        "DBC",
-        "GLD",
-        "TLT",
-        "XLV",
-        "XLU",
-        "KRE",
-        "MTUM",
-        "USMV"
-      ],
-      "transforms": [
-        "level_z",
-        "chg_5d_z",
-        "chg_20d_z"
-      ],
-      "rolling_window": 252,
-      "min_window_overlap_pct": 0.95
+      "enabled": true,
+      "version": "v2"
     },
     "training_window_years": 3.0,
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
     },
+    "calibrator_threshold_mode": "crosssectional",
     "early_stopping_rounds": null
   },
   "training": {
@@ -695,7 +683,7 @@
   },
   "acceptance": {
     "_doc": "Model acceptance gates (Phase 1+2 2026-04-26). See doc/components/model-selection.md.",
-    "enabled": false,
+    "enabled": true,
     "g4_max_degradation": 0.05,
     "g4_severity": "hard",
     "g7_floor": 0.02,
@@ -736,5 +724,6 @@
       "change": "add LITE + COHR to watchlist (datacenter_hw / optical-comms exposure)",
       "rollback": "remove from watchlist + sector_map; revert this commit"
     }
-  ]
+  ],
+  "_experiment_id": "E2a-60d-macro"
 }
