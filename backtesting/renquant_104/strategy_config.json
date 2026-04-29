@@ -177,7 +177,7 @@
       "trailing_stop_trail_pct": 0.18,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
-      "take_profit_pct": 0.25
+      "take_profit_pct": 0
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -191,7 +191,7 @@
       "min_price_move_pct": 0.005,
       "trailing_stop_trigger_pct": 0.2,
       "trailing_stop_trail_pct": 0.1,
-      "take_profit_pct": 0.2
+      "take_profit_pct": 0
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
@@ -206,7 +206,7 @@
       "trailing_stop_trigger_pct": 0.15,
       "trailing_stop_trail_pct": 0.1,
       "max_concurrent_positions": 4,
-      "take_profit_pct": 0.15
+      "take_profit_pct": 0
     },
     "BEAR": {
       "max_position_pct": 0.0,
@@ -232,7 +232,13 @@
   "bear_defensive_slots": 2,
   "bear_defensive_pct": 0.15,
   "risk": {
-    "max_sells_per_bar": 2
+    "max_sells_per_bar": 2,
+    "panel_exit": {
+      "enabled": true,
+      "panel_sell_floor": 0.2,
+      "mu_sell_ceiling": 0.0,
+      "trigger_mode": "and"
+    }
   },
   "sector_map": {
     "AAPL": "giant_tech",

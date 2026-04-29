@@ -43,12 +43,18 @@ log = logging.getLogger("kernel.pipeline.limit_sells")
 
 # Mirror task_panel_veto.RISK_EXIT_TYPES — these always pass through.
 # Kept inline (not imported) so this file has no peer-task dependency.
+#
+# Audit fix 2026-04-29: removed `panel_conviction` from this set. Conviction
+# loss is a MODEL signal (rank_score + μ both weak), not a hard price-action
+# stop. Multiple holdings can degrade conviction simultaneously in a downturn
+# → mass-exit risk. Treat panel_conviction like model_sell: subject to the
+# per-bar cap. Hard risk exits (stop_loss, trailing, gap, max_hold) remain
+# exempt because their triggers are deterministic price events, not signal.
 _RISK_EXIT_TYPES: frozenset[str] = frozenset({
     "stop_loss",
     "trailing_stop",
     "single_day_loss",
     "max_hold",
-    "panel_conviction",
     "rotation",
     "kelly_trim",
     "sdl",
@@ -56,6 +62,12 @@ _RISK_EXIT_TYPES: frozenset[str] = frozenset({
     "gap_down",
     "max_hold_days",
     "joint_sell",  # JointActionJob's bundled sell-leg also exempt
+})
+
+# Soft sells that share the per-bar cap (model_sell + panel_conviction).
+_SOFT_SELL_TYPES: frozenset[str] = frozenset({
+    "model_sell",
+    "panel_conviction",
 })
 
 
@@ -72,7 +84,8 @@ class LimitSellsPerBarTask(Task):
         if not ctx.exits:
             return False
 
-        # Partition: risk-exits always pass; model_sells go through cap.
+        # Partition: risk-exits always pass; model_sells + panel_conviction
+        # go through the cap (they're "soft" signal-driven exits).
         risk_kept: list = []
         model_sells: list = []   # list of (ticker, sig, mu_for_sort)
         for ticker, sig in ctx.exits:
@@ -80,11 +93,11 @@ class LimitSellsPerBarTask(Task):
             if exit_type in _RISK_EXIT_TYPES:
                 risk_kept.append((ticker, sig))
                 continue
-            if exit_type != "model_sell":
+            if exit_type not in _SOFT_SELL_TYPES:
                 # Unknown type — preserve (fail-open).
                 risk_kept.append((ticker, sig))
                 continue
-            # model_sell — collect with μ for ranking.
+            # model_sell or panel_conviction — collect with μ for ranking.
             held = (ctx.holdings or {}).get(ticker)
             mu_raw = getattr(held, "mu", None) if held is not None else None
             try:

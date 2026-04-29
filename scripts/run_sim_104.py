@@ -104,9 +104,9 @@ def main() -> None:
         delta = r_apy - g_apy
         print()
         print("=" * 50)
-        print(f"  {args.strategy_config_name:<35} APY={r_apy:+.2f}%  Sharpe={result.sharpe:.3f}")
-        print(f"  {args.compare_to:<35} APY={g_apy:+.2f}%  Sharpe={golden.sharpe:.3f}")
-        print(f"  Delta vs golden                         APY={delta:+.2f}%")
+        print(f"  {args.strategy_config_name:<35} APY={r_apy:+.2f}%  WR={result.win_rate:.0%}  trades={len(result.buys)}")
+        print(f"  {args.compare_to:<35} APY={g_apy:+.2f}%  WR={golden.win_rate:.0%}  trades={len(golden.buys)}")
+        print(f"  Delta vs golden                         APY={delta:+.2f} pp")
         verdict = "PROMOTE ✓" if delta >= 0 else "REJECT ✗"
         print(f"  Verdict: {verdict}")
         print("=" * 50)
