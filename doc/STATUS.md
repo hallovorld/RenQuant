@@ -194,6 +194,26 @@ After today's consolidation, these are the canonical sources for each topic:
 
 ---
 
+## §7.5. Post-Tier-1 follow-ups (2026-04-25 doc) — most resolved
+
+When I scanned `doc/experiments/post-tier1-followups.md` (4 days old), I found most items already resolved by today's audit work:
+
+| ID | Item | Current state |
+|---|---|---|
+| DBT-1 | ENTRY-DATE-FROM-FILLS pagination (100-trade limit) | ⚠️ still open; edge case for very long-tenure positions; deferred |
+| DBT-2 | sell-then-rebuy lifecycle awareness in fill matching | ⚠️ still open; ~1 day work; not blocking |
+| **DBT-3** | 8 missing test groups for runner-only fixes | ✅ **resolved** — `test_runner_state_fixes.py` covers STATE-GC, STATE-GC-NEWBUYS, ENTRY-DATE-*, UNMANAGED, EXITS-FAIL |
+| **DBT-4** | floor `compute_regime_confidence` at 0 | ✅ **resolved** — `kernel/regime.py:340-344` has `max(0.0, ...)` |
+| **OP-1** | Add GLD to `earnings_surprise.skip_tickers` | ✅ **resolved** — already present in `strategy_config.json:633` |
+| OP-2 | Stale HWM auto-snap — root cause analysis | ⚠️ open; low priority since RU-1 fix masks symptom |
+| OP-3 | BA position unmanaged at broker | user decision (BA still held today; explicit decision pending) |
+| **OP-4** | AMD not in watchlist | ✅ **functionally resolved** — bypass_ticker_gate=true exposes AMD to Panel-LTR; can be added to watchlist if you want |
+| OP-5 | NGBoost RuntimeWarning on σ overflow | ⚠️ benign — clipping is in place; warning persists but doesn't corrupt output |
+| FE-1, FE-2 | Feature engineering iterations | deferred — would require dedicated retrain cycles |
+| V-1, V-2, V-3 | Tier 1 validation | superseded — Tier 1 baseline replaced by today's +0.0350 production retrain |
+
+`doc/experiments/post-tier1-followups.md` is now **soft-deprecated**. Read the table above for current state.
+
 ## §8. What this doc replaces
 
 Status claims in these docs are now **superseded** by the corresponding section here. Read the source for the original analysis; cross-reference here for current state:

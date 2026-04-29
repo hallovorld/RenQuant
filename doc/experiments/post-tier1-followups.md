@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED — see [`doc/STATUS.md`](../STATUS.md) §7.5 for current status of every DBT/OP item below.**
+>
+> Most items in this doc were resolved by 2026-04-28 audit work. The 2026-04-25 view is preserved for historical context only. Do not use this doc as the active follow-up tracker.
+
 # Post-Tier-1 Follow-ups — 2026-04-25 (evening session)
 
 Living tracker for everything caught during the deep audit + B+E + Tier 1
