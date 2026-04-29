@@ -23,17 +23,21 @@ The system is healthy. Today's 9 commits resolved every P0 bug we knew about, an
 
 ## §0. Top-line model findings (2026-04-29 早间)
 
-### Finding 1: macro v2 + embeddings closures may be P0-bug artifacts (preliminary)
+### Finding 1: closed-experiment retest (macro v2 + embeddings) under clean CV
 
-Re-running closed experiments under fixed CV (BUG-CV-1/2/3 patched):
+Re-running 3 closed experiments under fixed CV (BUG-CV-1/2/3 patched):
 
-| Experiment | Old claim | Re-measured CPCV | Verdict |
+| Experiment | Old (buggy CV) | New (clean CV) | Re-verdict |
 |---|---|---|---|
-| 10d production (no macro, no emb) | +0.0418 (corrupted) | **+0.0350** | True baseline |
-| **macro v2** (per-ticker β features) | "−23% vs baseline" → ~+0.032 | **+0.0345** | **essentially neutral** (−1.4%) — previous closure was P0-bug artifact |
-| asset embeddings (16D) | "−18.5%" → ~+0.034 | (in flight) | TBD — C retest running |
+| 10d production (no macro, no emb) | +0.0418 (corrupted) | **+0.0350** | true baseline |
+| **macro v2** per-ticker β | "−23%" (≈ +0.032) | **+0.0345** | **essentially neutral** (−1.4%) — closure was P0-bug artifact, can be reopened |
+| **asset embeddings 16D** | "−18.5%" (≈ +0.034) | **+0.0308** | still negative (−12%) — closure direction correct, magnitude was inflated |
 
-**Important caveat**: paired-t comparisons across runs aren't statistically rigorous (different fold seeds). But the magnitude swing (from −23% to ~0%) on macro v2 is too large to be sampling noise. The "macro path closed" verdict deserves re-examination.
+The previous "macro v2 closed at −23%" verdict was the worst of the three — it was almost entirely P0-bug-induced. Embeddings closure direction stands but magnitude was overstated.
+
+Implication for future work:
+- Macro v2: keep open as "neutral, may help when combined with longer horizon / wider universe"
+- Embeddings: still rejected on this panel, but reconsider once we have a substantially larger panel (T2-2 effect grows with universe size)
 
 ### Finding 2: 60d horizon swap on 103 watchlist** — first clean test post P0 fixes:
 
