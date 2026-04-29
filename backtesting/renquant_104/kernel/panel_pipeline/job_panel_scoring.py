@@ -178,30 +178,54 @@ class BuildFeatureMatrixTask(Task):
             ctx._panel_matrix = None  # noqa: SLF001
             return None
 
-        # External audit fix #5 (2026-04-29): mirror NGBoost's drift guard on
-        # the panel-LTR side. build_inference_matrix silently NaN-fills any
-        # column the inference panel no longer produces — XGBoost handles NaN
-        # natively, so the model continues scoring with degraded features and
-        # the operator never sees the alert. Hard-fail when too many cols are
-        # all-NaN, same threshold semantics as ApplyNGBoostTask.
+        # Drift guard (2026-04-29, revised 2026-04-29 evening):
+        # Distinguish STRUCTURAL drift (feature never produced by inference
+        # pipeline — e.g. macro/emb disabled after training) from TRANSIENT
+        # NaN (feature exists historically but today's data not yet available
+        # — e.g. afternoon_drift_z before market closes, or minute bars not
+        # cached for the current session).
+        #
+        # Structural: the column is all-NaN AND has no non-NaN historical
+        #   values in the raw feature frames → the pipeline genuinely stopped
+        #   producing it. Hard-fail: this would corrupt every score.
+        # Transient: the column has historical non-NaN values but is NaN
+        #   today (timing gap). Log a warning; XGBoost handles NaN natively,
+        #   same as pre-P0-fix behaviour. Don't block trading.
         drift_thr = float(panel_cfg.get("max_feature_drift_pct", 0.05))
         all_nan_cols = [c for c in scorer.feature_cols if X[c].isna().all()]
         if all_nan_cols:
+            structural, transient = [], []
+            for col in all_nan_cols:
+                # Check whether the column has non-NaN history in any
+                # ticker's feature frame (ff_subset is {ticker: DataFrame}).
+                has_history = any(
+                    (ff.get(col) is not None and not ff[col].isna().all())
+                    if isinstance(ff, dict)
+                    else (col in ff.columns and not ff[col].isna().all())
+                    for ff in ff_subset.values()
+                )
+                (transient if has_history else structural).append(col)
+
+            if transient:
+                log.warning(
+                    "BuildFeatureMatrixTask: %d feature col(s) all-NaN TODAY "
+                    "(transient — historical data exists, today not cached yet). "
+                    "XGBoost NaN-imputes natively; scoring continues. "
+                    "Cols: %s",
+                    len(transient), transient[:5],
+                )
+
+            n_struct  = len(structural)
             n_total   = len(scorer.feature_cols)
-            n_missing = len(all_nan_cols)
-            pct_miss  = n_missing / max(1, n_total)
-            if pct_miss > drift_thr:
+            pct_struct = n_struct / max(1, n_total)
+            if structural and pct_struct > drift_thr:
                 log.error(
-                    "BuildFeatureMatrixTask: %d/%d (%.1f%%) feature cols ALL-NaN "
-                    "in inference panel — exceeds max_feature_drift_pct=%.2f. "
-                    "Panel-LTR scorer was trained with features the inference "
-                    "panel no longer produces (e.g. macro/emb feature block "
-                    "disabled after artifact was trained). FAIL-SAFE: clearing "
-                    "ctx._panel_matrix + candidates so Gate B blocks all buys "
-                    "outright. RETRAIN: `python scripts/train_104.py --skip-baseline "
-                    "--skip-recalibrate --force`. First 10 missing: %s",
-                    n_missing, n_total, pct_miss * 100, drift_thr,
-                    all_nan_cols[:10],
+                    "BuildFeatureMatrixTask: %d/%d (%.1f%%) feature cols "
+                    "STRUCTURALLY missing — inference pipeline no longer produces "
+                    "them (e.g. macro/emb disabled after model was trained). "
+                    "FAIL-SAFE: clearing candidates. Retrain recommended. "
+                    "First 10: %s",
+                    n_struct, n_total, pct_struct * 100, structural[:10],
                 )
                 ctx._panel_matrix = None  # noqa: SLF001
                 ctx.candidates = []

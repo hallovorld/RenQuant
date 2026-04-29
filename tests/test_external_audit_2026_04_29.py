@@ -94,14 +94,17 @@ class TestEvalICFloor:
 
 class TestPanelLTRDriftGuard:
     def test_drift_guard_present_in_buildfeaturematrixtask(self):
-        """BuildFeatureMatrixTask now hard-fails when too many cols are all-NaN."""
+        """BuildFeatureMatrixTask distinguishes structural vs transient NaN drift."""
         src = (REPO_ROOT / "backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py").read_text()
         idx = src.find("class BuildFeatureMatrixTask")
-        block = src[idx:idx + 6000]
-        # Threshold + check + fail-safe cleanup all in one block
+        block = src[idx:idx + 8000]
+        # Threshold still configurable
         assert "max_feature_drift_pct" in block
         assert "all_nan_cols" in block
-        # Fail-safe semantics match NGBoost path
+        # Post-fix: structural vs transient distinction
+        assert "structural" in block
+        assert "transient" in block
+        # Hard-fail path only fires on structural drift
         assert "ctx.candidates = []" in block
         assert "return False" in block
 
