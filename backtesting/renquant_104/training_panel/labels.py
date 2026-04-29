@@ -117,7 +117,11 @@ def gaussianize_cross_section(
 
     rank / (N+1) ∈ (0,1)  →  norm.ppf(...)  ⇒  approximately standard normal.
 
-    Ties get average rank. A single-ticker day maps to 0.0 (median).
+    Ties get average rank. A single-ticker day yields NaN (cross-sectional
+    rank is undefined with N=1; emitting 0.0 silently injected a "neutral"
+    label into training, biasing weights for any date the universe shrinks
+    to one ticker — common at 200+-watchlist start dates where younger names
+    enter progressively. External audit fix 2026-04-29 (#9).
     """
     # Assemble long frame indexed by (date, ticker)
     frames = []
@@ -134,7 +138,8 @@ def gaussianize_cross_section(
         if n == 0:
             return out_v
         if n == 1:
-            out_v[mask] = 0.0
+            # Cross-sectional rank with N=1 is undefined — return NaN so the
+            # row is dropped from training, not silently labeled 0.0.
             return out_v
         ranks = r[mask].rank(method="average")
         u = ranks / (n + 1)

@@ -177,6 +177,36 @@ class BuildFeatureMatrixTask(Task):
             log.warning("BuildFeatureMatrixTask: empty inference matrix")
             ctx._panel_matrix = None  # noqa: SLF001
             return None
+
+        # External audit fix #5 (2026-04-29): mirror NGBoost's drift guard on
+        # the panel-LTR side. build_inference_matrix silently NaN-fills any
+        # column the inference panel no longer produces — XGBoost handles NaN
+        # natively, so the model continues scoring with degraded features and
+        # the operator never sees the alert. Hard-fail when too many cols are
+        # all-NaN, same threshold semantics as ApplyNGBoostTask.
+        drift_thr = float(panel_cfg.get("max_feature_drift_pct", 0.05))
+        all_nan_cols = [c for c in scorer.feature_cols if X[c].isna().all()]
+        if all_nan_cols:
+            n_total   = len(scorer.feature_cols)
+            n_missing = len(all_nan_cols)
+            pct_miss  = n_missing / max(1, n_total)
+            if pct_miss > drift_thr:
+                log.error(
+                    "BuildFeatureMatrixTask: %d/%d (%.1f%%) feature cols ALL-NaN "
+                    "in inference panel — exceeds max_feature_drift_pct=%.2f. "
+                    "Panel-LTR scorer was trained with features the inference "
+                    "panel no longer produces (e.g. macro/emb feature block "
+                    "disabled after artifact was trained). FAIL-SAFE: clearing "
+                    "ctx._panel_matrix + candidates so Gate B blocks all buys "
+                    "outright. RETRAIN: `python scripts/train_104.py --skip-baseline "
+                    "--skip-recalibrate --force`. First 10 missing: %s",
+                    n_missing, n_total, pct_miss * 100, drift_thr,
+                    all_nan_cols[:10],
+                )
+                ctx._panel_matrix = None  # noqa: SLF001
+                ctx.candidates = []
+                return False
+
         ctx._panel_matrix = X  # noqa: SLF001
         log.debug("BuildFeatureMatrixTask: matrix %s", X.shape)
 

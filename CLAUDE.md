@@ -268,6 +268,25 @@ These are not "nice to haves" — they're the response to a single 24h period wh
 - Why this is load-bearing: 6 months from now, "should we try blending horizons?" will come up again. If `failed-experiments-log.md` doesn't have an answer, we will burn 3-6 hours of compute re-discovering. The log is cheaper than the rerun.
 - A failed experiment is not a failure of the team — failing fast and recording why is the engine of progress. The failure mode is *not recording* it.
 
+**5.8 Status reports use concepts, not code.**
+- When briefing the user on progress, avoid commit hashes, file paths, variable names, task IDs, and bug labels (`BUG-CV-2`, `min_best_iter=0`, `panel-ltr.json`, etc.). Use the conceptual name of the thing instead — "未训练守卫", "诊断侧配置", "面板排序模型".
+- Why: code references force the user to context-switch into the codebase to interpret the message. Concept names communicate the *what* and *why* directly. Status briefings exist to give the user a fast read on where things are, not to repeat the implementation.
+- Code-level identifiers belong in commit messages, doc files, and direct technical questions — *not* in recurring status reports.
+- When the user asks a specific technical question ("what does file X do?"), code references are appropriate. Distinguish status briefings (concepts) from technical answers (code OK).
+
+**5.9 Multi-track plans ship as a timeline diagram.**
+- When proposing a plan with parallel work streams or sequenced phases, draw it as an ASCII timeline before starting execution. Tracks on rows, time on the X-axis, dependencies as arrows.
+- Why: a paragraph-style plan hides ordering and parallelism. A diagram makes both visible in one glance — the user can see at-a-glance which steps gate the next, which run in parallel, and where the merge points are. They can redirect ("flip Track A and B") with a single line instead of re-reading prose.
+- Required elements: phase markers on the X-axis (e.g. `[现在]`, `[+2h]`, `[+完成]`), each track on its own row, arrows for sequence (`──→`), vertical bars for parallel streams (`↓`).
+- Apply for: any plan with ≥2 sequential phases, OR ≥2 parallel work streams, OR a stop-gate (e.g. acceptance check) followed by branching paths. Single-step actions don't need a diagram.
+- Example pattern (use when a fix queue must complete before a retrain, with secondary work in parallel):
+  ```
+  [现在]              [+2h]               [+3h]                [+并行]
+  P0 fixes ─────────→ retrain ──────────→ sim ──────────────→ promote/reject
+                       ↓
+                      P1 fixes 同时跑
+  ```
+
 ### Documentation Index (canonical pointers)
 
 **Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)

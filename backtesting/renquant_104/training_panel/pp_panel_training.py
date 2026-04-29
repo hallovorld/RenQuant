@@ -2113,6 +2113,26 @@ class FinalFitTask(PanelTask):
                     f"set panel_ltr.min_best_iter to a smaller value in config."
                 )
 
+            # External audit fix #7 (2026-04-29): best_iter alone is not enough.
+            # A model can pass best_iter=5 with eval_ic ≈ 0 (uninformative). Add
+            # eval_ic_floor as the second gate — both must pass to save.
+            # Disabled by default (None) so legacy retrains aren't blocked; set
+            # `panel_ltr.min_eval_ic` in config to enable. Recommended: 0.005
+            # (above noise floor for 15-fold CPCV on 60k-row panel).
+            min_eval_ic = cfg.get("min_eval_ic")
+            if min_eval_ic is not None:
+                import math as _math  # noqa: PLC0415
+                eval_ic = fit.get("eval_ic")
+                if eval_ic is None or not _math.isfinite(float(eval_ic)) \
+                        or float(eval_ic) < float(min_eval_ic):
+                    raise RuntimeError(
+                        f"FinalFit eval_ic={eval_ic} below min_eval_ic={min_eval_ic}. "
+                        f"Model converged on best_iter but is uninformative on the "
+                        f"holdout — likely panel/label/feature regression upstream. "
+                        f"Artifact NOT saved. To bypass for diagnostic runs, lower "
+                        f"or unset `panel_ltr.min_eval_ic` in config."
+                    )
+
 
 class SaveArtifactTask(PanelTask):
     """Write the JSON artifact with CV metadata + populate ctx.summary."""
@@ -2535,9 +2555,61 @@ class NGBoostSaveTask(PanelTask):
         }
         # Strip None values to keep the artifact clean.
         meta = {k: v for k, v in meta.items() if v is not None}
-        ctx.ngboost_head.save(out_path, metadata=meta)
+
+        # External audit fix #6 (2026-04-29): NGBoost saver previously did
+        # a direct overwrite. If the new head was bad (val_mu_ic ≈ 0,
+        # corrupted feature_cols, etc.) the prior production head was
+        # already gone — no recovery path. Mirror panel-LTR's snapshot +
+        # acceptance pattern: write to .staging.json, hard-gate on
+        # val_mu_ic floor, atomic-rename to final path on pass.
+        ngb_min_val_ic = cfg.get("min_val_mu_ic")
+        val_mu_ic = ctx.ngboost_fit.get("val_mu_ic")
+
+        # Snapshot prior production artifact for rollback (if it exists).
+        prior_snapshot = None
+        if out_path.exists():
+            import shutil  # noqa: PLC0415
+            prior_snapshot = out_path.with_suffix(".pre-train.json")
+            shutil.copy2(str(out_path), str(prior_snapshot))
+
+        # Stage the new artifact at .staging.json — never touch out_path
+        # until acceptance passes.
+        staging_path = out_path.with_suffix(".staging.json")
+        ctx.ngboost_head.save(staging_path, metadata=meta)
+
+        if ngb_min_val_ic is not None:
+            import math as _math  # noqa: PLC0415
+            if val_mu_ic is None or not _math.isfinite(float(val_mu_ic)) \
+                    or float(val_mu_ic) < float(ngb_min_val_ic):
+                log.error(
+                    "NGBoostSaveTask: val_mu_ic=%s below min_val_mu_ic=%s — "
+                    "REJECTING new NGBoost head. Staging artifact left at %s "
+                    "for diagnostic; prior head preserved at %s.",
+                    val_mu_ic, ngb_min_val_ic, staging_path, out_path,
+                )
+                # Don't promote. If we had a prior snapshot, the prior
+                # production artifact is still in place at out_path.
+                if prior_snapshot and prior_snapshot.exists():
+                    try:
+                        prior_snapshot.unlink()
+                    except OSError:
+                        pass
+                ctx.ngboost_artifact_path = None
+                return
+
+        # Promote staging → final atomically. On POSIX rename is atomic
+        # within the same filesystem; if a reader has the old artifact
+        # mmap'd, it keeps reading the old version until next open.
+        import os as _os  # noqa: PLC0415
+        _os.replace(str(staging_path), str(out_path))
+        if prior_snapshot and prior_snapshot.exists():
+            try:
+                prior_snapshot.unlink()
+            except OSError:
+                pass
         ctx.ngboost_artifact_path = out_path
-        log.info("NGBoostSaveTask: artifact → %s", out_path)
+        log.info("NGBoostSaveTask: artifact → %s (val_mu_ic=%s)",
+                 out_path, val_mu_ic)
 
         try:
             from kernel.persistence import get_connection, record_training_run  # noqa: PLC0415
