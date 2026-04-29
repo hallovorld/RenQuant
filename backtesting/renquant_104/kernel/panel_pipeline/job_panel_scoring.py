@@ -195,16 +195,22 @@ class BuildFeatureMatrixTask(Task):
         all_nan_cols = [c for c in scorer.feature_cols if X[c].isna().all()]
         if all_nan_cols:
             structural, transient = [], []
+            # Build set of columns present in either feature or factor frames.
+            # A column that exists in ANY frame is being produced by the pipeline
+            # (timing gap → transient). A column absent from ALL frames was never
+            # produced (disabled block → structural). Check columns not values —
+            # intraday features live in factor_frames, not feature_frames.
+            produced_cols: set[str] = set()
+            for frames in (ff_subset, fac_subset or {}):
+                if frames:
+                    for ff in frames.values():
+                        if hasattr(ff, "columns"):
+                            produced_cols.update(ff.columns)
+                        elif isinstance(ff, dict):
+                            produced_cols.update(ff.keys())
+
             for col in all_nan_cols:
-                # Check whether the column has non-NaN history in any
-                # ticker's feature frame (ff_subset is {ticker: DataFrame}).
-                has_history = any(
-                    (ff.get(col) is not None and not ff[col].isna().all())
-                    if isinstance(ff, dict)
-                    else (col in ff.columns and not ff[col].isna().all())
-                    for ff in ff_subset.values()
-                )
-                (transient if has_history else structural).append(col)
+                (transient if col in produced_cols else structural).append(col)
 
             if transient:
                 log.warning(
