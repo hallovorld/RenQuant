@@ -1457,13 +1457,34 @@ class LabelsTask(PanelTask):
             if sec in sec_fwd_frames
         }
 
-        ctx.raw_residuals = compute_residual_returns(
-            fwd_returns, spy_fwd, sec_fwd_by_ticker,
-            beta_window=beta_window, lookahead_days=lookahead,
-        )
+        if label_mode == "triple_barrier":
+            # E24 fix (2026-05-02): cannot residualize triple-barrier labels
+            # against fixed-horizon SPY/sector forward returns — ticker_fwd
+            # is variable-horizon (1..max_horizon_days, depending on which
+            # barrier hit) but spy_fwd / sector_fwd here are fixed
+            # `lookahead`-day returns. Mixing them in OLS residual produces
+            # anti-predictive labels (eval_ic=-0.0744 in initial A/A).
+            #
+            # Simplest valid path: SKIP residualization. Use the raw
+            # barrier-hit return as the label directly. The rank-pairwise
+            # objective on cross-sectional rank-norm of these raw returns
+            # still produces a valid alpha signal; the residualization was
+            # a beta-removal step we forgo here.
+            #
+            # If A/A on this design lifts IC, future work can add proper
+            # hit-time-matched residual extraction (per-row spy_fwd at
+            # ticker's hit_days[t]).
+            ctx.raw_residuals = {t: s.copy() for t, s in fwd_returns.items()}
+            log.info("LabelsTask: triple_barrier mode — skipping residualization "
+                     "(use raw barrier-hit returns directly)")
+        else:
+            ctx.raw_residuals = compute_residual_returns(
+                fwd_returns, spy_fwd, sec_fwd_by_ticker,
+                beta_window=beta_window, lookahead_days=lookahead,
+            )
         ctx.labels = gaussianize_cross_section(ctx.raw_residuals)
-        log.info("LabelsTask: built labels for %d tickers (raw residuals + gauss)",
-                 len(ctx.labels))
+        log.info("LabelsTask: built labels for %d tickers (mode=%s)",
+                 len(ctx.labels), label_mode)
 
 
 class BuildHourlyResolutionPanelTask(PanelTask):
