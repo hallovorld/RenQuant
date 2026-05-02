@@ -49,19 +49,50 @@ MIGA, FSTGAT — none use hard splits.
 - `0917c14` feat(layer1): cross_sectional_rank_within_sector helper + 16 tests
 - `ae9ecdb` feat(audit): wl178 failure diagnostic + universe builder + design v2
 
-### Background tasks status (2026-05-01 23:30 PT)
-- ✅ **A/A retrain** completed. Half A: train_ic=+0.116, CPCV mean_ic=+0.0004. Half B: train_ic=+0.085, mean_ic=+0.0136 (guard fired). Confirmed wl178 heterogeneity is structural at any random subset size.
-- ✅ **Universe OHLCV fetch** completed. 633 / 793 succeeded (160 delisted/odd). Cache: 215 → 1006 tickers.
-- ✅ **Layer 1 alone retrain** completed. CPCV mean_ic=−0.0008 — within A/A noise band, NO lift. Failed-experiment-log E_LAYER1_ALONE on the branch.
-- 🟡 **Triage + bug fixes shipped** — three implementation bugs found in Layer 1's wl178 deployment:
-  * BUG 1: sector_map covered only 58% of wl178; fixed via `scripts/build_sector_map.py` pulling IWB CSV → 100% coverage in `strategy_config.wl178_v2.json`.
-  * BUG 2: `min_sector_size=5` default demoted small sectors; lowered to 3.
-  * BUG 3: feature redundancy (`_z` + `_sr` correlated); added `replace_z` substitution flag.
-- 🟡 **Layer 1 SUBSTITUTION + Layer 2 retrain** running (started 23:29 PT). Config: `strategy_config.wl178_v2_l1sub_l2.json`. Log: `/tmp/wl178_v2_l1sub_l2.log`. ETA ~23:55 PT.
-- 🟡 **B2 baseline sim** running in parallel (started 23:29 PT, --skip-train mode using production wl103 artifacts). Log: `/tmp/b2_baseline_skiptrain.log`. ETA ~23:50 PT. NOTE: sim is in-sample contaminated since wl103 was trained on the full window — establishes script integrity but not honest-hold-out APY.
+### Background tasks status (2026-05-02 02:30 PT)
+- ✅ **A/A retrain** (Half A: oos_ic=+0.0004, train_ic=+0.116; Half B: train_ic=+0.085, guard fired pre-record).
+- ✅ **Universe OHLCV fetch** completed. Cache: 215 → 1006 tickers.
+- ✅ **Layer 1 alone retrain** — CPCV mean_ic=−0.0008 (in noise band).
+- ✅ **5 implementation bugs surfaced + fixed**:
+  * BUG 1: sector_map 58% → 100% coverage (build_sector_map.py + IWB CSV)
+  * BUG 2: `min_sector_size=5` → 3 default
+  * BUG 3: `replace_z` substitution mode flag (eliminates _z/_sr redundancy)
+  * BUG 4: monotone_constraints rewrite when replace_z drops _z cols
+  * BUG 4.5: rewrite was at WRONG config path (top-level vs nested `panel_ltr`)
+- ✅ **Layer 1+2 v3 retrain COMPLETED** (commit `eb0e857`, BUG 4.5 fix landed) —
+  - **CPCV mean_ic = +0.0150** (vs A/A pool +0.007, vs wl103 baseline +0.0418)
+  - train_ic = +0.0865 (recovered from L1-alone +0.069)
+  - Within A/A noise band (~0.25σ), borderline / partial lift
+  - **Verdict: do not promote. Escalate to Phase C (graph attention NN).**
+  - Recorded in `failed-experiments-log.md::E_LAYER1_PLUS_2_V3` + DB
+    `training_runs` row `20260502075821-panel-ltr-00c57f` (commit_sha + config_json + feature_cols + notes all populated).
+- ✅ **Phase C scaffold shipped** (commit `4ec70bd`) — GraphAttentionScorer NN module, sector-mask correctness verified, gradient sanity, save/load roundtrip; `.train()` raises `NotImplementedError` until cloud GPU integration.
+- ✅ **B2 baseline sim** (production wl103 --skip-train) — ran but produced 0 trades due to feature drift (model trained on richer features than current inference path emits). Established sim framework works; not a useful APY datum.
+- 🟡 **B2 sim on wl178_v2_l1sub_l2 artifact** — first attempt crashed on the `asset_embeddings` bug (main fix `5674f4e` not yet on experimental branch). Cherry-picked into experimental branch (`1051097`); re-dispatched 02:13 PT.
+
+### Experimental data persistence (DB)
+All retrains write to `training_runs` table in the worktree-local
+`data/runs.db`. Each row carries: `commit_sha`, full `config_json`,
+`feature_cols`, `artifact_path`, `n_rows`, `n_tickers`, `n_dates`,
+`n_features`, `device`, `elapsed_sec`, `training_window_years`,
+`notes` (operator-written context).
+
+Query pattern:
+```sql
+SELECT run_id, run_date, oos_mean_ic, train_ic, n_tickers, n_features,
+       commit_sha, notes
+FROM training_runs ORDER BY run_date DESC;
+```
+
+Crash-failed retrains (Half B + Layer 1 alone) are NOT in DB — they
+hit the FinalFit guard before `record_training_run` was called. The
+narrative + log analysis sits in `failed-experiments-log.md`.
 
 ### Lessons captured
-`doc/research/lessons-learned-sector-arch.md` on the branch — unified record of triage protocol, mechanism map, theoretical anchors, bugs, process patterns. Read this first when resuming sector-arch work.
+`doc/research/lessons-learned-sector-arch.md` (on branch) — unified
+record of triage protocol, mechanism map, theoretical anchors, bugs
+(now including BUG 4.5: "test mocked the same wrong path the bug used"),
+process patterns. Read this first when resuming sector-arch work.
 
 ### Merge criteria (gates before PR back to main)
 - [ ] Per-sector path beats single-panel baseline on B2 hold-out by ≥ +1 APY pt (Layer 1+2 alone), ≥ +2 (Layer 3 graph), ≥ +4 (Layer 4 MoE)
