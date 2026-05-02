@@ -30,13 +30,15 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## ✅ P0 CV bugs (discovered 2026-04-28, all fixed by 2026-04-29)
+## ✅ P0 CV bugs (discovered 2026-04-28, all fixed; refined 2026-05-02)
 
-Three bugs that corrupted CPCV IC measurements. **All three are fixed and have regression tests in `tests/test_p0_cv_bug_fixes.py` (13 tests, all green).** Kept in this file for historical reference — do not re-investigate.
+Three bugs that corrupted CPCV IC measurements. **All fixed with regression tests in `tests/test_p0_cv_bug_fixes.py` (14 tests green).** Kept here for historical reference — do not re-investigate.
 
-- **BUG-CV-1** (linspace fold drift) — fixed in `training_panel/purged_cv.py` lines 70-72 + 261-263 (integer division `fold_size = n_dates // n_splits`, last edge clamped to `n_dates`). Test: `TestBugCV1FoldStability::test_fold_assignment_stable_across_n_dates_roll`.
-- **BUG-CV-2** (best_iter guard) — fixed in `training_panel/pp_panel_training.py` line 2438 (`min_best_iter=5` default; raises RuntimeError if XGBoost early-stopped below threshold). Test: `test_guard_raises_when_best_iter_below_threshold`.
-- **BUG-CV-3** (eval set misaligned with CPCV) — fixed in `training_panel/pp_panel_training.py` line 2352 (`n_eval = max(2, n_total // cv_n_splits)` instead of hardcoded 20%). Test: `test_eval_size_matches_cpcv_fold_size`.
+- **BUG-CV-1** (linspace fold drift) — fixed in `training_panel/purged_cv.py` (integer division `fold_size = n_dates // n_splits`, last edge clamped). Test: `TestBugCV1FoldStability::test_fold_assignment_stable_across_n_dates_roll`.
+- **BUG-CV-2** (best_iter guard) — fixed in `training_panel/pp_panel_training.py` (`min_best_iter=5` default raises RuntimeError if early-stop fires below threshold). **Refined 2026-05-02 (Task #24)**: iter-count check is FALSE POSITIVE on strong-univariate-IC features (e.g. days_since_earnings IC=+0.02 → XGB plateaus at round 4-9). Added eval_ic escape clause: when `best_iter < min_best_iter`, accept if `eval_ic >= min_best_iter_eval_ic_floor` (default 0.02). Pathological case (eval_ic ≈ 0) still raises. Test: `test_guard_has_eval_ic_escape_clause`.
+- **BUG-CV-3** (eval set misaligned with CPCV) — fixed in `training_panel/pp_panel_training.py` (`n_eval = max(2, n_total // cv_n_splits)` instead of hardcoded 20%). Test: `test_eval_size_matches_cpcv_fold_size`.
+
+**XGB run-to-run variance characterized (2026-05-02 σ estimation)**: same config (pead_off) produces highly variable `best_iter` (4 vs 25) and `train_ic` (±0.025) across seeds, but **CPCV `mean_ic` is robust (Δ=0.0001 across 2 paired runs)**. Lesson: compare experiments on `mean_ic`, not `train_ic` or `best_iter`.
 
 ---
 
