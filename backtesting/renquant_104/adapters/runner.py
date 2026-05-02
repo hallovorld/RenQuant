@@ -920,12 +920,21 @@ class RunnerAdapter:
                 # so all order producers (selection / rotation / topup /
                 # qp / future) are tolerated. rs_score is retired from
                 # ranking math anyway (CLAUDE.md), so 0.0 is correct.
+                # Trade-log distinguishes order provenance (2026-05-01 audit):
+                # `order_type` carries through whatever the producer set
+                # (TopUpHeldTask → "TOP_UP", SizeAndEmitTask → "NEW_BUY",
+                # rotation/QP → respective tags). When absent, fall back to
+                # the runner's own is_topup detection (handles legacy producers
+                # that don't tag).
+                fallback_type = "TOP_UP" if is_topup else "NEW_BUY"
+                order_type    = order.get("order_type", fallback_type)
                 self._log_trade(ctx, {
                     "action":     "BUY",
                     "symbol":     ticker,
                     "shares":     shares,
                     "price":      price,
                     "invest":     invest,
+                    "order_type": order_type,
                     "rank_score": order.get("rank_score", 0.0) or 0.0,
                     "rs_score":   order.get("rs_score",   0.0) or 0.0,
                     "regime":     order.get("regime",     ctx.regime),

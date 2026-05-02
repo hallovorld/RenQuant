@@ -393,6 +393,10 @@ class TestTopUpTargetPctAccuracy:
                           entry_date=datetime.date(2026, 1, 1),
                           high_watermark=100.0, shares=100,
                           kelly_target_pct=0.60)
+        # Conviction floor (added 2026-05-01) blocks TopUp when rank_score
+        # is missing/low. This test exercises cap math, not the gate —
+        # set a passing rank so the gate is inert.
+        hs.rank_score = 0.50
         # Cap at 20%, so even though Kelly says 60% (delta=50%), only 20%
         # is bought this session. target_pct should reflect the actual fill
         # (current 10% + 20% cap = 30%), NOT the abstract Kelly target (60%).

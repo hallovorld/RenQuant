@@ -535,6 +535,7 @@
       "max_concentration": 0.35,
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
+      "topup_conviction_floor": 0.20,
       "base_rate": 0.273
     }
   },

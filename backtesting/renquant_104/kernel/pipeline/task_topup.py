@@ -96,6 +96,20 @@ class TopUpHeldTask(Task):
         )
         earnings_check_active = bool(earnings_calendar) and today is not None
 
+        # Conviction floor on TopUp (2026-05-01 trade-audit response):
+        # Pre-fix, TopUp added shares to held positions whenever Kelly
+        # target > current weight, regardless of whether the panel ranker
+        # still liked the holding. Result: 4 of 7 buys 2026-04-29 → 05-01
+        # had rank_score=0.0 — TopUp was blindly Kelly-maintaining held
+        # positions while the panel had no current opinion on them.
+        # Invariant: TopUp only adds to a holding whose latest calibrated
+        # rank_score is at or above `topup_conviction_floor` (default 0.20
+        # — same level as the panel-conviction sell floor). When the
+        # panel hasn't scored the holding yet (None / NaN), fail-CLOSED:
+        # don't add. This gate sits BEFORE the Kelly-delta math so
+        # TopUp can only act when both the model AND Kelly agree.
+        topup_floor = float(kelly_cfg.get("topup_conviction_floor", 0.20))
+
         for ticker, hs in ctx.holdings.items():
             if ticker in already_buying or ticker in already_selling \
                or ticker in rotation_sells:
@@ -107,6 +121,17 @@ class TopUpHeldTask(Task):
                     ticker, earnings_buf,
                 )
                 continue
+            # Conviction floor — fail-closed on missing/low rank.
+            if topup_floor > 0:
+                hs_rank = getattr(hs, "rank_score", None)
+                if hs_rank is None or not math.isfinite(hs_rank) \
+                   or hs_rank < topup_floor:
+                    log.info(
+                        "TopUpHeldTask [%s]: SKIPPED — conviction floor "
+                        "(rank_score=%s < floor=%.2f)",
+                        ticker, hs_rank, topup_floor,
+                    )
+                    continue
             kelly_target = getattr(hs, "kelly_target_pct", None)
             if kelly_target is None or not math.isfinite(kelly_target) or kelly_target <= 0:
                 continue

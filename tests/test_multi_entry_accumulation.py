@@ -95,7 +95,7 @@ class TestSizeAndEmitPerSessionCap:
 
 # ── TopUpHeldTask also honours the cap ───────────────────────────────────────
 
-def _hs(shares, kelly_target, entry_price=100.0):
+def _hs(shares, kelly_target, entry_price=100.0, rank_score=0.50):
     import datetime
     from kernel.exits import HoldingState
     h = HoldingState(
@@ -103,6 +103,11 @@ def _hs(shares, kelly_target, entry_price=100.0):
         shares=shares, high_watermark=entry_price,
     )
     h.kelly_target_pct = kelly_target
+    # Conviction floor on TopUp (added 2026-05-01) blocks adds when the
+    # holding's latest rank_score is below floor (default 0.20). These
+    # tests target cap math, not the conviction gate — set a passing rank
+    # so the gate is inert and the cap-math behaviour stays under test.
+    h.rank_score = rank_score
     return h
 
 

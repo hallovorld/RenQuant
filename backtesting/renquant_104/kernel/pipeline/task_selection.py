@@ -162,6 +162,19 @@ class SizeAndEmitTask(Task):
         # the same as None — skip the ticker, log a warning so operators
         # see WHICH ticker had bad data.
         import math as _math
+        # Cash-aware portfolio fill (2026-05-01 trade-audit response):
+        # 4/28 incident — the system emitted 6 buys × ~$8k each against a
+        # ~$10k account (≈5x implied leverage) because each call to
+        # compute_position_size saw the SAME ctx.cash constant. Pre-fix
+        # was per-position cash check; post-fix tracks `remaining_cash`
+        # decremented after each order so the cumulative invest never
+        # exceeds available cash. Selection is already ranked by score
+        # so first orders are highest conviction; subsequent low-conviction
+        # orders simply hit zero cash and skip.
+        # Invariant: sum(o.invest for o in ctx.orders emitted here)
+        # ≤ ctx.cash - reserve_pct * portfolio_value.
+        remaining_cash = float(getattr(ctx, "cash", 0.0) or 0.0)
+        starting_cash  = remaining_cash
         for ticker in ctx._selected:  # noqa: SLF001
             price = ctx.prices.get(ticker)
             if price is None or not _math.isfinite(price) or price <= 0:
@@ -211,15 +224,27 @@ class SizeAndEmitTask(Task):
                     max_pct = cap
 
             _, shares = compute_position_size(
-                ctx.portfolio_value, ctx.cash,
+                ctx.portfolio_value, remaining_cash,
                 max_pct, reserve_pct, price,
                 override_pct=override_pct,
             )
             if shares < 1:
-                log.info("SizeAndEmitTask: %s insufficient cash — skip", ticker)
+                log.info("SizeAndEmitTask: %s insufficient cash — skip "
+                         "(remaining_cash=$%.0f price=$%.2f)",
+                         ticker, remaining_cash, price)
                 continue
 
             invest     = shares * price
+            # Defensive: per-position sizer already rounded down to whole
+            # shares within remaining_cash, but assert the invariant —
+            # sum of emitted invests must not exceed starting_cash.
+            if invest > remaining_cash + 1e-6:  # fp-tolerance
+                log.warning(
+                    "SizeAndEmitTask: %s invest=$%.0f > remaining_cash=$%.0f "
+                    "— skipping to preserve cash invariant",
+                    ticker, invest, remaining_cash,
+                )
+                continue
             target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
             ctx.orders.append({
                 "ticker":     ticker,
@@ -242,11 +267,23 @@ class SizeAndEmitTask(Task):
                 # from `target_pct` (the actually-sized fraction).
                 "kelly_target_pct": getattr(c, "kelly_target_pct", None) if c else None,
                 "detail":     c.detail      if c else "",
+                # Order provenance — distinguished in trade log so audits
+                # can tell why a buy fired (NEW_BUY vs TopUp Kelly maintenance
+                # vs rotation vs QP). TopUpHeldTask sets "TOP_UP" on its
+                # orders; this is the fresh-entry path.
+                "order_type": "NEW_BUY",
             })
+            remaining_cash -= invest
             log.info(
-                "SizeAndEmitTask: %s BUY %d shares @ %.2f "
-                "(%.1f%% conv=%.2f σ_mult=%.2f)",
-                ticker, shares, price, target_pct * 100, conv, sig_m,
+                "SizeAndEmitTask: %s NEW_BUY %d shares @ %.2f "
+                "($%.0f, %.1f%% target, conv=%.2f σ_mult=%.2f) "
+                "remaining_cash=$%.0f",
+                ticker, shares, price, invest, target_pct * 100,
+                conv, sig_m, remaining_cash,
             )
 
-        log.info("SizeAndEmitTask: %d orders placed", len(ctx.orders))
+        spent = starting_cash - remaining_cash
+        log.info(
+            "SizeAndEmitTask: %d orders placed (spent=$%.0f / starting_cash=$%.0f)",
+            len(ctx.orders), spent, starting_cash,
+        )
