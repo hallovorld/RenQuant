@@ -1156,6 +1156,41 @@ class TickerPanelFactorJob(PanelTickerJob):
 
 # ── Phase 3 — PanelAssemblyJob + tasks ───────────────────────────────────────
 
+# Single source of truth for "which raw factor columns get cross-sectional
+# normalization in the panel pipeline." Both FactorZScoreTask and
+# SectorRankNormalizeTask read from this list. Adding a new factor column
+# here automatically applies BOTH _z (global cross-sectional z-score) AND
+# _sr (per-sector rank percentile, sector-aware path) treatments.
+#
+# Audit fix M1 (2026-05-01): pre-fix this list was duplicated in two
+# Tasks — adding a column to FactorZScoreTask would silently miss
+# SectorRankNormalizeTask, leaving the new column with _z but no _sr.
+# The trained model would then see uneven coverage across sector-aware
+# vs not, biasing tree splits toward the cols that have both.
+RAW_FACTOR_COLS_FOR_NORM: list[str] = [
+    # Round 1+ technical factors (per-ticker time-series, cross-sectionally
+    # standardized per date so different scales don't dominate rank loss).
+    "size", "mom_12_1", "beta_60d", "resid_mom",
+    # Round 3 orthogonal factors
+    "amihud_illiq", "volume_shift", "price_to_high",
+    "realized_vol", "drawdown_peak",
+    # Round 4+ time-varying fundamentals (opt-in via config)
+    "earnings_surprise_cum",
+    # Round 5: SEC Form 4 executive-only insider trades (opt-in)
+    "insider_net_buy_90d",
+    # Plan G: hourly-bar aggregates (opt-in via panel_ltr.hourly.enabled)
+    "morning_drift", "afternoon_drift", "vwap_premium",
+    "vol_ratio", "intraday_realized_vol", "overnight_gap",
+    # 2026-04-24: 10-minute-bar aggregates (opt-in via panel_ltr.minute.enabled).
+    # TickerPanelFactorJob writes these m_*-prefixed columns into
+    # raw_factor_frame; without them in this list they'd silently
+    # drop from feature_cols. See minute_features.py for definitions.
+    "m_morning_drift", "m_morning_30min_drift",
+    "m_afternoon_drift", "m_closing_30min_drift",
+    "m_vwap_premium", "m_vol_ratio", "m_first_hour_vol_pct",
+    "m_intraday_realized_vol", "m_overnight_gap", "m_reversal_ratio",
+]
+
 
 # Default panel feature columns that should be cross-sectionally z-scored
 # across tickers per date (per-ticker raw indicators whose absolute values
@@ -1248,27 +1283,8 @@ class FactorZScoreTask(PanelTask):
             _sector_median_fill,
         )
 
-        raw_cols = [
-            "size", "mom_12_1", "beta_60d", "resid_mom",
-            # Round 3 orthogonal factors (time-series, same treatment as above)
-            "amihud_illiq", "volume_shift", "price_to_high",
-            "realized_vol", "drawdown_peak",
-            # Round 4+ time-varying fundamentals (opt-in via config)
-            "earnings_surprise_cum",
-            # Round 5: SEC Form 4 executive-only insider trades (opt-in)
-            "insider_net_buy_90d",
-            # Plan G: hourly-bar aggregates (opt-in via panel_ltr.hourly.enabled)
-            "morning_drift", "afternoon_drift", "vwap_premium",
-            "vol_ratio", "intraday_realized_vol", "overnight_gap",
-            # 2026-04-24: 10-minute-bar aggregates (opt-in via panel_ltr.minute.enabled).
-            # TickerPanelFactorJob writes these m_*-prefixed columns into
-            # raw_factor_frame; without them in this list they'd silently
-            # drop from feature_cols. See minute_features.py for definitions.
-            "m_morning_drift", "m_morning_30min_drift",
-            "m_afternoon_drift", "m_closing_30min_drift",
-            "m_vwap_premium", "m_vol_ratio", "m_first_hour_vol_pct",
-            "m_intraday_realized_vol", "m_overnight_gap", "m_reversal_ratio",
-        ]
+        # Use the single-source-of-truth list (see header). Audit fix M1.
+        raw_cols = RAW_FACTOR_COLS_FOR_NORM
         per_col: dict[str, dict[str, pd.Series]] = {}
         for col in raw_cols:
             per_col[col] = {
@@ -1368,21 +1384,9 @@ class SectorRankNormalizeTask(PanelTask):
 
     name = "SectorRankNormalizeTask"
 
-    # The same set of raw feature columns FactorZScoreTask consumes.
-    # Kept as a class attribute so test code can reference it.
-    _RAW_COLS: list[str] = [
-        "size", "mom_12_1", "beta_60d", "resid_mom",
-        "amihud_illiq", "volume_shift", "price_to_high",
-        "realized_vol", "drawdown_peak",
-        "earnings_surprise_cum",
-        "insider_net_buy_90d",
-        "morning_drift", "afternoon_drift", "vwap_premium",
-        "vol_ratio", "intraday_realized_vol", "overnight_gap",
-        "m_morning_drift", "m_morning_30min_drift",
-        "m_afternoon_drift", "m_closing_30min_drift",
-        "m_vwap_premium", "m_vol_ratio", "m_first_hour_vol_pct",
-        "m_intraday_realized_vol", "m_overnight_gap", "m_reversal_ratio",
-    ]
+    # Reads from the module-level RAW_FACTOR_COLS_FOR_NORM single-source-of-truth
+    # so adding a new factor column applies BOTH _z and _sr treatment
+    # in lockstep. Audit fix M1 (2026-05-01).
 
     def run(self, ctx: PanelTrainingContext) -> None:
         cfg = (ctx.config.get("panel_ltr") or {}).get("sector_rank_norm") or {}
@@ -1410,7 +1414,7 @@ class SectorRankNormalizeTask(PanelTask):
 
         # Build per-column input dict from raw_factor_frames
         per_col: dict[str, dict[str, "pd.Series"]] = {}
-        for col in self._RAW_COLS:
+        for col in RAW_FACTOR_COLS_FOR_NORM:
             per_col[col] = {
                 t: df[col] for t, df in ctx.raw_factor_frames.items()
                 if col in df.columns

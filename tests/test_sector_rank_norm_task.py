@@ -39,6 +39,7 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 from training_panel.pp_panel_training import (   # noqa: E402
     SectorRankNormalizeTask,
     PanelAssemblyJob,
+    RAW_FACTOR_COLS_FOR_NORM,
 )
 
 
@@ -214,6 +215,54 @@ class TestDefensive:
 
 
 # ── Wiring — Task placement in PanelAssemblyJob.tasks ─────────────────────────
+
+class TestSharedRawColsConstant:
+    """Audit fix M1 (2026-05-01): RAW_FACTOR_COLS_FOR_NORM is the
+    single source of truth for which factor columns get cross-sectional
+    normalization. Both FactorZScoreTask and SectorRankNormalizeTask
+    must read from it — adding a new column anywhere requires editing
+    only this constant, never two parallel hardcoded lists.
+    """
+
+    def test_constant_is_non_empty_list_of_strings(self):
+        assert isinstance(RAW_FACTOR_COLS_FOR_NORM, list)
+        assert len(RAW_FACTOR_COLS_FOR_NORM) > 0
+        for col in RAW_FACTOR_COLS_FOR_NORM:
+            assert isinstance(col, str) and col, f"bad col entry: {col!r}"
+
+    def test_no_duplicates_in_constant(self):
+        # Duplicates would compute the same _z (or _sr) twice and
+        # collide on the second pass — collision-guard catches it but
+        # silently drops one of the writes. Asserting uniqueness here
+        # catches the issue at parse time.
+        seen: set[str] = set()
+        for col in RAW_FACTOR_COLS_FOR_NORM:
+            assert col not in seen, (
+                f"{col!r} appears twice in RAW_FACTOR_COLS_FOR_NORM — "
+                f"would silently drop one of two normalization passes"
+            )
+            seen.add(col)
+
+    def test_factor_zscore_task_reads_module_constant(self):
+        """Source-level enforcement: FactorZScoreTask body must
+        reference the shared constant, not have its own duplicate list."""
+        from training_panel import pp_panel_training as ppt
+        import inspect
+        src = inspect.getsource(ppt.FactorZScoreTask.run)
+        assert "RAW_FACTOR_COLS_FOR_NORM" in src, (
+            "FactorZScoreTask must read RAW_FACTOR_COLS_FOR_NORM, "
+            "not duplicate the list"
+        )
+
+    def test_sector_rank_norm_task_reads_module_constant(self):
+        from training_panel import pp_panel_training as ppt
+        import inspect
+        src = inspect.getsource(ppt.SectorRankNormalizeTask.run)
+        assert "RAW_FACTOR_COLS_FOR_NORM" in src, (
+            "SectorRankNormalizeTask must read RAW_FACTOR_COLS_FOR_NORM, "
+            "not duplicate the list"
+        )
+
 
 class TestWiring:
     def test_task_in_panel_assembly_job(self):
