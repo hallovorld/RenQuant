@@ -98,7 +98,10 @@ class SimAdapter:
                 ohlcv_panel = dict(ohlcv)
                 if benchmark not in ohlcv_panel:
                     ohlcv_panel[benchmark] = spy_df
-                ff, fac, macro, emb = prepare_inference_panel_frames(
+                # exp branch: prepare_inference_panel_frames returns 3-tuple
+                # (asset_embeddings T2-2 is dead on this branch — see
+                # E13 in failed-experiments-log.md). Don't unpack a 4th value.
+                ff, fac, macro = prepare_inference_panel_frames(
                     watchlist=list(config.get("watchlist", [])),
                     ohlcv=ohlcv_panel,
                     ticker_sectors=ticker_sectors,
@@ -107,18 +110,17 @@ class SimAdapter:
                 self._panel_feature_frames   = ff
                 self._panel_factor_frames    = fac
                 self._panel_macro_frame      = macro   # Bug #25
-                self._panel_asset_embeddings = emb     # T2-2
+                self._panel_asset_embeddings = None
                 log.info("SimAdapter: built panel frames internally "
-                         "(feat=%d  factor=%d  macro=%s  emb=%d)",
+                         "(feat=%d  factor=%d  macro=%s)",
                          len(ff), len(fac),
-                         "None" if macro is None else f"{len(macro.columns)}cols",
-                         len(emb) if emb else 0)
+                         "None" if macro is None else f"{len(macro.columns)}cols")
             except Exception as exc:
                 log.warning("SimAdapter: panel frame prep failed — %s", exc)
                 self._panel_feature_frames   = None
                 self._panel_factor_frames    = None
                 self._panel_macro_frame      = None
-                self._panel_asset_embeddings = None  # T2-2
+                self._panel_asset_embeddings = None
         else:
             self._panel_feature_frames = panel_feature_frames
             self._panel_factor_frames  = panel_factor_frames
