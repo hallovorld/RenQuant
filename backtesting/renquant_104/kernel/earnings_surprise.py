@@ -205,6 +205,95 @@ def fetch_earnings_surprise_watchlist(
 
 # ── Factor computation ────────────────────────────────────────────────────────
 
+# ── PEAD enrichment (Track B, Bernard-Thomas 1989, Chan-Jegadeesh-Lakonishok 1996)
+
+def compute_pead_features(
+    surprises: dict[str, pd.DataFrame],
+    ohlcv: dict[str, pd.DataFrame],
+    *,
+    decay_window_days: int = 60,
+    max_window_days: int = 90,
+) -> tuple[dict[str, pd.Series], dict[str, pd.Series], dict[str, pd.Series]]:
+    """Three PEAD feature columns per ticker, ffilled to daily OHLCV index:
+
+    Returns
+    -------
+    days_since_earnings : dict[ticker, Series]
+        Calendar days since most-recent announcement, clamped to
+        [0, max_window_days]. NaN before first announcement in window.
+
+    pead_decay_weight : dict[ticker, Series]
+        Linear ramp 1.0 at day 0 → 0.0 at decay_window_days. 0.0 past
+        decay_window_days. NaN before first announcement.
+
+    pead_signal : dict[ticker, Series]
+        Most-recent surprise_pct × decay_weight. The canonical PEAD
+        alpha — captures sign + magnitude + recency in one column.
+        NaN before first announcement.
+
+    No-lookahead: announcement INDEX is shifted +1 calendar day before
+    reindex+ffill, mirroring `compute_earnings_surprise_cum` (#R3-35).
+    Earnings releases are typically after-market — the post-release
+    state first becomes available on the bar AFTER the announcement.
+
+    References
+    ----------
+    Bernard & Thomas 1989: post-earnings drift strongest in days 1-30,
+    decays mostly by day 60, ~zero past 90.
+    Chan-Jegadeesh-Lakonishok 1996: surprise quintile sign+magnitude
+    scales drift size.
+    """
+    days_out: dict[str, pd.Series] = {}
+    decay_out: dict[str, pd.Series] = {}
+    signal_out: dict[str, pd.Series] = {}
+
+    for ticker, df_ohlcv in ohlcv.items():
+        surprise_df = surprises.get(ticker)
+        idx = df_ohlcv.index
+        if surprise_df is None or surprise_df.empty or "surprise_pct" not in surprise_df.columns:
+            days_out[ticker]   = pd.Series(np.nan, index=idx)
+            decay_out[ticker]  = pd.Series(np.nan, index=idx)
+            signal_out[ticker] = pd.Series(np.nan, index=idx)
+            continue
+
+        sp = surprise_df["surprise_pct"].sort_index()
+        # Shift announcement index +1 day (lookahead-safe; same convention
+        # as compute_earnings_surprise_cum).
+        ann_index_shifted = sp.index + pd.Timedelta(days=1)
+
+        # For each daily bar, find most-recent announcement at-or-before
+        # that bar. Use a per-announcement Series that holds the
+        # announcement date itself; reindex+ffill gives us the most-recent.
+        ann_dates_sr = pd.Series(ann_index_shifted, index=ann_index_shifted)
+        most_recent_ann = ann_dates_sr.reindex(idx, method="ffill")
+
+        # Most-recent surprise value (forward-filled).
+        sp_shifted_idx = sp.copy()
+        sp_shifted_idx.index = ann_index_shifted
+        most_recent_surprise = sp_shifted_idx.reindex(idx, method="ffill")
+
+        # days_since = (idx_date - most_recent_ann_date).days
+        # Pandas vectorisation: subtract two datetime Series → Timedelta Series → .dt.days
+        days_since_raw = (pd.Series(idx, index=idx) - most_recent_ann).dt.days
+        # Clamp + propagate NaN where most_recent_ann was NaT (pre-first-announcement)
+        days_since = days_since_raw.where(~most_recent_ann.isna(), np.nan)
+        days_since = days_since.clip(lower=0, upper=max_window_days)
+
+        # decay_weight = max(0, 1 - days/decay_window_days)
+        decay = (1.0 - days_since / float(decay_window_days)).clip(lower=0.0)
+        decay = decay.where(~days_since.isna(), np.nan)
+
+        # signal = most_recent_surprise × decay
+        signal = most_recent_surprise * decay
+        signal = signal.where(~days_since.isna(), np.nan)
+
+        days_out[ticker]   = days_since
+        decay_out[ticker]  = decay
+        signal_out[ticker] = signal
+
+    return days_out, decay_out, signal_out
+
+
 def compute_earnings_surprise_cum(
     surprises: dict[str, pd.DataFrame],
     ohlcv: dict[str, pd.DataFrame],

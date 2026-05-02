@@ -987,7 +987,7 @@ class TickerPanelFactorJob(PanelTickerJob):
             compute_drawdown_from_peak,
             FUNDAMENTAL_COLS,
         )
-        from kernel.earnings_surprise import compute_earnings_surprise_cum
+        from kernel.earnings_surprise import compute_earnings_surprise_cum, compute_pead_features
         from kernel.insider_trades    import compute_insider_net_buy_cum
 
         # Audit P-15 (2026-04-24): granular per-stage try/except. Pre-fix
@@ -1062,6 +1062,40 @@ class TickerPanelFactorJob(PanelTickerJob):
             log.warning("  %s: TickerPanelFactorJob[earnings_surprise] failed — %s",
                         tc.ticker, exc)
             cols["earnings_surprise_cum"] = pd.Series(float("nan"), index=idx)
+
+        # Stage 3b — PEAD enrichment (Track B: days_since + decay + signal)
+        # Gated on `panel_ltr.pead.enabled` (default false). Three columns:
+        # `days_since_earnings`, `pead_decay_weight`, `pead_signal`. The
+        # last is the canonical PEAD alpha (Bernard-Thomas 1989, CJL 1996).
+        pead_cfg = ctx.config.get("panel_ltr", {}).get("pead", {}) or {}
+        if pead_cfg.get("enabled", False):
+            try:
+                if tc.earnings_surprises:
+                    days_d, decay_d, signal_d = compute_pead_features(
+                        {tc.ticker: tc.earnings_surprises.get(tc.ticker, pd.DataFrame())},
+                        {tc.ticker: tc.ohlcv[tc.ticker]},
+                        decay_window_days=int(pead_cfg.get("decay_window_days", 60)),
+                        max_window_days=int(pead_cfg.get("max_window_days", 90)),
+                    )
+                    cols["days_since_earnings"] = (days_d.get(tc.ticker)
+                        if days_d.get(tc.ticker) is not None
+                        else pd.Series(float("nan"), index=idx))
+                    cols["pead_decay_weight"] = (decay_d.get(tc.ticker)
+                        if decay_d.get(tc.ticker) is not None
+                        else pd.Series(float("nan"), index=idx))
+                    cols["pead_signal"] = (signal_d.get(tc.ticker)
+                        if signal_d.get(tc.ticker) is not None
+                        else pd.Series(float("nan"), index=idx))
+                else:
+                    cols["days_since_earnings"] = pd.Series(float("nan"), index=idx)
+                    cols["pead_decay_weight"] = pd.Series(float("nan"), index=idx)
+                    cols["pead_signal"] = pd.Series(float("nan"), index=idx)
+            except Exception as exc:
+                log.warning("  %s: TickerPanelFactorJob[pead] failed — %s",
+                            tc.ticker, exc)
+                cols["days_since_earnings"] = pd.Series(float("nan"), index=idx)
+                cols["pead_decay_weight"] = pd.Series(float("nan"), index=idx)
+                cols["pead_signal"] = pd.Series(float("nan"), index=idx)
 
         # Stage 4 — insider trades (time-varying, trailing-90d)
         try:
@@ -1257,6 +1291,8 @@ class FactorZScoreTask(PanelTask):
             "earnings_surprise_cum",
             # Round 5: SEC Form 4 executive-only insider trades (opt-in)
             "insider_net_buy_90d",
+            # Track B: PEAD enrichment (opt-in via panel_ltr.pead.enabled)
+            "days_since_earnings", "pead_decay_weight", "pead_signal",
             # Plan G: hourly-bar aggregates (opt-in via panel_ltr.hourly.enabled)
             "morning_drift", "afternoon_drift", "vwap_premium",
             "vol_ratio", "intraday_realized_vol", "overnight_gap",
@@ -1309,6 +1345,8 @@ class FactorZScoreTask(PanelTask):
             for c in ("amihud_illiq", "volume_shift", "price_to_high",
                       "realized_vol", "drawdown_peak",
                       "earnings_surprise_cum", "insider_net_buy_90d",
+                      # Track B: PEAD enrichment (opt-in via panel_ltr.pead.enabled)
+                      "days_since_earnings", "pead_decay_weight", "pead_signal",
                       # Plan G: hourly-bar aggregates
                       "morning_drift", "afternoon_drift", "vwap_premium",
                       "vol_ratio", "intraday_realized_vol", "overnight_gap",
