@@ -462,7 +462,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.json",
+      "artifact_path": "artifacts/panel-ltr.insider_on.json",
       "nan_prone_cols": [],
       "buy_floor": null,
       "rotation_advantage": 0.0,
@@ -474,7 +474,7 @@
       },
       "ngboost": {
         "enabled": true,
-        "artifact_path": "artifacts/ngboost-head.json",
+        "artifact_path": "artifacts/ngboost-head.insider_on.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -485,7 +485,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/panel-rank-calibration.insider_on.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
