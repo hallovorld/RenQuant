@@ -820,3 +820,55 @@ python scripts/train_104.py --strategy-config-name strategy_config.pead_on.json 
 
 **Side benefit produced this session**:
 - BUG-CV-2 guard refinement (Task #24): added `min_best_iter_eval_ic_floor` escape clause for false-positive on strong-univariate-IC features. The original guard would have blocked all PEAD ablation A/B runs with `RuntimeError: best_iter < 5` since adding any strong-IC column makes XGB plateau by round 4-9. Now accepts when eval_ic ≥ 0.02 floor.
+
+---
+
+## E24: Triple-barrier label A/A — eval IC NEGATIVE due to residual mismatch (track F, partial)
+
+**Date**: 2026-05-02
+**Branch**: main
+**Run IDs** (`data/runs.db`):
+- triple_barrier_off (fwd_5d explicit): `20260502211508-panel-ltr-6a95a1`, mean_ic=+0.03399 (= pead_off baseline, identical bit-for-bit)
+- triple_barrier_on (alpha=2, beta=2, max_h=10): FAILED at FinalFit guard. best_iter=4, eval_ic=**−0.0744**, train_ic=+0.0710.
+
+**Hypothesis**: Lopez de Prado AFML §3 triple-barrier label (first hit of {upper, lower, time}) replaces fwd_5d. Predicted +5-10 bp lift.
+
+**Result**: Eval IC went deeply NEGATIVE. Model + label are anti-predictive.
+
+**Diagnosis (post-hoc)**:
+
+Reading `LabelsTask.run()` after the failure:
+
+```python
+spy_fwd = spy_close.shift(-lookahead) / spy_close - 1.0   # FIXED 5-day
+fwd_returns = compute_triple_barrier_labels(...)["label"]  # VARIABLE 1-10 days
+ctx.raw_residuals = compute_residual_returns(fwd_returns, spy_fwd, ...)
+```
+
+The bug: `ticker_fwd` is the realized return at *its own* barrier-hit day (variable, 1-10 days), but `spy_fwd` is fixed 5-day. So the residual `ticker_fwd − β × spy_fwd` mixes forward windows of different lengths. The model fits noise, not alpha.
+
+This is a **design omission**, not a code bug. Triple-barrier labels need either:
+1. Hit-time-matched SPY/sector forward returns (compute SPY return from t to ticker's hit day), or
+2. Skip residual extraction for triple-barrier mode (use raw barrier-hit return as label).
+
+**Result classification**: NOT a falsification of the triple-barrier hypothesis — it's a wiring incompleteness. The label-design idea remains untested at this horizon.
+
+**Resume conditions**:
+1. Refactor `LabelsTask` so when `label_mode='triple_barrier'`:
+   - For each ticker × date, extract `hit_days[ticker, t]` from compute_triple_barrier_labels output.
+   - Compute SPY return from t to t + hit_days (per-row alignment).
+   - Same for sector_fwd.
+2. OR skip residual extraction entirely for triple-barrier (use raw barrier-hit return as label, no benchmark adjustment).
+3. Re-run A/A.
+
+**Side benefit**:
+- Confirmed `label_mode='fwd_5d'` is bit-identical to default: triple_barrier_off mean_ic = pead_off mean_ic = +0.03399 to 15 decimals. Wiring for the explicit-default path is correct.
+- New BUG-CV-2 escape clause (Task #24) correctly REJECTED triple_barrier_on (eval_ic=−0.0744 < floor 0.02) — the guard distinguishes "fast-converging strong signal" (PEAD ablation, eval_ic=+0.06) from "anti-predictive label corruption" (this case, eval_ic=−0.07). The escape clause is well-calibrated.
+
+**Recipe**:
+```bash
+# Reproduce the failure (will RuntimeError):
+python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_on.json --skip-baseline --skip-recalibrate --force
+```
+
+**Status**: PARTIAL — module + wiring landed but residual-mismatch resume needed. Track F deferred until horizon-matched residual extraction is implemented.
