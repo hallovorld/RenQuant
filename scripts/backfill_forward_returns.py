@@ -106,6 +106,46 @@ def _rows_needing_backfill(
     return conn.execute(q, params).fetchall()
 
 
+def _benchmark_pairs(
+    conn, benchmarks: list[str], since: datetime.date | None,
+) -> list[tuple[str, str]]:
+    """Return (run_date, benchmark_ticker) pairs missing forward returns.
+
+    Benchmarks (SPY, sector ETFs) are not stored in candidate_scores —
+    they're the *reference* against which candidates are evaluated. But
+    downstream consumers (M3 conformal Gate B fit; trade-eval DB
+    relative-return labels) JOIN forward returns by benchmark too, so the
+    backfill must cover them. Pre-fix the LEFT JOIN nulled out the entire
+    fit input → fit_conformal_gate_b.py reported "0 valid rows" while
+    74k otherwise-valid candidate rows existed.
+    """
+    if not benchmarks:
+        return []
+    q = """
+        SELECT DISTINCT ps.run_date
+          FROM pipeline_runs ps
+    """
+    params: list = []
+    if since is not None:
+        q += " WHERE ps.run_date >= ?"
+        params.append(since.isoformat())
+    q += " ORDER BY ps.run_date"
+    out: list[tuple[str, str]] = []
+    distinct_dates = [row[0] for row in conn.execute(q, params).fetchall()]
+    for date_str in distinct_dates:
+        for bench in benchmarks:
+            # Only emit if the (date, bench) row is missing/incomplete.
+            row = conn.execute(
+                """SELECT fwd_1d, fwd_5d, fwd_10d, fwd_20d
+                     FROM ticker_forward_returns
+                    WHERE as_of_date = ? AND ticker = ?""",
+                (date_str, bench),
+            ).fetchone()
+            if row is None or any(v is None for v in row):
+                out.append((date_str, bench))
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--strategy", default="renquant_104")
@@ -121,6 +161,13 @@ def main() -> None:
                    help="Only backfill rows at or after this date (YYYY-MM-DD).")
     p.add_argument("--cache-root", default="data/ohlcv",
                    help="Root of per-ticker parquet cache.")
+    p.add_argument(
+        "--benchmarks", default="SPY",
+        help="Comma-separated benchmarks to also backfill (default: SPY). "
+             "Empty string disables benchmark backfill. Required for "
+             "fit_conformal_gate_b.py — without SPY in the table the "
+             "conformal-fit JOIN nulls every candidate row.",
+    )
     args = p.parse_args()
     if args.db is None:
         args.db = "data/sim_runs.db" if args.source == "sim" else "data/runs.db"
@@ -145,8 +192,16 @@ def main() -> None:
         sys.exit(1)
 
     pairs = _rows_needing_backfill(conn, args.since)
+
+    benchmarks = [b.strip().upper() for b in args.benchmarks.split(",") if b.strip()]
+    bench_pairs = _benchmark_pairs(conn, benchmarks, args.since)
+    if bench_pairs:
+        log.info("Benchmark backfill: %d (date, benchmark) pair(s) for %s",
+                 len(bench_pairs), benchmarks)
+        pairs = pairs + bench_pairs
+
     if not pairs:
-        log.info("Nothing to backfill — every candidate row already has forward returns.")
+        log.info("Nothing to backfill — every candidate + benchmark row already has forward returns.")
         return
 
     # Group by ticker to amortise parquet load
