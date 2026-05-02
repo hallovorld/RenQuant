@@ -10,6 +10,37 @@ from .pipeline import Task
 log = logging.getLogger("kernel.pipeline.sell")
 
 
+# Module-level taxonomy of exit types — single source of truth so the
+# earnings-blackout veto, the SellGateB μ/σ guard, and any future
+# sector-conditional or regime-conditional sell gate all classify exits
+# the same way. Adding a new exit_type? Add it here and decide whether
+# it's MODEL- or PATH-driven.
+#
+# MODEL_DRIVEN_EXIT_TYPES — exits derived from a model output (panel
+# rank, NGBoost μ/σ, streak counter on per-ticker tournament). These
+# are SUPPRESSED inside the earnings blackout window because the model
+# can't see the upcoming/just-released fundamental information.
+#
+# PATH_DRIVEN_EXIT_TYPES — exits derived from price-action invariants
+# (stop_loss, trailing, single-day-loss, max-hold) or portfolio-level
+# rebalance (kelly_trim, rotation). These ALWAYS fire even inside the
+# earnings window — the price has already moved against us, the
+# blackout doesn't change that.
+MODEL_DRIVEN_EXIT_TYPES: frozenset[str] = frozenset({
+    "model_sell",
+    "panel_conviction",
+})
+
+PATH_DRIVEN_EXIT_TYPES: frozenset[str] = frozenset({
+    "stop_loss",
+    "trailing_stop",
+    "single_day_loss",
+    "max_hold",
+    "kelly_trim",
+    "rotation",
+})
+
+
 class PrepareHoldingTask(Task):
     """Validate holding + price; attach prev_close.
 
@@ -393,17 +424,15 @@ class EarningsBlackoutSellTask(Task):
 
     name = "EarningsBlackoutSellTask"
 
-    # Path-action exits never blocked. Mirrors SellGateBTask's exemption list
-    # plus rotation/kelly_trim which are portfolio-level decisions, not
-    # model-driven sells. Update this set if a new exit_type is introduced.
-    _MODEL_DRIVEN_EXIT_TYPES = frozenset({"model_sell", "panel_conviction"})
-
     def run(self, tc: TickerInferenceContext) -> bool | None:
         sig = getattr(tc, "exit_signal", None)
         if sig is None or not sig.should_exit:
             return
 
-        if sig.exit_type not in self._MODEL_DRIVEN_EXIT_TYPES:
+        # Use module-level taxonomy (single source of truth — see header).
+        # Adding a new exit_type elsewhere requires updating the taxonomy
+        # too, otherwise the new type silently bypasses this gate.
+        if sig.exit_type not in MODEL_DRIVEN_EXIT_TYPES:
             return  # path-action rule — exempt
 
         regime_cfg = tc.config.get("regime", {})

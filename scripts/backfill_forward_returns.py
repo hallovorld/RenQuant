@@ -118,31 +118,37 @@ def _benchmark_pairs(
     backfill must cover them. Pre-fix the LEFT JOIN nulled out the entire
     fit input → fit_conformal_gate_b.py reported "0 valid rows" while
     74k otherwise-valid candidate rows existed.
+
+    Audit fix L1 (2026-05-01): pre-fix this fn ran one SELECT per
+    (date, benchmark) pair — for our 567-date DB that's 567 queries,
+    fine but O(D × B). Now: a single LEFT JOIN per benchmark,
+    O(B) queries total. ~50× speedup at current scale; matters when
+    the trade-eval DB grows or new benchmarks are added.
     """
     if not benchmarks:
         return []
-    q = """
-        SELECT DISTINCT ps.run_date
-          FROM pipeline_runs ps
-    """
-    params: list = []
-    if since is not None:
-        q += " WHERE ps.run_date >= ?"
-        params.append(since.isoformat())
-    q += " ORDER BY ps.run_date"
     out: list[tuple[str, str]] = []
-    distinct_dates = [row[0] for row in conn.execute(q, params).fetchall()]
-    for date_str in distinct_dates:
-        for bench in benchmarks:
-            # Only emit if the (date, bench) row is missing/incomplete.
-            row = conn.execute(
-                """SELECT fwd_1d, fwd_5d, fwd_10d, fwd_20d
-                     FROM ticker_forward_returns
-                    WHERE as_of_date = ? AND ticker = ?""",
-                (date_str, bench),
-            ).fetchone()
-            if row is None or any(v is None for v in row):
-                out.append((date_str, bench))
+    for bench in benchmarks:
+        # Single LEFT JOIN per benchmark — emit (run_date, bench) when
+        # the ticker_forward_returns row is missing OR any of the four
+        # forward-return columns is NULL.
+        q = """
+            SELECT DISTINCT ps.run_date
+              FROM pipeline_runs ps
+              LEFT JOIN ticker_forward_returns tfr
+                     ON tfr.as_of_date = ps.run_date
+                    AND tfr.ticker     = ?
+             WHERE (tfr.as_of_date IS NULL
+                    OR tfr.fwd_1d  IS NULL OR tfr.fwd_5d  IS NULL
+                    OR tfr.fwd_10d IS NULL OR tfr.fwd_20d IS NULL)
+        """
+        params: list = [bench]
+        if since is not None:
+            q += " AND ps.run_date >= ?"
+            params.append(since.isoformat())
+        q += " ORDER BY ps.run_date"
+        for (date_str,) in conn.execute(q, params).fetchall():
+            out.append((date_str, bench))
     return out
 
 

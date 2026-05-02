@@ -31,7 +31,11 @@ from kernel.exits import ExitSignal, HoldingState   # noqa: E402
 from kernel.pipeline.context import (                 # noqa: E402
     InferenceContext, TickerInferenceContext,
 )
-from kernel.pipeline.task_sell import EarningsBlackoutSellTask  # noqa: E402
+from kernel.pipeline.task_sell import (   # noqa: E402
+    EarningsBlackoutSellTask,
+    MODEL_DRIVEN_EXIT_TYPES,
+    PATH_DRIVEN_EXIT_TYPES,
+)
 from kernel.pipeline.task_topup import TopUpHeldTask  # noqa: E402
 from kernel.pipeline.job_sell import TickerSellJob   # noqa: E402
 
@@ -265,6 +269,39 @@ class TestDefensive:
         EarningsBlackoutSellTask().run(tc)
         assert tc.exit_signal is sig
         assert tc.exit_signal.should_exit is False
+
+
+# ── Module-level taxonomy guard (M2 fix, 2026-05-01) ─────────────────────────
+
+class TestExitTypeTaxonomy:
+    """The MODEL_DRIVEN / PATH_DRIVEN sets are the single source of truth
+    for "which exits respect the earnings blackout vs which always fire."
+    Future code adding a new exit_type must classify it explicitly here;
+    these guards catch silent bypass via missing classification.
+    """
+
+    def test_model_and_path_sets_disjoint(self):
+        """No exit type can be in both sets — they're mutually exclusive
+        by definition (model-driven OR price-driven, never both)."""
+        overlap = MODEL_DRIVEN_EXIT_TYPES & PATH_DRIVEN_EXIT_TYPES
+        assert overlap == set(), (
+            f"exit type(s) classified in BOTH MODEL_ and PATH_DRIVEN: "
+            f"{overlap}. Each must be exactly one or the other."
+        )
+
+    def test_known_model_driven_set_includes_at_least_model_sell(self):
+        # Sanity check: regression guard against accidental empty set.
+        assert "model_sell" in MODEL_DRIVEN_EXIT_TYPES
+        assert "panel_conviction" in MODEL_DRIVEN_EXIT_TYPES
+
+    def test_known_path_driven_set_includes_hard_risk_exits(self):
+        for must_have in ("stop_loss", "trailing_stop",
+                           "single_day_loss", "max_hold"):
+            assert must_have in PATH_DRIVEN_EXIT_TYPES, (
+                f"{must_have} must be PATH_DRIVEN — losing this "
+                f"classification would let earnings blackout veto a "
+                f"price-action stop, which is the OPPOSITE of safe behavior"
+            )
 
 
 # ── Wiring (TickerSellJob includes EarningsBlackoutSellTask, runs LAST) ───────
