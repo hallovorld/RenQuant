@@ -5,66 +5,110 @@ architectural change from `main` so production stays clean. Merge back
 to main only after the experiment validates (per CLAUDE.md §5.2 — sanity
 check every claim) AND survives B2 hold-out (per roadmap §B2).
 
+**Convention:** branches under `exp/` are isolated worktrees, never
+merged trivially. Each carries a design doc on its own branch and a
+pointer here on main.
+
 ---
 
-## `exp/wl500-and-sector-arch` — per-sector sub-model architecture
+## `exp/wl500-and-sector-arch` — sector-aware multi-layer architecture (active)
 
 **Started:** 2026-05-01
-**Branch base:** `main` @ `2874698` (M3 conformal Gate B fitted artifact)
-**Worktree:** `/tmp/renquant-wl500-exp` (developer-local; recreate via
-`git worktree add /tmp/renquant-wl500-exp exp/wl500-and-sector-arch`)
+**Worktree:** `/tmp/renquant-wl500-exp`
+**Lead doc on branch:** `doc/research/per-sector-architecture-plan.md`
 
 ### Why
-Watchlist expansion has been blocked by **failed-experiments E5 / E17 / E21**
-(see `doc/research/failed-experiments-log.md`):
+Watchlist expansion past 178 tickers has been blocked twice by E17/E21
+(OOS IC went negative on heterogeneous universes). Phase 0 diagnostic on
+2026-05-01 confirmed via KS test that ALL 28 sector pairs in wl178 have
+median KS ≥ 0.30 — Witter 2025 mechanism (rank-pairwise loss degrades on
+heterogeneous distributions) is the actual cause.
 
-- Two independent expansion attempts (B1=227 mutual-fund-spec, wl178=quality-filter)
-  both produced **negative or near-zero OOS IC** when retraining the existing
-  cross-sectional rank-pairwise panel-LTR on heterogeneous universes.
-- Diagnosis (E17): the rank-pairwise loss assumes universe homogeneity in
-  feature distribution. Adding sectors (financials / industrials / energy /
-  consumer) to a tech-heavy 103 ticker baseline breaks the rank ordering;
-  even train IC drops, so it's not just generalization — model can't fit.
-- Direct conclusion: **list expansion alone cannot work on the current
-  architecture.** Closing the path forward requires per-sector or
-  sector-aware modeling.
+### Architecture (post literature audit, design v2)
 
-### What this branch is doing
-1. Pulled broader universe (Russell 1000 = 1,009 tickers, via iShares IWB
-   ETF holdings CSV) → `scripts/watchlist_universe.json`.
-2. Designed per-sector sub-model architecture (one rank-pairwise ranker
-   per GICS sector, inference routes by ticker-sector lookup, scores
-   compared via per-sector percentile).
-3. Built skeleton `kernel/panel_pipeline/` job + tasks for the sector-aware
-   path. Default off (legacy single-panel path remains the production
-   default until validation lands).
-4. Will dispatch OHLCV backfill for new universe tickers in background
-   (long-running, non-blocking).
-5. Validates via B2 hold-out (`scripts/holdout_backtest.py` already on
-   main) before any merge proposal.
+Five-layer pipeline; each layer flag-gated for independent A/B:
 
-### How to continue work on this branch
+| Layer | Status | Reference |
+|---|---|---|
+| L1 — per-`(date, sector)` rank-norm | ✅ helper + Task wired (training + inference) | qlib `CSRankNorm` |
+| L2 — sector as model conditioning | ⏳ next commit | Gu-Kelly-Xiu 2020 |
+| L3 — Temporal Graph Convolution | ⏳ Phase C, NN backend | Feng et al. 2019 |
+| L4 — Soft MoE (sector-group gating) | ⏳ Phase D, NN backend | MIGA 2024 |
+| L5 — Empirical-Bayes shrinkage | ✅ helper landed | Robbins 1956, Efron-Morris 1973 |
+
+Hard-split per-sector approach (the original v1 design) was **rejected**
+based on Witter 2025 (JMS Vol. 10(3)): paper ran exactly that A/B and
+showed pooled beats per-sector. Audit also surveyed qlib, alpha-mind,
+MIGA, FSTGAT — none use hard splits.
+
+### Commits on this branch (newest first)
+- `dad3781` fix(audit): M1 — extract `RAW_FACTOR_COLS_FOR_NORM` shared constant
+- `936aedd` feat(layer1): wire SectorRankNormalizeTask into inference path
+- `c6b8047` feat(layer1): SectorRankNormalizeTask wired into PanelAssemblyJob
+- `82c464f` feat(layer5): EB-shrinkage helpers + 17 tests
+- `0917c14` feat(layer1): cross_sectional_rank_within_sector helper + 16 tests
+- `ae9ecdb` feat(audit): wl178 failure diagnostic + universe builder + design v2
+
+### Background tasks running
+- **A/A retrain** (started 2026-05-01 21:43 PT) — both halves of wl178 random split. Half A in calibrator phase; half B in PanelFeatureJob. Logs at `/tmp/aa_half_a.log`, `/tmp/aa_half_b.log`. Confirms Witter mechanism if both halves recover ≈ +0.04 IC.
+- **Universe OHLCV fetch** (started 2026-05-01 22:21 PT) — pulling 5y daily bars for 793 missing Russell-1000 tickers. Network-bound; no CPU contention with A/A. Log at `/tmp/universe_fetch.log`.
+
+### Merge criteria (gates before PR back to main)
+- [ ] Per-sector path beats single-panel baseline on B2 hold-out by ≥ +1 APY pt (Layer 1+2 alone), ≥ +2 (Layer 3 graph), ≥ +4 (Layer 4 MoE)
+- [ ] OOS Spearman IC ≥ +0.0418 on the wl178 universe (rules out E17/E21 regression)
+- [ ] Train IC ≥ +0.118 (rules out "model can't fit" — wl178 sat at +0.085)
+- [ ] All hard acceptance gates green
+- [ ] Full test suite green on this branch
+- [ ] Sectors with <20 tickers route to general-pool fallback cleanly (no inference-time crash)
+
+### Recovery
 ```bash
-# From repo root
-git worktree add /tmp/renquant-wl500-exp exp/wl500-and-sector-arch  # if worktree gone
-cd /tmp/renquant-wl500-exp
-# Work...
-git push -u origin exp/wl500-and-sector-arch  # if remote tracking needed
+git worktree add /tmp/renquant-wl500-exp exp/wl500-and-sector-arch
+mkdir -p /tmp/renquant-wl500-exp/data
+ln -s $(pwd)/data/ohlcv /tmp/renquant-wl500-exp/data/ohlcv
 ```
 
-### Merge criteria (do not merge until ALL of these clear)
-- [ ] Per-sector ranker beats single-panel baseline on B2 hold-out by ≥ +2 APY pts
-- [ ] OOS Spearman IC ≥ +0.0418 (current production with wl103) — must NOT
-      regress; expansion only adds value if IC holds or improves
-- [ ] Train IC ≥ +0.118 (rules out "model can't fit" failure mode that
-      sank wl178)
-- [ ] Full test suite green on the experimental branch
-- [ ] Each sector-sub-model has at least 30 tickers or fall-back to a
-      "general" bucket — under-populated sectors must not break inference
-- [ ] Acceptance gates pass on production-config retrain with the new path
+---
 
-### Status
-🔴 Branch created; design doc + skeleton in flight. No production impact.
-Track progress via:
-- `doc/research/per-sector-architecture-plan.md` (on branch)
-- `git log exp/wl500-and-sector-arch` (commits)
+## `exp/b2-baseline-wl103` — baseline B2 hold-out reference (active)
+
+**Started:** 2026-05-01
+**Worktree:** `/tmp/renquant-b2-baseline`
+**Purpose:** establishes the apples-to-apples Layer-1-OFF baseline number that the sector-aware experiment compares against. Train wl103 (production) with `sample_end = 2024-12-31`; sim 2025-01-02 → 2026-04-30.
+
+This baseline is **not yet dispatched** — waiting until A/A clears its
+heaviest CPU phase (~10-20 min) so the two trainers don't oversubscribe
+the M2 Pro cores.
+
+### How to dispatch when ready
+```bash
+cd /tmp/renquant-b2-baseline
+python scripts/holdout_backtest.py \
+  --strategy-config-name strategy_config.golden.json \
+  --train-end 2024-12-31 --sim-start 2025-01-02 --sim-end 2026-04-30 \
+  > /tmp/b2_baseline.log 2>&1 &
+```
+
+Expected wallclock: ~30-60 min. Output JSON at
+`/tmp/renquant-b2-baseline/data/holdout_results/2024-12-31.json`.
+
+---
+
+## Future planned branches (not yet created)
+
+| Branch | Purpose | Trigger |
+|---|---|---|
+| `exp/per-sector-categorical` | Phase A.4 — `gics_sector` as XGBoost categorical | After A/A confirms diagnostic |
+| `exp/graph-attention-nn` | Phase C — Feng 2019 TGC, NN backend | After Layer 1+2 validated |
+| `exp/miga-moe` | Phase D — MIGA 2024 soft MoE, NN backend | After Layer 3 validated |
+| `exp/macro-v3-isolation` | Quarantine the in-flight macro/embedding WIP currently uncommitted on main, get main green | Anytime — pure refactor |
+
+---
+
+## Process notes
+
+- **Always create via `git worktree add`** — keeps main checkout clean.
+- **Always `mkdir -p worktree/data && ln -s repo/data/ohlcv`** — data dir is gitignored, must be symlinked into the worktree.
+- **Dispatch long-running training with `run_in_background`** and tail logs at `/tmp/<descriptor>.log`. Don't poll — wait for task notifications.
+- **Each branch carries its own design doc** in `doc/research/`. The pointer here on main only summarizes; the source of truth is on the branch.
+- **Pre-existing failures landscape (as of 2026-05-01 main)**: 13 tests fail on the macro v3 / asset-embeddings WIP that's currently uncommitted on main (`backtesting/.../macro_per_ticker.py`, `feature_matrix.py`, `tests/test_panel_bugfixes.py`). These are NOT introduced by recent commits; they came along with WIP that should be moved to its own branch.
