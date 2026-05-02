@@ -8,6 +8,89 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E_LAYER1_ALONE. Sector-rank-norm alone insufficient on wl178
+
+**Date**: 2026-05-01
+**Type**: partial structural negative — single-layer fix doesn't close gap
+**Production impact**: none (experimental branch; main wl103 unchanged)
+**Branch**: `exp/wl500-and-sector-arch`
+
+### Hypothesis
+After Phase 0 diagnostic confirmed wl178 sector heterogeneity (KS ≥ 0.30 across all 28 sector pairs), Layer-1 of the design-v2 architecture (per-`(date, sector)` percentile rank columns appended to the existing `_z` global z-score) should restore OOS panel IC to ≈ wl103 production baseline (+0.0418).
+
+### Implementation
+- `cross_sectional_rank_within_sector` helper in `training_panel/factors.py` — qlib-CSRankNorm-style per-`(date, sector)` percentile in [0, 1].
+- `SectorRankNormalizeTask` in `training_panel/pp_panel_training.py` — appends `{col}_sr` columns to factor_frames after FactorZScoreTask, in BOTH `PanelAssemblyJob` (training) and `prepare_inference_panel_frames` (inference). Default OFF; flag `panel_ltr.sector_rank_norm.enabled`.
+- `RAW_FACTOR_COLS_FOR_NORM` shared module constant — single source of truth for which raw columns get cross-sectional normalization. Both FactorZScoreTask and SectorRankNormalizeTask read from it (audit fix M1).
+- Test coverage: 16 helper tests + 11 task tests + 1 inference plumbing test, all green.
+
+### Data (CPCV 15-fold, wl178 panel, 178 tickers, daily resolution, 2024-2026 window)
+
+Reference series for context (all panel-LTR, XGBoost rank:pairwise, same hyperparams):
+
+| Experiment | Layer 1 | Layer 2 | train_ic | CPCV mean_ic | n_splits | Status |
+|---|---|---|---:|---:|---:|---|
+| Production wl103 | off | off | +0.118 | **+0.0418** | 15 | reference |
+| A/A half A (wl178/2) | off | off | +0.116 | +0.0004 | 15 | completed |
+| A/A half B (wl178/2) | off | off | +0.085 | +0.0136 | 15 | guard_fired |
+| **wl178 Layer 1** | **10 cols** | off | +0.069 | **−0.0008** | 15 | **guard_fired** |
+
+The Layer-1 retrain landed CPCV mean_ic = −0.0008 — within ±1.5σ of A/A baseline (−0.0008 vs +0.0004 / +0.0136 for the two A/A halves; pooled std ≈ 0.020). Layer 1 alone produced **no detectable lift** despite individual `_sr` features showing IC up to +0.0353 (resid_mom_sr) on the within-date diagnostic.
+
+### Sanity / falsification
+- ✅ Layer 1 fired: `SectorRankNormalizeTask: added 1780 (ticker × _sr column) entries across 178 tickers, 10 feature cols`. Tasks ran. Implementation verified by:
+  - 16 unit tests on the helper (range invariant, sector relativity, NaN propagation, A/A test, determinism).
+  - 11 Task tests (default-off no-op, sector relativity under 100× scale gap, defensive paths).
+  - Per-feature IC diagnostic logged inside the retrain — `*_sr` cols carried real signal individually.
+- ✅ Compared against A/A baseline (random splits of same wl178 universe), not against fundamentally different baseline.
+- ✅ Same XGBoost hyperparams, CPCV folds, eval set.
+
+### Why the individual `_sr` IC doesn't aggregate
+Single-feature IC ranges +0.035 (resid_mom_sr) down to −0.008 (beta_60d_sr). Yet ensemble CPCV is essentially zero. Plausible mechanisms:
+
+1. **Redundancy with `_z`**: `_z` and `_sr` carry overlapping information (same underlying raw value, different normalization). Tree splits on `_sr` are masked by earlier `_z` splits — added `_sr` is mostly noise to the ensemble.
+2. **Heterogeneity persists in the LABEL**: forward-return distributions across sectors are still heterogeneous; cross-sectional rank label can't be made comparable by feature normalization alone.
+3. **Ensemble overfit on small sample**: 178-ticker × 750-date panel produces enough rows for a tree to memorize without generalizing.
+
+Not yet falsified — need Layer 1 + Layer 2 (sector identity) to test whether explicit sector anchoring helps the model carve per-sector decision regions. That experiment dispatched 23:13 PT 2026-05-01.
+
+### Conclusion
+**Layer 1 (sector rank-norm alongside global z-score) is INSUFFICIENT to close the wl178 OOS-IC gap to wl103 baseline.** Not a complete failure — the helper code is correct, the integration is clean, default-off compat preserved. But on its own this layer doesn't move the needle.
+
+Next steps (gating Layer 1+2 result):
+- If Layer 1+2 also fails (mean_ic ~0): escalate to NN backend (Phase C / Phase D, Feng 2019 / MIGA 2024).
+- If Layer 1+2 succeeds (mean_ic > +0.020): ship; keep Layer 3+4 as future ceiling work.
+- Either way, document in this log + mark merge criteria accordingly.
+
+### Reproduction
+```bash
+# In the exp/wl500-and-sector-arch worktree:
+python -c "
+import json
+cfg = json.load(open('backtesting/renquant_104/strategy_config.wl178.json'))
+cfg.setdefault('panel_ltr', {}).setdefault('sector_rank_norm', {})['enabled'] = True
+open('backtesting/renquant_104/strategy_config.wl178_layer1.json', 'w').write(json.dumps(cfg, indent=2))
+"
+python scripts/train_104.py \
+  --strategy-config-name strategy_config.wl178_layer1.json \
+  --skip-baseline --skip-recalibrate --force --skip-acceptance \
+  > /tmp/wl178_layer1.log 2>&1
+
+python scripts/compare_panel_experiments.py --logs /tmp/wl178_layer1.log
+# Expect: cpcv_mean_ic ≈ -0.0008 ± 0.020
+```
+
+### Files
+- `backtesting/renquant_104/training_panel/factors.py::cross_sectional_rank_within_sector`
+- `backtesting/renquant_104/training_panel/pp_panel_training.py::SectorRankNormalizeTask`
+- `backtesting/renquant_104/strategy_config.wl178_layer1.json`
+- Log: `/tmp/wl178_layer1.log`
+
+### Status
+🟡 **Partial — superseded by Layer 1+2 experiment in flight.** Final classification (failed / superseded / inconclusive) blocks on Layer 1+2 result.
+
+---
+
 ## E1. M2 horizon-blender v3 — learned and fixed-weight blends BOTH lose to single best horizon
 
 **Date**: 2026-04-28
