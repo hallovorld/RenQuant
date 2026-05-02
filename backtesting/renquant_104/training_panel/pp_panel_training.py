@@ -1487,6 +1487,37 @@ class SectorRankNormalizeTask(PanelTask):
                         fac = fac.drop(columns=z_cols_to_drop)
                 ctx.factor_frames[ticker] = fac
 
+        # BUG 4 fix (2026-05-01 evening triage of Layer 1+2 retrain crash):
+        # when replace_z=True drops _z columns, the strategy_config's
+        # `monotone_constraints` dict still references *_z keys that no
+        # longer exist in the panel — PanelLTRModel.train() validates
+        # constraint keys ⊆ feature_cols and loud-errors. Rewrite the
+        # constraints dict in-place so *_z keys map to their _sr
+        # counterparts. Economic priors carry over (a +1 monotone
+        # constraint on mom_12_1_z meaning "higher momentum z-score →
+        # higher predicted rank" is equally valid for mom_12_1_sr —
+        # the percentile preserves the order of the underlying value).
+        if replace_z and isinstance(ctx.config, dict):
+            mc = ctx.config.get("monotone_constraints")
+            if isinstance(mc, dict) and mc:
+                renamed: dict[str, int] = {}
+                n_renamed = 0
+                for k, v in mc.items():
+                    if k.endswith("_z"):
+                        base = k[:-2]
+                        if base in RAW_FACTOR_COLS_FOR_NORM:
+                            renamed[f"{base}_sr"] = int(v)
+                            n_renamed += 1
+                            continue
+                    renamed[k] = v
+                ctx.config["monotone_constraints"] = renamed
+                if n_renamed:
+                    log.info(
+                        "SectorRankNormalizeTask: replace_z mode — renamed "
+                        "%d monotone_constraints keys from _z to _sr",
+                        n_renamed,
+                    )
+
         log.info(
             "SectorRankNormalizeTask: added %d (ticker × _sr column) entries "
             "across %d tickers, %d feature cols "

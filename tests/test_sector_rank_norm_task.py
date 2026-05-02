@@ -282,6 +282,45 @@ class TestReplaceZMode:
             # is preserved (no _sr counterpart, so not redundant).
             assert "other_col_z" in df.columns
 
+    def test_replace_z_renames_monotone_constraints_to_sr(self):
+        """BUG 4 (2026-05-01): when replace_z drops _z columns, the
+        strategy_config's monotone_constraints still referenced the
+        _z keys → PanelLTRModel.train() validation loud-errored.
+
+        Fix: when replace_z=True, the Task rewrites monotone_constraints
+        in-place so *_z keys (whose base is in RAW_FACTOR_COLS_FOR_NORM)
+        get renamed to *_sr. Economic priors carry over — a +1 monotone
+        constraint on mom_12_1_z means "higher momentum → higher rank,"
+        equally valid for mom_12_1_sr since percentile preserves
+        order of the underlying value.
+        """
+        ctx = self._ctx_with_replace_z(replace_z=True)
+        # Simulate the strategy_config carrying _z monotone constraints
+        ctx.config["monotone_constraints"] = {
+            "mom_12_1_z":  1,
+            "size_z":     -1,
+            "other_z":     1,   # NOT in RAW_FACTOR_COLS_FOR_NORM — preserved as-is
+            "fund_thing":  1,   # not _z suffixed — preserved as-is
+        }
+        SectorRankNormalizeTask().run(ctx)
+        mc = ctx.config["monotone_constraints"]
+        # _z keys for cols in RAW_FACTOR_COLS_FOR_NORM renamed to _sr
+        assert "mom_12_1_z" not in mc, "mom_12_1_z should be renamed"
+        assert "size_z" not in mc,     "size_z should be renamed"
+        assert mc["mom_12_1_sr"] == 1, "monotone sign carries over"
+        assert mc["size_sr"]    == -1, "monotone sign carries over"
+        # _z keys NOT in RAW_FACTOR_COLS_FOR_NORM stay
+        assert mc["other_z"] == 1, "non-managed _z keys preserved"
+        # Non-_z keys untouched
+        assert mc["fund_thing"] == 1
+
+    def test_no_rename_when_replace_z_disabled(self):
+        ctx = self._ctx_with_replace_z(replace_z=False)
+        ctx.config["monotone_constraints"] = {"mom_12_1_z": 1}
+        SectorRankNormalizeTask().run(ctx)
+        # In augmentation mode, _z still exists → constraint key stays
+        assert ctx.config["monotone_constraints"]["mom_12_1_z"] == 1
+
     def test_replace_z_no_effect_when_sr_missing(self):
         """If _sr wasn't actually added for some col (e.g., col missing
         from raw_factor_frames), the corresponding _z is NOT dropped."""
