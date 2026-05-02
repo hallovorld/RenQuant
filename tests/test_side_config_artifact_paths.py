@@ -48,18 +48,26 @@ def _walk_artifact_paths(obj, path=""):
 
 
 def _side_config_files() -> list[Path]:
-    """All strategy_config.*.json files that have _audit_label set."""
+    """All strategy_config.*.json files except production
+    (strategy_config.json, strategy_config.golden.json).
+
+    Coverage chosen by file name: any non-production config could be
+    invoked via `--strategy-config-name` and clobber production unless
+    its artifact paths are overridden. The original v1 test scoped to
+    `_audit_label`-tagged configs only — but several historical configs
+    (lgbm_*, emb_*, macro_*, wl174, wl178) lack the label and had the
+    same leak. Expanded scope catches them.
+    """
     cfg_dir = REPO_ROOT / "backtesting" / "renquant_104"
     out = []
     for p in cfg_dir.glob("strategy_config.*.json"):
         if p.name in ("strategy_config.json", "strategy_config.golden.json"):
             continue
         try:
-            cfg = json.loads(p.read_text())
+            json.loads(p.read_text())
         except Exception:
             continue
-        if cfg.get("_audit_label"):
-            out.append(p)
+        out.append(p)
     return out
 
 
@@ -72,7 +80,9 @@ def test_at_least_one_side_config_present():
 @pytest.mark.parametrize("config_path", _side_config_files(), ids=lambda p: p.stem)
 def test_side_config_does_not_use_production_artifact_paths(config_path):
     cfg = json.loads(config_path.read_text())
-    label = cfg["_audit_label"]
+    # Fall back to filename stem when _audit_label is missing (older
+    # historical configs don't carry the label).
+    label = cfg.get("_audit_label") or config_path.stem.replace("strategy_config.", "")
     violations = []
     for dotted_path, value in _walk_artifact_paths(cfg):
         if value in PRODUCTION_DEFAULTS:

@@ -1067,7 +1067,7 @@ class TickerPanelFactorJob(PanelTickerJob):
         # Gated on `panel_ltr.pead.enabled` (default false). Three columns:
         # `days_since_earnings`, `pead_decay_weight`, `pead_signal`. The
         # last is the canonical PEAD alpha (Bernard-Thomas 1989, CJL 1996).
-        pead_cfg = ctx.config.get("panel_ltr", {}).get("pead", {}) or {}
+        pead_cfg = tc.config.get("panel_ltr", {}).get("pead", {}) or {}
         if pead_cfg.get("enabled", False):
             try:
                 if tc.earnings_surprises:
