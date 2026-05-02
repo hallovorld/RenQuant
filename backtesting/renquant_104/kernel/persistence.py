@@ -326,6 +326,32 @@ CREATE TABLE IF NOT EXISTS challenger_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_challenger_run    ON challenger_decisions(run_id);
 CREATE INDEX IF NOT EXISTS idx_challenger_window ON challenger_decisions(challenger_name, decision_date);
+
+-- Trade-evaluation table (roadmap §2026-04-26 Phase 1, shipped 2026-05-02).
+-- Re-evaluates every trade at multiple horizons (1d, 5d, 7d, 14d, 28d).
+-- Joining trades × ticker_forward_returns at horizon h gives the realized
+-- forward return; comparing against SPY's same-horizon return gives the
+-- benchmark-relative outcome. Populated by:
+--   * scripts/backfill_trade_evaluations.py (nightly cron, Phase 2)
+--   * record_trade_evaluations() helper for ad-hoc evaluation
+-- Each (run_id, ticker, action, horizon_days) is unique — primary-key
+-- guarantee prevents double-counting on backfill re-runs.
+CREATE TABLE IF NOT EXISTS trade_evaluations (
+    run_id           TEXT    NOT NULL,   -- FK to pipeline_runs.run_id (= trades.run_id)
+    ticker           TEXT    NOT NULL,
+    action           TEXT    NOT NULL,   -- 'buy' or 'sell'
+    horizon_days     INTEGER NOT NULL,   -- 1, 5, 7, 14, 28 (or any positive int)
+    fwd_return       REAL,                -- ticker's realized forward return at horizon
+    fwd_return_spy   REAL,                -- SPY's forward return on same date+horizon
+    relative_return  REAL,                -- fwd_return - fwd_return_spy (excess)
+    is_winner        INTEGER,             -- 1 if relative_return > 0 else 0; NULL if missing
+    n_trade_rows     INTEGER,             -- multiplicity in case of partial sells / top-ups
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (run_id, ticker, action, horizon_days)
+);
+CREATE INDEX IF NOT EXISTS idx_trade_eval_ticker  ON trade_evaluations(ticker);
+CREATE INDEX IF NOT EXISTS idx_trade_eval_horizon ON trade_evaluations(horizon_days);
+CREATE INDEX IF NOT EXISTS idx_trade_eval_run     ON trade_evaluations(run_id);
 """
 
 
@@ -1016,6 +1042,81 @@ def record_forward_returns(
               fwd_10d     = COALESCE(excluded.fwd_10d, fwd_10d),
               fwd_20d     = COALESCE(excluded.fwd_20d, fwd_20d),
               updated_at  = CURRENT_TIMESTAMP""",
+        payload,
+    )
+    return len(payload)
+
+
+def record_trade_evaluations(
+    conn: sqlite3.Connection | None,
+    rows: Iterable[dict],
+) -> int:
+    """Upsert trade_evaluations rows (roadmap §2026-04-26 Phase 1).
+
+    Each row: ``{run_id, ticker, action, horizon_days, fwd_return,
+    fwd_return_spy, relative_return, is_winner, n_trade_rows}``.
+
+    `is_winner` is computed by the caller (1 / 0 / None) so we don't
+    silently re-derive it from `relative_return` here — the caller's
+    intent (e.g. relative-to-benchmark vs absolute) stays explicit.
+
+    On conflict we REPLACE the row — backfill is idempotent. The
+    primary-key (run_id, ticker, action, horizon_days) prevents
+    double-counting when the same (trade, horizon) pair gets re-evaluated.
+
+    Returns the number of rows attempted (not necessarily inserted —
+    SQLite's INSERT OR REPLACE returns 1 for both insert + update).
+    """
+    if conn is None:
+        return 0
+    payload = []
+    for r in rows:
+        try:
+            run_id  = str(r["run_id"])
+            ticker  = str(r["ticker"])
+            action  = str(r["action"])
+            horizon = int(r["horizon_days"])
+        except (KeyError, ValueError, TypeError) as exc:
+            log.warning(
+                "record_trade_evaluations: skipping row missing required "
+                "key (run_id/ticker/action/horizon_days): %s — %s", r, exc,
+            )
+            continue
+        if action not in ("buy", "sell"):
+            log.warning(
+                "record_trade_evaluations: skipping row with invalid action=%r"
+                " (must be 'buy' or 'sell')", action,
+            )
+            continue
+        if horizon <= 0:
+            log.warning(
+                "record_trade_evaluations: skipping row with non-positive "
+                "horizon_days=%r", horizon,
+            )
+            continue
+        payload.append((
+            run_id, ticker, action, horizon,
+            _none_or_float(r.get("fwd_return")),
+            _none_or_float(r.get("fwd_return_spy")),
+            _none_or_float(r.get("relative_return")),
+            _none_or_int(r.get("is_winner")),
+            _none_or_int(r.get("n_trade_rows")),
+        ))
+    if not payload:
+        return 0
+    conn.executemany(
+        """INSERT INTO trade_evaluations
+              (run_id, ticker, action, horizon_days,
+               fwd_return, fwd_return_spy, relative_return,
+               is_winner, n_trade_rows)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(run_id, ticker, action, horizon_days) DO UPDATE SET
+              fwd_return       = COALESCE(excluded.fwd_return,       fwd_return),
+              fwd_return_spy   = COALESCE(excluded.fwd_return_spy,   fwd_return_spy),
+              relative_return  = COALESCE(excluded.relative_return,  relative_return),
+              is_winner        = COALESCE(excluded.is_winner,        is_winner),
+              n_trade_rows     = COALESCE(excluded.n_trade_rows,     n_trade_rows),
+              created_at       = CURRENT_TIMESTAMP""",
         payload,
     )
     return len(payload)
