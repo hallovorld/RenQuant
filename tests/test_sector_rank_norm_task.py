@@ -220,6 +220,34 @@ class TestWiring:
         names = [type(t).__name__ for t in PanelAssemblyJob().tasks]
         assert "SectorRankNormalizeTask" in names
 
+    def test_inference_path_includes_sector_rank_norm(self):
+        """prepare_inference_panel_frames must call SectorRankNormalizeTask
+        AFTER FactorZScoreTask so the inference-time factor_frames carry
+        the same _sr columns the trained model expects.
+
+        Without this, panel scoring at inference time would receive
+        all-NaN _sr columns (the model's feature_cols list expects them
+        but factor_frames don't have them) → drift guard fires → no
+        scores. Source-level check — the function body must reference
+        SectorRankNormalizeTask.
+        """
+        from training_panel import pipeline as tp
+        import inspect
+        src = inspect.getsource(tp.prepare_inference_panel_frames)
+        assert "SectorRankNormalizeTask" in src, (
+            "prepare_inference_panel_frames must run SectorRankNormalizeTask "
+            "after FactorZScoreTask, otherwise inference factor_frames lack "
+            "the _sr columns the trained model expects"
+        )
+        # Also assert order: SectorRankNorm must come AFTER FactorZScore
+        # so factor_frames is populated with _z columns it can use.
+        i_fz  = src.index("FactorZScoreTask")
+        i_srn = src.index("SectorRankNormalizeTask")
+        assert i_fz < i_srn, (
+            "Source ordering: FactorZScoreTask must call before "
+            "SectorRankNormalizeTask in prepare_inference_panel_frames"
+        )
+
     def test_runs_after_factor_zscore_before_labels(self):
         """Order: NeutralizedFeatureZScore → FactorZScore →
         SectorRankNormalize → Labels → BuildHourly → BuildPanel → Diag.

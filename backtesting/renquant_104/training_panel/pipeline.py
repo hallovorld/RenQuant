@@ -18,6 +18,7 @@ from .pp_panel_training import (
     SectorMomentumTask,
     FactorZScoreTask,
     NeutralizedFeatureZScoreTask,
+    SectorRankNormalizeTask,
     LoadFundamentalsTask,
     LoadEarningsSurpriseTask,
     LoadInsiderTradesTask,
@@ -189,6 +190,13 @@ def prepare_inference_panel_frames(
     # PanelAssemblyJob in the training pipeline.
     NeutralizedFeatureZScoreTask().run(ctx)
     FactorZScoreTask().run(ctx)
+    # 2026-05-01 sector-aware: SectorRankNormalizeTask MUST run here too
+    # so inference factor_frames carry the same _sr columns the trained
+    # model expects. Without this, panel_score regresses on missing _sr
+    # cols at inference time → all-NaN drift guard fires → no scores
+    # emitted. Default off (panel_ltr.sector_rank_norm.enabled=False) =
+    # no-op, full backward compat with wl103 production.
+    SectorRankNormalizeTask().run(ctx)
 
     # Bug #25 fix: return macro_frame too so adapters can attach to
     # InferenceContext for cross-section broadcast at scoring time.
