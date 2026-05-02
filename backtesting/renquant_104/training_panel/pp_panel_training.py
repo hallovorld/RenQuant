@@ -1387,6 +1387,15 @@ class SectorRankNormalizeTask(PanelTask):
     # Reads from the module-level RAW_FACTOR_COLS_FOR_NORM single-source-of-truth
     # so adding a new factor column applies BOTH _z and _sr treatment
     # in lockstep. Audit fix M1 (2026-05-01).
+    #
+    # BUG 3 fix (2026-05-01 evening triage of E_LAYER1_ALONE):
+    # ``replace_z`` flag toggles between augmentation (default — keep _z,
+    # add _sr) and SUBSTITUTION (delete _z, replace with _sr). Substitution
+    # eliminates feature redundancy that caused tree ensemble attention
+    # dilution in the first Layer-1 retrain. When the flag is true, after
+    # writing _sr columns we drop the corresponding _z column on each
+    # ticker's frame so the panel sees only one representation per
+    # underlying value.
 
     def run(self, ctx: PanelTrainingContext) -> None:
         cfg = (ctx.config.get("panel_ltr") or {}).get("sector_rank_norm") or {}
@@ -1409,8 +1418,17 @@ class SectorRankNormalizeTask(PanelTask):
             cross_sectional_rank_within_sector,
         )
 
-        min_sector_size  = int(cfg.get("min_sector_size", 5))
+        # BUG 2 fix (2026-05-01 evening triage): default min_sector_size
+        # lowered from 5 to 3. The `5` came from EB-shrinkage math
+        # (Robbins 1956 — order-statistic noise dominates below 5). But
+        # for assignment of the percentile (vs. shrinkage of it), N=3
+        # is enough and saves us from demoting energy(3)/utility(1)/
+        # commodity(1)-style small sectors to global fallback. Layer 5
+        # (EB shrinkage) keeps a separate min for its own use.
+        min_sector_size  = int(cfg.get("min_sector_size", 3))
         fallback_global  = bool(cfg.get("fallback_global", True))
+        # BUG 3 fix: substitution vs augmentation mode (see class docstring).
+        replace_z        = bool(cfg.get("replace_z", False))
 
         # Build per-column input dict from raw_factor_frames
         per_col: dict[str, dict[str, "pd.Series"]] = {}
@@ -1452,16 +1470,29 @@ class SectorRankNormalizeTask(PanelTask):
                     new_cols[new_col] = sr
                     n_cols_added += 1
             if new_cols:
-                ctx.factor_frames[ticker] = pd.concat(
+                fac = pd.concat(
                     [fac, pd.DataFrame(new_cols, index=fac.index)],
                     axis=1, copy=False,
                 )
+                # BUG 3 fix — substitution mode: drop the corresponding _z
+                # columns so the panel sees only ONE representation per
+                # raw factor (eliminates the redundancy that caused tree
+                # attention dilution in the first Layer-1 retrain).
+                if replace_z:
+                    z_cols_to_drop = [
+                        f"{c}_z" for c in RAW_FACTOR_COLS_FOR_NORM
+                        if f"{c}_z" in fac.columns and f"{c}_sr" in fac.columns
+                    ]
+                    if z_cols_to_drop:
+                        fac = fac.drop(columns=z_cols_to_drop)
+                ctx.factor_frames[ticker] = fac
 
         log.info(
             "SectorRankNormalizeTask: added %d (ticker × _sr column) entries "
-            "across %d tickers, %d feature cols (min_sector_size=%d, fallback=%s)",
+            "across %d tickers, %d feature cols "
+            "(min_sector_size=%d, fallback=%s, replace_z=%s)",
             n_cols_added, len(ctx.factor_frames), len(sr_outputs),
-            min_sector_size, fallback_global,
+            min_sector_size, fallback_global, replace_z,
         )
 
 
