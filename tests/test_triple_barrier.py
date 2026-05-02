@@ -200,6 +200,26 @@ class TestLabelsTaskIntegration:
             f"this method takes ctx not tc):\n" + "\n".join(f"  {ln.strip()}" for ln in bad)
         )
 
+    def test_triple_barrier_mode_skips_residualization(self):
+        """E24 fix (2026-05-02): when label_mode='triple_barrier', LabelsTask
+        must NOT call compute_residual_returns (which mixes fixed-horizon
+        spy_fwd with variable-horizon ticker_fwd → corrupted labels). Must
+        use raw barrier-hit returns directly as raw_residuals.
+        """
+        src_path = REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "pp_panel_training.py"
+        src = src_path.read_text()
+        idx = src.find("class LabelsTask(PanelTask):")
+        block = src[idx:idx + 5000]
+        # The triple_barrier branch must skip residualization
+        assert "triple_barrier mode — skipping residualization" in block, (
+            "LabelsTask must explicitly log when skipping residualization for "
+            "triple_barrier (E24 fix). Found block:\n" + block[-2500:]
+        )
+        # The fwd_returns must be assigned directly to raw_residuals on that path
+        assert "raw_residuals = {t: s.copy() for t, s in fwd_returns.items()}" in block, (
+            "triple_barrier branch must set raw_residuals = fwd_returns directly"
+        )
+
     def test_label_mode_default_is_fwd_5d(self):
         """When label_mode is not set, behaviour must be unchanged from
         production (close-to-close at lookahead_days). Static check via
