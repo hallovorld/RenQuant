@@ -167,6 +167,54 @@ class TestSampleWeights:
             assert (upper_rows["sample_weight"] == 1.0).all()
 
 
+class TestLabelsTaskIntegration:
+    """Smoke: the triple-barrier branch in LabelsTask.run() must not crash.
+
+    Pre-class-of-bug: PEAD shipped with `ctx.config` referenced as `tc.config`
+    and 103/103 ticker chains failed (NameError). That bug class was caught
+    only by an integration smoke test, not by unit tests on the pure
+    function. Apply the same defense here for the triple-barrier wiring.
+    """
+
+    def test_labels_task_uses_ctx_not_tc(self):
+        """Static check: the triple-barrier branch in LabelsTask references
+        ctx.config / ctx.ohlcv / ctx.watchlist (not tc.* — wrong scope).
+        """
+        src_path = REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "pp_panel_training.py"
+        src = src_path.read_text()
+        # Locate the LabelsTask.run body
+        idx = src.find("class LabelsTask(PanelTask):")
+        assert idx != -1, "LabelsTask not found"
+        # Take the next 3000 chars (covers the run method)
+        block = src[idx:idx + 3000]
+        # The triple_barrier wiring must use ctx (not tc)
+        assert "label_mode == \"triple_barrier\"" in block, (
+            "triple_barrier branch missing in LabelsTask"
+        )
+        # No tc.config / tc.ohlcv / tc.watchlist refs in this scope
+        bad = [ln for ln in block.splitlines() if any(
+            f"tc.{attr}" in ln for attr in ("config", "ohlcv", "watchlist")
+        )]
+        assert not bad, (
+            f"LabelsTask triple_barrier branch references tc.* (wrong scope; "
+            f"this method takes ctx not tc):\n" + "\n".join(f"  {ln.strip()}" for ln in bad)
+        )
+
+    def test_label_mode_default_is_fwd_5d(self):
+        """When label_mode is not set, behaviour must be unchanged from
+        production (close-to-close at lookahead_days). Static check via
+        source: the default branch must be the 'else' (close.shift)."""
+        src_path = REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "pp_panel_training.py"
+        src = src_path.read_text()
+        idx = src.find("class LabelsTask(PanelTask):")
+        block = src[idx:idx + 3000]
+        # Default must be fwd_5d (so omitting label_mode → unchanged)
+        assert 'label_mode = str(cfg.get("label_mode", "fwd_5d"))' in block, (
+            "Default label_mode must be 'fwd_5d' to keep production behaviour "
+            "unchanged when the key is omitted from config."
+        )
+
+
 class TestConfig:
 
     def test_default_config(self):
