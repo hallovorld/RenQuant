@@ -110,6 +110,112 @@ def compute_residual_returns(
     return out
 
 
+def compute_residual_returns_hit_aligned(
+    fwd_returns: dict[str, pd.Series],
+    hit_days: dict[str, pd.Series],
+    spy_close: pd.Series,
+    sector_close_by_ticker: dict[str, pd.Series],
+    *,
+    beta_window: int = 60,
+    purge_days: int = 10,
+) -> dict[str, pd.Series]:
+    """Hit-time-matched residualization for variable-horizon (e.g.
+    triple-barrier) forward returns.
+
+    For each (ticker, date) row, the ticker's forward return was
+    realised at t + hit_days[t] (variable, 1..max_horizon_days). To
+    residualize against benchmarks, we compute SPY and sector forward
+    returns over THE SAME variable horizon — not a fixed window.
+
+    Mathematically::
+
+        spy_fwd_i,t = spy_close[t + hd_i,t] / spy_close[t] - 1
+        sec_fwd_i,t = sec_close[t + hd_i,t] / sec_close[t] - 1
+        residual_i,t = fwd_i,t − β_spy_i,t · spy_fwd_i,t − β_sec_i,t · sec_fwd_orth_i,t
+
+    The β's are still rolling-OLS-purged (same as compute_residual_returns)
+    using purge_days = max possible hit horizon (caller passes max_horizon_days
+    from triple-barrier config) so no future bar leaks into β estimation.
+
+    Sector orthogonalization (Frisch-Waugh-Lovell) preserved from
+    fixed-horizon variant — sec_fwd is orthogonalized against spy_fwd
+    before β_sec fit, so the joint residual ≡ OLS residual on [spy, sec].
+
+    Why this matters: previous (incorrect) E24 attempt used fixed
+    `lookahead`-day spy_fwd against variable-horizon ticker_fwd → mixed
+    horizons in OLS produced anti-predictive labels (eval_ic=−0.0744).
+    """
+    out: dict[str, pd.Series] = {}
+    spy_close = spy_close.astype(float)
+
+    for t, fwd in fwd_returns.items():
+        fwd = fwd.astype(float)
+        hd = hit_days.get(t)
+        if hd is None:
+            out[t] = pd.Series(np.nan, index=fwd.index)
+            continue
+
+        # Build per-row spy_fwd and sec_fwd by walking each row and
+        # picking the appropriate forward-window endpoint. Reindex SPY
+        # to the ticker's index so we can use positional offsets safely.
+        spy_aligned = spy_close.reindex(fwd.index).astype(float)
+        spy_fwd = pd.Series(np.nan, index=fwd.index, dtype=float)
+
+        n = len(fwd.index)
+        hd_arr = hd.reindex(fwd.index).to_numpy()
+        spy_arr = spy_aligned.to_numpy()
+        spy_fwd_arr = np.full(n, np.nan, dtype=float)
+        for i in range(n):
+            d_i = hd_arr[i]
+            if not np.isfinite(d_i):
+                continue
+            j = i + int(d_i)
+            if j >= n or not np.isfinite(spy_arr[i]) or not np.isfinite(spy_arr[j]) or spy_arr[i] == 0:
+                continue
+            spy_fwd_arr[i] = spy_arr[j] / spy_arr[i] - 1.0
+        spy_fwd[:] = spy_fwd_arr
+
+        # Sector — same hit-time alignment if sector close is available
+        sec_close = sector_close_by_ticker.get(t)
+        sec_fwd: "pd.Series | None" = None
+        if sec_close is not None:
+            sec_aligned = sec_close.reindex(fwd.index).astype(float)
+            sec_arr = sec_aligned.to_numpy()
+            sec_fwd_arr = np.full(n, np.nan, dtype=float)
+            for i in range(n):
+                d_i = hd_arr[i]
+                if not np.isfinite(d_i):
+                    continue
+                j = i + int(d_i)
+                if j >= n or not np.isfinite(sec_arr[i]) or not np.isfinite(sec_arr[j]) or sec_arr[i] == 0:
+                    continue
+                sec_fwd_arr[i] = sec_arr[j] / sec_arr[i] - 1.0
+            sec_fwd = pd.Series(sec_fwd_arr, index=fwd.index)
+
+        # β estimation: same purged rolling OLS as fixed-horizon variant.
+        # Purge = max possible hit horizon (passed in via purge_days) so
+        # no overlap between current bar's label window and prior β
+        # estimation window.
+        beta_spy = _rolling_beta_purged(
+            fwd, spy_fwd, window=beta_window, purge=purge_days,
+        )
+        residual = fwd - beta_spy * spy_fwd
+
+        if sec_fwd is not None:
+            # Frisch-Waugh-Lovell sector orthogonalization
+            beta_sec_on_spy = _rolling_beta_purged(
+                sec_fwd, spy_fwd, window=beta_window, purge=purge_days,
+            )
+            sec_fwd_orth = sec_fwd - beta_sec_on_spy * spy_fwd
+            beta_sec = _rolling_beta_purged(
+                fwd, sec_fwd_orth, window=beta_window, purge=purge_days,
+            )
+            residual = residual - beta_sec * sec_fwd_orth
+
+        out[t] = residual
+    return out
+
+
 def gaussianize_cross_section(
     residuals: dict[str, pd.Series],
 ) -> dict[str, pd.Series]:
