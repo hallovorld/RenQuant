@@ -1465,6 +1465,123 @@ class SectorRankNormalizeTask(PanelTask):
         )
 
 
+class SectorOneHotTask(PanelTask):
+    """Layer-2 sector conditioning — append one-hot sector indicator columns.
+
+    Why
+    ---
+    Per Gu-Kelly-Xiu 2020 (RFS, "Empirical Asset Pricing via Machine
+    Learning"), industry indicators as model inputs are a standard and
+    effective sector-conditioning signal. Tree models (XGBoost, our
+    backend) split on individual binary columns, so a sector_<name>=1
+    indicator gives the ranker an explicit "sector identity" signal it
+    can split on alongside the _sr (sector-rank-normalized, Layer 1) and
+    _z (global-z-score, original) features.
+
+    Layer 2 stacks ON TOP of Layer 1: with both flags on, the model sees
+    BOTH sector-identity (`sector_*`) AND sector-relative percentile
+    (`*_sr`) AND global z-score (`*_z`) — and can pick which
+    representation to split on per tree node. Three orthogonal sector
+    encodings let the rank-pairwise loss find signal even when one
+    representation alone is insufficient (the wl178 failure mode).
+
+    Why one-hot rather than XGBoost native categorical
+    --------------------------------------------------
+    XGBoost native categorical (`enable_categorical=True`,
+    dtype='category') is more memory-efficient and can split on subsets
+    of categories. But it requires:
+      * matching pandas dtype at training AND inference
+      * artifact must record the category mapping
+      * ltr_model.py DMatrix calls need updating
+    One-hot dummies are equivalent for tree models (each binary column
+    is split-friendly), require zero changes to the existing XGBoost
+    backend, and have the same convergence properties for our scale
+    (~10 sectors × 178 tickers).
+    Reference: Hastie-Tibshirani-Friedman ESL §9.2.4 (one-hot vs
+    categorical for trees — equivalent in expressive power, one-hot
+    just creates more nodes).
+
+    Invariant
+    ---------
+    For each ticker in ctx.factor_frames with a known sector S:
+        new column ``sector_<S>`` exists with value 1.0 (broadcast over
+        every date for that ticker; static-per-ticker by definition);
+        all other ``sector_<other>`` columns are 0.0.
+    Tickers with no sector mapping get ALL `sector_*` columns set to 0
+    (= "no sector identity" — model treats as fallback / unmapped).
+
+    Default OFF
+    -----------
+    Flag: ``panel_ltr.sector_one_hot.enabled`` (default False). When
+    False, this Task is a complete no-op — full wl103 backward compat.
+    """
+
+    name = "SectorOneHotTask"
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = (ctx.config.get("panel_ltr") or {}).get("sector_one_hot") or {}
+        if not bool(cfg.get("enabled", False)):
+            return  # default off — no-op, full backward compatibility
+
+        if not ctx.factor_frames:
+            log.info("SectorOneHotTask: no factor frames — skipping")
+            return
+
+        ticker_sectors = ctx.ticker_sectors or {}
+        if not ticker_sectors:
+            log.warning(
+                "SectorOneHotTask: ticker_sectors empty — required for "
+                "one-hot encoding. Skipping.",
+            )
+            return
+
+        # Stable, deterministic order of sector names → predictable column
+        # names across runs. Inference path uses the same ordering.
+        all_sectors = sorted(set(ticker_sectors.values()))
+        prefix = str(cfg.get("col_prefix", "sector_"))
+        max_cols = int(cfg.get("max_sectors", 30))   # safety guard
+        if len(all_sectors) > max_cols:
+            log.warning(
+                "SectorOneHotTask: %d distinct sectors exceeds max_sectors=%d — "
+                "skipping to avoid feature blow-up. Tighten the sector taxonomy "
+                "or raise max_sectors via config.",
+                len(all_sectors), max_cols,
+            )
+            return
+
+        n_cols_added = 0
+        for ticker, fac in ctx.factor_frames.items():
+            sector = ticker_sectors.get(ticker)
+            new_cols: dict[str, pd.Series] = {}
+            for s in all_sectors:
+                col_name = f"{prefix}{s}"
+                if col_name in fac.columns:
+                    # Collision guard — pre-existing same-named column.
+                    log.warning(
+                        "SectorOneHotTask: %s — column %s already exists "
+                        "in factor_frames, skipping (potential "
+                        "double-application bug).",
+                        ticker, col_name,
+                    )
+                    continue
+                new_cols[col_name] = pd.Series(
+                    1.0 if s == sector else 0.0,
+                    index=fac.index, dtype=float,
+                )
+                n_cols_added += 1
+            if new_cols:
+                ctx.factor_frames[ticker] = pd.concat(
+                    [fac, pd.DataFrame(new_cols, index=fac.index)],
+                    axis=1, copy=False,
+                )
+
+        log.info(
+            "SectorOneHotTask: added %d sector indicator entries across %d "
+            "tickers (%d distinct sectors)",
+            n_cols_added, len(ctx.factor_frames), len(all_sectors),
+        )
+
+
 class LabelsTask(PanelTask):
     """Forward returns → purged β-neutral residuals → cross-sectional Gaussianize.
 
@@ -1918,6 +2035,7 @@ class PanelAssemblyJob(PanelJob):
             NeutralizedFeatureZScoreTask(),
             FactorZScoreTask(),
             SectorRankNormalizeTask(),
+            SectorOneHotTask(),
             LabelsTask(),
             BuildHourlyResolutionPanelTask(),
             BuildPanelTask(),

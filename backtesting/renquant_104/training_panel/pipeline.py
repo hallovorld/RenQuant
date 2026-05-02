@@ -19,6 +19,7 @@ from .pp_panel_training import (
     FactorZScoreTask,
     NeutralizedFeatureZScoreTask,
     SectorRankNormalizeTask,
+    SectorOneHotTask,
     LoadFundamentalsTask,
     LoadEarningsSurpriseTask,
     LoadInsiderTradesTask,
@@ -197,6 +198,10 @@ def prepare_inference_panel_frames(
     # emitted. Default off (panel_ltr.sector_rank_norm.enabled=False) =
     # no-op, full backward compat with wl103 production.
     SectorRankNormalizeTask().run(ctx)
+    # Layer 2 (2026-05-01): sector one-hot identity columns. Same ordering
+    # as PanelAssemblyJob so inference factor_frames mirror training.
+    # Default off; gated on panel_ltr.sector_one_hot.enabled.
+    SectorOneHotTask().run(ctx)
 
     # Bug #25 fix: return macro_frame too so adapters can attach to
     # InferenceContext for cross-section broadcast at scoring time.
