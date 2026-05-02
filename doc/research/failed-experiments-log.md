@@ -857,3 +857,47 @@ The original guard threshold `min_best_iter ≥ 20` was too aggressive — based
 
 **复现**：`python scripts/train_104.py --strategy-config-name strategy_config.wl174.json --skip-baseline --skip-recalibrate --force`
 
+
+---
+
+## E_LAYER1_PLUS_2_ON_WL103. Layer 1+2 on baseline (homogeneous) universe — falsification confirmed
+
+**Date**: 2026-05-02
+**Branch**: `exp/wl500-and-sector-arch` @ `44cc937`
+**Run ID**: `20260502095403-panel-ltr-eef109` in `data/runs.db`
+
+**假设**: L1 (sector_rank_norm) + L2 (sector_one_hot) on wl178 (heterogeneous, +0.0150) is universe-conditional, not universal. Predicted: applying L1+L2 to homogeneous wl103 universe will *hurt* IC vs baseline (wl103 prod +0.0418), with predicted IC band +0.030~+0.035.
+
+**实现**: `strategy_config.wl103_l1sub_l2.json` — wl103 watchlist + L1 (replace_z=True, min_sector_size=3, fallback_global=True) + L2 (sector_one_hot.enabled=True). All else identical to wl178_v2_l1sub_l2 template. sector_map 100% coverage on all 103 tickers.
+
+**结果**:
+- CPCV mean_ic = **+0.0328** (vs baseline wl103 +0.0418 = **−21.5%**)
+- train_ic = +0.1001
+- best_iter = 4 (early-stop fired fast — eval set rejecting L1+L2 features quickly; `min_best_iter=1` inherited from wl178 template, would have failed `min_best_iter=5` guard)
+- Lands inside predicted +0.030~+0.035 band. **Falsification predicted with proper magnitude.**
+
+**机理 (post-hoc)**:
+1. wl103 is a hand-curated, homogeneous universe — KS heterogeneity lower than wl178 by construction. L1's "treatment" (per-sector rank norm) treats a problem that doesn't exist; the substitution mode (`replace_z=True`) drops `_z` columns the model was trained to use.
+2. wl103 has small sectors (avg ~8 tickers/sector, smallest 2-3). Per-(date, sector) percentile rank on a 3-ticker sector produces only 3 bins {0, 0.5, 1} — coarser signal than global z-score.
+3. L2 sector_one_hot adds 12 indicator columns for 99-103 tickers (~8 ones per column). Tree models over-attend to these low-cardinality categoricals and over-fit sector × feature interactions.
+4. Early-stop firing at best_iter=4 is consistent — eval-IC peaks immediately and degrades; no signal in deeper trees on this universe.
+
+**结论**: **L1+L2 is universe-conditional, not universal.** Production wl103 should NOT enable L1+L2. The +0.0150 lift on wl178 is real (relative to wl178's noise band), but it is treating wl178's heterogeneity sickness — not a free improvement.
+
+**与 E_LAYER1_PLUS_2_V3 比较**:
+- wl178 + L1+L2: mean_ic = +0.0150 (treats heterogeneity)
+- wl103 + L1+L2: mean_ic = +0.0328 (HURTS homogeneous)
+- wl103 baseline (no L1+L2): +0.0418 (gold standard)
+
+**机理总结**: L1+L2 is a curative tool for heterogeneity, not a productivity tool. **Apply only to KS-confirmed heterogeneous universes.**
+
+**Roadmap impact**:
+- Drop L1+L2 from wl103 production roadmap (was never going to land there).
+- Keep L1+L2 wired for any future wl-expansion experiments where KS analysis confirms heterogeneity > 0.30 median.
+- Phase C (graph attention NN) and Phase D (MoE) remain on wl178+ track only.
+
+**复现**:
+```bash
+cd /tmp/renquant-wl500-exp
+python scripts/train_104.py --strategy-config-name strategy_config.wl103_l1sub_l2.json --skip-baseline --skip-recalibrate --force
+```
