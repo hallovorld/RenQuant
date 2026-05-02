@@ -98,24 +98,27 @@ class SimAdapter:
                 ohlcv_panel = dict(ohlcv)
                 if benchmark not in ohlcv_panel:
                     ohlcv_panel[benchmark] = spy_df
-                ff, fac, macro = prepare_inference_panel_frames(
+                ff, fac, macro, emb = prepare_inference_panel_frames(
                     watchlist=list(config.get("watchlist", [])),
                     ohlcv=ohlcv_panel,
                     ticker_sectors=ticker_sectors,
                     config=self._config,
                 )
-                self._panel_feature_frames = ff
-                self._panel_factor_frames  = fac
-                self._panel_macro_frame    = macro   # Bug #25
+                self._panel_feature_frames   = ff
+                self._panel_factor_frames    = fac
+                self._panel_macro_frame      = macro   # Bug #25
+                self._panel_asset_embeddings = emb     # T2-2
                 log.info("SimAdapter: built panel frames internally "
-                         "(feat=%d  factor=%d  macro=%s)",
+                         "(feat=%d  factor=%d  macro=%s  emb=%d)",
                          len(ff), len(fac),
-                         "None" if macro is None else f"{len(macro.columns)}cols")
+                         "None" if macro is None else f"{len(macro.columns)}cols",
+                         len(emb) if emb else 0)
             except Exception as exc:
                 log.warning("SimAdapter: panel frame prep failed — %s", exc)
-                self._panel_feature_frames = None
-                self._panel_factor_frames  = None
-                self._panel_macro_frame    = None
+                self._panel_feature_frames   = None
+                self._panel_factor_frames    = None
+                self._panel_macro_frame      = None
+                self._panel_asset_embeddings = None  # T2-2
         else:
             self._panel_feature_frames = panel_feature_frames
             self._panel_factor_frames  = panel_factor_frames
@@ -773,6 +776,20 @@ class SimAdapter:
                 current_streak += 1
                 longest_streak = max(longest_streak, current_streak)
 
+        # Risk-adjusted metrics (2026-05-02 §3 instrumentation). Computed
+        # from the equity curve so they reflect the full OOS window. NaN
+        # is propagated when there's insufficient data — caller (sim
+        # runner / B2 hold-out) renders NaN as "—" rather than zero.
+        from kernel.risk_metrics import compute_risk_metrics  # noqa: PLC0415
+        if not equity_df.empty and "portfolio" in equity_df.columns:
+            risk = compute_risk_metrics(equity_df["portfolio"], apy=apy)
+        else:
+            risk = {
+                "sharpe":  float("nan"), "sortino": float("nan"),
+                "calmar":  float("nan"), "max_dd":  float("nan"),
+                "ann_vol": float("nan"),
+            }
+
         return SimResult(
             equity_df     = equity_df,
             trade_log     = self._trade_log,
@@ -790,4 +807,9 @@ class SimAdapter:
             longest_no_candidate_streak = int(self._monitor_state.get("no_candidate_streak", 0)),
             first_trade_date            = first_trade,
             last_activity_date          = last_activity,
+            sharpe        = risk["sharpe"],
+            sortino       = risk["sortino"],
+            calmar        = risk["calmar"],
+            max_dd        = risk["max_dd"],
+            ann_vol       = risk["ann_vol"],
         )
