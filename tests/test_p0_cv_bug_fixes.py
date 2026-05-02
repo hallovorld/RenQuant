@@ -107,21 +107,48 @@ class TestBugCV2BestIterGuard:
         # fast-converging models.
         assert 'cfg.get("min_best_iter", 5)' in src
 
+    def test_guard_has_eval_ic_escape_clause(self):
+        """2026-05-02 refinement (Task #24): the iter-count check is
+        false-positive when adding strong-univariate-IC features (e.g.
+        days_since_earnings IC=+0.02) — XGB converges on a healthy plateau
+        by round 4-9. Guard must accept these runs IF eval_ic is above
+        a healthy floor (default 0.02).
+        """
+        src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
+        idx = src.find("BUG-CV-2 hard guard")
+        # Look at the next ~3000 chars covering the new escape clause
+        block = src[idx:idx + 5000]
+        assert "min_best_iter_eval_ic_floor" in block, (
+            "guard must support eval_ic-based escape clause"
+        )
+        # Default floor must be 0.02 (well above CPCV noise band ±0.005)
+        assert 'cfg.get("min_best_iter_eval_ic_floor", 0.02)' in block, (
+            "default eval_ic floor must be 0.02 (above noise band)"
+        )
+        # The accept-and-log path must exist — strong-signal features
+        # should not trigger RuntimeError
+        assert "strong-signal feature" in block, (
+            "must log when accepting low best_iter due to high eval_ic"
+        )
+
     def test_guard_skipped_for_transformer_backend(self):
         """Transformer has different best_iter semantics; guard must skip."""
         src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
         # The guard runs only when backend in (xgboost, lightgbm)
         idx = src.find("BUG-CV-2 hard guard")
-        block = src[idx:idx + 2000]
+        block = src[idx:idx + 5000]
         assert 'backend in ("xgboost", "lightgbm")' in block
 
     def test_guard_configurable(self):
         """Operator can override min_best_iter for diagnostic runs."""
         src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
         idx = src.find("BUG-CV-2 hard guard")
-        block = src[idx:idx + 2000]
+        block = src[idx:idx + 5000]
         assert "panel_ltr.min_best_iter" in block, (
             "error message must tell operator how to override"
+        )
+        assert "min_best_iter_eval_ic_floor" in block, (
+            "error message must mention the new eval_ic_floor escape lever"
         )
 
 
