@@ -1333,6 +1333,134 @@ class FactorZScoreTask(PanelTask):
                  len(out), has_fundamentals)
 
 
+class SectorRankNormalizeTask(PanelTask):
+    """Layer-1 sector-aware ranking — write per-(date, sector) percentile
+    rank columns alongside the existing _z (cross-sectional z-score) columns.
+
+    Why
+    ---
+    Per-feature global z-score (FactorZScoreTask, runs immediately before)
+    standardizes each numeric column across the FULL universe per date.
+    When the universe is heterogeneous (Witter 2025 + 2026-05-01
+    diagnostic confirmed: ALL 28 sector pairs in the wl178 panel have KS
+    ≥ 0.30 on technical features), the global z-score forces comparison
+    between values whose underlying distributions are not comparable —
+    rank-pairwise loss can't extract signal. This Task adds a parallel
+    sector-relative percentile column for each numeric feature; the
+    downstream model sees BOTH _z and _sr versions and picks via tree
+    splits.
+
+    Invariant
+    ---------
+    For any row in ctx.factor_frames[ticker]:
+        if column ``foo_z`` exists, an additional column ``foo_sr`` is
+        written, where _sr ∈ [0, 1] is the per-(date, sector) percentile
+        of the original raw factor value. Tickers in under-populated
+        sectors (n < min_sector_size) fall back to global percentile.
+        NaN raw values map to NaN _sr values.
+
+    Default OFF
+    -----------
+    The flag ``panel_ltr.sector_rank_norm.enabled`` defaults to False.
+    When False, this Task is a complete no-op — ctx.factor_frames is
+    untouched. The wl103 production behavior is bit-for-bit preserved.
+    """
+
+    name = "SectorRankNormalizeTask"
+
+    # The same set of raw feature columns FactorZScoreTask consumes.
+    # Kept as a class attribute so test code can reference it.
+    _RAW_COLS: list[str] = [
+        "size", "mom_12_1", "beta_60d", "resid_mom",
+        "amihud_illiq", "volume_shift", "price_to_high",
+        "realized_vol", "drawdown_peak",
+        "earnings_surprise_cum",
+        "insider_net_buy_90d",
+        "morning_drift", "afternoon_drift", "vwap_premium",
+        "vol_ratio", "intraday_realized_vol", "overnight_gap",
+        "m_morning_drift", "m_morning_30min_drift",
+        "m_afternoon_drift", "m_closing_30min_drift",
+        "m_vwap_premium", "m_vol_ratio", "m_first_hour_vol_pct",
+        "m_intraday_realized_vol", "m_overnight_gap", "m_reversal_ratio",
+    ]
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cfg = (ctx.config.get("panel_ltr") or {}).get("sector_rank_norm") or {}
+        if not bool(cfg.get("enabled", False)):
+            return  # default off — no-op, full backward compatibility
+
+        if not ctx.raw_factor_frames or not ctx.factor_frames:
+            log.info("SectorRankNormalizeTask: no factor frames — skipping")
+            return
+
+        ticker_sectors = ctx.ticker_sectors or {}
+        if not ticker_sectors:
+            log.warning(
+                "SectorRankNormalizeTask: ticker_sectors empty — required "
+                "for per-sector normalization. Skipping.",
+            )
+            return
+
+        from training_panel.factors import (   # noqa: PLC0415
+            cross_sectional_rank_within_sector,
+        )
+
+        min_sector_size  = int(cfg.get("min_sector_size", 5))
+        fallback_global  = bool(cfg.get("fallback_global", True))
+
+        # Build per-column input dict from raw_factor_frames
+        per_col: dict[str, dict[str, "pd.Series"]] = {}
+        for col in self._RAW_COLS:
+            per_col[col] = {
+                t: df[col] for t, df in ctx.raw_factor_frames.items()
+                if col in df.columns
+            }
+
+        # Compute sector-rank per col
+        n_cols_added = 0
+        sr_outputs: dict[str, dict[str, "pd.Series"]] = {}
+        for col, ticker_series in per_col.items():
+            if not ticker_series:
+                continue
+            sr_outputs[col] = cross_sectional_rank_within_sector(
+                ticker_series, ticker_sectors,
+                min_sector_size=min_sector_size,
+                fallback_global=fallback_global,
+            )
+
+        # Append _sr columns to each ticker's factor_frame
+        for ticker, fac in ctx.factor_frames.items():
+            new_cols = {}
+            for col, by_ticker in sr_outputs.items():
+                if ticker in by_ticker:
+                    sr = by_ticker[ticker].reindex(fac.index)
+                    new_col = f"{col}_sr"
+                    if new_col in fac.columns:
+                        # Collision guard — somebody else already produced it.
+                        # Skip; emit a warning (per audit-fix conventions).
+                        log.warning(
+                            "SectorRankNormalizeTask: %s — column %s already "
+                            "exists in factor_frames, skipping (potential "
+                            "double-application bug).",
+                            ticker, new_col,
+                        )
+                        continue
+                    new_cols[new_col] = sr
+                    n_cols_added += 1
+            if new_cols:
+                ctx.factor_frames[ticker] = pd.concat(
+                    [fac, pd.DataFrame(new_cols, index=fac.index)],
+                    axis=1, copy=False,
+                )
+
+        log.info(
+            "SectorRankNormalizeTask: added %d (ticker × _sr column) entries "
+            "across %d tickers, %d feature cols (min_sector_size=%d, fallback=%s)",
+            n_cols_added, len(ctx.factor_frames), len(sr_outputs),
+            min_sector_size, fallback_global,
+        )
+
+
 class LabelsTask(PanelTask):
     """Forward returns → purged β-neutral residuals → cross-sectional Gaussianize.
 
@@ -1777,9 +1905,15 @@ class PanelAssemblyJob(PanelJob):
         # When panel_ltr.training_resolution=='hourly' it sets ctx.panel
         # directly; BuildPanelTask's early-out then skips daily aggregation.
         # Default ('daily') preserves bit-for-bit existing behaviour.
+        # 2026-05-01 sector-aware: SectorRankNormalizeTask runs immediately
+        # after FactorZScoreTask so _sr columns coexist with _z columns
+        # in ctx.factor_frames. BuildPanelTask then picks them up via
+        # the same column-discovery path as the existing _z features.
+        # Default off; enable via panel_ltr.sector_rank_norm.enabled.
         return [
             NeutralizedFeatureZScoreTask(),
             FactorZScoreTask(),
+            SectorRankNormalizeTask(),
             LabelsTask(),
             BuildHourlyResolutionPanelTask(),
             BuildPanelTask(),
