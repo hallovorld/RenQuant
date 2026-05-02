@@ -1067,8 +1067,14 @@ class TickerPanelFactorJob(PanelTickerJob):
         # Gated on `panel_ltr.pead.enabled` (default false). Three columns:
         # `days_since_earnings`, `pead_decay_weight`, `pead_signal`. The
         # last is the canonical PEAD alpha (Bernard-Thomas 1989, CJL 1996).
-        pead_cfg = ctx.config.get("panel_ltr", {}).get("pead", {}) or {}
+        # `panel_ltr.pead.feature_subset` (optional list) filters which
+        # columns get added — used for ablation A/A (e.g. days_only,
+        # signal_only). Default: all three.
+        pead_cfg = tc.config.get("panel_ltr", {}).get("pead", {}) or {}
         if pead_cfg.get("enabled", False):
+            pead_subset = pead_cfg.get("feature_subset") or [
+                "days_since_earnings", "pead_decay_weight", "pead_signal",
+            ]
             try:
                 if tc.earnings_surprises:
                     days_d, decay_d, signal_d = compute_pead_features(
@@ -1077,25 +1083,34 @@ class TickerPanelFactorJob(PanelTickerJob):
                         decay_window_days=int(pead_cfg.get("decay_window_days", 60)),
                         max_window_days=int(pead_cfg.get("max_window_days", 90)),
                     )
-                    cols["days_since_earnings"] = (days_d.get(tc.ticker)
-                        if days_d.get(tc.ticker) is not None
-                        else pd.Series(float("nan"), index=idx))
-                    cols["pead_decay_weight"] = (decay_d.get(tc.ticker)
-                        if decay_d.get(tc.ticker) is not None
-                        else pd.Series(float("nan"), index=idx))
-                    cols["pead_signal"] = (signal_d.get(tc.ticker)
-                        if signal_d.get(tc.ticker) is not None
-                        else pd.Series(float("nan"), index=idx))
+                    if "days_since_earnings" in pead_subset:
+                        cols["days_since_earnings"] = (days_d.get(tc.ticker)
+                            if days_d.get(tc.ticker) is not None
+                            else pd.Series(float("nan"), index=idx))
+                    if "pead_decay_weight" in pead_subset:
+                        cols["pead_decay_weight"] = (decay_d.get(tc.ticker)
+                            if decay_d.get(tc.ticker) is not None
+                            else pd.Series(float("nan"), index=idx))
+                    if "pead_signal" in pead_subset:
+                        cols["pead_signal"] = (signal_d.get(tc.ticker)
+                            if signal_d.get(tc.ticker) is not None
+                            else pd.Series(float("nan"), index=idx))
                 else:
-                    cols["days_since_earnings"] = pd.Series(float("nan"), index=idx)
-                    cols["pead_decay_weight"] = pd.Series(float("nan"), index=idx)
-                    cols["pead_signal"] = pd.Series(float("nan"), index=idx)
+                    if "days_since_earnings" in pead_subset:
+                        cols["days_since_earnings"] = pd.Series(float("nan"), index=idx)
+                    if "pead_decay_weight" in pead_subset:
+                        cols["pead_decay_weight"] = pd.Series(float("nan"), index=idx)
+                    if "pead_signal" in pead_subset:
+                        cols["pead_signal"] = pd.Series(float("nan"), index=idx)
             except Exception as exc:
                 log.warning("  %s: TickerPanelFactorJob[pead] failed — %s",
                             tc.ticker, exc)
-                cols["days_since_earnings"] = pd.Series(float("nan"), index=idx)
-                cols["pead_decay_weight"] = pd.Series(float("nan"), index=idx)
-                cols["pead_signal"] = pd.Series(float("nan"), index=idx)
+                if "days_since_earnings" in pead_subset:
+                    cols["days_since_earnings"] = pd.Series(float("nan"), index=idx)
+                if "pead_decay_weight" in pead_subset:
+                    cols["pead_decay_weight"] = pd.Series(float("nan"), index=idx)
+                if "pead_signal" in pead_subset:
+                    cols["pead_signal"] = pd.Series(float("nan"), index=idx)
 
         # Stage 4 — insider trades (time-varying, trailing-90d)
         try:
