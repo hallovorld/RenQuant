@@ -37,6 +37,12 @@ def main():
                    help="Always refetch, don't reuse cached rows.")
     p.add_argument("--max-filings", type=int, default=200,
                    help="Max Form 4 filings to pull per ticker (recent first).")
+    p.add_argument("--total-budget-sec", type=float, default=None,
+                   help="Total fetch budget. Default uses fetch_insider_trades_watchlist's "
+                        "240s (daily-refresh sized). For initial cold backfill on a 100+ "
+                        "ticker watchlist, pass a larger value (e.g. 5400 = 90 min).")
+    p.add_argument("--per-ticker-sec", type=float, default=None,
+                   help="Per-ticker hard timeout. Default 45s.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -47,13 +53,21 @@ def main():
 
     from kernel.insider_trades import fetch_insider_trades_watchlist  # noqa: PLC0415
 
+    kwargs: dict = {}
+    if args.total_budget_sec is not None:
+        kwargs["total_budget_sec"] = args.total_budget_sec
+    if args.per_ticker_sec is not None:
+        kwargs["per_ticker_sec"] = args.per_ticker_sec
+
+    budget_str = (f"{args.total_budget_sec:.0f}s"
+                  if args.total_budget_sec is not None else "default 240s")
     log.info("Fetching executive Form 4 insider trades for %d tickers "
-             "(cache=%s, max_filings=%d, ~%.1f min rate-limited total)",
-             len(watchlist), not args.no_cache, args.max_filings,
-             0.2 * len(watchlist) * args.max_filings / 60)
+             "(cache=%s, max_filings=%d, budget=%s)",
+             len(watchlist), not args.no_cache, args.max_filings, budget_str)
 
     out = fetch_insider_trades_watchlist(
         watchlist, cache=not args.no_cache, max_filings=args.max_filings,
+        **kwargs,
     )
     non_empty = sum(1 for df in out.values() if not df.empty)
     total_tx  = sum(len(df) for df in out.values())
