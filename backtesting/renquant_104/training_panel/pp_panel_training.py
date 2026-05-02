@@ -1819,6 +1819,59 @@ class LabelsTask(PanelTask):
                 beta_window=beta_window, lookahead_days=lookahead,
             )
         ctx.labels = gaussianize_cross_section(ctx.raw_residuals)
+
+        # CLAUDE.md §5.2 sanity check: shuffled-label test. When
+        # `panel_ltr.label_shuffle_seed` is set, permute the gaussianized
+        # labels WITHIN EACH DATE (preserving cross-sectional rank
+        # distribution) using the given seed. Expected behavior: a model
+        # trained on these shuffled labels should produce CPCV mean_ic ≈ 0.
+        # Any non-zero mean_ic on shuffled labels indicates leakage or
+        # methodology bug, not a real alpha signal.
+        # CLAUDE.md §5.2 sanity check #2: time-shift placebo. When
+        # `panel_ltr.label_shift_days` is set (positive int N), shift each
+        # ticker's label series FORWARD by N trading days — so feature row
+        # at date t will be paired with the label from t+N. Real predictive
+        # signal at horizon h ≤ N should produce CPCV mean_ic ≈ 0 (features
+        # at t can't see beyond the horizon).
+        shift_days = cfg.get("label_shift_days")
+        if shift_days is not None and int(shift_days) > 0:
+            for t in list(ctx.labels.keys()):
+                ctx.labels[t] = ctx.labels[t].shift(int(shift_days))
+            log.warning(
+                "LabelsTask: TIME-SHIFT PLACEBO active (shift_days=+%d) — "
+                "label at t paired with feature at t-%d. Expected CPCV "
+                "mean_ic ≈ 0; any non-zero value = leakage.",
+                int(shift_days), int(shift_days),
+            )
+
+        shuffle_seed = cfg.get("label_shuffle_seed")
+        if shuffle_seed is not None:
+            import numpy as _np  # noqa: PLC0415
+            rng = _np.random.default_rng(int(shuffle_seed))
+            # Permute labels per (date) — concat all per-ticker series at
+            # each date, shuffle, then redistribute back to tickers.
+            all_dates: set = set()
+            for s in ctx.labels.values():
+                all_dates.update(s.index)
+            for date in all_dates:
+                vals_at_date = []
+                tickers_at_date = []
+                for t, s in ctx.labels.items():
+                    if date in s.index and _np.isfinite(s.loc[date]):
+                        vals_at_date.append(float(s.loc[date]))
+                        tickers_at_date.append(t)
+                if len(vals_at_date) < 2:
+                    continue
+                permuted = rng.permutation(vals_at_date)
+                for t, v in zip(tickers_at_date, permuted):
+                    ctx.labels[t].loc[date] = v
+            log.warning(
+                "LabelsTask: SHUFFLED-LABEL SANITY MODE active "
+                "(seed=%d) — labels permuted within each date. "
+                "Expected CPCV mean_ic ≈ 0; any non-zero value = leakage/bug.",
+                int(shuffle_seed),
+            )
+
         log.info("LabelsTask: built labels for %d tickers (mode=%s)",
                  len(ctx.labels), label_mode)
 
