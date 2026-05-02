@@ -148,14 +148,25 @@ def _run_sim_on_snapshot(snap_dir: Path, config: dict, sim_start: str,
     )
     result.print_summary()
 
+    # Risk-adjusted metrics (2026-05-02 §3 instrumentation). NaN signals
+    # "not enough data" rather than 0.0 — preserve NaN through serialization
+    # so the report doesn't fool a reader into thinking we measured 0.
+    import math as _m  # noqa: PLC0415
+    def _safe(x: float, scale: float = 1.0) -> float:
+        v = float(getattr(result, "apy", 0.0))   # placeholder
+        v = float(x)
+        return v * scale if _m.isfinite(v) else float("nan")
     return {
-        "apy":          float(getattr(result, "apy",        0.0)) * 100,
-        "sharpe":       float(getattr(result, "sharpe",     0.0)),
-        "max_dd":       float(getattr(result, "max_dd",     0.0)) * 100,
-        "win_rate":     float(getattr(result, "win_rate",   0.0)),
-        "total_return": float(getattr(result, "total_return", 0.0)) * 100,
-        "n_buys":       int(len(getattr(result, "buys",  []) or [])),
-        "n_sells":      int(len(getattr(result, "sells", []) or [])),
+        "apy":           float(getattr(result, "apy",        0.0)) * 100,
+        "sharpe":        _safe(getattr(result, "sharpe",     float("nan"))),
+        "sortino":       _safe(getattr(result, "sortino",    float("nan"))),
+        "calmar":        _safe(getattr(result, "calmar",     float("nan"))),
+        "max_dd":        _safe(getattr(result, "max_dd",     float("nan")), scale=100),
+        "ann_vol":       _safe(getattr(result, "ann_vol",    float("nan")), scale=100),
+        "win_rate":      float(getattr(result, "win_rate",   0.0)),
+        "total_return":  float(getattr(result, "total_return", 0.0)) * 100,
+        "n_buys":        int(len(getattr(result, "buys",  []) or [])),
+        "n_sells":       int(len(getattr(result, "sells", []) or [])),
     }
 
 
@@ -266,7 +277,10 @@ def main() -> None:
         # anyone from copy-pasting a number out of context.
         "apy_holdout":          metrics["apy"],
         "sharpe_holdout":       metrics["sharpe"],
+        "sortino_holdout":      metrics["sortino"],
+        "calmar_holdout":       metrics["calmar"],
         "max_dd_holdout":       metrics["max_dd"],
+        "ann_vol_holdout":      metrics["ann_vol"],
         "total_return_holdout": metrics["total_return"],
         "win_rate_holdout":     metrics["win_rate"],
         "n_buys":               metrics["n_buys"],
@@ -283,9 +297,15 @@ def main() -> None:
     print("=" * 60)
     print(f"  B2 HOLD-OUT (train_end={args.train_end})")
     print("=" * 60)
+    import math as _m   # noqa: PLC0415
+    def _fmt(v: float, fmt: str = "{:+.3f}") -> str:
+        return fmt.format(v) if _m.isfinite(v) else "—"
     print(f"  apy_holdout         {report['apy_holdout']:+.2f}%")
-    print(f"  sharpe_holdout      {report['sharpe_holdout']:+.3f}")
-    print(f"  max_dd_holdout      {report['max_dd_holdout']:+.2f}%")
+    print(f"  sharpe_holdout      {_fmt(report['sharpe_holdout'])}")
+    print(f"  sortino_holdout     {_fmt(report['sortino_holdout'])}")
+    print(f"  calmar_holdout      {_fmt(report['calmar_holdout'])}")
+    print(f"  max_dd_holdout      {_fmt(report['max_dd_holdout'], '{:+.2f}%')}")
+    print(f"  ann_vol_holdout     {_fmt(report['ann_vol_holdout'], '{:+.2f}%')}")
     print(f"  total_return_holdout{report['total_return_holdout']:+.2f}%")
     print(f"  win_rate_holdout    {report['win_rate_holdout']:.0%}")
     print(f"  buys / sells        {report['n_buys']} / {report['n_sells']}")

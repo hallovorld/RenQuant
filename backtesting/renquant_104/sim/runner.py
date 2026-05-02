@@ -47,6 +47,15 @@ class SimResult:
     first_trade_date:          "str | None" = None
     last_activity_date:        "str | None" = None
 
+    # Risk-adjusted metrics (2026-05-02 §3 instrumentation). All annualized
+    # at 252 trading days. NaN signals "not enough data" rather than 0.0.
+    # Computed from equity_df["portfolio"] in build_result().
+    sharpe:           float = float("nan")     # Sharpe (rf=0)
+    sortino:          float = float("nan")     # downside-deviation Sharpe
+    calmar:           float = float("nan")     # APY / Max DD
+    max_dd:           float = float("nan")     # max peak-to-trough drawdown (positive fraction)
+    ann_vol:          float = float("nan")     # annualized return volatility
+
     @property
     def buys(self) -> list[dict]:
         return [t for t in self.trade_log if t["action"] == "buy"]
@@ -56,9 +65,21 @@ class SimResult:
         return [t for t in self.trade_log if t["action"] == "sell"]
 
     def print_summary(self) -> None:
+        import math as _m   # noqa: PLC0415
         print(f"Simulation complete: {len(self.equity_df)} days")
         print(f"Final value: ${self.final_value:,.0f}  |  "
               f"Return: {self.total_return:.1%}  |  APY: {self.apy:.1%}")
+        # Risk-adjusted metrics (2026-05-02). Skip lines whose value is
+        # NaN (= "not enough data") to keep the summary clean on degenerate
+        # zero-trade sims.
+        if _m.isfinite(self.sharpe) or _m.isfinite(self.max_dd):
+            sharpe_s  = f"{self.sharpe:+.2f}"  if _m.isfinite(self.sharpe)  else "—"
+            sortino_s = f"{self.sortino:+.2f}" if _m.isfinite(self.sortino) else "—"
+            calmar_s  = f"{self.calmar:+.2f}"  if _m.isfinite(self.calmar)  else "—"
+            mdd_s     = f"{self.max_dd:.1%}"   if _m.isfinite(self.max_dd)  else "—"
+            vol_s     = f"{self.ann_vol:.1%}"  if _m.isfinite(self.ann_vol) else "—"
+            print(f"Risk: Sharpe={sharpe_s}  Sortino={sortino_s}  "
+                  f"Calmar={calmar_s}  MaxDD={mdd_s}  Vol={vol_s}")
         print(f"Trades: {len(self.buys)} buys, {len(self.sells)} sells  |  "
               f"Win rate: {self.win_rate:.0%}")
         if self.sells:
