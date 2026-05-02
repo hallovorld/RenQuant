@@ -480,7 +480,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/panel-rank-calibration.macro_h60.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",

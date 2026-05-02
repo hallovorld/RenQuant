@@ -552,7 +552,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/panel-rank-calibration.wl103_l1sub_l2.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
