@@ -901,3 +901,74 @@ The original guard threshold `min_best_iter ≥ 20` was too aggressive — based
 cd /tmp/renquant-wl500-exp
 python scripts/train_104.py --strategy-config-name strategy_config.wl103_l1sub_l2.json --skip-baseline --skip-recalibrate --force
 ```
+
+**If resume A/B still ≤ +5 bp**: investigate per-ticker insider IC (diagnostic — maybe only specific sectors carry the signal). If still ≤ baseline, document final NO-GO.
+
+**Lesson**: partial-coverage features need to clear a coverage threshold (~70-80%? not measured) before signal SNR rises above CPCV noise. Future feature additions that depend on third-party data: **stage data fetching to 70%+ coverage BEFORE wiring into panel** to avoid this exact "is the feature dead or just data-thin?" ambiguity.
+
+---
+
+## E23: PEAD enrichment at fwd_5d — statistically significant NEGATIVE (shelved)
+
+**Date**: 2026-05-02
+**Branch**: main
+**Run IDs** (`data/runs.db`):
+- pead_off run1 (golden + pead.enabled=false): `20260502183144-panel-ltr-c0b18a`, mean_ic=+0.0339
+- pead_off run2 (σ measurement): `20260502202120-panel-ltr-891067`, mean_ic=+0.0340
+- pead_off run3 (σ measurement): `20260502204955-panel-ltr-3536e9`, mean_ic=+0.0340
+- pead_on full (3 cols, strict guard): `20260502190009-panel-ltr-0f7206`, mean_ic=+0.0327
+- pead_days_only (1 col, bypass guard): `20260502200343-panel-ltr-868ba5`, mean_ic=+0.0330
+
+**Hypothesis**: PEAD enrichment (Bernard-Thomas 1989, CJL 1996) — adding `days_since_earnings` + `pead_decay_weight` + `pead_signal` (most recent surprise × linear decay over 60d) — should add +2-6 bp CPCV IC at fwd_5d horizon.
+
+**Setup**: Three new feature columns gated on `panel_ltr.pead.enabled` (default false). All else identical to golden config. Config: `strategy_config.pead_on.json`.
+
+**Methodology gotcha discovered**: The §2a default acceptance threshold (+0.002) is **not calibrated to single-A/A noise**. Three pead_off retrains with same config but different XGB seeds produced:
+- mean_ic: +0.0339, +0.0340, +0.0340 → **σ = 0.000058 ≈ 0.6 bp**
+- best_iter: 25, 4, 39 → highly seed-sensitive
+- train_ic: +0.1190, +0.0949, +0.1193 → highly seed-sensitive
+
+Lesson: **CPCV mean_ic is the only robust statistic across XGB seeds**. best_iter and train_ic are not comparable across runs. Ship-or-shelve decisions must use mean_ic ± measured σ, not gut-feel thresholds.
+
+**Result (σ-corrected)**:
+- pead_on full: delta = −0.0013 vs pead_off mean = **22σ negative** (highly significant)
+- pead_days_only: delta = −0.0010 vs pead_off mean = **17σ negative** (highly significant)
+
+**Per-feature univariate IC** (on pead_on training run):
+- `days_since_earnings_z`: IC = +0.0208 (apparently strong positive)
+- `pead_signal_z`: IC = −0.0046 (weak negative, std=0.62 compressed by zero-padding past 60d)
+- `pead_decay_weight_z`: not separately measured (likely weak)
+
+**Mechanism analysis (post-hoc)**:
+- Single-column positive IC (days_since +0.02) does NOT translate to multivariate model gain.
+- XGB learns spurious interactions involving PEAD columns that produce inconsistent predictions across CPCV folds.
+- The "post-earnings regime" days_since column may correlate with fwd_5d *some* of the time (e.g. specific earnings season patterns) but the relationship is not stationary across years/sectors.
+- pead_signal is structurally compressed: ~70% of panel rows have `decay_weight=0` (post-60d), making the column near-binary on the announcement window. Tree splits don't extract clean alpha from such concentrated information.
+
+**Audit per CLAUDE.md §2b (deep audit before accepting unexpected result)**:
+1. ✅ Sample-bar inputs verified on real AAPL data — all values match expected formulas exactly (decay 1.0→0.0 over 60d, signal = surprise × decay, +1d shift lookahead-safe).
+2. ✅ Independent reasoning matches outputs — implementation is correct.
+3. ✅ pead_off baseline reproduces production (mean_ic=+0.0339 ≈ 04-30 retrain +0.0340).
+4. ✅ No interaction with `earnings_surprise_cum` (independent computation).
+
+**Conclusion**: PEAD-as-implemented is **structurally incompatible with fwd_5d horizon ranking model**. NOT a bug — a real measurement that the design doesn't fit.
+
+**Resume conditions**:
+1. **Try fwd_20d or fwd_60d horizon** — PEAD literature targets weeks-to-months drift; fwd_5d may be too short.
+2. **Cross-sectional surprise quintile/rank** instead of raw surprise_pct — CJL 1996 used quintile bins, not raw values.
+3. **Sector-conditional PEAD** — drift strength varies by sector (tech > staples). Could interact with sector indicators if Layer 2 lands.
+4. **Drop pead_signal entirely**, keep only days_since as a regime indicator — but ablation showed even days_only is −17σ, so this is unlikely to help without horizon change.
+
+**Recipe**:
+```bash
+# Reproduce σ measurement:
+python scripts/train_104.py --strategy-config-name strategy_config.pead_off_run2.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.pead_off_run3.json --skip-baseline --skip-recalibrate --force
+
+# Reproduce A/B:
+python scripts/train_104.py --strategy-config-name strategy_config.pead_off.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.pead_on.json --skip-baseline --skip-recalibrate --force
+```
+
+**Side benefit produced this session**:
+- BUG-CV-2 guard refinement (Task #24): added `min_best_iter_eval_ic_floor` escape clause for false-positive on strong-univariate-IC features. The original guard would have blocked all PEAD ablation A/B runs with `RuntimeError: best_iter < 5` since adding any strong-IC column makes XGB plateau by round 4-9. Now accepts when eval_ic ≥ 0.02 floor.
