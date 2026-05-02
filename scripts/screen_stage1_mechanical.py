@@ -56,8 +56,7 @@ def _load_ticker_universe(path: Path) -> list[str]:
     return sorted(set(tickers))
 
 
-def _load_sector_map() -> dict[str, str]:
-    cfg_path = REPO_ROOT / "backtesting" / "renquant_104" / "strategy_config.golden.json"
+def _load_sector_map(cfg_path: Path) -> dict[str, str]:
     cfg = json.loads(cfg_path.read_text())
     return cfg.get("sector_map", {}) or {}
 
@@ -111,6 +110,11 @@ def main():
     p.add_argument("--out",
                    default=str(REPO_ROOT / "scripts" / "screen_stage1_results.json"),
                    help="Output JSON path with admit / reject lists.")
+    p.add_argument("--sector-config",
+                   default=str(REPO_ROOT / "backtesting" / "renquant_104" / "strategy_config.golden.json"),
+                   help="Path to a config JSON whose `sector_map` is used for ticker→sector lookup. "
+                        "Use the IWB-extended map (built via build_sector_map.py) to lift "
+                        "coverage from production's ~106 to Russell-1000-wide ~1000.")
     p.add_argument("--adv-min", type=float, default=10_000_000.0,
                    help="Minimum trailing-60d ADV (USD).")
     p.add_argument("--age-min", type=float, default=3.0,
@@ -125,9 +129,9 @@ def main():
     args = p.parse_args()
 
     universe = _load_ticker_universe(Path(args.universe))
-    sector_map = _load_sector_map()
-    log.info("Stage 1 inputs: %d candidate tickers, %d sector_map entries",
-             len(universe), len(sector_map))
+    sector_map = _load_sector_map(Path(args.sector_config))
+    log.info("Stage 1 inputs: %d candidate tickers, %d sector_map entries (from %s)",
+             len(universe), len(sector_map), Path(args.sector_config).name)
     log.info("Thresholds: ADV>=%.0f USD, age>=%.1f yrs, price>=%.2f",
              args.adv_min, args.age_min, args.price_min)
 
