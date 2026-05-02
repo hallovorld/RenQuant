@@ -8,6 +8,13 @@ Pinned invariants:
   5. NO LOOKAHEAD: feature value at announcement day uses ONLY pre-announcement data
      (announcement index shifted +1 day before reindex+ffill).
   6. NaN propagation: pre-first-announcement days are NaN, not 0.
+  7. Integration smoke: TickerPanelFactorJob with pead.enabled=True must not
+     NameError or otherwise crash. Pre-fix incident (2026-05-02): the PEAD
+     block referenced `ctx.config` instead of `tc.config`, producing a
+     NameError that depleted 103/103 ticker chains and killed the retrain
+     with the D-8 / TPF-1 guard. Unit tests on `compute_pead_features`
+     PASS even though the integration path is broken — only the smoke
+     test catches the variable-name slip.
 
 Reference: Bernard-Thomas 1989, Chan-Jegadeesh-Lakonishok 1996.
 """
@@ -153,6 +160,36 @@ class TestNanPropagation:
         assert days["AAPL"].isna().all()
         assert decay["AAPL"].isna().all()
         assert signal["AAPL"].isna().all()
+
+
+class TestPanelFactorJobIntegration:
+    """Smoke: the PEAD block in TickerPanelFactorJob must not raise.
+
+    Pre-fix bug (2026-05-02): the block used `ctx.config` instead of
+    `tc.config`. NameError → 103/103 ticker chains failed → D-8 guard
+    killed the retrain. Unit tests on `compute_pead_features` PASS but
+    didn't catch the slip because they don't exercise the wired-in
+    code path.
+    """
+
+    def test_pead_block_uses_tc_config_not_ctx(self):
+        """Static check: the wiring code references tc.config, not ctx.config.
+        Any future refactor that inadvertently reverts this will fire pre-merge."""
+        src_path = REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "pp_panel_training.py"
+        src = src_path.read_text()
+        # The PEAD block must read tc.config, not ctx.config
+        # (TickerPanelFactorJob's per-ticker function takes `tc`, not `ctx`)
+        idx = src.find("Stage 3b — PEAD")
+        assert idx != -1, "Could not locate PEAD block in pp_panel_training.py"
+        # Look at the next 1500 characters
+        block = src[idx:idx + 1500]
+        # Must NOT use ctx.config in this scope
+        bad_refs = [ln for ln in block.splitlines() if "ctx.config" in ln]
+        assert not bad_refs, (
+            f"PEAD block in TickerPanelFactorJob uses ctx.config (out of scope) — "
+            f"will NameError at runtime and crash the panel chain. Use tc.config instead.\n"
+            f"Offending lines:\n" + "\n".join(f"  {ln.strip()}" for ln in bad_refs)
+        )
 
 
 class TestMultipleAnnouncements:
