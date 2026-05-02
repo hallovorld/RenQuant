@@ -49,9 +49,19 @@ MIGA, FSTGAT — none use hard splits.
 - `0917c14` feat(layer1): cross_sectional_rank_within_sector helper + 16 tests
 - `ae9ecdb` feat(audit): wl178 failure diagnostic + universe builder + design v2
 
-### Background tasks running
-- **A/A retrain** (started 2026-05-01 21:43 PT) — both halves of wl178 random split. Half A in calibrator phase; half B in PanelFeatureJob. Logs at `/tmp/aa_half_a.log`, `/tmp/aa_half_b.log`. Confirms Witter mechanism if both halves recover ≈ +0.04 IC.
-- **Universe OHLCV fetch** (started 2026-05-01 22:21 PT) — pulling 5y daily bars for 793 missing Russell-1000 tickers. Network-bound; no CPU contention with A/A. Log at `/tmp/universe_fetch.log`.
+### Background tasks status (2026-05-01 23:30 PT)
+- ✅ **A/A retrain** completed. Half A: train_ic=+0.116, CPCV mean_ic=+0.0004. Half B: train_ic=+0.085, mean_ic=+0.0136 (guard fired). Confirmed wl178 heterogeneity is structural at any random subset size.
+- ✅ **Universe OHLCV fetch** completed. 633 / 793 succeeded (160 delisted/odd). Cache: 215 → 1006 tickers.
+- ✅ **Layer 1 alone retrain** completed. CPCV mean_ic=−0.0008 — within A/A noise band, NO lift. Failed-experiment-log E_LAYER1_ALONE on the branch.
+- 🟡 **Triage + bug fixes shipped** — three implementation bugs found in Layer 1's wl178 deployment:
+  * BUG 1: sector_map covered only 58% of wl178; fixed via `scripts/build_sector_map.py` pulling IWB CSV → 100% coverage in `strategy_config.wl178_v2.json`.
+  * BUG 2: `min_sector_size=5` default demoted small sectors; lowered to 3.
+  * BUG 3: feature redundancy (`_z` + `_sr` correlated); added `replace_z` substitution flag.
+- 🟡 **Layer 1 SUBSTITUTION + Layer 2 retrain** running (started 23:29 PT). Config: `strategy_config.wl178_v2_l1sub_l2.json`. Log: `/tmp/wl178_v2_l1sub_l2.log`. ETA ~23:55 PT.
+- 🟡 **B2 baseline sim** running in parallel (started 23:29 PT, --skip-train mode using production wl103 artifacts). Log: `/tmp/b2_baseline_skiptrain.log`. ETA ~23:50 PT. NOTE: sim is in-sample contaminated since wl103 was trained on the full window — establishes script integrity but not honest-hold-out APY.
+
+### Lessons captured
+`doc/research/lessons-learned-sector-arch.md` on the branch — unified record of triage protocol, mechanism map, theoretical anchors, bugs, process patterns. Read this first when resuming sector-arch work.
 
 ### Merge criteria (gates before PR back to main)
 - [ ] Per-sector path beats single-panel baseline on B2 hold-out by ≥ +1 APY pt (Layer 1+2 alone), ≥ +2 (Layer 3 graph), ≥ +4 (Layer 4 MoE)
