@@ -216,6 +216,101 @@ class TestDefensive:
 
 # ── Wiring — Task placement in PanelAssemblyJob.tasks ─────────────────────────
 
+class TestReplaceZMode:
+    """BUG 3 fix (2026-05-01): substitution vs augmentation mode.
+    `replace_z=True` drops the _z column when writing the matching _sr
+    column. Eliminates feature redundancy that drove tree-ensemble
+    attention dilution in the first Layer-1 retrain (Hastie ESL §10.13.1).
+    """
+
+    @staticmethod
+    def _ctx_with_replace_z(replace_z: bool, *, n_tickers: int = 6):
+        from types import SimpleNamespace
+        idx = pd.date_range("2026-01-01", periods=3, freq="B")
+        tickers = [f"T{i:02d}" for i in range(n_tickers)]
+        ts = {t: ("tech" if i % 2 == 0 else "fin")
+              for i, t in enumerate(tickers)}
+        raw_factor_frames = {}
+        factor_frames = {}
+        for i, t in enumerate(tickers):
+            raw_factor_frames[t] = pd.DataFrame({
+                "size":     [float(i + 1)] * 3,
+                "mom_12_1": [float(i) * 0.01] * 3,
+            }, index=idx)
+            factor_frames[t] = pd.DataFrame({
+                "size_z":      [0.0] * 3,
+                "mom_12_1_z":  [0.0] * 3,
+                "other_col_z": [0.5] * 3,  # not in RAW_FACTOR_COLS_FOR_NORM
+            }, index=idx)
+        return SimpleNamespace(
+            config={"panel_ltr": {"sector_rank_norm": {
+                "enabled": True, "replace_z": replace_z,
+            }}},
+            raw_factor_frames=raw_factor_frames,
+            factor_frames=factor_frames,
+            ticker_sectors=ts,
+        )
+
+    def test_default_keeps_z_columns(self):
+        """Augmentation mode (replace_z=False, default): both _z and _sr
+        present after the Task runs."""
+        ctx = self._ctx_with_replace_z(replace_z=False)
+        SectorRankNormalizeTask().run(ctx)
+        for t, df in ctx.factor_frames.items():
+            assert "size_z" in df.columns
+            assert "size_sr" in df.columns
+            assert "mom_12_1_z" in df.columns
+            assert "mom_12_1_sr" in df.columns
+
+    def test_replace_z_drops_corresponding_z_columns(self):
+        """Substitution mode: _z is dropped where matching _sr was added."""
+        ctx = self._ctx_with_replace_z(replace_z=True)
+        SectorRankNormalizeTask().run(ctx)
+        for t, df in ctx.factor_frames.items():
+            assert "size_z" not in df.columns, f"{t}: size_z should be dropped"
+            assert "size_sr" in df.columns
+            assert "mom_12_1_z" not in df.columns, f"{t}: mom_12_1_z should be dropped"
+            assert "mom_12_1_sr" in df.columns
+
+    def test_replace_z_preserves_unrelated_z_columns(self):
+        """Only _z columns whose raw factor is in RAW_FACTOR_COLS_FOR_NORM
+        get dropped. Unrelated `other_col_z` (not in the constant) stays."""
+        ctx = self._ctx_with_replace_z(replace_z=True)
+        SectorRankNormalizeTask().run(ctx)
+        for t, df in ctx.factor_frames.items():
+            # Pre-existing _z col not derived from RAW_FACTOR_COLS_FOR_NORM
+            # is preserved (no _sr counterpart, so not redundant).
+            assert "other_col_z" in df.columns
+
+    def test_replace_z_no_effect_when_sr_missing(self):
+        """If _sr wasn't actually added for some col (e.g., col missing
+        from raw_factor_frames), the corresponding _z is NOT dropped."""
+        ctx = self._ctx_with_replace_z(replace_z=True)
+        # Remove `mom_12_1` from raw_factor_frames to simulate it missing
+        for t in ctx.raw_factor_frames:
+            ctx.raw_factor_frames[t] = ctx.raw_factor_frames[t].drop(
+                columns=["mom_12_1"],
+            )
+        SectorRankNormalizeTask().run(ctx)
+        # _z col stays since no matching _sr was produced
+        for t, df in ctx.factor_frames.items():
+            assert "mom_12_1_z" in df.columns
+
+
+class TestMinSectorSizeDefault:
+    """BUG 2 fix (2026-05-01): default min_sector_size lowered from 5 to 3
+    so small sectors (energy=3, utility=1, commodity=1 on wl178)
+    aren't silently demoted to global-fallback rank."""
+
+    def test_default_is_three(self):
+        from training_panel.pp_panel_training import SectorRankNormalizeTask
+        import inspect
+        src = inspect.getsource(SectorRankNormalizeTask.run)
+        assert 'min_sector_size", 3' in src or "min_sector_size', 3" in src, (
+            "default min_sector_size must be 3 per BUG 2 fix"
+        )
+
+
 class TestSharedRawColsConstant:
     """Audit fix M1 (2026-05-01): RAW_FACTOR_COLS_FOR_NORM is the
     single source of truth for which factor columns get cross-sectional
