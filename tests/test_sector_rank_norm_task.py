@@ -282,30 +282,42 @@ class TestReplaceZMode:
             # is preserved (no _sr counterpart, so not redundant).
             assert "other_col_z" in df.columns
 
-    def test_replace_z_renames_monotone_constraints_to_sr(self):
-        """BUG 4 (2026-05-01): when replace_z drops _z columns, the
-        strategy_config's monotone_constraints still referenced the
+    def test_replace_z_renames_monotone_constraints_to_sr_NESTED_PATH(self):
+        """BUG 4 + 4.5 (2026-05-01..02): when replace_z drops _z columns,
+        the strategy_config's monotone_constraints still referenced the
         _z keys → PanelLTRModel.train() validation loud-errored.
 
-        Fix: when replace_z=True, the Task rewrites monotone_constraints
-        in-place so *_z keys (whose base is in RAW_FACTOR_COLS_FOR_NORM)
-        get renamed to *_sr. Economic priors carry over — a +1 monotone
-        constraint on mom_12_1_z means "higher momentum → higher rank,"
-        equally valid for mom_12_1_sr since percentile preserves
-        order of the underlying value.
+        CRITICAL: monotone_constraints lives at NESTED path
+            ctx.config['panel_ltr']['monotone_constraints']
+        not at the top level. The earlier BUG 4 fix used top-level path
+        and never fired (BUG 4.5).
+
+        Fix: when replace_z=True, the Task rewrites the NESTED
+        monotone_constraints in-place so *_z keys (whose base is in
+        RAW_FACTOR_COLS_FOR_NORM) get renamed to *_sr. Economic priors
+        carry over — a +1 monotone constraint on mom_12_1_z means
+        "higher momentum → higher rank," equally valid for mom_12_1_sr
+        since percentile preserves order of the underlying value.
+
+        This test uses the NESTED structure that matches the actual
+        strategy_config.json layout — so a future "wrote to wrong path"
+        regression would fail this test.
         """
         ctx = self._ctx_with_replace_z(replace_z=True)
-        # Simulate the strategy_config carrying _z monotone constraints
-        ctx.config["monotone_constraints"] = {
+        # Simulate the strategy_config NESTED structure (matches reality)
+        ctx.config["panel_ltr"]["monotone_constraints"] = {
             "mom_12_1_z":  1,
             "size_z":     -1,
             "other_z":     1,   # NOT in RAW_FACTOR_COLS_FOR_NORM — preserved as-is
             "fund_thing":  1,   # not _z suffixed — preserved as-is
         }
         SectorRankNormalizeTask().run(ctx)
-        mc = ctx.config["monotone_constraints"]
+        # Read from NESTED path (must be where the rewrite landed)
+        mc = ctx.config["panel_ltr"]["monotone_constraints"]
         # _z keys for cols in RAW_FACTOR_COLS_FOR_NORM renamed to _sr
-        assert "mom_12_1_z" not in mc, "mom_12_1_z should be renamed"
+        assert "mom_12_1_z" not in mc, (
+            f"mom_12_1_z should be renamed, got mc={mc!r}"
+        )
         assert "size_z" not in mc,     "size_z should be renamed"
         assert mc["mom_12_1_sr"] == 1, "monotone sign carries over"
         assert mc["size_sr"]    == -1, "monotone sign carries over"
@@ -314,12 +326,96 @@ class TestReplaceZMode:
         # Non-_z keys untouched
         assert mc["fund_thing"] == 1
 
+    def test_top_level_monotone_constraints_NOT_touched(self):
+        """Regression test for BUG 4.5: rewrite must NOT touch a
+        top-level monotone_constraints (it's not where the real config
+        lives). If we wrote to top level, training reading from nested
+        path would still see the _z keys and crash."""
+        ctx = self._ctx_with_replace_z(replace_z=True)
+        # Set BOTH paths; verify only nested gets rewritten
+        ctx.config["monotone_constraints"] = {"mom_12_1_z": 1}        # top-level
+        ctx.config["panel_ltr"]["monotone_constraints"] = {           # nested (real path)
+            "mom_12_1_z": 1,
+        }
+        SectorRankNormalizeTask().run(ctx)
+        nested = ctx.config["panel_ltr"]["monotone_constraints"]
+        # Nested path should be renamed (this is what training reads)
+        assert "mom_12_1_z" not in nested
+        assert nested["mom_12_1_sr"] == 1
+        # Top-level not where training looks → leaving alone is fine.
+        # We don't assert top-level state because that's not part of
+        # the contract — only the nested path matters.
+
+    def test_replace_z_real_strategy_config_structure(self):
+        """End-to-end with the EXACT strategy_config nesting:
+        panel_ltr → monotone_constraints. Mirrors the real wl178_v2
+        config that crashed Layer 1+2 v2 retrain.
+        """
+        from types import SimpleNamespace
+        idx = pd.date_range("2026-01-01", periods=3, freq="B")
+        ts = {f"T{i}": ("tech" if i % 2 == 0 else "fin") for i in range(6)}
+        raw_factor_frames = {
+            t: pd.DataFrame({
+                "size": [float(i + 1)] * 3,
+                "mom_12_1": [float(i) * 0.01] * 3,
+                "beta_60d": [float(i) * 0.001] * 3,
+            }, index=idx)
+            for i, t in enumerate(ts)
+        }
+        factor_frames = {
+            t: pd.DataFrame({
+                "size_z": [0.0] * 3,
+                "mom_12_1_z": [0.0] * 3,
+                "beta_60d_z": [0.0] * 3,
+            }, index=idx)
+            for t in ts
+        }
+        ctx = SimpleNamespace(
+            config={
+                "panel_ltr": {
+                    "sector_rank_norm": {
+                        "enabled": True, "min_sector_size": 3,
+                        "fallback_global": True, "replace_z": True,
+                    },
+                    "monotone_constraints": {
+                        "mom_12_1_z":  1,
+                        "beta_60d_z": -1,
+                        "size_z":     -1,
+                        "book_to_price_z": -1,   # not in RAW_FACTOR_COLS_FOR_NORM
+                    },
+                },
+            },
+            raw_factor_frames=raw_factor_frames,
+            factor_frames=factor_frames,
+            ticker_sectors=ts,
+        )
+        SectorRankNormalizeTask().run(ctx)
+        # Verify _z cols dropped on every ticker's frame
+        for t, df in ctx.factor_frames.items():
+            assert "size_z" not in df.columns,    f"{t}: size_z should be dropped"
+            assert "size_sr" in df.columns,       f"{t}: size_sr should exist"
+            assert "mom_12_1_z" not in df.columns
+            assert "beta_60d_z" not in df.columns
+        # Verify monotone_constraints rewritten at the NESTED path
+        mc = ctx.config["panel_ltr"]["monotone_constraints"]
+        assert "mom_12_1_z" not in mc
+        assert "beta_60d_z" not in mc
+        assert "size_z" not in mc
+        assert mc["mom_12_1_sr"] == 1
+        assert mc["beta_60d_sr"] == -1
+        assert mc["size_sr"] == -1
+        # book_to_price_z is NOT in RAW_FACTOR_COLS_FOR_NORM (FUNDAMENTAL_COLS member),
+        # so it's preserved as-is even though it's _z suffixed.
+        assert mc["book_to_price_z"] == -1, (
+            "FUNDAMENTAL_COLS _z entries must be preserved (no _sr counterpart)"
+        )
+
     def test_no_rename_when_replace_z_disabled(self):
         ctx = self._ctx_with_replace_z(replace_z=False)
-        ctx.config["monotone_constraints"] = {"mom_12_1_z": 1}
+        ctx.config["panel_ltr"]["monotone_constraints"] = {"mom_12_1_z": 1}
         SectorRankNormalizeTask().run(ctx)
         # In augmentation mode, _z still exists → constraint key stays
-        assert ctx.config["monotone_constraints"]["mom_12_1_z"] == 1
+        assert ctx.config["panel_ltr"]["monotone_constraints"]["mom_12_1_z"] == 1
 
     def test_replace_z_no_effect_when_sr_missing(self):
         """If _sr wasn't actually added for some col (e.g., col missing

@@ -1487,7 +1487,7 @@ class SectorRankNormalizeTask(PanelTask):
                         fac = fac.drop(columns=z_cols_to_drop)
                 ctx.factor_frames[ticker] = fac
 
-        # BUG 4 fix (2026-05-01 evening triage of Layer 1+2 retrain crash):
+        # BUG 4 + 4.5 fix (2026-05-02 deep audit, post Layer 1+2 v2 crash):
         # when replace_z=True drops _z columns, the strategy_config's
         # `monotone_constraints` dict still references *_z keys that no
         # longer exist in the panel — PanelLTRModel.train() validates
@@ -1497,25 +1497,37 @@ class SectorRankNormalizeTask(PanelTask):
         # constraint on mom_12_1_z meaning "higher momentum z-score →
         # higher predicted rank" is equally valid for mom_12_1_sr —
         # the percentile preserves the order of the underlying value).
+        #
+        # CRITICAL: monotone_constraints lives at the NESTED path
+        # ``ctx.config["panel_ltr"]["monotone_constraints"]``. CrossValidate
+        # task reads it at pp_panel_training.py line 2228:
+        #     cfg = ctx.config.get("panel_ltr", {})
+        #     monotone = dict(cfg.get("monotone_constraints", {}))
+        # The earlier BUG 4 fix wrote to top-level which never existed →
+        # rewrite never fired and Layer 1+2 v2 retrain crashed at fold
+        # validation with the same error BUG 4 was meant to prevent.
         if replace_z and isinstance(ctx.config, dict):
-            mc = ctx.config.get("monotone_constraints")
-            if isinstance(mc, dict) and mc:
-                renamed: dict[str, int] = {}
-                n_renamed = 0
-                for k, v in mc.items():
-                    if k.endswith("_z"):
-                        base = k[:-2]
-                        if base in RAW_FACTOR_COLS_FOR_NORM:
-                            renamed[f"{base}_sr"] = int(v)
-                            n_renamed += 1
-                            continue
-                    renamed[k] = v
-                ctx.config["monotone_constraints"] = renamed
-                if n_renamed:
+            panel_cfg = ctx.config.get("panel_ltr")
+            if isinstance(panel_cfg, dict):
+                mc = panel_cfg.get("monotone_constraints")
+                if isinstance(mc, dict) and mc:
+                    renamed: dict[str, int] = {}
+                    n_renamed = 0
+                    n_preserved = 0
+                    for k, v in mc.items():
+                        if k.endswith("_z"):
+                            base = k[:-2]
+                            if base in RAW_FACTOR_COLS_FOR_NORM:
+                                renamed[f"{base}_sr"] = int(v)
+                                n_renamed += 1
+                                continue
+                        renamed[k] = v
+                        n_preserved += 1
+                    panel_cfg["monotone_constraints"] = renamed
                     log.info(
-                        "SectorRankNormalizeTask: replace_z mode — renamed "
-                        "%d monotone_constraints keys from _z to _sr",
-                        n_renamed,
+                        "SectorRankNormalizeTask: replace_z mode — rewrote "
+                        "monotone_constraints (renamed %d _z→_sr, preserved %d)",
+                        n_renamed, n_preserved,
                     )
 
         log.info(
