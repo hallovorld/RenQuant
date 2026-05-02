@@ -157,6 +157,8 @@
     "correlation_artifact": "watchlist-correlation.json",
     "earnings_artifact": "earnings-calendar.json",
     "earnings_buffer_days": 3,
+    "earnings_sell_buffer_pre_days": 2,
+    "earnings_sell_buffer_post_days": 5,
     "choppy_hurst_floor": 0.2,
     "confidence_veto_threshold": 0.0,
     "cusum_cooldown_mode": "wall_time",
@@ -465,7 +467,7 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-29",
+    "blend_updated": "2026-04-30",
     "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,

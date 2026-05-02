@@ -194,18 +194,41 @@ class TestUnitMismatchAudit:
 # ── Task wiring into TickerSellJob ───────────────────────────────────────────
 
 class TestJobWiring:
-    def test_panel_conviction_is_last_in_chain(self):
-        """Position matters: must run LAST so higher priority rules always win.
+    def test_panel_conviction_runs_after_all_exit_deciders(self):
+        """Position matters: PCT must run AFTER the exit-decider chain so
+        higher priority rules always win, but BEFORE EarningsBlackoutSell
+        so a panel_conviction exit set by PCT is still subject to the
+        event-blackout veto.
 
         Round-7 (2026-04-26): SellGateBTask was inserted between
         EvaluateExitsTask and PanelConvictionExitTask to add a μ/σ guard
-        on model_sell. PCT remains last — when SellGateB clears
-        exit_signal, PCT still gets a chance to evaluate independently.
+        on model_sell. PCT then evaluated independently after SellGateB
+        cleared model_sell.
+
+        2026-05-01 trade-audit response: EarningsBlackoutSellTask appended
+        as the final task. It vetoes both `model_sell` and
+        `panel_conviction` exits when the holding sits inside the earnings
+        event-blackout window — so PCT still fires conditionally, but its
+        verdict is now subject to the same calendar-respect contract that
+        guards model_sell.
         """
         tasks = TickerSellJob().tasks
         types = [type(t).__name__ for t in tasks]
-        assert types[-1] == "PanelConvictionExitTask"
         # Order: Prepare → Score → Evaluate → SellGateB → PanelConviction
+        # → EarningsBlackoutSell.
         assert types == ["PrepareHoldingTask", "ScoreModelTask",
                           "EvaluateExitsTask", "SellGateBTask",
-                          "PanelConvictionExitTask"]
+                          "PanelConvictionExitTask",
+                          "EarningsBlackoutSellTask"]
+        # Invariants this ordering protects:
+        i_pct  = types.index("PanelConvictionExitTask")
+        i_eb   = types.index("EarningsBlackoutSellTask")
+        i_gate = types.index("SellGateBTask")
+        i_eval = types.index("EvaluateExitsTask")
+        assert i_eval < i_gate < i_pct, (
+            "PCT must run AFTER SellGateB clears (or doesn't clear) model_sell"
+        )
+        assert i_pct < i_eb, (
+            "EarningsBlackoutSell must run AFTER PCT so a panel_conviction "
+            "exit set by PCT is still subject to event-blackout veto"
+        )

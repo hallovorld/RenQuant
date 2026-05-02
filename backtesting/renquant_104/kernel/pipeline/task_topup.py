@@ -77,9 +77,35 @@ class TopUpHeldTask(Task):
         # log signal. Operator couldn't see WHY a holding wasn't being
         # topped up.
         import math
+        # 2026-05-01 trade-audit fix: TopUp must respect the same earnings
+        # blackout the buy-side EarningsFilterTask enforces. Pre-fix, FTNT
+        # was topped up on 2026-04-29 — one day before its 2026-04-30
+        # earnings print — because TopUp ran on the held set, not the
+        # candidate pipeline. Symmetric (±buffer) — adding to a position is
+        # entering, and entry must respect event windows.
+        # Guarded: if ctx lacks today / earnings_calendar / config, fall
+        # through silently (legacy SimpleNamespace tests that don't model
+        # earnings inputs still get baseline TopUp behavior).
+        from kernel.selection import is_earnings_blocked  # noqa: PLC0415
+        earnings_calendar = getattr(ctx, "earnings_calendar", None) or {}
+        today = getattr(ctx, "today", None)
+        cfg_for_buf = getattr(ctx, "config", None) or {}
+        earnings_buf = int(
+            (cfg_for_buf.get("regime", {}) if isinstance(cfg_for_buf, dict) else {})
+            .get("earnings_buffer_days", 3)
+        )
+        earnings_check_active = bool(earnings_calendar) and today is not None
+
         for ticker, hs in ctx.holdings.items():
             if ticker in already_buying or ticker in already_selling \
                or ticker in rotation_sells:
+                continue
+            if earnings_check_active and is_earnings_blocked(
+                    ticker, today, earnings_calendar, earnings_buf):
+                log.info(
+                    "TopUpHeldTask [%s]: SKIPPED — within ±%d days of earnings",
+                    ticker, earnings_buf,
+                )
                 continue
             kelly_target = getattr(hs, "kelly_target_pct", None)
             if kelly_target is None or not math.isfinite(kelly_target) or kelly_target <= 0:

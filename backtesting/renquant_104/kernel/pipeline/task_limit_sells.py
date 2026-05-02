@@ -19,12 +19,15 @@ References:
     accumulated through prior position-building.
 
 Behavior:
-  * Counts `model_sell` exits in ctx.exits.
-  * If count exceeds `risk.max_sells_per_bar`, sort by NGBoost μ
-    ascending (most-bearish first), keep the top N, drop the rest.
-  * Risk exits (stop_loss / trailing / single_day_loss / max_hold /
-    panel_conviction / rotation / kelly_trim) are EXEMPT — they
-    always fire.
+  * Counts `model_sell` AND `panel_conviction` exits in ctx.exits — both
+    are "soft" signal-driven exits (audit fix 2026-04-29: panel_conviction
+    is a MODEL signal, not a price-action stop, so it shares the cap).
+  * If combined count exceeds `risk.max_sells_per_bar`, sort by NGBoost
+    μ ascending (most-bearish first), keep the top N, drop the rest.
+  * Hard risk exits (stop_loss / trailing_stop / single_day_loss /
+    max_hold / rotation / kelly_trim / gap_down / joint_sell) are EXEMPT
+    — they always fire because their triggers are deterministic price
+    events, not signal.
   * Default OFF (max_sells_per_bar=0 means uncapped).
 
 Wired into both InferencePipeline and SellOnlyPipeline AFTER the

@@ -145,13 +145,23 @@ class TestGaussianizeCrossSection:
                 assert abs(out[t].loc[d]) < 1e-9
 
     def test_single_ticker_day_edge_case(self):
-        """One ticker on a date — map to 0.0, no crash."""
+        """One ticker on a date — map to NaN (audit fix #9, 2026-04-29).
+
+        Cross-sectional rank with N=1 is undefined. Pre-fix the function
+        returned 0.0, silently injecting a "neutral" label into training
+        and biasing weights for any date the universe shrinks to one
+        ticker — common at watchlist-start dates where younger names
+        enter progressively. NaN is the correct verdict: drop the row.
+        """
         from training_panel.labels import gaussianize_cross_section
         idx = _dates(3)
         residuals = {"AAA": pd.Series([0.1, 0.2, 0.3], index=idx)}
         out = gaussianize_cross_section(residuals)
         for d in idx:
-            assert out["AAA"].loc[d] == 0.0
+            assert np.isnan(out["AAA"].loc[d]), (
+                "single-ticker day must yield NaN (not 0.0) so the row is "
+                "dropped rather than silently labeled neutral"
+            )
 
     def test_nans_pass_through(self):
         from training_panel.labels import gaussianize_cross_section

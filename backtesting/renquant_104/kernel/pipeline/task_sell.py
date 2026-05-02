@@ -1,6 +1,7 @@
 """Per-ticker sell evaluation tasks."""
 from __future__ import annotations
 
+import datetime
 import logging
 
 from .context import TickerInferenceContext
@@ -304,8 +305,12 @@ class PanelConvictionExitTask(Task):
             current_price = getattr(tc, "today_close", None) or getattr(hs, "current_price", entry_price)
             if (lt_gate > 0 and entry_date is not None and entry_price > 0
                     and current_price > 0):
+                # Defensive: tc may be a SimpleNamespace mock without `today`.
+                # Use getattr — without this, `tc.today` raises AttributeError
+                # before isinstance() can even run.
                 from datetime import date as _date  # noqa: PLC0415
-                today = tc.today if isinstance(tc.today, _date) else None
+                tc_today = getattr(tc, "today", None)
+                today = tc_today if isinstance(tc_today, _date) else None
                 if today is not None:
                     days_held = (today - entry_date).days
                     unrealized_gain = (current_price - entry_price) / entry_price
@@ -329,3 +334,114 @@ class PanelConvictionExitTask(Task):
             )
             log.info("PanelConvictionExitTask [%s]: EXIT rank=%.3f μ=%+.4f (%s)",
                      tc.ticker, prob_score, mu, trigger_mode)
+
+
+class EarningsBlackoutSellTask(Task):
+    """Veto model-driven exits inside the earnings event-blackout window.
+
+    Invariant
+    ---------
+    Model-driven exits (`model_sell`, `panel_conviction`) are SUPPRESSED when
+    the holding sits inside its earnings event-blackout window. Path-action
+    exits (`stop_loss`, `trailing_stop`, `single_day_loss`, `max_hold`,
+    `kelly_trim`, `rotation`) ALWAYS fire — they are price-action signals not
+    affected by event-driven information asymmetries.
+
+    Window is asymmetric:
+      * pre_days  (default 2): tighter window before a known print — operator
+        is expected to size down voluntarily, not panic-exit on a model spike
+        in the run-up.
+      * post_days (default 5): wider window after the print to respect
+        Post-Earnings Announcement Drift (Bernard & Thomas 1989; Sadka 2006;
+        Hirshleifer-Lim-Teoh 2009). Pure-momentum signals systematically
+        whipsaw against the drift — give it room to play out.
+
+    References
+    ----------
+    Bernard, V.L. & Thomas, J.K. (1989). "Post-Earnings-Announcement Drift:
+        Delayed Price Response or Risk Premium?" Journal of Accounting
+        Research 27(Supp): 1-36.
+    Sadka, R. (2006). "Momentum and post-earnings-announcement drift
+        anomalies: The role of liquidity risk." Journal of Financial
+        Economics 80(2): 309-349.
+    Hirshleifer, D., Lim, S.S. & Teoh, S.H. (2009). "Driven to Distraction:
+        Extraneous Events and Underreaction to Earnings News." Journal of
+        Finance 64(5): 2289-2325.
+
+    Motivating incident
+    -------------------
+    2026-05-01 trade audit: CAT printed Q1 EPS $5.54 vs $4.62 est (+19.9%
+    beat) on 2026-04-30, single-day +9.88%. The per-ticker tournament model
+    accumulated `streak=3` model_sell signals through the print, and on
+    2026-05-01 the system sold CAT into the post-beat strength — a textbook
+    momentum-vs-PEAD whipsaw. This Task is the structural fix.
+
+    Pre-conditions
+    --------------
+    * `regime.earnings_sell_buffer_pre_days  >= 0` (default 2)
+    * `regime.earnings_sell_buffer_post_days >= 0` (default 5)
+    * `tc.earnings_calendar` is dict[ticker → list[ISO date strings]]
+      (populated by `_make_sell_tctx` from `ctx.earnings_calendar`)
+
+    Falls through gracefully (no veto) when:
+      * No exit_signal, or signal is not should_exit
+      * exit_type is a path rule (stop/trailing/SDL/max_hold/kelly_trim/rotation)
+      * earnings_calendar missing or no dates for this ticker
+      * No earnings date within the asymmetric window
+      * Both pre and post buffer = 0 (operator-disabled)
+    """
+
+    name = "EarningsBlackoutSellTask"
+
+    # Path-action exits never blocked. Mirrors SellGateBTask's exemption list
+    # plus rotation/kelly_trim which are portfolio-level decisions, not
+    # model-driven sells. Update this set if a new exit_type is introduced.
+    _MODEL_DRIVEN_EXIT_TYPES = frozenset({"model_sell", "panel_conviction"})
+
+    def run(self, tc: TickerInferenceContext) -> bool | None:
+        sig = getattr(tc, "exit_signal", None)
+        if sig is None or not sig.should_exit:
+            return
+
+        if sig.exit_type not in self._MODEL_DRIVEN_EXIT_TYPES:
+            return  # path-action rule — exempt
+
+        regime_cfg = tc.config.get("regime", {})
+        pre_days  = int(regime_cfg.get("earnings_sell_buffer_pre_days",  2))
+        post_days = int(regime_cfg.get("earnings_sell_buffer_post_days", 5))
+        if pre_days <= 0 and post_days <= 0:
+            return  # operator-disabled
+
+        calendar = tc.earnings_calendar or {}
+        dates = calendar.get(tc.ticker, []) if calendar else []
+        if not dates:
+            return  # no calendar entries — can't veto, fail open
+
+        today = tc.today
+        if not isinstance(today, datetime.date):
+            return  # malformed bar date — defensive
+
+        for d_str in dates:
+            try:
+                d = datetime.date.fromisoformat(d_str)
+            except (TypeError, ValueError):
+                continue
+            offset = (d - today).days
+            # offset > 0  → earnings is N days in the future (pre-window)
+            # offset == 0 → today is earnings day
+            # offset < 0  → earnings was N days in the past (post-window)
+            inside_pre  = (0 <  offset <= pre_days)
+            inside_day  = (offset == 0)
+            inside_post = (-post_days <= offset < 0)
+            if inside_pre or inside_day or inside_post:
+                log.info(
+                    "EarningsBlackoutSellTask [%s]: VETO %s exit  "
+                    "earnings=%s  offset=%+d  window=(-%d, +%d)",
+                    tc.ticker, sig.exit_type, d_str, offset,
+                    post_days, pre_days,
+                )
+                # Clear so downstream portfolio-level tasks (LimitSellsPerBar)
+                # see no exit. Streak preserved — once the window closes the
+                # accumulated streak fires immediately on the next bar.
+                tc.exit_signal = None
+                return

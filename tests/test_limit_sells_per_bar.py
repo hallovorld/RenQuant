@@ -7,10 +7,14 @@ Per-ticker rules can't see the portfolio-level effect.
 
 Behavioral contract:
   * Default OFF (max_sells_per_bar=0 → uncapped).
-  * Risk exits (stop_loss/trailing/SDL/max_hold/panel_conviction/
-    rotation/kelly_trim/joint_sell) are EXEMPT — they always fire.
-  * model_sell exits sorted by NGBoost μ ascending (most-bearish first),
-    keep top N, drop the rest.
+  * Hard risk exits (stop_loss/trailing/SDL/max_hold/rotation/kelly_trim/
+    joint_sell/gap_down) are EXEMPT — deterministic price-action, always fire.
+  * Soft sells (model_sell + panel_conviction) share the per-bar cap. Audit
+    fix 2026-04-29: panel_conviction is a MODEL signal, not a price stop —
+    multiple holdings degrading conviction simultaneously creates the same
+    mass-exit risk model_sell does.
+  * Soft sells sorted by NGBoost μ ascending (most-bearish first), keep
+    top N, drop the rest.
   * Diagnostic: dropped exits stored in ctx.exits_throttled +
     counters["model_sell_throttled"] incremented.
   * Defensive: missing μ → treated as +inf (least urgent → first to drop).
@@ -101,11 +105,14 @@ class TestDefaultOff:
 # ── Risk exits exempt ─────────────────────────────────────────────────────────
 
 class TestRiskExitsExempt:
-    """Path-dependent rules MUST always fire — never throttled."""
+    """Hard risk exits (deterministic price-action) MUST always fire —
+    never throttled. NOTE: panel_conviction is intentionally NOT in this
+    list — see TestPanelConvictionThrottled below for the rationale.
+    """
 
     @pytest.mark.parametrize("risk_type", [
         "stop_loss", "trailing_stop", "single_day_loss", "max_hold",
-        "panel_conviction", "rotation", "kelly_trim", "joint_sell",
+        "rotation", "kelly_trim", "joint_sell",
     ])
     def test_risk_exits_pass_unchanged(self, risk_type):
         """5 risk exits + cap=2 → all 5 still pass (exempt)."""
@@ -115,6 +122,59 @@ class TestRiskExitsExempt:
 
         LimitSellsPerBarTask().run(ctx)
         assert len(ctx.exits) == 5
+
+
+class TestPanelConvictionThrottled:
+    """Audit fix 2026-04-29: panel_conviction shares the cap with model_sell.
+
+    Rationale: panel_conviction fires on (rank_score < floor) AND
+    (μ ≤ ceiling) — both are MODEL signals. In a downturn many holdings
+    can degrade conviction simultaneously → mass-exit risk identical to
+    a model_sell stampede. The cap mitigates the same Almgren-Chriss
+    market-impact penalty either way. Hard risk exits stay exempt
+    because their triggers are deterministic price events, not signal.
+    """
+
+    def test_five_panel_conviction_capped_at_two(self):
+        exits = [(f"T{i}", _exit("panel_conviction")) for i in range(5)]
+        holdings = {
+            "T0": _holding(mu=-0.10),  # most bearish — kept
+            "T1": _holding(mu=-0.05),  # kept
+            "T2": _holding(mu=-0.02),
+            "T3": _holding(mu=0.0),
+            "T4": _holding(mu=0.05),   # least bearish — first to drop
+        }
+        ctx = _ctx(exits=exits, holdings=holdings, max_sells_per_bar=2)
+        LimitSellsPerBarTask().run(ctx)
+        kept = {t for t, _ in ctx.exits}
+        assert len(ctx.exits) == 2
+        assert kept == {"T0", "T1"}, (
+            "most-bearish panel_conviction (lowest μ) must win the cap"
+        )
+
+    def test_panel_conviction_and_model_sell_share_same_cap(self):
+        """Mixed: 2 model_sell + 3 panel_conviction + cap=3 → keep 3 most
+        bearish across BOTH types (cap is on the union, not per-type)."""
+        exits = [
+            ("MS1", _exit("model_sell")),       # μ = -0.20  (most bearish)
+            ("MS2", _exit("model_sell")),       # μ = +0.02
+            ("PC1", _exit("panel_conviction")), # μ = -0.15
+            ("PC2", _exit("panel_conviction")), # μ = -0.05
+            ("PC3", _exit("panel_conviction")), # μ = +0.10
+        ]
+        holdings = {
+            "MS1": _holding(mu=-0.20),
+            "MS2": _holding(mu=+0.02),
+            "PC1": _holding(mu=-0.15),
+            "PC2": _holding(mu=-0.05),
+            "PC3": _holding(mu=+0.10),
+        }
+        ctx = _ctx(exits=exits, holdings=holdings, max_sells_per_bar=3)
+        LimitSellsPerBarTask().run(ctx)
+        kept = {t for t, _ in ctx.exits}
+        assert kept == {"MS1", "PC1", "PC2"}, (
+            "top-3 by μ ascending across mixed model_sell + panel_conviction"
+        )
 
     def test_mixed_risk_and_model_sells_only_caps_model_sells(self):
         """3 stop_loss + 4 model_sell + cap=2 → 3 stop + 2 model = 5 total."""

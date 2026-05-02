@@ -66,6 +66,12 @@ def _make_sell_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
         exit_params=exit_params,
         holding=ctx.holdings[ticker],
         price=ctx.prices.get(ticker, 0.0),
+        # earnings_calendar plumbed to sell tctx (2026-05-01) so
+        # EarningsBlackoutSellTask can veto model-driven exits inside the
+        # event-blackout window. Buy-side has had this since the original
+        # candidate pipeline; sell-side was missing it and let CAT exit on
+        # 2026-05-01 the day after a +9.88% earnings rip.
+        earnings_calendar=ctx.earnings_calendar,
         feature_cache_frame=ctx.feature_cache.get(ticker) if ctx.feature_cache else None,
     )
 

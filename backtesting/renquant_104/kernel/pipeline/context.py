@@ -120,8 +120,11 @@ class TickerInferenceContext:
     holding: Any = None          # HoldingState | None
     price: float = 0.0
 
-    # Candidate-job inputs (None for sell jobs)
-    earnings_calendar: Any = None  # dict[ticker → list[str]] | None
+    # earnings_calendar: shared by candidate AND sell tctx so the
+    # buy-side EarningsFilterTask and the sell-side EarningsBlackoutSellTask
+    # both see the same calendar. dict[ticker → list[ISO date strings]] | None.
+    earnings_calendar: Any = None
+    # last_sell_dates: candidate-job input (None for sell jobs)
     last_sell_dates: Any = None    # dict[ticker → date | None] | None
 
     # Intermediate task outputs — written by one task, read by the next
