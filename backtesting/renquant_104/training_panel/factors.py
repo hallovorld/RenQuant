@@ -254,6 +254,128 @@ def cross_sectional_zscore(
     return out
 
 
+def cross_sectional_rank_within_sector(
+    feature: dict[str, pd.Series],
+    ticker_sectors: dict[str, str],
+    *,
+    min_sector_size: int = 5,
+    fallback_global: bool = True,
+) -> dict[str, pd.Series]:
+    """Per (date, sector): rank-normalize values across tickers in the
+    same sector to a percentile in [0, 1].
+
+    Why this exists
+    ---------------
+    The default ``cross_sectional_zscore`` standardizes each feature
+    across the full universe per date. When the universe is heterogeneous
+    in feature distribution (Witter 2025: e.g. tech mom_12_1 lives on a
+    different scale than energy mom_12_1), the global z-score forces
+    comparison between values whose underlying distributions are not
+    comparable. The result was the wl178 fitting collapse documented in
+    failed-experiments-log E17/E21 — train IC dropped from +0.118 to
+    +0.085 because the rank-pairwise loss couldn't extract signal from
+    cross-distribution comparisons.
+
+    This helper produces a sector-relative percentile in [0, 1]. Two
+    tickers in the same sector with the same percentile have the same
+    rank within their cohort, regardless of how that cohort's raw values
+    compare to another sector's. Reference: Microsoft qlib's
+    ``CSRankNorm`` (see qlib/data/dataset/processor.py).
+
+    Invariant
+    ---------
+    For any (date, sector) group with ≥ ``min_sector_size`` tickers:
+        result_per_ticker ∈ [0, 1] AND values are unique-per-rank
+        (ties broken by 'average' rank). Tickers in under-populated
+        sectors fall back to global-percentile if ``fallback_global``,
+        else NaN.
+
+    Parameters
+    ----------
+    feature : dict[ticker, pd.Series]
+        Time-indexed series of raw feature values, one per ticker.
+    ticker_sectors : dict[ticker, sector]
+        GICS-style sector labels (or any consistent partitioning). Used
+        to group within each date.
+    min_sector_size : int
+        Below this threshold a sector is treated as under-populated and
+        either falls back to the global cross-section or yields NaN. The
+        default 5 is conservative — empirical-Bayes math (Robbins 1955;
+        practitioner Wheeler 2018) shows percentile noise dominates below
+        this scale anyway.
+    fallback_global : bool
+        When True, under-populated tickers get a global cross-sectional
+        percentile (across the full universe on that date). When False,
+        they get NaN — useful for debugging / strict experiments.
+
+    Returns
+    -------
+    dict[ticker, pd.Series]
+        Same shape as input. Values in [0, 1] for non-NaN entries. NaN
+        rows propagated from the input remain NaN in the output.
+    """
+    if not feature:
+        return {}
+
+    frames = []
+    for t, s in feature.items():
+        frames.append(pd.DataFrame({
+            "date":   s.index,
+            "ticker": t,
+            "sector": ticker_sectors.get(t, "_unmapped"),
+            "val":    s.values,
+        }))
+    long = pd.concat(frames, ignore_index=True)
+
+    # Per (date, sector) percentile rank among non-NaN values.
+    # ``method='average'`` handles ties symmetrically — important when
+    # many tickers share an exact value (e.g. zero overnight gap on a
+    # quiet day). pct=True normalizes by group size to land in (0, 1].
+    long["sector_pct"] = (
+        long.groupby(["date", "sector"], sort=False, dropna=False)["val"]
+        .rank(method="average", pct=True, na_option="keep")
+    )
+
+    # Per-(date, sector) sample size — used to enforce min_sector_size.
+    long["sector_n"] = long.groupby(
+        ["date", "sector"], sort=False, dropna=False,
+    )["val"].transform(lambda s: int(s.notna().sum()))
+
+    # Global per-date percentile rank — used as fallback for sectors
+    # below the min size, or as primary for tickers with no sector label.
+    long["global_pct"] = (
+        long.groupby("date", sort=False)["val"]
+        .rank(method="average", pct=True, na_option="keep")
+    )
+
+    if fallback_global:
+        # Under-populated sector OR unmapped ticker → use global percentile.
+        long["pct"] = np.where(
+            (long["sector_n"] < min_sector_size) | (long["sector"] == "_unmapped"),
+            long["global_pct"],
+            long["sector_pct"],
+        )
+    else:
+        long["pct"] = np.where(
+            (long["sector_n"] < min_sector_size) | (long["sector"] == "_unmapped"),
+            np.nan,
+            long["sector_pct"],
+        )
+
+    # Preserve NaN-ness of input — a NaN raw value should not become a
+    # spurious percentile.
+    long.loc[long["val"].isna(), "pct"] = np.nan
+
+    out: dict[str, pd.Series] = {}
+    for t, sub in long.groupby("ticker", sort=False):
+        s = pd.Series(
+            sub["pct"].values,
+            index=pd.Index(sub["date"].values),
+        ).sort_index()
+        out[t] = s
+    return out
+
+
 FUNDAMENTAL_COLS: list[str] = [
     "earnings_yield",
     "roe",
