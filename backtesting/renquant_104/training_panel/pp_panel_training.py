@@ -1407,6 +1407,14 @@ class LabelsTask(PanelTask):
         beta_window = int(cfg.get("beta_window", 60))
         benchmark   = ctx.config.get("benchmark", "SPY")
 
+        # Track F: optional triple-barrier label mode (Lopez de Prado AFML §3).
+        # Default `fwd_5d` (production, close-to-close at lookahead). When
+        # `panel_ltr.label_mode == 'triple_barrier'`, replace per-ticker
+        # forward returns with the realised return at the FIRST hit among
+        # {upper, lower, time} barriers. Other steps (residuals + gauss)
+        # stay identical — only the per-ticker base return differs.
+        label_mode = str(cfg.get("label_mode", "fwd_5d")).lower()
+
         spy_df = ctx.ohlcv.get(benchmark)
         if spy_df is None:
             raise RuntimeError("LabelsTask: benchmark OHLCV missing")
@@ -1415,11 +1423,30 @@ class LabelsTask(PanelTask):
         spy_fwd = spy_close.shift(-lookahead) / spy_close - 1.0
 
         fwd_returns: dict[str, pd.Series] = {}
-        for t, df in ctx.ohlcv.items():
-            if t not in ctx.watchlist:
-                continue
-            c = df["close"].astype(float)
-            fwd_returns[t] = c.shift(-lookahead) / c - 1.0
+        if label_mode == "triple_barrier":
+            from kernel.triple_barrier import (  # noqa: PLC0415
+                TripleBarrierConfig, compute_triple_barrier_labels,
+            )
+            tb_cfg_dict = cfg.get("triple_barrier", {}) or {}
+            tb_cfg = TripleBarrierConfig(
+                alpha           = float(tb_cfg_dict.get("alpha",            2.0)),
+                beta            = float(tb_cfg_dict.get("beta",             2.0)),
+                max_horizon_days= int(tb_cfg_dict.get("max_horizon_days",   lookahead)),
+                vol_window      = int(tb_cfg_dict.get("vol_window",         20)),
+            )
+            log.info("LabelsTask: label_mode=triple_barrier  alpha=%.2f beta=%.2f "
+                     "max_horizon=%d vol_window=%d",
+                     tb_cfg.alpha, tb_cfg.beta, tb_cfg.max_horizon_days, tb_cfg.vol_window)
+            wl_ohlcv = {t: df for t, df in ctx.ohlcv.items() if t in ctx.watchlist}
+            tb_out = compute_triple_barrier_labels(wl_ohlcv, tb_cfg)
+            for t, frame in tb_out.items():
+                fwd_returns[t] = frame["label"]
+        else:
+            for t, df in ctx.ohlcv.items():
+                if t not in ctx.watchlist:
+                    continue
+                c = df["close"].astype(float)
+                fwd_returns[t] = c.shift(-lookahead) / c - 1.0
 
         sec_fwd_frames: dict[str, pd.Series] = {}
         for sec, df in ctx.sector_etf_ohlcv.items():
