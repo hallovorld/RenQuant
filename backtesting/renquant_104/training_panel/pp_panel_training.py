@@ -1458,25 +1458,37 @@ class LabelsTask(PanelTask):
         }
 
         if label_mode == "triple_barrier":
-            # E24 fix (2026-05-02): cannot residualize triple-barrier labels
-            # against fixed-horizon SPY/sector forward returns — ticker_fwd
-            # is variable-horizon (1..max_horizon_days, depending on which
-            # barrier hit) but spy_fwd / sector_fwd here are fixed
-            # `lookahead`-day returns. Mixing them in OLS residual produces
-            # anti-predictive labels (eval_ic=-0.0744 in initial A/A).
+            # E24 v2 fix (2026-05-02): hit-time-matched residualization.
+            # ticker_fwd is variable-horizon (1..max_horizon_days), so
+            # SPY/sector benchmark forward returns must use the SAME hit
+            # horizon per (ticker, t) row — not the fixed `lookahead`-day
+            # window. Mixing horizons in OLS produces anti-predictive
+            # labels (initial v1 fix attempt eval_ic=−0.0744 with mismatch).
             #
-            # Simplest valid path: SKIP residualization. Use the raw
-            # barrier-hit return as the label directly. The rank-pairwise
-            # objective on cross-sectional rank-norm of these raw returns
-            # still produces a valid alpha signal; the residualization was
-            # a beta-removal step we forgo here.
-            #
-            # If A/A on this design lifts IC, future work can add proper
-            # hit-time-matched residual extraction (per-row spy_fwd at
-            # ticker's hit_days[t]).
-            ctx.raw_residuals = {t: s.copy() for t, s in fwd_returns.items()}
-            log.info("LabelsTask: triple_barrier mode — skipping residualization "
-                     "(use raw barrier-hit returns directly)")
+            # New path: compute_residual_returns_hit_aligned reads
+            # `hit_days` per (ticker, t) from the triple-barrier output
+            # and constructs per-row spy_fwd[i,t] = spy_close[t+hit] / spy_close[t] − 1.
+            # β estimation uses the same purged rolling OLS, with purge =
+            # max_horizon_days so prior-window β fit doesn't see future
+            # bars. Sector orthogonalization (FWL) preserved.
+            from training_panel.labels import compute_residual_returns_hit_aligned  # noqa: PLC0415
+            hit_days_by_ticker = {t: tb_out[t]["hit_days"] for t in tb_out}
+            sec_close_by_ticker = {
+                t: ctx.sector_etf_ohlcv[sec]["close"].astype(float)
+                for t, sec in ctx.ticker_sectors.items()
+                if sec in ctx.sector_etf_ohlcv
+            }
+            ctx.raw_residuals = compute_residual_returns_hit_aligned(
+                fwd_returns,
+                hit_days_by_ticker,
+                ctx.ohlcv[benchmark]["close"].astype(float),
+                sec_close_by_ticker,
+                beta_window=beta_window,
+                purge_days=tb_cfg.max_horizon_days,
+            )
+            log.info("LabelsTask: triple_barrier mode — hit-time-matched "
+                     "residualization (purge=%d, beta_window=%d)",
+                     tb_cfg.max_horizon_days, beta_window)
         else:
             ctx.raw_residuals = compute_residual_returns(
                 fwd_returns, spy_fwd, sec_fwd_by_ticker,
