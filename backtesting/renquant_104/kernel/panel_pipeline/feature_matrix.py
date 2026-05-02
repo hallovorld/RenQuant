@@ -65,6 +65,7 @@ def build_inference_matrix(
     feature_cols: list[str],
     nan_prone_cols: list[str] | None = None,
     macro_frame: "pd.DataFrame | None" = None,
+    asset_embeddings: "dict[str, np.ndarray] | None" = None,
 ) -> pd.DataFrame:
     """One row per ticker × len(feature_cols) columns, aligned to the artifact.
 
@@ -75,6 +76,15 @@ def build_inference_matrix(
          value for every ticker on this date) if `macro_frame` provided
       4. Append `{col}_is_missing` indicator for each `col` in `nan_prone_cols`
       5. Select and order columns per `feature_cols`
+
+    The ``asset_embeddings`` parameter is the interface point for T2-2
+    (per-ticker asset embedding broadcast at inference). The full
+    broadcast logic lives on the ``exp/macro-v3-isolation`` experimental
+    branch — the production T2-2 was rejected (NO-GO 2026-04-27, CPCV
+    OOS IC −18.5%) and ``asset_embeddings`` is None in the production
+    config. This signature accepts the kwarg so the call site in
+    ``job_panel_scoring.py`` is type-correct on main; ignoring the value
+    is the production behavior.
 
     Tickers with no row on-or-before `today` are skipped. Missing columns
     are filled with NaN so the resulting matrix has the exact shape the
