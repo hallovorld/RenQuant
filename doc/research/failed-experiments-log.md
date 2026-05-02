@@ -89,6 +89,86 @@ python scripts/compare_panel_experiments.py --logs /tmp/wl178_layer1.log
 ### Status
 🟡 **Partial — superseded by Layer 1+2 experiment in flight.** Final classification (failed / superseded / inconclusive) blocks on Layer 1+2 result.
 
+### Final classification (post Layer 1+2 v3, 2026-05-02)
+**Superseded — but not solved.** Layer 1+2 v3 retrain landed CPCV mean_ic = +0.0150 (vs Layer 1 alone = -0.0008). Layer 1 alone was insufficient; Layer 1+2 produces a measurable lift but the lift is within the A/A noise band (half_b = +0.0136, pooled std ≈ 0.034) — statistically indistinguishable from noise at 1σ. **Sector-aware path is partially effective but does not close the gap to wl103 production baseline (+0.0418).**
+
+---
+
+## E_LAYER1_PLUS_2_V3. Layer 1 substitution + Layer 2 sector-one-hot — borderline lift, not enough
+
+**Date**: 2026-05-02
+**Type**: borderline — qualitative architecture wins but quantitative IC short of target
+**Production impact**: none (experimental branch; main wl103 unchanged)
+**Branch**: `exp/wl500-and-sector-arch` @ `eb0e857`
+**Config**: `strategy_config.wl178_v2_l1sub_l2.json`
+
+### Hypothesis
+After fixing 4 implementation bugs surfaced during BUG 1/2/3/4/4.5 triage (sector_map 100% coverage, min_sector_size=3, replace_z substitution mode, monotone_constraints rewrite at nested path), the combined Layer 1 (sector-rank-norm replacing global z-score) + Layer 2 (sector one-hot identity columns) on wl178 should produce CPCV mean_ic ≥ +0.030 — closing 70%+ of the gap to production wl103 (+0.0418).
+
+### Implementation
+- All BUG 1-4.5 fixes applied per `fa66876` and `eb0e857`
+- 100% sector_map coverage on wl178 (104 → 178 tickers via IWB CSV + 13 hand-classified)
+- min_sector_size = 3 (lowered from 5 default)
+- `replace_z = True` (substitution mode — drops `_z` cols when `_sr` cols added)
+- Layer 2 enabled — adds 12 `sector_<name>` indicator cols
+- monotone_constraints auto-rewritten 5 _z keys → _sr (FUNDAMENTAL_COLS keys preserved)
+
+### Data (CPCV 15-fold, wl178 panel)
+
+| Metric | Value | vs Reference |
+|---|---:|---|
+| **CPCV mean_ic** | **+0.0150** | 2× A/A pool baseline (~+0.007); 0.36× wl103 (+0.0418) |
+| CPCV std | 0.0202 | within typical CV variance |
+| train_ic | +0.0865 | recovered from L1-alone (+0.069); below wl103 (+0.118) |
+| NGBoost val_mu_ic | -0.0138 | half-bad (vs L1-alone -0.028) — μ/σ head still mis-fits |
+| FinalFit best_iter | > 5 | guard didn't fire — model actually trained (vs v1/v2 crashes) |
+
+### Statistical context
+A/A baseline (random 89-ticker halves of wl178, no sector-aware): half_a +0.0004, half_b +0.0136, pooled std ≈ 0.034. Layer 1+2's +0.0150 is +0.008 above pool average → ~0.25σ. **Not statistically significant lift** at conventional thresholds. Qualitatively positive trend, quantitatively within noise.
+
+### Sanity checks
+- ✅ Architecture mechanically working: replace_z drops _z cols correctly, monotone_constraints rewritten to _sr keys, Layer 2 sector columns present
+- ✅ FinalFit converged (best_iter > 5, eta×iter > 0.10) — not an undertrained artifact
+- ✅ Inference path applies same rewrites (bug-symmetric across train + score)
+- ⚠️ NGBoost μ/σ head still fits poorly (val_mu_ic = -0.014) — μ-derived signals (Gate B edge_sharpe) may be unreliable on wl178 even with Layer 1+2
+
+### Why the lift is small (working theory)
+Layer 1+2 add THREE orthogonal sector encodings:
+1. `_sr` — per-(date, sector) percentile rank (substitutes _z)
+2. `sector_<S>` — binary identity columns
+3. (implicit) — sector membership now drives the cross-section's normalization basis
+
+Tree rank-pairwise loss can split on any of these per node, but **cannot encode pair-level relations** ("ticker A and ticker B share sector X, so their score difference should be modulated"). That's the failure mode Feng 2019's graph attention is designed to fix.
+
+Conclusion: the structural ceiling for tree-based sector-aware ranking on wl178 is ≈ +0.015 — under 50% of production wl103. Closing the rest needs architecture change, not parameter tuning.
+
+### Reproduction
+```bash
+# In exp/wl500-and-sector-arch worktree:
+python scripts/build_sector_map.py    # 100% sector_map → strategy_config.wl178_v2.json
+python -c "
+import json
+cfg = json.load(open('backtesting/renquant_104/strategy_config.wl178_v2.json'))
+cfg.setdefault('panel_ltr', {}).update({
+    'sector_rank_norm': {'enabled': True, 'min_sector_size': 3, 'fallback_global': True, 'replace_z': True},
+    'sector_one_hot':   {'enabled': True, 'max_sectors': 30},
+    'min_best_iter':    1,
+})
+open('backtesting/renquant_104/strategy_config.wl178_v2_l1sub_l2.json', 'w').write(json.dumps(cfg, indent=2))
+"
+python scripts/train_104.py --strategy-config-name strategy_config.wl178_v2_l1sub_l2.json \
+    --skip-baseline --skip-recalibrate --force --skip-acceptance > /tmp/wl178_v2_l1sub_l2_v3.log 2>&1
+
+python scripts/compare_panel_experiments.py --logs /tmp/wl178_v2_l1sub_l2_v3.log
+# Expect: cpcv_mean_ic ≈ +0.0150, train_ic ≈ +0.0865
+```
+
+### Decision
+Do not ship to production. Per the pre-defined judgment tree: +0.0150 falls in the "+0.015..+0.030 partial" band, but the lift is within A/A noise (0.25σ) → not statistically convincing. **Recommend escalating to Phase C (graph attention NN backend)** rather than further parameter tuning of XGBoost rank-pairwise. Phase C scaffold shipped at `4ec70bd`; training requires cloud GPU integration (Phase G, not yet set up).
+
+### Status
+🟢 **Closed — borderline result, recorded.** Phase C scaffolding shipped as next step. Main wl103 production unchanged.
+
 ---
 
 ## E1. M2 horizon-blender v3 — learned and fixed-weight blends BOTH lose to single best horizon

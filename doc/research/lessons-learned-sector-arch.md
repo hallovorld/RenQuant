@@ -183,6 +183,30 @@ data, design the substitution path as well as the augmentation path.
 Add `replace_z` flag so operators can run "_sr only" experiments and
 isolate the augmentation effect from the substitution effect.
 
+### BUG 4 + 4.5 — config-path bug, AND test mocked the same wrong path
+
+Two bugs in series. BUG 4 added a `monotone_constraints` rewrite when
+`replace_z=True` drops `_z` columns. BUG 4.5 was that the rewrite
+targeted `ctx.config["monotone_constraints"]` (top level) but the
+real config nests it at `ctx.config["panel_ltr"]["monotone_constraints"]`.
+
+**The smoking gun**: my own unit test for BUG 4 mocked the SAME wrong
+path the bug used. Test passed; production crashed. Both pieces of
+code shared the same wrong assumption, so the test confirmed the
+buggy code matched the buggy expectation.
+
+**Lesson:** when writing a test for a config-path-dependent fix, mock
+with the ACTUAL config structure (load real strategy_config.json,
+deepcopy, mutate). Don't mock at a level that abstracts away the
+nesting — that's where path bugs hide.
+
+**Process improvement adopted:** for any new code that reads
+`ctx.config[...]`, the test must include at least one assertion that
+loads the real strategy_config.json and verifies the read produces
+the expected value at the expected path. The
+`test_replace_z_real_strategy_config_structure` test in
+`tests/test_sector_rank_norm_task.py` is the pattern.
+
 ---
 
 ## 6 · Process patterns that worked
