@@ -2,15 +2,27 @@
 
 **Status**: Active daily strategy.
 **Author**: Ren Hao
-**Last updated**: 2026-04-26 (round-7 + model-selection systematization)
+**Last updated**: 2026-05-02 (Track A/B/F shelved + Track D Stage 3 in flight)
 **Based on**: renquant_103 (adaptive regime multi-stock)
 
-**Current production artifact** (`artifacts/panel-ltr.json`, 2026-04-26):
+**Current production artifact** (`artifacts/panel-ltr.json`, last retrain 2026-04-30 23:48):
 - Backend: XGBoost rank:pairwise (`kind: panel_ltr_xgboost`)
-- 28 feature_cols (per-ticker indicators + factor z-scores + fundamentals)
-- Panel: 74,547 rows × 99 tickers × 753 dates
-- OOS mean IC: **0.0482** (q25 0.028 / q50 0.055 / q95 0.082, std 0.025)
-- best_iter 9, params `eta=0.02 max_depth=3 min_child_weight=60 ss=cs=0.5 λ=5 α=2 seed=42`
+- **27 feature_cols** (per-ticker indicators + factor z-scores + fundamentals; insider_net_buy_90d wired but data-thin per E22 in failed-experiments-log)
+- Panel: 77,559 rows × **103 tickers** × 753 dates
+- **CPCV mean_ic: +0.034** (3-run σ estimation 2026-05-02 → run-to-run σ = 0.6 bp on identical config; 6-fold CPCV)
+- best_iter / train_ic vary widely across XGB seeds (range best_iter=4-39, train_ic=0.095-0.119) — **mean_ic is the only robust comparison statistic**
+- params `eta=0.02 max_depth=3 min_child_weight=60 ss=cs=0.5 λ=5 α=2 seed=42`
+
+**Recent shelved experiments** (see `doc/research/failed-experiments-log.md`):
+- E22 (Insider): 44% data coverage → −0.0008 in noise. Resume after SEC throttle clears + Sunday retrain refresh.
+- E23 (PEAD enrichment, 3 cols): −0.0010 = 17σ negative. Shelved.
+- E25 (Triple-barrier label, hit-time-matched residual): apparent +98bp lift; placebo invalidated as regime-persistence over-fit. Shelved.
+
+**In-flight expansion** (Track D, Stage 3 batch admission running 2026-05-02 19:00 PT):
+- Stage 1 mechanical → 816/1008 candidates pass liquidity/age/sector
+- Stage 1.5 IWB sector_map → 99.6% Russell-1000 coverage
+- Stage 2 KS distributional → 178/720 admitted (median KS 0.17, threshold 0.20)
+- Stage 3 greedy IC-additive batch admission → output `scripts/stage3_final_watchlist.json`
 
 **Round-7 additions** (2026-04-26):
 - **Macro factor frame** (VXX/HYG/UUP/DBC/GLD/TLT/XLV/XLU/KRE/MTUM/USMV × {level_z, chg_5d_z, chg_20d_z}, `kernel/macro.py`). Default OFF in prod; macro-enabled XGBoost variant (61 features, OOS IC 0.0393) preserved at `panel-ltr.macro-enabled.bak.json` but NOT promoted (-18% IC vs prod). LGBM-with-macro experiment (2026-04-26 evening) confirmed macro reduces IC further to 0.0224. See [`../components/macro-factor-frame-design.md`](../components/macro-factor-frame-design.md).
