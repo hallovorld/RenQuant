@@ -50,6 +50,15 @@ Exit codes
 """
 from __future__ import annotations
 
+# CLAUDE.md §5.10: saturate hardware. Set BEFORE numpy / xgboost imports.
+import os as _os
+for _k, _v in (("OMP_NUM_THREADS", "10"),
+               ("MKL_NUM_THREADS", "10"),
+               ("OPENBLAS_NUM_THREADS", "10"),
+               ("VECLIB_MAXIMUM_THREADS", "10"),
+               ("NUMEXPR_NUM_THREADS", "10")):
+    _os.environ.setdefault(_k, _v)
+
 import argparse
 import datetime as _dt
 import json

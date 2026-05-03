@@ -75,10 +75,12 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "lambda_l2":         5.0,
     "lambdarank_truncation_level": 10,     # NDCG@10 — v1 setting
     "verbose":           -1,
-    # Audit fix LGB-NEW-5 (2026-04-26 round-3): cap num_threads to 4
-    # to avoid fork/OMP deadlock with multiprocessing parents (same
-    # rationale as XGBoost X6).
-    "num_threads":       4,
+    # 2026-05-03 raise: num_threads 4 → 10 per CLAUDE.md §5.10 (saturate hardware).
+    # Original LGB-NEW-5 cap was defensive against macOS fork/OMP deadlock with
+    # prior multiprocessing parents; current dispatch goes through subprocess.run
+    # (clean process launch), not a forked worker, so fork-OMP deadlock is not
+    # the active risk. M2 Pro has 10 cores.
+    "num_threads":       10,
     # Audit fix LGB-NEW-4 (2026-04-26 round-3): explicit seeds for
     # reproducibility. bagging_fraction + feature_fraction use random
     # sampling; without seed, two runs differ. Multiple seed knobs

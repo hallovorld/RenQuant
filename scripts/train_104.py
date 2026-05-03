@@ -16,6 +16,17 @@ Usage::
 """
 from __future__ import annotations
 
+# CLAUDE.md §5.10: saturate the local hardware. M2 Pro has 10 cores;
+# default BLAS / OpenMP env vars often leave ~60% idle. Set BEFORE any
+# numpy / xgboost / ngboost import so libraries pick up the setting.
+import os as _os
+for _k, _v in (("OMP_NUM_THREADS", "10"),
+               ("MKL_NUM_THREADS", "10"),
+               ("OPENBLAS_NUM_THREADS", "10"),
+               ("VECLIB_MAXIMUM_THREADS", "10"),
+               ("NUMEXPR_NUM_THREADS", "10")):
+    _os.environ.setdefault(_k, _v)
+
 import argparse
 import json
 import logging

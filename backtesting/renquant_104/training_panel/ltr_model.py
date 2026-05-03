@@ -74,13 +74,15 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "lambda": 1.0,
     "alpha": 0.5,
     "tree_method": "hist",
-    # Audit fix X6 (2026-04-26): cap nthread at a reasonable bound to
-    # avoid fork/OMP deadlock when training is launched from a process
-    # that previously used multiprocessing (e.g. TickerPanelFeatureJob).
-    # Pre-fix `nthread=-1` used all cores; on macOS with prior fork
-    # context this could deadlock. Cap at 4 (≥ 2× speedup over single-
-    # thread, well below deadlock threshold). Override via xgb_params.nthread.
-    "nthread": 4,
+    # 2026-05-03 raise: nthread 4 → 10 per CLAUDE.md §5.10 (saturate hardware).
+    # Original X6 cap (4) was defensive against macOS fork/OMP deadlock with
+    # prior multiprocessing context; in current code the dispatch path goes
+    # through subprocess.run() (clean process launch from train_104.py /
+    # FullTrainingPipeline), not from a forked worker, so fork-OMP deadlock
+    # is not the active risk. M2 Pro has 10 cores and we're paying for them.
+    # Override via xgb_params.nthread if a workflow invokes training from a
+    # multiprocessing.Pool worker (rare).
+    "nthread": 10,
     "verbosity": 0,
     # Audit fix X12 (2026-04-26 batch-3): explicit RNG seed for
     # reproducibility. Pre-fix, subsample=0.8 and colsample_bytree=0.7
@@ -312,6 +314,16 @@ class PanelLTRModel:
                 rounds_done += this_chunk
                 eval_preds = cur_booster.predict(deval)
                 ic = _mean_ic(eval_panel, eval_preds, label_col)
+                # Diagnostic (2026-04-28): also compute train_ic per chunk
+                # so we can observe train/eval gap evolution for the
+                # round-9-saturation investigation. Cheap on small panels;
+                # remove or guard behind a flag if it ever shows up in
+                # profiles.
+                try:
+                    train_preds_chunk = cur_booster.predict(dtrain)
+                    train_ic_chunk = _mean_ic(panel, train_preds_chunk, label_col)
+                except Exception:
+                    train_ic_chunk = float("nan")
                 if ic > best_ic + min_delta_ic:
                     best_ic       = ic
                     best_iter     = rounds_done - 1
@@ -319,14 +331,18 @@ class PanelLTRModel:
                     best_booster  = cur_booster.save_raw(raw_format="ubj")
                     patience_left = int(early_stopping_rounds)
                     _ltr_log.info(
-                        "early-stop: rounds=%d eval_ic=%+.4f (new best)",
-                        rounds_done, ic,
+                        "early-stop: rounds=%d eval_ic=%+.4f train_ic=%+.4f gap=%+.4f (new best)",
+                        rounds_done, ic, train_ic_chunk, train_ic_chunk - ic,
                     )
                 else:
                     patience_left -= this_chunk
-                    _ltr_log.debug(
-                        "early-stop: rounds=%d eval_ic=%+.4f patience_left=%d",
-                        rounds_done, ic, patience_left,
+                    # Was DEBUG; promoted to INFO for the round-9-saturation
+                    # investigation so we capture the full eval_ic trajectory
+                    # in production logs without needing log-level changes.
+                    _ltr_log.info(
+                        "early-stop: rounds=%d eval_ic=%+.4f train_ic=%+.4f gap=%+.4f patience_left=%d",
+                        rounds_done, ic, train_ic_chunk,
+                        train_ic_chunk - ic, patience_left,
                     )
                 if patience_left <= 0:
                     _ltr_log.info(

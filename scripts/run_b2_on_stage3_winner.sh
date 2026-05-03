@@ -16,6 +16,13 @@
 # anything else).
 set -euo pipefail
 
+# CLAUDE.md §5.10: saturate hardware
+export OMP_NUM_THREADS=10
+export MKL_NUM_THREADS=10
+export OPENBLAS_NUM_THREADS=10
+export VECLIB_MAXIMUM_THREADS=10
+export NUMEXPR_NUM_THREADS=10
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROGRESS="$REPO_ROOT/scripts/stage3_progress.json"
 
