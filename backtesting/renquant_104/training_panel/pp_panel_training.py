@@ -1505,18 +1505,25 @@ class LabelsTask(PanelTask):
         # methodology bug, not a real alpha signal.
         # CLAUDE.md §5.2 sanity check #2: time-shift placebo. When
         # `panel_ltr.label_shift_days` is set (positive int N), shift each
-        # ticker's label series FORWARD by N trading days — so feature row
-        # at date t will be paired with the label from t+N. Real predictive
-        # signal at horizon h ≤ N should produce CPCV mean_ic ≈ 0 (features
-        # at t can't see beyond the horizon).
+        # ticker's label series so that label@t = original_label@(t+N).
+        # I.e. feature row at date t is paired with the label that ORIGINALLY
+        # belonged to date t+N (a future date). Real predictive signal at
+        # horizon h << N should produce CPCV mean_ic ≈ 0 (features at t
+        # can't see N+h days into the future).
+        #
+        # Bug history: v1 used pandas `.shift(+N)` which moves data DOWN by
+        # N rows — so label@t became original_label@(t-N), pairing features
+        # with PAST labels. Trivial to "leak" since features (mom_*, beta_*,
+        # drawdown_*) are by construction backward-looking — gave fake
+        # eval_ic=+0.29. Correct direction: `.shift(-N)` so label@t = future.
         shift_days = cfg.get("label_shift_days")
         if shift_days is not None and int(shift_days) > 0:
             for t in list(ctx.labels.keys()):
-                ctx.labels[t] = ctx.labels[t].shift(int(shift_days))
+                ctx.labels[t] = ctx.labels[t].shift(-int(shift_days))
             log.warning(
                 "LabelsTask: TIME-SHIFT PLACEBO active (shift_days=+%d) — "
-                "label at t paired with feature at t-%d. Expected CPCV "
-                "mean_ic ≈ 0; any non-zero value = leakage.",
+                "label at t paired with original label at t+%d (future). "
+                "Expected CPCV mean_ic ≈ 0; any non-zero value = leakage.",
                 int(shift_days), int(shift_days),
             )
 
