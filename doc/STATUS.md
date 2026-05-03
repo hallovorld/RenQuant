@@ -1,23 +1,25 @@
 # RenQuant — Single Source of Truth: Status, Issues, Decisions
 
-**Last updated**: 2026-04-28 evening (post P0 fixes + production retrain)
+**Last updated**: 2026-05-02 evening (Track A/B/F shelved, Track D Stage 3 in flight)
 
 This doc is the **single canonical status reference**. It supersedes scattered status mentions across all other docs. When a doc says "deferred", "still broken", "TODO", "🔴", or "blocked" — check here first; the answer is below.
 
 For original details, the linked source docs remain. This doc does not replace specifications — it replaces *status claims* about specifications.
+
+> **2026-05-02 update**: this doc's body §0 onwards is from 2026-04-28; for the latest experimental status see [`research/branch-pointers.md`](research/branch-pointers.md). The 60d XGBoost +110% IC claim in §0 has not been re-validated under today's σ measurement (run-to-run σ = 0.6 bp; if reproducible the +0.074 vs +0.034 = ~67σ delta IS real, but please re-run with §5.2 sanity full sequence — particularly time-shift placebo — before promoting; Track F just lost +98bp claim to placebo regime-persistence interpretation).
 
 ---
 
 ## Production state (right now)
 
 **Strategy**: `renquant_104` panel-LTR cross-sectional ranking
-**Watchlist**: 103 tickers
-**Live model**: just retrained (best_iter=19, oos_mean_ic=+0.035)
+**Watchlist**: 103 tickers (Track D Stage 3 expansion in flight; target ~150-200; see `scripts/stage3_progress.json`)
+**Live model**: last retrain 2026-04-30 23:48; CPCV mean_ic = +0.034 (3-run σ estimation 2026-05-02: σ = 0.6 bp on identical config; mean_ic robust, best_iter / train_ic seed-sensitive)
 **Broker**: Alpaca live
-**Account equity**: ~$10,022 (5 holdings as of 12:44 PT today)
-**Live cron schedule**: open + preclose + intraday + daily-post-close (3 plists active for 104; 103 plists unloaded permanently today)
+**Account equity**: ~$10K (varies per session)
+**Live cron schedule**: open + preclose + intraday + daily-post-close + Sunday retrain (5 plists active for 104; all have `RENQUANT_SEC_UA` env var as of 2026-05-02 for SEC EDGAR insider data refresh)
 
-The system is healthy. Today's 9 commits resolved every P0 bug we knew about, and the production model is for the first time running healthy-trained weights instead of an under-trained stub.
+The system is healthy. Today's session ruled out 3 architectural experiments (E22 insider at partial coverage, E23 PEAD enrichment, E25 triple-barrier label) and built the Track D candidate-screening funnel that's currently expanding the watchlist via greedy IC-additive admission.
 
 ---
 
