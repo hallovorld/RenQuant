@@ -200,24 +200,37 @@ class TestLabelsTaskIntegration:
             f"this method takes ctx not tc):\n" + "\n".join(f"  {ln.strip()}" for ln in bad)
         )
 
-    def test_triple_barrier_mode_skips_residualization(self):
-        """E24 fix (2026-05-02): when label_mode='triple_barrier', LabelsTask
-        must NOT call compute_residual_returns (which mixes fixed-horizon
-        spy_fwd with variable-horizon ticker_fwd → corrupted labels). Must
-        use raw barrier-hit returns directly as raw_residuals.
+    def test_triple_barrier_mode_uses_hit_time_matched_residual(self):
+        """E24 v2 fix (2026-05-02): when label_mode='triple_barrier', LabelsTask
+        must call compute_residual_returns_hit_aligned (NOT
+        compute_residual_returns which mixes fixed-horizon spy_fwd with
+        variable-horizon ticker_fwd → produced eval_ic=−0.0744 in v0).
+
+        v1 (skip residualization) was a workaround. v2 implements proper
+        hit-time-matched residualization where each (ticker, t) row uses
+        spy_fwd over the SAME horizon as the ticker's barrier hit.
         """
         src_path = REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "pp_panel_training.py"
         src = src_path.read_text()
         idx = src.find("class LabelsTask(PanelTask):")
         block = src[idx:idx + 5000]
-        # The triple_barrier branch must skip residualization
-        assert "triple_barrier mode — skipping residualization" in block, (
-            "LabelsTask must explicitly log when skipping residualization for "
-            "triple_barrier (E24 fix). Found block:\n" + block[-2500:]
+        # The triple_barrier branch must use the hit-aligned function
+        assert "compute_residual_returns_hit_aligned" in block, (
+            "LabelsTask triple_barrier branch must use compute_residual_returns_hit_aligned "
+            "(E24 v2 fix). Found block:\n" + block[-2500:]
         )
-        # The fwd_returns must be assigned directly to raw_residuals on that path
-        assert "raw_residuals = {t: s.copy() for t, s in fwd_returns.items()}" in block, (
-            "triple_barrier branch must set raw_residuals = fwd_returns directly"
+        # And explicitly log it as hit-time-matched residualization
+        assert "hit-time-matched" in block, (
+            "Must log when triple_barrier uses hit-time-matched residualization."
+        )
+        # Must NOT use the v1 skip-residualization workaround anymore
+        assert "skipping residualization" not in block, (
+            "v1 skip-residualization shouldn't be active any longer (replaced by v2 hit-aligned)"
+        )
+        # v2 must pass hit_days_by_ticker into the new function (per-row alignment)
+        assert "hit_days_by_ticker" in block, (
+            "triple_barrier v2 must construct hit_days dict from tb_out and pass to "
+            "compute_residual_returns_hit_aligned"
         )
 
     def test_label_mode_default_is_fwd_5d(self):

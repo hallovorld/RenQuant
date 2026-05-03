@@ -4,29 +4,37 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-04-27 晚间更新 — embeddings/macro A/B 决定性结果 + 今日交易事故根因）
+## 🗂 项目状态速览（2026-05-02 晚间更新 — Track A/B/F shelved + Track D Stage 3 in flight）
 
-> 每次进入此项目时先读这段，5 分钟上下文。详细记录见 [`doc/archives/sessions/2026-04-27-decisions.md`](doc/archives/sessions/2026-04-27-decisions.md)。
+> 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/2026-04-27-decisions.md`](doc/archives/sessions/2026-04-27-decisions.md)；最新状态在 [`doc/research/branch-pointers.md`](doc/research/branch-pointers.md)。
 
-**生产模型：** XGBoost rank:pairwise，27 特征，无 macro，无 embedding，**CPCV OOS IC = +0.0418**（15-fold，2026-04-27 重训复现）
-**实盘：** Alpaca ~$10k，持仓 PLTR / TSM / CAT / AMZN / GOOG / XLU，真实回撤 ~0.17%
+**生产模型：** XGBoost rank:pairwise，27 特征，无 macro，无 embedding，**CPCV mean_ic = +0.034**（6-fold cv_n_splits=6, 3-run σ estimation 2026-05-02 σ = 0.6bp，最近重训 2026-04-30 23:48）
+**实盘：** Alpaca ~$10k，持仓滚动；策略架构稳定
 **Watchlist：** 103 ticker，面板 ~77k rows
 
 **已关闭（不要再讨论）：**
-- **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减。**v4 macro-as-panel-row** 实测 OOS IC −28.8%（2026-04-27 paired t=−1.98）。所有 macro 形式都被否决。等 watchlist 扩到 200+ 再重评。
-- **Asset Embeddings (T2-2)** — **2026-04-27 NO-GO**：16D embeddings 全 watchlist 重训覆盖 104 ticker，paired CPCV 实测 OOS IC = +0.0341 vs baseline +0.0418（−18.5%, t=−1.45）。早先 dispatch agent 的 "GO" 判断（基于 OLS A/B + per-feature IC 单变量正交）在 XGB rank 树模型下不成立。`asset_embeddings.enabled` 已设回 `false`。
+- **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减，v4 macro-as-panel-row OOS IC −28.8%。所有 macro 形式都被否决。等 watchlist 扩到 200+ 再重评。
+- **Asset Embeddings (T2-2)** — 16D embeddings 全 watchlist 重训覆盖 104 ticker，paired CPCV OOS IC = +0.0341 vs baseline +0.034 ≈ 0 提升。`asset_embeddings.enabled` 已设回 `false`。
 - **LightGBM 替换**：在当前面板 −60% IC，已拒绝（2026-04-27）。
-- **T2-4 Boyd Rotation / rotation 作为 APY 杠杆**：rotation 每次 −2.5 APY pts，基础设施保留但默认关闭。
+- **T2-4 Boyd Rotation**：rotation 每次 −2.5 APY pts，基础设施保留但默认关闭。
+- **Track A — Insider 信号 (E22, 2026-05-02)**：44% 覆盖下贡献 −0.0008 在噪声内。Resume 条件：SEC IP 节流恢复 + Sunday retrain 补全数据后重测。
+- **Track B — PEAD enrichment (E23, 2026-05-02)**：days_since/decay/signal 三列 A/A delta = −0.0010 ~ −0.0013 = **17-22σ 显著负向**。fwd_5d horizon 太短捕捉不到 30-60d drift。Resume 条件：fwd_20d / surprise quintile-rank。
+- **Track F — Triple-barrier label (E25, 2026-05-02)**：v3 hit-time-matched 出 mean_ic +0.0438（vs baseline +0.034 = +98bp 假象）。但 **time-shift +60d placebo 也 +0.0458 ≈ real**——disambiguation vs fwd_5d 显示 triple-barrier 是 regime persistence 拟合，无 10 天 alpha。Production 保留 fwd_5d。
 
 **当前优先顺序：**
-1. 🔴 **Watchlist 99→200**（breadth 扩展，+42% IR ceiling — 现在是最有希望的 lever）
-2. 🔴 **T2-3 Regime Ensemble**（等面板 > 150k rows）
-3. 🔴 **OOS Backtest 基础设施 B1-B3**（等 live 数据积累）
-4. 🟡 **`bypass_ticker_gate=true` 实验**：今天 41 个 in-universe 票里只有 10 个进 candidate（NVDA/AMD 都被 per-ticker model 预筛掉），让 Panel-LTR 真正成为主控可能能多放出 candidates；先在 sim 验证。
+1. 🟡 **Track D — Watchlist 103→~200 expansion**（in flight 2026-05-02 19:00 PT）：Stage 1 mechanical (816/1008) + Stage 1.5 IWB sector_map (1004/1008) + Stage 2 KS distributional (178/720) + **Stage 3 greedy IC-additive batch admission 跑中**（17 batch × ~35 min ≈ 10 小时 wallclock）。输出 `scripts/stage3_final_watchlist.json`。
+2. 🔴 **Microstructure / hourly bar 信号 (Track C)**：Alpaca hourly 数据空（0/178 缓存），数据获取 + 特征构建 ~3-5 天。
+3. 🔴 **Regime Ensemble (T2-3)**：等面板 > 150k rows（Track D Stage 3 落定后会够）。
+4. 🟡 **B2 holdout sim 基础设施完善**：Sharpe/Sortino/Calmar 已 instrumented (commit `c679600`, `fa7e4b7` on exp 分支)；Sharpe 0.609 在 wl178+L1+L2 artifact 上首测。
 
-**评估基准共识：** CPCV OOS IC 可信（轻微虚高不影响相对比较）。Sim backtest 泄漏是独立的 Roadmap P0 问题，当前阶段不处理——不需要每次解释。
+**评估基准共识：** CPCV mean_ic 可信（**run-to-run σ = 0.6bp** per 3-run 2026-05-02 estimation）。**train_ic 和 best_iter 跨 seed 高方差**——只用 mean_ic 比较实验。
 
-**🚨 2026-04-27 已修复事故 — NGBoost feature drift：** 今日盘中 0 buy。根因是部署的 `ngboost-head.json` 是某次 macro v3 实验时训出，含 140+ macro feature cols（vxx/hyg/dgs10/cpiaucsl/...）；而当前 inference panel 不再产生这些列（macro 已关），ApplyNGBoostTask 把缺失列零填充 → σ 失真 → 所有 candidate 的 `edge_sharpe` 被压到 < 0.10 阈值 → Gate B 全否。修复：(a) 已重训 panel + NGBoost head 与当前 panel 对齐；(b) 已加 `max_feature_drift_pct` 硬阈值（默认 5%），缺失超过就 SKIP NGBoost 而不是静默零填充。
+**§5.2 sanity 三件套强制要求**（任何架构试验声明 +IC 之前必跑）：
+1. A/A test（同 config 多次 → σ）
+2. Shuffled-label（panel_ltr.label_shuffle_seed=N → mean_ic 应 ≈ 0）
+3. Time-shift placebo（panel_ltr.label_shift_days=N → mean_ic 应 ≈ 0）
+
+infra 已接入 standard pipeline，一行 config 就跑。Track F 的 +98bp 假象就是漏跑 placebo 才被骗。
 
 ---
 
@@ -143,7 +151,7 @@ This applies to:
 - Silent failure modes (e.g. systemic no-trade periods → `tests/test_no_trade_monitor.py` + `tests/test_no_trade_invariant.py`)
 - Upstream-task ordering bugs (e.g. ApplyGlobalCalibrationTask skipped in additive mode → `tests/test_panel_bugfixes.py`)
 
-Run tests via `python -m pytest tests/ -v`. Total ≈ 2330+ tests as of 2026-04-26 round-7.
+Run tests via `python -m pytest tests/ -v`. Total **2929 passed, 10 skipped** as of 2026-05-02 evening (after Track D + Track F sanity infrastructure, +599 since 2026-04-26 round-7's 2330).
 
 Notable test groupings (just summary — full file listing in [`doc/arch/overview.md`](doc/arch/overview.md)):
 - `tests/test_policy_alignment.py` — 235 paired NB/LEAN alignment
