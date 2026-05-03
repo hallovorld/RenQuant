@@ -266,6 +266,29 @@ These are not "nice to haves" — they're the response to a single 24h period wh
                       P1 fixes 同时跑
   ```
 
+**5.10 Saturate the local hardware. Memory is for spending.**
+- M2 Pro has 10 cores (8 performance + 2 efficiency) and 32 GB RAM. Every long-running compute job MUST be configured to use them. Default XGBoost / NumPy / PyTorch settings often leave 60-75% of the machine idle — that's wallclock you're throwing away.
+- Mandatory env vars or config flags before any training / sim:
+  ```
+  export OMP_NUM_THREADS=10
+  export MKL_NUM_THREADS=10
+  export OPENBLAS_NUM_THREADS=10
+  ```
+  XGBoost: set `xgb_params.nthread=10` (or `n_jobs=-1`); NGBoost: set `n_jobs=-1`; sklearn helpers: `n_jobs=-1`.
+- Memory-side: don't conservatively load chunks. If the dataset is < 5 GB, load fully into RAM. `pd.read_parquet` defaults are already fast; the lazy-loading is for 100 GB+, not us.
+- **Verification step** before declaring a long job "running": after dispatch, check `top -l 1 | grep CPU` — should see ≥80% user CPU. If 30% user / 60% idle → the job is bottlenecked, fix BEFORE letting it eat hours.
+- Why this is load-bearing: in 2026-05-02 Stage 3 wl-expansion experiment I ran 18 sequential XGB retrains over ~10 hours wallclock. Mid-run sampling showed 25% CPU usage / 62% idle — the job was running on ~2.5 cores out of 10. **Same compute completes in ~3-4 hours with proper saturation.** The user is paying for an M2 Pro, not an M1 Air.
+
+**5.11 Experiment design optimizes for time-to-answer, not "thoroughness".**
+- Before running a long experiment, ask: **"What's the cheapest experiment that would change my decision?"** Run that FIRST. The greedy / iterative / "leave-no-stone-unturned" approach is for OPTIMIZATION, not range-finding.
+- Decision tree before any multi-hour experiment:
+  1. **Range-finding question?** ("Does X work at all?") → single endpoint test (top-down, max-everything), 30 min wallclock.
+  2. **Optimization question?** ("Find best subset / hyperparam") → ONLY after range-finding shows X works at all. Greedy / batch / sweep is fine here.
+  3. **Diagnostic question?** ("Why did Y fail?") → §5.2 sanity sequence FIRST (A/A + shuffled-label + time-shift placebo), THEN dig into mechanism.
+- Why this matters: in 2026-05-02 Track D Stage 3 I ran a 9-hour greedy admission experiment to answer "does watchlist expansion lift IC?" — a 30-minute top-down single training would have answered that range-finding question and saved 8.5 hours. Bottom-up greedy is for FINDING the best subset given that breadth helps, not for testing whether it does.
+- Apply also to: A/A vs A/B (run A/A noise FIRST), full panel vs ablation (run smallest-meaningful-ablation first), training cost (single seed first to verify pipeline before launching 5-seed σ estimation).
+- Sunk-cost guard: if mid-experiment evidence already answers the question, **kill the experiment**. The 12 batches of Stage 3 already proved "wl expansion lifts IC by ~9 bp"; the remaining 6 batches were optimization, not new information. Don't keep running just because the script is configured to keep running.
+
 ### Documentation Index (canonical pointers)
 
 **Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)
