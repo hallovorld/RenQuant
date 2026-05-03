@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Cloud backup of critical state files to a GitHub private repo.
+#
+# What gets backed up (≈46MB total, scales slowly):
+#   * data/runs.db                — panel training history (sqlite, 568K)
+#   * data/runs.alpaca.db         — Alpaca live broker state (sqlite, 45M)
+#   * data/insider_trades/*.parquet — cached SEC Form 4 data (~328K, slow to refetch)
+#   * backtesting/renquant_104/live_state.{alpaca,paper}.json — current positions
+#   * scripts/stage3_progress.json — Track D Stage 3 batch admission progress
+#
+# Production artifacts (panel-ltr.json, ngboost-head.json, etc) are already in
+# the main RenQuant repo (committed). They don't need this backup.
+#
+# Usage:
+#   bash scripts/backup_to_github.sh             # one-shot backup
+#   BACKUP_REMOTE=git@github.com:user/repo.git bash scripts/backup_to_github.sh
+#
+# Env vars:
+#   BACKUP_REMOTE — git URL of the private backup repo (required first time;
+#                   cached after first clone in BACKUP_REPO/.git/config)
+#   BACKUP_REPO   — local clone path (default: ~/.renquant-state-backup)
+#   NTFY_TOPIC    — ntfy.sh topic for failure alerts (default: renquant)
+#
+# Setup (one-time, operator):
+#   1. Create empty PRIVATE repo on GitHub (recommended name: renquant-state-backup).
+#      Anywhere is fine — single-developer use, just needs to be private.
+#   2. Run: BACKUP_REMOTE=git@github.com:USER/renquant-state-backup.git \
+#          bash scripts/backup_to_github.sh
+#   3. Verify the first backup pushed cleanly.
+#   4. Wire to launchd via com.renquant.backup.plist for periodic backups.
+#
+# SQLite safety:
+#   We use the SQLite online backup API (`.backup` command) which is safe to
+#   call concurrently with writers (e.g. Stage 3 retraining writing to runs.db).
+#   Falls back to plain `cp` if sqlite3 CLI is unavailable.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BACKUP_REPO="${BACKUP_REPO:-$HOME/.renquant-state-backup}"
+NTFY_TOPIC="${NTFY_TOPIC:-renquant}"
+TS_HUMAN="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+TS_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+notify_failure() {
+    local msg="$1"
+    if command -v terminal-notifier &>/dev/null; then
+        terminal-notifier -title "RenQuant backup FAILED" -message "$msg" -sound Glass 2>/dev/null || true
+    fi
+    curl -s -H "Title: RenQuant backup FAILED" -d "$msg" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
+}
+
+trap 'notify_failure "Script failed at line $LINENO"' ERR
+
+# ── 1. Ensure backup repo exists locally ──────────────────────────────────────
+if [ ! -d "$BACKUP_REPO/.git" ]; then
+    if [ -z "${BACKUP_REMOTE:-}" ]; then
+        echo "ERROR: BACKUP_REPO ($BACKUP_REPO) doesn't exist and BACKUP_REMOTE not set." >&2
+        echo "First-time setup: BACKUP_REMOTE=<git-url> $0" >&2
+        exit 1
+    fi
+    echo "Cloning backup repo from $BACKUP_REMOTE → $BACKUP_REPO"
+    git clone "$BACKUP_REMOTE" "$BACKUP_REPO" || {
+        # Empty repo case — clone fails because no commits yet; init manually.
+        mkdir -p "$BACKUP_REPO"
+        cd "$BACKUP_REPO"
+        git init -b main
+        git remote add origin "$BACKUP_REMOTE"
+        echo "# RenQuant state backup" > README.md
+        git add README.md
+        git commit -m "init"
+        git push -u origin main
+        cd "$REPO_ROOT"
+    }
+fi
+
+cd "$BACKUP_REPO"
+
+# ── 2. Pull latest (in case of multi-host writes — paranoia guard) ────────────
+git pull --rebase --autostash 2>&1 | tail -3 || true
+
+# ── 3. Snapshot critical files ────────────────────────────────────────────────
+mkdir -p data/insider_trades
+
+# SQLite via online backup API (safe with concurrent writers)
+backup_sqlite() {
+    local src="$1" dst="$2"
+    if [ ! -f "$src" ]; then
+        echo "  skip: $src not found"
+        return
+    fi
+    if command -v sqlite3 &>/dev/null; then
+        sqlite3 "$src" ".backup '$dst'" 2>&1 \
+            && echo "  sqlite3 .backup: $(basename $src) → $(basename $dst)" \
+            || { echo "  sqlite3 backup failed; falling back to cp"; cp "$src" "$dst"; }
+    else
+        cp "$src" "$dst"
+        echo "  cp (no sqlite3): $(basename $src) → $(basename $dst)"
+    fi
+}
+
+echo "Snapshot at $TS_HUMAN"
+backup_sqlite "$REPO_ROOT/data/runs.db" "$BACKUP_REPO/data/runs.db"
+backup_sqlite "$REPO_ROOT/data/runs.alpaca.db" "$BACKUP_REPO/data/runs.alpaca.db"
+
+# Live state JSON files (small, plain copy is fine)
+for f in "$REPO_ROOT/backtesting/renquant_104"/live_state.*.json; do
+    [ -f "$f" ] && cp "$f" "$BACKUP_REPO/$(basename $f)"
+done
+
+# Insider trades parquets (rsync — incremental, only copies changed)
+if [ -d "$REPO_ROOT/data/insider_trades" ]; then
+    rsync -aq --delete "$REPO_ROOT/data/insider_trades/" "$BACKUP_REPO/data/insider_trades/"
+fi
+
+# Stage 3 progress (running experiment state)
+[ -f "$REPO_ROOT/scripts/stage3_progress.json" ] && \
+    cp "$REPO_ROOT/scripts/stage3_progress.json" "$BACKUP_REPO/stage3_progress.json"
+[ -f "$REPO_ROOT/scripts/stage3_final_watchlist.json" ] && \
+    cp "$REPO_ROOT/scripts/stage3_final_watchlist.json" "$BACKUP_REPO/stage3_final_watchlist.json"
+
+# ── 4. Commit + push if changed ───────────────────────────────────────────────
+git add -A
+if git diff --cached --quiet; then
+    echo "No changes since last backup; skipping commit."
+    exit 0
+fi
+
+git commit -m "backup $TS_ISO" --quiet
+git push origin main 2>&1 | tail -3
+echo "Backup pushed at $TS_ISO"
