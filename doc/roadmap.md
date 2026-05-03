@@ -359,10 +359,15 @@ gaps repeatedly + ThreadPool+GIL leaves us at 1-core utilisation
 during per-ticker work. Long-term refactor candidates, in order of
 expected ROI:
 
-- 🔴 **ThreadPool → ProcessPool for `run_panel_ticker_parallel`**
-  (~80 LoC, medium risk). 5-10× wallclock speedup on the 99-ticker
-  per-ticker chain. Breaks the GIL bottleneck (P3-1 in panel-ml audit).
+- 🔴 **ThreadPool → ProcessPool for `run_panel_ticker_parallel`** (P0 priority)
+  (~80 LoC, medium risk). 5-10× wallclock speedup on the per-ticker
+  chain. Breaks the GIL bottleneck (P3-1 in panel-ml audit).
   Requires picklable TickerPanelContext + worker `sys.path` setup.
+  **2026-05-03 priority bump (CLAUDE.md §5.10 mandate)**: empirically
+  measured during top-down wl=281 training: 12 ThreadPool workers but
+  CPU 14-17% / 70-74% idle due to Python GIL serializing pandas ops.
+  Wallclock cost: every panel-LTR retrain takes 2-3× longer than it
+  should. Fix this BEFORE any other multi-batch experiment campaign.
 - 🔴 **Vectorize panel build (drop per-ticker loop entirely)**
   (~300 LoC, high risk). 10-20× speedup; rewrites Feature/Neutralize/Factor
   as cross-sectional ops on the full panel. Algorithmic change; needs
