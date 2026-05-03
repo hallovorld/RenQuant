@@ -872,3 +872,64 @@ python scripts/train_104.py --strategy-config-name strategy_config.triple_barrie
 ```
 
 **Status**: PARTIAL — module + wiring landed but residual-mismatch resume needed. Track F deferred until horizon-matched residual extraction is implemented.
+
+---
+
+## E25: Triple-barrier label A/A — placebo invalidates "+98bp lift" (shelved)
+
+**Date**: 2026-05-02
+**Branch**: main (commits 80b3972 → 84a0194)
+**Run IDs** (`data/runs.db`):
+- triple_barrier_off (fwd_5d default): `20260502211508-panel-ltr-6a95a1`, mean_ic=+0.0340
+- triple_barrier_on v3 (hit-time-matched residual): `20260502223218-panel-ltr-ffc361`, mean_ic=+0.0433
+- triple_barrier_on repro: `20260502230207-panel-ltr-0a370c`, mean_ic=+0.0444
+- triple_barrier_on shuffled-label sanity: `20260502232804-panel-ltr-7debb6`, mean_ic=+0.0005 ✓ (PASSED)
+- triple_barrier_on time-shift +60d placebo: `20260503002353-panel-ltr-cb23ec`, mean_ic=+0.0458 ✗ (FAILED)
+- fwd_5d baseline +60d placebo (disambiguation): `20260503005701-panel-ltr-a1168c`, mean_ic=+0.0290
+
+**Hypothesis**: Lopez de Prado AFML §3 triple-barrier label (first-hit of {upper, lower, time}) replaces fwd_5d as the panel-LTR target. Hit-time-matched residualization (per-row spy_fwd at ticker's hit_days[t]) preserves β-neutrality across variable horizons. Predicted +5-10 bp CPCV IC lift; saw +98 bp (massive).
+
+**Setup**:
+- panel_ltr.label_mode = 'triple_barrier' (new flag)
+- triple_barrier hyperparams: alpha=beta=2.0, max_horizon_days=10, vol_window=20
+- New compute_residual_returns_hit_aligned in labels.py
+- Otherwise identical to production golden config
+
+**Initial result**: triple_barrier_on mean_ic = +0.0438 (avg of v3 + repro), vs baseline +0.0340 = **+98 bp delta**. Reproducible across XGB seeds (σ ≈ 0.6 bp from 3-run pead_off baseline).
+
+**§5.2 sanity sequence**:
+1. **Reproducibility**: passed. v3 = +0.0433, repro = +0.0444, both within run-to-run σ.
+2. **Shuffled-label sanity**: passed. mean_ic on per-date permuted labels = +0.0005 ≈ 0. Confirms model can't learn random labels = no obvious leak.
+3. **Time-shift placebo (+60d)**: **FAILED**. mean_ic on shifted labels = +0.0458 (HIGHER than real +0.0438).
+
+**Disambiguation**: Same +60d placebo on baseline fwd_5d label = +0.0290. So all models pick up some "regime persistence" at 60-day horizon, but:
+- fwd_5d real (+0.0340) − placebo (+0.0290) = **+0.0050** (5 bp of real 10-day alpha)
+- triple_barrier real (+0.0438) − placebo (+0.0458) = **−0.0020** (zero real 10-day alpha; the lift was entirely regime-persistence capture)
+
+**Mechanism**: Cross-sectional rank persistence (high-mom stocks at t are still high-mom at t+60) is a slow phenomenon. Triple-barrier's hit-time-matched residualization mathematically purifies the SPY-removal step, which lets the model fit this slow regime baseline more cleanly. But for our 10-day rebalance strategy, regime persistence is not actionable alpha — it's already priced in, and frequent rebalancing on slow signals incurs friction with no edge.
+
+**Conclusion**: Triple-barrier as designed is **NOT a real alpha lift over fwd_5d**. The +98 bp CPCV IC improvement is statistical artifact of the model better fitting cross-sectional persistence, not improved 10-day predictive power. Production keeps fwd_5d.
+
+**Process lesson**: §5.2 placebo SHOULD have run BEFORE declaring victory on v3 mean_ic. I dispatched v3 → repro → shuffled-label → THEN placebo. Order should have been v3 → ALL §5.2 → declare. The shuffled-only "pass" gave false confidence; placebo with disambiguation against baseline was the actual decisive test.
+
+**Resume conditions**:
+1. **Shorter shift placebo (e.g. shift=15d)**: characterize where the persistence effect peaks vs where it disappears. If placebo IC drops sharply between shift=10 and shift=30, signal might be 10-20 day but not pure 10-day.
+2. **Triple-barrier WITHOUT residualization** (the original v0 simplification): see if that variant has lower placebo IC (would suggest residualization specifically captures persistence).
+3. **Different barrier hyperparams**: alpha=1.5/beta=2.5 (tighter profit-take, looser stop) might capture different distributional moments.
+4. **Triple-barrier with FORCED 5-day max_horizon**: closer to fwd_5d horizon, may have less regime-persistence room.
+
+**Side benefits this session**:
+- compute_residual_returns_hit_aligned (kernel/labels.py) is general-purpose; future variable-horizon labels can reuse.
+- §5.2 sanity infrastructure (panel_ltr.label_shuffle_seed + label_shift_days) is now in standard pipeline. Any future architecture experiment can A/A-validate with one config flip.
+- Process discipline encoded — placebo bug found by self-audit (initial .shift(+60) was wrong direction; corrected to .shift(-60)).
+
+**Recipe**:
+```bash
+# Reproduce all 6 measurements:
+python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_off.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_on.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_on_repro.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_on_shuffled.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_on_placebo.json --skip-baseline --skip-recalibrate --force
+python scripts/train_104.py --strategy-config-name strategy_config.fwd5d_placebo_shift60.json --skip-baseline --skip-recalibrate --force
+```
