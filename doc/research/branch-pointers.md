@@ -49,6 +49,31 @@ MIGA, FSTGAT — none use hard splits.
 - `0917c14` feat(layer1): cross_sectional_rank_within_sector helper + 16 tests
 - `ae9ecdb` feat(audit): wl178 failure diagnostic + universe builder + design v2
 
+### 2026-05-02 evening session summary (main branch)
+
+Major experimental work this session — record of what landed and what didn't.
+
+**Infrastructure / quality fixes (all on main, all green):**
+- BUG-CV-2 strict guard refined: `min_best_iter_eval_ic_floor=0.02` escape clause for strong-univariate-IC features (commit `9477c1d`).
+- side-config artifact-path leak invariant test (commit `1ce7cfb` + `fd9d5d5`): pinned all 16 historical side configs to non-production artifact paths.
+- lean-adapter 4-tuple unpack fix (commit `e115b39`): closed silent panel-frame failure that disabled LEAN backtest panel scoring.
+- Sharpe / Sortino / Calmar instrumentation (cherry-pick to exp branch, commit `fa7e4b7` on exp).
+- §5.2 sanity infrastructure: `panel_ltr.label_shuffle_seed` + `label_shift_days` config flags now in standard pipeline (commits `9686d91` + `84a0194`). Any architecture experiment can A/A-validate with one config flip.
+- σ characterization: 3-run pead_off retrains showed run-to-run mean_ic σ = 0.6 bp. CPCV mean_ic is the only robust statistic across XGB seeds; best_iter and train_ic vary wildly. Compare experiments on mean_ic only.
+- Production launchd plists (`com.renquant.retrain-panel104` + `com.renquant.daily104`) updated with `RENQUANT_SEC_UA` env var. Future Sunday retrains get fresh insider data.
+
+**Experiments closed (failed-experiments-log.md):**
+- E22: insider feature on/off A/B at 44% coverage. Delta = −0.0008 in noise. Resume after SEC IP throttle clears + Sunday retrain populates fresh data.
+- E23: PEAD enrichment (Bernard-Thomas + CJL design). 22σ negative on full A/A. days_since alone +0.0208 univariate but combined model −17σ. SHELVED.
+- E24: triple-barrier label v0 (skip-residualization workaround) + v1 (mismatched fixed-horizon spy_fwd) → eval_ic=−0.0744. Diagnosed as horizon-mismatch design omission.
+- **E25: triple-barrier label v3** (hit-time-matched residualization, `compute_residual_returns_hit_aligned`). Apparent +98 bp mean_ic lift; reproducibility passed; shuffled-label sanity passed; **time-shift +60d placebo failed (mean_ic +0.0458 ≈ real +0.0438)**. Disambiguation against fwd_5d baseline (+0.0290) showed triple-barrier has zero real 10-day alpha — the lift was hit-time residualization more cleanly fitting cross-sectional regime persistence (slow phenomenon, not actionable for 10-day rebalance). **SHELVED**. Resume conditions documented (shorter shift placebo, no-residualization variant, tighter barriers, forced 5-day max_horizon).
+
+**Track D — wl103 → wl200 expansion (in progress):**
+- Stage 1 mechanical screening (commit `92833d5`): liquidity / age / sector / ETF filter. 1008 candidates → 96 (gated on production sector_map).
+- Stage 1.5 IWB sector_map expansion (commit `7487573`): pulled iShares IWB ETF holdings CSV → 1004/1008 (99.6%) coverage. Stage 1 re-run admits 816 with full sector_map.
+- Stage 2 KS distributional gate (commit `54997af`): per-ticker KS test against wl103 reference pool on 4 OHLCV-derived feature distributions. 720 candidates → 178 admitted (median KS = 0.1705, threshold 0.20).
+- **Stage 3 greedy IC-additive batch admission (commit `810dbe6`, in flight)**: 178 candidates / 10 per batch = 18 batches. Each batch adds 10 tickers, retrains panel-only, accepts iff `delta_mean_ic > -0.002`. ~15 min per batch wallclock × 18 = ~4.5 hours. Output: `scripts/stage3_final_watchlist.json` with the proposed expanded watchlist + accepted/rejected per batch + final IC.
+
 ### Background tasks status (2026-05-02 02:30 PT)
 - ✅ **A/A retrain** (Half A: oos_ic=+0.0004, train_ic=+0.116; Half B: train_ic=+0.085, guard fired pre-record).
 - ✅ **Universe OHLCV fetch** completed. Cache: 215 → 1006 tickers.
