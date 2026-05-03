@@ -78,18 +78,15 @@ Cost: ~140 retrain points × 20 min/retrain ≈ 47 hours per backtest. Mitigatio
 - Parallel retraining (multiple retrain points concurrent)
 - `--cache-from previous-walk-forward.pkl` to incremental-extend the curve
 
-### B2 — Hold-out backtest (single-cut sanity check)  🔴
-Cheap version of walk-forward: train once with `sample_end = backtest_start - 1day`,
-then sim. Useful as "does the strategy framework even make sense?" gate
-before investing in walk-forward. Cost: ~30 min per run.
+### B2 — Hold-out backtest (single-cut sanity check)  ✅ DONE 2026-05-02
+Implemented as `scripts/holdout_backtest.py`. First full B2 ran on
+wl178+L1+L2 artifact 2026-05-02 (APY +10.33%, Sharpe +0.609, total +13.83%, win 71%).
+Wrapper `scripts/run_b2_on_stage3_winner.sh` auto-dispatches B2 on
+the highest-mean_ic Stage 3 batch artifact.
 
 ```
-scripts/holdout_backtest.py --train-end 2023-12-31 --sim-start 2024-01-01
+scripts/holdout_backtest.py --train-end 2024-12-31 --sim-start 2025-01-02
 ```
-
-Drives FullTrainingPipeline once with the cutoff, then `run_backtest`. Should
-produce a strict lower bound for walk-forward (production retrains see more
-data; hold-out doesn't).
 
 ### B3 — Reporting separation  🔴
 Split metric provenance in every doc + every chart caption:
@@ -123,19 +120,19 @@ Every "+X% APY uplift" in the roadmap below is currently **in-sample noise** unt
 28天后可以re evaluate我的trade的合理性，用这个数据来校验我的model，用点
 强化学习的概念理解我的需求"*
 
-**Status:** 🔴 Design only. Full spec: `doc/components/trade-evaluation.md`.
+**Status (updated 2026-05-02):** Phase 1+2 ✅ DONE; Phase 3-6 🔴 deferred.
+Full spec: `doc/components/trade-evaluation.md`.
 Treats trades as RL `(s, a, r)` tuples; uses off-policy evaluation
 (Sutton-Barto, Jiang-Li 2016, Doroudi-Thomas-Brunskill 2017,
 López de Prado 2018) for time-delayed validation.
 
 **6 phases:**
-1. Schema + write-path (P1, ~3h) — 3 new tables: `trade_outcomes`,
-   `policy_versions`, `policy_evaluations`.
-2. Nightly backfill at 1d/5d/7d/14d/28d horizons (P1, ~2h).
-3. Weekly rollup + ntfy on >1σ degradation (P1, ~3h).
-4. OPE estimators: importance sampling + doubly robust (P2, ~5h).
-5. Dashboard (P2, ~2h).
-6. **Closed-loop policy improvement** (P3, weeks) — auto-nominate
+1. ✅ Schema + write-path (DONE 2026-05-02): `trade_evaluations` table with composite PK (run_id, ticker, action, horizon_days), `record_trade_evaluations()` helper.
+2. ✅ Nightly backfill at 1d/5d/7d/14d/28d horizons (DONE 2026-05-02): `scripts/backfill_trade_evaluations.py`.
+3. 🔴 Weekly rollup + ntfy on >1σ degradation (P1, ~3h).
+4. 🔴 OPE estimators: importance sampling + doubly robust (P2, ~5h).
+5. 🔴 Dashboard (P2, ~2h).
+6. 🔴 **Closed-loop policy improvement** (P3, weeks) — auto-nominate
    config changes that beat golden via OPE. Deferred until 6+ months
    of trade data. Requires safe-RL constraints + confidence bounds
    (Bottou et al. 2013).
@@ -145,11 +142,15 @@ SIM side), §144 (streak → db — same "db is canonical" theme).
 
 ---
 
-## 📦 2026-04-26 — Model metadata DB + artifact cloud backup (DEFERRED)
+## 📦 2026-04-26 → 2026-05-02 — Model metadata DB + artifact cloud backup (PARTIAL DONE)
 
 **User ask 2026-04-26 evening**: "每个模型的metadata应该进数据库，模型artifact应该有云备份".
 
-**Status**: ⏸️ DEFERRED — full plan written (`doc/components/metadata-db-and-backup-plan.md`), implementation moved to next session per user direction "下次再处理".
+**Status (updated 2026-05-02)**:
+- ✅ State + DB cloud backup (`scripts/backup_to_github.sh` + `com.renquant.backup.plist` + `doc/ops/cloud-backup-setup.md`) DONE — backs up `data/runs.db` + `data/runs.alpaca.db` + `live_state.*.json` + insider parquets to GitHub private repo every 4 h. Activated 2026-05-03.
+- ✅ Per-run metadata in DB (`training_runs` table) — already populated with commit_sha + config_json + feature_cols + n_rows + n_tickers + n_dates + n_features + device + elapsed_sec + notes (per CLAUDE.md §B).
+- 🔴 Per-promote artifact upload (Hot tier) — separate immutable run-id-named blob upload for each promoted production model. NOT YET implemented — current backup repo treats artifacts as mutable copies.
+- 🔴 Per-gate verdicts table (`training_run_gates`) — 11 acceptance gates evaluated per run; today written only as ascii summary in run notes. Schema designed in `doc/components/metadata-db-and-backup-plan.md`.
 
 **What's already designed** (ready to implement):
 - 7 columns added to `training_runs`: sim_apy/sharpe/calmar/max_dd/turnover, promoted_at, demoted_at, replaced_run_id, sha256_hex, cloud_backup_url
