@@ -50,6 +50,7 @@ class _Ctx:
     bear_only: bool = False
     buy_blocked: bool = False
     skip_buys: bool = False
+    earnings_calendar: dict = field(default_factory=dict)
     last_sell_dates: dict = field(default_factory=dict)
     orders: list = field(default_factory=list)
     exits: list = field(default_factory=list)
@@ -193,6 +194,77 @@ class TestBuyBlockedRespected:
         assert len(ctx.exits) >= 1, (
             "skip_buys must NOT block sells — drawdown halt must be "
             "able to de-risk"
+        )
+
+
+class TestEarningsBlackoutQPTopUp:
+    """2026-05-05 wl183 incident bug 4: QP had no earnings awareness.
+    The buy-side EarningsFilterTask blocks new entries within ±N days
+    of earnings, but QP could top-up an existing holding right into
+    the print. Same gap-risk rationale that justifies blocking entries
+    applies to top-ups (5–15% gap on a miss far exceeds typical Δw).
+    Fix: per-ticker is_earnings_blocked check on dw>0 emissions."""
+
+    def _cfg_with_earnings(self, buf=3):
+        cfg = _qp_on()
+        cfg["regime"] = {"earnings_buffer_days": buf}
+        return cfg
+
+    def test_blocks_top_up_within_buffer(self):
+        """Held name with earnings tomorrow → QP top-up suppressed."""
+        ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
+        # Earnings 2 days from "today" (2026-04-26) → within ±3-day buffer
+        ctx.earnings_calendar = {"H": ["2026-04-28"]}
+        ctx.holdings = {"H": _Hold(shares=10, mu=0.05, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        assert ctx.orders == [], (
+            f"earnings within buffer must suppress QP top-up; got "
+            f"{len(ctx.orders)} order(s) — bug 4 reopened"
+        )
+
+    def test_allows_top_up_outside_buffer(self):
+        """Held name with earnings 30 days out → QP top-up allowed."""
+        ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
+        ctx.earnings_calendar = {"H": ["2026-05-26"]}  # +30d
+        ctx.holdings = {"H": _Hold(shares=10, mu=0.10, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        assert len(ctx.orders) >= 1, (
+            "earnings outside buffer must NOT block top-up; got 0 orders"
+        )
+
+    def test_allows_sell_within_buffer(self):
+        """Earnings blackout MUST NOT block sells — risk reduction is
+        always allowed regardless of earnings proximity."""
+        ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
+        ctx.earnings_calendar = {"H": ["2026-04-28"]}  # within buffer
+        ctx.holdings = {"H": _Hold(shares=20, mu=-0.05, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 8000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        assert len(ctx.exits) >= 1, (
+            "earnings buffer must NOT block sells — sell remains valid "
+            "for risk-reduction"
+        )
+
+    def test_no_earnings_calendar_no_op(self):
+        """Empty earnings_calendar (e.g. data outage) must not silently
+        block all top-ups — the task degrades gracefully."""
+        ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
+        ctx.earnings_calendar = {}     # empty
+        ctx.holdings = {"H": _Hold(shares=10, mu=0.10, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        assert len(ctx.orders) >= 1, (
+            "empty earnings calendar must not silently suppress top-ups"
         )
 
 

@@ -425,7 +425,23 @@ class EmitOrdersFromQPSolutionTask(Task):
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
         skip_buys   = bool(getattr(ctx, "skip_buys",   False))
         buys_gated  = buy_blocked or skip_buys
+        # 2026-05-05 wl183 incident bug 4: QP had no earnings awareness.
+        # The buy-side EarningsFilterTask (in TickerCandidateJob) blocks
+        # new entries within ±earnings_buffer_days of earnings, but QP
+        # could still top-up an EXISTING holding right into earnings.
+        # Same gap-risk rationale that justifies blocking new entries
+        # applies to top-ups: an unexpected miss can move 5–15% on the
+        # print, far larger than typical Δw the QP is optimizing over.
+        # Fix: per-ticker check via the same is_earnings_blocked helper
+        # the buy-side filter uses, gated on the same buffer config so
+        # train/inference symmetry is preserved.
+        from kernel.selection import is_earnings_blocked  # noqa: PLC0415
+        earnings_cal = getattr(ctx, "earnings_calendar", None) or {}
+        earn_buf = int((ctx.config.get("regime", {}) or {})
+                          .get("earnings_buffer_days", 3))
+        today = getattr(ctx, "today", None)
         n_blocked_buys = 0
+        n_blocked_earnings = 0
         nb = ns = 0
         for i, t in enumerate(tickers):
             dw = float(sol.delta_w[i])
@@ -441,6 +457,10 @@ class EmitOrdersFromQPSolutionTask(Task):
                 if buys_gated:
                     n_blocked_buys += 1
                     continue
+                if today is not None and is_earnings_blocked(
+                        t, today, earnings_cal, earn_buf):
+                    n_blocked_earnings += 1
+                    continue
                 _emit_qp_buy(ctx, t, shares, px, sol, i, cands)
                 nb += 1
             elif _emit_qp_sell(ctx, t, shares, dw, sol, i):
@@ -453,6 +473,13 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "top-up BUY(s) (bar would have whiplashed against "
                 "drawdown/velocity/blackout circuit)",
                 reason, n_blocked_buys,
+            )
+        if n_blocked_earnings:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: suppressed %d QP top-up "
+                "BUY(s) within ±%d days of earnings (gap-risk parity "
+                "with buy-side EarningsFilterTask)",
+                n_blocked_earnings, earn_buf,
             )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
