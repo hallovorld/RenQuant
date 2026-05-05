@@ -103,6 +103,11 @@ def solve_portfolio_qp(
     # indicator because it breaks SLSQP gradients. Defaults to zero.
     fixed_cost_per_trade: float = 0.0,      # c_fix ≥ 0, NAV-fraction
     fixed_cost_beta:      float = 100.0,    # β > 0 (saturates around |Δw| ≈ 1/β)
+    # 2026-05-05 — budget constraint mode. "inequality" (default, legacy)
+    # = `Σw ≤ 1 − cash_reserve` (LE); "equality" = `Σw == 1 − cash_reserve`
+    # which forces full deployment (modulo reserve). EQ is the textbook
+    # Markowitz formulation for active long-only managers.
+    budget_mode: str = "inequality",
 ) -> QPSolution:
     """Solve the single-period Markowitz QP with linear-cost transaction.
 
@@ -246,14 +251,28 @@ def solve_portfolio_qp(
         lo_bounds[bad] = hi_bounds[bad]
     bounds = list(zip(lo_bounds.tolist(), hi_bounds.tolist()))
 
-    # Linear constraint: 1' (w_current + Δw) ≤ 1 - cash_reserve
-    #                ⇔ 1' Δw ≤ (1 - cash_reserve - 1' w_current)
+    # Linear constraint: 1' (w_current + Δw) [≤ or =] 1 - cash_reserve
+    #                ⇔ 1' Δw [≤ or =] (1 - cash_reserve - 1' w_current)
+    # 2026-05-05 cash-drag fix: budget_mode="equality" (caller-set) forces
+    # `Σw == 1 − cash_reserve` instead of `≤`. Equality removes the
+    # "cash is free" loophole — when μ is small / non-positive across
+    # the board, the LE form leaves cash idle (cash drag). EQ deploys
+    # everything except the reserve; risk is still controlled by
+    # γ·wᵀΣw + per-asset w_upper. Default LE preserves legacy parity.
+    # References: Markowitz 1952 §III; Best & Grauer 1991 §4.
     cash_slack = (1.0 - cash_reserve) - float(np.sum(w_current))
-    cash_constraint = LinearConstraint(
-        A=np.ones((1, n)),
-        lb=-np.inf,
-        ub=cash_slack,
-    )
+    if budget_mode == "equality":
+        cash_constraint = LinearConstraint(
+            A=np.ones((1, n)),
+            lb=cash_slack,    # lb == ub → equality
+            ub=cash_slack,
+        )
+    else:   # default "inequality" — legacy
+        cash_constraint = LinearConstraint(
+            A=np.ones((1, n)),
+            lb=-np.inf,
+            ub=cash_slack,
+        )
 
     # Audit fix QP-MATMUL-WARN (2026-04-26): Apple Silicon Accelerate
     # BLAS emits spurious 'divide by zero' / 'overflow' RuntimeWarnings

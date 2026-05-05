@@ -407,7 +407,8 @@
       "qp_robust_mu_kappa": 0.0,
       "qp_cvar_lambda": 0.0,
       "qp_drawdown_limit": 0.2,
-      "qp_no_trade_band_factor": 1.0
+      "qp_no_trade_band_factor": 1.0,
+      "qp_budget_mode": "equality"
     },
     "enabled_regimes": [
       "BULL_CALM"

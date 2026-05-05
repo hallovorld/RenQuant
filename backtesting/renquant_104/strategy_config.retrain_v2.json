@@ -406,7 +406,8 @@
       "qp_signal_decay": 0.0,
       "qp_robust_mu_kappa": 0.0,
       "qp_cvar_lambda": 0.0,
-      "qp_drawdown_limit": 0.2
+      "qp_drawdown_limit": 0.2,
+      "qp_budget_mode": "equality"
     },
     "enabled_regimes": [
       "BULL_CALM"

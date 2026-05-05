@@ -377,6 +377,10 @@ class SolveMarkowitzQPTask(Task):
             # G4 — Smoothed fixed cost (off by default)
             fixed_cost_per_trade=float(cfg.get("qp_fixed_cost_per_trade", 0.0)),
             fixed_cost_beta=float(cfg.get("qp_fixed_cost_beta", 200.0)),
+            # 2026-05-05 cash-drag fix — budget mode. "equality" forces
+            # Σw = 1 − cash_reserve (full deployment except reserve);
+            # "inequality" is legacy LE.
+            budget_mode=str(cfg.get("qp_budget_mode", "inequality")),
         )
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_n_buys = 0  # noqa: SLF001
