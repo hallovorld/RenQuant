@@ -4,12 +4,12 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-05-02 晚间更新 — Track A/B/F shelved + Track D Stage 3 in flight）
+## 🗂 项目状态速览（2026-05-05 — Track A/B/D/F all shelved；wl103 production stays golden）
 
 > 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/2026-04-27-decisions.md`](doc/archives/sessions/2026-04-27-decisions.md)；最新状态在 [`doc/research/branch-pointers.md`](doc/research/branch-pointers.md)。
 
 **生产模型：** XGBoost rank:pairwise，27 特征，无 macro，无 embedding，**CPCV mean_ic = +0.034**（6-fold cv_n_splits=6, 3-run σ estimation 2026-05-02 σ = 0.6bp，最近重训 2026-04-30 23:48）
-**实盘：** Alpaca ~$10k，持仓滚动；策略架构稳定
+**实盘：** Alpaca ~$10k，持仓滚动；策略架构稳定。Production calibrator collapsed (`n_unique_prob_y=7`) — runtime SOFT WARN visible every cron, top candidates tie at floor=0.30 cap → degraded buy ranking. Sells unaffected. Retrain pending.
 **Watchlist：** 103 ticker，面板 ~77k rows
 
 **已关闭（不要再讨论）：**
@@ -19,13 +19,14 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 - **T2-4 Boyd Rotation**：rotation 每次 −2.5 APY pts，基础设施保留但默认关闭。
 - **Track A — Insider 信号 (E22, 2026-05-02)**：44% 覆盖下贡献 −0.0008 在噪声内。Resume 条件：SEC IP 节流恢复 + Sunday retrain 补全数据后重测。
 - **Track B — PEAD enrichment (E23, 2026-05-02)**：days_since/decay/signal 三列 A/A delta = −0.0010 ~ −0.0013 = **17-22σ 显著负向**。fwd_5d horizon 太短捕捉不到 30-60d drift。Resume 条件：fwd_20d / surprise quintile-rank。
+- **Track D — wl103→wl183 expansion (E26, 2026-05-05)**：Stage 3 IC-additive admission 出 +9bp Stage IC，但 27-mo B2 holdout post-fix Sharpe **−0.07** / APY **−1.60%** vs wl103 baseline +1.10 / +13.27%。78% win rate 但 average loser ≫ average winner（adverse selection on unconviction picks under collapsed calibrator）。Resume 条件：(1) 先 retrain calibrator 到 n_unique≥10；(2) 然后再考虑 wl ≥ 250 + 不同 admission criterion。**wl103 stays golden.**
 - **Track F — Triple-barrier label (E25, 2026-05-02)**：v3 hit-time-matched 出 mean_ic +0.0438（vs baseline +0.034 = +98bp 假象）。但 **time-shift +60d placebo 也 +0.0458 ≈ real**——disambiguation vs fwd_5d 显示 triple-barrier 是 regime persistence 拟合，无 10 天 alpha。Production 保留 fwd_5d。
 
 **当前优先顺序：**
-1. 🟡 **Track D — Watchlist 103→~200 expansion**（in flight 2026-05-02 19:00 PT）：Stage 1 mechanical (816/1008) + Stage 1.5 IWB sector_map (1004/1008) + Stage 2 KS distributional (178/720) + **Stage 3 greedy IC-additive batch admission 跑中**（17 batch × ~35 min ≈ 10 小时 wallclock）。输出 `scripts/stage3_final_watchlist.json`。
+1. 🟡 **Calibrator retrain** (P0, blocks Track D resume)：production `panel-rank-calibration.json` `n_unique_prob_y=7` < runtime floor 10。Underlying cause: panel-LTR `best_iter=4` (XGB plateaued at 4 rounds → ~7 distinct probabilities)。Fix: bump `min_best_iter` floor + retrain panel-LTR + refit calibrator。
 2. 🔴 **Microstructure / hourly bar 信号 (Track C)**：Alpaca hourly 数据空（0/178 缓存），数据获取 + 特征构建 ~3-5 天。
-3. 🔴 **Regime Ensemble (T2-3)**：等面板 > 150k rows（Track D Stage 3 落定后会够）。
-4. 🟡 **B2 holdout sim 基础设施完善**：Sharpe/Sortino/Calmar 已 instrumented (commit `c679600`, `fa7e4b7` on exp 分支)；Sharpe 0.609 在 wl178+L1+L2 artifact 上首测。
+3. 🔴 **Regime Ensemble (T2-3)**：等面板 > 150k rows。Track D 已 shelved，等下一次 wl 扩或更宽 horizon 标签提供更多 rows。
+4. 🟡 **B2 holdout sim 基础设施完善**：Sharpe/Sortino/Calmar 已 instrumented；wl103 baseline Sharpe 1.10 / APY 13.27%。Future runs anchor on this benchmark。
 
 **评估基准共识：** CPCV mean_ic 可信（**run-to-run σ = 0.6bp** per 3-run 2026-05-02 estimation）。**train_ic 和 best_iter 跨 seed 高方差**——只用 mean_ic 比较实验。
 

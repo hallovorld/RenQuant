@@ -933,3 +933,55 @@ python scripts/train_104.py --strategy-config-name strategy_config.triple_barrie
 python scripts/train_104.py --strategy-config-name strategy_config.triple_barrier_on_placebo.json --skip-baseline --skip-recalibrate --force
 python scripts/train_104.py --strategy-config-name strategy_config.fwd5d_placebo_shift60.json --skip-baseline --skip-recalibrate --force
 ```
+
+## E26: wl183 watchlist expansion — B2 NO-GO post-fix (Sharpe −0.07, APY −1.6%) — 2026-05-05
+
+**Track**: D — wl103 → wl200+ expansion. Stage 3 greedy admission shipped wl183 (103 wl103 + 80 IC-additive batch admissions) and trained wl183-specific artifacts (`panel-ltr.wl183_daily_clean.json`, `ngboost-head.wl183_daily_clean.json`, `panel-rank-calibration.wl183_daily_clean.json`).
+
+**Hypothesis**: Stage 3 measured per-batch IC lifts of ~+9bp (wl103 → wl183). If that IC lift translates to OOS performance, expect Sharpe ≥ wl103 baseline (1.10) and APY ≥ wl103 (13.27%) on the 27-mo B2 holdout (sim 2025-05-05 → 2026-05-04).
+
+**Pre-flight bug**: Initial 27-mo wl183 B2 sim returned `n_buys=0, n_sells=0` over the full holdout — the wl183 promotion was blocked, not by performance, but by silent inference-side data corruption.
+
+**Root cause**: `kernel/row_coverage.py::filter_by_coverage` called `panel.loc[keep_mask].reset_index(drop=True)` unconditionally. For training (long-form panel, integer index OK) this was fine. For inference, `build_inference_matrix` produces X **ticker-indexed**, and the reset clobbered ticker symbols → `X.index = [0, 1, 2, …]` (int64). All downstream `scores.get(cand.ticker)` lookups in `ApplyScoresTask`, `ApplyNGBoostTask`, `ApplyGlobalCalibrationTask` returned None for every candidate → 0 trades on every bar.
+
+Production (`strategy_config.json`) was unaffected: `row_coverage.enabled` is absent (defaults False). Only the wl183 side config (`row_coverage.enabled=true`) hit the bug.
+
+**Fix**: opt-in `preserve_index=True` parameter on `filter_by_coverage`, passed from `RowCoverageGateTask`. Default unchanged for training callers. Source-level + runtime contract tests in `tests/test_row_coverage_gate.py`. Commit `8d0f871`, runtime contract `7a61f00`.
+
+**Post-fix B2 (27-mo) result on wl183**:
+
+| Metric | wl183 (post-fix) | wl103 baseline |
+|---|---|---|
+| APY | **−1.60%** | +13.27% |
+| Sharpe | **−0.069** | +1.10 |
+| Sortino | −0.063 | — |
+| Calmar | −0.119 | — |
+| Max DD | 13.45% | ~12% |
+| Ann vol | 12.36% | — |
+| Total return | −1.59% | — |
+| Win rate | 77.46% | — |
+| n_buys / n_sells | 142 / 173 | — |
+
+**Mechanism**: high win rate (77%) + negative Sharpe means losers are materially larger than winners. Combined with the calibrator collapse (`n_unique_prob_y=7`, top candidates tie at floor=0.30 cap), buy ranking is effectively random within the cap-clamped tier — adverse selection on unconviction picks. The +9bp Stage 3 IC lift did not survive the calibrator + buy_floor + execution gauntlet.
+
+**Conclusion**: **NO-GO for wl183 promotion.** wl103 stays as production golden.
+
+**Resume conditions**:
+1. Calibrator retrain — production `panel-rank-calibration.json` has `n_unique_prob_y=7` (below the runtime SOFT WARN floor of 10). Underlying cause: panel-LTR `best_iter=4` (XGB plateaued at 4 boosting rounds → ~16 leaf paths → ~7 distinct calibrated probabilities). Retrain with bumped `min_best_iter` floor + accept loss curve at higher round count.
+2. After calibrator fix, re-run wl183 B2. If Sharpe still < wl103 baseline → wl183 universe genuinely doesn't help and expansion track is dead until Track D step IV (wl≥250) or different admission criterion.
+3. Investigate the high-win-rate + negative-Sharpe pattern. May indicate the 80 admitted tickers concentrate in adverse-selection regimes (e.g. high-momentum names that mean-revert in bear-leaning bars).
+
+**Side benefits this session**:
+- `preserve_index` parameter is general; future filter_by_coverage callers in inference paths get the safe default.
+- Runtime contract test (`test_row_coverage_gate_preserves_ticker_index_runtime`) catches regressions in `filter_by_coverage` defaults, ctx field renames, or alternative filter implementations — lower blast radius than the source-level guard.
+- `kelly_target_pct` range invariant tests (`test_pipeline_value_contracts.py::TestKellyTargetPctRangeInvariant`) added in passing — pins `[0, min(max_pct, max_concentration)]` for any input including degenerate cases (None, NaN, inf, σ≤0, μ≤0, non-numeric).
+
+**Recipe**:
+```bash
+# Reproduce post-fix B2:
+python scripts/holdout_backtest.py --skip-train \
+    --strategy-config-name strategy_config.wl183_daily_clean.json \
+    --train-end 2025-05-04 --sim-start 2025-05-05 --sim-end 2026-05-04 \
+    --output /tmp/wl183_b2.json
+# Verify Sharpe / APY in the output JSON match the table above (≈ −0.07 / −1.60%).
+```
