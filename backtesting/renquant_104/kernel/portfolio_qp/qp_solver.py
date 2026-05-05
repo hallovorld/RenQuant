@@ -411,8 +411,34 @@ def solve_portfolio_qp(
             d_fixed = np.zeros(n)
         return d_ret + d_var + d_cost + d_tax + d_impact + d_fixed
 
-    # Initial guess: zero trade
+    # Initial guess: zero trade is OUTSIDE the feasible region when
+    # min_invested_pct > current_invested. SLSQP fails with "Positive
+    # directional derivative for linesearch". Warm-start with a feasible
+    # uniform allocation that satisfies both LB (min_invested_slack) and
+    # UB (cash_slack) when applicable. The QP itself will optimize away
+    # from this baseline; we only need a starting point inside the
+    # feasibility region.
     dw0 = np.zeros(n)
+    if min_invested_pct > 0 and min_invested_slack > 0:
+        # Spread min_invested_slack uniformly across all assets; clamp
+        # by per-asset upper bound so the warm-start respects w_upper.
+        per_asset = min_invested_slack / max(1, n)
+        # If upper bound is finite and binding, use it; else use uniform.
+        for i in range(n):
+            ub_i = hi_bounds[i] if i < len(hi_bounds) else per_asset
+            dw0[i] = min(per_asset, max(0.0, ub_i))
+        # Re-balance if total still below LB (some assets capped):
+        deficit = min_invested_slack - float(np.sum(dw0))
+        if deficit > 1e-9:
+            # distribute remaining deficit to non-capped assets
+            for i in range(n):
+                if dw0[i] < hi_bounds[i] - 1e-9:
+                    headroom = hi_bounds[i] - dw0[i]
+                    take = min(headroom, deficit)
+                    dw0[i] += take
+                    deficit -= take
+                    if deficit <= 1e-9:
+                        break
 
     constraints: list = [cash_constraint]
     # Stage 9: turnover hard constraint Σ|Δw| ≤ τ_max
