@@ -130,7 +130,14 @@ class RowCoverageGateTask(Task):
         if not enabled:
             return
         scorer = ctx._panel_scorer  # noqa: SLF001
-        X, stats = filter_by_coverage(X, list(scorer.feature_cols), min_pct)
+        # 2026-05-05 wl183 0-trade fix: inference X is ticker-indexed.
+        # Without preserve_index=True, filter_by_coverage's default reset
+        # to int64 0..n-1 broke every downstream `scores.get(cand.ticker)`
+        # lookup → 0/N scored → 0 trades on every bar. See row_coverage.py
+        # docstring for the full incident write-up.
+        X, stats = filter_by_coverage(
+            X, list(scorer.feature_cols), min_pct, preserve_index=True,
+        )
         if stats["n_dropped"]:
             log.info("RowCoverageGateTask: dropped %d/%d (%.1f%%) "
                       "below %.0f%% coverage",

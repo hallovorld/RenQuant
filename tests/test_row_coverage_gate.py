@@ -99,8 +99,46 @@ class TestFilterByCoverage(unittest.TestCase):
         nan_pcts = [0.8 if i % 2 == 0 else 0.0 for i in range(20)]
         df, feats = _make_panel(20, 10, nan_pct_per_row=nan_pcts)
         out, _ = filter_by_coverage(df, feats, min_pct=0.5)
-        # Output index should be 0..n-1, not the original sparse indices
+        # Output index should be 0..n-1, not the original sparse indices.
+        # Default behaviour (training: long-form panel, integer index OK).
         self.assertEqual(list(out.index), list(range(len(out))))
+
+    def test_preserve_index_when_requested(self):
+        """2026-05-05 wl183 0-trade regression: inference matrices are
+        ticker-indexed. A silent reset to int64 0..n-1 broke every
+        downstream `scores.get(cand.ticker)` lookup → 0/N scored on every
+        bar in production. preserve_index=True keeps the original ticker
+        index intact through the filter."""
+        df, feats = _make_panel(5, 10, nan_pct_per_row=[0.0, 0.8, 0.0, 0.8, 0.0])
+        # Re-index by tickers, like build_inference_matrix produces.
+        df = df.set_index(pd.Index(["AAPL", "MSFT", "NVDA", "TSLA", "META"]))
+        out, _ = filter_by_coverage(df, feats, min_pct=0.5, preserve_index=True)
+        # Surviving rows: indices 0, 2, 4 → AAPL, NVDA, META
+        self.assertEqual(list(out.index), ["AAPL", "NVDA", "META"])
+        self.assertEqual(out.index.dtype, object)  # NOT int64
+
+    def test_preserve_index_default_false_back_compat(self):
+        """The old API contract (reset to 0..n-1) is preserved for callers
+        that don't opt into preserve_index — training paths still work."""
+        df, feats = _make_panel(5, 10, nan_pct_per_row=[0.0, 0.8, 0.0, 0.8, 0.0])
+        df = df.set_index(pd.Index(["AAPL", "MSFT", "NVDA", "TSLA", "META"]))
+        out, _ = filter_by_coverage(df, feats, min_pct=0.5)  # default
+        # Default reset → integer 0..n-1
+        self.assertEqual(list(out.index), [0, 1, 2])
+
+    def test_inference_caller_passes_preserve_index(self):
+        """Source-level guard: RowCoverageGateTask (inference path) MUST
+        call filter_by_coverage with preserve_index=True. Without it, the
+        wl183 0/N lookup miss recurs."""
+        path = (REPO / "backtesting" / "renquant_104" / "kernel"
+                / "panel_pipeline" / "tasks_feature_matrix.py")
+        src = path.read_text()
+        idx_class = src.find("class RowCoverageGateTask")
+        idx_next = src.find("class ", idx_class + 1)
+        body = src[idx_class:idx_next] if idx_next > 0 else src[idx_class:]
+        self.assertIn("preserve_index=True", body,
+            "RowCoverageGateTask must call filter_by_coverage with "
+            "preserve_index=True so X.index stays as ticker symbols")
 
 
 class TestCoverageFromConfig(unittest.TestCase):

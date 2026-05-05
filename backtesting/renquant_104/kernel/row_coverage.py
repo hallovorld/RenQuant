@@ -51,6 +51,8 @@ def filter_by_coverage(
     panel: pd.DataFrame,
     feature_cols: list[str],
     min_pct: float,
+    *,
+    preserve_index: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Drop rows whose non-NaN feature coverage is below ``min_pct``.
 
@@ -68,11 +70,25 @@ def filter_by_coverage(
     min_pct : float in [0, 1]
         Minimum non-NaN fraction required to keep the row. 0 disables
         the filter (returns input unchanged).
+    preserve_index : bool, default False
+        2026-05-05 wl183 0-trade fix. Training panels carry (date, ticker)
+        as columns and use an integer row index, so resetting after the
+        filter is safe. Inference matrices (built by
+        ``build_inference_matrix``) carry **ticker symbols** in the index
+        and downstream tasks (``ApplyScoresTask``, ``ApplyNGBoostTask``,
+        ``ApplyGlobalCalibrationTask``) look up scores by
+        ``cand.ticker``. A silent reset breaks every per-ticker lookup
+        — `scores.get(cand.ticker)` returns None for all candidates →
+        0 trades. The wl183 production sim hit exactly this on
+        2026-05-05 (X.shape=(57, 21), X.index=int64 → all 57 candidates
+        missed). Set ``preserve_index=True`` from any inference caller.
 
     Returns
     -------
     filtered : DataFrame
-        Index reset, original column order preserved.
+        ``preserve_index=False`` (default): index reset to 0..n-1.
+        ``preserve_index=True``: original index retained on surviving rows.
+        Original column order preserved either way.
     stats : dict
         n_in / n_out / n_dropped / pct_dropped / min_pct / n_features
         — for logging and metadata persistence.
@@ -111,7 +127,9 @@ def filter_by_coverage(
     coverage = notna_count / float(len(feature_cols))
     keep_mask = coverage >= min_pct
 
-    filtered = panel.loc[keep_mask].reset_index(drop=True)
+    filtered = panel.loc[keep_mask]
+    if not preserve_index:
+        filtered = filtered.reset_index(drop=True)
     n_dropped = int((~keep_mask).sum())
     stats = {
         "n_in":        int(len(panel)),
