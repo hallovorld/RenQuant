@@ -914,18 +914,56 @@ class TestQPTaxAwareDisabledByDefault:
             "positions to defer tax → disposition effect mechanized."
         )
 
+    # Active production-style configs whose qp_min_dw_pct must stay ≥ 0.01.
+    # Historical ablation/sweep configs (ablation_*.json, armA_*.json,
+    # emb_*.json, sweep_*.json, h60.json) are EXEMPT — their results are
+    # already published in failed-experiments-log.md and rewriting them
+    # retroactively would misrepresent history. Add active configs here
+    # as they're created.
+    _ACTIVE_CONFIGS = (
+        "strategy_config.json",
+        "strategy_config.golden.json",
+        "strategy_config.wl183_daily_clean.json",
+        "strategy_config.wl183_diag10.json",
+    )
+
     def test_qp_min_dw_pct_above_micro_threshold(self):
-        """Pin qp_min_dw_pct ≥ 0.01 to avoid micro-trim death spiral."""
+        """Pin qp_min_dw_pct ≥ 0.01 across active production-style
+        configs so the wl183 incident class can't recur silently.
+
+        2026-05-05 wl183 incident: side config had qp_min_dw_pct=0.005 (4×
+        below production's 0.02) — QP allowed Δw=0.79% trims (1-share
+        rebalances) → 145 micro-sells over 27 mo → friction killed Sharpe
+        even at 77% win rate (B2 result: Sharpe −0.07, APY −1.60%).
+        Production was correctly pinned at 0.02 but the side config
+        wasn't tested.
+        """
         import json as _json
-        cfg = _json.loads(
-            (REPO / "backtesting" / "renquant_104" / "strategy_config.json").read_text()
+        strat_dir = REPO / "backtesting" / "renquant_104"
+
+        violations = []
+        missing = []
+        for name in self._ACTIVE_CONFIGS:
+            path = strat_dir / name
+            if not path.exists():
+                missing.append(name)
+                continue
+            cfg = _json.loads(path.read_text())
+            ja = cfg.get("rotation", {}).get("joint_actions", {}) or {}
+            if ja.get("solver") != "qp":
+                continue
+            v = ja.get("qp_min_dw_pct", 0.0)
+            if v < 0.01:
+                violations.append((name, v))
+
+        assert not violations, (
+            f"qp_min_dw_pct < 0.01 in active configs (micro-trim death "
+            f"spiral; wl183 v2 B2 produced Sharpe −0.07, APY −1.60%): "
+            f"{violations}"
         )
-        ja = cfg.get("rotation", {}).get("joint_actions", {})
-        v = ja.get("qp_min_dw_pct", 0.0)
-        assert v >= 0.01, (
-            f"qp_min_dw_pct={v} too low (≤0.01) — produces micro-trim "
-            f"sells <1% NAV per bar; each one pays full ST tax + slippage. "
-            f"v2 B2: 91 sells avg $1,900 produced -3.6% total return."
+        assert not missing, (
+            f"active configs missing from disk: {missing} — update "
+            f"_ACTIVE_CONFIGS or restore the file"
         )
 
 
