@@ -105,12 +105,15 @@ def main() -> None:
     if args.out:
         out_path = Path(args.out)
     else:
-        out_name_train = panel_cfg.get("artifact_path")
+        # Bug 14 fix: inference-side wins so side configs route correctly
+        # even when training-side panel_ltr.artifact_path inherits the
+        # production default (which is the common case in side configs).
         out_name_infer = (
             config.get("ranking", {})
                   .get("panel_scoring", {})
                   .get("artifact_path")
         )
+        out_name_train = panel_cfg.get("artifact_path")
         panel_artifact = out_name_infer or out_name_train or "artifacts/panel-ltr.json"
         panel_path = Path(panel_artifact)
         if panel_path.stem == "panel-ltr":
@@ -210,11 +213,13 @@ def main() -> None:
     fac = pctx.raw_factor_frames
 
     # ── Load scorer ─────────────────────────────────────────────────────────
-    # Bug 14 fix: also fall through to inference-side artifact_path so
-    # side configs read the side artifact (not production fallback).
+    # Bug 14 fix: inference-side wins so side configs read the side
+    # artifact even when training-side panel_ltr.artifact_path inherits
+    # the production default. Same precedence as the out_path derivation
+    # above + NGBoostSaveTask.
     scorer_artifact_rel = (
-        panel_cfg.get("artifact_path")
-        or config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
+        config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
+        or panel_cfg.get("artifact_path")
         or "artifacts/panel-ltr.json"
     )
     scorer_path = strategy_dir / scorer_artifact_rel
