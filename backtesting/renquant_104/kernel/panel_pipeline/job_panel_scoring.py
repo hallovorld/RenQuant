@@ -161,6 +161,23 @@ class ApplyScoresTask(Task):
             cand.panel_score = float(v)
             n_cand_scored += 1
 
+        # 2026-05-05 wl183 0-trade diagnostic. Only fires on the failure
+        # path where every candidate lookup missed. Surfaces the dtype +
+        # sample mismatch that would otherwise need a code edit + re-sim
+        # to debug. Cheap (one log line on failure, none on the happy path).
+        if ctx.candidates and n_cand_scored == 0:
+            cand_sample = [c.ticker for c in ctx.candidates[:5]]
+            log.error(
+                "ApplyScoresTask 0/N LOOKUP MISS: scores.shape=%s "
+                "scores.dtype=%s n_finite=%d scores.index[:5]=%s "
+                "cand_ticker[:5]=%s first_lookup=%r X.shape=%s "
+                "X.index.dtype=%s",
+                scores.shape, scores.dtype, scores.notna().sum(),
+                list(scores.index[:5]), cand_sample,
+                scores.get(cand_sample[0]) if cand_sample else None,
+                X.shape, X.index.dtype,
+            )
+
         n_held_scored = 0
         for ticker, hs in ctx.holdings.items():
             v = scores.get(ticker)
