@@ -93,14 +93,22 @@ class TestEvalICFloor:
 # ── #5: panel-LTR drift guard mirrors NGBoost ───────────────────────────────
 
 class TestPanelLTRDriftGuard:
-    def test_drift_guard_present_in_buildfeaturematrixtask(self):
-        """BuildFeatureMatrixTask distinguishes structural vs transient NaN drift."""
-        src = (REPO_ROOT / "backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py").read_text()
-        idx = src.find("class BuildFeatureMatrixTask")
-        block = src[idx:idx + 8000]
+    """Drift guard distinguishes structural vs transient NaN drift.
+
+    2026-05-04: refactored — the legacy BuildFeatureMatrixTask was
+    split per CLAUDE.md §1c into BuildFeatureMatrixJob with 4 Tasks.
+    The drift_guard logic now lives in DriftGuardTask in
+    `kernel/panel_pipeline/tasks_feature_matrix.py`. Tests updated to
+    look there.
+    """
+    def test_drift_guard_present_in_drift_guard_task(self):
+        src = (REPO_ROOT / "backtesting/renquant_104/kernel/panel_pipeline/tasks_feature_matrix.py").read_text()
+        idx = src.find("class DriftGuardTask")
+        assert idx > 0, "DriftGuardTask must exist in tasks_feature_matrix.py"
+        block = src[idx:]
         # Threshold still configurable
         assert "max_feature_drift_pct" in block
-        assert "all_nan_cols" in block
+        assert "nan_cols" in block
         # Post-fix: structural vs transient distinction
         assert "structural" in block
         assert "transient" in block
@@ -110,46 +118,48 @@ class TestPanelLTRDriftGuard:
 
     def test_drift_threshold_default_matches_ngboost(self):
         """Same default 0.05 (5%) as ApplyNGBoostTask — consistency for operators."""
-        src = (REPO_ROOT / "backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py").read_text()
-        idx = src.find("class BuildFeatureMatrixTask")
-        block = src[idx:idx + 6000]
+        src = (REPO_ROOT / "backtesting/renquant_104/kernel/panel_pipeline/tasks_feature_matrix.py").read_text()
         # The default 0.05 is read from the same panel_scoring config tree
-        assert 'panel_cfg.get("max_feature_drift_pct", 0.05)' in block
+        assert 'max_feature_drift_pct' in src
+        assert ', 0.05)' in src   # config default 5%
 
 
 # ── #6: NGBoost staging + acceptance ────────────────────────────────────────
 
+def _ngboost_save_task_body() -> str:
+    """Read the NGBoostSaveTask class body, bounded by the next class
+    definition. Replaces the brittle src[idx:idx+6000] window from the
+    original tests — that hardcoded slice broke once the body grew past
+    6kB (e.g. when the 2026-05-04 fingerprint stamp was added)."""
+    src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
+    idx = src.find("class NGBoostSaveTask")
+    end = src.find("\nclass ", idx + 1)
+    return src[idx:end] if end > 0 else src[idx:]
+
+
 class TestNGBoostStaging:
     def test_staging_path_used(self):
         """NGBoostSaveTask writes to .staging.json, then atomic-renames on pass."""
-        src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
-        idx = src.find("class NGBoostSaveTask")
-        block = src[idx:idx + 6000]
+        block = _ngboost_save_task_body()
         assert ".staging.json" in block
         assert "_os.replace" in block, "must use atomic rename, not direct save"
 
     def test_pre_train_snapshot_taken(self):
         """Prior production artifact is snapshotted to .pre-train.json before stage."""
-        src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
-        idx = src.find("class NGBoostSaveTask")
-        block = src[idx:idx + 6000]
+        block = _ngboost_save_task_body()
         assert ".pre-train.json" in block
         assert "shutil.copy2" in block
 
     def test_min_val_mu_ic_gate(self):
         """The acceptance gate compares val_mu_ic to a configurable floor."""
-        src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
-        idx = src.find("class NGBoostSaveTask")
-        block = src[idx:idx + 6000]
+        block = _ngboost_save_task_body()
         assert "min_val_mu_ic" in block
         assert "REJECTING new NGBoost head" in block
 
     def test_rollback_path_preserves_prior(self):
         """On rejection: staging is left for diag, prior remains at out_path,
         snapshot is removed (no .pre-train.json clutter)."""
-        src = (REPO_ROOT / "backtesting/renquant_104/training_panel/pp_panel_training.py").read_text()
-        idx = src.find("class NGBoostSaveTask")
-        block = src[idx:idx + 6000]
+        block = _ngboost_save_task_body()
         # Prior snapshot is unlinked on both paths (success + reject)
         assert block.count("prior_snapshot.unlink()") >= 2
 

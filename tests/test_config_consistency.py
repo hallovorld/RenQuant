@@ -55,6 +55,93 @@ class TestRelevantFields:
         out = _model_relevant_fields(_cfg(emb=True))
         assert out["asset_embeddings"] is True
 
+    # ── 2026-05-04 invariant: training resolution must be in fingerprint
+    # so daily↔hourly artifact-vs-config drift fails LOUD instead of
+    # silently fail-safing every bar via DriftGuardTask. See incident:
+    # panel-ltr.json (trained 2026-05-03 with hourly+minute features) +
+    # 2026-05-04 daily-only mandate → strategy made 0 trades for 252
+    # days because DriftGuardTask saw 13/27 features missing.
+
+    def test_extracts_training_resolution(self):
+        out = _model_relevant_fields(_cfg())
+        assert out["training_resolution"] == "daily"
+
+    def test_extracts_hourly_enabled_default_false(self):
+        out = _model_relevant_fields(_cfg())
+        assert out["hourly_enabled"] is False
+
+    def test_extracts_minute_enabled_default_false(self):
+        out = _model_relevant_fields(_cfg())
+        assert out["minute_enabled"] is False
+
+    def test_extracts_hourly_enabled_when_set_true(self):
+        cfg = _cfg()
+        cfg["panel_ltr"]["hourly"] = {"enabled": True}
+        out = _model_relevant_fields(cfg)
+        assert out["hourly_enabled"] is True
+
+    def test_extracts_minute_enabled_when_set_true(self):
+        cfg = _cfg()
+        cfg["panel_ltr"]["minute"] = {"enabled": True}
+        out = _model_relevant_fields(cfg)
+        assert out["minute_enabled"] is True
+
+
+class TestFingerprintResolutionInvariant:
+    """Daily-mode vs hourly-mode produce DISTINCT fingerprints — the
+    smoke test that prevents the 2026-05-03/04 stale-artifact incident
+    from silently recurring on the next Sunday retrain."""
+
+    def test_hourly_flag_changes_fingerprint(self):
+        cfg_daily = _cfg()
+        cfg_hourly = _cfg()
+        cfg_hourly["panel_ltr"]["hourly"] = {"enabled": True}
+        assert fingerprint_config(cfg_daily) != fingerprint_config(cfg_hourly)
+
+    def test_minute_flag_changes_fingerprint(self):
+        cfg_daily = _cfg()
+        cfg_minute = _cfg()
+        cfg_minute["panel_ltr"]["minute"] = {"enabled": True}
+        assert fingerprint_config(cfg_daily) != fingerprint_config(cfg_minute)
+
+    def test_training_resolution_change_changes_fingerprint(self):
+        cfg_daily = _cfg()
+        cfg_hourly_res = _cfg()
+        cfg_hourly_res["panel_ltr"]["training_resolution"] = "hourly"
+        assert fingerprint_config(cfg_daily) != fingerprint_config(cfg_hourly_res)
+
+
+class TestNGBoostSaveTaskStampsFingerprint:
+    """2026-05-04 source-level pin: NGBoostSaveTask must stamp the same
+    config_fingerprint + config_fingerprint_fields into ngboost-head.json
+    that SaveArtifactTask stamps into panel-ltr.json. Pre-fix only
+    panel-ltr was stamped, leaving the NGBoost head's artifact lacking
+    a way to detect resolution drift at adapter init.
+
+    This is a source-level pin (not a behavioral test) because spinning
+    up a full training context is expensive. The two operative lines
+    must be present and use the same `_model_relevant_fields` helper."""
+
+    def test_ngboost_save_stamps_fingerprint(self):
+        path = (REPO_ROOT / "backtesting" / "renquant_104"
+                / "training_panel" / "pp_panel_training.py")
+        src = path.read_text()
+        idx_class = src.find("class NGBoostSaveTask")
+        # next class boundary
+        idx_next = src.find("\nclass ", idx_class + 1)
+        body = src[idx_class:idx_next] if idx_next > 0 else src[idx_class:]
+        # Both fields stamped from the SAME helper as panel-LTR
+        assert 'meta["config_fingerprint"]' in body, (
+            "NGBoostSaveTask must stamp config_fingerprint (2026-05-04)"
+        )
+        assert 'meta["config_fingerprint_fields"]' in body
+        assert "fingerprint_config(ctx.config)" in body
+        assert "_model_relevant_fields(ctx.config)" in body
+        # And the fail-soft try/except so a config_consistency import
+        # failure doesn't kill training.
+        assert "try:" in body
+        assert "except Exception" in body
+
 
 # ── fingerprint_config ──────────────────────────────────────────────────────
 

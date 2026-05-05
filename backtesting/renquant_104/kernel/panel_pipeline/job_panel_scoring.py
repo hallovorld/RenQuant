@@ -108,137 +108,25 @@ class LoadScorerTask(Task):
 
 
 class BuildFeatureMatrixTask(Task):
-    """Pick today's row per candidate + held ticker into a single feature matrix.
+    """Back-compat shim. The 165-line monolith was split per CLAUDE.md
+    §1c (2026-05-04) into `BuildFeatureMatrixJob` with 4 Tasks:
 
-    Held positions are scored alongside candidates so rotation can compare
-    them on the same cross-sectional panel scale.
+        ResolveInferenceFramesTask    — subset frames, macro v1/v2
+        AssembleInferenceMatrixTask   — call build_inference_matrix
+        RowCoverageGateTask           — drop low-coverage rows
+        DriftGuardTask                — structural vs transient NaN
+
+    See `kernel/panel_pipeline/tasks_feature_matrix.py`. Existing
+    callers (PanelScoringJob.tasks list) keep working unchanged.
     """
 
+    _job = None   # lazy-init to avoid circular import at module load
+
     def run(self, ctx: InferenceContext) -> bool | None:
-        if not ctx.candidates and not ctx.holdings:
-            # No work to do — but DON'T short-circuit the chain so
-            # downstream calibration / ngboost loaders can still
-            # initialize for next bar's use.
-            ctx._panel_matrix = None  # noqa: SLF001
-            return None
-        scorer: PanelScorer = getattr(ctx, "_panel_scorer", None)
-        if scorer is None:
-            ctx._panel_matrix = None  # noqa: SLF001
-            return None
-
-        feature_frames = getattr(ctx, "_panel_feature_frames", None)
-        factor_frames  = getattr(ctx, "_panel_factor_frames", None)
-        # Bug #25 fix: macro frame is per-DATE (not per-ticker), broadcast
-        # by build_inference_matrix to every row at scoring time.
-        # Audit XM1+XM4 fix (2026-04-27): when macro v2 (per-ticker β) is
-        # active, the v1 broadcast path is silenced — β columns flow
-        # through factor_frames instead. Otherwise broadcasting v1 macro
-        # PLUS v2 β is double-injection.
-        macro_cfg = ctx.config.get("panel_ltr", {}).get("macro", {})
-        macro_version = str(macro_cfg.get("version", "v1")).lower()
-        if macro_version == "v2":
-            macro_frame = None   # v2 routes through factor_frames; broadcast OFF
-        else:
-            macro_frame = getattr(ctx, "_panel_macro_frame", None)
-        if feature_frames is None:
-            log.warning("BuildFeatureMatrixTask: ctx has no _panel_feature_frames "
-                        "(adapter must populate) — leaving matrix unset; "
-                        "downstream tasks will no-op individually")
-            # Audit #39: don't kill the chain — let LoadGlobalCalibration /
-            # LoadNGBoost still initialize. ApplyScoresTask checks the matrix
-            # itself and no-ops cleanly when None/empty.
-            ctx._panel_matrix = None  # noqa: SLF001
-            return None
-
-        today = ctx.today
-        today_ts = pd.Timestamp(today if isinstance(today, datetime.date) else today)
-        target_tickers = {c.ticker for c in ctx.candidates} | set(ctx.holdings.keys())
-        ff_subset = {t: feature_frames[t] for t in target_tickers if t in feature_frames}
-        fac_subset = None
-        if factor_frames is not None:
-            fac_subset = {t: factor_frames[t] for t in target_tickers if t in factor_frames}
-
-        panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
-        nan_prone = list(panel_cfg.get("nan_prone_cols", []))
-        # T2-2 fix: pass per-ticker asset embeddings (emb_0..emb_{D-1}) so
-        # inference feature matrix matches training. Previously the embeddings
-        # were loaded by LoadAssetEmbeddingsTask inside prepare_inference_panel_frames
-        # but discarded on return — emb_* cols fell back to NaN at inference.
-        asset_embeddings = getattr(ctx, "_panel_asset_embeddings", None)
-
-        X = build_inference_matrix(
-            ff_subset, fac_subset, today_ts,
-            feature_cols=scorer.feature_cols,
-            nan_prone_cols=nan_prone,
-            macro_frame=macro_frame,        # Bug #25 fix: same broadcast as training
-            asset_embeddings=asset_embeddings,  # T2-2 fix: real embeddings at inference
-        )
-        if X.empty:
-            log.warning("BuildFeatureMatrixTask: empty inference matrix")
-            ctx._panel_matrix = None  # noqa: SLF001
-            return None
-
-        # Drift guard (2026-04-29, revised 2026-04-29 evening):
-        # Distinguish STRUCTURAL drift (feature never produced by inference
-        # pipeline — e.g. macro/emb disabled after training) from TRANSIENT
-        # NaN (feature exists historically but today's data not yet available
-        # — e.g. afternoon_drift_z before market closes, or minute bars not
-        # cached for the current session).
-        #
-        # Structural: the column is all-NaN AND has no non-NaN historical
-        #   values in the raw feature frames → the pipeline genuinely stopped
-        #   producing it. Hard-fail: this would corrupt every score.
-        # Transient: the column has historical non-NaN values but is NaN
-        #   today (timing gap). Log a warning; XGBoost handles NaN natively,
-        #   same as pre-P0-fix behaviour. Don't block trading.
-        drift_thr = float(panel_cfg.get("max_feature_drift_pct", 0.05))
-        all_nan_cols = [c for c in scorer.feature_cols if X[c].isna().all()]
-        if all_nan_cols:
-            structural, transient = [], []
-            # Build set of columns present in either feature or factor frames.
-            # A column that exists in ANY frame is being produced by the pipeline
-            # (timing gap → transient). A column absent from ALL frames was never
-            # produced (disabled block → structural). Check columns not values —
-            # intraday features live in factor_frames, not feature_frames.
-            produced_cols: set[str] = set()
-            for frames in (ff_subset, fac_subset or {}):
-                if frames:
-                    for ff in frames.values():
-                        if hasattr(ff, "columns"):
-                            produced_cols.update(ff.columns)
-                        elif isinstance(ff, dict):
-                            produced_cols.update(ff.keys())
-
-            for col in all_nan_cols:
-                (transient if col in produced_cols else structural).append(col)
-
-            if transient:
-                log.warning(
-                    "BuildFeatureMatrixTask: %d feature col(s) all-NaN TODAY "
-                    "(transient — historical data exists, today not cached yet). "
-                    "XGBoost NaN-imputes natively; scoring continues. "
-                    "Cols: %s",
-                    len(transient), transient[:5],
-                )
-
-            n_struct  = len(structural)
-            n_total   = len(scorer.feature_cols)
-            pct_struct = n_struct / max(1, n_total)
-            if structural and pct_struct > drift_thr:
-                log.error(
-                    "BuildFeatureMatrixTask: %d/%d (%.1f%%) feature cols "
-                    "STRUCTURALLY missing — inference pipeline no longer produces "
-                    "them (e.g. macro/emb disabled after model was trained). "
-                    "FAIL-SAFE: clearing candidates. Retrain recommended. "
-                    "First 10: %s",
-                    n_struct, n_total, pct_struct * 100, structural[:10],
-                )
-                ctx._panel_matrix = None  # noqa: SLF001
-                ctx.candidates = []
-                return False
-
-        ctx._panel_matrix = X  # noqa: SLF001
-        log.debug("BuildFeatureMatrixTask: matrix %s", X.shape)
+        if BuildFeatureMatrixTask._job is None:
+            from .tasks_feature_matrix import BuildFeatureMatrixJob
+            BuildFeatureMatrixTask._job = BuildFeatureMatrixJob()
+        BuildFeatureMatrixTask._job.run(ctx)
 
 
 class ApplyScoresTask(Task):
@@ -287,59 +175,124 @@ class ApplyScoresTask(Task):
 
 
 class VetoWeakBuysTask(Task):
-    """Drop candidates whose panel_score is below `buy_floor`.
+    """Drop candidates whose CALIBRATED rank_score is below `buy_floor`.
 
-    No-op when buy_floor is unset or <= -inf. Candidates without a panel
-    score (e.g. missing features) are kept — RankingJob blends rs_score in.
+    Invariant (P0 fix 2026-05-03): the buy_floor compares against the SAME
+    scale that downstream tier thresholds (rotation, QualityFloor) use —
+    calibrated rank_score in [0, 1]. Pre-fix this task read raw
+    ``cand.panel_score`` (XGBoost rank:pairwise margin, range ~ [0, 0.05])
+    while running BEFORE ``ApplyGlobalCalibrationTask``, so the 0.30 floor
+    set on 2026-04-29 (commit 410758b "buy_floor null→0.30") could never
+    be crossed by any candidate. Production cron silently dropped 55/55
+    candidates daily for 5 days — no fresh entries opened, only TopUps on
+    existing holdings. Audit log:
+
+        2026-04-30 16:05  Phase 2b: 55 candidates from 78 tickers
+        2026-04-30 16:05  VetoWeakBuysTask: dropped 55 below panel_score=0.300
+
+    Fix: this task is reordered to run AFTER ``ApplyGlobalCalibrationTask``
+    so ``cand.rank_score`` is the calibrated probability, not raw margin.
+    Configs that set ``buy_floor: 0.30`` now express "drop bottom 30% by
+    calibrator" as intended.
+
+    No-op when buy_floor is unset. Candidates without a rank_score (e.g.
+    missing features) are kept — RankingJob blends rs_score in.
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         # Audit fix VETO-EMPTY-CANDS (Round 2 deep audit, 2026-04-25):
         # pre-fix returned False when ctx.candidates was empty, which
-        # short-circuits the rest of PanelScoringJob's chain
-        # (LoadNGBoost → ApplyNGBoost → ApplyGlobalCalibration →
-        # ApplyKellySizing). On a "holdings-only bar" (zero candidates,
-        # non-empty ctx.holdings), holdings ALSO need their panel scores
-        # calibrated and Kelly-sized for downstream rotation/sell logic.
-        # Pre-fix the chain stopped, leaving holding rank_score / mu /
-        # sigma / kelly_target_pct unset. Now: return None (continue)
-        # so the holding-side branches of the next tasks still fire.
+        # short-circuits the rest of PanelScoringJob's chain. Empty
+        # candidates is now a continue (None), not a stop.
         if not ctx.candidates:
             return None
+
+        # 2026-05-04 user mandate ("rank_score need to be collected
+        # properly for future fine tune"). Snapshot the full pre-veto
+        # candidate list (references, not deep copies) onto ctx so the
+        # adapter's record_candidate_scores can persist BOTH kept and
+        # vetoed rows — the offline analysis needs the FULL rank_score
+        # distribution per bar, not just the survivors. The cands'
+        # rank_score / mu / sigma are already populated by
+        # ApplyGlobalCalibration + ApplyNGBoost at this point in the
+        # chain. Vetoed cands are tagged via ctx._blocked_by_ticker
+        # ("veto:rank_score_below_floor" / "veto:rank_score_nan").
+        # ALWAYS captured, regardless of whether the veto fires —
+        # offline analysis needs the data either way.
+        ctx._full_candidate_snapshot = list(ctx.candidates)    # noqa: SLF001
+
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
-        floor     = panel_cfg.get("buy_floor")
-        if floor is None:
+        raw_floor = panel_cfg.get("buy_floor")
+        if raw_floor is None:
             return
-        floor = float(floor)
+
+        # 2026-05-04 user spec: "暂时改成，取min[mean+std, 0.3]". Per-bar
+        # adaptive floor that keeps only candidates above 1σ above the
+        # bar's mean rank_score, capped by the legacy 0.30 absolute
+        # threshold. Two interpretations of "scientific":
+        #   (a) data-driven per-bar (mean+std uses today's distribution)
+        #   (b) bounded above by the historical pre-fix value so we
+        #       never get LESS strict than legacy
+        # min(mean+std, cap) satisfies both. The cap can be tuned via
+        # buy_floor_adaptive_cap; defaults to 0.30.
+        floor: float
+        floor_label: str
+        if isinstance(raw_floor, str) and raw_floor == "adaptive_mean_std_cap":
+            cap = float(panel_cfg.get("buy_floor_adaptive_cap", 0.30))
+            scores = [getattr(c, "rank_score", None) for c in ctx.candidates]
+            scores = [float(s) for s in scores
+                       if s is not None and not pd.isna(s)]
+            if len(scores) >= 2:
+                import statistics as _stats  # noqa: PLC0415
+                mean_s = _stats.fmean(scores)
+                std_s  = _stats.stdev(scores)
+                adaptive = mean_s + std_s
+                floor = min(adaptive, cap)
+                floor_label = (f"min(mean+std={adaptive:.3f}, "
+                                f"cap={cap:.3f}) = {floor:.3f}  "
+                                f"(n={len(scores)})")
+            else:
+                floor = cap
+                floor_label = f"{cap:.3f} (cap; n<2 for stats)"
+        else:
+            floor = float(raw_floor)
+            floor_label = f"{floor:.3f} (absolute)"
 
         kept: list = []
         dropped = 0
+        blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
         for cand in ctx.candidates:
-            ps = cand.panel_score
+            # 2026-05-03 fix: read CALIBRATED rank_score (post-calibration).
+            # Pre-fix this read cand.panel_score (raw XGB margin) — see
+            # docstring for the production incident this caused.
+            score = getattr(cand, "rank_score", None)
             # Audit P-22: differentiate three states:
-            #   ps is None         → no panel score available (e.g. ticker
-            #                        not in matrix); KEEP — rs_score still
+            #   score is None      → no score available; KEEP — rs_score still
             #                        ranks it (matches original behavior).
-            #   ps is NaN          → panel scoring ran but produced NaN
-            #                        (missing features, model crash) →
-            #                        DROP. Pre-fix this slipped through
-            #                        because NaN < float is False.
-            #   ps < floor         → DROP (the documented veto).
-            if ps is None:
+            #   score is NaN       → scoring ran but produced NaN → DROP.
+            #                        Pre-fix this slipped through because
+            #                        NaN < float is False.
+            #   score < floor      → DROP (the documented veto).
+            if score is None:
                 kept.append(cand)
                 continue
-            if pd.isna(ps) or ps < floor:
+            if pd.isna(score):
                 dropped += 1
+                blocked[cand.ticker] = "veto:rank_score_nan"
+                continue
+            if score < floor:
+                dropped += 1
+                blocked[cand.ticker] = "veto:rank_score_below_floor"
                 continue
             kept.append(cand)
+        ctx._blocked_by_ticker = blocked                       # noqa: SLF001
 
-        # Audit #43: keep the counter present even when nothing was dropped
-        # so downstream readers don't see KeyError on ctx.counters["panel_vetoed"].
+        # Audit #43: keep counter present even when nothing dropped.
         ctx.counters["panel_vetoed"] = ctx.counters.get("panel_vetoed", 0) + dropped
         if dropped:
             ctx.candidates = kept
-            log.info("VetoWeakBuysTask: dropped %d candidate(s) below panel_score=%.3f",
-                     dropped, floor)
+            log.info("VetoWeakBuysTask: dropped %d candidate(s) below "
+                     "rank_score floor=%s", dropped, floor_label)
 
 
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
@@ -629,19 +582,37 @@ class ApplyNGBoostTask(Task):
         # passthrough, predict_distribution returns NaN at rows it couldn't
         # score (NaN/inf input features). Skip those tickers cleanly so
         # downstream sizers / rotators don't compute Kelly = μ/σ² on NaN.
+        # 2026-05-04 instrumentation: per-candidate skip-reason counters
+        # so the funnel is explainable end-to-end (the user mandate that
+        # spawned this audit). Without these, the log says n_cands=48
+        # then n_kelly=0 with no way to tell if the leak is in
+        # NaN-passthrough, predict_distribution missing rows, or μ
+        # values landing exactly at zero.
+        n_set = n_not_in_idx = n_mu_nan = n_sigma_nan = 0
+        blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
         for cand in ctx.candidates:
             if cand.ticker not in mu.index:
+                n_not_in_idx += 1
+                blocked[cand.ticker] = "ngb_skipped:not_in_predict_index"
                 continue
             mu_val    = mu.loc[cand.ticker]
             sigma_val = sigma.loc[cand.ticker]
-            if pd.isna(mu_val) or pd.isna(sigma_val):
+            if pd.isna(mu_val):
+                n_mu_nan += 1
+                blocked[cand.ticker] = "ngb_skipped:mu_nan"
+                continue
+            if pd.isna(sigma_val):
+                n_sigma_nan += 1
+                blocked[cand.ticker] = "ngb_skipped:sigma_nan"
                 continue
             cand.mu    = float(mu_val)
             cand.sigma = float(sigma_val)
+            n_set += 1
             if override:
                 v = float(combined.loc[cand.ticker])
                 cand.rank_score  = v
                 cand.panel_score = v
+        ctx._blocked_by_ticker = blocked  # noqa: SLF001
 
         for ticker, hs in ctx.holdings.items():
             if ticker not in mu.index:
@@ -663,8 +634,10 @@ class ApplyNGBoostTask(Task):
                 hs.panel_score = v
                 hs.rank_score  = v
 
-        log.info("ApplyNGBoostTask: mode=%s  λ=%.2f  n_cands=%d  n_holdings=%d",
-                 score_mode, lambda_sigma, len(ctx.candidates), len(ctx.holdings))
+        log.info("ApplyNGBoostTask: mode=%s  λ=%.2f  n_cands=%d  n_holdings=%d  "
+                 "(set_μσ=%d  not_in_idx=%d  mu_nan=%d  sigma_nan=%d)",
+                 score_mode, lambda_sigma, len(ctx.candidates), len(ctx.holdings),
+                 n_set, n_not_in_idx, n_mu_nan, n_sigma_nan)
 
 
 # ── Kelly sizing (Plan C — the smart part) ───────────────────────────────────
@@ -704,34 +677,79 @@ class ApplyKellySizingTask(Task):
         regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         max_pct  = float(regime_p.get("max_position_pct", 0.15)) * _conf_mult
 
-        def _kelly(obj):
-            return kelly_target_pct(
-                getattr(obj, "mu",    None),
-                getattr(obj, "sigma", None),
+        # 2026-05-04 instrumentation (user mandate: explainable funnel,
+        # decision-tree DB persistence). Per-candidate skip-reason
+        # counters + write to ctx._blocked_by_ticker so SQL queries on
+        # candidate_scores.blocked_by show exactly why each ticker was
+        # filtered. Without this, the funnel stage "n_cands=48 →
+        # kelly=0 non-zero" was opaque.
+        import math   # noqa: PLC0415
+        skip_counts = {
+            "kelly_zero:mu_none":        0,
+            "kelly_zero:mu_nonfinite":   0,
+            "kelly_zero:sigma_none":     0,
+            "kelly_zero:sigma_nonfinite":0,
+            "kelly_zero:sigma_nonpos":   0,
+            "kelly_zero:mu_le_min_edge": 0,
+            "kelly_zero:capped_zero":    0,
+        }
+        blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
+
+        def _kelly_with_reason(obj):
+            mu_v = getattr(obj, "mu",    None)
+            sg_v = getattr(obj, "sigma", None)
+            if mu_v is None:    return 0.0, "kelly_zero:mu_none"
+            if sg_v is None:    return 0.0, "kelly_zero:sigma_none"
+            try:
+                mu_f = float(mu_v); sg_f = float(sg_v)
+            except (TypeError, ValueError):
+                return 0.0, "kelly_zero:mu_nonfinite"
+            if not math.isfinite(mu_f):  return 0.0, "kelly_zero:mu_nonfinite"
+            if not math.isfinite(sg_f):  return 0.0, "kelly_zero:sigma_nonfinite"
+            if sg_f <= 0:                return 0.0, "kelly_zero:sigma_nonpos"
+            if mu_f <= min_edge:         return 0.0, "kelly_zero:mu_le_min_edge"
+            target = kelly_target_pct(
+                mu_f, sg_f,
                 max_pct           = max_pct,
                 max_concentration = max_concentration,
                 fractional        = fractional,
                 min_edge          = min_edge,
             )
+            if target <= 0:              return 0.0, "kelly_zero:capped_zero"
+            return target, None
 
         for cand in ctx.candidates:
-            cand.kelly_target_pct = _kelly(cand)
+            target, reason = _kelly_with_reason(cand)
+            cand.kelly_target_pct = target
+            if reason is not None:
+                skip_counts[reason] += 1
+                # Don't clobber a more upstream block (e.g. ngb_skipped)
+                blocked.setdefault(cand.ticker, reason)
+
         for hs in ctx.holdings.values():
-            hs.kelly_target_pct = _kelly(hs)
+            target, _ = _kelly_with_reason(hs)
+            hs.kelly_target_pct = target
+
+        ctx._blocked_by_ticker = blocked  # noqa: SLF001
 
         # Audit summary — most informative when live.
         cand_targets = [c.kelly_target_pct for c in ctx.candidates
                          if c.kelly_target_pct]
         held_targets = [h.kelly_target_pct for h in ctx.holdings.values()
                          if h.kelly_target_pct]
+        # Compact skip-reason summary: only emit non-zero counts.
+        skip_str = " ".join(f"{r.split(':',1)[1]}={c}"
+                              for r, c in skip_counts.items() if c > 0)
         log.info(
             "ApplyKellySizingTask: fractional=%.2f max_conc=%.2f  "
-            "cands=%d non-zero (avg=%.1f%%)  holdings=%d non-zero (avg=%.1f%%)",
+            "cands=%d non-zero (avg=%.1f%%)  holdings=%d non-zero (avg=%.1f%%)"
+            "%s",
             fractional, max_concentration,
             len(cand_targets),
             (sum(cand_targets) / len(cand_targets) * 100) if cand_targets else 0,
             len(held_targets),
             (sum(held_targets) / len(held_targets) * 100) if held_targets else 0,
+            f"  zero_reasons[{skip_str}]" if skip_str else "",
         )
 
 
@@ -774,11 +792,15 @@ class PanelScoringJob(Job):
             LoadScorerTask(),
             BuildFeatureMatrixTask(),
             ApplyScoresTask(),
-            VetoWeakBuysTask(),
             LoadNGBoostTask(),
             ApplyNGBoostTask(),
             LoadGlobalCalibrationTask(),
             ApplyGlobalCalibrationTask(),
+            # 2026-05-03 P0 fix: VetoWeakBuysTask MOVED to here (was right
+            # after ApplyScoresTask). Veto must compare against calibrated
+            # rank_score, not raw XGB margin. See VetoWeakBuysTask
+            # docstring for the production incident this resolves.
+            VetoWeakBuysTask(),
             ApplyKellySizingTask(),   # Plan C — f*=μ/σ² (no-op unless kelly_sizing.enabled)
             # Buy-logic redesign Stage 0 (2026-04-26): quality gates
             # filter weak-signal candidates AFTER all scoring + sizing.

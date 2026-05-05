@@ -111,14 +111,32 @@ class TestRotationThreshold:
 # ── Fix 3: buy_floor for new buys ───────────────────────────────────────────
 
 class TestBuyFloor:
-    def test_buy_floor_set_to_030(self):
+    def test_buy_floor_is_set_and_principled(self):
+        """buy_floor must be set (not null) so the veto runs.
+
+        2026-05-04: the original test pinned `floor == 0.30` (a hard-
+        coded magic number). Per user mandate "0.3 is not a scientific
+        number", the floor moved to the adaptive
+        `min(mean + std, cap)` mode where `cap` is the 0.30 legacy
+        ceiling. Either form is acceptable — the contract is "veto
+        active, threshold defined".
+        """
         import json
         cfg = json.loads((REPO_ROOT / "backtesting/renquant_104/strategy_config.json").read_text())
         floor = cfg["ranking"]["panel_scoring"].get("buy_floor")
-        assert floor == 0.30, (
-            f"buy_floor must be 0.30 (was {floor}) — pre-fix null meant new buys "
-            "had no panel score floor while rotations enforced panel_buy_floor=0.30"
-        )
+        assert floor is not None, "buy_floor must not be null"
+        if isinstance(floor, str):
+            assert floor == "adaptive_mean_std_cap", (
+                f"unsupported buy_floor mode: {floor!r}"
+            )
+            cap = cfg["ranking"]["panel_scoring"].get("buy_floor_adaptive_cap")
+            assert cap is not None, (
+                "adaptive mode requires buy_floor_adaptive_cap"
+            )
+            assert 0.0 < float(cap) < 1.0
+        else:
+            # Legacy absolute mode — must still be in (0, 1)
+            assert 0.0 < float(floor) < 1.0
 
 
 # ── Fix 4: rotation enabled_regimes ─────────────────────────────────────────

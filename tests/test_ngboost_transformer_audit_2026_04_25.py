@@ -512,3 +512,99 @@ class TestN25ApplyNGBoostHandlesMissingCols:
         # Post-fix: predictions populated (with x3 filled to 0.0).
         assert cand_a.mu is not None and cand_a.sigma is not None
         assert cand_b.mu is not None and cand_b.sigma is not None
+
+
+# ── 2026-05-04 user mandate: NGBoost task must tag every skipped cand ──
+
+class TestNGBoostSkipReasonsInstrumentation:
+    """When ApplyNGBoostTask cannot populate μ/σ for a candidate, it must
+    write a per-ticker reason into ctx._blocked_by_ticker so the
+    candidate_scores DB column blocked_by reveals exactly why on a SQL
+    query. Three skip categories:
+
+      ngb_skipped:not_in_predict_index
+          → candidate's ticker has no row in the inference matrix
+            (BuildFeatureMatrix dropped it).
+      ngb_skipped:mu_nan
+          → predict_distribution returned NaN μ (bad inference row).
+      ngb_skipped:sigma_nan
+          → predict returned NaN σ.
+    """
+
+    def _train_minimal_head(self):
+        """Tiny NGBoostHead — just enough to predict on a 2x2 matrix."""
+        from training_panel.ngboost_head import NGBoostHead
+        rng = np.random.default_rng(7)
+        n = 200
+        df = pd.DataFrame({
+            "x1": rng.normal(size=n),
+            "x2": rng.normal(size=n),
+            "residual_return_raw": rng.normal(size=n),
+        })
+        head = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        head.train(df, ["x1", "x2"], impute_features=False)
+        return head
+
+    def _make_ctx(self, candidates, X, head):
+        return SimpleNamespace(
+            config={"ranking": {"panel_scoring": {"ngboost": {
+                "enabled": True, "score_mode": "additive",
+                "lambda_sigma": 0.0,
+            }}}},
+            candidates=list(candidates),
+            holdings={},
+            _ngboost_head=head,
+            _panel_matrix=X,
+        )
+
+    def test_not_in_index_tagged(self):
+        """Candidate whose ticker isn't in the inference matrix index gets
+        ngb_skipped:not_in_predict_index."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
+        head = self._train_minimal_head()
+        # Matrix only has AAA — but cand list includes BBB
+        X = pd.DataFrame({"x1": [0.1], "x2": [0.2]}, index=["AAA"])
+        cand_aaa = SimpleNamespace(
+            ticker="AAA", mu=None, sigma=None,
+            rank_score=None, panel_score=None,
+        )
+        cand_bbb = SimpleNamespace(
+            ticker="BBB", mu=None, sigma=None,
+            rank_score=None, panel_score=None,
+        )
+        ctx = self._make_ctx([cand_aaa, cand_bbb], X, head)
+        ApplyNGBoostTask().run(ctx)
+        # AAA: μ/σ written, no skip reason
+        assert cand_aaa.mu is not None
+        assert "AAA" not in getattr(ctx, "_blocked_by_ticker", {})
+        # BBB: skip reason logged
+        assert ctx._blocked_by_ticker["BBB"] == \
+               "ngb_skipped:not_in_predict_index"
+
+    def test_mu_nan_tagged(self):
+        """When predict_distribution returns NaN μ for a ticker (NaN/inf
+        row passthrough with impute_features=False), tag it."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
+        head = self._train_minimal_head()
+        # Row CCC has inf input → NaN output (impute_features=False above)
+        X = pd.DataFrame({
+            "x1": [0.1, np.inf],
+            "x2": [0.2, 0.3],
+        }, index=["AAA", "CCC"])
+        cand_aaa = SimpleNamespace(
+            ticker="AAA", mu=None, sigma=None,
+            rank_score=None, panel_score=None,
+        )
+        cand_ccc = SimpleNamespace(
+            ticker="CCC", mu=None, sigma=None,
+            rank_score=None, panel_score=None,
+        )
+        ctx = self._make_ctx([cand_aaa, cand_ccc], X, head)
+        ApplyNGBoostTask().run(ctx)
+        assert cand_aaa.mu is not None
+        # CCC's μ came back NaN → tagged
+        assert "ngb_skipped:" in ctx._blocked_by_ticker["CCC"]
+        # Specifically mu_nan or sigma_nan (both can happen on inf input)
+        assert ctx._blocked_by_ticker["CCC"] in (
+            "ngb_skipped:mu_nan", "ngb_skipped:sigma_nan",
+        )

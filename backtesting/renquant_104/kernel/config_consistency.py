@@ -48,16 +48,30 @@ def _model_relevant_fields(config: dict[str, Any]) -> dict[str, Any]:
     """Project a config to its model-affecting subset.
 
     Order-stable so the resulting hash is deterministic across runs.
+
+    2026-05-04 invariant fix per CLAUDE.md §5.3 (incident: panel-ltr.json
+    trained 2026-05-03 with hourly+minute features → 2026-05-04 user
+    mandate disabled hourly+minute → daily-only data path no longer
+    produces those columns → DriftGuardTask fail-safed every bar →
+    strategy made 0 trades for 252 days). The training resolution and
+    intraday-bar flags must be part of the fingerprint so any drift
+    between artifact and runtime data path triggers a loud
+    ConfigModelMismatch instead of a silent runtime degradation.
     """
     panel = config.get("panel_ltr", {}) or {}
     xgb_params = panel.get("xgb_params", {}) or {}
     emb_cfg = panel.get("asset_embeddings", {}) or {}
+    hourly_cfg = panel.get("hourly", {}) or {}
+    minute_cfg = panel.get("minute", {}) or {}
     return {
         # Sorted set of tickers — order doesn't matter for the panel.
         "watchlist": sorted(config.get("watchlist", []) or []),
         "lookahead_days":      int(panel.get("lookahead_days", 10)),
         "objective":           str(xgb_params.get("objective", "rank:pairwise")),
         "asset_embeddings":    bool(emb_cfg.get("enabled", False)),
+        "training_resolution": str(panel.get("training_resolution", "daily")),
+        "hourly_enabled":      bool(hourly_cfg.get("enabled", False)),
+        "minute_enabled":      bool(minute_cfg.get("enabled", False)),
     }
 
 

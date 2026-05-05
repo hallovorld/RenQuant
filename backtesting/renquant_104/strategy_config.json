@@ -394,7 +394,12 @@
       "qp_risk_aversion": 3.0,
       "qp_cost_kappa": 0.0001,
       "qp_dw_max": 0.5,
-      "qp_min_dw_pct": 0.005,
+      "qp_min_dw_pct": 0.02,
+      "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
+      "qp_tax_aware": false,
+      "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
+      "qp_tax_lot_method": "fifo",
+      "_qp_tax_lot_method_reason": "G7 (2026-05-04): tax-lot disposal rule. 'fifo' = oldest lot first (broker default); 'hifo' = highest-cost lot first (minimises realized gain on partial sells); 'avg' = legacy single-cost-basis kill-switch.",
       "default_sigma": 0.05,
       "qp_signal_decay": 0.0,
       "qp_robust_mu_kappa": 0.0,
@@ -467,14 +472,16 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-04-30",
+    "blend_updated": "2026-05-04",
     "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
       "artifact_path": "artifacts/panel-ltr.json",
       "nan_prone_cols": [],
-      "buy_floor": 0.3,
+      "buy_floor": "adaptive_mean_std_cap",
+      "buy_floor_adaptive_cap": 0.3,
+      "_buy_floor_reason": "2026-05-04 user spec ('暂时改成，取min[mean+std, 0.3]'): per-bar adaptive floor = min(mean(rank_score) + std(rank_score), 0.30). Two interpretations of 'scientific': (a) data-driven per-bar (mean+std uses today's distribution); (b) bounded above by the legacy 0.30 absolute so we never get LESS strict than pre-fix. min(mean+std, cap) satisfies both. Diagnostic 2026-05-04: with the prior absolute floor=0.30 and prob_base_rate=0.278, ALL 50 candidates per bar were vetoed (strategy made 0 trades for 252 days). Adaptive mode keeps top ~16% per bar by score — Kelly+QP downstream still filter on μ>0. Pre-veto rank_scores are also persisted to candidate_scores via ctx._full_candidate_snapshot for offline distribution analysis.",
       "rotation_advantage": 0.0,
       "sizing": {
         "enabled": false,
@@ -535,7 +542,7 @@
       "max_concentration": 0.35,
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
-      "topup_conviction_floor": 0.20,
+      "topup_conviction_floor": 0.2,
       "base_rate": 0.273
     }
   },
@@ -669,12 +676,14 @@
       ]
     },
     "hourly": {
-      "enabled": true,
-      "cache_dir": "data/intraday"
+      "enabled": false,
+      "cache_dir": "data/intraday",
+      "_disabled_reason": "2026-05-04 user mandate: daily model trains on daily-only data. Half the universe (~100/183 tickers) lacks intraday history; aggregating to daily creates NaN-leaf rows that polluted the calibrator (the 2026-05-04 incident). Re-enable only for an explicit hourly-resolution model (renquant_105)."
     },
     "minute": {
-      "enabled": true,
-      "cache_dir": "data/intraday"
+      "enabled": false,
+      "cache_dir": "data/intraday",
+      "_disabled_reason": "Same as hourly above \u2014 daily model uses daily-only data by default."
     },
     "macro": {
       "enabled": false,

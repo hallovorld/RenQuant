@@ -204,6 +204,11 @@ class RunnerAdapter:
         entry_dates     = state.get("entry_dates",     {})
         sell_streaks    = state.get("sell_streaks",    {})
         last_sell_dates = state.get("last_sell_dates", {})
+        # G8 (2026-05-04): per-ticker date when a path-rule exit
+        # (trailing_stop / stop_loss / single_day_loss / max_hold / gap_down)
+        # last fired. Persisted across runs so restart-after-stop honours
+        # the cooldown. Read by PostStopCooldownFilterTask.
+        last_stop_exit_dates = state.get("last_stop_exit_dates", {})
         position_hwm    = state.get("position_hwm",    {})
         # Thesis-degradation baselines (Approach A) — per-ticker
         # {rank_score, panel_score, kelly_target_pct} stamped at buy.
@@ -222,10 +227,23 @@ class RunnerAdapter:
 
         # ── Broker account ───────────────────────────────────────────────────
         account_value = broker.get_account_value()
+        # 2026-05-04 audit Issue 36 fix: silent broker.get_cash() failure
+        # used to default cash := account_value (= total NAV including
+        # held positions). Downstream sizing then thought ALL of NAV was
+        # liquid and could over-allocate. Fail-SAFE: fall back to ZERO
+        # cash (the safest assumption — no fresh buys this bar) and log
+        # loud so operator knows broker is partially down.
         try:
             cash = broker.get_cash()
-        except Exception:
-            cash = account_value
+        except Exception as _cash_exc:
+            log.error(
+                "runner: broker.get_cash() failed (%s: %s) — "
+                "fail-SAFE setting cash=0 for this bar to prevent "
+                "over-allocation. Pre-fix this defaulted to account_value "
+                "(= total NAV) which silently allowed Kelly oversizing.",
+                type(_cash_exc).__name__, _cash_exc,
+            )
+            cash = 0.0
 
         # Stale-HWM guard (see `resolve_hwm` docstring above). Snaps when
         # stored HWM is wildly above current equity, preserves normal
@@ -503,6 +521,13 @@ class RunnerAdapter:
                 last_sells_d[sym] = datetime.date.fromisoformat(d_str)
             except (ValueError, TypeError):
                 last_sells_d[sym] = None
+        # G8: same coercion for stop-exit dates
+        last_stops_d: dict[str, datetime.date | None] = {}
+        for sym, d_str in (last_stop_exit_dates or {}).items():
+            try:
+                last_stops_d[sym] = datetime.date.fromisoformat(d_str)
+            except (ValueError, TypeError):
+                last_stops_d[sym] = None
 
         # ── Persisted live state on context for commit() ─────────────────────
         self._state          = state
@@ -510,6 +535,7 @@ class RunnerAdapter:
         self._entry_signals  = entry_signals   # Approach A — persisted per-ticker
         self._sell_streaks   = sell_streaks
         self._last_sell_dates_str = last_sell_dates
+        self._last_stop_exit_dates_str = dict(last_stop_exit_dates or {})
         self._position_hwm   = position_hwm
         self._stop_orders    = stop_orders     # Z9: per-ticker stop_order metadata
         self._positions_cache = positions_cache
@@ -527,6 +553,7 @@ class RunnerAdapter:
             earnings_calendar = earnings,
             holdings          = holdings,
             last_sell_dates   = last_sells_d,
+            last_stop_exit_dates = last_stops_d,
             portfolio_value   = account_value,
             cash              = cash,
             prices            = prices,
@@ -798,6 +825,15 @@ class RunnerAdapter:
                 # Z9: cancel broker-side stop on full liquidation.
                 if self._z9_enabled(ctx):
                     self._z9_cancel_stop(ticker, reason="full liquidation")
+            # G8 (2026-05-04): stamp post-stop blackout on path-rule
+            # exits regardless of partial/full. Distinct from wash-sale —
+            # this fires even on small partial trims because the timing
+            # signal (a stop tripped) invalidates re-entry.
+            from kernel.pipeline.task_post_stop_cooldown import (  # noqa: PLC0415
+                DEFAULT_STOP_EXIT_TYPES,
+            )
+            if str(getattr(sig, "exit_type", "")) in DEFAULT_STOP_EXIT_TYPES:
+                self._last_stop_exit_dates_str[ticker] = today_str
             else:
                 # TRIM (partial): replace stop with reduced qty at the same
                 # stop_price (never loosens; see _z9_place_or_replace_stop).
@@ -1091,6 +1127,7 @@ class RunnerAdapter:
             "entry_signals":     self._entry_signals,   # Approach A
             "sell_streaks":      self._sell_streaks,
             "last_sell_dates":   self._last_sell_dates_str,
+            "last_stop_exit_dates": self._last_stop_exit_dates_str,
             "position_hwm":      self._position_hwm,
             "stop_orders":       self._stop_orders,    # Z9
             "regime_state":      regime_state_out,
@@ -1202,8 +1239,17 @@ class RunnerAdapter:
                             .get("panel_scoring", {})
                             .get("artifact_path")
             )
+            # 2026-05-04 user mandate ("rank_score need to be collected
+            # properly for future fine tune"): persist the FULL pre-veto
+            # candidate list so candidate_scores captures the complete
+            # rank_score distribution per bar, not just survivors. The
+            # snapshot is set by VetoWeakBuysTask before it filters
+            # ctx.candidates. Vetoed rows are tagged via blocked_map
+            # (veto:rank_score_below_floor / veto:rank_score_nan).
+            cand_pool = getattr(ctx, "_full_candidate_snapshot",
+                                  ctx.candidates) or ctx.candidates
             record_candidate_scores(
-                self._db, run_id, ctx.candidates, ctx.holdings,
+                self._db, run_id, cand_pool, ctx.holdings,
                 selected_tickers=selected_tickers,
                 blocked_map=blocked_map,
                 sector_map=sector_map,

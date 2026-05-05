@@ -207,13 +207,131 @@ class TestApplyKellySizingTask:
         assert i_ks > i_cal
 
     def test_applies_to_both_cands_and_holdings(self):
+        """Kelly target is written onto every candidate AND every holding.
+
+        Pre-2026-05-04: pinned the literal `_kelly(cand)` helper call.
+        Post-2026-05-04: the helper was renamed `_kelly_with_reason`
+        because Kelly now returns (target, skip_reason) so the Task can
+        write a per-ticker reason into ctx._blocked_by_ticker for the
+        decision-tree DB. The semantic invariant is unchanged: every
+        cand and every holding gets a kelly_target_pct assignment.
+        """
         src = (_STRATEGY_DIR / "kernel" / "panel_pipeline" / "job_panel_scoring.py").read_text()
-        assert "cand.kelly_target_pct = _kelly(cand)" in src
-        assert "hs.kelly_target_pct = _kelly(hs)"     in src
+        assert "cand.kelly_target_pct = target" in src
+        assert "hs.kelly_target_pct = target"   in src
+        # And the helper that produces (target, reason) exists exactly
+        # once in this Task body.
+        assert src.count("_kelly_with_reason") >= 3   # def + 2 callsites
+        # Decision-tree DB plumbing: skip-reason MUST be written into
+        # ctx._blocked_by_ticker so record_candidate_scores persists it.
+        assert "ctx._blocked_by_ticker = blocked" in src
+        assert "kelly_zero:" in src   # at least one prefix in the source
 
     def test_uses_kernel_kelly_helper(self):
         src = (_STRATEGY_DIR / "kernel" / "panel_pipeline" / "job_panel_scoring.py").read_text()
         assert "from kernel.kelly import kelly_target_pct" in src
+
+
+# ── Skip-reason instrumentation (2026-05-04 user mandate: explainable funnel) ──
+#
+# When candidates flow through ApplyKellySizingTask, every cand whose
+# kelly_target lands at zero MUST be tagged with one of:
+#
+#   kelly_zero:mu_none          — NGBoost left mu=None (skipped at predict)
+#   kelly_zero:mu_nonfinite     — NaN / inf
+#   kelly_zero:sigma_none       — sigma not populated
+#   kelly_zero:sigma_nonfinite  — NaN / inf
+#   kelly_zero:sigma_nonpos     — sigma ≤ 0
+#   kelly_zero:mu_le_min_edge   — μ ≤ configured min_edge
+#   kelly_zero:capped_zero      — formula returned 0 after caps
+#
+# That tag goes into ctx._blocked_by_ticker so record_candidate_scores
+# persists it to the candidate_scores.blocked_by column. Without that,
+# "Kelly is returning 0 for all 50 candidates" is opaque on a SQL query.
+
+class TestKellySkipReasonsInstrumentation:
+    """Behavioral tests for the per-ticker kelly_zero:* skip reasons
+    written into ctx._blocked_by_ticker by ApplyKellySizingTask.
+    """
+
+    def _make_ctx(self, candidates, holdings=(), kelly_min_edge=0.0):
+        cfg = {
+            "ranking": {"kelly_sizing": {
+                "enabled": True,
+                "fractional": 0.5,
+                "max_concentration": 0.35,
+                "min_edge": kelly_min_edge,
+            }},
+            "regime_params": {"BULL_CALM": {"max_position_pct": 0.20}},
+        }
+        return SimpleNamespace(
+            candidates=list(candidates),
+            holdings={h.ticker: h for h in holdings},
+            confidence=1.0,
+            regime="BULL_CALM",
+            config=cfg,
+            counters={},
+        )
+
+    def _cand(self, ticker, *, mu=None, sigma=None):
+        return SimpleNamespace(
+            ticker=ticker, mu=mu, sigma=sigma,
+            kelly_target_pct=None,
+        )
+
+    def test_mu_none_tagged(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        ctx = self._make_ctx([self._cand("AAPL", mu=None, sigma=0.05)])
+        ApplyKellySizingTask().run(ctx)
+        assert ctx._blocked_by_ticker["AAPL"] == "kelly_zero:mu_none"
+        assert ctx.candidates[0].kelly_target_pct == 0.0
+
+    def test_sigma_none_tagged(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        ctx = self._make_ctx([self._cand("MSFT", mu=0.02, sigma=None)])
+        ApplyKellySizingTask().run(ctx)
+        assert ctx._blocked_by_ticker["MSFT"] == "kelly_zero:sigma_none"
+
+    def test_sigma_nonpos_tagged(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        ctx = self._make_ctx([self._cand("NVDA", mu=0.02, sigma=0.0)])
+        ApplyKellySizingTask().run(ctx)
+        assert ctx._blocked_by_ticker["NVDA"] == "kelly_zero:sigma_nonpos"
+
+    def test_mu_nonfinite_tagged(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        ctx = self._make_ctx([self._cand("AMD", mu=float("nan"), sigma=0.05)])
+        ApplyKellySizingTask().run(ctx)
+        assert ctx._blocked_by_ticker["AMD"] == "kelly_zero:mu_nonfinite"
+
+    def test_mu_le_min_edge_tagged(self):
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        ctx = self._make_ctx(
+            [self._cand("ZM", mu=0.001, sigma=0.05)],
+            kelly_min_edge=0.005,   # 50 bps floor
+        )
+        ApplyKellySizingTask().run(ctx)
+        assert ctx._blocked_by_ticker["ZM"] == "kelly_zero:mu_le_min_edge"
+
+    def test_positive_kelly_does_not_tag(self):
+        """When kelly is healthy, no entry in _blocked_by_ticker for that ticker."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        # μ=0.005, σ=0.05 → f* = 0.005/0.0025 = 2.0 → fractional 0.5 × 2.0 = 1.0
+        # → capped by max_pct (0.20) → kelly = 0.20
+        ctx = self._make_ctx([self._cand("META", mu=0.005, sigma=0.05)])
+        ApplyKellySizingTask().run(ctx)
+        assert "META" not in ctx._blocked_by_ticker
+        assert ctx.candidates[0].kelly_target_pct == pytest.approx(0.20)
+
+    def test_does_not_clobber_upstream_block(self):
+        """If an UPSTREAM Task (e.g. NGBoost) already wrote a reason for
+        this ticker, Kelly's setdefault must not overwrite it."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyKellySizingTask
+        ctx = self._make_ctx([self._cand("RBLX", mu=None, sigma=None)])
+        ctx._blocked_by_ticker = {"RBLX": "ngb_skipped:not_in_predict_index"}
+        ApplyKellySizingTask().run(ctx)
+        # The NGB reason should still be there, NOT the kelly reason
+        assert ctx._blocked_by_ticker["RBLX"] == "ngb_skipped:not_in_predict_index"
 
 
 # ── The beautiful kernel/kelly.py — pure function tests ──────────────────────

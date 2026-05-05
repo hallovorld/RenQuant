@@ -132,6 +132,12 @@ class SimAdapter:
         self._holdings: dict[str, Any] = {}        # ticker → HoldingState
         self._pos_shares: dict[str, float] = {}    # ticker → shares count
         self._last_sell_date: dict[str, pd.Timestamp] = {}   # ticker → date
+        # G8 (2026-05-04): per-ticker date when a path-rule exit (trailing_stop /
+        # stop_loss / single_day_loss / max_hold / gap_down) last fired. Distinct
+        # from `_last_sell_date` (which tracks ANY sell for wash-sale on losses).
+        # Read by PostStopCooldownFilterTask to block re-entry within
+        # `risk.post_stop_cooldown.bars` of a stop event.
+        self._last_stop_exit_date: dict[str, pd.Timestamp] = {}
         self._regime_state   = RegimeState()
         self._regime_counts  = {r: 0 for r in REGIMES}
         # Monitor: persist MonitorIdleStreakTask's streak counters across bars.
@@ -332,6 +338,10 @@ class SimAdapter:
         last_sells_d: dict[str, datetime.date | None] = {}
         for sym, d in self._last_sell_date.items():
             last_sells_d[sym] = d.date() if hasattr(d, "date") else d
+        # G8: same shape for stop-exit dates
+        last_stops_d: dict[str, datetime.date | None] = {}
+        for sym, d in self._last_stop_exit_date.items():
+            last_stops_d[sym] = d.date() if hasattr(d, "date") else d
 
         # Truncated OHLCV: each ticker's DataFrame sliced to [:today_ts] so
         # no future bars are visible to the pipeline (replicates LEAN
@@ -352,6 +362,7 @@ class SimAdapter:
             holdings         = {t: self._holdings[t]
                                 for t in list(self._holdings.keys())},
             last_sell_dates  = last_sells_d,
+            last_stop_exit_dates = last_stops_d,
             portfolio_value  = pv,
             cash             = self._cash,
             prices           = prices,
@@ -518,8 +529,18 @@ class SimAdapter:
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            # 2026-05-04 user mandate ("rank_score need to be collected
+            # properly for future fine tune"): persist the FULL pre-
+            # veto candidate list so the candidate_scores table captures
+            # the complete rank_score / mu / sigma distribution per
+            # bar, not just the survivors. Vetoed rows are tagged via
+            # blocked_map (veto:rank_score_below_floor / kelly_zero:*
+            # / ngb_skipped:*), so SQL queries on blocked_by reveal
+            # exactly where each ticker was filtered out.
+            cand_pool = getattr(ctx, "_full_candidate_snapshot",
+                                  ctx.candidates) or ctx.candidates
             record_candidate_scores(
-                self._db, run_id, ctx.candidates, ctx.holdings,
+                self._db, run_id, cand_pool, ctx.holdings,
                 selected_tickers=selected_tickers,
                 blocked_map=blocked_map,
             )
@@ -572,21 +593,68 @@ class SimAdapter:
         # Aligned with LeanAdapter + RunnerAdapter (2026-04-24 fix).
         if not is_partial:
             self._last_sell_date[ticker] = today_ts
+        # G8 (2026-05-04): stamp post-stop blackout date on path-rule
+        # exits regardless of partial/full. The blackout blocks
+        # *re-entry* — even a partial Kelly trim that hits a
+        # `single_day_loss` exit_type means timing is bad.
+        from kernel.pipeline.task_post_stop_cooldown import (  # noqa: PLC0415
+            DEFAULT_STOP_EXIT_TYPES,
+        )
+        if str(sig.exit_type) in DEFAULT_STOP_EXIT_TYPES:
+            # Defensive: existing tests construct SimAdapter via a custom
+            # __init__ that may skip our dict init. Ensure the attribute.
+            if not hasattr(self, "_last_stop_exit_date"):
+                self._last_stop_exit_date = {}
+            self._last_stop_exit_date[ticker] = today_ts
+
+        # G7: consume tax lots (FIFO/HIFO/avg) BEFORE we mutate share
+        # counts, so the disposed lots' cost-basis is what determined
+        # the gain on this trade. Method comes from rotation.joint_actions
+        # but defaults to FIFO (broker convention).
+        from kernel.exits import apply_sell_lots, ensure_lots  # noqa: PLC0415
+        ensure_lots(self._holdings[ticker])
+        ja_cfg = (ctx.config.get("rotation", {}).get("joint_actions", {}) or {})
+        lot_method = str(ja_cfg.get("qp_tax_lot_method", "fifo")).lower()
+        apply_sell_lots(self._holdings[ticker], float(sell_shares), lot_method)
+        # 2026-05-04 audit P1-5: apply_sell_lots mutates `hs.lots` but
+        # NOT `hs.entry_price`. Under HIFO disposal of a partial trim,
+        # the highest-cost lot is gone first → the surviving weighted
+        # avg drops. If we don't refresh entry_price here, downstream
+        # trailing_stop / stop_loss / take_profit checks compare
+        # current_price against a STALE pre-sell weighted avg → wrong
+        # P&L sign on every check. The legacy comment said "Kelly trims
+        # should not reset cost basis" — that's TRUE but the issue is
+        # we're recomputing the basis FROM THE SURVIVING LOTS, which IS
+        # the consistent post-sell basis (not a "reset"). Equally
+        # important on full sells (lots empty → entry_price → 0).
+        hs_after = self._holdings[ticker]
+        hs_after.entry_price = hs_after.weighted_avg_entry_price()
 
         if is_partial:
-            # Keep the position open with reduced share count. entry_price and
-            # entry_date stay — Kelly trims should not reset cost basis / tenure.
+            # Keep the position open with reduced share count.
+            # entry_date stays — tenure tracks original acquisition.
             self._pos_shares[ticker] = total_shares - sell_shares
             self._holdings[ticker].shares = total_shares - sell_shares
 
+        # 2026-05-04 audit Issue 27: NaN entry_price was truthy in Python
+        # (`bool(float('nan'))` is True), so the `if hs.entry_price else 0.0`
+        # branch did NOT short-circuit and `(price - NaN) / NaN = NaN`
+        # propagated into trade_log, then into win_rate / avg_pnl / B2
+        # holdout reports as NaN. Compute pnl_pct defensively: require
+        # both finite price AND finite positive entry_price.
+        import math as _math_pnl   # local import — module-level math not present
+        _entry = float(getattr(hs, "entry_price", 0.0) or 0.0)
+        if (_math_pnl.isfinite(price) and _math_pnl.isfinite(_entry) and _entry > 0):
+            _pnl_pct = (price - _entry) / _entry
+        else:
+            _pnl_pct = 0.0
         self._trade_log.append({
             "action":      "sell",
             "ticker":      ticker,
             "date":        today_ts,
             "price":       price,
             "shares":      sell_shares,
-            "pnl_pct":     (price - hs.entry_price) / hs.entry_price
-                            if hs.entry_price else 0.0,
+            "pnl_pct":     _pnl_pct,
             "hold_days":   hold_days,
             "tax":         tax,
             "exit_reason": sig.exit_type,
@@ -603,7 +671,7 @@ class SimAdapter:
         #   - SAB-1: max(hwm, NaN) = NaN → trailing stop dead for the position.
         # Now: explicit isfinite + > 0 guards on price/shares; reject the
         # order cleanly (log warning) on bad data.
-        from kernel.exits import HoldingState  # noqa: PLC0415
+        from kernel.exits import HoldingState, TaxLot, ensure_lots  # noqa: PLC0415
         import math
         ticker = order["ticker"]
         shares = order["shares"]
@@ -642,8 +710,15 @@ class SimAdapter:
                 self._holdings[ticker].high_watermark = price
             self._holdings[ticker].shares = new_shares
             self._pos_shares[ticker] = new_shares
+            # G7: append a TaxLot for this top-up. Migrate any pre-G7
+            # legacy state (lots empty but legacy avg/entry exist) first
+            # so the existing position has a baseline lot.
+            ensure_lots(self._holdings[ticker])
+            self._holdings[ticker].lots.append(TaxLot(
+                shares=float(shares), price=float(price), date=today_ts.date(),
+            ))
         else:
-            self._holdings[ticker] = HoldingState(
+            hs_new = HoldingState(
                 entry_price    = price,
                 entry_date     = today_ts.date(),
                 high_watermark = price,
@@ -656,6 +731,11 @@ class SimAdapter:
                 entry_panel_score      = order.get("panel_score"),
                 entry_kelly_target_pct = order.get("kelly_target_pct"),
             )
+            # G7: seed the lot list with this fresh acquisition.
+            hs_new.lots.append(TaxLot(
+                shares=float(shares), price=float(price), date=today_ts.date(),
+            ))
+            self._holdings[ticker] = hs_new
             self._pos_shares[ticker] = shares
         self._trade_log.append({
             "action":    "buy",

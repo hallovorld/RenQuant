@@ -193,6 +193,82 @@ def run_panel_ticker_parallel(
 
 # ── Phase 1 — PanelDataJob + tasks ───────────────────────────────────────────
 
+class ScanTrainingDataTask(PanelTask):
+    """Pre-flight data scan — verifies row/col alignment + emits report.
+
+    User mandate (2026-05-04): every training run MUST start with a
+    data-scan that checks every input data source for length, date
+    range, and ticker coverage; surfaces a JSON artifact + log summary;
+    optionally fail-loud on alignment violations.
+
+    Reads:
+      ctx.watchlist
+      ctx.config["panel_ltr"]["data_scan"] (optional):
+        - enabled         (bool, default True — set False to opt out)
+        - strict          (bool, default False — raise on issues)
+        - include_intraday (bool, default False — match daily-only mandate)
+        - artifact_path   (str, default 'training_data_scan.json')
+
+    Writes:
+      ctx.training_data_scan (dict — full DataScanReport.to_dict())
+      artifact at strategy_dir / artifacts / artifact_path
+    """
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        from training_panel.data_scan import (   # noqa: PLC0415
+            scan_training_inputs, log_scan_summary, write_scan_report,
+        )
+        cfg = ctx.config.get("panel_ltr", {}).get("data_scan", {})
+        if not cfg.get("enabled", True):
+            log.info("ScanTrainingDataTask: data_scan.enabled=false — skipping")
+            return
+
+        strict          = bool(cfg.get("strict", False))
+        # Match the daily-only mandate: include intraday in the scan only
+        # when hourly OR minute panel features are explicitly enabled.
+        # Operator can override via data_scan.include_intraday.
+        pl_cfg = ctx.config.get("panel_ltr", {})
+        intraday_in_use = (
+            pl_cfg.get("hourly", {}).get("enabled", False)
+            or pl_cfg.get("minute", {}).get("enabled", False)
+        )
+        include_intraday = bool(cfg.get("include_intraday", intraday_in_use))
+
+        # Resolve repo_root: strategy_dir is <repo>/backtesting/<strategy>
+        if ctx.strategy_dir is not None:
+            repo_root = ctx.strategy_dir.parent.parent
+        else:
+            from pathlib import Path as _Path  # noqa: PLC0415
+            repo_root = _Path.cwd()
+
+        report = scan_training_inputs(
+            list(ctx.watchlist),
+            repo_root,
+            include_intraday=include_intraday,
+        )
+        log_scan_summary(report)
+
+        # Persist alongside the model artifacts
+        if ctx.strategy_dir is not None:
+            artifact_name = cfg.get("artifact_path", "training_data_scan.json")
+            artifact_path = ctx.strategy_dir / "artifacts" / artifact_name
+            try:
+                write_scan_report(report, artifact_path)
+                log.info("ScanTrainingDataTask: report → %s", artifact_path)
+            except Exception as exc:
+                log.warning("ScanTrainingDataTask: failed to write report: %s", exc)
+
+        # Stash on ctx for downstream visibility
+        ctx.training_data_scan = report.to_dict()
+
+        if report.issues and strict:
+            raise RuntimeError(
+                f"ScanTrainingDataTask: {len(report.issues)} alignment "
+                f"issue(s) and panel_ltr.data_scan.strict=true. "
+                f"Issues: {report.issues}"
+            )
+
+
 class FetchOHLCVTask(PanelTask):
     """Fetch watchlist + benchmark + sector ETFs into ctx.ohlcv."""
 
@@ -789,6 +865,11 @@ class PanelDataJob(PanelJob):
     @property
     def tasks(self) -> list[PanelTask]:
         return [
+            # 2026-05-04 user mandate: data-scan preflight runs FIRST. It
+            # is read-only (no fetches) and emits a coverage + alignment
+            # report before any expensive load happens. With strict=True
+            # in config, alignment issues abort the run loud.
+            ScanTrainingDataTask(),
             FetchOHLCVTask(),
             SectorMomentumTask(),
             LoadFundamentalsTask(),
@@ -985,6 +1066,7 @@ class TickerPanelFactorJob(PanelTickerJob):
             compute_amihud_illiquidity, compute_volume_shift,
             compute_price_to_high, compute_realized_vol,
             compute_drawdown_from_peak,
+            compute_idio_vol, compute_short_term_reversal,
             FUNDAMENTAL_COLS,
         )
         from kernel.earnings_surprise import compute_earnings_surprise_cum, compute_pead_features
@@ -1013,6 +1095,8 @@ class TickerPanelFactorJob(PanelTickerJob):
             p2h      = compute_price_to_high(one, window=252).get(tc.ticker)
             rvol     = compute_realized_vol(one, window=20).get(tc.ticker)
             ddn      = compute_drawdown_from_peak(one, window=252).get(tc.ticker)
+            ivol     = compute_idio_vol(one, tc.ohlcv[benchmark], window=60, beta_window=beta_window).get(tc.ticker)
+            stmr     = compute_short_term_reversal(one, window=21).get(tc.ticker)
             cols.update({
                 "size":            (size if size is not None else pd.Series(index=idx)).reindex(idx),
                 "mom_12_1":        (mom  if mom  is not None else pd.Series(index=idx)).reindex(idx),
@@ -1024,6 +1108,9 @@ class TickerPanelFactorJob(PanelTickerJob):
                 "price_to_high":   (p2h      if p2h      is not None else pd.Series(index=idx)).reindex(idx),
                 "realized_vol":    (rvol     if rvol     is not None else pd.Series(index=idx)).reindex(idx),
                 "drawdown_peak":   (ddn      if ddn      is not None else pd.Series(index=idx)).reindex(idx),
+                # 2026-05-03: idiosyncratic vol (Ang 2006) + short-term reversal (Jegadeesh 1990)
+                "idio_vol":        (ivol     if ivol     is not None else pd.Series(index=idx)).reindex(idx),
+                "mom_1m_reversal": (stmr     if stmr     is not None else pd.Series(index=idx)).reindex(idx),
             })
         except Exception as exc:
             log.error("  %s: TickerPanelFactorJob[core_factors] failed — %s: %s "
@@ -1302,6 +1389,8 @@ class FactorZScoreTask(PanelTask):
             # Round 3 orthogonal factors (time-series, same treatment as above)
             "amihud_illiq", "volume_shift", "price_to_high",
             "realized_vol", "drawdown_peak",
+            # 2026-05-03: idiosyncratic vol (Ang 2006) + short-term reversal (Jegadeesh 1990)
+            "idio_vol", "mom_1m_reversal",
             # Round 4+ time-varying fundamentals (opt-in via config)
             "earnings_surprise_cum",
             # Round 5: SEC Form 4 executive-only insider trades (opt-in)
@@ -1359,6 +1448,8 @@ class FactorZScoreTask(PanelTask):
             # Round 3+: append z-scored orthogonal factors
             for c in ("amihud_illiq", "volume_shift", "price_to_high",
                       "realized_vol", "drawdown_peak",
+                      # 2026-05-03: IVOL + 1m reversal
+                      "idio_vol", "mom_1m_reversal",
                       "earnings_surprise_cum", "insider_net_buy_90d",
                       # Track B: PEAD enrichment (opt-in via panel_ltr.pead.enabled)
                       "days_since_earnings", "pead_decay_weight", "pead_signal",
@@ -1842,6 +1933,57 @@ class BuildPanelTask(PanelTask):
             log.info("BuildPanelTask: dropped non-ranking cols %s",
                      sorted(drop_cols & set(panel.columns)))
 
+        # 2026-05-04 — Forward-fill whitelisted slow-moving features
+        # within ticker before any other gate. Slow features (size_z,
+        # roe_z, asset embeddings) plausibly carry yesterday's value
+        # forward across short data outages; high-frequency intraday
+        # features must NOT be ffill'd (yesterday's afternoon-drift
+        # tells you nothing about today's). Whitelist required (no
+        # default whitelist — safer to opt-in per feature).
+        # Disabled (no ffill) when imputation.ffill_cols is empty/missing.
+        imp_cfg = cfg.get("imputation", {})
+        ffill_cols = list(imp_cfg.get("ffill_cols", []))
+        ffill_max_gap = int(imp_cfg.get("ffill_max_gap_days", 5))
+        if ffill_cols and ffill_max_gap > 0:
+            from training_panel.imputation import forward_fill_per_ticker  # noqa: PLC0415
+            panel_before = panel
+            panel = forward_fill_per_ticker(
+                panel, ffill_cols, max_gap_days=ffill_max_gap,
+            )
+            n_filled = int(
+                panel_before[ffill_cols].isna().sum().sum()
+                - panel[ffill_cols].isna().sum().sum()
+            ) if all(c in panel_before.columns for c in ffill_cols) else 0
+            log.info(
+                "BuildPanelTask imputation: forward-filled %d cells across "
+                "%d cols (max gap %dd, whitelist=%s)",
+                n_filled, len(ffill_cols), ffill_max_gap, ffill_cols[:5],
+            )
+
+        # 2026-05-04 P0 root-cause fix — row-coverage gate.
+        # Drops rows whose feature coverage is below the configured
+        # minimum, preventing XGB from learning the "default direction"
+        # for all-NaN rows (which collapses inference + calibrator). See
+        # kernel/row_coverage.py for the full incident write-up.
+        # Default DISABLED — preserves bit-for-bit parity with prior models.
+        from kernel.row_coverage import (   # noqa: PLC0415
+            coverage_from_config, filter_by_coverage,
+        )
+        rc_enabled, rc_min_pct = coverage_from_config(ctx.config)
+        if rc_enabled and feature_cols:
+            panel, rc_stats = filter_by_coverage(panel, feature_cols, rc_min_pct)
+            log.info(
+                "BuildPanelTask row_coverage: dropped %d/%d (%.1f%%) rows "
+                "with < %.0f%% feature coverage (n_features=%d)",
+                rc_stats["n_dropped"], rc_stats["n_in"],
+                rc_stats["pct_dropped"] * 100,
+                rc_min_pct * 100, rc_stats["n_features"],
+            )
+            # Recompute group_sizes after row filter
+            group_sizes = panel.groupby("date", sort=True).size().values.astype(np.int32)
+            if isinstance(meta, dict):
+                meta["row_coverage_stats"] = rc_stats
+
         ctx.panel = panel
         ctx.group_sizes = group_sizes
         ctx.panel_metadata = meta
@@ -2073,7 +2215,7 @@ class CrossValidateTask(PanelTask):
                     self._m.train(
                         df, gs, feature_cols=list(X.columns),
                         label_col="label", weight_col="weight",
-                        num_boost_round=max(num_rounds // 2, 50),
+                        num_boost_round=num_rounds  # 2026-05-04 audit Issue 14 fix: align CV with FinalFit (was max(num_rounds//2,50)),
                     )
                 def predict(self, X):
                     return self._m.predict(X.copy()).values
@@ -2110,7 +2252,7 @@ class CrossValidateTask(PanelTask):
                     self._m.train(
                         df, gs, feature_cols=list(X.columns),
                         label_col="label", weight_col="weight",
-                        num_boost_round=max(num_rounds // 2, 50),
+                        num_boost_round=num_rounds  # 2026-05-04 audit Issue 14 fix: align CV with FinalFit (was max(num_rounds//2,50)),
                     )
                 def predict(self, X):
                     return self._m.predict(X.copy()).values
@@ -2761,6 +2903,25 @@ class NGBoostSaveTask(PanelTask):
             "oos_per_fold_ic": ctx.ngboost_fit.get("oos_per_fold_ic"),
             "oos_ic_quantiles": ctx.ngboost_fit.get("oos_ic_quantiles"),
         }
+        # 2026-05-04 invariant fix: stamp config fingerprint into NGBoost
+        # artifact so adapters can detect artifact-vs-config drift on
+        # load (same pattern as panel-LTR SaveArtifactTask:2535-2543).
+        # Pre-fix only panel-ltr.json was stamped; ngboost-head.json
+        # silently rode along with whatever resolution it was trained
+        # against, hiding the 2026-05-03/04 stale-artifact incident
+        # from the load-time consistency check. With the fingerprint
+        # now stamped on BOTH artifacts, hourly→daily config drift
+        # raises ConfigModelMismatch on the next adapter init.
+        try:
+            from kernel.config_consistency import (  # noqa: PLC0415
+                fingerprint_config, _model_relevant_fields,
+            )
+            meta["config_fingerprint"]        = fingerprint_config(ctx.config)
+            meta["config_fingerprint_fields"] = _model_relevant_fields(ctx.config)
+        except Exception as exc:
+            log.warning("NGBoostSaveTask: config-consistency stamp failed: %s "
+                        "— artifact lacks fingerprint, will trip backwards-compat "
+                        "path on load", exc)
         # Strip None values to keep the artifact clean.
         meta = {k: v for k, v in meta.items() if v is not None}
 
@@ -2960,15 +3121,49 @@ class RefreshPanelCalibratorTask(PanelTask):
                     if "Summary:" in line or "Saved" in line:
                         log.info("  %s", line.strip())
             else:
-                log.warning(
-                    "RefreshPanelCalibratorTask: failed rc=%d  elapsed=%.1fs\n"
-                    "  STDERR (tail):\n%s",
-                    r.returncode, elapsed,
-                    "\n".join((r.stderr or "").splitlines()[-15:]),
+                # 2026-05-04 audit Issue 16 fix: fail-loud on calibrator
+                # refresh failure. Pre-fix, this was log.warning + return
+                # — the SAME pattern that caused the original CAL-7
+                # incident (model overwritten, calibrator stayed stale,
+                # silent miscalibration). Now: by default, raise so the
+                # retrain pipeline aborts loudly. Operator-facing escape
+                # hatch via `panel_ltr.global_calibration.refresh_failure_mode`:
+                #   "raise" (default): raise RuntimeError, abort retrain
+                #   "warn":            preserve old log.warning behavior
+                stderr_tail = "\n".join((r.stderr or "").splitlines()[-15:])
+                msg = (
+                    f"RefreshPanelCalibratorTask: failed rc={r.returncode} "
+                    f"elapsed={elapsed:.1f}s\n"
+                    f"  STDERR (tail):\n{stderr_tail}"
                 )
+                fail_mode = str(gc_cfg.get("refresh_failure_mode", "raise")).lower()
+                if fail_mode == "raise":
+                    log.error(msg)
+                    raise RuntimeError(
+                        "Panel calibrator refresh failed — aborting retrain "
+                        "to prevent CAL-7 stale-calibrator incident. "
+                        "Set ranking.panel_scoring.global_calibration."
+                        "refresh_failure_mode='warn' to revert to legacy "
+                        "log-only behavior."
+                    )
+                else:
+                    log.warning(msg)
         except _sub.TimeoutExpired:
+            fail_mode = str(gc_cfg.get("refresh_failure_mode", "raise")).lower()
+            if fail_mode == "raise":
+                raise RuntimeError(
+                    "Panel calibrator refresh timed out after 1800s — "
+                    "aborting retrain to prevent stale-calibrator incident."
+                )
             log.warning("RefreshPanelCalibratorTask: timed out after 1800s")
+        except RuntimeError:
+            raise   # pass-through our explicit fail-loud raise above
         except Exception as exc:
+            fail_mode = str(gc_cfg.get("refresh_failure_mode", "raise")).lower()
+            if fail_mode == "raise":
+                raise RuntimeError(
+                    f"Panel calibrator refresh raised {type(exc).__name__}: {exc}"
+                )
             log.warning("RefreshPanelCalibratorTask: %s", exc)
 
 
