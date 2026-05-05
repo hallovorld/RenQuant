@@ -226,20 +226,26 @@ class VetoWeakBuysTask(Task):
         if raw_floor is None:
             return
 
-        # 2026-05-04 user spec: per-bar adaptive floor.
-        # Formula: min(mean+std, cap)
-        # Considered + rejected (2026-05-04 evening): adding a third
-        # quantile-based bound to "always keep top N%". Live e2e
-        # (2026-05-04) showed the formula correctly drops 100% of
-        # candidates on no-signal days — top 10 candidates tied at
-        # 0.2579 < prob_base_rate 0.2779, μ values ≈ 0. Forcing a
-        # top-quartile buy would override the model's "nothing today"
-        # output. Keep the simpler formula; trust the model when it
-        # says no signal.
+        # 2026-05-04 user spec (final form):
+        #   floor = min(max(buy_floor_min, mean+std), buy_floor_adaptive_cap)
+        # i.e. clamp `mean+std` to the interval [min, cap].
+        #   defaults: min=0.20, cap=0.30
+        #
+        # Three rules in one formula:
+        #   - if mean+std < min:    use min        (don't go below absolute floor)
+        #   - if mean+std in range: use mean+std   (per-bar adaptive)
+        #   - if mean+std > cap:    use cap        (don't go above legacy ceiling)
+        #
+        # The min bound is a fail-safe: even when the distribution is
+        # extremely degenerate (e.g. all cands clustered far below
+        # base_rate), we still require rank_score ≥ 0.20 for entry.
+        # Prevents accidentally accepting tiny rank_scores when the
+        # mean+std happens to land low.
         floor: float
         floor_label: str
         if isinstance(raw_floor, str) and raw_floor == "adaptive_mean_std_cap":
-            cap = float(panel_cfg.get("buy_floor_adaptive_cap", 0.30))
+            cap     = float(panel_cfg.get("buy_floor_adaptive_cap", 0.30))
+            min_fl  = float(panel_cfg.get("buy_floor_min",          0.20))
             scores = [getattr(c, "rank_score", None) for c in ctx.candidates]
             scores = [float(s) for s in scores
                        if s is not None and not pd.isna(s)]
@@ -248,11 +254,14 @@ class VetoWeakBuysTask(Task):
                 mean_s = _stats.fmean(scores)
                 std_s  = _stats.stdev(scores)
                 adaptive = mean_s + std_s
-                floor = min(adaptive, cap)
-                floor_label = (f"min(mean+std={adaptive:.3f}, "
-                                f"cap={cap:.3f}) = {floor:.3f}  "
-                                f"(n={len(scores)})")
+                # Clamp mean+std to [min_fl, cap].
+                floor = min(max(min_fl, adaptive), cap)
+                floor_label = (
+                    f"min(max(min={min_fl:.2f}, mean+std={adaptive:.3f}), "
+                    f"cap={cap:.2f}) = {floor:.3f}  (n={len(scores)})"
+                )
             else:
+                # Insufficient sample — collapse to the safe upper end.
                 floor = cap
                 floor_label = f"{cap:.3f} (cap; n<2 for stats)"
         else:

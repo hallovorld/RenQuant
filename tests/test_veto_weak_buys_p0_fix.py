@@ -153,76 +153,100 @@ class TestRankScoreSemantics(unittest.TestCase):
 # legacy 0.30 ceiling so we never get LESS strict than pre-fix.
 
 class TestAdaptiveBuyFloor(unittest.TestCase):
-    def _make_ctx_adaptive(self, cap=0.30):
+    """2026-05-04 user spec (final): floor = min(max(min, mean+std), cap)
+    where defaults min=0.20, cap=0.30. The min is a fail-safe so a
+    degenerate-low distribution can't permit a tiny rank_score buy."""
+
+    def _make_ctx_adaptive(self, cap=0.30, min_fl=0.20):
         from types import SimpleNamespace
         return SimpleNamespace(
             config={"ranking": {"panel_scoring": {
                 "buy_floor": "adaptive_mean_std_cap",
                 "buy_floor_adaptive_cap": cap,
+                "buy_floor_min": min_fl,
             }}},
             candidates=[],
             holdings={},
             counters={},
         )
 
-    def test_adaptive_uses_mean_plus_std_when_below_cap(self):
-        """Distribution: 0.10, 0.15, 0.20, 0.25, 0.30 (mean 0.20, std ≈ 0.079).
-        mean+std ≈ 0.279 < cap 0.30 → floor = 0.279 → drops bottom up to 0.279."""
+    def test_adaptive_uses_mean_plus_std_when_in_range(self):
+        """Distribution: 0.10, 0.15, 0.20, 0.25, 0.30 (mean 0.20, std≈0.079).
+        mean+std ≈ 0.279 ∈ [0.20, 0.30] → floor = 0.279 → keeps T4 (0.30)."""
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
-        ctx = self._make_ctx_adaptive(cap=0.30)
+        ctx = self._make_ctx_adaptive()
         ctx.candidates = [
             _make_cand(f"T{i}", panel_score=0.0, rank_score=s)
             for i, s in enumerate([0.10, 0.15, 0.20, 0.25, 0.30])
         ]
         VetoWeakBuysTask().run(ctx)
-        # Expected floor ≈ 0.20 + 0.079 = 0.279. Candidates ≥ 0.279 kept.
         kept = {c.ticker for c in ctx.candidates}
-        # T3 (0.25) → drop  (0.25 < 0.279)
-        # T4 (0.30) → keep  (0.30 ≥ 0.279)
         self.assertEqual(kept, {"T4"})
 
     def test_adaptive_capped_when_distribution_wide(self):
-        """Distribution: 0.10, 0.30, 0.50, 0.70, 0.90 (mean 0.50, std ≈ 0.316).
-        mean+std ≈ 0.816 > cap 0.30 → floor = 0.30 → drops only those <0.30."""
+        """mean+std=0.816 > cap 0.30 → floor=0.30. Keeps cands ≥ 0.30."""
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
-        ctx = self._make_ctx_adaptive(cap=0.30)
+        ctx = self._make_ctx_adaptive()
         ctx.candidates = [
             _make_cand(f"T{i}", panel_score=0.0, rank_score=s)
             for i, s in enumerate([0.10, 0.30, 0.50, 0.70, 0.90])
         ]
         VetoWeakBuysTask().run(ctx)
         kept = {c.ticker for c in ctx.candidates}
-        # T0 (0.10) drops; T1..T4 ≥ 0.30 keep
         self.assertEqual(kept, {"T1", "T2", "T3", "T4"})
+
+    def test_adaptive_clamped_to_min_when_distribution_below(self):
+        """Distribution: 0.05, 0.07, 0.10, 0.12, 0.15 (mean=0.098, std≈0.039).
+        mean+std=0.137 < min 0.20 → floor=0.20. ALL drop (none reach 0.20)."""
+        from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
+        ctx = self._make_ctx_adaptive(min_fl=0.20, cap=0.30)
+        ctx.candidates = [
+            _make_cand(f"T{i}", panel_score=0.0, rank_score=s)
+            for i, s in enumerate([0.05, 0.07, 0.10, 0.12, 0.15])
+        ]
+        VetoWeakBuysTask().run(ctx)
+        # mean+std=0.137 < min=0.20 → clamped UP to 0.20.
+        # No candidate ≥ 0.20 → ALL drop.
+        self.assertEqual(len(ctx.candidates), 0,
+                         "min floor must engage when mean+std falls below it")
+
+    def test_adaptive_min_keeps_one_above_min(self):
+        """Distribution where most are below 0.20 but one cand at 0.25.
+        mean+std clamped to min=0.20 → that one cand passes."""
+        from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
+        ctx = self._make_ctx_adaptive(min_fl=0.20)
+        ctx.candidates = [
+            _make_cand(f"T{i}", panel_score=0.0, rank_score=s)
+            for i, s in enumerate([0.05, 0.07, 0.10, 0.12, 0.25])
+        ]
+        VetoWeakBuysTask().run(ctx)
+        kept = {c.ticker for c in ctx.candidates}
+        self.assertEqual(kept, {"T4"})
 
     def test_adaptive_falls_back_to_cap_with_under_2_cands(self):
         """One cand → no std defined → use cap directly."""
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
-        ctx = self._make_ctx_adaptive(cap=0.30)
+        ctx = self._make_ctx_adaptive()
         ctx.candidates = [_make_cand("ONLY", panel_score=0.0, rank_score=0.50)]
         VetoWeakBuysTask().run(ctx)
-        # 0.50 ≥ 0.30 cap → keep
         self.assertEqual([c.ticker for c in ctx.candidates], ["ONLY"])
 
     def test_adaptive_per_bar_recomputes_each_call(self):
         """Same Task instance, two different bars → different floors."""
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
         task = VetoWeakBuysTask()
-        # Bar 1 — tight cluster around 0.30
-        # mean=0.30, sample-stdev≈0.0158, mean+std≈0.316 > cap 0.30
-        # → floor = min(0.316, 0.30) = 0.30 → keeps cands ≥ 0.30
-        ctx1 = self._make_ctx_adaptive(cap=0.30)
+        # Bar 1 — tight cluster around 0.30 (mean+std≈0.316 → cap)
+        ctx1 = self._make_ctx_adaptive()
         ctx1.candidates = [
             _make_cand(f"X{i}", panel_score=0.0, rank_score=s)
             for i, s in enumerate([0.28, 0.29, 0.30, 0.31, 0.32])
         ]
         task.run(ctx1)
         kept1 = {c.ticker for c in ctx1.candidates}
-        # X0=0.28, X1=0.29 drop; X2=0.30, X3=0.31, X4=0.32 keep
+        # min(max(0.20, 0.316), 0.30) = 0.30 → keeps ≥ 0.30
         self.assertEqual(kept1, {"X2", "X3", "X4"})
-        # Bar 2 — wide spread, mean=0.40, sample-stdev≈0.279,
-        # mean+std≈0.679 > cap → floor = 0.30 → keeps cands ≥ 0.30
-        ctx2 = self._make_ctx_adaptive(cap=0.30)
+        # Bar 2 — wide spread (mean+std=0.679 → cap)
+        ctx2 = self._make_ctx_adaptive()
         ctx2.candidates = [
             _make_cand(f"Y{i}", panel_score=0.0, rank_score=s)
             for i, s in enumerate([0.10, 0.20, 0.40, 0.60, 0.80])

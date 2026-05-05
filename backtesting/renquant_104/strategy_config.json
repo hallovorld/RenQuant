@@ -483,6 +483,7 @@
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
+      "buy_floor_min": 0.2,
       "_buy_floor_reason": "2026-05-04 user spec ('暂时改成，取min[mean+std, 0.3]'): per-bar adaptive floor = min(mean(rank_score) + std(rank_score), 0.30). Two interpretations of 'scientific': (a) data-driven per-bar (mean+std uses today's distribution); (b) bounded above by the legacy 0.30 absolute so we never get LESS strict than pre-fix. min(mean+std, cap) satisfies both. Diagnostic 2026-05-04: with the prior absolute floor=0.30 and prob_base_rate=0.278, ALL 50 candidates per bar were vetoed (strategy made 0 trades for 252 days). Adaptive mode keeps top ~16% per bar by score — Kelly+QP downstream still filter on μ>0. Pre-veto rank_scores are also persisted to candidate_scores via ctx._full_candidate_snapshot for offline distribution analysis.",
       "rotation_advantage": 0.0,
       "sizing": {
