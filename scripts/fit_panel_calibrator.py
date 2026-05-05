@@ -95,12 +95,23 @@ def main() -> None:
     # side paths, not production. Convention: derive by replacing
     # "panel-ltr" stem with "panel-rank-calibration" if a side artifact
     # path is set, else use canonical default.
+    #
+    # Bug 14 fix (2026-05-05 incident): pre-fix only `panel_ltr.artifact_path`
+    # was read. Side configs set `ranking.panel_scoring.artifact_path`
+    # (the inference-side) — without inheritance from inference-side,
+    # the calibrator subprocess silently wrote to production path even
+    # when running with --strategy-config-name <side>. Mirror the
+    # SaveArtifactTask + NGBoostSaveTask precedence: inference-side wins.
     if args.out:
         out_path = Path(args.out)
     else:
-        # If config says panel-ltr lives at artifacts/panel-ltr.h60.json,
-        # the calibrator goes to artifacts/panel-rank-calibration.h60.json.
-        panel_artifact = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+        out_name_train = panel_cfg.get("artifact_path")
+        out_name_infer = (
+            config.get("ranking", {})
+                  .get("panel_scoring", {})
+                  .get("artifact_path")
+        )
+        panel_artifact = out_name_infer or out_name_train or "artifacts/panel-ltr.json"
         panel_path = Path(panel_artifact)
         if panel_path.stem == "panel-ltr":
             out_path = strategy_dir / "artifacts" / "panel-rank-calibration.json"
@@ -199,7 +210,14 @@ def main() -> None:
     fac = pctx.raw_factor_frames
 
     # ── Load scorer ─────────────────────────────────────────────────────────
-    scorer_path = strategy_dir / panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    # Bug 14 fix: also fall through to inference-side artifact_path so
+    # side configs read the side artifact (not production fallback).
+    scorer_artifact_rel = (
+        panel_cfg.get("artifact_path")
+        or config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
+        or "artifacts/panel-ltr.json"
+    )
+    scorer_path = strategy_dir / scorer_artifact_rel
     log.info("Loading panel scorer: %s", scorer_path)
     scorer = PanelScorer.load(scorer_path)
     nan_cols = list(panel_cfg.get("nan_prone_cols", []))
