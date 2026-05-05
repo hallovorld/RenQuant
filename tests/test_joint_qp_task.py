@@ -197,6 +197,73 @@ class TestBuyBlockedRespected:
         )
 
 
+class TestNonFiniteDeltaWGuard:
+    """Bug 9 fix (2026-05-05): solver returns sol.status='optimal' but
+    sol.delta_w can occasionally contain NaN/inf on numerically-degenerate
+    inputs (zero-vol asset, near-singular Σ). Pre-fix, `int(abs(NaN) ×
+    nav / px)` raised ValueError mid-loop → uncaught → entire bar's
+    Phase 3 unwound, no signal recorded.
+    Post-fix: skip non-finite entries with a WARN log, rest of the bar
+    proceeds normally."""
+
+    def test_nan_dw_skipped_not_crashed(self):
+        """Construct a synthetic _qp_solution with NaN dw — emit must
+        not crash and must skip the bad entry."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        ctx = _Ctx(config=_qp_on())
+        # 2 tickers; NaN dw on ticker B
+        ctx._qp_tickers = ["A", "B"]
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10),
+                          _Cand("B", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0, "B": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.10, float("nan")]),
+            target_w=np.array([0.10, 0.10]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+        # Should NOT crash:
+        EmitOrdersFromQPSolutionTask().run(ctx)
+        # A still emits a BUY; B gets skipped.
+        a_orders = [o for o in ctx.orders
+                     if (o.get("ticker") if isinstance(o, dict)
+                         else getattr(o, "ticker", None)) == "A"]
+        b_orders = [o for o in ctx.orders
+                     if (o.get("ticker") if isinstance(o, dict)
+                         else getattr(o, "ticker", None)) == "B"]
+        assert len(a_orders) == 1, "A's finite Δw must still produce a BUY"
+        assert len(b_orders) == 0, "B's NaN Δw must be skipped, not crash"
+
+    def test_inf_dw_skipped_not_crashed(self):
+        """Same guard for +inf delta_w."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        ctx = _Ctx(config=_qp_on())
+        ctx._qp_tickers = ["A"]
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([float("inf")]),
+            target_w=np.array([0.0]),
+            objective=0.0,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+        # Should NOT crash:
+        EmitOrdersFromQPSolutionTask().run(ctx)
+        assert ctx.orders == [], "inf Δw must be skipped, not produce an order"
+
+
 class TestEarningsBlackoutQPTopUp:
     """2026-05-05 wl183 incident bug 4: QP had no earnings awareness.
     The buy-side EarningsFilterTask blocks new entries within ±N days

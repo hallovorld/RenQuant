@@ -443,12 +443,28 @@ class EmitOrdersFromQPSolutionTask(Task):
         n_blocked_buys = 0
         n_blocked_earnings = 0
         nb = ns = 0
+        # Bug 9 fix (2026-05-05): defensive against non-finite Δw.
+        # SolveMarkowitzQPTask returns sol.status="optimal" when SLSQP
+        # converges, but the solver can occasionally produce NaN/inf
+        # weights on numerically-degenerate inputs (e.g. zero-volatility
+        # asset that wasn't pre-filtered, near-singular Σ). Pre-fix,
+        # `int(abs(NaN) * ...)` raises ValueError mid-loop → uncaught →
+        # the entire bar's Phase 3 unwinds, no Kelly/QP signal recorded.
+        # Post-fix: skip non-finite Δw with a warning so the operator
+        # can investigate without crashing the sim.
+        import math as _math_dw  # noqa: PLC0415
+        n_skipped_nonfinite = 0
         for i, t in enumerate(tickers):
             dw = float(sol.delta_w[i])
+            if not _math_dw.isfinite(dw):
+                n_skipped_nonfinite += 1
+                continue
             if abs(dw) < min_dw:
                 continue
             px = prices.get(t, 0.0)
-            if px <= 0:
+            if not _math_dw.isfinite(px) or px <= 0:
+                continue
+            if not _math_dw.isfinite(nav) or nav <= 0:
                 continue
             shares = int(abs(dw) * nav / px)
             if shares <= 0:
@@ -480,6 +496,13 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "BUY(s) within ±%d days of earnings (gap-risk parity "
                 "with buy-side EarningsFilterTask)",
                 n_blocked_earnings, earn_buf,
+            )
+        if n_skipped_nonfinite:
+            log.warning(
+                "EmitOrdersFromQPSolutionTask: skipped %d non-finite "
+                "Δw entries (NaN/inf weights from solver — investigate "
+                "Σ conditioning or μ/σ inputs)",
+                n_skipped_nonfinite,
             )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001

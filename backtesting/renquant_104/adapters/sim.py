@@ -562,13 +562,31 @@ class SimAdapter:
         hs = self._holdings[ticker]
         total_shares = self._pos_shares[ticker]
 
+        # Bug 8 fix (2026-05-05): NaN/inf sig.quantity slipped through
+        # both `<= 0` and `>= total_shares` (NaN comparisons return
+        # False), then `sell_shares = float(NaN) = NaN` propagated
+        # through apply_sell_lots → gross_pnl=NaN → cash=NaN. Once
+        # _cash goes NaN, every subsequent _portfolio_value call returns
+        # NaN and the equity curve is poisoned. Pre-fix the SAB-3 audit
+        # caught this on the BUY side; sell side had the same hole.
+        # Treat non-finite or non-positive quantity as full liquidation
+        # (the caller's intent of "exit this position" without a partial
+        # spec).
+        import math as _math_q  # noqa: PLC0415
         req_qty = getattr(sig, "quantity", None)
-        if req_qty is None or req_qty <= 0 or req_qty >= total_shares:
-            sell_shares = total_shares
-            is_partial  = False
-        else:
+        is_finite_partial = (
+            req_qty is not None
+            and isinstance(req_qty, (int, float))
+            and _math_q.isfinite(float(req_qty))
+            and req_qty > 0
+            and req_qty < total_shares
+        )
+        if is_finite_partial:
             sell_shares = float(req_qty)
             is_partial  = True
+        else:
+            sell_shares = total_shares
+            is_partial  = False
 
         price = ctx.prices.get(ticker)
         if price is None:

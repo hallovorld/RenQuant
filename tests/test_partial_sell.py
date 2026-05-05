@@ -199,6 +199,66 @@ class TestSimAdapterPartialSell:
             f"Bug 6 reopened: cash={adp._cash}, expected $875"
         )
 
+    def test_nan_quantity_treated_as_full_liquidation(self):
+        """Bug 8 fix (2026-05-05): NaN/inf sig.quantity slipped through
+        the partial-vs-full check (NaN < total → False; NaN > 0 → False),
+        flowed into sell_shares = NaN, then propagated to gross_pnl =
+        NaN → tax=0 (guarded) → cash += NaN → equity curve poisoned.
+        Post-fix: non-finite quantity is treated as full liquidation."""
+        import math
+        import pandas as pd
+        from adapters.sim import SimAdapter
+        from kernel.exits import HoldingState, TaxLot, ExitSignal
+
+        adp = SimAdapter.__new__(SimAdapter)
+        hs = HoldingState(
+            entry_price=100.0,
+            entry_date=datetime.date(2026, 1, 1),
+            shares=10, high_watermark=120.0,
+        )
+        hs.lots = [TaxLot(shares=10, price=100.0,
+                            date=datetime.date(2026, 1, 1))]
+        adp._holdings        = {"NVDA": hs}
+        adp._pos_shares      = {"NVDA": 10}
+        adp._cash            = 0.0
+        adp._last_sell_date  = {}
+        adp._trade_log       = []
+        adp._ohlcv           = {}
+
+        ctx = SimpleNamespace(
+            today    = datetime.date(2026, 4, 24),
+            prices   = {"NVDA": 110.0},
+            config   = {
+                "tax": {"short_term_rate": 0.50, "long_term_rate": 0.20,
+                        "long_term_threshold_days": 365},
+                "rotation": {"joint_actions": {"qp_tax_lot_method": "fifo"}},
+            },
+            exits    = [],
+            holdings = {},
+        )
+        # Quantity = NaN — must NOT corrupt cash.
+        sig_nan = ExitSignal(should_exit=True, reason="bug",
+                              exit_type="kelly_trim", quantity=float("nan"))
+        adp._apply_sell("NVDA", sig_nan, pd.Timestamp("2026-04-24"), ctx)
+
+        # Cash must be finite, equity curve safe.
+        assert math.isfinite(adp._cash), (
+            f"Bug 8 reopened: NaN quantity corrupted cash → {adp._cash}"
+        )
+        # Treated as full liquidation: 10 × $110 − tax_on_($1100−$1000) ST 50%
+        # = 1100 − 50 = $1050
+        assert abs(adp._cash - 1050.0) < 1e-6, (
+            f"NaN quantity must be treated as full sell at FIFO basis; "
+            f"cash={adp._cash}, expected $1050"
+        )
+        tl = adp._trade_log[0]
+        assert tl["partial"] is False, (
+            "NaN quantity must produce a full-liquidation event"
+        )
+        assert tl["shares"] == 10, (
+            f"shares={tl['shares']}, expected 10 (all)"
+        )
+
     def test_pnl_pct_uses_disposed_basis_not_surviving_avg(self):
         """Bug 7 fix (2026-05-05 wl183 incident, follow-on to bug 6):
         on partial trims, hs.entry_price gets refreshed to the
