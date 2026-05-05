@@ -212,6 +212,36 @@ class NGBoostHead:
                     X_train.shape[0], X_train.shape[1],
                 )
 
+        # Audit fix NGB-OVERFLOW-TRAIN (2026-04-28): clip feature matrices
+        # before fit() to prevent gradient blow-up inside NGBoost's Normal
+        # distribution, which manifests as:
+        #   RuntimeWarning: overflow encountered in square
+        #   self.var = self.scale**2  (ngboost/distns/normal.py:72)
+        # During Natural Gradient iterations, large feature magnitudes can
+        # drive the `scale` parameter past ~1e154, at which point scale**2
+        # overflows float64. All our features are z-scored (std≈1), so
+        # any value beyond ±10 is already extreme noise. Clipping there is
+        # safe and prevents the blow-up. We also sanitise any residual
+        # non-finite cells that survived imputation (belt-and-suspenders).
+        _CLIP = 10.0
+        _n_nonfinite_tr = int((~np.isfinite(X_train)).sum())
+        _n_extreme_tr   = int((np.abs(X_train) > _CLIP).sum())
+        if _n_nonfinite_tr + _n_extreme_tr > 0:
+            logging.getLogger("ngboost").warning(
+                "NGBoostHead.train: X_train has %d non-finite + %d extreme "
+                "(|x|>%.0f) cells — clipping before fit; check feature pipeline",
+                _n_nonfinite_tr, _n_extreme_tr, _CLIP,
+            )
+        X_train = np.clip(
+            np.nan_to_num(X_train, nan=0.0, posinf=_CLIP, neginf=-_CLIP),
+            -_CLIP, _CLIP,
+        )
+        if X_val is not None:
+            X_val = np.clip(
+                np.nan_to_num(X_val, nan=0.0, posinf=_CLIP, neginf=-_CLIP),
+                -_CLIP, _CLIP,
+            )
+
         self.regressor = NGBRegressor(Dist=Normal, **self.params)
         fit_kwargs: dict[str, Any] = {}
         if sw_train is not None:

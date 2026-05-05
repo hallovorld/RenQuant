@@ -27,16 +27,43 @@ from .scoring import (
     raw_score_kind_for_model,
 )
 
-_DEFAULT_OOS_YEARS = 2
+_DEFAULT_OOS_YEARS = 2     # legacy default — kept only for backward compat
+_DEFAULT_OOS_DAYS  = 90    # 2026-05-04 user mandate: ~63 trading days = 3-month
+                            # rolling Sharpe window. Recent performance dominates.
 
 
 def resolve_oos_cutoff(config: dict) -> pd.Timestamp:
-    """OOS cutoff: explicit config["oos_cutoff"] wins, else today - oos_years."""
+    """OOS cutoff: explicit `oos_cutoff` wins; else `today - oos_days` (default 90).
+
+    2026-05-04 user mandate: per-ticker tournament Sharpe must reflect
+    RECENT performance, not a 2-year aggregate. Default OOS window
+    tightened from 2 years → ~3 trading-month (90 calendar days). Old
+    `oos_years` config key is honored when set explicitly so legacy
+    pipelines don't break, but the new default is days-based.
+
+    Anchor:
+      * If `config["sample_end"]` is set (B2 hold-out path): cutoff =
+        sample_end - oos_days. Train data ends at cutoff; OOS slice is
+        cutoff → sample_end.
+      * Else (live / generic train): cutoff = today - oos_days.
+    """
     raw = config.get("oos_cutoff") if config else None
     if raw:
         return pd.Timestamp(raw)
-    years = int(config.get("oos_years", _DEFAULT_OOS_YEARS)) if config else _DEFAULT_OOS_YEARS
-    return pd.Timestamp.today().normalize() - pd.DateOffset(years=years)
+
+    sample_end = config.get("sample_end") if config else None
+    anchor = (pd.Timestamp(sample_end).normalize()
+              if sample_end else pd.Timestamp.today().normalize())
+
+    # Prefer days-based config; fall back to legacy years key only when
+    # operator explicitly opted in via `oos_years` (no implicit promotion).
+    oos_days  = config.get("oos_days") if config else None
+    oos_years = config.get("oos_years") if config else None
+    if oos_days is not None:
+        return anchor - pd.Timedelta(days=int(oos_days))
+    if oos_years is not None:
+        return anchor - pd.DateOffset(years=int(oos_years))
+    return anchor - pd.Timedelta(days=_DEFAULT_OOS_DAYS)
 
 # Strategy root dir — used to set PYTHONPATH in worker processes so they can
 # import training.* even with spawn (which doesn't inherit sys.path).

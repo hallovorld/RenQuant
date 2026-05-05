@@ -46,8 +46,15 @@ class TopUpHeldTask(Task):
         top_up_thresh = float(kelly_cfg.get("top_up_threshold", 0.05))
         if top_up_thresh <= 0:
             return
-        if ctx.bear_only or ctx.skip_buys:
-            return   # don't add during BEAR / halt
+        # 2026-05-04 audit Issue 39 fix: TopUp must also respect
+        # ctx.buy_blocked — set by macro gates (EMA50Gate, VelocityCrash,
+        # DrawdownGate). Pre-fix, when SPY went below its 50-day EMA,
+        # NEW buys were correctly blocked but TopUps kept adding to
+        # existing positions — violating the macro gate's intent. TopUp
+        # is a buy (cash debit + share increment), should respect every
+        # buy-side macro gate.
+        if ctx.bear_only or ctx.skip_buys or getattr(ctx, "buy_blocked", False):
+            return   # don't add during BEAR / halt / macro-block
 
         portfolio = float(getattr(ctx, "portfolio_value", 0.0))
         if portfolio <= 0:

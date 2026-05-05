@@ -23,13 +23,13 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/CRM/CRM-manual-rules.json"
   },
-  "trained_date": "2026-04-24",
+  "trained_date": "2026-04-30",
   "best_approach": "Manual",
   "sharpe": -0.1567,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-17",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-23",
   "live_holdout_sharpe": -0.4018,
   "live_holdout_days": 126,
   "score_calibration": {
@@ -37,10 +37,10 @@
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2501,
+    "sample_size": 2504,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.15553778488604558,
+    "base_rate": 0.15455271565495207,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
@@ -51,11 +51,11 @@
       3.0
     ],
     "y_thresholds": [
-      0.13676286072772897,
-      0.13676286072772897,
-      0.15945089757127773,
-      0.17040951122853368,
-      0.17040951122853368
+      0.13625,
+      0.13625,
+      0.15911485774499473,
+      0.16821192052980133,
+      0.16821192052980133
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -63,7 +63,7 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.038600625281141054,
+    "er_residual_std": 0.03859552160324251,
     "er_x_thresholds": [
       -1.0,
       0.0,
@@ -71,14 +71,14 @@
       3.0
     ],
     "er_y_thresholds": [
-      -0.0019034899554680913,
-      -0.0019034899554680913,
-      0.0009592796659022888,
-      0.0009592796659022888
+      -0.0020568853067239783,
+      -0.0020568853067239783,
+      0.0009366061005523466,
+      0.0009366061005523466
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-24"
+  "score_calibration_date": "2026-05-04"
 }

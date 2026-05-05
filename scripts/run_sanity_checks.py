@@ -51,58 +51,72 @@ def main() -> None:
         PanelTrainingContext, PanelTrainingPipeline,
         PanelDataJob, PanelFeatureJob, PanelAssemblyJob,
     )
-    from training_panel.purged_cv import PurgedCVSplitter  # noqa: PLC0415
+    # 2026-05-03 P0 fix: legacy `PurgedCVSplitter` class never existed in
+    # `training_panel.purged_cv` — the canonical class is `PurgedKFold`,
+    # which takes (panel, date_col) instead of (dates_list). Sanity script
+    # had been broken since the rename and silently skipped under
+    # `|| true` in the followups wrapper. Now uses correct API.
+    from training_panel.purged_cv import PurgedKFold  # noqa: PLC0415
     from training_panel.ltr_model import PanelLTRModel  # noqa: PLC0415
     from scipy.stats import spearmanr  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
 
     # ── Build panel once (reused for all tests) ──────────────────────────────
+    # 2026-05-03 P0 fix: PanelTrainingContext signature was simplified some
+    # time ago — only `config` is required. Legacy `strategy` /
+    # `strategy_dir` kwargs are gone. Watchlist comes from config.
     log.info("Building panel for sanity checks …")
     ctx = PanelTrainingContext(
         config=config,
-        strategy=args.strategy,
-        strategy_dir=strategy_dir,
+        watchlist=list(config.get("watchlist", [])),
     )
     PanelDataJob().run(ctx)
     PanelFeatureJob().run(ctx)
     PanelAssemblyJob().run(ctx)
 
-    panel = ctx.panel_frame
+    panel = ctx.panel
     if panel is None or panel.empty:
         log.error("Panel is empty — cannot run sanity checks")
         sys.exit(1)
 
     panel_cfg = config.get("panel_ltr", {})
     cv_cfg = panel_cfg.get("cv", {})
-    n_splits = int(cv_cfg.get("n_splits", 15))
-    embargo = int(cv_cfg.get("embargo_days", 5))
+    # Honour BOTH `cv.{n_splits,embargo_days}` and the flat
+    # `cv_n_splits / cv_embargo_days` fields used by some configs.
+    n_splits = int(cv_cfg.get("n_splits", panel_cfg.get("cv_n_splits", 15)))
+    embargo = int(cv_cfg.get("embargo_days",
+                             panel_cfg.get("cv_embargo_days", 5)))
+    lookahead = int(panel_cfg.get("lookahead_days", 5))
     feature_cols = ctx.feature_cols
     label_col = "label"
     xgb_params = dict(panel_cfg.get("xgb_params", {}))
 
-    splitter = PurgedCVSplitter(n_splits=n_splits, embargo_days=embargo)
-    dates = sorted(panel["date"].unique())
-
     def _fold_ic(panel_data: pd.DataFrame, seed: int | None = None) -> list[float]:
-        """Run one CPCV pass; return per-fold IC list."""
-        ics = []
-        for train_idx, test_idx in splitter.split(dates):
-            train_dates = {dates[i] for i in train_idx}
-            test_dates  = {dates[i] for i in test_idx}
-            train = panel_data[panel_data["date"].isin(train_dates)].dropna(
-                subset=[label_col])
-            test  = panel_data[panel_data["date"].isin(test_dates)].dropna(
-                subset=[label_col])
+        """Run one CV pass with PurgedKFold; return per-fold IC list."""
+        # Reset index so iloc-based positional indexing is unambiguous.
+        panel_data = panel_data.reset_index(drop=True)
+        splitter = PurgedKFold(
+            n_splits=n_splits,
+            embargo_days=embargo,
+            lookahead_days=lookahead,
+        )
+        ics: list[float] = []
+        for train_idx, test_idx in splitter.split(panel_data, date_col="date"):
+            train = panel_data.iloc[train_idx].dropna(subset=[label_col])
+            test  = panel_data.iloc[test_idx].dropna(subset=[label_col])
             if len(train) < 100 or len(test) < 20:
                 continue
-            train_groups = train.groupby("date").size().values
+            train = train.sort_values("date")
+            train_groups = train.groupby("date", sort=False).size().values
             model = PanelLTRModel(params=xgb_params)
             model.train(train, train_groups,
                         feature_cols=feature_cols, label_col=label_col,
                         weight_col="weight", num_boost_round=50)
             preds = model.predict(test)
-            for d, grp in test.join(preds.rename("score")).groupby("date"):
+            scored = test.assign(score=preds.values
+                                 if hasattr(preds, "values") else preds)
+            for _d, grp in scored.groupby("date"):
                 if len(grp) < 5:
                     continue
                 rho, _ = spearmanr(grp["score"], grp[label_col])

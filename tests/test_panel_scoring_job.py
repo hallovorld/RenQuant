@@ -296,12 +296,13 @@ class TestPanelScoringJob:
         assert PanelScoringJob().should_skip(ctx) is False
 
     def test_tasks_are_ten_in_order(self, tmp_path):
-        """After the 2026-04-23 task-#2 refactor, NGBoost runs BEFORE
-        calibration so that mu_minus_lambda_sigma mode also ends up
-        calibrated. See PanelScoringJob docstring for rationale.
+        """After the 2026-05-04 P0 fix VetoWeakBuysTask was MOVED to AFTER
+        ApplyGlobalCalibrationTask (so it compares against calibrated
+        rank_score, not raw XGB margin). See PanelScoringJob docstring +
+        VetoWeakBuysTask docstring for the production incident this resolves.
 
-        Golden v4 (Kelly promoted) appends ApplyKellySizingTask.
-        Stage-0 buy-logic redesign (2026-04-26) appends QualityFloorTask
+        Golden v4 (Kelly promoted) keeps ApplyKellySizingTask as #9 (post-veto).
+        Stage-0 buy-logic redesign (2026-04-26) keeps QualityFloorTask
         as the 10th task — flag-OFF default preserves bit-for-bit parity.
         """
         from kernel.panel_pipeline.job_panel_scoring import (
@@ -315,12 +316,14 @@ class TestPanelScoringJob:
         assert isinstance(tasks[0], LoadScorerTask)
         assert isinstance(tasks[1], BuildFeatureMatrixTask)
         assert isinstance(tasks[2], ApplyScoresTask)
-        assert isinstance(tasks[3], VetoWeakBuysTask)
-        # NGBoost now runs before calibration:
-        assert isinstance(tasks[4], LoadNGBoostTask)
-        assert isinstance(tasks[5], ApplyNGBoostTask)
-        assert isinstance(tasks[6], LoadGlobalCalibrationTask)
-        assert isinstance(tasks[7], ApplyGlobalCalibrationTask)
+        # NGBoost runs before calibration (preserved from 2026-04-23):
+        assert isinstance(tasks[3], LoadNGBoostTask)
+        assert isinstance(tasks[4], ApplyNGBoostTask)
+        assert isinstance(tasks[5], LoadGlobalCalibrationTask)
+        assert isinstance(tasks[6], ApplyGlobalCalibrationTask)
+        # 2026-05-04 P0: VetoWeakBuysTask MOVED here so it compares
+        # calibrated rank_score (post-ApplyGlobalCalibration) not raw XGB.
+        assert isinstance(tasks[7], VetoWeakBuysTask)
         assert isinstance(tasks[8], ApplyKellySizingTask)
         # Stage-0 quality gate (flag-OFF by default):
         assert isinstance(tasks[9], QualityFloorTask)

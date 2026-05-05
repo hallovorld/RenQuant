@@ -138,6 +138,37 @@ python -m live.runner --strategy foo --broker paper --once
 - LEAN, live, and sim all go through `InferencePipeline` via `LeanAdapter` / `RunnerAdapter` / `SimAdapter`. Universe admission is consolidated in `kernel/pipeline/job_universe.py::LoadUniverseJob`.
 - When adding a new decision: write as Task → wire into Pipeline phase → add paired alignment tests in `tests/test_panel_alignment.py` or `tests/test_policy_alignment.py`.
 
+### 1c. Split Every Complex Structure (Principle)
+**Every complex structure — not just decision logic — must be split into small Tasks. The Task chain is universal: sequence or concurrent.** A monolith of 200+ lines doing 5 logical steps is a bug factory. The user mandate (2026-05-04, formalized): "每个复杂结构都应该split成小的，或者可以sequence，或者可以concurrent的task！"
+
+**Limits:**
+- Each Task body **soft target ≤ 50 lines**. Going over is a smell, not a build break — but if you're at 100+ you almost certainly have ≥ 2 responsibilities and should split. Use judgment: a single complicated math operation can legitimately exceed the target; multiple sequential operations cannot.
+- Each Task is **single-responsibility** — one of {extract, validate, compute, transform, persist, emit}. If you can't name it in one verb, it's two Tasks.
+- Each Task has its **own unit test** with a stub ctx. Tests assert the ctx mutations the Task is responsible for, nothing more.
+- Tasks communicate via **documented ctx fields** (public `ctx.X` for cross-Job state, private `ctx._job_*` for intra-Job state). No hidden coupling via globals.
+
+**Why monoliths kill us:**
+- A 459-line `JointPortfolioQPTask` (pre-split 2026-05-04) bundled vector extraction + tax cost + constraints + solve + emit into one function. Bugs in tax math hid because tests had to mock the entire context to exercise that branch. Refactor: 5 Tasks of 23-45 lines each, each independently testable.
+- The 2026-04-29 calibrator NaN-leaf collapse incident lived for days inside `BuildFeatureMatrixTask` — a single Task doing matrix build + drift guard + row-coverage filter. The bug was in the row-coverage interaction with the drift guard, but isolating it required reading the full Task. Splitting would have made the failure mode obvious.
+- Future-Claude reading a 200-line Task can't tell which lines are load-bearing for which downstream assertion.
+
+**How to apply:**
+- **New code**: design as a Job (or Task chain in an existing Job). Each step gets its own Task class with explicit reads/writes documented in the docstring. Never start with a monolith intending to "split later".
+- **Splitting existing monoliths**: identify the logical phases (extract / validate / compute / emit), promote each to a Task, store cross-step state on `ctx._job_*` private fields, keep a back-compat shim at the original entry point. Reference: `kernel/portfolio_qp/{tasks.py, job_qp.py, task_joint_qp.py}` (the 2026-05-04 QP split pattern).
+- **Sequence vs concurrent**: default sequence. Promote to `run_parallel()` only when (a) Tasks operate on independent rows (per-ticker chains) AND (b) measured speedup ≥ 1.5x on M2 Pro 10-core (per §5.10).
+- **No partial splits**: if you split 3 of 5 phases and leave 2 inside a giant Task, you've doubled the maintenance surface. Either split all or none.
+
+**Pending-splits backlog (status as of 2026-05-04 evening):**
+
+| Monolith | Status | Notes |
+|---|---|---|
+| `JointPortfolioQPTask` (459 lines) | ✅ split → `JointPortfolioQPJob` (5 domain Tasks + 8 atoms) | reference pattern in `kernel/portfolio_qp/{tasks.py,job_qp.py}` |
+| `BuildFeatureMatrixTask` (~165 lines) | ✅ split → `BuildFeatureMatrixJob` (4 Tasks) | `kernel/panel_pipeline/tasks_feature_matrix.py` |
+| `BuildPanelTask` (~155 lines) | ✅ split → `BuildPanelJob` (6 Tasks) | `training_panel/tasks_build_panel.py` |
+| `BuildHourlyResolutionPanelTask` (~160 lines) | ✅ split → `BuildHourlyResolutionPanelJob` (5 Tasks) | `training_panel/tasks_build_hourly_panel.py` |
+| `JointActionTask` legacy greedy (~700 lines) | ⏸ **DEFERRED** | 6-phase state machine with 10+ load-bearing audit fixes (BUG-MM defer, BUG-L two-pass, BUG-Q net-alpha, etc.). NOT in production path (`solver=qp` is the live config). Splitting carries high regression risk for low ROI; revisit when production switches back to greedy or when full integration tests are in place to validate parity. |
+| `record_trades` / `record_pipeline_run` | ✅ NOT-A-MONOLITH | both functions ≤ 50 lines already; do not split. |
+
 ### 2. Tests for Every Feature — and Every Bug
 Every policy in notebook and LEAN must have a corresponding test. **Every bug gets fixed as soon as it's found, and the fix ships with a regression test that would fail before the fix.** A bug without a test is a bug you'll see again.
 

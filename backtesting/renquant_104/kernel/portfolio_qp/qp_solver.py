@@ -85,6 +85,24 @@ def solve_portfolio_qp(
     # at κ=0.0001 was negligible vs typical μ. With turnover_max set, the
     # solver can never trade more than τ_max NAV-fraction per bar.
     turnover_max:   float | None = None,
+    # Stage G3 (2026-05-04) — Almgren-Chriss 2000 sqrt-impact transaction
+    # cost. Adds a market-impact term to the objective:
+    #     impact_i = impact_coef · σ_i · |Δw_i|^1.5 · sqrt(NAV / V_dollar_i)
+    # where V_dollar_i is the per-asset average daily dollar volume (ADV),
+    # and σ_i is taken from sqrt(diag(Σ)). The sqrt(participation) factor
+    # is the empirical Gatheral form. Defaults to zero impact (preserves
+    # legacy linear-only κ behaviour).
+    impact_coef:    float = 0.0,            # b ≥ 0 (Gatheral)
+    v_daily_dollar: Sequence[float] | None = None,  # n-vector of ADV in $; if None, impact=0
+    nav_dollar:     float = 0.0,            # current NAV in dollars (for participation rate)
+    # Stage G4 (2026-05-04) — Smoothed fixed cost per trade. Approximates
+    # the discontinuous "if you trade at all, pay a fixed fee" with a
+    # smooth tanh penalty:
+    #     fixed_i = fixed_cost_per_trade · tanh(fixed_cost_beta · |Δw_i|)
+    # Beta controls the steepness; large β → step. We avoid the literal
+    # indicator because it breaks SLSQP gradients. Defaults to zero.
+    fixed_cost_per_trade: float = 0.0,      # c_fix ≥ 0, NAV-fraction
+    fixed_cost_beta:      float = 100.0,    # β > 0 (saturates around |Δw| ≈ 1/β)
 ) -> QPSolution:
     """Solve the single-period Markowitz QP with linear-cost transaction.
 
@@ -112,6 +130,13 @@ def solve_portfolio_qp(
         sigma_arr = np.asarray(sigma, dtype=float)
         if len(sigma_arr) != n:
             raise ValueError(f"len(sigma)={len(sigma_arr)} != n={n}")
+        # 2026-05-04 audit Issue 32 fix: NaN sigma slipped through
+        # `np.clip(arr, 1e-6, None)` (np.clip preserves NaN), then
+        # `arr**2 = NaN` → `np.diag(NaN)` poisoned Σ → QP objective
+        # `post_w @ Σ @ post_w` returned NaN → SLSQP behavior on NaN
+        # objective is undefined. Sanitize NaN/inf to a sane default
+        # (5% — a typical equity vol) BEFORE clipping.
+        sigma_arr = np.where(np.isfinite(sigma_arr), sigma_arr, 0.05)
         # Floor σ at 1e-6 to keep Σ positive definite even for stale rows
         sigma_arr = np.clip(sigma_arr, 1e-6, None)
         Sigma_mat = np.diag(sigma_arr ** 2)
@@ -121,6 +146,18 @@ def solve_portfolio_qp(
             raise ValueError(
                 f"Sigma shape {Sigma_mat.shape} != (n={n}, n={n})",
             )
+        # Issue 32 (full-Σ path): same NaN-slip class. If caller's
+        # correlation matrix had NaN cells, Σ_ij = NaN propagates.
+        if not np.isfinite(Sigma_mat).all():
+            n_bad = int(np.sum(~np.isfinite(Sigma_mat)))
+            log.warning(
+                "QP: full Σ has %d non-finite cell(s) — replacing with 0 "
+                "(may degrade solution quality; check correlation artifact)",
+                n_bad,
+            )
+            Sigma_mat = np.where(np.isfinite(Sigma_mat), Sigma_mat, 0.0)
+            # Re-add diagonal floor to preserve PSD
+            Sigma_mat += 1e-8 * np.eye(n)
 
     # Broadcast caps
     if np.isscalar(w_upper):
@@ -232,34 +269,103 @@ def solve_portfolio_qp(
             raise ValueError(
                 f"tax_cost_per_sell length {len(tax_arr)} != n={n}",
             )
-        tax_arr = np.maximum(tax_arr, 0.0)  # never reward negative cost
+        # 2026-05-04 v4: removed `np.maximum(tax_arr, 0.0)` clamp.
+        # Berkin-Jeffrey (1990) tax-loss harvesting: selling losers can
+        # OFFSET prior YTD realized gains, which is a NEGATIVE tax cost
+        # (= reward). The clamp killed this entire alpha source. Caller
+        # (JointPortfolioQPTask) computes the negative coefficient when
+        # ctx.ytd_realized_gain_dollar is positive and the position has
+        # an unrealized loss to harvest. NaN/inf entries still get
+        # zeroed — those are bad data, not legitimate negative costs.
+        tax_arr = np.where(np.isfinite(tax_arr), tax_arr, 0.0)
     else:
         tax_arr = np.zeros(n)
+
+    # Stage G3 — Almgren-Chriss participation factor.
+    # impact_per_unit_pow_1.5_i = impact_coef · σ_i · sqrt(NAV / V_i)
+    # We pre-multiply σ and the sqrt(NAV/V) into a single per-asset
+    # coefficient so _obj only does |Δw|^1.5.
+    b_impact = float(max(0.0, impact_coef))
+    if (b_impact > 0.0
+            and v_daily_dollar is not None
+            and float(nav_dollar) > 0.0):
+        v_arr = np.asarray(v_daily_dollar, dtype=float)
+        if len(v_arr) != n:
+            raise ValueError(
+                f"v_daily_dollar length {len(v_arr)} != n={n}",
+            )
+        # Sanitise: any non-finite or non-positive ADV → no impact for
+        # that asset (we don't want NaN poisoning the objective; missing
+        # ADV signals "data unavailable", not "ADV is zero").
+        v_safe = np.where((np.isfinite(v_arr)) & (v_arr > 0.0), v_arr, np.inf)
+        sigma_diag_g3 = np.sqrt(np.maximum(np.diag(Sigma_mat), 0.0))
+        # NAV / V → participation; sqrt for Gatheral.
+        impact_coef_arr = b_impact * sigma_diag_g3 * np.sqrt(
+            float(nav_dollar) / v_safe,
+        )
+        # v_safe = inf → coef = 0 cleanly.
+        impact_coef_arr = np.where(
+            np.isfinite(impact_coef_arr), impact_coef_arr, 0.0,
+        )
+    else:
+        impact_coef_arr = np.zeros(n)
+
+    # Stage G4 — Smoothed fixed cost. c_fix · tanh(β·|Δw|).
+    # tanh(0) = 0 (no trade → no cost), tanh(β·|Δw|) → 1 as |Δw| >> 1/β.
+    # β large → step-like; β small → smooth quadratic-ish near zero.
+    c_fix = float(max(0.0, fixed_cost_per_trade))
+    beta_fix = float(max(1e-6, fixed_cost_beta))
 
     def _obj(dw: np.ndarray) -> float:
         post_w = w_current + dw
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
             ret  = float(np.dot(mu_clean, post_w))
             var  = float(post_w @ Sigma_mat @ post_w)
-        cost = float(cost_kappa * np.sum(np.abs(dw)))
+        abs_dw = np.abs(dw)
+        cost = float(cost_kappa * np.sum(abs_dw))
         # Tax cost only on sells: cost_i × max(0, -Δw_i)
         sell_amt = np.maximum(-dw, 0.0)
         tax_cost = float(np.sum(tax_arr * sell_amt))
-        return -(ret - gamma_eff * var - cost - tax_cost)  # minimize -obj
+        # G3 sqrt-impact (Almgren-Chriss / Gatheral)
+        impact_cost = (
+            float(np.sum(impact_coef_arr * np.power(abs_dw, 1.5)))
+            if b_impact > 0 else 0.0
+        )
+        # G4 smoothed fixed cost (tanh)
+        fixed = (
+            c_fix * float(np.sum(np.tanh(beta_fix * abs_dw)))
+            if c_fix > 0 else 0.0
+        )
+        return -(ret - gamma_eff * var - cost - tax_cost
+                  - impact_cost - fixed)  # minimize -obj
 
     def _grad(dw: np.ndarray) -> np.ndarray:
         post_w = w_current + dw
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
             d_var = 2.0 * gamma_eff * (Sigma_mat @ post_w)
-        # Minimizing  f(Δw) = -ret + γ·var + κ|Δw| + tax × max(0, -Δw)
-        #   d_ret  = -μ
-        #   d_var  = 2γ·Σ·(w + Δw)
-        #   d_cost = κ·sign(Δw)
-        #   d_tax  = -tax_i × 1[Δw_i < 0]   (max is non-smooth at 0; subgradient = 0)
+        # Minimizing  f(Δw) = -ret + γ·var + κ|Δw| + tax · max(0,-Δw)
+        #                       + b·σ·|Δw|^1.5·sqrt(NAV/V) + c_fix·tanh(β|Δw|)
+        #   d_ret      = -μ
+        #   d_var      = 2γ·Σ·(w + Δw)
+        #   d_cost     = κ·sign(Δw)
+        #   d_tax      = -tax_i · 1[Δw_i < 0]
+        #   d_impact   = 1.5 · b·σ·sqrt(NAV/V) · sqrt(|Δw|) · sign(Δw)
+        #   d_fixed    = c_fix · β · sech²(β|Δw|) · sign(Δw)
         d_ret  = -mu_clean
         d_cost = cost_kappa * np.sign(dw)
         d_tax  = -tax_arr * (dw < 0).astype(float)
-        return d_ret + d_var + d_cost + d_tax
+        abs_dw = np.abs(dw)
+        sgn    = np.sign(dw)
+        if b_impact > 0:
+            d_impact = 1.5 * impact_coef_arr * np.sqrt(abs_dw) * sgn
+        else:
+            d_impact = np.zeros(n)
+        if c_fix > 0:
+            sech2 = 1.0 / np.cosh(beta_fix * abs_dw) ** 2
+            d_fixed = c_fix * beta_fix * sech2 * sgn
+        else:
+            d_fixed = np.zeros(n)
+        return d_ret + d_var + d_cost + d_tax + d_impact + d_fixed
 
     # Initial guess: zero trade
     dw0 = np.zeros(n)
@@ -287,12 +393,26 @@ def solve_portfolio_qp(
 
     delta_w = np.asarray(res.x, dtype=float)
     target_w = w_current + delta_w
+    # 2026-05-04 audit Issue 22 fix: when μ is all zeros (all candidates
+    # failed scoring → mu=0 fallback in JointPortfolioQPTask), the
+    # objective `-(0 - γ·var - κ|Δw| - tax)` is minimized at Δw = 0,
+    # so SLSQP returns success=True with delta_w ≈ 0 and the caller
+    # silently emits zero buys / zero sells. The pipeline status looks
+    # "optimal" but it's a sentinel for missing signal, not a real
+    # decision. Tag the status so the caller can branch on it (e.g.
+    # log.warning + fall through to greedy or Kelly defaults).
+    finite_mu_count = int(np.sum(np.isfinite(mu)))
+    nonzero_mu_count = int(np.sum(np.abs(mu_clean) > 1e-12))
+    if res.success and nonzero_mu_count == 0:
+        status = "optimal_no_signal"
+    else:
+        status = "optimal" if res.success else f"failed:{res.message[:50]}"
     return QPSolution(
         delta_w=delta_w,
         target_w=target_w,
         objective=-float(res.fun),
         n_iter=int(res.nit) if hasattr(res, "nit") else 0,
-        status="optimal" if res.success else f"failed:{res.message[:50]}",
+        status=status,
         diagnostics={
             "n_assets":        n,
             "risk_aversion":   risk_aversion,
@@ -312,5 +432,9 @@ def solve_portfolio_qp(
             "turnover_max":    float(turnover_max) if turnover_max is not None else None,
             "actual_turnover": float(np.sum(np.abs(delta_w))),
             "sigma_off_diag_nonzero": int((np.abs(Sigma_mat) > 1e-12).sum() - np.count_nonzero(np.diag(Sigma_mat))),
+            "impact_coef":     b_impact,
+            "impact_cost_max": float(impact_coef_arr.max()) if impact_coef_arr.size else 0.0,
+            "fixed_cost":      c_fix,
+            "fixed_cost_beta": beta_fix if c_fix > 0 else 0.0,
         },
     )

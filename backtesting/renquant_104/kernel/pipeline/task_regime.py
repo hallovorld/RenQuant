@@ -85,9 +85,34 @@ class GMMTask(Task):
         spy_df      = ctx.ohlcv.get("SPY")
         spy_returns = np.array(ctx.spy_returns)
 
+        # 2026-05-04 audit Issue 01 fix: null-guard for ctx.gmm. Pre-fix,
+        # if GMM artifact loading failed upstream, gmm_predict(None, …)
+        # raised inside the call and crashed the daily104 cron hard.
+        # Fail-SAFE: empty probs dict → RegimeFinalizeTask defaults to
+        # AMBIGUOUS regime via the existing empty-dict path (Issue 02
+        # documents that default; the ambiguity is now intentional rather
+        # than silent). Also guard SPY df.
+        if ctx.gmm is None:
+            log.warning(
+                "GMMTask: ctx.gmm is None — GMM artifact missing/failed "
+                "to load. Setting empty gmm_probs (RegimeFinalizeTask "
+                "will fall back to default regime).",
+            )
+            ctx.regime_state.gmm_probs = {}
+            return
+        if spy_df is None or spy_df.empty:
+            log.warning(
+                "GMMTask: SPY OHLCV missing/empty — skipping GMM predict.",
+            )
+            ctx.regime_state.gmm_probs = {}
+            return
+
         ctx.regime_state.gmm_probs = gmm_predict(
             ctx.gmm, spy_returns, spy_df, vol_window=vol_window
         )
+        if not ctx.regime_state.gmm_probs:
+            log.warning("GMMTask: gmm_predict returned empty probs.")
+            return
         dominant = max(ctx.regime_state.gmm_probs, key=ctx.regime_state.gmm_probs.get)
         log.debug("GMMTask: probs=%s  dominant=%s", ctx.regime_state.gmm_probs, dominant)
 

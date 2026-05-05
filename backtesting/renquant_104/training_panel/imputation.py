@@ -83,6 +83,52 @@ def sector_median_fill(
     return panel
 
 
+def forward_fill_per_ticker(
+    panel: pd.DataFrame, cols: list[str], *,
+    max_gap_days: int = 5,
+    ticker_col: str = "ticker",
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Forward-fill NaN values in ``cols`` WITHIN each ticker's time series,
+    capped at ``max_gap_days`` consecutive NaN to avoid stale-value leak.
+
+    2026-05-04 — added in response to user spec "数据消失时 forward fill".
+    Targeted only at slow-moving features (whitelist via config). DO NOT
+    apply to high-frequency intraday-derived features — yesterday's
+    afternoon-drift z-score has no information about today's, so ffill
+    on those is just noise injection.
+
+    The cap is enforced by counting consecutive NaN per ticker per col;
+    runs longer than ``max_gap_days`` keep the trailing values as NaN.
+    Use sector_median_fill or row_coverage filter for the long-gap case.
+
+    Parameters
+    ----------
+    panel : DataFrame
+        Long-form panel (one row per ticker × date). Must have ``ticker_col``
+        and ``date_col``.
+    cols : list[str]
+        Whitelist of columns to forward-fill. Empty list → no-op.
+    max_gap_days : int
+        Maximum consecutive NaN run to fill (calendar-row count, not
+        calendar-day; aligns with bar count). Default 5.
+
+    Returns a NEW DataFrame; does not mutate input.
+    """
+    if not cols or panel.empty:
+        return panel
+    panel = panel.copy()
+    cols_present = [c for c in cols if c in panel.columns]
+    if not cols_present:
+        return panel
+    # Sort within ticker; pandas groupby's `ffill(limit=N)` enforces the cap.
+    panel = panel.sort_values([ticker_col, date_col], kind="mergesort")
+    panel[cols_present] = panel.groupby(
+        ticker_col, group_keys=False, sort=False,
+    )[cols_present].ffill(limit=max_gap_days)
+    return panel
+
+
 def compute_age_weight(
     panel: pd.DataFrame,
     listing_dates: dict[str, pd.Timestamp],

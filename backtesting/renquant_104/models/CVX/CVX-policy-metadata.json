@@ -1,77 +1,55 @@
 {
   "model_name": "CVX",
-  "policy_type": "classification",
-  "feature_columns": [
-    "rsi",
-    "macd_hist",
-    "cci",
-    "bbp",
-    "adx",
-    "williams_r",
-    "obv_slope",
-    "spy_realized_vol",
-    "spy_adx",
-    "spy_trend",
-    "hurst_proxy"
+  "policy_type": "manual",
+  "score_rules": [
+    {
+      "col": "rsi",
+      "buy_below": 30,
+      "sell_above": 70
+    },
+    {
+      "col": "macd_hist",
+      "buy_above": 0,
+      "sell_below": 0
+    },
+    {
+      "col": "cci",
+      "buy_below": -100,
+      "sell_above": 50
+    }
   ],
-  "lookahead": 5,
-  "threshold": 0.03,
-  "leaf_size": 25,
-  "bags": 15,
-  "impact": 0.0,
-  "buy_threshold": 0.1,
-  "sell_threshold": -0.1,
+  "buy_threshold": 2,
+  "sell_threshold": -2,
   "artifacts": {
-    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/CVX/CVX-rf-trees.json"
+    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/CVX/CVX-manual-rules.json"
   },
-  "trained_date": "2026-04-24",
-  "best_approach": "Classification",
-  "sharpe": 0.8956,
+  "trained_date": "2026-04-30",
+  "best_approach": "Manual",
+  "sharpe": 0.8941,
+  "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-17",
-  "live_holdout_sharpe": 0.2375,
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-23",
+  "live_holdout_sharpe": 3.5865,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
-    "score_kind": "bag_learner_raw",
+    "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2501,
+    "sample_size": 2504,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.14514194322271093,
-    "raw_min": -0.6,
-    "raw_max": 0.6,
+    "base_rate": 0.14536741214057508,
+    "raw_min": -1.0,
+    "raw_max": 3.0,
     "x_thresholds": [
-      -0.6,
-      -0.5333333333333333,
-      -0.4666666666666667,
-      -0.4,
-      0.06666666666666667,
-      0.13333333333333333,
-      0.2,
-      0.26666666666666666,
-      0.3333333333333333,
-      0.4,
-      0.4666666666666667,
-      0.5333333333333333,
-      0.6
+      -1.0,
+      3.0
     ],
     "y_thresholds": [
-      0.0,
-      0.10526315789473684,
-      0.10526315789473684,
-      0.13137344970142398,
-      0.13137344970142398,
-      0.1828793774319066,
-      0.1828793774319066,
-      0.4375,
-      0.5555555555555556,
-      0.6666666666666666,
-      0.8333333333333334,
-      1.0,
-      1.0
+      0.14536741214057508,
+      0.14536741214057508
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -79,42 +57,22 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.03328262911082291,
+    "er_residual_std": 0.03377577615536768,
     "er_x_thresholds": [
-      -0.6,
-      -0.5333333333333333,
-      -0.4666666666666667,
-      -0.4,
-      -0.3333333333333333,
-      -0.26666666666666666,
-      0.06666666666666667,
-      0.13333333333333333,
-      0.2,
-      0.26666666666666666,
-      0.3333333333333333,
-      0.4,
-      0.5333333333333333,
-      0.6
+      -1.0,
+      0.0,
+      2.0,
+      3.0
     ],
     "er_y_thresholds": [
-      -0.027687792797118322,
-      -0.027687792797118322,
-      -0.02048149109584963,
-      -0.011571705534612144,
-      -0.005351301207395258,
-      -0.0012933764899389637,
-      -0.0012933764899389637,
-      0.001366409911459999,
-      0.001435407107050764,
-      0.02485301468530545,
-      0.034929592221084924,
-      0.05150651138914774,
-      0.05150651138914774,
-      0.053412984639002126
+      -0.0026708238189586636,
+      -0.0005951820642248159,
+      -0.0005951820642248159,
+      -0.00046403617240368494
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-24"
+  "score_calibration_date": "2026-05-04"
 }

@@ -114,9 +114,24 @@ class LocalStore:
         timeframe: str = "1d",
         start: str | None = None,
         end: str | None = None,
-        tolerance_days: int = 5,
+        tolerance_days: int | None = None,
     ) -> bool:
-        """Check whether the local cache covers [start, end]."""
+        """Check whether the local cache covers [start, end] AND is fresh.
+
+        Freshness rule (default, ``tolerance_days=None``): cache.max_date
+        must be ≥ the last completed NYSE session strictly before the
+        reference date. Reference is ``end`` if given, else today.
+
+        2026-05-03 P0 fix: legacy default ``tolerance_days=5`` plus the
+        ``end=None`` short-circuit silently accepted a 3-trading-day-stale
+        cache. ``fetch_ohlcv`` calls without an end parameter then never
+        refetched, panel pipeline ran on stale data, 6 live orders went
+        out on Sunday based on Thursday closes. Invariant: if you call
+        ``has_range`` without specifying ``tolerance_days``, NYSE-aware
+        staleness is enforced. Pass ``tolerance_days=N`` only if you
+        knowingly want the legacy calendar-day tolerance (e.g., backtest
+        with a fixed historical end).
+        """
         path = self._path(symbol, timeframe)
         if not path.exists():
             return False
@@ -127,8 +142,33 @@ class LocalStore:
             df.index = pd.to_datetime(df.index)
         if start and df.index.min() > pd.Timestamp(start):
             return False
-        if end and df.index.max() < pd.Timestamp(end) - pd.Timedelta(days=tolerance_days):
-            return False
+
+        ref = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+        cache_max = df.index.max()
+
+        if tolerance_days is not None:
+            if cache_max < ref - pd.Timedelta(days=tolerance_days):
+                return False
+            return True
+
+        # NYSE-aware staleness
+        try:
+            import pandas_market_calendars as mcal  # noqa: PLC0415
+            cal = mcal.get_calendar("NYSE")
+            sched = cal.schedule(
+                start_date=ref - pd.Timedelta(days=14),
+                end_date=ref,
+            )
+            sched_before = sched[sched.index.date < ref.date()]
+            if sched_before.empty:
+                return True
+            last_complete = sched_before.index[-1].date()
+            if cache_max.date() < last_complete:
+                return False
+        except Exception:
+            # Calendar lib unavailable — fall back to a conservative 2-day cap.
+            if cache_max < ref - pd.Timedelta(days=2):
+                return False
         return True
 
 

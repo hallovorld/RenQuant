@@ -145,6 +145,15 @@ class InferencePipeline:
         except Exception:
             pass    # never let observability break the pipeline
 
+        # 2026-05-03 P0 incident: panel pipeline ingested through Thursday
+        # only, model + inference ran on stale data, 6 live orders went out
+        # Sunday based on Thursday closes 3 trading days behind Friday.
+        # This gate is the LAST line of defense against silent staleness
+        # leaking into broker submissions. Disable in backtest configs via
+        # data_freshness.enabled=false. See task_data_freshness.py.
+        from .task_data_freshness import DataFreshnessGateTask  # noqa: PLC0415
+        DataFreshnessGateTask().run(ctx)
+
         RegimeJob().run(ctx)
         DrawdownJob().run(ctx)
         BuyGatesJob().run(ctx)
@@ -175,6 +184,31 @@ class InferencePipeline:
                     ctx.candidates.append(tc.candidate)
             log.info("Phase 2b (buy scan): %d candidates from %d tickers",
                      len(ctx.candidates), len(universe))
+
+        # G8 (2026-05-04 post-stop blackout): drop candidates whose ticker
+        # had a path-rule exit (trailing_stop / stop_loss / single_day_loss /
+        # max_hold / gap_down) within `risk.post_stop_cooldown.bars`. Off
+        # by default — opt-in via that config block. Adapter populates
+        # ctx.last_stop_exit_dates when the exit_type is in the
+        # DEFAULT_STOP_EXIT_TYPES set.
+        from .task_post_stop_cooldown import (  # noqa: PLC0415
+            PostStopCooldownFilterTask,
+        )
+        PostStopCooldownFilterTask().run(ctx)
+
+        # 2026-05-03 P0 risk gates (added same evening as DataFreshnessGate):
+        # universe-admission filters keep small/illiquid names out of the
+        # watchlist, but once admitted nothing at runtime checks
+        #   • realized vol — could be 100% annualized and still pass
+        #   • current concentration — could already hold 30% of portfolio
+        # These two gates drop violators from ctx.candidates before
+        # Phase 3 (PanelScoring/Ranking) so the QP never sees them. See
+        # task_risk_gates.py for invariants + defaults.
+        from .task_risk_gates import (  # noqa: PLC0415
+            RealizedVolGateTask, PositionConcentrationGateTask,
+        )
+        RealizedVolGateTask().run(ctx)
+        PositionConcentrationGateTask().run(ctx)
 
         # 2026-04-24: honour Job.should_skip on the Phase-3 jobs. Each
         # Job declares should_skip() guards (no candidates, bear_only,
@@ -262,6 +296,10 @@ class SellOnlyPipeline:
     def run(self, ctx: InferenceContext) -> None:
         log.info("SellOnlyPipeline START  date=%s", ctx.today)
         t0 = time.monotonic()
+
+        # 2026-05-03 P0: even sell-only paths must refuse stale data.
+        from .task_data_freshness import DataFreshnessGateTask  # noqa: PLC0415
+        DataFreshnessGateTask().run(ctx)
 
         RegimeJob().run(ctx)
         DrawdownJob().run(ctx)

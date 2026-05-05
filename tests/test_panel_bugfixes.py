@@ -160,7 +160,7 @@ class TestPrepareInferenceFramesZScoring:
             "indicator_spec": {},  # defaults
             "_strategy_dir": str(_STRATEGY_DIR),
         }
-        ff, fac, macro = prepare_inference_panel_frames(
+        ff, fac, macro, _emb = prepare_inference_panel_frames(
             watchlist=["AAA", "BBB", "CCC"], ohlcv=ohlcv,
             ticker_sectors={"AAA": "tech", "BBB": "tech", "CCC": "tech"},
             config=cfg,

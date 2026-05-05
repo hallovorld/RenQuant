@@ -143,14 +143,37 @@ def score_candidates(
     if not candidates:
         return []
 
-    rank_scores = [c.rank_score for c in candidates]
-    rs_scores   = [c.rs_score   for c in candidates]
-    rank_min, rank_max = min(rank_scores), max(rank_scores)
-    rs_min,   rs_max   = min(rs_scores),   max(rs_scores)
+    # 2026-05-04 audit Issue 20 fix: drop NaN/inf entries before computing
+    # min/max. Pre-fix, a single NaN rank_score made `min(...)` return
+    # NaN → `_norm()` returned NaN for every candidate → `blend()` returned
+    # NaN → `sorted()` is non-deterministic on NaN keys (Python's Timsort
+    # comparisons return False both ways for NaN). Different runs of the
+    # same data could produce different rankings. Same RA-1 pattern as
+    # SortCandidatesTask but at the upstream entry point.
+    import math as _math
+    finite_rank = [c.rank_score for c in candidates
+                   if c.rank_score is not None
+                   and _math.isfinite(float(c.rank_score))]
+    finite_rs   = [c.rs_score for c in candidates
+                   if c.rs_score is not None
+                   and _math.isfinite(float(c.rs_score))]
+    if finite_rank:
+        rank_min, rank_max = min(finite_rank), max(finite_rank)
+    else:
+        rank_min, rank_max = 0.0, 0.0
+    if finite_rs:
+        rs_min, rs_max = min(finite_rs), max(finite_rs)
+    else:
+        rs_min, rs_max = 0.0, 0.0
+
+    def _safe_norm(v: float | None, lo: float, hi: float) -> float:
+        if v is None or not _math.isfinite(float(v)):
+            return 0.0   # NaN/None contributes nothing — same effect as ranking last
+        return _norm(float(v), lo, hi)
 
     def blend(c: CandidateResult) -> float:
-        return (w_rank * _norm(c.rank_score, rank_min, rank_max)
-                + w_rs   * _norm(c.rs_score,   rs_min,   rs_max))
+        return (w_rank * _safe_norm(c.rank_score, rank_min, rank_max)
+                + w_rs   * _safe_norm(c.rs_score,   rs_min,   rs_max))
 
     return sorted(candidates, key=blend, reverse=True)
 
@@ -293,8 +316,11 @@ def compute_relative_strength(stock_ret_20d: float, etf_ret_20d: float) -> float
         stock_ret_20d: 20-day return of the stock  (pct_change(20)).
         etf_ret_20d:   20-day return of its sector ETF.
 
-    Returns 0.0 when either input is NaN.
+    Returns 0.0 when either input is NaN OR inf.
     """
-    if math.isnan(stock_ret_20d) or math.isnan(etf_ret_20d):
+    # 2026-05-04 audit Issue 21 fix: also guard against inf. Pre-fix,
+    # an inf return (theoretically possible from an upstream divide-by-
+    # zero) propagated through subtraction and downstream rs ranking.
+    if not (math.isfinite(stock_ret_20d) and math.isfinite(etf_ret_20d)):
         return 0.0
     return stock_ret_20d - etf_ret_20d

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "kind": "panel_ltr_validation_proxy",
+  "trained_date": "2026-04-27",
+  "validation_type": "numpy_ols_proxy",
+  "note": "XGBoost \u5728 VM \u4e2d\u4e0d\u53ef\u7528 (macOS-only venv); \u4f7f\u7528 cross-sectional ridge OLS \u4ee3\u7406\u9a8c\u8bc1 embedding \u6548\u679c",
+  "config_changes_verified": {
+    "rank_ndcg": true,
+    "asset_embeddings_enabled": true,
+    "morning_drift_z_dropped": true
+  },
+  "proxy_comparison": {
+    "version_a_features": 11,
+    "version_b_features": 27,
+    "embedding_dim": 16,
+    "ic_a_mean": 0.014751154460968691,
+    "ic_a_std": 0.049490447535499325,
+    "ic_a_per_fold": [
+      0.07701281658032619,
+      0.050733853600157384,
+      -0.02683062588482683,
+      -0.06990360351049443,
+      0.017854500355856836,
+      0.039639985624793005
+    ],
+    "ic_b_mean": 0.009932073307084397,
+    "ic_b_std": 0.04047711953212488,
+    "ic_b_per_fold": [
+      0.05895885319423362,
+      0.04358529284965542,
+      -0.006614269748645074,
+      -0.06724924032981547,
+      0.016564255061270797,
+      0.014347548815807095
+    ],
+    "delta_ic": -0.0048190811538842936,
+    "delta_pct": -32.66917966528525,
+    "gate_threshold": 0.014013596737920256,
+    "acceptance_gate_passed": false
+  },
+  "xgb_reference": {
+    "rank_pairwise_ic": 0.041138526242597576,
+    "rank_ndcg_no_emb_ic": 0.003869647567656677,
+    "rank_ndcg_best_iter": 4
+  },
+  "panel_shape": {
+    "rows": 122689,
+    "tickers": 56
+  }
+}

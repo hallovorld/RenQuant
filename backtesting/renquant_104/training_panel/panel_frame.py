@@ -100,6 +100,8 @@ def build_panel_frame(
     drop_cols_from_features: tuple[str, ...] = ("fwd_return", "label"),
     training_window_years: "float | None" = None,
     recency_weighting: "dict | None" = None,
+    macro_version: str = "v1",
+    force_broadcast: bool = False,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Assemble the unified panel training frame.
 
@@ -174,8 +176,20 @@ def build_panel_frame(
     # macro data (NYSE-holiday + weekend mismatches with equity calendar).
     # Trailing NaN (warmup for rolling-z) → 0.0 (z-scored mean — same
     # convention as factor_frames handling above).
+    #
+    # Bug-1 fix (2026-04-27): v1 broadcast injects IDENTICAL macro values
+    # for every ticker on a given date — within-date variance is exactly
+    # zero so the cross-sectional rank loss receives zero gradient from
+    # these columns.  Additionally, colsample_bytree samples them as
+    # "real" features, diluting the effective feature set.  v1 mode now
+    # SKIPS the broadcast entirely unless force_broadcast=True is passed
+    # (escape hatch for testing / legacy comparisons).  v2 mode uses
+    # per-ticker β features (already in factor_frames) so broadcast is
+    # also unnecessary there — but v2 callers should pass macro_frame=None
+    # anyway (see Bug-2 fix in pp_panel_training.py::BuildPanelTask).
     macro_cols: list[str] = []
-    if macro_frame is not None and not macro_frame.empty:
+    if (macro_frame is not None and not macro_frame.empty
+            and (macro_version != "v1" or force_broadcast)):
         # Ensure macro_frame index is datetime for clean merge
         if not isinstance(macro_frame.index, pd.DatetimeIndex):
             macro_frame = macro_frame.copy()
@@ -245,9 +259,18 @@ def build_panel_frame(
     # history for feature computation, but BEFORE weights are computed so
     # rolling sums reflect the truncated window.
     if training_window_years is not None and training_window_years > 0:
-        cutoff = panel["date"].max() - pd.Timedelta(days=int(training_window_years * 365.25))
-        n_before = len(panel)
+        data_end = panel["date"].max()
+        cutoff = data_end - pd.Timedelta(days=int(training_window_years * 365.25))
+        n_dates_before = panel["date"].nunique()
         panel = panel[panel["date"] >= cutoff].reset_index(drop=True)
+        n_dates_after = panel["date"].nunique()
+        import logging as _logging
+        _logging.getLogger("panel_frame").info(
+            "build_panel_frame: training_window=%.1fy  data_end=%s  "
+            "cutoff=%s  dates=%d→%d (dropped %d)",
+            training_window_years, data_end.date(), cutoff.date(),
+            n_dates_before, n_dates_after, n_dates_before - n_dates_after,
+        )
         # Safe to regroup — group_sizes recomputed below.
 
     panel["weight_concurrency"] = compute_concurrency_weight(

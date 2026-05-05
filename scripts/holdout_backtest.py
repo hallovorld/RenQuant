@@ -176,6 +176,13 @@ def _run_sim_on_snapshot(snap_dir: Path, config: dict, sim_start: str,
         "total_return":  float(getattr(result, "total_return", 0.0)) * 100,
         "n_buys":        int(len(getattr(result, "buys",  []) or [])),
         "n_sells":       int(len(getattr(result, "sells", []) or [])),
+        # 2026-05-03 P0 — per-trade detail. SimResult.trade_log is the
+        # only place where pnl_pct / hold_days / tax / exit_reason are
+        # populated per (ticker, action). Pre-fix the holdout report
+        # threw all of this away and only persisted aggregate stats —
+        # making per-trade decision-tree analysis impossible without
+        # re-running the sim. Caller dumps to a parquet sidecar.
+        "trade_log":     list(getattr(result, "trade_log", []) or []),
     }
 
 
@@ -300,6 +307,21 @@ def main() -> None:
         REPO_ROOT / "data" / "holdout_results" / f"{args.train_end}.json"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # 2026-05-03 P0: dump per-trade detail to parquet sidecar so per-trade
+    # decision-tree analysis (pnl × exit_reason × hold_days × ticker × tax)
+    # is possible without re-running the sim. Path:
+    #   {out_path stem}.trades.parquet
+    trade_log = metrics.pop("trade_log", []) or []
+    if trade_log:
+        try:
+            import pandas as _pd   # noqa: PLC0415
+            trades_df = _pd.DataFrame(trade_log)
+            trades_path = out_path.with_suffix(".trades.parquet")
+            trades_df.to_parquet(trades_path, index=False)
+            log.info("Wrote per-trade detail (%d events) → %s",
+                     len(trades_df), trades_path)
+        except Exception as exc:
+            log.warning("Failed to dump trade_log: %s", exc)
     out_path.write_text(json.dumps(report, indent=2))
 
     print()

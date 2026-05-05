@@ -86,10 +86,13 @@ class TestGateBPure:
         assert reason == "sigma_nonpositive"
 
     def test_rejects_nan_mu(self):
+        """2026-05-04 audit Issue 24: NaN sigma OR mu now hits an
+        isfinite guard FIRST; reason string changed to
+        `sigma_or_mu_nonfinite`. Both outcomes correctly reject."""
         c = _Cand("A", mu=float("nan"), sigma=0.10)
         ok, reason = _gate_b_edge_sharpe(c, threshold=0.20)
         assert ok is False
-        assert reason == "mu_nan"
+        assert reason in {"mu_nan", "sigma_or_mu_nonfinite"}
 
     def test_passes_when_no_ngboost_attached(self):
         """Cand without μ/σ (no NGBoost ran) — gate should pass through."""

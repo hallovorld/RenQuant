@@ -207,6 +207,9 @@ class TestTickerPanelJobs:
             # Round 3 orthogonal factors
             "amihud_illiq", "volume_shift", "price_to_high",
             "realized_vol", "drawdown_peak",
+            # 2026-05-03 added factors (factors.py landed):
+            # Ang 2006 IVOL puzzle + Jegadeesh 1990 1-month reversal
+            "idio_vol", "mom_1m_reversal",
         }
         assert set(tc.raw_factor_frame.columns) == expected
 
@@ -233,6 +236,8 @@ class TestFactorZScoreTask:
             # Round 3 orthogonal factor z-scores
             "amihud_illiq_z", "volume_shift_z", "price_to_high_z",
             "realized_vol_z", "drawdown_peak_z",
+            # 2026-05-03 new factor z-scores (Ang IVOL + 1mo reversal)
+            "idio_vol_z", "mom_1m_reversal_z",
         }
         for t, df in ctx.factor_frames.items():
             assert set(df.columns) == expected

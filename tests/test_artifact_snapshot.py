@@ -47,6 +47,40 @@ class TestSnapshotCreation:
             import shutil
             shutil.rmtree(snap, ignore_errors=True)
 
+    def test_copies_side_config_files(self, tmp_path):
+        """Regression: side configs `strategy_config.<variant>.json` were
+        invisible to the snapshot, silently routing every B2/A-B side-
+        config sim to the production strategy_config.json. (2026-05-04
+        bug — discovered when armA_rowcov_ffill produced byte-identical
+        trades to baseline.)"""
+        from kernel.artifact_snapshot import snapshot_artifacts
+        strategy = _make_fake_strategy(tmp_path)
+        # Drop two side configs alongside the production one.
+        (strategy / "strategy_config.armA_rowcov_ffill.json").write_text(
+            '{"watchlist": ["NVDA", "AAPL"], "side_marker": "armA"}'
+        )
+        (strategy / "strategy_config.macro_v2.json").write_text(
+            '{"watchlist": ["NVDA"], "side_marker": "macro_v2"}'
+        )
+        snap = snapshot_artifacts(strategy)
+        try:
+            # Production must still copy
+            assert (snap / "strategy_config.json").exists()
+            # Both side configs must now be present in the snapshot
+            assert (snap / "strategy_config.armA_rowcov_ffill.json").exists(), \
+                "side config strategy_config.armA_rowcov_ffill.json not copied — " \
+                "B2/A-B sims will silently fall back to production config"
+            assert (snap / "strategy_config.macro_v2.json").exists(), \
+                "side config strategy_config.macro_v2.json not copied"
+            # Content must match (not be the production config in disguise)
+            side = json.loads(
+                (snap / "strategy_config.armA_rowcov_ffill.json").read_text()
+            )
+            assert side.get("side_marker") == "armA"
+        finally:
+            import shutil
+            shutil.rmtree(snap, ignore_errors=True)
+
     def test_captures_git_sha_when_repo(self, tmp_path):
         """Snapshot records HEAD sha for reproducibility."""
         from kernel.artifact_snapshot import snapshot_artifacts

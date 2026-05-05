@@ -23,13 +23,13 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/COIN/COIN-manual-rules.json"
   },
-  "trained_date": "2026-04-24",
+  "trained_date": "2026-04-30",
   "best_approach": "Manual",
   "sharpe": 0.8127,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-17",
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-23",
   "live_holdout_sharpe": -0.4853,
   "live_holdout_days": 126,
   "score_calibration": {
@@ -37,10 +37,10 @@
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 1173,
+    "sample_size": 1176,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.3435635123614663,
+    "base_rate": 0.342687074829932,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
@@ -51,9 +51,9 @@
     ],
     "y_thresholds": [
       0.2222222222222222,
-      0.3277027027027027,
-      0.35294117647058826,
-      0.35294117647058826
+      0.3222591362126246,
+      0.35377358490566035,
+      0.35377358490566035
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -61,7 +61,7 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.1142665920575201,
+    "er_residual_std": 0.11422966024916162,
     "er_x_thresholds": [
       -1.0,
       1.0,
@@ -69,14 +69,14 @@
       3.0
     ],
     "er_y_thresholds": [
-      0.003153850065253044,
-      0.003153850065253044,
-      0.003872150701876861,
-      0.003872150701876861
+      0.002708489838417311,
+      0.002708489838417311,
+      0.003838423221045434,
+      0.003838423221045434
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-24"
+  "score_calibration_date": "2026-05-04"
 }

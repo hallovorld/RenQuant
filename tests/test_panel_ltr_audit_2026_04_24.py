@@ -78,18 +78,22 @@ class TestApplyScoresChainContinues:
 # ── P-22: NaN panel_score is vetoed (NaN < float = False bug) ──────────────
 
 class TestVetoNaNPanelScore:
-    def test_nan_panel_score_is_dropped(self):
+    """P-22 NaN-handling — UPDATED 2026-05-04 after VetoWeakBuysTask was
+    moved AFTER ApplyGlobalCalibrationTask and now reads ``rank_score``
+    (calibrated) not ``panel_score`` (raw XGB margin). The NaN/None
+    semantics are the same; the FIELD NAME is what changed."""
+
+    def test_nan_rank_score_is_dropped(self):
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
         from kernel.selection import CandidateResult
         ctx = SimpleNamespace(
             config={"ranking": {"panel_scoring": {"buy_floor": 0.5}}},
             candidates=[
-                CandidateResult(ticker="A", raw_score=0, rank_score=0.1,
-                                rs_score=0, detail="",
-                                panel_score=float("nan")),
-                CandidateResult(ticker="B", raw_score=0, rank_score=0.2,
-                                rs_score=0, detail="",
-                                panel_score=0.7),
+                CandidateResult(ticker="A", raw_score=0,
+                                rank_score=float("nan"),
+                                rs_score=0, detail="", panel_score=0.0),
+                CandidateResult(ticker="B", raw_score=0, rank_score=0.7,
+                                rs_score=0, detail="", panel_score=0.0),
             ],
             counters={},
         )
@@ -100,16 +104,17 @@ class TestVetoNaNPanelScore:
         assert "B" in tickers
         assert ctx.counters["panel_vetoed"] == 1
 
-    def test_none_panel_score_is_kept(self):
-        """Distinct from NaN: ps=None means the matrix didn't include
-        this ticker (e.g., no factor frame). RS still ranks it."""
+    def test_none_rank_score_is_kept(self):
+        """ps=None means the matrix didn't include this ticker (e.g., no
+        factor frame). RS still ranks it. Same intent as before; just on
+        the calibrated rank_score field instead of raw panel_score."""
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
         from kernel.selection import CandidateResult
         ctx = SimpleNamespace(
             config={"ranking": {"panel_scoring": {"buy_floor": 0.5}}},
             candidates=[
-                CandidateResult(ticker="A", raw_score=0, rank_score=0.1,
-                                rs_score=0, detail="", panel_score=None),
+                CandidateResult(ticker="A", raw_score=0, rank_score=None,
+                                rs_score=0, detail="", panel_score=0.0),
             ],
             counters={},
         )

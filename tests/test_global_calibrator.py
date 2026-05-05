@@ -374,7 +374,14 @@ class TestCalibratorPoolDiagnostics:
             t = f"T{i:02d}"
             scores[t] = _pd.Series([0.05] * 30, index=dates, name=t)
             rets[t]   = _pd.Series([0.01] * 30, index=dates, name=t)
-        with pytest.raises(ValueError, match="collapsed to"):
+        # 2026-05-04 — match either the original "collapsed to" error
+        # (probability head 1 unique y) OR the new NaN-leaf filter rejection
+        # ("after NaN-leaf filter, pooled n=0 < min_rows"). Constant-score
+        # data triggers the NaN-leaf mode-collapse filter first because
+        # 100% of rows match the modal value; either path is a correct
+        # "rejected for degeneracy" outcome.
+        with pytest.raises(ValueError,
+                           match="collapsed to|after NaN-leaf filter|< min_rows"):
             fit_global_calibrator(scores, rets, threshold=0.005,
                                   min_rows=200)
 

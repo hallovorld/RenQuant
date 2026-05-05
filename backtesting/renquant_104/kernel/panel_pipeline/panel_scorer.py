@@ -55,10 +55,28 @@ class PanelScorer:
         loader which resolves the paired `.json` sidecar automatically.
         """
         path = Path(path)
+        # 2026-05-04 audit Issue 28: explicit FileNotFoundError so the
+        # caller (LoadScorerTask) gets a typed error and a useful path
+        # in the message — pre-fix, json.loads on a missing file raised
+        # FileNotFoundError from path.read_text() with the same path but
+        # transformer .pt branch took it before the JSON path could
+        # produce any error context.
+        if not path.exists():
+            raise FileNotFoundError(
+                f"PanelScorer.load: artifact not found: {path} — "
+                f"check ranking.panel_scoring.artifact_path config + "
+                f"that the snapshot dir copied the side artifact "
+                f"(2026-05-04 snapshot side-config fix)."
+            )
         if path.suffix == ".pt":
             from kernel.panel_pipeline.transformer_scorer import TransformerPanelScorer  # noqa: PLC0415
             return TransformerPanelScorer.load(path)
-        payload = json.loads(path.read_text())
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"PanelScorer.load: artifact at {path} is not valid JSON: {exc}"
+            ) from exc
         kind = payload.get("kind")
         if kind == "panel_transformer":
             # JSON sidecar was passed; transformer loader will find the .pt.

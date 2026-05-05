@@ -53,6 +53,11 @@ class PanelTrainingContext:
     # can fetch new tickers if needed. Inference must remain offline-fast.
     inference_only: bool = False
 
+    # 2026-05-04 (user mandate): data-scan preflight result, populated by
+    # ScanTrainingDataTask at the start of every training run. dict
+    # form of training_panel.data_scan.DataScanReport.to_dict().
+    training_data_scan: dict = field(default_factory=dict)
+
     # Macro factor frame (Phase 1B, 2026-04-26 round-7). Date-indexed
     # DataFrame with z-scored macro features (VIX, HYG, UUP, ...). When
     # populated, BuildPanelTask broadcasts these per-date values to every

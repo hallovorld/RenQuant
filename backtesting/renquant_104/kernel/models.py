@@ -136,6 +136,18 @@ def predict_qlearning(artifact: dict, feature_row: pd.Series, holdings: int = 0)
     n_bins     = int(artifact.get("n_bins", 5))
     q_table    = np.array(artifact["q_table"])
 
+    # 2026-05-04 audit Issue 38 fix: NaN feature value silently routed
+    # to the LAST bin via `np.digitize(NaN, edges)` which returns
+    # `len(edges)+1`, then `np.clip(... - 1, 0, n_bins-1)` pinned to
+    # n_bins-1 = top bin. So a missing feature looked like an extreme-
+    # value bullish (or bearish, depending on sign of bin) signal —
+    # deterministic but semantically wrong. Mirror predict_classification
+    # / predict_xgboost behavior: NaN feature → return 0.0 (neutral).
+    for col in feat_cols:
+        val = feature_row.get(col)
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return 0.0
+
     state = 0
     for col in feat_cols:
         val     = float(feature_row.get(col, 0))

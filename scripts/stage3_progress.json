@@ -1,0 +1,280 @@
+{
+  "batch_size": 10,
+  "threshold": -0.002,
+  "baseline_size": 103,
+  "baseline_ic": 0.034,
+  "started_at": "2026-05-02T19:05:30",
+  "batches": [
+    {
+      "batch_idx": 0,
+      "tickers": [
+        "ABNB",
+        "AES",
+        "AGCO",
+        "AKAM",
+        "ALNY",
+        "APA",
+        "APH",
+        "APO",
+        "APPF",
+        "APTV"
+      ],
+      "new_ic": 0.0359,
+      "reference_ic": 0.0359,
+      "delta": 0.0019,
+      "accepted": true,
+      "elapsed_s": 1500,
+      "rc": "manual_recovery_from_db"
+    },
+    {
+      "batch_idx": 1,
+      "tickers": [
+        "ARES",
+        "ATI",
+        "AYI",
+        "BBY",
+        "BC",
+        "BHF",
+        "BIO",
+        "BWXT",
+        "BX",
+        "CACI"
+      ],
+      "new_ic": 0.03691345290545787,
+      "reference_ic": 0.03691345290545787,
+      "delta": 0.0010134529054578664,
+      "accepted": true,
+      "elapsed_s": 1880.5941994169261,
+      "rc": 0
+    },
+    {
+      "batch_idx": 2,
+      "tickers": [
+        "CARR",
+        "CF",
+        "CG",
+        "CGNX",
+        "CHTR",
+        "CNC",
+        "CNH",
+        "CNM",
+        "COF",
+        "COLB"
+      ],
+      "new_ic": 0.0407689222136974,
+      "reference_ic": 0.0407689222136974,
+      "delta": 0.0038554693082395314,
+      "accepted": true,
+      "elapsed_s": 1998.2295831250958,
+      "rc": 0
+    },
+    {
+      "batch_idx": 3,
+      "tickers": [
+        "CPAY",
+        "CPNG",
+        "CR",
+        "CRH",
+        "CRL",
+        "CRUS",
+        "CVS",
+        "DAR",
+        "DD",
+        "DECK"
+      ],
+      "new_ic": 0.03793598952059085,
+      "reference_ic": 0.0407689222136974,
+      "delta": -0.0028329326931065477,
+      "accepted": false,
+      "elapsed_s": 2121.0227195417974,
+      "rc": 0
+    },
+    {
+      "batch_idx": 4,
+      "tickers": [
+        "DG",
+        "DHI",
+        "DINO",
+        "DKS",
+        "DLTR",
+        "DOW",
+        "DRS",
+        "DV",
+        "DXCM",
+        "ELAN"
+      ],
+      "new_ic": 0.038453586274062916,
+      "reference_ic": 0.0407689222136974,
+      "delta": -0.002315335939634483,
+      "accepted": false,
+      "elapsed_s": 2122.1532267909497,
+      "rc": 0
+    },
+    {
+      "batch_idx": 5,
+      "tickers": [
+        "EME",
+        "EPAM",
+        "EQT",
+        "ESAB",
+        "ESI",
+        "ETN",
+        "EXEL",
+        "EXPE",
+        "FBIN",
+        "FCNCA"
+      ],
+      "new_ic": 0.04369782160553339,
+      "reference_ic": 0.04369782160553339,
+      "delta": 0.002928899391835993,
+      "accepted": true,
+      "elapsed_s": 2021.8138633330818,
+      "rc": 0
+    },
+    {
+      "batch_idx": 6,
+      "tickers": [
+        "FCX",
+        "FDX",
+        "FERG",
+        "FICO",
+        "FITB",
+        "FLS",
+        "FLUT",
+        "FRPT",
+        "GLW",
+        "GM"
+      ],
+      "new_ic": 0.034415385003444106,
+      "reference_ic": 0.04369782160553339,
+      "delta": -0.009282436602089286,
+      "accepted": false,
+      "elapsed_s": 2284.070734583074,
+      "rc": 0
+    },
+    {
+      "batch_idx": 7,
+      "tickers": [
+        "GME",
+        "GMED",
+        "GRMN",
+        "GTES",
+        "GWRE",
+        "GXO",
+        "HALO",
+        "HII",
+        "HLNE",
+        "IAC"
+      ],
+      "new_ic": 0.0394371793765088,
+      "reference_ic": 0.04369782160553339,
+      "delta": -0.004260642229024593,
+      "accepted": false,
+      "elapsed_s": 2185.068159249844,
+      "rc": 0
+    },
+    {
+      "batch_idx": 8,
+      "tickers": [
+        "IBKR",
+        "IDXX",
+        "IONS",
+        "IP",
+        "IPGP",
+        "IQV",
+        "IRDM",
+        "IRM",
+        "IVZ",
+        "JBHT"
+      ],
+      "new_ic": 0.04072669777421967,
+      "reference_ic": 0.04369782160553339,
+      "delta": -0.0029711238313137253,
+      "accepted": false,
+      "elapsed_s": 2178.501471708063,
+      "rc": 0
+    },
+    {
+      "batch_idx": 9,
+      "tickers": [
+        "JEF",
+        "JLL",
+        "KEX",
+        "KEYS",
+        "KKR",
+        "KRC",
+        "LAZ",
+        "LBRDK",
+        "LFUS",
+        "LNC"
+      ],
+      "new_ic": 0.04118650655935973,
+      "reference_ic": 0.04369782160553339,
+      "delta": -0.002511315046173662,
+      "accepted": false,
+      "elapsed_s": 2047.05468241591,
+      "rc": 0
+    },
+    {
+      "batch_idx": 10,
+      "tickers": [
+        "LPLA",
+        "LPX",
+        "LUV",
+        "LVS",
+        "LW",
+        "MASI",
+        "MAT",
+        "MEDP",
+        "MIDD",
+        "MP"
+      ],
+      "new_ic": 0.042158785784429505,
+      "reference_ic": 0.042158785784429505,
+      "delta": -0.0015390358211038874,
+      "accepted": true,
+      "elapsed_s": 2095.09570754203,
+      "rc": 0
+    },
+    {
+      "batch_idx": 11,
+      "tickers": [
+        "MPC",
+        "MTCH",
+        "NBIX",
+        "NCNO",
+        "NOV",
+        "NTAP",
+        "NU",
+        "NUE",
+        "NVST",
+        "NXST"
+      ],
+      "new_ic": 0.04338276377575688,
+      "reference_ic": 0.04338276377575688,
+      "delta": 0.0012239779913273754,
+      "accepted": true,
+      "elapsed_s": 2245.4842938340735,
+      "rc": 0
+    },
+    {
+      "batch_idx": 12,
+      "tickers": [
+        "ODFL",
+        "OLLI",
+        "OMF",
+        "OVV",
+        "PAYC",
+        "PCOR",
+        "PEN",
+        "PHM",
+        "PLNT",
+        "PNFP"
+      ],
+      "new_ic": null,
+      "delta": null,
+      "accepted": false,
+      "error": "timeout"
+    }
+  ]
+}

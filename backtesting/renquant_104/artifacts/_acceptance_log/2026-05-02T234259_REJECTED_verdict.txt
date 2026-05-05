@@ -1,0 +1,13 @@
+AcceptanceVerdict @ 2026-05-02T23:42:59Z
+  [hard] G1_schema                    PASS  metric=27.0000  threshold=1.0000  no prior artifact; accept 27 cols
+  [hard] G2_calibrator_unique         PASS  metric=n/a  threshold=5.0000  no n_unique_prob_y on this artifact (skip)
+  [hard] G3_pool_ic_positive          PASS  metric=n/a  threshold=0.0000  no pool_ic on this artifact (skip)
+  [hard] G4_oos_ic_vs_prior           PASS  metric=0.0005  threshold=0.0000  no prior — accept on new>0 (got +0.0005)
+  [hard] G5_score_range               PASS  metric=n/a  threshold=n/a  no score_sample_range; skip
+  [hard] G6_inference_smoke           PASS  metric=n/a  threshold=n/a  no inference_smoke_test (skip)
+  [hard] G7_oos_ic_floor              FAIL  metric=0.0005  threshold=0.0200  oos_mean_ic=+0.0005 vs floor=+0.0200
+  [soft] G8_per_ticker_variance       PASS  metric=n/a  threshold=0.0010  no smoke_test (skip)
+  [hard] G9_sim_apy                   PASS  metric=n/a  threshold=n/a  no sim_smoke.apy on staging (skip)
+  [hard] G10_sim_sharpe               PASS  metric=n/a  threshold=n/a  no sim_smoke.sharpe on staging (skip)
+  [soft] G11_turnover                 PASS  metric=n/a  threshold=n/a  no sim_smoke.turnover_ratio on staging (skip)
+  ─── VERDICT: REJECT (hard fails=1, soft warns=0)

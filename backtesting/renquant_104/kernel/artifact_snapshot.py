@@ -47,7 +47,16 @@ log = logging.getLogger("kernel.artifact_snapshot")
 # read during a backtest. If training writes any of these out-of-band,
 # we'd see model drift. Snapshot all of them.
 _SNAPSHOT_DIRS = ["artifacts", "models"]
+# 2026-05-04 fix: include ALL strategy_config*.json side configs.
+# Pre-fix, only the production strategy_config.json + .golden.json were
+# copied; B2/A-B sims that used --strategy-config-name <side>.json
+# silently ran against the production config inside the snapshot,
+# making side configs INVISIBLE to the sim path. Result: every
+# "side config" test produced identical trades to baseline.
+# `_SNAPSHOT_FILE_PATTERNS` is a list of glob patterns; full files
+# matching any pattern are copied.
 _SNAPSHOT_FILES = ["strategy_config.json", "strategy_config.golden.json"]
+_SNAPSHOT_FILE_PATTERNS = ["strategy_config.*.json"]
 
 
 def snapshot_artifacts(
@@ -80,11 +89,22 @@ def snapshot_artifacts(
         dst = target_root / sub
         shutil.copytree(src, dst)
 
-    # Copy top-level config files
+    # Copy top-level config files (literal names + glob patterns).
+    # 2026-05-04 fix: side configs `strategy_config.<variant>.json` were
+    # invisible to the snapshot, silently routing every B2/A-B side-
+    # config sim to the production strategy_config.json.
+    seen_files: set[str] = set()
     for fname in _SNAPSHOT_FILES:
         src = strategy_dir / fname
         if src.exists():
             shutil.copy2(src, target_root / fname)
+            seen_files.add(fname)
+    for pattern in _SNAPSHOT_FILE_PATTERNS:
+        for src in strategy_dir.glob(pattern):
+            if src.name in seen_files:
+                continue
+            shutil.copy2(src, target_root / src.name)
+            seen_files.add(src.name)
 
     # Record the commit SHA at snapshot time — essential for reproducing
     # this A/B later if needed

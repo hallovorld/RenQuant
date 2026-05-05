@@ -166,9 +166,25 @@ def macro_levels_to_returns(macro_levels: pd.DataFrame) -> pd.DataFrame:
 
     The v1 `kernel.macro::build_macro_frame` produces z-scored levels
     (vxx_level_z, hyg_level_z, etc.). For β computation we need
-    returns; this helper produces a 1-day-difference proxy.
+    returns; this helper produces a 1-day return proxy.
 
     Convention: name columns `<symbol>_chg` (e.g. vxx_chg, hyg_chg).
+
+    Bug-3 fix (2026-04-27): the original implementation applied diff()
+    to z-scored levels.  diff(z) = (close_t - close_{t-1}) / σ, which
+    is a *scaled price change* in z-score units — not a return.  The
+    resulting β_macro carries units of "(ticker pct-return) per (σ of
+    macro level)", which is economically uninterpretable and makes β
+    values incomparable across macro symbols with different volatilities.
+
+    Fix: use pct_change() on the z-scored level series as the closest
+    available proxy for log-returns within this function's scope.  Note
+    that the ideal fix is to pass raw close prices from the upstream
+    MacroFactorStore directly; pct_change on z-scored prices is a
+    second-best approximation that at least preserves proportionality
+    with true returns (positive z-level → correct sign; near-zero z
+    levels can produce outliers so the downstream cross-sectional z-score
+    in FactorZScoreTask provides a safety net).
     """
     if macro_levels is None or macro_levels.empty:
         return pd.DataFrame()
@@ -176,10 +192,12 @@ def macro_levels_to_returns(macro_levels: pd.DataFrame) -> pd.DataFrame:
     out: dict[str, pd.Series] = {}
     for col in macro_levels.columns:
         # Heuristic: pick only the *_level_z columns; chg_*d_z columns
-        # are already differenced. We diff levels to get clean returns.
+        # are already differenced multi-day returns — skip them.
         if col.endswith("_level_z"):
             base = col.replace("_level_z", "")
-            out[f"{base}_chg"] = macro_levels[col].diff()
+            # Bug-3 fix: pct_change() gives a dimensionless return proxy;
+            # diff() gave Δz in z-score units (no economic meaning for β).
+            out[f"{base}_chg"] = macro_levels[col].pct_change()
         # else: skip — chg_5d / chg_20d are smoothed, not point returns
 
     return pd.DataFrame(out, index=macro_levels.index).dropna(how="all")

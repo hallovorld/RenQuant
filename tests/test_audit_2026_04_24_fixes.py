@@ -174,13 +174,20 @@ class TestGateChainNoEarlyShortCircuit:
 
     def test_ema50_gate_handles_missing_spy(self):
         """Audit #16 — when SPY OHLCV is missing, gate logs warning but
-        doesn't crash or silently disable the macro filter."""
+        doesn't crash.
+
+        2026-05-04 update: per audit Issue 06 fix, missing SPY now
+        FAIL-SAFE blocks buys (sets ctx.buy_blocked=True) instead of
+        silently disabling the macro filter. Pre-fix returned None;
+        post-fix returns False (chain short-circuit) + sets buy_blocked.
+        """
         from kernel.pipeline.task_gates import EMA50GateTask
         ctx = SimpleNamespace(regime="BULL_CALM", buy_blocked=False,
                                counters={}, ohlcv={}, config={})
-        # Should not raise.
         result = EMA50GateTask().run(ctx)
-        assert result is None
+        # Post-Issue-06 fail-SAFE: missing SPY blocks buys.
+        assert ctx.buy_blocked is True
+        assert result is False
 
 
 # ── #1 — should_skip dead code now wired into pp_inference ───────────────────

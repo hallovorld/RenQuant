@@ -791,6 +791,9 @@ class EmitRotationsTask(Task):
             if kelly_on and kelly_pure:
                 conv, sig_m = 1.0, 1.0
             else:
+                # 2026-05-04 REVERTED — same as task_selection.py (audit
+                # Issue 17 fix needed paired sizing_cfg retune; without
+                # it, halved position sizes regressed Sharpe).
                 conv = conviction_multiplier(
                     getattr(buy_cand, "panel_score", None) if buy_cand else None,
                     sizing_cfg,

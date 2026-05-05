@@ -36,24 +36,31 @@ def _gate_a_distribution_floor(
 ) -> tuple[bool, str | None]:
     """Distribution-relative floor (cross-sectional percentile lookup).
 
-    Reject when the candidate's `panel_score` is below the trailing N-day
-    p_X cutoff retrieved from `score_percentiles_daily`. Returns
-    (passes, reject_reason). When threshold is None (no history yet),
-    skip the gate.
+    Reject when the candidate's CALIBRATED ``rank_score`` is below the
+    trailing N-day p_X cutoff retrieved from ``score_percentiles_daily``.
+
+    2026-05-03 P0 fix (same scale-mismatch class as VetoWeakBuysTask):
+    pre-fix this read raw ``cand.panel_score`` (XGB margin ~ [0, 0.05])
+    and compared to a threshold drawn from ``score_percentiles_daily``,
+    which actually stores percentiles of CALIBRATED ``rank_score``
+    (range [0, 1]). Currently dormant — production has
+    ``distribution_floor.enabled=false`` — but still a latent bug.
+    Fixed alongside the active VetoWeakBuysTask scale fix to keep the
+    codebase coherent.
     """
     if threshold is None:
         return True, None
-    panel = getattr(cand, "panel_score", None)
-    if panel is None:
+    score = getattr(cand, "rank_score", None)
+    if score is None:
         return True, None
     try:
-        panel_f = float(panel)
+        score_f = float(score)
     except (TypeError, ValueError):
         return True, None
-    if panel_f != panel_f:    # NaN
-        return False, "panel_nan"
-    if panel_f < threshold:
-        return False, f"panel_score={panel_f:+.4f}<{threshold:+.4f}"
+    if score_f != score_f:    # NaN
+        return False, "rank_score_nan"
+    if score_f < threshold:
+        return False, f"rank_score={score_f:+.4f}<{threshold:+.4f}"
     return True, None
 
 
@@ -92,6 +99,14 @@ def _gate_c_no_trade_band(
         sigma_f = float(sigma)
     except (TypeError, ValueError):
         return True, None
+    # 2026-05-04 audit Issue 23: NaN sigma slips past `<= 0.0` (NaN <= 0
+    # is False) → sigma_sq = NaN → target_w = NaN → `deviation < band` is
+    # False → CANDIDATE PASSES the gate (fail-OPEN). The mu NaN-check
+    # below was already there (mu_f != mu_f) but the symmetric sigma
+    # check was missing. Add explicit isfinite guard.
+    import math as _math
+    if not _math.isfinite(sigma_f) or not _math.isfinite(mu_f):
+        return False, "sigma_or_mu_nonfinite"
     if sigma_f <= 0.0 or mu_f != mu_f:
         return False, "sigma_zero_or_mu_nan"
     sigma_sq = sigma_f * sigma_f
@@ -125,9 +140,16 @@ def _gate_b_edge_sharpe(
         sigma_f = float(sigma)
     except (TypeError, ValueError):
         return True, None
+    # 2026-05-04 audit Issue 24: NaN sigma slips past `<= 0.0` (NaN <= 0
+    # is False) → edge_sharpe = mu/NaN = NaN → `edge_sharpe < threshold`
+    # is False → CANDIDATE PASSES (fail-OPEN). Same class as Issue 23
+    # in _gate_c. Explicit isfinite first.
+    import math as _math
+    if not _math.isfinite(sigma_f) or not _math.isfinite(mu_f):
+        return False, "sigma_or_mu_nonfinite"
     if sigma_f <= 0.0:
         return False, "sigma_nonpositive"
-    if mu_f != mu_f:   # NaN
+    if mu_f != mu_f:   # NaN (now redundant, kept for explicit symmetry)
         return False, "mu_nan"
     edge_sharpe = mu_f / sigma_f
     if edge_sharpe < threshold:

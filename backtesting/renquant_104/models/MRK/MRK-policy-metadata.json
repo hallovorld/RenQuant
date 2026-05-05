@@ -1,59 +1,75 @@
 {
   "model_name": "MRK",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "rsi",
-      "buy_below": 30,
-      "sell_above": 70
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "cci",
-      "buy_below": -100,
-      "sell_above": 50
-    }
+  "policy_type": "classification",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx",
+    "williams_r",
+    "obv_slope",
+    "spy_realized_vol",
+    "spy_adx",
+    "spy_trend",
+    "hurst_proxy"
   ],
-  "buy_threshold": 2,
-  "sell_threshold": -2,
-  "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/MRK/MRK-manual-rules.json"
-  },
-  "trained_date": "2026-04-24",
-  "best_approach": "Manual",
-  "sharpe": 1.0275,
   "lookahead": 5,
+  "threshold": 0.03,
+  "leaf_size": 25,
+  "bags": 15,
+  "impact": 0.0,
+  "buy_threshold": 0.1,
+  "sell_threshold": -0.1,
+  "artifacts": {
+    "trees": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/MRK/MRK-rf-trees.json"
+  },
+  "trained_date": "2026-04-30",
+  "best_approach": "Classification",
+  "sharpe": 1.6078,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-17",
-  "live_holdout_sharpe": 2.5181,
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-23",
+  "live_holdout_sharpe": 1.388,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
-    "score_kind": "vote_count",
+    "score_kind": "bag_learner_raw",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2501,
+    "sample_size": 2504,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.14234306277489003,
-    "raw_min": -1.0,
-    "raw_max": 3.0,
+    "base_rate": 0.14217252396166133,
+    "raw_min": -0.5333333333333333,
+    "raw_max": 0.4666666666666667,
     "x_thresholds": [
-      -1.0,
-      0.0,
-      1.0,
-      3.0
+      -0.5333333333333333,
+      -0.4,
+      -0.3333333333333333,
+      -0.26666666666666666,
+      -0.2,
+      0.06666666666666667,
+      0.13333333333333333,
+      0.2,
+      0.26666666666666666,
+      0.3333333333333333,
+      0.4,
+      0.4666666666666667
     ],
     "y_thresholds": [
-      0.10252808988764045,
-      0.10252808988764045,
-      0.15818893236444942,
-      0.15818893236444942
+      0.0,
+      0.0,
+      0.047619047619047616,
+      0.07407407407407407,
+      0.11869995289684408,
+      0.11869995289684408,
+      0.22297297297297297,
+      0.3472222222222222,
+      0.5714285714285714,
+      0.6111111111111112,
+      0.7142857142857143,
+      1.0
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -61,24 +77,42 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.03262178724171021,
+    "er_residual_std": 0.031220049296998974,
     "er_x_thresholds": [
-      -1.0,
+      -0.5333333333333333,
+      -0.3333333333333333,
+      -0.26666666666666666,
+      -0.2,
+      -0.13333333333333333,
+      -0.06666666666666667,
       0.0,
-      1.0,
-      2.0,
-      3.0
+      0.06666666666666667,
+      0.13333333333333333,
+      0.2,
+      0.26666666666666666,
+      0.3333333333333333,
+      0.4,
+      0.4666666666666667
     ],
     "er_y_thresholds": [
-      -0.003159313899854405,
-      -0.003159313899854405,
-      0.0005965106482221868,
-      0.0005965106482221868,
-      0.003253345275051869
+      -0.034269981400094005,
+      -0.034269981400094005,
+      -0.021249871541086214,
+      -0.01301799188128012,
+      -0.004502096807941483,
+      -0.002961679245391476,
+      0.0011121326779988039,
+      0.0011121326779988039,
+      0.010017752984799445,
+      0.017652608864696204,
+      0.033383638411575794,
+      0.033383638411575794,
+      0.041620147925081764,
+      0.13210049495504528
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-24"
+  "score_calibration_date": "2026-05-04"
 }

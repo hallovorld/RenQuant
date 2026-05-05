@@ -1,55 +1,67 @@
 {
   "model_name": "META",
-  "policy_type": "manual",
-  "score_rules": [
-    {
-      "col": "rsi",
-      "buy_below": 30,
-      "sell_above": 70
-    },
-    {
-      "col": "macd_hist",
-      "buy_above": 0,
-      "sell_below": 0
-    },
-    {
-      "col": "cci",
-      "buy_below": -100,
-      "sell_above": 50
-    }
+  "policy_type": "qlearning",
+  "feature_columns": [
+    "rsi",
+    "macd_hist",
+    "cci",
+    "bbp",
+    "adx"
   ],
-  "buy_threshold": 2,
-  "sell_threshold": -2,
+  "n_bins": 10,
+  "n_epochs": 100,
+  "alpha": 0.2,
+  "gamma": 0.9,
+  "impact": 0.0,
   "artifacts": {
-    "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/META/META-manual-rules.json"
+    "qtable": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/META/META-qtable.json",
+    "bin_edges": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/META/META-bin-edges.json"
   },
-  "trained_date": "2026-04-24",
-  "best_approach": "Manual",
-  "sharpe": 0.8717,
+  "trained_date": "2026-04-30",
+  "best_approach": "QLearning",
+  "sharpe": 0.9853,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-17",
-  "live_holdout_sharpe": 2.0041,
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-23",
+  "live_holdout_sharpe": -0.0727,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
-    "score_kind": "vote_count",
+    "score_kind": "q_buy_minus_sell",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2501,
+    "sample_size": 2506,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.18152738904438226,
-    "raw_min": -1.0,
-    "raw_max": 3.0,
+    "base_rate": 0.18116520351157223,
+    "raw_min": -106.46516669890688,
+    "raw_max": 226.84011650820287,
     "x_thresholds": [
-      -1.0,
-      3.0
+      -106.46516669890688,
+      -95.15301476845033,
+      -69.24710574534218,
+      -68.62327946258488,
+      0.18789494961152897,
+      0.18917700050245712,
+      0.6713673690507478,
+      0.6742483154845537,
+      64.99418682703131,
+      68.19499626299607,
+      226.84011650820287
     ],
     "y_thresholds": [
-      0.18152738904438226,
-      0.18152738904438226
+      0.0,
+      0.1388888888888889,
+      0.1388888888888889,
+      0.15207945375543142,
+      0.15207945375543142,
+      0.19014084507042253,
+      0.19014084507042253,
+      0.24167872648335745,
+      0.24167872648335745,
+      0.43478260869565216,
+      0.43478260869565216
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -57,20 +69,56 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.04310556503855469,
+    "er_residual_std": 0.0425115262338538,
     "er_x_thresholds": [
-      -1.0,
-      0.0,
-      3.0
+      -106.46516669890688,
+      -95.15301476845033,
+      -69.24710574534218,
+      -68.62327946258488,
+      -55.00295190383398,
+      -53.83980665718454,
+      -7.532511712960371,
+      -7.46240465173858,
+      -0.2268463351041765,
+      -0.22096378062589753,
+      0.047899333744071626,
+      0.0637007706431625,
+      0.1517284836816319,
+      0.17268973187271186,
+      0.6661839505567072,
+      0.6713673690507478,
+      5.788083081985106,
+      6.009937622289814,
+      64.45480700698201,
+      64.99418682703131,
+      226.84011650820287
     ],
     "er_y_thresholds": [
-      0.0009460951548820399,
-      0.001967546991849821,
-      0.001967546991849821
+      -0.14685038228301436,
+      -0.012036552806615173,
+      -0.012036552806615173,
+      -0.009364897006405805,
+      -0.009364897006405805,
+      -0.005034583601608907,
+      -0.005034583601608907,
+      -0.00144581428286805,
+      -0.00144581428286805,
+      0.0011052937541756265,
+      0.0011052937541756265,
+      0.003319355985098073,
+      0.003319355985098073,
+      0.0034008134262357805,
+      0.0034008134262357805,
+      0.006790848318395161,
+      0.006790848318395161,
+      0.009749987862019666,
+      0.009749987862019666,
+      0.013545136742539524,
+      0.013545136742539524
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-24"
+  "score_calibration_date": "2026-05-04"
 }

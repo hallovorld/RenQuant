@@ -1,0 +1,86 @@
+{
+  "scan_utc": "2026-05-05T03:55:15+00:00",
+  "today": "2026-05-04",
+  "watchlist_size": 103,
+  "repo_root": "/Users/renhao/git/github/RenQuant",
+  "sources": {
+    "daily_ohlcv": {
+      "name": "daily_ohlcv",
+      "n_tickers": 103,
+      "n_tickers_vs_watchlist": 1.0,
+      "missing_tickers": [],
+      "date_min": "2026-05-01",
+      "date_max": "2026-05-01",
+      "n_rows_total": 247394,
+      "rows_per_ticker_min": 1137,
+      "rows_per_ticker_p50": 2597,
+      "rows_per_ticker_max": 3101,
+      "age_days": 3
+    },
+    "fundamentals": {
+      "name": "fundamentals",
+      "n_tickers": 103,
+      "n_tickers_vs_watchlist": 1.0,
+      "missing_tickers": [],
+      "date_min": "2026-04-23",
+      "date_max": "2026-04-27",
+      "n_rows_total": 103,
+      "rows_per_ticker_min": 1,
+      "rows_per_ticker_p50": 1,
+      "rows_per_ticker_max": 1,
+      "age_days": 7
+    },
+    "earnings_surprise": {
+      "name": "earnings_surprise",
+      "n_tickers": 102,
+      "n_tickers_vs_watchlist": 0.9902912621359223,
+      "missing_tickers": [
+        "GLD"
+      ],
+      "date_min": "2026-01-22",
+      "date_max": "2026-04-24",
+      "n_rows_total": 2403,
+      "rows_per_ticker_min": 17,
+      "rows_per_ticker_p50": 24,
+      "rows_per_ticker_max": 25,
+      "age_days": 10
+    },
+    "insider_trades": {
+      "name": "insider_trades",
+      "n_tickers": 98,
+      "n_tickers_vs_watchlist": 0.9514563106796117,
+      "missing_tickers": [
+        "ASML",
+        "GLD",
+        "GS",
+        "NVO",
+        "SHOP"
+      ],
+      "date_min": "2022-06-01",
+      "date_max": "2026-04-30",
+      "n_rows_total": 4402,
+      "rows_per_ticker_min": 1,
+      "rows_per_ticker_p50": 40,
+      "rows_per_ticker_max": 182,
+      "age_days": 4
+    },
+    "benchmark_spy": {
+      "name": "benchmark_spy",
+      "n_tickers": 1,
+      "n_tickers_vs_watchlist": 1.0,
+      "missing_tickers": [],
+      "date_min": null,
+      "date_max": "2026-05-01",
+      "n_rows_total": 2597,
+      "rows_per_ticker_min": 2597,
+      "rows_per_ticker_p50": 2597,
+      "rows_per_ticker_max": 2597,
+      "age_days": 3
+    }
+  },
+  "alignment": {
+    "watchlist_coverage_pct": 1.0,
+    "daily_vs_spy_max_date_gap_days": 0
+  },
+  "issues": []
+}

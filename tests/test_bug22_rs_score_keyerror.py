@@ -73,7 +73,10 @@ class TestQPOrderShape:
     .get() is actually load-bearing). If the QP producer adds these
     fields later, this test points at the right spot."""
 
-    QP_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/portfolio_qp/task_joint_qp.py"
+    # 2026-05-04: legacy task_joint_qp.py is now a back-compat shim;
+    # the order-emit code lives in tasks.py (EmitOrdersFromQPSolutionTask
+    # via the _emit_qp_buy helper).
+    QP_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/portfolio_qp/tasks.py"
     QP_SOURCE = QP_PATH.read_text()
 
     def test_qp_order_dict_does_not_set_rs_score(self):
@@ -81,14 +84,10 @@ class TestQPOrderShape:
         rs_score. If it ever does, the runner's defensive .get() default
         of 0.0 still works — but the test reminds us to remove this
         comment block too."""
-        # Find the QP buy-emit dict.
         anchor = "ctx.orders.append({"
         assert anchor in self.QP_SOURCE
         idx = self.QP_SOURCE.find(anchor)
         block = self.QP_SOURCE[idx:idx + 600]
-        # The bug report says rs_score is NOT set here. If this assertion
-        # ever flips, update the runner's comment to remove the QP-specific
-        # justification.
         assert '"rs_score"' not in block, (
             "QP order producer now sets rs_score — update runner.py "
             "comment block to reflect that the .get() default is no "

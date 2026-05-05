@@ -23,24 +23,24 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/models/RBLX/RBLX-manual-rules.json"
   },
-  "trained_date": "2026-04-24",
+  "trained_date": "2026-04-30",
   "best_approach": "Manual",
-  "sharpe": 1.3179,
+  "sharpe": 1.2921,
   "lookahead": 5,
   "strategy": "renquant_103",
-  "live_train_rows": 999,
-  "live_train_end": "2026-04-17",
-  "live_holdout_sharpe": -0.3781,
+  "live_train_rows": 998,
+  "live_train_end": "2026-04-23",
+  "live_holdout_sharpe": -0.1271,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 1197,
+    "sample_size": 1200,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.34252297410192145,
+    "base_rate": 0.3416666666666667,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
@@ -52,8 +52,8 @@
     ],
     "y_thresholds": [
       0.3333333333333333,
-      0.341688654353562,
-      0.341688654353562,
+      0.3403416557161629,
+      0.3403416557161629,
       0.34604904632152594,
       0.34604904632152594
     ],
@@ -63,7 +63,7 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.08355916872158707,
+    "er_residual_std": 0.083740388202335,
     "er_x_thresholds": [
       -1.0,
       1.0,
@@ -71,8 +71,8 @@
       3.0
     ],
     "er_y_thresholds": [
-      -0.0003945201694822263,
-      -0.0003945201694822263,
+      -0.0009009190667099941,
+      -0.0009009190667099941,
       0.0014326147491051683,
       0.0014326147491051683
     ],
@@ -80,5 +80,5 @@
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-24"
+  "score_calibration_date": "2026-05-04"
 }

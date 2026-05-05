@@ -140,6 +140,7 @@ class LeanAdapter:
             earnings_calendar = algo._earnings,
             holdings         = dict(algo._holdings),  # shallow copy; jobs mutate in place
             last_sell_dates  = algo._last_sell_dates,
+            last_stop_exit_dates = getattr(algo, "_last_stop_exit_dates", {}) or {},
             portfolio_value  = pv,
             cash             = cash,
             prices           = prices,
@@ -203,6 +204,11 @@ class LeanAdapter:
         # full_exits tracks tickers that we should actually pop from
         # algo._holdings + stamp last_sell_dates for wash-sale.
         full_exits: set[str] = set()
+        # 2026-05-04 audit Issue 37 fix: NaN gross_pnl (broker disconnect,
+        # corrupted UnrealizedProfit) propagated `tax = NaN` → `_total_tax += NaN`
+        # → cumulative tax permanently NaN, all post-trade reports broken.
+        # Skip the tax addition on non-finite values; sell still proceeds.
+        import math as _math_lex
         for ticker, sig in ctx.exits:
             hs        = ctx.holdings.get(ticker)
             sym       = algo.symbols[ticker]
@@ -225,6 +231,13 @@ class LeanAdapter:
                     gross_pnl, days_held, tax_short, tax_long, tax_thresh,
                 )
 
+            if not _math_lex.isfinite(tax):
+                log.warning(
+                    "lean.commit [%s]: NaN/inf tax (gross_pnl=%s) — "
+                    "skipping cumulative add to preserve _total_tax.",
+                    ticker, gross_pnl,
+                )
+                tax = 0.0
             algo._total_tax     += tax
             algo._executed_sells += 1
             if is_lt:
@@ -260,6 +273,17 @@ class LeanAdapter:
                 algo._last_sell_dates[ticker] = ctx.today
                 algo.Liquidate(sym)
                 full_exits.add(ticker)
+            # G8 (2026-05-04): stamp post-stop blackout date on path-rule
+            # exits regardless of partial/full. Tracked separately from
+            # last_sell_dates so it survives even when the partial-trim
+            # wash-sale exemption applies.
+            from kernel.pipeline.task_post_stop_cooldown import (  # noqa: PLC0415
+                DEFAULT_STOP_EXIT_TYPES,
+            )
+            if str(sig.exit_type) in DEFAULT_STOP_EXIT_TYPES:
+                if not hasattr(algo, "_last_stop_exit_dates"):
+                    algo._last_stop_exit_dates = {}
+                algo._last_stop_exit_dates[ticker] = ctx.today
 
         # Remove fully-exited tickers from algo._holdings (partial trims keep
         # the position open with original entry_date / entry_price preserved).
@@ -289,10 +313,18 @@ class LeanAdapter:
             Resolution_cls = None
 
         # prev_closes update — use ohlcv last close from context
+        # 2026-05-04 audit Issue 35 fix: NaN close (delisted/suspended ticker)
+        # slipped past the empty-check, then `float(NaN) = NaN` corrupted
+        # algo._prev_closes[ticker]. Downstream check_single_day_loss sees
+        # NaN prev_close, comparison `daily_drop >= sdl_pct` is False
+        # → SDL gate silently disabled for that ticker. Skip non-finite.
+        import math as _math_le
         for ticker in list(algo._models.keys()) + ["SPY"]:
             df = ctx.ohlcv.get(ticker)
             if df is not None and not df.empty:
-                algo._prev_closes[ticker] = float(df["close"].iloc[-1])
+                _close = float(df["close"].iloc[-1])
+                if _math_le.isfinite(_close):
+                    algo._prev_closes[ticker] = _close
 
         # ── Apply buy orders ──────────────────────────────────────────────────
         # Top-up support: when ticker already held (TopUpHeldTask emitted

@@ -257,25 +257,31 @@ class TestPanelVetoWeakBuys:
         assert len(ctx.candidates) == 3
         assert "panel_vetoed" not in ctx.counters
 
-    def test_keeps_candidates_with_missing_panel_score(self):
-        """Candidates without a panel_score are kept — rs_score still ranks them."""
+    def test_keeps_candidates_with_missing_rank_score(self):
+        """Candidates without a rank_score are kept — rs_score still ranks them.
+
+        2026-05-03 fix: VetoWeakBuysTask now reads ``cand.rank_score``
+        (calibrated, post-ApplyGlobalCalibration) instead of
+        ``cand.panel_score`` (raw XGB margin). The "missing-score keep"
+        path therefore checks rank_score=None, not panel_score=None.
+        """
         from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
         from kernel.selection import CandidateResult
         cfg = _panel_enabled_config()
         cfg["ranking"]["panel_scoring"]["buy_floor"] = 0.5
         ctx = _make_ctx(cfg)
         ctx.candidates = [
-            CandidateResult(ticker="A", raw_score=0, rank_score=0.1,
+            CandidateResult(ticker="A", raw_score=0, rank_score=None,
                             rs_score=0, detail="", expected_return=0,
-                            panel_score=None),
+                            panel_score=0.1),
             CandidateResult(ticker="B", raw_score=0, rank_score=0.2,
                             rs_score=0, detail="", expected_return=0,
                             panel_score=0.2),
         ]
         VetoWeakBuysTask().run(ctx)
         tickers = {c.ticker for c in ctx.candidates}
-        assert "A" in tickers     # kept — panel_score missing
-        assert "B" not in tickers  # dropped — below floor
+        assert "A" in tickers     # kept — rank_score missing
+        assert "B" not in tickers  # dropped — below floor (rank_score 0.2 < 0.5)
 
 
 # ── Conviction-scaled sizing ──────────────────────────────────────────────────

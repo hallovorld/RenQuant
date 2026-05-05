@@ -41,17 +41,22 @@ def prepare_inference_panel_frames(
     ohlcv: dict[str, pd.DataFrame],
     ticker_sectors: dict[str, str],
     config: dict[str, Any],
-) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], "pd.DataFrame | None"]:
+) -> "tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], pd.DataFrame | None, dict]":
     """Build neutralized feature frames + z-scored factor frames + macro frame for live inference.
 
     Mirrors Phase 1 (SectorMomentum + Load* tasks) + Phase 2 (per-ticker
     Feature+Neutralize+Factor) + FactorZScoreTask of PanelTrainingPipeline,
     but without building labels / panel frame / training.
 
-    Returns ``(neutralized_frames, factor_frames_z, macro_frame)``. Adapters
-    attach all three to the InferenceContext (as `_panel_feature_frames`,
-    `_panel_factor_frames`, `_panel_macro_frame`) before running
-    PanelScoringJob.
+    Returns ``(neutralized_frames, factor_frames_z, macro_frame, asset_embeddings)``.
+    Adapters attach all four to the InferenceContext (as `_panel_feature_frames`,
+    `_panel_factor_frames`, `_panel_macro_frame`, `_panel_asset_embeddings`)
+    before running PanelScoringJob.
+
+    T2-2 (2026-04-27): added ``asset_embeddings`` as 4th return value.
+    LoadAssetEmbeddingsTask was already run here and stored on ctx but the
+    result was silently discarded — causing emb_0..emb_15 to fall back to
+    NaN at inference time while training used real embeddings.
 
     Bug #25 fix (2026-04-26 round-7): macro_frame added as third return
     value. When `panel_ltr.macro.enabled=true`, training builds a panel
@@ -192,7 +197,9 @@ def prepare_inference_panel_frames(
 
     # Bug #25 fix: return macro_frame too so adapters can attach to
     # InferenceContext for cross-section broadcast at scoring time.
-    return ctx.neutralized_frames, ctx.factor_frames, ctx.macro_factor_frame
+    # T2-2 fix: also return asset_embeddings so adapters attach to
+    # InferenceContext as _panel_asset_embeddings for build_inference_matrix.
+    return ctx.neutralized_frames, ctx.factor_frames, ctx.macro_factor_frame, ctx.asset_embeddings
 
 
 def train_panel_model(

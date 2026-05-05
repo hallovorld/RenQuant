@@ -76,6 +76,9 @@ def build_inference_matrix(
          value for every ticker on this date) if `macro_frame` provided
       4. Append `{col}_is_missing` indicator for each `col` in `nan_prone_cols`
       5. Select and order columns per `feature_cols`
+      6. **T2-2 fix**: join per-ticker asset embedding vectors (emb_0..emb_{D-1})
+         from `asset_embeddings` dict. Mirrors `build_panel_frame`'s embedding
+         broadcast. Tickers absent from the artifact get 0.0 (neutral).
 
     The ``asset_embeddings`` parameter is the interface point for T2-2
     (per-ticker asset embedding broadcast at inference). The full
@@ -136,6 +139,26 @@ def build_inference_matrix(
         return pd.DataFrame(columns=feature_cols)
 
     out = pd.DataFrame.from_dict(rows, orient="index")
+
+    # T2-2 fix: join per-ticker asset embeddings (emb_0..emb_{D-1}).
+    # Training path (build_panel_frame) broadcasts each ticker's embedding
+    # vector onto every row of that ticker. Here we do the same: index is
+    # already ticker, so a left-join suffices. Tickers absent from the
+    # embedding artifact get 0.0 (same convention as build_panel_frame).
+    if asset_embeddings is not None and len(asset_embeddings) > 0:
+        first_emb = next(iter(asset_embeddings.values()))
+        if first_emb is not None and len(first_emb) > 0:
+            emb_dim = len(first_emb)
+            emb_cols = [f"emb_{i}" for i in range(emb_dim)]
+            emb_df = pd.DataFrame.from_dict(
+                {t: list(v) for t, v in asset_embeddings.items()
+                 if v is not None and len(v) == emb_dim},
+                orient="index",
+                columns=emb_cols,
+            )
+            out = out.join(emb_df, how="left")
+            out[emb_cols] = out[emb_cols].fillna(0.0)
+
     # Guarantee all required columns exist (fill missing ones with NaN).
     for c in feature_cols:
         if c not in out.columns:

@@ -41,6 +41,13 @@ class InferenceContext:
     # Portfolio state — populated by adapter from LEAN Portfolio / broker
     holdings: dict = field(default_factory=dict)       # ticker → HoldingState
     last_sell_dates: dict = field(default_factory=dict) # ticker → date | None
+    # 2026-05-04 G8 (post-stop re-entry blackout, refactor doc):
+    # ticker → date when a path-rule exit (trailing_stop / stop_loss /
+    # single_day_loss) last fired. Used by PostStopCooldownFilterTask
+    # to block re-entry within a configurable window. Distinct from
+    # last_sell_dates (which tracks ANY sell for wash-sale / 30d window
+    # on losses only). post-stop blackout fires regardless of P&L sign.
+    last_stop_exit_dates: dict = field(default_factory=dict)  # ticker → date
     portfolio_value: float = 0.0
     cash: float = 0.0
     prices: dict = field(default_factory=dict)         # ticker → float

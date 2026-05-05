@@ -154,10 +154,18 @@ class EMA50GateTask(Task):
         from kernel.market_gates import check_spy_ema_trend  # noqa: PLC0415
 
         spy_df = ctx.ohlcv.get("SPY")
+        # 2026-05-04 audit Issue 06 fix: fail-SAFE on missing SPY data.
+        # Pre-fix: returned None (no block) so a SPY data outage let
+        # offensive buys flow even though all other macro gates default
+        # to "block on missing data" (DrawdownGate, VelocityCrash). With
+        # Issue 05 (VelocityCrash silent on NaN), a SPY outage could
+        # disable both macro gates in BULL while offensive buys flowed.
+        # Now: missing SPY = block buys this bar.
         if spy_df is None or "close" not in spy_df.columns or spy_df.empty:
-            log.warning("EMA50GateTask: SPY OHLCV missing — macro filter disabled "
-                        "this bar (data outage)")
-            return None
+            ctx.buy_blocked = True
+            log.warning("EMA50GateTask: SPY OHLCV missing — fail-SAFE blocking "
+                        "buys this bar (data outage)")
+            return False
         if check_spy_ema_trend(spy_df["close"]):
             ctx.buy_blocked = True
             log.info("EMA50GateTask: SPY below EMA50 — buys blocked")

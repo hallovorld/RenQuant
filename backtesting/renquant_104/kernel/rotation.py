@@ -532,7 +532,13 @@ def find_rotation_pairs(
         cand_ticker = c.ticker
         if cand_ticker in held_scores:
             continue
-        cand_score = float(c.rank_score)
+        # 2026-05-04 audit Issue 33 fix: NaN rank_score slipped past the
+        # `cand_score < float(panel_buy_floor)` check (NaN < X is False)
+        # → candidate proceeded as if it crossed the buy floor. Same
+        # NaN-slip class as Issues 6/7/18/19/22. Reject NaN here.
+        cand_score = float(c.rank_score) if c.rank_score is not None else float("nan")
+        if not math.isfinite(cand_score):
+            continue
         # Phase 1 (2026-04-25): panel_buy_floor — candidate strong enough.
         if panel_buy_floor is not None and cand_score < float(panel_buy_floor):
             continue

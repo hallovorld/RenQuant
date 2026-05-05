@@ -83,32 +83,32 @@ def _seed_percentiles(db: sqlite3.Connection,
 
 class TestGateAPure:
     def test_passes_when_above_threshold(self):
-        c = _Cand("A", panel_score=0.05)
+        c = _Cand("A", rank_score=0.05)
         ok, reason = _gate_a_distribution_floor(c, threshold=0.02)
         assert ok is True and reason is None
 
     def test_rejects_when_below_threshold(self):
-        c = _Cand("A", panel_score=0.005)
+        c = _Cand("A", rank_score=0.005)
         ok, reason = _gate_a_distribution_floor(c, threshold=0.02)
         assert ok is False
-        assert "panel_score" in reason
+        assert "rank_score" in reason
 
     def test_no_threshold_passes(self):
         """No history yet → threshold=None → don't gate."""
-        c = _Cand("A", panel_score=-5.0)
+        c = _Cand("A", rank_score=-5.0)
         ok, reason = _gate_a_distribution_floor(c, threshold=None)
         assert ok is True and reason is None
 
     def test_missing_panel_score_passes(self):
-        c = _Cand("A", panel_score=None)
+        c = _Cand("A", rank_score=None)
         ok, _ = _gate_a_distribution_floor(c, threshold=0.05)
         assert ok is True
 
     def test_nan_panel_score_rejected(self):
-        c = _Cand("A", panel_score=float("nan"))
+        c = _Cand("A", rank_score=float("nan"))
         ok, reason = _gate_a_distribution_floor(c, threshold=0.05)
         assert ok is False
-        assert reason == "panel_nan"
+        assert reason == "rank_score_nan"
 
 
 # ── Task integration ──────────────────────────────────────────────────────────
@@ -116,14 +116,14 @@ class TestGateAPure:
 class TestGateAIntegration:
     def test_gate_a_off_preserves_candidates(self):
         ctx = _Ctx(config={})
-        ctx.candidates = [_Cand("A", panel_score=0.001)]
+        ctx.candidates = [_Cand("A", rank_score=0.001)]
         QualityFloorTask().run(ctx)
         assert len(ctx.candidates) == 1
 
     def test_gate_a_no_db_attached_no_op(self):
         """Gate A enabled but no DB → no threshold → no-op + no crash."""
         ctx = _Ctx(config=_on_a())
-        ctx.candidates = [_Cand("WEAK", panel_score=-1.0)]
+        ctx.candidates = [_Cand("WEAK", rank_score=-1.0)]
         QualityFloorTask().run(ctx)
         assert len(ctx.candidates) == 1   # no-op
 
@@ -138,7 +138,7 @@ class TestGateAIntegration:
             ("2026-04-25", 0.05),
         ])
         ctx._db = db                    # noqa: SLF001
-        ctx.candidates = [_Cand("WEAK", panel_score=-1.0)]
+        ctx.candidates = [_Cand("WEAK", rank_score=-1.0)]
         QualityFloorTask().run(ctx)
         assert len(ctx.candidates) == 1   # no-op
 
@@ -156,8 +156,8 @@ class TestGateAIntegration:
             ("2026-04-25", 0.06),
         ])
         ctx._db = db                    # noqa: SLF001
-        strong = _Cand("STRONG", panel_score=0.10)   # > p85
-        weak   = _Cand("WEAK",   panel_score=0.01)   # < p85
+        strong = _Cand("STRONG", rank_score=0.10)   # > p85
+        weak   = _Cand("WEAK",   rank_score=0.01)   # < p85
         ctx.candidates = [strong, weak]
         QualityFloorTask().run(ctx)
         kept = {c.ticker for c in ctx.candidates}
@@ -174,7 +174,7 @@ class TestGateAIntegration:
             ("2026-04-25", 0.10),
         ])
         ctx._db = db                    # noqa: SLF001
-        ctx.candidates = [_Cand("WEAK", panel_score=0.01)]
+        ctx.candidates = [_Cand("WEAK", rank_score=0.01)]
         QualityFloorTask().run(ctx)
         blocked = getattr(ctx, "_blocked_by_ticker", {})
         assert "WEAK" in blocked
@@ -203,11 +203,11 @@ class TestGateAIntegration:
         # GATE_A_FAIL: panel below p85 — rejected at gate A
         # GATE_B_FAIL: panel above p85 BUT edge_sharpe<0.3 — rejected at B
         # PASS_BOTH:   panel above + edge_sharpe>0.3
-        gate_a_fail = _Cand("GA_FAIL",  panel_score=0.001,
+        gate_a_fail = _Cand("GA_FAIL",  rank_score=0.001,
                              mu=0.10, sigma=0.10)
-        gate_b_fail = _Cand("GB_FAIL",  panel_score=0.10,
+        gate_b_fail = _Cand("GB_FAIL",  rank_score=0.10,
                              mu=0.01, sigma=0.10)        # 0.1 < 0.3
-        pass_both   = _Cand("PASS",     panel_score=0.10,
+        pass_both   = _Cand("PASS",     rank_score=0.10,
                              mu=0.10, sigma=0.10)        # 1.0 > 0.3
         ctx.candidates = [gate_a_fail, gate_b_fail, pass_both]
         QualityFloorTask().run(ctx)

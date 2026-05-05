@@ -188,6 +188,14 @@ class SizeAndEmitTask(Task):
                 # overlap with Kelly's μ / σ² inputs.
                 conv, sig_m = 1.0, 1.0
             else:
+                # 2026-05-04 REVERTED Issue 17 fix: switching from raw
+                # panel_score → calibrated rank_score WITHOUT retuning
+                # the sizing_cfg.{floor,ceiling,min_mult} for the new
+                # scale collapsed positions to ~half size, contributing
+                # to the v2 -0.33 Sharpe regression. Original raw
+                # panel_score path stays — the structural mismatch the
+                # original Issue noted is real but the fix needs a
+                # paired sizing_cfg retune in the same change.
                 conv = conviction_multiplier(
                     getattr(c, "panel_score", None) if c else None, sizing_cfg,
                 )

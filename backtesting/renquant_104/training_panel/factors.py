@@ -195,6 +195,56 @@ def compute_realized_vol(
     return out
 
 
+def compute_idio_vol(
+    ohlcv: dict[str, pd.DataFrame],
+    spy_ohlcv: pd.DataFrame,
+    *,
+    window: int = 60,
+    beta_window: int = 60,
+) -> dict[str, pd.Series]:
+    """Idiosyncratic volatility — std of residual daily returns after
+    market β neutralization (Ang-Hodrick-Xing-Zhang 2006 RFS).
+
+    Distinct from compute_realized_vol (total daily-return std) — IVOL
+    captures only the residual / firm-specific component, removing the
+    market-driven volatility. Documented anomaly: high-IVOL stocks
+    underperform peers (negative loading expected by tree model).
+
+    For each ticker:
+      1. β_t = trailing-`beta_window` OLS β of ticker_ret on spy_ret
+      2. resid_t = ticker_ret_t - β_t × spy_ret_t
+      3. idio_vol_t = std(resid over rolling `window`) × √252
+    """
+    spy_ret = spy_ohlcv["close"].astype(float).pct_change()
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        ret = df["close"].astype(float).pct_change()
+        spy_aligned = spy_ret.reindex(ret.index)
+        cov = ret.rolling(beta_window, min_periods=beta_window).cov(spy_aligned)
+        var = spy_aligned.rolling(beta_window, min_periods=beta_window).var()
+        beta = (cov / var.replace(0, np.nan)).clip(lower=-3.0, upper=5.0)
+        resid = ret - beta * spy_aligned
+        out[t] = resid.rolling(window, min_periods=max(5, window // 2)).std() * np.sqrt(252)
+    return out
+
+
+def compute_short_term_reversal(
+    ohlcv: dict[str, pd.DataFrame], *, window: int = 21,
+) -> dict[str, pd.Series]:
+    """1-month return — short-term reversal signal (Jegadeesh 1990 JF).
+
+    Stocks that have outperformed peers over the past month tend to
+    UNDERPERFORM next month (reversal). Tree model will learn negative
+    loading. Distinct from mom_12_1 which is medium-term momentum.
+
+    Computed as `close.pct_change(window)` — straightforward 21-day return.
+    """
+    out: dict[str, pd.Series] = {}
+    for t, df in ohlcv.items():
+        out[t] = df["close"].astype(float).pct_change(window)
+    return out
+
+
 def compute_drawdown_from_peak(
     ohlcv: dict[str, pd.DataFrame], window: int = 252,
 ) -> dict[str, pd.Series]:

@@ -51,10 +51,24 @@ class DrawdownCircuitTask(Task):
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
+        import math
         regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         halt_pct = float(regime_p.get("drawdown_halt_pct", 0.0))
 
         if ctx.hwm <= 0 or halt_pct <= 0:
+            return
+
+        # 2026-05-04 audit Issue 07 fix: NaN/inf guard on portfolio_value.
+        # Pre-fix: NaN portfolio_value → drawdown = NaN → `NaN >= halt_pct`
+        # is False → halt silently doesn't fire. Same NaN-propagation
+        # pattern as DC-1 (already fixed in HWMUpdateTask), but the same
+        # guard was missing here. Fail-SAFE: block buys on non-finite
+        # input, the same way HWMUpdateTask preserves prior HWM.
+        if not math.isfinite(ctx.hwm) or not math.isfinite(ctx.portfolio_value):
+            ctx.skip_buys = True
+            log.warning("DrawdownCircuitTask: non-finite hwm=%s or "
+                        "portfolio_value=%s — fail-SAFE forcing skip_buys=True",
+                        ctx.hwm, ctx.portfolio_value)
             return
 
         drawdown = (ctx.hwm - ctx.portfolio_value) / ctx.hwm
