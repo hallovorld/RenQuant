@@ -260,6 +260,98 @@ class TestCheckBrokerConnect:
         assert not r.ok and r.severity == "hard"
 
 
+# ── P-CALIBRATOR-HEALTH ────────────────────────────────────────────────────
+# 2026-05-05 parity fix: training has a "probability head collapse"
+# guard inside fit_global_calibrator. Runtime had no equivalent —
+# silently loaded a calibrator with only N unique outputs (N=7 in the
+# 2026-05-04 production incident) and ranked all top candidates as
+# tied. This check closes the gap.
+
+class TestCheckCalibratorHealth:
+    def _setup(self, tmp_path, *, n_unique=20, pool_ic=0.02,
+                min_unique_cfg=None):
+        from kernel.preflight import _check_calibrator_health
+        cfg = {
+            "panel_ltr": {},
+            "ranking": {"panel_scoring": {"global_calibration": {
+                "artifact_path": "artifacts/panel-rank-calibration.json",
+            }}},
+        }
+        if min_unique_cfg is not None:
+            cfg["panel_ltr"]["calibrator_health"] = {
+                "min_unique_prob_y": min_unique_cfg,
+            }
+        cal_dir = tmp_path / "artifacts"
+        cal_dir.mkdir(exist_ok=True)
+        cal_path = cal_dir / "panel-rank-calibration.json"
+        cal_path.write_text(json.dumps({
+            "metadata": {"n_unique_prob_y": n_unique, "pool_ic": pool_ic}
+        }))
+        return _check_calibrator_health, cfg, tmp_path
+
+    def test_pass_when_n_unique_above_floor(self, tmp_path):
+        check, cfg, sd = self._setup(tmp_path, n_unique=50, pool_ic=0.03)
+        r = check(cfg, sd)
+        assert r.ok and r.severity == "hard"
+        assert "n_unique_prob_y=50" in r.message
+
+    def test_fail_when_n_unique_below_floor(self, tmp_path):
+        # Reproduce the 2026-05-04 incident exactly: n_unique=7
+        check, cfg, sd = self._setup(tmp_path, n_unique=7, pool_ic=0.02)
+        r = check(cfg, sd)
+        assert not r.ok
+        assert r.severity == "hard"
+        assert "n_unique_prob_y=7" in r.message
+        assert "min_unique_prob_y=10" in r.message
+
+    def test_min_unique_configurable(self, tmp_path):
+        # n_unique=15 passes the default 10 but should fail at 20
+        check, cfg, sd = self._setup(tmp_path, n_unique=15,
+                                      min_unique_cfg=20)
+        r = check(cfg, sd)
+        assert not r.ok and r.severity == "hard"
+
+    def test_soft_warn_on_negative_pool_ic(self, tmp_path):
+        check, cfg, sd = self._setup(tmp_path, n_unique=50, pool_ic=-0.001)
+        r = check(cfg, sd)
+        # ok=True (soft warn) but flagged
+        assert r.ok and r.severity == "soft"
+        assert "pool_ic" in r.message and "anti-correlated" in r.message
+
+    def test_legacy_artifact_without_n_unique_soft_skip(self, tmp_path):
+        # Pre-2026-05 artifacts didn't stamp n_unique_prob_y. Don't
+        # block legacy retrains — soft warn instead.
+        from kernel.preflight import _check_calibrator_health
+        cfg = {"panel_ltr": {}, "ranking": {"panel_scoring":
+                {"global_calibration": {"artifact_path":
+                    "artifacts/panel-rank-calibration.json"}}}}
+        cal_dir = tmp_path / "artifacts"
+        cal_dir.mkdir(exist_ok=True)
+        (cal_dir / "panel-rank-calibration.json").write_text(json.dumps({
+            "metadata": {"pool_ic": 0.02}  # no n_unique_prob_y
+        }))
+        r = _check_calibrator_health(cfg, tmp_path)
+        assert r.ok and r.severity == "soft"
+        assert "legacy artifact" in r.message
+
+    def test_missing_artifact_soft_skip(self, tmp_path):
+        from kernel.preflight import _check_calibrator_health
+        cfg = {"panel_ltr": {}, "ranking": {"panel_scoring":
+                {"global_calibration": {"artifact_path":
+                    "artifacts/panel-rank-calibration.json"}}}}
+        # No artifact file exists
+        r = _check_calibrator_health(cfg, tmp_path)
+        assert r.ok and r.severity == "soft"
+        assert "absent" in r.message
+
+    def test_check_in_all_checks(self):
+        from kernel.preflight import ALL_CHECKS, _check_calibrator_health
+        assert _check_calibrator_health in ALL_CHECKS, (
+            "P-CALIBRATOR-HEALTH must be in ALL_CHECKS so run_preflight "
+            "executes it on every cron tick"
+        )
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 class TestRunPreflight:

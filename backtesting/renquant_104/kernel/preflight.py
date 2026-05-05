@@ -445,7 +445,87 @@ ALL_CHECKS = (
     _check_state_file,
     _check_broker_connect,
     _check_artifact_run_id_alignment,  # audit fix #2 — soft check
+    None,  # _check_calibrator_health — registered below to keep ALL_CHECKS readable
 )
+
+
+def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightCheck":
+    """P-CALIBRATOR-HEALTH (2026-05-05 parity fix): runtime equivalent of the
+    training-side `fit_global_calibrator` "probability head collapsed to N
+    unique values" guard.
+
+    Today's diagnostic (2026-05-04 e2e) found `n_unique_prob_y = 7` in the
+    production calibrator: only 7 distinct calibrated probabilities across
+    235K training rows. Result at runtime: top 10 candidates all tied at
+    rank_score=0.2579, no real ranking → strategy can't differentiate. The
+    training-time guard catches this AT FIT but the artifact had been saved
+    BEFORE that guard was added; runtime had no way to detect the
+    degradation. This check closes that gap.
+
+    Hard-fail when:
+      * artifact missing or unparseable
+      * `n_unique_prob_y < min_unique_prob_y` (default 10)
+    Soft-warn when:
+      * `pool_ic <= 0` (calibrator anti-correlated with labels)
+
+    Tunable via config.panel_ltr.calibrator_health.min_unique_prob_y.
+    Backwards-compat: pre-2026-05 artifacts without n_unique_prob_y in
+    metadata get a soft skip (can't verify, log a warning).
+    """
+    panel_cfg = config.get("panel_ltr", {})
+    cal_cfg = ((config.get("ranking", {})
+                       .get("panel_scoring", {})
+                       .get("global_calibration", {})) or {})
+    rel = cal_cfg.get("artifact_path", "artifacts/panel-rank-calibration.json")
+    p = strategy_dir / rel
+    if not p.exists():
+        return PreflightCheck(
+            "P-CALIBRATOR-HEALTH", "soft", True,
+            f"calibrator artifact absent at {p} — global_calibration may be disabled",
+        )
+    try:
+        meta = json.loads(p.read_text()).get("metadata", {}) or {}
+    except Exception as exc:
+        return PreflightCheck(
+            "P-CALIBRATOR-HEALTH", "hard", False, f"unreadable: {exc}",
+        )
+    n_unique = meta.get("n_unique_prob_y")
+    pool_ic = meta.get("pool_ic")
+    health_cfg = panel_cfg.get("calibrator_health", {}) or {}
+    min_unique = int(health_cfg.get("min_unique_prob_y", 10))
+    if n_unique is None:
+        return PreflightCheck(
+            "P-CALIBRATOR-HEALTH", "soft", True,
+            "n_unique_prob_y not stamped (legacy artifact); skip — will be "
+            "stamped on next retrain. Cannot verify probability-head granularity.",
+        )
+    if int(n_unique) < min_unique:
+        return PreflightCheck(
+            "P-CALIBRATOR-HEALTH", "hard", False,
+            f"n_unique_prob_y={n_unique} < min_unique_prob_y={min_unique}. "
+            f"Calibrator probability head collapsed — top candidates will tie, "
+            f"strategy cannot differentiate buys. Retrain or investigate "
+            f"isotonic-input distribution. (See doc/components/calibration.md "
+            f"and the 2026-05-04 e2e post-mortem.)",
+            details={"n_unique_prob_y": n_unique, "min_unique_prob_y": min_unique,
+                     "pool_ic": pool_ic},
+        )
+    if pool_ic is not None and float(pool_ic) <= 0:
+        return PreflightCheck(
+            "P-CALIBRATOR-HEALTH", "soft", True,
+            f"pool_ic={pool_ic} ≤ 0 — calibrator anti-correlated with labels; "
+            f"investigate before live trade. n_unique={n_unique}.",
+            details={"n_unique_prob_y": n_unique, "pool_ic": pool_ic},
+        )
+    return PreflightCheck(
+        "P-CALIBRATOR-HEALTH", "hard", True,
+        f"n_unique_prob_y={n_unique} ≥ {min_unique}, pool_ic={pool_ic}",
+        details={"n_unique_prob_y": n_unique, "pool_ic": pool_ic},
+    )
+
+
+# Replace the placeholder in ALL_CHECKS with the actual function.
+ALL_CHECKS = tuple(c if c is not None else _check_calibrator_health for c in ALL_CHECKS)
 
 
 def run_preflight(
