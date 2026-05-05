@@ -376,6 +376,92 @@ class TestNGBoostOutputClamps(unittest.TestCase):
         self.assertIn("MU_CEIL", src)
 
 
+# ── kelly_target_pct: input-fuzz output range invariant ─────────────────────
+
+
+class TestKellyTargetPctRangeInvariant(unittest.TestCase):
+    """kelly_target_pct must return ∈ [0, min(max_pct, max_concentration)]
+    for ANY valid input. Audit fix K-1 (2026-04-25) caught a NaN leak
+    via min(...) propagation — test enumerates the failure modes that
+    have actually shipped + property-fuzzes wide μ/σ inputs to pin the
+    invariant.
+
+    This belongs at the contract layer, not the unit layer: every
+    downstream task (SizeAndEmitTask cap, TopUpHeldTask threshold) reads
+    this output and assumes it's a fraction in the documented range. A
+    NaN or negative leak would silently corrupt order sizing.
+    """
+
+    def test_degenerate_inputs_return_zero(self):
+        from kernel.kelly import kelly_target_pct
+        cases = [
+            (None, 0.05, "mu=None"),
+            (0.02, None, "sigma=None"),
+            (float("nan"), 0.05, "mu=NaN"),
+            (0.02, float("nan"), "sigma=NaN"),
+            (float("inf"), 0.05, "mu=inf"),
+            (0.02, float("inf"), "sigma=inf"),
+            (0.02, 0.0, "sigma=0"),
+            (0.02, -0.01, "sigma<0"),
+            (-0.01, 0.05, "mu<0 (loses bet)"),
+            (0.0, 0.05, "mu=0 (no edge)"),
+            ("not_a_number", 0.05, "mu non-numeric"),
+            (0.02, "not_a_number", "sigma non-numeric"),
+        ]
+        for mu, sigma, label in cases:
+            with self.subTest(label):
+                v = kelly_target_pct(mu, sigma, max_pct=0.15,
+                                      max_concentration=0.35)
+                self.assertEqual(v, 0.0,
+                    f"{label}: expected 0.0, got {v!r}")
+
+    def test_positive_input_in_documented_range(self):
+        """For every (μ, σ) in a wide grid, output ∈ [0, min(max_pct, conc)]
+        and is finite."""
+        from kernel.kelly import kelly_target_pct
+        rng = np.random.default_rng(0)
+        max_pct, max_conc = 0.15, 0.35
+        upper = min(max_pct, max_conc)
+        # 200 random (mu, sigma) pairs over wide range
+        for _ in range(200):
+            mu    = float(rng.uniform(0.001, 0.5))    # always positive
+            sigma = float(rng.uniform(0.001, 1.0))
+            v = kelly_target_pct(mu, sigma, max_pct=max_pct,
+                                  max_concentration=max_conc,
+                                  fractional=0.25)
+            self.assertTrue(math.isfinite(v),
+                f"non-finite output for mu={mu} sigma={sigma}: {v!r}")
+            self.assertGreaterEqual(v, 0.0,
+                f"negative output for mu={mu} sigma={sigma}: {v!r}")
+            self.assertLessEqual(v, upper + 1e-9,
+                f"exceeded upper={upper} for mu={mu} sigma={sigma}: {v!r}")
+
+    def test_huge_edge_capped_at_smaller_of_two_caps(self):
+        """When Kelly says "all-in", we cap at min(max_pct, max_concentration)."""
+        from kernel.kelly import kelly_target_pct
+        # Pathological: tiny σ + decent μ → f* = μ/σ² is huge.
+        v = kelly_target_pct(0.05, 0.001, max_pct=0.10,
+                              max_concentration=0.35,
+                              fractional=1.0)
+        # max_pct (0.10) is the binding cap here, NOT max_concentration.
+        self.assertAlmostEqual(v, 0.10, places=6)
+        # Flip the binding cap.
+        v2 = kelly_target_pct(0.05, 0.001, max_pct=0.50,
+                              max_concentration=0.20,
+                              fractional=1.0)
+        self.assertAlmostEqual(v2, 0.20, places=6)
+
+    def test_min_edge_threshold_excludes_low_mu(self):
+        """μ ≤ min_edge → 0 (don't bet on no edge)."""
+        from kernel.kelly import kelly_target_pct
+        # μ exactly at edge: drop
+        v = kelly_target_pct(0.005, 0.05, max_pct=0.15, min_edge=0.005)
+        self.assertEqual(v, 0.0)
+        # Just above: enters Kelly formula
+        v2 = kelly_target_pct(0.006, 0.05, max_pct=0.15, min_edge=0.005)
+        self.assertGreater(v2, 0.0)
+
+
 # ── Phase 2: risk_metrics finiteness contracts ──────────────────────────────
 
 
