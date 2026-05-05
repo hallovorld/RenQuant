@@ -719,7 +719,7 @@
       "kind": "exp_decay",
       "half_life_days": 252
     },
-    "calibration_method": "platt"
+    "calibration_method": "isotonic"
   },
   "training": {
     "cadence": "custom",

@@ -480,7 +480,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.retrain_v2.json",
+      "artifact_path": "artifacts/panel-ltr.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -495,7 +495,7 @@
       },
       "ngboost": {
         "enabled": true,
-        "artifact_path": "artifacts/ngboost-head.retrain_v2.json",
+        "artifact_path": "artifacts/ngboost-head.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -506,7 +506,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.retrain_v2.json",
+        "artifact_path": "artifacts/panel-rank-calibration.platt_test.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -719,7 +719,8 @@
       "half_life_days": 252
     },
     "min_best_iter": 10,
-    "min_best_iter_eval_ic_floor": 0.0
+    "min_best_iter_eval_ic_floor": 0.0,
+    "calibration_method": "platt"
   },
   "training": {
     "cadence": "custom",

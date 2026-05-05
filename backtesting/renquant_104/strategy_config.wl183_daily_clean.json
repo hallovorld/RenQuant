@@ -800,7 +800,7 @@
       ],
       "ffill_max_gap_days": 5
     },
-    "calibration_method": "platt"
+    "calibration_method": "isotonic"
   },
   "training": {
     "cadence": "custom",
