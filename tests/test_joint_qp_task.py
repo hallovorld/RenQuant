@@ -49,6 +49,7 @@ class _Ctx:
     confidence: float = 0.6
     bear_only: bool = False
     buy_blocked: bool = False
+    skip_buys: bool = False
     last_sell_dates: dict = field(default_factory=dict)
     orders: list = field(default_factory=list)
     exits: list = field(default_factory=list)
@@ -160,6 +161,38 @@ class TestBuyBlockedRespected:
         assert ctx.orders == [], (
             f"buy_blocked must suppress QP top-ups too; got "
             f"{len(ctx.orders)} order(s) — bug 3 reopened"
+        )
+
+    def test_skip_buys_also_suppresses_qp_top_up(self):
+        """Persistent drawdown halt (ctx.skip_buys=True from
+        DrawdownCircuitTask) must also suppress QP buy emissions.
+        skip_buys is the longer-lived sibling of buy_blocked — when
+        portfolio drawdown crosses halt_pct, skip_buys stays True until
+        recovery below resume_pct. QP must respect both flags."""
+        ctx = _Ctx(config=_qp_on())
+        ctx.skip_buys = True   # drawdown halted
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        assert ctx.orders == [], (
+            f"skip_buys must suppress all QP_BUY emissions; got "
+            f"{len(ctx.orders)} — drawdown circuit was bypassed"
+        )
+
+    def test_skip_buys_allows_sells(self):
+        """Sells must still fire when skip_buys=True so drawdown halt
+        can de-risk the portfolio."""
+        ctx = _Ctx(config=_qp_on())
+        ctx.skip_buys = True
+        ctx.holdings = {"H": _Hold(shares=20, mu=-0.05, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 8000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        assert len(ctx.exits) >= 1, (
+            "skip_buys must NOT block sells — drawdown halt must be "
+            "able to de-risk"
         )
 
 

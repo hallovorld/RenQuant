@@ -408,18 +408,23 @@ class EmitOrdersFromQPSolutionTask(Task):
         cfg = _qp_cfg(ctx)
         min_dw = float(cfg.get("qp_min_dw_pct", 0.005))
         cands = {c.ticker: c for c in (ctx.candidates or [])}
-        # 2026-05-05 wl183 incident bug 3: when ctx.buy_blocked is set
-        # (DrawdownGate, VelocityCrash, EarningsBlackout regime), the
-        # buy-side phases of the pipeline are gated — but the QP rebalance
-        # was NOT, so it kept emitting top-up BUYs against the buy-blocked
-        # intent. Combined with regime-driven Kelly target oscillation
-        # (max_position_pct × confidence_to_size_multiplier flip on regime
-        # transition), this produced same-bar BUY/SELL whiplash on existing
-        # holdings (e.g. 03-19 BULL_VOL conf=0.99 BUY +20%, 03-20 BULL_CALM
-        # conf=0.50 SELL -24% at 10bps friction round-trip).
-        # Fix: suppress dw>0 emissions on buy_blocked bars. Sells still
+        # 2026-05-05 wl183 incident bug 3: when ctx.buy_blocked OR
+        # ctx.skip_buys is set, QP rebalance must not emit any buy.
+        #   - buy_blocked: per-bar gate (DrawdownGate, VelocityCrash,
+        #     EarningsBlackout regime). Pipeline gates Phase 2b but QP
+        #     was free to emit top-ups → whiplash.
+        #   - skip_buys: persistent drawdown-circuit halt (set by
+        #     DrawdownCircuitTask, cleared on recovery). Same intent —
+        #     no new exposure until circuit clears.
+        # Pre-fix bar 03-19 (BULL_VOL conf=0.99 buys_blocked=True): QP
+        # emitted +20% buys against the circuit; bar 03-20 (BULL_CALM
+        # conf=0.50 transition=True): QP reversed at -24%. 10bps friction
+        # round-trip × hundreds of regime flips = wl183 B2 Sharpe -0.07.
+        # Fix: suppress dw>0 emissions on either flag. Sells still
         # allowed so the circuit can de-risk.
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
+        skip_buys   = bool(getattr(ctx, "skip_buys",   False))
+        buys_gated  = buy_blocked or skip_buys
         n_blocked_buys = 0
         nb = ns = 0
         for i, t in enumerate(tickers):
@@ -433,7 +438,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             if shares <= 0:
                 continue
             if dw > 0:
-                if buy_blocked:
+                if buys_gated:
                     n_blocked_buys += 1
                     continue
                 _emit_qp_buy(ctx, t, shares, px, sol, i, cands)
@@ -441,11 +446,13 @@ class EmitOrdersFromQPSolutionTask(Task):
             elif _emit_qp_sell(ctx, t, shares, dw, sol, i):
                 ns += 1
         if n_blocked_buys:
+            reason = ("buy_blocked=True" if buy_blocked
+                      else "skip_buys=True (drawdown halt)")
             log.info(
-                "EmitOrdersFromQPSolutionTask: buy_blocked=True — "
-                "suppressed %d QP top-up BUY(s) (bar would have whiplashed "
-                "against drawdown/velocity/blackout circuit)",
-                n_blocked_buys,
+                "EmitOrdersFromQPSolutionTask: %s — suppressed %d QP "
+                "top-up BUY(s) (bar would have whiplashed against "
+                "drawdown/velocity/blackout circuit)",
+                reason, n_blocked_buys,
             )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
