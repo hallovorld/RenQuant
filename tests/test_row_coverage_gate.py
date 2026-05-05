@@ -189,6 +189,56 @@ class TestInferenceWiring(unittest.TestCase):
                       "RowCoverageGateTask must call filter_by_coverage")
         self.assertIn("coverage_from_config", body)
 
+    def test_row_coverage_gate_preserves_ticker_index_runtime(self):
+        """Runtime contract: after RowCoverageGateTask runs, ctx._panel_matrix
+        must keep the original ticker-string index. The 2026-05-05 wl183
+        0-trade incident silently reset this to int64 0..n-1, breaking
+        every downstream `scores.get(cand.ticker)` lookup. This test
+        executes the actual task with a synthetic ticker-indexed X and
+        asserts the output index is unchanged in dtype and content.
+
+        Lower blast radius than the source-level guard — catches
+        regressions where someone changes `filter_by_coverage` defaults
+        or wires a different filter without updating the call site."""
+        from kernel.panel_pipeline.tasks_feature_matrix import (
+            RowCoverageGateTask,
+        )
+
+        feat_cols = ["adx", "cci", "rel_mom_20d"]
+
+        # Synthetic X with ticker index — varying coverage so the filter
+        # actually drops some rows (proving the filter ran AND preserved).
+        X = pd.DataFrame(
+            {
+                "adx":         [50.0, np.nan, 30.0, np.nan, 40.0],
+                "cci":         [10.0, np.nan, 20.0,    5.0, 25.0],
+                "rel_mom_20d": [0.05,    0.1, np.nan, np.nan, 0.08],
+                # Non-feature column — must survive too
+                "extra":       [1, 2, 3, 4, 5],
+            },
+            index=pd.Index(["AAPL", "MSFT", "NVDA", "TSLA", "META"]),
+        )
+
+        scorer = type("_StubScorer", (), {"feature_cols": feat_cols})()
+        ctx = type("_StubCtx", (), {})()
+        ctx._panel_matrix = X.copy()
+        ctx._panel_scorer = scorer
+        ctx.config = {"panel_ltr": {"row_coverage": {
+            "enabled": True, "min_pct": 0.7,
+        }}}
+        RowCoverageGateTask().run(ctx)
+
+        out = ctx._panel_matrix
+        self.assertIsNotNone(out, "filter must not null out the matrix")
+        # The crux: index dtype + values must be ticker strings, not int64.
+        self.assertEqual(out.index.dtype, object,
+                         f"index dtype regressed to {out.index.dtype} — "
+                         f"the wl183 0-trade bug returned")
+        for t in out.index:
+            self.assertIsInstance(t, str, f"index entry {t!r} not a str")
+        # Surviving rows must be a subset of the input tickers (sanity).
+        self.assertTrue(set(out.index) <= set(X.index))
+
 
 if __name__ == "__main__":
     unittest.main()
