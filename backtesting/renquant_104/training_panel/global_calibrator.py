@@ -328,19 +328,27 @@ def fit_global_calibrator(
     method_lc = (method or "isotonic").lower()
     if method_lc == "platt":
         # Platt scaling — sigmoid logistic regression on raw_score → P(label).
-        # Smooth by construction; no collapse risk. Sample at quantile knots
-        # so the downstream interpolation infrastructure (linear between
-        # knots) reproduces the sigmoid faithfully.
+        # Smooth by construction; no collapse risk WHEN we sample knots
+        # at evenly-spaced (linspace) x values rather than quantiles.
+        # Quantile-based knots collapse to ~3 unique y when raw_all has
+        # few unique values (best_iter=4 XGB → ~16 leaf paths → most
+        # rows tied at a few scores → quantiles also tied). Use
+        # linspace from min to max of raw_all so prob_x has K guaranteed
+        # unique values regardless of raw_all distribution.
         from sklearn.linear_model import LogisticRegression  # noqa: PLC0415
         # Reshape for sklearn: (n_samples, 1)
         X = raw_all.reshape(-1, 1)
         platt = LogisticRegression(C=1e6, solver="lbfgs", max_iter=1000)
         platt.fit(X, prob_labels)
-        # Sample sigmoid at 100 quantile knots of raw_all for downstream
-        # piecewise-linear interpolation.
         K = 100
-        knot_q = np.linspace(0.001, 0.999, K)
-        prob_x = np.quantile(raw_all, knot_q)
+        x_min = float(np.min(raw_all))
+        x_max = float(np.max(raw_all))
+        # Tiny bracket margin to dodge degenerate min == max case (which
+        # would itself indicate a broken scorer)
+        if x_max - x_min < 1e-12:
+            x_min -= 1.0
+            x_max += 1.0
+        prob_x = np.linspace(x_min, x_max, K)
         prob_y = platt.predict_proba(prob_x.reshape(-1, 1))[:, 1]
         # ER head — also linear regression for symmetry (LinearRegression
         # gives smooth ER curve, no plateau).
