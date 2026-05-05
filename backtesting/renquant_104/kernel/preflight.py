@@ -500,13 +500,23 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
             "stamped on next retrain. Cannot verify probability-head granularity.",
         )
     if int(n_unique) < min_unique:
+        # 2026-05-05 incident: this was originally `hard`, which blocked ALL
+        # preflight — including sell-only intraday crons that don't use the
+        # calibrator at all (sells run via SellGateB + path rules). 14 sell
+        # crons aborted between 07:00–09:36 PT before the severity was
+        # downgraded. Calibrator collapse is a *quality* issue (top candidates
+        # tie, ranking is ineffective) not a *safety* issue — the adaptive
+        # buy_floor at `min(max(0.20, mean+std), 0.30)` already absorbs tied
+        # scores at the cap, and downstream sizing/risk gates are unaffected.
+        # SOFT keeps the loud warning visible without halting live ops.
         return PreflightCheck(
-            "P-CALIBRATOR-HEALTH", "hard", False,
-            f"n_unique_prob_y={n_unique} < min_unique_prob_y={min_unique}. "
+            "P-CALIBRATOR-HEALTH", "soft", True,
+            f"WARN: n_unique_prob_y={n_unique} < min_unique_prob_y={min_unique}. "
             f"Calibrator probability head collapsed — top candidates will tie, "
-            f"strategy cannot differentiate buys. Retrain or investigate "
-            f"isotonic-input distribution. (See doc/components/calibration.md "
-            f"and the 2026-05-04 e2e post-mortem.)",
+            f"buy ranking is ineffective. Retrain or investigate isotonic-input "
+            f"distribution. Sells unaffected; buys will fall through to "
+            f"buy_floor cap. (See doc/components/calibration.md and the "
+            f"2026-05-04 e2e post-mortem.)",
             details={"n_unique_prob_y": n_unique, "min_unique_prob_y": min_unique,
                      "pool_ic": pool_ic},
         )

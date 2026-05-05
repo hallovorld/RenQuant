@@ -295,21 +295,32 @@ class TestCheckCalibratorHealth:
         assert r.ok and r.severity == "hard"
         assert "n_unique_prob_y=50" in r.message
 
-    def test_fail_when_n_unique_below_floor(self, tmp_path):
+    def test_warn_when_n_unique_below_floor(self, tmp_path):
         # Reproduce the 2026-05-04 incident exactly: n_unique=7
+        # 2026-05-05 incident fix: severity downgraded from hard→soft.
+        # Calibrator collapse blocks buy quality (top candidates tie) but
+        # SHOULD NOT halt sell-only intraday crons — sells use SellGateB +
+        # path rules independent of the calibrator. The original hard
+        # severity caused 14 consecutive sell-only cron aborts on 2026-05-05
+        # before the downgrade. Now: ok=True (soft warn), message stays
+        # loud, the operator still sees the WARN, but live ops continue.
         check, cfg, sd = self._setup(tmp_path, n_unique=7, pool_ic=0.02)
         r = check(cfg, sd)
-        assert not r.ok
-        assert r.severity == "hard"
+        assert r.ok, "must NOT block — sell-only crons need to keep running"
+        assert r.severity == "soft"
+        assert "WARN" in r.message
         assert "n_unique_prob_y=7" in r.message
         assert "min_unique_prob_y=10" in r.message
+        assert "Sells unaffected" in r.message
 
     def test_min_unique_configurable(self, tmp_path):
-        # n_unique=15 passes the default 10 but should fail at 20
+        # n_unique=15 passes the default 10 but should warn at 20.
+        # Soft severity (per 2026-05-05 fix), still ok=True.
         check, cfg, sd = self._setup(tmp_path, n_unique=15,
                                       min_unique_cfg=20)
         r = check(cfg, sd)
-        assert not r.ok and r.severity == "hard"
+        assert r.ok and r.severity == "soft"
+        assert "WARN" in r.message
 
     def test_soft_warn_on_negative_pool_ic(self, tmp_path):
         check, cfg, sd = self._setup(tmp_path, n_unique=50, pool_ic=-0.001)
