@@ -438,11 +438,26 @@ class SimAdapter:
         # Track which tickers need FULL liquidation vs partial trim. Only
         # full exits pop from holdings/pos_shares; partial trims update
         # share count in-place (see _apply_sell).
+        # Bug 11 fix (2026-05-05): mirror _apply_sell's bug-8 partial-vs-
+        # full logic exactly. Pre-fix, commit() used `q is None or q <= 0
+        # or q >= cur` while _apply_sell switched to a strict isfinite
+        # check. NaN sig.quantity → _apply_sell treated as FULL but
+        # commit treated as PARTIAL → ticker fully liquidated in cash
+        # but stayed in _holdings with shares=0 (ghost position). All
+        # subsequent rebalances saw a phantom holding with no shares.
+        import math as _math_q  # noqa: PLC0415
         full_exit_tickers: set[str] = set()
         for ticker, sig in deduped_exits:
             q = getattr(sig, "quantity", None)
             cur = self._pos_shares.get(ticker, 0)
-            if q is None or q <= 0 or q >= cur:
+            is_finite_partial = (
+                q is not None
+                and isinstance(q, (int, float))
+                and _math_q.isfinite(float(q))
+                and q > 0
+                and q < cur
+            )
+            if not is_finite_partial:
                 full_exit_tickers.add(ticker)
             self._apply_sell(ticker, sig, today_ts, ctx)
 
