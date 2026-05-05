@@ -48,6 +48,7 @@ class _Ctx:
     regime: str = "BULL_CALM"
     confidence: float = 0.6
     bear_only: bool = False
+    buy_blocked: bool = False
     last_sell_dates: dict = field(default_factory=dict)
     orders: list = field(default_factory=list)
     exits: list = field(default_factory=list)
@@ -101,6 +102,65 @@ class TestQPDispatch:
         ctx.prices = {"A": 100.0}
         ret = JointPortfolioQPTask().run(ctx)
         assert ret is False
+
+
+class TestBuyBlockedRespected:
+    """2026-05-05 wl183 incident bug 3: when buy_blocked is set
+    (DrawdownGate, VelocityCrash, EarningsBlackout regime), QP rebalance
+    must NOT increase any position. Sells still allowed so the circuit
+    can de-risk. Pre-fix the QP top-up path ignored buy_blocked → bar X
+    QP_BUY +20% (against the circuit), bar X+1 SELL −24% (regime calmed)
+    → 10bps round-trip friction every regime flip. Bled wl183 B2 from
+    Sharpe 1.10 (wl103 baseline) into −0.07."""
+
+    def test_buy_blocked_suppresses_qp_top_up(self):
+        ctx = _Ctx(config=_qp_on())
+        ctx.buy_blocked = True   # <-- the new gate
+        # Strong-mu candidate that would normally trigger a QP_BUY
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        # Buys must be suppressed; orders empty
+        assert ctx.orders == [], (
+            f"buy_blocked must suppress all QP_BUY emissions; got "
+            f"{len(ctx.orders)} order(s) — bug 3 from wl183 incident"
+        )
+
+    def test_buy_blocked_allows_sells(self):
+        """Sells must still fire on buy_blocked bars so circuit can
+        de-risk during drawdowns."""
+        ctx = _Ctx(config=_qp_on())
+        ctx.buy_blocked = True
+        # Held name with negative-mu signal → optimum is to SELL it
+        ctx.holdings = {"H": _Hold(shares=20, mu=-0.05, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 8000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        # Sell still allowed
+        assert len(ctx.exits) >= 1, (
+            "buy_blocked must NOT block sells — circuit must be able "
+            "to de-risk during drawdowns"
+        )
+
+    def test_buy_blocked_top_up_on_held_also_blocked(self):
+        """The whiplash specifically came from QP topping up an EXISTING
+        holding while buy_blocked. Verify Δw>0 on held names is also
+        suppressed (not just new-entry buys)."""
+        ctx = _Ctx(config=_qp_on())
+        ctx.buy_blocked = True
+        # Already holding "H", QP would normally top it up given +mu
+        ctx.holdings = {"H": _Hold(shares=10, mu=0.05, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+        JointPortfolioQPTask().run(ctx)
+        # No top-up BUY orders
+        assert ctx.orders == [], (
+            f"buy_blocked must suppress QP top-ups too; got "
+            f"{len(ctx.orders)} order(s) — bug 3 reopened"
+        )
 
 
 # ── Buy/sell directions ───────────────────────────────────────────────────────
