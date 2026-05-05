@@ -94,6 +94,16 @@ class AssembleInferenceMatrixTask(Task):
             macro_frame=inp["macro_frame"],
             asset_embeddings=inp["asset_embeddings"],
         )
+        # 2026-05-05 P0 diag: log X shape + index sample to diagnose
+        # the wl183 0-trade bug where ApplyScores reports 0/N scored.
+        # If shape=(N,K) but cands report 0/N, X.index doesn't match
+        # ctx.candidates (data path bug). If shape=(0,K), the matrix
+        # builder dropped every ticker (frame issue).
+        target = list(inp["ff_subset"].keys())
+        log.info("AssembleInferenceMatrixTask: X.shape=%s  ff_sub=%d  "
+                  "X.index[:5]=%s  target[:5]=%s",
+                  X.shape, len(target),
+                  list(X.index[:5]), target[:5])
         if X.empty:
             log.warning("AssembleInferenceMatrixTask: empty matrix")
             ctx._panel_matrix = None  # noqa: SLF001
