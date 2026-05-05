@@ -281,11 +281,21 @@ def solve_portfolio_qp(
         min_invested_slack = (
             float(min_invested_pct) - float(np.sum(w_current))
         )
-        # Sanity: if floor > ceiling (e.g. min=0.9, cash_reserve=0.2 →
+        # Sanity 1: if floor > ceiling (e.g. min=0.9, cash_reserve=0.2 →
         # ceiling=0.8), clamp floor to ceiling minus epsilon to keep
         # feasible.
         if min_invested_slack > cash_slack:
             min_invested_slack = cash_slack
+        # Sanity 2 (2026-05-05 — Track B'' debug): floor INFEASIBILITY
+        # by capacity. With small per-asset caps (e.g. max_position_pct
+        # × conf_mult = 0.075) and few candidates (e.g. 8), max possible
+        # ΣΔw = 8×0.075 = 0.60. If floor=0.70, no Δw can satisfy LB →
+        # SLSQP fails "Positive directional derivative for linesearch".
+        # Auto-clamp by per-asset hi_bounds total. Conservative: leave
+        # 1% slack so SLSQP has interior feasibility.
+        max_capacity = float(np.sum(hi_bounds))
+        if min_invested_slack > max_capacity - 0.01:
+            min_invested_slack = max(-np.inf, max_capacity - 0.01)
     if budget_mode == "equality":
         cash_constraint = LinearConstraint(
             A=np.ones((1, n)),
