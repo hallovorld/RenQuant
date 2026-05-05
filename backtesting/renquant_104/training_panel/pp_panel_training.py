@@ -2495,9 +2495,39 @@ class SaveArtifactTask(PanelTask):
             default_tf = cfg.get("transformer_artifact_path", "panel-transformer.pt")
             out_path = Path(default_tf)
         else:
-            out_path = Path(cfg.get("artifact_path", "panel-ltr.json"))
+            # Bug 13 fix (2026-05-05 incident): SaveArtifactTask only read
+            # `panel_ltr.artifact_path` — but side configs set
+            # `ranking.panel_scoring.artifact_path` (the inference path).
+            # When the side config inherited the production training-side
+            # default, training silently overwrote production
+            # `panel-ltr.json` instead of writing to the side artifact.
+            # Mirror NGBoostSaveTask: inference-side wins (the live
+            # runner reads from inference-side; writing there is the
+            # only correct semantics). Training-side default is the
+            # fallback only when inference-side is unset.
+            out_name_train = cfg.get("artifact_path")
+            out_name_infer = (
+                ctx.config.get("ranking", {})
+                          .get("panel_scoring", {})
+                          .get("artifact_path")
+            )
+            if (out_name_train and out_name_infer
+                    and out_name_train != out_name_infer):
+                log.warning(
+                    "SaveArtifactTask: training-side path %s != "
+                    "inference-side path %s. Using inference-side "
+                    "(where the live runner reads); please reconcile "
+                    "in config.",
+                    out_name_train, out_name_infer,
+                )
+            out_name = out_name_infer or out_name_train or "panel-ltr.json"
+            out_path = Path(out_name)
         if ctx.strategy_dir and not out_path.is_absolute():
-            out_path = ctx.strategy_dir / "artifacts" / out_path.name
+            # Preserve relative path AS WRITTEN — match NGBoostSaveTask.
+            if out_path.parent == Path("."):
+                out_path = ctx.strategy_dir / "artifacts" / out_path
+            else:
+                out_path = ctx.strategy_dir / out_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         fit = getattr(ctx, "_final_fit", {}) or {}
