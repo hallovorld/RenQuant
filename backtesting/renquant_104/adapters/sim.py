@@ -578,7 +578,31 @@ class SimAdapter:
             price = float(df.loc[today_ts, "close"])
 
         hold_days = (today_ts.date() - hs.entry_date).days if hs.entry_date else 0
-        gross_pnl = sell_shares * (price - hs.entry_price)
+
+        # Bug 6 fix (2026-05-05 wl183 incident): under FIFO/HIFO lot
+        # disposal, the realized cost basis of the disposed shares is NOT
+        # the weighted-average entry_price. Pre-fix, gross_pnl was
+        # sell_shares × (price − avg_entry), which under FIFO with rising
+        # prices systematically UNDER-estimates true gain (oldest lots are
+        # cheapest) → tax under-collected → cash inflated → APY/Sharpe
+        # over-reported. Post-fix: dispose lots first, get the actual
+        # cost basis from `apply_sell_lots`, compute gross_pnl off that.
+        # Falls back to avg-cost when the holding has no lots (legacy
+        # state with shares but lots not migrated yet — rare).
+        from kernel.exits import apply_sell_lots, ensure_lots  # noqa: PLC0415
+        ensure_lots(self._holdings[ticker])
+        ja_cfg = (ctx.config.get("rotation", {}).get("joint_actions", {}) or {})
+        lot_method = str(ja_cfg.get("qp_tax_lot_method", "fifo")).lower()
+        had_lots = bool(self._holdings[ticker].lots)
+        proceeds_basis, _ = apply_sell_lots(
+            self._holdings[ticker], float(sell_shares), lot_method,
+        )
+        if had_lots and proceeds_basis > 0:
+            gross_pnl = sell_shares * price - proceeds_basis
+        else:
+            # Legacy path: no lots, fall back to avg-entry computation.
+            gross_pnl = sell_shares * (price - hs.entry_price)
+
         tax_cfg   = ctx.config.get("tax", {})
         tax = compute_trade_tax(
             gross_pnl, hold_days,
@@ -606,16 +630,6 @@ class SimAdapter:
             if not hasattr(self, "_last_stop_exit_date"):
                 self._last_stop_exit_date = {}
             self._last_stop_exit_date[ticker] = today_ts
-
-        # G7: consume tax lots (FIFO/HIFO/avg) BEFORE we mutate share
-        # counts, so the disposed lots' cost-basis is what determined
-        # the gain on this trade. Method comes from rotation.joint_actions
-        # but defaults to FIFO (broker convention).
-        from kernel.exits import apply_sell_lots, ensure_lots  # noqa: PLC0415
-        ensure_lots(self._holdings[ticker])
-        ja_cfg = (ctx.config.get("rotation", {}).get("joint_actions", {}) or {})
-        lot_method = str(ja_cfg.get("qp_tax_lot_method", "fifo")).lower()
-        apply_sell_lots(self._holdings[ticker], float(sell_shares), lot_method)
         # 2026-05-04 audit P1-5: apply_sell_lots mutates `hs.lots` but
         # NOT `hs.entry_price`. Under HIFO disposal of a partial trim,
         # the highest-cost lot is gone first → the surviving weighted

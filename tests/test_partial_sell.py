@@ -130,6 +130,75 @@ class TestSimAdapterPartialSell:
         assert tl["shares"]  == 4
         assert tl["partial"] is False
 
+    def test_lot_disposed_basis_used_for_tax_not_avg_entry(self):
+        """Bug 6 fix (2026-05-05 wl183 incident): tax was computed off
+        weighted-avg entry_price, but FIFO/HIFO lot disposal uses a
+        DIFFERENT cost basis. Pre-fix, gross_pnl = sell_shares ×
+        (price − avg) — under FIFO with rising prices, oldest (cheapest)
+        lots dispose first, so true realized gain > computed → tax
+        UNDER-collected → cash inflated → APY/Sharpe over-reported.
+
+        Test scenario: 2 lots — 5sh @ $100 (oldest) + 5sh @ $200. Avg
+        entry = $150. Sell 5 shares @ $250 with FIFO.
+
+          legacy (avg-cost):  gross_pnl = 5 × ($250 − $150) = $500
+          fixed  (FIFO basis): gross_pnl = 5 × $250 − 5×$100 = $750
+
+        ST tax @ 50% on $750 = $375 (true) vs $250 (legacy). Cash after
+        sell:
+          legacy:  0 + 5×$250 − $250 = $1000  (over-stated by $125)
+          fixed:   0 + 5×$250 − $375 = $875  (correct)
+        """
+        import pandas as pd
+        from adapters.sim import SimAdapter
+        from kernel.exits import HoldingState, TaxLot, ExitSignal
+
+        adp = SimAdapter.__new__(SimAdapter)
+        # Build a 2-lot holding directly (oldest cheap, newest expensive)
+        hs = HoldingState(
+            entry_price=150.0,    # avg = (100*5 + 200*5)/10 = 150
+            entry_date=datetime.date(2026, 1, 1),
+            shares=10, high_watermark=200.0,
+        )
+        hs.lots = [
+            TaxLot(shares=5, price=100.0, date=datetime.date(2026, 1, 1)),
+            TaxLot(shares=5, price=200.0, date=datetime.date(2026, 3, 1)),
+        ]
+        adp._holdings        = {"NVDA": hs}
+        adp._pos_shares      = {"NVDA": 10}
+        adp._cash            = 0.0
+        adp._last_sell_date  = {}
+        adp._trade_log       = []
+        adp._ohlcv           = {}
+
+        ctx = SimpleNamespace(
+            today    = datetime.date(2026, 4, 24),
+            prices   = {"NVDA": 250.0},
+            config   = {
+                "tax": {"short_term_rate": 0.50, "long_term_rate": 0.20,
+                        "long_term_threshold_days": 365},
+                "rotation": {"joint_actions": {"qp_tax_lot_method": "fifo"}},
+            },
+            exits    = [],
+            holdings = {},
+        )
+        sig = ExitSignal(should_exit=True, reason="kelly trim",
+                          exit_type="kelly_trim", quantity=5.0)
+        adp._apply_sell("NVDA", sig, pd.Timestamp("2026-04-24"), ctx)
+
+        tl = adp._trade_log[0]
+        # Tax should be on the FIFO-disposed gain ($750), not avg ($500).
+        # ST tax @ 50% on $750 = $375.
+        assert abs(tl["tax"] - 375.0) < 1e-6, (
+            f"Bug 6 reopened: tax={tl['tax']}, expected $375 (FIFO gain "
+            f"$750 × 50% ST). Pre-fix would compute $250 (avg-cost gain "
+            f"$500 × 50%)."
+        )
+        # Cash = 5×$250 − $375 = $875
+        assert abs(adp._cash - 875.0) < 1e-6, (
+            f"Bug 6 reopened: cash={adp._cash}, expected $875"
+        )
+
     def test_full_exit_detection_logic(self):
         """The commit() loop pops only when quantity is None or ≥ current shares.
 
