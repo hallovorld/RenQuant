@@ -2512,6 +2512,19 @@ class SaveArtifactTask(PanelTask):
             "oos_per_fold_ic": ctx.cv_result["per_fold_ic"],
             "oos_ic_quantiles": ctx.cv_result.get("quantiles"),   # only present for CPCV
             "training_train_ic": fit.get("train_ic", 0.0),
+            # 2026-05-04 (P0 fix): stamp eval_ic at best_iter into the
+            # artifact so the runner's preflight P-BEST-ITER check can
+            # apply the same escape clause that FinalFitTask uses
+            # (best_iter < min_best_iter is OK if eval_ic ≥ floor).
+            # Pre-fix: only `train_ic` made it to the artifact; eval_ic
+            # stayed in the in-memory fit dict and was lost on save —
+            # the live runner's preflight had no way to know whether
+            # an early-stop best_iter=4 was the healthy
+            # strong-univariate-IC plateau or a pathological
+            # untrained head, so it always failed-safe (refused to
+            # trade). Stamping eval_ic restores symmetry between the
+            # training-time guard and the runtime guard.
+            "eval_ic":         fit.get("eval_ic"),
             "training_notes":  cfg.get("training_notes", "Stage-1 panel pipeline"),
             "neutralize_features": cfg.get("neutralize_features", True),
             "lookahead_days":  cfg.get("lookahead_days", 5),

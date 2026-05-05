@@ -131,11 +131,41 @@ def _check_best_iter(config: dict, strategy_dir: Path) -> PreflightCheck:
         )
     min_bi = int(panel_cfg.get("min_best_iter", 5))
     if int(bi) < min_bi:
+        # 2026-05-04 (P0 fix): mirror the FinalFitTask training-time
+        # escape clause. best_iter < min_best_iter is a FALSE POSITIVE
+        # on strong-univariate-IC features (XGBoost converges by round
+        # 4-9 and further rounds add zero eval-set improvement). If
+        # eval_ic at best_iter is healthy (≥ floor, default 0.02),
+        # accept the model. This keeps the runtime guard symmetric
+        # with the training-time guard — pre-fix, training accepted
+        # the model + saved the artifact, then preflight refused to
+        # load it = strategy never trades. Pathological case
+        # (eval_ic ≈ 0 or missing from artifact) still fails-safe.
+        eval_ic_floor = float(panel_cfg.get("min_best_iter_eval_ic_floor", 0.02))
+        eval_ic = meta.get("eval_ic")
+        try:
+            eval_ic_f = float(eval_ic) if eval_ic is not None else None
+        except (TypeError, ValueError):
+            eval_ic_f = None
+        import math as _math
+        if (eval_ic_f is not None and _math.isfinite(eval_ic_f)
+                and eval_ic_f >= eval_ic_floor):
+            return PreflightCheck(
+                "P-BEST-ITER", "hard", True,
+                f"best_iter={bi} < {min_bi} but eval_ic={eval_ic_f:+.4f} ≥ "
+                f"floor={eval_ic_floor:+.4f} — strong-univariate-IC plateau, accepting",
+                details={"best_iter": bi, "min_best_iter": min_bi,
+                         "eval_ic": eval_ic_f, "eval_ic_floor": eval_ic_floor},
+            )
         return PreflightCheck(
             "P-BEST-ITER", "hard", False,
-            f"best_iter={bi} < min_best_iter={min_bi}. Model undertrained "
-            f"(early-stop fired in round {bi}). Retrain required.",
-            details={"best_iter": bi, "min_best_iter": min_bi},
+            f"best_iter={bi} < min_best_iter={min_bi} AND "
+            f"eval_ic={eval_ic} < floor={eval_ic_floor:+.4f}. "
+            f"Model undertrained (early-stop fired in round {bi}). "
+            f"Retrain required, OR confirm eval_ic is stamped in the artifact "
+            f"(SaveArtifactTask must include 'eval_ic' in meta).",
+            details={"best_iter": bi, "min_best_iter": min_bi,
+                     "eval_ic": eval_ic, "eval_ic_floor": eval_ic_floor},
         )
     return PreflightCheck(
         "P-BEST-ITER", "hard", True,
