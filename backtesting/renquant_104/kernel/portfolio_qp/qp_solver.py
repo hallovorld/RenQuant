@@ -106,8 +106,19 @@ def solve_portfolio_qp(
     # 2026-05-05 — budget constraint mode. "inequality" (default, legacy)
     # = `Σw ≤ 1 − cash_reserve` (LE); "equality" = `Σw == 1 − cash_reserve`
     # which forces full deployment (modulo reserve). EQ is the textbook
-    # Markowitz formulation for active long-only managers.
+    # Markowitz formulation but breaks SLSQP feasibility on empty-
+    # portfolio start (Positive directional derivative for linesearch
+    # at w_current=0). PREFER min_invested_pct below for cash-drag fix.
     budget_mode: str = "inequality",
+    # 2026-05-05 cash-drag P0 (replaces equality experiment): impose a
+    # SOFT floor on total deployment via a two-sided box constraint.
+    # When min_invested_pct > 0, adds a second LinearConstraint:
+    #     Σw ≥ min_invested_pct   (i.e. 1' Δw ≥ min_invested_pct − 1'w_current)
+    # combined with the existing 1' Δw ≤ (1 − cash_reserve − 1'w_current).
+    # Default 0.0 → no floor (legacy parity). Setting 0.7 forces
+    # 70–100% deployed. Easier for SLSQP than equality (feasibility
+    # region is non-degenerate).
+    min_invested_pct:     float = 0.0,
 ) -> QPSolution:
     """Solve the single-period Markowitz QP with linear-cost transaction.
 
@@ -261,16 +272,30 @@ def solve_portfolio_qp(
     # γ·wᵀΣw + per-asset w_upper. Default LE preserves legacy parity.
     # References: Markowitz 1952 §III; Best & Grauer 1991 §4.
     cash_slack = (1.0 - cash_reserve) - float(np.sum(w_current))
+    # 2026-05-05 cash-drag fix: replace inequality / equality with a
+    # two-sided box. lb is min_invested_floor (default -inf = legacy
+    # behavior); ub is the existing cash_slack. SLSQP handles boxes
+    # cleanly; equality often fails Positive-directional-derivative.
+    min_invested_slack = float("-inf")
+    if min_invested_pct > 0:
+        min_invested_slack = (
+            float(min_invested_pct) - float(np.sum(w_current))
+        )
+        # Sanity: if floor > ceiling (e.g. min=0.9, cash_reserve=0.2 →
+        # ceiling=0.8), clamp floor to ceiling minus epsilon to keep
+        # feasible.
+        if min_invested_slack > cash_slack:
+            min_invested_slack = cash_slack
     if budget_mode == "equality":
         cash_constraint = LinearConstraint(
             A=np.ones((1, n)),
             lb=cash_slack,    # lb == ub → equality
             ub=cash_slack,
         )
-    else:   # default "inequality" — legacy
+    else:   # default "inequality" — legacy + optional floor
         cash_constraint = LinearConstraint(
             A=np.ones((1, n)),
-            lb=-np.inf,
+            lb=min_invested_slack,
             ub=cash_slack,
         )
 

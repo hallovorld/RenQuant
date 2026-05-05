@@ -377,10 +377,14 @@ class SolveMarkowitzQPTask(Task):
             # G4 — Smoothed fixed cost (off by default)
             fixed_cost_per_trade=float(cfg.get("qp_fixed_cost_per_trade", 0.0)),
             fixed_cost_beta=float(cfg.get("qp_fixed_cost_beta", 200.0)),
-            # 2026-05-05 cash-drag fix — budget mode. "equality" forces
-            # Σw = 1 − cash_reserve (full deployment except reserve);
-            # "inequality" is legacy LE.
+            # 2026-05-05 cash-drag fix — budget mode + min_invested_pct.
+            # equality forces Σw = 1 − cash_reserve (textbook Markowitz)
+            # but breaks SLSQP feasibility on empty-portfolio start.
+            # min_invested_pct > 0 imposes a SOFT floor (two-sided box,
+            # stays feasible). Recommended starting point: 0.7
+            # (require ≥70% deployed).
             budget_mode=str(cfg.get("qp_budget_mode", "inequality")),
+            min_invested_pct=float(cfg.get("qp_min_invested_pct", 0.0)),
         )
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_n_buys = 0  # noqa: SLF001
