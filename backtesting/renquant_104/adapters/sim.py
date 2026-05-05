@@ -656,10 +656,27 @@ class SimAdapter:
         # propagated into trade_log, then into win_rate / avg_pnl / B2
         # holdout reports as NaN. Compute pnl_pct defensively: require
         # both finite price AND finite positive entry_price.
+        #
+        # Bug 7 fix (2026-05-05 wl183 incident, follow-on to bug 6): on
+        # PARTIAL trims, hs.entry_price was already refreshed to the
+        # SURVIVING-lot weighted avg (line 645), which is NOT the cost
+        # basis of the DISPOSED shares. Using surviving-avg here reports
+        # "unrealized P&L on the remaining position", not "realized P&L
+        # of this trade". Result: partial-trim win/loss classification
+        # was wrong — a Kelly trim at +30% on cheaper FIFO lots could
+        # show pnl_pct ≈ 0% (vs the surviving expensive lots) instead
+        # of the actual realized +30%. Corrupts win_rate + avg_pnl.
+        # Fix: use the disposed cost basis (proceeds_basis / sell_shares)
+        # which represents the *actual basis of what was sold*. Falls
+        # back to surviving entry_price for legacy state without lots.
         import math as _math_pnl   # local import — module-level math not present
-        _entry = float(getattr(hs, "entry_price", 0.0) or 0.0)
-        if (_math_pnl.isfinite(price) and _math_pnl.isfinite(_entry) and _entry > 0):
-            _pnl_pct = (price - _entry) / _entry
+        if had_lots and proceeds_basis > 0 and sell_shares > 0:
+            _disposed_basis = proceeds_basis / sell_shares
+        else:
+            _disposed_basis = float(getattr(hs, "entry_price", 0.0) or 0.0)
+        if (_math_pnl.isfinite(price) and _math_pnl.isfinite(_disposed_basis)
+                and _disposed_basis > 0):
+            _pnl_pct = (price - _disposed_basis) / _disposed_basis
         else:
             _pnl_pct = 0.0
         self._trade_log.append({

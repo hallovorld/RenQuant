@@ -199,6 +199,68 @@ class TestSimAdapterPartialSell:
             f"Bug 6 reopened: cash={adp._cash}, expected $875"
         )
 
+    def test_pnl_pct_uses_disposed_basis_not_surviving_avg(self):
+        """Bug 7 fix (2026-05-05 wl183 incident, follow-on to bug 6):
+        on partial trims, hs.entry_price gets refreshed to the
+        SURVIVING-lot weighted avg before pnl_pct is computed. Pre-fix,
+        pnl_pct = (price − surviving_avg) / surviving_avg — that's
+        unrealized P&L on the *remaining* position, not realized P&L
+        on what was sold.
+
+        Scenario: 2 lots — 5sh @ $100 (FIFO oldest) + 5sh @ $200.
+        Sell 5 @ $250 under FIFO:
+          disposed cost = $100/sh, realized gain = ($250 − $100) / $100 = +150%
+          surviving avg = $200/sh
+          pre-fix pnl_pct = (250 − 200) / 200 = +25%   ← WRONG (under-reports)
+          fixed pnl_pct  = (250 − 100) / 100 = +150%   ← realized
+
+        Win-rate impact: a profitable FIFO partial trim could be
+        classified as 25% gain or worse — sometimes flipping to a loss
+        if the surviving lots are recent expensive ones."""
+        import pandas as pd
+        from adapters.sim import SimAdapter
+        from kernel.exits import HoldingState, TaxLot, ExitSignal
+
+        adp = SimAdapter.__new__(SimAdapter)
+        hs = HoldingState(
+            entry_price=150.0,
+            entry_date=datetime.date(2026, 1, 1),
+            shares=10, high_watermark=200.0,
+        )
+        hs.lots = [
+            TaxLot(shares=5, price=100.0, date=datetime.date(2026, 1, 1)),
+            TaxLot(shares=5, price=200.0, date=datetime.date(2026, 3, 1)),
+        ]
+        adp._holdings        = {"NVDA": hs}
+        adp._pos_shares      = {"NVDA": 10}
+        adp._cash            = 0.0
+        adp._last_sell_date  = {}
+        adp._trade_log       = []
+        adp._ohlcv           = {}
+
+        ctx = SimpleNamespace(
+            today    = datetime.date(2026, 4, 24),
+            prices   = {"NVDA": 250.0},
+            config   = {
+                "tax": {"short_term_rate": 0.50, "long_term_rate": 0.20,
+                        "long_term_threshold_days": 365},
+                "rotation": {"joint_actions": {"qp_tax_lot_method": "fifo"}},
+            },
+            exits    = [],
+            holdings = {},
+        )
+        sig = ExitSignal(should_exit=True, reason="kelly trim",
+                          exit_type="kelly_trim", quantity=5.0)
+        adp._apply_sell("NVDA", sig, pd.Timestamp("2026-04-24"), ctx)
+
+        tl = adp._trade_log[0]
+        # FIFO disposed basis = $100/sh, gain = ($250-$100)/$100 = 1.50
+        assert abs(tl["pnl_pct"] - 1.50) < 1e-6, (
+            f"Bug 7 reopened: pnl_pct={tl['pnl_pct']}, expected +1.50 "
+            f"(realized FIFO gain). Pre-fix would compute +0.25 against "
+            f"surviving $200 avg."
+        )
+
     def test_full_exit_detection_logic(self):
         """The commit() loop pops only when quantity is None or ≥ current shares.
 
