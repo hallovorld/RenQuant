@@ -232,6 +232,62 @@ class TestAdaptiveBuyFloor(unittest.TestCase):
         self.assertEqual(kept2, {"Y2", "Y3", "Y4"})
 
 
+class TestAdaptiveSkipsOnNoSignalDays(unittest.TestCase):
+    """2026-05-04 e2e learning: when the rank_score distribution is
+    highly compressed (e.g. 43 cands range [0.232, 0.258], top 10
+    tied at 0.2579 < prob_base_rate 0.278), `mean+std` lands ABOVE
+    the maximum and 100% are vetoed. This is **correct** — the model
+    is saying "no signal today"; forcing a top-quantile buy would
+    override the model's actual output.
+
+    Considered + rejected: a 3rd quantile-floor bound to "always keep
+    top N%". Rationale for rejection: trust the model when it says
+    nothing. Compressed distributions ARE a no-signal indicator;
+    suppressing buys is the right behavior, not a bug to mask.
+    """
+
+    def _make_ctx_adaptive(self, cap=0.30):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            config={"ranking": {"panel_scoring": {
+                "buy_floor": "adaptive_mean_std_cap",
+                "buy_floor_adaptive_cap": cap,
+            }}},
+            candidates=[],
+            holdings={},
+            counters={},
+        )
+
+    def test_compressed_distribution_drops_all_on_purpose(self):
+        """When mean+std > max(scores), all are vetoed — no buys.
+        Reproduces 2026-05-04 live e2e: model has no signal, no trade."""
+        from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
+        ctx = self._make_ctx_adaptive(cap=0.30)
+        # Left-skewed distribution: a tail of low scores pulls mean
+        # down enough that mean+std overshoots the max. Specifically:
+        #  5 outliers at 0.10 + 38 cands at 0.25
+        #  mean ≈ 0.233, std ≈ 0.049 → mean+std ≈ 0.282 > max(0.25)
+        # This is the calibrator-collapse pattern: most cands cluster
+        # at one calibrated probability, a few outliers below.
+        scores = [0.10] * 5 + [0.25] * 38
+        import statistics
+        self.assertGreater(
+            statistics.fmean(scores) + statistics.stdev(scores),
+            max(scores),
+            "scenario must have mean+std > max — that's what the test pins"
+        )
+        ctx.candidates = [
+            _make_cand(f"T{i}", panel_score=0.0, rank_score=s)
+            for i, s in enumerate(scores)
+        ]
+        VetoWeakBuysTask().run(ctx)
+        # ALL dropped — correct behavior on a no-signal day. Forcing
+        # a top-quantile buy would override the model's actual output.
+        self.assertEqual(len(ctx.candidates), 0,
+                         "compressed distribution MUST drop all — "
+                         "model is saying 'no signal', do not force buys")
+
+
 # 2026-05-04 user mandate: "rank_score need to be collected properly
 # for future fine tune". Snapshot the full pre-veto candidate list so
 # the persistence layer captures BOTH kept and vetoed rows.

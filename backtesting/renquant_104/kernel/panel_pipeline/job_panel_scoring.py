@@ -226,15 +226,16 @@ class VetoWeakBuysTask(Task):
         if raw_floor is None:
             return
 
-        # 2026-05-04 user spec: "暂时改成，取min[mean+std, 0.3]". Per-bar
-        # adaptive floor that keeps only candidates above 1σ above the
-        # bar's mean rank_score, capped by the legacy 0.30 absolute
-        # threshold. Two interpretations of "scientific":
-        #   (a) data-driven per-bar (mean+std uses today's distribution)
-        #   (b) bounded above by the historical pre-fix value so we
-        #       never get LESS strict than legacy
-        # min(mean+std, cap) satisfies both. The cap can be tuned via
-        # buy_floor_adaptive_cap; defaults to 0.30.
+        # 2026-05-04 user spec: per-bar adaptive floor.
+        # Formula: min(mean+std, cap)
+        # Considered + rejected (2026-05-04 evening): adding a third
+        # quantile-based bound to "always keep top N%". Live e2e
+        # (2026-05-04) showed the formula correctly drops 100% of
+        # candidates on no-signal days — top 10 candidates tied at
+        # 0.2579 < prob_base_rate 0.2779, μ values ≈ 0. Forcing a
+        # top-quartile buy would override the model's "nothing today"
+        # output. Keep the simpler formula; trust the model when it
+        # says no signal.
         floor: float
         floor_label: str
         if isinstance(raw_floor, str) and raw_floor == "adaptive_mean_std_cap":
