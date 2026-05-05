@@ -476,7 +476,7 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-05-04",
+    "blend_updated": "2026-05-05",
     "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
@@ -718,7 +718,8 @@
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
-    }
+    },
+    "calibration_method": "platt"
   },
   "training": {
     "cadence": "custom",

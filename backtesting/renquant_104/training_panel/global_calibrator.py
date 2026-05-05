@@ -143,6 +143,14 @@ def fit_global_calibrator(
     threshold_mode: str = "absolute",
     min_rows: int = 1000,
     rolling_window_years: float | None = None,
+    # 2026-05-05 — calibration method. Default 'isotonic' is the legacy
+    # path. 'platt' fits a sigmoid (logistic regression on raw_score) and
+    # samples it at quantile knots — produces SMOOTH continuous output
+    # by construction, immune to the discrete-y collapse that isotonic
+    # suffers when raw_score has few unique values. Reference:
+    # Platt (1999) "Probabilistic Outputs for Support Vector Machines";
+    # Niculescu-Mizil & Caruana (2005) ICML §3.
+    method: str = "isotonic",
 ) -> GlobalPanelCalibration:
     """Pool all tickers' (panel_score, future_return) pairs; fit one isotonic.
 
@@ -317,16 +325,38 @@ def fit_global_calibrator(
             prob_labels = (fwd_all >= threshold).astype(float)
     else:
         prob_labels = (fwd_all >= threshold).astype(float)
-    iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
-
-    # ER head: direct regression
-    iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_all)
-
-    # Extract knots for JSON serialization. Use the isotonic model's own knots.
-    prob_x = np.asarray(iso_p.X_thresholds_, dtype=float)
-    prob_y = np.asarray(iso_p.y_thresholds_, dtype=float)
-    er_x   = np.asarray(iso_er.X_thresholds_, dtype=float)
-    er_y   = np.asarray(iso_er.y_thresholds_, dtype=float)
+    method_lc = (method or "isotonic").lower()
+    if method_lc == "platt":
+        # Platt scaling — sigmoid logistic regression on raw_score → P(label).
+        # Smooth by construction; no collapse risk. Sample at quantile knots
+        # so the downstream interpolation infrastructure (linear between
+        # knots) reproduces the sigmoid faithfully.
+        from sklearn.linear_model import LogisticRegression  # noqa: PLC0415
+        # Reshape for sklearn: (n_samples, 1)
+        X = raw_all.reshape(-1, 1)
+        platt = LogisticRegression(C=1e6, solver="lbfgs", max_iter=1000)
+        platt.fit(X, prob_labels)
+        # Sample sigmoid at 100 quantile knots of raw_all for downstream
+        # piecewise-linear interpolation.
+        K = 100
+        knot_q = np.linspace(0.001, 0.999, K)
+        prob_x = np.quantile(raw_all, knot_q)
+        prob_y = platt.predict_proba(prob_x.reshape(-1, 1))[:, 1]
+        # ER head — also linear regression for symmetry (LinearRegression
+        # gives smooth ER curve, no plateau).
+        from sklearn.linear_model import LinearRegression  # noqa: PLC0415
+        lin_er = LinearRegression().fit(X, fwd_all)
+        er_x = prob_x.copy()
+        er_y = lin_er.predict(er_x.reshape(-1, 1))
+    else:
+        iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
+        # ER head: direct regression
+        iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_all)
+        # Extract knots for JSON serialization. Use the isotonic model's own knots.
+        prob_x = np.asarray(iso_p.X_thresholds_, dtype=float)
+        prob_y = np.asarray(iso_p.y_thresholds_, dtype=float)
+        er_x   = np.asarray(iso_er.X_thresholds_, dtype=float)
+        er_y   = np.asarray(iso_er.y_thresholds_, dtype=float)
 
     # Audit fix CALIB-COLLAPSE-GUARD (2026-04-26 round-7): refuse to
     # ship a calibrator where the probability head has < 5 unique y
@@ -370,6 +400,7 @@ def fit_global_calibrator(
         "prob_base_rate":     float(prob_labels.mean()),
         "er_mean":            float(fwd_all.mean()),
         "er_std":             float(fwd_all.std()),
+        "calibration_method": method_lc,
     }
     log.info(
         "fit_global_calibrator: n=%d tickers=%d pool_ic=%+.4f "

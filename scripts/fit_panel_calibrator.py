@@ -268,10 +268,19 @@ def main() -> None:
         future_returns[t] = fwd_rel
 
     # ── Fit global calibrator ──────────────────────────────────────────────
+    # 2026-05-05 — calibration_method config knob. Default "isotonic"
+    # (legacy). Set "platt" for sigmoid-fit logistic regression that
+    # cannot collapse on coarse XGB outputs. Pass via panel_ltr config
+    # so side configs can opt in independently.
+    calib_method = str(
+        panel_cfg.get("calibration_method", "isotonic")
+    ).lower()
+    log.info(f"Fitting calibrator: method={calib_method}")
     calib = fit_global_calibrator(
         panel_scores, future_returns,
         lookahead_days=lookahead, threshold=threshold,
         threshold_mode=threshold_mode,
+        method=calib_method,
     )
     calib.save(out_path, metadata={
         "scorer_artifact": str(scorer_path),

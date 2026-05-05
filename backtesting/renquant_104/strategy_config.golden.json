@@ -718,7 +718,8 @@
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
-    }
+    },
+    "calibration_method": "platt"
   },
   "training": {
     "cadence": "custom",
