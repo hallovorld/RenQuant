@@ -570,13 +570,13 @@
     "neutralize_rolling_window": 252,
     "neutralize_warmup_days": 252,
     "xgb_params": {
-      "eta": 0.02,
+      "eta": 0.05,
       "max_depth": 3,
-      "min_child_weight": 30,
+      "min_child_weight": 15,
       "subsample": 0.5,
       "colsample_bytree": 0.5,
-      "lambda": 3.0,
-      "alpha": 1.0,
+      "lambda": 2.0,
+      "alpha": 0.5,
       "objective": "rank:pairwise"
     },
     "artifact_path": "artifacts/panel-ltr.json",
@@ -718,8 +718,8 @@
       "kind": "exp_decay",
       "half_life_days": 252
     },
-    "min_best_iter": 30,
-    "min_best_iter_eval_ic_floor": 0.025
+    "min_best_iter": 10,
+    "min_best_iter_eval_ic_floor": 0.0
   },
   "training": {
     "cadence": "custom",
