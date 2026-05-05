@@ -264,6 +264,85 @@ class TestNonFiniteDeltaWGuard:
         assert ctx.orders == [], "inf Δw must be skipped, not produce an order"
 
 
+class TestNoTradeBandDavisNorman:
+    """Bug-bounty round 4 (2026-05-05): cash-drag mitigation via
+    Davis-Norman (1990) / Constantinides (1979) per-asset no-trade
+    band. Pre-fix the only floor was uniform qp_min_dw_pct (e.g. 0.02
+    NAV-fraction) regardless of asset volatility. Post-fix:
+        threshold_i = max(qp_min_dw_pct, qp_no_trade_band_factor × σ_i)
+    Default factor=0.0 preserves legacy parity. Bumping factor=1.0+
+    lets QP hold positions through 1σ drifts → fewer cap-driven
+    trims → less cash drag in trending markets."""
+
+    def test_band_disabled_by_default(self):
+        """factor=0.0 → behavior identical to pre-fix (uniform min_dw_pct)."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+        ctx = _Ctx(config=_qp_on())
+        ctx._qp_tickers = ["A"]
+        ctx._qp_sigma = np.array([0.10])  # 10% σ
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        # Δw=0.03 — well above min_dw=0.005, factor=0 → NO suppression
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.03]),
+            target_w=np.array([0.03]),
+            objective=0.001, n_iter=3, status="optimal", diagnostics={},
+        )
+        EmitOrdersFromQPSolutionTask().run(ctx)
+        assert len(ctx.orders) == 1, "factor=0 must not suppress; legacy parity"
+
+    def test_band_suppresses_below_sigma_threshold(self):
+        """factor=1.0 + σ=0.05 → threshold = max(0.005, 0.05) = 0.05.
+        Δw=0.03 is BELOW the band → suppressed."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+        cfg = _qp_on()
+        cfg["rotation"]["joint_actions"]["qp_no_trade_band_factor"] = 1.0
+        ctx = _Ctx(config=cfg)
+        ctx._qp_tickers = ["A"]
+        ctx._qp_sigma = np.array([0.05])  # 5% σ
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.05)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        # Δw=0.03 < threshold=0.05 → suppressed
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.03]),
+            target_w=np.array([0.03]),
+            objective=0.001, n_iter=3, status="optimal", diagnostics={},
+        )
+        EmitOrdersFromQPSolutionTask().run(ctx)
+        assert ctx.orders == [], (
+            "factor=1.0 σ=0.05 → 5% band; Δw=3% must be suppressed"
+        )
+
+    def test_band_emits_above_sigma_threshold(self):
+        """Same factor=1.0 + σ=0.05 but Δw=0.07 > 0.05 band → emit."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+        cfg = _qp_on()
+        cfg["rotation"]["joint_actions"]["qp_no_trade_band_factor"] = 1.0
+        ctx = _Ctx(config=cfg)
+        ctx._qp_tickers = ["A"]
+        ctx._qp_sigma = np.array([0.05])
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.05)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.07]),
+            target_w=np.array([0.07]),
+            objective=0.001, n_iter=3, status="optimal", diagnostics={},
+        )
+        EmitOrdersFromQPSolutionTask().run(ctx)
+        assert len(ctx.orders) == 1, (
+            "Δw=7% > 5% band → must emit"
+        )
+
+
 class TestEarningsBlackoutQPTopUp:
     """2026-05-05 wl183 incident bug 4: QP had no earnings awareness.
     The buy-side EarningsFilterTask blocks new entries within ±N days

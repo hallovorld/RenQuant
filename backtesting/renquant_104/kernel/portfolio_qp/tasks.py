@@ -407,6 +407,20 @@ class EmitOrdersFromQPSolutionTask(Task):
         nav = float(_get_path(ctx, "portfolio_value", 0.0) or 0.0)
         cfg = _qp_cfg(ctx)
         min_dw = float(cfg.get("qp_min_dw_pct", 0.005))
+        # 2026-05-05 cash-drag fix: per-asset no-trade band.
+        # Davis-Norman (1990) / Constantinides (1979) closed form:
+        #   ε_i ≈ (3κ/γ)^(1/3) × σ_i × √Δt
+        # The classical answer to "when do I rebalance" — only trade
+        # when |Δw_i| exceeds a volatility-scaled threshold. Smaller
+        # ε for low-vol assets (rebalance often), larger ε for high-vol
+        # (let positions drift). Pre-fix the only floor was the uniform
+        # qp_min_dw_pct (0.02 NAV-fraction), which produces friction-
+        # equivalent trades regardless of σ. Post-fix the threshold is
+        # max(qp_min_dw_pct, qp_no_trade_band_factor × σ_i).
+        # Default qp_no_trade_band_factor=0.0 → disabled (legacy parity).
+        # Recommended starting point: 1.0 (one-σ band).
+        no_trade_factor = float(cfg.get("qp_no_trade_band_factor", 0.0))
+        sigma_vec = _get_path(ctx, "_qp_sigma")
         cands = {c.ticker: c for c in (ctx.candidates or [])}
         # 2026-05-05 wl183 incident bug 3: when ctx.buy_blocked OR
         # ctx.skip_buys is set, QP rebalance must not emit any buy.
@@ -454,12 +468,24 @@ class EmitOrdersFromQPSolutionTask(Task):
         # can investigate without crashing the sim.
         import math as _math_dw  # noqa: PLC0415
         n_skipped_nonfinite = 0
+        n_skipped_band = 0
         for i, t in enumerate(tickers):
             dw = float(sol.delta_w[i])
             if not _math_dw.isfinite(dw):
                 n_skipped_nonfinite += 1
                 continue
-            if abs(dw) < min_dw:
+            # Per-asset no-trade band: max(min_dw_pct, factor × σ_i).
+            # When sigma_vec missing or non-finite for asset i, fall
+            # back to the uniform min_dw threshold (legacy parity).
+            sig_i = 0.0
+            if sigma_vec is not None and i < len(sigma_vec):
+                sig_i_raw = float(sigma_vec[i])
+                if _math_dw.isfinite(sig_i_raw) and sig_i_raw > 0:
+                    sig_i = sig_i_raw
+            threshold = max(min_dw, no_trade_factor * sig_i)
+            if abs(dw) < threshold:
+                if abs(dw) >= min_dw:
+                    n_skipped_band += 1
                 continue
             px = prices.get(t, 0.0)
             if not _math_dw.isfinite(px) or px <= 0:
@@ -503,6 +529,14 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "Δw entries (NaN/inf weights from solver — investigate "
                 "Σ conditioning or μ/σ inputs)",
                 n_skipped_nonfinite,
+            )
+        if n_skipped_band:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: skipped %d trades by "
+                "no-trade band (above %.2f%% min_dw but inside %.1fσ "
+                "vol-scaled band) — Davis-Norman/Constantinides "
+                "rebalance economy",
+                n_skipped_band, min_dw * 100, no_trade_factor,
             )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
