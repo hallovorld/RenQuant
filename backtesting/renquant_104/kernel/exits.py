@@ -16,6 +16,28 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 
+# ── G7: tax-lot tracking ──────────────────────────────────────────────────────
+
+@dataclass
+class TaxLot:
+    """Individual tax lot for a position.
+
+    Real-world brokerages track each buy as a separate lot with its own
+    cost basis and acquisition date. The QP solver's tax-cost vector should
+    mirror that: on a partial sell, only the actually-disposed lots'
+    gain/loss matters, not a single average.
+
+    Fields:
+      shares: float  — remaining shares in this lot (post any partial
+                       consumption from upstream sells).
+      price:  float  — fill price per share for this lot.
+      date:   date   — acquisition date (used for ST/LT classification).
+    """
+    shares: float
+    price:  float
+    date:   datetime.date
+
+
 @lru_cache(maxsize=4096)
 def _is_nyse_trading_day(d: datetime.date) -> bool:
     """Return True iff d is a regular NYSE trading day (Mon-Fri, not a US
@@ -81,6 +103,137 @@ class HoldingState:
     entry_panel_score:   float | None = None
     entry_kelly_target_pct: float | None = None
 
+    # G7 (2026-05-04): explicit tax-lot list. Each buy appends a TaxLot;
+    # sells consume lots per FIFO/HIFO. Default empty for back-compat;
+    # `ensure_lots()` synthesizes a single lot from the legacy
+    # entry_price/entry_date/shares fields when the list is empty.
+    lots: list = field(default_factory=list)
+
+    # Lot-level helpers ────────────────────────────────────────────────
+    def total_shares(self) -> float:
+        """Sum of shares across all lots. Falls back to `self.shares`
+        when lots are empty (legacy / un-migrated holdings)."""
+        if self.lots:
+            return float(sum(L.shares for L in self.lots))
+        return float(self.shares or 0.0)
+
+    def weighted_avg_entry_price(self) -> float:
+        """Cost-basis-weighted average entry price across all lots.
+        Falls back to `self.entry_price` when lots are empty."""
+        if not self.lots:
+            return float(self.entry_price or 0.0)
+        total_sh = sum(L.shares for L in self.lots)
+        if total_sh <= 0:
+            return float(self.entry_price or 0.0)
+        cost = sum(L.shares * L.price for L in self.lots)
+        return float(cost / total_sh)
+
+
+def ensure_lots(hs) -> None:
+    """Migrate a legacy HoldingState to the lot model in-place.
+
+    If `hs.lots` is already populated, no-op. Otherwise, when the legacy
+    fields describe a real position (shares > 0 AND entry_price > 0),
+    synthesize a single `TaxLot` from them. This keeps the QP HIFO path
+    correct on holdings that haven't been touched by a lot-aware buy yet
+    (e.g. positions hydrated from broker on adapter startup).
+
+    Idempotent and cheap — call freely at the head of any consumer.
+
+    Defensive: accepts any HoldingState-like object. If the object is
+    missing a `lots` attribute (test stubs / legacy snapshot), we
+    auto-attach an empty list before populating.
+    """
+    if not hasattr(hs, "lots") or hs.lots is None:
+        try:
+            hs.lots = []
+        except (AttributeError, TypeError):
+            return   # frozen / unsettable — caller's stub, skip silently
+    if hs.lots:
+        return
+    sh = float(getattr(hs, "shares", 0.0) or 0.0)
+    px = float(getattr(hs, "entry_price", 0.0) or 0.0)
+    ed = getattr(hs, "entry_date", None)
+    if sh > 0 and px > 0 and ed is not None:
+        hs.lots.append(TaxLot(shares=sh, price=px, date=ed))
+
+
+def apply_buy_lot(hs: HoldingState, shares: float, price: float,
+                   date: datetime.date) -> None:
+    """Append a new TaxLot to `hs.lots` and refresh the legacy fields.
+
+    `entry_price` is recomputed as the weighted average across all lots
+    (back-compat for code paths that read it). `entry_date` is left at
+    the FIRST lot's date so tenure-based rules (max_hold, lt_hold_gate)
+    track the original acquisition. This mirrors broker convention:
+    "first acquired" anchors hold-period reporting.
+    """
+    if shares <= 0 or price <= 0:
+        return
+    ensure_lots(hs)
+    hs.lots.append(TaxLot(shares=float(shares), price=float(price), date=date))
+    hs.entry_price = hs.weighted_avg_entry_price()
+    if not hs.lots[:-1]:   # this was the first lot
+        hs.entry_date = date
+
+
+def apply_sell_lots(hs: HoldingState, shares_to_sell: float,
+                     method: str = "fifo") -> tuple[float, float]:
+    """Consume lots from `hs.lots` per FIFO/HIFO; return (proceeds_basis,
+    realized_gain_dollar) where:
+      - proceeds_basis is the cost-basis $ disposed (sum lot.price*take)
+      - realized_gain_dollar requires caller to add (sell_price * shares)
+        and subtract proceeds_basis. We return cost basis here so the
+        caller can compute gain at its own sell_price.
+
+    Modifies `hs.lots` in place. If the request exceeds total lot shares,
+    consumes everything available and returns whatever was matched.
+
+    Caller is responsible for updating `hs.shares` / legacy `entry_price`
+    after this call (or rely on the helpers in HoldingState). When
+    `method == 'avg'` we still consume FIFO (legacy avg-cost mutation
+    ignored lots entirely; here we keep books consistent by trimming
+    proportionally).
+    """
+    if shares_to_sell <= 0 or not hs.lots:
+        return 0.0, 0.0
+    method_norm = (method or "fifo").lower()
+    if method_norm == "hifo":
+        # sort copy so we don't mutate the user-visible order until
+        # we actually consume; pop highest-price lot first.
+        order = sorted(range(len(hs.lots)), key=lambda i: -hs.lots[i].price)
+    elif method_norm == "avg":
+        # avg method: trim each lot proportionally to its share weight.
+        total = sum(L.shares for L in hs.lots)
+        if total <= 0:
+            return 0.0, 0.0
+        take_frac = min(1.0, shares_to_sell / total)
+        basis = 0.0
+        for L in hs.lots:
+            t = L.shares * take_frac
+            basis += t * L.price
+            L.shares -= t
+        hs.lots = [L for L in hs.lots if L.shares > 1e-9]
+        return basis, 0.0
+    else:   # FIFO (default)
+        order = list(range(len(hs.lots)))
+
+    remaining = float(shares_to_sell)
+    basis = 0.0
+    for idx in order:
+        if remaining <= 1e-12:
+            break
+        L = hs.lots[idx]
+        take = min(L.shares, remaining)
+        if take <= 0:
+            continue
+        basis += take * L.price
+        L.shares -= take
+        remaining -= take
+    # Drop any lot whose remaining shares are below a numerical floor.
+    hs.lots = [L for L in hs.lots if L.shares > 1e-9]
+    return basis, 0.0
+
 
 # ── Exit result ────────────────────────────────────────────────────────────────
 
@@ -121,7 +274,13 @@ def check_take_profit(
     Configured via regime_params.take_profit_pct (default 0 = disabled).
     Runs BEFORE trailing stop so it fires on the way up, not only on pullback.
     """
-    if take_profit_pct <= 0 or state.entry_price <= 0:
+    import math
+    # 2026-05-04 audit Issue 18 fix: NaN entry_price slipped past `<= 0`
+    # (NaN comparisons all False) → gain = (px - NaN)/NaN = NaN → no
+    # exit. Same NaN-slip class as SE-1/EX-LE-5/SL-2. Defense in depth.
+    if (take_profit_pct <= 0
+            or not math.isfinite(state.entry_price)
+            or state.entry_price <= 0):
         return _NO_EXIT
     gain = (current_price - state.entry_price) / state.entry_price
     if gain >= take_profit_pct:
@@ -164,7 +323,13 @@ def check_stop_loss(
     stop_pct: float,   # e.g. 0.15 (15% cumulative loss)
 ) -> ExitSignal:
     """Fixed cumulative stop-loss from entry price."""
-    if stop_pct <= 0 or state.entry_price <= 0:
+    import math
+    # 2026-05-04 audit Issue 19 fix: NaN entry_price slipped past `<= 0`
+    # → loss_pct = NaN → no stop ever fires. Same NaN-slip class as
+    # Issue 18 (check_take_profit). Defense in depth.
+    if (stop_pct <= 0
+            or not math.isfinite(state.entry_price)
+            or state.entry_price <= 0):
         return _NO_EXIT
     loss_pct = (state.entry_price - current_price) / state.entry_price
     if loss_pct >= stop_pct:
@@ -179,26 +344,54 @@ def check_stop_loss(
 def check_single_day_loss(
     current_price: float,
     state: HoldingState,
-    sdl_pct: float,   # e.g. 0.10 (10% single-day drop)
+    sdl_pct: float,    # absolute %: e.g. 0.06 (6% single-day drop)
+    sdl_n_sigma: float = 0.0,   # N × daily realized vol (preferred when set)
 ) -> ExitSignal:
-    """Single-day loss gate — fires on intraday gap-downs vs previous close.
+    """Single-day loss gate — fires on gap-downs vs previous close.
 
-    Only meaningful in BULL_CALM (wide 15% cumulative stop).  Other regimes
-    use a tight 5% cumulative stop so sdl_pct should be 0 there.
+    Two threshold modes:
+      sdl_pct (legacy)    absolute % of prev_close (e.g. 0.06 = 6%)
+      sdl_n_sigma (new)   N × per-ticker daily realized vol, derived from
+                          state.sigma (NGBoost's predicted 5-day σ);
+                          daily_vol = sigma / sqrt(5)
+    When both are configured, the EFFECTIVE threshold is
+    max(absolute, N×σ_daily) — i.e. we use whichever is more permissive,
+    so high-vol names don't panic on a normal noise day. Set sdl_pct=0
+    AND sdl_n_sigma>0 for fully σ-adaptive behaviour.
+
+    2026-05-04 motivation: B2 holdout showed `single_day_loss` had
+    win_rate 40% / median pnl −5.2% — high-vol stocks (NVDA/RBLX/etc.
+    daily σ ≈ 4-5%) tripped the absolute 6% threshold on noise days
+    and crystallized losses on positions that would have recovered.
+    σ-scaled threshold aligns the gate with each ticker's own
+    volatility.
     """
-    # Audit fix EX-LE-5 (Round 2 deep audit, 2026-04-25): defense in
-    # depth — even though PH-1/PH-2 now coerces NaN prev_close to None,
-    # this function should also fail-safe locally on non-finite inputs.
     import math
-    if sdl_pct <= 0 or state.prev_close is None or state.prev_close <= 0:
+    if state.prev_close is None or state.prev_close <= 0:
         return _NO_EXIT
     if not math.isfinite(state.prev_close):
         return _NO_EXIT
+
+    abs_thresh = float(sdl_pct) if sdl_pct and sdl_pct > 0 else 0.0
+    sigma_thresh = 0.0
+    if sdl_n_sigma and sdl_n_sigma > 0:
+        sg = getattr(state, "sigma", None)
+        if (sg is not None and math.isfinite(float(sg)) and float(sg) > 0):
+            # NGBoost σ is forward-5d return std; daily_vol ≈ σ/√5.
+            daily_vol = float(sg) / math.sqrt(5.0)
+            sigma_thresh = float(sdl_n_sigma) * daily_vol
+
+    threshold = max(abs_thresh, sigma_thresh)
+    if threshold <= 0:
+        return _NO_EXIT
+
     daily_drop = (state.prev_close - current_price) / state.prev_close
-    if daily_drop >= sdl_pct:
+    if daily_drop >= threshold:
         return ExitSignal(
             should_exit=True,
-            reason=f"single_day_loss drop={daily_drop:.1%}",
+            reason=f"single_day_loss drop={daily_drop:.1%} ≥ "
+                    f"{threshold:.1%} (abs={abs_thresh:.1%} / "
+                    f"σN={sigma_thresh:.1%})",
             exit_type="single_day_loss",
         )
     return _NO_EXIT
@@ -356,10 +549,11 @@ def compute_exits(
     if sig.should_exit:
         return sig, state
 
-    # 3. Single-day loss gate
+    # 3. Single-day loss gate (absolute % AND/OR σ-scaled threshold).
     sig = check_single_day_loss(
         current_price, state,
         float(params.get("max_single_day_loss_pct", 0)),
+        float(params.get("sdl_n_sigma", 0)),
     )
     if sig.should_exit:
         return sig, state

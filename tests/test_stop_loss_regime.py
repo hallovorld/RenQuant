@@ -113,12 +113,21 @@ class TestRegimeConfigInvariants:
         )
 
     def test_volatile_regimes_have_sdl(self):
-        """SL-2: BULL_VOLATILE + CHOPPY now have sdl gate."""
+        """SL-2: BULL_VOLATILE + CHOPPY have an SDL gate (absolute or σ-scaled).
+
+        2026-05-04: BULL_CALM moved to σ-scaled (max_single_day_loss_pct=0,
+        sdl_n_sigma=3.0) because the absolute 6% threshold tripped on
+        noise for high-vol names — 20 SDL exits in B2 holdout had 40%
+        win_rate / median pnl −5.2%. Either form (absolute > 0 OR
+        σ-scaled > 0) counts as 'gate present'."""
         params = _load_regime_params(CONFIG_PATH)
         for regime in ("BULL_CALM", "BULL_VOLATILE", "CHOPPY"):
             rp = params[regime]
-            assert rp["max_single_day_loss_pct"] > 0.0, (
-                f"{regime} should have sdl > 0 (SL-2 fix)"
+            abs_thr   = rp.get("max_single_day_loss_pct", 0)
+            sigma_thr = rp.get("sdl_n_sigma", 0)
+            assert (abs_thr > 0) or (sigma_thr > 0), (
+                f"{regime} must have an SDL gate "
+                f"(max_single_day_loss_pct OR sdl_n_sigma > 0)"
             )
 
     def test_volatile_trail_tighter_than_calm(self):
@@ -220,6 +229,86 @@ class TestSingleDayLossBehavior:
         )
         if expected_fire:
             assert sig.exit_type == "single_day_loss"
+
+
+# 2026-05-04: σ-scaled SDL — adapts threshold to per-ticker volatility.
+# B2 holdout post-mortem: 20 absolute-mode SDL exits had 40% win_rate /
+# median pnl −5.2% — high-vol stocks tripped the 6% threshold on
+# normal noise days. σ mode uses N × (NGBoost_σ / √5) as the threshold.
+
+class TestSigmaScaledSingleDayLoss:
+    def _state_with_sigma(self, sigma, prev_close=100.0):
+        s = _state(entry_price=prev_close, prev_close=prev_close)
+        s.sigma = sigma
+        return s
+
+    def test_sigma_mode_uses_sigma_over_sqrt5(self):
+        """σ_5d=0.10 → daily_vol=10/√5 ≈ 4.47%; with N=3 → 13.4% threshold.
+        12% drop should NOT fire (below threshold)."""
+        state = self._state_with_sigma(sigma=0.10)
+        sig = check_single_day_loss(
+            current_price=88.0,    # 12% drop
+            state=state,
+            sdl_pct=0.0,           # absolute disabled
+            sdl_n_sigma=3.0,
+        )
+        assert not sig.should_exit, "12% < 13.4% σ-threshold; should not fire"
+
+    def test_sigma_mode_fires_above_threshold(self):
+        """Same σ=0.10 (threshold 13.4%); 15% drop SHOULD fire."""
+        state = self._state_with_sigma(sigma=0.10)
+        sig = check_single_day_loss(
+            current_price=85.0,    # 15% drop
+            state=state,
+            sdl_pct=0.0,
+            sdl_n_sigma=3.0,
+        )
+        assert sig.should_exit
+        assert "σN=" in sig.reason
+
+    def test_low_vol_stock_low_threshold(self):
+        """Low-vol stock σ=0.02 (daily ≈ 0.9%); N=3 → 2.7% threshold.
+        4% drop fires; 2% drop does not."""
+        state = self._state_with_sigma(sigma=0.02)
+        # 2% drop — below threshold
+        sig = check_single_day_loss(98.0, state, 0.0, 3.0)
+        assert not sig.should_exit
+        # 4% drop — above threshold
+        sig = check_single_day_loss(96.0, state, 0.0, 3.0)
+        assert sig.should_exit
+
+    def test_combined_mode_uses_more_permissive_threshold(self):
+        """When both abs and σ are set, threshold = max(abs, σ-derived).
+        σ=0.10 → σ-threshold 13.4%; abs=0.06 → effective threshold = 13.4%
+        (more permissive for high-vol). 8% drop should NOT fire."""
+        state = self._state_with_sigma(sigma=0.10)
+        sig = check_single_day_loss(
+            current_price=92.0,    # 8% drop
+            state=state,
+            sdl_pct=0.06,
+            sdl_n_sigma=3.0,
+        )
+        assert not sig.should_exit, (
+            "8% < max(6%, 13.4%) — combined mode is more permissive"
+        )
+
+    def test_sigma_mode_no_op_when_sigma_missing(self):
+        """If state.sigma is None or non-finite, σ-mode contributes 0 →
+        falls back to absolute mode."""
+        state = _state(entry_price=100.0, prev_close=100.0)
+        # No sigma set; sdl_pct=0.06 still drives behavior
+        sig = check_single_day_loss(93.0, state, 0.06, 3.0)
+        assert sig.should_exit, (
+            "7% drop should fire on absolute 6% threshold "
+            "when σ is missing"
+        )
+
+    def test_both_disabled_never_fires(self):
+        state = self._state_with_sigma(sigma=0.10)
+        sig = check_single_day_loss(50.0, state, 0.0, 0.0)
+        assert not sig.should_exit, (
+            "with both thresholds disabled, even 50% drop must not fire"
+        )
 
 
 # ── Functional: priority ordering preserved ────────────────────────────────
