@@ -406,8 +406,7 @@
       "qp_signal_decay": 0.0,
       "qp_robust_mu_kappa": 0.0,
       "qp_cvar_lambda": 0.0,
-      "qp_drawdown_limit": 0.2,
-      "qp_no_trade_band_factor": 1.0
+      "qp_drawdown_limit": 0.2
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -480,7 +479,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.json",
+      "artifact_path": "artifacts/panel-ltr.retrain_v2.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -495,7 +494,7 @@
       },
       "ngboost": {
         "enabled": true,
-        "artifact_path": "artifacts/ngboost-head.json",
+        "artifact_path": "artifacts/ngboost-head.retrain_v2.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -506,7 +505,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/panel-rank-calibration.retrain_v2.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -572,11 +571,11 @@
     "xgb_params": {
       "eta": 0.02,
       "max_depth": 3,
-      "min_child_weight": 60,
+      "min_child_weight": 30,
       "subsample": 0.5,
       "colsample_bytree": 0.5,
-      "lambda": 5.0,
-      "alpha": 2.0,
+      "lambda": 3.0,
+      "alpha": 1.0,
       "objective": "rank:pairwise"
     },
     "artifact_path": "artifacts/panel-ltr.json",
@@ -717,7 +716,9 @@
     "recency_weighting": {
       "kind": "exp_decay",
       "half_life_days": 252
-    }
+    },
+    "min_best_iter": 30,
+    "min_best_iter_eval_ic_floor": 0.025
   },
   "training": {
     "cadence": "custom",
