@@ -4,12 +4,14 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-05-05 — Track A/B/D/F all shelved；wl103 production stays golden）
+## 🗂 项目状态速览（2026-05-05 晚 — walk-forward NO-GO；模型vs SPY 一致负 alpha）
 
 > 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/2026-04-27-decisions.md`](doc/archives/sessions/2026-04-27-decisions.md)；最新状态在 [`doc/research/branch-pointers.md`](doc/research/branch-pointers.md)。
 
-**生产模型：** XGBoost rank:pairwise，27 特征，无 macro，无 embedding，**CPCV mean_ic = +0.034**（6-fold cv_n_splits=6, 3-run σ estimation 2026-05-02 σ = 0.6bp，最近重训 2026-04-30 23:48）
-**实盘：** Alpaca ~$10k，持仓滚动；策略架构稳定。Production calibrator collapsed (`n_unique_prob_y=7`) — runtime SOFT WARN visible every cron, top candidates tie at floor=0.30 cap → degraded buy ranking. Sells unaffected. Retrain pending.
+**🔴 关键发现 (E27, 2026-05-05)**：3-cut walk-forward 测试显示生产模型 mean alpha vs SPY = **−15.62% ± 10.21%**，三个 cut 的 alpha 全部为负。单切 27-mo B2 测得的 Sharpe 0.68 是 smoothing 假象——拆成 6-mo 窗口后 Sharpe 在 −1.39 ~ +1.82 间剧烈摆动。**不要 promote 任何当前模型变体（wl103 / wl183 / retrain_v2）做 active alpha capture。**
+
+**生产模型：** XGBoost rank:pairwise，21 特征（daily cron 自动重训后），**CPCV mean_ic = +0.033**（best_iter=14，n_unique_prob_y=11 — passes runtime SOFT WARN floor），最近重训 2026-05-05 13:55 (daily cron auto)。**注意：模型在 6-mo OOS 上 vs SPY 一致负 alpha（详见 E27）。**
+**实盘：** Alpaca ~$10k，持仓滚动；架构稳定。**今日累计修了 14 个 bug + 4 个 QP 新功能（Davis-Norman 不交易区间、qp_min_invested_pct 软底、可行 warm-start、capacity clamp）。生产 27-mo B2 数字 Sharpe 0.59→0.68 / APY 7%→10.12% — 但走 walk-forward 真相是 mean Sharpe 0.21 ± 2.27。**
 **Watchlist：** 103 ticker，面板 ~77k rows
 
 **已关闭（不要再讨论）：**
@@ -19,7 +21,8 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 - **T2-4 Boyd Rotation**：rotation 每次 −2.5 APY pts，基础设施保留但默认关闭。
 - **Track A — Insider 信号 (E22, 2026-05-02)**：44% 覆盖下贡献 −0.0008 在噪声内。Resume 条件：SEC IP 节流恢复 + Sunday retrain 补全数据后重测。
 - **Track B — PEAD enrichment (E23, 2026-05-02)**：days_since/decay/signal 三列 A/A delta = −0.0010 ~ −0.0013 = **17-22σ 显著负向**。fwd_5d horizon 太短捕捉不到 30-60d drift。Resume 条件：fwd_20d / surprise quintile-rank。
-- **Track D — wl103→wl183 expansion (E26, 2026-05-05)**：Stage 3 IC-additive admission 出 +9bp Stage IC，但 27-mo B2 holdout post-fix Sharpe **−0.07** / APY **−1.60%** vs wl103 baseline +1.10 / +13.27%。78% win rate 但 average loser ≫ average winner（adverse selection on unconviction picks under collapsed calibrator）。Resume 条件：(1) 先 retrain calibrator 到 n_unique≥10；(2) 然后再考虑 wl ≥ 250 + 不同 admission criterion。**wl103 stays golden.**
+- **Track D — wl103→wl183 expansion (E26, 2026-05-05)**：Stage 3 IC-additive admission 出 +9bp Stage IC，但 27-mo B2 holdout post-fix Sharpe **−0.07** / APY **−1.60%** vs wl103 baseline +1.10 / +13.27%。78% win rate 但 average loser ≫ average winner。Resume 条件：见 E26。**wl183 with all 14 bug fixes**: Sharpe +0.55 vs wl103 +0.68 — wl183 仍然输给 wl103 0.13 Sharpe，confirms TC collapse (Fundamental Law violation when breadth doubles but transfer coefficient halves)。
+- **🔴 整个 active-alpha 路线 (E27, 2026-05-05)**：walk-forward 3-cut 显示模型 mean alpha vs SPY 一致负向 (−15.62% ± 10.21%)，所有 cut 都输给 SPY。单切 27-mo Sharpe 0.68 是 regime-smoothing 假象。**当前模型架构 + label (fwd_5d) + 训练数据 (2.5y) 不能产出真 alpha**。Resume 条件：换 label (fwd_20d/60d)、扩训练数据 (5y+)、换 architecture (Transformer)、或做真正的 walk-forward retraining。在那之前，建议 (a) cap allocation 至 30%，剩 70% 直接持 SPY；或 (b) 完全切 passive。
 - **Track F — Triple-barrier label (E25, 2026-05-02)**：v3 hit-time-matched 出 mean_ic +0.0438（vs baseline +0.034 = +98bp 假象）。但 **time-shift +60d placebo 也 +0.0458 ≈ real**——disambiguation vs fwd_5d 显示 triple-barrier 是 regime persistence 拟合，无 10 天 alpha。Production 保留 fwd_5d。
 
 **当前优先顺序：**

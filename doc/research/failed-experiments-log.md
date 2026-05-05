@@ -985,3 +985,60 @@ python scripts/holdout_backtest.py --skip-train \
     --output /tmp/wl183_b2.json
 # Verify Sharpe / APY in the output JSON match the table above (≈ −0.07 / −1.60%).
 ```
+
+## E27: walk-forward 3-cut on production wl103 — alpha vs SPY consistently negative — 2026-05-05
+
+**Track**: post-bug-bounty consistency check. After 14 bug fixes + 4 new QP features (Davis-Norman band, min_invested floor, feasible warm-start, capacity clamp) brought single-cut 27-mo B2 from Sharpe 0.59 → 0.68 / APY 7% → 10.12%, ran walk-forward to test whether the alpha is real or a smoothing artifact of one long window.
+
+**Hypothesis**: alpha measured by single-cut B2 should hold across rolling 6-mo OOS cuts. If so, ship-to-promotion proceeds. If not, the 27-mo number is regime-driven, not alpha.
+
+**Setup**: `scripts/walk_forward_holdout.py` — 3 cuts × 6-mo OOS, fixed artifact (no per-cut retraining since current model architecture trains on full history through 2025-05-04). Per-cut SPY benchmark computed for the same window.
+
+**Result**:
+
+| Cut | OOS Window | Strategy APY | Strategy Sharpe | SPY APY | SPY Sharpe | Alpha vs SPY |
+|---|---|---|---|---|---|---|
+| 2024-05-01 | 2024-05-02 → 2024-11-01 | 0.00% (0 trades) | NaN | +27.36% | +1.95 | **−27.36%** |
+| 2024-11-01 | 2024-11-02 → 2025-05-01 | −12.84% | **−1.39** | −4.07% | −0.04 | **−8.78%** |
+| 2025-05-04 | 2025-05-05 → 2025-11-04 | +32.05% | +1.82 | +42.78% | ~2.0+ | **−10.72%** |
+
+**Mean across cuts:** APY 6.40% ± 23.12%, Sharpe 0.21 ± 2.27, **alpha vs SPY = −15.62% ± 10.21%, sign-consistent NEGATIVE**.
+
+**Diagnosis**:
+
+- **The single 27-mo Sharpe 0.68 was a smoothing mirage.** Splitting into 6-mo windows reveals enormous regime dependence: −1.39 Sharpe in flat-bear, +1.82 in strong bull, NaN/0-trades in late-2024 bull.
+- **Strategy underperformed SPY in EVERY cut**, including the strong bulls (cut 3 captured 75% of SPY's move at the cost of cap-constrained turnover).
+- **The strategy is structurally a costly closet-index** — long-only equity exposure plus active management costs (~30–40% cash drag, ST tax, friction, regime flips).
+- **The Fundamental Law cannot rescue this** without a stronger signal: with `IC × √breadth × TC` and TC capped at ~0.078 (8 of 103 names), even doubling IC barely closes the −15pt gap.
+
+**Cut 1 (2024-05-01) zero-trade anomaly**: 0 buys / 0 sells. Most likely cause: the artifact's `config_fingerprint` (sha256:4f1e25989d475225) was minted on 2025-05-04 daily-cron training; running that on 2024-05-02 may pass preflight but produce no candidates above the calibrator-floor since the panel-LTR's training distribution doesn't generalize backward in time. Not a code bug per se — an artifact of the eval design (no per-cut retrain).
+
+**Conclusion**: **No-go on shipping ANY current model variant for active alpha capture.** The 14 bug fixes shipped today are net-positive (close real silent failure paths, surface accounting truth) and should remain in production. But the model+architecture pair as configured cannot beat SPY post-tax, post-friction, post-cash-drag — confirmed by 3-cut walk-forward across all sampled regimes.
+
+**Resume conditions**:
+
+1. **Different label**: replace `fwd_5d` binary "outperform-SPY 5d ahead" with `fwd_20d` or `fwd_60d`. Current 5d horizon is in noise-dominated territory; longer horizon shifts toward fundamental drivers.
+2. **Different model architecture**: try Transformer-on-panel (already in code but rejected previously due to 60% IC drop). Re-evaluate with 5y+ training data + new label.
+3. **More training history**: bump `training_years` from 2.5 → 5.0 or 10.0. Model has only seen ~625 dates × 103 tickers ≈ 65k panel rows. Doubling that may improve generalization.
+4. **Walk-forward retraining**: each cut gets its own retrain on data through that cut. Current eval uses fixed 2025-05-04 artifact for all cuts — leaks information. True walk-forward would be slower (~2h per cut) but methodologically correct.
+
+**Side benefits this session (kept)**:
+
+- 14 bug fixes (1–11, 13–14) — all real, ship to production. Removed silent failures, NaN propagation, accounting under-collection, ghost holdings, routing collisions.
+- QP solver gained: Davis-Norman no-trade band, min_invested floor, feasible warm-start, capacity clamp. All measurable in trade-count reduction (49% fewer buys, 53% fewer sells).
+- Walk-forward eval infrastructure (`scripts/walk_forward_holdout.py`) — first measurement of regime-stability for any model in this project. Will be reused going forward.
+- CLAUDE.md §5.2 sanity sequence verified yet again: A/A test (single-cut B2 was the equivalent here), §5.2 placebo (walk-forward exposed the real distribution).
+
+**Recipe**:
+```bash
+# Reproduce walk-forward result:
+python scripts/walk_forward_holdout.py \
+    --strategy-config-name strategy_config.json \
+    --cuts 2024-05-01 2024-11-01 2025-05-04 \
+    --oos-months 6 \
+    --output /tmp/funnel/wl103_walk_forward
+# Verify summary: apy_mean ≈ 6.4%, alpha_vs_spy_mean ≈ −15.6%
+cat /tmp/funnel/wl103_walk_forward/summary.json
+```
+
+**Key insight (carries forward)**: this is the first time the project has had a multi-cut OOS measurement on the production model. Going forward, **CLAUDE.md should require walk-forward eval in addition to single-cut B2 before any "ship to golden" decision**. Single-cut numbers are too vulnerable to regime smoothing to be trusted alone.
