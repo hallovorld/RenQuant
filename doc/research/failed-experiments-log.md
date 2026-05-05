@@ -1042,3 +1042,35 @@ cat /tmp/funnel/wl103_walk_forward/summary.json
 ```
 
 **Key insight (carries forward)**: this is the first time the project has had a multi-cut OOS measurement on the production model. Going forward, **CLAUDE.md should require walk-forward eval in addition to single-cut B2 before any "ship to golden" decision**. Single-cut numbers are too vulnerable to regime smoothing to be trusted alone.
+
+## E28: NaN-leaf collapse — XGB routes 60.8% of training rows to single leaf — 2026-05-05
+
+**Track**: investigated as part of E27 walk-forward + Platt calibrator side test.
+
+**Finding**: `fit_global_calibrator` log line during retrain_v2 calibrator subprocess run:
+
+```
+WARN dropping 143325/235859 rows (60.8%) where raw_score == 0.002549
+     (NaN-leaf collapse — XGB routed missing-feature rows to the same
+     terminal node). Pool reduced from 235859 → 92534.
+```
+
+**60.8% of the training panel maps to a SINGLE XGB raw_score value (0.002549).** With production XGB at `best_iter=4` + `max_depth=3` (= max 16 leaves), one leaf is the "default direction" target for any row with a missing feature value. With 21 features × ~60% of rows having at least one NaN somewhere → 60% land on this single leaf.
+
+**Implications**:
+
+1. **Calibrator effective training pool is 40% of nominal**: when the panel is 235k rows but 143k are tied at one score, the calibrator can only differentiate among the 92k surviving rows. This is why even Platt scaling (which doesn't collapse on its own) shows lower pool_ic vs the rich-history portion.
+2. **Inference matches training**: the same NaN-routing happens at inference, so any production candidate with a missing feature gets the score 0.002549 regardless of its other features. ~60% of inference candidates therefore tie at this score → calibrator's downstream rank_score is ~0.28 (matching the prob_base_rate). This explains why VetoWeakBuysTask sees so many candidates clustered around its floor.
+3. **Combined with E27 walk-forward result**: even with cleaner calibration, the underlying XGB scorer's NaN-routing wastes 60% of training signal. The model's effective capacity is 40% of nominal.
+
+**Root cause options**:
+
+A. **Pre-impute features** before XGB sees them (cross-sectional median per date). XGB then doesn't get to use NaN as a separate split direction; all rows go through normal splits. Trade-off: imputation hides "missingness" signal that COULD be predictive (e.g. earnings_surprise NaN = ticker doesn't report frequently).
+
+B. **Bigger trees** (max_depth 5+, ≥32 leaves). Even with NaN-routing, multiple paths absorb missing rows so they don't all collapse to one score. Trade-off: more overfitting risk.
+
+C. **Drop high-NaN-rate rows** before training (e.g. row coverage < 80%). Already partially in place (P0 row_coverage filter, 2026-05-04). Bumping threshold to 0.95 or 1.0 forces complete-feature training.
+
+**Decision for now**: document and shelve. The Transformer prep being built today (raw OHLCV + technical-indicator A/B) sidesteps this entirely — Transformer does NOT use XGB-style tree routing. If Transformer shows alpha, the XGB NaN-leaf problem becomes moot. If Transformer also fails, return to (A) pre-imputation as the systematic fix.
+
+**Side benefit**: one of the bug discovery candidates from today's session. E28 = empirical proof that the XGB scorer's 60% concentration at one leaf has been silently capping calibrator quality across all of E26 (wl183), E27 (walk-forward), and prior calibrator-collapse incidents.
