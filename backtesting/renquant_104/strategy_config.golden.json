@@ -719,7 +719,14 @@
       "kind": "exp_decay",
       "half_life_days": 252
     },
-    "calibration_method": "isotonic"
+    "calibration_method": "isotonic",
+    "imputation": {
+      "fill_zero": true,
+      "add_missingness_indicators": true,
+      "missingness_threshold_pct": 5.0,
+      "ffill_cols": [],
+      "ffill_max_gap_days": 5
+    }
   },
   "training": {
     "cadence": "custom",
