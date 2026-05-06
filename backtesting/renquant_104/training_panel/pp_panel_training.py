@@ -1984,6 +1984,46 @@ class BuildPanelTask(PanelTask):
             if isinstance(meta, dict):
                 meta["row_coverage_stats"] = rc_stats
 
+        # ── E28 fix (2026-05-05): NaN-leaf collapse mitigation ──
+        # When XGB's default-direction routes 60%+ of training rows to the
+        # same terminal node, the calibrator pool collapses to a constant
+        # raw_score for those rows. Two knobs:
+        #   - imputation.add_missingness_indicators: append `{col}_is_missing`
+        #     for cols above missingness_threshold_pct (Option C — preserves
+        #     XGB's natural NaN handling, just lets it split on indicators).
+        #   - imputation.fill_zero: ALSO replace NaN with 0 (Option A — risky;
+        #     Option A regressed cut-2 alpha by −13 pts in 2026-05-05 walk-fwd).
+        # See tasks_build_panel.py NaNFillFeaturesTask for the Job-style
+        # version (un-wired; this branch is what production actually executes).
+        imp_cfg = cfg.get("imputation", {})
+        imp_fill_zero = bool(imp_cfg.get("fill_zero", False))
+        imp_add_indicators = bool(imp_cfg.get("add_missingness_indicators", False))
+        if imp_fill_zero or imp_add_indicators:
+            threshold_pct = float(
+                imp_cfg.get("missingness_threshold_pct", 5.0)
+            ) / 100.0
+            feat_for_indicators = [
+                c for c in feature_cols if not c.endswith("_is_missing")
+            ]
+            nan_rates = panel[feat_for_indicators].isna().mean()
+            nan_rich = nan_rates[nan_rates > threshold_pct].index.tolist()
+            n_nan_total = int(panel[feat_for_indicators].isna().sum().sum())
+            if imp_add_indicators and nan_rich:
+                for col in nan_rich:
+                    ind = f"{col}_is_missing"
+                    if ind not in panel.columns:
+                        panel[ind] = panel[col].isna().astype(np.int8)
+                        feature_cols.append(ind)
+            if imp_fill_zero:
+                panel[feat_for_indicators] = panel[feat_for_indicators].fillna(0.0)
+            log.info(
+                "BuildPanelTask imputation: %d NaN cells / %d feat cols  "
+                "indicators_added=%d  fill_zero=%s  threshold=%.1f%%",
+                n_nan_total, len(feat_for_indicators),
+                len(nan_rich) if imp_add_indicators else 0,
+                imp_fill_zero, threshold_pct * 100,
+            )
+
         ctx.panel = panel
         ctx.group_sizes = group_sizes
         ctx.panel_metadata = meta

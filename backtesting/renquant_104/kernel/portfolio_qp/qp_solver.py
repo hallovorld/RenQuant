@@ -33,6 +33,66 @@ from scipy.optimize import LinearConstraint, NonlinearConstraint, minimize
 log = logging.getLogger("kernel.portfolio_qp.qp_solver")
 
 
+def _solve_via_cvxpy_fallback(
+    *, w_current, mu, Sigma, risk_aversion, cost_kappa, cash_reserve,
+    w_lower_arr, w_upper_arr, dw_max_arr,
+    min_invested_pct=0.0, turnover_max=None,
+) -> np.ndarray | None:
+    """cvxpy/CLARABEL fallback for QP infeasibility cases.
+
+    Phase A' (2026-05-06): used only when SLSQP fails with degenerate-
+    starting-point errors ("Positive directional derivative for linesearch").
+    Pattern from cvxportfolio/cvxportfolio (Boyd group, Stanford).
+
+    Returns delta_w numpy array, or None if cvxpy also fails. Imports
+    cvxpy lazily to avoid import-time cost on the fast SLSQP path.
+    """
+    try:
+        import cvxpy as cp  # noqa: PLC0415
+    except ImportError:
+        log.warning("cvxpy not installed — cannot fall back. pip install cvxpy")
+        return None
+
+    n = len(w_current)
+    dw = cp.Variable(n)
+    wp = w_current + dw
+
+    # Objective (matches SLSQP path's objective up to convexified parts):
+    # max  μ' wp  -  γ wp' Σ wp  -  κ |Δw|_1
+    # Σ_psd_wrap protects against tiny negative eigenvalues in Σ
+    obj = mu @ wp - risk_aversion * cp.quad_form(wp, cp.psd_wrap(Sigma))
+    if cost_kappa > 0:
+        obj = obj - cost_kappa * cp.norm(dw, 1)
+
+    constraints = [
+        cp.sum(wp) <= 1.0 - cash_reserve,
+        wp >= w_lower_arr,
+        wp <= w_upper_arr,
+        dw >= -dw_max_arr,
+        dw <= dw_max_arr,
+    ]
+    if min_invested_pct > 0:
+        constraints.append(cp.sum(wp) >= float(min_invested_pct))
+    if turnover_max is not None and float(turnover_max) > 0:
+        constraints.append(cp.norm(dw, 1) <= float(turnover_max))
+
+    prob = cp.Problem(cp.Maximize(obj), constraints)
+    try:
+        prob.solve(solver=cp.CLARABEL, verbose=False)
+    except Exception:
+        # Fall back to OSQP if CLARABEL not available or fails
+        try:
+            prob.solve(solver=cp.OSQP, verbose=False)
+        except Exception as exc:
+            log.warning("cvxpy fallback solver chain exhausted: %s", exc)
+            return None
+
+    if prob.status not in ("optimal", "optimal_inaccurate"):
+        log.warning("cvxpy fallback status=%s — giving up", prob.status)
+        return None
+    return np.asarray(dw.value, dtype=float)
+
+
 @dataclass
 class QPSolution:
     """Output of solve_portfolio_qp."""
@@ -472,6 +532,42 @@ def solve_portfolio_qp(
     )
 
     delta_w = np.asarray(res.x, dtype=float)
+
+    # ── Phase A' (2026-05-06): cvxpy fallback when SLSQP fails ────────────
+    # SLSQP returns "Positive directional derivative for linesearch" when
+    # the warm-start lands at a degenerate point. cvxpy + interior-point
+    # solvers (CLARABEL/OSQP) handle these cleanly. We pay the 5× speed
+    # penalty only on the failure path. See `doc/research/qp-cvxportfolio-
+    # refactor-plan.md` Phase A'.
+    if not res.success and ("Positive directional derivative" in (res.message or "")
+                             or "Inequality constraints incompatible" in (res.message or "")):
+        try:
+            cvx_dw = _solve_via_cvxpy_fallback(
+                w_current=w_current, mu=mu_clean, Sigma=Sigma_mat,
+                risk_aversion=gamma_eff, cost_kappa=cost_kappa,
+                cash_reserve=cash_reserve,
+                w_lower_arr=w_lower_arr, w_upper_arr=w_upper_arr,
+                dw_max_arr=dw_max_arr,
+                min_invested_pct=min_invested_pct,
+                turnover_max=turnover_max,
+            )
+            if cvx_dw is not None:
+                log.warning(
+                    "qp_solver: SLSQP infeasible (%s) → cvxpy fallback succeeded",
+                    (res.message or "")[:60],
+                )
+                delta_w = cvx_dw
+                # Re-evaluate objective at new delta_w
+                res = type("CvxpyRes", (), {
+                    "success": True,
+                    "x": cvx_dw,
+                    "fun": _obj(cvx_dw),
+                    "nit": -1,
+                    "message": "cvxpy_fallback",
+                })()
+        except Exception as exc:
+            log.warning("qp_solver: cvxpy fallback also failed: %s", exc)
+
     target_w = w_current + delta_w
     # 2026-05-04 audit Issue 22 fix: when μ is all zeros (all candidates
     # failed scoring → mu=0 fallback in JointPortfolioQPTask), the

@@ -174,3 +174,138 @@ class TestComputeAgeWeight:
         })
         w = compute_age_weight(panel, {}, warmup_days=504)
         assert (w == 1.0).all()
+
+
+class TestNaNFillFeaturesTask:
+    """E28 fix: NaN-leaf collapse — final NaN→0 + missingness indicators."""
+
+    def _make_ctx(self, panel: pd.DataFrame, imp_cfg: dict):
+        from training_panel.tasks_build_panel import NaNFillFeaturesTask
+        ctx = type("Ctx", (), {})()
+        ctx._bp_panel = panel
+        ctx._bp_inputs = {"cfg": {"imputation": imp_cfg}}
+        return ctx, NaNFillFeaturesTask()
+
+    def test_disabled_when_fill_zero_false(self):
+        panel = pd.DataFrame({
+            "date": [pd.Timestamp("2024-01-01")] * 3,
+            "ticker": ["A", "B", "C"],
+            "size_z": [1.0, np.nan, 3.0],
+        })
+        ctx, task = self._make_ctx(panel, {"fill_zero": False,
+                                            "add_missingness_indicators": False})
+        task.run(ctx)
+        assert ctx._bp_panel["size_z"].isna().sum() == 1
+
+    def test_indicators_only_mode_no_fill(self):
+        """Option C — indicators-only (E28 fix without dilution).
+
+        After cut-2 regression with Option A (fillna=0), this mode adds
+        `_is_missing` indicator columns but leaves NaN as-is, letting
+        XGB use both default-direction AND indicator splits.
+        """
+        n = 100
+        size_vals = [1.0] * n
+        size_vals[:30] = [np.nan] * 30  # 30% NaN > 5% threshold
+        panel = pd.DataFrame({
+            "date":   [pd.Timestamp("2024-01-01")] * n,
+            "ticker": [f"T{i}" for i in range(n)],
+            "label":  [0.0] * n,
+            "size_z": size_vals,
+        })
+        ctx, task = self._make_ctx(panel, {
+            "fill_zero": False,
+            "add_missingness_indicators": True,
+            "missingness_threshold_pct": 5.0,
+        })
+        task.run(ctx)
+        out = ctx._bp_panel
+        # Indicator added
+        assert "size_z_is_missing" in out.columns
+        assert out["size_z_is_missing"].sum() == 30
+        # NaN NOT filled — XGB will use its default-direction
+        assert out["size_z"].isna().sum() == 30
+
+    def test_fills_nan_with_zero_when_enabled(self):
+        panel = pd.DataFrame({
+            "date": [pd.Timestamp("2024-01-01")] * 4,
+            "ticker": ["A", "B", "C", "D"],
+            "label": [0.01, -0.02, np.nan, 0.05],
+            "size_z":     [1.0, np.nan, 3.0, np.nan],
+            "mom_12_1_z": [np.nan, np.nan, np.nan, 0.5],
+        })
+        ctx, task = self._make_ctx(panel, {
+            "fill_zero": True,
+            "add_missingness_indicators": True,
+            "missingness_threshold_pct": 5.0,
+        })
+        task.run(ctx)
+        out = ctx._bp_panel
+        assert out["size_z"].isna().sum() == 0
+        assert out["mom_12_1_z"].isna().sum() == 0
+        assert out["size_z"].iloc[1] == 0.0
+        # label NOT touched (excluded)
+        assert pd.isna(out["label"].iloc[2])
+
+    def test_indicator_dtype_and_values(self):
+        panel = pd.DataFrame({
+            "date": [pd.Timestamp("2024-01-01")] * 3,
+            "ticker": ["A", "B", "C"],
+            "label": [0.0, 0.0, 0.0],
+            "size_z": [1.0, np.nan, 3.0],
+        })
+        ctx, task = self._make_ctx(panel, {
+            "fill_zero": True,
+            "add_missingness_indicators": True,
+            "missingness_threshold_pct": 5.0,
+        })
+        task.run(ctx)
+        out = ctx._bp_panel
+        assert "size_z_is_missing" in out.columns
+        assert out["size_z_is_missing"].dtype == np.int8
+        assert out["size_z_is_missing"].tolist() == [0, 1, 0]
+
+    def test_indicator_skipped_below_threshold(self):
+        # 1 NaN out of 100 = 1% < threshold 5%
+        n = 100
+        size_vals = [1.0] * n
+        size_vals[0] = np.nan
+        panel = pd.DataFrame({
+            "date":   [pd.Timestamp("2024-01-01")] * n,
+            "ticker": [f"T{i}" for i in range(n)],
+            "label":  [0.0] * n,
+            "size_z": size_vals,
+        })
+        ctx, task = self._make_ctx(panel, {
+            "fill_zero": True,
+            "add_missingness_indicators": True,
+            "missingness_threshold_pct": 5.0,
+        })
+        task.run(ctx)
+        out = ctx._bp_panel
+        assert "size_z_is_missing" not in out.columns
+        # NaN still filled to 0
+        assert out["size_z"].isna().sum() == 0
+        assert out["size_z"].iloc[0] == 0.0
+
+    def test_excludes_label_and_meta_cols(self):
+        panel = pd.DataFrame({
+            "date":     [pd.Timestamp("2024-01-01")] * 3,
+            "ticker":   ["A", "B", "C"],
+            "sector":   ["TECH", "FIN", "ENERGY"],
+            "label":    [np.nan, 0.02, np.nan],
+            "weight":   [np.nan, 1.0, np.nan],
+            "size_z":   [np.nan, 2.0, np.nan],
+        })
+        ctx, task = self._make_ctx(panel, {
+            "fill_zero": True,
+            "add_missingness_indicators": False,
+            "missingness_threshold_pct": 5.0,
+        })
+        task.run(ctx)
+        out = ctx._bp_panel
+        # label/weight/sector untouched
+        assert pd.isna(out["label"].iloc[0])
+        assert pd.isna(out["weight"].iloc[0])
+        # size_z filled
+        assert out["size_z"].iloc[0] == 0.0

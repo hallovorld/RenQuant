@@ -1,4 +1,4 @@
-"""BuildPanel Job — 6 Tasks splitting the legacy 155-line BuildPanelTask
+"""BuildPanel Job — 7 Tasks splitting the legacy 155-line BuildPanelTask
 (per CLAUDE.md §1c, 2026-05-04).
 
 Composition:
@@ -7,6 +7,7 @@ Composition:
   MergeRawResidualsTask      — merge ctx.raw_residuals → panel
   ForwardFillImputeTask      — whitelisted slow features
   RowCoverageFilterTask      — drop low-coverage rows
+  NaNFillFeaturesTask        — final NaN→0 + missingness indicators (E28 fix)
   FinalizePanelTask          — exclude/drop_cols + commit feature_cols
 """
 from __future__ import annotations
@@ -191,7 +192,74 @@ class RowCoverageFilterTask(PanelTask):
             ctx._bp_meta["row_coverage_stats"] = stats
 
 
-# ── 6. Finalize: feature_cols + commit ────────────────────────────────────
+# ── 6. NaN-fill features + missingness indicators (E28 fix) ────────────────
+
+class NaNFillFeaturesTask(PanelTask):
+    """Final NaN handling for feature columns before XGB sees them.
+
+    Closes E28 (NaN-leaf collapse: 60.8% training rows routed to same
+    terminal node because XGB's default-direction sends every NaN-rich
+    row down the same path). For each candidate feature column with NaN
+    rate above ``missingness_threshold_pct``, append a
+    ``{col}_is_missing ∈ {0,1}`` indicator so the model can still learn
+    "missingness itself is informative". Then fill all remaining NaN in
+    feature columns with 0.0 — z-scored features are zero-mean, so 0 is
+    the natural neutral baseline.
+
+    Reads:  ctx._bp_panel, ctx._bp_inputs.cfg.imputation
+    Writes: ctx._bp_panel (NaN cells filled, indicator cols added)
+    """
+    name = "NaNFillFeaturesTask"
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        imp_cfg = ctx._bp_inputs["cfg"].get("imputation", {})
+        fill_zero = bool(imp_cfg.get("fill_zero", False))
+        add_indicators = bool(imp_cfg.get("add_missingness_indicators", False))
+        # Skip if neither knob is on (preserves legacy "do nothing" default).
+        if not fill_zero and not add_indicators:
+            return
+        threshold_pct = float(imp_cfg.get("missingness_threshold_pct", 5.0)) / 100.0
+
+        panel = ctx._bp_panel
+        user_drop = ctx._bp_inputs["cfg"].get("drop_cols")
+        drop_cols = set(DEFAULT_DROP_COLS)
+        if user_drop is not None:
+            drop_cols |= set(user_drop)
+        exclude = {"date", "ticker", "sector", "label",
+                    "residual_return_raw",
+                    "weight", "weight_concurrency", "weight_age",
+                    "weight_recency"} | drop_cols
+        feat_cols = [c for c in panel.columns
+                     if c not in exclude and not c.endswith("_is_missing")]
+        if not feat_cols:
+            return
+
+        nan_rates = panel[feat_cols].isna().mean()
+        nan_rich = nan_rates[nan_rates > threshold_pct].index.tolist()
+        n_nan_total = int(panel[feat_cols].isna().sum().sum())
+
+        # Indicators are independent of fill: Option C = indicators only,
+        # Option A = indicators + fill, Option B (rare) = fill only.
+        if add_indicators and nan_rich:
+            for col in nan_rich:
+                ind = f"{col}_is_missing"
+                if ind not in panel.columns:
+                    panel[ind] = panel[col].isna().astype(np.int8)
+
+        if fill_zero:
+            panel[feat_cols] = panel[feat_cols].fillna(0.0)
+
+        log.info(
+            "NaNFillFeaturesTask: %d NaN cells / %d feat cols  "
+            "indicators_added=%d  fill_zero=%s  threshold=%.1f%%",
+            n_nan_total, len(feat_cols),
+            len(nan_rich) if add_indicators else 0,
+            fill_zero, threshold_pct * 100,
+        )
+        ctx._bp_panel = panel
+
+
+# ── 7. Finalize: feature_cols + commit ────────────────────────────────────
 
 class FinalizePanelTask(PanelTask):
     """Compute feature_cols (excluding label/meta/drop_cols) + commit.
@@ -242,6 +310,7 @@ class BuildPanelJob(PanelJob):
             MergeRawResidualsTask(),
             ForwardFillImputeTask(),
             RowCoverageFilterTask(),
+            NaNFillFeaturesTask(),
             FinalizePanelTask(),
         ]
 
@@ -252,6 +321,7 @@ __all__ = [
     "MergeRawResidualsTask",
     "ForwardFillImputeTask",
     "RowCoverageFilterTask",
+    "NaNFillFeaturesTask",
     "FinalizePanelTask",
     "BuildPanelJob",
 ]

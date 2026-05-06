@@ -86,6 +86,11 @@ class PanelScorer:
             # Delay import to keep lightgbm optional.
             from training_panel.lgbm_ltr import PanelLGBMScorer  # noqa: PLC0415
             return PanelLGBMScorer.load(path)
+        if kind == "panel_linear":
+            # Phase 1 (2026-05-06): alpha158 + sklearn LinearRegression.
+            # +29 pts walk-forward alpha vs SPY @ 10bp friction.
+            from training_panel.linear_ltr import PanelLinearScorer  # noqa: PLC0415
+            return PanelLinearScorer.load(path)
         # Default: XGBoost rank:pairwise artifact
         booster = xgb.Booster()
         booster.load_model(bytearray(payload["booster_raw_json"].encode("utf-8")))

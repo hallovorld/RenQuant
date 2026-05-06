@@ -76,6 +76,12 @@ def main() -> None:
                    help="Per-regime minimum pooled sample count "
                         "(default 300). Regimes below floor are skipped "
                         "— runtime falls back to the pooled calibrator.")
+    p.add_argument("--force", action="store_true",
+                   help="Bypass the production-overwrite guard. Required "
+                        "when refitting the canonical production calibrator "
+                        "with a different `calibration_method` than the "
+                        "currently-installed one. See fit_panel_calibrator "
+                        "guard at end of main().")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -282,9 +288,45 @@ def main() -> None:
         threshold_mode=threshold_mode,
         method=calib_method,
     )
+    # ── Hard guard against accidental production overwrite ─────────────────
+    # Three production calibrator overwrite incidents on 2026-05-05:
+    # diagnostic Platt fit + retrain_v2 + isotonic-recal each silently
+    # wrote to artifacts/panel-rank-calibration.json because side experiments
+    # ran with the production strategy_config and the script's default
+    # output path resolution ended up at production.
+    #
+    # Guard: when writing to the canonical production path AND the existing
+    # artifact's calibration method differs from the new one (typical
+    # diagnostic-overwrite mode), require --force to proceed. The guard
+    # is a no-op when:
+    #   - output is a side path (suffix in stem), or
+    #   - --out was passed explicitly (operator confirmed target), or
+    #   - existing artifact has the same method (legitimate refit).
+    canonical_prod = strategy_dir / "artifacts" / "panel-rank-calibration.json"
+    if (out_path == canonical_prod and not args.out
+            and out_path.exists() and not args.force):
+        try:
+            existing = json.loads(out_path.read_text())
+            existing_method = (
+                existing.get("metadata", {}).get("method")
+                or existing.get("method", "")
+            ).lower()
+        except Exception:
+            existing_method = ""
+        if existing_method and existing_method != calib_method:
+            log.error(
+                "PRODUCTION OVERWRITE GUARD: existing calibrator at %s "
+                "uses method=%s; refusing to overwrite with method=%s. "
+                "Pass --out <side_path>.json for a diagnostic fit, or "
+                "--force to confirm production replacement.",
+                out_path, existing_method, calib_method,
+            )
+            sys.exit(2)
+
     calib.save(out_path, metadata={
         "scorer_artifact": str(scorer_path),
         "scorer_oos_mean_ic": scorer.metadata.get("oos_mean_ic"),
+        "method": calib_method,
     })
     log.info("Saved → %s", out_path)
     log.info("Summary: n=%d tickers=%d pool_IC=%+.4f base_rate=%.3f",

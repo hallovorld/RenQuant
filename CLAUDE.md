@@ -324,6 +324,29 @@ These are not "nice to haves" — they're the response to a single 24h period wh
 - Apply also to: A/A vs A/B (run A/A noise FIRST), full panel vs ablation (run smallest-meaningful-ablation first), training cost (single seed first to verify pipeline before launching 5-seed σ estimation).
 - Sunk-cost guard: if mid-experiment evidence already answers the question, **kill the experiment**. The 12 batches of Stage 3 already proved "wl expansion lifts IC by ~9 bp"; the remaining 6 batches were optimization, not new information. Don't keep running just because the script is configured to keep running.
 
+**5.12a Default to widely-accepted open-source solutions and the methods of highly-cited references — refuse to reinvent the wheel.**
+- The first question for every algorithm / data-pipeline / model-choice decision is: *what does Qlib / cvxportfolio / scikit-learn / PyPortfolioOpt / the canonical paper do?* The second question is *can we use that directly?* Inventing your own variant is the last resort, only after the canonical method is shown insufficient on RenQuant data.
+- Specific reference set this codebase pegs to:
+  - **Cross-sectional ranking models / features**: `microsoft/qlib` (Alpha158, LinearModel, LGBModel, TransformerModel)
+  - **Convex portfolio optimization**: `cvxportfolio` (Boyd group, Stanford) and CVXPY for the QP layer
+  - **Asset-pricing factor design**: Bryan Kelly + Gu + Xiu RFS 2020 firm-characteristics list
+  - **Risk + transaction cost**: Almgren-Chriss 2000, Ledoit-Wolf 2004 (already wired in)
+  - **Time-series ML reference**: Patch-TST (Nie 2023), TFT (Lim 2021), Qlib's pytorch_*_ts.py
+- Concrete failure mode this prevents: 2026-05-06 — I built `alpha158_lite` from documentation impressions instead of cloning Qlib and reading `qlib/contrib/data/loader.py` line-by-line. Result: 8 substantive deviations (sign-flipped ROC, wrong CORR formula, missing CNTP/SUMP/RSQR/RESI families, wrong normalization). When I went back and faithfully replicated Qlib's 158 features + LinearRegression(MSE), test IC jumped from +0.010 → +0.0316 (3× improvement).
+- Workflow: before writing a new algo or design choice (a) name the canonical reference, (b) confirm a clean license / pip-installable / cloneable version exists, (c) port the source with adaptation comments rather than rewriting, (d) only then test variations.
+
+**5.12 Every architectural / hyperparameter / data-design decision must be backed by literature OR a mature open-source reference — and "backed by" means the cited source was actually READ, not name-dropped as decoration.**
+- Citing "Qlib alpha158" without cloning `microsoft/qlib` and reading `qlib/contrib/data/handler.py` is decoration, not support. Citing "PatchTST" without reading Nie et al. 2023 to confirm `patch_len`/`stride`/`d_model` defaults is decoration.
+- Why this is load-bearing: in 2026-05-06's Transformer rebuild, I cited "Qlib alpha158" but built my own 40-feature subset by reading docs — features were OHLCV-derived and redundant with existing TA indicators. Result: 51-feature linear gave **+0.006 test_ic vs 11-feature +0.010** — strictly worse. Wasted ~2 hours of compute. Had I cloned Qlib first, I would have seen alpha158 needs to combine with cross-sectional and fundamental features (which production XGB already has).
+- Mandatory checklist for any non-trivial design decision:
+  1. **Cite a specific source** (paper title + year, or repo path `org/repo:file.py`).
+  2. **Read it** — open the paper section / clone the repo and read the relevant file. Add the SHA / commit hash if relying on a specific version.
+  3. **Confirm the decision matches the source** — same hyperparameter values, same data preprocessing, same evaluation metric. List discrepancies if you intentionally diverge, with reason.
+  4. **If no source can be found** — the decision is exploratory; mark it as "unsupported, will tune via A/B".
+- Apply for: model architecture (layers / d_model / heads), loss function, optimizer hyperparameters, data preprocessing, label construction, train/val/test split methodology, evaluation metrics, sanity-test design, feature engineering. Apply NOT for: trivial coding choices (variable names, file layout), task-specific glue (file paths, log formats).
+- Failure mode this prevents: re-deriving things from scratch when a 14k-star repo or 2k-citation paper has the answer. The user repeatedly asked "have you read [Qlib / Kelly RFS 2020 / etc]?" because my decisions kept being ad-hoc.
+- The 2026-05-06 self-audit listing **9 decisions where citation was decoration not real reference** (per-day batched DataLoader, listwise pairwise BCE, 60-day seq_len, alpha158-lite 40 features, label clip ±30%, per-horizon standardize, AdamW lr=1e-3, per-day demean labels, train/val/test split methodology) is the durable evidence of this principle's necessity.
+
 ### Documentation Index (canonical pointers)
 
 **Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)
