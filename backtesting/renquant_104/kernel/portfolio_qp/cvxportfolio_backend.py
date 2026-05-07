@@ -179,27 +179,39 @@ def solve_portfolio_qp_cvxportfolio(
     # use the cvxpy primary path for tax-aware optimization.
 
     # ── Constraints (cvxportfolio classes) ────────────────────────────────
+    # 2026-05-07 V8 leverage-blowup bug fixes:
+    #   - LongOnly applies_to_cash=True (was False, allowed negative cash =
+    #     margin loan; combined with bug below produced 1276% APY / 557% DD
+    #     pathological sim run)
+    #   - TurnoverLimit takes delta where the constraint is ½‖z‖₁ ≤ delta,
+    #     so to bound ‖z‖₁ ≤ turnover_max we pass turnover_max / 2.
+    #     Reference: cvxportfolio.constraints.TurnoverLimit docstring
+    #     (see ½·‖z[:-1]‖₁ ≤ delta in the docstring formula).
     constraints: list = []
-    # Long-only on stocks (excluding cash)
-    constraints.append(cvx.LongOnly(applies_to_cash=False))
+    constraints.append(cvx.LongOnly(applies_to_cash=True))    # all w_plus ≥ 0 incl. cash
     # Per-asset cap (broadcast scalar to Series if needed)
     if np.isscalar(w_upper):
         cap = float(w_upper)
     else:
         cap = pd.Series(np.asarray(w_upper, dtype=float), index=tickers)
     constraints.append(cvx.MaxWeights(cap))
-    # Slippage band on Δw
+    # Slippage band on Δw (cvxportfolio's MaxTradeWeights is z[:-1] ≤ dw_max)
     if not np.isscalar(dw_max):
         dw_max_series = pd.Series(np.asarray(dw_max, dtype=float), index=tickers)
     else:
         dw_max_series = float(dw_max)
     constraints.append(cvx.MaxTradeWeights(dw_max_series))
-    constraints.append(cvx.MinTradeWeights(-dw_max_series if np.isscalar(dw_max_series)
-                                           else -dw_max_series))
-    # Turnover cap
+    if np.isscalar(dw_max_series):
+        constraints.append(cvx.MinTradeWeights(-dw_max_series))
+    else:
+        constraints.append(cvx.MinTradeWeights(-dw_max_series))
+    # Turnover cap — cvxportfolio defines turnover as ½‖z‖₁, so we pass
+    # turnover_max/2 to get ‖z‖₁ ≤ turnover_max (matches our cvxpy backend
+    # and the alpha158_linear strategy_config semantic).
     if turnover_max is not None and float(turnover_max) > 0.0:
-        constraints.append(cvx.TurnoverLimit(float(turnover_max)))
-    # Leverage cap (Σwp ≤ 1 - cash_reserve)
+        constraints.append(cvx.TurnoverLimit(float(turnover_max) / 2.0))
+    # Leverage cap (Σwp_stocks ≤ 1 - cash_reserve, equivalently cash ≥ reserve
+    # when combined with LongOnly cash≥0 above).
     constraints.append(cvx.LeverageLimit(1.0 - float(cash_reserve)))
 
     # Wash-sale: per-asset Δw ≤ 0 — implement via per-asset MaxTradeWeights
