@@ -137,6 +137,58 @@ class TestCvxpyFallback:
             assert result is None, \
                 "fallback should return None when cvxpy not installed"
 
+    def test_fallback_clamps_capacity_infeasible_floor(self):
+        """REGRESSION (2026-05-06): when sum(per-asset hi-bounds) <
+        min_invested_pct, the cvxpy fallback used to forward the raw floor
+        unchanged → CLARABEL reported `infeasible` → V4 alpha158_linear sim
+        produced 0 trades over 128 days. The SLSQP path applied a capacity
+        clamp at lines 340-358, but the cvxpy path did not. Fix: shared
+        `_clamp_min_invested_floor` helper applied in both paths.
+
+        Construct a from-cash problem where 4 candidates × 0.15 cap = 0.60
+        capacity, but min_invested_pct=0.70 — without the clamp the QP is
+        infeasible; with the clamp the floor relaxes to 0.59 (capacity − ε)
+        and CLARABEL solves cleanly."""
+        from kernel.portfolio_qp.qp_solver import (
+            _solve_via_cvxpy_fallback, _clamp_min_invested_floor,
+        )
+
+        n = 4   # 4 candidates × 0.15 = 0.60 capacity
+        mu, Sigma = self._basic_problem(n=n, seed=4)
+        w_current = np.zeros(n)
+        # Verify clamp helper detects the capacity infeasibility:
+        floor, reason = _clamp_min_invested_floor(
+            min_invested_pct=0.70,
+            w_current=w_current,
+            cash_reserve=0.05,
+            hi_bounds=np.full(n, 0.15),
+        )
+        assert reason == "capacity", (
+            f"Expected capacity-clamp; got reason={reason!r}, floor={floor:.4f}"
+        )
+        assert 0.55 < floor < 0.60, f"Clamp floor {floor:.4f} not in expected range"
+
+        # End-to-end: cvxpy fallback now succeeds where it used to fail.
+        dw = _solve_via_cvxpy_fallback(
+            w_current=w_current, mu=mu, Sigma=Sigma,
+            risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
+            w_lower_arr=np.zeros(n),
+            w_upper_arr=np.full(n, 0.15),       # tight per-asset cap
+            dw_max_arr=np.full(n, 0.50),
+            min_invested_pct=0.70,              # > 0.60 capacity
+        )
+        assert dw is not None, (
+            "cvxpy fallback returned None — capacity clamp did not engage; "
+            "this means a from-cash V4-shape problem still infeasible."
+        )
+        # Solution must respect the per-asset cap and the relaxed floor.
+        wp = w_current + dw
+        assert (wp <= 0.15 + 1e-4).all()
+        assert wp.sum() >= 0.55, (
+            f"After capacity-clamp the QP should still allocate ≈0.59; "
+            f"got sum(wp)={wp.sum():.4f}"
+        )
+
     def test_fallback_parity_with_slsqp_on_easy_problem(self):
         """On a problem both solvers can solve, results agree to 1e-3."""
         from kernel.portfolio_qp.qp_solver import (

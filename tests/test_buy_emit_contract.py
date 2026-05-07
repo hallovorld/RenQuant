@@ -102,12 +102,28 @@ def test_every_buy_emitter_checks_buy_blocked_or_skip_buys():
 def test_qp_emit_task_has_both_gate_and_earnings_check():
     """Specific assertions for the QP path (production-active).
     Pin the bug-3 + bug-4 fixes in source so they can't silently
-    regress."""
+    regress.
+
+    2026-05-06 §1c split moved the earnings-check call out of the class
+    body into the `_gate_buy_or_block` helper. The Task now invokes
+    that helper, so we check the WHOLE module — earnings logic is still
+    load-bearing, just refactored.
+    """
     src = (KERNEL / "portfolio_qp" / "tasks.py").read_text()
+    # Class body still owns the orchestration + counter names.
     idx = src.find("class EmitOrdersFromQPSolutionTask")
     next_class = src.find("class ", idx + 1)
     body = src[idx:next_class] if next_class > 0 else src[idx:]
     assert "buy_blocked" in body
     assert "skip_buys" in body
-    assert "is_earnings_blocked" in body
     assert "buys_gated" in body
+    # Earnings gate now lives in the _gate_buy_or_block helper (module
+    # scope) — the class body delegates to it. Check whole-module text:
+    assert "is_earnings_blocked" in src, (
+        "Earnings blackout helper missing from portfolio_qp.tasks — "
+        "Bug 4 (wl183 2026-05-05) regressed."
+    )
+    assert "_gate_buy_or_block" in body, (
+        "Class body must delegate to _gate_buy_or_block helper — "
+        "otherwise the earnings/bear_only/buys_gated checks aren't wired."
+    )

@@ -33,6 +33,40 @@ from scipy.optimize import LinearConstraint, NonlinearConstraint, minimize
 log = logging.getLogger("kernel.portfolio_qp.qp_solver")
 
 
+def _clamp_min_invested_floor(
+    *,
+    min_invested_pct: float,
+    w_current: np.ndarray,
+    cash_reserve: float,
+    hi_bounds: np.ndarray,
+    safety_eps: float = 0.01,
+) -> tuple[float, str]:
+    """Apply same capacity clamps the SLSQP path uses, BEFORE handing the
+    floor to any solver.
+
+    The two clamps mirror lines 340-358 of the SLSQP path — without them,
+    the cvxpy / CLARABEL fallback receives an unrelaxed lower bound that
+    is mathematically infeasible when sum(hi_bounds) < min_invested_pct,
+    and CLARABEL correctly reports `infeasible` for the whole problem.
+
+    Returns (clamped_floor, clamp_reason). If `clamp_reason != "none"`
+    the caller can log a one-time diagnostic.
+    """
+    floor = float(min_invested_pct)
+    if floor <= 0:
+        return 0.0, "none"
+    cash_slack = (1.0 - float(cash_reserve)) - float(np.sum(w_current))
+    reason = "none"
+    if floor > cash_slack:
+        floor = max(0.0, cash_slack)
+        reason = "cash_slack"
+    max_capacity = float(np.sum(hi_bounds)) + float(np.sum(w_current))
+    if floor > max_capacity - safety_eps:
+        floor = max(0.0, max_capacity - safety_eps)
+        reason = "capacity"
+    return floor, reason
+
+
 def _solve_via_cvxpy_fallback(
     *, w_current, mu, Sigma, risk_aversion, cost_kappa, cash_reserve,
     w_lower_arr, w_upper_arr, dw_max_arr,
@@ -64,6 +98,22 @@ def _solve_via_cvxpy_fallback(
     if cost_kappa > 0:
         obj = obj - cost_kappa * cp.norm(dw, 1)
 
+    # 2026-05-06 fix: apply same capacity / cash-slack clamps the SLSQP
+    # path uses. Without these, cvxpy gets an infeasible floor whenever
+    # sum(per-asset upper-bounds) < min_invested_pct (e.g. tight conf-mult
+    # caps + few candidates), and CLARABEL correctly reports infeasible.
+    hi_bounds_arr = np.minimum(
+        np.asarray(w_upper_arr, dtype=float) - np.asarray(w_current, dtype=float),
+        np.asarray(dw_max_arr, dtype=float),
+    )
+    hi_bounds_arr = np.maximum(hi_bounds_arr, 0.0)   # never negative for capacity calc
+    floor_clamped, clamp_reason = _clamp_min_invested_floor(
+        min_invested_pct=float(min_invested_pct),
+        w_current=np.asarray(w_current, dtype=float),
+        cash_reserve=float(cash_reserve),
+        hi_bounds=hi_bounds_arr,
+    )
+
     constraints = [
         cp.sum(wp) <= 1.0 - cash_reserve,
         wp >= w_lower_arr,
@@ -71,8 +121,8 @@ def _solve_via_cvxpy_fallback(
         dw >= -dw_max_arr,
         dw <= dw_max_arr,
     ]
-    if min_invested_pct > 0:
-        constraints.append(cp.sum(wp) >= float(min_invested_pct))
+    if floor_clamped > 0:
+        constraints.append(cp.sum(wp) >= float(floor_clamped))
     if turnover_max is not None and float(turnover_max) > 0:
         constraints.append(cp.norm(dw, 1) <= float(turnover_max))
 
@@ -88,7 +138,19 @@ def _solve_via_cvxpy_fallback(
             return None
 
     if prob.status not in ("optimal", "optimal_inaccurate"):
-        log.warning("cvxpy fallback status=%s — giving up", prob.status)
+        # Diagnostic: which constraint blocked us?
+        sum_w = float(np.sum(w_current))
+        max_cap = float(np.sum(hi_bounds_arr)) + sum_w
+        log.warning(
+            "cvxpy fallback status=%s — giving up. "
+            "n=%d sum(w_current)=%.3f cash_slack=%.3f sum(hi_bounds)=%.3f "
+            "min_invested_pct(raw=%.3f, clamped=%.3f, reason=%s) max_capacity=%.3f",
+            prob.status, n, sum_w,
+            (1.0 - cash_reserve) - sum_w,
+            float(np.sum(hi_bounds_arr)),
+            float(min_invested_pct), float(floor_clamped), clamp_reason,
+            max_cap,
+        )
         return None
     return np.asarray(dw.value, dtype=float)
 
@@ -534,13 +596,17 @@ def solve_portfolio_qp(
     delta_w = np.asarray(res.x, dtype=float)
 
     # ── Phase A' (2026-05-06): cvxpy fallback when SLSQP fails ────────────
-    # SLSQP returns "Positive directional derivative for linesearch" when
-    # the warm-start lands at a degenerate point. cvxpy + interior-point
-    # solvers (CLARABEL/OSQP) handle these cleanly. We pay the 5× speed
-    # penalty only on the failure path. See `doc/research/qp-cvxportfolio-
-    # refactor-plan.md` Phase A'.
-    if not res.success and ("Positive directional derivative" in (res.message or "")
-                             or "Inequality constraints incompatible" in (res.message or "")):
+    # SLSQP returns various error messages when stuck or degenerate. cvxpy
+    # + interior-point solvers (CLARABEL/OSQP) — which are the QP solvers
+    # used by `cvxportfolio` (Boyd, Stanford) — handle these cleanly.
+    # Trigger fallback on ANY failure (not just the original two messages):
+    #   - "Positive directional derivative for linesearch" — degenerate start
+    #   - "Inequality constraints incompatible" — bad warm-start
+    #   - "More than 3*n iterations in LSQ subproblem" — slow conv on flat μ
+    #   - "Iteration limit reached" — convex but slow
+    # We pay the ~5× speed penalty only on the failure path. See
+    # `doc/research/qp-cvxportfolio-refactor-plan.md` Phase A'.
+    if not res.success:
         try:
             cvx_dw = _solve_via_cvxpy_fallback(
                 w_current=w_current, mu=mu_clean, Sigma=Sigma_mat,
