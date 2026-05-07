@@ -193,7 +193,16 @@ def main() -> None:
     )
     p.add_argument("--strategy", default="renquant_104")
     p.add_argument("--strategy-config-name", default="strategy_config.json",
-                   help="Config filename (default: strategy_config.json).")
+                   help="Config filename (default: strategy_config.json). "
+                        "Mutually exclusive with --experiment-label.")
+    p.add_argument(
+        "--experiment-label", default=None,
+        help="Inflate config from data/runs.db experiment_configs table "
+             "instead of reading a side JSON file. Example: "
+             "`--experiment-label alpha158_linear`. The DB row's overrides "
+             "are applied on top of its base_config. Mutually exclusive "
+             "with --strategy-config-name.",
+    )
     p.add_argument(
         "--train-end",
         # default = ~1 year before today (gives ~1y OOS window)
@@ -231,15 +240,46 @@ def main() -> None:
     _validate_dates(args.train_end, args.sim_start, args.sim_end)
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
-    cfg_path     = strategy_dir / args.strategy_config_name
-    if not cfg_path.exists():
-        log.error("Strategy config not found: %s", cfg_path)
-        sys.exit(1)
     if str(strategy_dir) not in sys.path:
         sys.path.insert(0, str(strategy_dir))
 
-    config = json.loads(cfg_path.read_text())
-    config["_strategy_config_name"] = args.strategy_config_name
+    if args.experiment_label is not None:
+        # DB-driven inflation — pulls overrides from experiment_configs table
+        # and applies them on top of the named base config. Avoids the
+        # 60+ side-config-file proliferation problem.
+        if args.strategy_config_name != "strategy_config.json":
+            log.error(
+                "--experiment-label and --strategy-config-name are mutually "
+                "exclusive. Pick one.",
+            )
+            sys.exit(2)
+        try:
+            sys.path.insert(0, str(REPO_ROOT / "scripts"))
+            from migrate_experiment_configs_to_db import (   # noqa: PLC0415
+                inflate_experiment_config,
+            )
+            config = inflate_experiment_config(
+                args.experiment_label, strategy_dir=strategy_dir,
+            )
+            config["_strategy_config_name"] = (
+                f"experiment_label:{args.experiment_label}"
+            )
+            log.info(
+                "Inflated experiment config '%s' from data/runs.db",
+                args.experiment_label,
+            )
+        except KeyError:
+            log.error("experiment_configs: label %r not found in DB. "
+                      "Run `python scripts/migrate_experiment_configs_to_db.py "
+                      "list` to see available labels.", args.experiment_label)
+            sys.exit(1)
+    else:
+        cfg_path = strategy_dir / args.strategy_config_name
+        if not cfg_path.exists():
+            log.error("Strategy config not found: %s", cfg_path)
+            sys.exit(1)
+        config = json.loads(cfg_path.read_text())
+        config["_strategy_config_name"] = args.strategy_config_name
     # The training stack already consumes config["sample_end"] (see
     # backtesting/renquant_104/kernel/pipeline/pp_training.py:DataFetchTask
     # and training_panel/pp_panel_training.py:FetchPanelDataTask).
