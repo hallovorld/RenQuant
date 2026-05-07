@@ -4,9 +4,19 @@
 
 RenQuant is built around **strict layer decoupling**. Each layer has one job, communicates via well-defined interfaces (JSON files), and can be developed or replaced independently. Every decision in the pipeline is inspectable — no end-to-end black boxes.
 
+> **2026-05-07 status banner**: portfolio QP is now cvxpy + CLARABEL
+> primary (`solve_portfolio_qp` in `kernel/portfolio_qp/qp_solver.py`)
+> with an opt-in `cvxportfolio.SinglePeriodOpt` backend. Soft cash-drag
+> penalty replaces the hard `min_invested_pct` floor. Two panel-LTR
+> backends shipped: legacy 27-feat XGB (live) + alpha158_linear (158
+> features, researched winner — pending walk-forward validation +
+> daily-retrain wiring before re-promotion). See [`../STATUS.md`](../STATUS.md)
+> for current state and [`../components/portfolio-qp.md`](../components/portfolio-qp.md)
+> for the QP architecture.
+
 ---
 
-## Current architecture (renquant_104, 2026-04-26)
+## Current architecture (renquant_104, 2026-04-26 base + 2026-05-07 QP refactor)
 
 The active strategy is `renquant_104`. Its inference and training are organized as **Pipelines composed of Jobs composed of Tasks** (see CLAUDE.md §1b "Every Logical Unit Is a Task, Job, or Pipeline"). Adapters bridge the kernel to LEAN / live runner / sim.
 
