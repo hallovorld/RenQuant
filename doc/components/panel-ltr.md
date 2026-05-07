@@ -5,11 +5,27 @@
 适用对象:不熟悉这两个模块的使用者/维护者。
 前置要求:对 OHLCV 数据和"横截面 vs 时间序列"有基本概念即可。
 
+> **2026-05-07 update**: production has TWO panel-LTR backends now.
+> The long-running 27-feature XGBoost (`kind: panel_ltr_xgboost`,
+> `panel-ltr.json`) is live. The 158-feature **alpha158 + sklearn
+> LinearRegression** variant (`kind: panel_linear`,
+> `panel-ltr.alpha158_linear.json`) is the researched winner for
+> single-cut Sharpe (V7 = +2.009) — pending walk-forward validation +
+> daily-retrain wiring before re-promotion. See [`STATUS.md`](../STATUS.md).
+> NGBoost head is currently OFF in the alpha158_linear path because the
+> 21-feature trained head is incompatible with the 158-feature panel; σ
+> falls back to rolling realized vol (Markowitz / Almgren-Chriss).
+
 相关代码:
-- `backtesting/renquant_104/training_panel/pp_panel_training.py` — 5 阶段训练 pipeline
+- `backtesting/renquant_104/training_panel/pp_panel_training.py` — 5 阶段 XGB 训练 pipeline
 - `backtesting/renquant_104/training_panel/ltr_model.py` — XGBoost LTR 模型封装
-- `backtesting/renquant_104/training_panel/ngboost_head.py` — NGBoost Normal(μ, σ) 头
-- `backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py` — 推理侧任务链
+- `backtesting/renquant_104/training_panel/linear_ltr.py` — sklearn LinearRegression wrapper (`PanelLinearScorer`)
+- `backtesting/renquant_104/training_panel/ngboost_head.py` — NGBoost Normal(μ, σ) 头 (legacy XGB path only)
+- `backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py` — 推理侧任务链 (dispatches on `metadata.kind`)
+- `backtesting/renquant_104/kernel/panel_pipeline/alpha158_features.py` — Qlib alpha158 feature builder
+- `scripts/build_alpha158_qlib.py` — alpha158 dataset builder (output: `data/alpha158_qlib_dataset.parquet`)
+- `scripts/train_panel_linear.py` — alpha158_linear training entry point
+- `scripts/retrain_alpha158_linear.sh` — daily retrain wrapper (not yet scheduled)
 
 ---
 
