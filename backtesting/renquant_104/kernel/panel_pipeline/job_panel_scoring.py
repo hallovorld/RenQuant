@@ -150,7 +150,41 @@ class ApplyScoresTask(Task):
             # those tasks already has its own None/empty guard, so we
             # return None (continue) and let them no-op individually.
             return None
-        scores: pd.Series = scorer.score(X)
+
+        # Phase 3 (2026-05-06): alpha158 + Linear scorer needs different
+        # features than the production XGB pipeline produces.
+        # `BuildFeatureMatrixJob` builds the 21-feature matrix from
+        # neutralized + factor frames; PanelLinearScorer expects the 158
+        # alpha158 features. Detect via scorer artifact metadata and
+        # rebuild X from per-ticker raw OHLCV using compute_alpha158_at.
+        scorer_kind = scorer.metadata.get("kind") if hasattr(scorer, "metadata") else None
+        if scorer_kind == "panel_linear":
+            from kernel.panel_pipeline.alpha158_features import compute_alpha158_at  # noqa: PLC0415
+            today = getattr(ctx, "today", None)
+            ohlcv_dict = getattr(ctx, "ohlcv", None) or getattr(ctx, "ohlcv_all", None)
+            if ohlcv_dict is None:
+                log.warning("ApplyScoresTask[panel_linear]: ctx.ohlcv unavailable")
+                return None
+            tickers = list(X.index)   # candidates + holdings already de-duped
+            rows = {}
+            for t in tickers:
+                ohlcv_t = ohlcv_dict.get(t)
+                if ohlcv_t is None or len(ohlcv_t) < 70:
+                    continue
+                feats = compute_alpha158_at(ohlcv_t, today)
+                if feats:
+                    rows[t] = feats
+            if not rows:
+                log.warning("ApplyScoresTask[panel_linear]: 0/%d tickers had "
+                             "sufficient history for alpha158", len(tickers))
+                return None
+            X = pd.DataFrame.from_dict(rows, orient="index")
+            # Use score_raw which applies stored ZScoreNorm + Fillna + Clip
+            scores: pd.Series = scorer.score_raw(X)
+            log.info("ApplyScoresTask[panel_linear]: scored %d tickers via "
+                     "alpha158 + score_raw", len(rows))
+        else:
+            scores: pd.Series = scorer.score(X)
 
         n_cand_scored = 0
         for cand in ctx.candidates:
