@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.retrain-alpha158-linear</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/retrain_alpha158_linear.sh</string>
+    </array>
+
+    <!--
+      Daily alpha158_linear retrain.
+
+      User design (2026-05-07): "每天都 train 一个新模型，用这个模型去做
+      当天的决策" — every day retrain on all data through yesterday, use
+      the freshly-trained model for today's decisions.
+
+      Schedule: 03:00 PT every weekday (market opens 06:30 PT). Gives
+      the 3-phase retrain (build alpha158 dataset → fit PanelLinearScorer
+      → fit calibrator) ~30-40 min headroom before market open.
+
+      Weekend skip: launchd doesn't run Sat/Sun if Hour/Minute set with
+      Weekday omitted; we explicitly run Mon-Fri (Weekday 1-5). Sunday's
+      retrain_panel.sh handles the production XGB sweep separately.
+
+      LOAD INSTRUCTIONS (when ready to schedule):
+        launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.renquant.retrain-alpha158-linear.plist
+
+      UNLOAD:
+        launchctl bootout gui/$UID/com.renquant.retrain-alpha158-linear
+
+      DRY-RUN ONCE (test without scheduling):
+        bash scripts/retrain_alpha158_linear.sh
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>3</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>3</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>3</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>3</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>3</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/retrain_alpha158_linear/launchd_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/retrain_alpha158_linear/launchd_stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/renhao/git/github/RenQuant</string>
+
+    <!--
+      Match the existing retrain-panel plist's behaviour: don't auto-run
+      on load (RunAtLoad=false), launchd only fires on the calendar
+      interval. Set RunAtLoad to true for testing if needed.
+    -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
