@@ -192,9 +192,15 @@ class ConvexRotationSolver:
 
         constraints: list = [
             w_new >= 0.0,                                       # long-only
+            w_new <= self.sector_max_pct,                       # T8 audit: per-position cap = sector_max_pct
             cp.sum(w_new) <= self.leverage_cap,
             cp.norm(delta, 1) <= self.turnover_cap,
         ]
+        # Audit T8 (2026-04-27): without per-position cap, the cvxpy
+        # path could put 100% on a single ticker (e.g. heavy μ with low
+        # γ from an empty portfolio). The scipy path enforces this via
+        # `Bounds(ub=sector_max_pct)`; mirror that here. Sector-level cap
+        # below stays as the (additive) constraint when sector_map given.
 
         if sector_map:
             for sector in set(sector_map.values()):
