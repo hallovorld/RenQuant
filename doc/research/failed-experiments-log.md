@@ -8,11 +8,32 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
-## E29. alpha158_linear walk-forward 3-cut — V7 single-cut Sharpe 2.01 was a regime-lucky window
+## E29. alpha158_linear (sklearn LinearRegression on 158 features) — STRUCTURALLY BROKEN across all variants
 
 **Date**: 2026-05-07
-**Type**: model walk-forward variance failure; structural (not implementation)
+**Type**: model architecture failure; structural (not implementation)
 **Production impact**: alpha158_linear NOT promoted to live; 27-feat XGB stays in production
+
+### Final verdict (4 walk-forward variants tested 2026-05-07)
+
+| Variant | Sharpe | APY | Comment |
+|---|---|---|---|
+| OLS static (V7 cut 3, 2025-05→11) | **+2.01** | +39.22% | regime-lucky single window |
+| OLS static (cut 1, 2024-05→11) | −0.94 | −17.24% | bad regime |
+| OLS static (cut 2, 2024-11→2025-05) | −0.64 | −12.05% | bad regime |
+| Ridge α=1 (cut 1+2+3 mean) | +0.19 | +1.53% | minor improvement, still NO-GO |
+| **Extended-train OOS** (2025-11→2026-05) | **−1.86** | **−32.12%** | **worst** — even with fresh training |
+
+The EXTENDED-TRAIN OOS test was decisive: that model's training set
+**included all of 2024 + most of 2025**, so it had seen every regime
+that broke OLS cuts 1+2. Despite that, OOS 2025-11→2026-05 produced
+−1.86 Sharpe and 21% drawdown.
+
+**Conclusion**: the alpha158 feature space + sklearn LinearRegression
+is structurally insufficient for our 103-ticker US universe. Qlib reports
++0.045 IC on CSI500 (500 Chinese stocks) — a 5× larger universe with
+different microstructure. Linear models on 158 features have too many
+DOF for the breadth we have.
 
 ### Hypothesis
 "alpha158_linear (Qlib alpha158 features + sklearn LinearRegression on z-scored fwd_5d_excess) produced V7 single-cut Sharpe **+2.009** on the 2025-05-05 → 2025-11-04 holdout. If the model has real signal — not just regime luck — it should also produce positive Sharpe on adjacent OOS 6-month windows."
@@ -65,14 +86,20 @@ done
 
 ### Resume condition
 
-Can re-evaluate alpha158_linear when ANY of these holds:
+The linear-on-alpha158 thesis is **closed** for our universe size. To
+re-open, need a structurally different architecture:
 
-1. Model retrained with extended training data (train through 2025-04-30, val 2025-04 → 2025-11) AND walk-forward 3-cut yields mean Sharpe ≥ 1.0.
-2. Ridge regularization (E29.1, in flight 2026-05-07) yields stable cross-cut Sharpe.
-3. Different label horizon (fwd_20d, fwd_60d) yields better cross-cut consistency.
-4. Ensemble combining alpha158_linear with the existing XGB shows complementary IC variance and stable mean alpha.
+1. **alpha158 + XGBoost** — non-linear interactions; XGB handled the 27-
+   feature panel well, may handle 158 better. Different model class.
+2. **Ensemble of XGB(27 feat) + alpha158_linear** — IC variance might
+   complement; combined Sharpe could stabilize cross-cut.
+3. **Watchlist > 200 tickers** — give linear model enough breadth to
+   exploit cross-sectional structure (Qlib uses 500+).
+4. **Different label** — fwd_20d (slightly worse on val/test in our
+   training); fwd_60d (longer horizon, untested).
 
-Until then, **27-feat XGB stays in production** — its known walk-forward is also weak (E27) but at least it benefits from daily retrains.
+Production stays on **27-feat XGB** (panel-ltr.json) — also weak walk-
+forward (E27) but benefits from daily retrains and shorter feature space.
 
 ---
 
