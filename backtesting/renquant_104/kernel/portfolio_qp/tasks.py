@@ -344,9 +344,23 @@ class SolveMarkowitzQPTask(Task):
     name = "SolveMarkowitzQPTask"
 
     def run(self, ctx) -> bool | None:
-        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
         cfg = _qp_cfg(ctx)
-        sol = solve_portfolio_qp(
+        # 2026-05-06 — choose backend at runtime. Both backends accept the
+        # same kwargs; cvxportfolio variant uses Boyd's reference policy
+        # classes directly. Default is cvxpy (faster, supports tax-aware
+        # sells + soft cash-drag). cvxportfolio backend is opt-in for
+        # users who want Boyd's class hierarchy verbatim.
+        backend = str(cfg.get("qp_solver_backend", "cvxpy")).lower()
+        if backend == "cvxportfolio":
+            from kernel.portfolio_qp.cvxportfolio_backend import (  # noqa: PLC0415
+                solve_portfolio_qp_cvxportfolio as _solve,
+            )
+        else:
+            from kernel.portfolio_qp.qp_solver import (  # noqa: PLC0415
+                solve_portfolio_qp as _solve,
+            )
+
+        kwargs = dict(
             w_current=_get_path(ctx, "_qp_w_current"),
             mu=_get_path(ctx, "_qp_mu"),
             sigma=_get_path(ctx, "_qp_sigma"),
@@ -365,27 +379,25 @@ class SolveMarkowitzQPTask(Task):
             robust_mu_kappa=float(cfg.get("qp_robust_mu_kappa", 0.0)),
             tax_cost_per_sell=_get_path(ctx, "_qp_tax_cost"),
             turnover_max=_get_path(ctx, "_qp_turnover_max"),
-            # G10 — Rockafellar-Uryasev CVaR tail-risk multiplier (off
-            # by default; cvar_lambda > 0 adds φ(z_α)/α · σ to gamma_eff)
             cvar_lambda=float(cfg.get("qp_cvar_lambda", 0.0)),
             cvar_alpha=float(cfg.get("qp_cvar_alpha", 0.05)),
-            # G3 — Almgren-Chriss sqrt-impact (off by default; set
-            # qp_impact_coef > 0 + ADV present to activate)
             impact_coef=float(cfg.get("qp_impact_coef", 0.0)),
             v_daily_dollar=_get_path(ctx, "_qp_v_daily_dollar"),
             nav_dollar=float(_get_path(ctx, "portfolio_value", 0.0) or 0.0),
-            # G4 — Smoothed fixed cost (off by default)
             fixed_cost_per_trade=float(cfg.get("qp_fixed_cost_per_trade", 0.0)),
             fixed_cost_beta=float(cfg.get("qp_fixed_cost_beta", 200.0)),
-            # 2026-05-05 cash-drag fix — budget mode + min_invested_pct.
-            # equality forces Σw = 1 − cash_reserve (textbook Markowitz)
-            # but breaks SLSQP feasibility on empty-portfolio start.
-            # min_invested_pct > 0 imposes a SOFT floor (two-sided box,
-            # stays feasible). Recommended starting point: 0.7
-            # (require ≥70% deployed).
             budget_mode=str(cfg.get("qp_budget_mode", "inequality")),
             min_invested_pct=float(cfg.get("qp_min_invested_pct", 0.0)),
+            # NEW (2026-05-06): soft cash-drag penalty replaces the
+            # pre-2026-05-06 hard `Σwp ≥ min_invested_pct` floor that was
+            # mathematically infeasible from cash + tight turnover.
+            cash_drag_lambda=float(cfg.get("qp_cash_drag_lambda", 0.05)),
         )
+        # cvxportfolio backend additionally takes a `tickers` kwarg for
+        # pandas-Series labelling; cvxpy backend ignores it.
+        if backend == "cvxportfolio":
+            kwargs["tickers"] = _get_path(ctx, "_qp_tickers")
+        sol = _solve(**kwargs)
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_n_buys = 0  # noqa: SLF001
         ctx._qp_n_sells = 0  # noqa: SLF001
