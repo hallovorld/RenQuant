@@ -62,7 +62,6 @@ Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking with cvxp
 |-----|----------|
 | [ab-journal.md](experiments/ab-journal.md) | Running A/B comparison journal |
 | [panel-training-runs.md](experiments/panel-training-runs.md) | Per-run training results table |
-| [post-tier1-followups.md](experiments/post-tier1-followups.md) | Investigation queue post-Tier-1 |
 | [sim-ab-results.md](experiments/sim-ab-results.md) | Sim-level A/B with APY/Sharpe deltas |
 
 ## top-level
