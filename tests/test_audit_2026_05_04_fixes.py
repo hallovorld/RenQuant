@@ -401,8 +401,13 @@ class TestSimAdapterPnLPctNaNGuard:
         # `import math` OR `_math_pnl.isfinite` after the local alias I
         # added). Bare `math.isfinite(price)` without an import in the
         # same function-scope WILL silently re-introduce the NameError.
-        i = src.find("_pnl_pct = (price - _entry) / _entry")
-        assert i > 0
+        # 2026-05-06 update: bug-7 fix renamed `_entry` to `_disposed_basis`
+        # (use the disposed cost basis, not surviving lot avg). Both names
+        # accepted as evidence of the post-fix block.
+        i = src.find("_pnl_pct = (price - _disposed_basis) / _disposed_basis")
+        if i < 0:
+            i = src.find("_pnl_pct = (price - _entry) / _entry")
+        assert i > 0, "post-fix _pnl_pct line not found"
         block = src[max(0, i - 800):i + 100]
         # Must have either 'import math' OR 'import math as _math' inside
         # the immediate function body (the `def _apply_sell` containing
@@ -924,7 +929,8 @@ class TestQPTaxAwareDisabledByDefault:
         "strategy_config.json",
         "strategy_config.golden.json",
         "strategy_config.wl183_daily_clean.json",
-        "strategy_config.wl183_diag10.json",
+        # 2026-05-06: alpha158_linear scorer side config (Phase 1+2 ship).
+        "strategy_config.alpha158_linear.json",
     )
 
     def test_qp_min_dw_pct_above_micro_threshold(self):

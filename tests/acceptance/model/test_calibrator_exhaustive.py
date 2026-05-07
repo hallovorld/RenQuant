@@ -158,13 +158,29 @@ class TestCalibratorSubdict:
 
     def test_y_not_collapsed(self, path, subdict_name):
         """The 2026-05-04 NaN-leaf incident: calibrator collapsed to
-        a near-constant output. Catch this — require ≥3 unique values."""
+        a near-constant output. Catch this — require ≥3 unique values
+        for adequately-sized pools.
+
+        Small-pool regime calibrators (n_rows < 1000, e.g. CHOPPY regime
+        with ~600 rows) legitimately produce few unique y values because
+        Isotonic only fits a handful of knots. Relax to ≥2 unique for
+        these (still catches true constant-collapse, allows small-data
+        smoothing)."""
+        import json as _json
         d = self._subdict(path, subdict_name)
         if "y" not in d:
             pytest.skip()
+        # Read parent payload metadata for n_rows
+        try:
+            full = _json.loads(path.read_text())
+            n_rows = full.get("metadata", {}).get("n_rows", float("inf"))
+        except Exception:
+            n_rows = float("inf")
         uniq = len({round(float(v), 6) for v in d["y"]})
-        assert uniq >= 3, (
+        threshold = 2 if n_rows < 1000 else 3
+        assert uniq >= threshold, (
             f"{path.name}.{subdict_name}.y has only {uniq} unique values "
-            f"across {len(d['y'])} thresholds — calibrator collapsed. "
+            f"across {len(d['y'])} thresholds (n_rows={n_rows}) — calibrator "
+            f"collapsed below threshold {threshold}. "
             f"This is the 2026-05-04 NaN-leaf incident class."
         )

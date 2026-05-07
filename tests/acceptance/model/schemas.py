@@ -82,7 +82,11 @@ def _quantiles_dict(d: Any) -> None:
 
 PANEL_LTR_SCHEMA: dict[str, dict] = {
     # Identity / kind
-    "kind":                {"type": str, "required": True, "non_empty": True,
+    # Legacy XGB-only artifacts (panel-ltr.golden-daily, panel-ltr.hourly,
+    # etc., trained pre-2026-04 before kind-dispatch was added) lack the
+    # `kind` field. Production loader (`PanelScorer.load`) treats missing
+    # kind as XGBoost default — accept the same here.
+    "kind":                {"type": str, "required": False, "non_empty": True,
                             "allowed": {"panel_ltr_xgboost", "panel_ltr_lightgbm",
                                          "panel_transformer"}},
     "version":             {"type": (int, str), "required": False},
@@ -131,7 +135,9 @@ PANEL_LTR_SCHEMA: dict[str, dict] = {
     # Config-fingerprint stamping (drift detection)
     "config_fingerprint":  {"type": (str, type(None)), "required": False,
                             "min_str_len": 8},
-    "config_fingerprint_fields": {"type": (list, type(None)), "required": False},
+    # Allow dict (production format with hashed field-name → fingerprint)
+    # or list (legacy format with just the field names). Both are valid.
+    "config_fingerprint_fields": {"type": (list, dict, type(None)), "required": False},
 }
 
 

@@ -76,7 +76,10 @@ class TestPanelLTRStandard(_StandardChecks):
         "triple_barrier_on_shuffled", "triple_barrier_on_repro",
         "macro_v2_retest", "emb_retest", "wl_sweep", "topdown",
     ))
-    SKIP_KIND = {"panel_transformer"}
+    # panel_transformer + panel_lgbm + panel_linear use different artifact
+    # schemas (no `booster_raw_json` etc.). These have their own scorer
+    # classes; skipping XGB-specific schema checks here.
+    SKIP_KIND = {"panel_transformer", "panel_lgbm", "panel_linear"}
 
 
 # ── NGBoost family ───────────────────────────────────────────────────────────

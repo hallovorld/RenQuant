@@ -256,7 +256,9 @@ class TestSimAdapterPartialNoWashSale:
         # Sentinel: post-fix logic gates wash-sale stamp on `if not is_partial`
         # in _apply_sell.
         idx = src.find("def _apply_sell")
-        body = src[idx:idx + 4000]
+        # _apply_sell grew to >4k chars after 2026-05-06 bug-fix sprint
+        # (NaN handling + earnings + Davis-Norman). Bump window to 8000.
+        body = src[idx:idx + 8000]
         assert "if not is_partial:" in body
         assert "_last_sell_date[ticker]" in body
 
