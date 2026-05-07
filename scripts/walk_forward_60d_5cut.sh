@@ -82,6 +82,8 @@ import json
 cfg = json.load(open('$cfg_in'))
 cfg['panel_ltr']['artifact_path'] = '$artifact'
 cfg.setdefault('ranking', {}).setdefault('panel_scoring', {})
+# CRITICAL: SimAdapter._try_load_panel_scorer reads THIS path, not panel_ltr.
+cfg['ranking']['panel_scoring']['artifact_path'] = '$artifact'
 cfg['ranking']['panel_scoring']['kind'] = 'panel_linear'
 json.dump(cfg, open('$cfg_out', 'w'), indent=2)
 print(f'wrote $cfg_out')

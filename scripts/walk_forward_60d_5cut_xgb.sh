@@ -70,8 +70,9 @@ for cut in "${CUTS[@]}"; do
 import json
 cfg = json.load(open('$cfg_in'))
 cfg['panel_ltr']['artifact_path'] = '$artifact'
-# XGB artifact uses kind=panel_ltr_xgboost (auto-detected by PanelScorer.load)
+# CRITICAL: SimAdapter._try_load_panel_scorer reads THIS path, not panel_ltr.
 cfg.setdefault('ranking', {}).setdefault('panel_scoring', {})
+cfg['ranking']['panel_scoring']['artifact_path'] = '$artifact'
 cfg['ranking']['panel_scoring']['kind'] = 'panel_ltr_xgboost'
 json.dump(cfg, open('$cfg_out', 'w'), indent=2)
 "
