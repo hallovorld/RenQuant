@@ -476,12 +476,12 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_updated": "2026-05-05",
+    "blend_updated": "2026-05-04",
     "blend_n_symbols": 103,
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.alpha158_linear.json",
+      "artifact_path": "artifacts/panel-ltr.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -495,8 +495,8 @@
         "min_mult": 0.5
       },
       "ngboost": {
-        "enabled": false,
-        "artifact_path": "artifacts/ngboost-head.alpha158_linear.json",
+        "enabled": true,
+        "artifact_path": "artifacts/ngboost-head.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -507,7 +507,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.alpha158_linear.json",
+        "artifact_path": "artifacts/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -580,11 +580,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.alpha158_linear.json",
+    "artifact_path": "artifacts/panel-ltr.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
-      "enabled": false,
-      "artifact_path": "artifacts/ngboost-head.alpha158_linear.json",
+      "enabled": true,
+      "artifact_path": "artifacts/ngboost-head.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -780,9 +780,5 @@
       "change": "add LITE + COHR to watchlist (datacenter_hw / optical-comms exposure)",
       "rollback": "remove from watchlist + sector_map; revert this commit"
     }
-  ],
-  "_audit_label": "alpha158_linear",
-  "_audit_notes": [
-    "NGBoost disabled for alpha158_linear: head was trained on 21 production features, incompatible with 158 alpha158 features. \u03c3 from rolling realized vol per Markowitz 1952 / Almgren-Chriss 2000."
   ]
 }
