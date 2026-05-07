@@ -6,6 +6,18 @@
 - ✅ Portfolio QP solver — **enabled in production**
 - ⏳ Gate A (distribution floor), Gate C (no-trade band), QP Stages 2/4/5/7 — implemented, default OFF, awaiting sim verification
 
+> **2026-05-07 update**: portfolio QP migrated from
+> `scipy.optimize.SLSQP + cvxpy fallback` (700-line hand-rolled solver)
+> to **cvxpy + CLARABEL primary** in the Boyd/Stanford
+> `cvxportfolio.SinglePeriodOpt` idiom. Hard `min_invested_pct` floor
+> became a soft `cash_drag_lambda` penalty (max(0, target − Σwp) added
+> to the objective). The `qp_solver_backend = "cvxpy" | "cvxportfolio"`
+> config switch lets you opt into Boyd's reference policy classes
+> directly. The Almgren-Chriss impact / Brown-Smith tax / RU CVaR /
+> Garlappi robust μ stages are all retained as cvxpy DCP terms.
+> See [`portfolio-qp.md`](portfolio-qp.md) §0 for the new architecture
+> and [`STATUS.md`](../STATUS.md) for the live-vs-research backend split.
+
 Pre-2026-04-26 the pipeline had `panel_buy_floor = null` → any candidate with μ > fee passed. R6/R7 evidence showed buys at edge_sharpe ≈ 0.10 (~random within the panel's noise floor). This doc covers the redesign + operational runbook.
 
 ---

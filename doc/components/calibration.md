@@ -1,8 +1,15 @@
 # Calibration
 
-**What it is:** maps the panel scorer's raw output (LightGBM/XGBoost LTR rank score, or μ−λσ from NGBoost) to a calibrated probability `P(outperform SPY by threshold% in lookahead_days)`. Lives at `artifacts/panel-rank-calibration.json` and is fitted by `scripts/recalibrate_scores.py`.
+**What it is:** maps the panel scorer's raw output (LightGBM/XGBoost LTR rank score, or μ−λσ from NGBoost, or sklearn-LinearRegression dot-product for alpha158_linear) to a calibrated probability `P(outperform SPY by threshold% in lookahead_days)`. Lives at `artifacts/panel-rank-calibration.json` (production) or `panel-rank-calibration.alpha158_linear.json` (alpha158_linear path) and is fitted by `scripts/recalibrate_scores.py` or `scripts/fit_alpha158_linear_calibrator.py`.
 
 The calibrator is **isotonic regression** by default; falls back to Platt scaling for small samples (per CLAUDE.md sample-size policy).
+
+> **2026-05-07 status**: production runs the XGB-trained calibrator
+> (`panel-rank-calibration.json`). `n_unique_prob_y=7 < 10` runtime
+> floor → SOFT-WARN; refit when panel-LTR best_iter floor is bumped
+> (P1 in roadmap). The alpha158_linear-trained calibrator
+> (`panel-rank-calibration.alpha158_linear.json`) is fitted but only
+> used when the alpha158_linear path is active.
 
 ## 1. Architecture
 
