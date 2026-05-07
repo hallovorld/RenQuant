@@ -52,6 +52,11 @@ def main() -> None:
     p.add_argument("--eta", type=float, default=0.02)
     p.add_argument("--max-depth", type=int, default=4)
     p.add_argument("--min-child-weight", type=float, default=60.0)
+    p.add_argument("--train-end-date", default=None,
+                   help="Override split_label: use ALL rows with date ≤ this "
+                        "date as train. Required for daily-retrain walk-forward.")
+    p.add_argument("--val-days", type=int, default=20,
+                   help="With --train-end-date, last N trading days reserved as val.")
     args = p.parse_args()
 
     log.info("Loading %s", args.dataset)
@@ -65,9 +70,18 @@ def main() -> None:
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.sort_values(["date", "ticker"]).reset_index(drop=True)
 
-    train = panel[panel["split_label"] == "train"].reset_index(drop=True)
-    val   = panel[panel["split_label"] == "val"].reset_index(drop=True)
-    test  = panel[panel["split_label"] == "test"].reset_index(drop=True)
+    if args.train_end_date is not None:
+        train_end = pd.Timestamp(args.train_end_date)
+        val_start = train_end - pd.Timedelta(days=args.val_days)
+        train = panel[panel["date"] <= val_start].reset_index(drop=True)
+        val   = panel[(panel["date"] > val_start) & (panel["date"] <= train_end)].reset_index(drop=True)
+        test  = panel[panel["date"] > train_end].reset_index(drop=True)
+        log.info("DATE-BASED SPLIT: train_end=%s  val_window=%dd",
+                 train_end.date(), args.val_days)
+    else:
+        train = panel[panel["split_label"] == "train"].reset_index(drop=True)
+        val   = panel[panel["split_label"] == "val"].reset_index(drop=True)
+        test  = panel[panel["split_label"] == "test"].reset_index(drop=True)
     log.info("Splits — train: %d  val: %d  test: %d",
              len(train), len(val), len(test))
 
@@ -117,7 +131,7 @@ def main() -> None:
         test["label"] = test.groupby("date")[args.label].rank(pct=True)
         test_groups = test.groupby("date").size().values.astype(int)
         # Score test rows
-        test_scores = model.score(test[feat_cols])
+        test_scores = model.predict(test[feat_cols])
         # Per-day Spearman IC of model_score vs label
         test_with = test.assign(_score=test_scores).copy()
         from scipy.stats import spearmanr
