@@ -9,6 +9,18 @@ the promotion case.** Production LightGBM on same panel + same split
 = +0.0850 (vs transformer +0.0519). LightGBM wins by 64%. No promotion.
 Plan retained as scratchpad for future improvement attempts.
 
+> **2026-05-07 update**: LightGBM itself was rejected (-60% IC vs XGB
+> on the production panel — see CLAUDE.md status closed-tracks). And
+> the v4 transformer rebuild (Task #28, scripts/transformer_v4.py)
+> shipped but was not promoted either. The panel-LTR space is now:
+>
+> - Production: 27-feat XGBoost (`panel-ltr.json`)
+> - Researched winner (NOT live): alpha158 + sklearn LinearRegression
+>   (`panel-ltr.alpha158_linear.json`) — pending walk-forward proof,
+>   see [`../STATUS.md`](../STATUS.md).
+>
+> Rust transformer remains a future-research path; no scheduled work.
+
 ## Why this matters
 
 Single-split val_IC of +0.0519 on the hourly-era panel beats the

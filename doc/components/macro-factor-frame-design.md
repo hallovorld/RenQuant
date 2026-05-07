@@ -1,6 +1,13 @@
 # Macro Factor Frame — Design + Integration Plan
 
-**Status:** 🔴 Design only.
+**Status:** 🔴 Design only — currently DISABLED in production.
+
+> **2026-05-07 status**: all macro variants (v1 broadcast / v2 per-ticker
+> β / v3 monotonic IC / v4 macro-as-panel-row) showed net negative IC at
+> panel size 103 per CLAUDE.md status block. Resume condition: watchlist
+> > 200 tickers OR redesigned regime-conditional broadcast. Currently
+> kept as architecture reference; no scheduled work. See
+> [`../STATUS.md`](../STATUS.md) closed-tracks list.
 **Driver:** User spec 2026-04-26 — *"按照proper的#3推进，计划好！把watchlist里的一部分item也可以换到 _macro_factor_frame里面，你给我一个完整的设计，如何把新的设计放到现有的架构中，如何确认python和rust的所有模型接受这个新的参数"*
 **Goal:** add macro / cross-asset signals (VIX, HYG, UUP, DBC, …) as broadcast features to every panel row WITHOUT trying to trade them. Also: migrate non-tradable items currently in the watchlist (defensive ETFs, sector ETFs as RS comparators) into this frame.
 
