@@ -13,6 +13,85 @@ Boyd, and Markowitz into one solver.
 
 ---
 
+## 0. Solver architecture (2026-05-06 cvxpy refactor) — READ FIRST
+
+`solve_portfolio_qp` is a **cvxpy + CLARABEL** convex solver in the
+[cvxportfolio](https://www.cvxportfolio.com/) (Boyd, Stanford) idiom.
+The previous `scipy.optimize.minimize(method="SLSQP")` implementation was
+removed entirely — it produced numerical errors (LSQ subproblem overflow,
+degenerate warm-starts) that triggered an ad-hoc cvxpy fallback that was
+itself misconfigured (no capacity / turnover clamps). The V4/V5
+alpha158_linear simulations exposed this with a 0-trade outcome over
+128 days, where the constraint set was mathematically infeasible.
+
+**Solver chain**: CLARABEL (primary, interior-point QP) → OSQP
+(alternative IP) → SCS (large-scale fallback). Any one is enough; the
+chain maximizes success across solver-specific edge cases.
+
+### Hard vs. soft constraints (the load-bearing distinction)
+
+| Class | What's in it | Encoded as |
+|-------|--------------|-----------|
+| **Hard** (physics) | Budget upper bound, per-asset box bounds, slippage cap, wash-sale, turnover cap | `cp.Constraint` |
+| **Soft** (preferences) | Cash-drag, tax-aware sells, Almgren-Chriss impact, CVaR tail, robust μ, drawdown γ scaling | Objective penalty terms |
+
+> **Critical change**: `min_invested_pct` is now a **soft target** driven
+> by `cash_drag_lambda` — not a hard floor. Pre-2026-05-06 we encoded it
+> as `Σwp ≥ min_invested_pct`, which is *infeasible* whenever
+> `Σ(per-asset hi-bounds) + turnover_max < min_invested_pct` (a typical
+> from-cash situation with confidence-multiplier-tight caps). The new
+> formulation adds `cash_drag_lambda · max(0, target − Σwp)` to the
+> objective. Solver deploys what it can, paying the drag for any cash
+> that remains. The QP is always solvable.
+
+### Cash-drag tuning
+
+| `cash_drag_lambda` | Behaviour |
+|---|---|
+| `0.0` | No cash-drag preference (legacy "no floor" parity) |
+| `0.05` (default) | Moderate; mid-50 bp signal beats the drag |
+| `10.0` | Stiff penalty; approximates pre-fix hard floor |
+
+### Day-by-day ramp from cash (Garleanu-Pedersen 2013 §4)
+
+With `min_invested_pct=0.7`, `turnover_max=0.30`, starting from all-cash:
+
+```
+Bar 1:  w_current=0.00 → invest 0.30 (turnover-saturated)
+Bar 2:  w_current=0.30 → invest +0.30 → w=0.60
+Bar 3:  w_current=0.60 → invest +0.10 → w=0.70 (target hit; drag = 0)
+```
+
+This is the canonical turnover-aware ramp; the previous hard-floor
+formulation tried to hit 0.70 in one bar and went infeasible.
+
+### Dropped features
+
+| Feature | Why dropped |
+|---|---|
+| `tanh(β\|Δw\|)` smoothed fixed cost | Not DCP-compliant; cvxpy can't solve. Was 0 in all production configs. Linear cost (`κ‖Δw‖₁`) covers the regime. |
+| Hand-coded gradients | cvxpy auto-differentiates. |
+| SLSQP + scipy.optimize | Replaced by CLARABEL. cvxpy is a hard dependency now. |
+
+### Numerical hygiene
+
+Interior-point solvers leave |x| < 1e-9 noise at constraint boundaries
+(e.g. `wp ≈ -3e-10` when `w_lower=0`). Post-solve clip to
+`[w_lower_arr, w_upper_arr]` removes these artifacts so callers don't
+see "shorts" that are floating-point dust.
+
+### References
+
+- Boyd & Vandenberghe 2004 §10.4 — interior-point convex QP
+- Markowitz 1952 — mean-variance portfolio selection
+- Garleanu-Pedersen 2013 §4 — dynamic trading w/ predictable returns + costs
+- Almgren-Chriss 2000 §2 — sqrt-impact transaction cost
+- Rockafellar-Uryasev 2002 — CVaR closed form
+- Garlappi-Uppal-Wang 2007 — robust μ subtraction
+- cvxportfolio 1.5 (Boyd/Stanford) — `SinglePeriodOpt` reference impl
+
+---
+
 ## 1. Why the current architecture is structurally limiting
 
 **Today** (renquant_104):
