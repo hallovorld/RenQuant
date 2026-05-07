@@ -8,6 +8,74 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E29. alpha158_linear walk-forward 3-cut — V7 single-cut Sharpe 2.01 was a regime-lucky window
+
+**Date**: 2026-05-07
+**Type**: model walk-forward variance failure; structural (not implementation)
+**Production impact**: alpha158_linear NOT promoted to live; 27-feat XGB stays in production
+
+### Hypothesis
+"alpha158_linear (Qlib alpha158 features + sklearn LinearRegression on z-scored fwd_5d_excess) produced V7 single-cut Sharpe **+2.009** on the 2025-05-05 → 2025-11-04 holdout. If the model has real signal — not just regime luck — it should also produce positive Sharpe on adjacent OOS 6-month windows."
+
+### Implementation
+
+Held the trained artifact (`panel-ltr.alpha158_linear.json`, trained on data through 2022-11-01 train split + 2022-11 → 2023-11 val) constant across 3 OOS windows:
+
+  - Cut 1: train_end=2024-05-04, sim 2024-05-05 → 2024-11-04
+  - Cut 2: train_end=2024-11-04, sim 2024-11-05 → 2025-05-04
+  - Cut 3: train_end=2025-05-04, sim 2025-05-05 → 2025-11-04 (= V7)
+
+All three cuts use `--skip-train` so the same trained scorer + same calibrator drives all bars. `holdout_backtest.py` produced raw fractional metrics in each result JSON.
+
+### Data (3-cut walk-forward, 6mo each)
+
+| Cut | Period | APY | Sharpe | Max DD | Win | Buys/Sells |
+|---|---|---|---|---|---|---|
+| 1 | 2024-05 → 2024-11 | **−17.24%** | **−0.94** | 18.1% | 60% | 130/162 |
+| 2 | 2024-11 → 2025-05 | **−12.05%** | **−0.64** | 12.1% | 46% | 82/112 |
+| 3 (V7) | 2025-05 → 2025-11 | +39.22% | +2.01 | 6.9% | 73% | 73/77 |
+| **Mean** | — | **+3.31%** | **+0.14** | 12.4% | — | — |
+
+### Sanity checks (CLAUDE.md §5.2)
+- A/A test: degenerate (same artifact, no random seed in sim).
+- Time-shift placebo: not run; would require retraining with shifted labels.
+- Multi-cut variance: ✓ run — this experiment IS the multi-cut variance test.
+
+### Conclusion
+
+**Structural failure of the walk-forward generalization claim.** V7's +2.01 Sharpe was a single-window outcome on a regime that happened to favour the model's biases. Cuts 1 and 2 produce −0.94 / −0.64 Sharpe with 18% and 12% drawdowns — losses that would be unrecoverable in real money over 6mo.
+
+The model HAS signal (Cut 3 is genuinely positive), but the variance across regimes is destructive. The pattern matches the older XGB walk-forward failure (E27, mean alpha −15.62% with single-cut Sharpe 0.68). **Single-cut numbers are not promotion evidence.**
+
+### Reproduction recipe
+
+```bash
+# Walk-forward 3-cut on the production alpha158_linear artifact:
+for cut in "2024-05-04 2024-05-05 2024-11-04" \
+           "2024-11-04 2024-11-05 2025-05-04" \
+           "2025-05-04 2025-05-05 2025-11-04"; do
+  read te ss se <<< "$cut"
+  python scripts/holdout_backtest.py \
+      --strategy renquant_104 \
+      --strategy-config-name strategy_config.alpha158_linear.json \
+      --train-end "$te" --sim-start "$ss" --sim-end "$se" \
+      --skip-train --out /tmp/wf_${te}.json
+done
+```
+
+### Resume condition
+
+Can re-evaluate alpha158_linear when ANY of these holds:
+
+1. Model retrained with extended training data (train through 2025-04-30, val 2025-04 → 2025-11) AND walk-forward 3-cut yields mean Sharpe ≥ 1.0.
+2. Ridge regularization (E29.1, in flight 2026-05-07) yields stable cross-cut Sharpe.
+3. Different label horizon (fwd_20d, fwd_60d) yields better cross-cut consistency.
+4. Ensemble combining alpha158_linear with the existing XGB shows complementary IC variance and stable mean alpha.
+
+Until then, **27-feat XGB stays in production** — its known walk-forward is also weak (E27) but at least it benefits from daily retrains.
+
+---
+
 ## E1. M2 horizon-blender v3 — learned and fixed-weight blends BOTH lose to single best horizon
 
 **Date**: 2026-04-28
