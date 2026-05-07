@@ -8,11 +8,29 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
-## E29. alpha158_linear (sklearn LinearRegression on 158 features) — STRUCTURALLY BROKEN across all variants
+## E29. alpha158_linear (sklearn LinearRegression on 158 features) — METHODOLOGICAL ERROR + RETEST IN PROGRESS
 
 **Date**: 2026-05-07
-**Type**: model architecture failure; structural (not implementation)
-**Production impact**: alpha158_linear NOT promoted to live; 27-feat XGB stays in production
+**Type**: ⚠️ **Verdict was premature** — initial conclusion conflated "static-model walk-forward" with "daily-retrain walk-forward"; retest in progress.
+**Production impact**: alpha158_linear NOT promoted to live (still TRUE); but the structural conclusion is in question.
+
+> **2026-05-07 follow-up**: the original E29 verdict ("structurally
+> broken") was based on tests using `--skip-train`, which means each
+> walk-forward cut used a SINGLE fixed model trained on data through
+> 2022-11. That model was 18-36 months stale during the sim windows.
+>
+> **The user's design is daily retraining** — model is ≤1 day stale at
+> all times. None of E29's tests below match that design except V7
+> itself (cut 3 with 0-6mo staleness post-retrain).
+>
+> Proper test = walk-forward cuts WITH retrain at the start of each
+> cut, matching V7's protocol on cuts 1 and 2:
+> - Cut 1 retrain at 2024-05-04, sim 2024-05-05 → 2024-11-04
+> - Cut 2 retrain at 2024-11-04, sim 2024-11-05 → 2025-05-04
+> - Cut 3 = V7 (already done, Sharpe +2.01)
+>
+> Both with-retrain cuts launched 2026-05-07 09:33; ~46min wall.
+> Verdict revised after results land.
 
 ### Final verdict (4 walk-forward variants tested 2026-05-07)
 
