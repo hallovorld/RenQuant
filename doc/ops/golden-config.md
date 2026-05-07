@@ -2,6 +2,22 @@
 
 **Current golden.** Promoted 2026-04-24 (v4.1 from +37.85 → +39.82 APY), builds on v4 (`eb8fab5`, Kelly half + A-gate). Round-7 additions on 2026-04-26 (acceptance gates Phase 1+2, challenger infra) added to the golden snapshot but do NOT change measured APY — they are infrastructure for future safe retrains.
 
+> **2026-05-07 status**: golden runs the 27-feature XGBoost panel-LTR
+> (`panel-ltr.json`). The 158-feature alpha158_linear variant
+> (`panel-ltr.alpha158_linear.json`) — V7 single-cut Sharpe 2.009 —
+> was briefly promoted then **reverted** the same day:
+>
+> 1. walk-forward 3-cut on the same trained-once model gave mean Sharpe
+>    +0.14 with cuts 1-2 producing −0.94 / −0.64 (E29 in failed-
+>    experiments-log) — the V7 number was a regime-lucky window;
+> 2. the daily retrain cron isn't wired for alpha158_linear yet
+>    (`scripts/retrain_alpha158_linear.sh` exists but no launchd plist).
+>
+> Backups of pre-promotion golden are preserved as
+> `strategy_config.golden.previous.json` + `strategy_config.live.previous.json`
+> for fast rollback. Re-promotion path is in
+> [`../roadmap.md`](../roadmap.md) P0.
+
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
 **Live config file:** `backtesting/renquant_104/strategy_config.json`
 

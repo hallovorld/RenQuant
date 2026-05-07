@@ -42,6 +42,29 @@ bash scripts/check_challenger_window.sh                          # daily cron po
 # Live trade
 python -m live.runner --strategy renquant_104 --broker alpaca --once
 python -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only
+
+# B2 Hold-out backtest (single-cut OOS sanity check on a saved artifact)
+python scripts/holdout_backtest.py \
+    --strategy renquant_104 \
+    --strategy-config-name strategy_config.alpha158_linear.json \
+    --train-end 2025-05-04 --sim-start 2025-05-05 --sim-end 2025-11-04 \
+    --skip-train --out /tmp/v7.json    # use existing artifact (fast)
+
+# Same, but inflating side-config from data/runs.db (Task #38 path)
+python scripts/holdout_backtest.py \
+    --experiment-label alpha158_linear \
+    --train-end 2025-05-04 --sim-start 2025-05-05 --sim-end 2025-11-04 \
+    --skip-train --out /tmp/v7.json
+
+# alpha158_linear retrain wrapper (not yet scheduled; manual run for now)
+bash scripts/retrain_alpha158_linear.sh                 # full rebuild
+bash scripts/retrain_alpha158_linear.sh --skip-features # reuse existing parquet
+
+# DB experiment_configs (side-config-as-DB-row) management
+python scripts/migrate_experiment_configs_to_db.py init           # one-time
+python scripts/migrate_experiment_configs_to_db.py import         # import all FS side configs
+python scripts/migrate_experiment_configs_to_db.py list           # show DB rows
+python scripts/migrate_experiment_configs_to_db.py inflate --label alpha158_linear
 ```
 
 ---
