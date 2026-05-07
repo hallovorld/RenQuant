@@ -39,31 +39,47 @@ def _clamp_min_invested_floor(
     w_current: np.ndarray,
     cash_reserve: float,
     hi_bounds: np.ndarray,
+    turnover_max: float | None = None,
     safety_eps: float = 0.01,
 ) -> tuple[float, str]:
-    """Apply same capacity clamps the SLSQP path uses, BEFORE handing the
-    floor to any solver.
+    """Compute the largest feasible `min_invested_pct` floor given the
+    per-bar reachable region, BEFORE handing it to any solver.
 
-    The two clamps mirror lines 340-358 of the SLSQP path — without them,
-    the cvxpy / CLARABEL fallback receives an unrelaxed lower bound that
-    is mathematically infeasible when sum(hi_bounds) < min_invested_pct,
-    and CLARABEL correctly reports `infeasible` for the whole problem.
+    Three clamps stack (most-binding wins):
+      (a) cash-slack:   floor ≤ (1 - cash_reserve) - Σw_current
+      (b) capacity:     floor ≤ Σ(hi_bounds) + Σw_current - ε
+      (c) turnover:     floor ≤ Σw_current + turnover_max - ε
 
-    Returns (clamped_floor, clamp_reason). If `clamp_reason != "none"`
-    the caller can log a one-time diagnostic.
+    Without (c), starting from all-cash with `min_invested_pct=0.7` and
+    `turnover_max=0.30` was MATHEMATICALLY INFEASIBLE (0.30 < 0.70 with
+    no inflow channel). CLARABEL correctly reported infeasible; the V4
+    sim produced 0 trades over 128 days because the QP gave up every day.
+
+    Returns (clamped_floor, clamp_reason). `reason` is the binding clamp:
+    "none" / "cash_slack" / "capacity" / "turnover". This is logged so
+    the operator can see which constraint relaxed the floor.
     """
     floor = float(min_invested_pct)
     if floor <= 0:
         return 0.0, "none"
-    cash_slack = (1.0 - float(cash_reserve)) - float(np.sum(w_current))
+    sum_w = float(np.sum(w_current))
+    cash_slack = (1.0 - float(cash_reserve)) - sum_w
     reason = "none"
     if floor > cash_slack:
         floor = max(0.0, cash_slack)
         reason = "cash_slack"
-    max_capacity = float(np.sum(hi_bounds)) + float(np.sum(w_current))
+    max_capacity = float(np.sum(hi_bounds)) + sum_w
     if floor > max_capacity - safety_eps:
         floor = max(0.0, max_capacity - safety_eps)
         reason = "capacity"
+    # (c) Turnover-reachable: in one bar, Σ|Δw| ≤ τ → max increase in
+    # invested fraction is τ (signs of Δw can only add when buying from
+    # cash). Practically: floor ≤ Σw_current + turnover_max - ε.
+    if turnover_max is not None and float(turnover_max) > 0:
+        max_reachable = sum_w + float(turnover_max)
+        if floor > max_reachable - safety_eps:
+            floor = max(0.0, max_reachable - safety_eps)
+            reason = "turnover"
     return floor, reason
 
 
@@ -112,6 +128,7 @@ def _solve_via_cvxpy_fallback(
         w_current=np.asarray(w_current, dtype=float),
         cash_reserve=float(cash_reserve),
         hi_bounds=hi_bounds_arr,
+        turnover_max=float(turnover_max) if turnover_max is not None else None,
     )
 
     constraints = [
@@ -400,24 +417,25 @@ def solve_portfolio_qp(
     # cleanly; equality often fails Positive-directional-derivative.
     min_invested_slack = float("-inf")
     if min_invested_pct > 0:
-        min_invested_slack = (
-            float(min_invested_pct) - float(np.sum(w_current))
+        # 2026-05-06: delegate to shared _clamp_min_invested_floor — same
+        # helper the cvxpy fallback uses. Includes the turnover clamp
+        # which fixes the V4/V5 alpha158_linear infeasibility (from-cash
+        # min_invested=0.7 vs turnover_max=0.30).
+        floor_clamped, _slsqp_clamp_reason = _clamp_min_invested_floor(
+            min_invested_pct=float(min_invested_pct),
+            w_current=np.asarray(w_current, dtype=float),
+            cash_reserve=float(cash_reserve),
+            hi_bounds=np.maximum(hi_bounds, 0.0),
+            turnover_max=float(turnover_max) if turnover_max is not None else None,
         )
-        # Sanity 1: if floor > ceiling (e.g. min=0.9, cash_reserve=0.2 →
-        # ceiling=0.8), clamp floor to ceiling minus epsilon to keep
-        # feasible.
-        if min_invested_slack > cash_slack:
-            min_invested_slack = cash_slack
-        # Sanity 2 (2026-05-05 — Track B'' debug): floor INFEASIBILITY
-        # by capacity. With small per-asset caps (e.g. max_position_pct
-        # × conf_mult = 0.075) and few candidates (e.g. 8), max possible
-        # ΣΔw = 8×0.075 = 0.60. If floor=0.70, no Δw can satisfy LB →
-        # SLSQP fails "Positive directional derivative for linesearch".
-        # Auto-clamp by per-asset hi_bounds total. Conservative: leave
-        # 1% slack so SLSQP has interior feasibility.
-        max_capacity = float(np.sum(hi_bounds))
-        if min_invested_slack > max_capacity - 0.01:
-            min_invested_slack = max(-np.inf, max_capacity - 0.01)
+        min_invested_slack = floor_clamped - float(np.sum(w_current))
+        if _slsqp_clamp_reason != "none":
+            log.info(
+                "QP: floor clamped from %.3f → %.3f (reason=%s) "
+                "→ min_invested_slack=%.3f",
+                float(min_invested_pct), floor_clamped,
+                _slsqp_clamp_reason, min_invested_slack,
+            )
     if budget_mode == "equality":
         cash_constraint = LinearConstraint(
             A=np.ones((1, n)),

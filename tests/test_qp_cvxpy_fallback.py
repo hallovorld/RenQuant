@@ -137,6 +137,61 @@ class TestCvxpyFallback:
             assert result is None, \
                 "fallback should return None when cvxpy not installed"
 
+    def test_fallback_clamps_turnover_infeasible_floor(self):
+        """REGRESSION (2026-05-06 V5 sim 0-trade): from-cash with
+        min_invested_pct=0.7 + turnover_max=0.3 is mathematically
+        infeasible — needs 70% turnover to satisfy floor, only 30%
+        allowed. CLARABEL correctly reported infeasible until the
+        turnover clamp landed.
+
+        With the turnover clamp: floor = max(0, sum(w_current) +
+        turnover_max - 0.01) = 0 + 0.30 - 0.01 = 0.29. Solver
+        successfully invests up to 29% in one bar; subsequent bars
+        ratchet up to the original 0.7 target."""
+        from kernel.portfolio_qp.qp_solver import (
+            _solve_via_cvxpy_fallback, _clamp_min_invested_floor,
+        )
+
+        n = 50   # capacity not the binding constraint
+        mu, Sigma = self._basic_problem(n=n, seed=5)
+        w_current = np.zeros(n)
+        # Verify clamp helper picks the turnover clamp:
+        floor, reason = _clamp_min_invested_floor(
+            min_invested_pct=0.70,
+            w_current=w_current,
+            cash_reserve=0.05,
+            hi_bounds=np.full(n, 0.075),     # 50 × 0.075 = 3.75 capacity (not binding)
+            turnover_max=0.30,
+        )
+        assert reason == "turnover", (
+            f"Expected turnover-clamp; got reason={reason!r}, floor={floor:.4f}"
+        )
+        assert 0.28 < floor < 0.30, f"Clamp floor {floor:.4f} not in expected range"
+
+        # End-to-end: cvxpy fallback now succeeds where it used to fail.
+        dw = _solve_via_cvxpy_fallback(
+            w_current=w_current, mu=mu, Sigma=Sigma,
+            risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
+            w_lower_arr=np.zeros(n),
+            w_upper_arr=np.full(n, 0.075),
+            dw_max_arr=np.full(n, 0.50),
+            min_invested_pct=0.70,            # > 0.30 turnover cap
+            turnover_max=0.30,
+        )
+        assert dw is not None, (
+            "cvxpy fallback returned None — turnover clamp did not engage; "
+            "from-cash + min_invested=0.7 + turnover=0.3 still infeasible."
+        )
+        wp = w_current + dw
+        # Solution respects turnover cap and the relaxed (turnover) floor.
+        assert np.abs(dw).sum() <= 0.30 + 1e-4, (
+            f"turnover_max=0.30 violated: Σ|dw|={np.abs(dw).sum():.4f}"
+        )
+        assert wp.sum() >= 0.27, (
+            f"After turnover-clamp the QP should still allocate ≈0.29; "
+            f"got sum(wp)={wp.sum():.4f}"
+        )
+
     def test_fallback_clamps_capacity_infeasible_floor(self):
         """REGRESSION (2026-05-06): when sum(per-asset hi-bounds) <
         min_invested_pct, the cvxpy fallback used to forward the raw floor
