@@ -1,95 +1,80 @@
 # RenQuant Documentation
 
-Themed index. The active strategy is `renquant_104` (panel-LTR cross-sectional ranking). `renquant_103` is the rollback. Doc tree last reorganized 2026-04-26.
+Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking with cvxpy + CLARABEL portfolio QP). `renquant_103` kept for rollback only.
 
-> **Where to start as a new contributor**: read [`arch/strategy-104.md`](arch/strategy-104.md) → [`arch/overview.md`](arch/overview.md) → [`components/panel-ltr.md`](components/panel-ltr.md) → [`components/model-selection.md`](components/model-selection.md) → [`ops/usage.md`](ops/usage.md). That sequence covers ~90% of the operational surface.
+> **Where to start**: [`STATUS.md`](STATUS.md) → [`arch/strategy-104.md`](arch/strategy-104.md) → [`arch/overview.md`](arch/overview.md) → [`components/portfolio-qp.md`](components/portfolio-qp.md) → [`ops/usage.md`](ops/usage.md).
 
 ---
 
-## arch/ — Architecture & strategy specs
+## arch/ — architecture & strategy specs
 
 | Doc | Contents |
 |-----|----------|
-| [strategy-104.md](arch/strategy-104.md) | **Current active strategy** — panel-LTR end-to-end, including XGBoost ranker, NGBoost head, calibrator, portfolio QP, acceptance gates, macro factors |
-| [overview.md](arch/overview.md) | Pipeline + data flow + adapter isolation; how `kernel/pipeline/` and `kernel/panel_pipeline/` compose |
-| [decision-graph-103.md](arch/decision-graph-103.md) | Decision flowchart — every branch in the inference pipeline (shared 103/104 trunk; 104 layer extends rather than replaces) |
-| [strategy-103.md](arch/strategy-103.md) | Rollback strategy spec — 3-layer regime detector + per-symbol scanner |
-| [indicators.md](arch/indicators.md) | Indicator catalog with parameters (uniform `(df, **params) -> DataFrame` API) |
+| [strategy-104.md](arch/strategy-104.md) | **Active strategy** — panel-LTR end-to-end (XGBoost ranker, NGBoost head, calibrator, portfolio QP, acceptance gates) |
+| [overview.md](arch/overview.md) | Pipeline + data flow; `kernel/pipeline/` and `kernel/panel_pipeline/` composition |
+| [decision-graph-103.md](arch/decision-graph-103.md) | Decision flowchart (shared 103/104 trunk; 104 layer extends) |
+| [strategy-103.md](arch/strategy-103.md) | Rollback strategy spec — kept for reference only |
+| [indicators.md](arch/indicators.md) | Indicator catalog with parameters |
 | [models.md](arch/models.md) | Per-backend model type reference + decision guide |
 
----
-
-## components/ — Subsystem deep dives
+## components/ — subsystem deep dives
 
 | Doc | Contents |
 |-----|----------|
-| [model-selection.md](components/model-selection.md) | **★ 4-tier SOP** — acceptance gates (Phase 1+2), backend tournament (Phase 3), shadow/challenger (Phase 4) |
-| [panel-ltr.md](components/panel-ltr.md) | Panel-LTR primer + glossary (cross-section, panel matrix, OOS IC, ranker mechanics) |
-| [buy-logic.md](components/buy-logic.md) | 3 quality gates + portfolio QP (operator runbook merged) |
-| [sell-logic.md](components/sell-logic.md) | SellGateB + LimitSellsPerBar (round-7 additions) |
-| [calibration.md](components/calibration.md) | Saturation finding + score-DB design + global calibrator mechanics |
-| [transformer.md](components/transformer.md) | Daily + hourly transformer; Bug #21/#23/#24 + acceptance protections |
-| [macro-factor-frame-design.md](components/macro-factor-frame-design.md) | VIX/HYG/UUP/DBC/GLD/TLT/XLV/XLU/KRE/MTUM/USMV cross-asset broadcast |
-| [metadata-db-and-backup-plan.md](components/metadata-db-and-backup-plan.md) | Plan: model metadata DB columns + cloud backup (Backblaze B2). DEFERRED — see roadmap |
-| [portfolio-qp.md](components/portfolio-qp.md) | QP solver for rotation under correlation + sector + concentration constraints |
-| [rotation.md](components/rotation.md) | Holdings rotation logic (joint actions, greedy fallback) |
-| [databases.md](components/databases.md) | runs.db schema reference + role split (live vs sim) |
-| [db-design-decision-factors.md](components/db-design-decision-factors.md) | Per-decision factor logging design |
+| [panel-ltr.md](components/panel-ltr.md) | Panel-LTR primer + glossary |
+| [buy-logic.md](components/buy-logic.md) | 3 quality gates + portfolio QP integration |
+| [sell-logic.md](components/sell-logic.md) | SellGateB + LimitSellsPerBar |
+| [calibration.md](components/calibration.md) | Score-DB + isotonic + global calibrator |
+| [rotation.md](components/rotation.md) | Holdings rotation logic |
+| [transformer.md](components/transformer.md) | Daily + hourly transformer (kept for future, not active) |
+| [portfolio-qp.md](components/portfolio-qp.md) | **cvxpy + CLARABEL convex QP** (Boyd/Stanford cvxportfolio idiom; 2026-05-06 refactor) |
+| [databases.md](components/databases.md) | runs.db schema + role split |
 | [training-pipeline.md](components/training-pipeline.md) | FullTrainingPipeline + PanelTrainingPipeline orchestration |
-| [trade-evaluation.md](components/trade-evaluation.md) | RL off-policy evaluation (OPE) design — DEFERRED |
+| [trade-evaluation.md](components/trade-evaluation.md) | RL off-policy evaluation (deferred) |
+| [macro-factor-frame-design.md](components/macro-factor-frame-design.md) | Macro factor design — currently disabled, see STATUS.md |
 
----
-
-## ops/ — Operations & runbooks
-
-| Doc | Contents |
-|-----|----------|
-| [usage.md](ops/usage.md) | **5 workflow modes** — research / validation / analysis / live / scheduled. Includes scripts/ CLI reference |
-| [setup.md](ops/setup.md) | Apple Silicon environment setup, prerequisites, daily activation |
-| [environment.md](ops/environment.md) | Reproducibility: conda env, pip pins, version lockfile, Docker requirements |
-| [tech-stack.md](ops/tech-stack.md) | Tool choices and rationale (xgboost vs lgbm vs torch, etc.) |
-| [golden-config.md](ops/golden-config.md) | Current golden state — strategy_config.golden.json snapshot + drift policy |
-| [transformer-promotion.md](ops/transformer-promotion.md) | Transformer-specific promotion checklist (separate from XGBoost gate flow) |
-| [maintenance-103.md](ops/maintenance-103.md) | 103 maintenance workflow (review / alignment / validation / commit cycle) |
-
----
-
-## research/ — Research notes (background reading)
+## ops/ — operations & runbooks
 
 | Doc | Contents |
 |-----|----------|
-| [papers-implemented.md](research/papers-implemented.md) | Index of academic papers wired into production code (Lo 2002, Garleanu-Pedersen 2013, …) |
-| [scoring-research.md](research/scoring-research.md) | Calibrated scoring + panel-LTR + feature neutralization notes |
+| [usage.md](ops/usage.md) | 5 workflow modes (research / validation / analysis / live / scheduled) |
+| [setup.md](ops/setup.md) | Apple Silicon environment setup |
+| [environment.md](ops/environment.md) | Reproducibility: conda env, pinned versions, Docker |
+| [golden-config.md](ops/golden-config.md) | Current golden state + drift policy |
+| [transformer-promotion.md](ops/transformer-promotion.md) | Transformer promotion checklist |
+| [maintenance-103.md](ops/maintenance-103.md) | 103 rollback maintenance workflow |
+
+## research/ — background reading
+
+| Doc | Contents |
+|-----|----------|
+| [papers-implemented.md](research/papers-implemented.md) | Academic papers wired into production code |
+| [scoring-research.md](research/scoring-research.md) | Calibrated scoring + panel-LTR notes |
 | [rotation-research.md](research/rotation-research.md) | Rotation literature scan |
-| [watchlist-100.md](research/watchlist-100.md) | Watchlist construction methodology + selection criteria |
+| [watchlist-100.md](research/watchlist-100.md) | Watchlist construction methodology |
 | [panel-sunday-sweep.md](research/panel-sunday-sweep.md) | Panel hyperparameter sweep findings |
-| [alpaca-crypto-btc.md](research/alpaca-crypto-btc.md) | Alpaca crypto integration evaluation (BTC) |
+| [alpaca-crypto-btc.md](research/alpaca-crypto-btc.md) | Alpaca crypto integration evaluation |
+| [failed-experiments-log.md](research/failed-experiments-log.md) | **Mandatory log** (CLAUDE.md §5.7): every failed experiment + why |
 
----
-
-## experiments/ — Measured A/B results
-
-| Doc | Contents |
-|-----|----------|
-| [ab-journal.md](experiments/ab-journal.md) | Running journal of A/B comparisons + verdicts |
-| [panel-training-runs.md](experiments/panel-training-runs.md) | Per-run training results table (OOS IC, train IC, panel shape, features) |
-| [panel-backend-comparison.md](experiments/panel-backend-comparison.md) | Cross-backend OOS IC comparison (XGBoost vs LightGBM vs Transformer) |
-| [panel-ic-improvement.md](experiments/panel-ic-improvement.md) | Tier 1 / Tier 1.5 retrain history toward higher OOS IC |
-| [post-tier1-followups.md](experiments/post-tier1-followups.md) | Investigation queue post-Tier-1 retrain |
-| [sim-ab-results.md](experiments/sim-ab-results.md) | Simulation-level A/B with APY/Sharpe deltas |
-| [rust-transformer-ic.md](experiments/rust-transformer-ic.md) | Rust transformer scorer parity check + perf benchmarks |
-
----
-
-## Top-level
+## experiments/ — measured A/B results
 
 | Doc | Contents |
 |-----|----------|
-| [roadmap.md](roadmap.md) | Living roadmap — current goals, open decisions, deferred items, completed work |
-| [REORG_PLAN.md](REORG_PLAN.md) | Doc-reorg plan history (Phase 1-5 mega-refactor 2026-04-26) |
+| [ab-journal.md](experiments/ab-journal.md) | Running A/B comparison journal |
+| [panel-training-runs.md](experiments/panel-training-runs.md) | Per-run training results table |
+| [post-tier1-followups.md](experiments/post-tier1-followups.md) | Investigation queue post-Tier-1 |
+| [sim-ab-results.md](experiments/sim-ab-results.md) | Sim-level A/B with APY/Sharpe deltas |
 
----
+## top-level
+
+| Doc | Contents |
+|-----|----------|
+| [STATUS.md](STATUS.md) | **Read first** — current state, recent results, open priorities |
+| [roadmap.md](roadmap.md) | Living roadmap — goals, open decisions, deferred work |
 
 ## archives/
 
-Historical session logs and audit reports live in `archives/sessions/` and `archives/audits/`. Browse if you need provenance for a specific decision; not part of normal operating documentation.
+- `archives/sessions/` — daily handoff notes
+- `archives/audits/` — historical audits + post-mortems
+- `archives/assessments/` — periodic system assessments
+- `archives/shelved/` — closed-experiment design docs (preserved for `git log --follow` provenance)
