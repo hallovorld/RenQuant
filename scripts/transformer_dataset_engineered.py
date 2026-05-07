@@ -139,13 +139,15 @@ def main() -> None:
     # Normalize each feature with rolling per-ticker z-score (same as Path A's OHLCV)
     log.info("Phase 6b: Per-ticker rolling z-score (window=%d)…", args.normalize_window)
     feat_cols = [c for c in panel.columns if c in TECH_FEATURES]
+    # Fast path: sort by (ticker, date), then groupby.rolling for each
+    # column (vectorized) instead of Python-lambda-per-group.
+    panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
+    min_periods = args.normalize_window // 2
     for c in feat_cols:
-        panel[c] = panel.groupby("ticker")[c].transform(
-            lambda s: (s - s.rolling(args.normalize_window,
-                                       min_periods=args.normalize_window // 2).mean())
-                       / s.rolling(args.normalize_window,
-                                     min_periods=args.normalize_window // 2).std().replace(0, np.nan)
-        )
+        gb = panel.groupby("ticker")[c]
+        roll_mean = gb.rolling(args.normalize_window, min_periods=min_periods).mean().reset_index(level=0, drop=True)
+        roll_std  = gb.rolling(args.normalize_window, min_periods=min_periods).std().reset_index(level=0, drop=True)
+        panel[c] = (panel[c] - roll_mean) / roll_std.replace(0, np.nan)
     panel = panel.dropna(subset=feat_cols)
     log.info("After per-ticker zscore: %d rows", len(panel))
 
