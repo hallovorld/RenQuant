@@ -839,8 +839,17 @@ class TestStageG3SqrtImpact:
 
 # ── Stage G4: Smoothed fixed cost (2026-05-04) ────────────────────────────────
 
+@pytest.mark.skip(
+    reason="2026-05-06 cvxpy refactor dropped tanh-smoothed fixed cost. "
+           "Reason: tanh(β|Δw|) is not DCP-compliant — cvxpy/CLARABEL "
+           "cannot solve it. Linear cost (κ‖Δw‖₁) covers most of the same "
+           "behaviour; fixed_cost_per_trade was 0 in all production "
+           "configs. Tests retained for documentation; revisit if a "
+           "convex piecewise-linear approximation of fixed cost is "
+           "needed (Boyd 2014 §5.4 outlines one)."
+)
 class TestStageG4FixedCost:
-    """Smooth tanh-based fixed cost per trade.
+    """Smooth tanh-based fixed cost per trade. SHELVED 2026-05-06.
 
     fixed_i = c_fix · tanh(β · |Δw_i|)
 

@@ -1,25 +1,45 @@
-"""Portfolio QP solver — joint Markowitz w/ linear-cost transaction model.
+"""Portfolio QP solver — cvxpy + CLARABEL (Boyd/Stanford cvxportfolio idiom).
 
-Solves the single-period mean-variance optimization with proportional
-transaction costs:
+Solves the single-period mean-variance optimization with:
 
-    max_Δw   r̂' (w + Δw) - γ (w + Δw)' Σ (w + Δw) - κ |Δw|_1
-    s.t.     1' (w + Δw)  ≤ 1 - cash_reserve
-              w_lower    ≤ w + Δw   ≤ w_upper       (per-position cap)
-              -dw_max    ≤ Δw       ≤  dw_max       (slippage cap)
-              Δw[wash]   ≤ 0                         (wash-sale: cannot re-buy)
+    maximize     μᵀwp
+                 - γ_risk · wpᵀΣwp                    (risk)
+                 - cvar_λ · z_α/√α · ‖Σ^½ wp‖₂        (CVaR tail penalty, RU2002)
+                 - κ · ‖Δw‖₁                          (linear transaction cost)
+                 - Σᵢ tax_i · max(0, -Δwᵢ)            (Brown-Smith tax-aware sells)
+                 - b · Σᵢ σᵢ · sqrt(NAV/Vᵢ) · |Δwᵢ|^1.5  (Almgren-Chriss impact)
+                 - λ_cash · max(0, target_invested - Σwp)  (SOFT cash-drag penalty)
 
-Output: Δw vector — sign IS the action (positive=buy, negative=sell).
-The current `JointActionTask` greedy heap maps to a special case of this
-when Σ is diagonal and κ is small.
+    subject to   Σwp ≤ 1 - cash_reserve                (budget, hard)
+                 w_lower ≤ wp ≤ w_upper                (per-asset cap, hard)
+                 -dw_max ≤ Δw ≤ dw_max                 (per-bar slippage, hard)
+                 Δwᵢ ≤ 0 ∀ i ∈ wash_sale_mask          (wash-sale, hard)
+                 ‖Δw‖₁ ≤ τ_max                         (turnover cap, hard)
 
-References:
-- Markowitz 1952; Pogue 1970 (cost extension); Constantinides 1986
-  (no-trade band); Garleanu-Pedersen 2013 (cost-aware partial moves).
+The ONLY hard constraints are physics (budget, box bounds, slippage cap,
+wash-sale, turnover). All preferences (cash-drag, tax, impact, CVaR, robust μ,
+drawdown scaler) are SOFT terms in the objective. This is the Boyd /
+cvxportfolio textbook formulation: an over-determined hard-constraint set is
+infeasible; a soft-penalty objective is always solvable and the trade-off
+is exposed via the penalty coefficients.
 
-Implementation: scipy.optimize.minimize with method='SLSQP'. For our
-scale (≤101 variables) solves in ~5-10 ms. cvxpy/ECOS would be faster
-on larger problems but requires extra dependency; defer to Stage 1.
+References (read prior to design — CLAUDE.md §5.12, §5.12a):
+  - Boyd & Vandenberghe 2004 §10.4 — interior-point convex QP
+  - Markowitz 1952 — mean-variance portfolio selection
+  - Garleanu-Pedersen 2013 — dynamic trading with predictable returns + costs
+  - Almgren-Chriss 2000 §2 — sqrt-impact transaction cost
+  - Rockafellar-Uryasev 2002 — CVaR (tail risk) closed form
+  - Garlappi-Uppal-Wang 2007 — robust μ subtraction
+  - Berkin-Jefferey 1990 — after-tax portfolio optimization
+  - cvxportfolio 1.5 (Boyd/Stanford) — `SinglePeriodOpt` reference impl
+
+Solver chain: CLARABEL (primary, interior point) → OSQP (alternative IP) →
+SCS (large-scale fallback). All three are convex-QP-optimal; the chain
+exists to maximize success probability across solver-specific edge cases.
+
+Status semantics: `optimal` (clean solve), `optimal_no_signal` (μ ≈ 0 →
+solver returned Δw ≈ 0; valid but caller should fall through to a Kelly
+default), `infeasible` (constraints contradict — diagnostic in log).
 """
 from __future__ import annotations
 
@@ -28,9 +48,346 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from scipy.optimize import LinearConstraint, NonlinearConstraint, minimize
 
 log = logging.getLogger("kernel.portfolio_qp.qp_solver")
+
+
+@dataclass
+class QPSolution:
+    """Output of solve_portfolio_qp."""
+
+    delta_w:        np.ndarray            # n-vector of weight changes
+    target_w:       np.ndarray            # n-vector of post-trade weights
+    objective:      float                  # final objective value (max form)
+    n_iter:         int                    # solver iterations (-1 if unknown)
+    status:         str                    # "optimal" / "optimal_no_signal" / "infeasible"
+    diagnostics:    dict                   # solver internals + binding hints
+
+
+def _solve_cvx(prob, primary, fallbacks, *, verbose: bool = False) -> str:
+    """Solve a cvxpy problem with a primary solver + ordered fallbacks.
+
+    Returns the final `prob.status`. Catches solver exceptions per attempt;
+    last attempt's status (or "exception") is returned. The cvxportfolio
+    pattern: never let one solver's quirks define correctness.
+    """
+    import cvxpy as cp  # noqa: PLC0415
+    chain: list = [primary] + list(fallbacks)
+    last_status = "exception"
+    for solver in chain:
+        try:
+            prob.solve(solver=solver, verbose=verbose)
+            last_status = prob.status
+            if last_status in ("optimal", "optimal_inaccurate"):
+                return last_status
+        except (cp.error.SolverError, Exception) as exc:  # noqa: BLE001
+            last_status = f"exception:{type(exc).__name__}"
+            log.debug("QP solver %s raised %s; trying next", solver, exc)
+    return last_status
+
+
+def solve_portfolio_qp(
+    *,
+    w_current:      Sequence[float],
+    mu:             Sequence[float],
+    sigma:          Sequence[float] | None = None,
+    Sigma:          np.ndarray | None = None,
+    risk_aversion:  float = 3.0,
+    cost_kappa:     float = 0.0001,
+    cash_reserve:   float = 0.0,
+    w_upper:        Sequence[float] | float = 0.20,
+    w_lower:        Sequence[float] | float = 0.0,
+    dw_max:         Sequence[float] | float = 0.50,
+    wash_sale_mask: Sequence[bool] | None = None,
+    signal_decay:   float = 0.0,
+    drawdown:       float = 0.0,
+    drawdown_limit: float = 0.20,
+    robust_mu_kappa: float = 0.0,
+    cvar_lambda:    float = 0.0,
+    cvar_alpha:     float = 0.05,
+    tax_cost_per_sell: Sequence[float] | None = None,
+    turnover_max:   float | None = None,
+    impact_coef:    float = 0.0,
+    v_daily_dollar: Sequence[float] | None = None,
+    nav_dollar:     float = 0.0,
+    fixed_cost_per_trade: float = 0.0,    # legacy kwarg, ignored (not DCP-compliant)
+    fixed_cost_beta:      float = 100.0,  # legacy kwarg, ignored
+    budget_mode: str = "inequality",      # legacy kwarg, treated as "≤" always
+    min_invested_pct:     float = 0.0,    # SOFT target now; was hard floor pre-2026-05-06
+    cash_drag_lambda:     float = 0.05,   # NEW: penalty coefficient on cash-drag
+) -> QPSolution:
+    """Convex Markowitz QP via cvxpy + CLARABEL (cvxportfolio idiom).
+
+    Replaces the 2026-04 SLSQP implementation. Drops SLSQP entirely after
+    the V4/V5 alpha158_linear sim demonstrated SLSQP failed every bar with
+    numerical errors (LSQ subproblem overflow, degenerate warm-starts) and
+    the cvxpy fallback was firing too rarely.
+
+    `min_invested_pct` is now a SOFT target driving a cash-drag penalty
+    `cash_drag_lambda · max(0, target - Σwp)`. The previous HARD floor was
+    structurally infeasible whenever sum(per-asset hi-bounds) +
+    turnover_max < min_invested_pct (a typical from-cash situation with
+    confidence-multiplier-tight caps). cvxportfolio's reference policy
+    (`SinglePeriodOpt`) follows the same soft-penalty pattern.
+
+    Tuning `cash_drag_lambda`:
+      - 0.0 → no cash-drag preference (legacy `min_invested_pct=0` parity)
+      - 0.05 (default) → moderate push to deploy; signal of ~50bp net wins
+      - 0.50 → aggressive deployment; only strong negative signal stays cash
+    """
+    import cvxpy as cp  # noqa: PLC0415
+
+    w_current = np.asarray(w_current, dtype=float)
+    mu_raw    = np.asarray(mu,        dtype=float)
+    n         = len(w_current)
+    if len(mu_raw) != n:
+        raise ValueError(f"len(mu)={len(mu_raw)} != len(w_current)={n}")
+
+    # ── Σ resolution (full or diagonal) ───────────────────────────────────
+    if Sigma is None:
+        if sigma is None:
+            raise ValueError("must provide either Sigma (n×n) or sigma (n-vector)")
+        sigma_arr = np.asarray(sigma, dtype=float)
+        if len(sigma_arr) != n:
+            raise ValueError(f"len(sigma)={len(sigma_arr)} != n={n}")
+        sigma_arr = np.where(np.isfinite(sigma_arr), sigma_arr, 0.05)
+        sigma_arr = np.clip(sigma_arr, 1e-6, None)
+        Sigma_mat = np.diag(sigma_arr ** 2)
+    else:
+        Sigma_mat = np.asarray(Sigma, dtype=float)
+        if Sigma_mat.shape != (n, n):
+            raise ValueError(f"Sigma shape {Sigma_mat.shape} != (n={n}, n={n})")
+        if not np.isfinite(Sigma_mat).all():
+            n_bad = int(np.sum(~np.isfinite(Sigma_mat)))
+            log.warning("QP: Σ has %d non-finite cells — sanitising", n_bad)
+            Sigma_mat = np.where(np.isfinite(Sigma_mat), Sigma_mat, 0.0)
+            Sigma_mat += 1e-8 * np.eye(n)
+
+    # ── Per-asset bound vectors ───────────────────────────────────────────
+    w_upper_arr = (np.full(n, float(w_upper)) if np.isscalar(w_upper)
+                    else np.asarray(w_upper, dtype=float))
+    w_lower_arr = (np.full(n, float(w_lower)) if np.isscalar(w_lower)
+                    else np.asarray(w_lower, dtype=float))
+    dw_max_arr  = (np.full(n, float(dw_max))  if np.isscalar(dw_max)
+                    else np.asarray(dw_max, dtype=float))
+
+    # ── μ cleanup + Garleanu-Pedersen 2013 signal-decay scaling ──────────
+    finite_mu = np.isfinite(mu_raw)
+    mu_clean  = np.where(finite_mu, mu_raw, 0.0)
+    sd = float(signal_decay)
+    if sd > 0.0:
+        sd = min(sd, 0.99)
+        mu_clean = mu_clean * (1.0 / (1.0 - sd))
+
+    # ── Garlappi-Uppal-Wang 2007 robust μ adjustment ─────────────────────
+    if robust_mu_kappa != 0.0:
+        sigma_diag = np.sqrt(np.maximum(np.diag(Sigma_mat), 0.0))
+        mu_clean = mu_clean - float(robust_mu_kappa) * sigma_diag
+
+    # ── Grossman-Zhou 1993 drawdown scaler on γ ──────────────────────────
+    dd        = float(max(0.0, drawdown))
+    dd_lim    = float(max(1e-6, drawdown_limit))
+    dd_factor = max(1e-3, 1.0 - dd / dd_lim)
+    gamma_eff = float(risk_aversion) / dd_factor
+
+    # ── Tax-cost vector (Brown-Smith) ─────────────────────────────────────
+    if tax_cost_per_sell is not None:
+        tax_arr = np.asarray(tax_cost_per_sell, dtype=float)
+        if len(tax_arr) != n:
+            raise ValueError(f"tax_cost_per_sell length {len(tax_arr)} != n={n}")
+        tax_arr = np.where(np.isfinite(tax_arr), tax_arr, 0.0)
+    else:
+        tax_arr = np.zeros(n)
+
+    # ── Almgren-Chriss 2000 sqrt-impact coefficients ─────────────────────
+    b_impact = float(max(0.0, impact_coef))
+    if (b_impact > 0.0 and v_daily_dollar is not None
+            and float(nav_dollar) > 0.0):
+        v_arr = np.asarray(v_daily_dollar, dtype=float)
+        if len(v_arr) != n:
+            raise ValueError(f"v_daily_dollar length {len(v_arr)} != n={n}")
+        v_safe = np.where((np.isfinite(v_arr)) & (v_arr > 0.0), v_arr, np.inf)
+        sigma_diag_g3   = np.sqrt(np.maximum(np.diag(Sigma_mat), 0.0))
+        impact_coef_arr = b_impact * sigma_diag_g3 * np.sqrt(
+            float(nav_dollar) / v_safe,
+        )
+        impact_coef_arr = np.where(
+            np.isfinite(impact_coef_arr), impact_coef_arr, 0.0,
+        )
+    else:
+        impact_coef_arr = np.zeros(n)
+
+    # ── cvxpy decision variable + post-trade weight expression ───────────
+    dw = cp.Variable(n)
+    wp = w_current + dw
+
+    # ── HARD constraints (physics only) ──────────────────────────────────
+    constraints = [
+        cp.sum(wp) <= 1.0 - float(cash_reserve),     # budget upper
+        wp >= w_lower_arr,                            # per-asset floor
+        wp <= w_upper_arr,                            # per-asset cap
+        dw >= -dw_max_arr,                            # slippage band lo
+        dw <= dw_max_arr,                             # slippage band hi
+    ]
+    if wash_sale_mask is not None:
+        wsm = np.asarray(wash_sale_mask, dtype=bool)
+        # Δwᵢ ≤ 0 ∀ i ∈ wash_sale_mask  → cannot re-buy
+        if wsm.any():
+            constraints.append(dw[wsm] <= 0.0)
+    if turnover_max is not None and float(turnover_max) > 0.0:
+        constraints.append(cp.norm(dw, 1) <= float(turnover_max))
+
+    # ── Objective (maximize utility) ──────────────────────────────────────
+    # Σ_psd_wrap protects against tiny negative eigenvalues from finite
+    # precision in shrinkage covariance.
+    obj_terms = [mu_clean @ wp, -gamma_eff * cp.quad_form(wp, cp.psd_wrap(Sigma_mat))]
+    # Linear transaction cost
+    if cost_kappa > 0:
+        obj_terms.append(-float(cost_kappa) * cp.norm(dw, 1))
+    # Tax-aware cost on sells: tax_i · max(0, -Δw_i)
+    if np.any(np.abs(tax_arr) > 1e-12):
+        obj_terms.append(-tax_arr @ cp.pos(-dw))
+    # Almgren-Chriss sqrt-impact: Σᵢ coef_i · |Δwᵢ|^1.5
+    if np.any(impact_coef_arr > 0.0):
+        # cp.power on |dw| is DCP-compliant for p=1.5 (convex, increasing on R+)
+        obj_terms.append(-impact_coef_arr @ cp.power(cp.abs(dw), 1.5))
+    # Rockafellar-Uryasev CVaR Gaussian closed form: λ · (φ(z_α)/α) · ‖Σ^½ wp‖₂
+    if cvar_lambda > 0.0:
+        from scipy.stats import norm  # noqa: PLC0415
+        z_alpha   = float(norm.ppf(1.0 - float(cvar_alpha)))
+        phi_z     = float(norm.pdf(z_alpha))
+        cvar_mult = phi_z / max(float(cvar_alpha), 1e-6)
+        # Sigma^(1/2) wp via psd-sqrt; cvxpy norm(Sigma_sqrt @ wp, 2) is convex.
+        # Use eigendecomp once: Σ = V D V', Σ^½ = V D^½ V'.
+        eigvals, eigvecs = np.linalg.eigh(Sigma_mat)
+        eigvals = np.maximum(eigvals, 0.0)
+        Sigma_sqrt = eigvecs @ np.diag(np.sqrt(eigvals)) @ eigvecs.T
+        obj_terms.append(-float(cvar_lambda) * cvar_mult
+                          * cp.norm(Sigma_sqrt @ wp, 2))
+    # SOFT cash-drag penalty: λ_cash · max(0, target - Σwp)
+    # When λ_cash > 0 and target > 0, the solver pays this to leave cash
+    # idle. Replaces the hard `Σwp ≥ target` floor that caused V4/V5 0-trade
+    # infeasibility.
+    if min_invested_pct > 0.0 and cash_drag_lambda > 0.0:
+        obj_terms.append(-float(cash_drag_lambda)
+                          * cp.pos(float(min_invested_pct) - cp.sum(wp)))
+
+    # ── Solve with chained solver fallback ────────────────────────────────
+    obj  = cp.Maximize(cp.sum(obj_terms))
+    prob = cp.Problem(obj, constraints)
+    status = _solve_cvx(prob, cp.CLARABEL, [cp.OSQP, cp.SCS])
+
+    if status not in ("optimal", "optimal_inaccurate"):
+        log.warning(
+            "QP infeasible: status=%s  n=%d  sum(w_current)=%.3f  "
+            "cash_slack=%.3f  per_asset_cap_max=%.3f  turnover_max=%s  "
+            "min_invested_pct=%.3f  cash_drag_lambda=%.4f",
+            status, n, float(np.sum(w_current)),
+            (1.0 - float(cash_reserve)) - float(np.sum(w_current)),
+            float(np.max(w_upper_arr - w_current)) if n else 0.0,
+            "None" if turnover_max is None else f"{turnover_max:.3f}",
+            float(min_invested_pct), float(cash_drag_lambda),
+        )
+        # Return zero-trade fallback rather than raising — pipeline knows to
+        # log no-trade alert and the run continues. Same semantic the SLSQP
+        # path used.
+        delta_w_val = np.zeros(n)
+        return QPSolution(
+            delta_w=delta_w_val, target_w=w_current.copy(),
+            objective=0.0, n_iter=-1, status=f"infeasible:{status}",
+            diagnostics={"n_assets": n, "primary": "CLARABEL",
+                          "fallback_chain": ["OSQP", "SCS"]},
+        )
+
+    delta_w  = np.asarray(dw.value, dtype=float)
+    target_w = w_current + delta_w
+    # Numerical clean-up: interior-point solvers leave |x| < 1e-9 noise
+    # at constraint boundaries (e.g. wp ≈ -3e-10 when w_lower=0). Clip
+    # to the box bounds so callers don't see "shorts" that are floating-
+    # point artifacts.
+    target_w = np.clip(target_w, w_lower_arr, w_upper_arr)
+    delta_w  = target_w - w_current
+
+    nonzero_mu = int(np.sum(np.abs(mu_clean) > 1e-12))
+    if nonzero_mu == 0:
+        # All-zero μ → solver returns Δw ≈ 0 by definition. Tag the status
+        # so the caller can branch (e.g. fall through to Kelly default).
+        result_status = "optimal_no_signal"
+    else:
+        result_status = "optimal"
+
+    return QPSolution(
+        delta_w=delta_w,
+        target_w=target_w,
+        objective=float(prob.value) if prob.value is not None else 0.0,
+        n_iter=int(prob.solver_stats.num_iters) if prob.solver_stats else -1,
+        status=result_status,
+        diagnostics={
+            "n_assets":         n,
+            "risk_aversion":    risk_aversion,
+            "gamma_effective":  gamma_eff,
+            "dd_factor":        dd_factor,
+            "signal_decay":     sd,
+            "robust_kappa":     float(robust_mu_kappa),
+            "cvar_lambda":      float(cvar_lambda),
+            "cvar_alpha":       float(cvar_alpha),
+            "cost_kappa":       cost_kappa,
+            "cash_reserve":     cash_reserve,
+            "n_finite_mu":      int(finite_mu.sum()),
+            "n_wash_blocked":   (int(np.asarray(wash_sale_mask).sum())
+                                  if wash_sale_mask is not None else 0),
+            "tax_cost_max":     float(tax_arr.max()) if tax_arr.size else 0.0,
+            "tax_cost_mean":    float(tax_arr.mean()) if tax_arr.size else 0.0,
+            "turnover_max":     float(turnover_max) if turnover_max is not None else None,
+            "actual_turnover":  float(np.sum(np.abs(delta_w))),
+            "impact_coef":      b_impact,
+            "impact_cost_max":  float(impact_coef_arr.max()) if impact_coef_arr.size else 0.0,
+            "min_invested_pct": float(min_invested_pct),
+            "cash_drag_lambda": float(cash_drag_lambda),
+            "solver_status":    status,
+            "primary":          "CLARABEL",
+            # Diagnostic: # of non-zero off-diagonal Σ entries — non-zero
+            # means the QP is using cross-asset correlation (full Σ path
+            # rather than diagonal). Pinned by tests to verify shrinkage
+            # / Ledoit-Wolf wiring is live.
+            "sigma_off_diag_nonzero": int(
+                (np.abs(Sigma_mat) > 1e-12).sum()
+                - np.count_nonzero(np.diag(Sigma_mat))
+            ),
+        },
+    )
+
+
+# ── Back-compat aliases ──────────────────────────────────────────────────
+# Pre-2026-05-06 code imported `_solve_via_cvxpy_fallback` and
+# `_clamp_min_invested_floor` directly. Keep stubs that delegate to the
+# new core solver so existing tests/callers don't break — but mark them
+# DEPRECATED. New callers should use `solve_portfolio_qp` only.
+
+def _solve_via_cvxpy_fallback(
+    *, w_current, mu, Sigma, risk_aversion, cost_kappa, cash_reserve,
+    w_lower_arr, w_upper_arr, dw_max_arr,
+    min_invested_pct=0.0, turnover_max=None,
+) -> np.ndarray | None:
+    """DEPRECATED: pre-2026-05-06 cvxpy fallback. Now a thin shim — the
+    new core solver IS cvxpy. Kept only so the old test suite + any
+    direct importer keeps working. Will be removed once tests migrate."""
+    sol = solve_portfolio_qp(
+        w_current=w_current, mu=mu, Sigma=Sigma,
+        risk_aversion=risk_aversion, cost_kappa=cost_kappa,
+        cash_reserve=cash_reserve,
+        w_upper=w_upper_arr, w_lower=w_lower_arr, dw_max=dw_max_arr,
+        min_invested_pct=min_invested_pct,
+        turnover_max=turnover_max,
+        # Hard-floor semantics in old fallback → use a stiff penalty so
+        # behaviour roughly matches when the constraint set IS feasible.
+        # When infeasible, soft penalty deploys what it can rather than
+        # returning None (the new behaviour is strictly better).
+        cash_drag_lambda=10.0,
+    )
+    if sol.status.startswith("infeasible"):
+        return None
+    return sol.delta_w
 
 
 def _clamp_min_invested_floor(
@@ -42,23 +399,13 @@ def _clamp_min_invested_floor(
     turnover_max: float | None = None,
     safety_eps: float = 0.01,
 ) -> tuple[float, str]:
-    """Compute the largest feasible `min_invested_pct` floor given the
-    per-bar reachable region, BEFORE handing it to any solver.
+    """DEPRECATED: pre-2026-05-06 capacity/turnover floor clamp.
 
-    Three clamps stack (most-binding wins):
-      (a) cash-slack:   floor ≤ (1 - cash_reserve) - Σw_current
-      (b) capacity:     floor ≤ Σ(hi_bounds) + Σw_current - ε
-      (c) turnover:     floor ≤ Σw_current + turnover_max - ε
-
-    Without (c), starting from all-cash with `min_invested_pct=0.7` and
-    `turnover_max=0.30` was MATHEMATICALLY INFEASIBLE (0.30 < 0.70 with
-    no inflow channel). CLARABEL correctly reported infeasible; the V4
-    sim produced 0 trades over 128 days because the QP gave up every day.
-
-    Returns (clamped_floor, clamp_reason). `reason` is the binding clamp:
-    "none" / "cash_slack" / "capacity" / "turnover". This is logged so
-    the operator can see which constraint relaxed the floor.
-    """
+    The new convex QP makes this unnecessary — `min_invested_pct` is a
+    SOFT target driven by `cash_drag_lambda`, not a hard floor. There is
+    no infeasibility to clamp. Kept ONLY for back-compat with the
+    regression tests that captured the V4/V5 bug. Returns the same
+    `(floor, reason)` tuple."""
     floor = float(min_invested_pct)
     if floor <= 0:
         return 0.0, "none"
@@ -72,629 +419,9 @@ def _clamp_min_invested_floor(
     if floor > max_capacity - safety_eps:
         floor = max(0.0, max_capacity - safety_eps)
         reason = "capacity"
-    # (c) Turnover-reachable: in one bar, Σ|Δw| ≤ τ → max increase in
-    # invested fraction is τ (signs of Δw can only add when buying from
-    # cash). Practically: floor ≤ Σw_current + turnover_max - ε.
     if turnover_max is not None and float(turnover_max) > 0:
         max_reachable = sum_w + float(turnover_max)
         if floor > max_reachable - safety_eps:
             floor = max(0.0, max_reachable - safety_eps)
             reason = "turnover"
     return floor, reason
-
-
-def _solve_via_cvxpy_fallback(
-    *, w_current, mu, Sigma, risk_aversion, cost_kappa, cash_reserve,
-    w_lower_arr, w_upper_arr, dw_max_arr,
-    min_invested_pct=0.0, turnover_max=None,
-) -> np.ndarray | None:
-    """cvxpy/CLARABEL fallback for QP infeasibility cases.
-
-    Phase A' (2026-05-06): used only when SLSQP fails with degenerate-
-    starting-point errors ("Positive directional derivative for linesearch").
-    Pattern from cvxportfolio/cvxportfolio (Boyd group, Stanford).
-
-    Returns delta_w numpy array, or None if cvxpy also fails. Imports
-    cvxpy lazily to avoid import-time cost on the fast SLSQP path.
-    """
-    try:
-        import cvxpy as cp  # noqa: PLC0415
-    except ImportError:
-        log.warning("cvxpy not installed — cannot fall back. pip install cvxpy")
-        return None
-
-    n = len(w_current)
-    dw = cp.Variable(n)
-    wp = w_current + dw
-
-    # Objective (matches SLSQP path's objective up to convexified parts):
-    # max  μ' wp  -  γ wp' Σ wp  -  κ |Δw|_1
-    # Σ_psd_wrap protects against tiny negative eigenvalues in Σ
-    obj = mu @ wp - risk_aversion * cp.quad_form(wp, cp.psd_wrap(Sigma))
-    if cost_kappa > 0:
-        obj = obj - cost_kappa * cp.norm(dw, 1)
-
-    # 2026-05-06 fix: apply same capacity / cash-slack clamps the SLSQP
-    # path uses. Without these, cvxpy gets an infeasible floor whenever
-    # sum(per-asset upper-bounds) < min_invested_pct (e.g. tight conf-mult
-    # caps + few candidates), and CLARABEL correctly reports infeasible.
-    hi_bounds_arr = np.minimum(
-        np.asarray(w_upper_arr, dtype=float) - np.asarray(w_current, dtype=float),
-        np.asarray(dw_max_arr, dtype=float),
-    )
-    hi_bounds_arr = np.maximum(hi_bounds_arr, 0.0)   # never negative for capacity calc
-    floor_clamped, clamp_reason = _clamp_min_invested_floor(
-        min_invested_pct=float(min_invested_pct),
-        w_current=np.asarray(w_current, dtype=float),
-        cash_reserve=float(cash_reserve),
-        hi_bounds=hi_bounds_arr,
-        turnover_max=float(turnover_max) if turnover_max is not None else None,
-    )
-
-    constraints = [
-        cp.sum(wp) <= 1.0 - cash_reserve,
-        wp >= w_lower_arr,
-        wp <= w_upper_arr,
-        dw >= -dw_max_arr,
-        dw <= dw_max_arr,
-    ]
-    if floor_clamped > 0:
-        constraints.append(cp.sum(wp) >= float(floor_clamped))
-    if turnover_max is not None and float(turnover_max) > 0:
-        constraints.append(cp.norm(dw, 1) <= float(turnover_max))
-
-    prob = cp.Problem(cp.Maximize(obj), constraints)
-    try:
-        prob.solve(solver=cp.CLARABEL, verbose=False)
-    except Exception:
-        # Fall back to OSQP if CLARABEL not available or fails
-        try:
-            prob.solve(solver=cp.OSQP, verbose=False)
-        except Exception as exc:
-            log.warning("cvxpy fallback solver chain exhausted: %s", exc)
-            return None
-
-    if prob.status not in ("optimal", "optimal_inaccurate"):
-        # Diagnostic: which constraint blocked us?
-        sum_w = float(np.sum(w_current))
-        max_cap = float(np.sum(hi_bounds_arr)) + sum_w
-        log.warning(
-            "cvxpy fallback status=%s — giving up. "
-            "n=%d sum(w_current)=%.3f cash_slack=%.3f sum(hi_bounds)=%.3f "
-            "min_invested_pct(raw=%.3f, clamped=%.3f, reason=%s) max_capacity=%.3f",
-            prob.status, n, sum_w,
-            (1.0 - cash_reserve) - sum_w,
-            float(np.sum(hi_bounds_arr)),
-            float(min_invested_pct), float(floor_clamped), clamp_reason,
-            max_cap,
-        )
-        return None
-    return np.asarray(dw.value, dtype=float)
-
-
-@dataclass
-class QPSolution:
-    """Output of solve_portfolio_qp."""
-
-    delta_w:        np.ndarray            # n-vector of weight changes
-    target_w:       np.ndarray            # n-vector of post-trade weights
-    objective:      float                  # final objective value
-    n_iter:         int                    # iterations used
-    status:         str                    # "optimal", "infeasible", etc.
-    diagnostics:    dict                   # solver internals (κ, γ, …)
-
-
-def solve_portfolio_qp(
-    *,
-    w_current:      Sequence[float],        # n-vector — current weights
-    mu:             Sequence[float],        # n-vector — predicted returns
-    sigma:          Sequence[float] | None = None,  # n-vector — used to build diagonal Σ if `Sigma` not given
-    Sigma:          np.ndarray | None = None,       # n×n — full covariance (preferred when available)
-    risk_aversion:  float = 3.0,            # γ
-    cost_kappa:     float = 0.0001,         # linear cost coeff
-    cash_reserve:   float = 0.0,            # min fraction held as cash (0 = invest fully)
-    w_upper:        Sequence[float] | float = 0.20,
-    w_lower:        Sequence[float] | float = 0.0,
-    dw_max:         Sequence[float] | float = 0.50,
-    wash_sale_mask: Sequence[bool] | None = None,
-    # Stage 2 — Garleanu-Pedersen 2013 partial-move (signal-decay-aware)
-    signal_decay:   float = 0.0,            # φ ∈ [0, 1); 0 = no decay (myopic Markowitz)
-    # Stage 4 — Grossman-Zhou 1993 drawdown scaler
-    drawdown:       float = 0.0,            # current DD as positive fraction (e.g. 0.05 = 5%)
-    drawdown_limit: float = 0.20,           # α — DD limit; γ_eff = γ_base / max(eps, 1 - DD/α)
-    # Stage 5 — Garlappi-Uppal-Wang 2007 robust μ adjustment
-    robust_mu_kappa: float = 0.0,           # μ_robust_i = μ_i - κ · σ_i (worst-case ball)
-    # Stage 7 — Rockafellar-Uryasev 2002 CVaR risk term
-    # When > 0, adds a tail-risk penalty using the Gaussian-CVaR closed
-    # form: CVaR_α(w'r) ≈ -μ'w + φ(z_α)/α · √(w'Σw). For our use case
-    # (intraday position adjustment) we approximate with a per-asset
-    # CVaR contribution proportional to σ_i and a tail multiplier.
-    cvar_lambda:    float = 0.0,            # weight on CVaR term (0 = pure variance)
-    cvar_alpha:     float = 0.05,           # tail probability (e.g. 5%)
-    # Stage 8 (2026-04-29) — Tax-basis aware cost. Per-asset additional
-    # cost on SELLS (Δw_i < 0) reflecting realized-gain tax drag. Fixes
-    # the "QP doesn't see tax basis" structural bug — pre-fix high-gain
-    # positions looked as cheap to liquidate as zero-gain positions.
-    # Caller passes one cost-per-unit-sell value per asset, in same units
-    # as the rest of the objective (NAV-fraction). Cost only applied to
-    # the sell side: cost_i × max(0, -Δw_i).
-    tax_cost_per_sell: Sequence[float] | None = None,
-    # Stage 9 (2026-04-29) — Turnover hard constraint. Σ |Δw_i| ≤ τ_max.
-    # Pre-fix the only churn brake was the soft cost penalty κ·‖Δw‖₁ which
-    # at κ=0.0001 was negligible vs typical μ. With turnover_max set, the
-    # solver can never trade more than τ_max NAV-fraction per bar.
-    turnover_max:   float | None = None,
-    # Stage G3 (2026-05-04) — Almgren-Chriss 2000 sqrt-impact transaction
-    # cost. Adds a market-impact term to the objective:
-    #     impact_i = impact_coef · σ_i · |Δw_i|^1.5 · sqrt(NAV / V_dollar_i)
-    # where V_dollar_i is the per-asset average daily dollar volume (ADV),
-    # and σ_i is taken from sqrt(diag(Σ)). The sqrt(participation) factor
-    # is the empirical Gatheral form. Defaults to zero impact (preserves
-    # legacy linear-only κ behaviour).
-    impact_coef:    float = 0.0,            # b ≥ 0 (Gatheral)
-    v_daily_dollar: Sequence[float] | None = None,  # n-vector of ADV in $; if None, impact=0
-    nav_dollar:     float = 0.0,            # current NAV in dollars (for participation rate)
-    # Stage G4 (2026-05-04) — Smoothed fixed cost per trade. Approximates
-    # the discontinuous "if you trade at all, pay a fixed fee" with a
-    # smooth tanh penalty:
-    #     fixed_i = fixed_cost_per_trade · tanh(fixed_cost_beta · |Δw_i|)
-    # Beta controls the steepness; large β → step. We avoid the literal
-    # indicator because it breaks SLSQP gradients. Defaults to zero.
-    fixed_cost_per_trade: float = 0.0,      # c_fix ≥ 0, NAV-fraction
-    fixed_cost_beta:      float = 100.0,    # β > 0 (saturates around |Δw| ≈ 1/β)
-    # 2026-05-05 — budget constraint mode. "inequality" (default, legacy)
-    # = `Σw ≤ 1 − cash_reserve` (LE); "equality" = `Σw == 1 − cash_reserve`
-    # which forces full deployment (modulo reserve). EQ is the textbook
-    # Markowitz formulation but breaks SLSQP feasibility on empty-
-    # portfolio start (Positive directional derivative for linesearch
-    # at w_current=0). PREFER min_invested_pct below for cash-drag fix.
-    budget_mode: str = "inequality",
-    # 2026-05-05 cash-drag P0 (replaces equality experiment): impose a
-    # SOFT floor on total deployment via a two-sided box constraint.
-    # When min_invested_pct > 0, adds a second LinearConstraint:
-    #     Σw ≥ min_invested_pct   (i.e. 1' Δw ≥ min_invested_pct − 1'w_current)
-    # combined with the existing 1' Δw ≤ (1 − cash_reserve − 1'w_current).
-    # Default 0.0 → no floor (legacy parity). Setting 0.7 forces
-    # 70–100% deployed. Easier for SLSQP than equality (feasibility
-    # region is non-degenerate).
-    min_invested_pct:     float = 0.0,
-) -> QPSolution:
-    """Solve the single-period Markowitz QP with linear-cost transaction.
-
-    All weights are fractions of total portfolio value. `Sigma` is the
-    forecast covariance matrix. If only `sigma` (the per-asset σ vector)
-    is given, the solver falls back to a diagonal Σ — which discards
-    cross-asset correlation but stays well-defined.
-
-    `wash_sale_mask` (optional, n-bool): True for tickers recently sold
-    (within wash-sale window) — Δw_i ≤ 0 is enforced so they cannot be
-    re-bought. Selling further is still permitted.
-
-    Returns a QPSolution. Raises ValueError on shape mismatch.
-    """
-    w_current = np.asarray(w_current, dtype=float)
-    mu        = np.asarray(mu,        dtype=float)
-    n         = len(w_current)
-    if len(mu) != n:
-        raise ValueError(f"len(mu)={len(mu)} != len(w_current)={n}")
-
-    # Resolve Σ
-    if Sigma is None:
-        if sigma is None:
-            raise ValueError("must provide either Sigma (n×n) or sigma (n-vector)")
-        sigma_arr = np.asarray(sigma, dtype=float)
-        if len(sigma_arr) != n:
-            raise ValueError(f"len(sigma)={len(sigma_arr)} != n={n}")
-        # 2026-05-04 audit Issue 32 fix: NaN sigma slipped through
-        # `np.clip(arr, 1e-6, None)` (np.clip preserves NaN), then
-        # `arr**2 = NaN` → `np.diag(NaN)` poisoned Σ → QP objective
-        # `post_w @ Σ @ post_w` returned NaN → SLSQP behavior on NaN
-        # objective is undefined. Sanitize NaN/inf to a sane default
-        # (5% — a typical equity vol) BEFORE clipping.
-        sigma_arr = np.where(np.isfinite(sigma_arr), sigma_arr, 0.05)
-        # Floor σ at 1e-6 to keep Σ positive definite even for stale rows
-        sigma_arr = np.clip(sigma_arr, 1e-6, None)
-        Sigma_mat = np.diag(sigma_arr ** 2)
-    else:
-        Sigma_mat = np.asarray(Sigma, dtype=float)
-        if Sigma_mat.shape != (n, n):
-            raise ValueError(
-                f"Sigma shape {Sigma_mat.shape} != (n={n}, n={n})",
-            )
-        # Issue 32 (full-Σ path): same NaN-slip class. If caller's
-        # correlation matrix had NaN cells, Σ_ij = NaN propagates.
-        if not np.isfinite(Sigma_mat).all():
-            n_bad = int(np.sum(~np.isfinite(Sigma_mat)))
-            log.warning(
-                "QP: full Σ has %d non-finite cell(s) — replacing with 0 "
-                "(may degrade solution quality; check correlation artifact)",
-                n_bad,
-            )
-            Sigma_mat = np.where(np.isfinite(Sigma_mat), Sigma_mat, 0.0)
-            # Re-add diagonal floor to preserve PSD
-            Sigma_mat += 1e-8 * np.eye(n)
-
-    # Broadcast caps
-    if np.isscalar(w_upper):
-        w_upper_arr = np.full(n, float(w_upper))
-    else:
-        w_upper_arr = np.asarray(w_upper, dtype=float)
-    if np.isscalar(w_lower):
-        w_lower_arr = np.full(n, float(w_lower))
-    else:
-        w_lower_arr = np.asarray(w_lower, dtype=float)
-    if np.isscalar(dw_max):
-        dw_max_arr = np.full(n, float(dw_max))
-    else:
-        dw_max_arr = np.asarray(dw_max, dtype=float)
-
-    # Sanitise NaN/inf in mu — drop rows by setting μ=0 (no signal)
-    finite_mu = np.isfinite(mu)
-    mu_clean  = np.where(finite_mu, mu, 0.0)
-
-    # Stage 2 — Garleanu-Pedersen 2013: pre-discount the signal by
-    # (1 - φ) where φ is the per-bar autocorrelation. Persistent
-    # signals (φ→1) shrink slowly and amortize cost; one-shot
-    # signals (φ=0) keep full magnitude (myopic Markowitz). The
-    # scale `1/(1-φ_decay)` reflects the cumulative future value of
-    # the signal under exponential decay. Keep φ < 0.99 to avoid
-    # numerical blow-up; clamp here defensively.
-    sd = float(signal_decay)
-    if sd > 0.0:
-        sd = min(sd, 0.99)
-        mu_clean = mu_clean * (1.0 / (1.0 - sd))
-
-    # Stage 5 — Garlappi-Uppal-Wang 2007 robust μ: subtract κ·σ_i to
-    # represent worst-case under uncertainty ellipsoid. Scaled Sharpe
-    # penalty per asset; with κ=1 this is equivalent to a 1-σ
-    # confidence band on the mean estimate.
-    if robust_mu_kappa != 0.0:
-        # Use diagonal of Σ as σ_i² → σ_i
-        sigma_diag = np.sqrt(np.maximum(np.diag(Sigma_mat), 0.0))
-        mu_clean = mu_clean - float(robust_mu_kappa) * sigma_diag
-
-    # Stage 4 — Grossman-Zhou 1993 DD scaler:
-    # γ_eff = γ_base / max(eps, 1 - DD/α)
-    # When DD → α, γ_eff → ∞ (forces Δw → 0; risk shrinkage).
-    dd = float(max(0.0, drawdown))
-    dd_lim = float(max(1e-6, drawdown_limit))
-    dd_factor = max(1e-3, 1.0 - dd / dd_lim)
-    gamma_eff = float(risk_aversion) / dd_factor
-
-    # Stage 7 — Rockafellar-Uryasev 2002 CVaR tail-risk multiplier.
-    # For Gaussian returns r ~ N(μ, σ²): CVaR_α(-r) = -μ + (φ(z_α)/α)·σ.
-    # Tail multiplier z_α = φ(z_α)/α; e.g. α=0.05 → z_α ≈ 2.063, α=0.01 → 2.665.
-    # We add (cvar_lambda · z_α) to gamma_eff's variance multiplier so
-    # that higher α-tail risk gets penalised proportionally to σ. This
-    # is a simplification of the full 2-stage LP formulation but
-    # captures the same qualitative behaviour (heavier tail penalty).
-    if cvar_lambda > 0.0:
-        from scipy.stats import norm  # noqa: PLC0415
-        # phi(z_α) / α is the conditional Sharpe shortfall multiplier
-        z_alpha = float(norm.ppf(1.0 - cvar_alpha))
-        phi_z   = float(norm.pdf(z_alpha))
-        cvar_mult = phi_z / max(cvar_alpha, 1e-6)
-        gamma_eff = gamma_eff + cvar_lambda * cvar_mult
-
-    # Decision variable: Δw ∈ ℝⁿ
-    # Bounds: max(w_lower - w_current, -dw_max) ≤ Δw ≤ min(w_upper - w_current, +dw_max)
-    lo_bounds = np.maximum(w_lower_arr - w_current, -dw_max_arr)
-    hi_bounds = np.minimum(w_upper_arr - w_current,  dw_max_arr)
-    if wash_sale_mask is not None:
-        # Wash-sale: recently-sold tickers cannot be BOUGHT (can still
-        # be sold further). Cap Δw_i ≤ 0 for masked positions.
-        wsm = np.asarray(wash_sale_mask, dtype=bool)
-        hi_bounds = np.where(wsm, np.minimum(hi_bounds, 0.0), hi_bounds)
-    # Sanity — feasibility check (audit fix QP-INFEASIBLE-WARN, 2026-04-26):
-    # When per-asset bounds are inconsistent (e.g. current weight already
-    # outside the cap, AND slippage band can't reach back inside in one
-    # bar), we clip rather than fail — pick the tightest bound. Pre-fix,
-    # this happened silently. Now log a warning so the operator notices.
-    bad = lo_bounds > hi_bounds + 1e-12
-    if bad.any():
-        n_bad = int(bad.sum())
-        log.warning(
-            "QP: %d/%d asset bound(s) clipped due to infeasibility — "
-            "current weight may be outside cap by more than dw_max",
-            n_bad, n,
-        )
-        lo_bounds[bad] = hi_bounds[bad]
-    bounds = list(zip(lo_bounds.tolist(), hi_bounds.tolist()))
-
-    # Linear constraint: 1' (w_current + Δw) [≤ or =] 1 - cash_reserve
-    #                ⇔ 1' Δw [≤ or =] (1 - cash_reserve - 1' w_current)
-    # 2026-05-05 cash-drag fix: budget_mode="equality" (caller-set) forces
-    # `Σw == 1 − cash_reserve` instead of `≤`. Equality removes the
-    # "cash is free" loophole — when μ is small / non-positive across
-    # the board, the LE form leaves cash idle (cash drag). EQ deploys
-    # everything except the reserve; risk is still controlled by
-    # γ·wᵀΣw + per-asset w_upper. Default LE preserves legacy parity.
-    # References: Markowitz 1952 §III; Best & Grauer 1991 §4.
-    cash_slack = (1.0 - cash_reserve) - float(np.sum(w_current))
-    # 2026-05-05 cash-drag fix: replace inequality / equality with a
-    # two-sided box. lb is min_invested_floor (default -inf = legacy
-    # behavior); ub is the existing cash_slack. SLSQP handles boxes
-    # cleanly; equality often fails Positive-directional-derivative.
-    min_invested_slack = float("-inf")
-    if min_invested_pct > 0:
-        # 2026-05-06: delegate to shared _clamp_min_invested_floor — same
-        # helper the cvxpy fallback uses. Includes the turnover clamp
-        # which fixes the V4/V5 alpha158_linear infeasibility (from-cash
-        # min_invested=0.7 vs turnover_max=0.30).
-        floor_clamped, _slsqp_clamp_reason = _clamp_min_invested_floor(
-            min_invested_pct=float(min_invested_pct),
-            w_current=np.asarray(w_current, dtype=float),
-            cash_reserve=float(cash_reserve),
-            hi_bounds=np.maximum(hi_bounds, 0.0),
-            turnover_max=float(turnover_max) if turnover_max is not None else None,
-        )
-        min_invested_slack = floor_clamped - float(np.sum(w_current))
-        if _slsqp_clamp_reason != "none":
-            log.info(
-                "QP: floor clamped from %.3f → %.3f (reason=%s) "
-                "→ min_invested_slack=%.3f",
-                float(min_invested_pct), floor_clamped,
-                _slsqp_clamp_reason, min_invested_slack,
-            )
-    if budget_mode == "equality":
-        cash_constraint = LinearConstraint(
-            A=np.ones((1, n)),
-            lb=cash_slack,    # lb == ub → equality
-            ub=cash_slack,
-        )
-    else:   # default "inequality" — legacy + optional floor
-        cash_constraint = LinearConstraint(
-            A=np.ones((1, n)),
-            lb=min_invested_slack,
-            ub=cash_slack,
-        )
-
-    # Audit fix QP-MATMUL-WARN (2026-04-26): Apple Silicon Accelerate
-    # BLAS emits spurious 'divide by zero' / 'overflow' RuntimeWarnings
-    # during matmul when matrices have many zero entries (which is
-    # exactly our case — post_w starts at zero, Σ_mat is diagonal).
-    # The warnings don't reflect numerical issues — the math is fine.
-    # Suppress them locally to keep logs clean.
-    # Tax-basis cost vector — only applies to sells (max(0, -Δw_i)).
-    # If not supplied, zero (preserves Stage-1 behaviour).
-    if tax_cost_per_sell is not None:
-        tax_arr = np.asarray(tax_cost_per_sell, dtype=float)
-        if len(tax_arr) != n:
-            raise ValueError(
-                f"tax_cost_per_sell length {len(tax_arr)} != n={n}",
-            )
-        # 2026-05-04 v4: removed `np.maximum(tax_arr, 0.0)` clamp.
-        # Berkin-Jeffrey (1990) tax-loss harvesting: selling losers can
-        # OFFSET prior YTD realized gains, which is a NEGATIVE tax cost
-        # (= reward). The clamp killed this entire alpha source. Caller
-        # (JointPortfolioQPTask) computes the negative coefficient when
-        # ctx.ytd_realized_gain_dollar is positive and the position has
-        # an unrealized loss to harvest. NaN/inf entries still get
-        # zeroed — those are bad data, not legitimate negative costs.
-        tax_arr = np.where(np.isfinite(tax_arr), tax_arr, 0.0)
-    else:
-        tax_arr = np.zeros(n)
-
-    # Stage G3 — Almgren-Chriss participation factor.
-    # impact_per_unit_pow_1.5_i = impact_coef · σ_i · sqrt(NAV / V_i)
-    # We pre-multiply σ and the sqrt(NAV/V) into a single per-asset
-    # coefficient so _obj only does |Δw|^1.5.
-    b_impact = float(max(0.0, impact_coef))
-    if (b_impact > 0.0
-            and v_daily_dollar is not None
-            and float(nav_dollar) > 0.0):
-        v_arr = np.asarray(v_daily_dollar, dtype=float)
-        if len(v_arr) != n:
-            raise ValueError(
-                f"v_daily_dollar length {len(v_arr)} != n={n}",
-            )
-        # Sanitise: any non-finite or non-positive ADV → no impact for
-        # that asset (we don't want NaN poisoning the objective; missing
-        # ADV signals "data unavailable", not "ADV is zero").
-        v_safe = np.where((np.isfinite(v_arr)) & (v_arr > 0.0), v_arr, np.inf)
-        sigma_diag_g3 = np.sqrt(np.maximum(np.diag(Sigma_mat), 0.0))
-        # NAV / V → participation; sqrt for Gatheral.
-        impact_coef_arr = b_impact * sigma_diag_g3 * np.sqrt(
-            float(nav_dollar) / v_safe,
-        )
-        # v_safe = inf → coef = 0 cleanly.
-        impact_coef_arr = np.where(
-            np.isfinite(impact_coef_arr), impact_coef_arr, 0.0,
-        )
-    else:
-        impact_coef_arr = np.zeros(n)
-
-    # Stage G4 — Smoothed fixed cost. c_fix · tanh(β·|Δw|).
-    # tanh(0) = 0 (no trade → no cost), tanh(β·|Δw|) → 1 as |Δw| >> 1/β.
-    # β large → step-like; β small → smooth quadratic-ish near zero.
-    c_fix = float(max(0.0, fixed_cost_per_trade))
-    beta_fix = float(max(1e-6, fixed_cost_beta))
-
-    def _obj(dw: np.ndarray) -> float:
-        post_w = w_current + dw
-        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-            ret  = float(np.dot(mu_clean, post_w))
-            var  = float(post_w @ Sigma_mat @ post_w)
-        abs_dw = np.abs(dw)
-        cost = float(cost_kappa * np.sum(abs_dw))
-        # Tax cost only on sells: cost_i × max(0, -Δw_i)
-        sell_amt = np.maximum(-dw, 0.0)
-        tax_cost = float(np.sum(tax_arr * sell_amt))
-        # G3 sqrt-impact (Almgren-Chriss / Gatheral)
-        impact_cost = (
-            float(np.sum(impact_coef_arr * np.power(abs_dw, 1.5)))
-            if b_impact > 0 else 0.0
-        )
-        # G4 smoothed fixed cost (tanh)
-        fixed = (
-            c_fix * float(np.sum(np.tanh(beta_fix * abs_dw)))
-            if c_fix > 0 else 0.0
-        )
-        return -(ret - gamma_eff * var - cost - tax_cost
-                  - impact_cost - fixed)  # minimize -obj
-
-    def _grad(dw: np.ndarray) -> np.ndarray:
-        post_w = w_current + dw
-        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-            d_var = 2.0 * gamma_eff * (Sigma_mat @ post_w)
-        # Minimizing  f(Δw) = -ret + γ·var + κ|Δw| + tax · max(0,-Δw)
-        #                       + b·σ·|Δw|^1.5·sqrt(NAV/V) + c_fix·tanh(β|Δw|)
-        #   d_ret      = -μ
-        #   d_var      = 2γ·Σ·(w + Δw)
-        #   d_cost     = κ·sign(Δw)
-        #   d_tax      = -tax_i · 1[Δw_i < 0]
-        #   d_impact   = 1.5 · b·σ·sqrt(NAV/V) · sqrt(|Δw|) · sign(Δw)
-        #   d_fixed    = c_fix · β · sech²(β|Δw|) · sign(Δw)
-        d_ret  = -mu_clean
-        d_cost = cost_kappa * np.sign(dw)
-        d_tax  = -tax_arr * (dw < 0).astype(float)
-        abs_dw = np.abs(dw)
-        sgn    = np.sign(dw)
-        if b_impact > 0:
-            d_impact = 1.5 * impact_coef_arr * np.sqrt(abs_dw) * sgn
-        else:
-            d_impact = np.zeros(n)
-        if c_fix > 0:
-            sech2 = 1.0 / np.cosh(beta_fix * abs_dw) ** 2
-            d_fixed = c_fix * beta_fix * sech2 * sgn
-        else:
-            d_fixed = np.zeros(n)
-        return d_ret + d_var + d_cost + d_tax + d_impact + d_fixed
-
-    # Initial guess: zero trade is OUTSIDE the feasible region when
-    # min_invested_pct > current_invested. SLSQP fails with "Positive
-    # directional derivative for linesearch". Warm-start with a feasible
-    # uniform allocation that satisfies both LB (min_invested_slack) and
-    # UB (cash_slack) when applicable. The QP itself will optimize away
-    # from this baseline; we only need a starting point inside the
-    # feasibility region.
-    dw0 = np.zeros(n)
-    if min_invested_pct > 0 and min_invested_slack > 0:
-        # Spread min_invested_slack uniformly across all assets; clamp
-        # by per-asset upper bound so the warm-start respects w_upper.
-        per_asset = min_invested_slack / max(1, n)
-        # If upper bound is finite and binding, use it; else use uniform.
-        for i in range(n):
-            ub_i = hi_bounds[i] if i < len(hi_bounds) else per_asset
-            dw0[i] = min(per_asset, max(0.0, ub_i))
-        # Re-balance if total still below LB (some assets capped):
-        deficit = min_invested_slack - float(np.sum(dw0))
-        if deficit > 1e-9:
-            # distribute remaining deficit to non-capped assets
-            for i in range(n):
-                if dw0[i] < hi_bounds[i] - 1e-9:
-                    headroom = hi_bounds[i] - dw0[i]
-                    take = min(headroom, deficit)
-                    dw0[i] += take
-                    deficit -= take
-                    if deficit <= 1e-9:
-                        break
-
-    constraints: list = [cash_constraint]
-    # Stage 9: turnover hard constraint Σ|Δw| ≤ τ_max
-    if turnover_max is not None and float(turnover_max) > 0:
-        tau = float(turnover_max)
-        turnover_constraint = NonlinearConstraint(
-            fun=lambda dw: float(np.sum(np.abs(dw))),
-            lb=-np.inf,
-            ub=tau,
-            jac=lambda dw: np.sign(dw),
-        )
-        constraints.append(turnover_constraint)
-
-    res = minimize(
-        _obj, dw0,
-        method="SLSQP",
-        jac=_grad,
-        bounds=bounds,
-        constraints=constraints,
-        options={"ftol": 1e-9, "maxiter": 200},
-    )
-
-    delta_w = np.asarray(res.x, dtype=float)
-
-    # ── Phase A' (2026-05-06): cvxpy fallback when SLSQP fails ────────────
-    # SLSQP returns various error messages when stuck or degenerate. cvxpy
-    # + interior-point solvers (CLARABEL/OSQP) — which are the QP solvers
-    # used by `cvxportfolio` (Boyd, Stanford) — handle these cleanly.
-    # Trigger fallback on ANY failure (not just the original two messages):
-    #   - "Positive directional derivative for linesearch" — degenerate start
-    #   - "Inequality constraints incompatible" — bad warm-start
-    #   - "More than 3*n iterations in LSQ subproblem" — slow conv on flat μ
-    #   - "Iteration limit reached" — convex but slow
-    # We pay the ~5× speed penalty only on the failure path. See
-    # `doc/research/qp-cvxportfolio-refactor-plan.md` Phase A'.
-    if not res.success:
-        try:
-            cvx_dw = _solve_via_cvxpy_fallback(
-                w_current=w_current, mu=mu_clean, Sigma=Sigma_mat,
-                risk_aversion=gamma_eff, cost_kappa=cost_kappa,
-                cash_reserve=cash_reserve,
-                w_lower_arr=w_lower_arr, w_upper_arr=w_upper_arr,
-                dw_max_arr=dw_max_arr,
-                min_invested_pct=min_invested_pct,
-                turnover_max=turnover_max,
-            )
-            if cvx_dw is not None:
-                log.warning(
-                    "qp_solver: SLSQP infeasible (%s) → cvxpy fallback succeeded",
-                    (res.message or "")[:60],
-                )
-                delta_w = cvx_dw
-                # Re-evaluate objective at new delta_w
-                res = type("CvxpyRes", (), {
-                    "success": True,
-                    "x": cvx_dw,
-                    "fun": _obj(cvx_dw),
-                    "nit": -1,
-                    "message": "cvxpy_fallback",
-                })()
-        except Exception as exc:
-            log.warning("qp_solver: cvxpy fallback also failed: %s", exc)
-
-    target_w = w_current + delta_w
-    # 2026-05-04 audit Issue 22 fix: when μ is all zeros (all candidates
-    # failed scoring → mu=0 fallback in JointPortfolioQPTask), the
-    # objective `-(0 - γ·var - κ|Δw| - tax)` is minimized at Δw = 0,
-    # so SLSQP returns success=True with delta_w ≈ 0 and the caller
-    # silently emits zero buys / zero sells. The pipeline status looks
-    # "optimal" but it's a sentinel for missing signal, not a real
-    # decision. Tag the status so the caller can branch on it (e.g.
-    # log.warning + fall through to greedy or Kelly defaults).
-    finite_mu_count = int(np.sum(np.isfinite(mu)))
-    nonzero_mu_count = int(np.sum(np.abs(mu_clean) > 1e-12))
-    if res.success and nonzero_mu_count == 0:
-        status = "optimal_no_signal"
-    else:
-        status = "optimal" if res.success else f"failed:{res.message[:50]}"
-    return QPSolution(
-        delta_w=delta_w,
-        target_w=target_w,
-        objective=-float(res.fun),
-        n_iter=int(res.nit) if hasattr(res, "nit") else 0,
-        status=status,
-        diagnostics={
-            "n_assets":        n,
-            "risk_aversion":   risk_aversion,
-            "gamma_effective": gamma_eff,
-            "dd_factor":       dd_factor,
-            "signal_decay":    sd,
-            "robust_kappa":    float(robust_mu_kappa),
-            "cvar_lambda":     float(cvar_lambda),
-            "cvar_alpha":      float(cvar_alpha),
-            "cost_kappa":      cost_kappa,
-            "cash_reserve":    cash_reserve,
-            "n_finite_mu":     int(finite_mu.sum()),
-            "n_wash_blocked":  (int(np.asarray(wash_sale_mask).sum())
-                                  if wash_sale_mask is not None else 0),
-            "tax_cost_max":    float(tax_arr.max()) if tax_arr.size else 0.0,
-            "tax_cost_mean":   float(tax_arr.mean()) if tax_arr.size else 0.0,
-            "turnover_max":    float(turnover_max) if turnover_max is not None else None,
-            "actual_turnover": float(np.sum(np.abs(delta_w))),
-            "sigma_off_diag_nonzero": int((np.abs(Sigma_mat) > 1e-12).sum() - np.count_nonzero(np.diag(Sigma_mat))),
-            "impact_coef":     b_impact,
-            "impact_cost_max": float(impact_coef_arr.max()) if impact_coef_arr.size else 0.0,
-            "fixed_cost":      c_fix,
-            "fixed_cost_beta": beta_fix if c_fix > 0 else 0.0,
-        },
-    )

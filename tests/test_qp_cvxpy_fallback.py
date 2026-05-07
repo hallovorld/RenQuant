@@ -90,13 +90,15 @@ class TestCvxpyFallback:
         assert dw is not None
         assert np.abs(dw).sum() <= 0.20 + 1e-4
 
-    def test_top_level_solver_integrates_fallback(self):
-        """solve_portfolio_qp's full path can invoke fallback path.
+    def test_top_level_solver_with_high_cash_drag_deploys_to_target(self):
+        """2026-05-06 refactor: min_invested_pct is now a SOFT target
+        driven by `cash_drag_lambda`. With λ=10 (stiff), the soft penalty
+        approximates the old hard floor — solver should deploy to ≥ target.
 
-        Force it via the parameter combination that historically broke
-        SLSQP: empty portfolio (w_current=0) + min_invested_pct=0.7.
-        Should return optimal status (either via SLSQP success after
-        warm-start, or via cvxpy fallback)."""
+        Pre-2026-05-06 hard-floor test had a bug: it relied on SLSQP's
+        slack relaxation to satisfy infeasible problems. New convex
+        formulation makes that explicit (penalty grows linearly with the
+        gap)."""
         from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
 
         n = 8
@@ -106,17 +108,49 @@ class TestCvxpyFallback:
             risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
             w_upper=0.20, w_lower=0.0, dw_max=0.50,
             min_invested_pct=0.7,
+            cash_drag_lambda=10.0,        # stiff penalty → behaves like hard floor
         )
         assert sol.status in ("optimal", "optimal_no_signal"), \
             f"unexpected status: {sol.status}"
-        # Either SLSQP succeeded with warm-start, or cvxpy stepped in.
-        # Either way, sum(target_w) should be ≥ 0.7 - tolerance.
+        # With λ_cash=10, penalty for being below 0.7 is 10×(0.7 - Σwp);
+        # only worth it if marginal μ < -10/n ≈ -1.25 per asset, which
+        # never happens in our μ ~ N(0, 0.05).
         assert sol.target_w.sum() >= 0.69, \
-            f"min_invested floor violated: sum(wp)={sol.target_w.sum():.4f}"
+            f"high cash_drag_lambda should approximate hard floor; "\
+            f"got sum(wp)={sol.target_w.sum():.4f}"
 
-    def test_fallback_returns_none_when_cvxpy_unavailable(self):
-        """Graceful degradation if cvxpy module is missing."""
-        # Block cvxpy import inside _solve_via_cvxpy_fallback
+    def test_top_level_solver_with_default_cash_drag_partial_deploy(self):
+        """Default `cash_drag_lambda=0.05` is moderate — solver deploys
+        when net signal beats the drag, stays partial otherwise.
+
+        This is the cvxportfolio-textbook tradeoff: cash drag is a soft
+        preference, not a hard rule. Expressing intent as a coefficient
+        in the objective makes the trade-off explicit and tunable."""
+        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
+
+        n = 8
+        mu, Sigma = self._basic_problem(n=n, seed=3)
+        sol = solve_portfolio_qp(
+            w_current=np.zeros(n), mu=mu, Sigma=Sigma,
+            risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
+            w_upper=0.20, w_lower=0.0, dw_max=0.50,
+            min_invested_pct=0.7,
+            # cash_drag_lambda defaults to 0.05
+        )
+        assert sol.status in ("optimal", "optimal_no_signal"), \
+            f"unexpected status: {sol.status}"
+        # Default penalty is moderate; some deployment but not the full
+        # 0.7 target unless μ is strongly positive on average.
+        assert 0.0 < sol.target_w.sum() < 0.7 + 1e-6, (
+            f"Default cash_drag should enable partial deployment; "
+            f"got sum(wp)={sol.target_w.sum():.4f}"
+        )
+
+    def test_solver_requires_cvxpy(self):
+        """Post-2026-05-06: `solve_portfolio_qp` REQUIRES cvxpy. The old
+        scipy.optimize.SLSQP path is gone. If cvxpy can't be imported,
+        an ImportError propagates — there is no fallback to a non-convex
+        scipy solver. (Industry-standard convex QP only.)"""
         import builtins
         real_import = builtins.__import__
 
@@ -125,17 +159,15 @@ class TestCvxpyFallback:
                 raise ImportError("Mocked: cvxpy not available")
             return real_import(name, *args, **kwargs)
 
-        from kernel.portfolio_qp.qp_solver import _solve_via_cvxpy_fallback
+        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
         with patch.object(builtins, "__import__", side_effect=fake_import):
-            result = _solve_via_cvxpy_fallback(
-                w_current=np.zeros(8), mu=np.zeros(8),
-                Sigma=np.eye(8) * 1e-3,
-                risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
-                w_lower_arr=np.zeros(8), w_upper_arr=np.full(8, 0.2),
-                dw_max_arr=np.full(8, 0.5),
-            )
-            assert result is None, \
-                "fallback should return None when cvxpy not installed"
+            with pytest.raises(ImportError, match="cvxpy"):
+                solve_portfolio_qp(
+                    w_current=np.zeros(8), mu=np.zeros(8),
+                    Sigma=np.eye(8) * 1e-3,
+                    risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
+                    w_upper=0.2, w_lower=0.0, dw_max=0.5,
+                )
 
     def test_fallback_clamps_turnover_infeasible_floor(self):
         """REGRESSION (2026-05-06 V5 sim 0-trade): from-cash with
