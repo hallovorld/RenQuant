@@ -1,6 +1,17 @@
 # Rotation Algorithm — Design + References
 
-**Last updated**: 2026-04-25 (post Bug F/Y/M/Q/S/L/MM/PR1-CASH batch).
+**Last updated**: 2026-04-25 (post Bug F/Y/M/Q/S/L/MM/PR1-CASH batch); 2026-05-07 cvxpy QP refactor banner.
+
+> **2026-05-07 update**: rotation now flows through the cvxpy + CLARABEL
+> portfolio QP (commit `b0acf90`) which decides buy/sell/rotate as a
+> single Δw vector — see [`portfolio-qp.md`](portfolio-qp.md). The
+> legacy 3-pass greedy `JointActionTask` (700 lines) stays as the
+> opt-in fallback (`rotation.joint_actions.solver = "greedy"`); the QP
+> path is `solver = "qp"` (default). The Boyd `cvxportfolio` opt-in
+> backend is `qp_solver_backend = "cvxportfolio"`. The
+> `kernel/rotation_convex.py` per-position-cap fix (commit `7712c76`)
+> closed a leverage hole in the cvxpy rotation-only path used by the
+> rotation_convex tests.
 
 ## Purpose
 

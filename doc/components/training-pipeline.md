@@ -1,6 +1,26 @@
 # Model Training — Design + References
 
-**Last updated**: 2026-04-26 (round-7 acceptance gate flow).
+**Last updated**: 2026-04-26 (round-7 acceptance gate flow); 2026-05-07 alpha158_linear additions.
+
+> **2026-05-07 update**: in addition to the production XGB sweep
+> (`scripts/sunday_panel_sweep.py` + `scripts/retrain_panel.sh`,
+> producing `panel-ltr.json`), there's now an alpha158_linear training
+> path:
+> - `scripts/build_alpha158_qlib.py` → `data/alpha158_qlib_dataset.parquet`
+>   (Qlib-faithful 158 features, embargoed walk-forward split).
+> - `scripts/train_panel_linear.py --estimator ols|ridge --label
+>   fwd_5d_excess|fwd_20d_excess|fwd_60d_excess` → `panel-ltr.alpha158_linear.json`
+>   (sklearn LinearRegression on z-scored cross-sectional labels —
+>   Qlib `LinearModel` equivalent).
+> - `scripts/fit_alpha158_linear_calibrator.py` refits the
+>   alpha158-specific calibrator.
+> - `scripts/retrain_alpha158_linear.sh` wraps the 3-phase chain;
+>   not yet scheduled (P0 in roadmap).
+>
+> alpha158_linear walk-forward NO-GO documented as E29 in
+> [`../research/failed-experiments-log.md`](../research/failed-experiments-log.md).
+> Production stays on XGB until the daily-retrain wiring lands and a
+> retrain-aware walk-forward shows mean Sharpe ≥ 1.0.
 
 ## Overview
 
