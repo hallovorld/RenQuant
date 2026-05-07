@@ -2,6 +2,26 @@
 
 **The database is a core asset.** Every pipeline decision, every trade, every retrain, every held-position snapshot is logged so future analysis can introspect *why* the system did what it did without re-running anything.
 
+> **2026-05-07 addition**: `experiment_configs` table (Task #38) —
+> side-config storage as DB rows. Replaces the file-system
+> `strategy_config.*.json` proliferation. Schema + helpers in
+> `scripts/migrate_experiment_configs_to_db.py`; inflate at runtime
+> via `holdout_backtest.py --experiment-label <name>`. Test coverage:
+> `tests/test_experiment_configs_db.py` (11 green).
+>
+> ```sql
+> CREATE TABLE experiment_configs (
+>     label             TEXT PRIMARY KEY,    -- e.g. 'alpha158_linear'
+>     base_config_name  TEXT NOT NULL,       -- usually 'strategy_config.json'
+>     overrides_json    TEXT NOT NULL,       -- dotted-key dict
+>     audit_label       TEXT,                -- side-config invariant test key
+>     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+>     updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+>     notes             TEXT
+> );
+> CREATE INDEX idx_experiment_configs_audit_label ON experiment_configs(audit_label);
+> ```
+
 Keep it:
 - **Flexible** — schema migrations are idempotent (`ALTER TABLE ADD COLUMN` guarded by `PRAGMA table_info`); JSON blob columns absorb ad-hoc fields without schema churn.
 - **Clean** — live/LEAN authoritative data is separated from ephemeral notebook experimentation.

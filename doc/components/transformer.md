@@ -3,6 +3,14 @@
 **Status:** Implemented but **not** in production. Per Bug #24 audit (2026-04-26) the hourly transformer produces NEGATIVE OOS IC vs XGBoost's +0.0482 — currently shelved behind acceptance gates.
 **Owner:** panel-LTR backend ensemble track.
 
+> **2026-05-07 status**: transformer rebuild (v4, scripts/transformer_v4.py)
+> shipped through Task #28 with 4-architecture sweep + sanity tests but
+> NOT promoted to production. The current production panel-LTR backend
+> is XGBoost (panel-ltr.json); the researched-winner-but-not-promoted
+> path is alpha158 + sklearn LinearRegression (panel-ltr.alpha158_linear.json,
+> see [`panel-ltr.md`](panel-ltr.md)). Transformer remains a future
+> option pending hourly data + larger panel.
+
 ## 1. Why a transformer (and why not)
 
 ### Why
