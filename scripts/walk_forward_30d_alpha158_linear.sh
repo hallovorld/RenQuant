@@ -57,7 +57,8 @@ for cut in "${CUTS[@]}"; do
         --output "$out" \
         > "/tmp/wf30d_train_${te}.log" 2>&1 &
     TRAIN_PIDS+=($!)
-    echo "  train cut $te → $out  (PID ${TRAIN_PIDS[-1]})"
+    last_pid=$!
+    echo "  train cut $te → $out  (PID $last_pid)"
 done
 for pid in "${TRAIN_PIDS[@]}"; do wait "$pid"; done
 echo "All 3 training jobs done."
@@ -103,7 +104,8 @@ for cut in "${CUTS[@]}"; do
         --skip-train --out "$out" \
         > "/tmp/wf30d_sim_${te}.log" 2>&1 &
     SIM_PIDS+=($!)
-    echo "  sim cut $te ($ss → $se)  (PID ${SIM_PIDS[-1]})"
+    last_pid=$!
+    echo "  sim cut $te ($ss → $se)  (PID $last_pid)"
 done
 for pid in "${SIM_PIDS[@]}"; do wait "$pid"; done
 echo "All 3 sims done."
