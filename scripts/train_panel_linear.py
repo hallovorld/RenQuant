@@ -69,6 +69,15 @@ def main() -> None:
     p.add_argument("--output",
                    default=str(REPO_ROOT / "backtesting" / "renquant_104"
                                 / "artifacts" / "panel-ltr.alpha158_linear.json"))
+    p.add_argument("--train-end-date", default=None,
+                   help="Override split_label: use ALL rows with date ≤ this "
+                        "date as train (overrides parquet's split_label). "
+                        "Use for daily-retrain walk-forward where train should "
+                        "include ALL data through the retrain date. "
+                        "Example: --train-end-date 2024-05-04")
+    p.add_argument("--val-days", type=int, default=20,
+                   help="When --train-end-date is set, use this many trading "
+                        "days BEFORE train-end for the val split (embargo).")
     args = p.parse_args()
 
     log.info("Loading %s", args.dataset)
@@ -78,10 +87,28 @@ def main() -> None:
     feat_cols = [c for c in panel.columns if c not in excluded]
     log.info("Features: %d  Total rows: %d", len(feat_cols), len(panel))
 
-    panel = panel.dropna(subset=[args.label])
-    train = panel[panel["split_label"] == "train"]
-    val   = panel[panel["split_label"] == "val"]
-    test  = panel[panel["split_label"] == "test"]
+    panel = panel.dropna(subset=[args.label]).copy()
+    panel["date"] = pd.to_datetime(panel["date"])
+
+    if args.train_end_date is not None:
+        # Date-based override (matches user's daily-retrain design):
+        # all data through train_end_date is training; the last val_days
+        # are reserved as val for diagnostic IC.
+        train_end = pd.Timestamp(args.train_end_date)
+        val_start = train_end - pd.Timedelta(days=args.val_days)
+        train = panel[panel["date"] <= val_start]
+        val   = panel[(panel["date"] > val_start) & (panel["date"] <= train_end)]
+        test  = panel[panel["date"] > train_end]
+        log.info("DATE-BASED SPLIT: train_end=%s  val_window=%dd  "
+                 "actual train ends %s, val %s, test starts %s",
+                 train_end.date(), args.val_days,
+                 train["date"].max().date() if len(train) else "(empty)",
+                 val["date"].max().date() if len(val) else "(empty)",
+                 test["date"].min().date() if len(test) else "(empty)")
+    else:
+        train = panel[panel["split_label"] == "train"]
+        val   = panel[panel["split_label"] == "val"]
+        test  = panel[panel["split_label"] == "test"]
     log.info("Splits — train: %d  val: %d  test: %d",
              len(train), len(val), len(test))
 
