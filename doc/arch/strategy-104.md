@@ -1,44 +1,44 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
 **Status**: Active daily strategy.
-**Author**: Ren Hao
-**Last updated**: 2026-05-02 (Track A/B/F shelved + Track D Stage 3 in flight)
+**Last updated**: 2026-05-07 (cvxpy + CLARABEL QP refactor + alpha158_linear V7 holdout)
 **Based on**: renquant_103 (adaptive regime multi-stock)
 
-**Current production artifact** (`artifacts/panel-ltr.json`, last retrain 2026-04-30 23:48):
-- Backend: XGBoost rank:pairwise (`kind: panel_ltr_xgboost`)
-- **27 feature_cols** (per-ticker indicators + factor z-scores + fundamentals; insider_net_buy_90d wired but data-thin per E22 in failed-experiments-log)
-- Panel: 77,559 rows × **103 tickers** × 753 dates
-- **CPCV mean_ic: +0.034** (3-run σ estimation 2026-05-02 → run-to-run σ = 0.6 bp on identical config; 6-fold CPCV)
-- best_iter / train_ic vary widely across XGB seeds (range best_iter=4-39, train_ic=0.095-0.119) — **mean_ic is the only robust comparison statistic**
-- params `eta=0.02 max_depth=3 min_child_weight=60 ss=cs=0.5 λ=5 α=2 seed=42`
+## Production snapshot (2026-05-07)
 
-**Recent shelved experiments** (see `doc/research/failed-experiments-log.md`):
-- E22 (Insider): 44% data coverage → −0.0008 in noise. Resume after SEC throttle clears + Sunday retrain refresh.
-- E23 (PEAD enrichment, 3 cols): −0.0010 = 17σ negative. Shelved.
-- E25 (Triple-barrier label, hit-time-matched residual): apparent +98bp lift; placebo invalidated as regime-persistence over-fit. Shelved.
+| | |
+|---|---|
+| Active model | **alpha158_linear** (Qlib alpha158 features + sklearn LinearRegression on z-scored fwd_5d_excess) |
+| Artifact | `artifacts/panel-ltr.alpha158_linear.json` |
+| Feature count | 158 (alpha158-faithful, mirrors `qlib.contrib.data.handler:Alpha158`) |
+| CPCV mean_ic | **+0.0351** (3-run σ ≈ 0.6 bp; mean_ic is the only robust seed-stable statistic) |
+| Watchlist | 103 tickers |
+| Panel size | ~77k rows × 103 tickers × 753 dates |
+| Portfolio QP | **cvxpy + CLARABEL** (Boyd/Stanford `cvxportfolio.SinglePeriodOpt` idiom, soft cash-drag) |
+| Backend switch | `qp_solver_backend = cvxpy \| cvxportfolio` (default cvxpy) |
 
-**In-flight expansion** (Track D, Stage 3 batch admission running 2026-05-02 19:00 PT):
-- Stage 1 mechanical → 816/1008 candidates pass liquidity/age/sector
-- Stage 1.5 IWB sector_map → 99.6% Russell-1000 coverage
-- Stage 2 KS distributional → 178/720 admitted (median KS 0.17, threshold 0.20)
-- Stage 3 greedy IC-additive batch admission → output `scripts/stage3_final_watchlist.json`
+### V7 single-cut holdout (2026-05-07)
 
-**Round-7 additions** (2026-04-26):
-- **Macro factor frame** (VXX/HYG/UUP/DBC/GLD/TLT/XLV/XLU/KRE/MTUM/USMV × {level_z, chg_5d_z, chg_20d_z}, `kernel/macro.py`). Default OFF in prod; macro-enabled XGBoost variant (61 features, OOS IC 0.0393) preserved at `panel-ltr.macro-enabled.bak.json` but NOT promoted (-18% IC vs prod). LGBM-with-macro experiment (2026-04-26 evening) confirmed macro reduces IC further to 0.0224. See [`../components/macro-factor-frame-design.md`](../components/macro-factor-frame-design.md).
-- **Model-selection 4-tier SOP** ([`../components/model-selection.md`](../components/model-selection.md)): 11 acceptance gates (G1-G11), backend tournament (`scripts/select_best_model.py`), shadow/challenger infrastructure (`kernel/challenger.py`).
-- **Atomic-swap promote** with staging→`.previous.json` rollback target.
-- **Operator UX**: `scripts/model_dashboard.py`, `scripts/finalize_challenger.py`, `scripts/check_challenger_window.sh`.
+Train end 2025-05-04, sim 2025-05-05 → 2025-11-04 (6 mo, 128 trading days):
 
-**Watchlist** (99 tickers): 60 tech split into 4 sub-buckets: `giant_tech` (8), `ai_chip` (18), `datacenter_hw` (10), `software` (24). 39 non-tech across finance/healthcare/industrial/consumer/energy/commodity/utility. Mutual-fund-overlap-weighted curation (VPMAX + FCNTX + AGTHX top holdings prioritized).
+- APY **+39.22%**, Sharpe **+2.009**, Sortino +1.665, Calmar +5.673
+- 73 buys / 77 sells, 73% win rate, max DD 6.91%
+- Longest no-trade streak 4d (was 128d before the QP refactor)
 
-**Resolved on 2026-04-27 (S1 investigation)** — the apparent 41→28 "regression" was a **deliberate cleanup**:
-- Commit `e9d71e6` (2026-04-25 18:46 PT, "Tier 1 batch: drop 13 noise/sparse features") explicitly dropped 13 columns flagged as low-IC or sparse by `FeatureDiagnosticTask`: `earnings_yield_z` (IC=−0.0009), `rsi`, `macd_hist`, `amihud_illiq_z`, `obv_slope`, `vol_ratio_z`, `m_vol_ratio_z`, `m_morning_drift_z`, `m_afternoon_drift_z`, `m_closing_30min_drift_z`, `m_first_hour_vol_pct_z`, `overnight_gap_z`, `insider_net_buy_90d_z` (80/99 tickers >50% NaN). Same commit added `book_to_price_z: -1` monotone constraint (data-driven sign reversal: actual IC=−0.0474 → low B/P / growth wins in current regime).
-- Result is a feature-quality win, not a regression: prod OOS IC moved from PRE-MINUTE era's 0.0391 (31 features) to current 0.0482 (28 features) — **+23% IC despite fewer columns**.
-- The doc's prior "41-feature, +30.90% APY" line was from a never-shipped earlier configuration. The current 28-feature artifact is the cleaned model.
+> **Caveat**: single-cut. Walk-forward 3-cut not yet measured. The
+> previous production XGB had single-cut Sharpe 0.68 but walk-forward
+> mean alpha vs SPY = −15.62% (CLAUDE.md E27). Treat V7 as a
+> lower-bound, not walk-forward-promotable until 3-cut runs.
 
-**Open questions remaining**:
-- Sim APY/Sharpe metrics for the current 28-feature artifact have not been re-measured. Run `scripts/sim_smoke.py`-style verification before quoting any APY number against current prod.
+### What's currently OFF (per CLAUDE.md status)
+
+- **Macro factor frame** — all v1–v4 variants showed net-negative IC at panel size 103. Revisit at 200+ tickers.
+- **NGBoost head** — 21-feature artifact incompatible with 158-feature alpha158 panel; using rolling realized vol (Markowitz/Almgren-Chriss reference) for σ instead.
+- **Asset embeddings (T2-2)** — +0.0001 IC delta = no lift.
+- **LightGBM** — REJECTED at -60% IC vs XGBoost panel.
+- **Boyd rotation (T2-4)** — -2.5 APY pts, infrastructure kept but disabled.
+
+See [`failed-experiments-log.md`](../research/failed-experiments-log.md) for durable record per CLAUDE.md §5.7.
 
 ---
 
