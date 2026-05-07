@@ -47,12 +47,12 @@ class TestJointPortfolioQPJobSplit:
         # Per-class soft limits with explicit reasons for over-50:
         OVERSIZED_ALLOWED = {
             "SolveMarkowitzQPTask": 60,           # many solver kwargs
-            # 2026-05-06: EmitOrders absorbed 4 gates today (buy_blocked
-            # check, earnings blackout, Davis-Norman no-trade band, NaN
-            # Δw guard). Current 144 lines is a §1c violation; split is
-            # tracked as Task #29-companion (pending). Until split, soft
-            # cap = 160 to avoid blocking legit fixes.
-            "EmitOrdersFromQPSolutionTask": 160,
+            # 2026-05-06 split: EmitOrders 144 → 69 lines after extracting
+            # _passes_no_trade_band, _gate_buy_or_block, _shares_from_dw,
+            # _log_summary helpers. Still slightly over the 50 soft cap
+            # because of the loop body composing 4 gate checks; further
+            # split would create per-gate Tasks at the cost of clarity.
+            "EmitOrdersFromQPSolutionTask": 75,
         }
         for cls_name in qp_tasks.__all__:
             cls = getattr(qp_tasks, cls_name)

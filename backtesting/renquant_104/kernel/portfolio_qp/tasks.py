@@ -393,6 +393,45 @@ class SolveMarkowitzQPTask(Task):
 
 # ── 7. Translate Δw → orders / exits ───────────────────────────────────────
 
+# ── Helper functions for EmitOrdersFromQPSolutionTask (split per §1c) ──────
+
+def _passes_no_trade_band(
+    dw: float, sig_i: float, min_dw: float, no_trade_factor: float,
+) -> tuple[bool, bool]:
+    """Davis-Norman 1990 / Constantinides 1979: skip trades inside
+    max(min_dw, no_trade_factor × σ_i). Returns (pass, was_in_band)."""
+    threshold = max(min_dw, no_trade_factor * sig_i)
+    if abs(dw) < threshold:
+        return False, abs(dw) >= min_dw
+    return True, False
+
+
+def _gate_buy_or_block(
+    t: str, dw: float, today, earnings_cal, earn_buf: int,
+    buys_gated: bool,
+) -> str | None:
+    """If dw>0 (buy/top-up): return blocked_reason if any gate fires.
+    Returns None if buy is allowed."""
+    if dw <= 0:
+        return None
+    if buys_gated:
+        return "buys_gated"
+    from kernel.selection import is_earnings_blocked  # noqa: PLC0415
+    if today is not None and is_earnings_blocked(t, today, earnings_cal, earn_buf):
+        return "earnings"
+    return None
+
+
+def _shares_from_dw(dw: float, nav: float, px: float) -> int:
+    """Convert Δw fraction into integer share count, with finite checks."""
+    import math as _m  # noqa: PLC0415
+    if not (_m.isfinite(dw) and _m.isfinite(px) and _m.isfinite(nav)):
+        return 0
+    if px <= 0 or nav <= 0:
+        return 0
+    return int(abs(dw) * nav / px)
+
+
 class EmitOrdersFromQPSolutionTask(Task):
     """Translate Δw → ctx.orders (buys/top-ups) + ctx.exits (closes/trims).
 
@@ -401,6 +440,18 @@ class EmitOrdersFromQPSolutionTask(Task):
              ctx.config['rotation']['joint_actions']['qp_min_dw_pct']
     Writes: ctx.orders (append), ctx.exits (append),
              ctx._qp_n_buys, ctx._qp_n_sells (counters for atom-side LogSummary)
+
+    Logic split per CLAUDE.md §1c (2026-05-06):
+      1. Setup gate flags + helper closures
+      2. Per-ticker loop calls _passes_no_trade_band, _gate_buy_or_block,
+         _shares_from_dw, then _emit_qp_buy / _emit_qp_sell
+      3. Log summary of blocked/skipped counters
+
+    Bug fixes pinned by tests (do NOT regress):
+      - Bug 3 (wl183 2026-05-05): buy_blocked / skip_buys suppress top-ups
+      - Bug 4 (wl183 2026-05-05): earnings blackout suppresses top-ups
+      - Bug 9 (2026-05-05): non-finite Δw skipped instead of crashing
+      - Davis-Norman no-trade band (2026-05-05 cash-drag fix)
     """
     name = "EmitOrdersFromQPSolutionTask"
 
@@ -415,139 +466,93 @@ class EmitOrdersFromQPSolutionTask(Task):
         nav = float(_get_path(ctx, "portfolio_value", 0.0) or 0.0)
         cfg = _qp_cfg(ctx)
         min_dw = float(cfg.get("qp_min_dw_pct", 0.005))
-        # 2026-05-05 cash-drag fix: per-asset no-trade band.
-        # Davis-Norman (1990) / Constantinides (1979) closed form:
-        #   ε_i ≈ (3κ/γ)^(1/3) × σ_i × √Δt
-        # The classical answer to "when do I rebalance" — only trade
-        # when |Δw_i| exceeds a volatility-scaled threshold. Smaller
-        # ε for low-vol assets (rebalance often), larger ε for high-vol
-        # (let positions drift). Pre-fix the only floor was the uniform
-        # qp_min_dw_pct (0.02 NAV-fraction), which produces friction-
-        # equivalent trades regardless of σ. Post-fix the threshold is
-        # max(qp_min_dw_pct, qp_no_trade_band_factor × σ_i).
-        # Default qp_no_trade_band_factor=0.0 → disabled (legacy parity).
-        # Recommended starting point: 1.0 (one-σ band).
         no_trade_factor = float(cfg.get("qp_no_trade_band_factor", 0.0))
         sigma_vec = _get_path(ctx, "_qp_sigma")
         cands = {c.ticker: c for c in (ctx.candidates or [])}
-        # 2026-05-05 wl183 incident bug 3: when ctx.buy_blocked OR
-        # ctx.skip_buys is set, QP rebalance must not emit any buy.
-        #   - buy_blocked: per-bar gate (DrawdownGate, VelocityCrash,
-        #     EarningsBlackout regime). Pipeline gates Phase 2b but QP
-        #     was free to emit top-ups → whiplash.
-        #   - skip_buys: persistent drawdown-circuit halt (set by
-        #     DrawdownCircuitTask, cleared on recovery). Same intent —
-        #     no new exposure until circuit clears.
-        # Pre-fix bar 03-19 (BULL_VOL conf=0.99 buys_blocked=True): QP
-        # emitted +20% buys against the circuit; bar 03-20 (BULL_CALM
-        # conf=0.50 transition=True): QP reversed at -24%. 10bps friction
-        # round-trip × hundreds of regime flips = wl183 B2 Sharpe -0.07.
-        # Fix: suppress dw>0 emissions on either flag. Sells still
-        # allowed so the circuit can de-risk.
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
         skip_buys   = bool(getattr(ctx, "skip_buys",   False))
         buys_gated  = buy_blocked or skip_buys
-        # 2026-05-05 wl183 incident bug 4: QP had no earnings awareness.
-        # The buy-side EarningsFilterTask (in TickerCandidateJob) blocks
-        # new entries within ±earnings_buffer_days of earnings, but QP
-        # could still top-up an EXISTING holding right into earnings.
-        # Same gap-risk rationale that justifies blocking new entries
-        # applies to top-ups: an unexpected miss can move 5–15% on the
-        # print, far larger than typical Δw the QP is optimizing over.
-        # Fix: per-ticker check via the same is_earnings_blocked helper
-        # the buy-side filter uses, gated on the same buffer config so
-        # train/inference symmetry is preserved.
-        from kernel.selection import is_earnings_blocked  # noqa: PLC0415
         earnings_cal = getattr(ctx, "earnings_calendar", None) or {}
         earn_buf = int((ctx.config.get("regime", {}) or {})
                           .get("earnings_buffer_days", 3))
         today = getattr(ctx, "today", None)
-        n_blocked_buys = 0
-        n_blocked_earnings = 0
+        import math as _m  # noqa: PLC0415
+
         nb = ns = 0
-        # Bug 9 fix (2026-05-05): defensive against non-finite Δw.
-        # SolveMarkowitzQPTask returns sol.status="optimal" when SLSQP
-        # converges, but the solver can occasionally produce NaN/inf
-        # weights on numerically-degenerate inputs (e.g. zero-volatility
-        # asset that wasn't pre-filtered, near-singular Σ). Pre-fix,
-        # `int(abs(NaN) * ...)` raises ValueError mid-loop → uncaught →
-        # the entire bar's Phase 3 unwinds, no Kelly/QP signal recorded.
-        # Post-fix: skip non-finite Δw with a warning so the operator
-        # can investigate without crashing the sim.
-        import math as _math_dw  # noqa: PLC0415
-        n_skipped_nonfinite = 0
-        n_skipped_band = 0
+        n_blocked_buys = n_blocked_earnings = 0
+        n_skipped_nonfinite = n_skipped_band = 0
+
         for i, t in enumerate(tickers):
             dw = float(sol.delta_w[i])
-            if not _math_dw.isfinite(dw):
+            if not _m.isfinite(dw):
                 n_skipped_nonfinite += 1
                 continue
-            # Per-asset no-trade band: max(min_dw_pct, factor × σ_i).
-            # When sigma_vec missing or non-finite for asset i, fall
-            # back to the uniform min_dw threshold (legacy parity).
             sig_i = 0.0
             if sigma_vec is not None and i < len(sigma_vec):
-                sig_i_raw = float(sigma_vec[i])
-                if _math_dw.isfinite(sig_i_raw) and sig_i_raw > 0:
-                    sig_i = sig_i_raw
-            threshold = max(min_dw, no_trade_factor * sig_i)
-            if abs(dw) < threshold:
-                if abs(dw) >= min_dw:
+                s = float(sigma_vec[i])
+                if _m.isfinite(s) and s > 0:
+                    sig_i = s
+            ok, in_band = _passes_no_trade_band(dw, sig_i, min_dw, no_trade_factor)
+            if not ok:
+                if in_band:
                     n_skipped_band += 1
                 continue
-            px = prices.get(t, 0.0)
-            if not _math_dw.isfinite(px) or px <= 0:
-                continue
-            if not _math_dw.isfinite(nav) or nav <= 0:
-                continue
-            shares = int(abs(dw) * nav / px)
+            shares = _shares_from_dw(dw, nav, prices.get(t, 0.0))
             if shares <= 0:
                 continue
             if dw > 0:
-                if buys_gated:
+                blocked = _gate_buy_or_block(
+                    t, dw, today, earnings_cal, earn_buf, buys_gated,
+                )
+                if blocked == "buys_gated":
                     n_blocked_buys += 1
                     continue
-                if today is not None and is_earnings_blocked(
-                        t, today, earnings_cal, earn_buf):
+                if blocked == "earnings":
                     n_blocked_earnings += 1
                     continue
-                _emit_qp_buy(ctx, t, shares, px, sol, i, cands)
+                _emit_qp_buy(ctx, t, shares, prices.get(t, 0.0), sol, i, cands)
                 nb += 1
             elif _emit_qp_sell(ctx, t, shares, dw, sol, i):
                 ns += 1
+
+        self._log_summary(
+            n_blocked_buys=n_blocked_buys, buy_blocked=buy_blocked,
+            n_blocked_earnings=n_blocked_earnings, earn_buf=earn_buf,
+            n_skipped_nonfinite=n_skipped_nonfinite,
+            n_skipped_band=n_skipped_band, min_dw=min_dw,
+            no_trade_factor=no_trade_factor,
+        )
+        ctx._qp_n_buys = nb  # noqa: SLF001
+        ctx._qp_n_sells = ns  # noqa: SLF001
+
+    @staticmethod
+    def _log_summary(
+        *, n_blocked_buys, buy_blocked, n_blocked_earnings, earn_buf,
+        n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
+    ) -> None:
         if n_blocked_buys:
             reason = ("buy_blocked=True" if buy_blocked
                       else "skip_buys=True (drawdown halt)")
             log.info(
-                "EmitOrdersFromQPSolutionTask: %s — suppressed %d QP "
-                "top-up BUY(s) (bar would have whiplashed against "
-                "drawdown/velocity/blackout circuit)",
+                "EmitOrdersFromQPSolutionTask: %s — suppressed %d QP top-ups",
                 reason, n_blocked_buys,
             )
         if n_blocked_earnings:
             log.info(
-                "EmitOrdersFromQPSolutionTask: suppressed %d QP top-up "
-                "BUY(s) within ±%d days of earnings (gap-risk parity "
-                "with buy-side EarningsFilterTask)",
-                n_blocked_earnings, earn_buf,
+                "EmitOrdersFromQPSolutionTask: suppressed %d top-ups within "
+                "±%d earnings days", n_blocked_earnings, earn_buf,
             )
         if n_skipped_nonfinite:
             log.warning(
-                "EmitOrdersFromQPSolutionTask: skipped %d non-finite "
-                "Δw entries (NaN/inf weights from solver — investigate "
-                "Σ conditioning or μ/σ inputs)",
-                n_skipped_nonfinite,
+                "EmitOrdersFromQPSolutionTask: skipped %d non-finite Δw "
+                "(investigate Σ conditioning)", n_skipped_nonfinite,
             )
         if n_skipped_band:
             log.info(
                 "EmitOrdersFromQPSolutionTask: skipped %d trades by "
-                "no-trade band (above %.2f%% min_dw but inside %.1fσ "
-                "vol-scaled band) — Davis-Norman/Constantinides "
-                "rebalance economy",
+                "no-trade band (min_dw=%.2f%%, factor=%.1fσ — Davis-Norman)",
                 n_skipped_band, min_dw * 100, no_trade_factor,
             )
-        ctx._qp_n_buys = nb  # noqa: SLF001
-        ctx._qp_n_sells = ns  # noqa: SLF001
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
