@@ -250,6 +250,73 @@ class TransformerRanker(nn.Module):
         return self.head(x[:, -1, :]).squeeze(-1)
 
 
+class iTransformerRanker(nn.Module):
+    """iTransformer for cross-sectional ranking.
+
+    Ref: Liu et al., "iTransformer: Inverted Transformers Are Effective for
+    Time Series Forecasting", ICLR 2024. thuml/iTransformer.
+    Embedding module design follows neuralforecast.common._modules.DataEmbedding_inverted.
+
+    Key inversion vs TransformerRanker:
+      TransformerRanker : attend across T time steps  per ticker  (temporal axis)
+      iTransformerRanker: attend across N tickers     per date    (cross-variate axis)
+
+    Adaptation for D>1 features per time step (original paper assumes D=1 scalar
+    variates; we have D=158 alpha158 features per ticker per day):
+      - Flatten each ticker's (seq_len, D) history → (seq_len*D,) vector
+      - Linear(seq_len*D → d_model): same projection as DataEmbedding_inverted
+        but over the joint temporal+feature dimension
+      - Standard TransformerEncoder for cross-ticker self-attention (N tokens)
+      - Score head: d_model → 1 per ticker
+    """
+
+    def __init__(self, n_channels: int, seq_len: int,
+                 d_model: int = 64, n_heads: int = 4,
+                 n_layers: int = 2, dropout: float = 0.1,
+                 d_ff: int = 256):
+        super().__init__()
+        # DataEmbedding_inverted equivalent: project each variate's history → d_model.
+        # Original: Linear(seq_len, d_model) for scalar variates.
+        # Ours: Linear(seq_len * n_channels, d_model) for multi-feature variates.
+        self.token_embed = nn.Linear(seq_len * n_channels, d_model)
+        self.input_norm  = nn.LayerNorm(d_model)
+        self.dropout_emb = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=n_heads,
+            dim_feedforward=d_ff,
+            dropout=dropout, activation="gelu",
+            batch_first=True, norm_first=True,  # Pre-LN (iTransformer default)
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, 1),
+        )
+
+        # Xavier init — same as existing TransformerRanker (audit fix #49)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor, t_idx: torch.Tensor) -> torch.Tensor:
+        # x: (N_tickers, seq_len, n_channels) — one full date's batch
+        N, T, D = x.shape
+        # Flatten temporal+feature dims per ticker → token embedding
+        # Equivalent to DataEmbedding_inverted.value_embedding on flattened input
+        x_flat  = x.reshape(N, T * D)                          # (N, T*D)
+        tokens  = self.dropout_emb(self.input_norm(
+            self.token_embed(x_flat)))                          # (N, d_model)
+        # Cross-ticker self-attention — the "inverted" axis
+        # TransformerEncoder expects (batch, seq, d_model); here batch=1, seq=N_tickers
+        encoded = self.encoder(tokens.unsqueeze(0)).squeeze(0)  # (N, d_model)
+        return self.head(encoded).squeeze(-1)                   # (N,)
+
+
 def build_model(arch: str, n_channels: int, seq_len: int) -> nn.Module:
     if arch == "linear":
         return LinearBaseline(n_channels, seq_len)
@@ -259,6 +326,8 @@ def build_model(arch: str, n_channels: int, seq_len: int) -> nn.Module:
         return LSTMRanker(n_channels, seq_len)
     if arch == "transformer":
         return TransformerRanker(n_channels, seq_len)
+    if arch == "itransformer":
+        return iTransformerRanker(n_channels, seq_len)
     raise ValueError(f"unknown arch: {arch}")
 
 
@@ -348,7 +417,7 @@ def main() -> None:
     p.add_argument("--dataset",
                    default=str(REPO_ROOT / "data" / "transformer_dataset_engineered.parquet"))
     p.add_argument("--arch", required=True,
-                   choices=["linear", "mlp", "lstm", "transformer"])
+                   choices=["linear", "mlp", "lstm", "transformer", "itransformer"])
     p.add_argument("--seq-len", type=int, default=60)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--lr", type=float, default=1e-3,
