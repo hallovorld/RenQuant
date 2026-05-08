@@ -277,6 +277,30 @@ Never promote based on single split val IC, even if val IC > current baseline.
 - "Our XGB +0.039 is **lower than Qlib's CSI300 XGB 0.050** by 22%, again consistent with US-market efficiency."
 - "Direct comparison to Gu/Kelly/Xiu is not possible because they report monthly R² and long-short Sharpe, not Spearman rank IC."
 
+
+
+### 2026-05-08 sanity verification
+
+Sanity tests on baseline (R1K + alpha158 + 5-fund + XGB d=5 e=0.05 fwd_60d, IC +0.066):
+
+| Test | IC | Verdict |
+|---|---|---|
+| A/A (3 seeds) | +0.066 ± 0.001 | ✓ Reproducible |
+| Per-date label shuffle | +0.025 | ✗ Significant residual signal |
+| Time-shift +60d | +0.030 | ✗ Regime persistence present |
+
+**Implication**: "Pure 60d-specific cross-sectional alpha" ≈ +0.066 - +0.025 = **+0.041**.
+
+The headline +0.066 IC includes:
+- ~+0.041 from true feature→label causal signal (the alpha we want)
+- ~+0.025 from slow features (60d rolling stats) that carry stable per-stock identifying
+  information; XGB ranks stocks by these "type" features even with permuted labels;
+  test labels also reflect these patterns → spurious shared signal.
+
+This is NOT a refutation of the +0.066 baseline — it's still real predictive power for
+trading purposes. But for production planning, treat **+0.04** as the harvestable
+60d-specific alpha, not +0.066.
+
 ### Open-source projects with reproducible US-stock IC numbers
 
 After research (knowledge base entry `ext_gu_kelly_xiu_2020`, `ext_qlib_benchmark`, `ext_cakici_2023`):

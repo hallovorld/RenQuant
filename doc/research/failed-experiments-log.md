@@ -1505,3 +1505,60 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 3. If we add Russell 2000-specific features (small-cap quality, size factor) → re-test
 
 **Current production baseline (locked)**: R1K (291 tickers) + alpha158 + SEC fund + XGB d=5 e=0.05 fwd_60d → mean IC +0.066, std 0.072, 6/7 cuts positive.
+
+## E38 — XGB hyperparameter sweep (27 combos) [2026-05-08]
+
+**Setup**: 7-cut WF on R1K + alpha158 + 5-fund + fwd_60d. Grid: max_depth ∈ {3,5,7} × eta ∈ {0.03,0.05,0.10} × min_child_weight ∈ {10,50,100}.
+
+**Top configs**:
+| Rank | Config | Mean IC | Std | Pos/7 | IR |
+|---|---|---|---|---|---|
+| 1 | d=7 eta=0.10 mcw=10 | +0.0685 | 0.077 | 6/7 | 0.89 |
+| 2 | d=7 eta=0.05 mcw=50 | +0.0681 | 0.078 | 6/7 | 0.88 |
+| 3 | d=3 eta=0.05 mcw=50 | +0.0679 | 0.069 | 6/7 | 0.98 |
+| Baseline | d=5 eta=0.05 mcw=50 | +0.0660 | 0.072 | 6/7 | 0.91 |
+
+**Verdict**: Marginal +0.002 IC at best. Not worth promoting (within 1 std of baseline). XGB hyperparameters are not the bottleneck on this dataset.
+
+**Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
+
+## E39 — Extended SEC fundamentals (7 derived ratios) [2026-05-08]
+
+**Setup**: Added 7 derived features (asset_turnover, profit_margin, return_on_assets, debt_to_assets, rev_growth_yoy, ni_growth_yoy, equity_growth) on top of existing 5 (earnings_yield, book_to_price, gross_profitability, roe, asset_growth) = 12 fund features total.
+
+**Result (paired WF, XGB d=5 e=0.05 mcw=50, fwd_60d)**:
+| Setup | Mean IC | Std | Pos/7 |
+|---|---|---|---|
+| Base (5 fund) | **+0.066** | 0.072 | 6/7 ⭐ |
+| Base + 7 ext fund | +0.038 | 0.067 | 5/7 |
+| Δ mean | **-0.028** | - | win 2/7 |
+
+**Verdict**: NO-GO. Adding 7 extended fundamentals HURTS by -0.028. Hypotheses for why:
+1. Multicollinearity: return_on_assets ≈ roe; debt_to_assets ≈ 1-equity ratio; profit_margin overlaps with earnings_yield
+2. Date alignment differences between two SEC fetches
+3. NaN→0 fill creates zero-bias features for tickers without data
+
+**Resume condition**: orthogonalize features (PCA or feature selection) before adding to model.
+
+## E40 — §5.2 Sanity test suite on baseline [2026-05-08]
+
+**Tests on R1K + 5-fund + XGB d=5 e=0.05 fwd_60d (IC=+0.066)**:
+
+| Test | IC | Threshold | Verdict |
+|---|---|---|---|
+| 1. A/A (3 seeds) | +0.066 ± 0.0009 | std < 0.005 | ✓ PASS |
+| 2. Per-date label shuffle | +0.025 (mean of 3 seeds) | < 0.010 | ✗ FAIL |
+| 3. Time-shift +60d | +0.030 | < 0.015 | ✗ FAIL |
+
+**Critical finding**: Real signal ≈ +0.066 - +0.025 = **+0.041** (true alpha contribution).
+The +0.025 from random labels is **stock-type identification** — slow features (60d rolling stats)
+carry stable per-stock patterns that XGB exploits even with permuted labels. Test labels
+also reflect these patterns → spurious correlation.
+
+The +0.030 from +60d shift is **regime persistence** — alpha158 60d-window features predict
+t+120 returns nearly as well as t+60 because the underlying signal is slow.
+
+**Implication**: The +0.066 headline IC has only ~+0.04 of "60d-specific cross-sectional alpha".
+The remaining ~+0.025 is slow factor exposure (still useful for trading, but not the same as alpha capture).
+
+**Reproduction**: `python scripts/walk_forward_sanity.py`
