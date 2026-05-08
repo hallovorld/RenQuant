@@ -336,17 +336,53 @@ def main() -> None:
     # ProcessInf: replace ±inf with NaN
     panel[feat_cols] = panel[feat_cols].replace([np.inf, -np.inf], np.nan)
 
-    # ZScoreNorm: per feature, GLOBAL z-score using train-only stats (we'll
-    # compute the train mask after merging labels). For now use full-panel
-    # stats — Qlib's ZScoreNorm is fit_start_time/fit_end_time-aware and we
-    # mirror that below with the merge.
-    log.info("Phase: merge labels + split_label from %s …", args.existing_engineered)
+    # ── Labels: compute from OHLCV directly for all tickers ──────────────────
+    # Previously used inner-merge with existing dataset which silently dropped
+    # any ticker not in the old 291-ticker universe. Now we compute fwd returns
+    # from each ticker's OHLCV and excess vs SPY, covering all N tickers.
+    log.info("Phase: compute labels (fwd_5d/20d/60d excess vs SPY) from OHLCV …")
+    ohlcv_dir = Path(args.ohlcv_dir)
+    spy_path = ohlcv_dir / "SPY" / "1d.parquet"
+    if not spy_path.exists():
+        log.error("SPY OHLCV not found at %s — cannot compute excess returns", spy_path)
+        sys.exit(1)
+    spy_df   = pd.read_parquet(spy_path)
+    spy_close = spy_df["close"].sort_index().rename("spy_close")
+
+    label_rows: list[pd.DataFrame] = []
+    for ticker in panel["ticker"].unique():
+        try:
+            t_df = pd.read_parquet(ohlcv_dir / ticker / "1d.parquet")
+        except Exception:
+            continue
+        c = t_df["close"].sort_index()
+        spy_aligned = spy_close.reindex(c.index, method="ffill")
+        rec: dict[str, pd.Series] = {"ticker": pd.Series(ticker, index=c.index),
+                                      "date": pd.Series(c.index, index=c.index)}
+        for n in (5, 20, 60):
+            fwd_ticker = c.shift(-n) / c - 1
+            fwd_spy    = spy_aligned.shift(-n) / spy_aligned - 1
+            rec[f"fwd_{n}d_excess"] = fwd_ticker - fwd_spy
+        label_rows.append(pd.DataFrame(rec))
+    labels_panel = pd.concat(label_rows, ignore_index=True)
+    labels_panel["date"] = pd.to_datetime(labels_panel["date"])
+    panel = panel.merge(labels_panel, on=["ticker", "date"], how="inner")
+    log.info("After label merge: %d rows, %d tickers", len(panel), panel["ticker"].nunique())
+
+    # ── split_label: date-based cutoffs from existing dataset ─────────────────
+    # Use the existing dataset's date→split mapping so train/val/test periods
+    # are consistent — but apply to ALL tickers regardless of old universe.
+    log.info("Phase: assign split_label from date cutoffs in %s …", args.existing_engineered)
     existing = pd.read_parquet(args.existing_engineered)
     existing["date"] = pd.to_datetime(existing["date"])
-    keep_cols = ["ticker", "date", "fwd_5d_excess", "fwd_20d_excess",
-                 "fwd_60d_excess", "split_label"]
-    panel = panel.merge(existing[keep_cols], on=["ticker", "date"], how="inner")
-    log.info("After merge: %d rows × %d cols", len(panel), len(panel.columns))
+    date_split = (existing[["date", "split_label"]]
+                  .drop_duplicates("date")
+                  .set_index("date")["split_label"])
+    panel["split_label"] = panel["date"].map(date_split)
+    # Dates beyond existing dataset → assign to test (most recent data)
+    panel["split_label"] = panel["split_label"].fillna("test")
+    panel = panel.dropna(subset=["fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"])
+    log.info("After split: %d rows, %d tickers", len(panel), panel["ticker"].nunique())
 
     train_mask = panel["split_label"] == "train"
     log.info("Phase: ZScoreNorm per feature (train-only stats) …")
