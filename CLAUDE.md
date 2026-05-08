@@ -40,6 +40,15 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 infra 已接入 standard pipeline，一行 config 就跑。Track F 的 +98bp 假象就是漏跑 placebo 才被骗。
 
+**IC 评估方法（强制读 [`doc/research/ic-evaluation-methodology.md`](doc/research/ic-evaluation-methodology.md)）：**
+- 任何 IC 数字必须来自 walk-forward（≥5 cuts），不能用单次 train/val/test split
+- 报告必须包含 mean ± std，per-cut 明细
+- Linear/Ridge baseline 必须在同一组 cuts 上跑过
+- Param/sample ratio > 1/100 的模型（transformer 等）在我们当前数据规模上**禁止训练**——必然过拟合
+- 当前 baseline (2026-05-08, 7-cut WF, fwd_20d, 291-ticker + fundamental):
+  OLS mean=+0.029 std=0.038 / Ridge +0.030 / XGB +0.039 std=0.046
+- 任何新模型/特征声明优于 baseline，必须在同一 7 cuts 上 paired comparison，差距 > 0.01 且 ≥ 5/7 cuts 胜出
+
 ---
 
 ## ✅ P0 CV bugs (discovered 2026-04-28, all fixed; refined 2026-05-02)
