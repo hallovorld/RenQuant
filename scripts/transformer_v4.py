@@ -438,6 +438,8 @@ def main() -> None:
                         "is genuine.")
     p.add_argument("--max-train-batches", type=int, default=0,
                    help=">0 to limit train batches per epoch (smoke testing)")
+    p.add_argument("--num-workers", type=int, default=4,
+                   help="DataLoader worker count (0 = main process, avoids fork issues)")
     args = p.parse_args()
 
     if args.device == "auto":
@@ -515,6 +517,7 @@ def main() -> None:
             warmup_epochs=args.warmup_epochs,
             seed=seed, max_train_batches=args.max_train_batches,
             out_path=out_dir / f"{args.arch}_seed{seed}.pt",
+            num_workers=args.num_workers,
         )
         result["seed"] = seed
         seed_results.append(result)
@@ -559,17 +562,18 @@ def main() -> None:
 
 def train_one_seed(arch, train_ds, val_ds, test_ds, channel_cols, seq_len,
                     device, epochs, lr, weight_decay, patience,
-                    warmup_epochs, seed, max_train_batches, out_path):
+                    warmup_epochs, seed, max_train_batches, out_path,
+                    num_workers=4):
     """Train one model with one seed; return result dict."""
     train_sampler = PerDayBatchSampler(train_ds, shuffle=True, seed=seed)
     val_sampler   = PerDayBatchSampler(val_ds,   shuffle=False, seed=seed)
     test_sampler  = PerDayBatchSampler(test_ds,  shuffle=False, seed=seed)
     train_loader = DataLoader(train_ds, batch_sampler=train_sampler,
-                              num_workers=4, pin_memory=False)
+                              num_workers=num_workers, pin_memory=False)
     val_loader   = DataLoader(val_ds,   batch_sampler=val_sampler,
-                              num_workers=2, pin_memory=False)
+                              num_workers=min(num_workers, 2), pin_memory=False)
     test_loader  = DataLoader(test_ds,  batch_sampler=test_sampler,
-                              num_workers=2, pin_memory=False)
+                              num_workers=min(num_workers, 2), pin_memory=False)
 
     model = build_model(arch, len(channel_cols), seq_len).to(device)
     n_params = sum(p.numel() for p in model.parameters())
