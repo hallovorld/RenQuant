@@ -165,10 +165,11 @@ def _build_relative_features(
 
 def _load_strategy_multi(
     strategy_name: str, broker_name: str | None = None,
+    config_name: str = "strategy_config.json",
 ) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock kernel model artifacts."""
     strategy_dir = REPO_ROOT / "backtesting" / strategy_name
-    config_path = strategy_dir / "strategy_config.json"
+    config_path = strategy_dir / config_name
     if not config_path.exists():
         log.error("Strategy config not found: %s", config_path)
         sys.exit(1)
@@ -561,6 +562,10 @@ def main():
                         help="Seconds between runs in scheduled mode (default: 86400). "
                              "Production scheduling uses launchd; this loop is intended "
                              "only for ad-hoc tests.")
+    parser.add_argument("--strategy-config-name", default="strategy_config.json",
+                        help="Side config filename inside the strategy dir "
+                             "(default: strategy_config.json). Use this to test "
+                             "alternate configs without touching the live one.")
     args = parser.parse_args()
 
     # 2026-04-27: thread broker tag through to UniverseContext for
@@ -568,6 +573,7 @@ def main():
     # used as the state-file suffix (paper / alpaca / alpaca-paper / ibkr).
     config, models, strategy_dir = _load_strategy_multi(
         args.strategy, broker_name=args.broker,
+        config_name=args.strategy_config_name,
     )
     initial_cash = config.get("initial_cash", 100_000)
     broker = _get_broker(args.broker, initial_cash=initial_cash)

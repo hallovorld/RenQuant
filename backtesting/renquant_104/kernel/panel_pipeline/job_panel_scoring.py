@@ -184,11 +184,53 @@ class ApplyScoresTask(Task):
                 log.info("ApplyScoresTask[panel_linear]: scored %d tickers via "
                          "alpha158 + score_raw", len(rows))
             else:
-                # XGBoost alpha158: align to stored feature_cols order; NaN-impute gaps
+                # XGBoost panel_ltr_xgboost: artifact may have additional fund features
+                # (earnings_yield, book_to_price, etc.) beyond alpha158. If so, look them up
+                # from the daily SEC fundamentals panel (point-in-time).
+                fund_cols = ["earnings_yield","book_to_price","gross_profitability","roe","asset_growth"]
+                needs_fund = any(fc in scorer.feature_cols for fc in fund_cols)
+                if needs_fund:
+                    import os                                                       # noqa: PLC0415
+                    from pathlib import Path                                         # noqa: PLC0415
+                    repo = Path(__file__).resolve().parents[3]
+                    fp = repo / "data" / "sec_fundamentals_daily.parquet"
+                    if fp.exists():
+                        fund_panel = pd.read_parquet(fp)
+                        fund_panel["date"] = pd.to_datetime(fund_panel["date"])
+                        snap = fund_panel[fund_panel["date"] <= pd.Timestamp(today)] \
+                            .sort_values("date").groupby("ticker").tail(1)
+                        for t, feats in rows.items():
+                            row = snap[snap["ticker"] == t]
+                            if len(row):
+                                for fc in fund_cols:
+                                    if fc in row.columns:
+                                        feats[fc] = float(row[fc].iloc[0]) if pd.notna(row[fc].iloc[0]) else 0.0
+                            else:
+                                for fc in fund_cols:
+                                    feats.setdefault(fc, 0.0)
+                        log.info("ApplyScoresTask[panel_ltr_xgboost]: merged 5 fund features "
+                                 "from %s", fp.name)
+                # Rebuild X with fund cols included
+                X = pd.DataFrame.from_dict(rows, orient="index")
                 X_aligned = X.reindex(columns=scorer.feature_cols, fill_value=float("nan"))
+
+                # Apply artifact-stored normalization chain if available (new artifacts
+                # store per-feature mean/std for raw→normalized inference parity)
+                meta = getattr(scorer, "metadata", {}) or {}
+                fmeans = meta.get("feature_means")
+                fstds  = meta.get("feature_stds")
+                if fmeans is not None and fstds is not None and len(fmeans) == len(scorer.feature_cols):
+                    import numpy as np                                               # noqa: PLC0415
+                    mu = np.asarray(fmeans); sd = np.asarray(fstds) + 1e-9
+                    Xv = X_aligned.fillna(0).values.astype(float)
+                    Xn = ((Xv - mu) / sd).clip(-5, 5)
+                    X_aligned = pd.DataFrame(Xn, index=X_aligned.index, columns=X_aligned.columns)
+                    log.info("ApplyScoresTask[panel_ltr_xgboost]: applied artifact normalization "
+                             "(mean/std for %d features)", len(fmeans))
+
                 scores: pd.Series = scorer.score(X_aligned)
-                log.info("ApplyScoresTask[panel_ltr_xgboost]: scored %d tickers via "
-                         "alpha158", len(rows))
+                log.info("ApplyScoresTask[panel_ltr_xgboost]: scored %d tickers via alpha158%s",
+                         len(rows), "+fund" if needs_fund else "")
         else:
             scores: pd.Series = scorer.score(X)
 

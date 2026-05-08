@@ -25,7 +25,7 @@ LABEL = "fwd_60d_excess"
 
 
 def main():
-    log.info("Loading R1K + 5-fund panel...")
+    log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
     panel = pd.read_parquet("data/alpha158_291_fundamental_dataset.parquet")
     panel["date"] = pd.to_datetime(panel["date"])
     excl = {"ticker","date","split_label","fwd_5d_excess","fwd_20d_excess","fwd_60d_excess"}
@@ -37,12 +37,48 @@ def main():
              len(train), len(panel), train["ticker"].nunique(),
              train["date"].min().date(), train["date"].max().date())
 
+    # Train directly on the already-normalized panel — no extra z-score
     Xtr = train[feat_cols].fillna(0).values.astype(np.float64)
     ytr = train[LABEL].clip(-5,5).values.astype(np.float64)
+    Xtr_n = Xtr  # no additional normalization
 
-    # Save normalization stats so inference can match
-    mu, sd = Xtr.mean(axis=0), Xtr.std(axis=0) + 1e-9
-    Xtr_n = ((Xtr - mu) / sd).clip(-5, 5)
+    # Build the FULL inference normalization chain stored in artifact:
+    # For each feature, (mean, std) such that (raw - mean) / std = normalized value
+    # alpha158 cols: from build_alpha158_qlib panel z-score (data/alpha158_qlib_dataset.stats.json)
+    # fund cols: from robust z-score recomputed on train period
+    ps = json.loads(Path("data/alpha158_qlib_dataset.stats.json").read_text())
+    alpha_norm = dict(zip(ps["feature_cols"], zip(ps["feature_means"], ps["feature_stds"])))
+
+    fund_cols = ["earnings_yield","book_to_price","gross_profitability","roe","asset_growth"]
+    fund_raw = pd.read_parquet("data/sec_fundamentals_daily.parquet")
+    fund_raw["date"] = pd.to_datetime(fund_raw["date"])
+    train_dates = set(train["date"])
+    fund_train_raw = fund_raw[fund_raw["date"].isin(train_dates)
+                               & fund_raw["ticker"].isin(set(train["ticker"]))]
+    log.info("Fund train rows for robust z-score recompute: %d", len(fund_train_raw))
+    fund_norm = {}
+    for c in fund_cols:
+        col = fund_train_raw[c].dropna()
+        med = float(col.median()) if len(col) else 0.0
+        mad = float((col - med).abs().median()) if len(col) else 1.0
+        scale = max(mad * 1.4826, 1e-9)
+        fund_norm[c] = (med, scale)
+
+    feat_means, feat_stds, feat_norm_kind = [], [], []
+    for c in feat_cols:
+        if c in alpha_norm:
+            m, s = alpha_norm[c]
+            feat_means.append(m); feat_stds.append(s); feat_norm_kind.append("global_z")
+        elif c in fund_norm:
+            m, s = fund_norm[c]
+            feat_means.append(m); feat_stds.append(s); feat_norm_kind.append("robust_z")
+        else:
+            feat_means.append(0.0); feat_stds.append(1.0); feat_norm_kind.append("identity")
+    log.info("Normalization chain: %d global_z, %d robust_z, %d identity",
+             feat_norm_kind.count("global_z"), feat_norm_kind.count("robust_z"),
+             feat_norm_kind.count("identity"))
+    mu = np.array(feat_means)
+    sd = np.array(feat_stds)
 
     sort_idx = np.argsort(train["date"].values)
     Xs, ys, ds = Xtr_n[sort_idx], ytr[sort_idx], train["date"].values[sort_idx]
