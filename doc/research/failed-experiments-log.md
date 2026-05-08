@@ -1543,28 +1543,64 @@ against the production base panel (163 features) using `scripts/wf_panel_args.py
 | **Base + 3 GMM regime** | **+0.0721** | 0.0619 | **6/7** | +0.09/+0.17/-0.01/+0.01/+0.13/+0.03/+0.10 |
 | **Δ** | **+0.0048** | -0.012 | +1 | wins 6/7 |
 
-**Verdict**: ⚠️ **MARGINAL — does NOT clear the +0.010 promotion threshold**
-(CLAUDE.md §2 + ic-evaluation-methodology.md). +0.005 is within XGB seed
-variance (CLAUDE.md §5.2 A/A σ ~6 bp). However:
-- Lower std (0.062 vs 0.074) — more stable across cuts
-- One additional positive cut (6/7 vs 5/7)
-- All 7 cuts show non-negative or marginal-negative perf
-- Cuts 1-2 (2019, 2020 COVID) show +30 bp & +40 bp regime lift, suggesting
-  regime features are doing something during volatility transitions
+**Verdict (initial)**: ⚠️ MARGINAL — raw IC +5 bp lift, below +0.01 floor.
+User direction (2026-05-08 evening): "0.01 太高了，能高一点点就应该 promote"
+(threshold too high; even slight lift should promote). Triggered §5.2
+sanity battery to validate the +5 bp is real signal not artifact.
 
-**Verdict refinement**: Direction is encouraging but magnitude is below
-threshold. Do NOT promote on this evidence alone. Resume conditions
-(any one suffices to revisit):
-1. **Sanity battery passes** — A/A + label-shuffle + time-shift placebo
-   from CLAUDE.md §5.2. The marginal +5 bp could be regime-context
-   stock-type capture (similar to the +25 bp shuffled-label artifact
-   E40 found).
-2. **Portfolio sim shows higher Sharpe** even at equal IC — regime
-   context might lift execution timing (entry/exit edges) without
-   raising raw IC. Run portfolio_simulation.py against fund_regime
-   panel.
-3. **Run 5 seeds and confirm Δ > 1σ above A/A noise** — current run
-   is single-seed, can't distinguish +5 bp from random.
+**Verdict (FINAL after §5.2 paired sanity, 2026-05-08 night)**: ✗ **NO-GO**.
+Raw IC went UP by +5 bp BUT shuffled-label IC went UP by +15 bp —
+real signal DROPPED by −13 bp. The regime probabilities increased
+stock-type / regime-period identification artifact more than they
+contributed real cross-sectional alpha.
+
+Paired sanity battery (`scripts/wf_sanity_paired.py`):
+
+| Metric | Baseline (5 fund) | + 3 GMM regime | Δ |
+|---|---:|---:|---:|
+| A/A mean IC (3 seeds: 42/43/44) | +0.0660 | +0.0685 | **+0.0025** |
+| A/A std across seeds | 0.0009 | **0.0050** | **+0.0042 (5×)** |
+| Per-date shuffled-label IC (seed=42) | +0.0276 | +0.0428 | **+0.0152** |
+| Time-shift +60d placebo IC (seed=42) | +0.0300 | +0.0203 | −0.0097 |
+| **REAL SIGNAL** = A/A_mean − shuffle | **+0.0384** | **+0.0257** | **−0.0127** |
+
+**Interpretation**: 
+- The +0.0025 raw IC delta is within 1× the regime panel's own A/A
+  σ (0.005) — it's not statistically distinguishable from seed
+  variance even before sanity adjustment.
+- Shuffled-label IC ballooned from +0.028 → +0.043 (+55% relative).
+  Per E40's finding, shuffled IC = stock-type identification on slow
+  features. Regime probabilities (slow-moving 1-day-lagged GMM
+  posterior) act as a fourth slow feature that the XGB tree splits
+  exploit to identify which-stock-on-which-regime-day even when
+  labels are randomized. That's the OPPOSITE of cross-sectional
+  alpha.
+- Same anti-pattern as Track F (E25, triple-barrier): raw IC went up,
+  placebo IC went up by more, real alpha was negative. CLAUDE.md
+  §5.2 is exactly this guardrail.
+
+**Resume condition**: regime context only worth re-trying if delivered
+via a path that does NOT add to per-stock slow-feature load. Two
+candidates:
+1. **Regime-conditional model GATING**, not regime-as-feature: train
+   3 separate XGB heads (one per GMM state), gate on regime at
+   inference. Avoids the per-stock leak because each model never
+   sees stocks across regime-mix permutations.
+2. **Regime-bucketed admission gate**: keep a single panel model,
+   but add a regime-conditional buy-floor multiplier in
+   `VetoWeakBuysTask` (e.g. +0.05 floor in BEAR regime). No new
+   features touch the model.
+
+**Production model unchanged** — current live = panel-ltr.alpha158_fund.json
+(promoted in commit ca350c0). Real signal = +0.038 stays the
+production benchmark to beat.
+
+**Reproduction**:
+```
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/wf_sanity_paired.py
+# saves data/sanity_paired_baseline_vs_regime.json
+```
 
 **Reproduction**:
 ```
