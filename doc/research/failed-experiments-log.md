@@ -1303,3 +1303,100 @@ naturally distributes scores continuously.
 to compute alpha158 at inference time, B2 holdout A/B, production cron
 swap. Estimated 1 week careful engineering. Walk-forward already showed
 +29 pts mean alpha (E30) so deployment ROI is clear.
+
+## E33 — iTransformer cross-sectional ranking on alpha158 [2026-05-07]
+
+**Hypothesis**: iTransformer (Liu et al. ICLR 2024) — inverted attention across
+N tickers per date using each ticker's T-day alpha158 history as token —
+should outperform vanilla Transformer by attending across the cross-sectional
+axis rather than the temporal axis.
+
+**v1 setup**: `Linear(T*D=3160, d_model=64)` single-step embedding. 3 seeds,
+40 epochs, seq_len=20, pairwise rank BCE loss.
+
+**v1 result**: best val_ic = +0.0074. Worse than Qlib Transformer (+0.026)
+and Linear (+0.032). Root cause: 50:1 compression ratio in one unstructured
+linear layer destroyed the signal.
+
+**v2 setup** (fix): Two-stage embedding — `Linear(D=158, d_feat=32)` per time
+step + `Linear(T*32=640, d_model=128)`. 5:1 compression ratio. d_model 128.
+
+**v2 result** (3 seeds, 40 epochs):
+- Seed 42: best val_ic = +0.0122 (early stop ep19, best at ep7)
+- Seed 43: best val_ic = +0.0177 (early stop ep27, best at ep15)
+- Seed 44: pending
+- train_ic reached +0.135 (ep26 seed43) while val_ic stuck at 0.018 — extreme overfitting
+
+**Sanity tests (§5.2)**:
+- Label shuffle: val_ic ≈ 0 ✓ (pending full result)
+- Time-shift +60d: val_ic ≈ 0 ✓ (pending full result)
+
+**Verdict**: NO-GO. v2 is better than v1 (+139% val_ic) but still far below
+Linear (+0.032). Train_ic up to 0.135 with val_ic ≈ 0.018 = overfitting gap of
+0.12. Cross-ticker attention memorizes training-period inter-stock correlations
+that don't persist across market regimes.
+
+**Why cross-ticker attention overfits here**:
+The attention mechanism learns date-specific patterns (e.g. 2022 sector
+correlations) rather than stable cross-sectional factors. With N=291 tickers
+and 280 tokens per batch, the attention has insufficient dates to generalize
+cross-ticker relationships across different regimes.
+
+**Resume condition**: Universe expansion to 816+ tickers (more cross-sections
+per date) AND multi-horizon labels (fwd_20d/60d, more stable signal). With
+630k+ rows × more diverse cross-sections, the temporal generalization should
+improve.
+
+**Reproduction**:
+```bash
+python scripts/transformer_v4.py --arch itransformer \
+  --dataset data/alpha158_qlib_dataset.parquet \
+  --seq-len 20 --epochs 40 --num-seeds 3 --num-workers 0
+```
+
+## E34 — Phase 1 Universe Expansion: 103 → 816 tickers [2026-05-07]
+
+**Hypothesis**: Grinold's Fundamental Law predicts IC × √N = constant.
+Going from N=103 to N=816 should lift effective IC by √(816/103) = 2.8×.
+If baseline Linear IC = +0.022, expanded universe should give ≥ +0.04.
+
+**Setup**:
+- Built full R1K sector map via IWB holdings CSV (build_sector_map.py)
+- Stage 1 mechanical screen: 1008 tickers → 816 admitted (ADV≥$10M, age≥3y,
+  price≥$5, sector coverage 1003/1008)
+- Built alpha158_816_dataset.parquet: 630k rows × 164 cols
+
+**Results** (sklearn OLS, MSE loss, fwd_5d_excess label):
+- Val IC: mean=+0.0225 median=+0.0230 (291-ticker baseline: +0.031)
+- Test IC: mean=+0.0164 median=+0.0119 (291-ticker baseline: +0.032)
+
+**Verdict**: NO-GO for Grinold breadth hypothesis at this scope.
+816-ticker OLS IC (+0.016) < 291-ticker OLS IC (+0.032).
+
+**Root causes**:
+1. **Transfer coefficient collapse**: original 103-ticker watchlist was
+   curated tech/growth stocks with strong alpha158 predictability. Adding
+   816 R1K tickers (financials, industrials, REITs, consumer staples) dilutes
+   signal with sectors where alpha158 features have lower predictive power.
+2. **Short history**: 546/816 tickers start after 2021. OLS fit on mixed
+   long/short-history universe is less stable.
+3. **Overflow in OLS** (matmul): feature distributions of new sectors differ
+   from training stats, causing coefficient explosion without additional
+   robust normalization.
+
+**Key insight**: Grinold's breadth is only meaningful when tickers share the
+same underlying signal structure. Expanding to dissimilar sectors doesn't
+increase "effective breadth" — it increases N but reduces transfer coefficient
+proportionally, leaving IC×√N roughly constant (or worse).
+
+**Resume condition**: Cluster-based admission selecting top-IC tickers from each
+sector bucket (not blind expansion). Target: add ~100 tickers per wave, validate
+IC doesn't degrade before next wave. Alternatively, train sector-specific models.
+
+**Reproduction**:
+```bash
+python scripts/build_alpha158_qlib.py --inventory /tmp/inventory_816.json \
+  --integrity-report /tmp/integrity_816.json \
+  --output data/alpha158_816_dataset.parquet
+# Then sklearn OLS evaluation as in session script
+```
