@@ -59,11 +59,12 @@ SLEEP_BETWEEN = 0.12   # ~8 req/sec, SEC asks for ≤10
 # period_type: "duration" = income stmt (quarterly period)
 #              "instant"  = balance sheet (point in time)
 CONCEPTS = [
-    ("NetIncomeLoss",     "us-gaap", "USD", "duration"),
-    ("GrossProfit",       "us-gaap", "USD", "duration"),
-    ("Revenues",          "us-gaap", "USD", "duration"),
-    ("Assets",            "us-gaap", "USD", "instant"),
-    ("StockholdersEquity","us-gaap", "USD", "instant"),
+    ("NetIncomeLoss",                  "us-gaap", "USD",    "duration"),
+    ("GrossProfit",                    "us-gaap", "USD",    "duration"),
+    ("Revenues",                       "us-gaap", "USD",    "duration"),
+    ("Assets",                         "us-gaap", "USD",    "instant"),
+    ("StockholdersEquity",             "us-gaap", "USD",    "instant"),
+    ("CommonStockSharesOutstanding",   "us-gaap", "shares", "instant"),  # for market-cap ratios
 ]
 
 
@@ -172,7 +173,8 @@ def forward_fill_to_daily(quarterly: pd.DataFrame,
                           daily_index: pd.DatetimeIndex,
                           tickers: list[str]) -> pd.DataFrame:
     """Expand quarterly panel to daily, forward-filling after available_date."""
-    feat_cols = ["NetIncomeLoss", "GrossProfit", "Revenues", "Assets", "StockholdersEquity"]
+    feat_cols = ["NetIncomeLoss", "GrossProfit", "Revenues", "Assets",
+                 "StockholdersEquity", "CommonStockSharesOutstanding"]
     feat_cols = [c for c in feat_cols if c in quarterly.columns]
 
     all_daily = []
@@ -222,28 +224,25 @@ def compute_derived_features(daily: pd.DataFrame,
 
         # TTM Net Income (sum of last 4 quarters is already in the quarterly
         # value since we use the period-end value). For simplicity use as-is.
-        ni  = merged.get("NetIncomeLoss",   pd.Series(np.nan, index=merged.index))
-        gp  = merged.get("GrossProfit",     pd.Series(np.nan, index=merged.index))
-        ast = merged.get("Assets",          pd.Series(np.nan, index=merged.index))
-        eq  = merged.get("StockholdersEquity", pd.Series(np.nan, index=merged.index))
-        px  = merged.get("price",           pd.Series(np.nan, index=merged.index))
-        rev = merged.get("Revenues",        pd.Series(np.nan, index=merged.index))
+        ni     = merged.get("NetIncomeLoss",                pd.Series(np.nan, index=merged.index))
+        gp     = merged.get("GrossProfit",                 pd.Series(np.nan, index=merged.index))
+        ast    = merged.get("Assets",                      pd.Series(np.nan, index=merged.index))
+        eq     = merged.get("StockholdersEquity",          pd.Series(np.nan, index=merged.index))
+        px     = merged.get("price",                       pd.Series(np.nan, index=merged.index))
+        shares = merged.get("CommonStockSharesOutstanding",pd.Series(np.nan, index=merged.index))
 
-        # Shares approximation: use StockholdersEquity / book_price if available
-        # Use a rough shares count from market data if possible
-        # For now: use value ratios that don't require shares
+        # Market cap = shares × price (both from daily data, point-in-time)
+        mktcap = shares * px
 
         result = pd.DataFrame(index=merged.index)
         result["ticker"] = ticker
 
-        # Valuation ratios (using raw quarterly values as proxies)
-        # These are proportional to correct values when price varies slowly
         with np.errstate(invalid="ignore", divide="ignore"):
-            result["earnings_yield"]      = ni  / (px * 1e6 + 1e-9)  # scaled
-            result["book_to_price"]       = eq  / (px * 1e6 + 1e-9)
-            result["gross_profitability"] = gp  / (ast + 1e-9)        # Novy-Marx
-            result["roe"]                 = ni  / (eq  + 1e-9)
-            result["asset_growth"]        = ast.pct_change(periods=4) # YoY
+            result["earnings_yield"]      = ni  / (mktcap + 1e-9)   # E/P, Gu et al. top feature
+            result["book_to_price"]       = eq  / (mktcap + 1e-9)   # B/M, Fama-French
+            result["gross_profitability"] = gp  / (ast    + 1e-9)   # Novy-Marx (2013)
+            result["roe"]                 = ni  / (eq     + 1e-9)   # profitability
+            result["asset_growth"]        = ast.pct_change(periods=4) # YoY, Cooper et al.
 
         derived_rows.append(result.reset_index().rename(columns={"index": "date"}))
 
