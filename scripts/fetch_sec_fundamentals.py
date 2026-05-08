@@ -78,24 +78,53 @@ def quarter_periods(start_year: int, end_year: int) -> list[tuple[str, str]]:
     return periods
 
 
-def fetch_frame(concept: str, taxonomy: str, unit: str, period: str) -> pd.DataFrame | None:
-    """Fetch all companies' values for one concept × one period."""
+def fetch_frame(concept: str, taxonomy: str, unit: str, period: str,
+                max_retries: int = 3, backoff: float = 5.0) -> pd.DataFrame | None:
+    """Fetch all companies' values for one concept × one period.
+
+    Retries up to max_retries times on timeout or 5xx errors, with
+    exponential backoff. 404 (concept not filed for that period) returns None
+    immediately — not an error.
+    """
     url = f"{FRAMES_BASE}/{taxonomy}/{concept}/{unit}/{period}.json"
-    try:
-        r = requests.get(url, headers=SEC_HEADERS, timeout=30)
-        if r.status_code == 404:
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(url, headers=SEC_HEADERS, timeout=30)
+            if r.status_code == 404:
+                return None          # period genuinely has no data — not an error
+            r.raise_for_status()
+            data = r.json().get("data", [])
+            if not data:
+                return None
+            df = pd.DataFrame(data)
+            df["concept"] = concept
+            df["period"]  = period
+            return df
+        except requests.exceptions.Timeout:
+            wait = backoff * attempt
+            if attempt < max_retries:
+                log.warning("  timeout %s/%s — retry %d/%d in %.0fs",
+                            concept, period, attempt, max_retries, wait)
+                time.sleep(wait)
+            else:
+                log.warning("  timeout %s/%s — giving up after %d retries",
+                            concept, period, max_retries)
+                return None
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code < 500:
+                log.warning("  HTTP %d %s/%s — skipping",
+                            e.response.status_code, concept, period)
+                return None          # 4xx: data issue, don't retry
+            wait = backoff * attempt
+            if attempt < max_retries:
+                log.warning("  HTTP error %s/%s — retry %d/%d in %.0fs",
+                            concept, period, attempt, max_retries, wait)
+                time.sleep(wait)
+            else:
+                return None
+        except Exception as e:
+            log.warning("  fetch_frame failed %s/%s: %s", concept, period, e)
             return None
-        r.raise_for_status()
-        data = r.json().get("data", [])
-        if not data:
-            return None
-        df = pd.DataFrame(data)
-        df["concept"] = concept
-        df["period"]  = period
-        return df
-    except Exception as e:
-        log.warning("  fetch_frame failed %s/%s: %s", concept, period, e)
-        return None
 
 
 def build_ticker_cik_map(universe: list[str]) -> dict[str, int]:
