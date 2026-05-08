@@ -244,7 +244,9 @@ Status:
 - ✓ Fetched OHLCV for 1910/1919 R2K tickers via yfinance
 - ✓ Built alpha158 dataset for 1640 R2K with 5+ years history (3.7M rows, 5.6× larger than R1K)
 - ⚠ SEC fundamentals coverage = 0 for R2K (only fetched for R1K) — re-fetching now (~30 min)
-- ✓ WF on R2K alpha158-only: COMPLETE — IC +0.015 vs R1K +0.066, Cakici NOT confirmed without fundamentals (testing if Cakici holds without fundamentals first)
+- ✓ WF on R2K alpha158-only: IC +0.015 (Cakici fails without fund)
+- ✓ WF on R2K + fund: IC +0.026 — fund adds +0.011 to R2K BUT still loses to R1K+fund (+0.066)
+- ✗ Cakici 2023 hypothesis NOT CONFIRMED for US daily ML with alpha158+5-fund features (testing if Cakici holds without fundamentals first)
 
 ---
 

@@ -1470,3 +1470,38 @@ R2K alpha158 + XGB d=5 e=0.05 fwd_60d 7-cut WF:
 3. Have survivorship bias in our 5+ year filter (delisted small caps excluded)
 
 **Next test**: rerun R2K WF AFTER SEC fundamentals are fetched for combined R1K+R2K universe. If R2K + fund ≥ R1K + fund, Cakici is partially confirmed (fundamentals required for small-cap signal).
+
+### E37 FINAL RESULT (2026-05-08): R2K + fund still loses to R1K + fund
+
+After re-fetching SEC fundamentals for R1K+R2K combined universe:
+- SEC fund coverage: 1869/1919 R2K tickers (97%)
+- Re-ran WF on R2K + fund with same fwd_60d XGB d=5 e=0.05 config
+
+**Results comparison (all 7-cut WF, fwd_60d, XGB d=5):**
+
+| Universe | Features | Mean IC | Std | Pos/7 |
+|---|---|---|---|---|
+| R1K (291 tickers) | alpha158 + fund | **+0.066** | 0.072 | 6/7 ⭐ |
+| R2K (1640 tickers) | alpha158 only | +0.015 | 0.052 | 5/7 |
+| R2K (1640 tickers) | alpha158 + fund | +0.026 | 0.082 | 5/7 |
+
+**Findings:**
+1. ✓ Fundamentals help R2K (+0.011 IC lift, 73% relative)
+2. ✗ R2K + fund STILL LOSES to R1K + fund (-0.040 mean IC)
+3. ✗ R2K std=0.082 > R1K std=0.072 (more regime-dependent, not less)
+4. R2K Cut 3 (2021): IC = -0.100 (extreme negative, small caps got crushed)
+
+**Cakici 2023 hypothesis verdict for US daily ML with alpha158**: NOT CONFIRMED.
+
+**Why Cakici doesn't transfer**:
+- They used 94 firm characteristics (Gu/Kelly/Xiu set), not OHLCV-only
+- Their result was at MONTHLY frequency on FULL universe (~30k stocks)
+- Our 5 SEC features are not enough fundamental signal to compensate
+- Small-cap alpha may require liquidity, size, microstructure factors we don't have
+
+**Resume conditions**:
+1. If we add Gu/Kelly/Xiu's 94-feature set (analyst data, microstructure, liquidity) → re-test R2K
+2. If we move to monthly horizon → re-test R2K
+3. If we add Russell 2000-specific features (small-cap quality, size factor) → re-test
+
+**Current production baseline (locked)**: R1K (291 tickers) + alpha158 + SEC fund + XGB d=5 e=0.05 fwd_60d → mean IC +0.066, std 0.072, 6/7 cuts positive.
