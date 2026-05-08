@@ -41,6 +41,25 @@ def load_artifact(path: Path) -> dict:
     art["_booster"] = booster
     art["_means"]   = np.array(art["feature_means"])
     art["_stds"]    = np.array(art["feature_stds"])
+
+    # CRITICAL: the model was trained on already-z-scored features (panel build
+    # applied per-feature z-score using train-only stats). compute_alpha158_at
+    # at inference time produces RAW features. Need to apply panel z-score
+    # FIRST before the artifact's per-cut normalization. Load panel z-score stats.
+    panel_stats_path = REPO / "data" / "alpha158_qlib_dataset.stats.json"
+    if panel_stats_path.exists():
+        ps = json.loads(panel_stats_path.read_text())
+        # Build map for alpha158 cols only (5 fund cols are in artifact stats only)
+        ps_means = dict(zip(ps["feature_cols"], ps["feature_means"]))
+        ps_stds  = dict(zip(ps["feature_cols"], ps["feature_stds"]))
+        art["_panel_means"] = np.array([ps_means.get(c, 0.0) for c in art["feature_cols"]])
+        art["_panel_stds"]  = np.array([ps_stds.get(c, 1.0)  for c in art["feature_cols"]])
+        log.info("Loaded panel z-score stats from %s", panel_stats_path.name)
+    else:
+        art["_panel_means"] = np.zeros(len(art["feature_cols"]))
+        art["_panel_stds"]  = np.ones(len(art["feature_cols"]))
+        log.warning("No panel stats found — assuming raw features ≈ z-scored")
+
     log.info("Artifact loaded: %s, %d features, fingerprint=%s",
              art["kind"], len(art["feature_cols"]), art["config_fingerprint"])
     return art
@@ -101,7 +120,11 @@ def score_universe(art: dict, universe: list[str], today: pd.Timestamp) -> pd.Da
 
     X = pd.DataFrame.from_dict(rows, orient="index").reindex(columns=art["feature_cols"])
     Xv = X.fillna(0).values.astype(np.float64)
-    Xn = ((Xv - art["_means"]) / art["_stds"]).clip(-5, 5)
+    # Step 1: panel z-score (matches build_alpha158_qlib.py training-time normalization)
+    Xv_panel = ((Xv - art["_panel_means"]) / art["_panel_stds"]).clip(-5, 5)
+    # Step 2: artifact-level z-score (mostly identity since panel was already z-scored,
+    # but kept for fund features which weren't in panel stats)
+    Xn = ((Xv_panel - art["_means"]) / art["_stds"]).clip(-5, 5)
     preds = art["_booster"].predict(xgb.DMatrix(Xn))
 
     out = pd.DataFrame({"ticker": X.index, "pred": preds})
