@@ -323,6 +323,88 @@ class iTransformerRanker(nn.Module):
         return self.head(encoded).squeeze(-1)                    # (N,)
 
 
+class PatchTSTRanker(nn.Module):
+    """PatchTST for cross-sectional stock ranking.
+
+    Ref: Nie et al., "A Time Series is Worth 64 Words", ICLR 2023.
+    yuqinie98/PatchTST. Ported from PatchTST_backbone.py.
+
+    Key idea: divide each ticker's T-step history into overlapping patches,
+    embed each patch, then apply transformer attention across patches
+    (temporal axis, channel-independent per feature dimension).
+
+    Adaptation for ranking (vs forecasting):
+    - Input: (N_tickers, seq_len, D_features)
+    - Each ticker processed independently across its D feature channels
+    - Patches from seq_len: num_patches = (seq_len - patch_len) // stride + 1
+    - Attention across num_patches per channel, then pool → score per ticker
+
+    Paper params (ETTh1): seq_len=336, patch_len=16, stride=8, d_model=16,
+    n_heads=4, e_layers=3. We use shorter seq_len for daily stock data.
+    """
+
+    def __init__(self, n_channels: int, seq_len: int,
+                 patch_len: int = 8, stride: int = 4,
+                 d_model: int = 64, n_heads: int = 4,
+                 n_layers: int = 3, dropout: float = 0.2,
+                 d_ff: int = 128):
+        super().__init__()
+        self.patch_len  = patch_len
+        self.stride     = stride
+        self.n_channels = n_channels
+        num_patches = (seq_len - patch_len) // stride + 1
+        self.num_patches = num_patches
+
+        # Patch embedding: each patch (patch_len time steps, all D features)
+        # → d_model token. Channel-mixing: all features in one projection.
+        self.patch_embed = nn.Linear(patch_len * n_channels, d_model)
+        self.pos_embed   = nn.Parameter(torch.randn(1, num_patches, d_model) * 0.02)
+        self.embed_norm  = nn.LayerNorm(d_model)
+        self.embed_drop  = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=n_heads,
+            dim_feedforward=d_ff,
+            dropout=dropout, activation="gelu",
+            batch_first=True, norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        self.head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, 1),
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor, t_idx: torch.Tensor) -> torch.Tensor:
+        # x: (N_tickers, seq_len, n_channels)
+        N, T, D = x.shape
+        P, S = self.patch_len, self.stride
+
+        # Extract patches: (N, num_patches, patch_len * n_channels)
+        patches = x.unfold(1, P, S)          # (N, num_patches, D, P)
+        patches = patches.permute(0, 1, 3, 2) # (N, num_patches, P, D)
+        patches = patches.reshape(N, self.num_patches, P * D)
+
+        # Embed + positional encoding
+        tokens = self.embed_drop(
+            self.embed_norm(self.patch_embed(patches)) + self.pos_embed
+        )                                     # (N, num_patches, d_model)
+
+        # Temporal attention across patches per ticker
+        encoded = self.encoder(tokens)        # (N, num_patches, d_model)
+
+        # Pool across patches → score per ticker
+        pooled = encoded.mean(dim=1)          # (N, d_model)
+        return self.head(pooled).squeeze(-1)  # (N,)
+
+
 def build_model(arch: str, n_channels: int, seq_len: int) -> nn.Module:
     if arch == "linear":
         return LinearBaseline(n_channels, seq_len)
@@ -334,6 +416,8 @@ def build_model(arch: str, n_channels: int, seq_len: int) -> nn.Module:
         return TransformerRanker(n_channels, seq_len)
     if arch == "itransformer":
         return iTransformerRanker(n_channels, seq_len)
+    if arch == "patchtst":
+        return PatchTSTRanker(n_channels, seq_len)
     raise ValueError(f"unknown arch: {arch}")
 
 
@@ -423,7 +507,7 @@ def main() -> None:
     p.add_argument("--dataset",
                    default=str(REPO_ROOT / "data" / "transformer_dataset_engineered.parquet"))
     p.add_argument("--arch", required=True,
-                   choices=["linear", "mlp", "lstm", "transformer", "itransformer"])
+                   choices=["linear", "mlp", "lstm", "transformer", "itransformer", "patchtst"])
     p.add_argument("--seq-len", type=int, default=60)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--lr", type=float, default=1e-3,
