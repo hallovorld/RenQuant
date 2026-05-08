@@ -26,17 +26,50 @@ Long-running quant trading workstation that does the boring infra well so the us
 
 ---
 
-## P0 — alpha158_linear path to live
+## P0 — Plan B: universe expansion + multi-horizon ensemble + Transformer (2026-05-07 EOD pivot)
 
-These are sequential. Each gates the next.
+Walk-forward 5-cut v2 (with FIXED artifact-path) confirmed **alpha158_linear NO-GO**: mean alpha vs SPY = −2.0 pts, only 1/5 cut beats SPY (defensive factor). Production 27-feat XGB walk-forward (E27) also −15.62%. Both backends fail to beat passive SPY at our 103-ticker scale — this is structural per Grinold's law (breadth too small).
 
-1. **Walk-forward 3-cut on alpha158_linear** (in flight 2026-05-07). Cuts run on the existing artifact across 3 OOS 6-mo windows: 2024-05→11, 2024-11→2025-05, 2025-05→11 (=V7). Pass criterion: mean Sharpe ≥ 1.0 across all 3 cuts.
-2. **Wire alpha158_linear into the daily retrain cron**. `scripts/retrain_alpha158_linear.sh` exists (commit `182e642`); needs launchd plist + integration test before scheduling. Without this the artifact goes stale and live picks degrade (the 2026-05-07 reverted promotion was caused by this exact failure).
-3. **Re-promote to live** with rollback rehearsed, after (1) passes and (2) is scheduled. Promote both `strategy_config.json` and `strategy_config.golden.json` in the same commit; backup copies as `*.previous.json`.
+**User-confirmed plan**: scale up universe → multi-horizon ensemble → Transformer long-term.
 
-If walk-forward fails (mean Sharpe < 0.5), iterate on the model rather than promoting:
-- Try Ridge regularization (`--estimator ridge --alpha 1.0` in `train_panel_linear.py`).
-- Try fwd_20d label (longer horizon, maybe more stable).
+### Phase 1 — Universe 103 → 300+ (Week 1)
+
+**BLOCKER**: Stage 1 mechanical screen on R1K rejects 752/1009 for `no_sector_mapping`. Run `scripts/build_sector_map.py` to expand sector coverage FIRST, then re-run Stage 1.
+
+Steps:
+1. Expand sector map → re-run `scripts/screen_stage1_mechanical.py`
+2. Cluster-based admission (sector × cap × beta bucket; top-IC per cluster) — avoids Track D wl183 TC collapse (E26)
+3. Build alpha158 dataset for 300+ universe
+4. Sanity train Linear: OOS IC ≥ +0.04 on new universe (vs 0.022 on 103)
+
+**PASS gate**: 280-320 ticker, OOS IC ≥ +0.04, no single new ticker −IC contribution.
+
+### Phase 2 — Multi-Horizon Ensemble (Week 1-2)
+
+3 alpha158 models × {fwd_5d, fwd_20d, fwd_60d} → 1/IC weighted ensemble (DeMiguel et al. 2009; NOT learned weights — E1 ElasticNet lost -79% IC).
+
+ALSO ensemble Linear + XGB heterogeneously (Linear = regime-stable defensive factor, XGB = regime-adaptive non-linear; errors likely uncorrelated).
+
+**PASS gate**: ensemble OOS IC > best single horizon AND walk-forward mean alpha vs SPY > 0.
+
+### Phase 3 — Transformer Fine-Tune (Week 2-3)
+
+E30 showed Transformer IC < Linear IC at 290-ticker / 8-yr. With Phase 1 expanded universe + Phase 2 multi-horizon labels, Transformer has more data to leverage.
+
+Architecture priority (literature: see session handoff):
+1. **iTransformer** (Liu 2024 ICLR) — invert attention to cross-asset axis
+2. **MASTER** (Li 2024 AAAI) — market-guided cross-stock attention
+3. **AlphaPortfolio** (Cong et al 2021/2024) — end-to-end Sharpe loss
+
+`scripts/transformer_v4.py` is current Paradigm A. Phase 3 ports iTransformer or MASTER.
+
+### Phase 4 — Promotion (Week 3-4)
+
+Full cron wire-up + paper smoke + 7d/14d watch before live equity.
+
+### If Phase 1 fails
+
+Pivot to hourly bars (Track C) — same breadth-lift goal via 16x more data points per ticker.
 - Try ensemble of XGBoost + alpha158_linear scores.
 
 ---

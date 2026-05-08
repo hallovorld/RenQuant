@@ -1,8 +1,17 @@
 # RenQuant — Status
 
-**Last updated**: 2026-05-07 (post cvxpy QP refactor + alpha158_linear V7 holdout)
+**Last updated**: 2026-05-07 evening (full handoff: see [`archives/sessions/2026-05-07-session-handoff.md`](archives/sessions/2026-05-07-session-handoff.md))
 
 This is the **canonical status reference** — what's live, what just changed, what's open. CLAUDE.md's status block at the top of the repo is the same content, kept short for context loads.
+
+> **2026-05-07 EOD**: alpha158_linear walk-forward 5-cut **v2 (with FIXED
+> artifact-path)** confirmed NO-GO: mean alpha vs SPY = −2.0 pts, only 1/5
+> cut beats SPY (T4 2025-Q1 crash, defensive factor strength). Neither
+> alpha158_linear nor production 27-feat XGB beats passive SPY in
+> walk-forward. Plan B confirmed: **universe 103 → 300+ + multi-horizon
+> ensemble + Transformer long-term**. Phase 1 blocker = sector map needs
+> expansion (752/1009 R1K tickers unmapped). See session handoff for
+> details.
 
 ---
 
