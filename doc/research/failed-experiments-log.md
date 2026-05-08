@@ -1711,9 +1711,41 @@ The remaining ~+0.025 is slow factor exposure (still useful for trading, but not
 | 1/std-weighted ensemble | +0.074 | 0.069 | 5/7 |
 | inverse-variance ensemble | +0.068 | 0.071 | 4/6 |
 
-**Verdict**: PROMOTE PENDING. EQ ensemble gives +0.007 IC + lower std vs baseline, but Δ < 0.01 promotion threshold. Win rate equal at 5/7. Worth testing in portfolio sim.
+**Verdict (initial)**: PROMOTE PENDING — +0.007 IC + lower std but Δ < 0.01.
+Worth testing in portfolio sim because IC and Sharpe don't always
+move together.
 
-**Reproduction**: `python scripts/walk_forward_multi_horizon.py`
+**Verdict (FINAL after D2 portfolio sim, 2026-05-08 night)**: ✗ **NO-GO**.
+Ran full 7-cut portfolio simulation (rebal=20d, hold=20d, decile=10%,
+TC=10bp). Compared to baseline E41:
+
+| Strategy | Sharpe | AnnRet | AnnVol | MaxDD |
+|---|---:|---:|---:|---:|
+| Baseline single-horizon fwd_60d (E41) LO | **1.06** | 34.4% | 32.4% | -42.3% |
+| **Multi-horizon ensemble** LO | **0.99** | 32.0% | 32.3% | -41.5% |
+| Baseline LS | 1.04 | — | — | — |
+| **Multi-horizon ensemble** LS | 0.98 | 24.1% | 24.5% | -36.5% |
+
+Sharpe DROPPED -0.07 LO / -0.06 LS despite the +0.007 IC lift. This
+is the IC↔Sharpe disconnect: multi-horizon ranks lift the
+*measurement* of cross-sectional discrimination, but mixing 5d-noise
+with 60d-signal at portfolio time:
+- shifts top-decile composition between rebalances → higher turnover
+- pulls conviction names down when 5d momentum disagrees with 60d
+- AnnVol identical (32.3 vs 32.4%) — risk unchanged but return down
+
+Production stays on single-horizon fwd_60d (panel-ltr.alpha158_fund.json).
+
+**Resume condition**: only worth revisiting if a NEW combiner gates
+on horizon-agreement (e.g. only buy when all 3 horizons agree on rank
+quartile). Pure rank-mean is decisively worse.
+
+**Reproduction**:
+```
+python scripts/walk_forward_multi_horizon.py        # for the +0.007 IC
+python scripts/portfolio_simulation_multihorizon.py # for the Sharpe drop
+# saves data/portfolio_sim_multihorizon.json
+```
 
 ## E43 — Vol-targeted portfolio [2026-05-08]
 
