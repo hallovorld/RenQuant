@@ -188,18 +188,78 @@ Before publishing any IC number, confirm:
 
 ---
 
-## 9. Today's Walk-Forward Result (2026-05-08)
+## 9. Walk-Forward Results Log (live, updated as experiments complete)
 
-7-cut WF on 291-ticker alpha158 + SEC fundamentals, fwd_20d label:
+All on 7-cut WF: train rolling 3 years, embargo 21 days, test 1 year. Cuts cover 2019-2025.
+
+### 2026-05-08 baselines
+
+#### Wave 1: 3 labels × 6 models (Linear / Ridge / XGB) on 291-ticker alpha158+fund
 
 ```
-       mean      std    min      max     per-cut
-OLS    +0.0292  0.038  -0.018  +0.087  [+0.041, +0.087, -0.018, +0.005, -0.001, +0.011, +0.079]
-RIDGE  +0.0303  0.038  -0.018  +0.090  [+0.044, +0.090, -0.018, +0.005, +0.000, +0.015, +0.078]
-XGB    +0.0390  0.046  -0.016  +0.106  [+0.062, +0.106, -0.016, -0.016, +0.032, +0.014, +0.092]
+Label         Model           Mean IC    Std       Pos/7  IR (mean/std)
+fwd_60d       XGB d=5 e=0.05  +0.0660    0.0722    6/7    0.92  ★ NEW BASELINE
+fwd_60d       XGB d=7 e=0.10  +0.0634    0.0765    5/7    0.83
+fwd_60d       XGB d=3 e=0.03  +0.0552    0.0610    6/7    0.90
+fwd_20d       XGB d=7 e=0.10  +0.0398    0.0492    5/7    0.81
+fwd_20d       XGB d=5 e=0.05  +0.0390    0.0456    5/7    0.85
+fwd_60d       Ridge a=10      +0.0372    0.0556    4/7    0.67
+fwd_60d       OLS             +0.0356    0.0553    4/7    0.64
+fwd_20d       Ridge a=10      +0.0303    0.0381    5/7    0.79
+fwd_20d       OLS             +0.0292    0.0378    5/7    0.77  (prev baseline)
+fwd_5d        XGB d=7 e=0.10  +0.0237    0.0185    6/7    1.28  ← best IR (most stable)
+fwd_5d        XGB d=3 e=0.03  +0.0221    0.0194    6/7    1.14
+fwd_5d        Ridge           +0.0104    0.0096    6/7    1.08
+fwd_5d        OLS             +0.0091    0.0082    6/7    1.11  ← lowest IC, most stable
 ```
 
-This is the durable, honest baseline. All future model claims must beat this on the same 7 cuts to count.
+**Key takeaways:**
+- **Longer horizon → higher IC but higher std**. fwd_60d gets +0.066 but std=0.072.
+- **Shorter horizon → lower IC, much more stable**. fwd_5d std=0.008-0.018.
+- **XGB beats Linear by ~30-50% on IC** at all horizons.
+- **fwd_5d has best IR** (1.0-1.3); fwd_60d best raw IC.
+- **Picking depends on objective**: max IC → fwd_60d XGB; max stability → fwd_5d XGB.
+
+#### Wave 2: regime conditioning (paired test on best config)
+
+```
+Config: fwd_60d, XGB d=5 e=0.05, 7 cuts
+                       Mean IC  Std     Win/7
+alpha158+fund          +0.0660  0.0722  -
++ regime_p (3 cols)    +0.0632  0.0652  4/7
+Δ                      -0.0028  -0.0070
+```
+
+**Verdict**: Regime not a win (paired threshold: ≥5/7 win + Δmean > 0.01). Std compressed 9.7% but IC unchanged. NOT promoted.
+
+**Theoretical interpretation**: XGB depth=5 with 158+5 alpha158/fund features can already implicitly learn regime structure from VMA, VSTD, BETA features. Adding 3 explicit regime probabilities is information-redundant for this model class.
+
+#### Wave 3: R2K small-cap universe (in progress)
+
+Hypothesis (Cakici et al. 2023 JEDC): ML alpha is 2.4× larger on small-caps than large-caps for US.
+- R1K (291 tickers): IC +0.066 (current baseline)
+- R2K target: > +0.10 if Cakici holds
+
+Status:
+- ✓ Fetched OHLCV for 1910/1919 R2K tickers via yfinance
+- ✓ Built alpha158 dataset for 1640 R2K with 5+ years history (3.7M rows, 5.6× larger than R1K)
+- ⚠ SEC fundamentals coverage = 0 for R2K (only fetched for R1K) — re-fetching now (~30 min)
+- ✓ WF on R2K alpha158-only: COMPLETE — IC +0.015 vs R1K +0.066, Cakici NOT confirmed without fundamentals (testing if Cakici holds without fundamentals first)
+
+---
+
+## 10. Production Promotion Rules
+
+For any model/feature to replace a current production model, it must:
+
+1. **Beat baseline on same 7 WF cuts** by ≥0.01 mean IC AND
+2. **Win ≥5/7 individual cuts** AND
+3. **Sanity tests pass** (label shuffle ≈ 0, time-shift ≈ 0) AND
+4. **Train_ic / val_ic gap < 0.05** at convergence
+
+If a candidate beats only on mean but fails win-rate, treat it as "promising but variance-inflated" and require a 9-cut or 11-cut WF for confirmation before promotion.
+
+Never promote based on single split val IC, even if val IC > current baseline.
 
 ### How this compares to literature (with caveats about apples-to-apples)
 

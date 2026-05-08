@@ -1400,3 +1400,73 @@ python scripts/build_alpha158_qlib.py --inventory /tmp/inventory_816.json \
   --output data/alpha158_816_dataset.parquet
 # Then sklearn OLS evaluation as in session script
 ```
+
+## E35 — Extended WF: 3 horizons × 6 models × 7 cuts [2026-05-08]
+
+**Hypothesis**: longer horizon labels (fwd_20d, fwd_60d) have higher SNR than fwd_5d for cross-sectional ranking, and XGB beats Linear on US large-caps if data scale is sufficient.
+
+**Setup**: 7-cut walk-forward on 291-ticker alpha158+fundamental, paired comparison.
+
+**Result**: NEW BASELINE — fwd_60d + XGB d=5 e=0.05 = IC +0.066, std 0.072, 6/7 cuts positive.
+
+| Best per horizon | Mean IC | Std | Pos/7 |
+|---|---|---|---|
+| fwd_60d XGB d=5 | **+0.066** | 0.072 | 6/7 |
+| fwd_20d XGB d=7 | +0.040 | 0.049 | 5/7 |
+| fwd_5d XGB d=7 | +0.024 | 0.019 | 6/7 |
+
+**Verdict**: SUCCESS. fwd_60d gives 70% higher IC than prior fwd_20d baseline. fwd_5d most stable (best IR=1.3).
+
+**Reproduction**: `python scripts/walk_forward_extended.py`
+
+## E36 — Regime conditioning: SPY GMM probabilities as features [2026-05-08]
+
+**Hypothesis**: Adding 3 regime probability features (BULL_VOLATILE, BEAR, BULL_CALM) from SPY GMM artifact will reduce IC variance across regimes.
+
+**Setup**: Paired 7-cut WF on best config (fwd_60d XGB d=5).
+
+**Result**: 
+- Base: IC +0.066 std 0.072
+- +Regime: IC +0.063 std 0.065
+- Δ mean = -0.003 (within noise), Δ std = -0.0070 (-9.7%)
+- Win rate 4/7
+
+**Verdict**: NO-GO per IC methodology paired threshold (≥5/7 win + Δ>0.01). Std reduction is real but mean unchanged.
+
+**Theoretical interpretation**: XGB depth=5 with 158 alpha158 features (which include VMA, VSTD, BETA per multiple windows) can implicitly learn regime structure. Adding 3 explicit regime probs is information-redundant for tree-based models. Could be useful for Linear models which can't learn nonlinear regime gates.
+
+**Resume condition**: try regime as Linear model interaction term (regime × momentum, regime × value), not as raw additive features.
+
+**Reproduction**: `python scripts/walk_forward_regime_compare.py`
+
+## E37 — Russell 2000 small-cap expansion [2026-05-08, in progress]
+
+**Hypothesis**: Cakici et al. (2023 JEDC) — ML alpha is 2.4× larger on US small-caps than large-caps. R2K should give IC > +0.10 vs current R1K best of +0.066.
+
+**Setup**: Fetched OHLCV for 1910/1919 R2K tickers (1640 with 5+ years), built alpha158 dataset (3.7M rows, 5.6× R1K).
+
+**SEC fundamentals**: Initially missing for R2K (only R1K had been fetched). Re-fetching for combined R1K+R2K universe (~3000 tickers, ~30 min).
+
+**Status**:
+- alpha158 build: done (1640 tickers, 3.7M rows)
+- SEC fund re-fetch: in progress
+- WF on R2K alpha158-only: in progress (test Cakici hypothesis without fundamentals first)
+
+**Reproduction**: `python scripts/fetch_russell2000_ohlcv.py` then `python scripts/build_alpha158_qlib.py --inventory /tmp/inv_r2k.json --integrity-report /tmp/integ_r2k.json --output data/alpha158_r2k_dataset.parquet`
+
+### E37 RESULT (2026-05-08): Cakici hypothesis NOT confirmed
+
+R2K alpha158 + XGB d=5 e=0.05 fwd_60d 7-cut WF:
+- **Mean IC: +0.0148** (R1K baseline: +0.066)
+- Std: 0.052
+- Per-cut range: -0.080 to +0.106
+- Pos: 5/7
+
+**Verdict**: NO-GO. R2K gives LOWER mean IC than R1K despite 5.6× more training data.
+
+**Why Cakici (2023) doesn't transfer**: They used 94 firm characteristics (Gu/Kelly/Xiu set, includes fundamentals + analyst data). We use pure OHLCV alpha158. Small-cap stocks likely:
+1. Have noisier OHLCV features (lower liquidity → wider bid-ask, gap distortions)
+2. Need fundamentals to separate quality from junk (which Cakici had)
+3. Have survivorship bias in our 5+ year filter (delisted small caps excluded)
+
+**Next test**: rerun R2K WF AFTER SEC fundamentals are fetched for combined R1K+R2K universe. If R2K + fund ≥ R1K + fund, Cakici is partially confirmed (fundamentals required for small-cap signal).
