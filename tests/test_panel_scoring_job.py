@@ -355,3 +355,117 @@ class TestPanelScoringJob:
         assert job.should_skip(ctx) is True
         after = [c.rank_score for c in ctx.candidates]
         assert before == after
+
+
+# ── Alpha158 XGBoost dispatch regression (0-trades bug 2026-05-07) ───────────
+
+def _write_xgb_alpha158_artifact(path: Path, feat_cols: list[str]):
+    """Minimal XGBoost artifact with kind=panel_ltr_xgboost + alpha158 feature set."""
+    rng = np.random.default_rng(42)
+    n = len(feat_cols)
+    X = rng.normal(size=(60, n))
+    y = (X[:, 0] > 0).astype(int)
+    dm = xgb.DMatrix(X, label=y)
+    booster = xgb.train(
+        {"objective": "binary:logistic", "verbosity": 0}, dm, num_boost_round=3,
+    )
+    raw = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
+    payload = {
+        "version": 1,
+        "kind": "panel_ltr_xgboost",
+        "feature_cols": feat_cols,
+        "booster_raw_json": raw,
+        "oos_mean_ic": 0.036,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _make_ohlcv(tickers, n_days=120):
+    """Minimal OHLCV dict — enough rows for compute_alpha158_at (needs ≥70)."""
+    rng = np.random.default_rng(7)
+    dates = pd.bdate_range("2025-09-01", periods=n_days)
+    out = {}
+    for t in tickers:
+        price = 100 + rng.normal(scale=2, size=n_days).cumsum()
+        out[t] = pd.DataFrame({
+            "open": price * 0.99,
+            "high": price * 1.01,
+            "low":  price * 0.98,
+            "close": price,
+            "volume": rng.integers(100_000, 1_000_000, size=n_days).astype(float),
+        }, index=dates)
+    return out
+
+
+class TestAlpha158XGBDispatch:
+    """Regression tests for the 2026-05-07 0-trades bug.
+
+    Root cause: DriftGuardTask and ApplyScoresTask gated alpha158 feature
+    building on scorer_kind == "panel_linear" only. panel_ltr_xgboost kind
+    fell through to the 21-feature production path — DriftGuard saw 87%
+    structural-missing columns and cleared ctx.candidates → 0 trades.
+    """
+
+    FEAT_COLS = [f"feat_{i}" for i in range(158)]
+
+    def test_drift_guard_skips_for_xgb_alpha158(self, tmp_path):
+        """DriftGuardTask must return None (skip) for panel_ltr_xgboost kind."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
+        from kernel.panel_pipeline.tasks_feature_matrix import DriftGuardTask
+
+        art = _write_xgb_alpha158_artifact(
+            tmp_path / "artifacts" / "panel-ltr.json", self.FEAT_COLS,
+        )
+        ctx = _make_ctx(tmp_path, enabled=True, artifact_path=str(art))
+        LoadScorerTask().run(ctx)
+
+        # 21-col production-shaped matrix — mismatches the 158 alpha158 feature_cols
+        ctx._panel_matrix = pd.DataFrame(
+            np.random.default_rng(0).normal(size=(3, 3)),
+            index=["AAA", "BBB", "CCC"],
+            columns=FEATURE_COLS,
+        )
+
+        result = DriftGuardTask().run(ctx)
+        assert result is None, "DriftGuardTask should skip for panel_ltr_xgboost"
+        assert len(ctx.candidates) == 3, "candidates must survive drift guard"
+
+    def test_apply_scores_uses_alpha158_path_for_xgb(self, tmp_path, monkeypatch):
+        """ApplyScoresTask must route panel_ltr_xgboost through alpha158 feature build."""
+        import kernel.panel_pipeline.alpha158_features as a158_mod  # noqa: PLC0415
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask, LoadScorerTask
+
+        feat_cols = self.FEAT_COLS
+        art = _write_xgb_alpha158_artifact(
+            tmp_path / "artifacts" / "panel-ltr.json", feat_cols,
+        )
+        tickers = ("AAA", "BBB", "CCC")
+        ctx = _make_ctx(tmp_path, enabled=True, artifact_path=str(art), tickers=tickers)
+        LoadScorerTask().run(ctx)
+
+        ctx.ohlcv = _make_ohlcv(tickers)
+        ctx._panel_matrix = pd.DataFrame(
+            np.random.default_rng(0).normal(size=(3, 3)),
+            index=list(tickers),
+            columns=FEATURE_COLS,
+        )
+
+        # Patch compute_alpha158_at on the module so the lazy import inside
+        # ApplyScoresTask picks up the stub (returns all 158 feat_cols).
+        rng = np.random.default_rng(99)
+        monkeypatch.setattr(
+            a158_mod, "compute_alpha158_at",
+            lambda ohlcv, today: {f: float(rng.normal()) for f in feat_cols},
+        )
+
+        before = [c.rank_score for c in ctx.candidates]
+        ApplyScoresTask().run(ctx)
+        after = [c.rank_score for c in ctx.candidates]
+
+        scored = sum(1 for a, b in zip(after, before) if a != b)
+        assert scored == 3, (
+            f"Expected all 3 candidates scored via alpha158+XGB path, "
+            f"got {scored}. before={before} after={after}"
+        )

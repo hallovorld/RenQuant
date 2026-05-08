@@ -151,19 +151,18 @@ class ApplyScoresTask(Task):
             # return None (continue) and let them no-op individually.
             return None
 
-        # Phase 3 (2026-05-06): alpha158 + Linear scorer needs different
-        # features than the production XGB pipeline produces.
-        # `BuildFeatureMatrixJob` builds the 21-feature matrix from
-        # neutralized + factor frames; PanelLinearScorer expects the 158
-        # alpha158 features. Detect via scorer artifact metadata and
-        # rebuild X from per-ticker raw OHLCV using compute_alpha158_at.
+        # Phase 3 (2026-05-06): alpha158 models need different features than
+        # the production XGB pipeline produces. `BuildFeatureMatrixJob` builds
+        # the 21-feature matrix; alpha158 models expect 158 features computed
+        # from raw OHLCV. Rebuild X here for both panel_linear and
+        # panel_ltr_xgboost alpha158 artifacts.
         scorer_kind = scorer.metadata.get("kind") if hasattr(scorer, "metadata") else None
-        if scorer_kind == "panel_linear":
+        if scorer_kind in ("panel_linear", "panel_ltr_xgboost"):
             from kernel.panel_pipeline.alpha158_features import compute_alpha158_at  # noqa: PLC0415
             today = getattr(ctx, "today", None)
             ohlcv_dict = getattr(ctx, "ohlcv", None) or getattr(ctx, "ohlcv_all", None)
             if ohlcv_dict is None:
-                log.warning("ApplyScoresTask[panel_linear]: ctx.ohlcv unavailable")
+                log.warning("ApplyScoresTask[alpha158]: ctx.ohlcv unavailable")
                 return None
             tickers = list(X.index)   # candidates + holdings already de-duped
             rows = {}
@@ -175,14 +174,21 @@ class ApplyScoresTask(Task):
                 if feats:
                     rows[t] = feats
             if not rows:
-                log.warning("ApplyScoresTask[panel_linear]: 0/%d tickers had "
+                log.warning("ApplyScoresTask[alpha158]: 0/%d tickers had "
                              "sufficient history for alpha158", len(tickers))
                 return None
             X = pd.DataFrame.from_dict(rows, orient="index")
-            # Use score_raw which applies stored ZScoreNorm + Fillna + Clip
-            scores: pd.Series = scorer.score_raw(X)
-            log.info("ApplyScoresTask[panel_linear]: scored %d tickers via "
-                     "alpha158 + score_raw", len(rows))
+            if scorer_kind == "panel_linear":
+                # PanelLinearScorer.score_raw applies stored ZScoreNorm + Fillna + Clip
+                scores: pd.Series = scorer.score_raw(X)
+                log.info("ApplyScoresTask[panel_linear]: scored %d tickers via "
+                         "alpha158 + score_raw", len(rows))
+            else:
+                # XGBoost alpha158: align to stored feature_cols order; NaN-impute gaps
+                X_aligned = X.reindex(columns=scorer.feature_cols, fill_value=float("nan"))
+                scores: pd.Series = scorer.score(X_aligned)
+                log.info("ApplyScoresTask[panel_ltr_xgboost]: scored %d tickers via "
+                         "alpha158", len(rows))
         else:
             scores: pd.Series = scorer.score(X)
 

@@ -169,6 +169,15 @@ class DriftGuardTask(Task):
         if X is None:
             return None
         scorer = ctx._panel_scorer  # noqa: SLF001
+        # Phase 3 (2026-05-06): alpha158 models use a separate inference
+        # path (features built per-ticker from raw OHLCV in ApplyScoresTask).
+        # The X matrix at this stage is XGB-shaped (21 cols) and doesn't
+        # match scorer.feature_cols (158 alpha158 cols). Skip drift check —
+        # ApplyScoresTask handles feature building for these kinds.
+        scorer_kind = (scorer.metadata.get("kind")
+                       if hasattr(scorer, "metadata") else None)
+        if scorer_kind in ("panel_linear", "panel_ltr_xgboost"):
+            return None
         nan_cols = [c for c in scorer.feature_cols if X[c].isna().all()]
         if not nan_cols:
             return
