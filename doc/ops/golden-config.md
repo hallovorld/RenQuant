@@ -2,21 +2,32 @@
 
 **Current golden.** Promoted 2026-04-24 (v4.1 from +37.85 → +39.82 APY), builds on v4 (`eb8fab5`, Kelly half + A-gate). Round-7 additions on 2026-04-26 (acceptance gates Phase 1+2, challenger infra) added to the golden snapshot but do NOT change measured APY — they are infrastructure for future safe retrains.
 
-> **2026-05-07 status**: golden runs the 27-feature XGBoost panel-LTR
-> (`panel-ltr.json`). The 158-feature alpha158_linear variant
-> (`panel-ltr.alpha158_linear.json`) — V7 single-cut Sharpe 2.009 —
-> was briefly promoted then **reverted** the same day:
+> **2026-05-08 status**: golden promoted to **alpha158+SEC-fund XGBoost**
+> (`panel-ltr.alpha158_fund.json`, 163 features = 158 alpha158 + 5
+> point-in-time SEC fundamentals: earnings_yield, book_to_price,
+> gross_profitability, roe, asset_growth). Model trained on R1K 291
+> tickers, fwd_60d_excess label, XGB d=5 e=0.05 100 rounds.
 >
-> 1. walk-forward 3-cut on the same trained-once model gave mean Sharpe
->    +0.14 with cuts 1-2 producing −0.94 / −0.64 (E29 in failed-
->    experiments-log) — the V7 number was a regime-lucky window;
-> 2. the daily retrain cron isn't wired for alpha158_linear yet
->    (`scripts/retrain_alpha158_linear.sh` exists but no launchd plist).
+> **Validation evidence** (vs the prior failed V7 promotion on 2026-05-07):
 >
-> Backups of pre-promotion golden are preserved as
-> `strategy_config.golden.previous.json` + `strategy_config.live.previous.json`
-> for fast rollback. Re-promotion path is in
-> [`../roadmap.md`](../roadmap.md) P0.
+> 1. Walk-forward **7-cut** mean OOS IC = **+0.066** (std 0.072), 6/7 cuts
+>    positive — not a regime-lucky single window. Sanity-adjusted real
+>    signal ~+0.041 after stock-type residual subtracted.
+> 2. Portfolio sim (long-only top decile, 7-cut WF) Sharpe 1.06,
+>    MaxDD −42%; long-short Sharpe 1.04. Consistent with Grinold's Law
+>    given measured IC and 291-ticker breadth.
+> 3. NGBoost head disabled (`ranking.panel_scoring.ngboost.enabled=false`)
+>    until retrained on the 163-feature space — the previous head was
+>    trained on 21 prod features and would fingerprint-mismatch.
+> 4. E2E paper sim 2026-05-07 produced 3 BUY orders (LMT, MPWR, ON)
+>    after all production safety gates (EarningsFilter, WashSale, Vol,
+>    Parabolic, VetoWeakBuys, JointPortfolioQP).
+>
+> Backups of pre-promotion golden + live are preserved as
+> `strategy_config.golden.previous_2026-05-08.json` +
+> `strategy_config.live.previous_2026-05-08.json` for fast rollback.
+> The earlier `.previous.json` (no date suffix) preserves the
+> 2026-05-07 V7 revert state.
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
 **Live config file:** `backtesting/renquant_104/strategy_config.json`
