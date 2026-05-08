@@ -120,22 +120,33 @@ To claim "model A beats model B":
 
 ---
 
-## 5. Parameter / Sample Count Sanity
+## 5. Direct Overfit Detection (Train vs Val Gap)
 
-Before training a complex model, check:
+The honest test for overfitting is empirical, not heuristic. During training, monitor:
 
-- **Linear model**: 1 parameter per feature. ~150 parameters for alpha158. No constraint on sample count.
-- **Tree (XGBoost)**: ~depth² × n_trees parameters. ~1000-10000 effective. Need ≥10× as many samples per cut.
-- **Transformer**: 100k–10M parameters. Need ≥100× as many samples per parameter to avoid pure memorization.
+```
+train_ic at convergence:  X
+val_ic at best epoch:     Y
+overfit_gap = X - Y
+```
 
-**Our scale**: 291 stocks × 1500 train dates ≈ 440k samples. 
-- Linear (158 params): comfortable
-- XGB (depth=5, 100 trees, ~5k effective): comfortable  
-- Transformer (350k params): **1.3 samples per parameter** — guaranteed to overfit
+**Empirical thresholds (from this project's measurements 2026-05):**
+- gap < 0.02: model is generalizing
+- gap 0.02-0.05: mild overfitting, still trustworthy
+- gap > 0.05: severe overfitting; val IC is largely noise from train→val correlation
 
-**Decision rule**: if param/sample ratio > 1/100, do not train — the complex model will overfit even with strong regularization. Increase data first.
+**Today's measurements:**
 
-Reference: Hastie, Tibshirani, Friedman (ESL Ch. 7) on bias-variance tradeoff and effective sample complexity.
+| Model | train_ic | val_ic | gap | Verdict |
+|---|---|---|---|---|
+| Linear OLS | +0.030 | +0.029 | 0.001 | ✓ honest |
+| XGBoost | +0.045 | +0.039 | 0.006 | ✓ honest |
+| iTransformer (350k params) | +0.103 | +0.018 | 0.085 | ✗ severe overfit |
+| PatchTST (180k params) | +0.077 | +0.020 | 0.057 | ✗ severe overfit |
+
+**Theoretical context**: Hastie/Tibshirani/Friedman (ESL Ch. 7) and Goodfellow/Bengio/Courville (DL Ch. 5) discuss the bias-variance tradeoff and the "VC dimension"-like concept that capacity must be matched to sample complexity. There is no single closed-form ratio (the param/sample heuristic is folklore, not theory). What matters in practice is the measured gap.
+
+**Decision rule (revised, evidence-based)**: train any architecture you want, but if the gap > 0.05 in walk-forward, the val IC is unusable for production decisions. Reduce model capacity (smaller d_model, more dropout, more weight decay) until gap < 0.02 before claiming the architecture works.
 
 ---
 
@@ -189,3 +200,25 @@ XGB    +0.0390  0.046  -0.016  +0.106  [+0.062, +0.106, -0.016, -0.016, +0.032, 
 ```
 
 This is the durable, honest baseline. All future model claims must beat this on the same 7 cuts to count.
+
+### How this compares to literature (with caveats about apples-to-apples)
+
+| Source | Universe | Reported metric | Our metric, equivalent |
+|---|---|---|---|
+| Gu, Kelly, Xiu (2020 RFS) | ~30k US stocks, monthly | OOS R²=0.35%, Sharpe=1.35 | (different metric) |
+| Cakici et al. (2023 JEDC) | US large-cap, monthly | OLS beats 8 ML methods | Same direction in our WF |
+| Qlib CSI300 benchmark | 300 Chinese A-shares, daily | XGB IC=0.050 | Our XGB +0.039 (US, 291) |
+| Qlib README baseline | CSI300, daily, alpha158 | Linear IC=0.034 | Our Linear +0.029 (US, 291) |
+
+**Honest comparison statements:**
+- "Our Linear OLS WF mean IC +0.029 is **lower than Qlib's CSI300 Linear IC 0.034** by ~15%, consistent with the documented A-share vs US-stock predictability gap (Cakici et al. 2023)."
+- "Our XGB +0.039 is **lower than Qlib's CSI300 XGB 0.050** by 22%, again consistent with US-market efficiency."
+- "Direct comparison to Gu/Kelly/Xiu is not possible because they report monthly R² and long-short Sharpe, not Spearman rank IC."
+
+### Open-source projects with reproducible US-stock IC numbers
+
+After research (knowledge base entry `ext_gu_kelly_xiu_2020`, `ext_qlib_benchmark`, `ext_cakici_2023`):
+- **microsoft/qlib**: only publishes CSI300/CSI500 numbers, not US
+- **OpenSourceAP/CrossSection**: replicates 300+ US anomalies, monthly horizon — useful for fundamental factor construction, not for daily ML IC
+- **stefan-jansen/machine-learning-for-trading**: textbook examples on US, but no proprietary IC numbers
+- **No widely cited public open-source reference reports daily Spearman rank IC on a US large-cap universe in the literature.** This means our +0.029-0.039 is most rigorously compared against Qlib CSI300 (different market) or Gu et al. (different metric).
