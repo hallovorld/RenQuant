@@ -52,3 +52,4 @@ backtesting/*/artifacts/panel-transformer.json
 
 # Local archive (notebook snapshots, etc — not tracked)
 archive/
+knowledge/chromadb/
