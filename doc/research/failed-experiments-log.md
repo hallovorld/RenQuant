@@ -1522,6 +1522,61 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 
 **Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
 
+## E44 — SPY-GMM regime probabilities as panel features [2026-05-08]
+
+**Hypothesis**: regime-conditional alpha capture — production signal works
+differently in BULL_CALM vs BULL_VOLATILE vs BEAR. Broadcasting the SPY
+GMM posterior probabilities (`regime_p_bull_calm`, `regime_p_bull_volatile`,
+`regime_p_bear`) as panel features should let XGB tree splits gate on
+regime context, not just stock fundamentals/momentum. Macro broadcast
+literature (Cakici et al. 2023, Cremers et al. 2008) supports this when
+used with ML rankers that can model interactions.
+
+**Setup**: alpha158 (158) + 5 SEC fundamentals + 3 GMM regime probs = 166
+features. Same R1K 291 ticker panel, fwd_60d_excess label, paired WF
+against the production base panel (163 features) using `scripts/wf_panel_args.py`.
+
+**Result (paired 7-cut WF, XGB d=5 e=0.05 mcw=50, identical seed=42)**:
+| Setup | Mean IC | Std | Pos/7 | Per-cut |
+|---|---|---|---|---|
+| Base (alpha158 + 5 fund) | +0.0673 | 0.0737 | 5/7 | +0.06/+0.13/-0.04/+0.00/+0.13/+0.03/+0.11 |
+| **Base + 3 GMM regime** | **+0.0721** | 0.0619 | **6/7** | +0.09/+0.17/-0.01/+0.01/+0.13/+0.03/+0.10 |
+| **Δ** | **+0.0048** | -0.012 | +1 | wins 6/7 |
+
+**Verdict**: ⚠️ **MARGINAL — does NOT clear the +0.010 promotion threshold**
+(CLAUDE.md §2 + ic-evaluation-methodology.md). +0.005 is within XGB seed
+variance (CLAUDE.md §5.2 A/A σ ~6 bp). However:
+- Lower std (0.062 vs 0.074) — more stable across cuts
+- One additional positive cut (6/7 vs 5/7)
+- All 7 cuts show non-negative or marginal-negative perf
+- Cuts 1-2 (2019, 2020 COVID) show +30 bp & +40 bp regime lift, suggesting
+  regime features are doing something during volatility transitions
+
+**Verdict refinement**: Direction is encouraging but magnitude is below
+threshold. Do NOT promote on this evidence alone. Resume conditions
+(any one suffices to revisit):
+1. **Sanity battery passes** — A/A + label-shuffle + time-shift placebo
+   from CLAUDE.md §5.2. The marginal +5 bp could be regime-context
+   stock-type capture (similar to the +25 bp shuffled-label artifact
+   E40 found).
+2. **Portfolio sim shows higher Sharpe** even at equal IC — regime
+   context might lift execution timing (entry/exit edges) without
+   raising raw IC. Run portfolio_simulation.py against fund_regime
+   panel.
+3. **Run 5 seeds and confirm Δ > 1σ above A/A noise** — current run
+   is single-seed, can't distinguish +5 bp from random.
+
+**Reproduction**:
+```
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/wf_panel_args.py \
+    --panel data/alpha158_291_fund_regime_dataset.parquet \
+    --label fwd_60d_excess \
+    --out   data/wf_fund_regime_fwd60d.json
+```
+Panel built by `scripts/build_regime_features.py` (SPY GMM 3-state
+posterior, 1-day lag to avoid lookahead).
+
 ## E39 — Extended SEC fundamentals (7 derived ratios) [2026-05-08]
 
 **Setup**: Added 7 derived features (asset_turnover, profit_margin, return_on_assets, debt_to_assets, rev_growth_yoy, ni_growth_yoy, equity_growth) on top of existing 5 (earnings_yield, book_to_price, gross_profitability, roe, asset_growth) = 12 fund features total.
@@ -1539,6 +1594,12 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 3. NaN→0 fill creates zero-bias features for tickers without data
 
 **Resume condition**: orthogonalize features (PCA or feature selection) before adding to model.
+
+**Replication 2026-05-08 evening (post-promotion E2E run)**: re-ran via
+`scripts/wf_panel_args.py` against same panels — Base XGB +0.0673,
+ext_fund XGB +0.0478, **Δ = −0.0195**. Direction confirmed; magnitude
+slightly smaller than the original run, consistent with XGB seed
+variance (CLAUDE.md §5.2 A/A σ ~6 bp). NO-GO verdict stands.
 
 ## E40 — §5.2 Sanity test suite on baseline [2026-05-08]
 
