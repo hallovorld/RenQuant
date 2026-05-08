@@ -321,7 +321,7 @@ def main() -> None:
         feats = build_features_for_ticker(t, Path(args.ohlcv_dir))
         if feats is None:
             continue
-        feats = feats.reset_index().rename(columns={"index": "date"})
+        feats = feats.reset_index().rename(columns={"index": "date", "Date": "date"})
         feats["date"] = pd.to_datetime(feats["date"])
         feats.insert(0, "ticker", t)
         rows.append(feats)
