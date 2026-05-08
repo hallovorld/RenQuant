@@ -1598,3 +1598,37 @@ The remaining ~+0.025 is slow factor exposure (still useful for trading, but not
    Strategy capacity ~$5-50M before market impact dominates.
 
 **Reproduction**: `python scripts/portfolio_simulation.py`
+
+## E42 — Multi-horizon ensemble [2026-05-08]
+
+**Setup**: Train fwd_5d, fwd_20d, fwd_60d models separately, ensemble cross-sectional ranks.
+
+**Results (7-cut WF, fwd_60d test labels)**:
+
+| Method | Mean IC | Std | Pos/7 |
+|---|---|---|---|
+| fwd_5d alone | +0.020 | 0.018 | 6/7 |
+| fwd_20d alone | +0.043 | 0.046 | 5/7 |
+| fwd_60d alone (baseline) | +0.067 | 0.074 | 5/7 |
+| **EQ ensemble (mean of ranks)** | **+0.074** | 0.069 | 5/7 |
+| 1/std-weighted ensemble | +0.074 | 0.069 | 5/7 |
+| inverse-variance ensemble | +0.068 | 0.071 | 4/6 |
+
+**Verdict**: PROMOTE PENDING. EQ ensemble gives +0.007 IC + lower std vs baseline, but Δ < 0.01 promotion threshold. Win rate equal at 5/7. Worth testing in portfolio sim.
+
+**Reproduction**: `python scripts/walk_forward_multi_horizon.py`
+
+## E43 — Vol-targeted portfolio [2026-05-08]
+
+**Setup**: Apply 60-day rolling vol target (15%) + DD-cap (-10% threshold, linear scale-down to -25%).
+
+**Results (vs base portfolio sim)**:
+
+| Strategy | Sharpe | AnnRet | AnnVol | MaxDD |
+|---|---|---|---|---|
+| Base LO top decile | 1.06 | 34.4% | 32.4% | -42.3% |
+| Vol-target LO (15%, DD-cap=10%) | 0.84 | 17.9% | 21.4% | -37.1% |
+
+**Verdict**: NEEDS REWORK. Vol-target reduced returns more than vol → Sharpe dropped 21%. MaxDD only improved 5pts. The DD threshold of -10% kicks in too aggressively in volatile regimes.
+
+**Resume condition**: tune DD threshold (-15% to -20%), or use ATR-based per-name vol normalization instead of portfolio-level.
