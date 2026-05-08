@@ -251,42 +251,48 @@ class TransformerRanker(nn.Module):
 
 
 class iTransformerRanker(nn.Module):
-    """iTransformer for cross-sectional ranking.
+    """iTransformer for cross-sectional ranking — v2 two-stage embedding.
 
     Ref: Liu et al., "iTransformer: Inverted Transformers Are Effective for
     Time Series Forecasting", ICLR 2024. thuml/iTransformer.
-    Embedding module design follows neuralforecast.common._modules.DataEmbedding_inverted.
+    Embedding follows neuralforecast.common._modules.DataEmbedding_inverted.
 
     Key inversion vs TransformerRanker:
       TransformerRanker : attend across T time steps  per ticker  (temporal axis)
       iTransformerRanker: attend across N tickers     per date    (cross-variate axis)
 
-    Adaptation for D>1 features per time step (original paper assumes D=1 scalar
-    variates; we have D=158 alpha158 features per ticker per day):
-      - Flatten each ticker's (seq_len, D) history → (seq_len*D,) vector
-      - Linear(seq_len*D → d_model): same projection as DataEmbedding_inverted
-        but over the joint temporal+feature dimension
-      - Standard TransformerEncoder for cross-ticker self-attention (N tokens)
-      - Score head: d_model → 1 per ticker
+    v1 failure: single Linear(T*D=3160, 64) — 50:1 compression in one unstructured
+    step destroyed the signal. v2 fix: two-stage embedding matching the paper's intent:
+      Stage 1 feat_proj  Linear(D, d_feat)          — compress features per time step
+                                                       (shared weights across T & N)
+      Stage 2 token_proj Linear(T*d_feat, d_model)  — aggregate temporal context per
+                                                       ticker → one d_model token
+                                                       (DataEmbedding_inverted analogue)
+    With D=158, T=20, d_feat=32, d_model=128: compression is 5:1 not 50:1.
     """
 
     def __init__(self, n_channels: int, seq_len: int,
-                 d_model: int = 64, n_heads: int = 4,
+                 d_model: int = 128, n_heads: int = 4,
                  n_layers: int = 2, dropout: float = 0.1,
-                 d_ff: int = 256):
+                 d_ff: int = 256, d_feat: int = 32):
         super().__init__()
-        # DataEmbedding_inverted equivalent: project each variate's history → d_model.
-        # Original: Linear(seq_len, d_model) for scalar variates.
-        # Ours: Linear(seq_len * n_channels, d_model) for multi-feature variates.
-        self.token_embed = nn.Linear(seq_len * n_channels, d_model)
-        self.input_norm  = nn.LayerNorm(d_model)
+        # Stage 1: feature compression per time step (shared across T and N)
+        # Equivalent to applying a lightweight feature mixer before temporal pooling.
+        self.feat_proj   = nn.Linear(n_channels, d_feat)
+        self.feat_norm   = nn.LayerNorm(d_feat)
+
+        # Stage 2: DataEmbedding_inverted — aggregate ticker's T compressed steps → token.
+        # Original paper: Linear(seq_len, d_model) for scalar variates.
+        # Here: Linear(seq_len * d_feat, d_model) — same idea, d_feat-dim variates.
+        self.token_proj  = nn.Linear(seq_len * d_feat, d_model)
+        self.token_norm  = nn.LayerNorm(d_model)
         self.dropout_emb = nn.Dropout(dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=n_heads,
             dim_feedforward=d_ff,
             dropout=dropout, activation="gelu",
-            batch_first=True, norm_first=True,  # Pre-LN (iTransformer default)
+            batch_first=True, norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
@@ -296,7 +302,6 @@ class iTransformerRanker(nn.Module):
             nn.Linear(d_model, 1),
         )
 
-        # Xavier init — same as existing TransformerRanker (audit fix #49)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -304,17 +309,18 @@ class iTransformerRanker(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor, t_idx: torch.Tensor) -> torch.Tensor:
-        # x: (N_tickers, seq_len, n_channels) — one full date's batch
+        # x: (N_tickers, seq_len, n_channels)
         N, T, D = x.shape
-        # Flatten temporal+feature dims per ticker → token embedding
-        # Equivalent to DataEmbedding_inverted.value_embedding on flattened input
-        x_flat  = x.reshape(N, T * D)                          # (N, T*D)
-        tokens  = self.dropout_emb(self.input_norm(
-            self.token_embed(x_flat)))                          # (N, d_model)
-        # Cross-ticker self-attention — the "inverted" axis
-        # TransformerEncoder expects (batch, seq, d_model); here batch=1, seq=N_tickers
+        # Stage 1: compress D features → d_feat at each time step
+        h = self.feat_norm(self.feat_proj(x))               # (N, T, d_feat)
+        # Stage 2: flatten temporal dim and project to d_model token per ticker
+        # This is DataEmbedding_inverted applied to d_feat-dim variates
+        h_flat = h.reshape(N, T * h.shape[-1])              # (N, T*d_feat)
+        tokens = self.dropout_emb(
+            self.token_norm(self.token_proj(h_flat)))        # (N, d_model)
+        # Cross-ticker self-attention (the inverted axis)
         encoded = self.encoder(tokens.unsqueeze(0)).squeeze(0)  # (N, d_model)
-        return self.head(encoded).squeeze(-1)                   # (N,)
+        return self.head(encoded).squeeze(-1)                    # (N,)
 
 
 def build_model(arch: str, n_channels: int, seq_len: int) -> nn.Module:
