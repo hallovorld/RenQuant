@@ -64,6 +64,24 @@ def main():
              len(fund), fund["ticker"].nunique(),
              [c for c in keep if c not in ("ticker","date")])
 
+    # ── Invariant guard: SEC date coverage ≥ panel date coverage ─────────
+    # 2026-05-09 BUG #2 root: panel max date 2026-02-11 vs sec max 2026-02-10
+    # → that one extra day got fund all-zero (cross-sectional median of
+    # all-NaN reduces to 0). Hard-fail to surface the SEC-fetch lag
+    # immediately rather than silently zero-filling.
+    panel_max = alpha["date"].max()
+    sec_max   = fund["date"].max()
+    if panel_max > sec_max:
+        raise RuntimeError(
+            f"BUG #2 guard: alpha158 panel max date {panel_max.date()} > "
+            f"sec_fundamentals_daily max {sec_max.date()}. "
+            f"Refresh sec_fundamentals_daily before rebuilding panel — "
+            f"otherwise the {(panel_max - sec_max).days} unmatched day(s) "
+            f"will get fund features silently zero-filled (since "
+            f"cross-sectional median over all-NaN candidates is itself "
+            f"NaN, falling back to fillna(0))."
+        )
+
     # Left-join — every alpha158 row keeps its labels, fund cols may be NaN
     # where the ticker has no SEC coverage on that date.
     log.info("Merging on (ticker, date)...")

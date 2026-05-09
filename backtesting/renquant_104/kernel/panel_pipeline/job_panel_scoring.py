@@ -192,6 +192,7 @@ class ApplyScoresTask(Task):
                 if needs_fund:
                     import os                                                       # noqa: PLC0415
                     from pathlib import Path                                         # noqa: PLC0415
+                    import numpy as np                                              # noqa: PLC0415
                     repo = Path(__file__).resolve().parents[4]
                     fp = repo / "data" / "sec_fundamentals_daily.parquet"
                     if fp.exists():
@@ -199,17 +200,50 @@ class ApplyScoresTask(Task):
                         fund_panel["date"] = pd.to_datetime(fund_panel["date"])
                         snap = fund_panel[fund_panel["date"] <= pd.Timestamp(today)] \
                             .sort_values("date").groupby("ticker").tail(1)
-                        for t, feats in rows.items():
+                        # ── 2026-05-09 BUG #1 fix: match training-time imputation chain ──
+                        # Training (build_alpha158_fund_panel.py):
+                        #     1) per-date cross-sectional median fillna
+                        #     2) final fillna(0) only if median was also NaN
+                        # Pre-fix runtime: NaN→0 directly (skipped step 1).
+                        # Result: 33% of (ticker,date) cells with NaN raw fund
+                        # values got DIFFERENT imputed values at train vs runtime
+                        # → SHAP shows fund features give ~constant contribution
+                        # at runtime (all map to same z-score branch).
+                        # Fix: replicate the median-then-zero chain.
+                        ticker_raw_fund = {}
+                        for t in rows.keys():
                             row = snap[snap["ticker"] == t]
                             if len(row):
-                                for fc in fund_cols:
-                                    if fc in row.columns:
-                                        feats[fc] = float(row[fc].iloc[0]) if pd.notna(row[fc].iloc[0]) else 0.0
+                                ticker_raw_fund[t] = {
+                                    fc: (float(row[fc].iloc[0])
+                                          if (fc in row.columns and pd.notna(row[fc].iloc[0]))
+                                          else None)
+                                    for fc in fund_cols
+                                }
                             else:
-                                for fc in fund_cols:
-                                    feats.setdefault(fc, 0.0)
-                        log.info("ApplyScoresTask[panel_ltr_xgboost]: merged 5 fund features "
-                                 "from %s", fp.name)
+                                ticker_raw_fund[t] = {fc: None for fc in fund_cols}
+                        # Step 1: cross-sectional median of CURRENT day's
+                        # candidates (mirror training's per-date median)
+                        cs_median = {}
+                        for fc in fund_cols:
+                            vals = [v for v in (ticker_raw_fund[t][fc] for t in rows) if v is not None]
+                            cs_median[fc] = float(np.median(vals)) if vals else 0.0
+                        # Apply median where ticker's value is missing; else use real value
+                        n_real, n_imputed = 0, 0
+                        for t in rows:
+                            for fc in fund_cols:
+                                v = ticker_raw_fund[t][fc]
+                                if v is None:
+                                    rows[t][fc] = cs_median[fc]
+                                    n_imputed += 1
+                                else:
+                                    rows[t][fc] = v
+                                    n_real += 1
+                        log.info(
+                            "ApplyScoresTask[panel_ltr_xgboost]: merged 5 fund features "
+                            "from %s (real=%d imputed_xs_median=%d)",
+                            fp.name, n_real, n_imputed,
+                        )
 
                 # PEAD features (E47 promotion 2026-05-08): if the artifact
                 # has days_since_earnings / pead_signal / pead_quintile_rank,
