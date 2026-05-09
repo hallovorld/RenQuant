@@ -114,10 +114,18 @@ else
     echo "Config drift OK."
 fi
 
-# Step 1: Run FullTrainingPipeline (baseline tournament → panel-LTR → recalibrate)
-echo "--- Step 1: Running renquant_104 FullTrainingPipeline ---"
+# Step 1: Retrain panel-LTR + calibrator on alpha158+fund 163-feat panel
+# (Promoted 2026-05-08 commit ca350c0. The OLD train_104.py wrote
+# panel-ltr.json which is no longer read by the live config — calling
+# it now would waste compute + leave the live model frozen at the
+# 2026-05-08 promotion snapshot. New chain in daily_retrain_alpha158_fund.sh:
+#   1) rebuild alpha158 panel from latest OHLCV
+#   2) merge with 5 SEC fund features → 163-feature panel
+#   3) retrain XGB, write to artifacts/panel-ltr.alpha158_fund.json
+#   4) refit calibrator on new model's predictions)
+echo "--- Step 1: Retraining alpha158+fund production pipeline ---"
 cd "$REPO_DIR"
-if "$PYTHON" scripts/train_104.py --strategy renquant_104; then
+if bash scripts/daily_retrain_alpha158_fund.sh; then
     echo "Training pipeline finished at $(date)"
 else
     echo "Training pipeline FAILED at $(date)"
@@ -144,9 +152,16 @@ echo "Models exported: $MODEL_COUNT / $WATCHLIST_SIZE"
 PANEL_INFO=$("$PYTHON" -c "
 import json
 from pathlib import Path
-adir = Path('$REPO_DIR/backtesting/renquant_104/artifacts')
-panel_path = adir / 'panel-ltr.json'
-ngb_path   = adir / 'ngboost-head.json'
+sd = Path('$REPO_DIR/backtesting/renquant_104')
+adir = sd / 'artifacts'
+# Read live config to know which artifact paths are actually in use
+# (post 2026-05-08 promote, panel = panel-ltr.alpha158_fund.json).
+cfg = json.loads((sd / 'strategy_config.json').read_text())
+panel_rel = cfg['ranking']['panel_scoring']['artifact_path']
+ngb_cfg = cfg['ranking']['panel_scoring'].get('ngboost', {})
+ngb_rel = ngb_cfg.get('artifact_path', 'artifacts/ngboost-head.json')
+panel_path = sd / panel_rel
+ngb_path   = sd / ngb_rel
 try:
     p = json.loads(panel_path.read_text())
 except Exception:
@@ -162,7 +177,8 @@ try:
     ngb_n  = n.get('metadata', {}).get('n_rows') or n.get('n_rows') or '—'
 except Exception:
     ngb_td = '—'; ngb_n = '—'
-print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td} n={ngb_n}')
+ngb_state = '' if ngb_cfg.get('enabled', True) else ' (disabled)'
+print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td}{ngb_state} n={ngb_n}')
 " 2>/dev/null || echo "panel info unavailable")
 
 # TTL-skipped count: how many tickers reused their prior artifact today
@@ -195,7 +211,9 @@ else
     RETRAINED_TODAY=$("$PYTHON" -c "
 import json, datetime
 from pathlib import Path
-p = Path('$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.json')
+sd = Path('$REPO_DIR/backtesting/renquant_104')
+cfg = json.loads((sd / 'strategy_config.json').read_text())
+p = sd / cfg['ranking']['panel_scoring']['artifact_path']
 try:
     td = json.loads(p.read_text()).get('trained_date', '')
     print('yes' if td == str(datetime.date.today()) else 'no')
