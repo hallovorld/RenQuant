@@ -1522,6 +1522,67 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 
 **Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
 
+## E45 — Russell 2000 watchlist expansion (291 → 1640 tickers) [2026-05-08]
+
+**Hypothesis**: per Cakici et al. 2023, ML cross-sectional alpha is
+larger on small caps (lower analyst coverage, more inefficiency).
+Per Grinold's Fundamental Law `IR ≈ IC × √breadth × TC`, expanding
+breadth 291 → 1640 (5.6× rows) gives √5.6 = 2.37× headroom on IR
+even if IC stays flat.
+
+**Setup**: Same panel construction as production (alpha158 + 5 SEC
+fund features = 163 features), 1640 R2K tickers, fwd_60d_excess label,
+7-cut paired walk-forward via `scripts/wf_panel_args.py`.
+
+**Result (paired 7-cut WF, identical XGB config to production)**:
+| Universe | Tickers | Rows | XGB mean IC | std | pos/7 |
+|---|---:|---:|---:|---:|---:|
+| Production (manual wl103) | 291 | 651k | **+0.067** | 0.074 | 5/7 |
+| **R2K** | 1640 | 3.74M | **+0.018** | **0.087** | 5/7 |
+| Δ | +5.6× | +5.7× | **−0.049** | +0.013 | flat |
+
+Per-cut R2K XGB: +0.06, +0.18, **−0.13**, +0.03, +0.01, +0.06, +0.01.
+Wider swings than production (−0.13 cut 3 in particular — 2021
+test on 2018-2020 train, lots of post-COVID small-cap dispersion).
+
+Note: OLS/Ridge actually beat XGB on R2K (+0.020 vs XGB +0.018) —
+suggests small-cap signal is more linear / XGB overfits the bigger
+panel's noise.
+
+**Verdict**: ✗ **NO-GO**. Same anti-pattern as E26 (wl103 → wl183
+Track D Stage 3): IC DROPS 75% relative when breadth grows 5.6×.
+Applying Grinold's Law:
+```
+IR_R2K / IR_baseline
+  = (IC_R2K / IC_base) × √(breadth_R2K / breadth_base) × (TC_R2K / TC_base)
+  = (0.018 / 0.067) × √5.6 × 1
+  = 0.27 × 2.37 = 0.64
+```
+Even ASSUMING transfer coefficient stays the same (it usually
+DOESN'T — small-cap execution is harder, wider spreads + lower
+liquidity → lower TC), risk-adjusted information ratio drops to
+64% of baseline. With realistic TC degradation it's worse.
+
+**Resume condition** (any one):
+1. Filter R2K to a high-quality subset (e.g. top 30% by 60d ADV +
+   SEC fund coverage > 80%) before training. Smaller-but-cleaner
+   small-cap universe should preserve IC.
+2. Sector-conditional small-cap models — train per-sector heads
+   only on small caps, gate on sector at inference.
+3. Small-cap-specific features (R&D intensity, short interest,
+   institutional ownership change). The current alpha158 +
+   5-fund set is large-cap-tuned — relative momentum / SEC
+   ratios behave differently in the small-cap distribution.
+
+**Reproduction**:
+```
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/wf_panel_args.py \
+    --panel data/alpha158_r2k_fundamental_dataset.parquet \
+    --label fwd_60d_excess \
+    --out   data/wf_r2k_fund_fwd60d.json
+```
+
 ## E44 — SPY-GMM regime probabilities as panel features [2026-05-08]
 
 **Hypothesis**: regime-conditional alpha capture — production signal works
