@@ -1522,6 +1522,65 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 
 **Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
 
+## E50 — Insider trades retest at 95% coverage [2026-05-09]
+
+**Hypothesis**: E22 (2026-05-02) closed insider features at 44% coverage
+(contribution -0.0008 within noise). Resume condition was "SEC IP throttle
+recovery + Sunday retrain補全数据". As of 2026-05-09 morning insider data
+coverage is **95.1%** on watchlist (98/103 tickers), with 83/98 having
+activity in last 90d. Worth retest.
+
+References:
+- Jeng, Metrick, Zeckhauser 2003 RFS — insider PURCHASES outperform sales
+  as predictors. Sales noisy due to liquidity / option-exercise / tax.
+- Cohen, Malloy, Pomorski 2012 JF — opportunistic insider buys carry alpha.
+
+**Setup**: 3 features added on top of production 169-feat panel:
+  insider_net_dollars_30d_z    — robust z-scored signed $ flow over 30d
+  insider_purchase_count_90d   — count of P-coded transactions in 90d
+  insider_buy_ratio_90d        — buy $ / |total $| ratio in 90d
+
+Paired §5.2 sanity battery (3-seed A/A + 1-seed shuffle).
+
+**Result**:
+| Metric | Base 169-feat | + insider 172-feat | Δ |
+|---|---:|---:|---:|
+| A/A mean IC (3 seeds) | +0.0551 | +0.0518 | **−0.0033** |
+| Shuffle IC | +0.0058 | **+0.0375** | **+0.0317** |
+| **REAL SIGNAL** | **+0.0493** | **+0.0143** | **−0.0350** |
+
+**Verdict**: ✗ **NO-GO** (substantial regression). Same anti-pattern as
+E44 fund_regime: shuffle IC SHOT UP from +0.006 → +0.038 (32 bp) when
+insider features are added. Real signal DROPS by 35 bp. Insider features
+add stock-type identification artifact MORE than they contribute
+cross-sectional alpha.
+
+**Why**: per-ticker rolling-window insider counts (e.g.
+`insider_purchase_count_90d`) are slow-moving stock characteristics —
+RBLX always has 12 purchases historically vs PLTR has 0. XGB tree splits
+exploit this as a ticker-identifier even when labels are shuffled. Same
+class of failure as macro broadcast features (E44 regime probabilities).
+
+**Resume conditions**: only re-test with these gates:
+1. **Insider features encoded as OPPORTUNISTIC vs ROUTINE** per Cohen-Malloy
+   -Pomorski 2012 — separates the alpha-bearing trades from routine noise.
+2. **Cross-sectional standardization PER DATE** (not per-ticker rolling) —
+   insider activity z-scored against today's universe, not against the
+   ticker's own history. Removes the per-ticker characteristic baseline.
+3. **PURCHASES ONLY** — drop sales (98% of data). Sales are noisy
+   per Jeng-Metrick-Zeckhauser 2003.
+
+The simple rolling-window aggregation doesn't separate signal from
+ticker-fixed-effect. Confirms the §5.2 sanity battery's value: would have
+mistakenly promoted on +0.0033 raw IC delta otherwise.
+
+**Reproduction**:
+```
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/wf_insider_paired.py
+# saves data/wf_insider_paired.json
+```
+
 ## E49 — SUE + surprise momentum/streak [2026-05-09]  ⭐ SECOND POSITIVE TODAY
 
 **Hypothesis**: B3 original plan (analyst consensus revisions) blocked by
