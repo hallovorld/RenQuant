@@ -495,7 +495,7 @@
         "min_mult": 0.5
       },
       "ngboost": {
-        "enabled": true,
+        "enabled": false,
         "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
