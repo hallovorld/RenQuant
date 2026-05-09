@@ -41,6 +41,11 @@ class InferenceContext:
     # Portfolio state — populated by adapter from LEAN Portfolio / broker
     holdings: dict = field(default_factory=dict)       # ticker → HoldingState
     last_sell_dates: dict = field(default_factory=dict) # ticker → date | None
+    # 2026-05-09 cost-aware wash-sale: realized $ P/L of the most recent
+    # full liquidation per ticker (FIFO). None = unknown (treated as gain
+    # by is_wash_sale_blocked_with_cost — fail-open). Negative = LOSS
+    # → §1091 applies → NPV deferred-tax cost computed.
+    last_sell_pls: dict = field(default_factory=dict)   # ticker → float | None
     # 2026-05-04 G8 (post-stop re-entry blackout, refactor doc):
     # ticker → date when a path-rule exit (trailing_stop / stop_loss /
     # single_day_loss) last fired. Used by PostStopCooldownFilterTask
@@ -133,6 +138,9 @@ class TickerInferenceContext:
     earnings_calendar: Any = None
     # last_sell_dates: candidate-job input (None for sell jobs)
     last_sell_dates: Any = None    # dict[ticker → date | None] | None
+    # 2026-05-09 cost-aware wash-sale (mirror of InferenceContext field —
+    # populated by adapter from broker FIFO-matched fills or sim trade tape)
+    last_sell_pls: Any = None      # dict[ticker → float | None] | None
 
     # Intermediate task outputs — written by one task, read by the next
     features: Any = None         # built feature DataFrame (shared by sell + candidate tasks)

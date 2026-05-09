@@ -652,11 +652,15 @@ class ValidatePairsTask(Task):
         defensive_set  = set(cfg.get("defensive_tickers", []))
 
         validated = []
+        from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
         for pair in ctx.rotations:
-            if is_wash_sale_blocked(pair.buy_ticker, ctx.today,
-                                    ctx.last_sell_dates or {}, wash_days):
-                log.info("ROTATION_REJECT  swap=%s→%s  reason=wash_sale",
-                         pair.sell_ticker, pair.buy_ticker)
+            blocked, ws_reason, _ = is_wash_sale_blocked_with_cost(
+                pair.buy_ticker, ctx.today, ctx.last_sell_dates or {},
+                getattr(ctx, "last_sell_pls", None) or {}, wash_days,
+            )
+            if blocked:
+                log.info("ROTATION_REJECT  swap=%s→%s  reason=wash_sale (%s)",
+                         pair.sell_ticker, pair.buy_ticker, ws_reason)
                 continue
 
             virtual_held = (

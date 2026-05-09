@@ -91,6 +91,7 @@ def _make_cand_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
         price=ctx.prices.get(ticker, 0.0),
         earnings_calendar=ctx.earnings_calendar,
         last_sell_dates=ctx.last_sell_dates,
+        last_sell_pls=ctx.last_sell_pls,
         feature_cache_frame=ctx.feature_cache.get(ticker) if ctx.feature_cache else None,
     )
 

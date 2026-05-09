@@ -655,10 +655,14 @@ class JointActionTask(Task):
                     )
                     continue
 
-            # Wash-sale check
-            if is_wash_sale_blocked(
-                a.cand_ticker, ctx.today, ctx.last_sell_dates, wash_days,
-            ):
+            # Wash-sale check (cost-aware: gain sales pass, loss sales blocked
+            # unless caller has μ̂ to compare against NPV cost — see §1091)
+            from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
+            blocked, _, _ = is_wash_sale_blocked_with_cost(
+                a.cand_ticker, ctx.today, ctx.last_sell_dates,
+                getattr(ctx, "last_sell_pls", None) or {}, wash_days,
+            )
+            if blocked:
                 ctx.counters["joint_blocked_wash"] = (
                     ctx.counters.get("joint_blocked_wash", 0) + 1
                 )

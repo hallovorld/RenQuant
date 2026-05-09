@@ -40,13 +40,137 @@ def is_wash_sale_blocked(
     last_sell_dates: dict[str, datetime.date | None],
     wash_sale_days: int,
 ) -> bool:
-    """Return True if ticker sold within wash_sale_days of today."""
+    """Return True if ticker sold within wash_sale_days of today.
+
+    DEPRECATED for production buy-side filtering — this is a binary block
+    that ignores the actual economic cost. Use is_wash_sale_blocked_with_cost
+    to factor in (a) gain sales have ZERO wash-sale cost (rule does not
+    apply per IRC §1091) and (b) loss sales have only an NPV time-value
+    cost (deferred deduction recovered on eventual sale of replacement).
+
+    Kept for back-compat callers that don't have realized-pnl data.
+    """
     if wash_sale_days <= 0:
         return False
     last = last_sell_dates.get(ticker)
     if last is None:
         return False
     return (today - last).days < wash_sale_days
+
+
+def wash_sale_npv_cost(
+    realized_loss: float,
+    *,
+    tax_rate: float = 0.30,
+    discount_rate: float = 0.05,
+    estimated_hold_years: float = 2.0,
+) -> float:
+    """NPV economic cost of a §1091-disallowed loss deduction.
+
+    The disallowed loss is added to the basis of the replacement security
+    (§1091(d)) and recovered when the replacement is eventually sold.
+    Per §1223(3), the holding period of the original carries forward
+    (no LT/ST treatment penalty).
+
+    Real cost = lost present value of the deferred tax savings:
+        cost = |loss| × tax_rate × (1 − 1/(1+r)^t)
+    where:
+        r = discount rate (cost of capital)
+        t = expected years until the replacement is sold and the
+            disallowed loss flows back into a deduction
+
+    Defaults: 30% combined federal+state tax, 5% discount, 2-year hold.
+    For a $100 loss this gives ~$2.78 NPV cost — a small fraction of the
+    raw loss.
+
+    Reference: IRC §1091, §1091(d), §1223(3); IRS Publication 550.
+    """
+    if realized_loss >= 0:
+        return 0.0   # gains have NO wash-sale cost (rule does not apply)
+    loss_abs = abs(realized_loss)
+    deferred_savings_now = loss_abs * tax_rate
+    nav_factor = 1.0 - 1.0 / ((1.0 + discount_rate) ** estimated_hold_years)
+    return deferred_savings_now * nav_factor
+
+
+def is_wash_sale_blocked_with_cost(
+    ticker: str,
+    today: datetime.date,
+    last_sell_dates: dict[str, datetime.date | None],
+    last_sell_pls: dict[str, float | None] | None,
+    wash_sale_days: int,
+    *,
+    tax_rate: float = 0.30,
+    discount_rate: float = 0.05,
+    estimated_hold_years: float = 2.0,
+    expected_dollar_return: float | None = None,
+    safety_margin: float = 1.5,
+) -> tuple[bool, str, float]:
+    """Cost-aware wash-sale decision per IRC §1091.
+
+    Logic:
+      1. If sale is outside the 30-day window → no rule applies → not blocked
+      2. If prior sale was a GAIN (or unknown but assume gain in absence
+         of data) → §1091 does not apply → not blocked
+      3. If prior sale was a LOSS:
+           cost_npv = wash_sale_npv_cost(loss, tax_rate, ...)
+         (a) if expected_dollar_return is known → block if expected_return
+             < safety_margin × cost_npv
+         (b) else (no μ̂ at this stage) → soft-block: keep blocking on
+             losses but log the cost so caller can route to a later
+             economic-aware gate
+
+    Returns: (blocked: bool, reason: str, cost_npv: float)
+
+    The (b) branch is the conservative default at the per-ticker
+    candidate-filter stage where μ̂ isn't available yet. Callers that
+    have μ̂ (e.g. the post-NGB economic gate) should pass
+    expected_dollar_return.
+    """
+    if wash_sale_days <= 0:
+        return (False, "wash_sale_days=0 (disabled)", 0.0)
+    last = last_sell_dates.get(ticker)
+    if last is None:
+        return (False, "no recent sale", 0.0)
+    days_since = (today - last).days
+    if days_since >= wash_sale_days:
+        return (False, f"{days_since}d since sale (≥ {wash_sale_days}d window)", 0.0)
+    pl = (last_sell_pls or {}).get(ticker)
+    if pl is None:
+        # P/L data not available (broker doesn't expose history, or sim
+        # adapter didn't compute it). Fall back to binary block — cannot
+        # safely allow without knowing if it was a loss.
+        return (
+            True,
+            f"sold {days_since}d ago (P/L unknown — binary block)",
+            0.0,
+        )
+    if pl >= 0.0:
+        # GAIN sale → §1091 does not apply (rule applies only to losses)
+        return (False, f"§1091 N/A (gain sale ${pl:+.2f})", 0.0)
+    # LOSS sale within window — compute economic cost
+    cost_npv = wash_sale_npv_cost(
+        pl, tax_rate=tax_rate, discount_rate=discount_rate,
+        estimated_hold_years=estimated_hold_years,
+    )
+    if expected_dollar_return is None:
+        # Can't run cost-vs-return test at this stage — keep block.
+        return (
+            True,
+            f"loss sale ${pl:.2f} {days_since}d ago, NPV cost ≈${cost_npv:.2f}",
+            cost_npv,
+        )
+    if expected_dollar_return >= safety_margin * cost_npv:
+        return (
+            False,
+            f"expected ${expected_dollar_return:+.2f} > {safety_margin}×NPV cost ${cost_npv:.2f}",
+            cost_npv,
+        )
+    return (
+        True,
+        f"expected ${expected_dollar_return:+.2f} < {safety_margin}×NPV cost ${cost_npv:.2f}",
+        cost_npv,
+    )
 
 
 def is_earnings_blocked(

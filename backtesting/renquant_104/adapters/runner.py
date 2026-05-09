@@ -521,6 +521,24 @@ class RunnerAdapter:
                 last_sells_d[sym] = datetime.date.fromisoformat(d_str)
             except (ValueError, TypeError):
                 last_sells_d[sym] = None
+
+        # 2026-05-09 cost-aware wash-sale: compute realized $ P/L per
+        # ticker for the most-recent full liquidation in the last 30d.
+        # Used by WashSaleFilterTask to skip block on GAIN sales (§1091
+        # rule does not apply) and to compute NPV cost on loss sales.
+        last_sells_pl: dict[str, float | None] = {}
+        try:
+            from kernel.realized_pnl import compute_recent_realized_pnl  # noqa: PLC0415
+            last_sells_pl = compute_recent_realized_pnl(
+                self._broker, days=int(config.get("wash_sale_days", 30)) + 5,
+            )
+            n_gains = sum(1 for v in last_sells_pl.values() if v is not None and v >= 0)
+            n_losses = sum(1 for v in last_sells_pl.values() if v is not None and v < 0)
+            log.info("realized_pnl: %d gains + %d losses in last %dd  (gains skip wash-sale block)",
+                     n_gains, n_losses, int(config.get("wash_sale_days", 30)) + 5)
+        except Exception as exc:
+            log.warning("realized_pnl compute failed: %s — wash-sale falls back to binary", exc)
+            last_sells_pl = {}
         # G8: same coercion for stop-exit dates
         last_stops_d: dict[str, datetime.date | None] = {}
         for sym, d_str in (last_stop_exit_dates or {}).items():
@@ -553,6 +571,7 @@ class RunnerAdapter:
             earnings_calendar = earnings,
             holdings          = holdings,
             last_sell_dates   = last_sells_d,
+            last_sell_pls     = last_sells_pl,
             last_stop_exit_dates = last_stops_d,
             portfolio_value   = account_value,
             cash              = cash,
