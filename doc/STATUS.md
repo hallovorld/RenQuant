@@ -1,133 +1,104 @@
 # RenQuant — Status
 
-**Last updated**: 2026-05-07 evening (full handoff: see [`archives/sessions/2026-05-07-session-handoff.md`](archives/sessions/2026-05-07-session-handoff.md))
-
-This is the **canonical status reference** — what's live, what just changed, what's open. CLAUDE.md's status block at the top of the repo is the same content, kept short for context loads.
-
-> **2026-05-07 EOD**: alpha158_linear walk-forward 5-cut **v2 (with FIXED
-> artifact-path)** confirmed NO-GO: mean alpha vs SPY = −2.0 pts, only 1/5
-> cut beats SPY (T4 2025-Q1 crash, defensive factor strength). Neither
-> alpha158_linear nor production 27-feat XGB beats passive SPY in
-> walk-forward. Plan B confirmed: **universe 103 → 300+ + multi-horizon
-> ensemble + Transformer long-term**. Phase 1 blocker = sector map needs
-> expansion (752/1009 R1K tickers unmapped). See session handoff for
-> details.
+**Last updated:** 2026-05-09 EOD (post BUG #6/#7/#5 + cost-aware wash-sale + NGB on/off A/B revert + WF 3-cut)
 
 ---
 
-## Right now
+## Production state
 
 | | |
 |---|---|
-| Active strategy | `renquant_104` panel-LTR cross-sectional ranking |
-| Active model | **alpha158_linear** (Qlib alpha158 features + sklearn LinearRegression on z-scored fwd_5d_excess) |
-| Watchlist | 103 tickers |
-| Portfolio QP | **cvxpy + CLARABEL** (Boyd/Stanford `cvxportfolio.SinglePeriodOpt` idiom, soft cash-drag penalty) |
-| Backend switch | `qp_solver_backend` config = `cvxpy` (default) \| `cvxportfolio` |
-| Broker | Alpaca paper |
-| Test count | ~14,200 passing |
+| Strategy        | `renquant_104` panel-LTR cross-sectional ranking |
+| Active model    | **XGB rank:pairwise on 169 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE), `panel-ltr.alpha158_fund.json` fingerprint `4f1e25989d475225` |
+| NGBoost head    | DISABLED (27-mo A/B: -3.78 APY pp / -0.14 Sharpe; persistence ratio 63% per E55). Artifact retained for future re-enable |
+| Watchlist       | 103 live / 292 train panel / wl162 quality-first selected (panel build pending) |
+| Portfolio QP    | cvxpy + CLARABEL (cvxportfolio idiom). σ-band cap 5% per BUG #7 fix |
+| Wash-sale       | Cost-aware per IRC §1091 (gain → no cost; loss → NPV deferred-tax cost) |
+| Calibrator      | Pooled `panel-rank-calibration.json`, n_unique_prob_y=79, pool_ic=+0.094 |
+| Broker          | Alpaca live, equity ~$10,580 (deposits 2× $5k 2026-04-06 + 04-16) |
+| Cron            | daily104 / open104 / preclose104 / intraday104 / Sunday retrain ENABLED |
+| Walk-forward gate | promote() requires `wf_gate_metadata.passed=True` (commit 5b8c891) |
+| Test count      | ~14k passing (60 acceptance + 14 WF gate + 27 wash-sale + 14 e2e smoke + invariants) |
 
 ---
 
-## Recent results
+## Honest performance baseline (2026-05-09)
 
-### V7 single-cut holdout — alpha158_linear + cvxpy backend (2026-05-07)
+```
+27-mo aggregate sim (NGB-off, 2024-01 → 2026-03):
+  APY +6.77%   Sharpe +0.40   Sortino +0.36   MaxDD 19.2%   Vol 22.8%
+  vs SPY +14.06% / +0.90 → trails by -7.3 APY pp / -0.50 Sharpe
 
-Train end 2025-05-04, sim 2025-05-05 → 2025-11-04 (6 mo, 128 trading days):
+Walk-forward 3-cut on same window:
+  Cut 1 (2024-01 → 2024-12)        APY +13.68%   Sharpe +0.66
+  Cut 2 (2024-07 → 2025-06)        APY  -3.95%   Sharpe -0.06
+  Cut 3 (2025-04 → 2026-03)        APY  +6.04%   Sharpe +0.37
+  Mean: APY +5.26% ± 8.93%   Sharpe +0.32 ± 0.36
 
-| Metric | Value |
-|---|---|
-| APY | **+39.22%** |
-| Sharpe | **+2.009** |
-| Sortino | +1.665 |
-| Calmar | +5.673 |
-| Max DD | 6.91% |
-| Win rate | 73% |
-| Buys / Sells | 73 / 77 |
-| Longest no-trade streak | 4d (was 128d before the QP refactor) |
+7-cut WF mean IC: +0.039 ± 0.046 (par with Qlib alpha158)
+Pure-alpha after persistence subtraction: ~+0.018
+```
 
-> **Caveat**: single-cut. Per CLAUDE.md §5.10 / E27, the previous production XGB had single-cut Sharpe 0.68 but walk-forward 3-cut showed **mean alpha vs SPY = −15.62% ± 10.21%**. alpha158_linear's walk-forward truth is not yet measured. Treat V7 as a strong lower bound but not as walk-forward-promotable until 3-cut runs land.
-
----
-
-## What just changed (2026-05-06 → 2026-05-07)
-
-### QP refactor — cvxpy + CLARABEL primary, drop SLSQP
-
-The pre-2026-05-06 solver was 700 lines of `scipy.optimize.minimize(method="SLSQP")` with hand-coded gradients, hand-coded slack clamps, and a half-baked cvxpy fallback. V4/V5 alpha158_linear sims produced **0 trades over 128 days** because the constraint set `Σwp ≥ min_invested_pct` + `‖Δw‖₁ ≤ turnover_max` was mathematically infeasible from cash (need 70% turnover in one bar to satisfy a 70% floor with a 30% turnover cap).
-
-**Fix shape (commits b0acf90 … f0e6deb)**:
-- Drop SLSQP entirely (-296 lines).
-- cvxpy + CLARABEL primary, OSQP/SCS fallback chain.
-- `min_invested_pct` becomes a **soft cash-drag penalty** (`cash_drag_lambda · max(0, target − Σwp)`), not a hard floor — Boyd/cvxportfolio textbook pattern.
-- All bespoke features (Almgren-Chriss impact, Brown-Smith tax, RU CVaR, Garlappi robust μ, Garleanu-Pedersen signal decay) re-expressed as cvxpy DCP terms.
-- Drop `tanh` smoothed fixed cost (not DCP, not used in production).
-- Multi-bar Garleanu-Pedersen ramp pinned by acceptance tests.
-- Parallel `cvxportfolio.SinglePeriodOpt` backend (commit f0e6deb) using Boyd's actual policy + cost + constraint classes; opt-in via `qp_solver_backend = "cvxportfolio"`.
-
-**Verified**: 161+ QP-related tests green; soft penalty formulation cannot be infeasible by constraint conflict; per-bar Garleanu-Pedersen ramp produces canonical 30%/60%/70% deployment from cash.
-
-### Side-config DB
-
-Added `data/runs.db::experiment_configs` SQLite table for side-config storage (`scripts/migrate_experiment_configs_to_db.py`). `holdout_backtest.py --experiment-label <name>` inflates the config from DB instead of reading a side `strategy_config.*.json` file. Replaces the 60+ side-config-file proliferation problem.
-
-### Doc cleanup (2026-05-07)
-
-- 40 closed-experiment design docs moved to `doc/archives/shelved/`.
-- Doc tree: 103 → 63 markdown files. Live docs match CLAUDE.md's canonical pointer list.
+**Reframe:** previous "Sharpe 1.06 / 1.10 / 2.01" claims were on code with silent corruption (BUG #1/#2/#6) AND single-cut windows. Today's +0.32 ± 0.36 is the first honest walk-forward measurement. Mean is below your Sharpe ≥ 1 floor; trails passive SPY by ~9 APY pp; sign-consistent across cuts (variance 6× lower than E27's ±2.27).
 
 ---
 
-## Closed (don't re-open)
+## Today's commits (2026-05-09, 14 total)
 
-Per CLAUDE.md status — these are decided. The shelved design docs live in `doc/archives/shelved/` for `git log --follow` history.
+```
+42e3adb  fix(features): BUG #5 asset_growth periods=4d → 252d (Cooper-Gulen-Schill 2008)
+4c16ce0  exp(track2): wl200 selection (→wl162) + insider feature test (REJECT)
+35a08c2  fix(tests): WF gate compat + options-IV scaffold (P0 #2 start)
+5b8c891  feat(promote): walk-forward gate enforcement (roadmap P0 #1)
+00506bf  docs(roadmap): rewrite by ROI w/ paper+open-source cite per item
+d681fe8  docs: E55 NGBoost-proper SIGNIFICANT 5-seed lift but 63% persistence
+fb74bb4  revert(prod): disable NGB after 27-month A/B losses by 3.78 APY pts
+36d79ef  docs+infra: E54 production deploy chain + sim adapter polymorphic loader
+ebbc158  fix(qp): BUG #7 cap σ-derived no-trade band at 5% — unblock high-σ exits
+3549c51  feat(filter): cost-aware wash-sale per IRC §1091
+ac468e7  fix(prod): BUG #6 prod μ̂ collapse + 4 universal model contracts
+fa7d005  exp(track2): Phase C neural QHead E52 → 1.7σ + 42% persistence audit
+022ade8  exp(track2): NGB raw-label promote + Phase A/B experiments E51 → null
+507cef6  fix(pipeline): BUG #1 runtime fund parity + BUG #2 SEC date guard
+```
 
-| Track | What | Verdict |
+---
+
+## Track 2 NULL experiments (today, all consistent — panel signal-bound)
+
+| Experiment | Result | Notes |
 |---|---|---|
-| Macro overlay (v1–v4) | All variants tested | Net negative IC at current panel size; revisit at 200+ tickers |
-| Asset embeddings (T2-2) | 16D embeddings full retrain | +0.0001 IC delta = 0 lift |
-| LightGBM panel | Replacement for XGBoost | -60% IC, REJECTED |
-| Boyd rotation (T2-4) | Per-bar rotation policy | -2.5 APY pts; infra kept, default OFF |
-| Insider feature (Track A) | SEC EDGAR enrichment | -0.0008 contribution at 44% coverage |
-| PEAD enrichment (Track B) | days_since/decay/signal | 17-22σ negative on fwd_5d (too short for drift) |
-| Watchlist 183 (Track D) | wl103 → wl183 expansion | TC collapse: Sharpe +0.55 vs wl103 +0.68 |
-| Triple-barrier label (Track F) | Hit-time-matched label | +98bp IC was placebo (time-shift +60d also +) |
-| Walk-forward XGB (E27) | 3-cut OOS test | Mean alpha vs SPY −15.62% ± 10.21% |
+| Phase A NGB QHead variants (X-std, y-demean, +K) | NULL | within 5-seed σ noise |
+| Phase C neural QHead MLP | 1.7σ borderline | 42% persistence (E52) |
+| Phase D2 NGBoost-proper | sig +60bp BUT 63% persistence | pure-alpha worse than baseline |
+| Per-sector excess label | REJECT | persistence 89%, pure-alpha drops to +0.005 |
+| Vol-adjusted label | REJECT | -5bp on raw_y eval |
+| LightGBM + sector categorical | REJECT | LGB structurally weaker than XGB |
+| Multi-horizon ensemble (E42 retest) | REJECT | shorter horizons dilute H=60 signal |
+| Triple-barrier label (E25 retest) | REJECT | val_ic negative on TB label |
+| Explicit momentum-rank features | NULL | persistence 63→69% (autocorrelated) |
+| Insider EDGAR features (E22 retest) | REJECT | -10 to -21bp; 8% coverage, no opportunistic split |
+
+**Pattern:** all variants of "tweak architecture/labels/features on the existing 169 panel" return NULL. Real lift requires NEW DATA SOURCES (P0 #2 options-IV, P0 #3 news, P0 #6 insider full backfill).
 
 ---
 
-## Open priorities
+## Open
 
-| Priority | Item | Why |
-|---|---|---|
-| 🔴 **P0** | Walk-forward 3-cut on alpha158_linear | V7 single-cut Sharpe 2.01 is great but not walk-forward proven. Compare to E27 baseline. |
-| 🟡 P1 | Calibrator retrain | Production `panel-rank-calibration.json` `n_unique_prob_y=7` < runtime floor 10. Refit after panel-LTR pin. |
-| 🟡 P1 | Microstructure / hourly bar (Track C) | Alpaca hourly cache empty (0/178 tickers). Data fetch + feature build ~3-5 days. |
-| 🟢 P2 | Regime ensemble (T2-3) | Wait for >150k panel rows. |
-
----
-
-## Doc map (canonical pointers)
-
-See [`README.md`](README.md). Quick start:
-
-- **What runs**: [`arch/strategy-104.md`](arch/strategy-104.md), [`arch/overview.md`](arch/overview.md), [`arch/decision-graph-103.md`](arch/decision-graph-103.md)
-- **How it runs**: [`ops/usage.md`](ops/usage.md), [`ops/golden-config.md`](ops/golden-config.md), [`ops/maintenance-103.md`](ops/maintenance-103.md)
-- **Why it runs the way it does**: [`components/portfolio-qp.md`](components/portfolio-qp.md), [`components/panel-ltr.md`](components/panel-ltr.md), [`components/buy-logic.md`](components/buy-logic.md), [`components/sell-logic.md`](components/sell-logic.md)
-- **Failed-experiment durable record** (CLAUDE.md §5.7): [`research/failed-experiments-log.md`](research/failed-experiments-log.md)
+- **P0 #1 walk-forward gate**: ✅ shipped (commit 5b8c891)
+- **P0 #4 wl200 expansion**: wl162 selected; panel build pending (~1h compute)
+- **BUG #5 asset_growth fix**: code fixed; `sec_fundamentals_daily.parquet` regen pending (~1h)
+- **P0 #2 options-IV**: awaits Polygon.io paid ($30/mo) OR 3-mo daily polling
+- **P0 #3 news sentiment FinBERT**: awaits Alpaca News backfill or paid news source
 
 ---
 
-## Engineering principles (CLAUDE.md §5)
+## Reference
 
-These are the rules. Read CLAUDE.md §5.1 through §5.12 before any non-trivial change.
-
-- **§5.1** Run relevant tests before every commit/push.
-- **§5.2** Every new number ships with at least one sanity check (A/A, shuffled-label, time-shift placebo).
-- **§5.3** Every "fix" must name the invariant that prevents the entire class of bug.
-- **§5.5** Production-touching changes must rehearse rollback.
-- **§5.6** Definition of "fixed" = full 24h audit clean.
-- **§5.7** Every failed experiment goes into `failed-experiments-log.md` same day.
-- **§5.10** Saturate hardware (M2 Pro 10 cores, 32 GB).
-- **§5.11** Optimize experiment design for time-to-answer (range-find first; greedy/sweep only after).
-- **§5.12 / §5.12a** Every architectural decision backed by literature OR mature open-source — actually READ, not name-dropped.
+- Roadmap (ROI-ranked): [`doc/roadmap.md`](roadmap.md)
+- Failed experiments (every NO-GO with reason): [`doc/research/failed-experiments-log.md`](research/failed-experiments-log.md)
+- Strategy spec: [`doc/arch/strategy-104.md`](arch/strategy-104.md)
+- Architecture overview: [`doc/arch/overview.md`](arch/overview.md)
+- IC eval methodology: [`doc/research/ic-evaluation-methodology.md`](research/ic-evaluation-methodology.md)
+- Operations: [`doc/ops/usage.md`](ops/usage.md), [`doc/ops/golden-config.md`](ops/golden-config.md)
+- CLAUDE.md @ repo root for development rules + working principles

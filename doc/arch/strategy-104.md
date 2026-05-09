@@ -1,366 +1,152 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
-**Status**: Active daily strategy.
-**Last updated**: 2026-05-07 (cvxpy + CLARABEL QP refactor + alpha158_linear V7 holdout)
-**Based on**: renquant_103 (adaptive regime multi-stock)
+**Status:** Active daily strategy.
+**Last updated:** 2026-05-09 EOD (post BUG #6/#7/#5 + cost-aware wash-sale + NGB on/off A/B revert + WF 3-cut)
+**Based on:** renquant_103 (adaptive regime multi-stock, kept for rollback)
 
-## Production snapshot (2026-05-07)
+---
+
+## Production snapshot (2026-05-09)
 
 | | |
 |---|---|
-| Active model | **alpha158_linear** (Qlib alpha158 features + sklearn LinearRegression on z-scored fwd_5d_excess) |
-| Artifact | `artifacts/panel-ltr.alpha158_linear.json` |
-| Feature count | 158 (alpha158-faithful, mirrors `qlib.contrib.data.handler:Alpha158`) |
-| CPCV mean_ic | **+0.0351** (3-run σ ≈ 0.6 bp; mean_ic is the only robust seed-stable statistic) |
-| Watchlist | 103 tickers |
-| Panel size | ~77k rows × 103 tickers × 753 dates |
-| Portfolio QP | **cvxpy + CLARABEL** (Boyd/Stanford `cvxportfolio.SinglePeriodOpt` idiom, soft cash-drag) |
-| Backend switch | `qp_solver_backend = cvxpy \| cvxportfolio` (default cvxpy) |
-
-### V7 single-cut holdout (2026-05-07)
-
-Train end 2025-05-04, sim 2025-05-05 → 2025-11-04 (6 mo, 128 trading days):
-
-- APY **+39.22%**, Sharpe **+2.009**, Sortino +1.665, Calmar +5.673
-- 73 buys / 77 sells, 73% win rate, max DD 6.91%
-- Longest no-trade streak 4d (was 128d before the QP refactor)
-
-> **Caveat**: single-cut. Walk-forward 3-cut not yet measured. The
-> previous production XGB had single-cut Sharpe 0.68 but walk-forward
-> mean alpha vs SPY = −15.62% (CLAUDE.md E27). Treat V7 as a
-> lower-bound, not walk-forward-promotable until 3-cut runs.
-
-### What's currently OFF (per CLAUDE.md status)
-
-- **Macro factor frame** — all v1–v4 variants showed net-negative IC at panel size 103. Revisit at 200+ tickers.
-- **NGBoost head** — 21-feature artifact incompatible with 158-feature alpha158 panel; using rolling realized vol (Markowitz/Almgren-Chriss reference) for σ instead.
-- **Asset embeddings (T2-2)** — +0.0001 IC delta = no lift.
-- **LightGBM** — REJECTED at -60% IC vs XGBoost panel.
-- **Boyd rotation (T2-4)** — -2.5 APY pts, infrastructure kept but disabled.
-
-See [`failed-experiments-log.md`](../research/failed-experiments-log.md) for durable record per CLAUDE.md §5.7.
+| Active model | **XGB rank:pairwise on 169 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE) |
+| Artifact | `artifacts/panel-ltr.alpha158_fund.json` fingerprint `4f1e25989d475225` |
+| Feature count | 169 (158 alpha158-faithful per Qlib + 5 SEC fund + 3 PEAD + 3 SUE) |
+| 7-cut WF mean IC | **+0.039 ± 0.046** (par with Qlib alpha158 benchmarks) |
+| Pure alpha (post-persistence) | **~+0.018** (E53/E55) |
+| Watchlist | 103 live / 292 train panel / wl162 quality-first selected |
+| Panel size | 715,629 rows × 292 tickers × ~2455 dates |
+| Portfolio QP | cvxpy + CLARABEL (Boyd/Stanford cvxportfolio.SinglePeriodOpt idiom) |
+| QP no-trade band | `max(min_dw=2%, min(0.05, 1.0σ × σ̂))` — capped at 5% per BUG #7 |
+| Wash-sale | Cost-aware per IRC §1091 (gain → no cost; loss → NPV deferred-tax cost) |
+| NGBoost head | DISABLED (27-mo A/B: -3.78 APY pp / -0.14 Sharpe; 63% persistence per E55) |
+| Promote gate | `wf_gate_metadata.passed=True` required (commit 5b8c891) |
 
 ---
 
-## 1. What's different from renquant_103
+## Honest performance (2026-05-09)
 
-renquant_104 inherits the entire renquant_103 decision graph — regime detection, sell
-priority, buy gates, sector/wash-sale guards, rotation — and adds a
-**cross-sectional panel-LTR ranker** on top of it. Every other node in the
-logic graph is unchanged.
+```
+27-mo aggregate (NGB-off, 2024-01 → 2026-03):
+  APY +6.77%   Sharpe +0.40   Sortino +0.36   MaxDD 19.2%   Vol 22.8%
+  vs SPY +14.06% / +0.90 → trails -7.3 APY pp / -0.50 Sharpe
 
-| Concern | renquant_103 | renquant_104 |
+3-cut walk-forward:
+  Cut 1 (2024)        APY +13.68%   Sharpe +0.66
+  Cut 2 (2024-mid → 2025-mid)        APY  -3.95%   Sharpe -0.06
+  Cut 3 (2025-Q2 → 2026-Q1)        APY  +6.04%   Sharpe +0.37
+  Mean: APY +5.26% ± 8.93%   Sharpe +0.32 ± 0.36
+```
+
+Variance 6× lower than E27's ±2.27 — more stable across regimes. Sign-consistent across cuts. Below Sharpe ≥ 1 floor; structurally trails passive SPY.
+
+---
+
+## Pipeline
+
+Three pipelines own the decision logic (`kernel/pipeline/` and `kernel/panel_pipeline/`):
+
+### InferencePipeline / SellOnlyPipeline (LEAN, live, sim)
+
+```
+Preflight (8 HARD checks)
+↓
+DataFreshnessGate → Regime detection (SPY-GMM) → Drawdown halt
+↓
+Buy gates (Sharpe floor, vol cap, wash-sale cost-aware, earnings blackout)
+↓
+Sell jobs (parallel) — model_sell + path rules + SellGateB
+↓
+Candidate jobs (parallel) — earnings + wash-sale + features + score + threshold + RS
+↓
+PanelScoringJob:
+  AssembleInferenceMatrix → ApplyScores (XGB rank) → ApplyNGBoost (skipped — disabled)
+  → ApplyGlobalCalibration → ApplyKellySizing → SortCandidates
+  → JointPortfolioQPJob (cvxpy CLARABEL) → EmitOrders
+↓
+Universal model contracts (post-predict diversity, pre-predict input variance — guards BUG #1/#2/#6 class)
+```
+
+### FullTrainingPipeline
+
+`BaselineTournamentJob → PanelTrainingJob → RecalibrationJob`
+
+### PanelTrainingPipeline
+
+`PanelDataJob → PanelFeatureJob → PanelAssemblyJob → PanelModelJob → RefreshPanelCalibratorJob`
+
+---
+
+## What's currently OFF (NGB-off baseline)
+
+| Feature | Status | Reason |
 |---|---|---|
-| Per-ticker model | Champion from tournament (Classification / QLearning / XGBoost / Manual) | Same |
-| Candidate rank | Per-ticker `rank_score` (calibrated Platt/isotonic) | **Cross-sectional panel-LTR `rank_score`** replaces per-ticker when `panel_scoring.enabled=true` |
-| Feature scope | Per-ticker indicators only | Per-ticker indicators + panel-level neutralized factors (sector momentum, size z-score, beta-residuals) |
-| Training driver | `Notebooks/renquant_103.ipynb` | **`scripts/train_104.py`** (no notebook — `FullTrainingPipeline` Job/Task chain) |
-| History lookback (inference) | 60 daily bars | **520 bars** when panel scoring is enabled (neutralization + factor windows need ≥504) |
-
-Everything else — exits, selection ledger, tiered thresholds, rotation — is
-identical. The logic graph in `doc/arch/decision-graph-103.md` continues to apply
-after inserting a single node between CandidateScan and Ranking:
-
-```
-… → CandidateJob → PanelScoringJob → RankingJob → RotationJob → SelectionJob
-                       ↑
-                       only runs when ranking.panel_scoring.enabled=true
-                       otherwise skipped via should_skip()
-```
+| NGBoost head + σ-aware Kelly | DISABLED | E55: 27-mo A/B -3.78 APY / -0.14 Sharpe; 63% persistence; pure-alpha too weak vs friction |
+| edge_sharpe_floor (Conformal Gate B) | DISABLED | Pure-alpha ceiling makes target FDR=0.30 unachievable |
+| Macro factor frame v1-v4 | DISABLED | All variants net-negative IC at panel size 103 |
+| Asset embeddings (T2-2) | DISABLED | +0.0001 IC delta = no lift |
+| LightGBM panel (E48) | REJECTED | -60% IC vs XGBoost; with sector categorical still net-negative |
+| Boyd rotation (T2-4) | DISABLED | -2.5 APY pts default OFF, infra retained |
+| Triple-barrier label (E25) | REJECTED | val_ic negative + placebo matches real |
+| Multi-horizon ensemble (E42) | REJECTED | Shorter horizons dilute H=60 (today retest reproduced) |
+| Per-sector excess label | REJECTED | 89% persistence, pure-alpha drops to +0.005 |
+| Vol-adj label (Lim 2021) | REJECTED | -5bp on raw_y eval |
+| Insider features (E22) | REJECTED | 8% panel coverage; needs full EDGAR backfill + opportunistic split |
 
 ---
 
-## 2. Panel-LTR design
+## Acceptance gates (`kernel/model_acceptance.py`)
 
-The panel-LTR model is a single XGBoost learning-to-rank model fitted on the
-cross-section of all watchlist tickers per day. Labels are forward
-excess-return ranks neutralized by:
+11 gates run by daily retrain (`scripts/train_104.py`):
 
-- Sector (via sector ETF returns)
-- Size (log market-cap proxy via price × volume moving average)
-- Beta-residuals vs SPY
+```
+G1  schema compatibility
+G2  calibrator non-collapse (n_unique_prob_y ≥ 10)
+G3  pool IC > 0
+G4  OOS IC ≥ prior × (1 - 5%)            HARD
+G5  score range coverage
+G6  inference smoke
+G7  OOS IC absolute floor (≥ 0.02)        HARD
+G8  per-ticker variance
+G9  sim APY drop < 1.0 pp                 HARD
+G10 sim Sharpe drop < 0.10                HARD
+G11 turnover ratio < 1.5x prior
+```
 
-The artifact written by training (`artifacts/panel-ltr.json`) contains:
-
-- `booster_raw_json` — serialized XGBoost model
-- `feature_cols` — exact column order used at inference
-- `oos_mean_ic` — mean information coefficient across CV folds
-- `trained_date`
-
-At inference time `PanelScoringJob` performs four atomic tasks:
-
-1. **LoadScorerTask** — deserialize the booster, resolve `artifact_path` against the
-   strategy dir if relative. Short-circuits the chain if disabled or missing.
-2. **BuildFeatureMatrixTask** — stack today's row from each candidate's
-   neutralized feature frame + factor frame into a single matrix keyed by ticker.
-3. **ApplyScoresTask** — predict and write `panel_score` onto both candidates **and**
-   current holdings (so rotation compares apples-to-apples). Also overwrites each
-   candidate's `rank_score` with its `panel_score`.
-4. **VetoWeakBuysTask** — drops candidates whose `panel_score` is below
-   `ranking.panel_scoring.buy_floor` (if configured). Only affects buys —
-   holdings keep their `panel_score` for rotation.
-
-When the flag is off, `PanelScoringJob.should_skip()` returns True and the
-per-ticker `rank_score` set by `CandidateJob` is used as-is (identical to 103).
-
-### Panel-driven policy knobs
-
-Three additional knobs under `ranking.panel_scoring` let the panel score shape
-downstream decisions without touching pipeline code:
-
-| Knob | Where it plugs in | Effect |
-|---|---|---|
-| `buy_floor` | `VetoWeakBuysTask` | Drops candidates with `panel_score < buy_floor` before ranking |
-| `sizing.{enabled, floor, ceiling, min_mult}` | `SizeAndEmitTask`, `EmitRotationsTask` via `conviction_multiplier()` | Scales `max_position_pct` by a multiplier in `[min_mult, 1.0]` based on `panel_score`'s location in `[floor, ceiling]` |
-| `rotation_advantage` | `find_rotation_pairs` / `RotationJob` | Requires the candidate's `panel_score` to beat the held position's by at least this fraction before a rotation pair is emitted |
-
-All three short-circuit cleanly when unset or when the panel flag is off.
+Plus walk-forward gate (post 2026-05-09): `wf_gate_metadata.passed=True` required for promote(). Daily cron uses `RQ_ALLOW_NO_WF=1` override (cheap gates only); manual / weekly promote runs `scripts/run_wf_gate.py` first.
 
 ---
 
-## 3. FullTrainingPipeline (`pp_training_full.py`)
+## Bug fixes shipped 2026-05-09
 
-`scripts/train_104.py` is a thin CLI wrapper. All orchestration lives in
-`kernel/pipeline/pp_training_full.py`:
-
-```
-FullTrainingPipeline
-  ├─ BaselineTournamentJob     wraps TrainingPipeline (per-ticker champion)
-  │    └─ RunBaselineTask
-  │
-  ├─ PanelTrainingJob          wraps PanelTrainingPipeline
-  │    ├─ FetchPanelDataTask         OHLCV for watchlist ∪ SPY ∪ sector ETFs
-  │    ├─ BuildPanelFeatureFramesTask  per-ticker labelled feature frames
-  │    └─ RunPanelTrainingTask       panel-LTR model → artifacts/panel-ltr.json
-  │
-  └─ RecalibrationJob          wraps scripts.recalibrate_scores.recalibrate
-       └─ RunRecalibrationTask refresh blend weights + per-symbol calibrations
-```
-
-Every phase is skippable via CLI flag (`--skip-baseline`, `--skip-panel`,
-`--skip-recalibrate`) — each Job's `should_skip(ctx)` reads the corresponding
-bool on `FullTrainingContext`. Tasks short-circuit the enclosing Job's chain
-by returning False, matching the convention in `pp_inference.py`.
-
----
-
-## 4. Runtime wiring
-
-Three runtime entry points must set the same panel flag. All of them read
-`ranking.panel_scoring.enabled` from `strategy_config.json`:
-
-| Entry point | Responsibility |
-|---|---|
-| `main.py` (LEAN) | Uses `LeanAdapter` which pulls **520 bars** from LEAN History when the flag is on, then calls `prepare_inference_panel_frames` before `InferencePipeline.run()` |
-| `live/runner.py` | Uses `RunnerAdapter` — identical prep, but fetches OHLCV from parquet cache via `common.fetch_ohlcv` |
-| `sim/runner.py` | Pipeline-only since April 2026 — `SimAdapter` + `InferencePipeline` mirror LEAN and live. Legacy `_run_backtest_legacy` + `swap_in_panel_scores` + `apply_ngboost_head` deleted. `panel_feature_frames` + `panel_factor_frames` pre-built by caller, sliced per-bar. |
-
-The lazy import pattern in `pp_inference.py` (`from kernel.panel_pipeline.job_panel_scoring import PanelScoringJob` inside `run()`) is load-bearing: `kernel.panel_pipeline.__init__` pulls in `job_panel_scoring`, which imports from `kernel.pipeline.context`, which triggers `kernel.pipeline.__init__` → `pp_inference`. Without the deferral we have a cycle. See `tests/test_panel_alignment.py::TestPipelineOrdering::test_panel_job_imported_lazily_inside_run` for the guard.
-
----
-
-## 5. Test coverage
-
-All renquant_103 alignment + policy tests ported to renquant_104 paths. Plus
-panel-specific coverage:
-
-| Test file | What it covers |
-|---|---|
-| `tests/test_panel_scoring_job.py` | Load / BuildMatrix / ApplyScores / VetoWeakBuys / Job wiring |
-| `tests/test_panel_training_pipeline.py` | PanelTrainingPipeline end-to-end with Job/Task ABCs |
-| `tests/test_panel_pipeline_e2e.py` | `prepare_inference_panel_frames` path |
-| `tests/test_panel_inference.py` | inference-time feature / factor flows |
-| `tests/test_panel_alignment.py` | **34 tests** — flag parity across LeanAdapter / RunnerAdapter / PanelScoringJob, pipeline ordering invariant, panel veto / conviction sizing / rotation advantage, plus NGBoost: `TestNGBoostFlagParity`, `TestApplyNGBoostScoring` (μ−λσ / additive / λ-scaling / missing features), `TestSigmaSizing` (median / bounds / end-to-end `SizeAndEmitTask`) |
-| `tests/test_ngboost_head.py` | **12 tests** — fit / predict / save-load / μ-σ recovery / σ heteroskedasticity / combined score / σ-sizing bounds |
-| `tests/test_training_cadence.py` | **8 tests** — daily preserves existing behaviour, weekly short-circuits off-cadence days, `--force` bypasses |
-| `tests/test_fundamentals_cache.py` | **9 tests** — `FundamentalsStore` parquet cache + injected-provider fetch + watchlist iteration with per-ticker error isolation |
-| `tests/test_panel_factors.py` | extended with **5 tests** for fundamental z-columns (no-op when `fundamentals=None`, four-z-column emission, cross-sectional normalisation, sector-median fill, empty-dict guard) |
-| `tests/test_panel_*` (frame, labels, neutralization, imputation, purged_cv, ltr_model, feature_matrix) | tests for the underlying building blocks |
-
-Total test count after Stage 2 + Stage 3.1: **857 collected — 855 passing, 2 skipped**.
-
-## 5a. Stage 2 — NGBoost μ,σ head (default off)
-
-`training_panel/ngboost_head.py::NGBoostHead` fits a separate NGBoost Normal(μ, σ) regressor on **raw** residual forward returns (not Gaussianized), producing location + scale per ticker. Enabled via `panel_ltr.ngboost.enabled` (training) and `ranking.panel_scoring.ngboost.enabled` (inference). `PanelTrainingPipeline` adds `PanelNGBoostJob` as Phase 5 (`NGBoostFitTask` → `NGBoostSaveTask`); `PanelScoringJob` grows to 6 tasks (`LoadScorer → BuildFeatureMatrix → ApplyScores → VetoWeakBuys → LoadNGBoost → ApplyNGBoost`).
-
-- `score_mode` (default `mu_minus_lambda_sigma`) — overrides `rank_score` and `panel_score` with `μ − λσ` so selection + rotation use the uncertainty-aware score. Set to `additive` to keep LTR rank_score and only populate `μ/σ` fields for sizing.
-- `lambda_sigma` (default 1.0) — penalty multiplier on σ.
-- `ranking.panel_scoring.sigma_sizing.{enabled,floor,ceiling}` gates a new `sigma_multiplier()` that scales `max_position_pct` by `clip(σ_median / σ_i, floor, ceiling)` in both `SizeAndEmitTask` and `EmitRotationsTask`.
-
-Artifact: single JSON at `artifacts/ngboost-head.json` with a base64-encoded pickle blob (NGBoost has no pure-JSON serializer); still self-contained and loadable without a side-car `.pkl`.
-
-## 5b. Stage 3.1 — Fundamental factor features (enabled)
-
-`kernel/fundamentals.py::FundamentalsStore` caches OpenBB snapshots at `data/fundamentals/{SYMBOL}.parquet`. Columns: `earnings_yield`, `roe`, `gross_profitability`, `book_to_price`, `short_pct_float` (yfinance `.info.shortPercentOfFloat`). `scripts/fetch_fundamentals.py` is the watchlist driver. `LoadFundamentalsTask` (Phase 1 of `PanelTrainingPipeline`) loads the cache into `PanelTrainingContext.fundamentals`; `TickerPanelFactorJob` broadcasts each ticker's scalar factors to the daily index; `FactorZScoreTask` cross-sectionally z-scores them (with sector-median fill for missing values). Fully wired — enable via `panel_ltr.fundamentals.enabled: true`.
-
-## 5c. Stage 3.2 — Orthogonal time-series factors (Round 3-5, all wired)
-
-`training_panel/factors.py` emits 5 new OHLCV-derived orthogonal factors in addition to the 4 base factors (`size_z`, `mom_12_1_z`, `beta_60d_z`, `resid_mom_z`):
-
-- `amihud_illiq_z` — Amihud (2002) illiquidity: rolling mean `|return| / $volume` × 1e6. Illiquidity premium.
-- `volume_shift_z` — `log(20d_volume / 60d_volume)` — trading-interest shifts.
-- `price_to_high_z` — close / 252d rolling max. 52-week-high anchor (George & Hwang 2004 behavioral).
-- `realized_vol_z` — 20d annualized return σ. Low-vol anomaly (monotone `-1`).
-- `drawdown_peak_z` — `close/peak - 1`. Reluctance-to-realize behavioral (dropped as redundant with price_to_high).
-
-Plus time-varying fundamentals (opt-in via config):
-
-- `earnings_surprise_cum_z` — via `kernel/earnings_surprise.py` + `LoadEarningsSurpriseTask` + `compute_earnings_surprise_cum`. Trailing-4Q cumulative EPS surprise %, daily-ffilled between announcements (yfinance `.earnings_dates`).
-- `insider_net_buy_90d_z` — via `kernel/insider_trades.py` + `LoadInsiderTradesTask` + `compute_insider_net_buy_cum`. SEC Form 4 executive-only (isOfficer=true) open-market P/S transactions, trailing-90d net USD buy (monotone `+1`).
-
-Individual feature IC (Spearman vs Gaussianized residual label, CPCV):
-
-```
-beta_60d_z              -0.063    (low-beta anomaly — strongest)
-realized_vol_z          -0.044
-roe_z                   +0.037
-amihud_illiq_z          +0.026
-gross_profitability_z   +0.025
-price_to_high_z         +0.025
-book_to_price_z         -0.022    (value factor inverted in recent regimes)
-earnings_surprise_cum_z -0.033    (no constraint applied — data vs theory conflict)
-insider_net_buy_90d_z   TBD       (fetch populating)
-```
-
-Panel IC improvement arc (Round 0 → Round 5):
-
-```
-0.038  baseline (April 2026 start-of-session)
-0.052  + hyperparam regularisation (Round 2)
-0.061  + Round 1 bug fixes (calibration + z-score wiring)
-0.062  + CPCV 15-split (more robust estimate)
-0.066  + monotone constraints on 6 economically-signed factors
-0.065  + 5 orthogonal price/volume factors (Round 3)
-0.064  + short interest (Round 4)
-0.06x  + earnings surprise + insider trades (Round 5, pending final run)
-```
-
-Ship gate for production: panel OOS IC ≥ 0.05 across CPCV folds. Currently comfortably above.
-
-## 5d. No-trade monitoring
-
-`kernel/pipeline/task_monitor.py::MonitorIdleStreakTask` runs at the end of `InferencePipeline` and tracks:
-
-- `no_trade_streak` — consecutive days with zero orders AND zero exits
-- `no_candidate_streak` — consecutive days with zero candidates surviving CandidateJob
-
-State persists across bars via `SimAdapter._monitor_state` and `RunnerAdapter.live_state.json` (`monitor_state` field). Emits WARNING logs when either streak exceeds `monitoring.max_no_trade_days` (default 15) / `max_no_candidate_days` (default 15) — the scheduled-run ntfy surfaces these.
-
-`SimResult.longest_no_trade_streak` is a post-hoc stat (computed from the trade log + equity curve). Opt-in invariant test `RENQUANT_FULL_SIM=1 pytest tests/test_no_trade_invariant.py` asserts `longest_no_trade_streak < 20d`. Enforces the user contract: **"it's OK not to trade, but NOT systematically."**
-
-Companion structural fix: `FilterUniverseFloorTask` always admits `defensive_tickers` regardless of floor type/threshold — prevents the monitor's trigger condition (low-confidence regime restricts universe to defensives → all defensives filtered by Sharpe floor → systemic no-trade).
-
-## 5e. Future: transformer panel backend
-
-See `doc/components/transformer-104.md`. Cross-sectional attention across the date-group as an alternative `panel_ltr.backend`. MPS-targeted. Ship gate: ≥1.3× XGBoost OOS IC.
-
-## 5c. Stage 1 cleanups (all behind flags, defaults preserve existing behaviour)
-
-- `training.cadence` (default `"daily"`) — set to `"weekly"` with `training.weekly_weekday: 6` (Sunday) to short-circuit `FullTrainingPipeline.run()` on non-cadence days. `scripts/train_104.py --force` and `scripts/retrain_panel.sh` bypass the gate.
-- `training.model_ttl_days` (default `0` = disabled) — per-ticker TTL gate inside `_run_ticker_chain`. When > 0, a ticker whose `models/{TICKER}/{TICKER}-policy-metadata.json` has a `trained_date` within TTL is skipped for the current run (cached model is kept as-is, `tc.ttl_skipped=True`). `--force` on `train_104.py` propagates to `config["_force_retrain"]` and bypasses TTL just like cadence. daily_104.sh counts "TTL skip" lines in the log and appends e.g. `(12 ticker-TTL skips)` to the ntfy notification body. Calibration + panel + recalibration phases still run — only the per-ticker tournament is skipped. Covered by `tests/test_model_ttl.py` (10 tests: disabled, fresh, stale, boundary, no artifact, corrupt json, missing trained_date, None strategy_dir, chain short-circuits, chain runs under --force).
-
-### 2026-04-24 PT session — flag-gated rotation + panel-exit improvements (all default-off)
-
-- **Rotation V1 gates** — `rotation.min_raw_advantage_pct` (pre-tax/cost edge floor) + `rotation.persistence_bars` (same pair must appear N prior bars). Default 0.0/0 both → pre-V1 behaviour. Tests: `tests/test_rotation_v1_gates.py` (10).
-- **Rotation V2 scoring** — `rotation.scoring_mode = "mu_minus_lambda_sigma"` swaps the isotonic-calibrated ER for NGBoost-direct μ−λσ driver. λ defaults to 1.0 (override via `rotation.lambda_` or `ranking.panel_scoring.ngboost.lambda_`). Falls back to ER on missing μ/σ. Tests: `tests/test_rotation_v2_scoring.py` (4).
-- **Rotation V3 gates** — `rotation.enabled_regimes` (allow-list of regime names) + `rotation.held_max_unrealized_pct` (cap on held unrealized, protects hot runners). Default None/None → pre-V3. Tests: `tests/test_rotation_v3_gates.py` (7).
-- **Panel conviction exit V2** — `risk.panel_exit.trigger_mode` = "and" (default, backwards-compat) | "or". OR mode fires when EITHER panel_score<floor OR μ<=ceiling. Intended for exits where panel and μ disagree; V1's strict AND almost never fired. Tests: `tests/test_panel_exit_v2.py` (9).
-- **snapshot default** — `sim.runner.run_backtest(snapshot=True)` is the default, isolating notebook sims from concurrent retrains via `kernel/artifact_snapshot.py`.
-- **10-minute bar infra** — `MinuteBarStore` + `compute_minute_features` (10 `m_`-prefixed factor columns) + `scripts/fetch_minute_bars.py`. Flag `panel_ltr.minute.enabled` (default false). Prereq for transformer retry (shelved at panel < 200k rows, 10-min would ~6× the data to ~280k). Tests: `tests/test_minute_features.py` (15).
-- **Notebook robustness tool** — `sim/analysis.strip_top_n_trades(result, n=3)` removes top-N realized-return trades and reports the expected-case APY (answers "am I riding 3 lucky mega-winners?"). Tests: `tests/test_sim_analysis.py` (8).
-- `ranking.tournament.exclude_models` (default `[]`) — e.g. `["qlearning"]` drops that approach from `run_tournament_all`. `QLearningModel` is kept intact so rollback is just a config flip.
-- rs_score retired from ranking math. `BlendScoresTask` hardcodes `(w_rank, w_rs) = (1.0, 0.0)`; a legacy `ranking.blend_weights` with non-zero rs weight triggers a one-time warning. `recalibrate_scores.py` no longer writes that key (offline diagnostic helper `_compute_blend_weights` is retained for tests). `rs_score` is still carried on `CandidateResult` for log readability.
-
----
-
-## 6. Scheduled runs
-
-Daily + weekly automation mirrors renquant_103 schedule with additional 104-specific jobs:
-
-| Run | Time (PT) | Script | What it does |
+| Bug | Symptom | Fix | Commit |
 |---|---|---|---|
-| Market open | 6:32 AM Mon-Fri | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down positions |
-| Intraday 5-min | 7:00-12:30 every 30min | `intraday_sell_104.sh` | Alpaca IEX overlay — intraday SDL / trailing-stop |
-| Pre-close | 12:44 PM Mon-Fri | `live_only_104.sh --sell-only` | Exit intraday stop breaches |
-| Conditional retrain | 13:10 PM Mon-Fri (new 2026-04-24) | `conditional_retrain_104.sh` | Fire `train_104.py --force` if SPY \|daily Δ\| > 2% or VIX \|daily Δ\| > 5% |
-| Daily pass | 1:55 PM Mon-Fri | `daily_104.sh` | `FullTrainingPipeline` (cadence-gated) → `export_lean_watchlist` → `backfill_forward_returns` → `compute_portfolio_metrics` → `live.runner --broker alpaca --once` |
-| Weekly APY check | 12:00 PM Sun | `weekly_apy_check.py` | 30-day rolling APY + DD streak; surfaces latest Sharpe |
-| Watchlist screen | 12:05 PM Sun (new 2026-04-24) | `screen_watchlist.py` | 6-month per-ticker Sharpe; flag DROP + ADD candidates |
-| Sunday retrain | 10:00 AM Sun | `retrain_panel.sh` | Forced weekly panel + ngboost retrain |
+| #1 | Runtime fund features all-zero in production | x-sec median imputation matches training | 507cef6 |
+| #2 | SEC date misalignment caused panel build leak | hard-fail when alpha panel max date > sec max | 507cef6 |
+| #5 | asset_growth 93.9% zero (XGB gain 0%) | `pct_change(periods=4d)` → `periods=252d` per Cooper-Gulen-Schill 2008 | 42e3adb |
+| #6 | μ̂ collapse — all candidates identical prediction | ApplyScoresTask stamps rebuilt panel matrix to ctx | ac468e7 |
+| #7 | σ-derived no-trade band 24% locked-out high-σ holdings | cap σ-band at 5% (`qp_no_trade_band_cap`) | ebbc158 |
 
-LaunchAgents at `~/Library/LaunchAgents/com.renquant.{open,intraday,preclose,conditional-retrain,daily,weekly-apy,screen-watchlist,retrain-panel}104.plist`. Log paths: `logs/daily_104/`, `logs/live_104/`, `logs/intraday_104/`, `logs/conditional_retrain_104/`, `logs/watchlist_screen/`. Lock files under `/tmp/renquant_104_*` prevent concurrent runs. NYSE holiday guard and already-ran-today guard in every script.
+Universal model contracts (`training_panel/model_contract.py`): post-predict diversity guard + pre-predict input variance guard on `QuantileHead`, `NGBoostHead`, `PanelScorer`, `ApplyGlobalCalibrationTask`. 70 new regression tests.
 
 ---
 
-## 7. Decision surface symmetry (2026-04-24)
+## References
 
-All 5 decision surfaces now consult model + policy together (user spec):
+**Implementation:** `kernel/pipeline/`, `kernel/panel_pipeline/`, `kernel/portfolio_qp/`, `training_panel/`
 
-| Surface | Per-ticker tournament | Panel score | NGBoost μ,σ | Kelly target | Notes |
-|---|---|---|---|---|---|
-| **Buy new** | ✓ | ✓ | ✓ (μ→size, σ→size) | ✓ (size cap) | `ScoreBuyTask` + gate chain + `SizeAndEmitTask` |
-| **Sell — price rules** | ✓ (model-streak only) | — | — | — | `trailing_stop`, `stop_loss`, `max_hold`, `sdl` are price-only by design |
-| **Sell — panel conviction** (new) | — | ✓ | ✓ | — | `PanelConvictionExitTask` — tiebreaker when price rules don't fire. Flag `risk.panel_exit.enabled` (default off pending A/B) |
-| **Top-up held** | — | ✓ | ✓ (via kelly_target) | ✓ | `TopUpHeldTask` — when `kelly_target - current > top_up_threshold` |
-| **Trim held** | — | ✓ (mu guard) | ✓ (mu guard) | ✓ | `TrimHeldTask` — when `current - kelly_target > trim_threshold`. Opt-in via `trim_enabled=false` default (A/B regressed). Guards: skip when `kelly_target < 0.05` OR `mu <= 0` per §2b audit |
-| **Rotate (swap)** | — | ✓ | ✓ (via kelly_target) | ✓ | `RotationJob` — three filter layers: `panel_rotation_advantage`, `kelly_rotation_advantage`, thesis-A. Route B alternative: `rotation.mode="thesis_primary"` uses thesis-degradation as primary gate (not filter) |
+**Docs:**
+- Roadmap: `doc/roadmap.md` (P0 #1–#9 ROI-ranked with paper citations)
+- Failed experiments: `doc/research/failed-experiments-log.md` (E1–E55)
+- IC eval methodology: `doc/research/ic-evaluation-methodology.md`
+- Live status: `doc/STATUS.md`
+- Operations: `doc/ops/usage.md`, `doc/ops/golden-config.md`
 
----
-
-## 8. Kelly sizing stack (2026-04-24)
-
-Continuous-returns Kelly: `f* = μ / σ²`, capped at `max_concentration` + regime `max_position_pct × confidence`. `ApplyKellySizingTask` writes `kelly_target_pct` on every candidate AND holding every bar; four tasks consume it.
-
-Config block (golden v4.1):
-```json
-"ranking.kelly_sizing": {
-  "enabled":           true,
-  "fractional":        0.50,       // half-Kelly (estimation error absorption)
-  "max_concentration": 0.35,
-  "min_edge":          0.0,
-  "top_up_threshold":  0.05,
-  "base_rate":         0.273,
-  "trim_enabled":      false,      // A/B showed regression — opt-in only
-  "trim_threshold":    0.10,
-  "trim_target_floor": 0.05,       // §2b audit guard
-  "rotation_advantage":      0.0,  // BC gate (dormant until model improves)
-  "rotation_target_floor":   0.05, // §2b audit guard
-  "disable_extra_multipliers": false,  // pure-Kelly mode flag
-  "per_session_buy_cap":     null  // multi-entry accumulation (null = off)
-}
-```
-
-Decision math unified — one source of truth for `kelly_target_pct`, consumed by:
-1. `SizeAndEmitTask` — caps new-buy size
-2. `TopUpHeldTask` — triggers top-up
-3. `TrimHeldTask` — triggers trim (opt-in)
-4. `RotationJob.BuildPairsTask` — Kelly-delta gate filter (dormant)
-
----
-
-## 9. Thesis-degradation rotation (2026-04-24)
-
-User insight: today's Kelly target is noisy. Compare instead against held's FIXED entry-time baseline. `HoldingState` gains 3 entry-stamp fields:
-- `entry_rank_score` — tournament+panel calibrated score at buy
-- `entry_panel_score` — panel score at buy
-- `entry_kelly_target_pct` — Kelly target at buy
-
-Stamped by all 3 adapters (sim, LEAN, live — live persists in `live_state.json::entry_signals`). Cleared on full exit.
-
-Two modes:
-- **Filter mode (default)** — `ranking.thesis_rotation.enabled: true` — runs alongside ER-based rotation, filters pairs. Default OFF pending A/B.
-- **Primary mode (new, Route B)** — `rotation.mode: "thesis_primary"` — bypasses ER discovery entirely, uses thesis-degradation as primary swap criterion. Config in `rotation.thesis.{degradation_pct, uplift_pct}`.
-
----
-
-## 10. Decision-trace DB (Plan AA, 2026-04-24)
-
-All pipeline decisions written to SQLite for audit + tuning. Split into two roles:
-- `data/runs.db` — live + LEAN (authoritative, permanent)
-- `data/sim_runs.db` — sim (ephemeral; TRUNCATEd at start of each `run_backtest`)
-
-8 tables: `pipeline_runs`, `candidate_scores`, `trades`, `rotations`, `training_runs`, `ticker_forward_returns`, `live_state_snapshots`, `portfolio_daily_metrics`.
-
-Full schema reference: `doc/components/databases.md`. Every row carries `commit_sha` for reproducibility.
-
-Analysis: `scripts/analyze_decision_factors.py` and `scripts/compute_portfolio_metrics.py` produce empirical IC, tier-realization, regime-conditional, Sharpe/VaR reports.
+**Literature anchors:**
+- Microsoft Qlib (alpha158 features) · Chen-Guestrin 2016 (XGBoost rank:pairwise)
+- Bernard-Thomas 1989 (PEAD) · Foster-Olsen-Shevlin 1984 (SUE)
+- Boyd cvxportfolio 2017 · Markowitz 1952 + Almgren-Chriss 2000 (QP + execution)
+- Brown-Smith 2011 + Berkin-Jeffrey 1990 (tax-aware) · IRC §1091 (wash-sale)
+- Lopez de Prado AFML 2018 §7/§3.6/§15 · Bailey-Lopez de Prado 2014 (DSR)
+- Hou-Xue-Zhang 2020 RFS · Grinold-Kahn 1999 §5 (Fundamental Law)
