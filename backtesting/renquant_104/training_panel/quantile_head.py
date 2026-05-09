@@ -84,6 +84,11 @@ class QuantileHead:
         columns, applies median imputation matching training-time
         `impute_features=True`, and returns NaN for any row whose
         feature vector remains non-finite after imputation.
+
+        Per CLAUDE.md §5.3 BUG #6 invariant: head_contract.soft_check_input
+        runs before predict, soft_check_output runs after. Both LOG warnings
+        but do not raise — pipeline-level guards (ApplyNGBoostTask) decide
+        the fail-safe action with full context.
         """
         if not self.boosters:
             raise RuntimeError("QuantileHead.predict_distribution called before load")
@@ -94,6 +99,10 @@ class QuantileHead:
                 f"feature columns: {missing[:5]}{'…' if len(missing) > 5 else ''} "
                 f"(model trained on {len(self.feature_cols)} features)."
             )
+        # ── Input contract ──
+        from .model_contract import soft_check_input, soft_check_output  # noqa: PLC0415
+        soft_check_input(panel, self.feature_cols, head_name="QuantileHead")
+
         X = panel[self.feature_cols].to_numpy(dtype=float, copy=False).copy()
         medians = getattr(self, "feature_medians_", None)
         if medians is not None:
@@ -105,6 +114,7 @@ class QuantileHead:
             dtype=float,
         )
         if not finite_mask.any():
+            soft_check_output(out, head_name="QuantileHead")
             return out
 
         Xf = X[finite_mask]
@@ -118,6 +128,8 @@ class QuantileHead:
 
         out.loc[finite_mask, "mu"]    = mu
         out.loc[finite_mask, "sigma"] = sigma
+        # ── Output contract ──
+        soft_check_output(out, head_name="QuantileHead")
         return out
 
 

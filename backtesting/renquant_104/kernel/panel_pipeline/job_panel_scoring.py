@@ -444,6 +444,20 @@ class ApplyScoresTask(Task):
                 X = pd.DataFrame.from_dict(rows, orient="index")
                 X_aligned = X.reindex(columns=scorer.feature_cols, fill_value=float("nan"))
 
+                # 2026-05-09 BUG #6 fix: ApplyNGBoostTask reads ctx._panel_matrix
+                # downstream and uses it to feed QuantileHead.predict_distribution.
+                # Pre-fix, ctx._panel_matrix held the LEGACY pre-alpha158 matrix
+                # built by AssembleInferenceMatrixTask, which lacks alpha158/fund/
+                # PEAD/SUE columns. QuantileHead's median imputation then filled
+                # ALL of them with feature_medians_ → identical input vector for
+                # every ticker → identical μ̂ across the entire candidate set.
+                # Diagnostic showed n=49 mean=-0.0026 std=0.0000 (constant).
+                # Fix: stamp the freshly-built RAW matrix (before normalization)
+                # to ctx._panel_matrix so downstream NGB head sees per-ticker
+                # alpha158 features. Normalization is XGB-rank-only and does NOT
+                # propagate (X_aligned local variable below).
+                ctx._panel_matrix = X_aligned.copy()  # noqa: SLF001
+
                 # Apply artifact-stored normalization chain if available (new artifacts
                 # store per-feature mean/std for raw→normalized inference parity)
                 meta = getattr(scorer, "metadata", {}) or {}
@@ -775,6 +789,24 @@ class ApplyGlobalCalibrationTask(Task):
             "ApplyGlobalCalibrationTask: calibrated %d/%d candidates, %d/%d holdings",
             n_cand, len(ctx.candidates), n_held, len(ctx.holdings),
         )
+        # 2026-05-09 BUG #6 GUARD CLASS: post-calibrate diversity check.
+        # If the calibrator collapses to constant output across candidates,
+        # the panel becomes un-rankable. Symptom of (a) all panel_score
+        # values identical (upstream collapse) or (b) calibrator artifact
+        # truncated to a single bucket. Pre-fix: candidates would all get
+        # identical rank_score → top-K selects deterministically by ticker
+        # alphabetic order, no signal-driven trading.
+        if n_cand >= 2:
+            from training_panel.model_contract import soft_check_score_series  # noqa: PLC0415
+            ranks = pd.Series(
+                [c.rank_score for c in ctx.candidates if c.rank_score is not None],
+                dtype=float,
+            )
+            if len(ranks) >= 2:
+                soft_check_score_series(
+                    ranks, model_name="ApplyGlobalCalibrationTask",
+                    expected_min=0.0, expected_max=1.0,
+                )
 
 
 # ── NGBoost tasks (Stage 2 — optional) ────────────────────────────────────────
@@ -911,6 +943,55 @@ class ApplyNGBoostTask(Task):
             for c in missing:
                 X[c] = 0.0
 
+        # 2026-05-09 BUG #6 GUARD: pre-predict input variance check.
+        # Invariant: ≥80% of feature columns must have non-zero per-row
+        # variance (i.e., not all rows identical) when n_rows ≥ 2. If too
+        # many columns are constant, downstream model will produce constant
+        # predictions (the BUG #6 failure mode). Constant columns also signal
+        # upstream feature corruption (BUG #1 fund-zero, BUG #2 SEC date drift).
+        try:
+            import numpy as _np  # noqa: PLC0415
+            X_head = X[head.feature_cols] if all(c in X.columns for c in head.feature_cols) else X
+            if len(X_head) >= 2:
+                col_stds = X_head.std(axis=0, skipna=True).fillna(0.0).values
+                n_zero_var = int((_np.abs(col_stds) < 1e-12).sum())
+                n_total_cols = len(col_stds)
+                pct_zero = n_zero_var / max(1, n_total_cols)
+                INPUT_ZERO_VAR_FLOOR = 0.20  # > 20% constant columns = bad
+                if pct_zero > INPUT_ZERO_VAR_FLOOR:
+                    log.error(
+                        "ApplyNGBoostTask INPUT-VARIANCE GUARD FAILED: %d/%d "
+                        "(%.1f%%) feature columns have zero per-row variance "
+                        "across %d candidates (threshold %.0f%%). Constant "
+                        "input columns → constant predictions. Likely causes: "
+                        "(a) ctx._panel_matrix carries legacy schema with all-"
+                        "NaN cols median-imputed to constants (BUG #6), (b) "
+                        "fund features all 0 (BUG #1), (c) panel build SEC-date "
+                        "misalignment (BUG #2). FAIL-SAFE: clearing candidates.",
+                        n_zero_var, n_total_cols, pct_zero * 100,
+                        len(X_head), INPUT_ZERO_VAR_FLOOR * 100,
+                    )
+                    _nan = float("nan")
+                    for cand in ctx.candidates:
+                        cand.mu = _nan
+                        cand.sigma = _nan
+                    ctx.candidates = []
+                    if hasattr(ctx, "counters"):
+                        ctx.counters["ngb_input_variance_fail"] = (
+                            ctx.counters.get("ngb_input_variance_fail", 0) + 1
+                        )
+                    return False
+                if pct_zero > 0.10:
+                    log.warning(
+                        "ApplyNGBoostTask: %d/%d (%.1f%%) feature columns have "
+                        "zero per-row variance — partial constant inputs. "
+                        "Predictions may be degraded. Below %.0f%% hard-fail.",
+                        n_zero_var, n_total_cols, pct_zero * 100,
+                        INPUT_ZERO_VAR_FLOOR * 100,
+                    )
+        except Exception as _exc:
+            log.warning("ApplyNGBoostTask input-variance check failed: %s", _exc)
+
         try:
             dist = head.predict_distribution(X)
         except Exception as exc:
@@ -985,6 +1066,58 @@ class ApplyNGBoostTask(Task):
                  "(set_μσ=%d  not_in_idx=%d  mu_nan=%d  sigma_nan=%d)",
                  score_mode, lambda_sigma, len(ctx.candidates), len(ctx.holdings),
                  n_set, n_not_in_idx, n_mu_nan, n_sigma_nan)
+        # 2026-05-09 BUG #6 GUARD: post-predict diversity check.
+        # Invariant: cross-sectional std of μ̂ across candidates must be > ε
+        # (typically training-time x-sec std is ~0.02 — anything below 1e-4
+        # signals collapse). Pre-fix, BUG #6 produced n=49 std=0.00000 silently
+        # (every ticker got the same feature_medians-imputed input vector).
+        # Kelly downstream rejected all 49 with mu_le_min_edge but no log
+        # surfaced WHY. Now: hard-fail with ERROR + clear candidates so the
+        # operator sees the prediction collapse immediately.
+        import numpy as _np  # noqa: PLC0415
+        mu_arr = _np.asarray(mu.values, dtype=float)
+        sd_arr = _np.asarray(sigma.values, dtype=float)
+        mu_finite = mu_arr[_np.isfinite(mu_arr)]
+        sd_finite = sd_arr[_np.isfinite(sd_arr)]
+        if len(mu_finite) >= 2:
+            mu_xs_std = float(mu_finite.std())
+            sd_xs_std = float(sd_finite.std()) if len(sd_finite) >= 2 else 0.0
+            n_unique_mu = int(len(_np.unique(mu_finite.round(8))))
+            log.info(
+                "ApplyNGBoostTask μ̂ stats: n=%d mean=%+.4f std=%.4f "
+                "n_unique=%d  σ̂ mean=%.4f std=%.4f",
+                len(mu_finite), float(mu_finite.mean()), mu_xs_std, n_unique_mu,
+                float(sd_finite.mean()) if len(sd_finite) else float("nan"),
+                sd_xs_std,
+            )
+            # Hard-fail thresholds. Training x-sec std ≈ 0.02; a healthy run
+            # is at least 1e-3. Below that, predictions have collapsed —
+            # either feature input is constant OR model is degenerate.
+            DIVERSITY_FLOOR = 1e-4
+            if mu_xs_std < DIVERSITY_FLOOR or n_unique_mu < 2:
+                log.error(
+                    "ApplyNGBoostTask DIVERSITY GUARD FAILED: μ̂ x-sec "
+                    "std=%.6f (< %.0e floor) AND n_unique_mu=%d. Predictions "
+                    "have collapsed to a constant — typically caused by (a) "
+                    "ctx._panel_matrix carrying legacy schema (BUG #6), (b) "
+                    "all features all-NaN at the candidate rows triggering "
+                    "median imputation everywhere, or (c) head-input feature "
+                    "subset disjoint from training. FAIL-SAFE: clearing "
+                    "ctx.candidates so QP/Kelly do not trade on collapsed μ̂.",
+                    mu_xs_std, DIVERSITY_FLOOR, n_unique_mu,
+                )
+                # Stamp NaN so anything downstream that reads cand.mu / cand.sigma
+                # also fails-safe rather than silently treating constant as truth.
+                _nan = float("nan")
+                for cand in ctx.candidates:
+                    cand.mu = _nan
+                    cand.sigma = _nan
+                ctx.candidates = []
+                if hasattr(ctx, "counters"):
+                    ctx.counters["ngb_diversity_fail"] = (
+                        ctx.counters.get("ngb_diversity_fail", 0) + 1
+                    )
+                return False
 
 
 # ── Kelly sizing (Plan C — the smart part) ───────────────────────────────────

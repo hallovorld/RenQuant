@@ -8,6 +8,47 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E53 — Lopez de Prado §7 purged train/val audit + literature read pass [2026-05-09]
+
+**Hypothesis (post literature pass):** Per Lopez de Prado AFML §7, training rows with date in `[val_cut - h, val_cut]` have fwd_60d windows overlapping val period → label leakage. Original E51 baseline +0.0294 may be inflated.
+
+**Setup:** drop training rows with date > val_cut - 60 trading days (val_cut=2024-02-01 → train_cut=2023-11-03). Lose 17,520 rows / 3.1% of training. Re-run 5-seed XGB-quantile baseline + placebo + cross-eval on purged data.
+
+**Result:**
+| | mean ± σ | seed-range | n_rows |
+|---|---|---|---|
+| ORIG (no purge) | +0.0294 ± 0.0033 | [+0.0239, +0.0325] | 568,563 |
+| PURGED (-60d) | +0.0301 ± 0.0101 | [+0.0191, +0.0457] | 551,043 |
+
+**Δ(PURGED - ORIG) = +0.0007 (t = +0.14)** — no significant leakage. E51's clean baseline confirmed.
+
+**Side findings**:
+- PURGED has 3× higher variance (σ=0.010 vs 0.003). Hypothesis: dropping recent training data makes seeds more sensitive to which long-history regime they over-fit.
+- Purged placebo IC = +0.0266 vs E52 unpurged +0.0368 — boundary did inflate placebo, but not real
+- Purged cross-eval (real model μ vs placebo y) = +0.0315 → **persistence ratio ≈ 65%** (vs E52's 42% on unpurged)
+- Counterintuitively: purging INCREASES the persistence ratio, doesn't reduce it. The real-alpha component shrinks more than the persistent component when we cut recent training data.
+
+**Literature read pass on this date (Duan 2020 NGBoost, Romano 2019 CQR, NGBoost source, Qlib `qlib/contrib/model/`)**:
+- NGBoost source confirms LogScore (NLL) and CRPScore are both implemented for Normal distribution. Natural gradient is load-bearing per Duan §3.5 ablation Table 2 (multiparameter without NG → NLL Boston 3.17 vs NGBoost 2.43).
+- Duan §4 large-data config (Year MSD 515k samples): lr=0.1, minibatch_frac=0.1, max_depth=3, LogScore. Our prior "NGBoost too slow" was misconfiguration.
+- Qlib has NO probabilistic/quantile head models in `qlib/contrib/model/` — confirmed.
+- Romano 2019 CQR: split-conformal + quantile regression provides finite-sample coverage guarantee (Theorem 1). Our ad-hoc gate_b lacks this.
+
+**Implication for Track 2 NGB strategy**:
+- E51 baseline +0.0294 is real (not inflated by leakage)
+- Phase A/B/C architecture changes cannot break panel-level alpha ceiling
+- Persistence is structural to this 60d-label/2.5y-panel/169-feature system; purging makes it worse
+- The literature-recommended fixes (purge, NGBoost-proper, CQR) target wrong layers — the bottleneck is the panel signal, not the head architecture or the gate
+- Only new signal sources (microstructure, news, sector embedding, longer history) can lift the ceiling
+
+**Reproduction**:
+```bash
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/qhead_purged_baseline.py
+```
+
+---
+
 ## E52 — NGB QHead Phase C neural MLP + audit reveals 42% regime persistence component [2026-05-09]
 
 **Hypothesis**: After Phase A/B null on XGB QHead, switch architecture to TFT-style joint quantile MLP (Lim 2021). Param/sample ratio ~1/88, AdamW lr=1e-3, LayerNorm + dropout, 50 epochs early-stop on val pinball loss.

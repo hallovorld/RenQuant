@@ -108,16 +108,30 @@ class PanelScorer:
         ticker symbols). Missing feature columns raise KeyError — the
         caller is responsible for aligning the matrix to the artifact's
         `feature_cols`.
+
+        Per CLAUDE.md §5.3 BUG #6 invariant: soft_check_input runs before
+        predict, soft_check_score_series runs after. Both LOG warnings on
+        degeneracy (constant features, collapsed scores) so silent
+        feature-corruption bugs surface immediately.
         """
         missing = [c for c in self.feature_cols if c not in feature_matrix.columns]
         if missing:
             raise KeyError(
                 f"PanelScorer.score: feature matrix missing columns: {missing}",
             )
+        # ── Input contract ──
+        from training_panel.model_contract import (  # noqa: PLC0415
+            soft_check_input, soft_check_score_series,
+        )
+        soft_check_input(feature_matrix, self.feature_cols, head_name="PanelScorer")
+
         X = feature_matrix[self.feature_cols].values
         d = xgb.DMatrix(X)
         preds = self.booster.predict(d)
-        return pd.Series(preds, index=feature_matrix.index, name="panel_score")
+        out = pd.Series(preds, index=feature_matrix.index, name="panel_score")
+        # ── Output contract ──
+        soft_check_score_series(out, model_name="PanelScorer")
+        return out
 
 
 def compute_panel_scores(

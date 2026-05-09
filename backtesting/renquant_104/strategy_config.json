@@ -495,10 +495,11 @@
         "min_mult": 0.5
       },
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
-        "lambda_sigma": 0.0
+        "lambda_sigma": 0.0,
+        "_enable_reason": "2026-05-09 raw-label QHead promoted (val μ-IC +0.029, μ̂ x-sec std 0.0196 vs prior 0.0001). Enables σ-aware sizing via sigma_sizing path. lambda_sigma=0 means μ̂ does NOT affect rank score, only sizing. Conformal Gate B (edge_sharpe_floor) DISABLED below — pure-alpha ceiling on current panel (~+0.029) makes any meaningful FDR target unachievable; see E52 audit. Re-enable Gate B when val μ-IC clears +0.04 with placebo |IC|<0.01."
       },
       "sigma_sizing": {
         "enabled": true,
@@ -522,8 +523,9 @@
       "quality_floor": {
         "enabled": true,
         "edge_sharpe_floor": {
-          "enabled": true,
-          "threshold": 0.1
+          "enabled": false,
+          "threshold": 0.1,
+          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no τ achieves target FDR=0.30 OR 0.40. Best τ=0.39 → FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val μ-IC ≥ +0.04 + placebo |IC|<0.01."
         },
         "distribution_floor": {
           "enabled": false

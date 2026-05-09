@@ -327,6 +327,10 @@ class NGBoostHead:
                 f"columns: {missing[:5]}{'…' if len(missing) > 5 else ''} "
                 f"(model trained on {len(self.feature_cols)} features)."
             )
+        # ── Input contract (BUG #6 class invariant) ──
+        from .model_contract import soft_check_input  # noqa: PLC0415
+        soft_check_input(panel, self.feature_cols, head_name="NGBoostHead")
+
         X = panel[self.feature_cols].to_numpy(dtype=float, copy=False).copy()
         medians = getattr(self, "feature_medians_", None)
         if medians is not None:
@@ -376,6 +380,9 @@ class NGBoostHead:
             mu_arr = np.clip(mu_arr, -MU_CEIL, MU_CEIL)
             out.loc[panel.index[finite_mask], "mu"]    = mu_arr
             out.loc[panel.index[finite_mask], "sigma"] = sigma_arr
+        # ── Output contract (BUG #6 class invariant) ──
+        from .model_contract import soft_check_output  # noqa: PLC0415
+        soft_check_output(out, head_name="NGBoostHead")
         return out
 
     def predict_mu(self, panel: pd.DataFrame) -> pd.Series:

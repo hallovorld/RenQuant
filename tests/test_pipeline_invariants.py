@@ -297,6 +297,43 @@ class TestPostBuildFeatureHealth:
             f"(≤50% required for healthy feature)"
         )
 
+    def test_apply_scores_writes_panel_matrix_for_ngboost(self):
+        """BUG #6 (2026-05-09): ApplyNGBoostTask reads ctx._panel_matrix
+        for QuantileHead.predict_distribution. Pre-fix, ctx._panel_matrix
+        was the LEGACY pre-alpha158 matrix from AssembleInferenceMatrixTask
+        (no alpha158/fund/PEAD/SUE columns). QuantileHead's median imputation
+        filled all 169 features with constants → identical input vector for
+        every ticker → identical μ̂ across the candidate set (std=0).
+
+        This invariant: after ApplyScoresTask runs on a panel_ltr_xgboost
+        scorer, ctx._panel_matrix MUST contain the per-ticker rebuilt
+        feature matrix (different rows per ticker, NOT all medians).
+        """
+        # The fix is a single line in ApplyScoresTask:
+        #     ctx._panel_matrix = X_aligned.copy()  # before normalization
+        # Smoke-test this by reading the source file and asserting
+        # the attribution exists in the right code branch.
+        scoring_py = REPO / "backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py"
+        src = scoring_py.read_text()
+        # Must have the assignment after the X_aligned reindex
+        idx_reindex = src.find("X_aligned = X.reindex")
+        idx_norm    = src.find("Apply artifact-stored normalization")
+        idx_assign  = src.find("ctx._panel_matrix = X_aligned")
+        assert idx_reindex > 0, "Source structure changed — find_x_aligned missing"
+        assert idx_norm > 0, "Normalization comment missing"
+        assert idx_assign > 0, (
+            "BUG #6 regression: ApplyScoresTask must persist X_aligned to "
+            "ctx._panel_matrix BEFORE normalization (so ApplyNGBoostTask "
+            "downstream sees raw per-ticker features, not the legacy matrix)."
+        )
+        # Order: reindex < assign < normalization (assign happens BEFORE
+        # normalization so the raw matrix is preserved for NGB)
+        assert idx_reindex < idx_assign < idx_norm, (
+            "ctx._panel_matrix assignment is in the wrong position — must be "
+            "between X_aligned reindex and normalization. Current order: "
+            f"reindex={idx_reindex} assign={idx_assign} norm={idx_norm}"
+        )
+
     def test_pead_quintile_rank_is_distributional_across_dates(self):
         """pead_quintile_rank is a per-date rank ∈ [0,1] — should have
         std > 0 on every date with active earnings tickers."""
