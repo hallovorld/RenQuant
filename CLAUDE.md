@@ -4,19 +4,25 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-05-08 晚 — alpha158+5fund+3PEAD promoted；real signal +0.037）
+## 🗂 项目状态速览（2026-05-09 — alpha158+5fund+3PEAD+3SUE promoted；real signal +0.049）
 
 > 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/`](doc/archives/sessions/)；最新 roadmap 在 [`doc/roadmap.md`](doc/roadmap.md)；失败实验记录在 [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md)。
 
-**🟢 今日里程碑 (2026-05-08)**：
-1. 早上把 alpha158+5fund 163-feat XGBoost 推到生产（commit `ca350c0`），E2E live Alpaca 真单 BUY LMT/ON ACCEPTED
-2. P0 修复 daily cron 缺口（commit `3d0efee`）：daily104.sh → Pipeline + Tasks 架构 + 缓存（122s 全跑/0.2s 缓存命中）+ 18/18 单元测试
-3. Calibrator refit 干净（pool_ic +0.10, n_unique_y=85，preflight HARD pass）
-4. **B4 PEAD long-horizon 通过 §5.2 sanity 是今天唯一真信号**：raw +0.0086, real_signal +0.0146 → +0.0370（+150% 相对）。Shuffle IC 反而下降 18bp（vs E44 regime 上涨 15bp），证明 PEAD 是真 alpha 不是 stock-type artifact。Promoted to 166-feat panel + ApplyScoresTask online PEAD computation (本次 session)。
+**🟢 2026-05-09 凌晨追加里程碑**:
+1. **E49 SUE promoted** ⭐ (commit `8151943`) — Foster-Olsen-Shevlin 1984 SUE + surprise momentum + streak. real_signal lift +0.021 on TOP of PEAD baseline. 169-feat now in production.
+2. **NGBoost replaced by QuantileHead** (commit `603ab59`) — 3-quantile XGB (q=0.16/0.5/0.84) replaces single-thread NGBoost (1h+ that didn't finish). Multi-threaded ~30s. ngboost.enabled=true, σ-aware QP + Kelly path active.
+3. **Path bug fixed** (commit `1538872`) + FEATURE-HEALTH WARN (commit `e55779d`) — silent fund/PEAD all-zero failure mode caught by runtime check.
+4. **Preflight FULLY GREEN** — 5 HARD pass + 4 soft pass. P-CONFIG-FP fingerprint stamped via `_model_relevant_fields` so live + stored hashes align.
 
-**生产模型：** XGBoost rank:pairwise，**166 特征**（158 alpha158 + 5 SEC fund + 3 PEAD），fingerprint `cd4d6171c049d26d`，daily cron 自动重训。Calibrator pool_ic=+0.102, n_unique_y=81。
-**实盘：** Alpaca live ~$10k，今日 promote 后真单 BUY LMT x1 + ON x10 ACCEPTED；先持有 FTNT/MU/BA。
-**Watchlist：** 103 ticker（runtime live universe）/ 292 ticker（training panel — alpha158+SEC 全集）。Panel ~715k rows × 172 cols (166 feat + 6 meta)。
+**🟢 2026-05-08 里程碑**:
+1. 早上 alpha158+5fund 163-feat XGBoost 推到生产（`ca350c0`）+ live Alpaca 真单 ACCEPTED
+2. P0 daily cron Pipeline+Tasks 架构（`3d0efee`）
+3. Calibrator refit (n_unique_y 7→85)
+4. **E47 PEAD long-horizon promoted** — Shuffle IC drop 18bp 验证真 alpha，real_signal +0.022 lift
+
+**生产模型：** XGBoost rank:pairwise，**169 特征**（158 alpha158 + 5 SEC fund + 3 PEAD + 3 SUE），fingerprint `sha256:4f1e25989d475225`，daily cron 自动重训。Calibrator pool_ic=+0.094, n_unique_y=79。QuantileHead enabled (val μ-IC +0.021, σ calibration +0.34).
+**实盘：** Alpaca live ~$10k；昨日 PEAD-aware live trades GS/HD/SPOT cancelled，今日 SUE-promoted 169-feat 重跑。先持有 FTNT/MU/BA。
+**Watchlist：** 103 ticker（runtime live universe）/ 292 ticker（training panel）。Panel ~716k rows × 175 cols (169 feat + 6 meta)。
 
 **已关闭（不要再讨论）：**
 - **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减，v4 macro-as-panel-row OOS IC −28.8%。所有 macro 形式都被否决。等 watchlist 扩到 200+ 再重评。
