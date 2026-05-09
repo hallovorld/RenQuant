@@ -1522,6 +1522,48 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 
 **Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
 
+## E48 — LightGBM retest on alpha158+5fund+3PEAD (166-feat) [2026-05-08]
+
+**Hypothesis**: E27-era LightGBM rejection (-60% IC) was on the
+21-feat production panel — small panel, high stochastic loss for
+LGBM. New 166-feat panel has 4× rows + richer feature mix; LGBM
+might handle this better. Per CLAUDE.md §5.12 use canonical
+microsoft/LightGBM (15k+ stars, Ke et al. 2017 NeurIPS).
+
+**Setup**: Paired 7-cut WF on the production panel:
+  - XGBoost rank:pairwise (baseline, identical config to live)
+  - LightGBM lambdarank (analog of rank:pairwise — relevance-bucketed labels)
+  - LightGBM regression (MSE — same protocol as XGB)
+
+Same train/test cuts, same feature normalization, same n_estimators=100.
+
+**Result (paired 7-cut WF, 47s total)**:
+| Model | Mean IC | Std | Pos/7 |
+|---|---:|---:|---:|
+| XGBoost rank:pairwise (live) | +0.0507 | 0.069 | 5/7 |
+| **LightGBM lambdarank** | **+0.0530** | 0.082 | **4/7** |
+| LightGBM regression | +0.0266 | 0.045 | 6/7 |
+| Δ lgb_rank − xgb | **+0.0023** | +0.013 | -1 |
+| Δ lgb_reg − xgb | -0.0241 | -0.024 | +1 |
+
+**Verdict**: ✗ **NO-GO** (marginal). LightGBM-rank's +0.002 raw IC
+lift is below the +0.005 promotion threshold AND comes with HIGHER
+variance (0.082 vs 0.069) AND FEWER positive cuts (4/7 vs 5/7).
+The "improvement" is more variance than signal. LightGBM-reg is
+clearly worse (-0.024). Per CLAUDE.md ic-evaluation-methodology.md,
+not promote-worthy.
+
+XGBoost rank:pairwise remains the production model. Resume only
+if a LightGBM-specific feature (e.g. categorical handling for
+sector) becomes useful.
+
+**Reproduction**:
+```
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/wf_lightgbm_paired.py
+# saves data/wf_lightgbm_paired.json
+```
+
 ## E47 — Long-horizon PEAD revisit (fwd_60d) [2026-05-08]  ⭐ FIRST POSITIVE TODAY
 
 **Hypothesis**: E23 (2026-05-02) closed PEAD at fwd_5d as -1.3 σ
