@@ -572,6 +572,56 @@ class TestPEADInferenceDispatch:
         scored = sum(1 for c in ctx.candidates if c.rank_score is not None)
         assert scored == 3, f"Expected 3 scored via PEAD path, got {scored}"
 
+    def test_health_check_warns_when_all_pead_features_zero(self, tmp_path, monkeypatch, caplog):
+        """If the data lookup fails for every ticker (e.g. path wrong, all
+        files missing) PEAD features are silently zero. Health check must
+        emit a WARNING that names the failure mode (the 2026-05-08 bug)."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask, LoadScorerTask
+        import kernel.panel_pipeline.alpha158_features as a158_mod
+
+        feat_cols = self.FEAT_COLS
+        art = _write_xgb_alpha158_artifact(
+            tmp_path / "artifacts" / "panel-ltr.json", feat_cols,
+        )
+        tickers = ("AAA", "BBB", "CCC")
+        ctx = _make_ctx(tmp_path, enabled=True, artifact_path=str(art), tickers=tickers)
+        LoadScorerTask().run(ctx)
+        ctx.ohlcv = _make_ohlcv(tickers)
+        ctx._panel_matrix = pd.DataFrame(
+            np.random.default_rng(0).normal(size=(3, 3)),
+            index=list(tickers),
+            columns=FEATURE_COLS,
+        )
+        # No earnings_surprise files → every ticker falls into n_no_data path
+        # → all PEAD features = 0.0 → health WARN should fire.
+
+        rng = np.random.default_rng(99)
+        a158_feat = [c for c in feat_cols if c not in self.PEAD_COLS]
+        monkeypatch.setattr(
+            a158_mod, "compute_alpha158_at",
+            lambda ohlcv, today: {f: float(rng.normal()) for f in a158_feat},
+        )
+
+        import kernel.panel_pipeline.job_panel_scoring as scoring_mod
+        fake_file = (
+            tmp_path / "backtesting" / "renquant_104"
+            / "kernel" / "panel_pipeline" / "stub.py"
+        )
+        fake_file.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(scoring_mod, "__file__", str(fake_file))
+        ctx.today = datetime.date(2026, 3, 20)
+
+        import logging as _logging
+        with caplog.at_level(_logging.WARNING, logger="kernel.panel_pipeline.scoring"):
+            ApplyScoresTask().run(ctx)
+
+        warn_msgs = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
+        pead_warn = [m for m in warn_msgs if "PEAD features" in m and "FEATURE-HEALTH" in m]
+        assert pead_warn, (
+            f"Expected FEATURE-HEALTH WARN about all-zero PEAD features. "
+            f"Got warnings: {warn_msgs}"
+        )
+
     def test_pead_path_resolves_repo_root_correctly(self, tmp_path, monkeypatch, caplog):
         """Regression test for the parents[3] vs parents[4] bug — production
         was looking up earnings_surprise/ at <repo>/backtesting/data/ not

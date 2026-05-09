@@ -272,6 +272,59 @@ class ApplyScoresTask(Task):
                              today_ts.date().isoformat(),
                              len(surprises_today), len(rows),
                              n_no_data, n_no_prior, n_out_of_window)
+
+                # ── Feature-health check (2026-05-08 path-bug regression guard) ─
+                # Catches the silent-zero failure mode that hid the parents[3]
+                # path bug: if EVERY ticker reports value 0.0 for a feature
+                # we just supposedly populated, the data lookup is dead.
+                # Both fund and PEAD blocks use rows[t].setdefault(col, 0.0)
+                # as their fallback, so an all-zero column is a strong
+                # signal of a runtime data outage (path wrong, file missing,
+                # API throttle).
+                if rows:
+                    health_warnings = []
+                    expected_nonzero_cols = []
+                    if needs_fund:
+                        expected_nonzero_cols.extend(c for c in fund_cols if c in scorer.feature_cols)
+                    if needs_pead:
+                        expected_nonzero_cols.extend(c for c in pead_cols if c in scorer.feature_cols)
+                    for c in expected_nonzero_cols:
+                        vals = [float(rows[t].get(c, 0.0)) for t in rows]
+                        if vals and max(abs(v) for v in vals) < 1e-12:
+                            health_warnings.append(c)
+                    # PEAD-quintile-rank legitimately defaults to 0 in the
+                    # "no surprise active" branch — exclude unless ALL fund
+                    # cols are also zero (the indicator of total failure).
+                    fund_dead = bool(needs_fund) and all(
+                        c in health_warnings for c in fund_cols if c in scorer.feature_cols
+                    )
+                    pead_dead = bool(needs_pead) and all(
+                        c in health_warnings for c in pead_cols if c in scorer.feature_cols
+                    )
+                    if fund_dead:
+                        log.warning(
+                            "ApplyScoresTask FEATURE-HEALTH: ALL %d fund features "
+                            "are 0 across %d tickers — runtime data lookup likely "
+                            "broken (sec_fundamentals_daily.parquet path / read). "
+                            "Production XGB will rank as if these features did not "
+                            "exist. Affected: %s",
+                            len([c for c in fund_cols if c in scorer.feature_cols]),
+                            len(rows),
+                            [c for c in health_warnings if c in fund_cols],
+                        )
+                    if pead_dead:
+                        log.warning(
+                            "ApplyScoresTask FEATURE-HEALTH: ALL %d PEAD features "
+                            "are 0 across %d tickers — possible if no ticker has "
+                            "earnings in the 60d window today (e.g. between cycles), "
+                            "but ALSO the failure mode of the parents[3] path bug "
+                            "fixed 2026-05-08. Cross-reference n_no_data above: "
+                            "if n_no_data == n_total, path is broken. "
+                            "Affected: %s",
+                            len([c for c in pead_cols if c in scorer.feature_cols]),
+                            len(rows),
+                            [c for c in health_warnings if c in pead_cols],
+                        )
                 # Rebuild X with fund + PEAD cols included
                 X = pd.DataFrame.from_dict(rows, orient="index")
                 X_aligned = X.reindex(columns=scorer.feature_cols, fill_value=float("nan"))
