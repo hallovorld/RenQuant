@@ -497,11 +497,11 @@
         "min_mult": 0.5
       },
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
-        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The σ-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha ≥+0.04 or alternative sizing scheme proves itself."
+        "_enable_reason": "2026-05-09 raw-label QHead promoted (val μ-IC +0.029, μ̂ x-sec std 0.0196 vs prior 0.0001). Enables σ-aware sizing via sigma_sizing path. lambda_sigma=0 means μ̂ does NOT affect rank score, only sizing. Conformal Gate B (edge_sharpe_floor) DISABLED below — pure-alpha ceiling on current panel (~+0.029) makes any meaningful FDR target unachievable; see E52 audit. Re-enable Gate B when val μ-IC clears +0.04 with placebo |IC|<0.01."
       },
       "sigma_sizing": {
         "enabled": true,
