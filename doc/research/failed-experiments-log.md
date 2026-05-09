@@ -1583,6 +1583,37 @@ $PY scripts/wf_panel_args.py \
     --out   data/wf_r2k_fund_fwd60d.json
 ```
 
+**Bug audit (CLAUDE.md §2b)** — user challenged the NO-GO: "could
+this just be a bug?" Two differential tests run via
+`scripts/wf_r2k_audit.py`:
+
+| Variant | XGB mean IC | pos/7 | If bug, expected |
+|---|---:|---:|---|
+| **Production baseline** (291) | **+0.0673** | 5/7 | reference |
+| R2K full (1640, alpha158+fund) | +0.0181 | 5/7 | initial result |
+| R2K **alpha158-only** (drop 5 fund) | +0.0253 | 5/7 | full recovery if fund-noise was bug |
+| R2K **top-300 liquid subset** | +0.0171 | 5/7 | full recovery if data-quality / survivorship was bug |
+| R2K top-300 + alpha158-only | +0.0149 | 4/7 | if both fixes stack |
+
+**Audit conclusion**: NO-GO is NOT a bug. Removing fund features
+gives +0.007 lift (small, consistent with sparser fund coverage on
+small caps), but doesn't recover anywhere near +0.067. Restricting
+to the top-300 liquid R2K subset gives ZERO recovery — actually
+slightly worse (+0.017 vs +0.018). Combining both fixes is also
+worse. The R2K signal weakness is structural, not a data-quality
+artifact.
+
+Why it's structural (post-hoc explanation):
+- Small-cap returns have fatter tails (label max=+39σ vs prod
+  reasonable values). XGB rank:pairwise is robust to outliers but
+  still loses cross-sectional ordering quality.
+- 53% of R2K tickers have constant gross_profitability (vs same
+  53% in prod, so not differential — the inflated count comes from
+  more total tickers).
+- Cut 3 (2018-train, 2021-test) shows R2K −0.13 IC vs prod +0.05
+  — same regime, very different signal sustainability when
+  applied across many small caps.
+
 ## E44 — SPY-GMM regime probabilities as panel features [2026-05-08]
 
 **Hypothesis**: regime-conditional alpha capture — production signal works
