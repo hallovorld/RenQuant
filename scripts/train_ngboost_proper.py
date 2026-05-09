@@ -99,50 +99,66 @@ def main():
     )
     log.info("Config: Normal dist, LogScore, max_depth=3, lr=0.1, minibatch_frac=0.1, n_est=500")
 
-    # Single seed first — establish whether NGBoost works at all on this scale
-    SEED = 42
-    log.info("Fitting NGBoost (seed=%d)...", SEED)
-    t0 = time.time()
-    model = NGBRegressor(
-        Dist=Normal,
-        Score=LogScore,
-        Base=DecisionTreeRegressor(
-            criterion="friedman_mse",
-            max_depth=3,
-            splitter="best",
-        ),
-        natural_gradient=True,
-        n_estimators=500,
-        learning_rate=0.1,
-        minibatch_frac=0.1,
-        col_sample=1.0,
-        verbose=True,
-        verbose_eval=50,
-        random_state=SEED,
-        validation_fraction=0.1,
-        early_stopping_rounds=20,
-    )
-    model.fit(Xtr, ytr, X_val=Xva, Y_val=yva)
-    fit_time = time.time() - t0
-    log.info("NGBoost fit in %.1fs (best_iter=%d)", fit_time, model.best_val_loss_itr or model.n_estimators)
+    # 5-seed A/A per CLAUDE.md §5.2 — single-seed +0.0356 was promising;
+    # need σ characterization to claim significance vs XGB +0.0294 ± 0.0029.
+    val_ics = []
+    sigma_calibs = []
+    mu_xs_stds = []
+    fit_times = []
+    for SEED in [42, 7, 123, 2024, 31415]:
+        log.info("Fitting NGBoost (seed=%d)...", SEED)
+        t0 = time.time()
+        model = NGBRegressor(
+            Dist=Normal,
+            Score=LogScore,
+            Base=DecisionTreeRegressor(
+                criterion="friedman_mse",
+                max_depth=3,
+                splitter="best",
+            ),
+            natural_gradient=True,
+            n_estimators=500,
+            learning_rate=0.1,
+            minibatch_frac=0.1,
+            col_sample=1.0,
+            verbose=False,        # quiet for 5-seed loop
+            random_state=SEED,
+            validation_fraction=0.1,
+            early_stopping_rounds=20,
+        )
+        model.fit(Xtr, ytr, X_val=Xva, Y_val=yva)
+        ft = time.time() - t0
 
-    # Predict
-    dist = model.pred_dist(Xva)
-    mu_va = dist.loc
-    sigma_va = dist.scale
-    val_ic = cs_ic(mu_va, yva, val_dates)
-    sigma_calib = float(spearmanr(sigma_va, np.abs(yva - mu_va))[0])
-    mu_xs_std = float(pd.DataFrame({"mu": mu_va, "d": val_dates}).groupby("d")["mu"].std().mean())
+        dist = model.pred_dist(Xva)
+        mu_va = dist.loc
+        sigma_va = dist.scale
+        v_ic = cs_ic(mu_va, yva, val_dates)
+        sc = float(spearmanr(sigma_va, np.abs(yva - mu_va))[0])
+        ms = float(pd.DataFrame({"mu": mu_va, "d": val_dates}).groupby("d")["mu"].std().mean())
+        log.info("  seed=%-5d val_ic=%+.4f σ-calib=%+.3f μ_xs_std=%.5f best_iter=%d (%.1fs)",
+                 SEED, v_ic, sc, ms, model.best_val_loss_itr or model.n_estimators, ft)
+        val_ics.append(v_ic); sigma_calibs.append(sc); mu_xs_stds.append(ms); fit_times.append(ft)
 
     log.info("=" * 60)
-    log.info("Phase D2 NGBoost (proper config, single seed=%d)", SEED)
+    log.info("NGBoost-proper 5-seed result (Duan 2020 §4 large-data config)")
     log.info("=" * 60)
-    log.info("  val μ-IC          : %+.4f  (vs XGB-quantile +0.0294 ± 0.0029)", val_ic)
-    log.info("  σ̂ calibration    : %+.4f  (Spearman σ̂ vs |y−μ̂|)", sigma_calib)
-    log.info("  μ̂ x-sec std (val): %.5f", mu_xs_std)
-    log.info("  σ̂ stats (val)    : mean=%.4f median=%.4f min=%.4f max=%.4f",
-             sigma_va.mean(), np.median(sigma_va), sigma_va.min(), sigma_va.max())
-    log.info("  Fit time         : %.1fs", fit_time)
+    log.info("  val μ-IC mean=%+.4f std=%.4f range=[%+.4f, %+.4f]",
+             np.mean(val_ics), np.std(val_ics, ddof=1), min(val_ics), max(val_ics))
+    log.info("  σ̂ calib mean=%+.3f", np.mean(sigma_calibs))
+    log.info("  μ̂ x-sec std mean=%.5f", np.mean(mu_xs_stds))
+    log.info("  fit time mean=%.1fs total=%.0fs", np.mean(fit_times), sum(fit_times))
+    log.info("")
+    log.info("Compare baseline XGB-quantile: mean=+0.0294 std=0.0029  (E51 5-seed A/A)")
+    delta = np.mean(val_ics) - 0.0294
+    se = np.sqrt(0.0029**2/5 + np.std(val_ics, ddof=1)**2/5)
+    t = delta / se if se > 0 else float("inf")
+    log.info("Δ(NGB-proper - XGB) = %+.4f  t-stat = %+.2f", delta, t)
+    if abs(t) > 2.0 and delta > 0:
+        log.info("✓ SIGNIFICANT BEAT — NGBoost-proper > XGB-quantile at 95%%")
+    elif delta > 0:
+        log.info("? Trend positive but not 2σ significant on n=5")
+    else:
+        log.info("✗ NGBoost-proper does NOT beat XGB-quantile")
 
 
 if __name__ == "__main__":

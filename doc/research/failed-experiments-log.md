@@ -8,6 +8,99 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E55 — 27-month NGB-on vs NGB-off A/B; NGBoost-proper retrain — both REJECT NGB [2026-05-09]
+
+After Phase D2 NGBoost-proper showed +60bp single-seed improvement over
+XGB-quantile baseline, ran 5-seed A/A confirmation + 27-month sim A/B
+to decide whether to keep NGB enabled in production.
+
+### NGBoost-proper 5-seed A/A (Duan 2020 §4 large-data config)
+
+```
+seed=42:    +0.0359
+seed=7:     +0.0359
+seed=123:   +0.0309
+seed=2024:  +0.0364
+seed=31415: +0.0377
+mean=+0.0354 std=0.0026  vs XGB-quantile +0.0294 ± 0.0029
+Δ = +0.0060  t-stat = +3.43  ✓ p<0.01 SIGNIFICANT
+```
+
+Architectural lift confirmed; "1h+ didn't finish" was misconfig (217s
+mean fit time per seed with paper-recommended lr=0.1, minibatch_frac=0.1).
+
+### §5.2 placebo on NGBoost-proper
+
+```
+real_ic                 = +0.0489 (purged train, single seed)
+placebo self_ic         = +0.0240
+CROSS (real μ → placebo y) = +0.0307
+persistence ratio       = 63%   (vs XGB's 42%)
+✗ §5.2 PLACEBO FAIL
+```
+
+NGB-proper has HIGHER persistence (63%) than XGB-quantile (42%). The
++60bp lift is 100% persistence component:
+- NGB-proper pure alpha = 0.0489 - 0.0307 = +0.0182
+- XGB-quantile pure alpha = 0.0509 - 0.0216 = +0.0293
+
+Pure 60d alpha is actually WORSE under NGB-proper. The headline IC win
+was illusory.
+
+### 27-month sim A/B (clean comparison after BUG #6/#7 fixes + loader fix)
+
+| Config | APY | Sharpe | Sortino | MaxDD | Vol | trades | WR |
+|---|---|---|---|---|---|---|---|
+| NGB-ON  (post-fixes) | +2.99% | +0.26 | +0.25 | 15.4% | 16.0% | 455 | 61% |
+| NGB-OFF | **+6.77%** | **+0.40** | +0.36 | 19.2% | 22.8% | **303** | **67%** |
+| Δ (off-on) | +3.78 pp | +0.14 | +0.11 | +3.8 | +6.8 | -152 | +6 |
+
+NGB-OFF wins on every risk-adjusted metric:
+- +3.78 APY pts
+- +0.14 Sharpe
+- +6 pp win rate
+- 152 fewer trades (33% less churn)
+
+Higher MaxDD/Vol on NGB-OFF, but Sharpe still higher → vol pays off.
+
+### Decomposition of NGB-on's 3.78 pp drag
+
+- Trading-cost component: 152 extra trades × ~0.15% fee+slippage × ~$500
+  avg = ~$114 over 27mo on $100k = ~0.5 pp APY drag from churn
+- Remaining ~3.3 pp drag = WORSE position selection / sizing under
+  σ-aware Kelly + QP. The Kelly weight ∝ μ̂/σ² spreads positions
+  proportional to the Sharpe quasi-ratio, but with model's μ̂ x-sec
+  spread only 0.025 (modest), Kelly basically allocates equal-weight
+  at the concentration cap. The QP then weighs μ̂ in the objective
+  alongside variance term — and μ̂'s 63% persistence component is what
+  the QP optimizes against, not real 60d alpha.
+
+### Action: REVERT — ngboost.enabled=false in production
+
+Committed in fb74bb4. NGB head artifact retained for future use.
+
+**Resume conditions for NGB re-enable:**
+- New feature panel produces pure_alpha ≥ +0.04 (per E53 audit)
+- OR redesign σ-aware sizing to avoid the friction tax revealed here
+- OR new use case (e.g. risk-overlay only, not Kelly target)
+
+**Lessons learned:**
+- Single-seed val_ic comparisons are unreliable (CLAUDE.md §5.2)
+- Headline IC ≠ pure alpha when persistence is large (CLAUDE.md §5.2 placebo)
+- Architectural improvement on val_ic doesn't guarantee live OOS APY win
+- Forward-tested A/B is the only decisive test of "does this help PnL"
+
+### Reproduction
+```bash
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/train_ngboost_proper.py     # 5-seed NGB-proper A/A
+$PY scripts/ngb_proper_placebo.py        # §5.2 placebo
+$PY scripts/run_sim_104.py --strategy-config-name strategy_config.json
+$PY scripts/run_sim_104.py --strategy-config-name strategy_config.ngb_off_ab.json
+```
+
+---
+
 ## E54 — Production deploy chain: BUG #6 + cost-aware wash-sale + BUG #7 + BA audit [2026-05-09]
 
 **Context:** following E51/E52/E53 NGB analytical work, one-day production
