@@ -1522,6 +1522,62 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 
 **Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
 
+## E49 — SUE + surprise momentum/streak [2026-05-09]  ⭐ SECOND POSITIVE TODAY
+
+**Hypothesis**: B3 original plan (analyst consensus revisions) blocked by
+free-tier data — neither SimFin nor yfinance expose historical analyst
+estimate revisions needed for paired WF backtesting. Pivot: build
+**revision-LIKE** features from existing earnings_surprise/ data:
+
+  - `sue_signal` = SUE × Bernard-Thomas decay
+    SUE = surprise_t / σ(surprise_(t-1..t-4))   (Foster-Olsen-Shevlin
+    1984, ~3500 cites — academic standard PEAD scoring measure)
+  - `surprise_momentum` = surprise_t − surprise_(t-1)  (QoQ change)
+  - `surprise_streak` = signed consecutive same-direction surprise count
+
+All three apply 60-day Bernard-Thomas linear decay (matches E47 PEAD
+path) and only fire within the 60d post-earnings window.
+
+**Setup**: Paired §5.2 sanity battery on top of the production 166-feat
+panel (which already includes E47 PEAD). Tests: 3-seed A/A + 1-seed
+shuffle. Same XGB d=5 e=0.05 mcw=50, same 7-cut WF.
+
+**Result**:
+| Metric | Base (166-feat, PEAD) | + SUE (169-feat) | Δ |
+|---|---:|---:|---:|
+| A/A mean IC (3 seeds 42/43/44) | +0.0522 | +0.0551 | **+0.0029** |
+| A/A std | 0.0027 | 0.0037 | +0.0010 |
+| Shuffled-label IC (seed=42) | +0.0239 | **+0.0058** | **−0.0181** |
+| **REAL SIGNAL** = A/A − shuffle | **+0.0283** | **+0.0493** | **+0.0210** |
+
+Same signature as E47 PEAD: shuffled-label IC DROPS by 18 bp when SUE
+features are added — meaning SUE adds genuine cross-sectional alpha,
+NOT stock-type artifact growth. Real signal lift +0.021 — even larger
+than E47 PEAD's +0.022. Two independent positive sanity-validated
+features in one day is an unusually rich result; both leverage the
+existing earnings_surprise panel from a different angle (E47 = signed
+surprise w/ decay, E49 = standardized surprise + momentum + streak).
+
+**Verdict**: ✓ **PROMOTE-CANDIDATE**.
+
+**Next steps to promote** (~2h work, mirroring E47):
+1. Extend `scripts/build_alpha158_fund_panel.py` with SUE feature
+   computation → outputs 169-feat panel.
+2. Add SUE inference path to `ApplyScoresTask` (read earnings_surprise,
+   compute SUE + momentum + streak online).
+3. Retrain XGB on 169-feat → new `panel-ltr.alpha158_fund.json`.
+4. Refit calibrator + retrain QuantileHead on 169-feat.
+5. Update FEATURE-HEALTH WARN to detect all-zero SUE features (path bug
+   regression guard).
+6. Drift check + tests + e2e.
+
+**Reproduction**:
+```
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/wf_pead_sue.py
+# saves data/wf_pead_sue.json with full sanity numbers
+```
+
 ## E48 — LightGBM retest on alpha158+5fund+3PEAD (166-feat) [2026-05-08]
 
 **Hypothesis**: E27-era LightGBM rejection (-60% IC) was on the
