@@ -292,8 +292,11 @@ class SimAdapter:
             log.warning("SimAdapter: ngboost artifact not found at %s", path)
             return None
         try:
-            from training_panel.ngboost_head import NGBoostHead  # noqa: PLC0415
-            return NGBoostHead.load(path)
+            # 2026-05-09: polymorphic loader dispatches on artifact kind
+            # field — handles both NGBoostHead and QuantileHead. The
+            # production runner already uses this; sim was missing it.
+            from training_panel.quantile_head import load_head_by_kind  # noqa: PLC0415
+            return load_head_by_kind(path)
         except Exception as exc:
             log.warning("SimAdapter: ngboost head load failed — %s", exc)
             return None

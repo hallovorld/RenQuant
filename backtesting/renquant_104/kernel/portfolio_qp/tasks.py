@@ -512,6 +512,23 @@ class EmitOrdersFromQPSolutionTask(Task):
         n_blocked_buys = n_blocked_earnings = 0
         n_skipped_nonfinite = n_skipped_band = 0
 
+        # 2026-05-09 BA QP audit: log every holding's per-asset solution
+        # so we can see why BA (high negative μ̂) wasn't sold even after
+        # BUG #7 band-cap fix. Holdings only — buys are visible via QP_BUY.
+        holdings_set = set((ctx.holdings or {}).keys())
+        for i, t in enumerate(tickers):
+            if t in holdings_set:
+                tw = float(sol.target_w[i]) if hasattr(sol, "target_w") else float("nan")
+                dw_h = float(sol.delta_w[i]) if hasattr(sol, "delta_w") else float("nan")
+                sig_h = float(sigma_vec[i]) if (sigma_vec is not None and i < len(sigma_vec)) else float("nan")
+                eff_band = max(min_dw, min(band_cap, no_trade_factor * (sig_h if _m.isfinite(sig_h) else 0)))
+                will_skip = (abs(dw_h) < eff_band) if _m.isfinite(dw_h) else None
+                log.info(
+                    "QP_HOLDING_SOLVE %s: target_w=%+.4f Δw=%+.4f σ=%.3f "
+                    "eff_band=%.4f will_skip=%s",
+                    t, tw, dw_h, sig_h, eff_band, will_skip,
+                )
+
         for i, t in enumerate(tickers):
             dw = float(sol.delta_w[i])
             if not _m.isfinite(dw):

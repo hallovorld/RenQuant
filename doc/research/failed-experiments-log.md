@@ -8,6 +8,139 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E54 — Production deploy chain: BUG #6 + cost-aware wash-sale + BUG #7 + BA audit [2026-05-09]
+
+**Context:** following E51/E52/E53 NGB analytical work, one-day production
+chain ran into three sequential blockers, each found and fixed.
+
+### BUG #6 — silent prediction collapse in production
+**Symptom:** paper e2e showed all 49 candidates with μ̂ = -0.0026 (std=0).
+Live runs since NGB enable were silently rejecting all candidates with
+mu_le_min_edge — model output was constant.
+
+**Root cause:** `ApplyScoresTask` for panel_ltr_xgboost rebuilt the
+per-ticker alpha158+fund+PEAD+SUE matrix locally, but did not stamp it
+to `ctx._panel_matrix`. Downstream `ApplyNGBoostTask` read the legacy
+pre-alpha158 matrix from `AssembleInferenceMatrixTask` — all 169 head
+features were missing. `QuantileHead.predict_distribution` then used
+its `feature_medians_` to impute every cell → identical inputs across
+all tickers → identical predictions.
+
+**Fix:** persist `X_aligned.copy()` to `ctx._panel_matrix` BEFORE
+normalization in `ApplyScoresTask`. One line. Verified: μ̂ x-sec std
+0.000→0.025, n_unique 1→49, 40/49 candidates pass Kelly.
+
+**Class invariants added to prevent recurrence (CLAUDE.md §5.3):**
+- Pipeline-level: `ApplyNGBoostTask` post-predict diversity guard
+  (clear candidates if μ̂ x-sec std < 1e-4 OR n_unique < 2)
+- Pipeline-level: `ApplyNGBoostTask` pre-predict input variance guard
+  (fail-safe if > 50% feature columns have zero per-row variance)
+- Universal head contract: `QuantileHead`/`NGBoostHead`/`PanelScorer`
+  all invoke `model_contract.soft_check_input` + `soft_check_output`
+  on every call
+- `ApplyGlobalCalibrationTask` post-loop diversity check
+- 14 smoke tests + 27 unit tests, all green
+
+### Cost-aware wash-sale per IRC §1091
+**Motivation:** original wash-sale filter was a binary 30d block →
+prevented re-entry to ANY recent sale, regardless of P/L.
+
+**§1091 mechanics:** rule applies ONLY to LOSS sales. GAIN sales
+have zero §1091 cost. LOSS sales have NPV deferred-tax cost ≈
+|loss| × tax × (1 − 1/(1+r)^t) — typically <5% of |loss|.
+
+**Implementation:**
+- `kernel/realized_pnl.py`: FIFO match broker fill history → per-ticker $ P/L
+- `kernel/selection.py`: `wash_sale_npv_cost()` + `is_wash_sale_blocked_with_cost()`
+- Decision tree: outside window → pass; gain → pass; loss + expected
+  return > 1.5×NPV cost → pass; loss + no μ̂ → conservative block;
+  P/L unknown → conservative block
+
+**Live verification:** AMZN +$74 / GOOG +$24 / CAT +$100 / SMCI +$5 /
+BA +$16 (gains) silently passed. NVDA −$32 / PLTR −$27 / TSM −$29
+classified as losses with NPV cost $0.76–$0.89 each. 12 unknown-PL
+fallbacks (ABBV/GS/HD/etc — sells without matching buys in 60d
+FIFO window) → conservative binary block.
+
+### BUG #7 — σ-derived no-trade band uncapped
+**Symptom:** post-BUG-#6 runs had buys=0 sells=0 every bar, with
+"5 trades skipped by no-trade band". BA at edge_sharpe=−0.51 (12%
+expected underperformance) failed to sell.
+
+**Root cause:** `_passes_no_trade_band` formula
+`threshold = max(min_dw, no_trade_factor × σ_i)`. With NGB σ̂ ≈
+0.10–0.30, threshold became 10–30% of equity. BA σ̂=0.243 → 24.3%
+band → 6.73% needed Δw < 24.3% → SUPPRESSED.
+
+**Fix:** cap σ-derived band at `qp_no_trade_band_cap` (default 5%):
+`threshold = max(min_dw, min(band_cap, factor × σ_i))`. Hard floor at
+min_dw preserved; assets with σ < 5% unaffected.
+
+**Reference:** Davis-Norman 1990 / Constantinides 1979 / Liu-Loewenstein
+2002. Note: the proper bandwidth shrinks with σ² (precision-weighted),
+not grows linearly — current formula is a quick-fix, deserves
+cvxportfolio-style rewrite.
+
+**Live verification:** 2 buys fired (CVX +$908, LLY +$948).
+
+### BA QP audit phase 2
+**Question after BUG #7 fix:** band cap 5% < BA's 6.73% needed Δw
+should let SELL fire — but `sells=0`. Why?
+
+**Audit instrumentation:** added `QP_HOLDING_SOLVE` log line that emits
+per-asset `target_w`, `Δw`, `σ`, `eff_band`, `will_skip` for every
+holding (BA/FTNT/MU). Captured live via fresh alpaca run (08:22).
+
+**Finding:**
+```
+QP_HOLDING_SOLVE BA:   target_w=+0.0154  Δw=-0.0519  σ=0.243  eff_band=0.0500  will_skip=False
+QP_HOLDING_SOLVE FTNT: target_w=+0.0974  Δw=-0.0104  σ=0.122  eff_band=0.0500  will_skip=True
+QP_HOLDING_SOLVE MU:   target_w=+0.0706  Δw=+0.0000  σ=0.138  eff_band=0.0500  will_skip=True
+```
+
+**Resolution:** BA target_w = 1.54% (NOT 0% as Kelly suggested). The
+QP balances negative-μ cost vs unrealized-gain tax penalty + transaction
+cost — keeps a residual 1.54% as the optimal trade-off. Δw = -5.19%
+(current 6.73% → target 1.54%) clears 5% band → SELL FIRES.
+
+**Why earlier 08:04 run didn't sell BA:** different cash/holdings state
+made QP set BA target_w higher (~4-6%) → Δw < band → suppressed. With
+more capital deployed elsewhere this run, BA target landed lower → sell
+fires. **QP behavior is dynamic, not deterministic per-ticker.**
+
+**Live verification:** BA sell 2 shares accepted at broker 15:22 UTC.
+
+### Production state at end of 2026-05-09 session
+
+| Holding | qty | $value | μ̂ | σ̂ | edge | target_w | action |
+|---------|-----|--------|-----|-----|------|----------|--------|
+| BA | 3 → 1 | $712 → $237 | -0.123 | 0.243 | -0.51 | 1.54% | SELL 2 shares |
+| FTNT | 10 | $1141 | +0.032 | 0.122 | +0.27 | 9.74% | HOLD (band suppressed trim) |
+| MU | 1 | $747 | +0.004 | 0.138 | +0.03 | 7.06% | HOLD |
+
+Pending limit buys (from earlier today): PANW $832, RTX $880, TSLA $857,
+CVX $908, LLY $948, CSCO $579, XOM $867 = $5,871 queued.
+
+### Open follow-ups
+- Wash-sale FIFO lookback extension (60d → 365d) → resolve "P/L unknown"
+  fallbacks for ABBV/GS/HD/etc.
+- Davis-Norman proper formula (Liu-Loewenstein 2002) replacing the
+  linear-σ heuristic with band cap.
+- σ̂ calibration audit — verify QHead's σ̂ ≈ 0.13 / 60d matches realized
+  return spread on val partition.
+- 27-month backtest A/B (NGB on vs off) — running.
+- NGBoost-proper retrain per Duan 2020 §4 (lr=0.1, minibatch_frac=0.1)
+  — running.
+
+### Reproduction
+```
+git log --since=2026-05-09 --until=2026-05-10 --oneline | head -10
+# 7 commits chain: BUG #1+#2 fix → NGB-experiment → Phase C → BUG #6+guards
+#                  → wash-sale → BUG #7
+```
+
+---
+
 ## E53 — Lopez de Prado §7 purged train/val audit + literature read pass [2026-05-09]
 
 **Hypothesis (post literature pass):** Per Lopez de Prado AFML §7, training rows with date in `[val_cut - h, val_cut]` have fwd_60d windows overlapping val period → label leakage. Original E51 baseline +0.0294 may be inflated.
