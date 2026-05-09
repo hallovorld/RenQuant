@@ -1522,6 +1522,62 @@ After re-fetching SEC fundamentals for R1K+R2K combined universe:
 
 **Best IR config** (more stable): d=5 eta=0.03 mcw=10 → IR=1.00, mean=+0.0674.
 
+## E46 — Per-sector model (sector-conditional XGB) [2026-05-08]
+
+**Hypothesis**: sector is a STATIC label (not slow-moving feature like
+GMM regime probabilities), so a per-sector head AVOIDS the
+stock-type identification artifact that killed E44 (regime-as-feature
+real signal -0.013 after sanity battery). Per Cremers et al. 2008
++ Daniel et al. 1997, sector-conditional models capture
+cross-sectional alpha that's hidden by within-sector heterogeneity
+under a single global head.
+
+**Setup**: Train one XGB rank:pairwise model per sector (using
+production sector_map: 11 sectors total, 8 with ≥5 tickers). Each
+sector's XGB sees only that sector's rows. Aggregate via cross-sector
+mean cut IC. Same 7-cut WF as production baseline.
+
+**Result (paired 7-cut WF, XGB d=5 e=0.05 mcw=50)**:
+| Sector | Tickers | Mean IC | Std | Pos/7 |
+|---|---:|---:|---:|---:|
+| consumer | 6 | **+0.091** | 0.124 | 6/7 |
+| software | 26 | +0.049 | 0.062 | 4/7 |
+| industrial | 7 | +0.046 | 0.131 | 4/7 |
+| datacenter_hw | 12 | +0.015 | 0.076 | 4/7 |
+| ai_chip | 19 | +0.010 | 0.093 | 4/7 |
+| healthcare | 8 | +0.005 | 0.098 | 4/7 |
+| finance | 13 | -0.025 | 0.136 | 3/7 |
+| giant_tech | 9 | -0.049 | 0.132 | 2/7 |
+| **CROSS-SECTOR** | — | **+0.018** | 0.032 | 5/7 |
+| Production baseline (1 global) | 291 | **+0.067** | 0.074 | 5/7 |
+| **Δ vs baseline** | — | **−0.049** | — | flat |
+
+**Verdict**: ✗ **NO-GO**. Cross-sector mean IC drops 73% relative
+(same magnitude as E45 R2K's 75% drop). Per-sector data thin
+(5-18k rows/cut/sector vs 200k+ rows/cut for global). XGB d=5 with
+100 rounds needs more data to generalize than thin-sector subsets
+provide. Two sectors actively negative (giant_tech, finance) drag
+the cross-sector mean below baseline.
+
+**Bright spots (worth follow-up)**:
+- consumer +0.091 (vs base +0.067 = +24bp lift)
+- software +0.049, industrial +0.046 — competitive with baseline
+- Variance across sectors suggests **heterogeneous ensemble** would
+  help: keep global model, add per-sector specialist ONLY for
+  consumer/software/industrial, ignore giant_tech/finance specialists
+
+**Resume condition**: train per-sector with smaller XGB (d=3, n=50)
++ sector-IC gating (only ensemble in sectors where per-sector IC >
+global IC by ≥0.01 on validation). This is optimization not
+range-finding — only pursue if other Track 2 items (B3 analyst,
+B4 PEAD) also fail.
+
+**Reproduction**:
+```
+$PY scripts/wf_per_sector.py
+# saves data/wf_per_sector.json
+```
+
 ## E45 — Russell 2000 watchlist expansion (291 → 1640 tickers) [2026-05-08]
 
 **Hypothesis**: per Cakici et al. 2023, ML cross-sectional alpha is
