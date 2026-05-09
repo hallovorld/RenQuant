@@ -690,14 +690,22 @@ class LoadNGBoostTask(Task):
                 p = Path(strategy_dir) / p
 
         try:
-            from training_panel.ngboost_head import NGBoostHead  # noqa: PLC0415
-            ctx._ngboost_head = NGBoostHead.load(p)  # noqa: SLF001
+            # Polymorphic loader: dispatches on artifact `kind` field.
+            # - ngboost_head → training_panel.ngboost_head.NGBoostHead
+            # - quantile_head → training_panel.quantile_head.QuantileHead
+            #   (XGBoost-quantile triplet, replaces single-thread NGBoost
+            #    on 166-feat panels — see commit 5aad137)
+            # Both classes expose identical predict_distribution() so this
+            # task and downstream ApplyNGBoostTask are agnostic.
+            from training_panel.quantile_head import load_head_by_kind  # noqa: PLC0415
+            ctx._ngboost_head = load_head_by_kind(p)  # noqa: SLF001
         except Exception as exc:
             log.warning("LoadNGBoostTask: failed to load %s — %s", p, exc)
             ctx._ngboost_head = None  # noqa: SLF001
             return
-        log.info("LoadNGBoostTask: loaded ngboost head (features=%d)",
-                 len(ctx._ngboost_head.feature_cols))
+        head_kind = type(ctx._ngboost_head).__name__
+        log.info("LoadNGBoostTask: loaded %s (features=%d)",
+                 head_kind, len(ctx._ngboost_head.feature_cols))
 
 
 class ApplyNGBoostTask(Task):
