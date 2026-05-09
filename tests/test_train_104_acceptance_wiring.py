@@ -57,7 +57,9 @@ class TestPromoteOrReject:
         # all_hard_passed verdict.
         idx = SCRIPT_SRC.find("verdict.all_hard_passed")
         assert idx >= 0
-        block = SCRIPT_SRC[idx:idx + 800]
+        # Widened from 800 to 1500 — 2026-05-09 added WF gate override
+        # comment between hard-pass branch and promote() call
+        block = SCRIPT_SRC[idx:idx + 1500]
         assert "promote(staging_path, active_path)" in block
 
     def test_reject_called_on_fail(self):

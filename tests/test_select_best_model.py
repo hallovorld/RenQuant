@@ -149,7 +149,11 @@ class TestComposite:
 # ── Promote winner ────────────────────────────────────────────────────────────
 
 class TestPromoteWinner:
-    def test_promote_swaps_files(self, tmp_path):
+    def test_promote_swaps_files(self, tmp_path, monkeypatch):
+        # 2026-05-09: WF gate now blocks promote without wf_gate_metadata.
+        # This test exercises select_best_model's promote_winner mechanics
+        # (file swap + winner pick), not the gate itself.
+        monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")
         # Build a minimal strategy dir layout
         strategy_dir = tmp_path / "renquant_X"
         adir = strategy_dir / "artifacts"
