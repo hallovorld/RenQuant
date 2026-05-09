@@ -1758,6 +1758,42 @@ python scripts/portfolio_simulation_multihorizon.py # for the Sharpe drop
 | Base LO top decile | 1.06 | 34.4% | 32.4% | -42.3% |
 | Vol-target LO (15%, DD-cap=10%) | 0.84 | 17.9% | 21.4% | -37.1% |
 
-**Verdict**: NEEDS REWORK. Vol-target reduced returns more than vol → Sharpe dropped 21%. MaxDD only improved 5pts. The DD threshold of -10% kicks in too aggressively in volatile regimes.
+**Verdict (initial)**: NEEDS REWORK. DD threshold -10% too aggressive.
 
-**Resume condition**: tune DD threshold (-15% to -20%), or use ATR-based per-name vol normalization instead of portfolio-level.
+**v2 sweep (D1, 2026-05-08 night)** — `scripts/portfolio_simulation_voltarget_v2.py`
+tests 4 alternate configs that widen the DD trigger and/or raise
+the vol target:
+
+| Config | Sharpe | AnnRet | AnnVol | MaxDD |
+|---|---:|---:|---:|---:|
+| Base LO top decile (E41) | **1.06** | 34.4% | 32.4% | -42.3% |
+| E43_v1 (15% vol, DD -10→-25%) | 0.84 | 17.9% | 21.4% | -37.1% |
+| v2a (15% vol, NO DD cap) | 0.91 | 22.7% | 25.0% | -35.5% |
+| v2b (15% vol, DD -15→-35%) | 0.89 | 21.4% | 24.1% | -35.5% |
+| v2c (15% vol, DD -20→-40%) | 0.90 | 22.5% | 24.9% | -35.5% |
+| **v2d (20% vol, DD -15→-35%)** ⭐ | **1.02** | 26.9% | 26.4% | **-35.5%** |
+
+**v2 verdict**: ⚠️ **NEUTRAL**. v2d is the closest to baseline
+(Sharpe -0.04, MaxDD -7pt better) but still doesn't recover the
+1.06 Sharpe. All v2 configs hit the same -35.5% MaxDD (consistent
+trough across configs at the 2022 drawdown — vol-targeting helps
+the steady-state but doesn't avoid the big DD event itself).
+
+**Final verdict**: do NOT promote portfolio-level vol-targeting.
+The mechanism reduces drawdown by accepting return drag, and the
+trade-off doesn't pay. Better path is **per-name σ-aware sizing
+via NGBoost** (currently retraining for the 163-feature space) —
+that's risk-targeting at the position level, which is more
+information-rich than aggregate vol scaling and matches the QP
+solver's native objective.
+
+**Resume condition**: revisit only if NGBoost-σ + Kelly-half +
+σ-multiplier path also fails. ATR-per-name normalization is the
+final fallback.
+
+**Reproduction**:
+```
+python scripts/portfolio_simulation_voltarget.py     # E43_v1
+python scripts/portfolio_simulation_voltarget_v2.py  # D1 v2 sweep
+# saves data/portfolio_sim_voltarget_v2.json
+```
