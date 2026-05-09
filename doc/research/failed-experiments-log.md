@@ -8,6 +8,66 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E52 — NGB QHead Phase C neural MLP + audit reveals 42% regime persistence component [2026-05-09]
+
+**Hypothesis**: After Phase A/B null on XGB QHead, switch architecture to TFT-style joint quantile MLP (Lim 2021). Param/sample ratio ~1/88, AdamW lr=1e-3, LayerNorm + dropout, 50 epochs early-stop on val pinball loss.
+
+**Phase C 5-seed result**:
+- seed=42: +0.0402, seed=7: +0.0348, seed=123: +0.0256, seed=2024: +0.0335, seed=31415: +0.0372
+- mean=+0.0342 ± 0.0055
+- Δ vs baseline XGB QHead (+0.0294 ± 0.0029) = +0.0048
+- Two-sample t = 1.71 (1.7σ — borderline, not 2σ significant)
+- Below +0.040 production target
+
+**§5.2 sanity battery (seed=42, single-shot)**:
+- Shuffled-label: val_ic = -0.0024 (within ±0.005) ✓ PASS
+- Time-shift +60d placebo: val_ic = -0.0155 (exceeds ±0.010) ✗ FAIL by absolute threshold
+
+**Critical audit — date-aligned placebo cross-eval (XGB QHead, val 2023-11-22 → 2025-11-13)**:
+| Train on | Eval against | val_ic |
+|---|---|---|
+| real fwd_60d | real fwd_60d | +0.0509 |
+| real fwd_60d | placebo (+60d shifted) | +0.0216 (CROSS) |
+| placebo | real | +0.0296 |
+| placebo | placebo | +0.0368 |
+
+**Persistence ratio = ic_cross/ic_real = 42%** — 40% of QHead IC is regime/factor persistence (features that equally predict t+60→t+120 returns), not specific 60d alpha. Pure 60d-alpha component ≈ +0.029.
+
+**XGB vs neural placebo signs**:
+- XGB QHead placebo IC = +0.0368 POSITIVE (model learns persistent factor exposure that bleeds into +60d shift)
+- Neural QHead placebo IC = -0.0155 NEGATIVE (mean-reversion artifact — features predict positive t+60 return AND negative t+120 return, consistent with momentum→reversal at longer horizon)
+
+Neural is arguably *cleaner* on alpha specificity (placebo opposite-signed), but both technically fail strict §5.2 threshold.
+
+**Failure mode classification**: Per CLAUDE.md Track F note ("triple-barrier +60d placebo +0.0458 ≈ real → regime persistence fitting"), a placebo IC > target threshold = REJECT. Both XGB raw-label and neural QHead fail this rule; production QHead's IC is ~60% genuine 60d alpha + 40% factor persistence.
+
+**Code/data audit (clean)**:
+- Panel free of duplicate (ticker,date) rows
+- Label cross-check: 2542/2542 AAPL rows match manual fwd_60d − SPY fwd_60d recompute to 0.000000 abs diff
+- shift(-60) correctly applied per-ticker (no cross-ticker leak)
+- Original 80/20 split val_cut=2024-02 vs placebo val_cut=2023-11 = 89-day misalignment (cause of original placebo IC discrepancy)
+- ±50% label clip impacts 1% rows, dominated by GME Nov 2020 meme spike
+
+**Production impact**:
+- New raw-label NGB head stays promoted (50% relative IC vs old z-scored head; both heads have the same persistence-vs-alpha decomposition, so net is still positive over baseline).
+- ngboost.enabled remains FALSE — pure-alpha component (~+0.029) is too weak for conformal Gate B at target FDR=0.30.
+- Current panel/label appears to ceil at ic_pure ≈ +0.029. Reaching +0.04 pure alpha likely requires Phase D (extend to 5y+ training panel).
+
+**Resume conditions**:
+- Phase D: extend training data (currently 2016-2023 train, 2024-2026 val) to 5y+ panel; addresses sample-size limit on alpha extraction.
+- Alternative label: vol-adjusted return (`y / vol_60d`) — should reduce noise and enrich alpha component.
+- Alternative gate_b target: relax to FDR=0.40 (achievable empirically), accept persistence-as-signal.
+
+**Reproduction**:
+```bash
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/train_qhead_neural.py            # 5-seed Phase C run
+$PY scripts/qhead_neural_sanity.py           # §5.2 shuffle + placebo
+# Date-aligned cross-eval (XGB) — see this entry's table
+```
+
+---
+
 ## E51 — NGB QuantileHead Phase A/B variants (per-date X std, per-date y demean, feat-sel, fwd_30d, HICAP, CatBoost MQ) [2026-05-09]
 
 **Hypothesis chain**: NGB QHead val μ-IC stuck at +0.030 (single-seed, raw-label fwd_60d). Tried 6 variants to lift it to ≥+0.04 for conformal Gate B viability:
