@@ -409,10 +409,27 @@ class SolveMarkowitzQPTask(Task):
 
 def _passes_no_trade_band(
     dw: float, sig_i: float, min_dw: float, no_trade_factor: float,
+    band_cap: float = 0.05,
 ) -> tuple[bool, bool]:
-    """Davis-Norman 1990 / Constantinides 1979: skip trades inside
-    max(min_dw, no_trade_factor × σ_i). Returns (pass, was_in_band)."""
-    threshold = max(min_dw, no_trade_factor * sig_i)
+    """Davis-Norman 1990 / Constantinides 1979 no-trade band, capped.
+
+    Original: skip trades inside max(min_dw, no_trade_factor × σ_i).
+
+    2026-05-09 BUG #7 fix: with NGB now emitting σ̂ ≈ 0.10-0.30, the
+    raw `no_trade_factor × σ_i` produces bands of 10-30% of equity for
+    high-σ holdings, making them structurally uncoverable even when μ̂
+    strongly disagrees with the position. Discovered when BA at
+    edge_sharpe = -0.51 (12% expected underperformance) failed to sell
+    because σ̂_BA = 0.24 → effective band = 24% > BA's 6.7% weight.
+
+    Cap the σ-derived band at `band_cap` (default 5% of equity) so
+    high-σ holdings remain reachable. The cap is per-ticker — assets
+    with σ < band_cap are unaffected.
+
+    Returns (pass, was_in_band).
+    """
+    sigma_band = min(band_cap, no_trade_factor * sig_i)
+    threshold = max(min_dw, sigma_band)
     if abs(dw) < threshold:
         return False, abs(dw) >= min_dw
     return True, False
@@ -479,6 +496,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         cfg = _qp_cfg(ctx)
         min_dw = float(cfg.get("qp_min_dw_pct", 0.005))
         no_trade_factor = float(cfg.get("qp_no_trade_band_factor", 0.0))
+        band_cap = float(cfg.get("qp_no_trade_band_cap", 0.05))
         sigma_vec = _get_path(ctx, "_qp_sigma")
         cands = {c.ticker: c for c in (ctx.candidates or [])}
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
@@ -504,7 +522,7 @@ class EmitOrdersFromQPSolutionTask(Task):
                 s = float(sigma_vec[i])
                 if _m.isfinite(s) and s > 0:
                     sig_i = s
-            ok, in_band = _passes_no_trade_band(dw, sig_i, min_dw, no_trade_factor)
+            ok, in_band = _passes_no_trade_band(dw, sig_i, min_dw, no_trade_factor, band_cap=band_cap)
             if not ok:
                 if in_band:
                     n_skipped_band += 1

@@ -408,6 +408,8 @@
       "qp_cvar_lambda": 0.0,
       "qp_drawdown_limit": 0.2,
       "qp_no_trade_band_factor": 1.0,
+      "qp_no_trade_band_cap": 0.05,
+      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: σ-derived no-trade band uncapped → high-σ holdings (e.g. BA σ̂=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
       "qp_min_invested_pct": 0.7
     },
     "enabled_regimes": [
