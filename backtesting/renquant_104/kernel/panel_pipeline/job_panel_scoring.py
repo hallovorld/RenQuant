@@ -216,15 +216,22 @@ class ApplyScoresTask(Task):
                 # compute them online from data/earnings_surprise/{tkr}.parquet.
                 # Bernard-Thomas 1989 60d decay window; missing tickers get
                 # cross-sectional zero (consistent with build-time fallback).
+                # Shared earnings-data resources used by both PEAD and SUE blocks.
+                # Hoisted so SUE block can run independently when PEAD-only
+                # cols aren't in feature_cols, and vice versa.
                 pead_cols = ["days_since_earnings", "pead_signal", "pead_quintile_rank"]
+                sue_cols  = ["sue_signal", "surprise_momentum", "surprise_streak"]
                 needs_pead = any(pc in scorer.feature_cols for pc in pead_cols)
-                if needs_pead:
+                needs_sue  = any(sc in scorer.feature_cols for sc in sue_cols)
+                if needs_pead or needs_sue:
                     from pathlib import Path  # noqa: PLC0415
                     import numpy as np         # noqa: PLC0415
                     repo = Path(__file__).resolve().parents[4]
                     earn_dir = repo / "data" / "earnings_surprise"
                     today_ts = pd.Timestamp(today)
                     DECAY = 60   # Bernard-Thomas 1989 drift window
+
+                if needs_pead:
                     # Per-ticker: pull most-recent earnings ≤ today
                     surprises_today = {}  # ticker → surprise_pct (for x-sec rank)
                     n_no_data = 0; n_no_prior = 0; n_out_of_window = 0
@@ -273,6 +280,68 @@ class ApplyScoresTask(Task):
                              len(surprises_today), len(rows),
                              n_no_data, n_no_prior, n_out_of_window)
 
+                # ── SUE features (E49 promotion 2026-05-09): SUE +
+                # surprise_momentum + surprise_streak. Same earnings_surprise
+                # data source as PEAD; computed independently because they
+                # use multiple historical events (4Q std denominator for SUE,
+                # prior-event diff for momentum, run-length for streak)
+                # whereas PEAD only uses the most-recent event.
+                # Foster-Olsen-Shevlin 1984 + Bernard-Thomas 60d decay.
+                if needs_sue:
+                    SUE_WINDOW = 4
+                    n_sue_active = 0; n_sue_no_data = 0; n_sue_oow = 0
+                    for t in list(rows.keys()):
+                        ep = earn_dir / f"{t}.parquet"
+                        if not ep.exists():
+                            n_sue_no_data += 1
+                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
+                            continue
+                        earn = pd.read_parquet(ep).reset_index()
+                        earn = earn.rename(columns={earn.columns[0]: "earnings_date"})
+                        earn["earnings_date"] = pd.to_datetime(earn["earnings_date"])
+                        earn = earn.sort_values("earnings_date").reset_index(drop=True)
+                        prior = earn[earn["earnings_date"] <= today_ts]
+                        if len(prior) == 0:
+                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
+                            continue
+                        last = prior.iloc[-1]
+                        days_since = int((today_ts - last["earnings_date"]).days)
+                        if days_since > DECAY or days_since < 0:
+                            n_sue_oow += 1
+                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
+                            continue
+                        decay = max(0.0, 1.0 - days_since / DECAY)
+                        s = prior["surprise_pct"].astype(float)
+                        # SUE: most-recent surprise / std(prior 4 quarters)
+                        if len(s) >= 2:
+                            denom_window = s.iloc[max(0, len(s)-1-SUE_WINDOW):len(s)-1]
+                            denom = float(denom_window.std()) if len(denom_window) >= 2 else 0.0
+                            sue = float(s.iloc[-1]) / max(denom, 1e-6)
+                            sue = max(min(sue, 5.0), -5.0)   # clip
+                        else:
+                            sue = 0.0
+                        # Momentum: surprise_t - surprise_(t-1)
+                        mom = float(s.iloc[-1] - s.iloc[-2]) if len(s) >= 2 else 0.0
+                        # Streak: signed consecutive same-direction count
+                        streak = 0
+                        cur_sign = 0
+                        for v in s:
+                            sgn = 1 if v > 0 else (-1 if v < 0 else 0)
+                            if sgn == 0 or sgn != cur_sign:
+                                streak = sgn; cur_sign = sgn
+                            else:
+                                streak += sgn
+                        rows[t]["sue_signal"]        = sue * decay
+                        rows[t]["surprise_momentum"] = mom * decay
+                        rows[t]["surprise_streak"]   = float(streak) * decay
+                        n_sue_active += 1
+                    for t in rows:
+                        for sc in sue_cols: rows[t].setdefault(sc, 0.0)
+                    log.info("ApplyScoresTask[panel_ltr_xgboost]: computed 3 SUE features "
+                             "today=%s (%d/%d tickers active; no_data=%d out_of_window=%d)",
+                             today_ts.date().isoformat(), n_sue_active, len(rows),
+                             n_sue_no_data, n_sue_oow)
+
                 # ── Feature-health check (2026-05-08 path-bug regression guard) ─
                 # Catches the silent-zero failure mode that hid the parents[3]
                 # path bug: if EVERY ticker reports value 0.0 for a feature
@@ -288,18 +357,20 @@ class ApplyScoresTask(Task):
                         expected_nonzero_cols.extend(c for c in fund_cols if c in scorer.feature_cols)
                     if needs_pead:
                         expected_nonzero_cols.extend(c for c in pead_cols if c in scorer.feature_cols)
+                    if needs_sue:
+                        expected_nonzero_cols.extend(c for c in sue_cols if c in scorer.feature_cols)
                     for c in expected_nonzero_cols:
                         vals = [float(rows[t].get(c, 0.0)) for t in rows]
                         if vals and max(abs(v) for v in vals) < 1e-12:
                             health_warnings.append(c)
-                    # PEAD-quintile-rank legitimately defaults to 0 in the
-                    # "no surprise active" branch — exclude unless ALL fund
-                    # cols are also zero (the indicator of total failure).
                     fund_dead = bool(needs_fund) and all(
                         c in health_warnings for c in fund_cols if c in scorer.feature_cols
                     )
                     pead_dead = bool(needs_pead) and all(
                         c in health_warnings for c in pead_cols if c in scorer.feature_cols
+                    )
+                    sue_dead = bool(needs_sue) and all(
+                        c in health_warnings for c in sue_cols if c in scorer.feature_cols
                     )
                     if fund_dead:
                         log.warning(
@@ -324,6 +395,16 @@ class ApplyScoresTask(Task):
                             len([c for c in pead_cols if c in scorer.feature_cols]),
                             len(rows),
                             [c for c in health_warnings if c in pead_cols],
+                        )
+                    if sue_dead:
+                        log.warning(
+                            "ApplyScoresTask FEATURE-HEALTH: ALL %d SUE features "
+                            "are 0 across %d tickers — same diagnostics as PEAD: "
+                            "either no ticker has earnings in the 60d window OR "
+                            "earnings_surprise/ data lookup is broken. Affected: %s",
+                            len([c for c in sue_cols if c in scorer.feature_cols]),
+                            len(rows),
+                            [c for c in health_warnings if c in sue_cols],
                         )
                 # Rebuild X with fund + PEAD cols included
                 X = pd.DataFrame.from_dict(rows, orient="index")

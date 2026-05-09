@@ -150,11 +150,17 @@ class TestProductionArtifactLoads:
             pytest.skip("production quantile head artifact not present")
         head = load_head_by_kind(prod_path)
         assert isinstance(head, QuantileHead)
-        assert len(head.feature_cols) == 166  # alpha158 + 5 fund + 3 PEAD
+        # Production panel grows over time as features are added:
+        # 166 = alpha158 + 5 fund + 3 PEAD (E47, 2026-05-08)
+        # 169 = + 3 SUE (E49, 2026-05-09)
+        assert len(head.feature_cols) in (166, 169), (
+            f"Expected 166 or 169 features, got {len(head.feature_cols)}"
+        )
         # Predict on a fake panel with the right columns
         rng = np.random.default_rng(42)
+        n_feat = len(head.feature_cols)
         panel = pd.DataFrame(
-            rng.normal(size=(5, 166)),
+            rng.normal(size=(5, n_feat)),
             index=["AAPL", "MSFT", "GOOG", "META", "NVDA"],
             columns=head.feature_cols,
         )

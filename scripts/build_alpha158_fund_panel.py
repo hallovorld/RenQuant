@@ -38,7 +38,9 @@ REPO = Path(__file__).resolve().parent.parent
 FUND_COLS = ["earnings_yield", "book_to_price", "gross_profitability",
              "roe", "asset_growth"]
 PEAD_COLS = ["days_since_earnings", "pead_signal", "pead_quintile_rank"]
+SUE_COLS  = ["sue_signal", "surprise_momentum", "surprise_streak"]
 PEAD_DECAY_DAYS = 60   # Bernard-Thomas 1989 drift window
+SUE_WINDOW = 4         # Foster-Olsen-Shevlin 1984 — 4 prior quarters for std denom
 
 
 def main():
@@ -101,12 +103,19 @@ def main():
     merged = _add_pead_features(merged)
     log.info("  PEAD features added in %.1fs", time.time()-t0)
 
-    # Verify final shape matches expected schema (alpha158 + fund + pead)
-    expected_cols = len(alpha.columns) + len(FUND_COLS) + len(PEAD_COLS)
+    # ── Add SUE features (E49 promotion 2026-05-09) ───────────────────────
+    log.info("Computing SUE features (Foster-Olsen-Shevlin 1984, 4Q std)...")
+    t0 = time.time()
+    merged = _add_sue_features(merged)
+    log.info("  SUE features added in %.1fs", time.time()-t0)
+
+    # Verify final shape matches expected schema (alpha158 + fund + pead + sue)
+    expected_cols = len(alpha.columns) + len(FUND_COLS) + len(PEAD_COLS) + len(SUE_COLS)
     if len(merged.columns) != expected_cols:
         log.warning("Column count %d (expected %d) — extra cols: %s",
                     len(merged.columns), expected_cols,
-                    set(merged.columns) - set(alpha.columns) - set(FUND_COLS) - set(PEAD_COLS))
+                    set(merged.columns) - set(alpha.columns) - set(FUND_COLS)
+                    - set(PEAD_COLS) - set(SUE_COLS))
 
     log.info("Writing → %s", out_p.name)
     merged.to_parquet(out_p, index=False)
@@ -171,6 +180,79 @@ def _add_pead_features(panel: pd.DataFrame) -> pd.DataFrame:
 
     # Drop the helper col — only keep the 3 final PEAD features
     return out.drop(columns=["pead_surprise"])
+
+
+def _add_sue_features(panel: pd.DataFrame) -> pd.DataFrame:
+    """Attach 3 SUE-class features per (ticker, date) using earnings_surprise/.
+
+    Foster-Olsen-Shevlin 1984 SUE:
+        SUE_t = surprise_t / σ(surprise_(t-1)..(t-4))
+    plus surprise_momentum (QoQ change in surprise%) and surprise_streak
+    (signed consecutive-same-direction count). All three carry only
+    within the 60d post-earnings Bernard-Thomas window.
+    """
+    earn_dir = REPO / "data" / "earnings_surprise"
+    n_with_data = 0
+    out_blocks = []
+    for tkr, g in panel.groupby("ticker"):
+        g = g.sort_values("date").reset_index(drop=True).copy()
+        ep = earn_dir / f"{tkr}.parquet"
+        if not ep.exists():
+            for c in SUE_COLS:
+                g[c] = np.nan
+            out_blocks.append(g); continue
+        n_with_data += 1
+        earn = pd.read_parquet(ep).reset_index()
+        earn = earn.rename(columns={earn.columns[0]: "earnings_date"})
+        earn["earnings_date"] = pd.to_datetime(earn["earnings_date"])
+        earn = earn.sort_values("earnings_date").reset_index(drop=True)
+
+        s = earn["surprise_pct"].astype(float)
+        # SUE per-event: rolling std of prior 4Q surprises (exclude current)
+        rolling_std = s.shift(1).rolling(SUE_WINDOW, min_periods=2).std()
+        sue_per_event = (s / (rolling_std + 1e-6)).clip(-5, 5)
+        momentum_per_event = s.diff()
+        # Signed consecutive-direction streak
+        sign = np.sign(s).fillna(0).astype(int)
+        streak = np.zeros(len(s), dtype=int)
+        for i in range(len(s)):
+            if i == 0 or sign.iloc[i] == 0 or sign.iloc[i] != sign.iloc[i-1]:
+                streak[i] = sign.iloc[i]
+            else:
+                streak[i] = streak[i-1] + sign.iloc[i]
+
+        # Forward-fill to daily panel — only carry within 60d window
+        g_dates = g["date"].values
+        e_dates = earn["earnings_date"].values
+        idxs = np.searchsorted(e_dates, g_dates, side="right") - 1
+        days_since = np.full(len(g), np.nan)
+        sue = np.full(len(g), np.nan)
+        mom = np.full(len(g), np.nan)
+        strk = np.full(len(g), np.nan)
+        valid = idxs >= 0
+        diff = (g_dates[valid] - e_dates[idxs[valid]]).astype('timedelta64[D]').astype(int)
+        days_since[valid] = diff
+        sue[valid] = sue_per_event.iloc[idxs[valid]].values
+        mom[valid] = momentum_per_event.iloc[idxs[valid]].values
+        strk[valid] = streak[idxs[valid]]
+        # Decay over 60d
+        out_of_window = (days_since > PEAD_DECAY_DAYS) | np.isnan(days_since)
+        decay = np.where(out_of_window, 0.0,
+                          np.maximum(0.0, 1.0 - days_since / PEAD_DECAY_DAYS))
+        g["sue_signal"]        = np.where(out_of_window, 0.0, sue * decay)
+        g["surprise_momentum"] = np.where(out_of_window, 0.0, mom * decay)
+        g["surprise_streak"]   = np.where(out_of_window, 0.0, strk * decay)
+        out_blocks.append(g)
+
+    log.info("  SUE coverage: %d/%d tickers had earnings data",
+             n_with_data, panel["ticker"].nunique())
+    out = pd.concat(out_blocks, ignore_index=True)
+
+    # Cross-sectional median imputation per date for inference; final 0
+    for c in SUE_COLS:
+        med = out.groupby("date")[c].transform("median")
+        out[c] = out[c].fillna(med).fillna(0.0)
+    return out
 
 
 if __name__ == "__main__":

@@ -103,23 +103,23 @@ def main():
 
     # Save artifact
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
-    # Stamp fingerprint_fields as a DICT of (field → value) — matches the
-    # legacy 21-feat artifact format that kernel/preflight expects so
-    # P-CONFIG-FP and P-WATCHLIST can do meaningful diffs. Including
-    # `watchlist` here lets P-WATCHLIST detect drift between training
-    # universe and live config.
-    fingerprint_fields = {
-        "watchlist":          sorted(train["ticker"].unique().tolist()),
-        "feature_cols":       feat_cols,
-        "objective":          PARAMS.get("objective"),
-        "label_col":          LABEL,
-        "lookahead_days":     60,
-        "asset_embeddings":   False,
-        "training_resolution": "daily",
-        "hourly_enabled":     False,
-        "minute_enabled":     False,
-        "params":             PARAMS,
-    }
+    # Stamp fingerprint_fields with the SAME projection that
+    # kernel.preflight._check_config_fingerprint computes via
+    # `_model_relevant_fields(config)` so P-CONFIG-FP can produce
+    # actionable diffs (operator changed watchlist / objective /
+    # asset_embeddings post-promote → preflight fires HARD).
+    #
+    # Note we OMIT `feature_cols` from fingerprint_fields — it's not
+    # part of the live config projection (would always diff and
+    # provide no signal). The model knows its own feature_cols via
+    # `artifact["feature_cols"]` separately, which is consumed by
+    # ApplyScoresTask but not by P-CONFIG-FP.
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+    from kernel.config_consistency import _model_relevant_fields  # noqa: PLC0415
+    live_cfg_path = REPO / "backtesting/renquant_104/strategy_config.json"
+    live_cfg = json.loads(live_cfg_path.read_text()) if live_cfg_path.exists() else {}
+    fingerprint_fields = _model_relevant_fields(live_cfg)
     artifact = {
         "version": 3,   # bump: fingerprint_fields format change (list → dict)
         "kind": "panel_ltr_xgboost",
@@ -140,9 +140,12 @@ def main():
         ),
         "config_fingerprint_fields": fingerprint_fields,
     }
-    fp = hashlib.sha256(
-        json.dumps(fingerprint_fields, sort_keys=True, default=str).encode()
-    ).hexdigest()[:16]
+    # Use kernel.config_consistency.fingerprint_config so the artifact's
+    # stamped hash matches what the live runner computes via the same
+    # function — otherwise P-CONFIG-FP HARD-fails on the hash even when
+    # the field VALUES match.
+    from kernel.config_consistency import fingerprint_config  # noqa: PLC0415
+    fp = fingerprint_config(live_cfg)   # returns "sha256:..." string
     artifact["config_fingerprint"] = fp
 
     out = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
