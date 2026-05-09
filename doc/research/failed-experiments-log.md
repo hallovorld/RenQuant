@@ -8,6 +8,56 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## E51 — NGB QuantileHead Phase A/B variants (per-date X std, per-date y demean, feat-sel, fwd_30d, HICAP, CatBoost MQ) [2026-05-09]
+
+**Hypothesis chain**: NGB QHead val μ-IC stuck at +0.030 (single-seed, raw-label fwd_60d). Tried 6 variants to lift it to ≥+0.04 for conformal Gate B viability:
+- A1 per-date X standardization (regime invariance via input)
+- A2 per-date y demean (regime invariance via target)
+- A1+A2 combined
+- B feat-sel top-K∈{40,60,80,100,120,169} on A2
+- fwd_30d label (Bernard-Thomas drift peak hypothesis)
+- HICAP (depth=7, 400 iter, weak reg)
+- CatBoost MultiQuantile (joint quantile fit, no crossing)
+
+**Single-seed results**:
+| Variant | val_ic | Notes |
+|---|---|---|
+| A0 baseline | +0.0305 | seed=42 single-shot |
+| A1 (X std) | +0.0251 | per-date std noisy with ~45 tickers/day |
+| A2 (y demean) | +0.0346 | LOOKED LIKE WIN |
+| A1+A2 | +0.0275 | combination hurts |
+| feat-sel K=40..120 | -0.007..+0.020 | top-K hurts uniformly |
+| fwd_30d | +0.0213 | 60d horizon dominates |
+| HICAP | +0.0233 | overfits fast (q=0.5 best_iter=18) |
+| CatBoost MQ | +0.0278 | jointquantile underperforms |
+
+**§5.2 sanity battery (5-seed A/A on A0 vs A2)**:
+- A0 (raw): mean=+0.0294 std=0.0029, range [+0.0239, +0.0325]
+- A2 (per-date y demean): mean=+0.0259 std=0.0062, range [+0.0139, +0.0311]
+- Δ(A2 - A0) = -0.0036, t-stat=-1.05 (2-sample)
+- **Conclusion: A2 IS WITHIN NOISE of A0; the single-seed +0.0346 was a 1.4σ lucky draw**
+
+**Real signal**: NGB raw-label QHead val_mu_ic = +0.0294 ± 0.003. Cannot reach +0.04 target via Phase A/B variants.
+
+**Failure mode**: XGBoost `tree_method=hist` is multi-thread non-deterministic even with `random_state=42`. Single-seed A/B comparisons are unreliable — single-shot variance ≈ 6bp on N=147k val rows. Per CLAUDE.md §5.2, mean across ≥5 seeds is required.
+
+**Production impact**: NGB stays disabled (`ngboost.enabled=false`). Conformal Gate B target FDR=0.30 unachievable with this head (best τ=0.39 → FDR=0.42). The new raw-label head IS promoted as the production NGB artifact (50% relative IC improvement over old head's +0.021), so when val_mu_ic eventually reaches +0.04, re-enable is a 1-flag flip.
+
+**Resume conditions**:
+- Phase C: neural quantile MLP head (Lim 2021 TFT-style with per-date LayerNorm + dropout); param/sample ratio < 1/100.
+- Phase D: extend training panel to 5y+ (current 2.5y) — addresses sample-size limit; addresses run-to-run σ.
+- New label hypotheses: vol-adjusted return (`y/vol_60d`), per-sector excess.
+
+**Reproduction**:
+```bash
+PY=/Users/renhao/miniconda3/envs/renquant/bin/python
+$PY scripts/build_raw_fwd60d_label.py        # build fwd_60d_excess_raw label
+$PY scripts/qhead_phaseA_experiments.py      # run A0/A1/A2/A1+A2/A3 single-seed
+# A/A 5-seed inline (see this entry's evidence): A0 mean +0.029, A2 mean +0.026
+```
+
+---
+
 ## E29. alpha158_linear (sklearn LinearRegression on 158 features) — METHODOLOGICAL ERROR + RETEST IN PROGRESS
 
 **Date**: 2026-05-07
