@@ -1,6 +1,6 @@
 # RenQuant — Roadmap
 
-**Single source of truth for what's next.** Ordered by priority. Last reset 2026-05-07 (post cvxpy QP refactor + alpha158_linear V7 holdout).
+**Single source of truth for what's next.** Ordered by priority. Last reset **2026-05-08 EOD** (post alpha158+fund promote + Track-B sweep + cron pipeline P0 fix).
 
 ---
 
@@ -8,69 +8,104 @@
 
 Long-running quant trading workstation that does the boring infra well so the user can iterate on signal research:
 
-- **Live alpha** — alpha158_linear (or successor) producing trades that net of cost/tax beat SPY by ≥ 5 pts annualized.
-- **Walk-forward defensible** — 3-cut OOS (each 6 mo) with mean Sharpe ≥ 1.0; no single-cut promotions.
+- **Live alpha** — production XGB panel-LTR producing trades that net of cost/tax beat SPY by ≥ 5 pts annualized.
+- **Walk-forward defensible** — 7-cut OOS with mean IC > 0 and ≥5/7 positive; no single-cut promotions.
 - **Self-maintaining** — daily retrain cron keeps every active model fresh; rollback rehearsed for each promotion.
-- **Reproducible** — every config + artifact + run lineage tracked in `data/runs.db`; no file-system clutter.
+- **Reproducible** — every config + artifact + run lineage tracked; no file-system clutter.
 
 ---
 
-## Right now
+## Right now (2026-05-08 EOD)
 
 | | |
 |---|---|
-| Production model | 27-feature XGBoost (panel-ltr.json) — single-cut Sharpe 0.68, walk-forward −15.62% mean alpha (E27) |
-| Researched winner | alpha158_linear panel-LTR — V7 single-cut Sharpe 2.009, walk-forward NOT yet validated |
-| Portfolio QP | cvxpy + CLARABEL primary; cvxportfolio.SinglePeriodOpt opt-in (commit `5a636bb` fixes) |
-| Live cron | open + preclose + intraday + daily + Sunday retrain (5 plists); open/preclose currently OFF pending alpha158 walk-forward + daily-retrain wiring |
+| Production model | **alpha158+5fund XGB rank:pairwise** (`panel-ltr.alpha158_fund.json`, 163 features, fingerprint `bf6455c2315bca06`) — promoted commit `ca350c0` |
+| Validation | 7-cut WF mean IC +0.067, sanity-adjusted real signal +0.038 (E40); portfolio sim Sharpe 1.06 LO / 1.04 LS (E41) |
+| Calibrator | Refit on new model 2026-05-09 — `n_unique_prob_y=85`, `pool_ic=+0.103`, preflight P-CALIBRATOR-HEALTH HARD PASS |
+| NGBoost head | DISABLED (old 21-feat head, single-thread NGBoost retrain ran 1h41m without finishing). **Replaced by 3-quantile XGBoost head** (this commit), multi-threaded, ~30s |
+| Live cron | daily104 + open104 + preclose104 + intraday104 ENABLED; Sunday retrain ENABLED. **daily104 wired to new alpha158+fund Pipeline 2026-05-08** (commit `3d0efee`, Task/Job per §1b + caching, 18/18 tests). Cached re-run = 0.2s; full retrain = 122s |
+| Live broker | Alpaca live account, equity $10,582; today's BUY LMT x1 + ON x10 ACCEPTED via E2E pipeline |
+| Portfolio QP | cvxpy + CLARABEL primary; Davis-Norman no-trade band active (today skipped MPWR @ $1576 because Δw too small for 1 share) |
 
 ---
 
-## P0 — Plan B: universe expansion + multi-horizon ensemble + Transformer (2026-05-07 EOD pivot)
+## P0 — Track 2 (alpha exploration) by ROI
 
-Walk-forward 5-cut v2 (with FIXED artifact-path) confirmed **alpha158_linear NO-GO**: mean alpha vs SPY = −2.0 pts, only 1/5 cut beats SPY (defensive factor). Production 27-feat XGB walk-forward (E27) also −15.62%. Both backends fail to beat passive SPY at our 103-ticker scale — this is structural per Grinold's law (breadth too small).
+Today (2026-05-08) cleared the production-readiness backlog (A2 calibrator + A3 cron). Remaining ROI-positive Track 2 items, ordered:
 
-**User-confirmed plan**: scale up universe → multi-horizon ensemble → Transformer long-term.
+### B2 — Per-sector model (cheap, novel) ⏵ NEXT
 
-### Phase 1 — Universe 103 → 300+ (Week 1)
+Train one XGB rank head per sector (11 sectors, 22 tickers/sector avg). Sector is a STATIC label (not slow-moving feature), so avoids the regime-as-feature artifact that killed E44 (real signal −0.013 after sanity battery). Each sector model sees only ~50k rows (still plenty for XGB d=5).
 
-**BLOCKER**: Stage 1 mechanical screen on R1K rejects 752/1009 for `no_sector_mapping`. Run `scripts/build_sector_map.py` to expand sector coverage FIRST, then re-run Stage 1.
+**Implementation**: extend `wf_panel_args.py` to bucket-per-sector + train independently + aggregate cross-sectional IC across sectors.
+**Pass gate**: cross-sector mean IC > production +0.067 by ≥0.005, AND each sector contributes net-positive (no sector dragging mean down).
+**Sanity**: §5.2 paired battery on per-sector setup vs global — must not introduce stock-type artifact growth.
 
-Steps:
-1. Expand sector map → re-run `scripts/screen_stage1_mechanical.py`
-2. Cluster-based admission (sector × cap × beta bucket; top-IC per cluster) — avoids Track D wl183 TC collapse (E26)
-3. Build alpha158 dataset for 300+ universe
-4. Sanity train Linear: OOS IC ≥ +0.04 on new universe (vs 0.022 on 103)
+### B3 — Analyst consensus revisions (medium, theory-backed)
 
-**PASS gate**: 280-320 ticker, OOS IC ≥ +0.04, no single new ticker −IC contribution.
+EPS revisions are classic sell-side alpha (Womack 1996, Stickel 1991). SimFin API has analyst data; not yet pulled. **Implementation**: fetch analyst consensus per ticker per quarter, derive `eps_revision_4w_pct` and `target_price_change_4w_pct` features, append to alpha158+5fund panel as 2 extra features.
+**Pass gate**: paired WF Δmean IC > +0.005 + sanity battery (real signal lift, not artifact growth).
 
-### Phase 2 — Multi-Horizon Ensemble (Week 1-2)
+### B4 — Long-horizon PEAD revisit (cheap, prior was fwd_5d failure)
 
-3 alpha158 models × {fwd_5d, fwd_20d, fwd_60d} → 1/IC weighted ensemble (DeMiguel et al. 2009; NOT learned weights — E1 ElasticNet lost -79% IC).
+E23 closed PEAD at fwd_5d (-1.3 σ artifact). Resume condition was fwd_20d/60d horizon. Production fwd_60d label may capture the 30-60d post-earnings drift Bernard-Thomas (1989) documents. **Implementation**: paired WF on alpha158+5fund + 3 PEAD features (`days_since_earnings`, `surprise_decay`, `surprise_quintile_rank`).
+**Pass gate**: same as B3.
 
-ALSO ensemble Linear + XGB heterogeneously (Linear = regime-stable defensive factor, XGB = regime-adaptive non-linear; errors likely uncorrelated).
+### B5 — Cross-sectional dispersion features ⚠️ likely fails E44 sanity
 
-**PASS gate**: ensemble OOS IC > best single horizon AND walk-forward mean alpha vs SPY > 0.
+Per-date features (vol-of-vol, dispersion of returns) broadcast to all tickers. **Risk**: same anti-pattern as E44 regime-as-feature (broadcast features grow stock-type artifact more than they add cross-sectional alpha). Run sanity FIRST.
 
-### Phase 3 — Transformer Fine-Tune (Week 2-3)
+### B6 — Sector-rotation overlay (D-track follow-up)
 
-E30 showed Transformer IC < Linear IC at 290-ticker / 8-yr. With Phase 1 expanded universe + Phase 2 multi-horizon labels, Transformer has more data to leverage.
+D2 multi-horizon NO-GO and D1 vol-target neutral. Resume only if NGBoost-σ + Kelly path also fails on portfolio sim.
 
-Architecture priority (literature: see session handoff):
-1. **iTransformer** (Liu 2024 ICLR) — invert attention to cross-asset axis
-2. **MASTER** (Li 2024 AAAI) — market-guided cross-stock attention
-3. **AlphaPortfolio** (Cong et al 2021/2024) — end-to-end Sharpe loss
+---
 
-`scripts/transformer_v4.py` is current Paradigm A. Phase 3 ports iTransformer or MASTER.
+## P1 — Architecture exploration
 
-### Phase 4 — Promotion (Week 3-4)
+Skip until P0 (B2/B3/B4) clears. Ordered by literature support:
 
-Full cron wire-up + paper smoke + 7d/14d watch before live equity.
+### C1 — Stacked ensemble (Linear + XGB + meta-ranker)
 
-### If Phase 1 fails
+Linear (158 alpha158 features) + XGB (5 fund + interactions) + meta-ranker learns blend. Reference: Wolpert 1992 stacked generalization, Ribeiro 2020 AdaStack.
 
-Pivot to hourly bars (Track C) — same breadth-lift goal via 16x more data points per ticker.
-- Try ensemble of XGBoost + alpha158_linear scores.
+### C2 — PatchTST on top-of-rank residuals
+
+Use Transformer ONLY on top-30 residuals (not standalone — at 700k rows we'd violate CLAUDE.md param/sample > 1/100 rule). Reference: Nie et al. 2023 ICLR PatchTST.
+
+### C3 — LightGBM retest on alpha158+fund
+
+E27-era rejection was on different panel. Quick test (~1 min). Resume condition: only after B2/B3/B4 exhausted.
+
+---
+
+## P2 — Infrastructure
+
+### A1 — Quantile-XGBoost head (in progress 2026-05-08 evening)
+
+Replaces NGBoost (single-thread, 1h+ on 516k×163). Method: 3 XGBoost-quantile regressors (q=0.16/0.50/0.84), σ̂ = (q_0.84−q_0.16)/2. Multi-threaded, ~30s. Reference: Koenker & Bassett 1978, Lim et al. 2021 TFT §3. Output artifact at `ngboost-head.alpha158_fund.json` with `kind="quantile_head"` — needs corresponding loader in `ApplyNGBoostTask` (separate Task).
+
+Once landed, unlocks `ranking.panel_scoring.ngboost.enabled=true` → σ-aware QP + Kelly sizing in production.
+
+### A4 — Acceptance gates for new daily retrain output
+
+Currently `daily_retrain_alpha158_fund.sh` retrains and overwrites the production artifact unconditionally. Wire `kernel/model_acceptance.py` so a bad retrain (IC drop > 5pt vs prior, or sanity placebo lift > 1pt) auto-rolls back to the previous artifact. Existing `acceptance` block in golden config has the gates — need to plumb them into the new pipeline.
+
+### A5 — Sunday retrain (`retrain_panel.sh`) — also wire to new pipeline
+
+Currently calls `sunday_panel_sweep.py` which does an XGB hyperparameter sweep on the OLD 21-feat panel. Either (a) update sweep to use 163-feat panel and write to new artifact, or (b) replace with weekly version of `daily_retrain_alpha158_fund` that does extra sanity (full §5.2 battery) and CV.
+
+---
+
+## Closed today (2026-05-08, do not re-open)
+
+| Track | Outcome | Why |
+|---|---|---|
+| E39 fund_ext (replication) | NO-GO | XGB IC −0.020 vs base, multicollinearity with existing 5 fund features |
+| **E44 fund_regime (broadcast GMM probs)** | **NO-GO** | Real signal **−0.013** after sanity (raw +5bp was masked by +15bp shuffled-label artifact growth) |
+| **E45 R2K (1640 tickers)** | **NO-GO + audited** | XGB IC drops 75% (+0.067 → +0.018). Audit: top-300 liquid + alpha158-only didn't recover. Structural — Cakici 2023 ML-alpha-larger-on-small-caps doesn't apply at this signal scale |
+| **E42 multi-horizon ensemble** | **NO-GO** | Raw IC +0.007 lift but portfolio Sharpe −0.07 (1.06 → 0.99). IC↔Sharpe disconnect |
+| **D1 vol-target v2 sweep** (4 configs) | NEUTRAL | Best (v2d 20% vol target) Sharpe 1.02 vs base 1.06; trades 4bp Sharpe for −7pt MaxDD. Not promote-worthy |
 
 ---
 
