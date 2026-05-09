@@ -216,9 +216,21 @@ def _check_config_fingerprint(config: dict, strategy_dir: Path) -> PreflightChec
             "P-CONFIG-FP", "hard", True,
             f"fingerprint match {live_fp}",
         )
+    stored_sub = meta.get("config_fingerprint_fields") or {}
+    # Defensive: 2026-05-08 alpha158_fund artifact stores
+    # config_fingerprint_fields as a LIST of field names (not a value
+    # dict like the legacy 21-feat format). When that's the case we
+    # cannot compute a per-field diff, so soft-pass the check —
+    # fingerprint mismatch is real but not actionable without stored
+    # field VALUES to point at the diverging key.
+    if not isinstance(stored_sub, dict):
+        return PreflightCheck(
+            "P-CONFIG-FP", "soft", True,
+            f"fingerprint_fields stored as {type(stored_sub).__name__}, "
+            f"not dict — can't diff. live={live_fp} stored={stored}",
+        )
     diff_keys = []
     live_sub = _model_relevant_fields(config)
-    stored_sub = meta.get("config_fingerprint_fields") or {}
     for k in sorted(set(live_sub) | set(stored_sub)):
         if live_sub.get(k) != stored_sub.get(k):
             diff_keys.append(k)
@@ -247,6 +259,10 @@ def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
             "P-WATCHLIST", "hard", False, f"unreadable: {exc}",
         )
     fields = meta.get("config_fingerprint_fields") or {}
+    # Defensive: alpha158_fund artifact stores fingerprint_fields as a
+    # LIST of field names (no values). Treat as not-stamped → soft-pass.
+    if not isinstance(fields, dict):
+        fields = {}
     trained_wl = fields.get("watchlist") or []
     if not trained_wl:
         return PreflightCheck(

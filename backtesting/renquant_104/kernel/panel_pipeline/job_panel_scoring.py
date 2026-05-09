@@ -192,7 +192,7 @@ class ApplyScoresTask(Task):
                 if needs_fund:
                     import os                                                       # noqa: PLC0415
                     from pathlib import Path                                         # noqa: PLC0415
-                    repo = Path(__file__).resolve().parents[3]
+                    repo = Path(__file__).resolve().parents[4]
                     fp = repo / "data" / "sec_fundamentals_daily.parquet"
                     if fp.exists():
                         fund_panel = pd.read_parquet(fp)
@@ -210,7 +210,69 @@ class ApplyScoresTask(Task):
                                     feats.setdefault(fc, 0.0)
                         log.info("ApplyScoresTask[panel_ltr_xgboost]: merged 5 fund features "
                                  "from %s", fp.name)
-                # Rebuild X with fund cols included
+
+                # PEAD features (E47 promotion 2026-05-08): if the artifact
+                # has days_since_earnings / pead_signal / pead_quintile_rank,
+                # compute them online from data/earnings_surprise/{tkr}.parquet.
+                # Bernard-Thomas 1989 60d decay window; missing tickers get
+                # cross-sectional zero (consistent with build-time fallback).
+                pead_cols = ["days_since_earnings", "pead_signal", "pead_quintile_rank"]
+                needs_pead = any(pc in scorer.feature_cols for pc in pead_cols)
+                if needs_pead:
+                    from pathlib import Path  # noqa: PLC0415
+                    import numpy as np         # noqa: PLC0415
+                    repo = Path(__file__).resolve().parents[4]
+                    earn_dir = repo / "data" / "earnings_surprise"
+                    today_ts = pd.Timestamp(today)
+                    DECAY = 60   # Bernard-Thomas 1989 drift window
+                    # Per-ticker: pull most-recent earnings ≤ today
+                    surprises_today = {}  # ticker → surprise_pct (for x-sec rank)
+                    n_no_data = 0; n_no_prior = 0; n_out_of_window = 0
+                    for t in list(rows.keys()):
+                        ep = earn_dir / f"{t}.parquet"
+                        if not ep.exists():
+                            n_no_data += 1
+                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
+                            continue
+                        earn = pd.read_parquet(ep).reset_index()
+                        earn = earn.rename(columns={earn.columns[0]: "earnings_date"})
+                        earn["earnings_date"] = pd.to_datetime(earn["earnings_date"])
+                        # Defensive: sort by earnings_date ASC. Parquet doesn't
+                        # guarantee row-order preservation across re-reads, and
+                        # we rely on iloc[-1] being most-recent below.
+                        earn = earn.sort_values("earnings_date").reset_index(drop=True)
+                        prior = earn[earn["earnings_date"] <= today_ts]
+                        if len(prior) == 0:
+                            n_no_prior += 1
+                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
+                            continue
+                        last = prior.iloc[-1]
+                        days_since = int((today_ts - last["earnings_date"]).days)
+                        if days_since > DECAY or days_since < 0:
+                            n_out_of_window += 1
+                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
+                            continue
+                        decay = max(0.0, 1.0 - days_since / DECAY)
+                        surprise = float(last["surprise_pct"]) if pd.notna(last["surprise_pct"]) else 0.0
+                        rows[t]["days_since_earnings"] = float(days_since)
+                        rows[t]["pead_signal"]         = surprise * decay
+                        surprises_today[t] = surprise
+                    # Cross-sectional quintile rank of today's surprise across all
+                    # tickers in the snap (matches build-time per-date rank logic).
+                    if surprises_today:
+                        ranks = pd.Series(surprises_today).rank(pct=True)
+                        for t, r in ranks.items():
+                            rows[t]["pead_quintile_rank"] = float(r)
+                    # Tickers without active surprise → zero quintile rank
+                    for t in rows:
+                        rows[t].setdefault("pead_quintile_rank", 0.0)
+                    log.info("ApplyScoresTask[panel_ltr_xgboost]: computed 3 PEAD features "
+                             "today=%s (%d/%d tickers active in 60d window; "
+                             "no_data=%d no_prior=%d out_of_window=%d)",
+                             today_ts.date().isoformat(),
+                             len(surprises_today), len(rows),
+                             n_no_data, n_no_prior, n_out_of_window)
+                # Rebuild X with fund + PEAD cols included
                 X = pd.DataFrame.from_dict(rows, orient="index")
                 X_aligned = X.reindex(columns=scorer.feature_cols, fill_value=float("nan"))
 

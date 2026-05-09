@@ -4,15 +4,19 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-05-05 晚 — walk-forward NO-GO；模型vs SPY 一致负 alpha）
+## 🗂 项目状态速览（2026-05-08 晚 — alpha158+5fund+3PEAD promoted；real signal +0.037）
 
-> 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/2026-04-27-decisions.md`](doc/archives/sessions/2026-04-27-decisions.md)；最新状态在 [`doc/research/branch-pointers.md`](doc/research/branch-pointers.md)。
+> 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/`](doc/archives/sessions/)；最新 roadmap 在 [`doc/roadmap.md`](doc/roadmap.md)；失败实验记录在 [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md)。
 
-**🔴 关键发现 (E27, 2026-05-05)**：3-cut walk-forward 测试显示生产模型 mean alpha vs SPY = **−15.62% ± 10.21%**，三个 cut 的 alpha 全部为负。单切 27-mo B2 测得的 Sharpe 0.68 是 smoothing 假象——拆成 6-mo 窗口后 Sharpe 在 −1.39 ~ +1.82 间剧烈摆动。**不要 promote 任何当前模型变体（wl103 / wl183 / retrain_v2）做 active alpha capture。**
+**🟢 今日里程碑 (2026-05-08)**：
+1. 早上把 alpha158+5fund 163-feat XGBoost 推到生产（commit `ca350c0`），E2E live Alpaca 真单 BUY LMT/ON ACCEPTED
+2. P0 修复 daily cron 缺口（commit `3d0efee`）：daily104.sh → Pipeline + Tasks 架构 + 缓存（122s 全跑/0.2s 缓存命中）+ 18/18 单元测试
+3. Calibrator refit 干净（pool_ic +0.10, n_unique_y=85，preflight HARD pass）
+4. **B4 PEAD long-horizon 通过 §5.2 sanity 是今天唯一真信号**：raw +0.0086, real_signal +0.0146 → +0.0370（+150% 相对）。Shuffle IC 反而下降 18bp（vs E44 regime 上涨 15bp），证明 PEAD 是真 alpha 不是 stock-type artifact。Promoted to 166-feat panel + ApplyScoresTask online PEAD computation (本次 session)。
 
-**生产模型：** XGBoost rank:pairwise，21 特征（daily cron 自动重训后），**CPCV mean_ic = +0.033**（best_iter=14，n_unique_prob_y=11 — passes runtime SOFT WARN floor），最近重训 2026-05-05 13:55 (daily cron auto)。**注意：模型在 6-mo OOS 上 vs SPY 一致负 alpha（详见 E27）。**
-**实盘：** Alpaca ~$10k，持仓滚动；架构稳定。**今日累计修了 14 个 bug + 4 个 QP 新功能（Davis-Norman 不交易区间、qp_min_invested_pct 软底、可行 warm-start、capacity clamp）。生产 27-mo B2 数字 Sharpe 0.59→0.68 / APY 7%→10.12% — 但走 walk-forward 真相是 mean Sharpe 0.21 ± 2.27。**
-**Watchlist：** 103 ticker，面板 ~77k rows
+**生产模型：** XGBoost rank:pairwise，**166 特征**（158 alpha158 + 5 SEC fund + 3 PEAD），fingerprint `cd4d6171c049d26d`，daily cron 自动重训。Calibrator pool_ic=+0.102, n_unique_y=81。
+**实盘：** Alpaca live ~$10k，今日 promote 后真单 BUY LMT x1 + ON x10 ACCEPTED；先持有 FTNT/MU/BA。
+**Watchlist：** 103 ticker（runtime live universe）/ 292 ticker（training panel — alpha158+SEC 全集）。Panel ~715k rows × 172 cols (166 feat + 6 meta)。
 
 **已关闭（不要再讨论）：**
 - **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减，v4 macro-as-panel-row OOS IC −28.8%。所有 macro 形式都被否决。等 watchlist 扩到 200+ 再重评。

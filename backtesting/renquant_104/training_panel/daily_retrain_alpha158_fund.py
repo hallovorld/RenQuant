@@ -177,11 +177,20 @@ class RefitCalibratorTask(RetrainTask):
         _run_script(ctx.repo_dir / "scripts" / "fit_calibrator_alpha158_fund.py")
 
 
-def _run_script(script: Path) -> None:
-    """Run a Python script in a subprocess; raise on non-zero exit."""
+def _run_script(script: Path, cwd: Path | None = None) -> None:
+    """Run a Python script in a subprocess; raise on non-zero exit.
+
+    cwd defaults to the repo root (script.parents[1]) so scripts that
+    use repo-relative paths like 'data/foo.parquet' work regardless
+    of the parent process's cwd. The bash launcher cd's to the
+    strategy dir for module-import purposes, but child Python scripts
+    expect repo root.
+    """
+    if cwd is None:
+        cwd = script.resolve().parents[1]   # scripts/foo.py → repo root
     cmd = [sys.executable, str(script)]
-    log.info("  $ %s", " ".join(cmd))
-    rc = subprocess.call(cmd)
+    log.info("  $ %s  (cwd=%s)", " ".join(cmd), cwd)
+    rc = subprocess.call(cmd, cwd=str(cwd))
     if rc != 0:
         raise RuntimeError(f"{script.name} exited {rc}")
 

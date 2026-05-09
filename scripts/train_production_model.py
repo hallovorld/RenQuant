@@ -103,8 +103,25 @@ def main():
 
     # Save artifact
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
+    # Stamp fingerprint_fields as a DICT of (field → value) — matches the
+    # legacy 21-feat artifact format that kernel/preflight expects so
+    # P-CONFIG-FP and P-WATCHLIST can do meaningful diffs. Including
+    # `watchlist` here lets P-WATCHLIST detect drift between training
+    # universe and live config.
+    fingerprint_fields = {
+        "watchlist":          sorted(train["ticker"].unique().tolist()),
+        "feature_cols":       feat_cols,
+        "objective":          PARAMS.get("objective"),
+        "label_col":          LABEL,
+        "lookahead_days":     60,
+        "asset_embeddings":   False,
+        "training_resolution": "daily",
+        "hourly_enabled":     False,
+        "minute_enabled":     False,
+        "params":             PARAMS,
+    }
     artifact = {
-        "version": 2,
+        "version": 3,   # bump: fingerprint_fields format change (list → dict)
         "kind": "panel_ltr_xgboost",
         "trained_date": datetime.utcnow().strftime("%Y-%m-%d"),
         "feature_cols": feat_cols,
@@ -117,15 +134,15 @@ def main():
         "label_col": LABEL,
         "lookahead_days": 60,
         "training_notes": (
-            "alpha158 + SEC fund (5 features) on R1K 291 tickers, fwd_60d label. "
-            "WF baseline IC=+0.066 std=0.072 6/7 cuts positive. "
-            "Sanity-adjusted real signal ~+0.041 (after stock-type residual subtracted). "
-            "Portfolio sim: Long-only top decile Sharpe=1.06, MaxDD=-42%."
+            "alpha158 + SEC fund (5) + PEAD (3, E47 promoted 2026-05-08) on R1K "
+            "291 tickers, fwd_60d label. PEAD real_signal lift +0.022 over "
+            "alpha158+5fund baseline (paired §5.2 sanity passed)."
         ),
-        "config_fingerprint_fields": ["feature_cols", "params", "label_col"],
+        "config_fingerprint_fields": fingerprint_fields,
     }
-    fp = hashlib.sha256(json.dumps({k: artifact[k] for k in artifact["config_fingerprint_fields"]},
-                                   sort_keys=True, default=str).encode()).hexdigest()[:16]
+    fp = hashlib.sha256(
+        json.dumps(fingerprint_fields, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
     artifact["config_fingerprint"] = fp
 
     out = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"

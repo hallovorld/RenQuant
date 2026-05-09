@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(launchctl print *)",
-      "Bash(md5 *)"
+      "Bash(launchctl list *)",
+      "Bash(md5 *)",
+      "Bash(awk *)",
+      "Bash(top *)"
     ]
   }
 }
