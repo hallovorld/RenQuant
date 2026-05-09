@@ -271,7 +271,16 @@ def compute_derived_features(daily: pd.DataFrame,
             result["book_to_price"]       = eq  / (mktcap + 1e-9)   # B/M, Fama-French
             result["gross_profitability"] = gp  / (ast    + 1e-9)   # Novy-Marx (2013)
             result["roe"]                 = ni  / (eq     + 1e-9)   # profitability
-            result["asset_growth"]        = ast.pct_change(periods=4) # YoY, Cooper et al.
+            # 2026-05-09 BUG #5 FIX: pct_change(periods=4) on a daily forward-
+            # filled series computed change over 4 DAYS (not 4 quarters). On
+            # a ffill'd daily series, consecutive days have identical values
+            # → 93.9% zero asset_growth in the panel → XGB feature gain = 0.
+            # Per Cooper-Gulen-Schill 2008 "Asset Growth and the Cross-Section
+            # of Stock Returns" the correct horizon is 1 year YoY. We use
+            # periods=252 (≈ 252 trading days per year) on the daily ffill'd
+            # series, which is mathematically equivalent to comparing
+            # current quarter's filing to the same-period 1y ago.
+            result["asset_growth"]        = ast.pct_change(periods=252) # YoY (Cooper-Gulen-Schill 2008)
 
         derived_rows.append(result.reset_index().rename(columns={"index": "date"}))
 
