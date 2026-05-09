@@ -414,11 +414,17 @@ class TestPromoteAuditFixes:
         with pytest.raises(ValueError, match="missing both 'kind' and 'feature_cols'"):
             promote(staging, active)
 
-    def test_promote_atomic_active_path_never_missing(self, tmp_path):
+    def test_promote_atomic_active_path_never_missing(self, tmp_path, monkeypatch):
         """#12 — between the two file ops, active path must always exist
         with valid content. Pre-fix the two-shutil.move sequence had a
         window where active was absent. Post-fix uses os.replace via a
-        temp file."""
+        temp file.
+
+        2026-05-09: WF gate now blocks promote without wf_gate_metadata;
+        this test is about swap-atomicity not the gate, so override.
+        Dedicated WF gate tests live in test_promote_wf_gate.py.
+        """
+        monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")
         active = tmp_path / "panel-ltr.json"
         active.write_text(json.dumps({"kind": "old", "feature_cols": ["a"]}))
         staging = tmp_path / "panel-ltr.staging.json"
@@ -441,7 +447,12 @@ class TestPromoteAuditFixes:
 # ── Atomic swap (promote / reject / rollback) ─────────────────────────────────
 
 class TestAtomicSwap:
-    def test_promote_swaps_files(self, tmp_path):
+    """Tests for promote() atomic-swap mechanics. WF gate is tested
+    separately in test_promote_wf_gate.py — these tests use the
+    RQ_ALLOW_NO_WF override to focus on swap behavior."""
+
+    def test_promote_swaps_files(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")
         active = tmp_path / "panel-ltr.json"
         active.write_text(json.dumps({"kind": "old"}))
         staging = tmp_path / "panel-ltr.staging.json"
@@ -453,7 +464,8 @@ class TestAtomicSwap:
         assert json.loads(prev.read_text())["kind"] == "old"
         assert not staging.exists()
 
-    def test_promote_no_prior_works(self, tmp_path):
+    def test_promote_no_prior_works(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RQ_ALLOW_NO_WF", "1")
         active = tmp_path / "panel-ltr.json"
         staging = tmp_path / "panel-ltr.staging.json"
         staging.write_text(json.dumps({"kind": "new"}))

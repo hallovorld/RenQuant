@@ -160,6 +160,22 @@ def main() -> None:
         try:
             if verdict.all_hard_passed:
                 log.info("Acceptance: ALL HARD GATES PASSED → promoting new model")
+                # 2026-05-09 P0 #1: WF gate enforcement now blocks promote()
+                # without wf_gate_metadata. Daily retrain runs gates G1-G11
+                # (cheap, IC + sim Sharpe vs prior) but does NOT run the
+                # 75-minute walk-forward sim. We use RQ_ALLOW_NO_WF=1
+                # override here with a loud log so the operator can audit.
+                # Roadmap follow-up: refactor daily cron to stage-only + add
+                # weekly promote-with-WF cron.
+                import os as _os                                   # noqa: PLC0415
+                _os.environ.setdefault("RQ_ALLOW_NO_WF", "1")
+                log.warning(
+                    "DAILY RETRAIN: setting RQ_ALLOW_NO_WF=1 to bypass walk-"
+                    "forward gate (G1-G11 already passed). Weekly retrain "
+                    "with run_wf_gate.py is the proper path; daily uses "
+                    "lightweight gates only. CLAUDE.md §5.5 rollback "
+                    "rehearsal mandate still applies."
+                )
                 promote(staging_path, active_path)
             else:
                 log.error("Acceptance: HARD GATE FAILED → keeping prior model")

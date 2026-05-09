@@ -577,6 +577,92 @@ class ModelAcceptanceGate:
 
 # ── Atomic-swap promote / reject ──────────────────────────────────────────────
 
+def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
+    """2026-05-09 P0 #1 — walk-forward gate enforcement.
+
+    Per E55/roadmap rewrite: every promote requires walk-forward 3-cut
+    Sharpe + §5.2 sanity battery (shuffled-label + time-shift placebo)
+    BEFORE the artifact is allowed into the active path.
+
+    Today's revelation (NGB on/off A/B): single-cut sim Sharpe was
+    misleading us into promoting models that lost 3.78 APY pp on
+    walk-forward. Past Sharpe claims (1.06, 1.10, 2.01) were on
+    contaminated code AND single-window cuts. This gate forces the
+    discipline CLAUDE.md §5.9 already required.
+
+    Required artifact metadata schema (written by
+    `scripts/run_wf_gate.py`):
+      wf_gate_metadata:
+        passed:               bool       # overall verdict
+        wf_3cut_sharpe_mean:  float
+        wf_3cut_sharpe_std:   float
+        wf_3cut_apy_mean:     float
+        sanity_shuffled_ic:   float       # must be ≈ 0
+        sanity_placebo_ic:    float       # must be < 0.5 × real_ic
+        run_at:               str (ISO-8601)
+        gate_version:         int
+
+    Failure modes:
+      - missing wf_gate_metadata        → refuse promote
+      - passed != True                  → refuse promote
+      - run_at older than 14 days       → refuse promote (must re-run)
+
+    Emergency override: set env `RQ_ALLOW_NO_WF=1` (logged loudly,
+    rate-limited per CLAUDE.md §5.5 rollback rehearsal).
+    """
+    import os as _os                                    # noqa: PLC0415
+    import datetime as _dt                              # noqa: PLC0415
+    if _os.environ.get("RQ_ALLOW_NO_WF") == "1":
+        log.warning(
+            "PROMOTE OVERRIDE: RQ_ALLOW_NO_WF=1 set — bypassing walk-forward "
+            "gate for %s. This is an emergency-only override; per CLAUDE.md "
+            "§5.5 you MUST rehearse rollback within 24h. Reason should be "
+            "documented in commit message.",
+            staging_path.name,
+        )
+        return
+    md = staging_data.get("metadata", {}) or {}
+    wf = md.get("wf_gate_metadata")
+    if not isinstance(wf, dict):
+        # Also check top-level (some artifacts store metadata at root)
+        wf = staging_data.get("wf_gate_metadata")
+    if not isinstance(wf, dict):
+        raise ValueError(
+            f"promote: refused — staging artifact missing wf_gate_metadata "
+            f"({staging_path}). Run `python scripts/run_wf_gate.py "
+            f"--artifact {staging_path}` first. Override with "
+            f"RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
+    if not bool(wf.get("passed")):
+        raise ValueError(
+            f"promote: refused — wf_gate_metadata.passed=False on "
+            f"{staging_path.name}. Detail: "
+            f"sharpe_mean={wf.get('wf_3cut_sharpe_mean')} "
+            f"shuffled_ic={wf.get('sanity_shuffled_ic')} "
+            f"placebo_ic={wf.get('sanity_placebo_ic')}. "
+            f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
+    # Staleness check: WF results older than 14 days are not credible
+    # for current model state (panel data + bug-fix lineage may differ).
+    run_at = wf.get("run_at")
+    if run_at:
+        try:
+            ran = _dt.datetime.fromisoformat(str(run_at).replace("Z", "+00:00"))
+            if ran.tzinfo is not None:
+                ran = ran.replace(tzinfo=None)
+            age_days = (_dt.datetime.utcnow() - ran).total_seconds() / 86400
+            if age_days > 14:
+                raise ValueError(
+                    f"promote: refused — wf_gate_metadata stale "
+                    f"({age_days:.1f} days old, threshold 14d). Re-run "
+                    f"`scripts/run_wf_gate.py`. Override with RQ_ALLOW_NO_WF=1."
+                )
+        except (ValueError, TypeError) as exc:
+            if "stale" in str(exc):
+                raise
+            log.warning("wf_gate_metadata.run_at unparseable: %r — skipping age check", run_at)
+
+
 def promote(staging_path: Path, active_path: Path) -> None:
     """Atomically swap staging into active, archiving prior to .previous.
 
@@ -594,6 +680,9 @@ def promote(staging_path: Path, active_path: Path) -> None:
     then rename temp → active. On the same filesystem, os.rename is
     atomic (POSIX); the active path is always EITHER the prior OR the
     new file, never absent.
+
+    Walk-forward gate (2026-05-09 P0 #1): refuses promote without
+    wf_gate_metadata.passed=True; see _check_wf_gate.
     """
     staging_path = Path(staging_path)
     active_path  = Path(active_path)
@@ -616,6 +705,9 @@ def promote(staging_path: Path, active_path: Path) -> None:
             f"promote: staging artifact missing both 'kind' and 'feature_cols' "
             f"({staging_path}); refusing to swap into active"
         )
+
+    # 2026-05-09 P0 #1 — walk-forward gate enforcement (after E55 NGB revert)
+    _check_wf_gate(data, staging_path)
 
     previous_path = active_path.with_suffix(".previous.json")
     # ── Audit fix #12: stage the new file next to active first so
