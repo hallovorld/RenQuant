@@ -703,11 +703,26 @@ class RunnerAdapter:
         this ticker, cancel it first; the new stop_price is the MIN of
         (existing, new) so we never loosen.
         """
-        if qty <= 0 or reference_price <= 0:
+        # 2026-05-09 audit fix (Z9-NaN): pre-fix, NaN qty / reference_price
+        # slipped past `<= 0` (NaN comparisons return False) → target=NaN
+        # → broker.place_stop_order crashed inside int(qty). Same QTY-NaN
+        # pattern as the exit-side audit fix. Now: explicit isfinite guard.
+        import math as _math_z9  # noqa: PLC0415
+        if (not _math_z9.isfinite(qty) or qty <= 0
+                or not _math_z9.isfinite(reference_price) or reference_price <= 0):
+            log.warning(
+                "Z9: skipping stop for %s — non-finite or non-positive "
+                "qty=%s reference_price=%s", ticker, qty, reference_price,
+            )
             return
         broker = self._broker
         ctx_pct = getattr(self, "_last_ctx_stop_pct", 0.06)
+        if not _math_z9.isfinite(ctx_pct) or ctx_pct <= 0 or ctx_pct >= 1:
+            ctx_pct = 0.06
         target = reference_price * (1.0 - ctx_pct)
+        if not _math_z9.isfinite(target) or target <= 0:
+            log.warning("Z9: derived target=%s non-finite — skipping", target)
+            return
 
         existing = self._stop_orders.get(ticker)
         if existing is not None:
