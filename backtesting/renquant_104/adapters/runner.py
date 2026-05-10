@@ -429,12 +429,22 @@ class RunnerAdapter:
             )
 
         # ── Current prices from broker positions ────────────────────────────
+        # 2026-05-09 audit fix (RU-PRICE-1): pre-fix `if qty > 0 and mkt > 0`
+        # passed for micro-qty (e.g. 1e-7 fractional shares from a botched
+        # broker fill) → `mkt / qty` produced an inflated price (e.g.
+        # market_value=$100, qty=1e-6 → price=$100M/share). Guard with
+        # isfinite + a 1-share floor so we treat sub-share dust as "no
+        # trustworthy price" and fall back to OHLCV close below.
+        import math as _math_p  # noqa: PLC0415
         prices: dict[str, float] = {}
         for ticker, pos in positions_cache.items():
             qty = float(pos.get("qty", 0))
             mkt = float(pos.get("market_value", 0))
-            if qty > 0 and mkt > 0:
-                prices[ticker] = mkt / qty
+            if (_math_p.isfinite(qty) and _math_p.isfinite(mkt)
+                    and qty >= 0.5 and mkt > 0):
+                px = mkt / qty
+                if _math_p.isfinite(px) and 0 < px < 1e6:
+                    prices[ticker] = px
 
         # ── OHLCV from parquet cache ─────────────────────────────────────────
         from kernel.data import fetch_ohlcv  # noqa: PLC0415
@@ -450,9 +460,23 @@ class RunnerAdapter:
                 df = fetch_ohlcv(sym)
                 if not df.empty:
                     ohlcv[sym] = df
-                    # Fill prices from OHLCV last close if broker didn't supply
+                    # Fill prices from OHLCV last close if broker didn't supply.
+                    # 2026-05-09 audit fix (RU-PRICE-2): isfinite guard on
+                    # the close value. Pre-fix, a NaN close in the last bar
+                    # (data-feed glitch on suspended/halted ticker) silently
+                    # propagated into ctx.prices → Kelly/HWM/QP all received
+                    # NaN → cascade of silent failures.
                     if sym not in prices:
-                        prices[sym] = float(df["close"].iloc[-1])
+                        close_val = float(df["close"].iloc[-1])
+                        if _math_p.isfinite(close_val) and close_val > 0:
+                            prices[sym] = close_val
+                        else:
+                            log.warning(
+                                "OHLCV close for %s is non-finite (%s) — "
+                                "skipping price entry; downstream tasks will "
+                                "see ticker as 'no price' (fail-safe).",
+                                sym, close_val,
+                            )
             except Exception as exc:
                 log.warning("OHLCV fetch failed for %s: %s", sym, exc)
 

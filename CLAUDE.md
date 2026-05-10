@@ -376,6 +376,76 @@ These are not "nice to haves" — they're the response to a single 24h period wh
 - Failure mode this prevents: re-deriving things from scratch when a 14k-star repo or 2k-citation paper has the answer. The user repeatedly asked "have you read [Qlib / Kelly RFS 2020 / etc]?" because my decisions kept being ad-hoc.
 - The 2026-05-06 self-audit listing **9 decisions where citation was decoration not real reference** (per-day batched DataLoader, listwise pairwise BCE, 60-day seq_len, alpha158-lite 40 features, label clip ±30%, per-horizon standardize, AdamW lr=1e-3, per-day demean labels, train/val/test split methodology) is the durable evidence of this principle's necessity.
 
+### 5.13 — 2026-05-09 audit lessons (mandatory anti-patterns to forbid)
+
+After a single-day audit found **17 RED bugs** (silent corruption, dead code, calibrator output up to +401%, sim/live divergence, theatrical WF gate), these patterns are now banned. Each rule is paired with the bug-class it prevents.
+
+**5.13.1 — Test fixtures lie. Tests must walk real prod data flow.**
+- I wrote 124 unit tests for σ-aware stop loss + profit ladder, all green. All used `HoldingState(sigma=0.30)` hand-construction. Production has `state.sigma = None` (NGB OFF). The 124 tests **never executed the prod path code being tested**.
+- **New rule:** every fix has at least one test that calls through the actual SimAdapter / RunnerAdapter / Pipeline entry point — not a hand-constructed fixture. Reference: `tests/test_pipeline_invariants.py::test_missing_ticker_gets_xs_median_not_zero` (synthetic SEC parquet → real ApplyScoresTask → assert prod behavior).
+
+**5.13.2 — Any new module is dead until grep proves prod imports it.**
+- `kernel/execution/smart_orders.py` (156 lines) + 42 tests. Production code: zero imports. Module orphaned for hours before anyone noticed.
+- **New rule:** before declaring a module "shipped", run `grep -rn '<module_name>' backtesting/<strategy>/{adapters,kernel,live,scripts}/` and verify ≥1 production import. If only tests reference it, it's not shipped.
+
+**5.13.3 — Every fix names its class-of-bug invariant + AUDIT REGRESSION GUARD test.**
+- BUG #6 (μ̂ collapse) was fixed by stamping `ctx._panel_matrix` AND adding `soft_check_score_series` (output diversity). Future-Claude can't reintroduce μ̂ collapse via a different mechanism — the diversity guard catches it.
+- **New rule:** every fix commit includes a test class named `class Test<Bug>RegressionGuard` (or AUDIT REGRESSION GUARD as docstring) that pins the invariant which prevents the entire bug class. Examples in repo: `test_qp_wash_sale_cost_aware.py`, `test_smoke_test_model.py::TestNoRetrainInDailyShell`.
+
+**5.13.4 — Single performance number = unverified claim. Multi-seed mean ± std required.**
+- "27-mo APY +6.77% / Sharpe +0.40 honest baseline" was cited in 3 doc files. Re-run 8 hours later (same config + artifact) produced +1.97% / +0.20. **Single-measurement claims are unfalsifiable.**
+- **New rule:** any APY / Sharpe / IC number quoted in commit / doc / roadmap MUST be `mean ± std` from ≥5 runs (different seeds OR different bar-orderings). Claims without σ are forbidden.
+
+**5.13.5 — Single source of truth: same business decision = same function.**
+- Wash-sale logic had 5 call sites: 4 used cost-aware `is_wash_sale_blocked_with_cost`, 1 (greedy selection) used binary `is_wash_sale_blocked`. Tickers got contradictory rulings at different stages.
+- **New rule:** any business-rule decision (wash-sale, position cap, drawdown halt, post-stop cooldown, earnings blackout) has exactly **one** function. All callers route through it. Adding a parallel implementation requires deleting the original first.
+
+**5.13.6 — Cron cadence must be info-theoretically justified.**
+- Daily retrain on a fwd_60d-label model adds 0.014% new info per day. Daily was **cargo-cult** — the trust boundary belongs at the cadence where new label info materializes (weekly+).
+- **New rule:** any new cron must answer in its docstring: "this frequency adds N% new training-relevant information per tick, vs M% from the next-coarsest alternative". If the answer is < 5% / tick, the cadence is wrong.
+
+**5.13.7 — Code change ≠ data update. Mark "requires data regen" explicitly.**
+- BUG #5 fixed `pct_change(periods=4) → 252` in `fetch_sec_fundamentals.py`. Commit said "FIXED". But `sec_fundamentals_daily.parquet` on disk was still the buggy version → production model still trained on bug values.
+- **New rule:** any commit modifying a data-pipeline script must include in the commit message: `⚠️ requires data regen: <command>`. Until the regen runs and the artifact mtime updates, the fix is **not** in production.
+
+**5.13.8 — Full pytest pass is a CI-gate invariant, not a vibe.**
+- Today's audit started from "the test suite has 67 failures" (down to 4 after fixes). Nobody had run the full suite in days. Some failures were missing optional deps; some were real bugs (8 side-config artifact paths, calibrator y > +1, panel_shape list/dict).
+- **New rule:** every push of `kernel/`, `adapters/`, `training_panel/`, `live/`, or `scripts/{train,daily,weekly,monthly}_*` must include a fresh `pytest tests/ --tb=no -q` snapshot in the commit message ("N passed / M failed"). Failure ≥ 5 → the commit is broken; investigate before merge.
+
+**5.13.9 — "Audit subsystem X" is a 4-step protocol, not a grep.**
+1. List X's data-flow inputs (where they come from, who writes them)
+2. List X's data-flow outputs (where they go, who reads them)
+3. For each input → output edge, write or find an integration test
+4. For each "if X is not None" branch, prove via grep that X has a non-None path in production
+
+If only step 1+2 done = audit at risk. Phase 2 audit on 2026-05-09 was 6 sampled / 2 deep — that's how σ-unwiring slipped through.
+
+**5.13.10 — `if optional_field is not None` defaults to dead code unless verified.**
+- σ-aware stop_loss / profit ladder both had `if state.sigma is None: return` short-circuits. NGBoost is OFF in production → `state.sigma` is never populated → the entire feature is **architecturally dead code**. The fix had passed 124 tests because all fixtures set sigma manually.
+- **New rule:** any new code path with `if optional_field is not None and optional_field > 0` must `grep -r 'optional_field = '` in the production codebase + show one prod write site that fires under current config. Otherwise the path is dead and the whole "fix" must be reverted or guarded by a config flag that's documented as "requires <feature> ON".
+
+**5.13.11 — NaN / inf must be guarded explicitly. `>` and `<` evaluate False on NaN.**
+- Found 5 separate places where `if x > 0` let NaN pass: `qty * price` cash math, `mkt / qty` price extraction, `panel_shape` schema, `tax` arithmetic, `position_value` updates. Pattern: `NaN > 0` is `False`, so the "nonpositive-reject" guard silently passes the NaN through.
+- **New rule:** any `>` or `<` comparison on a value that *could* be NaN (broker returns, broker fills, config-driven floats, OHLCV closes, fund features, calibrator output) must be paired with `math.isfinite(x)`. Pattern: `if math.isfinite(x) and x > threshold:`.
+
+**5.13.12 — Calibrator / regression output must be range-bounded.**
+- Production calibrator's `expected_return.y` ranged from -0.30 to +**4.01** (i.e. predicted +401% over fwd_60d). 32% of knots > ±100%. The QP solver consumed this as μ_i → top-scored tickers' position weights inflated 5-10×.
+- **New rule:** any regression / calibration output that feeds position sizing / Kelly / cash-budget math must have explicit `np.clip(out, lo, hi)` applied AT THE TRAIN SITE (so the artifact stores sane bounds). Defense in depth: also clip at the consumer site. Reference: `training_panel/global_calibrator.py:362-388` (commit `e715455`).
+
+**5.13.13 — Side configs are loaded weapons. Aliased artifact paths or fail-fast.**
+- 8 historical "side" configs (`strategy_config.golden.previous_*`, `live.previous_*`, `ngb_off_ab`, `alpha158_fund_paper`) all referenced production artifact paths. `--strategy-config-name <side>.json` would have **silently overwritten production** during retrain.
+- **New rule:** any `strategy_config.<label>.json` (where label != empty string) must alias all `artifact_path` keys to side-paths containing the label. Pinned by `tests/test_side_config_artifact_paths.py`.
+
+**5.13.14 — `panel-ltr.json` is a stub, not the live model. Tools must read `strategy_config.json::artifact_path`.**
+- 5 tooling scripts (finalize_challenger, audit_oos_ic_drift, model_dashboard, fit_panel_calibrator, train_panel_model) defaulted to loading `panel-ltr.json`. After alpha158 promotion that file became a 21-feat stub, while inference loaded `panel-ltr.alpha158_fund.json` (169 feats). Cross-tool comparisons were nonsense for days.
+- **New rule:** no tool defaults to a hardcoded artifact filename. Every load resolves through `cfg["ranking"]["panel_scoring"]["artifact_path"]`. Hardcoded filenames are a regression flag.
+
+**5.13.15 — WF gate exists in code ≠ WF gate enforced in production.**
+- `_check_wf_gate` was committed with regression tests. But `train_104.py:171` set `RQ_ALLOW_NO_WF=1` unconditionally on every daily promote. **Every prod promote bypassed the gate.** No weekly cron actually ran `run_wf_gate.py`. The gate was theatrical.
+- **New rule:** any safety gate added to the codebase has TWO required artifacts: (a) the gate function + tests, AND (b) a scheduled cron (plist + .sh) that invokes it WITHOUT override. If only (a) ships, the gate is decoration. Reference cadence: `doc/ops/schedule.md`.
+
+---
+
 ### Documentation Index (canonical pointers)
 
 **Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)

@@ -89,6 +89,24 @@ class PaperBroker(BaseBroker):
     def place_order(
         self, symbol: str, action: str, quantity: float, price: "float | None" = None,
     ) -> dict:
+        # 2026-05-09 audit fix (PB-NaN-1): pre-fix, NaN/inf quantity slipped
+        # past `qty <= 0` (NaN comparisons return False) → invest=NaN →
+        # cash=NaN → all subsequent get_account_value calls return NaN.
+        # Same NaN-propagation pattern as SAB-3 / DC-1 fixed in adapters.
+        # Now: explicit isfinite guard rejects bad orders cleanly.
+        import math as _math_pb  # noqa: PLC0415
+        if not _math_pb.isfinite(quantity) or quantity <= 0:
+            log.warning(
+                "PaperBroker.place_order(%s, %s, %s): rejecting non-finite "
+                "or non-positive quantity — order NOT placed",
+                action, symbol, quantity,
+            )
+            self._order_counter += 1
+            oid = f"PAPER-REJECTED-{self._order_counter:04d}"
+            return {"order_id": oid, "status": "rejected",
+                    "action": action.upper(), "symbol": symbol,
+                    "quantity": 0, "price": None,
+                    "reject_reason": f"non-finite or non-positive quantity ({quantity})"}
         self._order_counter += 1
         oid = f"PAPER-{self._order_counter:04d}"
         action_u = action.upper()
@@ -105,9 +123,21 @@ class PaperBroker(BaseBroker):
             )
             invest = 0.0
         else:
-            price  = float(price)
-            invest = float(quantity) * price
-            self._last_price[symbol] = price
+            price = float(price)
+            # 2026-05-09 audit fix (PB-NaN-2): same isfinite guard on price.
+            # Pre-fix, fetch_intraday_bars rare race could return NaN price
+            # → invest=NaN → cash=NaN → state corrupted.
+            if not _math_pb.isfinite(price) or price <= 0:
+                log.warning(
+                    "PaperBroker.place_order(%s, %s, %s): non-finite price "
+                    "(%s) — treating as no price; cash NOT updated",
+                    action, symbol, quantity, price,
+                )
+                price = None
+                invest = 0.0
+            else:
+                invest = float(quantity) * price
+                self._last_price[symbol] = price
 
         if action_u == "BUY":
             if invest > self._cash + 1e-6 and price is not None:
