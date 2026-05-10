@@ -925,12 +925,12 @@ class TestQPTaxAwareDisabledByDefault:
     # already published in failed-experiments-log.md and rewriting them
     # retroactively would misrepresent history. Add active configs here
     # as they're created.
+    # 2026-05-09 audit cleanup (commit a032bb8 onwards): legacy side configs
+    # wl183_daily_clean.json + alpha158_linear.json deleted (closed tracks per
+    # CLAUDE.md). Test now pins only the two configs that ARE production-active.
     _ACTIVE_CONFIGS = (
         "strategy_config.json",
         "strategy_config.golden.json",
-        "strategy_config.wl183_daily_clean.json",
-        # 2026-05-06: alpha158_linear scorer side config (Phase 1+2 ship).
-        "strategy_config.alpha158_linear.json",
     )
 
     def test_qp_min_dw_pct_above_micro_threshold(self):

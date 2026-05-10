@@ -1,6 +1,6 @@
 {
-  "scan_utc": "2026-05-05T03:55:15+00:00",
-  "today": "2026-05-04",
+  "scan_utc": "2026-05-07T21:08:27+00:00",
+  "today": "2026-05-07",
   "watchlist_size": 103,
   "repo_root": "/Users/renhao/git/github/RenQuant",
   "sources": {
@@ -9,13 +9,13 @@
       "n_tickers": 103,
       "n_tickers_vs_watchlist": 1.0,
       "missing_tickers": [],
-      "date_min": "2026-05-01",
-      "date_max": "2026-05-01",
-      "n_rows_total": 247394,
-      "rows_per_ticker_min": 1137,
-      "rows_per_ticker_p50": 2597,
-      "rows_per_ticker_max": 3101,
-      "age_days": 3
+      "date_min": "2026-05-07",
+      "date_max": "2026-05-07",
+      "n_rows_total": 247806,
+      "rows_per_ticker_min": 1141,
+      "rows_per_ticker_p50": 2601,
+      "rows_per_ticker_max": 3105,
+      "age_days": 0
     },
     "fundamentals": {
       "name": "fundamentals",
@@ -28,7 +28,7 @@
       "rows_per_ticker_min": 1,
       "rows_per_ticker_p50": 1,
       "rows_per_ticker_max": 1,
-      "age_days": 7
+      "age_days": 10
     },
     "earnings_surprise": {
       "name": "earnings_surprise",
@@ -43,7 +43,7 @@
       "rows_per_ticker_min": 17,
       "rows_per_ticker_p50": 24,
       "rows_per_ticker_max": 25,
-      "age_days": 10
+      "age_days": 13
     },
     "insider_trades": {
       "name": "insider_trades",
@@ -62,7 +62,7 @@
       "rows_per_ticker_min": 1,
       "rows_per_ticker_p50": 40,
       "rows_per_ticker_max": 182,
-      "age_days": 4
+      "age_days": 7
     },
     "benchmark_spy": {
       "name": "benchmark_spy",
@@ -70,12 +70,12 @@
       "n_tickers_vs_watchlist": 1.0,
       "missing_tickers": [],
       "date_min": null,
-      "date_max": "2026-05-01",
-      "n_rows_total": 2597,
-      "rows_per_ticker_min": 2597,
-      "rows_per_ticker_p50": 2597,
-      "rows_per_ticker_max": 2597,
-      "age_days": 3
+      "date_max": "2026-05-07",
+      "n_rows_total": 2601,
+      "rows_per_ticker_min": 2601,
+      "rows_per_ticker_p50": 2601,
+      "rows_per_ticker_max": 2601,
+      "age_days": 0
     }
   },
   "alignment": {

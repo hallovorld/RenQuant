@@ -117,12 +117,6 @@ Detailed reproducibility: [`doc/ops/environment.md`](doc/ops/environment.md).
 
 Detailed CLI + scheduled runs + plist files: [`doc/ops/usage.md`](doc/ops/usage.md).
 
-## Shared library `common/`
-
-Import as `import common`. **Do not import `common/` from inside `backtesting/`** — LEAN Docker can't access it.
-
-Modules: `common.{config, data, indicators, models, strategy, portfolio, tax, plotting}`. Detailed module exports: [`doc/arch/overview.md`](doc/arch/overview.md).
-
 ## Architecture (one paragraph + cross-refs)
 
 Three pipelines are the source of truth for ALL decision logic:
@@ -130,21 +124,30 @@ Three pipelines are the source of truth for ALL decision logic:
 - **FullTrainingPipeline** — orchestrates `BaselineTournamentJob → PanelTrainingJob → RecalibrationJob`. Code in `kernel/pipeline/pp_training_full.py`.
 - **PanelTrainingPipeline** — `PanelDataJob → PanelFeatureJob → PanelAssemblyJob → PanelModelJob → PanelNGBoostJob → RefreshPanelCalibratorJob`. Code in `training_panel/pp_panel_training.py`.
 
-Strategy specs are detailed elsewhere:
-- 101 (single-stock): minimal, kept for reference
-- 102 (multi-stock scanner): [`doc/arch/strategy-103.md`](doc/arch/strategy-103.md) (102 is parent of 103)
-- 103 (regime-adaptive): [`doc/arch/strategy-103.md`](doc/arch/strategy-103.md) — 3-layer regime + relative strength + rotation
-- **104 (active, panel-LTR)**: [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md) — cross-sectional XGBoost rank + NGBoost μ,σ head + global calibration + portfolio QP + acceptance gates
+Strategy specs:
+- 101 / 102 / 103: archived (rolled-back / superseded). Code lives at `backtesting/renquant_10{1,2,3}/` for forensic / rollback only.
+- **104 (ACTIVE, panel-LTR)**: [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md) — cross-sectional XGBoost rank + NGBoost μ,σ head (currently OFF) + global calibration + portfolio QP + acceptance gates
 
-Component deep dives:
+Component deep dives (verified to exist 2026-05-09):
 - [`doc/components/panel-ltr.md`](doc/components/panel-ltr.md) — primer + glossary
-- [`doc/components/buy-logic.md`](doc/components/buy-logic.md) — 3 quality gates + portfolio QP (operator runbook merged)
-- [`doc/components/sell-logic.md`](doc/components/sell-logic.md) — SellGateB + LimitSellsPerBar (round-7)
-- [`doc/components/calibration.md`](doc/components/calibration.md) — saturation finding + score-DB design
+- [`doc/components/buy-logic.md`](doc/components/buy-logic.md) — 3 quality gates + portfolio QP
+- [`doc/components/sell-logic.md`](doc/components/sell-logic.md) — SellGateB + LimitSellsPerBar
+- [`doc/components/calibration.md`](doc/components/calibration.md) — score-DB + isotonic
 - [`doc/components/rotation.md`](doc/components/rotation.md)
-- [`doc/components/transformer.md`](doc/components/transformer.md) — daily + hourly + Bug #21/23/24 + acceptance protections
-- [`doc/components/macro-factor-frame-design.md`](doc/components/macro-factor-frame-design.md) — VIX/HYG/UUP cross-asset broadcast
-- [`doc/components/trade-evaluation.md`](doc/components/trade-evaluation.md) — RL-OPE design
+- [`doc/components/portfolio-qp.md`](doc/components/portfolio-qp.md) — cvxpy CLARABEL backend
+- [`doc/components/databases.md`](doc/components/databases.md) — runs.db schema, broker isolation
+- [`doc/components/training-pipeline.md`](doc/components/training-pipeline.md)
+
+**Deleted 2026-05-09 (audit code-vs-doc reconciliation, code is source of truth):**
+- `doc/arch/decision-graph-103.md` — removed (renquant_103 archived; canonical flowchart is now `kernel/pipeline/pp_inference.py`)
+- `doc/arch/strategy-103.md` — removed (renquant_103 archived)
+- `doc/components/transformer.md` — removed (transformer DISABLED, see closed-track list above)
+- `doc/components/macro-factor-frame-design.md` — removed (all macro variants NO-GO per closed-track list)
+- `doc/components/trade-evaluation.md` — removed (RL-OPE deferred)
+- `doc/ops/maintenance-103.md` — removed (renquant_103 archived)
+- `doc/ops/transformer-promotion.md` — removed (transformer DISABLED)
+- `doc/experiments/post-tier1-followups.md` — removed (Tier 1 era closed)
+- `common/` directory — empty, never re-populated post-pipeline-refactor
 
 ## Adding a New Strategy
 
@@ -158,10 +161,10 @@ python -m live.runner --strategy foo --broker paper --once
 
 ## Development Rules (mandatory, always follow)
 
-### 1. Logic Graph is the Source of Truth
-[`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md) is the canonical decision flowchart for renquant_103.
-- **Whenever the notebook simulation cell (657a4a6c) changes**, update the logic graph first, then verify LEAN matches every node.
-- **Whenever LEAN main.py changes**, check it against the logic graph and update if LEAN is intentionally extended.
+### 1. Code is the Source of Truth (per user mandate 2026-05-09)
+- The flowchart for renquant_103 (`doc/arch/decision-graph-103.md`) was deleted along with renquant_103's active status. **Source of truth for decision logic is `kernel/pipeline/pp_inference.py`** — read the Pipeline / Job / Task chain there before consulting any doc.
+- For renquant_104 specifically: `pp_inference.py::InferencePipeline.run` enumerates all phases. Never trust a doc that contradicts a Job/Task body in `kernel/pipeline/` or `kernel/panel_pipeline/`.
+- Doc-vs-code reconciliation rule: when in conflict, **code wins, doc gets updated**. Stale docs are bug-class — they mislead future-Claude into writing wrong code.
 
 ### 1b. Every Logical Unit Is a Task, Job, or Pipeline
 **All new decision logic belongs in `kernel/pipeline/` or `kernel/panel_pipeline/` as a Task, Job, or Pipeline.** No new hand-written loops that bypass the orchestration layer.
@@ -259,11 +262,11 @@ Commit and push all changed files so the remote is always up to date.
 
 If it's not gitignored, it should be in the remote.
 
-### 4. Always Keep Docs Up to Date
-After any non-trivial change, sync these:
-- [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md) — decision flowchart
+### 4. Always Keep Docs Up to Date (per user mandate "code is source of truth")
+After any non-trivial change, sync these. Code wins on conflict, doc gets corrected.
 - [`doc/arch/overview.md`](doc/arch/overview.md) — pipeline + data flow
-- [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md) — current active strategy
+- [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md) — current active strategy (only renquant_104; 101/102/103 archived)
+- [`doc/ops/schedule.md`](doc/ops/schedule.md) — cadence (daily / weekly / monthly / event-triggered)
 - [`doc/roadmap.md`](doc/roadmap.md) — living roadmap
 - This file — keep test counts and rule set current
 
@@ -446,21 +449,21 @@ If only step 1+2 done = audit at risk. Phase 2 audit on 2026-05-09 was 6 sampled
 
 ---
 
-### Documentation Index (canonical pointers)
+### Documentation Index (canonical pointers; reconciled 2026-05-09 — all links verified to resolve)
 
-**Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)
+**Foundation**: [`doc/arch/overview.md`](doc/arch/overview.md), [`doc/arch/strategy-104.md`](doc/arch/strategy-104.md), [`doc/arch/indicators.md`](doc/arch/indicators.md), [`doc/arch/models.md`](doc/arch/models.md)
 
-**Components**: [`doc/components/panel-ltr.md`](doc/components/panel-ltr.md), [`doc/components/buy-logic.md`](doc/components/buy-logic.md), [`doc/components/sell-logic.md`](doc/components/sell-logic.md), [`doc/components/calibration.md`](doc/components/calibration.md), [`doc/components/rotation.md`](doc/components/rotation.md), [`doc/components/transformer.md`](doc/components/transformer.md), [`doc/components/portfolio-qp.md`](doc/components/portfolio-qp.md), [`doc/components/databases.md`](doc/components/databases.md), [`doc/components/training-pipeline.md`](doc/components/training-pipeline.md), [`doc/components/trade-evaluation.md`](doc/components/trade-evaluation.md), [`doc/components/macro-factor-frame-design.md`](doc/components/macro-factor-frame-design.md)
+**Components**: [`doc/components/panel-ltr.md`](doc/components/panel-ltr.md), [`doc/components/buy-logic.md`](doc/components/buy-logic.md), [`doc/components/sell-logic.md`](doc/components/sell-logic.md), [`doc/components/calibration.md`](doc/components/calibration.md), [`doc/components/rotation.md`](doc/components/rotation.md), [`doc/components/portfolio-qp.md`](doc/components/portfolio-qp.md), [`doc/components/databases.md`](doc/components/databases.md), [`doc/components/training-pipeline.md`](doc/components/training-pipeline.md)
 
-**Operations**: [`doc/ops/golden-config.md`](doc/ops/golden-config.md), [`doc/ops/usage.md`](doc/ops/usage.md), [`doc/ops/setup.md`](doc/ops/setup.md), [`doc/ops/environment.md`](doc/ops/environment.md), [`doc/ops/transformer-promotion.md`](doc/ops/transformer-promotion.md), [`doc/ops/maintenance-103.md`](doc/ops/maintenance-103.md)
+**Operations**: [`doc/ops/golden-config.md`](doc/ops/golden-config.md), [`doc/ops/usage.md`](doc/ops/usage.md), [`doc/ops/setup.md`](doc/ops/setup.md), [`doc/ops/environment.md`](doc/ops/environment.md), [`doc/ops/schedule.md`](doc/ops/schedule.md) — **single source of truth for cron / weekly / monthly / event-triggered cadence**
 
-**Research**: [`doc/research/papers-implemented.md`](doc/research/papers-implemented.md), [`doc/research/scoring-research.md`](doc/research/scoring-research.md), [`doc/research/rotation-research.md`](doc/research/rotation-research.md), [`doc/research/alpaca-crypto-btc.md`](doc/research/alpaca-crypto-btc.md), [`doc/research/watchlist-100.md`](doc/research/watchlist-100.md), [`doc/research/panel-sunday-sweep.md`](doc/research/panel-sunday-sweep.md)
+**Research**: [`doc/research/papers-implemented.md`](doc/research/papers-implemented.md), [`doc/research/scoring-research.md`](doc/research/scoring-research.md), [`doc/research/rotation-research.md`](doc/research/rotation-research.md), [`doc/research/alpaca-crypto-btc.md`](doc/research/alpaca-crypto-btc.md), [`doc/research/watchlist-100.md`](doc/research/watchlist-100.md), [`doc/research/panel-sunday-sweep.md`](doc/research/panel-sunday-sweep.md), [`doc/research/ic-evaluation-methodology.md`](doc/research/ic-evaluation-methodology.md), [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md)
 
-**Experiments / measured A/B**: [`doc/experiments/ab-journal.md`](doc/experiments/ab-journal.md), [`doc/experiments/panel-training-runs.md`](doc/experiments/panel-training-runs.md), [`doc/experiments/sim-ab-results.md`](doc/experiments/sim-ab-results.md), [`doc/experiments/post-tier1-followups.md`](doc/experiments/post-tier1-followups.md)
+**Experiments / measured A/B**: [`doc/experiments/ab-journal.md`](doc/experiments/ab-journal.md), [`doc/experiments/panel-training-runs.md`](doc/experiments/panel-training-runs.md), [`doc/experiments/sim-ab-results.md`](doc/experiments/sim-ab-results.md)
 
-**Roadmap**: [`doc/roadmap.md`](doc/roadmap.md)
+**Roadmap + audit**: [`doc/roadmap.md`](doc/roadmap.md), [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md), [`doc/AUDIT_2026-05-09_SUMMARY.md`](doc/AUDIT_2026-05-09_SUMMARY.md)
 
-**History**: [`doc/archives/sessions/`](doc/archives/sessions/), [`doc/archives/audits/`](doc/archives/audits/)
+**History**: `doc/archives/sessions/`, `doc/archives/audits/` (browseable directories — `git log --follow doc/archives/...` for provenance)
 
 ---
 
