@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
-# daily_104.sh — Retrain renquant_104 (tournament + panel-LTR + recalibrate) then
-# live trade via Alpaca. Designed for launchd/cron on macOS. Runs unattended.
+# daily_104.sh — DAILY OPS for renquant_104.
+#
+# 2026-05-09 refactor (audit FIX-C): retrain + promote MOVED to
+# weekly_wf_promote.sh (Sat 04:00 NYC) so the WF + §5.2 sanity gate is
+# actually enforced. Daily ops now does:
+#   - smoke test (load model, score 1 row, assert non-NaN) — pipeline heartbeat
+#   - LEAN data export (panels for next intraday backtest)
+#   - forward-returns backfill + portfolio metrics compute
+#   - live trade once via Alpaca
+#   - dashboard refresh
+#
+# Rationale (per doc/ops/schedule.md):
+#   * production label is fwd_60d → only 1 new label-row/ticker/day = 0.014%
+#     of 700k-row panel = statistical noise. Daily retrain mostly cargo-cult.
+#   * 5 RED bugs from 2026-05-09 audit were daily-retrain-introduced
+#     (silent corruption + auto-promote on noise, no WF gate enforcement).
+#   * Weekly retrain + WF gate + §5.2 sanity = real trust boundary.
+#
+# Designed for launchd/cron on macOS. Runs unattended.
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
@@ -114,121 +131,66 @@ else
     echo "Config drift OK."
 fi
 
-# Step 1: Retrain panel-LTR + calibrator on alpha158+fund 163-feat panel
-# (Promoted 2026-05-08 commit ca350c0. The OLD train_104.py wrote
-# panel-ltr.json which is no longer read by the live config — calling
-# it now would waste compute + leave the live model frozen at the
-# 2026-05-08 promotion snapshot. New chain in daily_retrain_alpha158_fund.sh:
-#   1) rebuild alpha158 panel from latest OHLCV
-#   2) merge with 5 SEC fund features → 163-feature panel
-#   3) retrain XGB, write to artifacts/panel-ltr.alpha158_fund.json
-#   4) refit calibrator on new model's predictions)
-echo "--- Step 1: Retraining alpha158+fund production pipeline ---"
+# Step 1: SMOKE TEST — pipeline heartbeat (replaces daily retrain).
+# 2026-05-09 audit FIX-C: retrain moved to weekly_wf_promote.sh.
+# Daily smoke test verifies the model artifact loads + scores correctly
+# WITHOUT consuming 75 min compute or risking BUG-#1/#6-class corruption.
+# A failure here means upstream data or artifact storage is broken —
+# operator must investigate before market open.
+echo "--- Step 1: Model smoke test (pipeline heartbeat) ---"
 cd "$REPO_DIR"
-if bash scripts/daily_retrain_alpha158_fund.sh; then
-    echo "Training pipeline finished at $(date)"
+if "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
+    echo "Smoke test PASS at $(date)"
 else
-    echo "Training pipeline FAILED at $(date)"
-    notify "RenQuant 104 ERROR" "Training pipeline failed — check $LOG"
+    echo "Smoke test FAILED at $(date)"
+    notify "RenQuant 104 SMOKE-FAIL" "Daily model smoke test failed — see $LOG. Live trade WILL NOT proceed."
     exit 1
 fi
 
-# Step 1b: Validate model count — alert if too few models exported
-MIN_MODELS=10
-MODEL_COUNT=$("$PYTHON" -c "
-import json
-from pathlib import Path
-models_dir = Path('$REPO_DIR/backtesting/renquant_104/models')
-watchlist = json.loads(Path('$REPO_DIR/backtesting/renquant_104/strategy_config.json').read_text())['watchlist']
-count = sum(1 for s in watchlist if (models_dir / s / f'{s}-policy-metadata.json').exists())
-print(count)
-" 2>/dev/null || echo "0")
-WATCHLIST_SIZE=$("$PYTHON" -c "import json; print(len(json.loads(open('$REPO_DIR/backtesting/renquant_104/strategy_config.json').read())['watchlist']))" 2>/dev/null || echo "?")
-echo "Models exported: $MODEL_COUNT / $WATCHLIST_SIZE"
-
-# Pull panel + ngboost artifact metadata for the notification body so the
-# alert also surfaces WHEN the panel was last retrained and how it scored.
-# Falls back to "—" when a field is missing.
+# Step 1b: Surface model age — alert if active artifact is > 14 days old.
+# 2026-05-09 audit FIX-C: replaces the old "Models retrained" ntfy that
+# fired on every daily promote. Now: weekly cadence is the source of
+# trust; this just surfaces the active artifact's age + IC so the
+# operator sees "model is N days old, last WF mean IC = X" each day.
 PANEL_INFO=$("$PYTHON" -c "
-import json
-from pathlib import Path
-sd = Path('$REPO_DIR/backtesting/renquant_104')
-adir = sd / 'artifacts'
-# Read live config to know which artifact paths are actually in use
-# (post 2026-05-08 promote, panel = panel-ltr.alpha158_fund.json).
-cfg = json.loads((sd / 'strategy_config.json').read_text())
-panel_rel = cfg['ranking']['panel_scoring']['artifact_path']
-ngb_cfg = cfg['ranking']['panel_scoring'].get('ngboost', {})
-ngb_rel = ngb_cfg.get('artifact_path', 'artifacts/ngboost-head.json')
-panel_path = sd / panel_rel
-ngb_path   = sd / ngb_rel
-try:
-    p = json.loads(panel_path.read_text())
-except Exception:
-    p = {}
-ic  = p.get('oos_mean_ic')
-std = p.get('oos_std_ic')
-td  = p.get('trained_date') or '—'
-ic_str  = f'{ic:+.4f}'  if isinstance(ic,  (int, float)) else '—'
-std_str = f'{std:.4f}' if isinstance(std, (int, float)) else '—'
-try:
-    n = json.loads(ngb_path.read_text())
-    ngb_td = n.get('trained_date') or '—'
-    ngb_n  = n.get('metadata', {}).get('n_rows') or n.get('n_rows') or '—'
-except Exception:
-    ngb_td = '—'; ngb_n = '—'
-ngb_state = '' if ngb_cfg.get('enabled', True) else ' (disabled)'
-print(f'panel@{td} IC={ic_str}±{std_str} | ngb@{ngb_td}{ngb_state} n={ngb_n}')
-" 2>/dev/null || echo "panel info unavailable")
-
-# TTL-skipped count: how many tickers reused their prior artifact today
-# (model_ttl_days gate in pp_training.py). Surfaced in ntfy body so we
-# can see at a glance whether the run exercised the full tournament or
-# reused cached models.
-TTL_SKIPPED=$(grep -c "TTL skip" "$LOG" 2>/dev/null || echo 0)
-
-# Audit fix DAILY-MODELCOUNT (Round 2 deep audit, 2026-04-25): pre-fix
-# used `[ "${MODEL_COUNT:-0}" -lt "$MIN_MODELS" ] 2>/dev/null`. The
-# 2>/dev/null suppressed the comparison's exit code itself when
-# MODEL_COUNT was non-numeric (e.g., from a corrupt strategy_config.json
-# breaking the inline Python earlier). The script then treated
-# "comparison failed" as "false" and skipped the WARN, so a config
-# corruption was invisible — the operator only saw "Models retrained"
-# even when the model count was actually undefined. Now: validate
-# MODEL_COUNT is numeric before the comparison; if not, fire a
-# distinct ERROR notification so the corruption surfaces clearly.
-if ! [ "$MODEL_COUNT" -eq "$MODEL_COUNT" ] 2>/dev/null; then
-    notify "RenQuant 104 ERROR" "MODEL_COUNT is non-numeric ('$MODEL_COUNT') — strategy_config.json may be corrupted"
-elif [ "$MODEL_COUNT" -lt "$MIN_MODELS" ]; then
-    notify "RenQuant 104 WARN" "Only $MODEL_COUNT models (min=$MIN_MODELS) — $PANEL_INFO"
-else
-    # Only fire the "Models retrained" ntfy on the 3 days/week that
-    # actually retrain (training.cadence="custom", allowed_weekdays=[1,3,6] →
-    # Tue/Thu/Sun). On off-cadence days `train_104.py` short-circuits;
-    # panel-ltr.json `trained_date` stays older than today, so we suppress
-    # the notification to avoid daily spam. The notification still fires
-    # on the 3 retrain days so the user gets the IC / model count.
-    RETRAINED_TODAY=$("$PYTHON" -c "
 import json, datetime
 from pathlib import Path
 sd = Path('$REPO_DIR/backtesting/renquant_104')
 cfg = json.loads((sd / 'strategy_config.json').read_text())
-p = sd / cfg['ranking']['panel_scoring']['artifact_path']
+p_rel = cfg['ranking']['panel_scoring']['artifact_path']
 try:
-    td = json.loads(p.read_text()).get('trained_date', '')
-    print('yes' if td == str(datetime.date.today()) else 'no')
+    p = json.loads((sd / p_rel).read_text())
 except Exception:
-    print('no')
-" 2>/dev/null || echo "no")
-    if [ "$RETRAINED_TODAY" = "yes" ]; then
-        TTL_NOTE=""
-        if [ "${TTL_SKIPPED:-0}" -gt 0 ] 2>/dev/null; then
-            TTL_NOTE=" ($TTL_SKIPPED ticker-TTL skips)"
-        fi
-        notify "RenQuant 104" "Models retrained: $MODEL_COUNT watchlist models ready${TTL_NOTE} — $PANEL_INFO"
-    else
-        echo "Models retrained: $MODEL_COUNT models (no retrain today — suppressing ntfy)"
-    fi
+    p = {}
+td = p.get('trained_date') or '—'
+ic = p.get('oos_mean_ic')
+ic_s = f'{ic:+.4f}' if isinstance(ic, (int, float)) else '—'
+nf = len(p.get('feature_cols', []))
+try:
+    age = (datetime.date.today() - datetime.date.fromisoformat(td)).days
+except Exception:
+    age = -1
+print(f'panel@{td} ({age}d old) IC={ic_s} n_feat={nf}')
+" 2>/dev/null || echo "panel info unavailable")
+echo "Active model: $PANEL_INFO"
+
+# Stale-model alert: if active artifact is > 14 days old, the weekly
+# WF cron either didn't run or rejected every promote. Operator must
+# investigate. 14d = 2 weekly cycles + buffer.
+MODEL_AGE_DAYS=$("$PYTHON" -c "
+import json, datetime
+from pathlib import Path
+sd = Path('$REPO_DIR/backtesting/renquant_104')
+try:
+    cfg = json.loads((sd / 'strategy_config.json').read_text())
+    p = json.loads((sd / cfg['ranking']['panel_scoring']['artifact_path']).read_text())
+    age = (datetime.date.today() - datetime.date.fromisoformat(p['trained_date'])).days
+    print(age)
+except Exception:
+    print(-1)
+" 2>/dev/null || echo "-1")
+if [ "$MODEL_AGE_DAYS" -gt 14 ] 2>/dev/null; then
+    notify "RenQuant 104 STALE-MODEL" "Active artifact ${MODEL_AGE_DAYS}d old — weekly WF cron may be failing. Check logs/weekly_wf_promote/."
 fi
 
 # Step 2: Export LEAN data for all watchlist symbols

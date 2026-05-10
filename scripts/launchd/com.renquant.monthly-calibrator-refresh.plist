@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Monthly calibrator refit — 1st of every month, 03:00 PT.
+
+  2026-05-09 audit FIX-C: separates calibrator drift correction
+  (low-risk, fast) from model retrain (high-risk, slow). XGBoost
+  booster stays the same; only isotonic knot positions update to
+  match shifted score distribution.
+
+  Steps (delegate to scripts/monthly_calibrator_refresh.sh):
+    1. smoke test
+    2. fit_panel_calibrator.py against active model
+    3. validate calibrator non-collapse (n_unique_prob_y >= 10)
+    4. ntfy summary
+
+  Install:
+    cp scripts/launchd/com.renquant.monthly-calibrator-refresh.plist \
+       ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.renquant.monthly-calibrator-refresh.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.monthly-calibrator-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/monthly_calibrator_refresh.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- 1st of every month at 03:00 PT (~06:00 ET, NYSE closed). -->
+        <key>Day</key><integer>1</integer>
+        <key>Hour</key><integer>3</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/monthly_calibrator/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/monthly_calibrator/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/miniconda3/envs/renquant/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
