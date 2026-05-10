@@ -669,6 +669,11 @@ class SimAdapter:
             # wash-sale (mirrors runner's compute_recent_realized_pnl).
             # Use gross_pnl (pre-tax, since §1091 looks at the loss event,
             # not the after-tax net). Live runner uses pre-tax too.
+            # Defensive: existing tests construct SimAdapter via __new__
+            # which bypasses __init__ — ensure the attribute (mirrors
+            # _last_stop_exit_date pattern below).
+            if not hasattr(self, "_last_sell_pls"):
+                self._last_sell_pls = {}
             try:
                 self._last_sell_pls[ticker] = float(gross_pnl)
             except (TypeError, ValueError):

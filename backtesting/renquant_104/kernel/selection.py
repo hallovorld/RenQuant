@@ -340,6 +340,11 @@ class SelectionContext:
     # compete as regular candidates in BULL_*/CHOPPY regimes AND bypass
     # the sector guard — e.g. XLU bought on 2026-04-20 at regime=BULL_VOLATILE.
     bear_only:          bool = False
+    # 2026-05-09 audit FIX-A (Phase 2.3): per-ticker realized $ P/L for the
+    # most-recent FULL liquidation. Enables cost-aware wash-sale (§1091
+    # N/A on gain sales) instead of binary 30d block. Default empty dict —
+    # fail-conservative when caller doesn't supply (mirrors WashSaleFilterTask).
+    last_sell_pls:      dict[str, float | None] = field(default_factory=dict)
 
 
 def run_selection_loop(
@@ -400,10 +405,21 @@ def run_selection_loop(
                          c.ticker, tier_idx + 1, tier_min, rs)
                 continue
 
-        if is_wash_sale_blocked(c.ticker, ctx.today, ctx.last_sell_dates, ctx.wash_sale_days):
+        # 2026-05-09 audit FIX-A: cost-aware wash-sale (§1091).
+        # Pre-fix used binary 30d block ignoring P/L. WashSaleFilterTask in
+        # candidate path was already cost-aware; this selection loop
+        # (greedy non-prod path) was the last binary holdout. Now uses the
+        # same single-source-of-truth helper.
+        ws_blocked, ws_reason, _ = is_wash_sale_blocked_with_cost(
+            ticker=c.ticker,
+            today=ctx.today,
+            last_sell_dates=ctx.last_sell_dates,
+            last_sell_pls=ctx.last_sell_pls,
+            wash_sale_days=ctx.wash_sale_days,
+        )
+        if ws_blocked:
             _reject(c.ticker, "wash_sale")
-            last = ctx.last_sell_dates.get(c.ticker)
-            log.info("  %-6s  SKIP   [wash sale — sold %s]", c.ticker, last)
+            log.info("  %-6s  SKIP   [wash sale — %s]", c.ticker, ws_reason)
             continue
 
         if not passes_sector_guard(

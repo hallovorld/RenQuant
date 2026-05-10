@@ -54,6 +54,10 @@ class PrepareSelectionTask(Task):
             today             = ctx.today,
             held_tickers      = held,
             last_sell_dates   = ctx.last_sell_dates,
+            # 2026-05-09 audit FIX-A: propagate cost-aware wash-sale data.
+            # Pre-fix run_selection_loop used binary block; now uses
+            # is_wash_sale_blocked_with_cost (single source of truth).
+            last_sell_pls     = getattr(ctx, "last_sell_pls", {}) or {},
             earnings_calendar = ctx.earnings_calendar or {},
             corr_matrix       = ctx.corr_matrix,
             sector_map        = sector_map,
