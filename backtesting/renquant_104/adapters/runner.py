@@ -496,6 +496,13 @@ class RunnerAdapter:
                     if idf is None or idf.empty:
                         continue
                     latest_close = float(idf["close"].iloc[-1])
+                    # 2026-05-09 audit fix (RU-INTRADAY-NaN): same guard as
+                    # OHLCV daily path — non-finite intraday close (5Min bar
+                    # gap on halted ticker) silently corrupted ctx.prices.
+                    if not _math_p.isfinite(latest_close) or latest_close <= 0:
+                        log.warning("Intraday close for %s non-finite (%s) — skipping",
+                                     sym, latest_close)
+                        continue
                     prices[sym] = latest_close
                     # Overwrite today's daily bar's close so kernel.exits sees the intraday level.
                     # Audit #58: copy the frame before mutating — fetch_ohlcv may
@@ -533,10 +540,23 @@ class RunnerAdapter:
         gmm       = load_gmm_artifact(gmm_path)
 
         corr_path = artifacts_dir / regime_cfg.get("correlation_artifact", "watchlist-correlation.json")
-        corr      = json.loads(corr_path.read_text()) if corr_path.exists() else None
+        # 2026-05-09 audit fix (RU-JSON-MALFORMED): pre-fix, malformed JSON
+        # in corr/earnings artifacts raised JSONDecodeError straight up
+        # → adapter __init__ crashed → live trade aborted with cryptic
+        # traceback. Now: malformed file logged + treated as missing
+        # (downstream tasks already handle None gracefully).
+        try:
+            corr = json.loads(corr_path.read_text()) if corr_path.exists() else None
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("corr artifact %s malformed (%s) — treating as missing", corr_path, exc)
+            corr = None
 
         earn_path = artifacts_dir / "earnings-calendar.json"
-        earnings  = json.loads(earn_path.read_text()) if earn_path.exists() else None
+        try:
+            earnings = json.loads(earn_path.read_text()) if earn_path.exists() else None
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("earnings artifact %s malformed (%s) — treating as missing", earn_path, exc)
+            earnings = None
 
         # Convert last_sell_dates strings to date objects for kernel.selection guards
         last_sells_d: dict[str, datetime.date | None] = {}
