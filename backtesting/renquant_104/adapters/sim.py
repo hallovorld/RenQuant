@@ -132,6 +132,14 @@ class SimAdapter:
         self._holdings: dict[str, Any] = {}        # ticker → HoldingState
         self._pos_shares: dict[str, float] = {}    # ticker → shares count
         self._last_sell_date: dict[str, pd.Timestamp] = {}   # ticker → date
+        # 2026-05-09 audit Phase 2.1: per-ticker realized $ P/L of the most-
+        # recent FULL liquidation, mirroring runner's compute_recent_realized_pnl().
+        # Used by WashSaleFilterTask via is_wash_sale_blocked_with_cost — gain
+        # sales skip §1091 block, loss sales compute NPV deferred-tax cost.
+        # Pre-fix sim left ctx.last_sell_pls as {} → wash-sale fell back to
+        # binary block on every recent-sell ticker → sim diverged from live
+        # (live had cost-aware logic active). Sim now mirrors live behavior.
+        self._last_sell_pls: dict[str, float] = {}
         # G8 (2026-05-04): per-ticker date when a path-rule exit (trailing_stop /
         # stop_loss / single_day_loss / max_hold / gap_down) last fired. Distinct
         # from `_last_sell_date` (which tracks ANY sell for wash-sale on losses).
@@ -365,6 +373,10 @@ class SimAdapter:
             holdings         = {t: self._holdings[t]
                                 for t in list(self._holdings.keys())},
             last_sell_dates  = last_sells_d,
+            # 2026-05-09 audit fix: propagate realized $ P/L for cost-aware
+            # wash-sale. Pre-fix sim diverged from live (live had this; sim
+            # didn't → wash-sale fell back to binary block in sim).
+            last_sell_pls    = dict(self._last_sell_pls),
             last_stop_exit_dates = last_stops_d,
             portfolio_value  = pv,
             cash             = self._cash,
@@ -653,6 +665,14 @@ class SimAdapter:
         # Aligned with LeanAdapter + RunnerAdapter (2026-04-24 fix).
         if not is_partial:
             self._last_sell_date[ticker] = today_ts
+            # 2026-05-09 audit fix: stamp realized $ P/L for cost-aware
+            # wash-sale (mirrors runner's compute_recent_realized_pnl).
+            # Use gross_pnl (pre-tax, since §1091 looks at the loss event,
+            # not the after-tax net). Live runner uses pre-tax too.
+            try:
+                self._last_sell_pls[ticker] = float(gross_pnl)
+            except (TypeError, ValueError):
+                pass    # leave None / unknown → binary fallback
         # G8 (2026-05-04): stamp post-stop blackout date on path-rule
         # exits regardless of partial/full. The blackout blocks
         # *re-entry* — even a partial Kelly trim that hits a
