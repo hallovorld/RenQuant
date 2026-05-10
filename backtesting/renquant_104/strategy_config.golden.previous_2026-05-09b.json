@@ -409,7 +409,7 @@
       "qp_drawdown_limit": 0.2,
       "qp_no_trade_band_factor": 1.0,
       "qp_no_trade_band_cap": 0.05,
-      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: σ-derived no-trade band uncapped → high-σ holdings (e.g. BA σ̂=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
+      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: \u03c3-derived no-trade band uncapped \u2192 high-\u03c3 holdings (e.g. BA \u03c3\u0302=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
       "qp_min_invested_pct": 0.7
     },
     "enabled_regimes": [
@@ -501,7 +501,7 @@
         "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
-        "_enable_reason": "2026-05-09 raw-label QHead promoted (val μ-IC +0.029, μ̂ x-sec std 0.0196 vs prior 0.0001). Enables σ-aware sizing via sigma_sizing path. lambda_sigma=0 means μ̂ does NOT affect rank score, only sizing. Conformal Gate B (edge_sharpe_floor) DISABLED below — pure-alpha ceiling on current panel (~+0.029) makes any meaningful FDR target unachievable; see E52 audit. Re-enable Gate B when val μ-IC clears +0.04 with placebo |IC|<0.01."
+        "_enable_reason": "2026-05-09 raw-label QHead promoted (val \u03bc-IC +0.029, \u03bc\u0302 x-sec std 0.0196 vs prior 0.0001). Enables \u03c3-aware sizing via sigma_sizing path. lambda_sigma=0 means \u03bc\u0302 does NOT affect rank score, only sizing. Conformal Gate B (edge_sharpe_floor) DISABLED below \u2014 pure-alpha ceiling on current panel (~+0.029) makes any meaningful FDR target unachievable; see E52 audit. Re-enable Gate B when val \u03bc-IC clears +0.04 with placebo |IC|<0.01."
       },
       "sigma_sizing": {
         "enabled": true,
@@ -510,7 +510,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/panel-rank-calibration.golden.previous_2026-05-09b.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -527,7 +527,7 @@
         "edge_sharpe_floor": {
           "enabled": false,
           "threshold": 0.1,
-          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no τ achieves target FDR=0.30 OR 0.40. Best τ=0.39 → FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val μ-IC ≥ +0.04 + placebo |IC|<0.01."
+          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no \u03c4 achieves target FDR=0.30 OR 0.40. Best \u03c4=0.39 \u2192 FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val \u03bc-IC \u2265 +0.04 + placebo |IC|<0.01."
         },
         "distribution_floor": {
           "enabled": false
@@ -592,7 +592,7 @@
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.json",
+      "artifact_path": "artifacts/ngboost-head.golden.previous_2026-05-09b.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01

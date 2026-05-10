@@ -481,7 +481,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.json",
+      "artifact_path": "artifacts/panel-ltr.golden.previous.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -496,7 +496,7 @@
       },
       "ngboost": {
         "enabled": true,
-        "artifact_path": "artifacts/ngboost-head.json",
+        "artifact_path": "artifacts/ngboost-head.golden.previous.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -507,7 +507,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/panel-rank-calibration.golden.previous.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -580,11 +580,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.json",
+    "artifact_path": "artifacts/panel-ltr.golden.previous.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.json",
+      "artifact_path": "artifacts/ngboost-head.golden.previous.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01

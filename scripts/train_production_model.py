@@ -130,7 +130,20 @@ def main():
         "params": PARAMS,
         "best_iter": N_ROUNDS,
         "booster_raw_json": raw_json,
-        "panel_shape": list(train.shape),
+        # 2026-05-09 audit fix: panel_shape MUST be a dict per
+        # acceptance schema (TestAttributeType[panel_shape]). Pre-fix
+        # this was list(train.shape) = [rows, cols] which violates
+        # the dict contract that pp_panel_training.py uses everywhere
+        # else. Acceptance schema breaks → silent regression in any
+        # downstream tool reading panel_shape.
+        "panel_shape": {
+            "rows":    int(train.shape[0]),
+            "tickers": int(train.index.get_level_values(0).nunique())
+                       if hasattr(train.index, "get_level_values") else 0,
+            "dates":   int(train.index.get_level_values(1).nunique())
+                       if hasattr(train.index, "get_level_values") and train.index.nlevels > 1
+                       else 0,
+        },
         "label_col": LABEL,
         "lookahead_days": 60,
         "training_notes": (
