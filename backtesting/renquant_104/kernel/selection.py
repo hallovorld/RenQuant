@@ -132,6 +132,16 @@ def is_wash_sale_blocked_with_cost(
     last = last_sell_dates.get(ticker)
     if last is None:
         return (False, "no recent sale", 0.0)
+    # 2026-05-09 audit Phase 2.2 fix: state files persist dates as ISO
+    # strings; live runner had its own coercion at the call site, but the
+    # QP wash-sale path passed raw last_sell_dates straight in. Coerce
+    # here once so all callers share the same path. Returns "no recent
+    # sale" sentinel on bad/unparseable strings.
+    if isinstance(last, str):
+        try:
+            last = datetime.date.fromisoformat(last[:10])
+        except (ValueError, TypeError):
+            return (False, "no recent sale (unparseable date)", 0.0)
     days_since = (today - last).days
     if days_since >= wash_sale_days:
         return (False, f"{days_since}d since sale (≥ {wash_sale_days}d window)", 0.0)

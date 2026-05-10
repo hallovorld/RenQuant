@@ -211,41 +211,56 @@ class ComputeBrownSmithTaxCostTask(Task):
 # ── 4. Wash-sale mask (uses atom + predicate) ───────────────────────────────
 
 class ComputeWashSaleMaskTask(Task):
-    """Wash-sale mask: tickers sold within wash_sale_days have Δw_i ≤ 0.
+    """Wash-sale mask: tickers sold within wash_sale_days where §1091 BLOCKS
+    the re-entry get Δw_i ≤ 0 in the QP.
 
-    Implemented as a thin domain wrapper around BuildMaskFromConditionTask.
-    Reads:  ctx._qp_tickers, ctx.last_sell_dates, ctx.config['wash_sale_days']
+    Cost-aware per IRC §1091 (mirrors `WashSaleFilterTask` in candidate path):
+      - Sale outside the wash_sale_days window → not blocked
+      - Sale was a GAIN (or unknown — fail-conservative) → §1091 N/A → not blocked
+      - Sale was a LOSS → §1091 applies → blocked (forces Δw ≤ 0)
+
+    2026-05-09 audit Phase 2.2 fix: pre-fix this task ignored
+    `ctx.last_sell_pls` and applied a binary 30-day block. The candidate
+    filter (`WashSaleFilterTask`) was correctly cost-aware, but tickers
+    that passed the filter (e.g. just sold for a gain) hit the binary QP
+    mask and were silently locked from increases. Result: post-gain re-
+    entries were architecturally impossible despite §1091 not applying.
+
+    Reads:  ctx._qp_tickers, ctx.last_sell_dates, ctx.last_sell_pls,
+             ctx.config['wash_sale_days']
     Writes: ctx._qp_wash_mask (np.ndarray of bool)
+
+    References:
+      - IRC §1091 wash-sale; §1091(d) basis adjustment; §1223(3) holding period
+      - kernel/selection.py::is_wash_sale_blocked_with_cost (single-source-of-truth)
     """
     name = "ComputeWashSaleMaskTask"
 
     def run(self, ctx) -> bool | None:
         wash_days = int((ctx.config or {}).get("wash_sale_days", 0))
-        if wash_days <= 0:
-            tickers = _get_path(ctx, "_qp_tickers") or []
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        if wash_days <= 0 or not tickers:
             ctx._qp_wash_mask = np.zeros(len(tickers), dtype=bool)  # noqa: SLF001
             return
-        from kernel.pipeline.atoms.vectors import BuildMaskFromConditionTask
-        last_sells = _get_path(ctx, "last_sell_dates") or {}
+        last_sells_d = _get_path(ctx, "last_sell_dates") or {}
+        last_sells_p = _get_path(ctx, "last_sell_pls") or {}
         today = ctx.today
 
-        def _is_recent_sell(c, t: str) -> bool:
-            last = last_sells.get(t)
-            if last is None:
-                return False
-            if isinstance(last, str):
-                try:
-                    last = _dt.date.fromisoformat(last[:10])
-                except ValueError:
-                    return False
-            try:
-                return (today - last).days < wash_days
-            except Exception:
-                return False
-
-        BuildMaskFromConditionTask(
-            "_qp_tickers", "_qp_wash_mask", _is_recent_sell,
-        ).run(ctx)
+        # Use the SAME helper as the upstream candidate filter so the two
+        # wash-sale paths can never silently diverge. Cost-aware: gains
+        # are not blocked, only losses (or unknown-and-conservative).
+        from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
+        mask = np.zeros(len(tickers), dtype=bool)
+        for i, t in enumerate(tickers):
+            blocked, _, _ = is_wash_sale_blocked_with_cost(
+                ticker=t,
+                today=today,
+                last_sell_dates=last_sells_d,
+                last_sell_pls=last_sells_p,
+                wash_sale_days=wash_days,
+            )
+            mask[i] = bool(blocked)
+        ctx._qp_wash_mask = mask  # noqa: SLF001
 
 
 # ── 5. Position caps + scalar constraints ──────────────────────────────────
