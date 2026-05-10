@@ -111,7 +111,12 @@ class NGBoostHead:
             keep = keep & np.isfinite(feat_arr).all(axis=1)
         n_dropped = int(len(panel) - keep.sum())
         if n_dropped:
-            import logging  # noqa: PLC0415
+            # Audit fix NGB-LOGGING-SHADOW (2026-05-10): use module-level
+            # `logging` (line 23). A previous inner `import logging` here
+            # made `logging` local to the entire `train` method, which
+            # caused `UnboundLocalError` at line 230 (the
+            # nonfinite/extreme-cell warning) whenever this branch did
+            # not fire first. §5.13.5 — single source of truth, no shadow.
             logging.getLogger("ngboost").info(
                 "NGBoostHead.train: dropped %d/%d rows (label/weight invalid)",
                 n_dropped, len(panel),
@@ -203,7 +208,8 @@ class NGBoostHead:
             if X_val is not None:
                 X_val = np.where(np.isfinite(X_val), X_val, medians)
             if n_imputed_train > 0:
-                import logging  # noqa: PLC0415
+                # Audit fix NGB-LOGGING-SHADOW (2026-05-10): see comment
+                # above. Module-level `logging` only — no inner shadow.
                 logging.getLogger("ngboost").info(
                     "NGBoostHead.train: imputed %d feature cells "
                     "(%.1f%% of %d×%d train matrix) with column medians",
