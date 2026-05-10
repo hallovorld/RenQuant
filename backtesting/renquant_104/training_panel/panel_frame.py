@@ -7,12 +7,62 @@ Public API:
   build_panel_frame(...)           — assembly entry point
   compute_concurrency_weight(...)  — AFML ch.4 sample weight
   compute_age_weight(...)          — young-ticker damping weight
+  resolve_lookahead_days(cfg)      — single source of truth for label horizon
 """
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 import numpy as np
 import pandas as pd
+
+
+# CLAUDE.md §5.13.5 / Track C8 / P3.3 (2026-05-10): canonical default for
+# the forward-return label horizon when `panel_ltr.lookahead_days` is not
+# present in the strategy config. Production training (scripts/
+# train_production_model.py) hardcodes 60 to match the fwd_60d_excess
+# label column. Keeping the panel-pipeline default aligned avoids a
+# silent fwd_5d → fwd_60d divergence when the config key is absent.
+DEFAULT_LOOKAHEAD_DAYS: int = 60
+
+
+def resolve_lookahead_days(cfg: dict | None) -> int:
+    """Return the canonical forward-return label horizon (trading days).
+
+    Reads ``panel_ltr.lookahead_days`` from the strategy config. This is
+    the **single source of truth** (§5.13.5) for the label horizon —
+    LabelsTask, BuildPanelTask, and any walk-forward driver must call
+    this helper rather than re-implementing the lookup.
+
+    Accepts either the full strategy config dict OR the inner
+    ``cfg["panel_ltr"]`` sub-dict. If the key is missing, returns
+    ``DEFAULT_LOOKAHEAD_DAYS`` and emits a WARNING — silent fallback
+    has historically masked train/inference horizon drift.
+
+    Returns
+    -------
+    int
+        Forward-return horizon in trading days.
+    """
+    if cfg is None:
+        logging.getLogger("panel_frame").warning(
+            "resolve_lookahead_days: cfg is None — using default %d",
+            DEFAULT_LOOKAHEAD_DAYS,
+        )
+        return DEFAULT_LOOKAHEAD_DAYS
+    # Accept either the outer strategy config or the panel_ltr sub-dict.
+    pl = cfg.get("panel_ltr", cfg) if isinstance(cfg, dict) else {}
+    if not isinstance(pl, dict):
+        pl = {}
+    if "lookahead_days" not in pl:
+        logging.getLogger("panel_frame").warning(
+            "resolve_lookahead_days: panel_ltr.lookahead_days missing "
+            "from config — falling back to default %d. Production should "
+            "always set this key explicitly to match the training horizon.",
+            DEFAULT_LOOKAHEAD_DAYS,
+        )
+        return DEFAULT_LOOKAHEAD_DAYS
+    return int(pl["lookahead_days"])
 
 
 def compute_concurrency_weight(

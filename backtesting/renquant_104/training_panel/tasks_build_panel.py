@@ -69,9 +69,17 @@ class AssemblePanelFrameTask(PanelTask):
     name = "AssemblePanelFrameTask"
 
     def run(self, ctx: PanelTrainingContext) -> None:
-        from .panel_frame import build_panel_frame
+        from .panel_frame import build_panel_frame, resolve_lookahead_days
         inp = ctx._bp_inputs
         cfg = inp["cfg"]
+        # Track C8 / P3.3 (2026-05-10): single source of truth for lookahead.
+        # `cfg` here is the panel_ltr sub-dict (set by SliceWatchlistFramesTask
+        # above) — resolve_lookahead_days accepts either shape.
+        lookahead = resolve_lookahead_days(cfg)
+        log.info(
+            "AssemblePanelFrameTask: lookahead horizon = %d trading days "
+            "(from panel_ltr.lookahead_days)", lookahead,
+        )
         panel, gs, meta = build_panel_frame(
             inp["ff_wl"], inp["lab_wl"], inp["sec_wl"],
             factor_frames=inp["fac_wl"],
@@ -79,7 +87,7 @@ class AssemblePanelFrameTask(PanelTask):
             asset_embeddings=inp["asset_embeddings"],
             listing_dates=inp["listing_dates"],
             min_history_days=int(cfg.get("min_history_days", 252)),
-            lookahead_days=int(cfg.get("lookahead_days", 5)),
+            lookahead_days=lookahead,
             age_warmup_days=int(cfg.get("age_warmup_days", 504)),
             nan_prone_cols=list(cfg.get("nan_prone_cols", [])),
             training_window_years=cfg.get("training_window_years"),

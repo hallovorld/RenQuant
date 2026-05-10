@@ -1606,11 +1606,19 @@ class LabelsTask(PanelTask):
             compute_residual_returns,
             gaussianize_cross_section,
         )
+        from training_panel.panel_frame import resolve_lookahead_days  # noqa: PLC0415
 
         cfg = ctx.config.get("panel_ltr", {})
-        lookahead   = int(cfg.get("lookahead_days", 5))
+        # Track C8 / P3.3 (2026-05-10): single source of truth for the
+        # forward-return label horizon. resolve_lookahead_days() reads
+        # panel_ltr.lookahead_days with explicit fallback + warning.
+        lookahead   = resolve_lookahead_days(ctx.config)
         beta_window = int(cfg.get("beta_window", 60))
         benchmark   = ctx.config.get("benchmark", "SPY")
+        log.info(
+            "LabelsTask: lookahead horizon = %d trading days "
+            "(from panel_ltr.lookahead_days)", lookahead,
+        )
 
         # Track F: optional triple-barrier label mode (Lopez de Prado AFML §3).
         # Default `fwd_5d` (production, close-to-close at lookahead). When
@@ -1957,13 +1965,19 @@ class BuildPanelTask(PanelTask):
     def run(self, ctx: PanelTrainingContext) -> None:
         if ctx.panel is not None:
             return
-        from training_panel.panel_frame import build_panel_frame
+        from training_panel.panel_frame import build_panel_frame, resolve_lookahead_days
 
         cfg = ctx.config.get("panel_ltr", {})
         min_history = int(cfg.get("min_history_days", 252))
-        lookahead   = int(cfg.get("lookahead_days", 5))
+        # Track C8 / P3.3 (2026-05-10): same lookahead helper as LabelsTask.
+        # Single source of truth (§5.13.5) — no separate magic default here.
+        lookahead   = resolve_lookahead_days(ctx.config)
         age_warmup  = int(cfg.get("age_warmup_days", 504))
         nan_cols    = list(cfg.get("nan_prone_cols", []))
+        log.info(
+            "BuildPanelTask: lookahead horizon = %d trading days "
+            "(from panel_ltr.lookahead_days)", lookahead,
+        )
 
         ff = ctx.neutralized_frames
         lab = ctx.labels

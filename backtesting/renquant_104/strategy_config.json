@@ -476,7 +476,7 @@
       "spy_trend",
       "hurst_proxy"
     ],
-    "lookahead": 5,
+    "_lookahead_removed_2026-05-10": "Per §5.13.5 single-source-of-truth: this key shadowed panel_ltr.lookahead_days and produced ambiguity (model_params.lookahead=5 vs panel_ltr.lookahead_days=10 vs prod artifact=60). Canonical key is now panel_ltr.lookahead_days. Tournament-side code (training/features.py build_training_features) still defaults to 5 internally — behavior unchanged for tournament path, but config no longer carries a conflicting value.",
     "threshold": 0.03,
     "leaf_size": 25,
     "bags": 15,
@@ -566,12 +566,13 @@
     }
   },
   "panel_ltr": {
-    "lookahead_days": 10,
+    "lookahead_days": 60,
+    "_lookahead_days_reason_2026-05-10": "Production artifact (panel-ltr.alpha158_fund.json trained 2026-05-09) has lookahead_days=60 / label_col=fwd_60d_excess. Prior config value (10) silently diverged from the artifact produced by scripts/train_production_model.py, which hardcodes 60. Setting config to 60 makes panel_ltr.lookahead_days the single source of truth (§5.13.5) and matches the production training horizon (CLAUDE.md project-status: 'XGBoost rank:pairwise + alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, fwd_60d label').",
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
     "cv_n_splits": 6,
-    "cv_embargo_days": 10,
+    "cv_embargo_days": 60,
     "num_boost_round": 300,
     "neutralize_features": true,
     "nan_prone_cols": [],
