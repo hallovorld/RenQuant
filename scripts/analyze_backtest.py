@@ -24,6 +24,13 @@ from matplotlib.ticker import FuncFormatter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+# kernel/ lives under backtesting/renquant_104/ — same convention as tests/.
+sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
+
+try:
+	from kernel.metrics.perf_summary import compute_perf_triple  # noqa: E402
+except ImportError:  # scipy missing in some minimal envs
+	compute_perf_triple = None  # type: ignore[assignment]
 
 
 # ── Ported from common/plotting.py ────────────────────────────────────────────
@@ -184,6 +191,37 @@ def parse_stats(result: dict) -> dict:
 			"Executed Buys", "Executed Sells",
 			"Blocked Wash Sales", "Blocked Min Hold",
 		] if k in rt},
+	}
+
+
+def compute_significance_metrics(equity: pd.Series | None, n_trials: int) -> dict:
+	"""Compute (DSR, PBO=NaN single-series, n_returns) for an equity curve.
+
+	Per CLAUDE.md §5.13.4 every Sharpe must ship with DSR + PBO. PBO needs
+	multiple candidate strategies; analyze_backtest.py only sees the headline
+	run, so PBO is reported as NaN here — call sites with multi-seed data
+	should use kernel.metrics.compute_perf_triple directly.
+	"""
+	if equity is None or len(equity) < 5 or compute_perf_triple is None:
+		return {
+			"DSR": "—", "PBO": "—",
+			"Returns Sample Size": 0, "DSR n_trials": int(n_trials),
+		}
+	rets = equity.astype(float).pct_change().dropna().to_numpy()
+	if rets.size < 5:
+		return {
+			"DSR": "—", "PBO": "—",
+			"Returns Sample Size": int(rets.size), "DSR n_trials": int(n_trials),
+		}
+	triple = compute_perf_triple(rets, n_trials=n_trials)
+	def _fmt(v):
+		try: return f"{float(v):.4f}"
+		except (ValueError, TypeError): return "—"
+	return {
+		"DSR": _fmt(triple["dsr"]),
+		"PBO": _fmt(triple["pbo"]),
+		"Returns Sample Size": triple["n_returns"],
+		"DSR n_trials": triple["n_trials"],
 	}
 
 
@@ -509,6 +547,10 @@ def main() -> int:
 	parser = argparse.ArgumentParser(description="Analyze a LEAN backtest run")
 	parser.add_argument("--strategy", required=True, help="Strategy directory name under backtesting/")
 	parser.add_argument("--run", help="Specific backtest run directory name; defaults to latest")
+	parser.add_argument(
+		"--n-trials", type=int, default=1,
+		help="Number of strategies/configurations searched to find this one (feeds DSR selection-bias correction; default 1)",
+	)
 	args = parser.parse_args()
 
 	strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -523,6 +565,9 @@ def main() -> int:
 	run_dir = result_path.parent
 	price_df = build_price_frame(config, result)
 	stats = parse_stats(result)
+	# §5.13.4: every Sharpe ships with DSR (+ PBO when multi-seed available).
+	equity_series = parse_equity_series(result)
+	stats.update(compute_significance_metrics(equity_series, n_trials=args.n_trials))
 
 	is_multi_stock = "watchlist" in config
 
