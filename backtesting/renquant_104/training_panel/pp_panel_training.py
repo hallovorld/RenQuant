@@ -850,13 +850,119 @@ class LoadAssetEmbeddingsTask(PanelTask):
         return True
 
 
+def _resolve_train_cutoff(ctx: PanelTrainingContext) -> "pd.Timestamp | None":
+    """Return the configured train_cutoff as a Timestamp, or None.
+
+    Walk-forward training (P1, 2026-05-10): when set, every data-loading
+    Task and BuildPanelTask must guarantee NO row at-or-after `train_cutoff`
+    is fed to the model. Source of truth: `ctx.config["panel_ltr"]["train_cutoff"]`
+    (ISO-formatted string). Default None preserves legacy behavior
+    (full sample). Per CLAUDE.md §5.13.10 the option is opt-in.
+    """
+    raw = ctx.config.get("panel_ltr", {}).get("train_cutoff")
+    if raw is None:
+        return None
+    try:
+        ts = pd.Timestamp(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"_resolve_train_cutoff: invalid panel_ltr.train_cutoff={raw!r}: {exc}"
+        )
+    if pd.isna(ts):
+        return None
+    # Normalize to naive timestamp at midnight to match panel `date` dtype.
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts.normalize()
+
+
+class ApplyTrainCutoffTask(PanelTask):
+    """Walk-forward leakage guard — slices every loaded data source.
+
+    Reads `ctx.config["panel_ltr"]["train_cutoff"]` (ISO string). When set,
+    drops every row at-or-after the cutoff from:
+      ctx.ohlcv, ctx.sector_etf_ohlcv, ctx.macro_factor_frame,
+      ctx.macro_betas (per-ticker DataFrames),
+      ctx.fundamentals (filtered if a `date` field is present),
+      ctx.earnings_surprises, ctx.insider_trades,
+      ctx.hourly_bars, ctx.minute_bars.
+
+    Defensive: if the cutoff drops every row of a frame, that ticker is
+    removed from the dict so downstream Phase-2 chains skip it cleanly
+    rather than producing an empty feature_frame.
+
+    No-op when train_cutoff is None (legacy behavior — CLAUDE.md §5.13.10).
+    """
+
+    @staticmethod
+    def _slice_df_by_index(df: "pd.DataFrame | None", cutoff: pd.Timestamp) -> "pd.DataFrame | None":
+        if df is None or df.empty:
+            return df
+        idx = pd.to_datetime(df.index)
+        mask = idx < cutoff
+        return df.loc[mask]
+
+    @staticmethod
+    def _slice_dict_of_frames(
+        store: dict, cutoff: pd.Timestamp,
+    ) -> dict:
+        out: dict = {}
+        for k, df in store.items():
+            sliced = ApplyTrainCutoffTask._slice_df_by_index(df, cutoff)
+            if sliced is not None and not sliced.empty:
+                out[k] = sliced
+        return out
+
+    @staticmethod
+    def _slice_event_frames(store: dict, cutoff: pd.Timestamp) -> dict:
+        """Slice event-style DataFrames whose `date` may be a column not the index."""
+        out: dict = {}
+        for k, df in store.items():
+            if df is None or df.empty:
+                continue
+            if "date" in df.columns:
+                d = pd.to_datetime(df["date"])
+                sliced = df.loc[d < cutoff]
+            elif "filing_date" in df.columns:
+                d = pd.to_datetime(df["filing_date"])
+                sliced = df.loc[d < cutoff]
+            else:
+                sliced = ApplyTrainCutoffTask._slice_df_by_index(df, cutoff)
+            if sliced is not None and not sliced.empty:
+                out[k] = sliced
+        return out
+
+    def run(self, ctx: PanelTrainingContext) -> None:
+        cutoff = _resolve_train_cutoff(ctx)
+        if cutoff is None:
+            return
+        log.info("ApplyTrainCutoffTask: applying cutoff=%s — slicing all data sources",
+                 cutoff.isoformat())
+        n_before = sum(len(df) for df in ctx.ohlcv.values())
+        ctx.ohlcv = self._slice_dict_of_frames(ctx.ohlcv, cutoff)
+        ctx.sector_etf_ohlcv = self._slice_dict_of_frames(ctx.sector_etf_ohlcv, cutoff)
+        if ctx.macro_factor_frame is not None:
+            ctx.macro_factor_frame = self._slice_df_by_index(ctx.macro_factor_frame, cutoff)
+        if ctx.macro_betas:
+            ctx.macro_betas = self._slice_dict_of_frames(ctx.macro_betas, cutoff)
+        # earnings_surprises / insider_trades carry events with a date column
+        ctx.earnings_surprises = self._slice_event_frames(ctx.earnings_surprises, cutoff)
+        ctx.insider_trades = self._slice_event_frames(ctx.insider_trades, cutoff)
+        # hourly / minute bars are date-indexed
+        ctx.hourly_bars = self._slice_dict_of_frames(ctx.hourly_bars, cutoff)
+        ctx.minute_bars = self._slice_dict_of_frames(ctx.minute_bars, cutoff)
+        n_after = sum(len(df) for df in ctx.ohlcv.values())
+        log.info("ApplyTrainCutoffTask: ohlcv rows %d → %d (cutoff=%s, %d tickers retained)",
+                 n_before, n_after, cutoff.isoformat(), len(ctx.ohlcv))
+
+
 class PanelDataJob(PanelJob):
     """Phase 1 — gather market data + sector momentum + fundamentals + earnings + insiders + hourly + minute + macro + asset_embeddings.
 
     Task chain: FetchOHLCV → SectorMomentum → LoadFundamentals
                 → LoadEarningsSurprise → LoadInsiderTrades → LoadHourlyBars
                 → LoadMinuteBars → LoadMacroFactors → LoadMacroPerTickerBetas
-                → LoadAssetEmbeddings
+                → LoadAssetEmbeddings → ApplyTrainCutoff (walk-forward guard)
     """
 
     def should_skip(self, ctx: PanelTrainingContext) -> bool:
@@ -871,6 +977,10 @@ class PanelDataJob(PanelJob):
             # in config, alignment issues abort the run loud.
             ScanTrainingDataTask(),
             FetchOHLCVTask(),
+            # 2026-05-10 P1: walk-forward train cutoff. Slices every loaded
+            # data source AT cutoff so feature computation never sees future
+            # rows. No-op when panel_ltr.train_cutoff is None (default).
+            ApplyTrainCutoffTask(),
             SectorMomentumTask(),
             LoadFundamentalsTask(),
             LoadEarningsSurpriseTask(),
@@ -881,6 +991,10 @@ class PanelDataJob(PanelJob):
             LoadFredMacroTask(),               # Tier 2 (2026-04-27)
             LoadMacroPerTickerBetasTask(),
             LoadAssetEmbeddingsTask(),
+            # Defensive second pass — catches the secondary loaders
+            # (Fundamentals/Earnings/Insider/Macro/...) that ran AFTER
+            # the first cutoff. Idempotent: no-op when cutoff is None.
+            ApplyTrainCutoffTask(),
         ]
 
 
@@ -2022,6 +2136,28 @@ class BuildPanelTask(PanelTask):
                 n_nan_total, len(feat_for_indicators),
                 len(nan_rich) if imp_add_indicators else 0,
                 imp_fill_zero, threshold_pct * 100,
+            )
+
+        # 2026-05-10 P1 walk-forward FINAL GUARD (CLAUDE.md §5.13.1, §5.13.10).
+        # Even if upstream ApplyTrainCutoffTask ran, defensive double-check:
+        # the panel must NOT contain any row at-or-after the cutoff. Slice
+        # before assertion so test fixtures + production both behave identically.
+        cutoff = _resolve_train_cutoff(ctx)
+        if cutoff is not None:
+            d = pd.to_datetime(panel["date"])
+            mask = d < cutoff
+            n_dropped = int((~mask).sum())
+            if n_dropped > 0:
+                log.warning(
+                    "BuildPanelTask train_cutoff guard: dropped %d/%d rows "
+                    "at-or-after %s (upstream slicing missed them)",
+                    n_dropped, len(panel), cutoff.isoformat(),
+                )
+                panel = panel.loc[mask].reset_index(drop=True)
+                group_sizes = panel.groupby("date", sort=True).size().values.astype(np.int32)
+            assert (pd.to_datetime(panel["date"]) < cutoff).all(), (
+                f"BuildPanelTask: panel still contains rows at-or-after "
+                f"train_cutoff={cutoff.isoformat()}"
             )
 
         ctx.panel = panel

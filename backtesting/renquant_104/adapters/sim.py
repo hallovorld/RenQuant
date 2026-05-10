@@ -53,7 +53,16 @@ class SimAdapter:
         fallback_corr: dict | None = None,
         panel_feature_frames: dict[str, pd.DataFrame] | None = None,
         panel_factor_frames: dict[str, pd.DataFrame] | None = None,
+        backtest_end: "pd.Timestamp | str | None" = None,
     ) -> None:
+        # Walk-forward feature flag (Track P2, 2026-05-10). Config schema:
+        #   walkforward.enabled:       bool, default false
+        #   walkforward.manifest_path: str,  default "artifacts/walkforward_manifest.json"
+        #                              (relative paths resolve under strategy_dir)
+        #   walkforward.fail_on_no_model: bool, default true
+        # When enabled=False (default), legacy static-model path runs and
+        # `assert_no_leakage` checks model.trained_date < backtest_end so
+        # the audit-2026-05-10 class of look-ahead leakage cannot recur.
         from kernel.regime import RegimeState  # noqa: PLC0415
         from kernel.config import REGIMES      # noqa: PLC0415
 
@@ -63,6 +72,10 @@ class SimAdapter:
         self._ohlcv          = ohlcv
         self._spy_df         = spy_df
         self._sector_etf_map = sector_etf_map
+        # Stored for the legacy-path leakage assertion (see end of init).
+        self._backtest_end: "pd.Timestamp | None" = (
+            pd.Timestamp(backtest_end) if backtest_end is not None else None
+        )
 
         # ── Load per-ticker policy artifacts (same path as live/runner) ─────
         self._models = self._load_models()
@@ -70,9 +83,19 @@ class SimAdapter:
         # ── Load regime, correlation, earnings artifacts ────────────────────
         self._gmm, self._earnings, self._corr = self._load_artifacts(fallback_corr)
 
-        # ── Panel scorer + NGBoost head (preloaded so PanelScoringJob's
-        #    LoadScorerTask / LoadNGBoostTask short-circuit) ─────────────────
-        self._panel_scorer  = self._try_load_panel_scorer()
+        # ── Walk-forward loader OR legacy static panel scorer ───────────────
+        # (Track P2, 2026-05-10) — exactly one path is taken; the other
+        # attribute is None. `_get_panel_scorer_for_bar(today)` routes.
+        self._walkforward_loader = self._try_load_walkforward_loader()
+        if self._walkforward_loader is not None:
+            self._panel_scorer = None
+        else:
+            self._panel_scorer = self._try_load_panel_scorer()
+            # Legacy-path leakage guard — fires when prod model trained on
+            # data inside the sim window. Skipped silently when
+            # backtest_end is unknown (caller didn't pass it) OR when the
+            # scorer's metadata lacks trained_date (older artifacts).
+            self._assert_legacy_no_leakage()
         self._ngboost_head  = self._try_load_ngboost_head()
 
         # ── Panel feature/factor frames (audit P-1, 2026-04-24) ─────────────
@@ -85,7 +108,7 @@ class SimAdapter:
         if panel_feature_frames is not None and panel_factor_frames is not None:
             self._panel_feature_frames = panel_feature_frames
             self._panel_factor_frames  = panel_factor_frames
-        elif self._panel_scorer is not None:
+        elif self._panel_scorer is not None or self._walkforward_loader is not None:
             try:
                 from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
                 benchmark = config.get("benchmark", "SPY")
@@ -194,9 +217,11 @@ class SimAdapter:
 
         log.info(
             "SimAdapter init: models=%d  gmm=%s  corr=%s  earnings=%s  "
-            "panel_scorer=%s  ngboost_head=%s  feature_cache=%d tickers",
+            "panel_scorer=%s  walkforward=%s  ngboost_head=%s  "
+            "feature_cache=%d tickers",
             len(self._models), self._gmm is not None, bool(self._corr),
             bool(self._earnings), self._panel_scorer is not None,
+            self._walkforward_loader is not None,
             self._ngboost_head is not None, len(self._feature_cache),
         )
 
@@ -286,6 +311,95 @@ class SimAdapter:
         except Exception as exc:
             log.warning("SimAdapter: panel scorer load failed — %s", exc)
             return None
+
+    def _try_load_walkforward_loader(self):
+        """Load the WalkForwardModelLoader iff walkforward.enabled=True.
+
+        Track P2 (2026-05-10): only enters this path when the config
+        opts in. Default is OFF — legacy sim runs continue working
+        unchanged. When manifest_path doesn't exist and
+        `fail_on_no_model=True` (the default), raise FileNotFoundError;
+        with `fail_on_no_model=False` we log + return None and the
+        legacy static path is used instead.
+        """
+        wf_cfg = self._config.get("walkforward", {})
+        if not wf_cfg.get("enabled", False):
+            return None
+        manifest = Path(wf_cfg.get("manifest_path",
+                                   "artifacts/walkforward_manifest.json"))
+        if not manifest.is_absolute():
+            manifest = self._strategy_dir / manifest
+        fail_on_missing = bool(wf_cfg.get("fail_on_no_model", True))
+        if not manifest.exists():
+            msg = f"SimAdapter: walkforward manifest not found at {manifest}"
+            if fail_on_missing:
+                raise FileNotFoundError(msg)
+            log.warning("%s — falling back to legacy static load", msg)
+            return None
+        try:
+            from kernel.walk_forward.loader import WalkForwardModelLoader  # noqa: PLC0415
+            loader = WalkForwardModelLoader(manifest)
+        except Exception as exc:
+            if fail_on_missing:
+                raise
+            log.warning("SimAdapter: walkforward loader init failed — %s", exc)
+            return None
+        if not loader.has_walkforward_model():
+            msg = (f"SimAdapter: walkforward manifest at {manifest} "
+                   f"has zero retrain entries")
+            if fail_on_missing:
+                raise ValueError(msg)
+            log.warning("%s — falling back", msg)
+            return None
+        log.info("SimAdapter: walkforward enabled (manifest=%s)", manifest)
+        return loader
+
+    def _assert_legacy_no_leakage(self) -> None:
+        """Defense-in-depth: legacy static model trained_date < backtest_end.
+
+        The 2026-05-10 audit class: prod model trained 2026-05-09 used in
+        a sim covering 2024-01 → 2026-03. Pre-fix sim happily loaded that
+        model and produced inflated metrics. Now we hard-fail at adapter
+        construction time, before a single bar runs.
+
+        Skipped when:
+          - panel scorer isn't loaded (legacy adapter without panel scoring)
+          - caller didn't pass backtest_end (older API surface)
+          - artifact metadata lacks trained_date (very old artifacts)
+
+        See `kernel.walk_forward.leakage_guard` for the canonical helper.
+        """
+        if self._panel_scorer is None or self._backtest_end is None:
+            return
+        meta = getattr(self._panel_scorer, "metadata", {}) or {}
+        trained_date = meta.get("trained_date")
+        if not trained_date:
+            log.warning(
+                "SimAdapter: panel scorer has no trained_date in metadata — "
+                "leakage guard skipped (suspicious; consider re-training "
+                "with current artifact writer to populate trained_date)."
+            )
+            return
+        from kernel.walk_forward.leakage_guard import assert_no_leakage  # noqa: PLC0415
+        assert_no_leakage(
+            trained_date,
+            self._backtest_end,
+            context=f"SimAdapter legacy load "
+                    f"(artifact={meta.get('feature_cols', ['?'])[:1]}…)",
+        )
+
+    def _get_panel_scorer_for_bar(self, today: pd.Timestamp):
+        """Return the panel scorer to use for `today`'s bar.
+
+        Walk-forward path: dispatch to `WalkForwardModelLoader.model_as_of(today)`,
+        which returns the most-recent retrain whose cutoff_date < today.
+        Legacy path: return the (already-leakage-checked) static scorer.
+
+        Returns None when neither path is configured (panel scoring off).
+        """
+        if self._walkforward_loader is not None:
+            return self._walkforward_loader.model_as_of(pd.Timestamp(today))
+        return self._panel_scorer
 
     def _try_load_ngboost_head(self):
         ngb_cfg = (self._config.get("ranking", {})
@@ -403,8 +517,12 @@ class SimAdapter:
 
         # Preload panel scoring artifacts so PanelScoringJob short-circuits
         # its LoadScorerTask / LoadNGBoostTask.
-        if self._panel_scorer is not None:
-            ctx._panel_scorer = self._panel_scorer  # noqa: SLF001
+        # Track P2 (2026-05-10): per-bar lookup. Walk-forward picks the
+        # latest retrain with cutoff_date < today so no future labels
+        # leak into this bar's scoring.
+        scorer_for_bar = self._get_panel_scorer_for_bar(today_ts)
+        if scorer_for_bar is not None:
+            ctx._panel_scorer = scorer_for_bar  # noqa: SLF001
         if self._ngboost_head is not None:
             ctx._ngboost_head = self._ngboost_head  # noqa: SLF001
         if self._panel_feature_frames is not None:

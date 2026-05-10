@@ -182,6 +182,12 @@ def run_backtest(
     from adapters.sim import SimAdapter  # noqa: PLC0415
     from kernel.pipeline.pp_inference import InferencePipeline  # noqa: PLC0415
 
+    # Resolve dates BEFORE adapter construction so the legacy-path
+    # leakage guard (Track P2, 2026-05-10) can fire at init time —
+    # before a single bar runs. Errors-out if backtest_end is before /
+    # equal to the model's trained_date (i.e. the prod model has already
+    # seen labels inside the sim window).
+    _be = backtest_end or config.get("backtest_end")
     adapter = SimAdapter(
         config               = config,
         strategy_dir         = strategy_dir,
@@ -192,6 +198,7 @@ def run_backtest(
         fallback_corr        = fallback_corr,
         panel_feature_frames = panel_feature_frames,
         panel_factor_frames  = panel_factor_frames,
+        backtest_end         = _be,
     )
 
     # DB separation (architecture 2026-04-24): sim runs a TRUNCATE of the

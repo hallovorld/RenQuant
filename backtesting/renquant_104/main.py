@@ -12,6 +12,7 @@ from pathlib import Path
 from kernel.config       import load_config, split_date_parts, BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
 from kernel.regime       import RegimeState, load_gmm_artifact
 from kernel.pipeline     import InferencePipeline, SellOnlyPipeline
+from kernel.walk_forward import assert_lean_panel_no_leakage
 from adapters.lean       import LeanAdapter
 
 CONFIG = load_config()
@@ -89,6 +90,15 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         # ── Artifacts ────────────────────────────────────────────────────────
         self._models: dict[str, dict] = {}
         self._load_all_models()
+
+        # AUDIT 2026-05-10 §5.13.5 — same leakage guard as SimAdapter.
+        # Routes through kernel.walk_forward.leakage_guard.assert_no_leakage.
+        # Regression invariant pinned in tests/test_lean_guard.py.
+        assert_lean_panel_no_leakage(
+            config=self._config,
+            strategy_dir=self._strategy_dir,
+            is_live_mode=getattr(self, "LiveMode", False),
+        )
 
         regime_cfg  = CONFIG.get("regime", {})
         self._gmm   = load_gmm_artifact(artifact_path(
