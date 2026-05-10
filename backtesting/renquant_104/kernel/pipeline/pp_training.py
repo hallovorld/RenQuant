@@ -564,14 +564,26 @@ class ExportJob(TrainingJob):
 
 
 class CorrelationJob(TrainingJob):
-    """Compute 120-day return correlation and save watchlist artifact."""
+    """Compute 120-day return correlation and save watchlist artifact.
+
+    Schema v2 (2026-05-10, audit fix): output is wrapped with
+    `schema_version`, `as_of_date`, `data_window_start`, `data_window_end`
+    so consumers (sim / LEAN) can enforce `as_of_date <= backtest_start`
+    via `kernel.walk_forward.correlation_guard.assert_correlation_no_leakage`.
+    Legacy v1 flat-dict format is still accepted on the read path
+    (`parse_correlation_artifact` handles both) but the writer always
+    emits v2 going forward.
+    """
 
     def run(self, ctx: TrainingContext) -> None:
         close_df = pd.DataFrame({
             t: ctx.ohlcv[t]["close"] for t in ctx.watchlist if t in ctx.ohlcv
         })
         ret_df = close_df.pct_change().dropna()
-        ctx.corr_matrix = ret_df.tail(120).corr()
+        # tail(120) is the actual data window the correlation reflects;
+        # capture its endpoints for the artifact metadata.
+        tail = ret_df.tail(120)
+        ctx.corr_matrix = tail.corr()
 
         if ctx.strategy_dir:
             corr_dict = {
@@ -581,11 +593,30 @@ class CorrelationJob(TrainingJob):
                 }
                 for ticker in ctx.corr_matrix.index
             }
+            # Stamp data window endpoints — `as_of_date` is the latest
+            # date used in the correlation computation (i.e. the upper
+            # bound of the leak-free backtest window for this artifact).
+            data_start = (
+                tail.index.min().date().isoformat() if not tail.empty else None
+            )
+            data_end = (
+                tail.index.max().date().isoformat() if not tail.empty else None
+            )
+            wrapped = {
+                "schema_version": 2,
+                "as_of_date": data_end,
+                "data_window_start": data_start,
+                "data_window_end": data_end,
+                "matrix": corr_dict,
+            }
             artifacts_dir = ctx.strategy_dir / "artifacts"
             artifacts_dir.mkdir(exist_ok=True)
             corr_path = artifacts_dir / "watchlist-correlation.json"
-            corr_path.write_text(json.dumps(corr_dict, indent=2))
-            print(f"CorrelationJob: saved → {corr_path}")
+            corr_path.write_text(json.dumps(wrapped, indent=2))
+            print(
+                f"CorrelationJob: saved → {corr_path} "
+                f"(as_of_date={data_end} window={data_start}…{data_end})"
+            )
 
 
 class CalibrationJob(TrainingJob):

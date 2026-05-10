@@ -545,8 +545,17 @@ class RunnerAdapter:
         # → adapter __init__ crashed → live trade aborted with cryptic
         # traceback. Now: malformed file logged + treated as missing
         # (downstream tasks already handle None gracefully).
+        #
+        # 2026-05-10 audit §5.13.5: also unwrap v2-schema correlation
+        # artifact (matrix + as_of_date). Live runner is in live mode,
+        # so the leakage guard is a no-op — but we still parse the v2
+        # schema correctly so downstream `corr.get(t, {})` keeps working.
+        from kernel.walk_forward import parse_correlation_artifact  # noqa: PLC0415
         try:
-            corr = json.loads(corr_path.read_text()) if corr_path.exists() else None
+            corr_raw = json.loads(corr_path.read_text()) if corr_path.exists() else None
+            corr, _corr_as_of = parse_correlation_artifact(corr_raw)
+            if not corr:
+                corr = None
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("corr artifact %s malformed (%s) — treating as missing", corr_path, exc)
             corr = None

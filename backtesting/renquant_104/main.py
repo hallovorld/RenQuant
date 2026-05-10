@@ -12,7 +12,11 @@ from pathlib import Path
 from kernel.config       import load_config, split_date_parts, BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
 from kernel.regime       import RegimeState, load_gmm_artifact
 from kernel.pipeline     import InferencePipeline, SellOnlyPipeline
-from kernel.walk_forward import assert_lean_panel_no_leakage
+from kernel.walk_forward import (
+    assert_correlation_no_leakage,
+    assert_lean_panel_no_leakage,
+    parse_correlation_artifact,
+)
 from adapters.lean       import LeanAdapter
 
 CONFIG = load_config()
@@ -103,8 +107,19 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         regime_cfg  = CONFIG.get("regime", {})
         self._gmm   = load_gmm_artifact(artifact_path(
             regime_cfg.get("gmm_artifact", "spy-gmm-regime.json")))
-        self._corr  = self._load_json_artifact(
+        # AUDIT 2026-05-10 §5.13.5 — correlation as-of-date leakage guard.
+        # Loads raw artifact, parses v1/v2 schema, asserts as_of_date <=
+        # backtest_start in backtest mode (LiveMode skips). Routes through
+        # kernel.walk_forward.correlation_guard.
+        _corr_raw = self._load_json_artifact(
             regime_cfg.get("correlation_artifact", "watchlist-correlation.json"), "Correlation")
+        self._corr, _corr_as_of = parse_correlation_artifact(_corr_raw)
+        assert_correlation_no_leakage(
+            _corr_as_of,
+            CONFIG.get("backtest_start"),
+            is_live_mode=getattr(self, "LiveMode", False),
+            context="LEAN main.py corr",
+        )
         self._earnings = self._load_json_artifact(
             regime_cfg.get("earnings_artifact", "earnings-calendar.json"), "Earnings")
 

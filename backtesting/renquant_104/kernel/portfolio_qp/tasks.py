@@ -97,11 +97,16 @@ class ComputeFullSigmaTask(Task):
             ctx._qp_Sigma_full = None  # noqa: SLF001
             return
         try:
-            corr = json.loads(path.read_text())
+            raw = json.loads(path.read_text())
         except Exception as exc:
             log.warning("ComputeFullSigmaTask: corr load failed (%s)", exc)
             ctx._qp_Sigma_full = None  # noqa: SLF001
             return
+        # 2026-05-10 audit §5.13.5: unwrap v1/v2 schema. SimAdapter
+        # has already enforced the as-of-date guard at __init__ time,
+        # so we only unwrap here (no second guard call).
+        from kernel.walk_forward import parse_correlation_artifact  # noqa: PLC0415
+        corr, _ = parse_correlation_artifact(raw)
         tickers = _get_path(ctx, "_qp_tickers") or []
         sig = _get_path(ctx, "_qp_sigma")
         n = len(tickers)

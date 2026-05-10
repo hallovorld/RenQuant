@@ -13,6 +13,10 @@ Adding a parallel implementation requires deleting this one first.
 """
 from __future__ import annotations
 
+from kernel.walk_forward.correlation_guard import (
+    assert_correlation_no_leakage,
+    parse_correlation_artifact,
+)
 from kernel.walk_forward.leakage_guard import assert_no_leakage
 from kernel.walk_forward.lean_guard import assert_lean_panel_no_leakage
 from kernel.walk_forward.loader import (
@@ -28,6 +32,8 @@ from kernel.walk_forward.manifest import (
 __all__ = [
     "assert_no_leakage",
     "assert_lean_panel_no_leakage",
+    "assert_correlation_no_leakage",
+    "parse_correlation_artifact",
     "RetrainEntry",
     "WalkForwardModelLoader",
     "WalkForwardManifest",

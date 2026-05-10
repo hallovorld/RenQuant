@@ -265,6 +265,10 @@ class SimAdapter:
 
     def _load_artifacts(self, fallback_corr):
         from kernel.regime import load_gmm_artifact  # noqa: PLC0415
+        from kernel.walk_forward import (  # noqa: PLC0415
+            assert_correlation_no_leakage,
+            parse_correlation_artifact,
+        )
         artifacts_dir = self._strategy_dir / "artifacts"
         if not artifacts_dir.exists():
             artifacts_dir = self._strategy_dir
@@ -287,10 +291,20 @@ class SimAdapter:
         corr_path = artifacts_dir / regime_cfg.get(
             "correlation_artifact", "watchlist-correlation.json",
         )
+        # AUDIT 2026-05-10 §5.13.5 — correlation as-of-date leakage guard.
+        # Unwraps v2 schema (matrix + as_of_date) or treats raw as v1.
+        # Routes through kernel.walk_forward.correlation_guard.
         if corr_path.exists():
-            corr_dict = json.loads(corr_path.read_text())
+            raw = json.loads(corr_path.read_text())
+            corr_dict, as_of_date = parse_correlation_artifact(raw)
+            assert_correlation_no_leakage(
+                as_of_date,
+                self._config.get("backtest_start"),
+                is_live_mode=False,
+                context=f"SimAdapter corr={corr_path.name}",
+            )
         elif fallback_corr is not None:
-            corr_dict = fallback_corr
+            corr_dict, _ = parse_correlation_artifact(fallback_corr)
         else:
             corr_dict = {}
         return gmm, earnings_cal, corr_dict
