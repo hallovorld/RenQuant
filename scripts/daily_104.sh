@@ -393,6 +393,13 @@ with open('$AUDIT_LOG', 'a') as f:
 print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today={n_orders}  regime={regime}\")
 " 2>&1 | tee -a "$LOG" || echo "audit write failed (non-fatal)"
 
+# Refresh the metrics dashboard (non-fatal — purely informational).
+# Reads from runs.alpaca.db + live_state.alpaca.json that the live runner
+# just updated above. Output: doc/dashboard.md (auto-rendered on GitHub).
+"$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
+    --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tee -a "$LOG" \
+    || echo "dashboard refresh failed (non-fatal)"
+
 else
     echo "=== daily_104 FAILED at $(date) ==="
     notify "RenQuant 104 ERROR" "Live trader failed — check $LOG"
