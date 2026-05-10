@@ -112,6 +112,10 @@ def main() -> None:
                    help="Backtesting directory name for kernel imports.")
     p.add_argument("--source", choices=["live", "sim"], default="live")
     p.add_argument("--db", default=None, help="Explicit path; overrides --source.")
+    p.add_argument("--broker", default="alpaca",
+                   choices=["alpaca", "alpaca_paper", "paper", "ibkr"],
+                   help="Broker tag for live runs.db lookup. 2026-05-09 fix: "
+                        "live data lives in data/runs.{broker}.db, not data/runs.db.")
     p.add_argument("--since", type=lambda s: datetime.date.fromisoformat(s),
                    default=None)
     p.add_argument("--rf-annual", type=float, default=DEFAULT_RF_ANNUAL,
@@ -120,7 +124,18 @@ def main() -> None:
     args = p.parse_args()
 
     if args.db is None:
-        args.db = "data/sim_runs.db" if args.source == "sim" else "data/runs.db"
+        if args.source == "sim":
+            args.db = "data/sim_runs.db"
+        else:
+            # 2026-05-09 audit fix: live data is broker-tagged
+            # (kernel/state_paths.py runs_db_path convention). Pre-fix this
+            # defaulted to data/runs.db which has 0 live rows after broker
+            # isolation switch — silently producing empty portfolio_daily_metrics.
+            sys.path.insert(0, str(REPO_ROOT / "backtesting" / args.strategy_dir))
+            from kernel.state_paths import runs_db_path  # noqa: PLC0415
+            args.db = str(runs_db_path("data/runs.db", args.broker).relative_to(REPO_ROOT)
+                          if runs_db_path("data/runs.db", args.broker).is_absolute()
+                          else runs_db_path("data/runs.db", args.broker))
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy_dir
     if str(strategy_dir) not in sys.path:
