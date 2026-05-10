@@ -175,7 +175,13 @@ def compute_macro_features(
     """
     if ohlcv is None or ohlcv.empty or "close" not in ohlcv.columns:
         return {}
-    close = ohlcv["close"].astype(float).sort_index()
+    # AUDIT 2026-05-10 C9 — sort_index() alone preserves duplicate index
+    # rows (yfinance occasionally returns dups on splits/dividends). Mirror
+    # the dedup pattern at line 135 to ensure macro_frame index is unique
+    # per §5.13.11. Otherwise downstream reindex (see macro_per_ticker.py:122)
+    # raises "cannot reindex on an axis with duplicate labels".
+    close = ohlcv["close"].astype(float)
+    close = close[~close.index.duplicated(keep="last")].sort_index()
     sym_lower = symbol.lower()
     out: dict[str, pd.Series] = {}
     for t in transforms:

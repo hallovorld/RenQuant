@@ -119,7 +119,16 @@ def compute_per_ticker_macro_betas(
         cols: dict[str, pd.Series] = {}
 
         for macro_col in macro_cols:
-            macro_r = macro_returns[macro_col].reindex(ticker_returns.index)
+            macro_r = macro_returns[macro_col]
+            # AUDIT 2026-05-10 C9 — defense in depth per §5.13.11. Upstream
+            # fix is at macro.py:178 (dedup at source); this is a belt-and-
+            # suspenders guard so any future regression doesn't reach
+            # reindex with duplicate labels. APP ticker triggered this at
+            # cutoff=2024-05-06; training_panel proceeded without APP for
+            # that retrain.
+            if macro_r.index.has_duplicates:
+                macro_r = macro_r[~macro_r.index.duplicated(keep="last")]
+            macro_r = macro_r.reindex(ticker_returns.index)
 
             # Rolling OLS β = Cov(stock, macro) / Var(macro)
             cov = ticker_returns.rolling(
