@@ -280,7 +280,13 @@ def compute_derived_features(daily: pd.DataFrame,
             # periods=252 (≈ 252 trading days per year) on the daily ffill'd
             # series, which is mathematically equivalent to comparing
             # current quarter's filing to the same-period 1y ago.
-            result["asset_growth"]        = ast.pct_change(periods=252) # YoY (Cooper-Gulen-Schill 2008)
+            # AUDIT 2026-05-10 BUG #5b — M&A / spin-off events (BKR 2017,
+            # VTRS 2020, VICI 2017, PRMB SPAC, MSTR BTC accumulation) produce
+            # inf and >>500% YoY values that poison the training matrix. Per
+            # §5.13.12 (range-bound at train site) + §5.13.11 (explicit inf
+            # guard). Floor: pct_change ≥ -1 always. Ceiling: 5.0 = 500% YoY
+            # ≈ 99.7th pct of legit growth distribution.
+            result["asset_growth"]        = ast.pct_change(periods=252).clip(-0.99, 5.0)  # YoY clipped (Cooper-Gulen-Schill 2008 + BUG #5b)
 
         derived_rows.append(result.reset_index().rename(columns={"index": "date"}))
 
