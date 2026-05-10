@@ -95,14 +95,40 @@ def make_artifact_dir(strategy_dir: Path, cutoff: pd.Timestamp) -> Path:
 
 def configure_panel_cutoff(cfg: dict, cutoff: pd.Timestamp,
                            artifact_path: Path) -> dict:
-    """Set panel_ltr.train_cutoff + panel_ltr.artifact_path for one retrain."""
+    """Set panel_ltr.train_cutoff + BOTH artifact_path keys for one retrain.
+
+    AUDIT 2026-05-10 §5.13.13/§5.13.14 incident: SaveArtifactTask
+    (pp_panel_training.py:2684-2699) reads inference-side
+    ``cfg["ranking"]["panel_scoring"]["artifact_path"]`` FIRST and
+    falls back to training-side ``cfg["panel_ltr"]["artifact_path"]``
+    only when inference-side is unset. Setting only the training-side
+    key was a no-op for the writer — every retrain silently overwrote
+    the production artifact at the inference-side path.
+
+    Fix: route both keys to the per-cutoff ``walkforward/<date>/`` path.
+    Sanity-assert the path contains 'walkforward' so this function
+    cannot accidentally be wired to a production-shaped path again.
+    """
+    p_str = str(artifact_path)
+    # Sanity guard per §5.13.3 — refuse paths outside the walkforward/
+    # subtree. Pinned by tests/test_walkforward_artifact_isolation.py.
+    assert "walkforward" in p_str, (
+        f"configure_panel_cutoff: artifact_path {p_str!r} does not "
+        f"contain 'walkforward' — refusing to risk overwriting "
+        f"production artifact"
+    )
+
     pl = cfg.setdefault("panel_ltr", {})
     pl["train_cutoff"] = cutoff.isoformat()
-    pl["artifact_path"] = str(artifact_path)
-    # Also disable calibrator auto-refresh per-cutoff — calibrator stays
-    # paired with the production artifact, not the walk-forward set.
+    pl["artifact_path"] = p_str
+
+    # CRITICAL: also override inference-side path. SaveArtifactTask
+    # prefers this key over panel_ltr.artifact_path; without this line,
+    # the per-cutoff redirect is a no-op for the writer.
     rk = cfg.setdefault("ranking", {}).setdefault("panel_scoring", {})
+    rk["artifact_path"] = p_str
     rk.setdefault("global_calibration", {})["auto_refresh"] = False
+
     return cfg
 
 
