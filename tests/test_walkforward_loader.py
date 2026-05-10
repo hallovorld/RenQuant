@@ -42,6 +42,73 @@ def _row(cutoff, trained, uri):
     }
 
 
+class TestAuditP32Regression:
+    """AUDIT REGRESSION GUARD per CLAUDE.md §5.13.3 — pins the 2026-05-10
+    P3.2 sim crash.
+
+    The bug: WalkForwardModelLoader.model_as_of passed `trained_date`
+    (wall-clock retrain time, ~"now") to `assert_no_leakage` instead of
+    `cutoff_date` (training-data upper bound). When the retrain script
+    ran on 2026-05-10 and the sim started at 2024-01-02, the assertion
+    fired because 2026-05-10 (trained) >= 2024-01-02 (sim today), even
+    though the actual training data for cutoff_date=2024-01-01 was clean.
+
+    Realistic scenario test: retrain script run TODAY (wall-clock 2026-05-10)
+    producing entries with cutoff_date < retrain wall-clock. Sim must
+    successfully load these models without raising.
+    """
+
+    def test_trained_date_in_future_does_not_break_loader(self, tmp_path,
+                                                          monkeypatch):
+        from kernel.walk_forward import WalkForwardModelLoader
+        # Wall-clock retrain time is 2026-05-10 (when the retrain script
+        # ran), but each entry's cutoff_date enforces the actual training
+        # data upper bound — clean walk-forward.
+        rows = [
+            _row("2024-01-01T00:00:00", "2026-05-10T12:00:00",
+                 "fake://run-A/m"),
+            _row("2024-02-01T00:00:00", "2026-05-10T12:30:00",
+                 "fake://run-B/m"),
+        ]
+        manifest = _make_manifest(tmp_path, rows)
+
+        class FakeScorer:
+            def __init__(self, uri):
+                self.uri = uri
+
+        def fake_load(path):
+            return FakeScorer(path)
+
+        monkeypatch.setattr(
+            "kernel.panel_pipeline.panel_scorer.PanelScorer.load",
+            staticmethod(fake_load),
+        )
+
+        loader = WalkForwardModelLoader(manifest)
+        # Sim today=2024-01-02 should pick cutoff=2024-01-01 entry.
+        # MUST NOT raise even though trained_date is 2 years AFTER today.
+        scorer = loader.model_as_of(pd.Timestamp("2024-01-02"))
+        assert scorer is not None
+        assert "run-A" in scorer.uri
+
+    def test_cutoff_equal_to_today_still_blocked(self, tmp_path,
+                                                 monkeypatch):
+        """cutoff_date must be strictly < today (line 152 invariant).
+        Cutoff == today should still raise since model has seen up-to-but-
+        excluding cutoff, but the loader's `e.cutoff_date < today_ts`
+        eligibility filter prevents selection of equal-cutoff entries."""
+        from kernel.walk_forward import WalkForwardModelLoader
+        rows = [
+            _row("2024-01-02T00:00:00", "2026-05-10T12:00:00",
+                 "fake://run-A/m"),
+        ]
+        manifest = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(manifest)
+        # today == cutoff → no eligible entries → raises
+        with pytest.raises(ValueError, match="no retrain"):
+            loader.model_as_of(pd.Timestamp("2024-01-02"))
+
+
 class TestModelAsOf:
     def test_returns_latest_eligible_entry(self, tmp_path, monkeypatch):
         from kernel.walk_forward import WalkForwardModelLoader

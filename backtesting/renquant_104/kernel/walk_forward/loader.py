@@ -135,7 +135,10 @@ class WalkForwardModelLoader:
         Built-in guards (CLAUDE.md §5.13.5):
             * cutoff_date < today (the primary point-in-time guarantee)
             * trained_date >= cutoff_date (manifest construction invariant)
-            * trained_date < today (canonical leakage helper)
+            * assert_no_leakage(cutoff_date, today): single-source helper
+              defense in depth — cutoff_date is the upper exclusive bound
+              of training data, NOT the wall-clock trained_date (which is
+              the moment the retrain script ran and is always ~"now").
         """
         today_ts = pd.Timestamp(today)
         eligible = [e for e in self._entries if e.cutoff_date < today_ts]
@@ -159,12 +162,16 @@ class WalkForwardModelLoader:
             f"trained_date {chosen.trained_date.isoformat()} < cutoff_date "
             f"{chosen.cutoff_date.isoformat()}"
         )
-        # §5.13.5 single-source leakage helper — also catches a manifest
-        # whose trained_date somehow ran ahead of `today` (shouldn't happen
-        # given cutoff < today, but defends against weird future-dated
-        # trained_date values).
+        # §5.13.5 single-source leakage helper. NOTE: pass cutoff_date,
+        # not trained_date. The latter is the wall-clock retrain time
+        # (~"now" for all entries) and is unrelated to training-data
+        # bounds. cutoff_date is the upper exclusive bound on training
+        # data — the real leakage barrier for a walk-forward model.
+        # AUDIT 2026-05-10 P3.2 sim crash: prior bug passed trained_date
+        # which always fired the guard because trained_date=2026-05-10
+        # is never < any pre-2026-05-10 sim bar.
         assert_no_leakage(
-            chosen.trained_date,
+            chosen.cutoff_date,
             today_ts,
             context=f"WalkForwardModelLoader.model_as_of("
                     f"today={today_ts.date().isoformat()})",
