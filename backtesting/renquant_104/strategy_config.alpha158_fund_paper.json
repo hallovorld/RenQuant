@@ -408,7 +408,11 @@
       "qp_cvar_lambda": 0.0,
       "qp_drawdown_limit": 0.2,
       "qp_no_trade_band_factor": 1.0,
-      "qp_min_invested_pct": 0.7
+      "qp_min_invested_pct": 0.7,
+      "qp_ledoit_wolf_lambda": 0.2,
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0→0.2 (Ledoit-Wolf 2004 mid-of-recommended-range).",
+      "qp_sector_cap_enabled": true,
+      "qp_correlation_cap_enabled": true
     },
     "enabled_regimes": [
       "BULL_CALM"

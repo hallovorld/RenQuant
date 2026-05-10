@@ -4,6 +4,13 @@ Thin wrapper: Initialize sets up state and wires the adapter + pipeline.
 OnData calls adapter.make_context → pipeline.run → adapter.commit.
 
 LEAN-safe: no common/ imports.  Docker can access kernel/ and adapters/ locally.
+
+LEAN data normalization: Adjusted (split + dividend).
+Sim data source: yfinance (default Adjusted).
+Both produce continuous price series with dividends reinvested.
+Cash dividend events are NOT modeled separately; they appear as price
+continuity instead. (Trade-off: ignores tax timing but maintains
+path-equivalence between sim and LEAN.)
 """
 from AlgorithmImports import *  # noqa: F401,F403
 import json
@@ -32,6 +39,18 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         self.SetStartDate(sy, sm, sd)
         self.SetEndDate(ey, em, ed)
         self.SetCash(CONFIG["initial_cash"])
+
+        # ── Data normalization (Track C7, 2026-05-10) ────────────────────────
+        # Adjusted matches yfinance default (split-adjusted + dividend-adjusted),
+        # keeping LEAN/sim parity. See execution audit 2026-05-10. Setting on
+        # UniverseSettings applies the default to ALL subsequent AddEquity
+        # calls (watchlist, sector ETFs, benchmark) — single source of truth.
+        # Without this, LEAN's default depends on the data source and may
+        # diverge from sim on dividend-paying stocks (e.g. AAPL ~0.6%/y).
+        try:
+            self.UniverseSettings.DataNormalizationMode = DataNormalizationMode.Adjusted
+        except (AttributeError, NameError):
+            pass
 
         # ── Execution model parity with SimAdapter (Track Batch A, 2026-05-10).
         # LEAN's brokerage model handles commission + slippage + T+2 cash

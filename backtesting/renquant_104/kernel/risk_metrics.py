@@ -127,6 +127,67 @@ def sharpe_ratio(
     return float(excess.mean() / std * math.sqrt(trading_days_per_year))
 
 
+def risk_free_rate_annual_to_daily(rf_annual: float) -> float:
+    """Convert annual risk-free rate to daily compounding equivalent.
+
+    Industry-standard for daily Sharpe (Bodie/Kane/Marcus, Investments,
+    11th ed., §5.4): ``rf_daily = (1 + rf_annual)^(1/252) - 1``.
+
+    Differs from the simple ``rf_annual / 252`` divisor used inside
+    ``sharpe_ratio`` (which is the linear approximation appropriate for
+    the arithmetic-Sharpe excess-return formulation). Use this helper
+    for the geometric-Sharpe path where compounding consistency matters.
+
+    Returns NaN for non-finite input.
+    """
+    if not math.isfinite(rf_annual):
+        return float("nan")
+    return float((1.0 + rf_annual) ** (1.0 / TRADING_DAYS_PER_YEAR) - 1.0)
+
+
+def geometric_sharpe_ratio(
+    returns: _SeriesLike,
+    risk_free_rate: float = 0.0,
+    ann_factor: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Geometric Sharpe: (geo_mean_ret - rf_daily) / std_ret × √ann_factor.
+
+    Geometric mean compounded daily: ``exp(mean(log(1+r))) - 1``. This is
+    more accurate than the arithmetic Sharpe for path-dependent /
+    high-volatility strategies because volatility drag (the log-vs-linear
+    gap) is captured directly in the numerator (Israelsen 2003,
+    "A Refinement to the Sharpe Ratio and Information Ratio", J. Asset
+    Management 5(6): 423-427).
+
+    The ``risk_free_rate`` argument is the DAILY risk-free rate (already
+    compounded — pass output of ``risk_free_rate_annual_to_daily``). Using
+    a daily rf keeps the geometric numerator coherent with daily compounding.
+
+    Returns NaN if:
+      * fewer than 30 valid observations (sample-size guard, matches
+        benchmark-relative metrics rule of thumb)
+      * std(returns) below floating-point noise floor (degenerate)
+      * any ``1 + r ≤ 0`` (negative cumulative wealth — log undefined)
+
+    Sign convention: positive when geo-mean exceeds rf_daily.
+    """
+    r = _to_series(returns).dropna()
+    if len(r) < 30:
+        return float("nan")
+    one_plus = 1.0 + r
+    if (one_plus <= 0).any():
+        return float("nan")
+    log_r = np.log(one_plus)
+    mean_log = float(log_r.mean())
+    if not math.isfinite(mean_log):
+        return float("nan")
+    geo_mean = math.exp(mean_log) - 1.0
+    std = float(r.std(ddof=1))
+    if not math.isfinite(std) or std < _STD_ZERO_EPSILON:
+        return float("nan")
+    return float((geo_mean - risk_free_rate) / std * math.sqrt(ann_factor))
+
+
 def sortino_ratio(
     returns: _SeriesLike,
     *,
@@ -347,6 +408,7 @@ def compute_risk_metrics(
     risk_free_rate: float = 0.0,
     target_return: float = 0.0,
     trading_days_per_year: int = TRADING_DAYS_PER_YEAR,
+    include_geometric: bool = False,
 ) -> dict[str, float]:
     """Compute the full bundle in one pass — convenience for sim/B2 callers.
 
@@ -355,6 +417,11 @@ def compute_risk_metrics(
     dict with keys: sharpe, sortino, calmar, max_dd, ann_vol,
     n_observations. NaN in any field signals "not enough data" rather
     than zero (don't conflate "no data" with "perfect Sharpe").
+
+    When ``include_geometric=True`` (sim opt-in) the result also carries
+    ``sharpe_geometric`` (Israelsen 2003) — geometric-mean-based Sharpe
+    that internalizes volatility drag. Default is False to preserve the
+    byte-identical key set existing tests / B2 consumers rely on.
 
     The caller MUST pass `apy` (annualized return) when they want
     Calmar; otherwise we can't compute Calmar from equity alone in a
@@ -388,7 +455,7 @@ def compute_risk_metrics(
             apy = float("nan")
     calmar = calmar_ratio(apy, mdd)
 
-    return {
+    out: dict[str, float] = {
         "sharpe":         sharpe,
         "sortino":        sortino,
         "calmar":         calmar,
@@ -396,6 +463,15 @@ def compute_risk_metrics(
         "ann_vol":        vol,
         "n_observations": float(n_valid),
     }
+    if include_geometric:
+        # Use compounded-daily rf for geometric-Sharpe coherence
+        # (Israelsen 2003 / Bodie-Kane-Marcus §5.4). Distinct from the
+        # rf/N linear divisor used inside arithmetic sharpe_ratio.
+        rf_daily = risk_free_rate_annual_to_daily(risk_free_rate)
+        out["sharpe_geometric"] = geometric_sharpe_ratio(
+            r, risk_free_rate=rf_daily, ann_factor=trading_days_per_year,
+        )
+    return out
 
 
 __all__ = [
@@ -404,6 +480,8 @@ __all__ = [
     "annualized_volatility",
     "sharpe_ratio",
     "sortino_ratio",
+    "geometric_sharpe_ratio",
+    "risk_free_rate_annual_to_daily",
     "max_drawdown",
     "calmar_ratio",
     "beta_vs_benchmark",

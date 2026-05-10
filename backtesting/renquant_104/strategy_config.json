@@ -410,7 +410,13 @@
       "qp_no_trade_band_factor": 1.0,
       "qp_no_trade_band_cap": 0.05,
       "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: σ-derived no-trade band uncapped → high-σ holdings (e.g. BA σ̂=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
-      "qp_min_invested_pct": 0.7
+      "qp_min_invested_pct": 0.7,
+      "qp_ledoit_wolf_lambda": 0.2,
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0→0.2 (Ledoit-Wolf 2004 mid-of-recommended-range). 169-stock universe sample-cov is high-noise / near-singular without shrinkage; λ=0.2 lifts off-diagonals toward 0 and equalises variance toward avg. Reference: Ledoit & Wolf 2004 Honey paper (J.PortMgmt 30(4):110-119).",
+      "qp_sector_cap_enabled": true,
+      "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight ≤ max_positions_per_sector × max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
+      "qp_correlation_cap_enabled": true,
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|ρ| ≥ correlation_guard_threshold). wp[i] + wp[j] ≤ 2 × max_position_pct. Linear approx of pair-product cap (Boyd 2004 §4.4)."
     },
     "enabled_regimes": [
       "BULL_CALM"

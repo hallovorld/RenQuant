@@ -37,6 +37,8 @@ from kernel.pipeline.pipeline import Job, Task
 
 from .tasks import (
     BuildADVVectorTask,
+    BuildCorrelationGroupConstraintTask,
+    BuildSectorConstraintMatrixTask,
     BuildWeightVectorTask,
     ComputeBrownSmithTaxCostTask,
     ComputeFullSigmaTask,
@@ -139,7 +141,12 @@ class JointPortfolioQPJob(Job):
             ComputeBrownSmithTaxCostTask(),
             ComputeWashSaleMaskTask(),
             BuildADVVectorTask(),                  # G3: per-asset ADV from ohlcv
-            ComputeQPConstraintsTask(),
+            ComputeQPConstraintsTask(),            # ← per-name caps, w_upper, …
+            # 2026-05-10 C2: hard sector + correlation pair caps. MUST run
+            # AFTER ComputeQPConstraintsTask so the sector / corr Tasks can
+            # read ctx._qp_w_upper for cap anchoring.
+            BuildSectorConstraintMatrixTask(),
+            BuildCorrelationGroupConstraintTask(),
 
             # ── Phase 4: solve (domain) ────────────────────────────────
             SolveMarkowitzQPTask(),

@@ -44,6 +44,7 @@ default), `infeasible` (constraints contradict — diagnostic in log).
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -115,6 +116,19 @@ def solve_portfolio_qp(
     budget_mode: str = "inequality",      # legacy kwarg, treated as "≤" always
     min_invested_pct:     float = 0.0,    # SOFT target now; was hard floor pre-2026-05-06
     cash_drag_lambda:     float = 0.05,   # NEW: penalty coefficient on cash-drag
+    # ── 2026-05-10 industrial-grade constraints (Track C2) ───────────────
+    # Sector cap as hard linear constraint: S @ wp ≤ sector_cap_vec.
+    # `sector_indicator` is an m × n indicator matrix (m sectors), `sector_cap_vec`
+    # is the per-sector weight cap. None / empty → constraint omitted.
+    # On infeasibility, caller (BuildSectorConstraintMatrixTask) detects the
+    # `infeasible:sector` status and re-solves with relaxed caps.
+    sector_indicator: np.ndarray | None = None,
+    sector_cap_vec:   Sequence[float] | None = None,
+    # Correlation group cap: list of (i, j, group_cap) tuples for pairs whose
+    # |corr| ≥ correlation_guard_threshold. Adds wp[i] + wp[j] ≤ group_cap
+    # (linear approximation of pair non-convex `wp[i] · wp[j] ≤ pair_cap`).
+    # Reference: Boyd & Vandenberghe 2004 §4.4 (linear group bounds).
+    corr_group_pairs: Sequence[tuple[int, int, float]] | None = None,
 ) -> QPSolution:
     """Convex Markowitz QP via cvxpy + CLARABEL (cvxportfolio idiom).
 
@@ -237,6 +251,48 @@ def solve_portfolio_qp(
     if turnover_max is not None and float(turnover_max) > 0.0:
         constraints.append(cp.norm(dw, 1) <= float(turnover_max))
 
+    # ── Sector cap (hard linear): S @ wp ≤ sector_cap_vec ────────────────
+    # Reference: Garleanu-Pedersen 2013 §3.2 budget-with-group-bounds; same
+    # form as cvxportfolio's `MaxWeightsAtSectors`. NaN-safe: rows / caps
+    # with non-finite entries are dropped.
+    n_sector_rows = 0
+    if sector_indicator is not None and sector_cap_vec is not None:
+        S = np.asarray(sector_indicator, dtype=float)
+        cap_v = np.asarray(sector_cap_vec, dtype=float)
+        if S.size and cap_v.size:
+            if S.ndim != 2 or S.shape[1] != n or S.shape[0] != cap_v.shape[0]:
+                raise ValueError(
+                    f"sector_indicator shape {S.shape} incompatible "
+                    f"with n={n} and cap_vec len={cap_v.shape[0]}",
+                )
+            finite_caps = np.isfinite(cap_v) & (cap_v >= 0.0)
+            finite_rows = np.isfinite(S).all(axis=1)
+            keep = finite_caps & finite_rows
+            if keep.any():
+                S_keep = S[keep]
+                cap_keep = cap_v[keep]
+                n_sector_rows = int(S_keep.shape[0])
+                constraints.append(S_keep @ wp <= cap_keep)
+
+    # ── Correlation group cap (hard linear): wp[i] + wp[j] ≤ group_cap ───
+    # Linearization of non-convex pair-product cap. Catches the case where
+    # two highly-correlated holdings together exceed the diversification
+    # budget for the group. Reference: Boyd & Vandenberghe 2004 §4.4.
+    n_corr_pairs = 0
+    if corr_group_pairs:
+        for triple in corr_group_pairs:
+            try:
+                i_idx, j_idx, gcap = triple
+                ii = int(i_idx); jj = int(j_idx); gc = float(gcap)
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not math.isfinite(gc) or gc < 0:
+                continue
+            if not (0 <= ii < n and 0 <= jj < n) or ii == jj:
+                continue
+            constraints.append(wp[ii] + wp[jj] <= gc)
+            n_corr_pairs += 1
+
     # ── Objective (maximize utility) ──────────────────────────────────────
     # Σ_psd_wrap protects against tiny negative eigenvalues from finite
     # precision in shrinkage covariance.
@@ -296,7 +352,9 @@ def solve_portfolio_qp(
             delta_w=delta_w_val, target_w=w_current.copy(),
             objective=0.0, n_iter=-1, status=f"infeasible:{status}",
             diagnostics={"n_assets": n, "primary": "CLARABEL",
-                          "fallback_chain": ["OSQP", "SCS"]},
+                          "fallback_chain": ["OSQP", "SCS"],
+                          "n_sector_constraints": n_sector_rows,
+                          "n_corr_pair_constraints": n_corr_pairs},
         )
 
     delta_w  = np.asarray(dw.value, dtype=float)
@@ -354,6 +412,10 @@ def solve_portfolio_qp(
                 (np.abs(Sigma_mat) > 1e-12).sum()
                 - np.count_nonzero(np.diag(Sigma_mat))
             ),
+            # 2026-05-10 industrial-grade C2 deliverables — pinned by
+            # tests/test_qp_sector_constraint.py + test_qp_correlation_constraint.py
+            "n_sector_constraints": n_sector_rows,
+            "n_corr_pair_constraints": n_corr_pairs,
         },
     )
 

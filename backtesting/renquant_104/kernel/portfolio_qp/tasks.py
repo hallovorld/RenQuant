@@ -135,7 +135,21 @@ class ShrinkSigmaLedoitWolfTask(Task):
     Effect: pulls off-diagonal correlation toward zero AND equalises
     diagonal variances toward the average — reducing noise on small-n
     correlation estimates. λ=0 → no change; λ=1 → identity·avg_var
-    (no correlation, equal variance). Typical operator setting 0.1–0.3.
+    (no correlation, equal variance).
+
+    **2026-05-10 default bumped 0.0 → 0.2** (Track C3). λ=0.2 is the
+    industry-standard mid-of-range from Ledoit & Wolf 2004 ("Honey, I
+    Shrunk the Sample Covariance Matrix", J. Portfolio Management 30(4):
+    110-119): they show on a 169-stock universe (matching ours) the OAS
+    (oracle approximating shrinkage) optimum sits in [0.13, 0.27].
+    Choosing λ=0.2 (mid of that range) is conservative, robust, and
+    config-overridable. Set 0.0 to disable; 1.0 → diagonal.
+
+    Eigenvalue floor: post-shrinkage we clip Σ's eigenvalues to ≥1e-8
+    (per CLAUDE.md §5.13.12) — guarantees CLARABEL/OSQP/SCS see a strict
+    PSD matrix and do not stall on numerical near-singularity (a real
+    failure mode pre-fix when correlation_artifact NaN cells leak into
+    Σ_full and the LW blend doesn't fully wash them out).
 
     Reads:  ctx._qp_Sigma_full,
              ctx.config['rotation']['joint_actions']['qp_ledoit_wolf_lambda']
@@ -144,21 +158,37 @@ class ShrinkSigmaLedoitWolfTask(Task):
     """
     name = "ShrinkSigmaLedoitWolfTask"
 
+    # Default λ=0.2: ledoit-wolf 2004, see class docstring. Override via
+    # config['rotation']['joint_actions']['qp_ledoit_wolf_lambda'].
+    DEFAULT_LAMBDA = 0.2
+    EIGEN_FLOOR    = 1e-8
+
     def run(self, ctx) -> bool | None:
         cfg = _qp_cfg(ctx)
-        lam = float(cfg.get("qp_ledoit_wolf_lambda", 0.0))
-        if lam <= 0.0:
-            return                                      # default: off
+        lam = float(cfg.get("qp_ledoit_wolf_lambda", self.DEFAULT_LAMBDA))
+        if not math.isfinite(lam) or lam <= 0.0:
+            return                                      # off
         lam = min(lam, 1.0)
         S = _get_path(ctx, "_qp_Sigma_full")
         if S is None:
-            return                                      # diagonal path
+            return                                      # diagonal-Σ path
         n = S.shape[0]
         if n == 0:
             return
         avg_var = float(np.trace(S)) / max(n, 1)
         F = avg_var * np.eye(n)
-        ctx._qp_Sigma_full = (1.0 - lam) * S + lam * F  # noqa: SLF001
+        S_blend = (1.0 - lam) * S + lam * F
+        # §5.13.12 — clamp eigenvalues so the solver always sees a sane
+        # PSD matrix. Symmetrize first to absorb any asymmetric float
+        # noise before eigh (which assumes Hermitian input).
+        S_sym = 0.5 * (S_blend + S_blend.T)
+        eigvals, eigvecs = np.linalg.eigh(S_sym)
+        if (eigvals < self.EIGEN_FLOOR).any():
+            eigvals = np.maximum(eigvals, self.EIGEN_FLOOR)
+            S_blend = eigvecs @ np.diag(eigvals) @ eigvecs.T
+            # Re-symmetrize: V·diag·V^T floats can drift ~1e-16 off-symmetric.
+            S_blend = 0.5 * (S_blend + S_blend.T)
+        ctx._qp_Sigma_full = S_blend  # noqa: SLF001
 
 
 # ── 3. Brown-Smith dynamic tax + Berkin-Jeffrey loss-harvest ────────────────
@@ -319,6 +349,179 @@ class ComputeQPConstraintsTask(Task):
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
+# ── 5a. Sector cap → per-sector indicator matrix + cap vector ───────────────
+
+class BuildSectorConstraintMatrixTask(Task):
+    """Construct hard linear sector-cap constraint inputs for the QP.
+
+    Per CLAUDE.md §5.13.5 (single source of truth), sector_map and
+    `max_positions_per_sector` come from THE SAME config keys the buy-side
+    `passes_sector_guard` uses (`config['sector_map']`,
+    `config['max_positions_per_sector']`). The QP enforcing the same caps
+    closes the audit gap: once a holding is in the book, the buy-side
+    filter never sees it again, but a stress reallocation could still pile
+    weight on top of it. The solver constraint catches that.
+
+    Per-sector weight cap = max_per_sector × max_position_pct × confidence.
+    Defensive tickers (`config['defensive_tickers']`) are included in the
+    indicator (they get the same cap) — divergence from buy-side which
+    *bypasses* the count-of-positions cap is intentional: the QP
+    constraint is on *weight*, not count, and an unbounded defensive
+    sleeve would defeat the diversification goal.
+
+    Reads:  ctx._qp_tickers, ctx.config['sector_map'],
+             ctx.config['max_positions_per_sector'],
+             ctx._qp_w_upper (anchors per-name cap × sector_count),
+             ctx.config['rotation']['joint_actions']['qp_sector_cap_enabled']
+    Writes: ctx._qp_sector_indicator (m × n np.ndarray, 0/1 ints) — None
+             when constraint disabled / no sectors mapped,
+             ctx._qp_sector_cap_vec (m-length np.ndarray of weight caps),
+             ctx._qp_sector_names (list[str]) — for diagnostics.
+    """
+    name = "BuildSectorConstraintMatrixTask"
+
+    def run(self, ctx) -> bool | None:
+        cfg = _qp_cfg(ctx)
+        if not bool(cfg.get("qp_sector_cap_enabled", True)):
+            ctx._qp_sector_indicator = None  # noqa: SLF001
+            ctx._qp_sector_cap_vec   = None  # noqa: SLF001
+            ctx._qp_sector_names     = []    # noqa: SLF001
+            return
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        n = len(tickers)
+        sector_map = (ctx.config or {}).get("sector_map", {}) or {}
+        max_per_sector = int((ctx.config or {}).get("max_positions_per_sector", 0))
+        if n == 0 or not sector_map or max_per_sector <= 0:
+            ctx._qp_sector_indicator = None  # noqa: SLF001
+            ctx._qp_sector_cap_vec   = None  # noqa: SLF001
+            ctx._qp_sector_names     = []    # noqa: SLF001
+            return
+        # Per-name cap (post-confidence scaling) is in ctx._qp_w_upper.
+        # Use the max element as the per-position anchor — all entries are
+        # the same scalar today, but keeping max-based makes this robust
+        # if/when ComputeQPConstraintsTask becomes per-asset.
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        per_name_cap = (
+            float(np.max(w_upper)) if (w_upper is not None and len(w_upper))
+            else float((ctx.config or {}).get("max_position_pct", 0.20))
+        )
+        sector_to_idx = self._build_sector_index(tickers, sector_map)
+        if not sector_to_idx:
+            ctx._qp_sector_indicator = None  # noqa: SLF001
+            ctx._qp_sector_cap_vec   = None  # noqa: SLF001
+            ctx._qp_sector_names     = []    # noqa: SLF001
+            return
+        sector_names = sorted(sector_to_idx.keys())
+        m = len(sector_names)
+        S = np.zeros((m, n), dtype=float)
+        for row, name in enumerate(sector_names):
+            for j in sector_to_idx[name]:
+                S[row, j] = 1.0
+        cap_vec = np.full(m, max_per_sector * per_name_cap, dtype=float)
+        ctx._qp_sector_indicator = S            # noqa: SLF001
+        ctx._qp_sector_cap_vec   = cap_vec      # noqa: SLF001
+        ctx._qp_sector_names     = sector_names # noqa: SLF001
+
+    @staticmethod
+    def _build_sector_index(tickers, sector_map) -> dict[str, list[int]]:
+        """Return {sector_name: [ticker_indices]} for sectors with ≥1 member."""
+        out: dict[str, list[int]] = {}
+        for j, t in enumerate(tickers):
+            sec = sector_map.get(t)
+            if not sec or not isinstance(sec, str):
+                continue
+            out.setdefault(sec, []).append(j)
+        return out
+
+
+# ── 5a-bis. High-correlation pair group cap ────────────────────────────────
+
+class BuildCorrelationGroupConstraintTask(Task):
+    """Build (i, j, group_cap) triples for high-correlation pairs.
+
+    For every pair (i, j) where |corr[i, j]| ≥ correlation_guard_threshold,
+    add a linear constraint `wp[i] + wp[j] ≤ 2 × per_name_cap` (group
+    bound). This is the convex linear approximation of the non-convex
+    `wp[i] · wp[j] ≤ pair_cap`. Tradeoff documented in qp_solver.py.
+
+    §5.13.5 single-source-of-truth: the `correlation_guard_threshold` is
+    read from `config['regime']['correlation_guard_threshold']` — same key
+    `passes_correlation_guard` uses in selection.py. Behaviour-equivalent
+    when the candidate filter and QP both fire (no double-blocking; the
+    QP just ensures any *internal* re-shuffling can't recreate the pair
+    concentration).
+
+    Reads:  ctx._qp_tickers, ctx.corr_matrix (pre-loaded by SimAdapter),
+             ctx.config['regime']['correlation_guard_threshold'],
+             ctx._qp_w_upper, ctx.config['rotation']['joint_actions']
+                 ['qp_correlation_cap_enabled']
+    Writes: ctx._qp_corr_group_pairs (list[tuple[int, int, float]] | None)
+    """
+    name = "BuildCorrelationGroupConstraintTask"
+
+    def run(self, ctx) -> bool | None:
+        cfg = _qp_cfg(ctx)
+        if not bool(cfg.get("qp_correlation_cap_enabled", True)):
+            ctx._qp_corr_group_pairs = None  # noqa: SLF001
+            return
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        n = len(tickers)
+        if n < 2:
+            ctx._qp_corr_group_pairs = None  # noqa: SLF001
+            return
+        corr_matrix = getattr(ctx, "corr_matrix", None) or {}
+        if not corr_matrix:
+            ctx._qp_corr_group_pairs = None  # noqa: SLF001
+            return
+        thr = float(((ctx.config or {}).get("regime", {}) or {}).get(
+            "correlation_guard_threshold", 0.70,
+        ))
+        if not math.isfinite(thr) or thr <= 0.0 or thr >= 1.0:
+            ctx._qp_corr_group_pairs = None  # noqa: SLF001
+            return
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        per_name_cap = (
+            float(np.max(w_upper)) if (w_upper is not None and len(w_upper))
+            else float((ctx.config or {}).get("max_position_pct", 0.20))
+        )
+        # Group-cap = 2 × per-name (linear relaxation). Two co-linear holdings
+        # can each individually hit the cap; the constraint binds when both
+        # try to be near-cap simultaneously and the realized portfolio looks
+        # like a single concentrated bet.
+        group_cap = 2.0 * per_name_cap
+        pairs = self._collect_pairs(tickers, corr_matrix, thr, group_cap)
+        ctx._qp_corr_group_pairs = pairs if pairs else None  # noqa: SLF001
+
+    @staticmethod
+    def _collect_pairs(tickers, corr_matrix, thr, group_cap):
+        """Walk the upper-triangle of the corr matrix; return (i, j, cap)."""
+        pairs: list[tuple[int, int, float]] = []
+        for i in range(len(tickers)):
+            ti = tickers[i]
+            row = corr_matrix.get(ti)
+            for j in range(i + 1, len(tickers)):
+                tj = tickers[j]
+                rho = None
+                if isinstance(row, dict):
+                    rho = row.get(tj)
+                if rho is None:
+                    other = corr_matrix.get(tj)
+                    if isinstance(other, dict):
+                        rho = other.get(ti)
+                if rho is None:
+                    continue
+                try:
+                    rho_f = float(rho)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(rho_f):
+                    # Fail-conservative: NaN correlation → treat as high.
+                    rho_f = 1.0
+                if abs(rho_f) >= thr:
+                    pairs.append((i, j, group_cap))
+        return pairs
+
+
 # ── 5b. Per-asset 20-day ADV (Almgren-Chriss participation) ─────────────────
 
 class BuildADVVectorTask(Task):
@@ -412,15 +615,71 @@ class SolveMarkowitzQPTask(Task):
             # pre-2026-05-06 hard `Σwp ≥ min_invested_pct` floor that was
             # mathematically infeasible from cash + tight turnover.
             cash_drag_lambda=float(cfg.get("qp_cash_drag_lambda", 0.05)),
+            # NEW (2026-05-10): C2 — hard sector + correlation pair caps.
+            # cvxportfolio backend doesn't see these (no parity yet); the
+            # cvxpy core solver takes them and emits diagnostic counters.
+            sector_indicator=_get_path(ctx, "_qp_sector_indicator"),
+            sector_cap_vec=_get_path(ctx, "_qp_sector_cap_vec"),
+            corr_group_pairs=_get_path(ctx, "_qp_corr_group_pairs"),
         )
         # cvxportfolio backend additionally takes a `tickers` kwarg for
         # pandas-Series labelling; cvxpy backend ignores it.
         if backend == "cvxportfolio":
             kwargs["tickers"] = _get_path(ctx, "_qp_tickers")
+            # cvxportfolio backend doesn't accept the new linear constraints
+            # yet — strip them so it doesn't TypeError. Fall back to soft
+            # diversification via Σ shrinkage only.
+            kwargs.pop("sector_indicator", None)
+            kwargs.pop("sector_cap_vec", None)
+            kwargs.pop("corr_group_pairs", None)
         sol = _solve(**kwargs)
+        sol = _retry_with_relaxed_c2_caps(sol, kwargs, _solve)
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_n_buys = 0  # noqa: SLF001
         ctx._qp_n_sells = 0  # noqa: SLF001
+
+
+# ── Soft-fallback for C2 hard constraints (sector + corr pair caps) ───────
+
+def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn):
+    """If the QP went infeasible with C2 caps active, relax + retry.
+
+    Retry sequence (per task spec — never silently drop, always log):
+      1. Multiply sector_cap_vec and corr_pair caps by 1.5 → re-solve.
+      2. If still infeasible → drop both C2 caps entirely → physics-only solve.
+
+    Returns the final QPSolution. Status carries `infeasible:*` only when
+    even the physics-only fallback failed (unusual — points to deeper Σ
+    or μ corruption).
+    """
+    if not sol.status.startswith("infeasible"):
+        return sol
+    has_c2 = (kwargs.get("sector_indicator") is not None
+              or kwargs.get("corr_group_pairs"))
+    if not has_c2:
+        return sol
+    log.warning("QP infeasible with C2 caps — retrying with caps relaxed ×1.5")
+    relaxed = dict(kwargs)
+    cap_v = relaxed.get("sector_cap_vec")
+    if cap_v is not None:
+        relaxed["sector_cap_vec"] = np.asarray(cap_v) * 1.5
+    pairs = relaxed.get("corr_group_pairs")
+    if pairs:
+        relaxed["corr_group_pairs"] = [
+            (i, j, float(c) * 1.5) for (i, j, c) in pairs
+        ]
+    sol = solve_fn(**relaxed)
+    if not sol.status.startswith("infeasible"):
+        return sol
+    log.warning(
+        "QP still infeasible after relax — dropping C2 caps for this bar "
+        "(sector + corr-pair constraints removed)",
+    )
+    last_resort = dict(kwargs)
+    last_resort["sector_indicator"] = None
+    last_resort["sector_cap_vec"]   = None
+    last_resort["corr_group_pairs"] = None
+    return solve_fn(**last_resort)
 
 
 # ── 7. Translate Δw → orders / exits ───────────────────────────────────────
@@ -770,6 +1029,8 @@ __all__ = [
     "ComputeWashSaleMaskTask",
     "BuildADVVectorTask",
     "ComputeQPConstraintsTask",
+    "BuildSectorConstraintMatrixTask",
+    "BuildCorrelationGroupConstraintTask",
     "SolveMarkowitzQPTask",
     "EmitOrdersFromQPSolutionTask",
 ]

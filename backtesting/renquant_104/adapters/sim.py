@@ -1273,13 +1273,28 @@ class SimAdapter:
             daily_returns_from_equity,
             information_ratio,
         )
+        # 2026-05-10 (Track C5): risk-free rate is now config-driven. Default
+        # 0.0 preserves byte-identical legacy behavior; production opts in
+        # via cfg["performance"]["risk_free_rate_annual"]. include_geometric
+        # adds Israelsen-2003 geometric Sharpe alongside the arithmetic form.
+        _rf_annual = float(
+            (self._config or {}).get("performance", {}).get(
+                "risk_free_rate_annual", 0.0,
+            )
+        )
         if not equity_df.empty and "portfolio" in equity_df.columns:
-            risk = compute_risk_metrics(equity_df["portfolio"], apy=apy)
+            risk = compute_risk_metrics(
+                equity_df["portfolio"],
+                apy=apy,
+                risk_free_rate=_rf_annual,
+                include_geometric=True,
+            )
         else:
             risk = {
                 "sharpe":  float("nan"), "sortino": float("nan"),
                 "calmar":  float("nan"), "max_dd":  float("nan"),
                 "ann_vol": float("nan"),
+                "sharpe_geometric": float("nan"),
             }
 
         # 2026-05-10 audit (§5.13.4): single-Sharpe-without-falsifiability
