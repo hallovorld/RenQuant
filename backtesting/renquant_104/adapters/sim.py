@@ -28,12 +28,22 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from kernel.execution import (
+    FeeConfig,
+    SlippageConfig,
+    T2CashQueue,
+    compute_buy_fees,
+    compute_sell_fees,
+    slip_fill_price,
+)
 
 log = logging.getLogger("adapters.sim")
 
@@ -177,6 +187,42 @@ class SimAdapter:
         # proposed (sell, buy) pair sets, oldest first. Only populated
         # when `rotation.persistence_bars > 0`. Capped at that window.
         self._rotation_proposals: list = []
+
+        # ── Execution model (Track Batch A, 2026-05-10) ─────────────────────
+        # Industry-grade fill model: commission schedule + slippage + T+2
+        # settlement. Three independent components, all single-source-of-
+        # truth per CLAUDE.md §5.13.5. Each is config-driven; defaults
+        # match Alpaca/IBKR retail equity (Q4 2025 schedules).
+        #
+        # Config schema (under top-level `execution`):
+        #   execution.enabled:             bool,  default True
+        #   execution.sec_fee_rate:        float, default 27.0e-6
+        #   execution.taf_per_share:       float, default 1.19e-4
+        #   execution.commission_bps:      float, default 0.0  (Alpaca = 0)
+        #   execution.half_spread_bps:     float, default 2.0  (liquid S&P)
+        #   execution.impact_bps_per_adv:  float, default 0.0  (off)
+        #   execution.t2_settlement_days:  int,   default 2
+        #   execution.legacy_no_fees:      bool,  default False — parity
+        #     flag for tests that need byte-identical pre-execution-model
+        #     behavior (skips slippage AND fees AND uses T+0). When True,
+        #     overrides `enabled`.
+        exec_cfg = self._config.get("execution", {}) or {}
+        self._exec_legacy = bool(exec_cfg.get("legacy_no_fees", False))
+        self._exec_enabled = bool(exec_cfg.get("enabled", True)) and not self._exec_legacy
+        self._fee_cfg = FeeConfig(
+            sec_fee_rate=float(exec_cfg.get("sec_fee_rate", 27.0e-6)),
+            taf_per_share=float(exec_cfg.get("taf_per_share", 1.19e-4)),
+            custom_bps=float(exec_cfg.get("commission_bps", 0.0)),
+        )
+        self._slip_cfg = SlippageConfig(
+            half_spread_bps=float(exec_cfg.get("half_spread_bps", 2.0)),
+            impact_bps_per_pct_adv=float(exec_cfg.get("impact_bps_per_adv", 0.0)),
+        )
+        self._t2_queue = T2CashQueue(
+            settlement_days=int(exec_cfg.get("t2_settlement_days", 2)),
+        )
+        # Cumulative fee tracking for diagnostic / build_result consumers.
+        self._total_fees: float = 0.0
 
         # SPY returns buffer (last 100) + previous close for daily return calc
         self._spy_returns: list[float] = []
@@ -445,6 +491,19 @@ class SimAdapter:
 
         today_ts = pd.Timestamp(today)
         today_date = today_ts.date() if hasattr(today_ts, "date") else today_ts
+
+        # ── Execution model: drain T+2 queue at top of every bar ────────────
+        # Per spec §4: first thing each bar, settle any pending sell
+        # proceeds whose settle_date <= today. This is the SINGLE callsite
+        # for drain() in the bar loop — keeps cash availability aligned
+        # between live brokers and sim.
+        # Defensive: hasattr guard for __new__-constructed test fixtures.
+        if (getattr(self, "_exec_enabled", False)
+                and hasattr(self, "_t2_queue")
+                and self._t2_queue.settlement_days > 0):
+            settled = self._t2_queue.drain(today_ts)
+            if math.isfinite(settled) and settled > 0:
+                self._cash += settled
 
         # Update SPY returns buffer
         if today_ts in self._spy_df.index:
@@ -757,6 +816,23 @@ class SimAdapter:
                 return
             price = float(df.loc[today_ts, "close"])
 
+        # ── Execution model: apply slippage to fill price (Track Batch A) ───
+        # Slippage adjustment happens BEFORE every downstream calc (gross_pnl,
+        # tax, cash, trade log) so a single source-of-truth fill price
+        # propagates everywhere. The market_price field is preserved in the
+        # closure for reference but no longer used past this point.
+        # Defensive: existing tests construct SimAdapter via __new__ (skipping
+        # __init__) — preserve byte-identical legacy behavior when the
+        # execution-model fields aren't initialized.
+        if getattr(self, "_exec_enabled", False):
+            slipped = slip_fill_price(
+                market_price=price, side="sell", shares=sell_shares,
+                adv_shares=None,
+                cfg=self._slip_cfg,
+            )
+            if _math_q.isfinite(slipped) and slipped > 0:
+                price = slipped
+
         hold_days = (today_ts.date() - hs.entry_date).days if hs.entry_date else 0
 
         # Bug 6 fix (2026-05-05 wl183 incident): under FIFO/HIFO lot
@@ -777,11 +853,27 @@ class SimAdapter:
         proceeds_basis, _ = apply_sell_lots(
             self._holdings[ticker], float(sell_shares), lot_method,
         )
-        if had_lots and proceeds_basis > 0:
+        # 2026-05-10 audit fix (§5.13.11): when proceeds_basis is non-
+        # positive (lots exhausted corner case — e.g. ensure_lots produced
+        # zero-cost lots from corrupted state), the next line would emit
+        # gross_pnl = sell_shares*price - 0 ≈ revenue, mis-classifying
+        # the disposal as 100% gain and over-taxing. Fall back to the
+        # weighted-avg entry_price so realized P&L tracks actual cost
+        # basis even when the lot ledger is degenerate.
+        if had_lots and _math_q.isfinite(proceeds_basis) and proceeds_basis > 0:
             gross_pnl = sell_shares * price - proceeds_basis
         else:
-            # Legacy path: no lots, fall back to avg-entry computation.
-            gross_pnl = sell_shares * (price - hs.entry_price)
+            # Legacy path or degenerate proceeds_basis: fall back to
+            # avg-entry computation. entry_price already guarded finite
+            # upstream in _apply_buy (SAB-2).
+            _fallback_entry = float(getattr(hs, "entry_price", 0.0) or 0.0)
+            if not _math_q.isfinite(_fallback_entry) or _fallback_entry <= 0:
+                _fallback_entry = price  # last resort: treat as flat P&L
+            gross_pnl = sell_shares * (price - _fallback_entry)
+            # Stamp proceeds_basis so downstream pnl_pct computation
+            # (had_lots branch below) sees a sane disposed basis.
+            if not (_math_q.isfinite(proceeds_basis) and proceeds_basis > 0):
+                proceeds_basis = sell_shares * _fallback_entry
 
         tax_cfg   = ctx.config.get("tax", {})
         tax = compute_trade_tax(
@@ -790,7 +882,63 @@ class SimAdapter:
             float(tax_cfg.get("long_term_rate", 0.32)),
             int(tax_cfg.get("long_term_threshold_days", 365)),
         )
-        self._cash += sell_shares * price - tax
+        # ── Execution model: sell fees + T+2 settlement (Track Batch A) ────
+        # Per §5.13.5 every fee dollar flows through compute_sell_fees;
+        # per the spec, proceeds (notional - fees) are queued for T+2
+        # settlement via the T2CashQueue, NOT credited immediately. Tax
+        # stays IMMEDIATE (matches how the IRS/withholding treats it —
+        # owed on trade date, not settle date).
+        # Defensive: __new__-constructed test fixtures bypass __init__,
+        # so getattr() with explicit defaults keeps legacy semantics.
+        _exec_on = getattr(self, "_exec_enabled", False)
+        if _exec_on:
+            sell_fees = compute_sell_fees(sell_shares, price, self._fee_cfg)
+        else:
+            sell_fees = {"sec_fee": 0.0, "taf": 0.0, "custom": 0.0, "total": 0.0}
+        notional = sell_shares * price
+        net_proceeds = notional - sell_fees["total"]
+        if hasattr(self, "_total_fees"):
+            self._total_fees += sell_fees["total"]
+
+        # 2026-05-10 audit fix (§5.13.11): every arithmetic input to the
+        # cash mutation must be finite, otherwise self._cash silently goes
+        # NaN and every subsequent _portfolio_value emits NaN. Pre-fix the
+        # guards covered the BUY path (SAB-3) and sig.quantity (Bug 8) but
+        # NOT proceeds_basis / gross_pnl / tax post-computation. Raise so
+        # the caller sees the diagnostic context instead of a silently
+        # poisoned equity curve.
+        if not (_math_q.isfinite(net_proceeds)
+                and _math_q.isfinite(tax)
+                and _math_q.isfinite(self._cash)):
+            raise ValueError(
+                f"SimAdapter._apply_sell cash NaN guard tripped: "
+                f"ticker={ticker} today={today_ts} sell_shares={sell_shares} "
+                f"price={price} proceeds_basis={proceeds_basis} "
+                f"entry_price={getattr(hs, 'entry_price', None)} "
+                f"gross_pnl={gross_pnl} tax={tax} net_proceeds={net_proceeds} "
+                f"cash_before={self._cash}"
+            )
+        # Tax is debited immediately on trade date.
+        self._cash -= tax
+        # T+0 legacy path: proceeds credited immediately. T+2 path: queue
+        # net proceeds for settlement; drain happens at top of next bar.
+        # Defensive: hasattr guard so __new__ test fixtures stay byte-
+        # identical to pre-execution-model legacy semantics.
+        _t2_on = (
+            _exec_on
+            and hasattr(self, "_t2_queue")
+            and self._t2_queue.settlement_days > 0
+        )
+        if _t2_on:
+            self._t2_queue.add_pending(today_ts, net_proceeds)
+        else:
+            self._cash += net_proceeds
+        if not _math_q.isfinite(self._cash):
+            raise ValueError(
+                f"SimAdapter._apply_sell cash became non-finite after mutation: "
+                f"ticker={ticker} today={today_ts} sell_shares={sell_shares} "
+                f"price={price} net_proceeds={net_proceeds} cash={self._cash}"
+            )
         # Wash-sale clock: stamp ONLY on full liquidation. Partial trims
         # (Kelly rebalance) intentionally don't block subsequent top-ups —
         # otherwise the position can never grow back toward Kelly target.
@@ -907,12 +1055,41 @@ class SimAdapter:
                 ticker, price, shares,
             )
             return
-        invest = shares * price
+
+        # ── Execution model: slippage + buy fees (Track Batch A) ────────────
+        # Per §5.13.11 every monetary `>` is finite-guarded; per §5.13.5
+        # routes through the single fee/slippage modules. When the
+        # `legacy_no_fees` parity flag is on, both adjustments are skipped
+        # for byte-identical pre-2026-05-10 behavior.
+        # Defensive: __new__ test fixtures may bypass __init__ — preserve
+        # legacy semantics when execution-model fields aren't initialized.
+        if getattr(self, "_exec_enabled", False):
+            fill_price = slip_fill_price(
+                market_price=price, side="buy", shares=shares,
+                adv_shares=None,  # retail order at < 0.1% ADV; impact off
+                cfg=self._slip_cfg,
+            )
+            if not math.isfinite(fill_price) or fill_price <= 0:
+                fill_price = price   # degenerate config → bail to market
+            buy_fees = compute_buy_fees(shares, fill_price, self._fee_cfg)
+        else:
+            fill_price = price
+            buy_fees = {"sec_fee": 0.0, "taf": 0.0, "custom": 0.0, "total": 0.0}
+
+        invest = shares * fill_price + buy_fees["total"]
+        if not math.isfinite(invest):
+            log.warning("SimAdapter: %s buy invest non-finite — rejecting", ticker)
+            return
         if invest > self._cash + 1e-6:
             log.warning("SimAdapter: insufficient cash for %s (need %.2f, have %.2f)",
                         ticker, invest, self._cash)
             return
         self._cash -= invest
+        if hasattr(self, "_total_fees"):
+            self._total_fees += buy_fees["total"]
+        # Lot cost basis records the post-slippage fill price; the buy
+        # commission is treated as immediate cash drag (not capitalized).
+        price = fill_price
         # If this ticker is already held (top-up path), increment shares
         # and adjust avg entry price. Otherwise fresh position.
         if ticker in self._holdings:
@@ -1026,7 +1203,12 @@ class SimAdapter:
             else pd.DataFrame(columns=["portfolio", "regime"])
         final_val = float(equity_df["portfolio"].iloc[-1]) if not equity_df.empty else self._initial_cash
         total_ret = final_val / self._initial_cash - 1.0
-        n_years = len(equity_df) / 252 if not equity_df.empty else 0
+        # 2026-05-10 audit fix: off-by-one. N equity points imply N-1
+        # inter-day return periods over (N-1)/252 trading years. Pre-fix
+        # used `len/252`, which over-counted year length by one bar and
+        # disagreed with `risk_metrics.py:241` (which already uses N-1).
+        # Pinned by tests/test_risk_metrics_extra.py::test_n_years_consistency.
+        n_years = (len(equity_df) - 1) / 252 if len(equity_df) >= 2 else 0
         apy = (1 + total_ret) ** (1 / n_years) - 1 if n_years > 0 else 0.0
 
         sells = [t for t in self._trade_log if t["action"] == "sell"]
@@ -1084,7 +1266,13 @@ class SimAdapter:
         # from the equity curve so they reflect the full OOS window. NaN
         # is propagated when there's insufficient data — caller (sim
         # runner / B2 hold-out) renders NaN as "—" rather than zero.
-        from kernel.risk_metrics import compute_risk_metrics  # noqa: PLC0415
+        from kernel.risk_metrics import (  # noqa: PLC0415
+            alpha_vs_benchmark,
+            beta_vs_benchmark,
+            compute_risk_metrics,
+            daily_returns_from_equity,
+            information_ratio,
+        )
         if not equity_df.empty and "portfolio" in equity_df.columns:
             risk = compute_risk_metrics(equity_df["portfolio"], apy=apy)
         else:
@@ -1093,6 +1281,49 @@ class SimAdapter:
                 "calmar":  float("nan"), "max_dd":  float("nan"),
                 "ann_vol": float("nan"),
             }
+
+        # 2026-05-10 audit (§5.13.4): single-Sharpe-without-falsifiability
+        # is an unverified claim. Wire DSR (Bailey/Borwein/López de Prado
+        # 2014, "The Deflated Sharpe Ratio") + PBO (Bailey/Borwein/López
+        # de Prado/Zhu 2015 CSCV) and the benchmark triple β/α/IR (Sharpe
+        # 1964 / Treynor-Black 1973) into every SimResult.
+        perf_cfg = (self._config or {}).get("performance", {}) or {}
+        n_trials = int(perf_cfg.get("n_trials", 1))
+        dsr_val = float("nan")
+        pbo_val = float("nan")
+        if not equity_df.empty and "portfolio" in equity_df.columns:
+            try:
+                from kernel.metrics import compute_perf_triple  # noqa: PLC0415
+                import numpy as _np  # noqa: PLC0415
+                rets = daily_returns_from_equity(equity_df["portfolio"]).dropna()
+                if len(rets) >= 2:
+                    triple = compute_perf_triple(
+                        returns=rets.to_numpy(dtype=float),
+                        n_trials=n_trials,
+                    )
+                    dsr_val = float(triple["dsr"])
+                    pbo_val = float(triple["pbo"])  # NaN in single-seed mode
+            except Exception as _exc:  # noqa: BLE001
+                # Falsifiability is opportunistic — never block sim emission
+                # on scipy import errors / degenerate inputs. Log + emit NaN.
+                log.warning("build_result: perf_triple computation failed: %s", _exc)
+
+        # Benchmark-relative β / α / IR vs SPY. Compare daily returns to
+        # SPY daily returns over the same date range.
+        beta_spy = float("nan")
+        alpha_spy = float("nan")
+        ir_spy = float("nan")
+        if (not equity_df.empty
+                and "portfolio" in equity_df.columns
+                and self._spy_df is not None
+                and not self._spy_df.empty
+                and "close" in self._spy_df.columns):
+            port_rets = daily_returns_from_equity(equity_df["portfolio"])
+            spy_aligned = self._spy_df["close"].reindex(equity_df.index)
+            spy_rets = daily_returns_from_equity(spy_aligned)
+            beta_spy = beta_vs_benchmark(port_rets, spy_rets)
+            alpha_spy = alpha_vs_benchmark(port_rets, spy_rets, beta=beta_spy)
+            ir_spy = information_ratio(port_rets, spy_rets)
 
         return SimResult(
             equity_df     = equity_df,
@@ -1116,4 +1347,10 @@ class SimAdapter:
             calmar        = risk["calmar"],
             max_dd        = risk["max_dd"],
             ann_vol       = risk["ann_vol"],
+            dsr                       = dsr_val,
+            pbo                       = pbo_val,
+            n_trials                  = n_trials,
+            beta_vs_spy               = beta_spy,
+            alpha_vs_spy              = alpha_spy,
+            information_ratio_vs_spy  = ir_spy,
         )

@@ -51,6 +51,17 @@ class LeanAdapter:
         self._panel_cache_ff: "dict | None"  = None
         self._panel_cache_fac: "dict | None" = None
 
+        # Execution-model parity bookkeeping (Track Batch A, 2026-05-10):
+        # LEAN's brokerage model handles fee + slippage + T+2 settlement
+        # natively when `SetBrokerageModel` is wired (main.py:Initialize).
+        # We keep a cumulative-fees mirror here so the runtime statistics
+        # report matches sim's `_total_fees` summary. Read from
+        # `algo.Portfolio.TotalFees` each commit; the running total comes
+        # straight from LEAN's brokerage model — no parallel arithmetic.
+        # Per CLAUDE.md §5.13.5 single-source-of-truth: never compute
+        # fees on the LEAN side from scratch — always read LEAN's number.
+        self._lean_fees_last_seen: float = 0.0
+
     # ── make_context ───────────────────────────────────────────────────────────
 
     def make_context(self, data: Any) -> InferenceContext:

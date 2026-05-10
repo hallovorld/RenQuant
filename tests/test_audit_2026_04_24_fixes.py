@@ -257,8 +257,10 @@ class TestSimAdapterPartialNoWashSale:
         # in _apply_sell.
         idx = src.find("def _apply_sell")
         # _apply_sell grew to >4k chars after 2026-05-06 bug-fix sprint
-        # (NaN handling + earnings + Davis-Norman). Bump window to 8000.
-        body = src[idx:idx + 8000]
+        # (NaN handling + earnings + Davis-Norman). Bumped to 8000.
+        # 2026-05-10 (Batch A execution model): added slippage + sell-fee
+        # + T+2 settlement branches — needs ~10k window now.
+        body = src[idx:idx + 10_000]
         assert "if not is_partial:" in body
         assert "_last_sell_date[ticker]" in body
 

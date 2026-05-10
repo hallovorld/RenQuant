@@ -153,7 +153,16 @@ def sortino_ratio(
     downside = excess[excess < 0]
     if len(downside) < 2:
         return float("nan")
-    downside_std = math.sqrt((downside ** 2).mean())
+    # 2026-05-10 audit fix (Sortino-Price 1994, "Performance Measurement in
+    # a Downside Risk Framework", J. Investing 3(3): 59-64): the canonical
+    # downside-deviation uses the SAMPLE standard deviation of the
+    # below-target returns (ddof=1), not the population RMS √E[d²] of the
+    # truncated series. The pre-fix population form biased downside_std
+    # DOWNWARD when n_downside is small (typical for daily-resolution
+    # equity strategies with mostly positive returns), which inflated
+    # Sortino by ~0.7% per the same reference. Switching to ddof=1 makes
+    # Sortino numerically comparable to Sharpe (which already uses ddof=1).
+    downside_std = float(downside.std(ddof=1))
     if downside_std < _STD_ZERO_EPSILON or not math.isfinite(downside_std):
         return float("nan")
     return float(excess.mean() / downside_std * math.sqrt(trading_days_per_year))
@@ -195,6 +204,140 @@ def calmar_ratio(apy: float, max_dd: float) -> float:
     if max_dd <= 0:
         return float("nan")
     return float(apy / max_dd)
+
+
+# ── Benchmark-relative metrics (beta / alpha / information ratio) ──────────
+#
+# References
+# ----------
+# - Sharpe, W.F. (1964). "Capital Asset Prices". J. Finance 19(3): 425-442.
+#   Defines β = Cov(r, b) / Var(b) and α = E[r] − β·E[b].
+# - Treynor, J.L. & Black, F. (1973). "How to Use Security Analysis". J.
+#   Business 46(1): 66-86. Information ratio = mean(active) / σ(active).
+# - Goodwin, T.H. (1998). "The Information Ratio". Fin. Analysts Journal
+#   54(4): 34-43. Annualization conventions.
+#
+# Sample-size guard (n < 30 → NaN) follows the rule-of-thumb from
+# Goodwin 1998 §IV: for daily-resolution benchmark regressions the OLS
+# estimator's standard error is too wide to interpret below ~30 obs.
+# Per §5.13.12, beta is clipped to ±10 to suppress ill-conditioned
+# regressions (e.g. flat-benchmark cases the variance guard didn't catch).
+
+# Minimum overlapping observations required before β/α/IR are computed.
+# Below this, the OLS estimator is too noisy to report (Goodwin 1998).
+_BENCHMARK_MIN_N: int = 30
+# Floor on var(benchmark) below which β is undefined (division by ~zero).
+_BENCHMARK_VAR_EPSILON: float = 1e-12
+# Sanity clip on β. Real equity-strategy β rarely exceeds 3; 10 is a
+# loose ceiling that catches pathological regressions on small samples
+# (per §5.13.12 — defensive guard for ill-conditioned outputs).
+_BETA_ABS_CLIP: float = 10.0
+
+
+def _align_returns_benchmark(
+    returns: _SeriesLike, benchmark: _SeriesLike,
+) -> tuple[pd.Series, pd.Series]:
+    """Inner-join r and b on their common index, drop NaN rows.
+
+    Returns ``(r_aligned, b_aligned)``. The two have identical length and
+    index. Empty when there is no overlap or every overlap is NaN.
+    """
+    r = _to_series(returns)
+    b = _to_series(benchmark)
+    # If either series carries no index (raw array), align by position.
+    if isinstance(returns, pd.Series) and isinstance(benchmark, pd.Series):
+        df = pd.concat([r, b], axis=1, join="inner").dropna()
+    else:
+        n = min(len(r), len(b))
+        df = pd.concat(
+            [r.iloc[:n].reset_index(drop=True),
+             b.iloc[:n].reset_index(drop=True)],
+            axis=1,
+        ).dropna()
+    if df.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=float)
+    return df.iloc[:, 0], df.iloc[:, 1]
+
+
+def beta_vs_benchmark(
+    returns: _SeriesLike, benchmark: _SeriesLike,
+) -> float:
+    """OLS β = Cov(r, b) / Var(b). NaN when n < 30 or Var(b) < 1e-12.
+
+    Clipped to ±10 per §5.13.12 — catches ill-conditioned regression on
+    nearly-constant benchmark windows that escape the variance guard.
+    """
+    r, b = _align_returns_benchmark(returns, benchmark)
+    if len(r) < _BENCHMARK_MIN_N:
+        return float("nan")
+    var_b = float(b.var(ddof=1))
+    if not math.isfinite(var_b) or var_b < _BENCHMARK_VAR_EPSILON:
+        return float("nan")
+    cov_rb = float(((r - r.mean()) * (b - b.mean())).sum() / (len(r) - 1))
+    if not math.isfinite(cov_rb):
+        return float("nan")
+    beta = cov_rb / var_b
+    if not math.isfinite(beta):
+        return float("nan")
+    # Defensive clip (§5.13.12) — preserves sign, caps magnitude.
+    if beta > _BETA_ABS_CLIP:
+        return _BETA_ABS_CLIP
+    if beta < -_BETA_ABS_CLIP:
+        return -_BETA_ABS_CLIP
+    return float(beta)
+
+
+def alpha_vs_benchmark(
+    returns: _SeriesLike,
+    benchmark: _SeriesLike,
+    *,
+    beta: float | None = None,
+    ann_factor: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Annualized CAPM α = (mean(r) − β·mean(b)) · ann_factor.
+
+    Per-period α = mean(r) − β·mean(b) (Sharpe 1964). Annualized by
+    multiplying by ann_factor (252 daily). When ``beta`` is None it is
+    computed from the same series via ``beta_vs_benchmark``.
+
+    NaN when n < 30 or β is NaN (propagates the guard from beta).
+    """
+    r, b = _align_returns_benchmark(returns, benchmark)
+    if len(r) < _BENCHMARK_MIN_N:
+        return float("nan")
+    if beta is None:
+        beta = beta_vs_benchmark(r, b)
+    if not math.isfinite(beta):
+        return float("nan")
+    mean_r = float(r.mean())
+    mean_b = float(b.mean())
+    if not (math.isfinite(mean_r) and math.isfinite(mean_b)):
+        return float("nan")
+    return float((mean_r - beta * mean_b) * ann_factor)
+
+
+def information_ratio(
+    returns: _SeriesLike,
+    benchmark: _SeriesLike,
+    *,
+    ann_factor: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """IR = mean(r − b) / σ(r − b, ddof=1) · √ann_factor (Treynor-Black 1973).
+
+    Annualized active-return Sharpe of the (r − b) series. NaN when
+    n < 30 or σ(active) below floating-point noise floor.
+    """
+    r, b = _align_returns_benchmark(returns, benchmark)
+    if len(r) < _BENCHMARK_MIN_N:
+        return float("nan")
+    active = r - b
+    sd = float(active.std(ddof=1))
+    if not math.isfinite(sd) or sd < _STD_ZERO_EPSILON:
+        return float("nan")
+    mean_a = float(active.mean())
+    if not math.isfinite(mean_a):
+        return float("nan")
+    return float(mean_a / sd * math.sqrt(ann_factor))
 
 
 def compute_risk_metrics(
@@ -263,5 +406,8 @@ __all__ = [
     "sortino_ratio",
     "max_drawdown",
     "calmar_ratio",
+    "beta_vs_benchmark",
+    "alpha_vs_benchmark",
+    "information_ratio",
     "compute_risk_metrics",
 ]

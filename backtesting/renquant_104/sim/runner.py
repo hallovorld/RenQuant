@@ -56,6 +56,20 @@ class SimResult:
     max_dd:           float = float("nan")     # max peak-to-trough drawdown (positive fraction)
     ann_vol:          float = float("nan")     # annualized return volatility
 
+    # Falsifiability layer (CLAUDE.md §5.13.4 — "Single performance number =
+    # unverified claim"). DSR corrects raw Sharpe for selection bias across
+    # n_trials configurations (Bailey-López de Prado 2014). PBO is the
+    # Probability of Backtest Overfitting via CSCV (Bailey et al. 2015) —
+    # requires multi_seed_returns to be meaningful; NaN in single-seed mode.
+    dsr:                          float = float("nan")
+    pbo:                          float = float("nan")
+    n_trials:                     int   = 1
+    # Benchmark-relative metrics vs SPY (Sharpe 1964 / Treynor-Black 1973).
+    # NaN when there are < 30 overlapping observations or no SPY series.
+    beta_vs_spy:                  float = float("nan")
+    alpha_vs_spy:                 float = float("nan")
+    information_ratio_vs_spy:     float = float("nan")
+
     @property
     def buys(self) -> list[dict]:
         return [t for t in self.trade_log if t["action"] == "buy"]
