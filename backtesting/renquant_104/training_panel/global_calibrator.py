@@ -118,6 +118,20 @@ class GlobalPanelCalibration:
         }
         p.write_text(json.dumps(payload, default=str))
 
+        # M1 PROOF-OF-CONCEPT (2026-05-10): MLflow artifact registry
+        # parallel-write. Gated on opt-in env var RENQUANT_MLFLOW_LOG=1 so
+        # the existing local-file readers (PanelScorer, ApplyGlobalCalibrationTask,
+        # preflight, fit_panel_calibrator) see no behavior change. When the
+        # env var is set, this also logs the same JSON + metadata to the
+        # MLflow tracking URI from RENQUANT_MLFLOW_TRACKING_URI (default
+        # `file:./mlruns`), so the artifact gets a durable run-id-stamped
+        # entry. Failure is logged but never raises — calibrator save must
+        # never break because mlflow flaked.
+        try:
+            _maybe_log_to_mlflow(p, payload, metadata or {})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("MLflow parallel-log failed (non-fatal): %s", exc)
+
     @classmethod
     def load(cls, path: str | Path) -> "GlobalPanelCalibration":
         payload = json.loads(Path(path).read_text())
@@ -132,6 +146,42 @@ class GlobalPanelCalibration:
             er_y   = np.asarray(payload["expected_return"]["y"], dtype=float),
             metadata = payload.get("metadata", {}),
         )
+
+
+def _maybe_log_to_mlflow(local_path: Path, payload: dict,
+                          extra_meta: dict) -> None:
+    """Gated MLflow parallel-write — see GlobalPanelCalibration.save docstring.
+
+    Single-responsibility helper: read env vars, no-op if disabled,
+    otherwise open a run and log artifact + meta.
+    """
+    import os as _os  # noqa: PLC0415
+    if _os.environ.get("RENQUANT_MLFLOW_LOG", "0") != "1":
+        return
+    tracking_uri = _os.environ.get("RENQUANT_MLFLOW_TRACKING_URI",
+                                    "file:./mlruns")
+    experiment = _os.environ.get("RENQUANT_MLFLOW_EXPERIMENT",
+                                  "renquant-panel-calibration")
+    from kernel.registry import (  # noqa: PLC0415
+        init_tracking, start_run, log_artifact_with_meta,
+    )
+    init_tracking(tracking_uri)
+    meta = {
+        "kind":         payload.get("kind"),
+        "version":      payload.get("version"),
+        "trained_date": payload.get("trained_date"),
+        "n_prob_knots": len(payload.get("probability", {}).get("x", [])),
+        "n_er_knots":   len(payload.get("expected_return", {}).get("x", [])),
+        **{k: v for k, v in extra_meta.items() if k != "metadata"},
+    }
+    with start_run(experiment, params={
+        "n_prob_knots": meta["n_prob_knots"],
+        "n_er_knots":   meta["n_er_knots"],
+        "trained_date": meta["trained_date"],
+    }) as run_id:
+        uri = log_artifact_with_meta(run_id, local_path,
+                                      artifact_path="calibrator", meta=meta)
+        log.info("MLflow parallel-log: %s (run=%s)", uri, run_id)
 
 
 def fit_global_calibrator(
