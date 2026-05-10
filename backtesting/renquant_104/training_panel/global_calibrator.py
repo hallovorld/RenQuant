@@ -358,13 +358,39 @@ def fit_global_calibrator(
         er_y = lin_er.predict(er_x.reshape(-1, 1))
     else:
         iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
-        # ER head: direct regression
-        iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_all)
+        # ER head: direct regression — but FIRST clip extreme forward returns.
+        # 2026-05-09 audit fix: pre-fix, fwd_all could contain individual ticker
+        # rows with fwd_60d = +400% (small-cap runaways, IPO pops). The isotonic
+        # then produced er_y values up to +4.01 → 32% of knots > +100%. The QP
+        # solver uses ctx.expected_return = calibrator.expected_return(score)
+        # in the μ vector → high-score tickers got μ=+4 → wildly inflated
+        # position weight + Kelly sizing.
+        # Clip to ±1 (±100% over the lookahead horizon) — defensive bound;
+        # individual rows with > 100% return are outliers, not signal-quality.
+        # Soft-warn + clip; don't reject the run since these can be legitimate
+        # tail events that should still inform "go long this kind of pattern".
+        fwd_clipped_count = int(np.sum(np.abs(fwd_all) > 1.0))
+        if fwd_clipped_count > 0:
+            log.warning(
+                "fit_global_calibrator: clipping %d/%d (%.2f%%) raw fwd_returns "
+                "to [-1.0, +1.0] before isotonic ER fit. Pre-fix, these flowed "
+                "to er_y unclipped → calibrator.expected_return() could output "
+                "+400%% for high-score tickers, wildly inflating QP μ vectors.",
+                fwd_clipped_count, len(fwd_all),
+                100 * fwd_clipped_count / max(1, len(fwd_all)),
+            )
+        fwd_for_er = np.clip(fwd_all, -1.0, 1.0)
+        iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_for_er)
         # Extract knots for JSON serialization. Use the isotonic model's own knots.
         prob_x = np.asarray(iso_p.X_thresholds_, dtype=float)
         prob_y = np.asarray(iso_p.y_thresholds_, dtype=float)
         er_x   = np.asarray(iso_er.X_thresholds_, dtype=float)
         er_y   = np.asarray(iso_er.y_thresholds_, dtype=float)
+        # Defense-in-depth: even after fwd clip, sklearn's isotonic in rare
+        # cases extrapolates knot y_thresholds_ outside the training range
+        # (e.g. degenerate data). Clip the EMITTED knots too so any caller
+        # reading the artifact directly sees sane bounds.
+        er_y = np.clip(er_y, -1.0, 1.0)
 
     # Audit fix CALIB-COLLAPSE-GUARD (2026-04-26 round-7): refuse to
     # ship a calibrator where the probability head has < 5 unique y
