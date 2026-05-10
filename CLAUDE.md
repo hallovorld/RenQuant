@@ -4,25 +4,35 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 项目状态速览（2026-05-09 — alpha158+5fund+3PEAD+3SUE promoted；real signal +0.049）
+## 🗂 项目状态速览（2026-05-09 EOD — AUDIT OPEN; 所有性能数字未经验证不可信任）
 
-> 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/`](doc/archives/sessions/)；最新 roadmap 在 [`doc/roadmap.md`](doc/roadmap.md)；失败实验记录在 [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md)。
+> 每次进入此项目时先读这段，5 分钟上下文。详细历史见 [`doc/archives/sessions/`](doc/archives/sessions/)；最新 roadmap 在 [`doc/roadmap.md`](doc/roadmap.md)；**当前审计在 [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md)**。
 
-**🟢 2026-05-09 凌晨追加里程碑**:
-1. **E49 SUE promoted** ⭐ (commit `8151943`) — Foster-Olsen-Shevlin 1984 SUE + surprise momentum + streak. real_signal lift +0.021 on TOP of PEAD baseline. 169-feat now in production.
-2. **NGBoost replaced by QuantileHead** (commit `603ab59`) — 3-quantile XGB (q=0.16/0.5/0.84) replaces single-thread NGBoost (1h+ that didn't finish). Multi-threaded ~30s. ngboost.enabled=true, σ-aware QP + Kelly path active.
-3. **Path bug fixed** (commit `1538872`) + FEATURE-HEALTH WARN (commit `e55779d`) — silent fund/PEAD all-zero failure mode caught by runtime check.
-4. **Preflight FULLY GREEN** — 5 HARD pass + 4 soft pass. P-CONFIG-FP fingerprint stamped via `_model_relevant_fields` so live + stored hashes align.
+**🔴 2026-05-09 EOD 审计触发的关键事实：**
 
-**🟢 2026-05-08 里程碑**:
-1. 早上 alpha158+5fund 163-feat XGBoost 推到生产（`ca350c0`）+ live Alpaca 真单 ACCEPTED
-2. P0 daily cron Pipeline+Tasks 架构（`3d0efee`）
-3. Calibrator refit (n_unique_y 7→85)
-4. **E47 PEAD long-horizon promoted** — Shuffle IC drop 18bp 验证真 alpha，real_signal +0.022 lift
+1. **所有"基线"数字目前都不可信任**。早上跑出 27-mo APY +6.77% / Sharpe +0.40 单次测量；同一天晚上同样 config + artifact 重跑得出 +1.97% / +0.20。这是单次测量复现失败，而 CLAUDE.md §5.2 早就要求每个新数字必须配 sanity check（A/A、shuffled-label、time-shift placebo），从未对 27-mo APY 做过 A/A multi-seed → σ_APY 未知 → 任何 APY 差异都可能纯噪声。
 
-**生产模型：** XGBoost rank:pairwise，**169 特征**（158 alpha158 + 5 SEC fund + 3 PEAD + 3 SUE），fingerprint `sha256:4f1e25989d475225`，daily cron 自动重训。Calibrator pool_ic=+0.094, n_unique_y=79。QuantileHead enabled (val μ-IC +0.021, σ calibration +0.34).
-**实盘：** Alpaca live ~$10k；昨日 PEAD-aware live trades GS/HD/SPOT cancelled，今日 SUE-promoted 169-feat 重跑。先持有 FTNT/MU/BA。
-**Watchlist：** 103 ticker（runtime live universe）/ 292 ticker（training panel）。Panel ~716k rows × 175 cols (169 feat + 6 meta)。
+2. **审计找到 17 个问题**，已修 6 个 RED（commits 9ff4984 / 0fa2557 / 7091e57 / de8d7ea / 0a9c39c / b11dadd / 501ede0）：
+   - dashboard 读错 broker DB → 修复 + 7 测试
+   - panel-ltr.json 21-feat 死文件 → 同步到 169-feat 生产 artifact
+   - sim 没传 last_sell_pls → cost-aware wash-sale 在 sim 里降级二进制 → 修 + 8 测试
+   - QP wash-sale 用二进制 + ISO 字符串日期崩溃 → 修 + 10 测试
+   - selection greedy 路径用二进制 wash-sale → 修 + 7 测试
+
+3. **未修的 YELLOW 问题**：
+   - BUG #5（asset_growth periods 修了 fetch 脚本但 `data/sec_fundamentals_daily.parquet` 是 5/8 旧版）→ 生产模型还在用 bug 的特征值。需重跑 fetch + 重训 panel
+   - WF 闸门 daily cron 用 `RQ_ALLOW_NO_WF=1` 全程绕过 → 所有 promote 实际未经 walk-forward 验证
+   - +6.77% 不可复现的根本原因未隔离（可能 sim 非确定性、可能 cron 干扰、可能我撤掉的 exec_tactics 改动）
+
+4. **执行战术（5 fix）整批撤销**（commit 501ede0 之后清理）：
+   - σ-自适应止损 (#0a)、利润分级 (#0c) 字面死代码 — 依赖 `state.sigma`，但 NGB 关了后 prod 永远是 None
+   - 时间衰减止损 (#0b) 实测 −4.33 pp APY 有害
+   - 赢家豁免 (#0e) +0.05 pp 在噪声内
+   - VWAP smart_orders 模块从未接进生产代码（grep 零引用）
+
+**生产模型：** XGBoost rank:pairwise + alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features，artifact `panel-ltr.alpha158_fund.json` 训练于 2026-05-09 03:44。NGBoost OFF。Calibrator pool_ic=+0.094。**性能：TBD pending bug-fix + A/A multi-seed protocol。**
+**实盘：** Alpaca live ~$10.5k。
+**Watchlist：** 103 ticker（runtime）/ 292 ticker（training panel）/ wl162 quality-first selected pending evaluation。
 
 **已关闭（不要再讨论）：**
 - **Macro 路线**：v1 broadcast 零梯度，v2 per-ticker β 修复 3 bug 后仍 −23% IC，v3 扩展 IC 单调递减，v4 macro-as-panel-row OOS IC −28.8%。所有 macro 形式都被否决。等 watchlist 扩到 200+ 再重评。

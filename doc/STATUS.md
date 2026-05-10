@@ -22,24 +22,17 @@
 
 ---
 
-## Honest performance baseline (2026-05-09)
+## Performance baseline — TBD (audit 2026-05-09 invalidated prior claims)
 
-```
-27-mo aggregate sim (NGB-off, 2024-01 → 2026-03):
-  APY +6.77%   Sharpe +0.40   Sortino +0.36   MaxDD 19.2%   Vol 22.8%
-  vs SPY +14.06% / +0.90 → trails by -7.3 APY pp / -0.50 Sharpe
+> **All previously published APY/Sharpe numbers are single-measurement and not reproducible.** Per `doc/AUDIT_2026-05-09.md`, the morning's "27-mo APY +6.77% / Sharpe +0.40 honest baseline" failed reproduction the same evening (re-run with same config + same artifact produced +1.97% / +0.20). Root cause not yet isolated; could be sim non-determinism, config drift, or one of the bugs the audit found.
 
-Walk-forward 3-cut on same window:
-  Cut 1 (2024-01 → 2024-12)        APY +13.68%   Sharpe +0.66
-  Cut 2 (2024-07 → 2025-06)        APY  -3.95%   Sharpe -0.06
-  Cut 3 (2025-04 → 2026-03)        APY  +6.04%   Sharpe +0.37
-  Mean: APY +5.26% ± 8.93%   Sharpe +0.32 ± 0.36
+**The work to establish a trustworthy baseline:**
+1. Fix all RED bugs from audit doc → done for: BUG #1/#2/#6/#7, fund parity, dashboard DB path, panel-ltr.json sync, sim/QP/selection cost-aware wash-sale (5 commits today).
+2. Fix remaining YELLOW bugs (BUG #5 parquet regen, WF gate cron schedule).
+3. Establish A/A multi-seed protocol per CLAUDE.md §5.2 to characterize σ_APY / σ_Sharpe.
+4. Only THEN report any number, with mean ± std from ≥5 seeds.
 
-7-cut WF mean IC: +0.039 ± 0.046 (par with Qlib alpha158)
-Pure-alpha after persistence subtraction: ~+0.018
-```
-
-**Reframe:** previous "Sharpe 1.06 / 1.10 / 2.01" claims were on code with silent corruption (BUG #1/#2/#6) AND single-cut windows. Today's +0.32 ± 0.36 is the first honest walk-forward measurement. Mean is below your Sharpe ≥ 1 floor; trails passive SPY by ~9 APY pp; sign-consistent across cuts (variance 6× lower than E27's ±2.27).
+Per user mandate 2026-05-09: "no number trustworthy until bugs fixed". Walk-forward, single-seed, and cross-cut numbers all currently unreliable.
 
 ---
 

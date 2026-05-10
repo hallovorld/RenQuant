@@ -25,21 +25,13 @@
 
 ---
 
-## Honest performance (2026-05-09)
+## Performance — TBD pending bug-fix baseline (audit 2026-05-09)
 
-```
-27-mo aggregate (NGB-off, 2024-01 → 2026-03):
-  APY +6.77%   Sharpe +0.40   Sortino +0.36   MaxDD 19.2%   Vol 22.8%
-  vs SPY +14.06% / +0.90 → trails -7.3 APY pp / -0.50 Sharpe
+Prior "27-mo APY +6.77% / Sharpe +0.40" and "3-cut WF mean +5.26%/+0.32" claims were single-measurement, **not reproducible** when re-run on same config+artifact. See `doc/AUDIT_2026-05-09.md` for root-cause analysis.
 
-3-cut walk-forward:
-  Cut 1 (2024)        APY +13.68%   Sharpe +0.66
-  Cut 2 (2024-mid → 2025-mid)        APY  -3.95%   Sharpe -0.06
-  Cut 3 (2025-Q2 → 2026-Q1)        APY  +6.04%   Sharpe +0.37
-  Mean: APY +5.26% ± 8.93%   Sharpe +0.32 ± 0.36
-```
+**Until a multi-seed A/A baseline is established (CLAUDE.md §5.2 mandate), no APY/Sharpe number from this strategy can be cited as ground truth.** All historical numbers in commit messages, prior STATUS.md, and the failed-experiments-log are upper-bound exploratory measurements, not reproducible benchmarks.
 
-Variance 6× lower than E27's ±2.27 — more stable across regimes. Sign-consistent across cuts. Below Sharpe ≥ 1 floor; structurally trails passive SPY.
+Today's 5 fix commits closed: cost-aware wash-sale (sim+QP+selection), broker-tagged DB, stale panel-ltr.json. Remaining: BUG #5 parquet regen, WF gate cron schedule.
 
 ---
 
