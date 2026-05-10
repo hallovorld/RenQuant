@@ -248,8 +248,15 @@ def rolling_features(df: pd.DataFrame) -> dict[str, pd.Series]:
         out[f"SUMP{n}"] = pos_ret.rolling(n).sum() / sum_abs
         out[f"SUMN{n}"] = neg_ret.rolling(n).sum() / sum_abs
         out[f"SUMD{n}"] = out[f"SUMP{n}"] - out[f"SUMN{n}"]
-        out[f"VMA{n}"]  = v.rolling(n).mean() / (v + EPS)
-        out[f"VSTD{n}"] = v.rolling(n).std() / (v + EPS)
+        # Per §5.13.11: zero-volume days (halts/delistings) produce ~1e16
+        # ratios when `v + EPS` is used as denominator (EPS=1e-12 → bid_avg/1e-12).
+        # Use rolling-mean as denominator floor; final fallback to 1.0 prevents
+        # inf when first rolling window is also all zero. Per §5.13.5: single
+        # denominator-floor implementation shared by all VMA/VSTD windows.
+        v_safe = v.where(np.isfinite(v) & (v > 0), v.rolling(20, min_periods=1).mean())
+        v_safe = v_safe.where(np.isfinite(v_safe) & (v_safe > 0), 1.0)
+        out[f"VMA{n}"]  = v.rolling(n).mean() / v_safe
+        out[f"VSTD{n}"] = v.rolling(n).std() / v_safe
         # WVMA: coefficient of variation of (|return| × volume)
         wv = abs_c_ret * v
         out[f"WVMA{n}"] = wv.rolling(n).std() / (wv.rolling(n).mean() + EPS)
@@ -386,6 +393,16 @@ def main() -> None:
 
     train_mask = panel["split_label"] == "train"
     log.info("Phase: ZScoreNorm per feature (train-only stats) …")
+    # Per §5.13.12: defense in depth. Replace inf/NaN, then winsorize at
+    # 0.1%/99.9% (train-only quantiles) BEFORE computing mean/std. A single
+    # 1e16 outlier in VMA/VSTD historically poisoned the column's stats
+    # and collapsed normal values to a single constant after z-score.
+    panel[feat_cols] = panel[feat_cols].replace([np.inf, -np.inf], np.nan)
+    for c in feat_cols:
+        train_col = panel.loc[train_mask, c]
+        q_lo, q_hi = train_col.quantile([0.001, 0.999])
+        if np.isfinite(q_lo) and np.isfinite(q_hi) and q_hi > q_lo:
+            panel[c] = panel[c].clip(q_lo, q_hi)
     # Save per-feature train-only means/stds as sidecar for inference-time
     # reuse (PanelLinearScorer.score_raw needs these to normalize raw
     # alpha158 features computed live).

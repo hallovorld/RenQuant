@@ -192,7 +192,19 @@ def _rolling_at(df_tail: pd.DataFrame) -> dict[str, float]:
         else:
             out[f"SUMP{n}"] = out[f"SUMN{n}"] = out[f"SUMD{n}"] = 0.0
         # Volume features
-        v_today = v[-1] if v[-1] > 0 else EPS
+        # Per §5.3: same denominator-floor invariant as `scripts/build_alpha158_qlib.py`.
+        # If today's volume is zero / NaN (halt / delisting), fall back to a
+        # rolling-mean of the prior 20 bars; if that is also zero, fall back to
+        # 1.0. This avoids the 1e16 explosion that the EPS=1e-12 fallback
+        # produced when v_today=0 (root cause of feature_stds blowup; §5.13.11).
+        v_last = v[-1]
+        if np.isfinite(v_last) and v_last > 0:
+            v_today = float(v_last)
+        else:
+            # Rolling mean of up to 20 prior bars (matches build script's window=20)
+            prior = v[-min(20, n_bars):]
+            prior = prior[np.isfinite(prior) & (prior > 0)]
+            v_today = float(prior.mean()) if prior.size > 0 else 1.0
         out[f"VMA{n}"]  = win_v.mean() / v_today
         out[f"VSTD{n}"] = win_v.std() / v_today
         # WVMA (CV of |return| × volume)
