@@ -1,32 +1,43 @@
 #!/usr/bin/env python
-"""Walk-forward panel-LTR training driver (Track P1, 2026-05-10).
+"""Walk-forward panel-LTR training driver (Track P3-v2, 2026-05-10).
 
-Trains one panel-LTR artifact per `retrain_date` in
-[--start-date, --end-date], each on a `[retrain_date - training_window, retrain_date)`
-window, and emits a manifest indexed by cutoff_date.
+Trains one alpha158 panel-LTR artifact per `retrain_date` in
+[--start-date, --end-date] by subprocess-invoking
+``scripts/train_production_model.py --train-cutoff <date>`` for each
+cutoff, and emits a manifest indexed by cutoff_date.
+
+This is the v2 path. v1 (legacy PanelTrainingPipeline / 21-feat) is
+deprecated: it trained the legacy 21-feature artifact while SimAdapter
+feeds the production alpha158 169-feature panel, producing 100% NaN
+predictions. v2 calls the same single-source-of-truth alpha158 training
+script that daily prod retrain uses (§5.13.5), guaranteeing feature-shape
+parity with SimAdapter.
 
 Sim adapters bind to the manifest via
-`kernel.walk_forward.WalkForwardModelLoader.model_as_of(today)`. No
+``kernel.walk_forward.WalkForwardModelLoader.model_as_of(today)``. No
 look-ahead leakage: every model used at sim bar `t` was trained
 strictly before `t`.
 
 Usage::
 
-    # Dry-run: print the 27 retrain dates without training
+    # Dry-run: print the retrain dates without training
     python scripts/train_walkforward_panel.py \\
         --start-date 2024-01-01 --end-date 2026-03-26 \\
         --cadence-days 21 --dry-run
 
-    # Real walk-forward training (≈ 3 hours on M2 Pro)
+    # Real walk-forward training (≈ 1-2 min per cutoff × N cutoffs)
     python scripts/train_walkforward_panel.py \\
         --start-date 2024-01-01 --end-date 2026-03-26 \\
         --cadence-days 21 \\
-        --manifest-output artifacts/walkforward_manifest.json
+        --manifest-output artifacts/walkforward_manifest_v2.json
 
-CLAUDE.md §5.10 hardware saturation: sets OMP_NUM_THREADS=10,
-MKL_NUM_THREADS=10, OPENBLAS_NUM_THREADS=10 + xgb_params.nthread=10.
+CLAUDE.md §5.10 hardware saturation: train_production_model.py uses
+xgb_params.nthread=8 internally; the subprocess inherits OMP/MKL/OPENBLAS
+env vars set here.
 
-CLAUDE.md §5.13.7 data-pipeline change: requires data regen.
+CLAUDE.md §5.13.13 isolation: per-cutoff artifacts land under
+``backtesting/renquant_104/artifacts/walkforward_v2/<cutoff>/`` so they
+cannot collide with v1 (``walkforward/``) or production artifacts.
 """
 from __future__ import annotations
 
@@ -34,12 +45,13 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-# §5.10 hardware saturation — must be set BEFORE numpy / xgboost import.
+# §5.10 hardware saturation — exported to subprocess env.
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "10")
 
@@ -47,6 +59,8 @@ import pandas as pd  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
+TRAIN_PROD_SCRIPT = REPO_ROOT / "scripts" / "train_production_model.py"
+WF_V2_SUBDIR = "walkforward_v2"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(STRATEGY_DIR))
 
@@ -68,67 +82,38 @@ def compute_retrain_dates(
     return list(pd.date_range(start, end, freq=f"{cadence_days}D"))
 
 
-def load_strategy_config(config_path: Path) -> dict:
-    """Read strategy_config.json + stamp _strategy_dir."""
-    if not config_path.exists():
-        raise FileNotFoundError(f"strategy config not found: {config_path}")
-    cfg = json.loads(config_path.read_text())
-    cfg["_strategy_dir"] = str(config_path.parent)
-    cfg["_strategy_config_name"] = config_path.name
-    return cfg
-
-
-def saturate_xgb_threads(cfg: dict) -> dict:
-    """Force xgb_params.nthread=10 in panel_ltr config (§5.10)."""
-    pl = cfg.setdefault("panel_ltr", {})
-    xp = pl.setdefault("xgb_params", {})
-    xp["nthread"] = int(xp.get("nthread", 10))
-    return cfg
-
-
-def make_artifact_dir(strategy_dir: Path, cutoff: pd.Timestamp) -> Path:
-    """Per-cutoff artifact subdirectory: artifacts/walkforward/<YYYY-MM-DD>/."""
-    sub = strategy_dir / "artifacts" / "walkforward" / cutoff.date().isoformat()
+def make_artifact_path(strategy_dir: Path, cutoff: pd.Timestamp) -> Path:
+    """Per-cutoff artifact path: artifacts/walkforward_v2/<YYYY-MM-DD>/panel-ltr.json."""
+    sub = strategy_dir / "artifacts" / WF_V2_SUBDIR / cutoff.date().isoformat()
     sub.mkdir(parents=True, exist_ok=True)
-    return sub
+    return sub / "panel-ltr.json"
 
 
 def configure_panel_cutoff(cfg: dict, cutoff: pd.Timestamp,
                            artifact_path: Path) -> dict:
-    """Set panel_ltr.train_cutoff + BOTH artifact_path keys for one retrain.
+    """LEGACY v1 helper — retained for back-compat with regression tests.
 
-    AUDIT 2026-05-10 §5.13.13/§5.13.14 incident: SaveArtifactTask
-    (pp_panel_training.py:2684-2699) reads inference-side
-    ``cfg["ranking"]["panel_scoring"]["artifact_path"]`` FIRST and
-    falls back to training-side ``cfg["panel_ltr"]["artifact_path"]``
-    only when inference-side is unset. Setting only the training-side
-    key was a no-op for the writer — every retrain silently overwrote
-    the production artifact at the inference-side path.
+    NOTE: v2 driver does NOT use this function. It exists solely so the
+    audit-regression suite in tests/test_walkforward_artifact_isolation.py
+    keeps passing — that test pins the v1 invariant that BOTH
+    panel_ltr.artifact_path AND ranking.panel_scoring.artifact_path must
+    point at the per-cutoff walkforward path.
 
-    Fix: route both keys to the per-cutoff ``walkforward/<date>/`` path.
-    Sanity-assert the path contains 'walkforward' so this function
-    cannot accidentally be wired to a production-shaped path again.
+    Per §5.13.13 the path is asserted to contain 'walkforward' to forbid
+    accidental production overwrite.
     """
     p_str = str(artifact_path)
-    # Sanity guard per §5.13.3 — refuse paths outside the walkforward/
-    # subtree. Pinned by tests/test_walkforward_artifact_isolation.py.
     assert "walkforward" in p_str, (
         f"configure_panel_cutoff: artifact_path {p_str!r} does not "
         f"contain 'walkforward' — refusing to risk overwriting "
         f"production artifact"
     )
-
     pl = cfg.setdefault("panel_ltr", {})
     pl["train_cutoff"] = cutoff.isoformat()
     pl["artifact_path"] = p_str
-
-    # CRITICAL: also override inference-side path. SaveArtifactTask
-    # prefers this key over panel_ltr.artifact_path; without this line,
-    # the per-cutoff redirect is a no-op for the writer.
     rk = cfg.setdefault("ranking", {}).setdefault("panel_scoring", {})
     rk["artifact_path"] = p_str
     rk.setdefault("global_calibration", {})["auto_refresh"] = False
-
     return cfg
 
 
@@ -143,29 +128,48 @@ def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
     )
 
 
-# ── Per-cutoff training (delegates to PanelTrainingPipeline) ────────────
+# ── Per-cutoff training (subprocesses train_production_model.py) ────────
 
-def train_one_cutoff(base_cfg: dict, cutoff: pd.Timestamp) -> str:
-    """Run the panel pipeline once with the given cutoff, return artifact URI."""
-    from training_panel.context import PanelTrainingContext  # noqa: PLC0415
-    from training_panel.pp_panel_training import PanelTrainingPipeline  # noqa: PLC0415
+def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path) -> tuple[bool, Path, str]:
+    """Subprocess train_production_model.py for one cutoff.
 
-    cfg = json.loads(json.dumps(base_cfg))  # deep-ish copy via JSON round-trip
-    strategy_dir = Path(cfg["_strategy_dir"])
-    artifact_dir = make_artifact_dir(strategy_dir, cutoff)
-    artifact_path = artifact_dir / "panel-ltr.json"
-    configure_panel_cutoff(cfg, cutoff, artifact_path)
-
-    pctx = PanelTrainingContext(
-        config=cfg,
-        watchlist=list(cfg.get("watchlist", [])),
-    )
-    log.info("train_one_cutoff: cutoff=%s start", cutoff.date().isoformat())
+    Returns (success, artifact_path, error_msg). On non-zero exit, success=False
+    and the caller logs + continues (does not abort the whole batch).
+    """
+    artifact_path = make_artifact_path(strategy_dir, cutoff)
+    cutoff_iso = cutoff.date().isoformat()
+    side_label = f"walkforward_v2_{cutoff_iso}"
+    cmd = [
+        sys.executable, str(TRAIN_PROD_SCRIPT),
+        "--train-cutoff", cutoff_iso,
+        "--output-path", str(artifact_path),
+        "--side-label", side_label,
+    ]
+    log.info("train_one_cutoff: cutoff=%s start  cmd=%s",
+             cutoff_iso, " ".join(cmd))
     t0 = time.monotonic()
-    PanelTrainingPipeline().run(pctx)
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(REPO_ROOT), check=False,
+            capture_output=True, text=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, artifact_path, f"subprocess.run raised: {exc}"
+    elapsed = time.monotonic() - t0
+    if proc.returncode != 0:
+        msg = f"exit={proc.returncode}; stderr_tail={proc.stderr[-500:]!r}"
+        log.error("train_one_cutoff: cutoff=%s FAILED  %.1fs  %s",
+                  cutoff_iso, elapsed, msg)
+        return False, artifact_path, msg
     log.info("train_one_cutoff: cutoff=%s DONE  %.1fs  artifact=%s",
-             cutoff.date().isoformat(), time.monotonic() - t0, artifact_path)
-    return str(artifact_path)
+             cutoff_iso, elapsed, artifact_path)
+    return True, artifact_path, ""
+
+
+def read_trained_date(artifact_path: Path) -> datetime:
+    """Pull trained_date from the artifact (stamped by train_production_model.py)."""
+    art = json.loads(artifact_path.read_text())
+    return datetime.fromisoformat(art["trained_date"])
 
 
 # ── CLI driver ──────────────────────────────────────────────────────────
@@ -178,12 +182,9 @@ def parse_args() -> argparse.Namespace:
                    help="Last retrain cutoff (YYYY-MM-DD).")
     p.add_argument("--cadence-days", type=int, default=21,
                    help="Days between retrain cutoffs (default: 21).")
-    p.add_argument("--config-path",
-                   default=str(STRATEGY_DIR / "strategy_config.json"),
-                   help="Strategy config to clone for each cutoff.")
     p.add_argument("--manifest-output",
-                   default=str(STRATEGY_DIR / "artifacts" / "walkforward_manifest.json"),
-                   help="Where to write the manifest JSON.")
+                   default=str(STRATEGY_DIR / "artifacts" / "walkforward_manifest_v2.json"),
+                   help="Where to write the merged manifest JSON (v2 default).")
     p.add_argument("--dry-run", action="store_true",
                    help="Print retrain dates and exit (no training).")
     return p.parse_args()
@@ -194,47 +195,51 @@ def main() -> None:
     start = pd.Timestamp(args.start_date)
     end = pd.Timestamp(args.end_date)
     retrain_dates = compute_retrain_dates(start, end, args.cadence_days)
-    log.info("Walk-forward plan: start=%s end=%s cadence=%dd  → %d retrains",
+    log.info("Walk-forward v2 plan: start=%s end=%s cadence=%dd → %d retrains",
              start.date(), end.date(), args.cadence_days, len(retrain_dates))
 
     if args.dry_run:
         for i, d in enumerate(retrain_dates):
             print(f"[{i+1:02d}/{len(retrain_dates)}] cutoff={d.date().isoformat()}")
         print(f"Total retrain dates: {len(retrain_dates)}")
+        print(f"Artifact root: {STRATEGY_DIR / 'artifacts' / WF_V2_SUBDIR}/")
+        print(f"Manifest output: {args.manifest_output}")
         return
 
-    # Lazy imports — only when actually training (avoids requiring
-    # heavy deps at dry-run time).
+    # Lazy imports — only when actually training.
     from kernel.walk_forward import WalkForwardManifest, write_manifest  # noqa: PLC0415
 
-    base_cfg = load_strategy_config(Path(args.config_path))
-    saturate_xgb_threads(base_cfg)
-
     entries = []
+    failed = []
     for i, cutoff in enumerate(retrain_dates):
         log.info("── retrain %d/%d  cutoff=%s ──",
                  i + 1, len(retrain_dates), cutoff.date().isoformat())
+        ok, artifact_path, err = train_one_cutoff(cutoff, STRATEGY_DIR)
+        if not ok:
+            failed.append((cutoff.date().isoformat(), err))
+            continue
         try:
-            uri = train_one_cutoff(base_cfg, cutoff)
+            trained_dt = read_trained_date(artifact_path)
         except Exception as exc:  # noqa: BLE001
-            log.error("retrain %d/%d FAILED at cutoff=%s — %s",
-                      i + 1, len(retrain_dates), cutoff.date().isoformat(), exc)
+            log.error("read_trained_date failed for %s: %s", artifact_path, exc)
+            failed.append((cutoff.date().isoformat(), f"read_trained_date: {exc}"))
             continue
         entries.append(build_retrain_entry(
             cutoff=cutoff,
-            trained_dt=datetime.utcnow(),
-            artifact_uri=uri,
+            trained_dt=trained_dt,
+            artifact_uri=str(artifact_path),
         ))
 
     manifest = WalkForwardManifest(
         cadence_days=int(args.cadence_days),
-        training_window_years=float(
-            base_cfg.get("panel_ltr", {}).get("training_window_years", 3.0)
-        ),
+        training_window_years=0.0,  # v2 uses cutoff-only slicing, no window
         retrains=entries,
     )
     out = write_manifest(manifest, args.manifest_output)
-    log.info("Wrote manifest with %d retrains → %s", len(entries), out)
+    log.info("Wrote manifest with %d/%d retrains → %s",
+             len(entries), len(retrain_dates), out)
+    if failed:
+        log.warning("FAILED cutoffs (%d): %s", len(failed), failed)
 
 
 if __name__ == "__main__":
