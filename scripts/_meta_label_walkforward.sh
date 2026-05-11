@@ -111,9 +111,15 @@ PY
     done
 }
 
-run_window "W1" "2024-04-01" "2024-10-01" "2024-10-01" "2025-04-01"
-run_window "W2" "2024-10-01" "2025-04-01" "2025-04-01" "2025-10-01"
-run_window "W3" "2025-04-01" "2025-10-01" "2025-10-01" "2026-03-26"
+# 2026-05-11 audit: redesigned from 6-mo train + 6-mo test to 12-mo train
+# + ~4-mo test. P4.5 with 12-mo training produced 146 events; 6-mo only
+# produced 77 events (below 100-event minimum for training). New windows:
+#   W1: train 24-04→25-04 (12mo)  test 25-04→25-08  (4mo)
+#   W2: train 24-08→25-08 (12mo)  test 25-08→25-12  (4mo)
+#   W3: train 24-12→25-12 (12mo)  test 25-12→26-03  (3+mo to end of OOS)
+run_window "W1" "2024-04-01" "2025-04-01" "2025-04-01" "2025-08-01"
+run_window "W2" "2024-08-01" "2025-08-01" "2025-08-01" "2025-12-01"
+run_window "W3" "2024-12-01" "2025-12-01" "2025-12-01" "2026-03-26"
 
 echo
 echo "[$(date '+%H:%M:%S')] ==== Walk-forward 3-window validation complete ===="

@@ -53,3 +53,7 @@ backtesting/*/artifacts/panel-transformer.json
 # Local archive (notebook snapshots, etc — not tracked)
 archive/
 knowledge/chromadb/
+
+# Strategy config backups + preview snapshots (P5 deploy artefact)
+backtesting/renquant_104/strategy_config.json.pre-*
+backtesting/renquant_104/strategy_config.json.preview_backup_*

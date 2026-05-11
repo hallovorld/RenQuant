@@ -95,7 +95,7 @@ def main() -> None:
     n_labeled   = int(labeled["meta_label"].notna().sum())
     if n_labeled > 0:
         balance = labeled["meta_label"].dropna().mean()
-        log.info("Wrote %s — triggered=%d  labeled=%d  class_balance(positive)=%.2%%",
+        log.info("Wrote %s — triggered=%d  labeled=%d  class_balance(positive)=%.2f%%",
                  out_path, n_triggered, n_labeled, balance * 100)
     else:
         log.warning("Wrote %s — no labels generated (no triggers? no future bars?)", out_path)
