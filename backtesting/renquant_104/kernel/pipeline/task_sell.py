@@ -26,19 +26,10 @@ log = logging.getLogger("kernel.pipeline.sell")
 # rebalance (kelly_trim, rotation). These ALWAYS fire even inside the
 # earnings window — the price has already moved against us, the
 # blackout doesn't change that.
-MODEL_DRIVEN_EXIT_TYPES: frozenset[str] = frozenset({
-    "model_sell",
-    "panel_conviction",
-})
-
-PATH_DRIVEN_EXIT_TYPES: frozenset[str] = frozenset({
-    "stop_loss",
-    "trailing_stop",
-    "single_day_loss",
-    "max_hold",
-    "kelly_trim",
-    "rotation",
-})
+# Canonical exit-type taxonomy (CLAUDE.md §5.13.5).
+# Refactored 2026-05-11 — kernel/exit_types owns the lookup.
+from kernel.exit_types import MODEL_DRIVEN as MODEL_DRIVEN_EXIT_TYPES  # noqa: E402
+from kernel.exit_types import PATH_DRIVEN_LEGACY as PATH_DRIVEN_EXIT_TYPES  # noqa: E402
 
 
 class PrepareHoldingTask(Task):

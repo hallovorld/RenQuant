@@ -30,12 +30,11 @@ from typing import Any
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Task
 
-# Path-rule exit types subject to meta-veto. Mirrors the
-# _PATH_RULE_EXITS set used by other audit tasks for consistency
-# (CLAUDE.md §5.13.5 — one business decision, one source).
-_PATH_RULE_EXITS: frozenset[str] = frozenset({
-    "stop_loss", "trailing_stop", "single_day_loss", "max_hold",
-})
+# Canonical exit-type taxonomy (CLAUDE.md §5.13.5 — single source).
+# Refactored 2026-05-11 — kernel/exit_types.META_LABEL_VETO_ELIGIBLE
+# owns the lookup. Only PATH_RULE_CORE names (no synonyms) because the
+# meta-label classifier was trained on those canonical exit_types.
+from kernel.exit_types import META_LABEL_VETO_ELIGIBLE as _PATH_RULE_EXITS  # noqa: E402
 
 # Regime → integer encoding — must match
 # kernel/meta_label/task_snapshot.py::_REGIME_CODE.

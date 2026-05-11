@@ -67,25 +67,9 @@ log = logging.getLogger("kernel.pipeline.panel_veto")
 
 # Exit types that are RISK-DRIVEN and must fire regardless of panel rank.
 # These are user-protective and should never be deferred just because
-# the model thinks the ticker is otherwise strong.
-# Audit fix PV-NEW-8 (2026-04-26 round-3): canonical exit_type names
-# from kernel/exits.py + JointActionTask. Hardcoded for explicitness;
-# the test_panel_rank_veto.TestRiskExitsNeverVetoed parametrizes over
-# this set so a name drift would surface immediately.
-RISK_EXIT_TYPES: frozenset[str] = frozenset({
-    "stop_loss",
-    "trailing_stop",
-    "single_day_loss",
-    "max_hold",
-    "rotation",          # already a panel-aware swap; don't undo it
-    "kelly_trim",        # Kelly-target rebalance (panel-aware via μ/σ²)
-    "joint_sell",        # panel-driven exit (already considers panel)
-    "joint_rotation",
-    # Defensive aliases — variants seen in older configs / docs:
-    "trailing_stop_loss",
-    "gap_down",
-    "max_hold_days",
-})
+# Canonical exit-type taxonomy (CLAUDE.md §5.13.5).
+# Refactored 2026-05-11 — kernel/exit_types.PANEL_VETO_BYPASS owns this.
+from kernel.exit_types import PANEL_VETO_BYPASS as RISK_EXIT_TYPES  # noqa: E402
 
 
 class PanelRankVetoTask(Task):

@@ -44,34 +44,16 @@ from .pipeline import Task
 log = logging.getLogger("kernel.pipeline.limit_sells")
 
 
-# Mirror task_panel_veto.RISK_EXIT_TYPES — these always pass through.
-# Kept inline (not imported) so this file has no peer-task dependency.
+# Canonical exit-type taxonomy (CLAUDE.md §5.13.5 — one source).
+# Refactored 2026-05-11 from inline frozenset to module import.
 #
-# Audit fix 2026-04-29: removed `panel_conviction` from this set. Conviction
-# loss is a MODEL signal (rank_score + μ both weak), not a hard price-action
-# stop. Multiple holdings can degrade conviction simultaneously in a downturn
-# → mass-exit risk. Treat panel_conviction like model_sell: subject to the
-# per-bar cap. Hard risk exits (stop_loss, trailing, gap, max_hold) remain
-# exempt because their triggers are deterministic price events, not signal.
-_RISK_EXIT_TYPES: frozenset[str] = frozenset({
-    "stop_loss",
-    "trailing_stop",
-    "single_day_loss",
-    "max_hold",
-    "rotation",
-    "kelly_trim",
-    "sdl",
-    "trailing_stop_loss",
-    "gap_down",
-    "max_hold_days",
-    "joint_sell",  # JointActionJob's bundled sell-leg also exempt
-})
-
-# Soft sells that share the per-bar cap (model_sell + panel_conviction).
-_SOFT_SELL_TYPES: frozenset[str] = frozenset({
-    "model_sell",
-    "panel_conviction",
-})
+# Audit history (2026-04-29): `panel_conviction` was moved OUT of the
+# exempt set and INTO the soft set — conviction loss is a MODEL signal
+# not a hard price stop, so it's subject to the per-bar cap. Hard
+# risk-class exits (stop_loss, trailing, gap, max_hold) stay exempt
+# because their triggers are deterministic price events.
+from kernel.exit_types import PER_BAR_CAP_EXEMPT as _RISK_EXIT_TYPES  # noqa: E402
+from kernel.exit_types import PER_BAR_CAP_SUBJECT as _SOFT_SELL_TYPES  # noqa: E402
 
 
 class LimitSellsPerBarTask(Task):

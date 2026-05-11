@@ -49,14 +49,10 @@ log = logging.getLogger("kernel.pipeline.post_stop_cooldown")
 # was bad. Time exits don't carry that signal, so blocking re-entry
 # after a max_hold creates spurious churn — the model may legitimately
 # want back in immediately if the score has refreshed. Audit P1-1.
-DEFAULT_STOP_EXIT_TYPES: frozenset[str] = frozenset({
-    "trailing_stop",
-    "trailing_stop_loss",
-    "stop_loss",
-    "single_day_loss",
-    "sdl",
-    "gap_down",
-})
+# Canonical exit-type taxonomy (CLAUDE.md §5.13.5).
+# Refactored 2026-05-11 — kernel/exit_types.POST_STOP_COOLDOWN_TRIGGERS
+# owns the lookup. Excludes max_hold (time exit, not price stop).
+from kernel.exit_types import POST_STOP_COOLDOWN_TRIGGERS as DEFAULT_STOP_EXIT_TYPES  # noqa: E402
 
 
 def is_post_stop_blocked(
