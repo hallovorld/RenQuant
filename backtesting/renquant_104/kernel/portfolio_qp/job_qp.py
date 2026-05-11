@@ -36,6 +36,7 @@ from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Job, Task
 
 from .tasks import (
+    ApplyConvictionCapTask,
     BuildADVVectorTask,
     BuildCorrelationGroupConstraintTask,
     BuildSectorConstraintMatrixTask,
@@ -142,6 +143,12 @@ class JointPortfolioQPJob(Job):
             ComputeWashSaleMaskTask(),
             BuildADVVectorTask(),                  # G3: per-asset ADV from ohlcv
             ComputeQPConstraintsTask(),            # ← per-name caps, w_upper, …
+            # 2026-05-11 A2: per-ticker conviction shrink of w_upper.
+            # OFF by default; opt-in via
+            #   rotation.joint_actions.qp_conviction_cap_enabled=true
+            # MUST run BEFORE sector/correlation tasks (they anchor on
+            # _qp_w_upper.max()).
+            ApplyConvictionCapTask(),
             # 2026-05-10 C2: hard sector + correlation pair caps. MUST run
             # AFTER ComputeQPConstraintsTask so the sector / corr Tasks can
             # read ctx._qp_w_upper for cap anchoring.

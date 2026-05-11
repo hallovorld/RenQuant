@@ -349,6 +349,74 @@ class ComputeQPConstraintsTask(Task):
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
+# ── 5b. Conviction-scaled per-name cap ──────────────────────────────────────
+
+class ApplyConvictionCapTask(Task):
+    """Shrink per-ticker `_qp_w_upper` by conviction multiplier.
+
+    Parity with greedy paths (`task_selection`, `task_rotation`,
+    `task_joint_actions`) which multiply position size by
+    `conviction_multiplier(panel_score, sizing_cfg)`. Without this, the
+    QP path treats every name with the same regime+confidence cap
+    regardless of model conviction — high- and low-rank candidates can
+    both saturate at `max_position_pct`.
+
+    Wiring: runs AFTER `ComputeQPConstraintsTask` (which writes
+    `_qp_w_upper` as a uniform vector) and BEFORE the sector/correlation
+    constraint Tasks (which anchor their caps on `_qp_w_upper.max()`).
+
+    Reads:  ctx._qp_tickers, ctx._qp_mu_source_map, ctx._qp_w_upper,
+             ctx.config["rotation"]["joint_actions"]["qp_conviction_cap_enabled"],
+             ctx.config["ranking"]["panel_scoring"]["sizing"]
+    Writes: ctx._qp_w_upper (in-place per-ticker scaling)
+             ctx._qp_conviction_caps (list[float] for diagnostics)
+
+    Default: disabled. Opt-in via `qp_conviction_cap_enabled=true`. No
+    promotion until sim shows positive APY delta (CLAUDE.md §2a).
+    """
+    name = "ApplyConvictionCapTask"
+
+    def run(self, ctx) -> bool | None:
+        cfg = _qp_cfg(ctx)
+        if not bool(cfg.get("qp_conviction_cap_enabled", False)):
+            return None
+        sizing_cfg = ((ctx.config or {}).get("ranking", {})
+                       .get("panel_scoring", {})
+                       .get("sizing", {}))
+        if not sizing_cfg or not sizing_cfg.get("enabled", False):
+            return None
+
+        # Local import to keep qp module decoupled from kernel.sizing.
+        from kernel.sizing import conviction_multiplier
+
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        src     = _get_path(ctx, "_qp_mu_source_map") or {}
+        if w_upper is None or len(tickers) == 0 or len(w_upper) != len(tickers):
+            return None
+
+        caps: list[float] = []
+        for i, t in enumerate(tickers):
+            obj = src.get(t)
+            ps = getattr(obj, "panel_score", None) if obj is not None else None
+            mult = conviction_multiplier(ps, sizing_cfg)
+            # Defensive: conviction_multiplier returns 1.0 on bad input
+            # (None / NaN / inf / malformed cfg). Clip to [0, 1] in case
+            # of future-config changes — w_upper must remain ≤ original.
+            try:
+                m = float(mult)
+            except (TypeError, ValueError):
+                m = 1.0
+            if not math.isfinite(m):
+                m = 1.0
+            m = max(0.0, min(1.0, m))
+            w_upper[i] = float(w_upper[i]) * m
+            caps.append(m)
+
+        ctx._qp_conviction_caps = caps  # noqa: SLF001
+        return None
+
+
 # ── 5a. Sector cap → per-sector indicator matrix + cap vector ───────────────
 
 class BuildSectorConstraintMatrixTask(Task):
@@ -1029,6 +1097,7 @@ __all__ = [
     "ComputeWashSaleMaskTask",
     "BuildADVVectorTask",
     "ComputeQPConstraintsTask",
+    "ApplyConvictionCapTask",
     "BuildSectorConstraintMatrixTask",
     "BuildCorrelationGroupConstraintTask",
     "SolveMarkowitzQPTask",
