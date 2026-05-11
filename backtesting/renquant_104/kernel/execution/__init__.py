@@ -14,11 +14,20 @@ Defaults match Alpaca's commission schedule (Q4 2025) and a conservative
 2 bps half-spread (≈ 4 bps round-trip on liquid S&P names).
 """
 
+from .backend import ExecutionBackend, FakeBackend
 from .fees import FeeConfig, compute_buy_fees, compute_sell_fees
 from .slippage import SlippageConfig, slip_fill_price
 from .t2_settlement import PendingCashEntry, T2CashQueue
+from .types import Fill, OrderIntent, OrderSide
 
 __all__ = [
+    # Backend ABC + reference impl (slice 1 of ExecutionPipeline refactor)
+    "ExecutionBackend",
+    "FakeBackend",
+    "Fill",
+    "OrderIntent",
+    "OrderSide",
+    # Fees / slippage / settlement primitives
     "FeeConfig",
     "compute_buy_fees",
     "compute_sell_fees",
