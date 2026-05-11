@@ -179,15 +179,14 @@ class TestStopLossSigmaAware:
 
     def test_hold_days_scaling_sigma_only(self):
         # Pure σ mode (stop_pct=0): 1 day held vs 25 days held
-        # σ-band scales with √days_held
+        # 2026-05-11 audit (A-9): days_held capped at 20, so 25-day uses
+        # √20 ≈ 4.47 not √25 = 5.
+        #   25-day position: 2 × 0.02 × √20 ≈ 17.9%, -10% loss < 17.9% → no fire
+        #   1-day position:  2 × 0.02 × √1  = 4%,    -10% loss > 4%    → fire
         today_old = datetime.date(2024, 6, 26)
         hs_old = _hs(today_old, entry_price=100.0, realized=0.02, days_ago=25)
         today_new = datetime.date(2024, 6, 2)
         hs_new = _hs(today_new, entry_price=100.0, realized=0.02, days_ago=1)
-        # 2σ × 0.02 × √25 = 20% vs 2σ × 0.02 × √1 = 4%
-        # At -10% loss:
-        #   25-day position: σ-band 20%, -10% < 20% → no fire
-        #   1-day position:  σ-band 4%,  -10% > 4%  → fire
         sig_old = check_stop_loss(
             current_price=90.0, state=hs_old,
             stop_pct=0.0, stop_n_sigma=2.0, today=today_old,
@@ -196,8 +195,48 @@ class TestStopLossSigmaAware:
             current_price=90.0, state=hs_new,
             stop_pct=0.0, stop_n_sigma=2.0, today=today_new,
         )
-        assert sig_old.should_exit is False, "25-day σ-band ≈ 20% > 10% loss"
+        assert sig_old.should_exit is False, \
+            "25-day capped to √20: σ-band ≈ 17.9% > 10% loss → no fire"
         assert sig_new.should_exit is True, "1-day σ-band ≈ 4% < 10% loss"
+
+
+class TestStopLossSigmaAwareSqrtTCapAuditA9:
+    """AUDIT REGRESSION GUARD (audit 2026-05-11, A-9): σ-aware threshold's
+    √t component must be capped at √20 so the stop doesn't grow unbounded
+    over long holds. Pre-fix, a 250-day hold at σ=2% × N=2 gave a 63%
+    σ-band — effectively disabling the stop entirely. Cap at √20 keeps
+    the cumulative band at most ~5σ × σ_daily, aligned with the realized-σ
+    rolling window in PrepareHoldingTask.
+    """
+
+    def test_threshold_is_bounded_at_t_eq_20(self):
+        # σ_daily = 2%, N = 2. Uncapped at t=100 would give 2 × 0.02 × √100 = 40%
+        # Capped at t=20: 2 × 0.02 × √20 ≈ 17.9%
+        today = datetime.date(2024, 6, 1)
+        hs = _hs(today, entry_price=100.0, realized=0.02, days_ago=100)
+        # At -25% loss: uncapped band 40% would NOT fire (40% > 25%)
+        #               capped band ~17.9% WILL fire (17.9% < 25%)
+        sig = check_stop_loss(
+            current_price=75.0, state=hs,
+            stop_pct=0.0, stop_n_sigma=2.0, today=today,
+        )
+        assert sig.should_exit is True, (
+            "100-day position with -25% loss: capped σ-band (~17.9%) should "
+            "trigger; uncapped (~40%) would not. The cap is what prevents the "
+            "stop from self-disabling over long holds."
+        )
+
+    def test_threshold_unchanged_below_cap(self):
+        # t = 15 < 20 → no cap applied → unchanged
+        today = datetime.date(2024, 6, 1)
+        hs = _hs(today, entry_price=100.0, realized=0.02, days_ago=15)
+        # σ-band = 2 × 0.02 × √15 ≈ 15.5%; at -10% no fire
+        sig = check_stop_loss(
+            current_price=90.0, state=hs,
+            stop_pct=0.0, stop_n_sigma=2.0, today=today,
+        )
+        assert sig.should_exit is False, \
+            "15-day position with -10% loss should be within σ-band"
 
 
 # ─────────────────────────────────────────────────────────────────────────

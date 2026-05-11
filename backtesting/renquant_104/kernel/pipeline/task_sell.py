@@ -94,6 +94,44 @@ class PrepareHoldingTask(Task):
         else:
             tc.holding.realized_sigma_daily = None
 
+        # 2026-05-11 L5: Wilder-smoothed ATR(14) for ATR-based trailing stop
+        # (Wilder 1978 "New Concepts in Technical Trading Systems" §9, Le Beau
+        # 1993 "Computer Analysis of the Futures Markets" Chandelier exit).
+        # TR_t = max(H_t - L_t, |H_t - C_{t-1}|, |L_t - C_{t-1}|)
+        # ATR_0 = mean(TR_1..TR_period)
+        # ATR_t = (ATR_{t-1} × (period-1) + TR_t) / period  for t > period
+        period = 14
+        if len(stock_df) >= period + 1:
+            highs = stock_df["high"].astype(float).values[-(period * 2 + 1):]
+            lows = stock_df["low"].astype(float).values[-(period * 2 + 1):]
+            closes = stock_df["close"].astype(float).values[-(period * 2 + 1):]
+            if (
+                len(highs) >= period + 1
+                and all(math.isfinite(x) for x in [highs[0], lows[0], closes[0]])
+            ):
+                import numpy as _np  # noqa: PLC0415
+                prev_close = closes[:-1]
+                hi_curr = highs[1:]
+                lo_curr = lows[1:]
+                tr = _np.maximum.reduce([
+                    hi_curr - lo_curr,
+                    _np.abs(hi_curr - prev_close),
+                    _np.abs(lo_curr - prev_close),
+                ])
+                if len(tr) >= period and _np.all(_np.isfinite(tr)):
+                    atr = float(_np.mean(tr[:period]))
+                    for i in range(period, len(tr)):
+                        atr = (atr * (period - 1) + tr[i]) / period
+                    tc.holding.realized_atr_daily = (
+                        atr if math.isfinite(atr) and atr > 0 else None
+                    )
+                else:
+                    tc.holding.realized_atr_daily = None
+            else:
+                tc.holding.realized_atr_daily = None
+        else:
+            tc.holding.realized_atr_daily = None
+
 
 class ScoreModelTask(Task):
     """Build feature frame and score model → tc.model_action."""

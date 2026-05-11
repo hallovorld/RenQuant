@@ -94,6 +94,11 @@ class HoldingState:
     # `_resolve_daily_sigma`). Revives Fix #0a (was dead-code per
     # AUDIT_2026-05-09 #1) by removing the NGB dependency.
     realized_sigma_daily: float | None = None
+    # 2026-05-11 L5 experiment: Wilder-smoothed ATR(14) for ATR-based trailing
+    # (Wilder 1978 "New Concepts in Technical Trading Systems" + Le Beau 1993
+    # "Chandelier exit"). Used by check_trailing_stop when atr_n_multiplier > 0.
+    # Written by PrepareHoldingTask each bar from last 14+ bars of high/low/close.
+    realized_atr_daily: float | None = None
     # Shares actually held at broker — populated by adapters from
     # broker positions cache. Needed to compute current-pct vs
     # kelly_target_pct for top-up decisions.
@@ -302,12 +307,19 @@ def check_take_profit(
 def check_trailing_stop(
     current_price: float,
     state: HoldingState,
-    ts_trigger: float,   # e.g. 0.20 (20% gain threshold)
-    ts_trail: float,     # e.g. 0.18 (18% below HWM)
+    ts_trigger: float,        # e.g. 0.20 (20% gain threshold)
+    ts_trail: float,          # e.g. 0.18 (18% below HWM)
+    atr_n_multiplier: float = 0.0,  # L5: Chandelier multiplier (Le Beau k≈3)
 ) -> ExitSignal:
     """BULL_CALM trailing stop — armed once peak gain crosses trigger.
 
     Uses peak gain (HWM-based) not current gain — stays armed after pullbacks.
+
+    L5 (Wilder 1978 + Le Beau 1993): when ``atr_n_multiplier > 0`` and the
+    holding has a finite ``realized_atr_daily``, the effective trail-pct
+    becomes ``max(ts_trail, k × ATR / HWM)`` — the Chandelier exit. This
+    adapts the trail width to per-ticker realized range instead of a fixed
+    %, so high-volatility names (NVDA σ_daily ≈ 5%) don't whipsaw on noise.
     """
     # 2026-05-11 audit (A-2): mirror check_take_profit:288 + check_stop_loss:398
     # NaN/inf entry_price guard. Pre-fix, a corrupted entry_price silently
@@ -322,11 +334,27 @@ def check_trailing_stop(
     peak_gain = (state.high_watermark - state.entry_price) / state.entry_price
     if peak_gain < ts_trigger:
         return _NO_EXIT
-    trail_floor = state.high_watermark * (1 - ts_trail)
+
+    # L5 ATR-based widening (Wilder 1978 §9, Le Beau 1993 Chandelier exit).
+    # Effective trail = max(legacy_pct, k × ATR / HWM). When ATR is missing
+    # or atr_n_multiplier is 0, legacy fixed pct governs (backward compat).
+    trail_pct = float(ts_trail)
+    if atr_n_multiplier and atr_n_multiplier > 0:
+        atr = getattr(state, "realized_atr_daily", None)
+        if (atr is not None
+                and math.isfinite(atr) and atr > 0
+                and math.isfinite(state.high_watermark)
+                and state.high_watermark > 0):
+            atr_trail = float(atr_n_multiplier) * atr / state.high_watermark
+            if math.isfinite(atr_trail) and atr_trail > trail_pct:
+                trail_pct = atr_trail
+
+    trail_floor = state.high_watermark * (1 - trail_pct)
     if current_price <= trail_floor:
         return ExitSignal(
             should_exit=True,
-            reason=f"trailing_stop trail_floor={trail_floor:.2f}",
+            reason=(f"trailing_stop trail_floor={trail_floor:.2f} "
+                    f"(trail_pct={trail_pct:.1%})"),
             exit_type="trailing_stop",
         )
     return _NO_EXIT
@@ -415,7 +443,14 @@ def check_stop_loss(
                 days_held = max(1, (today - state.entry_date).days)
             else:
                 days_held = 1
-            sigma_thresh = float(stop_n_sigma) * sg_daily * math.sqrt(float(days_held))
+            # 2026-05-11 audit (A-9): cap √t at √20 (~4.47×) so σ-band doesn't
+            # grow unbounded over hold time. Almgren-Chriss σ × √t is correct
+            # for cumulative Brownian drift, but at t=250d the band becomes
+            # ~50% and effectively disables the stop. Capping at 20d aligns
+            # with the realized-σ window (PrepareHoldingTask 20d rolling)
+            # and keeps σ-aware meaningful through the full hold horizon.
+            days_capped = min(days_held, 20)
+            sigma_thresh = float(stop_n_sigma) * sg_daily * math.sqrt(float(days_capped))
 
     threshold = max(abs_thresh, sigma_thresh)
     if threshold <= 0:
@@ -629,6 +664,7 @@ def compute_exits(
         current_price, state,
         float(params.get("trailing_stop_trigger_pct", 0)),
         float(params.get("trailing_stop_trail_pct",   0)),
+        float(params.get("atr_n_multiplier",          0)),
     )
     if sig.should_exit:
         return sig, state

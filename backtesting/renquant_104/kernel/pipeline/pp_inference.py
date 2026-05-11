@@ -44,6 +44,10 @@ def _build_exit_params(regime_p: dict, config: dict) -> dict:
         # 2026-05-10 σ-aware stop_loss (Fix #0a revive) — set to 0 to disable;
         # typical industry value 2.0 (Almgren-Chriss / Edwards-Magee).
         "stop_n_sigma":              regime_p.get("stop_n_sigma",              0),
+        # 2026-05-11 L5: Chandelier exit multiplier (Wilder 1978 + Le Beau 1993).
+        # When > 0 and ATR(14) is available, effective trailing trail-pct
+        # becomes max(trailing_stop_trail_pct, k × ATR / HWM). Typical k=3.
+        "atr_n_multiplier":          regime_p.get("atr_n_multiplier",          0),
         "max_single_day_loss_pct":   regime_p.get("max_single_day_loss_pct",   0),
         # Existing σ-aware SDL plumbing — previously wired in check_single_day_loss
         # but the config key was never threaded through _build_exit_params,

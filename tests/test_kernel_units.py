@@ -430,6 +430,71 @@ class TestCheckTrailingStopNaNGuard:
         assert not sig.should_exit
 
 
+class TestATRBasedTrailingL5:
+    """L5 experiment (Wilder 1978 'New Concepts in Technical Trading
+    Systems' §9 + Le Beau 1993 'Computer Analysis of the Futures Markets'
+    Chandelier exit): when ``atr_n_multiplier > 0`` AND the holding has a
+    finite ``realized_atr_daily``, the effective trail-pct becomes
+    ``max(ts_trail, k × ATR / HWM)``. Adapts the trail width to per-ticker
+    realized range, so high-volatility names don't whipsaw on noise.
+    """
+
+    def _state(self, entry=100.0, hwm=130.0, atr=None):
+        s = HoldingState(
+            entry_price=entry,
+            entry_date=datetime.date(2024, 1, 1),
+            high_watermark=hwm,
+        )
+        s.realized_atr_daily = atr
+        return s
+
+    def test_atr_widens_trail_when_atr_band_exceeds_legacy(self):
+        # ATR / HWM = 4 / 130 ≈ 3.1% → k=3 → atr_trail ≈ 9.2%
+        # legacy ts_trail = 5% — atr_trail wins
+        # HWM 130, legacy trail floor = 130 × 0.95 = 123.5
+        # atr trail floor = 130 × (1 - 0.092) ≈ 118.0
+        # current 120 → legacy WOULD fire (120 < 123.5)
+        #                ATR-mode does NOT fire (120 > 118.0)
+        state = self._state(hwm=130.0, atr=4.0)
+        sig = check_trailing_stop(
+            120.0, state, ts_trigger=0.20, ts_trail=0.05,
+            atr_n_multiplier=3.0,
+        )
+        assert not sig.should_exit, \
+            "ATR widening should prevent stop at noise-band drawdown"
+
+    def test_atr_zero_multiplier_preserves_legacy_behavior(self):
+        # atr_n_multiplier=0 → backward-compat path → ATR ignored entirely
+        state = self._state(hwm=130.0, atr=4.0)
+        sig = check_trailing_stop(
+            120.0, state, ts_trigger=0.20, ts_trail=0.05,
+            atr_n_multiplier=0.0,
+        )
+        # legacy 5% trail: floor = 130 × 0.95 = 123.5; 120 < 123.5 → fire
+        assert sig.should_exit
+        assert sig.exit_type == "trailing_stop"
+
+    def test_no_atr_data_falls_back_to_legacy(self):
+        # realized_atr_daily=None → ATR path silently skipped → legacy wins
+        state = self._state(hwm=130.0, atr=None)
+        sig = check_trailing_stop(
+            120.0, state, ts_trigger=0.20, ts_trail=0.05,
+            atr_n_multiplier=3.0,
+        )
+        assert sig.should_exit  # legacy 5% trail still fires
+
+    def test_atr_smaller_than_legacy_does_not_tighten(self):
+        # ATR=0.5, k=3 → atr_trail = 1.5/130 ≈ 1.2% < legacy 5%
+        # max() should pick legacy → legacy 5% behavior
+        state = self._state(hwm=130.0, atr=0.5)
+        sig = check_trailing_stop(
+            120.0, state, ts_trigger=0.20, ts_trail=0.05,
+            atr_n_multiplier=3.0,
+        )
+        # legacy still wins, fires at 120 < 123.5
+        assert sig.should_exit
+
+
 class TestCheckStopLoss:
     def test_fires_at_threshold(self):
         state = HoldingState(
