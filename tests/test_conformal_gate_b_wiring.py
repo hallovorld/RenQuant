@@ -37,10 +37,15 @@ from kernel.panel_pipeline.task_quality_floor import (  # noqa: E402
 
 def _ctx_with_strategy_dir(strategy_dir: Path,
                             regime: str = "BULL_CALM") -> InferenceContext:
+    # 2026-05-11 sim/prod isolation: production lookup default is
+    # artifacts/prod/gate_b_thresholds.json. Tests still write to the
+    # flat tmp_path/artifacts/<file> for isolation, so explicitly
+    # override the artifact path via the new config key.
     ctx = InferenceContext(
         config={
             "_strategy_dir": str(strategy_dir),
             "ranking": {"panel_scoring": {"quality_floor": {
+                "gate_b_artifact_path": "gate_b_thresholds.json",
                 "edge_sharpe_floor": {
                     "enabled": True,
                     "use_conformal": True,
