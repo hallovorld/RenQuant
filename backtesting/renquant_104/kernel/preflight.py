@@ -80,7 +80,7 @@ class PreflightFailed(RuntimeError):
 def _check_model_artifact(config: dict, strategy_dir: Path) -> PreflightCheck:
     """P-MODEL-ARTIFACT: panel-ltr.json exists + parses."""
     panel_cfg = config.get("panel_ltr", {})
-    rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = strategy_dir / rel
     if not p.exists():
         return PreflightCheck(
@@ -110,7 +110,7 @@ def _check_best_iter(config: dict, strategy_dir: Path) -> PreflightCheck:
     to trade on an undertrained model.
     """
     panel_cfg = config.get("panel_ltr", {})
-    rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = strategy_dir / rel
     if not p.exists():
         return PreflightCheck(
@@ -181,7 +181,7 @@ def _check_config_fingerprint(config: dict, strategy_dir: Path) -> PreflightChec
     asset_embeddings flip — the four-incidents class from 2026-04-27/28.
     """
     panel_cfg = config.get("panel_ltr", {})
-    rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = strategy_dir / rel
     if not p.exists():
         return PreflightCheck(
@@ -246,7 +246,7 @@ def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
     """P-WATCHLIST: config watchlist length consistent with training."""
     wl = config.get("watchlist") or []
     panel_cfg = config.get("panel_ltr", {})
-    rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = strategy_dir / rel
     if not p.exists():
         return PreflightCheck(
@@ -295,7 +295,7 @@ def _check_feature_coverage(
     dynamic case.
     """
     panel_cfg = config.get("panel_ltr", {})
-    panel_rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    panel_rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
 
     ngb_cfg = (config.get("ranking", {})
                        .get("panel_scoring", {})
@@ -305,7 +305,7 @@ def _check_feature_coverage(
             "P-FEATURE-COVER", "soft", True,
             "NGBoost disabled in config — skip",
         )
-    ngb_rel = ngb_cfg.get("artifact_path", "artifacts/ngboost-head.json")
+    ngb_rel = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
 
     panel_p = strategy_dir / panel_rel
     ngb_p   = strategy_dir / ngb_rel
@@ -414,10 +414,10 @@ def _check_artifact_run_id_alignment(
     corrupted. Soft check (old artifacts don't have run_id yet).
     """
     panel_cfg  = config.get("panel_ltr", {})
-    ltr_rel    = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    ltr_rel    = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     ngb_cfg    = (config.get("ranking", {}).get("panel_scoring", {})
                   .get("ngboost", {}))
-    ngb_rel    = ngb_cfg.get("artifact_path", "artifacts/ngboost-head.json")
+    ngb_rel    = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
     ltr_path   = strategy_dir / ltr_rel
     ngb_path   = strategy_dir / ngb_rel
     for p in (ltr_path, ngb_path):
@@ -492,7 +492,7 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
     cal_cfg = ((config.get("ranking", {})
                        .get("panel_scoring", {})
                        .get("global_calibration", {})) or {})
-    rel = cal_cfg.get("artifact_path", "artifacts/panel-rank-calibration.json")
+    rel = cal_cfg.get("artifact_path", "artifacts/prod/panel-rank-calibration.json")
     p = strategy_dir / rel
     if not p.exists():
         return PreflightCheck(

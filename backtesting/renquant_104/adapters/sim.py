@@ -361,7 +361,7 @@ class SimAdapter:
         panel_cfg = self._config.get("ranking", {}).get("panel_scoring", {})
         if not panel_cfg.get("enabled", False):
             return None
-        path = Path(panel_cfg.get("artifact_path", "artifacts/panel-ltr.json"))
+        path = Path(panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json"))
         if not path.is_absolute():
             path = self._strategy_dir / path
         if not path.exists():
@@ -469,7 +469,7 @@ class SimAdapter:
                               .get("ngboost", {}))
         if not ngb_cfg.get("enabled", False):
             return None
-        path = Path(ngb_cfg.get("artifact_path", "artifacts/ngboost-head.json"))
+        path = Path(ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json"))
         if not path.is_absolute():
             path = self._strategy_dir / path
         if not path.exists():

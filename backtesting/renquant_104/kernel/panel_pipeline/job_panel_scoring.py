@@ -680,7 +680,7 @@ class LoadGlobalCalibrationTask(Task):
         # Pooled calibrator — always attempted (acts as fallback).
         if getattr(ctx, "_global_calibrator", None) is None:
             pooled_path = _resolve(Path(gc_cfg.get(
-                "artifact_path", "artifacts/panel-rank-calibration.json",
+                "artifact_path", "artifacts/prod/panel-rank-calibration.json",
             )))
             try:
                 ctx._global_calibrator = GlobalPanelCalibration.load(pooled_path)  # noqa: SLF001
@@ -829,7 +829,7 @@ class LoadNGBoostTask(Task):
         if head is not None:
             return
 
-        artifact = ngb_cfg.get("artifact_path", "artifacts/ngboost-head.json")
+        artifact = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
         p = Path(artifact)
         if not p.is_absolute():
             strategy_dir = ctx.config.get("_strategy_dir")

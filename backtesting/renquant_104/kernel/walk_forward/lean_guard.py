@@ -58,7 +58,7 @@ def assert_lean_panel_no_leakage(
     if not panel_cfg.get("enabled", True):
         return
 
-    artifact_rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    artifact_rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     artifact_full = Path(strategy_dir) / artifact_rel
 
     trained_date = _read_trained_date(artifact_full)
