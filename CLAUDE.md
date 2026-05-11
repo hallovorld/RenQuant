@@ -180,6 +180,45 @@ Apply to: model architecture, loss, optimizer, preprocessing, label construction
 
 **5.13.15 Safety gate in code ≠ safety gate enforced in production.** Every safety gate ships TWO artifacts: (a) gate function + tests, AND (b) a scheduled cron (plist + `.sh`) that invokes it WITHOUT override. If only (a), the gate is decoration. (`_check_wf_gate` was committed with tests, but every daily promote set `RQ_ALLOW_NO_WF=1` — theatrical gate.)
 
+### 5.14 — Design of Experiments (DOE) for parameter sweeps
+
+**5.14.1 Use canonical DOE, not ad-hoc one-knob-at-a-time.** When tuning ≥2 numeric knobs that can interact (stop_loss × trailing × halt × σ-aware; learning_rate × depth × subsample; etc.), one-knob-at-a-time is **forbidden** — it misses 2-way interactions and over-counts main effects under confounding. Pick the methodology by stage:
+
+| Stage | Question | Method | Runs | Reference |
+|---|---|---|---|---|
+| Screening | "Which knobs matter at all?" | Plackett-Burman | ~k+4 | Plackett & Burman 1946 *Biometrika* 33:305 |
+| Screening (with 2-way) | "Which knobs + which pairs matter?" | 2-level Fractional Factorial 2^(k-p), Resolution IV+ | 8-32 | Box-Hunter-Hunter 2005 ch.6 |
+| Optimization | "Where is the optimum?" | **Box-Behnken** or Central Composite Design | 13-46 | Box & Behnken 1960 *Technometrics* 2:455; Box & Wilson 1951 *J. Royal Stat. Soc.* 13:1 |
+| Confirmation | "Does the predicted optimum actually win?" | 2-3 runs at predicted optimum + DSR/PBO | 3-5 | §5.13.4; Bailey-López de Prado 2014 *J. Portfolio Mgmt* 40(5):94 |
+
+Default to **Box-Behnken at 3 levels** for ≤6 knobs in continuous-tunable regions inside the legal config domain. Quadratic response surface `y = β₀ + Σβᵢxᵢ + Σβᵢⱼxᵢxⱼ + Σβᵢᵢxᵢ²` captures main effects + 2-way interactions + curvature with ≈25 runs (4 knobs) or ≈46 runs (6 knobs).
+
+**5.14.2 Always include center points.** 3-5 replicates at the design center serve two purposes: (a) lack-of-fit test for the quadratic surface, (b) `σ²_pure` estimate for proper response-surface inference. Single-seed-deterministic sims (RenQuant case) still need ≥1 center to anchor the surface, even if σ²_pure = 0.
+
+**5.14.3 Cite the DOE library, not the reinvention.** Default tooling:
+- `pyDOE2.bbdesign(k, center=N)` — Box-Behnken matrix
+- `pyDOE2.ccdesign(k, alpha='r')` — rotatable CCD
+- `pyDOE2.fracfact("a b c ab")` — fractional factorial
+- `sklearn.preprocessing.PolynomialFeatures(degree=2)` + `LinearRegression` — fit surface
+- `scipy.optimize.minimize(..., bounds=...)` — optimum on fitted surface
+
+Re-deriving the design matrix by hand = §5.12 violation.
+
+**5.14.4 Multiple-comparison correction is mandatory.** With N design points the winner's headline Sharpe is **inflated** by selection-bias. Apply both:
+1. **Deflated Sharpe Ratio** (Bailey-López de Prado 2014). Sim runner already computes DSR with `n_trials = N_design_points`. Winner gates on DSR > 0 (not raw SR).
+2. **Probability of Backtest Overfitting via CSCV** (Bailey, Borwein, López de Prado & Zhu 2015 *J. Comp. Finance* 14(1)). PBO > 50% → winner is overfit; reject. RenQuant code: `sim/runner.py::run_backtest_multi_seed` returns PBO when ≥2 seeds.
+
+Quote multiple-tested numbers as `Sharpe_raw=X / DSR=Y / PBO=Z%` in any report — never just raw SR.
+
+**5.14.5 Knob bounds come from baseline distribution analysis, not author preference.** Before picking levels, **extract the relevant percentile from baseline** — e.g., for `max_single_day_loss_pct`, pull the p90/p95/p99 of observed worst single-day-position-drops; for `stop_loss_pct`, pull the cumulative-loss percentile of trades that exited via stop. Bounds at empirically meaningful breakpoints, not round numbers. Round-number bounds (5%, 10%, 15%) are §5.12 violations — "exploratory, will tune via A/B" gets re-tuned forever.
+
+**5.14.6 Interaction-aware reporting.** Every DOE report must show:
+1. Main-effects plot (each knob's β coefficient with confidence interval)
+2. 2-way interaction plots for any significant βᵢⱼ
+3. Contour / heatmap of the fitted surface in the top-2 knob plane
+4. Pareto frontier across competing objectives (APY vs MaxDD, etc.)
+5. The optimum is the point on the surface, **not** the best of the N evaluated runs (the surface is the inference; the runs are samples).
+
 ---
 
 ## Documentation Index
