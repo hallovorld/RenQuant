@@ -294,6 +294,15 @@ class InferencePipeline:
         from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415
         MonitorIdleStreakTask().run(ctx)
 
+        # P4.1 (2026-05-11) — meta-label training data capture.
+        # MetaLabelLoggingJob.should_skip returns True unless
+        # config.meta_label_training.enabled = true AND
+        # ctx.snapshot_logger is set by the adapter. No-op in prod.
+        from kernel.meta_label.job_meta_label_log import MetaLabelLoggingJob  # noqa: PLC0415
+        _ml_job = MetaLabelLoggingJob()
+        if not _ml_job.should_skip(ctx):
+            _ml_job.run(ctx)
+
         # Audit fix ROT-COUNTER (Bug L, 2026-04-25): pre-fix this logged
         # `len(ctx.rotations)` which is "pairs CONSIDERED by find_rotation_pairs",
         # not "pairs EMITTED to broker". Iter3 produced rotations=1 in the log

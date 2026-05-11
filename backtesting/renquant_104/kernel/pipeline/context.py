@@ -118,6 +118,16 @@ class InferenceContext:
     # Both fields are transient: cleared at the start of every ExecutionPipeline
     # run so a stale value from the previous bar can't poison this bar.
     execution_backend: Any = None        # kernel.execution.ExecutionBackend | None
+
+    # ── Meta-label snapshot logger (P4.1, 2026-05-11) ────────────────────────
+    # Adapter attaches a kernel.meta_label.SnapshotLogger when
+    # `meta_label_training.enabled` is true in config. The
+    # MetaLabelLoggingJob (last in InferencePipeline) calls
+    # ``snapshot_logger.record(row)`` for every held ticker per bar so the
+    # post-sim training pipeline (P4.2+P4.3) has per-day per-position
+    # features to fit a triple-barrier exit classifier on. None in prod /
+    # untrained sims — Job's should_skip handles that case.
+    snapshot_logger: Any = None          # kernel.meta_label.SnapshotLogger | None
     fills: list = field(default_factory=list)  # list[kernel.execution.Fill]
 
 

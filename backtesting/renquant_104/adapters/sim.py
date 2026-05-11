@@ -233,6 +233,23 @@ class SimAdapter:
         self._trade_log:    list[dict]  = []
         self._rotation_log: list[dict]  = []
 
+        # ── Meta-label snapshot logger (P4.1, 2026-05-11) ──────────────────
+        # Owned by adapter so it persists across bars. Attached to ctx in
+        # make_context(); the MetaLabelLoggingJob's SnapshotHoldingsTask
+        # writes one row per held ticker per bar. Dumped on build_result()
+        # to data/position_day_snapshots.parquet (path from config).
+        # Disabled (None) when `meta_label_training.enabled` is false.
+        ml_cfg = self._config.get("meta_label_training", {}) or {}
+        if ml_cfg.get("enabled", False):
+            from kernel.meta_label import SnapshotLogger  # noqa: PLC0415
+            self._meta_label_logger = SnapshotLogger()
+            self._meta_label_output_path = str(
+                ml_cfg.get("output_path", "data/position_day_snapshots.parquet")
+            )
+        else:
+            self._meta_label_logger = None
+            self._meta_label_output_path = None
+
         # ── Optional SQLite decision-trace ──────────────────────────────────
         # sim writes to a SEPARATE DB (persistence.sim_db_path, default
         # data/sim_runs.db) so notebook experimentation doesn't pollute
@@ -585,6 +602,11 @@ class SimAdapter:
 
         # Hand prior streak counters to MonitorIdleStreakTask; it writes back.
         ctx.monitor_state = dict(self._monitor_state)
+
+        # P4.1 (2026-05-11) — attach meta-label snapshot logger if enabled.
+        # None when config.meta_label_training.enabled is false → the
+        # MetaLabelLoggingJob's should_skip handles the prod / no-train path.
+        ctx.snapshot_logger = self._meta_label_logger
 
         # Rotation V1 persistence gate: hand over the last N bars' proposed
         # (sell, buy) pair sets. BuildPairsTask reads via rotation_cfg
@@ -1206,6 +1228,30 @@ class SimAdapter:
     def build_result(self):
         """Return a SimResult equivalent to the legacy hand-written runner."""
         from sim.runner import SimResult  # noqa: PLC0415
+
+        # P4.1 (2026-05-11) — flush per-day position-snapshot buffer to
+        # parquet. No-op if meta_label_training was disabled (logger=None)
+        # or the adapter was constructed via __new__() for testing
+        # (no _meta_label_logger attr). Wrapped in try/except so a parquet
+        # I/O hiccup doesn't kill the whole result builder — the sim
+        # metrics are the primary output.
+        _ml_log = getattr(self, "_meta_label_logger", None)
+        _ml_out = getattr(self, "_meta_label_output_path", None)
+        if _ml_log is not None and _ml_out:
+            try:
+                out_path = Path(_ml_out)
+                if not out_path.is_absolute():
+                    out_path = Path(self._strategy_dir).parent.parent / out_path
+                _ml_log.dump_to_parquet(out_path)
+                log.info(
+                    "SimAdapter.build_result: dumped %d position-day snapshots → %s",
+                    _ml_log.n_rows(), out_path,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "SimAdapter.build_result: snapshot dump failed (%s); "
+                    "continuing with SimResult build", exc,
+                )
 
         equity_df = pd.DataFrame(self._equity_curve).set_index("date") if self._equity_curve \
             else pd.DataFrame(columns=["portfolio", "regime"])
