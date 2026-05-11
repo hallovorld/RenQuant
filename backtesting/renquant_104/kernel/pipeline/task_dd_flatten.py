@@ -103,4 +103,31 @@ class DrawdownFlattenTask(Task):
         # halt_pct — once we flatten we shouldn't immediately rebuy.
         # DrawdownCircuit resume logic still controls future bars.
         ctx.skip_buys = True
+
+        # 2026-05-11 — record a post-flatten cooldown date so
+        # FlattenCooldownGateTask blocks new buys for `cooldown_bars`
+        # business days even after DrawdownCircuit's resume threshold
+        # would have re-enabled them. Prevents the S-3 death spiral
+        # where flatten → buy → flatten → buy realises losses on every
+        # cycle. cooldown_bars=0 disables the cooldown entirely (still
+        # backward-compatible with the flatten-only mode).
+        try:
+            cooldown_bars = int(cfg.get("cooldown_bars", 0))
+        except (TypeError, ValueError):
+            cooldown_bars = 0
+        if cooldown_bars > 0:
+            try:
+                today_iso = ctx.today.isoformat()
+            except Exception:  # noqa: BLE001
+                today_iso = None
+            if today_iso is not None:
+                ms = ctx.monitor_state if isinstance(ctx.monitor_state, dict) else {}
+                ms["flatten_last_date_iso"] = today_iso
+                ms["flatten_cooldown_bars"] = cooldown_bars
+                ctx.monitor_state = ms
+                log.info(
+                    "DrawdownFlattenTask: cooldown armed — buys blocked "
+                    "for %d business days from %s.",
+                    cooldown_bars, today_iso,
+                )
         return None

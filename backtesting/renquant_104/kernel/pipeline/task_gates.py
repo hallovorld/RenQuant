@@ -10,6 +10,75 @@ from kernel.config import BEAR, BULL_VOLATILE
 log = logging.getLogger("kernel.pipeline.gates")
 
 
+class FlattenCooldownGateTask(Task):
+    """Gate -1 (2026-05-11): post-flatten cooldown.
+
+    When :class:`DrawdownFlattenTask` fires a HARD FLATTEN, it stamps
+    ``ctx.monitor_state["flatten_last_date_iso"]`` and
+    ``flatten_cooldown_bars``. This gate blocks buys for that many
+    business days regardless of DrawdownCircuit's resume threshold.
+
+    Solves the S-3 death-spiral pathology: when flatten fires and the
+    drawdown immediately recovers below ``drawdown_resume_pct``,
+    DrawdownGate re-enables buys; new positions are bought into a still-
+    fragile market, then the next drop triggers another flatten,
+    realising fresh losses on every cycle (observed: 38× flatten cycles
+    in S-3 sim → 96% MaxDD vs 44% golden).
+
+    Disabled when ``risk.drawdown_flatten.cooldown_bars`` is unset or 0.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        ms = ctx.monitor_state if isinstance(ctx.monitor_state, dict) else None
+        if not ms:
+            return None
+        last_iso = ms.get("flatten_last_date_iso")
+        cd_bars  = ms.get("flatten_cooldown_bars")
+        if not last_iso or not cd_bars:
+            return None
+        try:
+            cd_n = int(cd_bars)
+        except (TypeError, ValueError):
+            return None
+        if cd_n <= 0:
+            return None
+        import datetime as _dt  # noqa: PLC0415
+        try:
+            last_dt = _dt.date.fromisoformat(str(last_iso))
+        except ValueError:
+            return None
+        today = ctx.today
+        # ctx.today is a date in sim, datetime in live — normalize.
+        if isinstance(today, _dt.datetime):
+            today = today.date()
+        if not isinstance(today, _dt.date):
+            return None
+        # Cooldown window: [last_flatten_date + 1, last_flatten_date + cd_n]
+        # inclusive of cd_n business days. Use calendar-day arithmetic
+        # since SimAdapter ticks on business days only; on weekends this
+        # function isn't invoked anyway.
+        days_since = (today - last_dt).days
+        if days_since <= 0:
+            # Same bar — flatten just fired; ensure buys still blocked.
+            ctx.skip_buys = True
+            ctx.buy_blocked = True
+            return False
+        if days_since <= cd_n:
+            ctx.skip_buys = True
+            ctx.buy_blocked = True
+            log.info(
+                "FlattenCooldownGateTask: post-flatten cooldown active "
+                "(day %d of %d since flatten %s) — buys blocked.",
+                days_since, cd_n, last_iso,
+            )
+            return False
+        # Expired — clear the cooldown stamp so subsequent bars don't
+        # re-check forever.
+        ms.pop("flatten_last_date_iso", None)
+        ms.pop("flatten_cooldown_bars", None)
+        return None
+
+
 class DrawdownGateTask(Task):
     """Gate 0: if drawdown circuit breaker already fired, block buys."""
 
