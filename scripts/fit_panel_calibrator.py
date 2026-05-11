@@ -251,20 +251,27 @@ def main() -> None:
     # above + NGBoostSaveTask.
     # 2026-05-11 F6: --scorer-artifact CLI flag overrides config-derived
     # path so a sim-only calibrator can pair with a sim-only scorer
-    # without mutating the config.
+    # without mutating the config. A relative --scorer-artifact path
+    # resolves against REPO_ROOT (so caller can pass shell-relative
+    # paths like 'backtesting/.../sim/foo.json'); config-derived paths
+    # resolve against strategy_dir (the legacy contract).
     if args.scorer_artifact:
-        scorer_artifact_rel = args.scorer_artifact
+        scorer_path = (
+            Path(args.scorer_artifact)
+            if Path(args.scorer_artifact).is_absolute()
+            else REPO_ROOT / args.scorer_artifact
+        )
     else:
         scorer_artifact_rel = (
             config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
             or panel_cfg.get("artifact_path")
             or "artifacts/panel-ltr.json"
         )
-    scorer_path = (
-        Path(scorer_artifact_rel)
-        if Path(scorer_artifact_rel).is_absolute()
-        else strategy_dir / scorer_artifact_rel
-    )
+        scorer_path = (
+            Path(scorer_artifact_rel)
+            if Path(scorer_artifact_rel).is_absolute()
+            else strategy_dir / scorer_artifact_rel
+        )
     log.info("Loading panel scorer: %s", scorer_path)
     scorer = PanelScorer.load(scorer_path)
     nan_cols = list(panel_cfg.get("nan_prone_cols", []))

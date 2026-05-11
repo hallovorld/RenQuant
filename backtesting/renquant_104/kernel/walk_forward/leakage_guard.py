@@ -42,8 +42,10 @@ def assert_no_leakage(
     model_trained_date: Any,
     sim_today: Any,
     context: str = "",
+    *,
+    lookahead_days: int = 0,
 ) -> None:
-    """Raise ValueError if model_trained_date >= sim_today.
+    """Raise ValueError if model could have seen training labels at/after sim_today.
 
     Both legacy static-model load AND walk-forward per-bar lookup route
     through this. The leakage check that should have been there from
@@ -66,13 +68,26 @@ def assert_no_leakage(
     """
     trained = _to_timestamp(model_trained_date, label="model_trained_date")
     today = _to_timestamp(sim_today, label="sim_today")
-    if trained >= today:
+    # 2026-05-11 G1 fix — when lookahead_days > 0, training labels reach
+    # `trained + lookahead_days` (calendar days, conservative upper bound).
+    # E.g. fwd_60d_excess at cutoff 2024-01-01 saw prices through ~2024-03-01.
+    if lookahead_days and lookahead_days > 0:
+        last_label_seen = trained + pd.tseries.offsets.BDay(int(lookahead_days))
+    else:
+        last_label_seen = trained
+    if last_label_seen >= today:
         ctx = f" [{context}]" if context else ""
+        la_note = (
+            f" + lookahead_days={lookahead_days} → last label-seen "
+            f"{last_label_seen.date().isoformat()}"
+            if lookahead_days else ""
+        )
         raise ValueError(
             f"Look-ahead leakage detected{ctx}: model trained_date "
-            f"{trained.date().isoformat()} is not strictly before sim "
-            f"today {today.date().isoformat()}. The model has been "
-            f"trained on labels that include the sim's evaluation window "
-            f"— results would be inflated by data leakage. Use a "
-            f"walk-forward manifest with cutoff_date < every sim bar."
+            f"{trained.date().isoformat()}{la_note} is not strictly "
+            f"before sim today {today.date().isoformat()}. The model "
+            f"was trained on labels that may include forward returns "
+            f"reaching into the sim's evaluation window — results would "
+            f"be inflated by data leakage. Use a walk-forward manifest "
+            f"with cutoff_date + lookahead_days < every sim bar."
         )

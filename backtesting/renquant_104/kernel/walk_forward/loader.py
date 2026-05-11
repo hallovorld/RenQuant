@@ -52,6 +52,12 @@ class RetrainEntry:
     cutoff_date: pd.Timestamp
     trained_date: pd.Timestamp
     artifact_uri: str
+    # 2026-05-11 G1: forward-return horizon used to construct training
+    # labels. ``cutoff_date + lookahead_days`` is the upper bound on
+    # data the model has "seen" via its labels. Sim bars must satisfy
+    # ``today > cutoff_date + lookahead_days`` to avoid leak. Default 0
+    # = no forward labels (classification target / point-in-time only).
+    lookahead_days: int = 0
 
 
 def _resolve_manifest_path(raw: "str | Path") -> Path:
@@ -88,6 +94,7 @@ def _parse_entry(r: dict) -> RetrainEntry:
         cutoff_date=cutoff,
         trained_date=trained,
         artifact_uri=str(r["artifact_uri"]),
+        lookahead_days=int(r.get("lookahead_days", 0)),
     )
 
 
@@ -141,21 +148,31 @@ class WalkForwardModelLoader:
               the moment the retrain script ran and is always ~"now").
         """
         today_ts = pd.Timestamp(today)
-        eligible = [e for e in self._entries if e.cutoff_date < today_ts]
+        # 2026-05-11 G1: a fold is eligible only when
+        #   cutoff_date + lookahead_days < today
+        # (NOT just cutoff_date < today). For fwd_60d_excess labels this
+        # pushes the choice ~60 trading days back relative to today so the
+        # fold's forward labels can never reach into the current bar.
+        def _safe_last_label_date(e: RetrainEntry) -> pd.Timestamp:
+            if e.lookahead_days > 0:
+                return e.cutoff_date + pd.tseries.offsets.BDay(e.lookahead_days)
+            return e.cutoff_date
+        eligible = [e for e in self._entries if _safe_last_label_date(e) < today_ts]
         if not eligible:
             raise ValueError(
-                f"WalkForwardModelLoader: no retrain with cutoff_date "
-                f"< {today_ts.date().isoformat()} in manifest "
+                f"WalkForwardModelLoader: no retrain with cutoff_date + "
+                f"lookahead_days < {today_ts.date().isoformat()} in manifest "
                 f"{self._manifest_path} (entries={len(self._entries)}). "
-                f"Either the sim window starts before the first retrain "
-                f"or the manifest is empty."
+                f"Either the sim window starts before any fold's safe-label "
+                f"date or the manifest is empty. For fwd_60d labels the sim "
+                f"start must be ≥ first_cutoff + 60 trading days."
             )
         chosen = eligible[-1]
         # Built-in invariants per the contract.
-        assert chosen.cutoff_date < today_ts, (
+        assert _safe_last_label_date(chosen) < today_ts, (
             f"WalkForwardModelLoader internal invariant violated: chosen "
-            f"cutoff_date {chosen.cutoff_date.isoformat()} >= today "
-            f"{today_ts.isoformat()}"
+            f"safe_last_label_date {_safe_last_label_date(chosen).isoformat()} "
+            f">= today {today_ts.isoformat()}"
         )
         assert chosen.trained_date >= chosen.cutoff_date, (
             f"WalkForwardModelLoader internal invariant violated: chosen "
@@ -170,11 +187,17 @@ class WalkForwardModelLoader:
         # AUDIT 2026-05-10 P3.2 sim crash: prior bug passed trained_date
         # which always fired the guard because trained_date=2026-05-10
         # is never < any pre-2026-05-10 sim bar.
+        # 2026-05-11 G1: pass the manifest's lookahead_days so the guard
+        # enforces `cutoff_date + lookahead_days < today` (not just
+        # `cutoff_date < today`). Required for fwd_60d_excess-trained
+        # folds — otherwise sim bars in (cutoff, cutoff+60d] silently
+        # leak forward labels into the inference window.
         assert_no_leakage(
             chosen.cutoff_date,
             today_ts,
             context=f"WalkForwardModelLoader.model_as_of("
                     f"today={today_ts.date().isoformat()})",
+            lookahead_days=chosen.lookahead_days,
         )
         if chosen.artifact_uri in self._cache:
             return self._cache[chosen.artifact_uri]

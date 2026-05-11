@@ -14,7 +14,7 @@ fit_global_calibrator with the predictions + actual returns.
 Output: backtesting/renquant_104/artifacts/panel-rank-calibration.json
 """
 from __future__ import annotations
-import json, logging, sys
+import argparse, json, logging, sys
 from pathlib import Path
 import numpy as np, pandas as pd, xgboost as xgb
 
@@ -26,15 +26,57 @@ log = logging.getLogger("fit-calib-direct")
 
 
 def main():
-    panel_path = REPO / "data" / "alpha158_291_fundamental_dataset.parquet"
-    art_path   = REPO / "backtesting/renquant_104/artifacts/panel-ltr.alpha158_fund.json"
-    out_path   = REPO / "backtesting/renquant_104/artifacts/panel-rank-calibration.json"
+    # 2026-05-11 audit G2: prod artifacts moved to artifacts/prod/.
+    # Defaults updated; CLI args added so sim + ablation paths can override.
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--scorer-artifact", default=None,
+        help="Path to panel-LTR XGB JSON. Defaults to artifacts/prod/panel-ltr.alpha158_fund.json. "
+             "Relative paths resolve against repo root. Use a sim-only scorer "
+             "(trained with cutoff < sim_start) to get a leak-free sim calibrator.",
+    )
+    p.add_argument(
+        "--out", default=None,
+        help="Output calibrator path. Defaults to artifacts/prod/panel-rank-calibration.json.",
+    )
+    p.add_argument(
+        "--panel", default=None,
+        help="Panel parquet. Defaults to data/alpha158_291_fundamental_dataset.parquet.",
+    )
+    p.add_argument(
+        "--data-start", default=None,
+        help="ISO date. Drop scoring dates < this. Used with --data-end for "
+             "true OOS calibration (scorer trained ≤T → score (T, T+window)).",
+    )
+    p.add_argument(
+        "--data-end", default=None,
+        help="ISO date. Drop scoring dates >= this. Must be ≤ "
+             "(sim_start - lookahead_days - safety_buffer) for leak-free sim.",
+    )
+    args = p.parse_args()
+
+    panel_path = Path(args.panel) if args.panel else REPO / "data" / "alpha158_291_fundamental_dataset.parquet"
+    art_path = (
+        Path(args.scorer_artifact)
+        if args.scorer_artifact and Path(args.scorer_artifact).is_absolute()
+        else (REPO / args.scorer_artifact) if args.scorer_artifact
+        else REPO / "backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.json"
+    )
+    out_path = (
+        Path(args.out)
+        if args.out and Path(args.out).is_absolute()
+        else (REPO / args.out) if args.out
+        else REPO / "backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json"
+    )
     LABEL_60D  = "fwd_60d_excess"
 
     log.info("Loading panel + panel-LTR artifact...")
     art = json.loads(art_path.read_text())
     feat_cols = art["feature_cols"]
-    log.info("Artifact fingerprint=%s  features=%d", art["config_fingerprint"], len(feat_cols))
+    # 2026-05-11: walkforward-fold artifacts skip config_fingerprint stamping
+    # (§5.13.13). Production artifacts have it. Both should work here.
+    fingerprint = art.get("config_fingerprint", "<walkforward — no fingerprint>")
+    log.info("Artifact fingerprint=%s  features=%d", fingerprint, len(feat_cols))
 
     booster = xgb.Booster()
     booster.load_model(bytearray(art["booster_raw_json"].encode("utf-8")))
@@ -44,6 +86,18 @@ def main():
     log.info("Panel: rows=%d tickers=%d dates %s..%s",
              len(panel), panel["ticker"].nunique(),
              panel["date"].min().date(), panel["date"].max().date())
+
+    # 2026-05-11: optional date window filter for OOS sim calibration.
+    if args.data_start:
+        start = pd.Timestamp(args.data_start)
+        before = len(panel)
+        panel = panel[panel["date"] >= start]
+        log.info("--data-start=%s: filtered %d → %d rows", args.data_start, before, len(panel))
+    if args.data_end:
+        end = pd.Timestamp(args.data_end)
+        before = len(panel)
+        panel = panel[panel["date"] < end]
+        log.info("--data-end=%s: filtered %d → %d rows", args.data_end, before, len(panel))
 
     # Score the entire panel — predictions are RAW XGB output (already
     # operating on z-scored features since the panel was z-scored at build time)
@@ -102,8 +156,14 @@ def main():
     metadata = dict(calib.metadata)
     # Stamp the source artifact path so we can detect drift later
     metadata["scorer_artifact"] = str(art_path)
-    metadata["scorer_artifact_fingerprint"] = art["config_fingerprint"]
+    metadata["scorer_artifact_fingerprint"] = fingerprint
     metadata["scorer_oos_mean_ic"] = float(np.mean(ics))
+    # 2026-05-11: record OOS window for future audits.
+    if args.data_start:
+        metadata["data_window_start"] = args.data_start
+    if args.data_end:
+        metadata["data_window_end"] = args.data_end
+    metadata["lookahead_days_used"] = 60
 
     payload = {
         "version": 1,

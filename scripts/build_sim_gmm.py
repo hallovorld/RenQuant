@@ -122,26 +122,20 @@ def main() -> None:
              np.linalg.norm(gmm.means_, axis=1).round(3).tolist(),
              gmm.weights_.round(3).tolist())
 
-    # Label clusters: highest-mean-realized-vol → BULL_VOLATILE (or BEAR if
-    # also low return), highest-return → BULL_CALM, middle → BEAR/CHOPPY.
-    # Per kernel.regime.label_regimes: largest mean-of-vol-in-scaled-space
-    # gets BULL_VOLATILE; lowest return gets BEAR; rest CHOPPY/BULL_CALM by
-    # return ranking. We replicate the simple Boyd-Liu heuristic here:
-    # sort by (return, -vol) → top BULL_CALM, mid BULL_VOLATILE, bot BEAR.
-    # NB this is the prod label heuristic; matches existing artifact.
-    inv_means = scaler.inverse_transform(gmm.means_)
-    cluster_labels = [None] * 3
-    # Lowest-return cluster → BEAR
-    bear_idx = int(np.argmin(inv_means[:, 0]))
-    cluster_labels[bear_idx] = "BEAR"
-    # Of the remaining 2, higher-vol → BULL_VOLATILE, lower → BULL_CALM.
-    rem = [i for i in range(3) if i != bear_idx]
-    if inv_means[rem[0], 1] >= inv_means[rem[1], 1]:
-        cluster_labels[rem[0]] = "BULL_VOLATILE"
-        cluster_labels[rem[1]] = "BULL_CALM"
-    else:
-        cluster_labels[rem[0]] = "BULL_CALM"
-        cluster_labels[rem[1]] = "BULL_VOLATILE"
+    # 2026-05-11 G3 fix: use the SAME label heuristic as production
+    # (training/regime.RegimeGMM._auto_label): sort clusters by
+    # 20d_realized_vol ASC → [lowest-vol=BULL_CALM, mid=BULL_VOLATILE,
+    # highest=BEAR]. Audit Round 2 caught this drift — sim was using a
+    # return-first then vol heuristic, producing different cluster_labels
+    # than prod and changing the semantic regime each bar falls into.
+    feature_cols = list(feat.columns)
+    centers = scaler.inverse_transform(gmm.means_)
+    inv_df = pd.DataFrame(centers, columns=feature_cols)
+    vol_order = inv_df["20d_realized_vol"].argsort().values
+    cluster_labels = [""] * 3
+    cluster_labels[vol_order[0]] = "BULL_CALM"
+    cluster_labels[vol_order[1]] = "BULL_VOLATILE"
+    cluster_labels[vol_order[2]] = "BEAR"
 
     out_path = (
         Path(args.out) if args.out else
