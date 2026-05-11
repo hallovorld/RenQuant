@@ -395,6 +395,41 @@ class TestCheckTrailingStop:
         assert not sig.should_exit
 
 
+class TestCheckTrailingStopNaNGuard:
+    """AUDIT REGRESSION GUARD (audit 2026-05-11, A-2): check_trailing_stop
+    must guard ``state.entry_price`` against non-finite values, matching
+    the audit Issue 18/19 fix already applied to ``check_take_profit:288``
+    and ``check_stop_loss:398``. Pre-fix, a NaN entry_price (from a
+    corrupted state mutation or fill drop-through) silently bypassed the
+    ``<= 0`` guard (NaN comparisons all False) and propagated NaN
+    through ``peak_gain`` → trailing never armed → trailing_stop dead
+    for the affected position.
+    """
+
+    def _state(self, entry, hwm=125.0):
+        return HoldingState(
+            entry_price=entry,
+            entry_date=datetime.date(2024, 1, 1),
+            high_watermark=hwm,
+        )
+
+    def test_nan_entry_price_returns_no_exit(self):
+        import math
+        sig = check_trailing_stop(
+            100.0, self._state(entry=float("nan")),
+            ts_trigger=0.20, ts_trail=0.18,
+        )
+        assert not sig.should_exit
+        assert sig.exit_type == ""
+
+    def test_inf_entry_price_returns_no_exit(self):
+        sig = check_trailing_stop(
+            100.0, self._state(entry=float("inf")),
+            ts_trigger=0.20, ts_trail=0.18,
+        )
+        assert not sig.should_exit
+
+
 class TestCheckStopLoss:
     def test_fires_at_threshold(self):
         state = HoldingState(

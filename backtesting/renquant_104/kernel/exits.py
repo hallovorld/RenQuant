@@ -309,7 +309,15 @@ def check_trailing_stop(
 
     Uses peak gain (HWM-based) not current gain — stays armed after pullbacks.
     """
-    if ts_trigger <= 0 or ts_trail <= 0 or state.entry_price <= 0:
+    # 2026-05-11 audit (A-2): mirror check_take_profit:288 + check_stop_loss:398
+    # NaN/inf entry_price guard. Pre-fix, a corrupted entry_price silently
+    # bypassed `<= 0` (NaN comparisons all False) and propagated NaN through
+    # peak_gain → `< ts_trigger` False → trailing never armed → exit dead.
+    import math  # noqa: PLC0415 — match check_take_profit / check_stop_loss pattern
+    if (ts_trigger <= 0
+            or ts_trail <= 0
+            or not math.isfinite(state.entry_price)
+            or state.entry_price <= 0):
         return _NO_EXIT
     peak_gain = (state.high_watermark - state.entry_price) / state.entry_price
     if peak_gain < ts_trigger:
