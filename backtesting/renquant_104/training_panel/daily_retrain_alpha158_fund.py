@@ -61,8 +61,12 @@ class DailyRetrainContext:
     sec_fund_panel:      Path = REPO / "data" / "sec_fundamentals_daily.parquet"
     fund_merged_panel:   Path = REPO / "data" / "alpha158_291_fundamental_dataset.parquet"
     xgb_artifact_src:    Path = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
-    xgb_artifact_dst:    Path = REPO / "backtesting" / "renquant_104" / "artifacts" / "panel-ltr.alpha158_fund.json"
-    calibrator_artifact: Path = REPO / "backtesting" / "renquant_104" / "artifacts" / "panel-rank-calibration.json"
+    # 2026-05-11 sim/prod isolation: prod artifacts live under artifacts/prod/.
+    # The flat artifacts/<file>.json paths these used to write to are no longer
+    # served by the prod runner; without this fix daily retrain succeeded but
+    # live trading would read the stale frozen model forever.
+    xgb_artifact_dst:    Path = REPO / "backtesting" / "renquant_104" / "artifacts" / "prod" / "panel-ltr.alpha158_fund.json"
+    calibrator_artifact: Path = REPO / "backtesting" / "renquant_104" / "artifacts" / "prod" / "panel-rank-calibration.json"
 
     # Run telemetry (populated as Tasks execute)
     skipped: list[str] = field(default_factory=list)

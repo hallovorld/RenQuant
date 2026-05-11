@@ -74,8 +74,13 @@ if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
 fi
 
 # ── Step 2: Re-fit calibrator on current production model ────────────────
+# 2026-05-11 sim/prod isolation: explicit --out so the calibrator lands
+# under artifacts/prod/ (without --out the script derives a flat-path
+# orphan from the panel artifact's stem that prod runner won't read).
 echo "--- Step 2: Re-fit global calibrator ---"
-if ! "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104; then
+PROD_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json"
+if ! "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104 \
+        --out "$PROD_CAL"; then
     echo "Calibrator fit FAILED — prior calibrator preserved."
     notify "RenQuant 104 MONTHLY-FAIL" "Calibrator fit failed; prior calibrator unchanged. Check $LOG"
     exit 1

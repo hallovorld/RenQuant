@@ -92,7 +92,11 @@ fi
 # If WF gate then rejects, the prior trustworthy model would be gone.
 # Per CLAUDE.md §5.5 (rollback rehearsal mandate), backup BEFORE retrain
 # and restore on WF failure.
-ART_DIR="$REPO_DIR/backtesting/renquant_104/artifacts"
+# 2026-05-11 sim/prod isolation: prod artifacts moved to artifacts/prod/.
+# Before this fix, ACTIVE_ART pointed at the now-empty flat path, so the
+# `[ -f "$ACTIVE_ART" ]` backup guard always failed silently and rollback
+# never copied anything → §5.5 rehearsal invariant decoration-only.
+ART_DIR="$REPO_DIR/backtesting/renquant_104/artifacts/prod"
 ACTIVE_ART="$ART_DIR/panel-ltr.alpha158_fund.json"
 ACTIVE_CAL="$ART_DIR/panel-rank-calibration.json"
 ROLLBACK_ART="$ART_DIR/panel-ltr.alpha158_fund.weekly_rollback_$DATE.json"
@@ -146,7 +150,7 @@ fi
 # ── Step 5: Inspect gate metadata + summarize ─────────────────────────────
 GATE_SUMMARY=$("$PYTHON" -c "
 import json
-m = json.load(open('$STAGING_ARTIFACT'))
+m = json.load(open('$ACTIVE_ART'))
 gate = m.get('wf_gate_metadata') or m.get('metadata', {}).get('wf_gate_metadata') or {}
 sharpe = gate.get('wf_3cut_sharpe_mean')
 apy    = gate.get('wf_3cut_apy_mean')
