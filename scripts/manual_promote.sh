@@ -27,7 +27,8 @@ echo "This bypasses the weekly walk-forward gate. Use ONLY for emergencies."
 echo
 
 # 1. Confirm artifact path
-DEFAULT_STAGING="$REPO_DIR/backtesting/renquant_104/artifacts/panel-ltr.staging.json"
+# 2026-05-11 sim/prod isolation: staging artifact lives under prod/.
+DEFAULT_STAGING="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-ltr.staging.json"
 read -p "Staging artifact path [$DEFAULT_STAGING]: " STAGING
 STAGING="${STAGING:-$DEFAULT_STAGING}"
 if [ ! -f "$STAGING" ]; then

@@ -254,7 +254,10 @@ class RunPanelTrainingTask(FullTrainingTask):
         panel_cfg.setdefault("neutralize_features", True)
         panel_cfg.setdefault("nan_prone_cols",      [])
         panel_cfg.setdefault("xgb_params",          {})
-        panel_cfg.setdefault("artifact_path",       "artifacts/panel-ltr.json")
+        # 2026-05-11 sim/prod isolation: prod artifacts live in artifacts/prod/.
+        # Default rebased so training without an explicit artifact_path
+        # writes to the prod path the runner reads, not a flat orphan.
+        panel_cfg.setdefault("artifact_path",       "artifacts/prod/panel-ltr.alpha158_fund.json")
 
         artifact_out = Path(panel_cfg["artifact_path"])
         if not artifact_out.is_absolute():
