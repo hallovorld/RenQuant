@@ -38,6 +38,26 @@ Track-record discipline: **walk-forward defensible** (no single-cut promotions p
 
 ## P0 — by ROI (Sharpe-lift / effort)
 
+### ★ Execution-tactic block (added 2026-05-09 EOD after trade-level audit)
+
+Trade-level audit on Cut 3 (159 closed trades) revealed 3× systematic leakage in exit logic. Highest ROI is fixing **how we exit**, not the model. All 5 fixes implemented as independent config toggles, ablation-tested, WF-validated.
+
+| # | Fix | Reference | Expected impact |
+|---|---|---|---|
+| 0a | **σ-aware stop_loss** | Wilder 1978 *New Concepts in Technical Trading Systems* §5; Kestner 2003 *Quantitative Trading Strategies* ch.6 | 24 stop_loss exits avg -12.58% (current); ~half over-bleeding due to wrong-vol stops. Estimated +0.5 pp APY |
+| 0b | **Time-decayed stop tightening** | Lo 2007 "Adaptive Markets Hypothesis"; Schwager 1992 *New Market Wizards* | After N days held, tighten stop. Catches model-said-exit-but-stop-not-yet bleeders |
+| 0c | **Profit-target ladder (1.5σ / 3σ / runner)** | Kestner 2003 ch.7; Murphy 1999 *Technical Analysis*; Schwager *Wizards* | Ladder out 25%/25%/50%. Currently 14 trailing_stop captured +27% all-or-nothing; ladder locks gains progressively |
+| 0d | **VWAP execution over MOO** | Almgren-Chriss 2000 J. Risk; Bertsimas-Lo 1998 | -5 to -10 bps slippage savings per RT. Modest but compounds over 300 trades/yr |
+| 0e | **single_day_loss σ-aware + unrealized-gate** | Lo-Mamaysky-Wang 2000; observed: 4 SDL exits avg +12.75% (tripping winners) | Stop-out-winners is pure leakage. Add unrealized<0 gate or raise σ multiplier |
+
+**Pass-gate (each):** WF 3-cut Δ Sharpe ≥ +0.05 over current golden + sanity (no exit-reason-specific overfit).
+
+**Ablation order** (cheap-first):
+1. Implement all 5 as opt-in config flags (1 day)
+2. Single 12-mo window ablation per fix (~30min × 5 = 2.5h)
+3. WF 3-cut on winners (~75min × winners)
+4. Combine wins, retest combo
+
 ### 1. ⭐ Walk-forward gate enforcement (free; prevents fictional regressions)
 
 **Cost:** 0.5 day. **Expected lift:** 0 direct; prevents future cherry-picked promotes.
@@ -261,6 +281,16 @@ Existing `migrate_experiment_configs_to_db.py`. Remaining: live runner + retrain
 ### 17. Test suite hygiene
 
 ~14k tests; trim slow tests, add sim-level integration coverage (V8 leverage bug shipped because no sim test pinned cvxportfolio constraints).
+
+### 18. ~~Daily dashboard refresh~~ ✅ DONE 2026-05-09
+
+Markdown dashboard at `doc/dashboard.md`, auto-rendered by GitHub. Refreshed by `scripts/build_dashboard.py` wired into `scripts/daily_104.sh` (post-cron, non-fatal).
+
+Sections: portfolio value/P/L/HWM, recent trades, 21d P/L table (deployment-spike-filtered), model health (panel fingerprint + retrain age + latest WF mean IC), top-5 priorities pulled from this roadmap.
+
+**Tests:** `tests/test_dashboard.py` — 12 cases (unit / integration / E2E markdown-validity).
+
+**Manual refresh:** `python scripts/build_dashboard.py --broker alpaca`
 
 ---
 
