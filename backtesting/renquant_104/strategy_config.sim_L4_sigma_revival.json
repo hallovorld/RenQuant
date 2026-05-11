@@ -178,13 +178,12 @@
       "min_model_score": 0.1,
       "min_price_move_pct": 0.0,
       "trailing_stop_trigger_pct": 0.2,
-      "trailing_stop_trail_pct": 0.10,
-      "atr_n_multiplier": 3.0,
-      "_atr_reason": "L5 experiment: ATR-based Chandelier trailing (Wilder 1978 'New Concepts in Technical Trading Systems' §9, Le Beau 1993 Chandelier exit). Effective trail-pct = max(0.10, 3 × ATR(14) / HWM). Lower base trail (0.10 vs baseline 0.18) lets ATR dominate for volatile names; low-vol stocks (ATR<3% of price) keep 10% floor. ATR(14) Wilder-smoothed in PrepareHoldingTask.",
+      "trailing_stop_trail_pct": 0.18,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
       "take_profit_pct": 0,
-      "stop_n_sigma": 0
+      "stop_n_sigma": 2.5,
+      "_stop_n_sigma_reason": "L4 experiment: \u03c3-aware stop revival with A-9 \u221at cap fix (kernel/exits.py:415-421). Effective threshold = max(15% abs, 2.5\u03c3 \u00d7 \u03c3_daily \u00d7 \u221amin(t, 20)). High-vol stocks (\u03c3\u22485% daily) get \u03c3-band ~56% at t=20+ \u2192 don't whipsaw on noise; low-vol stocks keep 15% abs floor. Almgren-Chriss 2000 'Optimal execution' + Cont 2001 'Empirical properties of asset returns' fat-tail N=2.5 covers 99% normal moves."
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -498,7 +497,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.walkforward_eval.json",
+      "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -513,7 +512,7 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/sim/ngboost-head.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
         "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
@@ -525,7 +524,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.walkforward_eval.json",
+        "artifact_path": "artifacts/sim/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -586,7 +585,7 @@
     "nan_prone_cols": [],
     "asset_embeddings": {
       "enabled": false,
-      "artifact_path": "artifacts/asset-embeddings.json",
+      "artifact_path": "artifacts/sim/asset-embeddings.json",
       "max_age_days": 30
     },
     "factor_mom_window": 252,
@@ -603,11 +602,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.walkforward_eval.json",
+    "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.walkforward_eval.json",
+      "artifact_path": "artifacts/sim/ngboost-head.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -806,12 +805,12 @@
   ],
   "walkforward": {
     "enabled": true,
-    "manifest_path": "artifacts/walkforward_manifest_v3_clean.json",
+    "manifest_path": "artifacts/sim/walkforward_manifest.json",
     "fail_on_no_model": true
   },
   "performance": {
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "ab_L5_atr_trail"
+  "_side_config_label": "sim_L4_sigma_revival"
 }

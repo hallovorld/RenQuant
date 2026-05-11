@@ -249,6 +249,12 @@
       "panel_sell_floor": 0.2,
       "mu_sell_ceiling": 0.0,
       "trigger_mode": "and"
+    },
+    "drawdown_rebalance": {
+      "enabled": true,
+      "trigger_drawdown": 0.2,
+      "max_drawdown": 0.3,
+      "_reason": "L3 experiment: Grossman & Zhou 1993 (JEEM 19(2):241-276) drawdown-constrained Kelly. When portfolio DD \u2208 [0.20, 0.30], liquidate weakest holdings by panel_score so target_count = N \u00d7 max(0, 1 - DD/0.30). At DD=20% \u2192 keep ~33% of names (smallest f_kelly active); at DD=30% \u2192 f=0 \u2192 liquidate all. cvxportfolio (Boyd 2024) \u00a74.2 risk-aware optimizer is the architectural analogue; this is its lightweight discrete approximation."
     }
   },
   "sector_map": {
@@ -496,7 +502,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.walkforward_eval.json",
+      "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -511,7 +517,7 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/sim/ngboost-head.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
         "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
@@ -523,7 +529,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.walkforward_eval.json",
+        "artifact_path": "artifacts/sim/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -584,7 +590,7 @@
     "nan_prone_cols": [],
     "asset_embeddings": {
       "enabled": false,
-      "artifact_path": "artifacts/asset-embeddings.json",
+      "artifact_path": "artifacts/sim/asset-embeddings.json",
       "max_age_days": 30
     },
     "factor_mom_window": 252,
@@ -601,11 +607,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.walkforward_eval.json",
+    "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.walkforward_eval.json",
+      "artifact_path": "artifacts/sim/ngboost-head.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -804,12 +810,12 @@
   ],
   "walkforward": {
     "enabled": true,
-    "manifest_path": "artifacts/walkforward_manifest_v3_clean.json",
+    "manifest_path": "artifacts/sim/walkforward_manifest.json",
     "fail_on_no_model": true
   },
   "performance": {
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "walkforward_eval"
+  "_side_config_label": "sim_L3_dd_rebalance"
 }

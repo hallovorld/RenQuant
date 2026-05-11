@@ -82,6 +82,15 @@ def main() -> None:
                         "with a different `calibration_method` than the "
                         "currently-installed one. See fit_panel_calibrator "
                         "guard at end of main().")
+    p.add_argument("--data-end", type=str, default=None,
+                   help="ISO date (YYYY-MM-DD). Drop scoring dates >= this "
+                        "from the panel before fitting. Required for "
+                        "leakage-free walk-forward eval: set to "
+                        "(sim_start - lookahead - safety_buffer) so the "
+                        "forward-return target never overlaps the sim "
+                        "evaluation window. Example: sim_start=2024-01-02 "
+                        "+ lookahead=20d → --data-end 2023-12-01 leaves a "
+                        "~5-week buffer.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -239,6 +248,19 @@ def main() -> None:
     for t, df in ff.items():
         all_dates = all_dates.union(df.index)
     all_dates = all_dates.sort_values()
+    # 2026-05-11: --data-end cutoff for leakage-free OOS calibrators.
+    # CLAUDE.md §5.13: every scoring date with a forward-return target
+    # must precede the sim/holdout window. We drop scoring dates >=
+    # data_end so the resulting calibrator has not seen any panel
+    # (ticker, date) sample that falls inside the evaluation window.
+    if args.data_end:
+        cutoff = pd.Timestamp(args.data_end)
+        before = len(all_dates)
+        all_dates = all_dates[all_dates < cutoff]
+        log.info(
+            "--data-end=%s: filtered scoring grid %d → %d dates",
+            args.data_end, before, len(all_dates),
+        )
     log.info("Scoring %d dates for %d tickers", len(all_dates), len(ff))
 
     per_ticker_scores: dict[str, dict[pd.Timestamp, float]] = {t: {} for t in ff}

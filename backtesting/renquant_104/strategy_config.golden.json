@@ -409,10 +409,10 @@
       "qp_drawdown_limit": 0.2,
       "qp_no_trade_band_factor": 1.0,
       "qp_no_trade_band_cap": 0.05,
-      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: σ-derived no-trade band uncapped → high-σ holdings (e.g. BA σ̂=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
+      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: \u03c3-derived no-trade band uncapped \u2192 high-\u03c3 holdings (e.g. BA \u03c3\u0302=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
       "qp_min_invested_pct": 0.7,
       "qp_ledoit_wolf_lambda": 0.2,
-      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0→0.2 (Ledoit-Wolf 2004 mid-of-recommended-range).",
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0\u21920.2 (Ledoit-Wolf 2004 mid-of-recommended-range).",
       "qp_sector_cap_enabled": true,
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve.",
       "qp_correlation_cap_enabled": true,
@@ -476,7 +476,7 @@
       "spy_trend",
       "hurst_proxy"
     ],
-    "_lookahead_removed_2026-05-10": "Per §5.13.5: removed in favor of panel_ltr.lookahead_days as the single source of truth. Tournament path still defaults to 5 internally.",
+    "_lookahead_removed_2026-05-10": "Per \u00a75.13.5: removed in favor of panel_ltr.lookahead_days as the single source of truth. Tournament path still defaults to 5 internally.",
     "threshold": 0.03,
     "leaf_size": 25,
     "bags": 15,
@@ -489,7 +489,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.alpha158_fund.json",
+      "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -504,10 +504,10 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
-        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The σ-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha ≥+0.04 or alternative sizing scheme proves itself."
+        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
       },
       "sigma_sizing": {
         "enabled": true,
@@ -516,7 +516,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.json",
+        "artifact_path": "artifacts/prod/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -533,7 +533,7 @@
         "edge_sharpe_floor": {
           "enabled": false,
           "threshold": 0.1,
-          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no τ achieves target FDR=0.30 OR 0.40. Best τ=0.39 → FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val μ-IC ≥ +0.04 + placebo |IC|<0.01."
+          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no \u03c4 achieves target FDR=0.30 OR 0.40. Best \u03c4=0.39 \u2192 FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val \u03bc-IC \u2265 +0.04 + placebo |IC|<0.01."
         },
         "distribution_floor": {
           "enabled": false
@@ -567,7 +567,7 @@
   },
   "panel_ltr": {
     "lookahead_days": 60,
-    "_lookahead_days_reason_2026-05-10": "Aligned with production artifact (fwd_60d_excess label, scripts/train_production_model.py hardcodes 60). Single source of truth per §5.13.5.",
+    "_lookahead_days_reason_2026-05-10": "Aligned with production artifact (fwd_60d_excess label, scripts/train_production_model.py hardcodes 60). Single source of truth per \u00a75.13.5.",
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
@@ -578,7 +578,7 @@
     "nan_prone_cols": [],
     "asset_embeddings": {
       "enabled": false,
-      "artifact_path": "artifacts/asset-embeddings.json",
+      "artifact_path": "artifacts/prod/asset-embeddings.json",
       "max_age_days": 30
     },
     "factor_mom_window": 252,
@@ -595,11 +595,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.alpha158_fund.json",
+    "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.json",
+      "artifact_path": "artifacts/prod/ngboost-head.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01

@@ -410,7 +410,7 @@
       "qp_no_trade_band_factor": 1.0,
       "qp_min_invested_pct": 0.7,
       "qp_ledoit_wolf_lambda": 0.2,
-      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0→0.2 (Ledoit-Wolf 2004 mid-of-recommended-range).",
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0\u21920.2 (Ledoit-Wolf 2004 mid-of-recommended-range).",
       "qp_sector_cap_enabled": true,
       "qp_correlation_cap_enabled": true
     },
@@ -472,7 +472,7 @@
       "spy_trend",
       "hurst_proxy"
     ],
-    "_lookahead_removed_2026-05-10": "Per §5.13.5: removed in favor of panel_ltr.lookahead_days as the single source of truth. Tournament path still defaults to 5 internally.",
+    "_lookahead_removed_2026-05-10": "Per \u00a75.13.5: removed in favor of panel_ltr.lookahead_days as the single source of truth. Tournament path still defaults to 5 internally.",
     "threshold": 0.03,
     "leaf_size": 25,
     "bags": 15,
@@ -485,7 +485,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/panel-ltr.alpha158_fund.json",
+      "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std_cap",
       "buy_floor_adaptive_cap": 0.3,
@@ -500,7 +500,7 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/ngboost-head.alpha158_fund_paper.json",
+        "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund_paper.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0
       },
@@ -511,7 +511,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/panel-rank-calibration.alpha158_fund_paper.json",
+        "artifact_path": "artifacts/prod/panel-rank-calibration.alpha158_fund_paper.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -561,7 +561,7 @@
   },
   "panel_ltr": {
     "lookahead_days": 60,
-    "_lookahead_days_reason_2026-05-10": "Aligned with production artifact (fwd_60d_excess label, scripts/train_production_model.py hardcodes 60). Single source of truth per §5.13.5.",
+    "_lookahead_days_reason_2026-05-10": "Aligned with production artifact (fwd_60d_excess label, scripts/train_production_model.py hardcodes 60). Single source of truth per \u00a75.13.5.",
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
@@ -572,7 +572,7 @@
     "nan_prone_cols": [],
     "asset_embeddings": {
       "enabled": false,
-      "artifact_path": "artifacts/asset-embeddings.json",
+      "artifact_path": "artifacts/prod/asset-embeddings.json",
       "max_age_days": 30
     },
     "factor_mom_window": 252,
@@ -589,11 +589,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/panel-ltr.alpha158_fund.json",
+    "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/ngboost-head.alpha158_fund_paper.json",
+      "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund_paper.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01

@@ -54,39 +54,57 @@ class TestArtifactSetCompleteness:
     def artifacts(self) -> Path:
         return STRATEGY / "artifacts"
 
+    @property
+    def prod_artifacts(self) -> Path:
+        """2026-05-11 sim/prod isolation refactor: production-trading
+        artifacts live in artifacts/prod/ (sim eval lives in artifacts/sim/).
+        """
+        return self.artifacts / "prod"
+
     def test_required_artifact_set_present(self):
-        """Production training emits this set:
-            panel-ltr.json
-            (optional) ngboost-head.json
+        """Production training emits this set under artifacts/prod/:
+            panel-ltr*.json (canonical model, e.g. panel-ltr.alpha158_fund.json)
+            (optional) ngboost-head*.json
             (optional) panel-rank-calibration.json
-            (optional) training_data_scan.json — new 2026-05-04
+            (optional) training_data_scan.json
             (optional) spy-gmm-regime.json
         """
-        if not self.artifacts.exists():
-            pytest.skip("artifacts/ dir doesn't exist — fresh checkout")
-        required = {"panel-ltr.json"}
-        present = {p.name for p in self.artifacts.iterdir() if p.is_file()}
-        missing = required - present
-        assert not missing, (
-            f"Expected artifacts missing from production: {sorted(missing)}. "
+        if not self.prod_artifacts.exists():
+            pytest.skip(
+                "artifacts/prod/ dir doesn't exist — fresh checkout or "
+                "pre-2026-05-11 layout. Run scripts/holdout_backtest.py or "
+                "daily_104.sh to populate."
+            )
+        present = {p.name for p in self.prod_artifacts.iterdir() if p.is_file()}
+        # Accept any canonical panel-ltr variant (e.g. .alpha158_fund.json).
+        has_panel_ltr = any(
+            p.startswith("panel-ltr") and p.endswith(".json") for p in present
+        )
+        assert has_panel_ltr, (
+            f"No panel-ltr*.json found in artifacts/prod/ ({sorted(present)}). "
             f"Run scripts/holdout_backtest.py or daily_104.sh to populate."
         )
 
     def test_artifacts_recently_modified(self):
-        """If artifacts/ exists at all, panel-ltr.json should be no
-        older than 60 days. A model older than the staleness threshold
-        is a sign the cron is broken."""
+        """If artifacts/prod/ exists at all, the canonical panel-ltr*.json
+        should be no older than 60 days. A model older than the staleness
+        threshold is a sign the cron is broken."""
         import time
-        if not self.artifacts.exists():
-            pytest.skip("no artifacts dir")
-        path = self.artifacts / "panel-ltr.json"
-        if not path.exists():
-            pytest.skip("panel-ltr.json missing — run training")
-        age_sec = time.time() - path.stat().st_mtime
+        if not self.prod_artifacts.exists():
+            pytest.skip("no artifacts/prod/ dir")
+        panel_ltrs = sorted(
+            p for p in self.prod_artifacts.iterdir()
+            if p.name.startswith("panel-ltr") and p.suffix == ".json"
+        )
+        if not panel_ltrs:
+            pytest.skip("no panel-ltr*.json in artifacts/prod/ — run training")
+        # Use the most-recently-modified panel-ltr file (canonical).
+        canonical = max(panel_ltrs, key=lambda p: p.stat().st_mtime)
+        age_sec = time.time() - canonical.stat().st_mtime
         age_days = age_sec / 86400
         # 60 days = strategy_config.json's `model_staleness_days`
         assert age_days <= 60, (
-            f"panel-ltr.json is {age_days:.0f} days old — exceeds the "
+            f"{canonical.name} is {age_days:.0f} days old — exceeds the "
             f"60-day staleness threshold in strategy_config.json. "
             f"Either retrain or investigate why retrain-panel104 cron "
             f"hasn't fired."

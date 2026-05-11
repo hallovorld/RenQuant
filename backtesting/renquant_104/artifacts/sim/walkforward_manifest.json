@@ -1,0 +1,202 @@
+{
+  "cadence_days": 21,
+  "training_window_years": 0.0,
+  "retrains": [
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
+      "cutoff_date": "2024-01-01T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-01-22/panel-ltr.json",
+      "cutoff_date": "2024-01-22T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-02-12/panel-ltr.json",
+      "cutoff_date": "2024-02-12T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-03-04/panel-ltr.json",
+      "cutoff_date": "2024-03-04T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-03-25/panel-ltr.json",
+      "cutoff_date": "2024-03-25T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-04-15/panel-ltr.json",
+      "cutoff_date": "2024-04-15T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-05-06/panel-ltr.json",
+      "cutoff_date": "2024-05-06T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-05-27/panel-ltr.json",
+      "cutoff_date": "2024-05-27T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-06-17/panel-ltr.json",
+      "cutoff_date": "2024-06-17T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-07-08/panel-ltr.json",
+      "cutoff_date": "2024-07-08T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-07-29/panel-ltr.json",
+      "cutoff_date": "2024-07-29T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-08-19/panel-ltr.json",
+      "cutoff_date": "2024-08-19T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-09-09/panel-ltr.json",
+      "cutoff_date": "2024-09-09T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-09-30/panel-ltr.json",
+      "cutoff_date": "2024-09-30T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-10-21/panel-ltr.json",
+      "cutoff_date": "2024-10-21T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-11-11/panel-ltr.json",
+      "cutoff_date": "2024-11-11T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-12-02/panel-ltr.json",
+      "cutoff_date": "2024-12-02T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2024-12-23/panel-ltr.json",
+      "cutoff_date": "2024-12-23T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-01-13/panel-ltr.json",
+      "cutoff_date": "2025-01-13T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-02-03/panel-ltr.json",
+      "cutoff_date": "2025-02-03T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-02-24/panel-ltr.json",
+      "cutoff_date": "2025-02-24T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-03-17/panel-ltr.json",
+      "cutoff_date": "2025-03-17T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-04-07/panel-ltr.json",
+      "cutoff_date": "2025-04-07T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-04-28/panel-ltr.json",
+      "cutoff_date": "2025-04-28T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-05-19/panel-ltr.json",
+      "cutoff_date": "2025-05-19T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-06-09/panel-ltr.json",
+      "cutoff_date": "2025-06-09T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-06-30/panel-ltr.json",
+      "cutoff_date": "2025-06-30T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-07-21/panel-ltr.json",
+      "cutoff_date": "2025-07-21T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-08-11/panel-ltr.json",
+      "cutoff_date": "2025-08-11T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-09-01/panel-ltr.json",
+      "cutoff_date": "2025-09-01T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-09-22/panel-ltr.json",
+      "cutoff_date": "2025-09-22T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-10-13/panel-ltr.json",
+      "cutoff_date": "2025-10-13T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-11-03/panel-ltr.json",
+      "cutoff_date": "2025-11-03T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-11-24/panel-ltr.json",
+      "cutoff_date": "2025-11-24T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2025-12-15/panel-ltr.json",
+      "cutoff_date": "2025-12-15T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-01-05/panel-ltr.json",
+      "cutoff_date": "2026-01-05T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-01-26/panel-ltr.json",
+      "cutoff_date": "2026-01-26T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-02-16/panel-ltr.json",
+      "cutoff_date": "2026-02-16T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    },
+    {
+      "artifact_uri": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/sim/walkforward_retrains/2026-03-09/panel-ltr.json",
+      "cutoff_date": "2026-03-09T00:00:00",
+      "trained_date": "2026-05-10T00:00:00"
+    }
+  ],
+  "_path_migration_note": "2026-05-11: rebased artifact_uri from artifacts/walkforward_v3_clean/ \u2192 artifacts/sim/walkforward_retrains/ for sim/prod filesystem isolation (user feedback)"
+}

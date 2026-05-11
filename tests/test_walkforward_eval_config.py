@@ -28,12 +28,21 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
-CONFIG_PATH = STRATEGY_DIR / "strategy_config.walkforward_eval.json"
+CONFIG_PATH = STRATEGY_DIR / "strategy_config.sim_baseline.json"
 
+# 2026-05-11 sim/prod isolation refactor: every prod artifact now lives under
+# artifacts/prod/. Sim configs MUST point to artifacts/sim/<file>; using either
+# the old flat ``artifacts/<file>`` paths OR the new ``artifacts/prod/<file>``
+# would silently load prod-trained models in sim (the leak we just fixed).
 PRODUCTION_DEFAULT_ARTIFACTS = {
     "artifacts/panel-ltr.json",
     "artifacts/ngboost-head.json",
     "artifacts/panel-rank-calibration.json",
+    "artifacts/prod/panel-ltr.json",
+    "artifacts/prod/ngboost-head.json",
+    "artifacts/prod/panel-rank-calibration.json",
+    "artifacts/prod/panel-ltr.alpha158_fund.json",
+    "artifacts/prod/ngboost-head.alpha158_fund.json",
 }
 
 
@@ -56,11 +65,11 @@ def _walk_artifact_paths(obj, path=""):
 
 def test_walkforward_eval_config_exists_and_parses():
     """Sanity: the side config file is present and valid JSON."""
-    assert CONFIG_PATH.exists(), f"walkforward_eval side config missing: {CONFIG_PATH}"
+    assert CONFIG_PATH.exists(), f"sim_baseline side config missing: {CONFIG_PATH}"
     cfg = _load_cfg()
     assert isinstance(cfg, dict)
-    assert cfg.get("_side_config_label") == "walkforward_eval", (
-        "side config must carry _side_config_label='walkforward_eval' "
+    assert cfg.get("_side_config_label") == "sim_baseline", (
+        "side config must carry _side_config_label='sim_baseline' "
         "so future audits can grep-find it."
     )
 
