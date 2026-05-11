@@ -271,11 +271,7 @@
     "sell_threshold": -0.1
   },
   "ranking": {
-    "blend_weights": [
-      1.0,
-      0.0
-    ],
-    "blend_updated": "2026-04-21",
-    "blend_n_symbols": 34
+    "blend_updated": "2026-04-28",
+    "blend_n_symbols": 35
   }
 }

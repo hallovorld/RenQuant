@@ -23,40 +23,56 @@
   "artifacts": {
     "rules": "/Users/renhao/git/github/RenQuant/backtesting/renquant_103/models/XLF/XLF-manual-rules.json"
   },
-  "trained_date": "2026-04-21",
+  "trained_date": "2026-04-28",
   "best_approach": "Manual",
-  "sharpe": 1.749,
+  "sharpe": 1.7554,
   "lookahead": 5,
   "strategy": "renquant_103",
   "live_train_rows": 998,
-  "live_train_end": "2026-04-14",
-  "live_holdout_sharpe": 0.586,
+  "live_train_end": "2026-04-21",
+  "live_holdout_sharpe": 0.5859,
   "live_holdout_days": 126,
   "score_calibration": {
     "version": 1,
-    "method": "platt",
+    "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 164,
+    "sample_size": 2501,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.024390243902439025,
+    "base_rate": 0.04118352658936426,
     "raw_min": -1.0,
     "raw_max": 3.0,
-    "x_thresholds": null,
-    "y_thresholds": null,
-    "platt_coef": -0.8204162593338874,
-    "platt_intercept": -4.014675596072972,
-    "platt_scale_mean": 1.2865853658536586,
-    "platt_scale_std": 1.0167214400292295,
-    "er_method": "linear",
+    "x_thresholds": [
+      -1.0,
+      0.0,
+      3.0
+    ],
+    "y_thresholds": [
+      0.03305785123966942,
+      0.04159663865546218,
+      0.04159663865546218
+    ],
+    "platt_coef": null,
+    "platt_intercept": null,
+    "platt_scale_mean": null,
+    "platt_scale_std": null,
+    "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.01486817614207569,
-    "er_x_thresholds": null,
-    "er_y_thresholds": null,
-    "er_coef": -0.001534076972434972,
-    "er_intercept": -0.0008841521220822322,
+    "er_residual_std": 0.0167972470423304,
+    "er_x_thresholds": [
+      -1.0,
+      2.0,
+      3.0
+    ],
+    "er_y_thresholds": [
+      -0.0003851570569561338,
+      -0.0003851570569561338,
+      0.001126651259107009
+    ],
+    "er_coef": null,
+    "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-04-21"
+  "score_calibration_date": "2026-04-28"
 }
