@@ -37,10 +37,10 @@
     "method": "isotonic",
     "score_kind": "vote_count",
     "target_kind": "forward_relative_return_gt_threshold",
-    "sample_size": 2504,
+    "sample_size": 2506,
     "lookahead": 5,
     "threshold": 0.03,
-    "base_rate": 0.14536741214057508,
+    "base_rate": 0.14565043894652832,
     "raw_min": -1.0,
     "raw_max": 3.0,
     "x_thresholds": [
@@ -48,8 +48,8 @@
       3.0
     ],
     "y_thresholds": [
-      0.14536741214057508,
-      0.14536741214057508
+      0.14565043894652832,
+      0.14565043894652832
     ],
     "platt_coef": null,
     "platt_intercept": null,
@@ -57,7 +57,7 @@
     "platt_scale_std": null,
     "er_method": "isotonic",
     "er_lookahead": 5,
-    "er_residual_std": 0.03377577615536768,
+    "er_residual_std": 0.03377064039203008,
     "er_x_thresholds": [
       -1.0,
       0.0,
@@ -66,13 +66,13 @@
     ],
     "er_y_thresholds": [
       -0.0026708238189586636,
-      -0.0005951820642248159,
-      -0.0005951820642248159,
+      -0.0005765435108894711,
+      -0.0005765435108894711,
       -0.00046403617240368494
     ],
     "er_coef": null,
     "er_intercept": null,
     "er_constant": null
   },
-  "score_calibration_date": "2026-05-04"
+  "score_calibration_date": "2026-05-06"
 }
