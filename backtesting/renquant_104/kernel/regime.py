@@ -176,7 +176,11 @@ def rolling_cusum(
 # ── Layer 3: GMM ─────────────────────────────────────────────────────────────
 
 def compute_spy_adx(df: pd.DataFrame, period: int = 14) -> float:
-    """Compute ADX(*period*) from an OHLCV DataFrame."""
+    """Compute ADX(*period*) from an OHLCV DataFrame.
+
+    ATR delegated to kernel.indicators.compute_atr (single source of truth).
+    """
+    from kernel.indicators import compute_atr  # noqa: PLC0415
     if df is None or df.empty or len(df) < period + 1:
         return 25.0
     rows  = df.tail(max(period * 2, period + 1)).copy()
@@ -187,10 +191,7 @@ def compute_spy_adx(df: pd.DataFrame, period: int = 14) -> float:
     down  = -low.diff()
     plus_dm  = np.where((up > down) & (up > 0), up, 0.0)
     minus_dm = np.where((down > up) & (down > 0), down, 0.0)
-    tr = pd.concat(
-        [high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1
-    ).max(axis=1)
-    atr      = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    atr      = compute_atr(high, low, close, period=period)
     plus_di  = (100 * pd.Series(plus_dm, index=rows.index)
                 .ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
                 / atr.replace(0, float("nan")))

@@ -34,6 +34,48 @@ def compute_cci(high: pd.Series, low: pd.Series, close: pd.Series, period: int =
     return (tp - sma) / (0.015 * mad.replace(0, float("nan")))
 
 
+def compute_atr(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14,
+) -> pd.Series:
+    """Wilder-smoothed Average True Range — single source of truth.
+
+    Per Wilder 1978 *New Concepts in Technical Trading Systems* §9:
+
+        TR_t  = max(H_t − L_t, |H_t − C_{t−1}|, |L_t − C_{t−1}|)
+        ATR_t = (ATR_{t−1} × (N − 1) + TR_t) / N
+
+    Wilder smoothing is algebraically identical to an EWMA with
+    α = 1/N (verify: ATR_t = (1 − 1/N)·ATR_{t−1} + (1/N)·TR_t). We use
+    pandas's ``ewm(alpha=1/period, adjust=False)`` to match RSI/MACD's
+    smoothing convention in this same module and the ADX implementation
+    in ``kernel/regime.py:190-193``. ``min_periods=period`` ensures the
+    first ``period − 1`` values are NaN so downstream filters can detect
+    insufficient history.
+
+    Called by:
+      * ``kernel/pipeline/task_sell.py::PrepareHoldingTask`` — caches
+        per-position ``realized_atr_daily`` for L5 ATR-Chandelier trailing.
+      * ``kernel/regime.py::compute_adx_for_df`` (internal, should be
+        refactored to call this helper).
+
+    Args:
+        high / low / close: same-index pandas series.
+        period: smoothing window (default 14 = Wilder canonical).
+
+    Returns:
+        ATR series, NaN-padded for the first ``period - 1`` rows.
+    """
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+
 def compute_bbp(close: pd.Series, period: int = 20) -> pd.Series:
     sma = close.rolling(period).mean()
     std = close.rolling(period).std()
