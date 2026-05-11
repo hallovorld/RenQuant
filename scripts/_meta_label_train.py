@@ -163,8 +163,47 @@ def main() -> None:
              float(np.mean(precisions)), float(np.std(precisions)),
              float(np.mean(recalls)),    float(np.std(recalls)))
 
+    # ── Threshold sweep — find the F1-optimum threshold (not just 0.5)
+    log.info("\nThreshold sweep on out-of-fold predictions …")
+    # Reproduce out-of-fold predictions for threshold optimization
+    oof_proba = np.full(len(X), np.nan)
+    cv_again = PurgedKFold(
+        n_splits=args.n_splits, event_times=df["_event_dt"],
+        label_horizon_days=args.label_horizon_days, pct_embargo=args.pct_embargo,
+    )
+    for tr_idx, te_idx in cv_again.split(np.arange(len(X))):
+        if len(tr_idx) < 50:
+            continue
+        clf2 = xgb.XGBClassifier(
+            max_depth=args.max_depth, learning_rate=args.learning_rate,
+            n_estimators=args.n_estimators, subsample=args.subsample,
+            tree_method="hist", n_jobs=-1, random_state=42,
+            eval_metric="auc", use_label_encoder=False,
+        )
+        clf2.fit(X[tr_idx], y[tr_idx])
+        oof_proba[te_idx] = clf2.predict_proba(X[te_idx])[:, 1]
+
+    threshold_table = []
+    for thr in [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]:
+        mask = ~np.isnan(oof_proba)
+        if not mask.any():
+            continue
+        preds = (oof_proba[mask] >= thr).astype(int)
+        prec  = precision_score(y[mask], preds, zero_division=0)
+        rec   = recall_score   (y[mask], preds, zero_division=0)
+        f1    = 2 * prec * rec / max(prec + rec, 1e-9)
+        threshold_table.append({
+            "threshold": thr, "precision": float(prec),
+            "recall": float(rec), "f1": float(f1),
+        })
+        log.info("  thr=%.2f  prec=%.3f  rec=%.3f  f1=%.3f",
+                 thr, prec, rec, f1)
+    best_thr = max(threshold_table, key=lambda r: r["f1"])["threshold"] \
+        if threshold_table else args.default_threshold
+    log.info("F1-optimum threshold: %.2f", best_thr)
+
     # Final fit on ALL data (after CV evaluation)
-    log.info("Final fit on full %d events …", len(X))
+    log.info("\nFinal fit on full %d events …", len(X))
     final_clf = xgb.XGBClassifier(
         max_depth        = args.max_depth,
         learning_rate    = args.learning_rate,
@@ -178,6 +217,17 @@ def main() -> None:
     )
     final_clf.fit(X, y)
 
+    # ── Feature importance (gain-based per XGBoost) ─────────────────
+    log.info("\nFeature importance (top-15 by gain):")
+    fi = final_clf.get_booster().get_score(importance_type="gain")
+    fi_named = sorted(
+        ((feature_cols[int(k.lstrip("f"))], v) for k, v in fi.items()),
+        key=lambda x: -x[1],
+    )
+    fi_payload = [{"feature": n, "gain": float(g)} for n, g in fi_named[:30]]
+    for n, g in fi_named[:15]:
+        log.info("  %-30s gain=%.4f", n, g)
+
     booster = final_clf.get_booster()
     booster_raw = booster.save_raw(raw_format="json").decode("utf-8")
 
@@ -187,14 +237,17 @@ def main() -> None:
         "trained_date": pd.Timestamp.utcnow().date().isoformat(),
         "feature_cols":     feature_cols,
         "booster_raw_json": booster_raw,
-        "default_threshold": float(args.default_threshold),
+        "default_threshold": float(best_thr),   # F1-optimum, NOT 0.5
         "cv_metrics": {
             "auc_mean":               auc_mean,
             "auc_std":                auc_std,
             "precision_at_05_mean":   float(np.mean(precisions)),
             "recall_at_05_mean":      float(np.mean(recalls)),
             "n_splits":               args.n_splits,
+            "threshold_sweep":        threshold_table,
+            "best_threshold_by_f1":   float(best_thr),
         },
+        "feature_importance":    fi_payload,
         "training_data_summary": {
             "n_events":            n_events,
             "class_balance":       balance,

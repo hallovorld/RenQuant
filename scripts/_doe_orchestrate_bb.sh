@@ -40,3 +40,11 @@ wait_for_batch "3"
 echo "[$(date '+%H:%M:%S')] all 27 BB sims complete"
 .venv/bin/python scripts/_doe_fit_response_surface.py > data/logs/bb_analysis.log 2>&1
 echo "[$(date '+%H:%M:%S')] response surface fit → data/logs/bb_analysis.log"
+
+# ── Auto-chain into Track B (meta-label pipeline) ────────────────────
+echo "[$(date '+%H:%M:%S')] building BB-optimum config from response-surface output …"
+.venv/bin/python scripts/_doe_build_optimum_config.py >> data/logs/bb_analysis.log 2>&1
+echo "[$(date '+%H:%M:%S')] launching Track B meta-label pipeline (chronological split) …"
+bash scripts/_meta_label_pipeline.sh strategy_config.sim_BB_optimum.json \
+    > data/logs/meta_label_pipeline.log 2>&1 &
+echo "[$(date '+%H:%M:%S')] Track B running in background (PID=$!); see meta_label_pipeline.log"
