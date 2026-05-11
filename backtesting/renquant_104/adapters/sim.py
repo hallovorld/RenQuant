@@ -250,6 +250,28 @@ class SimAdapter:
             self._meta_label_logger = None
             self._meta_label_output_path = None
 
+        # ── Meta-label veto predictor (P4.4, 2026-05-11) ───────────────────
+        # Inference-time counterpart to the snapshot logger above.
+        # Loads the XGBoost classifier trained by scripts/_meta_label_train.py
+        # and exposes a `predictor(feats: dict) -> P(profitable_exit)`
+        # callable that MetaLabelVetoTask queries to drop false-positive
+        # path-rule exits. Disabled (None) when
+        # config.ranking.meta_label.enabled is false or the artifact
+        # is absent (§5.13.10 fallback).
+        veto_cfg = (self._config.get("ranking") or {}).get("meta_label") or {}
+        if veto_cfg.get("enabled", False):
+            from kernel.meta_label.predictor import load_meta_label_predictor  # noqa: PLC0415
+            art_path = veto_cfg.get(
+                "artifact_path",
+                "backtesting/renquant_104/artifacts/meta-label-exit.json",
+            )
+            art_resolved = Path(art_path)
+            if not art_resolved.is_absolute():
+                art_resolved = Path(self._strategy_dir).parent.parent / art_resolved
+            self._meta_label_predictor = load_meta_label_predictor(art_resolved)
+        else:
+            self._meta_label_predictor = None
+
         # ── Optional SQLite decision-trace ──────────────────────────────────
         # sim writes to a SEPARATE DB (persistence.sim_db_path, default
         # data/sim_runs.db) so notebook experimentation doesn't pollute
@@ -607,6 +629,11 @@ class SimAdapter:
         # None when config.meta_label_training.enabled is false → the
         # MetaLabelLoggingJob's should_skip handles the prod / no-train path.
         ctx.snapshot_logger = self._meta_label_logger
+
+        # P4.4 (2026-05-11) — attach meta-label veto predictor if loaded.
+        # None when config.ranking.meta_label.enabled is false or the
+        # artifact was missing — MetaLabelVetoTask's fallback handles it.
+        ctx._meta_label_predictor = self._meta_label_predictor  # noqa: SLF001
 
         # Rotation V1 persistence gate: hand over the last N bars' proposed
         # (sell, buy) pair sets. BuildPairsTask reads via rotation_cfg

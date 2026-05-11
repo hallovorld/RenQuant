@@ -189,6 +189,17 @@ class InferencePipeline:
         from .task_dd_flatten import DrawdownFlattenTask  # noqa: PLC0415
         DrawdownFlattenTask().run(ctx)
 
+        # P4.4 (2026-05-11) — meta-label veto on path-rule exits.
+        # López de Prado AFML ch.20: trained binary classifier predicts
+        # P(profitable_exit) and drops false-positive stop_loss /
+        # trailing_stop / single_day_loss / max_hold triggers. Runs
+        # AFTER DrawdownFlattenTask so a hard-flatten event can't be
+        # vetoed (the kill switch overrides everything). Disabled when
+        # config.ranking.meta_label.enabled=false OR adapter hasn't
+        # loaded a predictor (§5.13.10 fallback).
+        from kernel.meta_label.task_meta_label_veto import MetaLabelVetoTask  # noqa: PLC0415
+        MetaLabelVetoTask().run(ctx)
+
         # 2026-04-26 round-7 audit fix MAX-SELLS-PER-BAR:
         # portfolio-level cap on simultaneous model_sell exits. Risk
         # rules (stop_loss / trailing / SDL / max_hold) exempt — only
