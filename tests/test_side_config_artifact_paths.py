@@ -27,10 +27,23 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# 2026-05-11 sim/prod isolation refactor: prod artifacts moved into
+# artifacts/prod/. A side config writing to artifacts/prod/<file> would
+# silently clobber live trading. Also still forbid the legacy flat
+# artifacts/<file> paths so a regressed config can't sneak back in.
 PRODUCTION_DEFAULTS = {
+    # legacy flat paths (pre-2026-05-11; should never appear again)
     "artifacts/panel-ltr.json",
     "artifacts/ngboost-head.json",
     "artifacts/panel-rank-calibration.json",
+    # post-refactor prod aliases (the real live-trading targets)
+    "artifacts/prod/panel-ltr.json",
+    "artifacts/prod/ngboost-head.json",
+    "artifacts/prod/panel-rank-calibration.json",
+    "artifacts/prod/panel-ltr.alpha158_fund.json",
+    "artifacts/prod/ngboost-head.alpha158_fund.json",
+    "artifacts/prod/panel-rank-calibration.alpha158_fund_paper.json",
+    "artifacts/prod/ngboost-head.alpha158_fund_paper.json",
 }
 
 
@@ -59,9 +72,20 @@ def _side_config_files() -> list[Path]:
     same leak. Expanded scope catches them.
     """
     cfg_dir = REPO_ROOT / "backtesting" / "renquant_104"
+    # 2026-05-11 sim/prod isolation: production-flavoured configs that
+    # are EXPECTED to reference prod artifacts:
+    #   - strategy_config.json (live trading)
+    #   - strategy_config.golden.json (canonical reference)
+    #   - strategy_config.alpha158_fund_paper.json (Alpaca paper trading —
+    #     production-class with its own paper-specific aliases)
+    PROD_FLAVORED = {
+        "strategy_config.json",
+        "strategy_config.golden.json",
+        "strategy_config.alpha158_fund_paper.json",
+    }
     out = []
     for p in cfg_dir.glob("strategy_config.*.json"):
-        if p.name in ("strategy_config.json", "strategy_config.golden.json"):
+        if p.name in PROD_FLAVORED:
             continue
         try:
             json.loads(p.read_text())

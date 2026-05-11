@@ -31,29 +31,38 @@ from acceptance.model.schemas import (                     # noqa: E402
 
 
 def _auto_discover(prefix: str, exclude_substrings: tuple[str, ...] = ()) -> list[str]:
-    """Glob artifacts/ for files matching `{prefix}.json` or `{prefix}.*.json`.
+    """Glob artifacts/prod/ + artifacts/sim/ for matching files.
+
+    2026-05-11 sim/prod isolation refactor: artifacts moved out of the
+    flat artifacts/ root into prod/ and sim/ subdirectories. This helper
+    now searches BOTH. Returns relative paths from ARTIFACTS_DIR so each
+    test sees them as 'prod/panel-ltr.alpha158_fund.json' etc.
 
     Excludes:
       * .bak.json (historical backups)
+      * .pre-train.json (training-pipeline scratch)
+      * sim/walkforward_retrains/ (39 per-fold models — covered separately)
       * any filename containing one of `exclude_substrings`
-    Returns just the basenames (caller resolves to full paths).
     """
     if not ARTIFACTS_DIR.exists():
         return []
     out: list[str] = []
-    for p in sorted(ARTIFACTS_DIR.iterdir()):
-        if not p.is_file() or not p.name.endswith(".json"):
+    for sub in ("prod", "sim"):
+        d = ARTIFACTS_DIR / sub
+        if not d.exists():
             continue
-        if not (p.name == f"{prefix}.json" or p.name.startswith(f"{prefix}.")):
-            continue
-        # Skip .bak/.pre-train backups
-        if ".bak.json" in p.name or ".pre-train.json" in p.name:
-            continue
-        # Skip diagnostic/ablation noise — these are research outputs
-        # not meant for ship; would clutter the green pass count.
-        if any(sub in p.name for sub in exclude_substrings):
-            continue
-        out.append(p.name)
+        for p in sorted(d.iterdir()):
+            if not p.is_file() or not p.name.endswith(".json"):
+                continue
+            if not (p.name == f"{prefix}.json" or p.name.startswith(f"{prefix}.")):
+                continue
+            if ".bak.json" in p.name or ".pre-train.json" in p.name:
+                continue
+            if any(s in p.name for s in exclude_substrings):
+                continue
+            # Relative path so caller can build absolute file path via
+            # ARTIFACTS_DIR / out_entry.
+            out.append(f"{sub}/{p.name}")
     return out
 
 

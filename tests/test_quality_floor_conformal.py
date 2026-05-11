@@ -41,11 +41,17 @@ def _write_artifact(strategy_dir: Path, body: dict | str) -> Path:
 
 def _ctx(tmp_path: Path, regime: str = "BULL_CALM",
          max_age_days: int | None = 7) -> _StubCtx:
+    # 2026-05-11 sim/prod isolation: production lookup path moved to
+    # artifacts/prod/. Tests still write to the flat tmp_path/artifacts/
+    # for isolation, so explicitly override the artifact path to match.
     cfg = {"_strategy_dir": str(tmp_path)}
+    cfg["ranking"] = {"panel_scoring": {"quality_floor": {
+        "gate_b_artifact_path": "gate_b_thresholds.json",
+    }}}
     if max_age_days is not None:
-        cfg["ranking"] = {"panel_scoring": {"quality_floor": {
-            "edge_sharpe_floor": {"conformal_max_age_days": max_age_days},
-        }}}
+        cfg["ranking"]["panel_scoring"]["quality_floor"]["edge_sharpe_floor"] = {
+            "conformal_max_age_days": max_age_days,
+        }
     return _StubCtx(config=cfg, regime=regime)
 
 
