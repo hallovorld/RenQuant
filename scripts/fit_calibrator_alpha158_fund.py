@@ -76,7 +76,12 @@ def main():
     # 2026-05-11: walkforward-fold artifacts skip config_fingerprint stamping
     # (§5.13.13). Production artifacts have it. Both should work here.
     fingerprint = art.get("config_fingerprint", "<walkforward — no fingerprint>")
-    log.info("Artifact fingerprint=%s  features=%d", fingerprint, len(feat_cols))
+    # Round 3 audit (G10): label column from the artifact, not hardcoded.
+    # A short-horizon scorer (fwd_5d / fwd_20d) used with the previous
+    # hardcoded `fwd_60d_excess` produced a silent label/horizon mismatch.
+    label_col = art.get("label_col", LABEL_60D)
+    log.info("Artifact fingerprint=%s  features=%d  label_col=%s",
+             fingerprint, len(feat_cols), label_col)
 
     booster = xgb.Booster()
     booster.load_model(bytearray(art["booster_raw_json"].encode("utf-8")))
@@ -107,11 +112,11 @@ def main():
 
     # Sanity check IC vs fwd_60d
     from scipy.stats import spearmanr
-    valid = panel.dropna(subset=[LABEL_60D])
+    valid = panel.dropna(subset=[label_col])
     ics = []
     for _, g in valid.groupby("date"):
         if len(g) < 5: continue
-        ic, _ = spearmanr(g["panel_score"], g[LABEL_60D])
+        ic, _ = spearmanr(g["panel_score"], g[label_col])
         if not np.isnan(ic): ics.append(ic)
     log.info("In-sample fwd_60d cross-sectional IC: mean=%+.4f median=%+.4f n_dates=%d",
              np.mean(ics), np.median(ics), len(ics))
@@ -128,8 +133,8 @@ def main():
         # Use fwd_60d_excess (label the model was trained on). Calibrator
         # quantizes "outperform = fwd_return >= threshold" so the threshold
         # must be on the same scale as the label.
-        if LABEL_60D in gs.columns:
-            future_returns[tkr] = gs[LABEL_60D].dropna()
+        if label_col in gs.columns:
+            future_returns[tkr] = gs[label_col].dropna()
 
     log.info("Pool: %d tickers with both score + 60d-fwd returns",
              len(set(panel_scores) & set(future_returns)))

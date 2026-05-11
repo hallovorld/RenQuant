@@ -11,8 +11,9 @@
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
-CONDA_PREFIX="/Users/renhao/miniconda3/envs/renquant"
-PYTHON="$CONDA_PREFIX/bin/python"
+# 2026-05-11 audit M-env: switched conda → .venv per feedback_python_env.md
+VENV_DIR="/Users/renhao/git/github/RenQuant/.venv"
+PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/intraday_104"
 NTFY_TOPIC="renquant"
 mkdir -p "$LOG_DIR"

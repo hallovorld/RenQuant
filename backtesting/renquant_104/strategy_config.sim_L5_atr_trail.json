@@ -576,7 +576,7 @@
     }
   },
   "panel_ltr": {
-    "lookahead_days": 10,
+    "lookahead_days": 60,
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
