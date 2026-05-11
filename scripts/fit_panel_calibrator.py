@@ -91,6 +91,23 @@ def main() -> None:
                         "evaluation window. Example: sim_start=2024-01-02 "
                         "+ lookahead=20d → --data-end 2023-12-01 leaves a "
                         "~5-week buffer.")
+    p.add_argument("--data-start", type=str, default=None,
+                   help="ISO date (YYYY-MM-DD). Drop scoring dates < this. "
+                        "Combine with --data-start + --data-end to fit on a "
+                        "specific OOS window. Required for sim-only OOS "
+                        "calibration: scorer trained at cutoff_T, score the "
+                        "(T, T+1y) window via --data-start T+1d --data-end "
+                        "(sim_start - safety) → calibrator built on true "
+                        "OOS (score, fwd_return) pairs.")
+    p.add_argument("--scorer-artifact", type=str, default=None,
+                   help="Override the scorer path read from config. Used to "
+                        "fit a sim-only calibrator against a sim-only scorer "
+                        "(e.g. one trained with train_production_model.py "
+                        "--train-cutoff 2022-12-31). Without this, the script "
+                        "loads the scorer from "
+                        "`ranking.panel_scoring.artifact_path` or "
+                        "`panel_ltr.artifact_path` in the config. Relative "
+                        "paths resolve against the strategy directory.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
@@ -232,12 +249,22 @@ def main() -> None:
     # artifact even when training-side panel_ltr.artifact_path inherits
     # the production default. Same precedence as the out_path derivation
     # above + NGBoostSaveTask.
-    scorer_artifact_rel = (
-        config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
-        or panel_cfg.get("artifact_path")
-        or "artifacts/panel-ltr.json"
+    # 2026-05-11 F6: --scorer-artifact CLI flag overrides config-derived
+    # path so a sim-only calibrator can pair with a sim-only scorer
+    # without mutating the config.
+    if args.scorer_artifact:
+        scorer_artifact_rel = args.scorer_artifact
+    else:
+        scorer_artifact_rel = (
+            config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
+            or panel_cfg.get("artifact_path")
+            or "artifacts/panel-ltr.json"
+        )
+    scorer_path = (
+        Path(scorer_artifact_rel)
+        if Path(scorer_artifact_rel).is_absolute()
+        else strategy_dir / scorer_artifact_rel
     )
-    scorer_path = strategy_dir / scorer_artifact_rel
     log.info("Loading panel scorer: %s", scorer_path)
     scorer = PanelScorer.load(scorer_path)
     nan_cols = list(panel_cfg.get("nan_prone_cols", []))
@@ -248,11 +275,14 @@ def main() -> None:
     for t, df in ff.items():
         all_dates = all_dates.union(df.index)
     all_dates = all_dates.sort_values()
-    # 2026-05-11: --data-end cutoff for leakage-free OOS calibrators.
-    # CLAUDE.md §5.13: every scoring date with a forward-return target
-    # must precede the sim/holdout window. We drop scoring dates >=
-    # data_end so the resulting calibrator has not seen any panel
-    # (ticker, date) sample that falls inside the evaluation window.
+    # 2026-05-11: --data-end / --data-start window for leakage-free OOS
+    # calibrators. CLAUDE.md §5.13: every scoring date with a forward-
+    # return target must lie OUTSIDE the sim/holdout window. F6: when
+    # paired with a sim-only --scorer-artifact, --data-start lifts the
+    # lower bound past the scorer's training data → the calibrator is
+    # built on (raw_score, fwd_return) pairs where:
+    #   * scorer never saw the date during training (out-of-sample)
+    #   * forward return falls before sim window (no leak)
     if args.data_end:
         cutoff = pd.Timestamp(args.data_end)
         before = len(all_dates)
@@ -260,6 +290,14 @@ def main() -> None:
         log.info(
             "--data-end=%s: filtered scoring grid %d → %d dates",
             args.data_end, before, len(all_dates),
+        )
+    if args.data_start:
+        start = pd.Timestamp(args.data_start)
+        before = len(all_dates)
+        all_dates = all_dates[all_dates >= start]
+        log.info(
+            "--data-start=%s: filtered scoring grid %d → %d dates",
+            args.data_start, before, len(all_dates),
         )
     log.info("Scoring %d dates for %d tickers", len(all_dates), len(ff))
 
