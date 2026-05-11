@@ -41,7 +41,14 @@ def _build_exit_params(regime_p: dict, config: dict) -> dict:
         "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct", 0),
         "trailing_stop_trail_pct":   regime_p.get("trailing_stop_trail_pct",   0),
         "stop_loss_pct":             regime_p.get("stop_loss_pct",             0),
+        # 2026-05-10 σ-aware stop_loss (Fix #0a revive) — set to 0 to disable;
+        # typical industry value 2.0 (Almgren-Chriss / Edwards-Magee).
+        "stop_n_sigma":              regime_p.get("stop_n_sigma",              0),
         "max_single_day_loss_pct":   regime_p.get("max_single_day_loss_pct",   0),
+        # Existing σ-aware SDL plumbing — previously wired in check_single_day_loss
+        # but the config key was never threaded through _build_exit_params,
+        # so it was dead. Now config-driven (industry value 2.0-2.5).
+        "sdl_n_sigma":               regime_p.get("sdl_n_sigma",               0),
         "max_hold_days":             regime_p.get("max_hold_days",             0),
         "consecutive_sell_signals":  int(config.get("consecutive_sell_signals", 3)),
         "min_hold_days":             int(config.get("min_hold_days", 0)),

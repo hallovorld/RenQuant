@@ -74,6 +74,26 @@ class PrepareHoldingTask(Task):
         else:
             tc.holding.prev_close = None
 
+        # 2026-05-10: realized daily-return std (20d rolling) — fallback σ
+        # source for σ-aware exits when NGBoost is OFF in production
+        # (state.sigma is None). Revives Fix #0a per AUDIT_2026-05-09 #1.
+        # Window: 20 trading days (≈ 1 month), matches RiskMetrics 1996
+        # canonical daily-σ horizon and most Qlib volatility indicators.
+        # Defensive: needs ≥10 valid returns to emit; else None.
+        if len(stock_df) >= 21:
+            recent_close = stock_df["close"].iloc[-21:]
+            rets = recent_close.pct_change().dropna()
+            if len(rets) >= 10:
+                rv = float(rets.std(ddof=1))
+                if math.isfinite(rv) and rv > 0:
+                    tc.holding.realized_sigma_daily = rv
+                else:
+                    tc.holding.realized_sigma_daily = None
+            else:
+                tc.holding.realized_sigma_daily = None
+        else:
+            tc.holding.realized_sigma_daily = None
+
 
 class ScoreModelTask(Task):
     """Build feature frame and score model → tc.model_action."""

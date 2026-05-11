@@ -86,7 +86,14 @@ class HoldingState:
     expected_return: float | None = None   # latest E[R-SPY] over rotation horizon
     panel_score:     float | None = None   # latest cross-sectional panel-LTR score (set by PanelScoringJob)
     mu:              float | None = None   # latest NGBoost μ (set by PanelScoringJob)
-    sigma:           float | None = None   # latest NGBoost σ (set by PanelScoringJob)
+    sigma:           float | None = None   # latest NGBoost σ (set by PanelScoringJob, fwd-5d)
+    # 2026-05-10: realized daily-return std (20d rolling) — fallback when
+    # NGBoost is OFF in prod so σ-aware exits (stop_loss / single_day_loss)
+    # remain active. Written by PrepareHoldingTask each bar. Resolves to
+    # daily vol directly; NGB sigma needs /√5 conversion (see
+    # `_resolve_daily_sigma`). Revives Fix #0a (was dead-code per
+    # AUDIT_2026-05-09 #1) by removing the NGB dependency.
+    realized_sigma_daily: float | None = None
     # Shares actually held at broker — populated by adapters from
     # broker positions cache. Needed to compute current-pct vs
     # kelly_target_pct for top-up decisions.
@@ -317,25 +324,101 @@ def check_trailing_stop(
     return _NO_EXIT
 
 
+def _resolve_daily_sigma(state: "HoldingState") -> float | None:
+    """Resolve per-position daily volatility from NGBoost σ (preferred) or
+    realized-vol fallback.
+
+    Priority:
+      1. ``state.sigma`` (NGBoost 5-day σ) → daily = σ / √5
+      2. ``state.realized_sigma_daily`` (20-day realized) → use as-is
+      3. ``None`` when neither available
+
+    Reviving Fix #0a (σ-aware stops, was dead-code per AUDIT_2026-05-09 #1):
+    NGB is OFF in production so state.sigma is always None; the realized-vol
+    fallback (computed in PrepareHoldingTask from last 20d daily returns)
+    makes σ-aware exits actually fire. Industry-standard volatility-scaled
+    risk control (Almgren-Chriss 2000; Edwards-Magee 1948; RiskMetrics
+    1996 — daily-σ as the canonical risk unit).
+    """
+    import math  # noqa: PLC0415 — local import keeps helper self-contained
+    sg = getattr(state, "sigma", None)
+    if sg is not None:
+        try:
+            sgf = float(sg)
+            if math.isfinite(sgf) and sgf > 0:
+                return sgf / math.sqrt(5.0)
+        except (TypeError, ValueError):
+            pass
+    rs = getattr(state, "realized_sigma_daily", None)
+    if rs is not None:
+        try:
+            rsf = float(rs)
+            if math.isfinite(rsf) and rsf > 0:
+                return rsf
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def check_stop_loss(
     current_price: float,
     state: HoldingState,
-    stop_pct: float,   # e.g. 0.15 (15% cumulative loss)
+    stop_pct: float,   # e.g. 0.15 (15% cumulative loss) — legacy absolute floor
+    stop_n_sigma: float = 0.0,   # N × daily σ × √hold_days (σ-adaptive ceiling)
+    today: datetime.date | None = None,
 ) -> ExitSignal:
-    """Fixed cumulative stop-loss from entry price."""
-    import math
-    # 2026-05-04 audit Issue 19 fix: NaN entry_price slipped past `<= 0`
-    # → loss_pct = NaN → no stop ever fires. Same NaN-slip class as
-    # Issue 18 (check_take_profit). Defense in depth.
-    if (stop_pct <= 0
-            or not math.isfinite(state.entry_price)
-            or state.entry_price <= 0):
+    """Cumulative stop-loss from entry price — absolute and/or σ-adaptive.
+
+    Two threshold modes (effective = max of both):
+      stop_pct (legacy)    absolute fraction of entry (e.g. 0.15 = 15%)
+      stop_n_sigma (new)   N × daily_σ × √hold_days — scales with the
+                           ticker's own daily vol AND the cumulative drift
+                           over the holding window. High-σ stocks get
+                           wider stops (no noise-day exits); long-held
+                           positions get wider stops as the noise band
+                           accumulates with sqrt(t).
+
+    Industry refs:
+      Almgren-Chriss 2000 (Optimal execution): risk in σ-units, scales √t.
+      Edwards-Magee 1948 (Technical Analysis of Stock Trends, Ch. 28):
+        stop placement at "N-σ-day move" beyond entry.
+      RiskMetrics 1996 (J.P. Morgan): daily-σ is the canonical risk unit;
+        N-σ band = N × σ_daily × √horizon for cumulative drift.
+
+    Revives Fix #0a (σ-aware stop_loss) which was rolled back as dead code
+    per AUDIT_2026-05-09 #1. Root cause was σ source (NGB OFF in prod);
+    `_resolve_daily_sigma` adds realized-vol fallback so σ-aware works
+    independently of NGB.
+
+    2026-05-04 audit Issue 19 fix: NaN entry_price slipped past `<= 0`
+    → loss_pct = NaN → no stop ever fires. Same NaN-slip class as
+    Issue 18 (check_take_profit). Defense in depth.
+    """
+    import math  # noqa: PLC0415
+    if not math.isfinite(state.entry_price) or state.entry_price <= 0:
         return _NO_EXIT
+
+    abs_thresh = float(stop_pct) if stop_pct and stop_pct > 0 else 0.0
+    sigma_thresh = 0.0
+    if stop_n_sigma and stop_n_sigma > 0:
+        sg_daily = _resolve_daily_sigma(state)
+        if sg_daily is not None:
+            if today is not None:
+                days_held = max(1, (today - state.entry_date).days)
+            else:
+                days_held = 1
+            sigma_thresh = float(stop_n_sigma) * sg_daily * math.sqrt(float(days_held))
+
+    threshold = max(abs_thresh, sigma_thresh)
+    if threshold <= 0:
+        return _NO_EXIT
+
     loss_pct = (state.entry_price - current_price) / state.entry_price
-    if loss_pct >= stop_pct:
+    if loss_pct >= threshold:
         return ExitSignal(
             should_exit=True,
-            reason=f"stop_loss loss={loss_pct:.1%}",
+            reason=(f"stop_loss loss={loss_pct:.1%} ≥ {threshold:.1%} "
+                    f"(abs={abs_thresh:.1%} / σN={sigma_thresh:.1%})"),
             exit_type="stop_loss",
         )
     return _NO_EXIT
@@ -375,10 +458,11 @@ def check_single_day_loss(
     abs_thresh = float(sdl_pct) if sdl_pct and sdl_pct > 0 else 0.0
     sigma_thresh = 0.0
     if sdl_n_sigma and sdl_n_sigma > 0:
-        sg = getattr(state, "sigma", None)
-        if (sg is not None and math.isfinite(float(sg)) and float(sg) > 0):
-            # NGBoost σ is forward-5d return std; daily_vol ≈ σ/√5.
-            daily_vol = float(sg) / math.sqrt(5.0)
+        # 2026-05-10: route through _resolve_daily_sigma so realized-vol
+        # fallback is used when NGB is OFF (NGB σ unavailable). Industry-
+        # standard daily-σ resolution per Almgren-Chriss / RiskMetrics.
+        daily_vol = _resolve_daily_sigma(state)
+        if daily_vol is not None:
             sigma_thresh = float(sdl_n_sigma) * daily_vol
 
     threshold = max(abs_thresh, sigma_thresh)
@@ -541,10 +625,12 @@ def compute_exits(
     if sig.should_exit:
         return sig, state
 
-    # 2. Cumulative stop-loss
+    # 2. Cumulative stop-loss (legacy absolute % AND/OR σ-adaptive)
     sig = check_stop_loss(
         current_price, state,
         float(params.get("stop_loss_pct", 0)),
+        float(params.get("stop_n_sigma", 0)),
+        today,
     )
     if sig.should_exit:
         return sig, state
