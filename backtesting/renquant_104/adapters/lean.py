@@ -62,6 +62,41 @@ class LeanAdapter:
         # fees on the LEAN side from scratch — always read LEAN's number.
         self._lean_fees_last_seen: float = 0.0
 
+        # ── Meta-label hooks (P-LEAN, 2026-05-11) ─────────────────────
+        # Mirror SimAdapter / RunnerAdapter: LeanAdapter loads the
+        # XGBoost predictor at construction so backtest results in
+        # LEAN are PARITY with sim + live. Without this, LEAN sims
+        # would silently no-op meta-label (§5.13.10 fallback) and
+        # under-state prod behavior, defeating the point of LEAN
+        # backtest validation.
+        config = getattr(algo, "_config", None) or {}
+        ml_train_cfg = config.get("meta_label_training", {}) or {}
+        if ml_train_cfg.get("enabled", False):
+            from kernel.meta_label import SnapshotLogger  # noqa: PLC0415
+            self._meta_label_logger = SnapshotLogger()
+            self._meta_label_output_path = str(
+                ml_train_cfg.get("output_path", "data/position_day_snapshots.parquet")
+            )
+        else:
+            self._meta_label_logger = None
+            self._meta_label_output_path = None
+
+        veto_cfg = (config.get("ranking") or {}).get("meta_label") or {}
+        if veto_cfg.get("enabled", False):
+            from kernel.meta_label.predictor import load_meta_label_predictor  # noqa: PLC0415
+            from pathlib import Path  # noqa: PLC0415
+            art_path = veto_cfg.get(
+                "artifact_path",
+                "backtesting/renquant_104/artifacts/meta-label-exit.json",
+            )
+            strategy_dir = getattr(algo, "_strategy_dir", None)
+            art_resolved = Path(art_path)
+            if not art_resolved.is_absolute() and strategy_dir is not None:
+                art_resolved = Path(strategy_dir).parent.parent / art_resolved
+            self._meta_label_predictor = load_meta_label_predictor(art_resolved)
+        else:
+            self._meta_label_predictor = None
+
     # ── make_context ───────────────────────────────────────────────────────────
 
     def make_context(self, data: Any) -> InferenceContext:
@@ -195,6 +230,13 @@ class LeanAdapter:
             ctx._panel_factor_frames    = self._panel_cache_fac                      # noqa: SLF001
             ctx._panel_macro_frame      = getattr(self, "_panel_cache_macro", None)  # noqa: SLF001
             ctx._panel_asset_embeddings = getattr(self, "_panel_cache_emb", None)    # noqa: SLF001  T2-2
+
+        # P-LEAN (2026-05-11) — attach meta-label hooks for parity with
+        # SimAdapter / RunnerAdapter. snapshot_logger is None unless
+        # meta_label_training mode; predictor is None unless artifact
+        # loaded successfully (§5.13.10 fallback).
+        ctx.snapshot_logger = self._meta_label_logger
+        ctx._meta_label_predictor = self._meta_label_predictor  # noqa: SLF001
         return ctx
 
     # ── commit ─────────────────────────────────────────────────────────────────
