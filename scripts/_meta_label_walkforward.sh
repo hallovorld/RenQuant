@@ -90,12 +90,7 @@ PY
 
     # ── Step 6: 3-way OOS sims (parallel within window) ───────────────
     echo "[$(date '+%H:%M:%S')]   Step 6: 3-way OOS ($TES → $TEE) parallel…"
-    for cfg_short in baseline ${DEPLOY_BB_CFG%.json} ${DEPLOY_META_CFG%.json}; do
-        cfg_file="strategy_config.${cfg_short}.json"
-        # baseline special case
-        if [ "$cfg_short" = "baseline" ]; then
-            cfg_file="strategy_config.sim_baseline.json"
-        fi
+    for cfg_file in strategy_config.sim_baseline.json "$DEPLOY_BB_CFG" "$DEPLOY_META_CFG"; do
         label=$(basename "$cfg_file" .json | sed 's/strategy_config\.//')
         nohup python scripts/run_sim_104.py \
             --start "$TES" --end "$TEE" \

@@ -177,11 +177,12 @@
       "entry_mode": "momentum",
       "min_model_score": 0.1,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.2,
-      "trailing_stop_trail_pct": 0.18,
+      "trailing_stop_trigger_pct": 0.12,
+      "trailing_stop_trail_pct": 0.25,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
-      "take_profit_pct": 0
+      "take_profit_pct": 0,
+      "_bb14_meta_reason": "2026-05-11 P4.5 winner: BB_14 stops + meta-label classifier. Validated on 11-mo OOS 2025-04\u21922026-03: APY +0.2% / MaxDD 44.7% vs baseline -0.3% / 55.8%. Meta-label vetoed 5 SDLs. See doc/research/meta-labeling-results-2026-05-11.md."
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -412,11 +413,11 @@
       "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: \u03c3-derived no-trade band uncapped \u2192 high-\u03c3 holdings (e.g. BA \u03c3\u0302=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
       "qp_min_invested_pct": 0.7,
       "qp_ledoit_wolf_lambda": 0.2,
-      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0\u21920.2 (Ledoit-Wolf 2004 mid-of-recommended-range).",
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0\u21920.2 (Ledoit-Wolf 2004 mid-of-recommended-range). 169-stock universe sample-cov is high-noise / near-singular without shrinkage; \u03bb=0.2 lifts off-diagonals toward 0 and equalises variance toward avg. Reference: Ledoit & Wolf 2004 Honey paper (J.PortMgmt 30(4):110-119).",
       "qp_sector_cap_enabled": true,
-      "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve.",
+      "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs."
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -476,7 +477,7 @@
       "spy_trend",
       "hurst_proxy"
     ],
-    "_lookahead_removed_2026-05-10": "Per \u00a75.13.5: removed in favor of panel_ltr.lookahead_days as the single source of truth. Tournament path still defaults to 5 internally.",
+    "_lookahead_removed_2026-05-10": "Per \u00a75.13.5 single-source-of-truth: this key shadowed panel_ltr.lookahead_days and produced ambiguity (model_params.lookahead=5 vs panel_ltr.lookahead_days=10 vs prod artifact=60). Canonical key is now panel_ltr.lookahead_days. Tournament-side code (training/features.py build_training_features) still defaults to 5 internally \u2014 behavior unchanged for tournament path, but config no longer carries a conflicting value.",
     "threshold": 0.03,
     "leaf_size": 25,
     "bags": 15,
@@ -564,11 +565,17 @@
     },
     "ngboost_head": {
       "enabled": false
+    },
+    "meta_label": {
+      "enabled": true,
+      "threshold": 0.5,
+      "artifact_path": "backtesting/renquant_104/artifacts/meta-label-exit.json",
+      "_deployment_reason": "2026-05-11: meta-label exit veto. L\u00f3pez de Prado AFML ch.20. Trained 2026-05-11 on 2024-04\u21922025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: \u00a75.13.10 \u2014 missing artifact \u2192 no-op."
     }
   },
   "panel_ltr": {
     "lookahead_days": 60,
-    "_lookahead_days_reason_2026-05-10": "Aligned with production artifact (fwd_60d_excess label, scripts/train_production_model.py hardcodes 60). Single source of truth per \u00a75.13.5.",
+    "_lookahead_days_reason_2026-05-10": "Production artifact (panel-ltr.alpha158_fund.json trained 2026-05-09) has lookahead_days=60 / label_col=fwd_60d_excess. Prior config value (10) silently diverged from the artifact produced by scripts/train_production_model.py, which hardcodes 60. Setting config to 60 makes panel_ltr.lookahead_days the single source of truth (\u00a75.13.5) and matches the production training horizon (CLAUDE.md project-status: 'XGBoost rank:pairwise + alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, fwd_60d label').",
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,

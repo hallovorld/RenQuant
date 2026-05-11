@@ -177,11 +177,12 @@
       "entry_mode": "momentum",
       "min_model_score": 0.1,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.2,
-      "trailing_stop_trail_pct": 0.18,
+      "trailing_stop_trigger_pct": 0.12,
+      "trailing_stop_trail_pct": 0.25,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
-      "take_profit_pct": 0
+      "take_profit_pct": 0,
+      "_bb14_meta_reason": "2026-05-11 P4.5 winner: BB_14 stops + meta-label classifier. Validated on 11-mo OOS 2025-04\u21922026-03: APY +0.2% / MaxDD 44.7% vs baseline -0.3% / 55.8%. Meta-label vetoed 5 SDLs. See doc/research/meta-labeling-results-2026-05-11.md."
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -564,6 +565,12 @@
     },
     "ngboost_head": {
       "enabled": false
+    },
+    "meta_label": {
+      "enabled": true,
+      "threshold": 0.5,
+      "artifact_path": "backtesting/renquant_104/artifacts/meta-label-exit.json",
+      "_deployment_reason": "2026-05-11: meta-label exit veto. L\u00f3pez de Prado AFML ch.20. Trained 2026-05-11 on 2024-04\u21922025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: \u00a75.13.10 \u2014 missing artifact \u2192 no-op."
     }
   },
   "panel_ltr": {
