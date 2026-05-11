@@ -2616,3 +2616,58 @@ python -c "import json; print(json.load(open('backtesting/renquant_104/artifacts
   as dead code.
 - §5.13 ceiling reaffirmation: param/sample > 1/100 = overfitting guaranteed.
   P4.3 was 1/5; should have been rejected at training time.
+
+---
+
+## E64 (partial) — Conviction cap in QP path — 2026-05-11
+
+**Hypothesis (A2):** Wiring `conviction_multiplier(panel_score, sizing_cfg)`
+into the QP per-name cap (`_qp_w_upper`) would let low-conviction tickers
+get tighter caps in joint optimization, mirroring the greedy paths.
+
+**Implementation:** `kernel/portfolio_qp/tasks.py::ApplyConvictionCapTask`
+between `ComputeQPConstraintsTask` and `BuildSectorConstraintMatrixTask`.
+Opt-in via `rotation.joint_actions.qp_conviction_cap_enabled=true`. 13
+invariant tests GREEN.
+
+**Sim result (W3 window 2024-12→2025-12, walkforward sim_baseline):**
+| Config | APY | Sharpe | MaxDD |
+|---|---|---|---|
+| Baseline (cap OFF) | −11.6% | +0.60 | 55.0% |
+| A2 (cap ON)       | −11.6% | +0.60 | 55.0% |
+
+**Numbers bit-identical → A2 didn't fire.**
+
+**Root cause:** ApplyConvictionCapTask has a defensive gate:
+```python
+if not sizing_cfg or not sizing_cfg.get("enabled", False):
+    return None
+```
+And the active production config has `ranking.panel_scoring.sizing.enabled=False`
+(verified 2026-05-11). The conviction_multiplier path is **globally dormant
+in prod** — wiring it into QP didn't help because the parent feature flag was
+off. Greedy callers (task_selection / task_rotation / task_joint_actions)
+have the same dependency and also return 1.0 from `conviction_multiplier()`.
+
+**Status:** the QP wire is correct and well-tested; the experiment is
+inconclusive because the prerequisite (`sizing.enabled=true`) was never
+turned on. The wire isn't dead code — it's gated by an upstream config flag
+that nobody flipped during the audit.
+
+**Resume condition:** enable `panel_scoring.sizing.enabled=True` in a side
+config, rerun A/B (cap on vs off) WITH sizing on, then promote if APY/Sharpe
+improves. Pair with a per-bar log of how often the cap binds (i.e. how often
+`_qp_conviction_caps < 1.0` matters for the QP solution).
+
+**Reproduction:**
+```bash
+# Current config (sizing.enabled=False) is the inconclusive baseline.
+# To rerun properly:
+#   1. Build side config with sizing.enabled=True
+#   2. Sim A vs B on same window
+#   3. Compare APY / Sharpe / MaxDD / trade counts
+```
+
+Reverted preemptive plan to "promote A2 to prod after sim validation" —
+no validation possible until sizing.enabled is turned on first. Both the
+flag-flip and the validation are deferred to a future session.
