@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # intraday_sell_104.sh — Mid-market-hours exit-only pass with Alpaca 5-min bars.
+# ─── PAPER MODE (2026-05-11) ─────────────────────────────────────────────
+# 2026-05-11: per user safety mandate, --broker switched from alpaca (LIVE,
+# real money via Alpaca live API) to paper (LOCAL sim broker, no external
+# venue, records to live_state.paper.json + ntfy). To restore live trading:
+#   sed -i "" "s/--broker paper/--broker alpaca/g" scripts/*.sh
+# Or add ALPACA_PAPER_API_KEY/SECRET to .env + switch to --broker alpaca-paper
+# for Alpaca's paper-trading sandbox (real API, no real money).
+# ─────────────────────────────────────────────────────────────────────────
 #
 # Runs every ~30 min during market hours. Uses Alpaca's IEX 5-min feed to
 # overlay the latest intraday close on today's daily bar, then calls
@@ -64,7 +72,7 @@ fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
 cd "$REPO_DIR"
-if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
+if "$PYTHON" -m live.runner --strategy renquant_104 --broker paper --once \
         --sell-only --intraday; then
     echo "=== intraday_sell finished at $(date) ==="
 else

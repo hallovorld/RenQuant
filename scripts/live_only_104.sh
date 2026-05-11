@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # live_only_104.sh — Intraday sell check for renquant_104.
+# ─── PAPER MODE (2026-05-11) ─────────────────────────────────────────────
+# 2026-05-11: per user safety mandate, --broker switched from alpaca (LIVE,
+# real money via Alpaca live API) to paper (LOCAL sim broker, no external
+# venue, records to live_state.paper.json + ntfy). To restore live trading:
+#   sed -i "" "s/--broker paper/--broker alpaca/g" scripts/*.sh
+# Or add ALPACA_PAPER_API_KEY/SECRET to .env + switch to --broker alpaca-paper
+# for Alpaca's paper-trading sandbox (real API, no real money).
+# ─────────────────────────────────────────────────────────────────────────
 #
 # Runs the live trader WITHOUT model retraining or LEAN data export.
 # Used for the two intraday triggers:
@@ -128,7 +136,7 @@ except Exception:
 
 if "$PYTHON" -m live.runner \
     --strategy renquant_104 \
-    --broker alpaca \
+    --broker paper \
     --once \
     $SELL_ONLY_FLAG; then
 
