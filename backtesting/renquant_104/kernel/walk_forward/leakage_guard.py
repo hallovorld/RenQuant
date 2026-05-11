@@ -68,10 +68,32 @@ def assert_no_leakage(
     """
     trained = _to_timestamp(model_trained_date, label="model_trained_date")
     today = _to_timestamp(sim_today, label="sim_today")
-    # 2026-05-11 G1 fix — when lookahead_days > 0, training labels reach
+    # 2026-05-11 audit Round 3 (G2 strengthening): defensive input validation.
+    # Pre-fix: NaN/inf/float/string lookahead_days silently bypassed (NaN > 0
+    # is False; float(10.7) truncated; "60" raised opaque TypeError). Now:
+    # explicit type + finite + sign check with labeled errors so a bad
+    # manifest entry surfaces loudly instead of degrading to "no lookahead".
+    import math as _math  # noqa: PLC0415
+    if lookahead_days is None:
+        lookahead_days = 0
+    if isinstance(lookahead_days, bool):
+        raise TypeError(
+            f"lookahead_days must be int, got bool {lookahead_days!r}"
+        )
+    if not isinstance(lookahead_days, int):
+        raise TypeError(
+            f"lookahead_days must be int (got {type(lookahead_days).__name__} "
+            f"{lookahead_days!r}) — coerce upstream so the guard's check "
+            f"can't silently drift on float-vs-int comparisons."
+        )
+    if lookahead_days < 0:
+        raise ValueError(
+            f"lookahead_days must be ≥ 0, got {lookahead_days}"
+        )
+    # 2026-05-11 G1: when lookahead_days > 0, training labels reach
     # `trained + lookahead_days` (calendar days, conservative upper bound).
     # E.g. fwd_60d_excess at cutoff 2024-01-01 saw prices through ~2024-03-01.
-    if lookahead_days and lookahead_days > 0:
+    if lookahead_days > 0:
         last_label_seen = trained + pd.tseries.offsets.BDay(int(lookahead_days))
     else:
         last_label_seen = trained

@@ -118,13 +118,21 @@ def configure_panel_cutoff(cfg: dict, cutoff: pd.Timestamp,
 
 
 def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
-                         artifact_uri: str):
-    """Build a RetrainEntry — wrapper so callers don't have to import it."""
+                         artifact_uri: str, lookahead_days: int = 60):
+    """Build a RetrainEntry — wrapper so callers don't have to import it.
+
+    2026-05-11 Round 3 audit (G3): lookahead_days propagated so the
+    on-disk manifest carries the forward-label horizon and the leakage
+    guard can enforce `cutoff + lookahead < today` per bar. Default 60
+    matches the production training label `fwd_60d_excess` in
+    train_production_model.py.
+    """
     from kernel.walk_forward import RetrainEntry  # noqa: PLC0415
     return RetrainEntry(
         cutoff_date=cutoff,
         trained_date=pd.Timestamp(trained_dt),
         artifact_uri=artifact_uri,
+        lookahead_days=int(lookahead_days),
     )
 
 

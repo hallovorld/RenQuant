@@ -443,11 +443,17 @@ class SimAdapter:
             )
             return
         from kernel.walk_forward.leakage_guard import assert_no_leakage  # noqa: PLC0415
+        # 2026-05-11 Round 3 audit (G4): thread lookahead_days from the
+        # scorer's metadata so the legacy guard catches forward-label
+        # bleed too (e.g. fwd_60d_excess-trained model would silently
+        # pass `trained_date < backtest_end` even when bar-by-bar leak).
+        lookahead = int(meta.get("lookahead_days", 0) or 0)
         assert_no_leakage(
             trained_date,
             self._backtest_end,
             context=f"SimAdapter legacy load "
                     f"(artifact={meta.get('feature_cols', ['?'])[:1]}…)",
+            lookahead_days=lookahead,
         )
 
     def _get_panel_scorer_for_bar(self, today: pd.Timestamp):

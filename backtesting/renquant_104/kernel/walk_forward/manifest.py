@@ -44,6 +44,11 @@ class WalkForwardManifest:
                     "cutoff_date": e.cutoff_date.isoformat(),
                     "trained_date": e.trained_date.isoformat(),
                     "artifact_uri": e.artifact_uri,
+                    # 2026-05-11 Round 3 audit: persist lookahead_days so
+                    # the leakage guard's `cutoff + lookahead < today` check
+                    # survives a manifest round-trip. Default 0 = no
+                    # forward-label horizon (classification target).
+                    "lookahead_days": int(e.lookahead_days),
                 }
                 for e in self.retrains
             ],
@@ -69,10 +74,18 @@ def _validate_entry(raw: dict, idx: int) -> RetrainEntry:
             f"< cutoff_date {cutoff.isoformat()} (training finished BEFORE "
             f"its own labelled-data window ended)."
         )
+    # 2026-05-11 Round 3 audit: lookahead_days defaults to 0 for backward
+    # compat with v1 manifests, but emit a warning so operators upgrade.
+    lookahead = int(raw.get("lookahead_days", 0))
+    if lookahead < 0:
+        raise ValueError(
+            f"manifest entry [{idx}] lookahead_days={lookahead} must be ≥ 0"
+        )
     return RetrainEntry(
         cutoff_date=cutoff,
         trained_date=trained,
         artifact_uri=uri,
+        lookahead_days=lookahead,
     )
 
 
