@@ -320,8 +320,10 @@ class SimAdapter:
             artifacts_dir = self._strategy_dir
         regime_cfg = self._config.get("regime", {})
 
+        # 2026-05-11 sim/prod isolation: defaults relocated to prod/.
+        # Sim configs override these keys to sim/<file>.
         earnings_path = artifacts_dir / regime_cfg.get(
-            "earnings_artifact", "earnings-calendar.json",
+            "earnings_artifact", "prod/earnings-calendar.json",
         )
         earnings_cal = {}
         if earnings_path.exists():
@@ -331,11 +333,11 @@ class SimAdapter:
                 log.warning("earnings calendar load failed: %s", exc)
 
         gmm = load_gmm_artifact(
-            artifacts_dir / regime_cfg.get("gmm_artifact", "spy-gmm-regime.json"),
+            artifacts_dir / regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json"),
         )
 
         corr_path = artifacts_dir / regime_cfg.get(
-            "correlation_artifact", "watchlist-correlation.json",
+            "correlation_artifact", "prod/watchlist-correlation.json",
         )
         # AUDIT 2026-05-10 §5.13.5 — correlation as-of-date leakage guard.
         # Unwraps v2 schema (matrix + as_of_date) or treats raw as v1.

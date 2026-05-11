@@ -279,7 +279,11 @@ class QualityFloorTask(Task):
     def _gate_b_conformal_tau(
         ctx: InferenceContext, regime: str | None,
     ) -> float | None:
-        """Read regime-keyed τ from ``artifacts/gate_b_thresholds.json``.
+        """Read regime-keyed τ from a config-driven gate_b artifact path.
+
+        Path source (priority): ``ranking.panel_scoring.quality_floor.
+        gate_b_artifact_path`` → falls back to ``prod/gate_b_thresholds.json``
+        relative to ``<strategy_dir>/artifacts/``.
 
         Produced by ``scripts/fit_conformal_gate_b.py``. Returns None when
         any of the following — caller then falls back to the static config
@@ -302,7 +306,16 @@ class QualityFloorTask(Task):
             strategy_dir = Path(ctx.config.get("_strategy_dir", ""))
             if not strategy_dir.is_absolute():
                 return None
-            path = strategy_dir / "artifacts" / "gate_b_thresholds.json"
+            # 2026-05-11 sim/prod isolation: artifact lives under prod/ or sim/.
+            qfloor_cfg = (
+                ctx.config.get("ranking", {})
+                .get("panel_scoring", {})
+                .get("quality_floor", {})
+            )
+            rel_path = qfloor_cfg.get(
+                "gate_b_artifact_path", "prod/gate_b_thresholds.json"
+            )
+            path = strategy_dir / "artifacts" / rel_path
             if not path.exists():
                 return None
             data = _j.loads(path.read_text())

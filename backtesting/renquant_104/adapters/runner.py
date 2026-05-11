@@ -536,10 +536,12 @@ class RunnerAdapter:
         if not artifacts_dir.exists():
             artifacts_dir = self._strategy_dir
 
-        gmm_path  = artifacts_dir / regime_cfg.get("gmm_artifact", "spy-gmm-regime.json")
+        # 2026-05-11 sim/prod isolation: defaults relocated to prod/.
+        # Sim configs override these keys to sim/<file>.
+        gmm_path  = artifacts_dir / regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json")
         gmm       = load_gmm_artifact(gmm_path)
 
-        corr_path = artifacts_dir / regime_cfg.get("correlation_artifact", "watchlist-correlation.json")
+        corr_path = artifacts_dir / regime_cfg.get("correlation_artifact", "prod/watchlist-correlation.json")
         # 2026-05-09 audit fix (RU-JSON-MALFORMED): pre-fix, malformed JSON
         # in corr/earnings artifacts raised JSONDecodeError straight up
         # → adapter __init__ crashed → live trade aborted with cryptic
@@ -560,7 +562,8 @@ class RunnerAdapter:
             log.warning("corr artifact %s malformed (%s) — treating as missing", corr_path, exc)
             corr = None
 
-        earn_path = artifacts_dir / "earnings-calendar.json"
+        # 2026-05-11 sim/prod isolation + audit fix (was hardcoded, now config-driven).
+        earn_path = artifacts_dir / regime_cfg.get("earnings_artifact", "prod/earnings-calendar.json")
         try:
             earnings = json.loads(earn_path.read_text()) if earn_path.exists() else None
         except (json.JSONDecodeError, OSError) as exc:

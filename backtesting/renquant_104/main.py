@@ -166,14 +166,16 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         )
 
         regime_cfg  = CONFIG.get("regime", {})
+        # 2026-05-11 sim/prod isolation: defaults relocated to prod/.
+        # Sim configs override these keys to sim/<file>.
         self._gmm   = load_gmm_artifact(artifact_path(
-            regime_cfg.get("gmm_artifact", "spy-gmm-regime.json")))
+            regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json")))
         # AUDIT 2026-05-10 §5.13.5 — correlation as-of-date leakage guard.
         # Loads raw artifact, parses v1/v2 schema, asserts as_of_date <=
         # backtest_start in backtest mode (LiveMode skips). Routes through
         # kernel.walk_forward.correlation_guard.
         _corr_raw = self._load_json_artifact(
-            regime_cfg.get("correlation_artifact", "watchlist-correlation.json"), "Correlation")
+            regime_cfg.get("correlation_artifact", "prod/watchlist-correlation.json"), "Correlation")
         self._corr, _corr_as_of = parse_correlation_artifact(_corr_raw)
         assert_correlation_no_leakage(
             _corr_as_of,
@@ -182,7 +184,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             context="LEAN main.py corr",
         )
         self._earnings = self._load_json_artifact(
-            regime_cfg.get("earnings_artifact", "earnings-calendar.json"), "Earnings")
+            regime_cfg.get("earnings_artifact", "prod/earnings-calendar.json"), "Earnings")
 
         # ── Pipeline + adapter ───────────────────────────────────────────────
         self._pipeline = InferencePipeline()
