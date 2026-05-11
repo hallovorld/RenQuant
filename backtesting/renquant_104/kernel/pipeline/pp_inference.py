@@ -284,6 +284,19 @@ class InferencePipeline:
                 log.debug("%s skipped by should_skip", type(job).__name__)
                 continue
             job.run(ctx)
+            # After PanelScoringJob populates today's cross-section
+            # (panel_score / mu / sigma on candidates + holdings),
+            # run the cross-sectional panel-conviction exit. Bypasses
+            # the calibrator-saturated rank_score that made the legacy
+            # PanelConvictionExitTask in TickerSellJob structurally
+            # unreachable (0/12336 historical fires; see
+            # 2026-05-11 audit). Default disabled — opt-in via
+            # `risk.panel_exit.enabled`.
+            if type(job).__name__ == "PanelScoringJob":
+                from .task_panel_conviction_xs import (  # noqa: PLC0415
+                    CrossSectionalPanelExitTask,
+                )
+                CrossSectionalPanelExitTask().run(ctx)
 
         # Plan C: Kelly-driven top-up for existing holdings whose panel
         # score has improved beyond kelly_target_pct. No-op unless

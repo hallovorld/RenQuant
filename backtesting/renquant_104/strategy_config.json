@@ -242,7 +242,11 @@
       "enabled": true,
       "panel_sell_floor": 0.2,
       "mu_sell_ceiling": 0.0,
-      "trigger_mode": "and"
+      "trigger_mode": "and",
+      "xs_panel_percentile_floor": 0.2,
+      "mu_strong_sell_ceiling": -0.05,
+      "min_universe": 5,
+      "_deployment_reason": "2026-05-11 audit fix: legacy PanelConvictionExitTask had 0/12336 historical fire rate due to calibrator-saturation rank_score gating. NEW CrossSectionalPanelExitTask post-PanelScoringJob uses raw panel_score with cross-sectional percentile (AND mu) + strong-mu OR-bypass. Catches BA-style cases: panel=+0.198 (32%ile) mu=-0.123 \u2192 fires via strong_mu bypass."
     }
   },
   "sector_map": {
