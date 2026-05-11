@@ -180,6 +180,15 @@ class InferencePipeline:
                 ctx.counters["blocked_streak"] = ctx.counters.get("blocked_streak", 0) + 1
         log.info("Phase 2a (sell): %d exits from %d held", len(ctx.exits), len(sell_tctxs))
 
+        # S-2 (2026-05-11) — HARD FLATTEN kill switch at drawdown
+        # threshold. Runs AFTER the parallel TickerSellJob so path-rule
+        # exits are already in ctx.exits; this task augments the list
+        # with flatten signals for every still-held ticker when
+        # portfolio drawdown ≥ risk.drawdown_flatten.flatten_pct.
+        # Disabled by default — golden behaviour preserved.
+        from .task_dd_flatten import DrawdownFlattenTask  # noqa: PLC0415
+        DrawdownFlattenTask().run(ctx)
+
         # 2026-04-26 round-7 audit fix MAX-SELLS-PER-BAR:
         # portfolio-level cap on simultaneous model_sell exits. Risk
         # rules (stop_loss / trailing / SDL / max_hold) exempt — only
