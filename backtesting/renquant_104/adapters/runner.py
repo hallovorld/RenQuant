@@ -124,6 +124,47 @@ class RunnerAdapter:
         from kernel.persistence import get_connection  # noqa: PLC0415
         self._db = get_connection(config, strategy_dir=strategy_dir)
 
+        # ── Meta-label snapshot logger (P5, 2026-05-11) ────────────────────
+        # Mirror of SimAdapter wiring. Owned by adapter so it persists
+        # across bars. Attached to ctx in make_context(); MetaLabelLoggingJob
+        # writes one row per held ticker per bar; dumped at runner
+        # teardown. Disabled (None) when meta_label_training.enabled is
+        # false — i.e. always disabled in prod, only ON during a
+        # dedicated training data-capture run (intraday cron or research
+        # batch).
+        ml_train_cfg = config.get("meta_label_training", {}) or {}
+        if ml_train_cfg.get("enabled", False):
+            from kernel.meta_label import SnapshotLogger  # noqa: PLC0415
+            self._meta_label_logger = SnapshotLogger()
+            self._meta_label_output_path = str(
+                ml_train_cfg.get("output_path", "data/position_day_snapshots.parquet")
+            )
+        else:
+            self._meta_label_logger = None
+            self._meta_label_output_path = None
+
+        # ── Meta-label veto predictor (P5, 2026-05-11) ────────────────────
+        # Loads the XGBoost classifier trained by scripts/_meta_label_train.py
+        # and exposes a `predictor(feats: dict) -> P(profitable_exit)`
+        # callable that MetaLabelVetoTask queries to drop false-positive
+        # path-rule exits. This is the PROD deployment surface for the
+        # meta-label mechanism — same artifact format / fallback contract
+        # as SimAdapter so models trained in sim research deploy cleanly
+        # to live without code change.
+        veto_cfg = (config.get("ranking") or {}).get("meta_label") or {}
+        if veto_cfg.get("enabled", False):
+            from kernel.meta_label.predictor import load_meta_label_predictor  # noqa: PLC0415
+            art_path = veto_cfg.get(
+                "artifact_path",
+                "backtesting/renquant_104/artifacts/meta-label-exit.json",
+            )
+            art_resolved = Path(art_path)
+            if not art_resolved.is_absolute():
+                art_resolved = Path(strategy_dir).parent.parent / art_resolved
+            self._meta_label_predictor = load_meta_label_predictor(art_resolved)
+        else:
+            self._meta_label_predictor = None
+
     # ── make_context ───────────────────────────────────────────────────────────
 
     def make_context(self):  # noqa: ANN201
@@ -697,6 +738,15 @@ class RunnerAdapter:
             except Exception as exc:
                 log.warning("Panel frame prep failed — panel scoring will be skipped: %s",
                             exc)
+
+        # ── P5 (2026-05-11) attach meta-label hooks ──────────────────────
+        # snapshot_logger: None unless meta_label_training.enabled
+        #   (training-data capture mode — typically OFF in prod)
+        # _meta_label_predictor: None unless ranking.meta_label.enabled +
+        #   artifact loaded. The MetaLabelVetoTask in pp_inference.py
+        #   reads this to drop false-positive path-rule exits at live time.
+        ctx.snapshot_logger = self._meta_label_logger
+        ctx._meta_label_predictor = self._meta_label_predictor  # noqa: SLF001
 
         return ctx
 
