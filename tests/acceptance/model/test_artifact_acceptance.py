@@ -23,6 +23,25 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 ARTIFACTS = REPO / "backtesting" / "renquant_104" / "artifacts"
+# 2026-05-11 sim/prod isolation refactor: production artifacts moved to
+# artifacts/prod/. Tests now resolve the canonical panel-LTR / calibrator /
+# NGBoost paths via prod/, falling back to the legacy alpha158_fund alias
+# when the generic name is missing.
+PROD_ARTIFACTS = ARTIFACTS / "prod"
+
+def _prod_artifact(*candidates: str) -> Path:
+    """Return the first existing path among ``PROD_ARTIFACTS / name``.
+
+    Used so the acceptance tests find the canonical prod artifact whether
+    it's named generically (``panel-ltr.json``) or via the active model
+    alias (``panel-ltr.alpha158_fund.json``).
+    """
+    for c in candidates:
+        p = PROD_ARTIFACTS / c
+        if p.exists():
+            return p
+    return PROD_ARTIFACTS / candidates[0]  # fall back to first (will trigger skip)
+
 
 sys.path.insert(0, str(REPO / "tests"))
 from acceptance import protocol as P  # noqa: E402
@@ -33,7 +52,7 @@ from acceptance import protocol as P  # noqa: E402
 class TestPanelLTRArtifact:
     @property
     def path(self) -> Path:
-        return ARTIFACTS / "panel-ltr.json"
+        return _prod_artifact("panel-ltr.json", "panel-ltr.alpha158_fund.json")
 
     def test_artifact_exists_and_is_well_formed(self):
         if not self.path.exists():
@@ -65,7 +84,7 @@ class TestPanelLTRArtifact:
 class TestPanelCalibratorArtifact:
     @property
     def path(self) -> Path:
-        return ARTIFACTS / "panel-rank-calibration.json"
+        return _prod_artifact("panel-rank-calibration.json")
 
     def test_artifact_exists_and_is_well_formed(self):
         if not self.path.exists():
@@ -87,7 +106,7 @@ class TestPanelCalibratorArtifact:
 class TestDataScanReportArtifact:
     @property
     def path(self) -> Path:
-        return ARTIFACTS / "training_data_scan.json"
+        return _prod_artifact("training_data_scan.json")
 
     def test_report_exists_and_is_well_formed(self):
         if not self.path.exists():
@@ -154,9 +173,9 @@ class TestPerTickerPolicies:
 
 class TestCrossArtifactAlignment:
     def test_panel_ltr_calibrator_ngboost_aligned(self):
-        panel_path = ARTIFACTS / "panel-ltr.json"
-        ngb_path   = ARTIFACTS / "ngboost-head.json"
-        cal_path   = ARTIFACTS / "panel-rank-calibration.json"
+        panel_path = _prod_artifact("panel-ltr.json", "panel-ltr.alpha158_fund.json")
+        ngb_path   = _prod_artifact("ngboost-head.json", "ngboost-head.alpha158_fund.json")
+        cal_path   = _prod_artifact("panel-rank-calibration.json")
         if not panel_path.exists():
             pytest.skip("panel-ltr missing")
         if json.loads(panel_path.read_text()).get("kind") == "panel_transformer":
