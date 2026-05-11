@@ -2546,3 +2546,73 @@ python scripts/portfolio_simulation_voltarget.py     # E43_v1
 python scripts/portfolio_simulation_voltarget_v2.py  # D1 v2 sweep
 # saves data/portfolio_sim_voltarget_v2.json
 ```
+
+
+---
+
+## E63 — Meta-label classifier (López de Prado AFML ch.20) — 2026-05-11
+
+**Hypothesis (P4 / 2026-05-10):** XGBoost classifier trained on per-day position
+snapshots can predict which path-rule exits (stop_loss / trailing_stop /
+single_day_loss / max_hold) are profitable, then veto false-positive exits via
+`MetaLabelVetoTask`. AFML ch.20 reports 0.5-2 pt APY lift on similar setups.
+
+**Implementation:**
+- Snapshot logger writes per-bar position state to parquet (P4.1)
+- Triple-barrier labels (López de Prado AFML ch.3) — pt/sl multipliers 10/10,
+  fwd window 20 days (P4.2)
+- XGBoost classifier with PurgedKFold-5 CV + 2% embargo (P4.3, AFML ch.7)
+- Veto wired into `kernel/pipeline/task_meta_label_veto.py` between
+  Phase-2a sell job and buy phase (P4.4)
+- Promoted to 4 production launchd plists 2026-05-10 evening (P5)
+
+**3-window walk-forward results (W1/W2/W3 OOS):**
+| Window | Period | Baseline APY | Meta APY | Δ |
+|---|---|---|---|---|
+| W1 | 2025-04 → 2025-08 (4mo) | +4.7% | +4.7% | 0 (0 vetos fired) |
+| W2 | 2025-08 → 2025-12 (4mo) | −24.9% | −25.6% | −0.7 pt (1 veto) |
+| W3 | 2024-12 → 2025-12 (12mo) | −17.7% | **−44.4%** | **−26.7 pt** |
+| **mean ± σ** | | **−12.6% ± 12.7%** | **−21.8% ± 20.4%** | **−9.2 pt** |
+
+**Sanity check failures:**
+1. **AUC ≈ random**: prod artifact AUC = 0.554 ± 0.123, W2 artifact = 0.456
+   (anti-predictive). Cannot distinguish profitable from unprofitable exits.
+2. **Param/sample ratio = 1/5** (30 features / 146 events). §5.13 ceiling is
+   1/100 — overfitting was architecturally guaranteed.
+3. **W1/W2 BUY+SELL counts identical to baseline** (133 / 179 vs 133 / 178)
+   despite meta-label predictor being loaded — task fires 0-1 vetos per
+   4-month window. The classifier defaults to predicting P > threshold for
+   nearly every input, making the task a no-op.
+4. **No DSR / PBO at promotion time**: P4.5's "+0.2 pt APY / 5 SDLs vetoed"
+   claim was a single 11-mo measurement. §5.13.4 forbids single-measurement
+   promotion.
+
+**Conclusion:** REJECT. Meta-labeling on this setup is statistical noise that
+in one window actively destroyed 27 pts of APY (W3). Production disabled
+2026-05-11 (`ranking.meta_label.enabled=false`, prod artifact archived to
+`meta-label-exit.json.disabled-2026-05-11`).
+
+**Resume condition:**
+- Either 10× the training sample (n ≥ 1500 events) — requires multi-year
+  historical sim with snapshot logging — and demonstrate CV AUC > 0.60 OOS
+- OR a richer feature set tied to position regime that doesn't share noise
+  with the panel-LTR base scorer
+- AND DSR > 0 + PBO < 30% across ≥ 5 walk-forward cuts BEFORE any production
+  promotion
+
+**Reproduction:**
+```
+# Recreate Track V W1/W2/W3 walk-forward (already in
+# data/logs/wf_meta_W{1,2,3}/oos_sim_{baseline,deploy_meta,deploy_bbopt}.log)
+bash scripts/_meta_label_walkforward.sh
+# Inspect AUC + balance:
+python -c "import json; print(json.load(open('backtesting/renquant_104/artifacts/meta-label-exit.json.disabled-2026-05-11'))['cv_metrics'])"
+```
+
+**Anti-patterns retired (CLAUDE.md additions queued):**
+- §5.13.10 expansion: "predictor loaded ≠ predictor predicting" — verify the
+  classifier's output distribution clears the threshold before claiming the
+  Task is active. Tests-only references AND no-op-but-loaded both qualify
+  as dead code.
+- §5.13 ceiling reaffirmation: param/sample > 1/100 = overfitting guaranteed.
+  P4.3 was 1/5; should have been rejected at training time.
