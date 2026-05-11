@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly fundamental refresh — Saturdays 04:00 PT.
+
+  A3 (2026-05-11): refresh sec_fundamentals_daily.parquet,
+  sec_fundamentals_extended.parquet, and data/earnings_surprise/*.
+  Inference at job_panel_scoring.py:197 forward-fills the latest
+  available row silently. Without this cron the live model scored
+  on 90-day-stale fundamentals (Q1 2026 earnings missing) until
+  someone manually re-ran the fetch scripts.
+
+  Cadence rationale (§5.13.6): filings trickle in across the
+  ~40-45 days after each quarter-end, weekly catches the bulk
+  of each wave within ~5 days of the deadline without hammering
+  SEC EDGAR. Daily would be overkill (most days produce 0 new
+  filings for the universe).
+
+  Install:
+    cp scripts/launchd/com.renquant.weekly-fundamental-refresh.plist \
+       ~/Library/LaunchAgents/
+    launchctl load \
+       ~/Library/LaunchAgents/com.renquant.weekly-fundamental-refresh.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.renquant.weekly-fundamental-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/renhao/git/github/RenQuant/scripts/weekly_fundamental_refresh.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Saturday 04:00 PT (Weekday=6: Sun=0..Sat=6 on macOS, but
+             launchd actually uses Sun=0..Sat=6 OR Mon=1..Sun=7
+             depending on docs version. We pick Weekday=6 which is
+             Saturday on the canonical Sun=0 scheme; verify after
+             load via `launchctl list` + first-run log.) -->
+        <key>Weekday</key><integer>6</integer>
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/weekly_fundamental_refresh/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/renhao/git/github/RenQuant/logs/weekly_fundamental_refresh/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/renhao/git/github/RenQuant/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
