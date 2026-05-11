@@ -32,6 +32,29 @@ from .pipeline import Task
 log = logging.getLogger("kernel.pipeline.drawdown_rebalance")
 
 
+def compute_portfolio_drawdown(hwm: float, portfolio_value: float) -> float:
+    """Current portfolio drawdown ``(HWM - PV) / HWM``, clipped to [0, 1].
+
+    Single source of truth for the canonical drawdown ratio used by both
+    :class:`DrawdownCircuitTask` (buy-side halt) and
+    :class:`DrawdownRebalanceTask` (sell-side Grossman-Zhou rebalance).
+    Returns 0 on any non-finite or zero-HWM input so callers can compare
+    against thresholds without further NaN guards. Mirrors the canonical
+    drawdown formula used in ``quantstats.stats.max_drawdown`` and
+    ``ffn.calc_max_drawdown`` (both compute per-bar DD relative to
+    running max, then take the min).
+    """
+    if not math.isfinite(hwm) or not math.isfinite(portfolio_value):
+        return 0.0
+    if hwm <= 0:
+        return 0.0
+    dd = (hwm - portfolio_value) / hwm
+    if not math.isfinite(dd):
+        return 0.0
+    # Negative DD (PV above HWM, pre-HWM-update) → 0.
+    return max(0.0, dd)
+
+
 def compute_kelly_scaling(drawdown: float, dd_max: float) -> float:
     """Grossman-Zhou 1993 Eq. 8 evaluated at the current drawdown.
 
@@ -83,12 +106,12 @@ class DrawdownRebalanceTask(Task):
         trigger = float(cfg.get("trigger_drawdown", 0.20))
         dd_max = float(cfg.get("max_drawdown", 0.30))
 
+        # Use the single-source-of-truth DD helper (NaN-guarded internally).
         hwm = float(ctx.hwm)
         pv = float(ctx.portfolio_value)
-        # §5.13.11 NaN guard — never emit on degenerate inputs.
-        if not (math.isfinite(hwm) and math.isfinite(pv) and hwm > 0 and pv > 0):
+        if not (math.isfinite(pv) and pv > 0):
             return None
-        drawdown = (hwm - pv) / hwm
+        drawdown = compute_portfolio_drawdown(hwm, pv)
         if drawdown < trigger:
             return None  # not yet armed
 

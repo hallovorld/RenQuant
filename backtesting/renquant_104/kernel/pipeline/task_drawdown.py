@@ -71,7 +71,11 @@ class DrawdownCircuitTask(Task):
                         ctx.hwm, ctx.portfolio_value)
             return
 
-        drawdown = (ctx.hwm - ctx.portfolio_value) / ctx.hwm
+        # 2026-05-11: delegate to single-source-of-truth DD helper.
+        from .task_drawdown_rebalance import (  # noqa: PLC0415
+            compute_portfolio_drawdown,
+        )
+        drawdown = compute_portfolio_drawdown(ctx.hwm, ctx.portfolio_value)
 
         if ctx.skip_buys:
             # Already halted — keep halted until drawdown recovers below
