@@ -110,6 +110,16 @@ class InferenceContext:
     # full feature DataFrame indexed by bar date.
     feature_cache: dict = field(default_factory=dict)
 
+    # ── ExecutionPipeline plumbing (slice 2 of P0 consolidation) ─────────────
+    # Adapter sets execution_backend before pp_execution.ExecutionPipeline.run.
+    # Each ExecutionTask reads it via ctx.execution_backend.place_market_order.
+    # fills accumulates confirmed Fill records produced THIS BAR; adapters
+    # drain it in their post-pipeline hooks (trade-log write, equity curve).
+    # Both fields are transient: cleared at the start of every ExecutionPipeline
+    # run so a stale value from the previous bar can't poison this bar.
+    execution_backend: Any = None        # kernel.execution.ExecutionBackend | None
+    fills: list = field(default_factory=list)  # list[kernel.execution.Fill]
+
 
 @dataclass
 class TickerInferenceContext:
