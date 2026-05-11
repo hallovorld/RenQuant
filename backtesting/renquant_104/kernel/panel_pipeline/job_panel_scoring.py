@@ -1157,6 +1157,61 @@ class ApplyKellySizingTask(Task):
         regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         max_pct  = float(regime_p.get("max_position_pct", 0.15)) * _conf_mult
 
+        # R-02 (2026-05-11): Moskowitz-Ooi-Pedersen 2012 volatility-
+        # targeting. Optional — disabled by default. Scales the global
+        # gross-exposure cap by `clip(target_vol / spy_realized_vol_60d,
+        # floor, ceiling)` so the portfolio de-leverages in vol-spike
+        # regimes and re-leverages in calm ones. Composes multiplicatively
+        # with the R-04 DD scaling — both shrink `max_pct` independently.
+        vt_cfg = kelly_cfg.get("vol_target") or {}
+        if vt_cfg.get("enabled", False):
+            from kernel.vol_target import compute_vol_target_scale  # noqa: PLC0415
+            _vt_scale = compute_vol_target_scale(
+                ctx.spy_returns,
+                target_vol  = float(vt_cfg.get("target_vol",  0.15)),
+                window_days = int  (vt_cfg.get("window_days", 60)),
+                floor       = float(vt_cfg.get("floor",       0.30)),
+                ceiling     = float(vt_cfg.get("ceiling",     1.50)),
+            )
+            if _vt_scale != 1.0:
+                log.info(
+                    "ApplyKellySizing: vol-target max_pct %.4f -> %.4f "
+                    "(scale=%.3f target_vol=%.3f window=%dd)",
+                    max_pct, max_pct * _vt_scale, _vt_scale,
+                    float(vt_cfg.get("target_vol", 0.15)),
+                    int(vt_cfg.get("window_days", 60)),
+                )
+            max_pct *= _vt_scale
+
+        # R-04 (2026-05-11): Grossman-Zhou 1993 drawdown-conditioned Kelly
+        # scaling. Optional config block — disabled by default so golden
+        # behaviour is preserved. Tightens the SINGLE-NAME cap as the
+        # portfolio drawdown deepens; the existing DrawdownCircuitTask
+        # halts buys hard, and DrawdownRebalanceTask trims at the basket
+        # level. This scaling sits between them: rather than wait for
+        # halt_pct (binary), shrink new bet sizes continuously so the
+        # portfolio de-risks gracefully.
+        dd_cfg = kelly_cfg.get("drawdown_scaling") or {}
+        if dd_cfg.get("enabled", False):
+            from kernel.kelly import compute_kelly_dd_scale  # noqa: PLC0415
+            from kernel.pipeline.task_drawdown_rebalance import (  # noqa: PLC0415
+                compute_portfolio_drawdown,
+            )
+            _dd = compute_portfolio_drawdown(ctx.hwm, ctx.portfolio_value)
+            _dd_max   = float(dd_cfg.get("dd_max", 0.30))
+            _dd_pow   = float(dd_cfg.get("exponent", 1.0))
+            _dd_scale = compute_kelly_dd_scale(
+                _dd, dd_max=_dd_max, exponent=_dd_pow,
+            )
+            if _dd_scale < 1.0:
+                log.info(
+                    "ApplyKellySizing: DD-scaling max_pct %.4f -> %.4f "
+                    "(drawdown=%.1f%% dd_max=%.1f%% exp=%.1f scale=%.3f)",
+                    max_pct, max_pct * _dd_scale,
+                    _dd * 100, _dd_max * 100, _dd_pow, _dd_scale,
+                )
+            max_pct *= _dd_scale
+
         # 2026-05-04 instrumentation (user mandate: explainable funnel,
         # decision-tree DB persistence). Per-candidate skip-reason
         # counters + write to ctx._blocked_by_ticker so SQL queries on

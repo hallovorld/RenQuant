@@ -97,4 +97,34 @@ def kelly_target_pct(
     return max(0.0, min(float(max_pct), float(max_concentration), f_frac))
 
 
-__all__ = ["kelly_target_pct"]
+def compute_kelly_dd_scale(
+    drawdown: float,
+    *,
+    dd_max:   float,
+    exponent: float = 1.0,
+) -> float:
+    """Grossman-Zhou 1993 Eq. 8: scale gross exposure as drawdown grows.
+
+        f*(DD_t) = f_Kelly × max(0, 1 - (DD_t / DD_max) ** exponent)
+
+    Returns a multiplier in [0, 1]. ``exponent=1.0`` is the linear taper
+    used in the original paper; ``2.0`` defers the de-risking until the
+    drawdown is closer to ``dd_max`` (gentler at small DDs, sharper near
+    the cap). ``dd_max <= 0`` disables (returns 1.0) — caller stays
+    backward-compatible. NaN/inf inputs return 1.0 (fail-open per
+    §5.13.11; the upstream DrawdownCircuitTask already fail-SAFEs).
+    """
+    import math
+    if not math.isfinite(drawdown) or not math.isfinite(dd_max):
+        return 1.0
+    if dd_max <= 0:
+        return 1.0
+    if drawdown <= 0:
+        return 1.0
+    if drawdown >= dd_max:
+        return 0.0
+    ratio  = drawdown / dd_max
+    return max(0.0, 1.0 - ratio ** float(exponent))
+
+
+__all__ = ["kelly_target_pct", "compute_kelly_dd_scale"]
