@@ -4,18 +4,22 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 Status (2026-05-11 EOD — meta-label disabled; CVaR rejected as regime-dependent noise)
+## 🗂 Status (2026-05-11 EOD — strategy is solid; Bug C measurement fix corrected ALL prior findings)
 
 > Detailed audit: [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md). Roadmap: [`doc/roadmap.md`](doc/roadmap.md). Closed tracks + failed experiments: [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md). Session history: `doc/archives/sessions/`.
 
-- **2026-05-11 session findings:**
-  - 🔴 RED: meta-label classifier rejected & disabled in prod (commit `0cf758d`). Three-window WF showed −9.2 pt mean APY vs baseline, AUC ≈ random (0.55 ± 0.12), W2 anti-predictive (0.46). Artifact archived to `meta-label-exit.json.disabled-2026-05-11`. Full forensic in [E63](doc/research/failed-experiments-log.md).
-  - 🔴 RED candidate REJECTED: **CVaR `qp_cvar_lambda=0.5`** is **regime-dependent noise**, not an unconditional win. Mega ablation isolated CVaR as the sole driver of the W3 12-mo +6.5 pt result. But 3-window confirmation showed: W1 (benign) −21.4 pt, W2 (stress) +36.9 pt, W3 (mixed) +6.5 pt → mean +7.3 pt ± 16.0 pt σ on n=3. Not stat-sig per §5.13.4. The W3 win averaged opposite-sign 4-mo windows. Full forensic in [E65](doc/research/failed-experiments-log.md). Resume condition: regime-gated CVaR (BULL_VOLATILE/CHOPPY/BEAR only), validated on ≥5 windows per regime.
-  - 🟡 YELLOW: drawdown resume tightened to `halt/2` per regime (BULL_CALM 0.175, BULL_VOLATILE 0.05, CHOPPY 0.04, BEAR 0.025). Effect on MaxDD ambiguous — single 12-mo window's baseline regressed (34.7%→55.0%) when also removing meta-label. Needs multi-window characterization.
-  - 🟡 YELLOW E64 partial: conviction-cap QP wire (`ApplyConvictionCapTask`) is correct + 13 tests GREEN, but gated off by `panel_scoring.sizing.enabled=False`. Inconclusive until that flag is flipped.
-  - 🟢 GREEN: 3 cron scripts shipped (monthly meta-label retrain — note: now retraining a disabled artifact; weekly SEC fund refresh; monthly calibrator already in place). User installs via `launchctl load`.
-- **The only solid finding this session was a NEGATIVE one**: a production-active "win" (meta-label) was actively destroying value (−9.2 pt mean). Other audit-flagged candidates (A1 calibrator, A2 conviction cap, CVaR, vol-target, DD-Kelly, trend-overlay) all either failed or were inconclusive.
-- **All "baseline" numbers remain single-measurement on individual windows.** Three-window WF mean APY −7.2% ± 8.5% σ (post-meta-disable) — strategy edge not statistically distinguishable from zero.
+- **🔴 BIG FINDING: Bug C (commit `29e34b0`)** — SimAdapter._portfolio_value omitted T+2 pending balance from NAV. Phantom ±sale_amount returns inflated Vol by ~75× and MaxDD by ~10×, AND distorted compound APY downward via path-dependent vol drag. **This bug corrupted every sim metric this session.** Fix invariant: NAV ≡ free_cash + pending_settle + Σ(shares × price). 5 regression tests pinned.
+- **Strategy reality after Bug C fix (3 windows, post-fix):**
+    Baseline mean APY = **+11.6%**, Sharpe = **0.77**, MaxDD = **8.2%**
+    Pre-fix this was reported as APY = −7.2%, Sharpe = 0.60, MaxDD = 46.4% — ALL artifacts of Bug C. **The strategy is credible long-only at the ranking level.**
+- **Corrected prior verdicts:**
+  - Meta-label "E63 −9.2 pt active harm" → post-fix actual −1.5 pt (within noise). Classifier AUC = 0.55 still random, so disabled decision stands on theory not measurement. Prod commit `0cf758d` (meta off + drawdown resume halt/2) is unchanged.
+  - CVaR "E65 +7.3 pt ± 16 σ noise" → post-fix +0.1 pt ± 7.6. Still regime-dependent, still rejected.
+  - max_position_pct "E66 8% winner +7.2 pt" → post-fix **8% LOSES by 8.2 pt** vs baseline 20%. Vol-drag hypothesis was based on inflated pre-fix Vol; real Vol is ~10-20%, no drag to fix. Keep current 20% caps.
+  - A1 calibrator recent-12mo → post-fix mean −1.7 pt with high σ. Not worth flipping.
+- **🟡 YELLOW open: Bug D** — `ctx.cash = self._cash` is settled-only; Alpaca margin allows T+2 unsettled cash as buying power. Sim under-trades after recent sells vs live. Direction: sim shows LOWER returns than live would achieve.
+- **🟢 GREEN: 3 cron scripts shipped** (monthly meta-label retrain — currently retraining a disabled artifact; weekly SEC fund refresh; monthly calibrator already in place). User installs via `launchctl load`.
+- **All 3-window numbers are still n=3** — wider CI than σ implies. No DSR/PBO yet. But the picture is now PROFITABLE strategy with measurement noise on the optimizations, not "no-edge strategy" as feared.
 - **Production model:** XGBoost rank:pairwise, alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, artifact `panel-ltr.alpha158_fund.json` (trained 2026-05-09 03:44). NGBoost OFF. **Meta-label OFF (2026-05-11).** Calibrator pool_ic = +0.094.
 - **Live:** Alpaca PAPER mode (per user safety mandate 2026-05-11). **Watchlists:** 103 runtime / 292 training / wl162 quality-first selected pending evaluation.
 - **Active strategy:** `renquant_104` (panel-LTR cross-sectional ranking). `renquant_103` archived for rollback only.
