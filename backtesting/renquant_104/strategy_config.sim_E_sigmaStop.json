@@ -182,7 +182,7 @@
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
       "take_profit_pct": 0,
-      "stop_n_sigma": 0,
+      "stop_n_sigma": 2.0,
       "drawdown_resume_pct": 0.175
     },
     "BULL_VOLATILE": {
@@ -198,7 +198,7 @@
       "trailing_stop_trigger_pct": 0.2,
       "trailing_stop_trail_pct": 0.1,
       "take_profit_pct": 0,
-      "stop_n_sigma": 0,
+      "stop_n_sigma": 2.0,
       "sdl_n_sigma": 3.0,
       "drawdown_resume_pct": 0.05
     },
@@ -216,7 +216,7 @@
       "trailing_stop_trail_pct": 0.1,
       "max_concurrent_positions": 4,
       "take_profit_pct": 0,
-      "stop_n_sigma": 0,
+      "stop_n_sigma": 2.0,
       "sdl_n_sigma": 3.0,
       "drawdown_resume_pct": 0.04
     },
@@ -233,7 +233,7 @@
       "trailing_stop_trigger_pct": 0.1,
       "trailing_stop_trail_pct": 0.05,
       "take_profit_pct": 0,
-      "stop_n_sigma": 0,
+      "stop_n_sigma": 2.0,
       "sdl_n_sigma": 3.0,
       "drawdown_resume_pct": 0.025
     }
@@ -819,6 +819,6 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline",
+  "_side_config_label": "sim_E_sigmaStop",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
 }

@@ -459,3 +459,112 @@ This backlog catalogs features REJECTED on those suspect numbers. Each item:
 - **Smart orders (Fix #0d)** — orphan code, never wired into prod. Not a measurement issue; architectural.
 - **σ-aware stop revival "v6 disaster"** — currently being re-tested as E-σS (Phase 1 screening). Will be resolved tonight, not backlog.
 
+
+---
+
+## 7-REDO + 4-Backlog experimental plan (2026-05-11 PM)
+
+Following CLAUDE.md §5.11 (range-find first, optimize after) + §5.14 (DOE methodology with mandatory pass criteria).
+
+### Acceptance criteria for every experiment in this plan
+
+Per §5.13.4:
+- **PROMOTE**: mean Δ APY ≥ +2.0 pt AND mean Δ Sharpe ≥ +0.10 AND consistent direction in ≥4/6 windows
+- **REJECT**: mean Δ APY ∈ [−1, +1] AND |mean Δ Sharpe| < 0.05 → confirmed null
+- **INVESTIGATE**: anything else (regime-dependent, mixed) → expand window panel or design BB
+
+### Phase 0 (running now, ETA 23:01 PT): CVaR 5-window confirmation
+- 30 sims (5 λ × 6 windows), some redundant for reproducibility
+- λ ∈ {0, 0.15, 0.25, 0.35, 0.50}
+- Outputs: λ* (optimal), mean Δ vs baseline, DSR/PBO
+
+### Phase 1 (queued, kick off 23:05 PT after Phase 0): config-only feature screening
+
+**Cost:** 18 sims (3 configs × 6 windows), ~30min concurrent wallclock.
+
+| Config | Setting | Hypothesis |
+|---|---|---|
+| `sim_E43_voltarget_007.json` | `vol_target.enabled=true`, `target_vol=0.07` | At 7%, the vol-target binds always (SPY realized vol always > 7%). Tests if vol-targeting itself adds Sharpe. |
+| `sim_B5_trend_isolated.json` | `trend_overlay.enabled=true`, drawdown_halt loosened to 0.30 | Pre-fix trend was subsumed by hyperactive DD halt; isolate trend with halt loosened. |
+| `sim_B6_ddkelly_005.json` | `drawdown_scaling.enabled=true`, `dd_max=0.05` | At 5%, DD-Kelly binds early. Tests Grossman-Zhou scaling. |
+
+Launch script staged: `scripts/_phase1_run.sh`
+
+### Phase 2 (overnight, scheduled): heavy retrain experiments
+
+**Cost:** ~12h total CPU. Sequential because each retrain has high RAM footprint.
+
+| Order | Exp | Setup | Runtime | Pass criteria |
+|---|---|---|---|---|
+| 1 | **E55 NGBoost** | Train sim-side walkforward NGB head (39 cutoffs); copy to sim path; sim with `ngboost.enabled=true` × 6 windows | ~3h | Δ APY ≥ +2.0 vs NGB-off baseline |
+| 2 | **E42 multi-horizon** | Train fwd_5d + fwd_20d panel-LTR models; build ensemble scorer; sim × 6 windows | ~3h | Δ Sharpe ≥ +0.10 vs single-horizon (fwd_60d) |
+| 3 | **E26 wl183** | Train panel-LTR on wl183 universe; sim × 6 windows | ~4h | Δ APY ≥ +2.0 vs wl103 |
+| 4 | **E41 R1K** | Train R1K walkforward panel-LTR; sim × 6 windows | ~5h | Δ Sharpe ≥ +0.10 vs wl103 |
+
+### Phase 3 (free, post-processing): E27 SPY benchmark
+
+**Cost:** seconds. No sim runs.
+
+Post-process EXISTING equity curves vs SPY benchmark for 6 windows:
+- Strategy return per window from sim log Final value
+- SPY return per window from `data/ohlcv/SPY.parquet`
+- Compute alpha = strategy_return − SPY_return
+- Pass criteria: mean alpha ≥ +1 pt (the "do we beat SPY?" question)
+
+### Phase 4 (conditional, after Phase 1+2 winners): Box-Behnken optimization
+
+If Phase 1 yields ≥ 2 winners with theoretical interaction (e.g., CVaR + vol-target), launch 3-level Box-Behnken DOE:
+- pyDOE2.bbdesign(k_knobs, center=3) × 5 windows
+- For 3 knobs: ~75 sims, ~2-3h wallclock
+- Fit `y = β₀ + Σβᵢxᵢ + Σβᵢⱼxᵢxⱼ + Σβᵢᵢxᵢ²` quadratic response surface
+- scipy.optimize.minimize on surface → predicted optimum
+- 2-3 confirmation runs at predicted optimum + DSR/PBO
+
+### Phase 5 (skip unless code-revival authorized): B1 / B2 stop-loss revival
+
+These need ~30-line code patches to revive removed knobs:
+- B1 time-decayed stop tightening (`stop_decay_days`, removed from kernel/exits.py)
+- B2 SDL skip-if-winner (`sdl_skip_if_unrealized_above`, removed)
+
+Both pre-fix verdicts ("−4.33pt" / "noise") were Bug-C contaminated. To resurrect would need:
+1. ~30 lines code patch + tests
+2. 6-window × on/off A/B
+3. ~1.5h total
+
+Defer unless Phase 1-2 prove insufficient.
+
+### Resource budget summary
+
+| Phase | Sims | Wallclock | When |
+|---|---|---|---|
+| Phase 0 (CVaR) | 30 (running) | 40min | NOW → 23:01 |
+| Phase 1 (3 features × 6 win) | 18 | 30min | 23:05 → 23:35 |
+| Phase 2.1 E55 retrain + sim | 39 trains + 6 sims | 3h | 23:40 → 02:40 |
+| Phase 2.2 E42 retrain + sim | 78 trains + 6 sims | 3h | 02:45 → 05:45 |
+| Phase 2.3 E26 retrain + sim | 1 train + 6 sims | 4h | morning |
+| Phase 2.4 E41 R1K retrain + sim | 1 large train + 6 sims | 5h | morning-afternoon |
+| Phase 3 SPY post-process | 0 sims | seconds | anytime |
+
+### Decision tree at each gate
+
+```
+[Phase 0 done] → CVaR λ* found?
+  ├ Yes → flip prod config, ship CVaR λ* (commit + tomorrow's live firing uses it)
+  └ No  → keep baseline λ=0; CVaR confirmed reject
+
+[Phase 1 done] → Any winner?
+  ├ Yes (single) → confirmation 5-window at winner setting + commit
+  ├ Yes (multi) → schedule Phase 4 Box-Behnken on top 2
+  └ No  → all 3 confirmed inert; close backlog items
+
+[Phase 2.1 E55 done] → NGB on improves?
+  ├ Yes → flip prod config; ship σ-aware stop revival (depends on NGB)
+  └ No  → keep NGB off; permanently retire σ-aware-stop family
+
+[Phase 2.2-4] → similar gates per experiment
+
+[Phase 3 SPY] → strategy beats SPY?
+  ├ Yes → close E27 backlog; rejoice
+  └ No  → continue strategy improvement; may rethink universe (E26/E41 win could pivot)
+```
+

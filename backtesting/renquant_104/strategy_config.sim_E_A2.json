@@ -427,7 +427,8 @@
       "qp_sector_cap_enabled": true,
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
+      "qp_conviction_cap_enabled": true
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -508,7 +509,7 @@
       "_buy_floor_reason": "2026-05-04 user spec ('\u6682\u65f6\u6539\u6210\uff0c\u53d6min[mean+std, 0.3]'): per-bar adaptive floor = min(mean(rank_score) + std(rank_score), 0.30). Two interpretations of 'scientific': (a) data-driven per-bar (mean+std uses today's distribution); (b) bounded above by the legacy 0.30 absolute so we never get LESS strict than pre-fix. min(mean+std, cap) satisfies both. Diagnostic 2026-05-04: with the prior absolute floor=0.30 and prob_base_rate=0.278, ALL 50 candidates per bar were vetoed (strategy made 0 trades for 252 days). Adaptive mode keeps top ~16% per bar by score \u2014 Kelly+QP downstream still filter on \u03bc>0. Pre-veto rank_scores are also persisted to candidate_scores via ctx._full_candidate_snapshot for offline distribution analysis.",
       "rotation_advantage": 0.0,
       "sizing": {
-        "enabled": false,
+        "enabled": true,
         "floor": 0.0,
         "ceiling": 1.0,
         "min_mult": 0.5
@@ -819,6 +820,6 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline",
+  "_side_config_label": "sim_E_A2",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
 }

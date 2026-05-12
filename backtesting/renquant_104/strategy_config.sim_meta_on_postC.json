@@ -577,7 +577,9 @@
       "enabled": false
     },
     "meta_label": {
-      "enabled": false
+      "enabled": true,
+      "threshold": 0.5,
+      "artifact_path": "backtesting/renquant_104/artifacts/meta-label-exit.json.disabled-2026-05-11"
     }
   },
   "panel_ltr": {
@@ -819,6 +821,6 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline",
+  "_side_config_label": "sim_meta_on_postC",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
 }

@@ -162,7 +162,10 @@
     "choppy_hurst_floor": 0.2,
     "confidence_veto_threshold": 0.0,
     "cusum_cooldown_mode": "wall_time",
-    "cusum_cooldown_days": 3.0
+    "cusum_cooldown_days": 3.0,
+    "trend_overlay": {
+      "enabled": true
+    }
   },
   "regime_params": {
     "BULL_CALM": {
@@ -416,7 +419,7 @@
       "default_sigma": 0.05,
       "qp_signal_decay": 0.0,
       "qp_robust_mu_kappa": 0.0,
-      "qp_cvar_lambda": 0.0,
+      "qp_cvar_lambda": 0.5,
       "qp_drawdown_limit": 0.2,
       "qp_no_trade_band_factor": 1.0,
       "qp_no_trade_band_cap": 0.05,
@@ -571,7 +574,13 @@
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
       "topup_conviction_floor": 0.2,
-      "base_rate": 0.273
+      "base_rate": 0.273,
+      "vol_target": {
+        "enabled": true
+      },
+      "drawdown_scaling": {
+        "enabled": false
+      }
     },
     "ngboost_head": {
       "enabled": false
@@ -819,6 +828,6 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline",
+  "_side_config_label": "sim_mega_no_dd",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
 }
