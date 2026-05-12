@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # daily_104.sh — DAILY OPS for renquant_104.
-# ─── PAPER MODE (2026-05-11) ─────────────────────────────────────────────
-# 2026-05-11: per user safety mandate, --broker switched from alpaca (LIVE,
-# real money via Alpaca live API) to paper (LOCAL sim broker, no external
-# venue, records to live_state.paper.json + ntfy). To restore live trading:
-#   sed -i "" "s/--broker paper/--broker alpaca/g" scripts/*.sh
+# ─── LIVE MODE (restored 2026-05-11 PM) ─────────────────────────────────
+# 2026-05-11 PM: live trading restored per user request (Bug C fix shows
+# strategy is profitable: +11.6% APY mean Sharpe 0.77 across 3 windows).
+# To restore PAPER mode for safety testing:
+#   sed -i "" "s/--broker alpaca/--broker paper/g" scripts/*.sh
 # Or add ALPACA_PAPER_API_KEY/SECRET to .env + switch to --broker alpaca-paper
 # for Alpaca's paper-trading sandbox (real API, no real money).
 # ─────────────────────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ except Exception:
     print(0)
 " 2>/dev/null || echo "0")
 
-if "$PYTHON" -m live.runner --strategy renquant_104 --broker paper --once; then
+if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once; then
     echo "=== daily_104 finished at $(date) ==="
 
     # Build trade summary from THIS run's new entries only
@@ -320,7 +320,7 @@ except Exception as exc:
     pass
 
 # Regime + HWM from broker-isolated live_state file
-# (daily_104 always runs --broker paper, so use the alpaca-tagged path;
+# (daily_104 always runs --broker alpaca, so use the alpaca-tagged path;
 # fall back to legacy live_state.json during the migration window)
 _alpaca = Path('$REPO_DIR/backtesting/renquant_104/live_state.alpaca.json')
 _legacy = Path('$REPO_DIR/backtesting/renquant_104/live_state.json')
@@ -367,7 +367,7 @@ print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today=
 # Refresh the metrics dashboard (non-fatal — purely informational).
 # Reads from runs.alpaca.db + live_state.alpaca.json that the live runner
 # just updated above. Output: doc/dashboard.md (auto-rendered on GitHub).
-"$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker paper \
+"$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
     --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tee -a "$LOG" \
     || echo "dashboard refresh failed (non-fatal)"
 

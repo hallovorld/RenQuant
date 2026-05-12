@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # intraday_sell_104.sh — Mid-market-hours exit-only pass with Alpaca 5-min bars.
-# ─── PAPER MODE (2026-05-11) ─────────────────────────────────────────────
-# 2026-05-11: per user safety mandate, --broker switched from alpaca (LIVE,
-# real money via Alpaca live API) to paper (LOCAL sim broker, no external
-# venue, records to live_state.paper.json + ntfy). To restore live trading:
-#   sed -i "" "s/--broker paper/--broker alpaca/g" scripts/*.sh
+# ─── LIVE MODE (restored 2026-05-11 PM) ─────────────────────────────────
+# 2026-05-11 PM: live trading restored per user request (Bug C fix shows
+# strategy is profitable: +11.6% APY mean Sharpe 0.77 across 3 windows).
+# To restore PAPER mode for safety testing:
+#   sed -i "" "s/--broker alpaca/--broker paper/g" scripts/*.sh
 # Or add ALPACA_PAPER_API_KEY/SECRET to .env + switch to --broker alpaca-paper
 # for Alpaca's paper-trading sandbox (real API, no real money).
 # ─────────────────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
 cd "$REPO_DIR"
-if "$PYTHON" -m live.runner --strategy renquant_104 --broker paper --once \
+if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
         --sell-only --intraday; then
     echo "=== intraday_sell finished at $(date) ==="
 else
