@@ -4,14 +4,19 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 Status (2026-05-09 EOD — AUDIT OPEN; performance numbers untrustworthy until verified)
+## 🗂 Status (2026-05-11 EOD — meta-label disabled, CVaR validated as next promotion candidate)
 
 > Detailed audit: [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md). Roadmap: [`doc/roadmap.md`](doc/roadmap.md). Closed tracks + failed experiments: [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md). Session history: `doc/archives/sessions/`.
 
-- **All "baseline" numbers are unreliable.** A 27-mo APY result was non-reproducible across same-day reruns (+6.77% morning → +1.97% evening, identical config + artifact). σ_APY unknown — any APY delta could be pure noise. **No claim ships without `mean ± std` from ≥5 runs.**
-- **2026-05-09 audit found 17 bugs**; 6 RED fixed (commits in `doc/AUDIT_2026-05-09.md`). YELLOW open: stale `sec_fundamentals_daily.parquet` (BUG #5 fixed in script, not regenerated), WF gate bypassed by `RQ_ALLOW_NO_WF=1` on every daily promote, +6.77%/+1.97% reproducibility unisolated.
-- **Production model:** XGBoost rank:pairwise, alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, artifact `panel-ltr.alpha158_fund.json` (trained 2026-05-09 03:44). NGBoost OFF. Calibrator pool_ic = +0.094.
-- **Live:** Alpaca live ~$10.5k. **Watchlists:** 103 runtime / 292 training / wl162 quality-first selected pending evaluation.
+- **2026-05-11 session findings:**
+  - 🔴 RED: meta-label classifier rejected & disabled in prod (commit `0cf758d`). Three-window WF showed −9.2 pt mean APY vs baseline, AUC ≈ random (0.55 ± 0.12), W2 anti-predictive (0.46). Artifact archived to `meta-label-exit.json.disabled-2026-05-11`. Full forensic in [E63](doc/research/failed-experiments-log.md).
+  - 🟢 GREEN candidate: **CVaR `qp_cvar_lambda=0.5`** is the sole driver of the +6.5 pt APY / +0.05 Sharpe / −6.5 pt MaxDD improvement on 12-mo W3 OOS (2024-12 → 2025-12). 4-way mega ablation confirmed: removing CVaR reverts to baseline; removing vol-target / DD-Kelly / trend-overlay leaves numbers bit-identical. Promotion pending DSR/PBO + multi-window confirmation.
+  - 🟡 YELLOW: drawdown resume tightened to `halt/2` per regime (BULL_CALM 0.175, BULL_VOLATILE 0.05, CHOPPY 0.04, BEAR 0.025). Effect on MaxDD: this 12-mo window's baseline went from 34.7% (with meta) to 55.0% (without meta + tighter resume) — net regression on MaxDD axis, +6.1pt better on APY axis. Needs more windows to characterize.
+  - 🟡 YELLOW E64 partial: conviction-cap QP wire (`ApplyConvictionCapTask`) is correct + 13 tests GREEN, but gated off by `panel_scoring.sizing.enabled=False`. Inconclusive until that flag is flipped.
+  - 🟢 GREEN: 3 cron scripts shipped (monthly meta-label retrain, weekly SEC fund refresh, monthly calibrator already in place). User installs via `launchctl load`.
+- **All "baseline" numbers remain single-measurement on a 12-mo window. No `mean ± std` from ≥5 runs yet.** Three-window WF (W1/W2/W3) gave mean APY −12.6% ± 12.7% σ — strategy edge not statistically distinguishable from zero on this watchlist + window mix.
+- **Production model:** XGBoost rank:pairwise, alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, artifact `panel-ltr.alpha158_fund.json` (trained 2026-05-09 03:44). NGBoost OFF. **Meta-label OFF (2026-05-11).** Calibrator pool_ic = +0.094.
+- **Live:** Alpaca PAPER mode (per user safety mandate 2026-05-11). **Watchlists:** 103 runtime / 292 training / wl162 quality-first selected pending evaluation.
 - **Active strategy:** `renquant_104` (panel-LTR cross-sectional ranking). `renquant_103` archived for rollback only.
 
 **Sanity-test triad** (mandatory before any "+IC" / "+APY" claim — see §5.2):
