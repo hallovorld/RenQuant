@@ -3019,3 +3019,38 @@ for each REDO experiment:
 
 **NOT in this scope:** all 🟢 STANDS experiments. Their training-side IC findings are real. Don't waste compute re-running them.
 
+
+---
+
+## E-CV2 / B7 update — CVaR REJECTED on 6-window expansion — 2026-05-11 PM
+
+**Prior verdict (E-CV2, 3 windows):** mean ΔAPY +2.1pt, Sharpe +0.14 → looked like winner.
+
+**6-window confirmation (W1-W6, λ ∈ {0, 0.15, 0.25, 0.35, 0.50}):**
+
+| λ | mean APY | mean Sharpe | vs baseline (λ=0) |
+|---|---|---|---|
+| **0.00 (baseline)** | **+15.2%** | **+0.41** | reference |
+| 0.15 | +15.2% | +0.43 | 0 / +0.02 |
+| 0.25 | +11.9% | +0.45 | **−3.3 / +0.04** |
+| 0.35 | +11.4% | +0.31 | **−3.8 / −0.10** |
+| 0.50 | +13.6% | +0.35 | **−1.6 / −0.06** |
+
+**Verdict: REJECT all λ.**
+
+The 3-window E-CV2 finding was a sample-size artifact. W4-W6 (added in Phase 0 confirmation) shifted the picture:
+- W4 (Aug-Dec 2024): baseline +91% APY (post-election rally) — CVaR cuts this to +63-79%
+- W5 (Apr-Aug 2024): baseline −15% — CVaR worsens slightly
+- W6 (Dec-Apr 2024-2025): baseline −20% — CVaR worsens slightly
+
+**Mechanism:** CVaR's tail-risk penalty trims position sizes in bull markets, capping upside. The win on the original 3-window panel happened because W3 12-month overlapped both bull AND stress periods, allowing CVaR to look good in stress but hidden hurt in bull. 6 windows expose the truth.
+
+**Confirmed verdict per §5.13.4:**
+- mean ΔAPY = −3.3 pt at λ=0.25 (REJECT range)
+- mean ΔSharpe = +0.04 (REJECT range)
+- 4/6 windows show CVaR worse APY → no consistent winning direction
+
+**Reproduction:** see `data/logs/sim_2026-05-11_CVaR_confirm/W{1..6}_lambda_{000,015,025,035,050}.log`.
+
+**Lesson:** §5.13.4 requires ≥5 measurements for a reason. 3-window mean ± σ can hide window-selection bias. Always validate on ≥5 INDEPENDENT windows before any promotion.
+
