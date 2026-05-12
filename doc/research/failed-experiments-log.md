@@ -3217,3 +3217,49 @@ The strategy is at its local optimum for: alpha158+5fund+3PEAD+3SUE feature set,
 
 **Remaining structural experiments** (E26 wl183 universe, E41 R1K universe) deferred to future sessions — they require 3-5h of model retraining each, and §5.13.4 evidence so far suggests structural changes don't beat baseline either.
 
+
+---
+
+## Final SPY-benchmark analysis — 2026-05-12 11:43 PT — autonomous handoff conclusion
+
+Per user critique ("you are not comparing strategy performance with SPY?"), re-analyzed all session experiments with SPY as the benchmark (alpha = strategy_return − SPY_return per window).
+
+**Ranked by mean alpha vs SPY (6 windows, post-Bug-C):**
+
+| Rank | Config | Mean α vs SPY | Beat SPY in |
+|---|---|---|---|
+| 1 | E42 fwd60d static | −1.9 pt | 2/6 |
+| 2 | E42 fwd5d static | −2.3 pt | 2/6 |
+| 3 | **baseline (prod)** | **−2.3 pt** | 2/6 |
+| 4 | CVaR λ=0.50 | −2.7 pt | 2/6 |
+| 5 | CVaR λ=0.15 | −2.8 pt | 1/6 |
+| 6 | qp_min_dw=0.05 | −2.3 pt | 2/6 (no effect) |
+| 7 | trail15 | −3.1 pt | 2/6 |
+| 8 | wl150 universe | −3.3 pt | **3/6** (best hit rate) |
+| 9 | qp_dwmax=0.30 | −3.1 pt | 2/6 |
+| 10 | CVaR λ=0.25 | −3.4 pt | 1/6 |
+| 11 | wl183 quality | −3.8 pt | 2/6 |
+| 12 | qp_turn=0.15 | −3.8 pt | 2/6 |
+| 13 | maxpos 35% | −4.0 pt | 2/6 |
+| 14 | maxpos 25% | −4.4 pt | 2/6 |
+| 15 | sdl_n_sigma=2 | −5.5 pt | 2/6 |
+| 16 | qp_turn=0.50 | −7.0 pt | 1/6 |
+| 17 | NGB on (E55) | −10.0 pt | 2/6 (worst) |
+| — | **SPY long-only** | **+0.0 pt** | reference |
+
+**Critical observation:** of 200+ tested configs across this session, **ZERO beat SPY on mean alpha**.
+
+**The strategy's only consistent edge** is in **post-election rally regimes** (W4 Aug-Dec 2024: strategy +24% vs SPY +11% = +13 pt alpha). In all other windows, strategy underperforms passive long-only SPY.
+
+**Decision:** user authorized "continue holding" — production retains current baseline. Live trading runs at ~−2 pt expected drag vs SPY in exchange for optionality of capturing W4-style rally regimes.
+
+**Total session experiment count:** ~200 sims across 8 phases (CVaR, vol-target/trend/DD-Kelly, NGBoost, X-knobs stop-loss, E42 multi-horizon, universe expansion, high-maxpos, QP-knobs). **0 promotion candidates.** Strategy is at its local optimum.
+
+**Recommended next directions** (deferred — require structural changes beyond parameter tuning):
+1. New model class (LightGBM, neural)
+2. Universe pre-filter by realized volatility (concentrate on rally-captors)
+3. Different label horizon (fwd_30d, fwd_90d — not in current dataset)
+4. wl291 with data preflight (drop tickers with insufficient window-history)
+5. Box-Behnken on XGBoost hyperparams (depth, lr, subsample)
+6. Ensemble of multiple model classes
+
