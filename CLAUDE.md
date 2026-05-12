@@ -4,17 +4,18 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 Status (2026-05-11 EOD — meta-label disabled, CVaR validated as next promotion candidate)
+## 🗂 Status (2026-05-11 EOD — meta-label disabled; CVaR rejected as regime-dependent noise)
 
 > Detailed audit: [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md). Roadmap: [`doc/roadmap.md`](doc/roadmap.md). Closed tracks + failed experiments: [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md). Session history: `doc/archives/sessions/`.
 
 - **2026-05-11 session findings:**
   - 🔴 RED: meta-label classifier rejected & disabled in prod (commit `0cf758d`). Three-window WF showed −9.2 pt mean APY vs baseline, AUC ≈ random (0.55 ± 0.12), W2 anti-predictive (0.46). Artifact archived to `meta-label-exit.json.disabled-2026-05-11`. Full forensic in [E63](doc/research/failed-experiments-log.md).
-  - 🟢 GREEN candidate: **CVaR `qp_cvar_lambda=0.5`** is the sole driver of the +6.5 pt APY / +0.05 Sharpe / −6.5 pt MaxDD improvement on 12-mo W3 OOS (2024-12 → 2025-12). 4-way mega ablation confirmed: removing CVaR reverts to baseline; removing vol-target / DD-Kelly / trend-overlay leaves numbers bit-identical. Promotion pending DSR/PBO + multi-window confirmation.
-  - 🟡 YELLOW: drawdown resume tightened to `halt/2` per regime (BULL_CALM 0.175, BULL_VOLATILE 0.05, CHOPPY 0.04, BEAR 0.025). Effect on MaxDD: this 12-mo window's baseline went from 34.7% (with meta) to 55.0% (without meta + tighter resume) — net regression on MaxDD axis, +6.1pt better on APY axis. Needs more windows to characterize.
+  - 🔴 RED candidate REJECTED: **CVaR `qp_cvar_lambda=0.5`** is **regime-dependent noise**, not an unconditional win. Mega ablation isolated CVaR as the sole driver of the W3 12-mo +6.5 pt result. But 3-window confirmation showed: W1 (benign) −21.4 pt, W2 (stress) +36.9 pt, W3 (mixed) +6.5 pt → mean +7.3 pt ± 16.0 pt σ on n=3. Not stat-sig per §5.13.4. The W3 win averaged opposite-sign 4-mo windows. Full forensic in [E65](doc/research/failed-experiments-log.md). Resume condition: regime-gated CVaR (BULL_VOLATILE/CHOPPY/BEAR only), validated on ≥5 windows per regime.
+  - 🟡 YELLOW: drawdown resume tightened to `halt/2` per regime (BULL_CALM 0.175, BULL_VOLATILE 0.05, CHOPPY 0.04, BEAR 0.025). Effect on MaxDD ambiguous — single 12-mo window's baseline regressed (34.7%→55.0%) when also removing meta-label. Needs multi-window characterization.
   - 🟡 YELLOW E64 partial: conviction-cap QP wire (`ApplyConvictionCapTask`) is correct + 13 tests GREEN, but gated off by `panel_scoring.sizing.enabled=False`. Inconclusive until that flag is flipped.
-  - 🟢 GREEN: 3 cron scripts shipped (monthly meta-label retrain, weekly SEC fund refresh, monthly calibrator already in place). User installs via `launchctl load`.
-- **All "baseline" numbers remain single-measurement on a 12-mo window. No `mean ± std` from ≥5 runs yet.** Three-window WF (W1/W2/W3) gave mean APY −12.6% ± 12.7% σ — strategy edge not statistically distinguishable from zero on this watchlist + window mix.
+  - 🟢 GREEN: 3 cron scripts shipped (monthly meta-label retrain — note: now retraining a disabled artifact; weekly SEC fund refresh; monthly calibrator already in place). User installs via `launchctl load`.
+- **The only solid finding this session was a NEGATIVE one**: a production-active "win" (meta-label) was actively destroying value (−9.2 pt mean). Other audit-flagged candidates (A1 calibrator, A2 conviction cap, CVaR, vol-target, DD-Kelly, trend-overlay) all either failed or were inconclusive.
+- **All "baseline" numbers remain single-measurement on individual windows.** Three-window WF mean APY −7.2% ± 8.5% σ (post-meta-disable) — strategy edge not statistically distinguishable from zero.
 - **Production model:** XGBoost rank:pairwise, alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, artifact `panel-ltr.alpha158_fund.json` (trained 2026-05-09 03:44). NGBoost OFF. **Meta-label OFF (2026-05-11).** Calibrator pool_ic = +0.094.
 - **Live:** Alpaca PAPER mode (per user safety mandate 2026-05-11). **Watchlists:** 103 runtime / 292 training / wl162 quality-first selected pending evaluation.
 - **Active strategy:** `renquant_104` (panel-LTR cross-sectional ranking). `renquant_103` archived for rollback only.
