@@ -370,3 +370,92 @@ Week 10-12: Item #10 PatchTST + Item #13 Microstructure (if Sharpe ≥ 1.20 by w
 - Independent strategy dir at `backtesting/renquant_105/`
 
 105 design work resumes after 104 is stably live + ≥ Sharpe 1.0 walk-forward.
+
+---
+
+## Bug-C reassessment backlog (added 2026-05-11 PM)
+
+**Context:** Commit `29e34b0` fixed Bug C — `SimAdapter._portfolio_value` omitted T+2 pending settlement balance, creating phantom ±sale_amount returns. The bug inflated Vol by ~75× and MaxDD by ~10×, and via path-dependent vol drag also corrupted compound APY. **Every sim verdict from 2026-04 through 2026-05-11 AM that produced numbers depending on Vol/MaxDD or close-to-noise APY deltas is suspect.**
+
+This backlog catalogs features REJECTED on those suspect numbers. Each item:
+1. needs a post-Bug-C re-test before its verdict can be trusted
+2. carries a proposed experimental design respecting CLAUDE.md §5.14 DOE methodology
+3. is NOT urgent — production is stable post-fix; revisit when bored or hunting for marginal lift
+
+### High-priority revisits
+
+#### B1. Time-decayed stop tightening (Fix #0b)
+- **Original verdict (pre-Bug-C):** "actively harmful −4.33 pp APY / −0.20 Sharpe / +23 trades" (see `doc/AUDIT_2026-05-09.md` finding #2)
+- **Why suspect:** the −4.33pt was a single-window pre-fix measurement. Sharpe and MaxDD numbers feeding the ablation conclusion were inflated artifacts. The hypothesis (Schwager 1992 / Lo 2007 regime-adaptive stops) is theoretically defensible.
+- **Test design:** 3 windows × {stop_decay_days = 30 / 60 / off} = 9 sims. Pass: mean APY ≥ baseline AND Sharpe within 0.10 → revive at decay_days winner.
+- **Code path:** `kernel/exits.py` — check if `stop_decay_days` config knob still wired (may have been deleted in cleanup; reviving needs ~20 line patch).
+
+#### B2. SDL skip-if-winner (Fix #0e)
+- **Original verdict (pre-Bug-C):** "+0.05 pp APY / +0.00 Sharpe / 1 fewer trade — inside noise floor"
+- **Why suspect:** the "noise floor" was inflated by Bug C phantom Vol. Real noise floor is much narrower (post-fix Vol = ~15% vs pre-fix 157%). A +0.05 pp lift that looked like noise might be real signal.
+- **Test design:** 3 windows × on/off = 6 sims. Pass: mean APY ≥ +1 pt over baseline AND consistent direction across 2/3 windows.
+- **Config knob:** `regime_params.*.sdl_skip_if_unrealized_above` (default 0.0 = always skip; tighter values like 0.05 would be more selective).
+
+#### B3. Multi-horizon ensemble (E42 in roadmap above)
+- **Original verdict:** already flagged in roadmap as "RETEST after bug fixes". Bug C is the trigger.
+- **Why suspect:** any "no lift" finding before today is contaminated. The pre-fix Vol-distorted Sharpe was the deciding metric.
+- **Test design:** roadmap E42 entry already has a plan; bump priority post-Bug-C.
+
+#### B4. Triple-barrier label (E25 in roadmap above)
+- Same: roadmap "RETEST after bug fixes" — Bug C is the trigger.
+
+### Medium-priority revisits
+
+#### B5. Trend overlay (R-03)
+- **Original verdict:** in mega ablation, "fires but redundant with drawdown halt" — fired 3+ times in W3 log but produced bit-identical numbers to no-trend.
+- **Why suspect:** pre-fix drawdown halt was hyperactive (MaxDD inflated → halt fired more often than truly needed). Post-fix drawdown halt fires LESS often (MaxDD truly ~8%), so trend overlay has more ROOM to be the binding signal.
+- **Test design:** 3 windows × {trend on / off} with `drawdown_halt_pct` loosened to 0.30 in all regimes (force trend to be the primary regime gate). 6 sims.
+
+#### B6. DD-Kelly scaling (R-04)
+- **Original verdict:** "didn't fire in mega" — interpretation was "dead code".
+- **Real reason:** doesn't bind when portfolio drawdown < `dd_max` threshold. Post-fix MaxDD is ~8% which is below most reasonable dd_max thresholds → still doesn't bind in current windows.
+- **Test design:** 3 windows × {dd_max ∈ {0.05, 0.08, 0.10}}. Smaller dd_max → binds sooner → tests the mechanism. 9 sims.
+
+#### B7. CVaR `qp_cvar_lambda` re-sweep
+- **Original verdict:** +0.1pt ± 7.6 pt noise (post-Bug-C, n=3 windows).
+- **Why backlog:** the σ is wide. Could resolve with more windows. If signal real, λ optimization would find it.
+- **Test design:** Box-Behnken on λ ∈ {0.0, 0.25, 0.5, 0.75, 1.0} × 5 windows. 25 sims.
+
+### Low-priority revisits
+
+#### B8. Stop-loss multi-seed L1-L5 ablation (commit `45`)
+- **Original verdict:** "all 5 ablations (L1-L5) degraded performance" pre-Bug-C.
+- **Why suspect:** ablation deltas were measured against a Bug-C-distorted baseline.
+- **Test design:** rerun the 6-arm sweep post-fix on 3 windows = 18 sims.
+
+#### B9. R-01 CVaR / R-05 DD-tight / R-07 robust μ Phase 1 sims (commit `53`)
+- Same as B8: pre-Bug-C ablations.
+
+#### B10. Phase 4 Tier-3/4/5 stop-loss final-best configs (commit `63`)
+- **Original verdict:** "Tier-N config wins / loses by X pt".
+- **Why suspect:** all Tier comparisons used Bug-C-corrupted equity curves.
+- **Test design:** rerun the chosen Tier configs vs baseline post-fix on 3 windows.
+
+#### B11. Meta-label E63 — confirm theory-based rejection holds
+- **Post-Bug-C verdict:** mean Δ APY = −1.5 pt (within noise). Rejection KEPT on theory (AUC=0.55 random).
+- **Why backlog:** if a higher-quality classifier (more events, better features) ever comes along, the framework is still wired. Trigger to retest: when triple-barrier label E25 (B4) or P4.3-style snapshot logger produces > 1500 events with cross-validated AUC > 0.60.
+
+#### B12. The non-reproducible "+6.77% / +1.97%" 27-mo baseline
+- **Original verdict:** "non-reproducible across same-day reruns; σ_APY unknown" (CLAUDE.md status).
+- **Why backlog:** with Bug C fixed, the 27-mo baseline can now be measured reliably. Worth one clean rerun to establish the long-window reference. 1 sim, ~3 hours.
+
+### Process: how to drain this backlog
+
+1. **One at a time.** No batch — Bug C taught us that contaminated measurements compound across experiments.
+2. **§5.13.4 minimum:** mean ± std from ≥ 5 runs (windows OR seeds).
+3. **§5.14 DOE:** screening first (single-knob), Box-Behnken only after a knob shows ≥ +0.10 Sharpe range-find.
+4. **Document outcome** in `failed-experiments-log.md` whether positive or negative.
+5. **Update this backlog entry**: cross off resolved items, surface what was learned.
+
+### What is NOT in this backlog (decisions stand)
+
+- **Meta-label classifier disable** (commit `0cf758d`) — kept disabled on theory (AUC = 0.55 ≈ random). Bug C contaminated the magnitude of harm, not the theoretical basis for rejection.
+- **maxpos=8% sweep** — Bug-C-FLIPPED. Pre-fix: looked like winner. Post-fix: clearly loses 8.2 pt. Verdict is now CORRECT direction, not in backlog.
+- **Smart orders (Fix #0d)** — orphan code, never wired into prod. Not a measurement issue; architectural.
+- **σ-aware stop revival "v6 disaster"** — currently being re-tested as E-σS (Phase 1 screening). Will be resolved tonight, not backlog.
+
