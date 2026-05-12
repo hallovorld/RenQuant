@@ -3130,3 +3130,32 @@ Autonomous run executed 5 phases of post-Bug-C re-tests. **NO promotion candidat
 
 **Operational note:** the live trading restoration (commit `4aab86f`, --broker alpaca) was based on Bug-C-corrected mean APY of +11.6% (3-window). The 6-window re-measurement shows +15.2% mean APY (consistent direction, larger variance). Live trading is approved per user mandate.
 
+
+---
+
+## E-X-knobs sweep — 5 single-knob stop-loss tightening REJECTS — 2026-05-12 ~04:51 PT
+
+**Hypothesis:** pre-Bug-C "v6 disaster" finding (commit 2f10949: tighter stops → −12.6pt APY) was Bug-C-corrupted; post-fix, tighter stops might actually help.
+
+**Method:** 5 single-knob tests × 6 windows = 30 sims (W1-W6 panel).
+
+**Results (mean across 6 windows):**
+
+| Config | Setting | Mean APY | Mean Sharpe | Mean MaxDD | Δ vs baseline |
+|---|---|---|---|---|---|
+| **baseline** | (reference) | **+15.2%** | **+0.41** | **8.4%** | — |
+| stop07 | BULL_CALM stop_loss=0.07 | +7.7% | +0.06 | 7.8% | **−7.5 / −0.34** ❌ |
+| stop12 | BULL_CALM stop_loss=0.12 | +8.0% | +0.21 | 8.3% | **−7.2 / −0.20** ❌ |
+| trail15 | BULL_CALM trail=0.15 | +14.5% | +0.36 | 8.3% | −0.7 / −0.04 (noise) |
+| maxh250 | max_hold=250 days | +15.2% | +0.41 | 8.4% | 0 (max_hold doesn't bind) |
+| sdl2 | sdl_n_sigma=2.0 | +4.8% | −0.11 | 8.0% | **−10.4 / −0.52** ❌ |
+
+**Verdict: ALL REJECT.** The pre-Bug-C "tight stops disaster" verdict is CONFIRMED post-fix. Tighter stops genuinely destroy alpha — not a measurement artifact.
+
+- `stop_loss=0.07` (rejected pre-fix as −12.6pt): post-fix shows −7.5pt single-knob; combined with σ-tightening would land near the −12.6pt original.
+- `sdl_n_sigma=2.0`: worst at −10.4pt. Stop-out-on-2σ-day is too aggressive; the strategy needs to ride through normal volatility.
+- `trail15`: noise (Δ within ±1pt). Trailing stop in BULL_CALM doesn't bind often.
+- `maxh250`: ZERO effect. Positions are rotated by QP / model-sell before 250 days anyway.
+
+**Lesson:** parameter tuning on a stop-loss family is exhausted. The strategy's risk profile (Sharpe 0.41, MaxDD 8%) is at the local optimum for its current model + universe. Further alpha requires STRUCTURAL changes (model class, label horizon, universe).
+
