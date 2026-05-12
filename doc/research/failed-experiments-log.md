@@ -2905,3 +2905,117 @@ of Bug C distorting the equity curve.
   was promoted on a sim "win" needs re-verification on the same window
   set with post-Bug-C numbers before further claims.
 
+
+---
+
+# 🔍 Bug-C Reassessment Index (added 2026-05-11 PM)
+
+Per user mandate after Bug C fix (commit `29e34b0`), every prior verdict in this log was reviewed and classified by whether its decision depended on Bug-C-contaminated measurements.
+
+**The contamination rule:** Bug C distorted **NAV-derived sim metrics** (Sharpe / Sortino / MaxDD / Vol / Calmar / and via path-dependent drag, also compound APY for trade-heavy sims). It did NOT distort:
+- Panel IC / per-cut IC at training time
+- AUC / classifier output metrics
+- Feature importance / model internals
+- Universe selection by IC criteria
+- Walk-forward IC (cross-section ranking IC)
+
+**Classification:**
+- 🔴 **REDO** = verdict depended on Sharpe/APY/MaxDD/Sortino/Vol from a sim equity curve
+- 🟢 **STANDS** = training-side or IC-only; no sim NAV in the rejection reason
+- 🟡 **MIXED** = had both IC and sim components; IC part stands, sim part needs redo
+
+| # | Experiment | Date | Verdict relied on | Class | Notes |
+|---|---|---|---|---|---|
+| E1 | M2 horizon-blender v3 | pre-04 | val IC | 🟢 STANDS | training-side blender |
+| E2 | M2 horizon-blender v2 | pre-04 | val IC + 5 design bugs | 🟢 STANDS | implementation, not measurement |
+| E3 | Z8 σ-cap gate | pre-04 | IC by σ decile | 🟢 STANDS | training-side gating |
+| E4 | Z1 parabolic-exhaustion gate | pre-04 | IC by rel_mom decile | 🟢 STANDS | training-side gating |
+| E5 | B1 227-ticker watchlist | pre-04 | IC −44% | 🟢 STANDS | training IC, universe selection |
+| E6 | B1.2 high-vol subset 10d | pre-04 | IC selection bias | 🟢 STANDS | methodology, not measurement |
+| E7 | B1.3 60d aggressive hp | pre-04 | overfitting IC | 🟢 STANDS | training-side |
+| E8 | F3 10d hp retune wl227 | pre-04 | IC retest | 🟢 STANDS | training-side |
+| E9 | Macro v1 broadcast | pre-04 | gradient | 🟢 STANDS | training internal |
+| E10 | Macro v2 per-ticker β | pre-04 | IC −23% | 🟢 STANDS | training IC |
+| E11 | Macro v3 30ETF+22FRED | pre-04 | IC monotone-decreasing | 🟢 STANDS | training IC |
+| E12 | Macro v4 panel-row | pre-04 | IC −28.8%, paired t | 🟢 STANDS | training IC |
+| E13 | Asset embeddings T2-2 | pre-04 | CPCV reversal | 🟢 STANDS | training validation |
+| E14 | LightGBM substitution | pre-04 | IC −60% | 🟢 STANDS | training IC |
+| **E15** | **T2-4 Boyd Rotation** | pre-04 | **−2.5 APY/cycle sim** | **🔴 REDO** | sim-equity APY; Bug-C corrupted |
+| E16 | T2-3 Regime ensemble | pre-04 | deferred | — | not run |
+| E17 | wl178 quality 4-filter | pre-04 | eval IC neg | 🟢 STANDS | training IC |
+| E18 | LightGBM 10d clean CV | 2026-04-29 | clean CV IC | 🟢 STANDS | training-side |
+| E19 | 60d+macro v2 clean CV | 2026-04-29 | clean CV IC | 🟢 STANDS | training-side |
+| E20 | 60d+emb 16D clean CV | 2026-04-29 | clean CV IC | 🟢 STANDS | training-side |
+| E21 | wl174 clean CV | 2026-04-29 | clean CV IC | 🟢 STANDS | training-side |
+| E22 | Insider trades 44% A/B | pre-05 | IC neutral | 🟢 STANDS | training-side IC |
+| E23 | PEAD fwd_5d enrichment | pre-05 | IC significant neg | 🟢 STANDS | training-side |
+| E24 | Triple-barrier A/A track F | pre-05 | residual mismatch | 🟢 STANDS | training/methodology |
+| E25 | Triple-barrier placebo | pre-05 | placebo IC ≈ +98bp | 🟢 STANDS | methodology; placebo was the rejection (not Bug C) |
+| **E26** | **wl183 watchlist B2** | 2026-05-05 | **Sharpe −0.07 / APY −1.6%** | **🔴 REDO** | full sim metrics; Bug C corrupted |
+| **E27** | **WF 3-cut wl103 vs SPY** | 2026-05-05 | **alpha vs SPY −15.62% ± 10.21%** | **🔴 REDO** | sim-derived alpha; Bug C corrupted |
+| E28 | NaN-leaf collapse | 2026-05-05 | XGB 60.8% rows → 1 leaf | 🟢 STANDS | training internal diagnostic |
+| E29 | alpha158-lite redundant | 2026-05-06 | IC IC | 🟢 STANDS | training-side |
+| **E29 (V7)** | **alpha158_linear V7 single-cut Sharpe +2.01 reversed** | 2026-05-06 | **Sharpe per cut** | **🟡 MIXED** | qualitative (regime variance) robust; magnitudes need redo |
+| E30 | Qlib alpha158 + Linear +0.038 | 2026-05-06 | test_median_ic | 🟢 STANDS | training-side SUCCESS |
+| E31 | SLSQP→cvxpy backend swap | 2026-05-06 | solver mechanics | 🟢 STANDS | architectural |
+| E32 | alpha158_linear PROD-compat | 2026-05-06 | SUCCESS — promoted | 🟢 STANDS | training/integration |
+| E33 | iTransformer cross-sec rank | 2026-05-07 | val_IC | 🟢 STANDS | training-side |
+| E34 | Universe 103→816 expansion | 2026-05-07 | IC | 🟢 STANDS | training-side |
+| E35 | Extended WF 3h × 6m × 7cuts | 2026-05-08 | IC table | 🟢 STANDS | training/WF IC |
+| E36 | Regime conditioning SPY GMM | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E37 | R2000 small-cap expansion | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E38 | XGB hp sweep (27 combos) | 2026-05-08 | IC sweep | 🟢 STANDS | training-side |
+| E39 | Extended SEC fund (7 ratios) | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E40 | §5.2 Sanity suite baseline | 2026-05-08 | methodology | 🟢 STANDS | methodology |
+| **E41** | **Portfolio sim IC 0.066→Sharpe 1.06** | 2026-05-08 | **Sharpe 1.06 / MaxDD −42%** | **🔴 REDO** | sim-equity Sharpe; the headline "GO" claim. **Highest priority redo** |
+| **E42** | **Multi-horizon ensemble** | 2026-05-08 | **Sharpe −0.07 vs single** | **🔴 REDO** | sim equity; already in roadmap B3 |
+| **E43** | **Vol-targeted portfolio** | 2026-05-08 | **Sharpe −0.04, MaxDD −7pt** | **🔴 REDO** | sim equity; specifically about MaxDD which Bug C inflated. Already in roadmap B5 |
+| E44 | SPY-GMM regime probs | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E45 | R2000 watchlist 291→1640 | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E46 | Per-sector model | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E47 | Long-horizon PEAD fwd_60d | 2026-05-08 | IC positive | 🟢 STANDS | training SUCCESS |
+| E48 | LightGBM retest 166-feat | 2026-05-08 | IC | 🟢 STANDS | training-side |
+| E49 | SUE + surprise mom/streak | 2026-05-09 | IC positive | 🟢 STANDS | training SUCCESS |
+| E50 | Insider trades 95% retest | 2026-05-09 | IC | 🟢 STANDS | training-side |
+| E51 | NGB QHead A/B variants | 2026-05-09 | val IC | 🟢 STANDS | training-side |
+| E52 | NGB QHead Phase C MLP | 2026-05-09 | val IC + 42% regime fit | 🟢 STANDS | training-side |
+| E53 | Purged train/val audit | 2026-05-09 | methodology | 🟢 STANDS | methodology |
+| E54 | BUG #6/#7 + BA audit chain | 2026-05-09 | bug fix chain | — | not an A/B experiment |
+| **E55** | **27-mo NGB on/off A/B** | 2026-05-09 | **APY/Sharpe/MaxDD** | **🔴 REDO** | sim-equity comparison; NGB-off "wins by +3.78 APY" Bug-C corrupted. **NGB might actually be a win.** |
+| E63 | Meta-label classifier | 2026-05-11 | AUC + sim APY | 🟡 MIXED | AUC=0.55 (theory) stands; magnitude of harm was Bug C |
+| E64 | Conviction cap partial | 2026-05-11 | gated off | — | being retested NOW as E-A2 |
+| E65 | Mega risk ablation | 2026-05-11 | sim ablation | 🟡 MIXED | post-fix correction already noted; CVaR rejection still holds on stat-grounds |
+| E66 | max_position_pct sweep | 2026-05-11 | sim sweep | 🟢 STANDS | post-fix verdict CORRECT; 8% loses 8.2pt vs baseline 20% |
+
+---
+
+## Summary — what needs redoing
+
+**7 experiments to redo (sim-equity contaminated):**
+
+| Pri | # | Subject | Why redo | In roadmap as |
+|---|---|---|---|---|
+| 1 | E41 | IC+0.066 → Sharpe 1.06 portfolio sim | The headline "GO" finding for the current strategy. Need clean post-Bug-C measurement of the production-class strategy's real Sharpe. | NEW backlog item |
+| 2 | E55 | NGBoost on/off A/B | NGB-off "wins by +3.78 APY" was Bug-C corrupted. NGB-on might be the actual winner. Worth re-running because NGB-σ would unlock σ-aware stop loss (currently dead code per CLAUDE.md status). | B-NGB |
+| 3 | E27 | wl103 vs SPY walk-forward | "Mean alpha −15.62%" was the killer finding that motivated wl183 expansion. If wrong, current wl103 may already beat SPY post-fix. | B-WF-SPY |
+| 4 | E43 | Vol-targeted portfolio | Already in roadmap B5/B6. Specifically about MaxDD which was Bug C's biggest distortion. | B5 |
+| 5 | E42 | Multi-horizon ensemble | Already in roadmap B3 | B3 |
+| 6 | E26 | wl183 watchlist B2 | Universe expansion test. Negative verdict may be artifact. | B-WL183 |
+| 7 | E15 | Boyd rotation | Pre-04 sim measurement. Lower priority — rotation is currently used in path but the "−2.5 APY/cycle" cost number may be wrong. | B-ROT |
+
+**Conservative redo design (per §5.13.4 + §5.14):**
+
+```
+for each REDO experiment:
+  1. Identify the prod-class config from that experiment
+  2. Build sim_<exp_id>.json side config
+  3. Run 3 windows (W1=Apr-Aug25, W2=Aug-Dec25, W3=Dec24-Dec25 12mo) — already have baseline reference
+  4. Compute mean ± σ
+  5. If |mean - baseline| > 3 pt APY AND consistent direction in 2/3 windows → escalate to 5-window confirmation + DSR/PBO
+  6. Document in post-fix update to the original E entry
+```
+
+**Order of operations:** E41 first (highest-impact, headline finding), then E55 (could unlock NGB-σ feature family), then E27 (existential "does strategy beat SPY?"). Others as bandwidth allows.
+
+**NOT in this scope:** all 🟢 STANDS experiments. Their training-side IC findings are real. Don't waste compute re-running them.
+
