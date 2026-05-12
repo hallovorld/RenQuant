@@ -402,6 +402,8 @@ def check_stop_loss(
     stop_pct: float,   # e.g. 0.15 (15% cumulative loss) — legacy absolute floor
     stop_n_sigma: float = 0.0,   # N × daily σ × √hold_days (σ-adaptive ceiling)
     today: datetime.date | None = None,
+    stop_decay_days: int = 0,    # B1: after N days held, linearly tighten stop_pct (0 = off)
+    stop_decay_floor: float = 0.5,  # B1: minimum multiplier (0.5 = stop tightens to 50% of original)
 ) -> ExitSignal:
     """Cumulative stop-loss from entry price — absolute and/or σ-adaptive.
 
@@ -435,6 +437,24 @@ def check_stop_loss(
         return _NO_EXIT
 
     abs_thresh = float(stop_pct) if stop_pct and stop_pct > 0 else 0.0
+
+    # B1 (2026-05-12 revival) — time-decay tightening
+    # After `stop_decay_days` days, linearly reduce abs_thresh toward
+    # `stop_decay_floor × abs_thresh`. Catches bleeders that have been
+    # held too long without the model deciding to exit.
+    # Disabled when stop_decay_days <= 0.
+    if (stop_decay_days and stop_decay_days > 0 and abs_thresh > 0
+            and today is not None and state.entry_date is not None):
+        try:
+            held = max(0, (today - state.entry_date).days)
+            if held > stop_decay_days:
+                # Linear decay from 1.0 at decay_days → floor at 2×decay_days
+                excess = (held - stop_decay_days) / float(stop_decay_days)
+                multiplier = max(float(stop_decay_floor), 1.0 - excess * (1.0 - float(stop_decay_floor)))
+                abs_thresh = abs_thresh * multiplier
+        except (TypeError, ValueError):
+            pass
+
     sigma_thresh = 0.0
     if stop_n_sigma and stop_n_sigma > 0:
         sg_daily = _resolve_daily_sigma(state)
@@ -472,6 +492,7 @@ def check_single_day_loss(
     state: HoldingState,
     sdl_pct: float,    # absolute %: e.g. 0.06 (6% single-day drop)
     sdl_n_sigma: float = 0.0,   # N × daily realized vol (preferred when set)
+    sdl_skip_if_unrealized_above: float = 0.0,  # B2: skip SDL if position is up X% (default 0 = off)
 ) -> ExitSignal:
     """Single-day loss gate — fires on gap-downs vs previous close.
 
@@ -497,6 +518,17 @@ def check_single_day_loss(
         return _NO_EXIT
     if not math.isfinite(state.prev_close):
         return _NO_EXIT
+
+    # B2 (2026-05-12 revival) — skip SDL if position is currently a winner
+    # by more than `sdl_skip_if_unrealized_above`. Industry rationale: a
+    # 6%-down day on a stock that's up 20% from entry is noise, not signal;
+    # the position has cushion and SDL would prematurely realize the win.
+    # Disabled when threshold ≤ 0 (default).
+    if (sdl_skip_if_unrealized_above and sdl_skip_if_unrealized_above > 0
+            and math.isfinite(state.entry_price) and state.entry_price > 0):
+        unrealized = (current_price - state.entry_price) / state.entry_price
+        if math.isfinite(unrealized) and unrealized >= float(sdl_skip_if_unrealized_above):
+            return _NO_EXIT
 
     abs_thresh = float(sdl_pct) if sdl_pct and sdl_pct > 0 else 0.0
     sigma_thresh = 0.0
@@ -675,6 +707,8 @@ def compute_exits(
         float(params.get("stop_loss_pct", 0)),
         float(params.get("stop_n_sigma", 0)),
         today,
+        stop_decay_days=int(params.get("stop_decay_days", 0)),
+        stop_decay_floor=float(params.get("stop_decay_floor", 0.5)),
     )
     if sig.should_exit:
         return sig, state
@@ -684,6 +718,7 @@ def compute_exits(
         current_price, state,
         float(params.get("max_single_day_loss_pct", 0)),
         float(params.get("sdl_n_sigma", 0)),
+        sdl_skip_if_unrealized_above=float(params.get("sdl_skip_if_unrealized_above", 0)),
     )
     if sig.should_exit:
         return sig, state
