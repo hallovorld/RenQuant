@@ -2671,3 +2671,53 @@ improves. Pair with a per-bar log of how often the cap binds (i.e. how often
 Reverted preemptive plan to "promote A2 to prod after sim validation" —
 no validation possible until sizing.enabled is turned on first. Both the
 flag-flip and the validation are deferred to a future session.
+
+---
+
+## E65 — Mega risk overlay ablation — 2026-05-11 (W3 12-mo OOS)
+
+**Goal:** decompose the +6.5pt APY win of mega (CVaR + vol-target + DD-Kelly +
+trend-overlay) into individual contributions.
+
+**Window:** 2024-12-01 → 2025-12-01 (12-mo, W3 OOS), walkforward sim_baseline.
+
+**Results (7 sims):**
+| Config | APY | Sharpe | MaxDD | Trades | Verdict |
+|---|---|---|---|---|---|
+| baseline (no risk overlays) | −11.6% | +0.60 | 55.0% | 241 QP | reference |
+| **CVaR λ=0.5 alone** | **−5.1%** | **+0.65** | 48.5% | 241 QP | **+6.5 pt — winning component** |
+| Mega (all 4) | −5.1% | +0.65 | 48.5% | 241 QP | bit-identical to CVaR-only |
+| Mega without CVaR | −11.6% | +0.60 | 55.0% | 241 QP | reverts to baseline |
+| Mega without vol-target | −5.1% | +0.65 | 48.5% | 241 QP | inert knob |
+| Mega without DD-Kelly | −5.1% | +0.65 | 48.5% | 241 QP | inert knob |
+| Mega without trend-overlay | −5.1% | +0.65 | 48.5% | 241 QP | overlay fires but effect subsumed by drawdown halt |
+| A1 (calibrator recent-12mo) | −13.6% | +0.62 | **43.7%** | 241 QP | best MaxDD, −2pt APY |
+| CVaR + A1 stacked | −15.1% | +0.57 | 46.4% | 241 QP | **stack destroys CVaR's win** |
+
+**Conclusion:** The mega win was entirely driven by CVaR. Vol-target / DD-Kelly
+were silently gated off (likely require additional sub-flag, like A2's
+`sizing.enabled` dependency); trend-overlay fires (3+ `hard_bear` triggers
+logged) but its effect is subsumed by the drawdown-halt circuit breaker on
+this window.
+
+**Stacking CVaR with A1 calibrator HURTS** by 10pt APY vs CVaR alone (−5.1% →
+−15.1%). Hypothesis: the recent-12mo calibrator outputs a more conservative
+rank distribution, and CVaR's tail-risk penalty then over-rejects good
+candidates. Empirically: do NOT stack these.
+
+**Promotion recommendation:** ship CVaR λ=0.5 as a standalone config flag
+flip — `rotation.joint_actions.qp_cvar_lambda: 0.5`. Defer recent-12mo
+calibrator and the other 3 mega knobs.
+
+**Outstanding:** single-window measurement (W3 only). Per §5.13.4 need
+`mean ± std` from ≥5 windows before promotion. Replication recipe:
+
+```bash
+for label in sim_cvar_only sim_baseline; do
+  python scripts/run_sim_104.py \
+    --start 2024-12-01 --end 2025-12-01 \
+    --strategy-config-name strategy_config.$label.json \
+    --no-persist --no-compare
+done
+```
+
