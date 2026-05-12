@@ -1228,7 +1228,22 @@ class SimAdapter:
         the rest of the simulation.
         """
         import math
+        # 2026-05-11 BUG #C fix: include T+2 pending settlement balance.
+        # Pre-fix, `_portfolio_value` returned cash + position MTM but
+        # ignored sell proceeds sitting in `_t2_queue`. Result: on sell
+        # day, shares drop but cash unchanged (proceeds queued) ⇒ NAV
+        # phantom drop = sale amount. Two bars later when queue drains,
+        # NAV phantom recovery = sale amount. With many sells this
+        # inflates measured ann_vol by O(sale_size · √n_sells) — observed
+        # 516% vol on W1_maxpos08 (45 sells × $5k positions).
+        # Fix invariant (CLAUDE.md §5.3): NAV ≡ free_cash +
+        # pending_settle + Σ(shares × price). All three legs are real
+        # claim against the portfolio's economic value.
         total = self._cash
+        if getattr(self, "_t2_queue", None) is not None:
+            pending = self._t2_queue.pending_total()
+            if math.isfinite(pending):
+                total += pending
         for t, shares in self._pos_shares.items():
             p = prices.get(t)
             if p is None or not math.isfinite(p):
