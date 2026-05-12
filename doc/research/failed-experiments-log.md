@@ -2847,3 +2847,61 @@ json.dump(b, open('backtesting/renquant_104/strategy_config.sim_maxpos_$cap.json
 done
 ```
 
+
+---
+
+## E63/E65/E66 — POST-BUG-C CORRECTION — 2026-05-11
+
+Bug C (commit `29e34b0`) — SimAdapter._portfolio_value omitted T+2
+pending balance. Pre-fix, every sell created ±sale_amount phantom
+returns. Post-fix, NAV invariant restored.
+
+**Post-fix verification on 3 windows × 4 configs:**
+
+| Config | mean APY | mean Sharpe | mean MaxDD | vs baseline |
+|---|---|---|---|---|
+| Baseline (no meta-label) | **+11.6%** | **0.77** | 8.2% | reference |
+| Meta-label ON | +10.1% | 0.69 | 8.1% | −1.5 pt |
+| CVaR λ=0.5 | +11.7% | 0.61 | 8.2% | +0.1 pt |
+| A1 calibrator recent-12mo | +9.9% | 0.34 | 7.7% | −1.7 pt |
+
+**Corrections to prior verdicts:**
+
+* **E63 meta-label** — claimed "−9.2 pt mean APY, actively harmful".
+  Post-fix true number is −1.5 pt (within noise σ ≈ 5-8 pt across
+  windows). The classifier still has AUC ≈ random (0.55 ± 0.12), so
+  the disable decision stands on theory, not on a clean lift number.
+  The "active harm" framing in E63 was Bug C distortion.
+* **E65 CVaR** — claimed "regime-dependent noise, mean +7.3 pt ± 16.0".
+  Post-fix: mean +0.1 pt ± 7.6. Still regime-dependent, but milder.
+  Still not stat-sig. Reject still correct.
+* **E66 max_position_pct** — claimed "8% winner at +7.2 pt vs baseline".
+  Post-fix, baseline = +11.6%, maxpos=8% = +3.4%. **8% is now WORSE
+  than baseline by 8.2 pt.** The original hypothesis (vol-drag from
+  concentration) was based on inflated Vol=157% — real Vol is ~10-20%,
+  so no vol drag to fix. Revert to maxpos=20% (baseline).
+
+**Strategy reality after Bug C fix:**
+
+  Baseline 3-window mean: APY = +11.6% ± 9.0 pt σ, Sharpe = 0.77
+  MaxDD mean = 8.2%, with worst single-window = 11% drawdown
+
+This is a credible long-only strategy at the cross-sectional ranking
+level. The earlier "no edge, mean APY −7.2%" verdict was an artifact
+of Bug C distorting the equity curve.
+
+**What's STILL true:**
+* Meta-label classifier has AUC ≈ random — keep disabled (theory, not
+  measurement-based decision).
+* CVaR / vol-target / DD-Kelly / trend-overlay / A1 / A2 / 8% sweep
+  / fine-grain sweep — none provide stat-sig improvement over baseline.
+* All measurements remain n=3 windows, σ wide.
+
+**What needs follow-up:**
+* Bug D (`ctx.cash` settled-only) — sim is conservative vs Alpaca
+  margin; sim may under-trade post-sells. Effect direction is
+  "sim shows lower APY than live would achieve".
+* All historical session findings used the buggy sim — anything that
+  was promoted on a sim "win" needs re-verification on the same window
+  set with post-Bug-C numbers before further claims.
+
