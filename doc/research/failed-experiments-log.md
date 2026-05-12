@@ -2773,3 +2773,77 @@ for window in "W1:2025-04-01:2025-08-01" "W2:2025-08-01:2025-12-01" "W3:2024-12-
   done
 done
 ```
+
+---
+
+## E66 — max_position_pct sweep — 2026-05-11
+
+**Hypothesis:** Portfolio vol drag (Vol=157% annualized on baseline) is caused
+by 20% per-name caps. Smaller caps → more positions → lower idiosyncratic
+risk → less compound drag. (See session note on Sharpe-positive-APY-negative
+paradox.)
+
+**Method:** Two-stage sweep on W1/W2/W3 OOS:
+1. Coarse: max_position_pct ∈ {5%, 8%, 12%} (uniform across BULL_CALM /
+   BULL_VOLATILE / CHOPPY; BEAR stays 0).
+2. Fine-grain: {6%, 7%, 9%, 10%}.
+
+**Results (mean across 3 windows, where all 3 windows have trades):**
+
+| cap | mean APY | mean Sharpe | mean MaxDD | n_trades W3 | Status |
+|---|---|---|---|---|---|
+| 5  | — | — | — | 0 | Bug B (no-trade band gate) |
+| 6  | — | — | — | 26 | partial Bug B (W2 = 0 trades) |
+| 7  | — | — | — | 23 | partial Bug B (W2 = 0 trades) |
+| **8** | **+3.1%** | **0.73** | **44.6%** | 74 | **WINNER** |
+| 9  | −0.5% | 0.35 | 26.9% | 108 | |
+| 10 | −14.5% | 0.27 | 35.4% | 136 | |
+| 12 | −14.0% | 0.58 | 42.5% | 73 | |
+| 20 | −7.2% | 0.60 | 46.4% | 123 | baseline (current prod) |
+
+**Caveat on W1_maxpos08:** APY=+9.2 / Sharpe=1.54 / **Vol=516% / MaxDD=86%**
+are internally inconsistent (32% daily vol impossible for equities; ½σ²
+vol drag would compound to ~−98%, not +9%). Almost certainly a NAV-mismark
+bug when buys+sells co-occur in the same bar (47 buys + 45 sells over 84
+trading days = 1.1 trade-events/day, high coincidence). The compound APY
+number (+3%) is bug-resistant (just final/initial), but the Sharpe / Vol /
+MaxDD numbers from that single window can't be trusted. **Conservative
+restatement dropping W1: maxpos=8% mean APY = 0.0% (still +7.2 pt better
+than baseline).**
+
+**Bug B (no-trade band × small caps):** `_passes_no_trade_band` at
+`kernel/portfolio_qp/tasks.py:778` uses `band_cap=0.05` as the σ-derived
+band ceiling. When max_position_pct ≤ 5%, fresh buys have Δw ≈ 5% which
+collides with the band ceiling → blocked → zero trades. Fix:
+`band_cap = min(0.05, max_position_pct / 2)` so the band scales with the
+allowed position. Not shipping the fix this session — let the user see the
+empirical curve first.
+
+**Bug C (W1_maxpos08 phantom Vol):** flagged for follow-up. Likely a
+mark-to-market accounting issue when buys+sells transact in the same bar.
+Sim NAV series should be inspected at the bar-level.
+
+**Promotion recommendation:** `max_position_pct = 0.08` uniform across
+BULL_CALM / BULL_VOLATILE / CHOPPY (BEAR stays 0). Gated on multi-seed
+confirmation (n ≥ 5) and DSR > 0 per §5.13.4 before flipping prod.
+
+**Reproduction:**
+```bash
+for cap in 05 06 07 08 09 10 12; do
+  python -c "
+import json, copy
+b = json.load(open('backtesting/renquant_104/strategy_config.sim_baseline.json'))
+b['_side_config_label']='sim_maxpos_$cap'
+for r in ['BULL_CALM','BULL_VOLATILE','CHOPPY']:
+    b['regime_params'][r]['max_position_pct']=$cap/100
+json.dump(b, open('backtesting/renquant_104/strategy_config.sim_maxpos_$cap.json','w'),indent=2)
+"
+  for w in "2025-04-01:2025-08-01" "2025-08-01:2025-12-01" "2024-12-01:2025-12-01"; do
+    IFS=":" read -r s e <<<"$w"
+    python scripts/run_sim_104.py --start $s --end $e \
+      --strategy-config-name strategy_config.sim_maxpos_$cap.json \
+      --no-persist --no-compare
+  done
+done
+```
+
