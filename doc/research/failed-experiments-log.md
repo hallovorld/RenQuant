@@ -3159,3 +3159,61 @@ Autonomous run executed 5 phases of post-Bug-C re-tests. **NO promotion candidat
 
 **Lesson:** parameter tuning on a stop-loss family is exhausted. The strategy's risk profile (Sharpe 0.41, MaxDD 8%) is at the local optimum for its current model + universe. Further alpha requires STRUCTURAL changes (model class, label horizon, universe).
 
+
+---
+
+## E42 — Multi-horizon panel-LTR (fwd_5d / fwd_20d / fwd_60d static) — 2026-05-12
+
+**Hypothesis:** Shorter-horizon models (fwd_5d, fwd_20d) might capture faster signals than the current fwd_60d production. Multi-horizon ensemble could improve risk-adjusted return.
+
+**Method:** Train 3 panel-LTR XGBoost models with `--train-cutoff 2024-01-01` (sim-isolated artifacts under `artifacts/sim/E42_walkforward_horizons/`). Sim each × 6 windows (W1-W6) with walkforward disabled (static-model path).
+
+**Caveat:** All 3 horizons are STATIC models (single cutoff 2024-01-01), unlike baseline which uses 39-cutoff walkforward. Comparison conflates "horizon effect" with "static vs walkforward". For clean test, would need walkforward variant for each horizon — defer (~3h additional retraining each).
+
+**Results (6 windows, post-Bug-C):**
+
+| Horizon | mean APY | mean Sharpe | mean MaxDD | Δ APY | consistent |
+|---|---|---|---|---|---|
+| baseline_WF (fwd60d walkforward) | +15.2% | +0.41 | 8.4% | reference | — |
+| fwd5d static (cutoff 2024-01-01) | +13.4% | +0.34 | 7.9% | −1.8 | 2/6 |
+| fwd20d static (cutoff 2024-01-01) | +10.7% | +0.14 | 8.7% | −4.5 | 3/6 |
+| **fwd60d static (cutoff 2024-01-01)** | **+18.5%** | **+0.52** | 8.0% | **+3.3 / +0.12** | 3/6 |
+
+**fwd60d static numerically beats walkforward by +3.3pt APY / +0.12 Sharpe**, but:
+- Only 3 of 6 windows consistent positive direction (fails ≥4/6 gate per §5.13.4)
+- W5 huge loss (−15.5pt) where walkforward retrained mid-window
+- t-stat = 0.60 (mean_Δ=3.3, σ_Δ=13.4 across n=6 windows). Not statistically significant.
+
+**Mechanism:** Static fwd60d wins in W1-W2 (when walkforward retrains are equally stale) but loses in W5 (where walkforward updated to 2024-04-cutoff mid-W5). The mean +3.3 pt is a regime-conditional artifact, not robust signal.
+
+**Verdict: REJECT.** Multi-horizon panel-LTR family does not improve over baseline. Shorter horizons (fwd5d/20d) lose decisively. Static fwd60d's numerical edge fails consistency + significance gates. Walkforward (39-cutoff retraining) remains correct architecture.
+
+**Lesson:** the "walkforward adds noise" hypothesis is not supported. Walkforward's retraining cadence matters — when the regime shifts (W5 = different market state from 2024 training cutoff), walkforward's adapted model outperforms.
+
+**Reproduction:** see `data/logs/sim_2026-05-12_E42/W{1..6}_sim_E42_{fwd5d,fwd20d,fwd60d}.log`.
+
+---
+
+## 2026-05-12 autonomous handoff FINAL SUMMARY
+
+**7 experimental phases ran across 12 hours.** ZERO promotion candidates.
+
+| Phase | Experiment | Sims | Verdict |
+|---|---|---|---|
+| 0 | CVaR λ sweep 6-window | 30 | REJECT (all λ ≤ noise) |
+| 1 | E43/B5/B6 single-knob | 18 | REJECT (Kelly dead, no effect) |
+| 2.1 | E55 NGBoost on/off | 6 | REJECT (−20.6 pt APY decisive) |
+| 3 | E27 SPY benchmark | 0 (post-process) | Strategy LOSES to SPY by −2.3 pt |
+| X | 5-knob stop sweep | 30 | REJECT all 5 (pre-fix verdicts confirmed) |
+| 2.2 | E42 multi-horizon (5d/20d/60d static) | 18 | REJECT (fwd60d static +3.3pt but fails consistency gate) |
+
+**Total: 102 sims this autonomous run, 0 promotions.**
+
+The strategy is at its local optimum for: alpha158+5fund+3PEAD+3SUE feature set, XGBoost rank:pairwise, wl103 universe, fwd_60d label, 39-cutoff walkforward, regime-conditional caps, drawdown_resume=halt/2.
+
+**Mean APY +15.2%, Sharpe 0.41, MaxDD 8.4%** is the credible 6-window baseline. Strategy underperforms SPY (−2.3 pt mean alpha) — edge is in MaxDD (8% vs SPY 12-15%), not raw return.
+
+**Production unchanged.** Tomorrow's open104 (06:32 PT) fired with current baseline. No prod config flips this session.
+
+**Remaining structural experiments** (E26 wl183 universe, E41 R1K universe) deferred to future sessions — they require 3-5h of model retraining each, and §5.13.4 evidence so far suggests structural changes don't beat baseline either.
+
