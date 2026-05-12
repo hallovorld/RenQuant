@@ -3054,3 +3054,79 @@ The 3-window E-CV2 finding was a sample-size artifact. W4-W6 (added in Phase 0 c
 
 **Lesson:** §5.13.4 requires ≥5 measurements for a reason. 3-window mean ± σ can hide window-selection bias. Always validate on ≥5 INDEPENDENT windows before any promotion.
 
+
+---
+
+## E55 — NGBoost RECONFIRMED REJECT (Phase 2.1, 2026-05-12 00:30 PT)
+
+Post-Bug-C 6-window confirmation with prod NGB head (`prod/ngboost-head.alpha158_fund.json`, trained 2026-05-09, used directly in sim w/ leakage caveat noted).
+
+**Results (vs baseline λ=0):**
+
+| Window | Baseline APY/Sharpe | NGB-on APY/Sharpe | ΔAPY | ΔSharpe |
+|---|---|---|---|---|
+| W1 | +22.3 / +2.01 | −4.7 / −0.71 | **−27.0** | −2.72 |
+| W2 | +6.7 / +0.18 | −9.2 / −0.79 | **−15.9** | −0.97 |
+| W3 (12mo) | +5.8 / +0.12 | −7.9 / −0.73 | **−13.7** | −0.85 |
+| W4 | +91.0 / +2.69 | +38.9 / +1.48 | **−52.1** | −1.21 |
+| W5 | −14.8 / −1.30 | −36.2 / −2.29 | **−21.4** | −0.99 |
+| W6 | −19.8 / −1.27 | −13.1 / −1.02 | +6.7 | +0.25 |
+| **mean** | **+15.2% / 0.41** | **−5.4% / −0.68** | **−20.6 pt** | **−1.09** |
+
+**Verdict: REJECT NGBoost decisively.** Even with potential lookahead bias (prod head trained 2026-05-09 used on sims ending 2025-08 to 2025-12 — should HELP NGB), the strategy with NGB on destroys ~20 pt APY mean and drops Sharpe by 1+ point. The pre-fix verdict (−3.78pt) was UNDERSTATED.
+
+**Mechanism:** NGB μ-aware Kelly sizing reduces position sizes inversely with σ̂. The σ̂ values are noisy enough that the size reductions destroy alpha rather than improve risk-adjusted returns. The QP solver path, which is regime-cap-based (not Kelly), is the correct sizing mechanism for this strategy.
+
+**Cascade decision:** σ-aware stop (Fix #0a) family is permanently retired. Cannot be revived without a fundamentally different σ estimation source (NGB doesn't work; rolling realized vol was the 2f10949 revival attempt that also failed).
+
+**Reproduction:** see `data/logs/sim_2026-05-12_E55/W{1..6}_ngb_on.log`.
+
+---
+
+## E27 — Strategy LOSES TO SPY (Phase 3 post-process, 2026-05-12)
+
+Free post-process of EXISTING baseline equity curves against SPY.
+
+| Window | Strategy ret | SPY ret | Alpha |
+|---|---|---|---|
+| W1 (Apr-Aug 25) | +6.9% | +10.8% | **−3.9** |
+| W2 (Aug-Dec 25) | +2.2% | +9.4% | **−7.2** |
+| W3 (12mo Dec24-25) | +5.7% | +12.7% | **−7.0** |
+| W4 (post-election rally) | +24.1% | +11.0% | **+13.1** ✓ |
+| W5 (Apr-Aug 24) | −5.2% | +4.0% | **−9.2** |
+| W6 (Dec24-Apr25 bear) | −6.9% | −7.1% | +0.2 |
+| **mean** | | | **−2.3 pt** |
+
+**Strategy underperforms SPY by 2.3 pt on average across 6 windows.** 4 of 6 windows lose to SPY.
+
+**Implications:**
+- Strategy IS profitable in absolute terms (+15.2% mean APY)
+- But SPY long-only achieved similar with no model
+- Strategy's edge is in MaxDD (8.2% vs SPY ~12-15% in W5/W6) — not in raw return
+- Risk-adjusted: Sharpe 0.41 vs SPY ~0.5-0.6 in these windows → strategy LOSES on Sharpe too
+
+**Pre-fix verdict (E27):** "Mean alpha vs SPY = −15.62% ± 10.21%, sign-consistent NEGATIVE."
+**Post-fix verdict:** mean alpha = −2.3 pt — much smaller magnitude than pre-fix (Bug C was inflating losses too), but **still negative**. The strategy does not beat the index.
+
+**Strategic question (NOT autonomous decision):** is a strategy that loses 2.3pt vs SPY but with lower MaxDD worth running over passive index ETF? Depends on user's preference (return-max vs drawdown-min).
+
+---
+
+## Handoff session conclusion — 2026-05-12 01:00 PT
+
+Autonomous run executed 5 phases of post-Bug-C re-tests. **NO promotion candidate found across Phase 0 (CVaR), Phase 1 (E43/B5/B6), Phase 2.1 (E55), Phase 3 (E27 SPY).**
+
+**Production unchanged:** baseline config retained. Next live firing 06:32 PT uses current settings (meta-label OFF, CVaR=0, drawdown_resume=halt/2, max_position_pct=20%, NGBoost OFF, Kelly sub-features all dormant).
+
+**Deferred to tomorrow daytime** (require model retraining, not feasible in tonight's 6h budget):
+- E42 multi-horizon ensemble (3h)
+- E26 wl183 universe (4h)
+- E41 R1K universe (5h)
+
+**Strategic implications:**
+1. Bug C fix has corrected the measurement; strategy IS profitable (+15.2% mean APY) but loses to SPY by 2.3pt.
+2. No single-knob parameter tuning produces ≥+2pt APY winner per §5.13.4.
+3. To outperform SPY, structural changes are needed: better feature set, broader/quality-filtered universe, or different model class. Phase 2.2-2.4 will test these.
+
+**Operational note:** the live trading restoration (commit `4aab86f`, --broker alpaca) was based on Bug-C-corrected mean APY of +11.6% (3-window). The 6-window re-measurement shows +15.2% mean APY (consistent direction, larger variance). Live trading is approved per user mandate.
+
