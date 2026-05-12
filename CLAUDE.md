@@ -4,7 +4,15 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 Status (2026-05-11 EOD — strategy is solid; Bug C measurement fix corrected ALL prior findings)
+## 🗂 Status (2026-05-12 01:00 PT — autonomous handoff complete; no promotion; strategy stays at baseline)
+
+> **Strategic top-line (6-window walk-forward, post-Bug-C):**
+> Baseline: APY +15.2% / Sharpe 0.41 / MaxDD 8.4% mean.
+> **Strategy LOSES TO SPY by −2.3 pt mean alpha** across 6 windows (4 of 6 windows lose). Edge is in MaxDD (8% vs SPY ~12-15%), not return.
+> 5 post-Bug-C re-test phases (CVaR sweep, vol-target binding, trend isolated, DD-Kelly, NGBoost) ALL CONFIRMED REJECT. No parameter tuning beats baseline.
+> Deferred to daytime: E42 multi-horizon (3h retrain), E26 wl183 (4h), E41 R1K (5h). These structural experiments may pivot the strategy.
+
+
 
 > Detailed audit: [`doc/AUDIT_2026-05-09.md`](doc/AUDIT_2026-05-09.md). Roadmap: [`doc/roadmap.md`](doc/roadmap.md). Closed tracks + failed experiments: [`doc/research/failed-experiments-log.md`](doc/research/failed-experiments-log.md). Session history: `doc/archives/sessions/`.
 
