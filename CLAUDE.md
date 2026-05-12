@@ -4,13 +4,26 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 Status (2026-05-12 01:00 PT — autonomous handoff complete; no promotion; strategy stays at baseline)
+## 🗂 Status (2026-05-12 07:00 PT — autonomous handoff complete; 102 sims, 0 promotions; strategy at local optimum)
 
 > **Strategic top-line (6-window walk-forward, post-Bug-C):**
 > Baseline: APY +15.2% / Sharpe 0.41 / MaxDD 8.4% mean.
-> **Strategy LOSES TO SPY by −2.3 pt mean alpha** across 6 windows (4 of 6 windows lose). Edge is in MaxDD (8% vs SPY ~12-15%), not return.
-> 5 post-Bug-C re-test phases (CVaR sweep, vol-target binding, trend isolated, DD-Kelly, NGBoost) ALL CONFIRMED REJECT. No parameter tuning beats baseline.
-> Deferred to daytime: E42 multi-horizon (3h retrain), E26 wl183 (4h), E41 R1K (5h). These structural experiments may pivot the strategy.
+> **Strategy LOSES TO SPY by −2.3 pt mean alpha** across 6 windows. Edge is in MaxDD (8% vs SPY 12-15%), not return.
+> **7 post-Bug-C experimental phases × 102 sims** — ALL REJECT. The strategy is at its local optimum for the current feature set (alpha158+fund+PEAD+SUE = 169 features), model class (XGBoost rank:pairwise), universe (wl103), label horizon (fwd_60d walkforward).
+>
+> **Rejected this autonomous run (after Bug-C fix):**
+> - CVaR sweep (λ ∈ {0.15, 0.25, 0.35, 0.50}) — all within noise
+> - vol-target / trend-overlay / DD-Kelly (Phase 1 config-only) — Kelly path is dead (μ=None when NGB off)
+> - NGBoost on (E55) — destroys −20.6 pt APY decisively
+> - 5-knob stop-loss sweep (stop07/12, trail15, maxh250, sdl2) — confirms pre-Bug-C verdicts
+> - multi-horizon (fwd5d/20d/60d static) — fwd60d static +3.3pt but fails consistency gate; fwd5d/20d both lose
+>
+> **Deferred to future sessions** (require model retraining ≥3h each):
+> - E26 wl183 universe expansion
+> - E41 R1K universe (full Russell 1000)
+> - B1/B2 stop-loss revival (need code patch for `stop_decay_days` + `sdl_skip_if_unrealized_above`)
+>
+> Further alpha gains require STRUCTURAL changes (new universe, new feature set, new model class), not parameter tuning. Single-knob optimization is exhausted.
 
 
 
