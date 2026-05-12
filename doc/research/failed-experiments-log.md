@@ -2721,3 +2721,55 @@ for label in sim_cvar_only sim_baseline; do
 done
 ```
 
+
+---
+
+## E65 update — multi-window CVaR confirmation rejects unconditional promotion — 2026-05-11
+
+**Hypothesis:** the W3 single-window CVaR win (+6.5 pt APY) generalizes to other windows.
+
+**Method:** Reran baseline vs CVaR-only (λ=0.5) on W1 (Apr-Aug 2025) and W2
+(Aug-Dec 2025) 4-mo windows with the new prod config (meta-label off,
+drawdown resume = halt/2).
+
+**Results (3 windows × 2 arms = 6 sims):**
+
+| Window | Baseline APY/Sharpe/MaxDD | CVaR APY/Sharpe/MaxDD | Δ APY |
+|---|---|---|---|
+| W1 (4mo benign) | +4.7% / 0.55 / 33.5% | **−16.7%** / 0.45 / 38.9% | **−21.4 pt** |
+| W2 (4mo stress) | −14.7% / 0.66 / 50.8% | **+22.2%** / 0.91 / 55.0% | **+36.9 pt** |
+| W3 (12mo mixed) | −11.6% / 0.60 / 55.0% | −5.1% / 0.65 / 48.5% | +6.5 pt |
+| **mean ± σ** | **−7.2% ± 8.5%** APY | **+0.1% ± 16.0%** APY | **+7.3 pt mean** |
+
+**Conclusion:** REJECT unconditional promotion. CVaR's effect is
+**regime-dependent**:
+- In stress windows (negative-baseline), CVaR's tail-risk penalty avoids the
+  losses → big positive Δ.
+- In benign windows (positive-baseline), CVaR's tail-risk penalty rejects
+  good trades → big negative Δ.
+
+The W3 12-mo win was an average of opposite-sign 4-mo windows — the W1 loss
+cancelling part of W2 gain. Promoting CVaR globally trades W2-style wins for
+W1-style losses, expected value ≈ noise.
+
+σ_APY=16% across 3 cuts means the +7.3 pt mean delta is **not significantly
+different from zero** at any reasonable confidence level (§5.13.4 requires
+≥5 cuts AND DSR > 0).
+
+**Resume condition:**
+- Either: gate `qp_cvar_lambda` by regime (active in BULL_VOLATILE / CHOPPY /
+  BEAR; inactive in BULL_CALM). Test on ≥5 windows of EACH regime to validate
+  the gating.
+- Or: run on a much larger window set (10+ windows) and apply DSR/PBO before
+  any promotion decision.
+
+**Reproduction:**
+```bash
+for window in "W1:2025-04-01:2025-08-01" "W2:2025-08-01:2025-12-01" "W3:2024-12-01:2025-12-01"; do
+  IFS=":" read -r tag start end <<< "$window"
+  for cfg in sim_baseline sim_cvar_only; do
+    python scripts/run_sim_104.py --start $start --end $end \
+      --strategy-config-name strategy_config.$cfg.json --no-persist --no-compare
+  done
+done
+```
