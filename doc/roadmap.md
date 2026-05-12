@@ -38,6 +38,18 @@ Track-record discipline: **walk-forward defensible** (no single-cut promotions p
 
 ## P0 — by ROI (Sharpe-lift / effort)
 
+### ★ Methodology lock-in (2026-05-12)
+
+All future variant promotion gates on the **3-tier framework** in
+[`doc/research/promotion-methodology.md`](research/promotion-methodology.md):
+**Tier 1** REJECT (worse than baseline) · **Tier 2** SCREEN (small consistent edge,
+keep iterating) · **Tier 3** CONFIRMED via DSR > 0.5 or PBO < 0.5 or n ≥ 30 t > 3
+(live-promotable). Toolchain: `scripts/analyze_experiments.py` walks every
+`data/logs/sim_*/W*_<cfg>.log`, applies criteria, emits ranked tier report.
+Post-Bug-C re-evaluation (53 configs × 6 windows): 0 Tier 2, 0 Tier 3 →
+keep prod baseline; best candidate `E42_fwd60d` (60-day label window) needs
+extended walk-forward retest.
+
 ### ★ Execution-tactic block (added 2026-05-09 EOD after trade-level audit)
 
 Trade-level audit on Cut 3 (159 closed trades) revealed 3× systematic leakage in exit logic. Highest ROI is fixing **how we exit**, not the model. All 5 fixes implemented as independent config toggles, ablation-tested, WF-validated.

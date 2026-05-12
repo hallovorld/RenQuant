@@ -12,6 +12,22 @@ Use this log to avoid re-running experiments that already answered a question, a
 
 ---
 
+## 2026-05-12 — 3-tier promotion methodology adopted
+
+All batches from this date forward apply the canonical 3-tier criteria
+(see [`doc/research/promotion-methodology.md`](../research/promotion-methodology.md)):
+Tier 1 (REJECT) · Tier 2 (SCREEN, not live-promotable) · Tier 3 (CONFIRMED → live).
+Run `python scripts/analyze_experiments.py [--json-out ...]` at end of every batch.
+
+### Post-Bug-C systematic re-evaluation (2026-05-11/12 batch)
+
+**Verdict:** 53 configs / 36 with ≥ 6 windows. TIER3=0, TIER2=0, NEITHER=16, TIER1_REJECT=20.
+Best candidate `E42_fwd60d` (60-day label window): mean ΔAPY +3.3 / ΔSharpe +0.12 /
+Δα-SPY +0.4, consistency 3/6 (Tier 2 requires ≥ 4/6). **KEEP PROD BASELINE.**
+Candidate forwarded for extended walk-forward retest.
+
+---
+
 ## 2026-04-24 PT — 6 experiments
 
 ### 6. Route B — thesis_primary rotation mode

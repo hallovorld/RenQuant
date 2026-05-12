@@ -189,6 +189,8 @@ Apply to: model architecture, loss, optimizer, preprocessing, label construction
 
 **5.13.4 Single performance number = unverified claim.** Any APY / Sharpe / IC quoted in commit / doc / roadmap MUST be `mean ± std` from ≥5 runs (different seeds OR bar-orderings). Single-measurement claims are forbidden.
 
+**5.13.4a Promotion gating uses the 3-tier methodology** (see [`doc/research/promotion-methodology.md`](doc/research/promotion-methodology.md)): Tier 1 (REJECT: mean ΔAPY < 0 ∧ mean ΔSharpe < 0); Tier 2 (SCREEN, NOT live-promotable: mean ΔAPY > 0, mean ΔSharpe ≥ 0, ≥ 4/N consistent, ΔSPY-α ≥ 0); Tier 3 (LIVE-PROMOTABLE: Tier 2 + DSR > 0.5 OR PBO < 0.5 OR n ≥ 30 with t > 3.0). No live config flip without Tier 3. Run `python scripts/analyze_experiments.py` at the end of every multi-config batch.
+
 **5.13.5 One business decision = one function.** Wash-sale, position cap, drawdown halt, post-stop cooldown, earnings blackout — exactly **one** implementation; all callers route through it. Adding a parallel impl requires deleting the original first.
 
 **5.13.6 Cron cadence must be info-theoretically justified.** Any new cron's docstring answers: "this frequency adds N% new training-relevant info per tick vs the next-coarsest alternative". < 5%/tick = wrong cadence. Daily retrain on a fwd_60d-label model adds ~0.014%/day — cargo cult.
