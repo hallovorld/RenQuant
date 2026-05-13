@@ -349,6 +349,42 @@ class ComputeQPConstraintsTask(Task):
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
+def _resolve_regime_override(base_cfg: dict, ctx) -> dict:
+    """P1 (2026-05-12): if `base_cfg` has `regime_overrides` AND ctx.spy_regime
+    is set, return base_cfg merged with the regime-specific override.
+
+    Resolution order (highest precedence first):
+      1. regime_overrides[ctx.spy_regime]  (if regime label exists in overrides)
+      2. base_cfg                          (fallback)
+
+    Keys in the override block fully override base_cfg keys (shallow merge);
+    this means an override CAN flip `enabled: true → false` to disable a
+    feature in toxic regimes.
+
+    Returns base_cfg unmodified if:
+      - no `regime_overrides` block
+      - ctx.spy_regime is None (SpyRegimeLabelTask disabled)
+      - current regime not in overrides
+
+    Fail-open: any error → return base_cfg (no override).
+    """
+    if not isinstance(base_cfg, dict):
+        return {}
+    overrides = base_cfg.get("regime_overrides")
+    if not isinstance(overrides, dict) or not overrides:
+        return base_cfg
+    regime = getattr(ctx, "spy_regime", None)
+    if regime is None or regime not in overrides:
+        return base_cfg
+    override = overrides.get(regime)
+    if not isinstance(override, dict):
+        return base_cfg
+    # Shallow merge — override wins on key collision
+    merged = dict(base_cfg)
+    merged.update(override)
+    return merged
+
+
 # ── 4a. Force μ_QP source (Option A: validate NGBoost theory) ───────────────
 
 class ForceMuSourceTask(Task):
@@ -436,11 +472,23 @@ class ApplyGrinoldKahnTransformTask(Task):
     Config (off by default — opt-in to preserve baseline):
         ranking.alpha_to_mu.enabled = true
         ranking.alpha_to_mu.ic      = 0.094   (default: calibrator pool_ic)
+        ranking.alpha_to_mu.regime_overrides = {                # P1 2026-05-12
+            "HIGH_CALM":   {"enabled": true, "ic": 0.094},
+            "HIGH_SPIKED": {"enabled": false},                  # disable in toxic regime
+            "LOW_SPIKED":  {"enabled": true, "ic": 0.15},       # different IC per regime
+        }
+
+    When `regime_overrides` is set AND `ctx.spy_regime` is non-None
+    (set by SpyRegimeLabelTask, off by default), this task selects the
+    override for the current regime. Falls back to global if regime
+    not in overrides. Allows regime-conditional deployment per
+    doc/research/2026-05-12-findings-and-next.md.
     """
     name = "ApplyGrinoldKahnTransformTask"
 
     def run(self, ctx) -> bool | None:
-        cfg = (ctx.config or {}).get("ranking", {}).get("alpha_to_mu", {})
+        base_cfg = (ctx.config or {}).get("ranking", {}).get("alpha_to_mu", {})
+        cfg = _resolve_regime_override(base_cfg, ctx)
         if not cfg.get("enabled", False):
             return None
         ic = float(cfg.get("ic", 0.094))
@@ -504,6 +552,9 @@ class ApplyExposureScalingTask(Task):
         topl   = cfg.get("exposure_scaling", {})
         vt_cfg = topl.get("vol_target")        or legacy.get("vol_target")        or {}
         dd_cfg = topl.get("drawdown_scaling")  or legacy.get("drawdown_scaling")  or {}
+        # P1 (2026-05-12): regime-conditional override per ctx.spy_regime
+        vt_cfg = _resolve_regime_override(vt_cfg, ctx)
+        dd_cfg = _resolve_regime_override(dd_cfg, ctx)
         vt_scale = _compute_vt_scale(ctx, vt_cfg) if vt_cfg.get("enabled", False) else 1.0
         dd_scale = _compute_dd_scale(ctx, dd_cfg) if dd_cfg.get("enabled", False) else 1.0
         ctx._vol_target_scale = float(vt_scale)  # noqa: SLF001
