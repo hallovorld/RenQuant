@@ -38,6 +38,29 @@ Track-record discipline: **walk-forward defensible** (no single-cut promotions p
 
 ## P0 — by ROI (Sharpe-lift / effort)
 
+### ★★ Regime-conditional path (2026-05-12 EVENING discovery)
+
+Found via `scripts/eval_regime_stratified.py`: Grinold-Kahn α→μ (commit
+`7bc9b56`) is a **regime-conditional winner** — wins +18%/yr in HIGH_CALM
+(SPY 60d Sharpe > 1.5, vol pct < 33%, n=123, t=+1.67), loses −32%/yr in
+HIGH_SPIKED (SPY 60d Sharpe > 1.5, vol pct > 66%, n=53, t=−1.95). Pooled
+verdict is NEITHER because the two regimes cancel; conditional deployment
+could extract real edge.
+
+Full findings + forward plan: [`doc/research/2026-05-12-findings-and-next.md`](research/2026-05-12-findings-and-next.md)
+
+**Blockers to acting on this (must be cleared in order):**
+
+| # | Blocker | Effort | Why |
+|---|---|---|---|
+| **P0-A** | Sticky regime detector — labels 95% BULL_CALM in our 24mo OOS, misses HIGH_SPIKED periods entirely. Fix via SPY trend/vol signals OR replace GMM | 4-6h | Conditional deployment impossible without working regime signal |
+| **P0-B** | Extend walkforward manifest 2022-01 → 2024-01, regenerate ~50 cutoffs | 4h | Each regime cell needs n≥200 for Bonferroni-corrected significance |
+| **P1** | Add `ranking.X.regime_overrides` config block + reader Task | 2-3h | Currently `regime_params` only governs risk knobs, not ranking |
+| **P2** | Re-evaluate all 3 candidates on 36-48mo OOS, regime-stratified | 1 day | Real Tier 3 verdict on conditional deployment |
+| **P3** | If GK-in-HIGH_CALM survives Tier 3, flip live config | 1-2h | First regime-conditional production feature |
+
+P0-A and P0-B must precede P1 per §5.13.10 (no dead config paths).
+
 ### ★ Methodology lock-in (2026-05-12)
 
 All future variant promotion gates on the **3-tier framework** in

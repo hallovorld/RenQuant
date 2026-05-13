@@ -4,12 +4,20 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
-## 🗂 Status (2026-05-12 07:00 PT — autonomous handoff complete; 102 sims, 0 promotions; strategy at local optimum)
+## 🗂 Status (2026-05-12 EVENING — methodology rebuild + regime-conditional finding)
 
-> **Strategic top-line (6-window walk-forward, post-Bug-C):**
-> Baseline: APY +15.2% / Sharpe 0.41 / MaxDD 8.4% mean.
-> **Strategy LOSES TO SPY by −2.3 pt mean alpha** across 6 windows. Edge is in MaxDD (8% vs SPY 12-15%), not return.
-> **7 post-Bug-C experimental phases × 102 sims** — ALL REJECT. The strategy is at its local optimum for the current feature set (alpha158+fund+PEAD+SUE = 169 features), model class (XGBoost rank:pairwise), universe (wl103), label horizon (fwd_60d walkforward).
+> **EVENING UPDATE (2026-05-12 22:30 PT) — 3 NEW LOAD-BEARING FINDINGS:**
+> 1. **Prior 6-window mean-APY method was STATISTICALLY INVALID** (mixed window lengths, heavy overlap, regime variance dominating). All 36 "TIER 1 REJECT" verdicts from the morning batch are now flagged INCONCLUSIVE.
+> 2. **Built industry-grade evaluation** — paired daily returns + Newey-West HAC + stationary block bootstrap (statsmodels + arch). 8 non-overlapping 3-month windows, 496 paired daily observations. See [`doc/research/evaluation-protocol.md`](doc/research/evaluation-protocol.md).
+> 3. **Discovered regime-conditional structure** — Grinold-Kahn α→μ transform (commit `7bc9b56`) wins +18%/yr in SPY-HIGH_CALM (n=123, t=+1.67) but loses −32%/yr in SPY-HIGH_SPIKED (n=53, t=−1.95). Pooled NEITHER hides the structure. Conditional deployment blocked on regime detector fix (currently labels 95% of days BULL_CALM) — see [`doc/research/2026-05-12-findings-and-next.md`](doc/research/2026-05-12-findings-and-next.md).
+>
+> **Strategic top-line (NEW industry-grade method, 8-window panel):**
+> Pooled paired t-stat:
+> - vt15 vs baseline:  +0.75  mean Δ +0.84%/yr  95% CI [−1.0%, +3.4%]  → NEITHER
+> - GK094 vs baseline: +0.50  mean Δ +2.66%/yr  95% CI [−7.6%, +13.0%] → NEITHER (regime-conditional!)
+> - GK15 vs baseline:  pending (running 22:30)
+>
+> **PRIOR STATUS (kept for context):** 6-window walk-forward post-Bug-C: Baseline mean APY +15.2% / Sharpe 0.41 / MaxDD 8.4%; strategy LOSES TO SPY by −2.3pt mean alpha. These numbers are from the OLD methodology and may not survive under the new 8-window paired analysis. Baseline still unchanged; no prod flips today.
 >
 > **Rejected this autonomous run (after Bug-C fix):**
 > - CVaR sweep (λ ∈ {0.15, 0.25, 0.35, 0.50}) — all within noise
