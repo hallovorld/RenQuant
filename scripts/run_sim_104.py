@@ -39,6 +39,18 @@ def main() -> None:
     p.add_argument("--compare-to", default="strategy_config.golden.json",
                    help="Golden config to compare against (default: strategy_config.golden.json)")
     p.add_argument("--initial-cash", type=float, default=100_000)
+    # 2026-05-09 audit FIX-G: per-seed isolation for parallel multi-seed runs.
+    # Without these, multiple sims clobber data/sim_runs.db (single SQLite
+    # writer) → race + TRUNCATE conflicts.
+    p.add_argument("--sim-db-path", default=None,
+                   help="Override persistence.sim_db_path so parallel "
+                        "multi-seed runs use isolated DBs.")
+    p.add_argument("--no-persist", action="store_true",
+                   help="Disable persistence entirely (fastest; no DB writes).")
+    p.add_argument("--equity-json", default=None,
+                   help="Write daily equity curve to JSON (for paired-returns analysis)")
+    p.add_argument("--no-compare", action="store_true",
+                   help="Skip the golden-config comparison run.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / STRATEGY
@@ -54,6 +66,12 @@ def main() -> None:
     config["initial_cash"]          = args.initial_cash
     config["backtest_start"]        = args.start
     config["backtest_end"]          = args.end
+
+    # Per-seed DB isolation
+    if args.no_persist:
+        config["persistence"] = {"enabled": False}
+    elif args.sim_db_path:
+        config.setdefault("persistence", {})["sim_db_path"] = args.sim_db_path
 
     from kernel.data import fetch_ohlcv  # noqa: PLC0415
     from sim.runner import run_backtest   # noqa: PLC0415
@@ -82,7 +100,34 @@ def main() -> None:
     )
     result.print_summary()
 
-    # Compare to golden if available
+    # Emit daily equity curve for paired-returns analysis (industry-standard
+    # eval per doc/research/evaluation-protocol.md). Records date + nav so
+    # downstream paired t-test + Newey-West HAC + block-bootstrap have the
+    # raw daily P&L stream rather than the noisy per-window APY estimate.
+    if args.equity_json:
+        from pathlib import Path as _P
+        eq = result.equity_df.copy()
+        eq.index = eq.index.astype(str)
+        payload = {
+            "config":        args.strategy_config_name,
+            "start":         args.start,
+            "end":           args.end,
+            "initial_cash":  args.initial_cash,
+            "final_value":   float(result.final_value),
+            "total_return":  float(result.total_return),
+            "apy":           float(result.apy),
+            "sharpe":        float(result.sharpe) if result.sharpe == result.sharpe else None,
+            "ann_vol":       float(result.ann_vol) if result.ann_vol == result.ann_vol else None,
+            "max_dd":        float(result.max_dd) if result.max_dd == result.max_dd else None,
+            "equity":        eq["portfolio"].astype(float).to_dict(),
+        }
+        _P(args.equity_json).parent.mkdir(parents=True, exist_ok=True)
+        _P(args.equity_json).write_text(json.dumps(payload, indent=2))
+        log.info("Wrote daily equity → %s (%d days)", args.equity_json, len(eq))
+
+    # Compare to golden if available (skip with --no-compare to halve runtime)
+    if args.no_compare:
+        return
     golden_path = strategy_dir / args.compare_to
     if golden_path.exists() and args.compare_to != args.strategy_config_name:
         log.info("Running golden comparison: %s", args.compare_to)
