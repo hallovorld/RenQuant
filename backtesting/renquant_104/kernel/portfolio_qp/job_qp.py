@@ -37,6 +37,7 @@ from kernel.pipeline.pipeline import Job, Task
 
 from .tasks import (
     ApplyConvictionCapTask,
+    ApplyExposureScalingTask,
     BuildADVVectorTask,
     BuildCorrelationGroupConstraintTask,
     BuildSectorConstraintMatrixTask,
@@ -143,6 +144,11 @@ class JointPortfolioQPJob(Job):
             ComputeWashSaleMaskTask(),
             BuildADVVectorTask(),                  # G3: per-asset ADV from ohlcv
             ComputeQPConstraintsTask(),            # ← per-name caps, w_upper, …
+            # 2026-05-12 dead-path fix: hoist vol-target + DD-Kelly scaling
+            # out of the dormant Kelly path into the QP bounds. Composes
+            # multiplicatively with conviction & sector caps below. See
+            # doc/AUDIT_2026-05-12_dead_paths.md.
+            ApplyExposureScalingTask(),
             # 2026-05-11 A2: per-ticker conviction shrink of w_upper.
             # OFF by default; opt-in via
             #   rotation.joint_actions.qp_conviction_cap_enabled=true

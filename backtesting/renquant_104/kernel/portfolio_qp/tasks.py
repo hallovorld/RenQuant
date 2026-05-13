@@ -349,6 +349,77 @@ class ComputeQPConstraintsTask(Task):
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
+# ── 5a. Exposure scaling (vol-target + DD-Kelly) ────────────────────────────
+
+class ApplyExposureScalingTask(Task):
+    """Scale per-asset `_qp_w_upper` by basket-level exposure modifiers.
+
+    Composes Moskowitz-Ooi-Pedersen 2012 volatility-targeting and
+    Grossman-Zhou 1993 drawdown-conditioned Kelly scaling at the QP
+    upper-bound level, INDEPENDENT of the Kelly sizing path (which is
+    dead when NGB is off — see doc/AUDIT_2026-05-12_dead_paths.md).
+
+    Invariant pinned:
+        _qp_w_upper ≡ max_pos × confidence × vol_target_scale × dd_scale
+
+    Config (read from BOTH legacy and new locations for backward compat):
+        ranking.kelly_sizing.vol_target.{enabled,target_vol,window_days,...}
+        ranking.kelly_sizing.drawdown_scaling.{enabled,dd_max,exponent}
+        exposure_scaling.vol_target.*        (new top-level path)
+        exposure_scaling.drawdown_scaling.*  (new top-level path)
+
+    Both helpers fail-open (return 1.0 on malformed input).
+    """
+    name = "ApplyExposureScalingTask"
+
+    def run(self, ctx) -> bool | None:
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        if w_upper is None or len(w_upper) == 0:
+            ctx._vol_target_scale = 1.0  # noqa: SLF001
+            ctx._dd_kelly_scale = 1.0    # noqa: SLF001
+            return None
+        cfg = ctx.config or {}
+        legacy = cfg.get("ranking", {}).get("kelly_sizing", {})
+        topl   = cfg.get("exposure_scaling", {})
+        vt_cfg = topl.get("vol_target")        or legacy.get("vol_target")        or {}
+        dd_cfg = topl.get("drawdown_scaling")  or legacy.get("drawdown_scaling")  or {}
+        vt_scale = _compute_vt_scale(ctx, vt_cfg) if vt_cfg.get("enabled", False) else 1.0
+        dd_scale = _compute_dd_scale(ctx, dd_cfg) if dd_cfg.get("enabled", False) else 1.0
+        ctx._vol_target_scale = float(vt_scale)  # noqa: SLF001
+        ctx._dd_kelly_scale   = float(dd_scale)  # noqa: SLF001
+        combined = vt_scale * dd_scale
+        if combined != 1.0:
+            ctx._qp_w_upper = np.asarray(w_upper) * float(combined)  # noqa: SLF001
+            log.info(
+                "ApplyExposureScalingTask: w_upper scaled by vt=%.3f × dd=%.3f = %.3f",
+                vt_scale, dd_scale, combined,
+            )
+
+
+def _compute_vt_scale(ctx, vt_cfg: dict) -> float:
+    from kernel.vol_target import compute_vol_target_scale  # noqa: PLC0415
+    return compute_vol_target_scale(
+        getattr(ctx, "spy_returns", None) or [],
+        target_vol  = float(vt_cfg.get("target_vol",  0.15)),
+        window_days = int  (vt_cfg.get("window_days", 60)),
+        floor       = float(vt_cfg.get("floor",       0.30)),
+        ceiling     = float(vt_cfg.get("ceiling",     1.50)),
+    )
+
+
+def _compute_dd_scale(ctx, dd_cfg: dict) -> float:
+    from kernel.kelly import compute_kelly_dd_scale  # noqa: PLC0415
+    from kernel.pipeline.task_drawdown_rebalance import compute_portfolio_drawdown  # noqa: PLC0415
+    hwm = float(getattr(ctx, "hwm", 0.0) or 0.0)
+    pv  = float(getattr(ctx, "portfolio_value", 0.0) or 0.0)
+    dd  = compute_portfolio_drawdown(hwm, pv)
+    return compute_kelly_dd_scale(
+        dd,
+        dd_max   = float(dd_cfg.get("dd_max",   0.30)),
+        exponent = float(dd_cfg.get("exponent", 1.0)),
+    )
+
+
 # ── 5b. Conviction-scaled per-name cap ──────────────────────────────────────
 
 class ApplyConvictionCapTask(Task):
