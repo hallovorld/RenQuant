@@ -138,21 +138,40 @@ def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
 
 # ── Per-cutoff training (subprocesses train_production_model.py) ────────
 
-def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path) -> tuple[bool, Path, str]:
+def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
+                     label: str | None = None,
+                     watchlist_file: str | None = None,
+                     artifact_root: str | None = None) -> tuple[bool, Path, str]:
     """Subprocess train_production_model.py for one cutoff.
+
+    Optional args (2026-05-13 Track 6 / Track 1):
+        label: --label passthrough (e.g. fwd_5d_excess for horizon retest)
+        watchlist_file: --watchlist-file passthrough (wl174 retrained variant)
+        artifact_root: override WF_V2_SUBDIR (e.g. 'walkforward_horizon_5d')
 
     Returns (success, artifact_path, error_msg). On non-zero exit, success=False
     and the caller logs + continues (does not abort the whole batch).
     """
-    artifact_path = make_artifact_path(strategy_dir, cutoff)
     cutoff_iso = cutoff.date().isoformat()
+    if artifact_root:
+        artifact_path = strategy_dir / "artifacts" / artifact_root / cutoff_iso / "panel-ltr.json"
+    else:
+        artifact_path = make_artifact_path(strategy_dir, cutoff)
     side_label = f"walkforward_v2_{cutoff_iso}"
+    if label:
+        side_label = f"walkforward_{label.replace('_excess','')}_{cutoff_iso}"
+    if watchlist_file:
+        side_label = f"walkforward_wl_{cutoff_iso}"
     cmd = [
         sys.executable, str(TRAIN_PROD_SCRIPT),
         "--train-cutoff", cutoff_iso,
         "--output-path", str(artifact_path),
         "--side-label", side_label,
     ]
+    if label:
+        cmd.extend(["--label", label])
+    if watchlist_file:
+        cmd.extend(["--watchlist-file", watchlist_file])
     log.info("train_one_cutoff: cutoff=%s start  cmd=%s",
              cutoff_iso, " ".join(cmd))
     t0 = time.monotonic()
@@ -193,6 +212,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--manifest-output",
                    default=str(STRATEGY_DIR / "artifacts" / "walkforward_manifest_v2.json"),
                    help="Where to write the merged manifest JSON (v2 default).")
+    p.add_argument("--label", default=None,
+                   help="Forward label column to use (default: panel default fwd_60d_excess)")
+    p.add_argument("--watchlist-file", default=None,
+                   help="JSON config file to filter panel to a custom watchlist")
+    p.add_argument("--artifact-root", default=None,
+                   help="Override artifacts/<root>/ subdirectory (default: walkforward_v2)")
     p.add_argument("--dry-run", action="store_true",
                    help="Print retrain dates and exit (no training).")
     return p.parse_args()
@@ -222,7 +247,12 @@ def main() -> None:
     for i, cutoff in enumerate(retrain_dates):
         log.info("── retrain %d/%d  cutoff=%s ──",
                  i + 1, len(retrain_dates), cutoff.date().isoformat())
-        ok, artifact_path, err = train_one_cutoff(cutoff, STRATEGY_DIR)
+        ok, artifact_path, err = train_one_cutoff(
+            cutoff, STRATEGY_DIR,
+            label=args.label,
+            watchlist_file=args.watchlist_file,
+            artifact_root=args.artifact_root,
+        )
         if not ok:
             failed.append((cutoff.date().isoformat(), err))
             continue
