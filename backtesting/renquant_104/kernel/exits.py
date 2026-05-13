@@ -552,11 +552,16 @@ def check_single_day_loss(
     if threshold <= 0:
         return _NO_EXIT
 
-    daily_drop = (state.prev_close - current_price) / state.prev_close
+    # 2026-05-13 Long-Short Phase 2A: short positions take losses on UP moves.
+    is_short = float(getattr(state, "shares", 0.0) or 0.0) < 0
+    if is_short:
+        daily_drop = (current_price - state.prev_close) / state.prev_close
+    else:
+        daily_drop = (state.prev_close - current_price) / state.prev_close
     if daily_drop >= threshold:
         return ExitSignal(
             should_exit=True,
-            reason=f"single_day_loss drop={daily_drop:.1%} ≥ "
+            reason=f"single_day_loss{' [SHORT]' if is_short else ''} drop={daily_drop:.1%} ≥ "
                     f"{threshold:.1%} (abs={abs_thresh:.1%} / "
                     f"σN={sigma_thresh:.1%})",
             exit_type="single_day_loss",

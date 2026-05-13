@@ -78,3 +78,36 @@ class TestShortAwareStopLoss:
         short_no = check_stop_loss(108.5, short_state, stop_pct=0.10).should_exit
         assert not long_no
         assert not short_no
+
+
+class TestShortAwareSingleDayLoss:
+
+    def _state(self, shares, entry, prev_close):
+        from kernel.exits import HoldingState
+        return HoldingState(
+            shares=shares, entry_price=entry, entry_date=datetime.date(2025, 1, 1),
+            high_watermark=entry, prev_close=prev_close,
+        )
+
+    def test_long_sdl_fires_on_gap_down(self):
+        """Long: SDL fires on gap-DOWN ≥ 6%."""
+        from kernel.exits import check_single_day_loss
+        state = self._state(shares=+100, entry=100.0, prev_close=100.0)
+        sig = check_single_day_loss(current_price=93.0, state=state, sdl_pct=0.06)
+        assert sig.should_exit
+        assert "[SHORT]" not in sig.reason
+
+    def test_short_sdl_fires_on_gap_up(self):
+        """Short: SDL fires on gap-UP ≥ 6% (opposite of long)."""
+        from kernel.exits import check_single_day_loss
+        state = self._state(shares=-100, entry=100.0, prev_close=100.0)
+        sig = check_single_day_loss(current_price=107.0, state=state, sdl_pct=0.06)
+        assert sig.should_exit
+        assert "[SHORT]" in sig.reason
+
+    def test_short_sdl_no_fire_on_gap_down(self):
+        """Short: gap-DOWN is PROFIT, no SDL."""
+        from kernel.exits import check_single_day_loss
+        state = self._state(shares=-100, entry=100.0, prev_close=100.0)
+        sig = check_single_day_loss(current_price=93.0, state=state, sdl_pct=0.06)
+        assert not sig.should_exit
