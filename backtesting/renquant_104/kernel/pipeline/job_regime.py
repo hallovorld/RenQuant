@@ -4,6 +4,7 @@ from __future__ import annotations
 from .pipeline import Job, Task
 from .task_regime import HurstTask, CUSUMTask, GMMTask, BEAROverrideTask, RegimeFinalizeTask
 from .task_trend_overlay import TrendOverlayTask
+from .task_spy_regime import SpyRegimeLabelTask
 
 
 class RegimeJob(Job):
@@ -26,4 +27,11 @@ class RegimeJob(Job):
             BEAROverrideTask(),
             TrendOverlayTask(),
             RegimeFinalizeTask(),
+            # 2026-05-12: parallel SPY-derived regime label written to
+            # ctx.spy_regime. OFF by default (regime.spy_regime.enabled);
+            # used downstream for regime-conditional ranking feature
+            # deployment. Runs AFTER RegimeFinalizeTask so the GMM-based
+            # ctx.regime is already committed — SPY regime is purely
+            # additive, never overrides existing risk/sizing logic.
+            SpyRegimeLabelTask(),
         ]
