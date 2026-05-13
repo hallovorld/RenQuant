@@ -8,6 +8,54 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## 24-mo continuous OOS confirmation — REJECT [2026-05-12]
+
+**Hypothesis.** 6-window walk-forward post-Bug-C showed mean APY +15.2% / Sharpe 0.41 / α-SPY −2.3 pt. A single 24-mo continuous OOS run (2024-04-01 → 2026-03-26, 499 trading days, walk-forward retrain every fold) should corroborate the multi-window picture: marginally profitable absolute but losing to SPY.
+
+**Implementation.** `python scripts/run_sim_104.py --start 2024-04-01 --end 2026-03-26 --strategy-config-name strategy_config.sim_baseline.json --no-persist --no-compare` → `data/logs/sim_2026-05-12_27mo_OOS/baseline_24mo_2024-04_to_2026-03.log`.
+
+**Numbers (single seed, walkforward retrains).**
+
+  Return  -4.4% / APY -2.2% / Sharpe -0.36 / Sortino -0.07
+  Calmar  -0.14 / MaxDD 16.0% / Vol 16.2%
+  vs SPY: Beta +0.55 / Alpha -7.62%/yr / InfoRatio -0.85
+  223 buys / 292 sells / 58% win rate / 52d avg hold
+  DSR +0.012 (n_trials=39)  PBO=—  (single-seed)
+
+Exit reasons: model_sell 87, qp_sell 69, qp_close 49, stop_loss 41,
+single_day_loss 38, trailing_stop 8.
+
+**Sanity.** N=1 (single seed). DSR is computed over the 39 manifest
+folds and lands essentially at zero (+0.012, far below the 0.5 Tier-3
+gate). No A/A or shuffled-label triad on this run; the continuous-OOS
+verdict is corroborative, not a primary discovery.
+
+**Conclusion.** REJECT continuous-window over-baseline claim. The
+6-window mean-of-means hides the within-window negative drawdowns that
+compound in a 24-mo continuous test: same strategy that mean +15% across
+non-overlapping 4-mo cuts gives **−2.2% APY** when run end-to-end. SPY
+delivered ~+10-12% over the same window → α-SPY −7.6 pt is **3× the
+6-window mean α** and a stronger reject against running this strategy
+in preference to passive SPY.
+
+The 6-window mean is mathematically valid (mean of returns ≠ compound
+return on a single equity curve) — but for practical comparison vs
+SPY-buy-and-hold the continuous-OOS curve is the apples-to-apples
+metric and it loses decisively.
+
+**Recipe to reproduce.**
+
+  source .venv/bin/activate
+  python scripts/run_sim_104.py \
+      --start 2024-04-01 --end 2026-03-26 \
+      --strategy-config-name strategy_config.sim_baseline.json \
+      --no-persist --no-compare
+
+Expected runtime ≈ 75 min; output written to
+`data/logs/sim_2026-05-12_27mo_OOS/baseline_24mo_2024-04_to_2026-03.log`.
+
+---
+
 ## E55 — 27-month NGB-on vs NGB-off A/B; NGBoost-proper retrain — both REJECT NGB [2026-05-09]
 
 After Phase D2 NGBoost-proper showed +60bp single-seed improvement over

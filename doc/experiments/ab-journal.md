@@ -26,6 +26,14 @@ Best candidate `E42_fwd60d` (60-day label window): mean ΔAPY +3.3 / ΔSharpe +0
 Δα-SPY +0.4, consistency 3/6 (Tier 2 requires ≥ 4/6). **KEEP PROD BASELINE.**
 Candidate forwarded for extended walk-forward retest.
 
+### 24-mo continuous OOS confirmation (2026-05-12)
+
+Single continuous backtest 2024-04-01 → 2026-03-26 with walkforward retrains
+every fold corroborates the 6-window verdict. Return −4.4% / APY −2.2% /
+Sharpe −0.36 / α-SPY −7.62%/yr / DSR +0.012. **Tier 1 REJECT** against running
+the strategy in preference to passive SPY. Documented in failed-experiments-log.md
+as "24-mo continuous OOS confirmation".
+
 ---
 
 ## 2026-04-24 PT — 6 experiments
