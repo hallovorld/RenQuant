@@ -93,6 +93,47 @@ Trade-level audit on Cut 3 (159 closed trades) revealed 3× systematic leakage i
 3. WF 3-cut on winners (~75min × winners)
 4. Combine wins, retest combo
 
+### 0. 🆕 Long-short extension (added 2026-05-13 — STRUCTURAL, highest expected ROI)
+
+**Theoretical basis**: Grinold-Kahn 1999 *Active Portfolio Management* §5 extended:
+long-short doubles breadth utilization → IR_LS ≈ IR_long × √2 (~+40%).
+Empirically (Kelly-Gu-Xiu 2020 RFS §3.4): long-short ML strategies show
+~2× Sharpe of long-only counterparts. AQR / Fama-French market-neutral
+factors: 30-60% Sharpe boost.
+
+**Pre-req empirical gate (CHEAP, 30 min)**:
+1. Take existing 16-window predictions
+2. Compute bottom-decile forward 60-day return vs top-decile
+3. If |bottom_return_ann| ≥ 5% → real short alpha → invest engineering
+4. If bottom ≈ 0 → no short signal → skip
+
+**Engineering (3-4 weeks, conditional on empirical gate pass)**:
+- QP `_qp_w_lower < 0` + sector-neutral constraint (4-6h)
+- Stop-loss / exit logic for shorts (4-6h)
+- Wash-sale rules per IRC §1233 (8h)
+- Tax accounting (short = always short-term, can defer) (4-6h)
+- Alpaca broker locate + borrow fee integration (1-2 weeks)
+- Reg-T 150% margin guard + position limits (1 week)
+
+**Risk-mitigated path (recommended)**:
+- Start: gross long = 100% + gross short = 30%, NOT full market-neutral
+- Sector-neutral hard constraint (no net sector tilt)
+- Position cap: max 5% short per name
+- Borrow fee guard: skip names with borrow > 200bps/yr
+
+**Expected impact (if pre-req gate passes)**:
+- APY: +3-7%/yr alpha-SPY (over long-only baseline)
+- Sharpe: 0.4 → 0.6-0.8
+- MaxDD: 8% → 5-6% (market-neutral component dampens drawdowns)
+
+**Risk if gate fails**: 0 (we don't ship)
+**Risk if shipped**: borrow fees, short squeeze, regulatory complexity,
+margin calls during DD. Requires explicit user OK before flipping live
+config from long-only to long-short (per auto-promote exclusion list).
+
+**Status (2026-05-13)**: Phase 1 empirical gate test launching now,
+in parallel with wl174 sim batch. No prod changes.
+
 ### 1. ⭐ Walk-forward gate enforcement (free; prevents fictional regressions)
 
 **Cost:** 0.5 day. **Expected lift:** 0 direct; prevents future cherry-picked promotes.
