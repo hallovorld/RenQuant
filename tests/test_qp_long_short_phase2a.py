@@ -89,3 +89,80 @@ class TestLongShortPhase2A:
         # Output should match pre-Phase-2A behavior
         assert ctx._qp_w_lower == 0.0
         assert ctx._qp_w_upper.shape == (3,)
+        # gross_max=None when long-only (no constraint imposed)
+        assert ctx._qp_gross_max is None
+
+    def test_gross_max_set_when_shorts_enabled(self):
+        """long_short.enabled=true → gross_max read from config (default 1.30)."""
+        from kernel.portfolio_qp.tasks import ComputeQPConstraintsTask
+        ctx = _make_ctx(
+            regime_params={"BULL_CALM": {"max_position_pct": 0.20}},
+            long_short={"enabled": True, "max_short_pct": 0.05,
+                        "max_gross_exposure": 1.40},
+        )
+        ComputeQPConstraintsTask().run(ctx)
+        assert ctx._qp_gross_max == 1.40
+
+    def test_gross_max_default_1_30(self):
+        """When max_gross_exposure not set, defaults to 1.30 (Reg-T conservative)."""
+        from kernel.portfolio_qp.tasks import ComputeQPConstraintsTask
+        ctx = _make_ctx(
+            regime_params={"BULL_CALM": {"max_position_pct": 0.20}},
+            long_short={"enabled": True, "max_short_pct": 0.05},
+        )
+        ComputeQPConstraintsTask().run(ctx)
+        assert ctx._qp_gross_max == 1.30
+
+    def test_gross_max_bear_overrides_to_none(self):
+        """BEAR regime: w_lower=0 AND gross_max=None (no gross constraint needed)."""
+        from kernel.portfolio_qp.tasks import ComputeQPConstraintsTask
+        ctx = _make_ctx(
+            regime="BEAR",
+            regime_params={"BEAR": {"max_position_pct": 0.0}},
+            long_short={"enabled": True, "max_short_pct": 0.05,
+                        "max_gross_exposure": 1.40},
+        )
+        ComputeQPConstraintsTask().run(ctx)
+        assert ctx._qp_w_lower == 0.0
+        assert ctx._qp_gross_max is None
+
+
+class TestSolverGrossMaxConstraint:
+    """Solver-level test: gross_max constraint forces Σ|w| ≤ gross_max."""
+
+    def test_solver_rejects_above_gross(self):
+        """When gross_max=1.0 + w_lower<0, solver returns Σ|w| ≤ 1.0."""
+        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
+        import numpy as _np
+        n = 5
+        w_curr = _np.zeros(n)
+        mu = _np.array([+1.0, +0.5, 0.0, -0.5, -1.0])
+        sigma = _np.full(n, 0.05)
+        sol = solve_portfolio_qp(
+            w_current=w_curr, mu=mu, sigma=sigma,
+            risk_aversion=1.0, cost_kappa=0.0001,
+            w_upper=_np.full(n, 0.30), w_lower=_np.full(n, -0.30),
+            dw_max=_np.full(n, 1.0), cash_reserve=0.0,
+            gross_max=1.0,
+        )
+        wp = sol.target_w
+        gross = float(_np.sum(_np.abs(wp)))
+        assert gross <= 1.0 + 1e-4, f"Σ|w|={gross} > gross_max=1.0"
+
+    def test_solver_long_only_no_gross_constraint(self):
+        """Default (gross_max=None) → no constraint added; same as pre-Phase-2A."""
+        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
+        import numpy as _np
+        n = 5
+        sol = solve_portfolio_qp(
+            w_current=_np.zeros(n),
+            mu=_np.array([+1.0, +0.5, 0.0, -0.5, -1.0]),
+            sigma=_np.full(n, 0.05),
+            risk_aversion=1.0,
+            w_upper=_np.full(n, 0.30), w_lower=0.0,  # long-only
+            dw_max=_np.full(n, 1.0),
+            # gross_max=None (default)
+        )
+        # Should solve normally
+        assert sol.status in ("optimal", "optimal_inaccurate")
+        assert _np.all(sol.target_w >= -1e-9)  # no shorts

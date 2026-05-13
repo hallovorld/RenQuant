@@ -324,7 +324,8 @@ class ComputeQPConstraintsTask(Task):
         scale = confidence_to_size_multiplier(getattr(ctx, "confidence", None))
         ctx._qp_w_upper = np.full(n, max_pct * scale)  # noqa: SLF001
         # 2026-05-13 Long-Short Phase 2A: allow w_lower < 0 when enabled.
-        # Config: long_short.enabled (bool), max_short_pct (per-name short cap).
+        # Config: long_short.enabled (bool), max_short_pct (per-name short cap),
+        #         max_gross_exposure (Σ|w| cap, ≤ Reg-T 150%).
         # Default 0 → long-only (current behavior preserved).
         ls_cfg = ctx.config.get("long_short", {}) or {}
         if ls_cfg.get("enabled", False):
@@ -332,10 +333,14 @@ class ComputeQPConstraintsTask(Task):
             # Bear regime: also block shorts to keep risk symmetric
             if getattr(ctx, "regime", None) == "BEAR":
                 ctx._qp_w_lower = 0.0  # noqa: SLF001
+                ctx._qp_gross_max = None  # noqa: SLF001 — no shorts, no gross cap
             else:
                 ctx._qp_w_lower = -float(max_short_pct) * scale  # noqa: SLF001
+                # Reg-T spirit: cap gross at 1.5 max (default 1.3 = 100% long + 30% short)
+                ctx._qp_gross_max = float(ls_cfg.get("max_gross_exposure", 1.30))  # noqa: SLF001
         else:
             ctx._qp_w_lower = 0.0  # noqa: SLF001
+            ctx._qp_gross_max = None  # noqa: SLF001 — long-only path; cp.sum(wp)≤1 binds
         ctx._qp_dw_max = np.full(n, float(cfg.get("qp_dw_max", 0.50)))  # noqa: SLF001
         ctx._qp_cash_reserve = float(rp.get(  # noqa: SLF001
             "cash_reserve_pct",
@@ -944,6 +949,12 @@ class SolveMarkowitzQPTask(Task):
             sector_indicator=_get_path(ctx, "_qp_sector_indicator"),
             sector_cap_vec=_get_path(ctx, "_qp_sector_cap_vec"),
             corr_group_pairs=_get_path(ctx, "_qp_corr_group_pairs"),
+            # 2026-05-13 Long-Short Phase 2A: gross-exposure cap (Σ|wp|).
+            # Default None → no constraint (long-only path; sum(wp) ≤ 1 binds).
+            # When long_short.enabled, set to max_gross_exposure (≤ 1.5 by
+            # Reg-T spirit). Read from ctx so ComputeQPConstraintsTask can
+            # override.
+            gross_max=_get_path(ctx, "_qp_gross_max"),
         )
         # cvxportfolio backend additionally takes a `tickers` kwarg for
         # pandas-Series labelling; cvxpy backend ignores it.
@@ -955,6 +966,7 @@ class SolveMarkowitzQPTask(Task):
             kwargs.pop("sector_indicator", None)
             kwargs.pop("sector_cap_vec", None)
             kwargs.pop("corr_group_pairs", None)
+            kwargs.pop("gross_max", None)  # Phase 2A: long-short not supported in cvxportfolio backend
         sol = _solve(**kwargs)
         sol = _retry_with_relaxed_c2_caps(sol, kwargs, _solve)
         ctx._qp_solution = sol  # noqa: SLF001

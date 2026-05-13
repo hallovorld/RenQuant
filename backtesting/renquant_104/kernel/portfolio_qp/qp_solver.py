@@ -116,6 +116,7 @@ def solve_portfolio_qp(
     budget_mode: str = "inequality",      # legacy kwarg, treated as "≤" always
     min_invested_pct:     float = 0.0,    # SOFT target now; was hard floor pre-2026-05-06
     cash_drag_lambda:     float = 0.05,   # NEW: penalty coefficient on cash-drag
+    gross_max:            float | None = None,  # Long-Short Phase 2A: cap Σ|wp| (set when shorts enabled)
     # ── 2026-05-10 industrial-grade constraints (Track C2) ───────────────
     # Sector cap as hard linear constraint: S @ wp ≤ sector_cap_vec.
     # `sector_indicator` is an m × n indicator matrix (m sectors), `sector_cap_vec`
@@ -250,6 +251,14 @@ def solve_portfolio_qp(
             constraints.append(dw[wsm] <= 0.0)
     if turnover_max is not None and float(turnover_max) > 0.0:
         constraints.append(cp.norm(dw, 1) <= float(turnover_max))
+    # ── Long-Short Phase 2A: gross-exposure cap (Σ|wp| ≤ gross_max) ──────
+    # When shorts are enabled (w_lower < 0), without this constraint the
+    # optimizer can naively select max long AND max short on every name,
+    # blowing gross beyond Reg-T 150% limit. cvxpy norm(wp, 1) is convex
+    # so feasible under CLARABEL. Skip when gross_max is None (long-only
+    # path; sum(wp) <= 1 bound is sufficient).
+    if gross_max is not None and float(gross_max) > 0.0:
+        constraints.append(cp.norm(wp, 1) <= float(gross_max))
 
     # ── Sector cap (hard linear): S @ wp ≤ sector_cap_vec ────────────────
     # Reference: Garleanu-Pedersen 2013 §3.2 budget-with-group-bounds; same
