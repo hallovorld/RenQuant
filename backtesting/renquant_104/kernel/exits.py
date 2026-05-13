@@ -476,11 +476,19 @@ def check_stop_loss(
     if threshold <= 0:
         return _NO_EXIT
 
-    loss_pct = (state.entry_price - current_price) / state.entry_price
+    # 2026-05-13 Long-Short Phase 2A: detect short position via state.shares<0.
+    # For longs: loss when price < entry. For shorts: loss when price > entry.
+    # Flipping the sign in loss_pct gives the same |loss| metric for either side.
+    is_short = float(getattr(state, "total_shares", lambda: state.shares)() if callable(getattr(state, "total_shares", None)) else state.shares) < 0
+    if is_short:
+        loss_pct = (current_price - state.entry_price) / state.entry_price
+    else:
+        loss_pct = (state.entry_price - current_price) / state.entry_price
     if loss_pct >= threshold:
         return ExitSignal(
             should_exit=True,
-            reason=(f"stop_loss loss={loss_pct:.1%} ≥ {threshold:.1%} "
+            reason=(f"stop_loss{' [SHORT]' if is_short else ''} "
+                    f"loss={loss_pct:.1%} ≥ {threshold:.1%} "
                     f"(abs={abs_thresh:.1%} / σN={sigma_thresh:.1%})"),
             exit_type="stop_loss",
         )
