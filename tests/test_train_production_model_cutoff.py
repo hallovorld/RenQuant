@@ -151,7 +151,7 @@ class TestCutoffSlicing:
         panel.to_parquet(tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet")
 
         cutoff = pd.Timestamp("2024-01-01")
-        train, feat_cols = TPM.load_and_slice_panel(cutoff)
+        train, feat_cols, _label = TPM.load_and_slice_panel(cutoff)
         assert train["date"].max() < cutoff
         assert len(train) > 0
         # Feature cols exclude the meta + label columns
@@ -164,7 +164,7 @@ class TestCutoffSlicing:
         (tmp_path / "data").mkdir(exist_ok=True)
         panel.to_parquet(tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet")
         monkeypatch.chdir(tmp_path)
-        train, _ = TPM.load_and_slice_panel(None)
+        train, _, _ = TPM.load_and_slice_panel(None)
         # All synthetic rows have labels → train == panel (size-wise)
         assert len(train) == len(panel)
 
@@ -255,8 +255,8 @@ class TestAuditP3v2Regression:
         (tmp_path / "data").mkdir(exist_ok=True)
         panel.to_parquet(tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet")
         monkeypatch.chdir(tmp_path)
-        train_full, _ = TPM.load_and_slice_panel(None)
-        train_cut, _ = TPM.load_and_slice_panel(pd.Timestamp("2024-01-01"))
+        train_full, _, _ = TPM.load_and_slice_panel(None)
+        train_cut, _, _ = TPM.load_and_slice_panel(pd.Timestamp("2024-01-01"))
         assert train_cut["date"].nunique() < train_full["date"].nunique()
         assert len(train_cut) < len(train_full)
         # The bug class this prevents: walkforward training using the

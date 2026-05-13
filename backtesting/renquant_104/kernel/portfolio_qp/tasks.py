@@ -323,7 +323,19 @@ class ComputeQPConstraintsTask(Task):
                                 ctx.config.get("max_position_pct", 0.20)))
         scale = confidence_to_size_multiplier(getattr(ctx, "confidence", None))
         ctx._qp_w_upper = np.full(n, max_pct * scale)  # noqa: SLF001
-        ctx._qp_w_lower = 0.0  # noqa: SLF001
+        # 2026-05-13 Long-Short Phase 2A: allow w_lower < 0 when enabled.
+        # Config: long_short.enabled (bool), max_short_pct (per-name short cap).
+        # Default 0 → long-only (current behavior preserved).
+        ls_cfg = ctx.config.get("long_short", {}) or {}
+        if ls_cfg.get("enabled", False):
+            max_short_pct = float(ls_cfg.get("max_short_pct", 0.05))
+            # Bear regime: also block shorts to keep risk symmetric
+            if getattr(ctx, "regime", None) == "BEAR":
+                ctx._qp_w_lower = 0.0  # noqa: SLF001
+            else:
+                ctx._qp_w_lower = -float(max_short_pct) * scale  # noqa: SLF001
+        else:
+            ctx._qp_w_lower = 0.0  # noqa: SLF001
         ctx._qp_dw_max = np.full(n, float(cfg.get("qp_dw_max", 0.50)))  # noqa: SLF001
         ctx._qp_cash_reserve = float(rp.get(  # noqa: SLF001
             "cash_reserve_pct",

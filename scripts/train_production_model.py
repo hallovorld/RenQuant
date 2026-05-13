@@ -54,6 +54,14 @@ def parse_args() -> argparse.Namespace:
         "--side-label", type=str, default=None,
         help="Extra training_notes tag; required when --train-cutoff is set.",
     )
+    p.add_argument(
+        "--label", type=str, default=None,
+        help="Override LABEL column (default fwd_60d_excess). Track 6 horizon swap.",
+    )
+    p.add_argument(
+        "--watchlist-file", type=str, default=None,
+        help="JSON config or list file; filter panel rows to tickers in this watchlist. Track 1 wl retrain.",
+    )
     return p.parse_args()
 
 
@@ -90,15 +98,29 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Optional[pd.Timestamp], Pat
     return cutoff_date, out_path, is_walkforward
 
 
-def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp]) -> tuple[pd.DataFrame, list[str]]:
-    """Load alpha158 panel, optionally filter by cutoff, return (train_df, feat_cols)."""
+def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
+                         watchlist_file: Optional[str] = None,
+                         label_override: Optional[str] = None) -> tuple[pd.DataFrame, list[str], str]:
+    """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used)."""
+    label_used = label_override or LABEL
     log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
     panel = pd.read_parquet("data/alpha158_291_fundamental_dataset.parquet")
     panel["date"] = pd.to_datetime(panel["date"])
     excl = {"ticker","date","split_label","fwd_5d_excess","fwd_20d_excess","fwd_60d_excess"}
     feat_cols = [c for c in panel.columns if c not in excl]
 
-    train = panel.dropna(subset=[LABEL])
+    # Watchlist filter (Track 1 wl retrain)
+    if watchlist_file:
+        wl_data = json.loads(Path(watchlist_file).read_text())
+        wl = wl_data.get("watchlist") or wl_data.get("proposed_watchlist") or wl_data
+        if isinstance(wl, list):
+            n_before = panel["ticker"].nunique()
+            panel = panel[panel["ticker"].isin(wl)].copy()
+            log.info("Watchlist filter (%s): tickers %d → %d (matched %d)",
+                     watchlist_file, n_before, panel["ticker"].nunique(),
+                     len(set(wl) & set(panel["ticker"].unique())))
+
+    train = panel.dropna(subset=[label_used])
     if cutoff_date is not None:
         before = len(train)
         train = train[train["date"] < cutoff_date]
@@ -108,10 +130,10 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp]) -> tuple[pd.DataFr
         if len(train) == 0:
             raise SystemExit(f"No training rows with date < {cutoff_date.date()}")
 
-    log.info("Train rows: %d (panel total: %d), tickers: %d, dates: %s → %s",
+    log.info("Train rows: %d (panel total: %d), tickers: %d, dates: %s → %s, label: %s",
              len(train), len(panel), train["ticker"].nunique(),
-             train["date"].min().date(), train["date"].max().date())
-    return train, feat_cols
+             train["date"].min().date(), train["date"].max().date(), label_used)
+    return train, feat_cols, label_used
 
 
 def build_normalization(train: pd.DataFrame, feat_cols: list[str]) -> tuple[np.ndarray, np.ndarray, list[str]]:
@@ -154,10 +176,10 @@ def build_normalization(train: pd.DataFrame, feat_cols: list[str]) -> tuple[np.n
     return np.array(feat_means), np.array(feat_stds), feat_norm_kind
 
 
-def train_xgb(train: pd.DataFrame, feat_cols: list[str]) -> tuple[xgb.Booster, float]:
-    """Train rank:pairwise XGB and return (booster, in-sample IC)."""
+def train_xgb(train: pd.DataFrame, feat_cols: list[str], label: str = LABEL) -> tuple[xgb.Booster, float]:
+    """Train rank:pairwise XGB and return (booster, in-sample IC). Label param added 2026-05-13."""
     Xtr = train[feat_cols].fillna(0).values.astype(np.float64)
-    ytr = train[LABEL].clip(-5,5).values.astype(np.float64)
+    ytr = train[label].clip(-5,5).values.astype(np.float64)
 
     sort_idx = np.argsort(train["date"].values)
     Xs, ys, ds = Xtr[sort_idx], ytr[sort_idx], train["date"].values[sort_idx]
@@ -175,7 +197,7 @@ def train_xgb(train: pd.DataFrame, feat_cols: list[str]) -> tuple[xgb.Booster, f
     train_ics = []
     for _, g in train_check.groupby("date"):
         if len(g) < 5: continue
-        ic, _ = spearmanr(g["pred"], g[LABEL])
+        ic, _ = spearmanr(g["pred"], g[label])
         if not np.isnan(ic): train_ics.append(ic)
     train_ic_mean = float(np.mean(train_ics)) if train_ics else float("nan")
     log.info("In-sample train IC: %+.4f (sanity check, not OOS)", train_ic_mean)
@@ -241,9 +263,11 @@ def main():
     args = parse_args()
     cutoff_date, out_path, is_walkforward = resolve_paths(args)
 
-    train, feat_cols = load_and_slice_panel(cutoff_date)
+    train, feat_cols, label_used = load_and_slice_panel(
+        cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
+    )
     mu, sd, _ = build_normalization(train, feat_cols)
-    booster, _ic = train_xgb(train, feat_cols)
+    booster, _ic = train_xgb(train, feat_cols, label=label_used)
     artifact = build_artifact(booster, feat_cols, mu, sd, train,
                               cutoff_date, args.side_label)
 
