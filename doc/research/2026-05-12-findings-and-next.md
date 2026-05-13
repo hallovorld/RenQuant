@@ -36,7 +36,45 @@ discoveries and the prerequisites to act on them are not lost.
 | baseline ≡ baseline (sanity) | +0.00 | +0.00% | [0,0] | 0.00 | 0/8 | NEITHER ✓ |
 | vt15 vs baseline | +0.75 | +0.84% | [−1.0, +3.4] | +0.03 | 2/8 | NEITHER |
 | GK094 vs baseline | +0.50 | +2.66% | [−7.6, +13.0] | +0.02 | 6/8 | NEITHER |
-| GK15 vs baseline | (pending) | | | | | |
+| **GK15** vs baseline | **+0.80** | **+3.81%** | **[−5.7, +12.9]** | +0.03 | 6/8 | NEITHER |
+
+## Regime-stratified comparison (all 3 candidates)
+
+GK15 (IC=0.15, less smoothing than GK094) regime breakdown:
+
+| Regime | n | GK094 t / Δ% | GK15 t / Δ% | vt15 t / Δ% |
+|---|---:|---:|---:|---:|
+| HIGH_CALM | 123 | +1.67 / +17.9% | +0.66 / +6.9% | **+1.51 / +5.8% (CI lo > 0)** |
+| LOW_SPIKED | 79 | +0.04 / +0.3% | **+1.84 / +7.7%** | +nan / 0.0% (identity) |
+| MED_SPIKED | 60 | +0.32 / +6.5% | +0.58 / +9.5% | +0.56 / +0.5% |
+| HIGH_SPIKED | 53 | **−1.95 / −31.8%** | −1.49 / −19.8% | −1.11 / −0.8% |
+| HIGH_NORMAL | 52 | −0.08 / −1.3% | −0.02 / −0.4% | +nan / 0.0% |
+| MED_NORMAL | 46 | +0.10 / +1.2% | **+1.46 / +16.5% (d=0.20)** | −1.05 / −0.3% |
+| MED_CALM | 41 | −0.83 / −13.4% | +0.09 / +1.7% | −1.07 / −6.5% |
+| LOW_NORMAL | 37 | +1.31 / +29.7% | +0.19 / +4.5% | +nan / 0.0% |
+
+**Key structural findings:**
+
+1. **HIGH_SPIKED is the toxic regime for ALL Grinold-Kahn variants.** GK094 −32%, GK15 −20%. Less smoothing reduces but doesn't eliminate the damage. The risk-controlled bet-shape is structurally suboptimal when trend is strong AND vol spikes.
+
+2. **HIGH_CALM is the favorable regime for ALL candidates.** GK094 +18%, GK15 +7%, vt15 +6%. The "risk-controlled" smoothing pays off when trend is smooth.
+
+3. **IC choice interacts with regime:**
+   - GK094 (heavy smoothing) wins big in HIGH_CALM, loses big in HIGH_SPIKED
+   - GK15 (light smoothing) wins moderately in HIGH_CALM, loses moderately in HIGH_SPIKED
+   - GK15 ALSO wins +7.7%/yr in LOW_SPIKED (t=+1.84) — a regime where GK094 was flat
+   - There's no single IC that's optimal across regimes — supports regime-conditional IC.
+
+4. **vt15 has DEGENERATE regimes (mean Δ = exactly 0)** in LOW_SPIKED, HIGH_NORMAL, LOW_NORMAL.
+   This is mechanically explained: when SPY realized vol matches target_vol=15%, the scale = 1.0
+   and vt15 is bit-identical to baseline. So vt15 only differs in regimes where vol is markedly
+   higher or lower than 15%. In our 8-window panel that's a minority of days.
+
+5. **Closest-to-Tier-2 individual cells:**
+   - GK15 / LOW_SPIKED: t=+1.84, Δ=+7.7%, CI [−0.5%, +17.0%], d=0.15 — closest but CI lower crosses zero
+   - GK15 / MED_NORMAL: t=+1.46, Δ=+16.5%, CI [−5.4%, +40.5%], d=0.20 — d at threshold
+   - vt15 / HIGH_CALM: t=+1.51, Δ=+5.8%, CI [+0.3%, +14.3%], d=0.14 — CI clean but d below threshold
+   None clear Tier 2's 4-condition gate, none clear Tier 3 after Bonferroni-9.
 
 **Key:** all 3 candidates pooled to NEITHER. The OLD framework said all
 3 were "REJECT". Both verdicts are now superseded by the regime-conditional
