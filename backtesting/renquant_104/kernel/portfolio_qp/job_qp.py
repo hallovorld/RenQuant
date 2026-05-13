@@ -38,6 +38,8 @@ from kernel.pipeline.pipeline import Job, Task
 from .tasks import (
     ApplyConvictionCapTask,
     ApplyExposureScalingTask,
+    ApplyGrinoldKahnTransformTask,
+    ForceMuSourceTask,
     BuildADVVectorTask,
     BuildCorrelationGroupConstraintTask,
     BuildSectorConstraintMatrixTask,
@@ -135,6 +137,18 @@ class JointPortfolioQPJob(Job):
             # ── Phase 2: build vectors (atom + domain) ─────────────────
             _BuildMuVectorTask(),
             _BuildSigmaVectorTask(),
+            # 2026-05-12: Option A NGBoost validator (off by default).
+            # When ngboost.enabled=true AND ranking.qp_mu_source='panel_score',
+            # forces μ_QP back to the LTR z-score scale so we can isolate
+            # whether NGBoost's σ (in Kelly path) adds value independent
+            # of the destructive μ-scale mismatch.
+            ForceMuSourceTask(),
+            # 2026-05-12: Grinold-Kahn α→μ transform (off by default).
+            # Normalizes ANY scoring source (LTR panel_score / NGBoost μ /
+            # custom) to σ-scale, decoupling QP risk-penalty calibration
+            # from input scale. See doc/AUDIT_2026-05-12_dead_paths.md
+            # §NGBoost SUSPECT — μ-scale mismatch.
+            ApplyGrinoldKahnTransformTask(),
             BuildWeightVectorTask(),
             ComputeFullSigmaTask(),
             ShrinkSigmaLedoitWolfTask(),           # G5: LW shrinkage (off by default)

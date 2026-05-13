@@ -349,6 +349,127 @@ class ComputeQPConstraintsTask(Task):
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
+# ── 4a. Force μ_QP source (Option A: validate NGBoost theory) ───────────────
+
+class ForceMuSourceTask(Task):
+    """Override `_qp_mu` from a specific candidate attribute, independent
+    of the NGBoost mu/panel_score fallback chain in BuildMuVectorTask.
+
+    Enables Option A validation (CLAUDE.md §2b NGBoost audit, 2026-05-12):
+    when `ngboost.enabled=true` (so σ flows through to Kelly + risk), we
+    can still force μ_QP = panel_score so the QP's risk/return tradeoff
+    stays in its calibrated z-score scale.
+
+    This isolates the contribution of NGBoost σ from the destructive
+    μ-scale mismatch that broke E55 (455 trades vs 303, APY +2.99% vs
+    +6.77%).
+
+    Config (off by default):
+        ranking.qp_mu_source = "panel_score"  (or "rank_score" / "mu")
+                            default: "mu"  → no-op, preserves baseline
+
+    Stage A → if NGB-on + force panel_score beats NGB-off baseline,
+    NGBoost σ is contributing real value. Then we know option C
+    (Grinold-Kahn normalization of NGB μ) is the right architecture.
+    """
+    name = "ForceMuSourceTask"
+
+    def run(self, ctx) -> bool | None:
+        source = str((ctx.config or {}).get("ranking", {}).get("qp_mu_source", "mu")).lower()
+        if source == "mu":
+            return None  # no-op: keep mu from BuildMuVectorTask
+        if source not in ("panel_score", "rank_score"):
+            log.warning("ForceMuSource: unknown source '%s' — no-op", source)
+            return None
+        tickers   = _get_path(ctx, "_qp_tickers") or []
+        src_map   = _get_path(ctx, "_qp_mu_source_map") or {}
+        new_mu    = np.zeros(len(tickers))
+        n_set     = 0
+        for i, t in enumerate(tickers):
+            obj = src_map.get(t)
+            if obj is None:
+                continue
+            val = getattr(obj, source, None)
+            if val is None:
+                # fallback: try the other rank field
+                alt = "rank_score" if source == "panel_score" else "panel_score"
+                val = getattr(obj, alt, None)
+            try:
+                v = float(val) if val is not None else 0.0
+            except (TypeError, ValueError):
+                v = 0.0
+            if math.isfinite(v):
+                new_mu[i] = v
+                n_set += 1
+        ctx._qp_mu = new_mu  # noqa: SLF001
+        log.info(
+            "ForceMuSource: μ_QP ← %s for %d/%d tickers (μ̄=%.4f, σ_μ=%.4f)",
+            source, n_set, len(tickers),
+            float(new_mu.mean()) if len(new_mu) else 0.0,
+            float(new_mu.std(ddof=1)) if len(new_mu) > 1 else 0.0,
+        )
+
+
+# ── 4b. Grinold-Kahn α→μ transform (scale-normalizes any score) ─────────────
+
+class ApplyGrinoldKahnTransformTask(Task):
+    """Convert raw `_qp_mu` into σ-scale natural units via Grinold-Kahn.
+
+    Reference: Grinold 1989 "The Fundamental Law of Active Management"
+    (*J. Portfolio Management*); Grinold-Kahn 1999 *Active Portfolio
+    Management* ch.5. Formula:
+
+        μ_i  =  IC  ×  σ_i  ×  z(score_i)
+
+    Where z(score) is the cross-sectional z-score of the raw score, σ_i
+    the asset volatility (from `_qp_sigma`), IC the information
+    coefficient (use calibrator's pool_ic).
+
+    Fixes §5.13.10 NGBoost μ-scale-mismatch bug class: swapping between
+    LTR `panel_score` (~±2 z-units) and NGBoost μ (~1e-3 raw return) used
+    to silently change the QP's risk/return tradeoff because λ_risk and
+    transaction-cost weights are anchored to one input scale.
+
+    With this transform, μ is always in σ-units (the natural scale of the
+    quadratic risk term), so swapping signal sources is safe.
+
+    Config (off by default — opt-in to preserve baseline):
+        ranking.alpha_to_mu.enabled = true
+        ranking.alpha_to_mu.ic      = 0.094   (default: calibrator pool_ic)
+    """
+    name = "ApplyGrinoldKahnTransformTask"
+
+    def run(self, ctx) -> bool | None:
+        cfg = (ctx.config or {}).get("ranking", {}).get("alpha_to_mu", {})
+        if not cfg.get("enabled", False):
+            return None
+        ic = float(cfg.get("ic", 0.094))
+        if not math.isfinite(ic):
+            return None
+        mu_arr = _get_path(ctx, "_qp_mu")
+        sigma_arr = _get_path(ctx, "_qp_sigma")
+        if mu_arr is None or sigma_arr is None:
+            return None
+        mu_arr = np.asarray(mu_arr, dtype=float)
+        sigma_arr = np.asarray(sigma_arr, dtype=float)
+        if len(mu_arr) < 2 or len(mu_arr) != len(sigma_arr):
+            return None
+        finite = np.isfinite(mu_arr)
+        if int(finite.sum()) < 2:
+            return None
+        m  = float(mu_arr[finite].mean())
+        sd = float(mu_arr[finite].std(ddof=1))
+        if not math.isfinite(sd) or sd <= 0:
+            return None
+        z = np.zeros_like(mu_arr)
+        z[finite] = (mu_arr[finite] - m) / sd
+        ctx._qp_mu = ic * sigma_arr * z  # noqa: SLF001
+        log.info(
+            "ApplyGrinoldKahnTransform: IC=%.3f raw_μ̄=%.4f raw_σ_μ=%.4f → μ̄_QP=%.4f",
+            ic, m, sd, float(np.abs(ctx._qp_mu).mean()),
+        )
+
+
 # ── 5a. Exposure scaling (vol-target + DD-Kelly) ────────────────────────────
 
 class ApplyExposureScalingTask(Task):
