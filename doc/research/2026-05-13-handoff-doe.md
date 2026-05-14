@@ -159,3 +159,58 @@ the proper paired-daily framework either.
 | gk094 | NEITHER | −1.67% | 0.000 |
 
 Still pending: gk15, riskav5, maxpos10, sectorcap4, ntband2x.
+
+## Cycle 8 verdicts (T+7h)
+
+### riskav5 (risk_aversion γ=5, tighter) — TIER 1 REJECT
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | **−2.12%** |
+| t-statistic | −0.93 |
+| Deflated Sharpe | 0.000 |
+| Window consistency | 8/16 (50%) |
+
+Pushing γ from 3.0 → 5.0 (tighter risk penalty) → under-deploys
+risk-budgeted positions → loses 2.12pt/yr to baseline. Confirms the
+current γ=3.0 is appropriately calibrated for the existing μ/Σ scale.
+
+## Status @ T+7h: 7/10 panels analyzed, ALL NEITHER or REJECT
+
+| Panel | Verdict | mean Δ/yr | DSR |
+|---|---|---:|---:|
+| kappa05 | TIER 1 REJECT | −1.22% | 0.000 |
+| mindw05 | NEITHER (no effect) | 0.00% | 0.000 |
+| p15_cellA | TIER 1 REJECT | −1.22% | 0.000 |
+| vt15 | NEITHER | +0.48% | 0.970 (artifact) |
+| gk094 | NEITHER | −1.67% | 0.000 |
+| gk15 | NEITHER | −0.11% | 0.001 |
+| riskav5 | TIER 1 REJECT | −2.12% | 0.000 |
+
+## Regime detector audit — NOT a bug
+
+Prior status doc flagged "regime detector stuck at BULL_CALM since
+2026-04-25 (95% of days)" as a structural issue. Audit revises:
+
+- Recent 30d SPY return: **+14.14%** (annualized +112%)
+- Recent 30d realized vol: 10.9%
+- Implied Sharpe: ~10
+
+This is **textbook BULL_CALM** — strong positive trend, low vol. The
+detector is correctly reflecting market reality, not stuck.
+
+**Implication**: regime-conditional configs (e.g. GK_conditional)
+that "didn't work" failed for legitimate reasons, not because of a
+broken regime layer. The structural pivot must look elsewhere:
+- Universe expansion (wl174 with proper walkforward retrain)
+- Signal upgrade (LightGBM, PatchTST, broader alpha set)
+- NGBoost reactivation evaluation
+
+## Remaining queue (3/10 panels)
+
+- maxpos10 (tighter single-name concentration 10%) — running 3/16
+- sectorcap4 (tighter sector cap 4 vs 6) — pending
+- ntband2x (no-trade band 2× vs 1×) — pending
+
+Expected ~4h remaining. If all 3 also NEITHER/REJECT, structural
+pivot is mandatory.
