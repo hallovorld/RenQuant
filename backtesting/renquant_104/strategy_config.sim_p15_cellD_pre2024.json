@@ -1,0 +1,829 @@
+{
+  "model_name": "renquant-104",
+  "watchlist": [
+    "AAPL",
+    "ABBV",
+    "ADBE",
+    "ADI",
+    "AFRM",
+    "AMAT",
+    "AMD",
+    "AMZN",
+    "ANET",
+    "APP",
+    "ASML",
+    "AVGO",
+    "AXP",
+    "BA",
+    "BLK",
+    "CAT",
+    "CMG",
+    "COIN",
+    "COST",
+    "CRM",
+    "CRWD",
+    "CSCO",
+    "CVX",
+    "DDOG",
+    "DELL",
+    "DLR",
+    "DOCU",
+    "EQIX",
+    "ESTC",
+    "FTNT",
+    "GE",
+    "GLD",
+    "GOOG",
+    "GS",
+    "GTLB",
+    "HD",
+    "HON",
+    "HOOD",
+    "HPE",
+    "HUBS",
+    "IBM",
+    "INTC",
+    "INTU",
+    "JNJ",
+    "JPM",
+    "KLAC",
+    "LLY",
+    "LMT",
+    "LRCX",
+    "MA",
+    "MCD",
+    "MCHP",
+    "MDB",
+    "MDT",
+    "META",
+    "MPWR",
+    "MRK",
+    "MRVL",
+    "MSFT",
+    "MU",
+    "NEE",
+    "NET",
+    "NFLX",
+    "NOW",
+    "NVDA",
+    "NVO",
+    "NVTS",
+    "NXPI",
+    "OKTA",
+    "ON",
+    "ORCL",
+    "OXY",
+    "PANW",
+    "PCTY",
+    "PG",
+    "PGR",
+    "PLTR",
+    "PYPL",
+    "QCOM",
+    "RBLX",
+    "RTX",
+    "SHOP",
+    "SMCI",
+    "SNOW",
+    "SOFI",
+    "SPOT",
+    "TEAM",
+    "TMO",
+    "TSLA",
+    "TSM",
+    "TXN",
+    "UNH",
+    "UNP",
+    "V",
+    "VRT",
+    "WDAY",
+    "WDC",
+    "WMT",
+    "XOM",
+    "ZM",
+    "ZS",
+    "LITE",
+    "COHR"
+  ],
+  "benchmark": "SPY",
+  "data_src": "yfinance",
+  "initial_cash": 100000,
+  "model_staleness_days": 60,
+  "sharpe_floor": 1.0,
+  "wash_sale_days": 30,
+  "min_hold_days": 5,
+  "model_sell": {
+    "panel_veto": {
+      "enabled": true,
+      "min_rank_score": 0.5,
+      "max_streak_to_veto": 5
+    }
+  },
+  "score_db": {
+    "enabled": true,
+    "comment": "Phase 1 collect-only. Phase 2 will add percentile-based admission via panel_buy_pctile."
+  },
+  "consecutive_sell_signals": 3,
+  "min_hold_profit_days": 20,
+  "min_hold_loss_days": 20,
+  "max_hold_days": 500,
+  "train_split": 0.7,
+  "volume_zscore_lookback": 20,
+  "volume_filter": {
+    "mode": "percentile",
+    "percentile_threshold": 85
+  },
+  "training_years": 2.5,
+  "max_concurrent_positions": 8,
+  "parallel_workers": null,
+  "parallel_ticker_timeout_seconds": 600,
+  "position_sizing": {
+    "max_position_pct": 0.15,
+    "cash_reserve_pct": 0.0
+  },
+  "regime": {
+    "hurst_window": 63,
+    "hurst_trending_threshold": 0.65,
+    "hurst_reversion_threshold": 0.52,
+    "cusum_threshold": 5.5,
+    "cusum_drift": 0.5,
+    "cusum_lookback": 20,
+    "transition_uncertainty_bars": 3,
+    "bear_vol_threshold": 0.35,
+    "bear_return_threshold": -0.08,
+    "gmm_artifact": "sim/aux_2022-04-01/spy-gmm-regime.json",
+    "vol_realized_window": 20,
+    "correlation_guard_threshold": 0.7,
+    "correlation_artifact": "sim/aux_2022-04-01/watchlist-correlation.json",
+    "earnings_artifact": "sim/aux_2022-04-01/earnings-calendar.json",
+    "earnings_buffer_days": 3,
+    "earnings_sell_buffer_pre_days": 2,
+    "earnings_sell_buffer_post_days": 5,
+    "choppy_hurst_floor": 0.2,
+    "confidence_veto_threshold": 0.0,
+    "cusum_cooldown_mode": "wall_time",
+    "cusum_cooldown_days": 3.0
+  },
+  "regime_params": {
+    "BULL_CALM": {
+      "max_position_pct": 0.15,
+      "cash_reserve_pct": 0.0,
+      "stop_loss_pct": 0.15,
+      "max_single_day_loss_pct": 0.0,
+      "sdl_n_sigma": 3.0,
+      "_sdl_reason": "2026-05-04: \u03c3-scaled SDL threshold = 3\u00b7daily_vol; legacy 6% absolute tripped on noise for high-vol stocks (NVDA/RBLX). 2026-05-11 audit (A-7): BULL_CALM stop-loss block restored to golden.json values after v6 disaster (commit 2f10949 tightened stops to stop_loss=0.07 / trailing 0.10/0.07 / drawdown=0.15 + added stop_n_sigma=2.0 \u2192 APY -12.6%). Restored: stop_loss=0.15, trailing 0.20/0.18, drawdown=0.35, sdl_n_sigma=3.0, stop_n_sigma OFF.",
+      "max_hold_days": 500,
+      "drawdown_halt_pct": 0.35,
+      "entry_mode": "momentum",
+      "min_model_score": 0.1,
+      "min_price_move_pct": 0.0,
+      "trailing_stop_trigger_pct": 0.2,
+      "trailing_stop_trail_pct": 0.18,
+      "spy_velocity_halt_pct": 0.03,
+      "spy_velocity_lookback_days": 3,
+      "take_profit_pct": 0,
+      "stop_n_sigma": 0,
+      "drawdown_resume_pct": 0.175
+    },
+    "BULL_VOLATILE": {
+      "max_position_pct": 0.2,
+      "cash_reserve_pct": 0.2,
+      "stop_loss_pct": 0.05,
+      "max_single_day_loss_pct": 0.06,
+      "max_hold_days": 500,
+      "drawdown_halt_pct": 0.1,
+      "entry_mode": "capitulation",
+      "min_model_score": 0.15,
+      "min_price_move_pct": 0.005,
+      "trailing_stop_trigger_pct": 0.2,
+      "trailing_stop_trail_pct": 0.1,
+      "take_profit_pct": 0,
+      "stop_n_sigma": 0,
+      "sdl_n_sigma": 3.0,
+      "drawdown_resume_pct": 0.05
+    },
+    "CHOPPY": {
+      "max_position_pct": 0.15,
+      "cash_reserve_pct": 0.3,
+      "stop_loss_pct": 0.08,
+      "max_single_day_loss_pct": 0.06,
+      "max_hold_days": 40,
+      "drawdown_halt_pct": 0.08,
+      "entry_mode": "divergence",
+      "min_model_score": 0.15,
+      "min_price_move_pct": 0.0,
+      "trailing_stop_trigger_pct": 0.15,
+      "trailing_stop_trail_pct": 0.1,
+      "max_concurrent_positions": 4,
+      "take_profit_pct": 0,
+      "stop_n_sigma": 0,
+      "sdl_n_sigma": 3.0,
+      "drawdown_resume_pct": 0.04
+    },
+    "BEAR": {
+      "max_position_pct": 0.0,
+      "cash_reserve_pct": 1.0,
+      "stop_loss_pct": 0.05,
+      "max_single_day_loss_pct": 0.0,
+      "max_hold_days": 500,
+      "drawdown_halt_pct": 0.05,
+      "entry_mode": "blocked",
+      "min_model_score": 0.0,
+      "min_price_move_pct": 0.0,
+      "trailing_stop_trigger_pct": 0.1,
+      "trailing_stop_trail_pct": 0.05,
+      "take_profit_pct": 0,
+      "stop_n_sigma": 0,
+      "sdl_n_sigma": 3.0,
+      "drawdown_resume_pct": 0.025
+    }
+  },
+  "defensive_tickers": [
+    "GLD",
+    "TLT",
+    "XLV",
+    "XLU"
+  ],
+  "bear_defensive_slots": 2,
+  "bear_defensive_pct": 0.15,
+  "risk": {
+    "max_sells_per_bar": 2,
+    "panel_exit": {
+      "enabled": true,
+      "panel_sell_floor": 0.2,
+      "mu_sell_ceiling": 0.0,
+      "trigger_mode": "and"
+    }
+  },
+  "sector_map": {
+    "AAPL": "giant_tech",
+    "AMZN": "giant_tech",
+    "GOOG": "giant_tech",
+    "META": "giant_tech",
+    "TSLA": "giant_tech",
+    "NFLX": "giant_tech",
+    "MSFT": "giant_tech",
+    "ORCL": "giant_tech",
+    "NVDA": "ai_chip",
+    "ASML": "ai_chip",
+    "AMD": "ai_chip",
+    "TSM": "ai_chip",
+    "MU": "ai_chip",
+    "AMAT": "ai_chip",
+    "MPWR": "ai_chip",
+    "TXN": "ai_chip",
+    "INTC": "ai_chip",
+    "NVTS": "ai_chip",
+    "AVGO": "ai_chip",
+    "QCOM": "ai_chip",
+    "LRCX": "ai_chip",
+    "KLAC": "ai_chip",
+    "MRVL": "ai_chip",
+    "ON": "ai_chip",
+    "ADI": "ai_chip",
+    "NXPI": "ai_chip",
+    "MCHP": "ai_chip",
+    "WDC": "datacenter_hw",
+    "DELL": "datacenter_hw",
+    "ANET": "datacenter_hw",
+    "VRT": "datacenter_hw",
+    "SMCI": "datacenter_hw",
+    "HPE": "datacenter_hw",
+    "IBM": "datacenter_hw",
+    "EQIX": "datacenter_hw",
+    "DLR": "datacenter_hw",
+    "CSCO": "datacenter_hw",
+    "PANW": "software",
+    "CRWD": "software",
+    "PLTR": "software",
+    "SHOP": "software",
+    "SPOT": "software",
+    "ADBE": "software",
+    "CRM": "software",
+    "NOW": "software",
+    "INTU": "software",
+    "WDAY": "software",
+    "SNOW": "software",
+    "DDOG": "software",
+    "NET": "software",
+    "FTNT": "software",
+    "ZS": "software",
+    "TEAM": "software",
+    "MDB": "software",
+    "OKTA": "software",
+    "ZM": "software",
+    "DOCU": "software",
+    "GTLB": "software",
+    "HUBS": "software",
+    "PCTY": "software",
+    "ESTC": "software",
+    "APP": "software",
+    "RBLX": "software",
+    "JPM": "finance",
+    "MA": "finance",
+    "COIN": "finance",
+    "PGR": "finance",
+    "V": "finance",
+    "GS": "finance",
+    "BLK": "finance",
+    "AXP": "finance",
+    "BA": "industrial",
+    "HOOD": "finance",
+    "SOFI": "finance",
+    "PYPL": "finance",
+    "AFRM": "finance",
+    "XLF": "finance",
+    "LLY": "healthcare",
+    "MRK": "healthcare",
+    "NVO": "healthcare",
+    "UNH": "healthcare",
+    "JNJ": "healthcare",
+    "ABBV": "healthcare",
+    "TMO": "healthcare",
+    "MDT": "healthcare",
+    "CAT": "industrial",
+    "RTX": "industrial",
+    "GE": "industrial",
+    "LMT": "industrial",
+    "HON": "industrial",
+    "UNP": "industrial",
+    "COST": "consumer",
+    "CMG": "consumer",
+    "WMT": "consumer",
+    "PG": "consumer",
+    "HD": "consumer",
+    "MCD": "consumer",
+    "XOM": "energy",
+    "OXY": "energy",
+    "CVX": "energy",
+    "GLD": "commodity",
+    "XLU": "utility",
+    "NEE": "utility",
+    "XLK": "giant_tech",
+    "LITE": "datacenter_hw",
+    "COHR": "datacenter_hw"
+  },
+  "sector_etf_map": {
+    "tech": "XLK",
+    "giant_tech": "XLK",
+    "ai_chip": "XLK",
+    "datacenter_hw": "XLK",
+    "software": "XLK",
+    "finance": "XLF",
+    "healthcare": "XLV",
+    "energy": "XLE",
+    "industrial": "XLI",
+    "consumer": "XLY",
+    "commodity": "GLD",
+    "bond": "TLT",
+    "utility": "XLU"
+  },
+  "max_positions_per_sector": 6,
+  "tax": {
+    "short_term_rate": 0.5,
+    "long_term_rate": 0.32,
+    "long_term_threshold_days": 365
+  },
+  "lt_hold_gate_days": 330,
+  "lt_hold_min_gain": 0.1,
+  "rotation": {
+    "enabled": true,
+    "min_expected_advantage_pct": 0.06,
+    "target_horizon_days": 20,
+    "transaction_cost_pct": 0.0,
+    "min_rotation_hold_days": 7,
+    "lt_protection_days": 30,
+    "max_rotations_per_bar": 1,
+    "panel_buy_floor": 0.3,
+    "panel_sell_floor": 0.2,
+    "panel_buy_top_n": 3,
+    "panel_buy_rank_floor": 0.2,
+    "joint_actions": {
+      "enabled": true,
+      "fee_pct": 0.0005,
+      "slippage_pct": 0.0005,
+      "slot_budget_mode": "shared",
+      "solver": "qp",
+      "qp_risk_aversion": 3.0,
+      "qp_cost_kappa": 0.001,
+      "qp_dw_max": 0.5,
+      "qp_min_dw_pct": 0.02,
+      "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
+      "qp_tax_aware": false,
+      "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
+      "qp_tax_lot_method": "fifo",
+      "_qp_tax_lot_method_reason": "G7 (2026-05-04): tax-lot disposal rule. 'fifo' = oldest lot first (broker default); 'hifo' = highest-cost lot first (minimises realized gain on partial sells); 'avg' = legacy single-cost-basis kill-switch.",
+      "default_sigma": 0.05,
+      "qp_signal_decay": 0.0,
+      "qp_robust_mu_kappa": 0.0,
+      "qp_cvar_lambda": 0.0,
+      "qp_drawdown_limit": 0.2,
+      "qp_no_trade_band_factor": 1.0,
+      "qp_no_trade_band_cap": 0.05,
+      "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: \u03c3-derived no-trade band uncapped \u2192 high-\u03c3 holdings (e.g. BA \u03c3\u0302=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
+      "qp_min_invested_pct": 0.7,
+      "qp_ledoit_wolf_lambda": 0.2,
+      "_qp_ledoit_wolf_lambda_reason": "2026-05-10 C3: bumped 0.0\u21920.2 (Ledoit-Wolf 2004 mid-of-recommended-range). 169-stock universe sample-cov is high-noise / near-singular without shrinkage; \u03bb=0.2 lifts off-diagonals toward 0 and equalises variance toward avg. Reference: Ledoit & Wolf 2004 Honey paper (J.PortMgmt 30(4):110-119).",
+      "qp_sector_cap_enabled": true,
+      "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
+      "qp_correlation_cap_enabled": true,
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
+    },
+    "enabled_regimes": [
+      "BULL_CALM"
+    ]
+  },
+  "sample_start": "2016-01-01",
+  "sample_end": "2026-06-30",
+  "backtest_start": "2024-04-01",
+  "backtest_end": "2026-03-26",
+  "indicator_spec": {
+    "rsi": {
+      "period": 14
+    },
+    "macd": {
+      "fast": 12,
+      "slow": 26,
+      "signal": 9
+    },
+    "cci": {
+      "period": 20
+    },
+    "bbp": {
+      "period": 20
+    },
+    "adx": {
+      "period": 14
+    },
+    "williams_r": {
+      "period": 14
+    },
+    "obv": {
+      "signal_period": 20
+    }
+  },
+  "tiered_thresholds": [
+    {
+      "min_model_score": 0.27
+    },
+    {
+      "min_model_score": 0.45
+    },
+    {
+      "min_model_score": 0.6
+    }
+  ],
+  "model_params": {
+    "feature_columns": [
+      "rsi",
+      "macd_hist",
+      "cci",
+      "bbp",
+      "adx",
+      "williams_r",
+      "obv_slope",
+      "spy_realized_vol",
+      "spy_adx",
+      "spy_trend",
+      "hurst_proxy"
+    ],
+    "lookahead": 5,
+    "threshold": 0.03,
+    "leaf_size": 25,
+    "bags": 15,
+    "buy_threshold": 0.1,
+    "sell_threshold": -0.1
+  },
+  "ranking": {
+    "blend_updated": "2026-05-06",
+    "blend_n_symbols": 103,
+    "panel_scoring": {
+      "enabled": true,
+      "bypass_ticker_gate": true,
+      "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
+      "nan_prone_cols": [],
+      "buy_floor": "adaptive_mean_std_cap",
+      "buy_floor_adaptive_cap": 0.3,
+      "buy_floor_min": 0.2,
+      "_buy_floor_reason": "2026-05-04 user spec ('\u6682\u65f6\u6539\u6210\uff0c\u53d6min[mean+std, 0.3]'): per-bar adaptive floor = min(mean(rank_score) + std(rank_score), 0.30). Two interpretations of 'scientific': (a) data-driven per-bar (mean+std uses today's distribution); (b) bounded above by the legacy 0.30 absolute so we never get LESS strict than pre-fix. min(mean+std, cap) satisfies both. Diagnostic 2026-05-04: with the prior absolute floor=0.30 and prob_base_rate=0.278, ALL 50 candidates per bar were vetoed (strategy made 0 trades for 252 days). Adaptive mode keeps top ~16% per bar by score \u2014 Kelly+QP downstream still filter on \u03bc>0. Pre-veto rank_scores are also persisted to candidate_scores via ctx._full_candidate_snapshot for offline distribution analysis.",
+      "rotation_advantage": 0.0,
+      "sizing": {
+        "enabled": false,
+        "floor": 0.0,
+        "ceiling": 1.0,
+        "min_mult": 0.5
+      },
+      "ngboost": {
+        "enabled": false,
+        "artifact_path": "artifacts/sim/ngboost-head.json",
+        "score_mode": "additive",
+        "lambda_sigma": 0.0,
+        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
+      },
+      "sigma_sizing": {
+        "enabled": true,
+        "floor": 0.3,
+        "ceiling": 1.0
+      },
+      "global_calibration": {
+        "enabled": true,
+        "artifact_path": "artifacts/sim/panel-rank-calibration.json",
+        "regime_conditional": {
+          "enabled": false,
+          "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
+          "regimes": [
+            "BULL_CALM",
+            "BULL_VOLATILE",
+            "CHOPPY",
+            "BEAR"
+          ]
+        }
+      },
+      "quality_floor": {
+        "enabled": true,
+        "edge_sharpe_floor": {
+          "enabled": false,
+          "threshold": 0.1,
+          "_disable_reason": "2026-05-09 (E52 audit): pure-alpha ceiling on current panel ~+0.029, no \u03c4 achieves target FDR=0.30 OR 0.40. Best \u03c4=0.39 \u2192 FDR=0.42 admits 1% of val rows = 0 candidates per day in production. Gate would reject all signals; better to skip filter and let QP / sigma_sizing handle quality. Re-enable when val \u03bc-IC \u2265 +0.04 + placebo |IC|<0.01."
+        },
+        "distribution_floor": {
+          "enabled": false
+        },
+        "no_trade_band": {
+          "enabled": false
+        },
+        "gate_b_artifact_path": "sim/gate_b_thresholds.json"
+      },
+      "sell_gate_b": {
+        "enabled": true,
+        "threshold": 0.1
+      },
+      "kind": "panel_ltr_xgboost"
+    },
+    "universe_floor": {
+      "type": "sharpe",
+      "threshold": 0.5
+    },
+    "kelly_sizing": {
+      "enabled": true,
+      "fractional": 0.5,
+      "max_concentration": 0.35,
+      "min_edge": 0.0,
+      "top_up_threshold": 0.05,
+      "topup_conviction_floor": 0.2,
+      "base_rate": 0.273
+    },
+    "ngboost_head": {
+      "enabled": false
+    },
+    "meta_label": {
+      "enabled": false
+    }
+  },
+  "panel_ltr": {
+    "lookahead_days": 60,
+    "beta_window": 252,
+    "min_history_days": 252,
+    "age_warmup_days": 504,
+    "cv_n_splits": 6,
+    "cv_embargo_days": 10,
+    "num_boost_round": 300,
+    "neutralize_features": true,
+    "nan_prone_cols": [],
+    "asset_embeddings": {
+      "enabled": false,
+      "artifact_path": "artifacts/sim/asset-embeddings.json",
+      "max_age_days": 30
+    },
+    "factor_mom_window": 252,
+    "factor_skip": 21,
+    "neutralize_rolling_window": 252,
+    "neutralize_warmup_days": 252,
+    "xgb_params": {
+      "eta": 0.02,
+      "max_depth": 3,
+      "min_child_weight": 60,
+      "subsample": 0.5,
+      "colsample_bytree": 0.5,
+      "lambda": 5.0,
+      "alpha": 2.0,
+      "objective": "rank:pairwise"
+    },
+    "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
+    "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
+    "ngboost": {
+      "enabled": true,
+      "artifact_path": "artifacts/sim/ngboost-head.json",
+      "params": {
+        "n_estimators": 400,
+        "learning_rate": 0.01
+      },
+      "training_notes": "Stage-2 NGBoost head for residual returns"
+    },
+    "fundamentals": {
+      "enabled": true,
+      "cache_dir": "data/fundamentals",
+      "skip_tickers": [
+        "XLF",
+        "XLU",
+        "XLK",
+        "GLD",
+        "TLT",
+        "XLV"
+      ]
+    },
+    "backend": "xgboost",
+    "lightgbm_params": {
+      "objective": "lambdarank",
+      "metric": "ndcg",
+      "ndcg_at": [
+        5,
+        10
+      ],
+      "learning_rate": 0.02,
+      "num_leaves": 15,
+      "max_depth": 4,
+      "min_data_in_leaf": 50,
+      "feature_fraction": 0.5,
+      "bagging_fraction": 0.5,
+      "bagging_freq": 5,
+      "lambda_l1": 2.0,
+      "lambda_l2": 5.0,
+      "verbose": -1
+    },
+    "cv_method": "cpcv",
+    "cv_n_test_groups": 2,
+    "monotone_constraints": {
+      "beta_60d_z": -1,
+      "mom_12_1_z": 1,
+      "resid_mom_z": 1,
+      "realized_vol_z": -1,
+      "price_to_high_z": 1,
+      "short_pct_float_z": -1,
+      "book_to_price_z": -1
+    },
+    "drop_cols": [
+      "volume_shift_z",
+      "drawdown_peak_z",
+      "earnings_yield_z",
+      "rsi",
+      "macd_hist",
+      "amihud_illiq_z",
+      "obv_slope",
+      "vol_ratio_z",
+      "m_vol_ratio_z",
+      "m_morning_drift_z",
+      "m_afternoon_drift_z",
+      "m_closing_30min_drift_z",
+      "m_first_hour_vol_pct_z",
+      "overnight_gap_z",
+      "insider_net_buy_90d_z",
+      "morning_drift_z"
+    ],
+    "earnings_surprise": {
+      "enabled": true,
+      "cache_dir": "data/earnings_surprise",
+      "skip_tickers": [
+        "XLF",
+        "XLU",
+        "XLK",
+        "GLD",
+        "TLT",
+        "XLV"
+      ]
+    },
+    "insider_trades": {
+      "enabled": true,
+      "cache_dir": "data/insider_trades",
+      "max_filings": 200,
+      "skip_tickers": [
+        "ASML",
+        "SHOP",
+        "NVO",
+        "TSM",
+        "GLD",
+        "XLF",
+        "XLU",
+        "XLK",
+        "TLT",
+        "XLV"
+      ]
+    },
+    "hourly": {
+      "enabled": false,
+      "cache_dir": "data/intraday",
+      "_disabled_reason": "2026-05-04 user mandate: daily model trains on daily-only data. Half the universe (~100/183 tickers) lacks intraday history; aggregating to daily creates NaN-leaf rows that polluted the calibrator (the 2026-05-04 incident). Re-enable only for an explicit hourly-resolution model (renquant_105)."
+    },
+    "minute": {
+      "enabled": false,
+      "cache_dir": "data/intraday",
+      "_disabled_reason": "Same as hourly above \u2014 daily model uses daily-only data by default."
+    },
+    "macro": {
+      "enabled": false,
+      "cache_dir": "data/macro",
+      "symbols": [
+        "VXX",
+        "HYG",
+        "UUP",
+        "DBC",
+        "GLD",
+        "TLT",
+        "XLV",
+        "XLU",
+        "KRE",
+        "MTUM",
+        "USMV"
+      ],
+      "transforms": [
+        "level_z",
+        "chg_5d_z",
+        "chg_20d_z"
+      ],
+      "rolling_window": 252,
+      "min_window_overlap_pct": 0.95
+    },
+    "training_window_years": 3.0,
+    "recency_weighting": {
+      "kind": "exp_decay",
+      "half_life_days": 252
+    },
+    "calibration_method": "isotonic",
+    "imputation": {
+      "fill_zero": true,
+      "add_missingness_indicators": true,
+      "missingness_threshold_pct": 5.0,
+      "ffill_cols": [],
+      "ffill_max_gap_days": 5
+    }
+  },
+  "training": {
+    "cadence": "custom",
+    "allowed_weekdays": [
+      1,
+      3,
+      6
+    ],
+    "model_ttl_days": 1
+  },
+  "acceptance": {
+    "_doc": "Model acceptance gates (Phase 1+2 2026-04-26). See doc/components/model-selection.md.",
+    "enabled": true,
+    "g4_max_degradation": 0.05,
+    "g4_severity": "hard",
+    "g7_floor": 0.02,
+    "g7_severity": "hard",
+    "g8_min_std": 0.001,
+    "g8_severity": "soft",
+    "g9_max_pp_drop": 1.0,
+    "g9_severity": "hard",
+    "g10_max_sharpe_drop": 0.1,
+    "g10_severity": "hard",
+    "g11_max_multiplier": 1.5,
+    "g11_severity": "soft",
+    "run_sim_smoke": false,
+    "challenger": {
+      "_doc": "Phase 4 \u2014 shadow-mode infrastructure (platform only; live wiring in Phase 4b).",
+      "enabled": false,
+      "artifact_path": null,
+      "name": null,
+      "shadow_period_days": 0
+    }
+  },
+  "persistence": {
+    "enabled": true,
+    "db_path": "data/runs.db"
+  },
+  "monitoring": {
+    "max_no_trade_days": 15,
+    "max_no_candidate_days": 15
+  },
+  "_activation_log": [
+    {
+      "date": "2026-04-26",
+      "change": "enable QP solver + Gate B (\u03c4=0.10)",
+      "rollback": "set rotation.joint_actions.solver=\"greedy\" + ranking.panel_scoring.quality_floor.enabled=false"
+    },
+    {
+      "date": "2026-04-26",
+      "change": "add LITE + COHR to watchlist (datacenter_hw / optical-comms exposure)",
+      "rollback": "remove from watchlist + sector_map; revert this commit"
+    }
+  ],
+  "walkforward": {
+    "enabled": true,
+    "manifest_path": "artifacts/sim/walkforward_manifest_merged.json",
+    "fail_on_no_model": true
+  },
+  "performance": {
+    "n_trials": 39,
+    "risk_free_rate_annual": 0.05
+  },
+  "_side_config_label": "sim_p15_cellD_pre2024",
+  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
+  "gates": {
+    "ema50_gate": {
+      "enabled": true
+    }
+  }
+}
