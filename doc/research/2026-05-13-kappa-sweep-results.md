@@ -186,3 +186,53 @@ QP under-prices friction theory is correct in principle but the
 strategy's μ-scale (panel z-scores) makes any κ that bites
 asymmetric: too low → no effect, too high → suppresses both losing
 AND winning trades. The fix must come from a different mechanism.
+
+## min_dw_pct=0.05 panel — verdict
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | **+0.00%** (identical to baseline) |
+| t-statistic | 0.00 |
+| Deflated Sharpe | 0.000 |
+| Window consistency | 0/15 (no measurable difference) |
+
+### Verdict: **NEITHER**
+
+The 0.02 → 0.05 raise didn't bind in any window — strategy already
+makes trades > 5% of NAV most of the time. Higher threshold (0.10+)
+might bind but produces nothing if 5% doesn't.
+
+## Combined p15_cellA (κ=0.05 + min_dw=0.05) — verdict
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | **−1.22%** |
+| t-statistic | −0.41 |
+| Deflated Sharpe | 0.000 |
+| Window consistency | 6/16 (38%) |
+
+### Verdict: **TIER 1 REJECT**
+
+Numbers IDENTICAL to κ=0.05 alone — confirms min_dw=0.05 is below
+its binding threshold. The combination is just κ=0.05. No interaction
+to optimise here.
+
+## Friction-knob sweep — FINAL VERDICT (6/6 panels)
+
+| Panel | Knob | Verdict | mean Δ/yr |
+|---|---|---|---:|
+| κ=0.003 | QP cost_kappa | NEITHER | +0.48% |
+| κ=0.05 | QP cost_kappa | **TIER 1 REJECT** | −1.22% |
+| κ=0.1 | QP cost_kappa | NEITHER | +0.58% |
+| min_dw=0.05 | min trade size | NEITHER | 0.00% (no effect) |
+| p15_cellA | both combined | **TIER 1 REJECT** | −1.22% |
+| EMA50-off | macro gate off | **TIER 1 REJECT** | −3.21% |
+
+**Conclusive**: friction tuning + min trade size + EMA50 gate are
+ALL exhausted. The −7.5pt/yr alpha gap to SPY has a different root
+cause that single-knob (or 2-knob combination of these knobs)
+cannot fix.
+
+Remaining open candidates: vt15 (vol-target), gk094/gk15 (signal
+α→μ rescale), riskav5 (tighter γ), maxpos15 (tighter concentration),
+sectorcap4 (tighter diversification), ntband2x (less trading).
