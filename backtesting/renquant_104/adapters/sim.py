@@ -552,6 +552,14 @@ class SimAdapter:
             if math.isfinite(settled) and settled > 0:
                 self._cash += settled
 
+        # 2026-05-14 Phase 2B: daily borrow cost on short positions.
+        # Charges (|short_value| × borrow_rate / 252) per bar. Reads rate
+        # from data/alpaca_borrow_status.json (ETB → cheap rate, HTB →
+        # expensive rate). No-op when no shorts open or feature disabled.
+        # Per 2026-05-14 research: all 103 watchlist names are ETB, so
+        # real impact for current universe is < 0.5%/yr.
+        self._charge_daily_borrow(today_ts)
+
         # Update SPY returns buffer
         if today_ts in self._spy_df.index:
             spy_close = float(self._spy_df.loc[today_ts, "close"])
@@ -1209,6 +1217,63 @@ class SimAdapter:
             "mu":        order.get("mu"),
             "sigma_mult": order.get("sigma_mult"),
         })
+
+    def _charge_daily_borrow(self, today_ts) -> None:
+        """Phase 2B: daily borrow cost charge on short positions.
+
+        Per Alpaca live API (2026-05-14 research, see
+        `data/alpaca_borrow_status.json`):
+          - easy_to_borrow=True (ETB): borrow_rate_etb (default 0.005/yr)
+          - easy_to_borrow=False (HTB): borrow_rate_htb (default 0.05/yr)
+          - shortable=False: cannot short — filtered upstream
+
+        Charged daily: cost = |short_value| × borrow_rate / 252.
+
+        No-op when no negative-share positions exist. Safe to call on
+        every bar (cheap dict iteration).
+        """
+        if not getattr(self, "holdings", None):
+            return
+        # Lazy-load borrow status once
+        if not hasattr(self, "_borrow_status_cache"):
+            import json as _json  # noqa: PLC0415
+            from pathlib import Path  # noqa: PLC0415
+            p = Path("data/alpaca_borrow_status.json")
+            try:
+                self._borrow_status_cache = (
+                    _json.loads(p.read_text()).get("results", {})
+                    if p.exists() else {}
+                )
+            except Exception:
+                self._borrow_status_cache = {}
+        bs = self._borrow_status_cache
+        # Rates from config or defaults
+        cfg = getattr(self, "_strategy_config", {}) or {}
+        ls_cfg = cfg.get("long_short", {}) or {}
+        rate_etb = float(ls_cfg.get("borrow_rate_etb", 0.005))
+        rate_htb = float(ls_cfg.get("borrow_rate_htb", 0.05))
+        total_charge = 0.0
+        for ticker, hs in self.holdings.items():
+            shares = float(getattr(hs, "shares", 0.0) or 0.0)
+            if shares >= 0:
+                continue
+            # Need current price — use entry as fallback when not in self._ohlcv
+            df = self._ohlcv.get(ticker) if hasattr(self, "_ohlcv") else None
+            if df is not None and today_ts in df.index:
+                price = float(df.loc[today_ts, "close"])
+            else:
+                price = float(getattr(hs, "entry_price", 0.0) or 0.0)
+            if not math.isfinite(price) or price <= 0:
+                continue
+            short_value = abs(shares) * price
+            info = bs.get(ticker, {})
+            etb = info.get("easy_to_borrow", True)  # fail-open: assume ETB
+            rate = rate_etb if etb else rate_htb
+            daily_cost = short_value * rate / 252.0
+            if math.isfinite(daily_cost) and daily_cost > 0:
+                total_charge += daily_cost
+        if total_charge > 0 and math.isfinite(self._cash):
+            self._cash -= total_charge
 
     def _portfolio_value(self, prices: dict[str, float], today_ts=None) -> float:
         """Mark-to-market the held positions.

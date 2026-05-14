@@ -384,6 +384,21 @@
   },
   "lt_hold_gate_days": 330,
   "lt_hold_min_gain": 0.1,
+  "long_short": {
+    "_comment": "Phase 2 long-short. Flip enabled=true to turn shorts ON; false to disable instantly. Pre-flight checklist before enabling in live: data/alpaca_borrow_status.json fresh (<7d), Alpaca paper account has margin/short permissions, max_shorts kept conservative (<=3 for first 2 weeks).",
+    "enabled": false,
+    "short_decile": 0.1,
+    "max_shorts": 3,
+    "max_short_pct": 0.05,
+    "max_gross_exposure": 1.15,
+    "borrow_rate_etb": 0.005,
+    "borrow_rate_htb": 0.05,
+    "borrow_status_path": "data/alpaca_borrow_status.json",
+    "etf_blacklist": [
+      "SPY", "GLD", "QQQ", "IWM", "DIA", "TLT", "HYG", "LQD", "VXX",
+      "XLF", "XLE", "XLK", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE"
+    ]
+  },
   "rotation": {
     "enabled": true,
     "min_expected_advantage_pct": 0.06,
