@@ -114,3 +114,48 @@ Per `feedback_auto_promote_to_prod.md`:
 | EMA50-off | TIER 1 REJECT | −3.21% | −0.63 | 0.000 | 6/16 |
 | min_dw_pct=0.05 | RE-RUN in v3 sweep | — | — | — | — |
 | κ=0.05 | RE-RUN in v3 sweep | — | — | — | — |
+
+## Cycle 6 verdicts (T+6h)
+
+### vt15 (vol-target 15%) — NEITHER
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | +0.48% |
+| t-statistic | +0.80 |
+| Deflated Sharpe | **0.970** (apparent winner — but see below) |
+| Window consistency | 3/16 (19%) |
+
+**Misleading DSR**: 7/16 windows show 0.00% effect (vol-target didn't
+bind — strategy's realized vol < 15% in those quarters). Of 9 windows
+where it DID bind, only 3 positive. DSR inflated because ~half the
+sample is exactly zero, giving tiny noise floor.
+
+Q14 alone (+9.58%) carries the mean. Q13 (−3.27%), Q07 (−1.12%),
+Q15 (−0.12%) cancel it on the loss side.
+
+**Verdict: NEITHER** — consistency floor not met, no promote.
+
+### gk094 (Grinold-Kahn α→μ IC=0.094) — NEITHER
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | −1.67% |
+| t-statistic | −0.50 |
+| Deflated Sharpe | 0.000 |
+| Window consistency | 8/16 (50%) |
+
+Mild loss, no significance. The α→μ rescale to σ-units doesn't help on
+the proper paired-daily framework either.
+
+## Status @ T+6h: 5/10 panels verdicts in, ALL NEITHER or REJECT
+
+| Panel | Verdict | mean Δ/yr | DSR |
+|---|---|---:|---:|
+| kappa05 | TIER 1 REJECT | −1.22% | 0.000 |
+| mindw05 | NEITHER (no effect) | 0.00% | 0.000 |
+| p15_cellA | TIER 1 REJECT | −1.22% | 0.000 |
+| vt15 | NEITHER | +0.48% | 0.970 (artifact) |
+| gk094 | NEITHER | −1.67% | 0.000 |
+
+Still pending: gk15, riskav5, maxpos10, sectorcap4, ntband2x.
