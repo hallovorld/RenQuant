@@ -829,7 +829,19 @@ class LoadNGBoostTask(Task):
         if head is not None:
             return
 
-        artifact = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
+        # §5.13.14: never default to a hardcoded artifact filename. The path
+        # MUST come from config — otherwise a sim that enables NGBoost
+        # without overriding artifact_path would silently load the
+        # production model and breach sim/prod isolation.
+        artifact = ngb_cfg.get("artifact_path")
+        if not artifact:
+            log.error(
+                "LoadNGBoostTask: ngboost.enabled=true but artifact_path "
+                "is not set in cfg.ranking.panel_scoring.ngboost. Refusing "
+                "to default to any prod path — NGBoost disabled for this run."
+            )
+            ctx._ngboost_head = None  # noqa: SLF001
+            return
         p = Path(artifact)
         if not p.is_absolute():
             strategy_dir = ctx.config.get("_strategy_dir")
