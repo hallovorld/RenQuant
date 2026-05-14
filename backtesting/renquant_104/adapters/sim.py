@@ -1189,6 +1189,38 @@ class SimAdapter:
             old_shares = float(self._pos_shares.get(ticker, 0))
             new_shares = old_shares + shares
             old_entry  = self._holdings[ticker].entry_price
+            # 2026-05-14 audit RED #A: short-cover P&L tax per §1233.
+            # When old_shares < 0 (short position) and we BUY to cover,
+            # the IRS §1233 says all P&L is short-term capital gains
+            # regardless of holding period. Compute cover-side tax now
+            # because the regular sell path (_apply_sell with tax) is
+            # never invoked for shorts. Pre-fix this gave shorts a free
+            # tax pass, inflating apparent v6 longshort_v1 result by an
+            # estimated 2-5pt APY. Cover P&L = (short_entry_price -
+            # cover_price) × covered_shares (positive when short
+            # profited, taxed; negative = loss, no tax).
+            if old_shares < 0 and math.isfinite(old_entry):
+                covered_shares = min(shares, -old_shares)  # how many we actually closed
+                if covered_shares > 0:
+                    short_pnl = (old_entry - price) * covered_shares
+                    if short_pnl > 0:
+                        from kernel.portfolio import compute_trade_tax  # noqa: PLC0415
+                        tax_cfg = ctx.config.get("tax", {}) if ctx is not None else {}
+                        # §1233: shorts always short-term. hold_days=0
+                        # forces ST rate.
+                        short_tax = compute_trade_tax(
+                            short_pnl, hold_days=0,
+                            short_term_rate=float(tax_cfg.get("short_term_rate", 0.50)),
+                            long_term_rate=float(tax_cfg.get("long_term_rate", 0.32)),
+                            long_term_threshold_days=int(tax_cfg.get("long_term_threshold_days", 365)),
+                        )
+                        if math.isfinite(short_tax) and short_tax > 0 \
+                                and math.isfinite(self._cash):
+                            self._cash -= short_tax
+                            log.info(
+                                "SHORT_COVER_TAX %s short_pnl=$%.2f tax=$%.2f cover_shares=%d",
+                                ticker, short_pnl, short_tax, int(covered_shares),
+                            )
             # SAB-2 guard: if old_entry is NaN/inf (corrupted state), use
             # the current price as entry rather than corrupt new_entry.
             if not math.isfinite(old_entry):
