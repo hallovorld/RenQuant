@@ -427,14 +427,7 @@
       "qp_sector_cap_enabled": true,
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
-      "vol_target": {
-        "enabled": true,
-        "target_vol": 0.15,
-        "window_days": 60,
-        "floor": 0.3,
-        "ceiling": 1.5
-      }
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -578,7 +571,14 @@
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
       "topup_conviction_floor": 0.2,
-      "base_rate": 0.273
+      "base_rate": 0.273,
+      "vol_target": {
+        "enabled": true,
+        "target_vol": 0.15,
+        "window_days": 60,
+        "floor": 0.3,
+        "ceiling": 1.5
+      }
     },
     "ngboost_head": {
       "enabled": false
