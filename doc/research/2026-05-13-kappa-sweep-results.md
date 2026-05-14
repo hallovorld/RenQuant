@@ -97,3 +97,25 @@ running:
 Predicted: a milder κ may preserve bull deployment while still suppressing
 the bottom of the trade-distribution. min_dw_pct may be a cleaner
 mechanism (size-based threshold) than κ (signal-magnitude-based).
+
+## κ=0.003 panel — verdict (post-full-16-window analysis)
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | +0.48% |
+| Newey-West SE | 0.009% (daily, lag=6) |
+| t-statistic | +0.22 |
+| p-value | 0.828 |
+| 95% bootstrap CI | [−3.79%, +4.89%] |
+| Sharpe of Δ | +0.11 (CI [−0.81, +1.15]) |
+| Deflated Sharpe | +0.690 (K_trials=100) |
+| Window consistency | 8/16 (50%) |
+
+### Verdict: **NEITHER**
+
+5/16 windows (Q03, Q04, Q07, Q12, Q14) returned **exactly +0.00pt**
+— κ=0.003 below binding threshold there (identical to baseline trades).
+Wins: Q08 +10.26%, Q09 +12.00%. Losses: Q05 −8.80%, Q11 −11.31%.
+
+Net: variance not edge — same failure mode as κ=0.1, just smaller
+magnitude. The κ knob alone is not the answer.
