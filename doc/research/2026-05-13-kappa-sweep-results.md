@@ -119,3 +119,39 @@ Wins: Q08 +10.26%, Q09 +12.00%. Losses: Q05 −8.80%, Q11 −11.31%.
 
 Net: variance not edge — same failure mode as κ=0.1, just smaller
 magnitude. The κ knob alone is not the answer.
+
+## EMA50-off panel — verdict (16-window)
+
+Tests the second mechanism from the baseline diagnosis doc:
+disabling the SPY < EMA50 buy-block gate (now config-flag-able).
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | **−3.21%** |
+| Newey-West SE | 0.020% (daily, lag=6) |
+| t-statistic | −0.63 |
+| p-value | 0.531 |
+| 95% bootstrap CI | [−13.14%, +6.28%] |
+| Sharpe of Δ | −0.33 (CI [−1.35, +0.67]) |
+| Deflated Sharpe | +0.000 (K_trials=100) |
+| Window consistency | 6/16 (38%) |
+
+### Verdict: **TIER 1 REJECT**
+
+Pattern by regime:
+- **BEAR wins LOST**: Q01 −21pt, Q03 −19pt, Q05 −19pt, Q11 −19pt, Q16 −16pt
+- **Bull wins** (modest): Q07 +15pt, Q13 +25pt, Q06 +9pt
+
+The EMA50 gate's bear-regime protection (~25pt in Q01) outweighs
+its bull-regime drag (~12pt in Q04). Net effect of disabling: −3.21pt/yr.
+
+### Implication
+
+EMA50 gate is **NOT the chronic-lag culprit.** The bull-market alpha
+gap has a different root cause. Disabling the gate loses more than it
+recovers — keep enabled. Theory falsified by data per CLAUDE.md §5.2
+sanity protocol.
+
+**Action taken**: EMA50 gate stays enabled in production. The new
+`gates.ema50_gate.enabled` flag remains for future research (per the
+bug-bounty fix that introduced it).
