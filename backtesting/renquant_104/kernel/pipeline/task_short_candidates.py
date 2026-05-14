@@ -168,20 +168,28 @@ class ShortCandidateSelectionTask(Task):
         n_picked = min(n_bottom, max_shorts)
         picks = eligible.head(n_picked)
 
-        # Wrap in CandidateResult objects
+        # Wrap in CandidateResult objects.
+        # 2026-05-14 fix: NEGATE panel_score so the QP sees a negative μ
+        # for short candidates → optimal w is negative → actual short
+        # allocation. Pre-fix the bottom-decile panel_score was passed
+        # raw, but XGBoost rank:pairwise outputs are typically positive
+        # for the whole universe; "bottom decile" = small positive, not
+        # negative. With μ > 0 the QP optimum is w > 0 (long). The
+        # absolute value preserves magnitude for risk weighting; sign
+        # flip is the directional signal.
         from kernel.selection import CandidateResult  # noqa: PLC0415
-        ctx.short_candidates = [
-            CandidateResult(
+        ctx.short_candidates = []
+        for t, v in picks.items():
+            score_sign_flipped = -abs(float(v))   # always non-positive
+            ctx.short_candidates.append(CandidateResult(
                 ticker=t,
-                raw_score=float(v),
+                raw_score=float(v),                # preserve raw for telemetry
                 rank_score=float(v),
                 rs_score=0.0,
-                detail=f"short_candidate panel_score={v:.4f}",
-                expected_return=-float(v),  # negative — short profits on decline
-                panel_score=float(v),
-            )
-            for t, v in picks.items()
-        ]
+                detail=f"short_candidate raw_panel_score={v:.4f} → mu={score_sign_flipped:.4f}",
+                expected_return=score_sign_flipped,  # negative
+                panel_score=score_sign_flipped,      # negative — drives QP shorting
+            ))
         log.info(
             "ShortCandidateSelectionTask: %d short candidates picked "
             "(bottom %.0f%%, max_shorts=%d) — tickers=%s",

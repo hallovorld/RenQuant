@@ -91,7 +91,12 @@ class _BuildSigmaVectorTask(BuildVectorFromMappingTask):
 
 class _BuildSourceMapTask(Task):
     """Build dict {ticker: candidate_or_holding} for vector tasks to consume.
-    Candidates win when both have the ticker (latest scoring data)."""
+    Candidates win when both have the ticker (latest scoring data).
+
+    2026-05-13 Long-Short Phase 2A: also include ctx.short_candidates
+    (bottom-of-rank tickers) when long_short.enabled. The QP will
+    optimize over the joint long+short candidate set + holdings.
+    """
     name = "BuildSourceMapTask"
 
     def run(self, ctx) -> bool | None:
@@ -102,6 +107,20 @@ class _BuildSourceMapTask(Task):
             t = getattr(c, "ticker", None)
             if t:
                 src[t] = c   # candidate wins (newer scores)
+        # Phase 2B fix (2026-05-14): short candidates OVERRIDE long candidates
+        # for the same ticker. ctx.candidates is the BROAD admission pool
+        # (60-70 names that passed earnings/wash-sale gates) while
+        # ctx.short_candidates is the bottom-decile of the FULL universe by
+        # panel score. They overlap at the bottom of the admission pool.
+        # Pre-fix the `if t not in src` check left the long-side positive
+        # mu in place → QP never allocated negative weights → "longshort"
+        # sims ran as 130% long-only (leverage from gross_max=1.30), giving
+        # false Tier 3 readings on 2026-05-14. Override ensures the short
+        # candidate's signed panel_score reaches the QP.
+        for c in (getattr(ctx, "short_candidates", None) or []):
+            t = getattr(c, "ticker", None)
+            if t:
+                src[t] = c
         ctx._qp_mu_source_map = src   # noqa: SLF001
 
 
