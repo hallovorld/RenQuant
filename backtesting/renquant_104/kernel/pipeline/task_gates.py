@@ -217,10 +217,22 @@ class VelocityCrashTask(Task):
 
 
 class EMA50GateTask(Task):
-    """Gate 4: SPY below 50-day EMA — macro downtrend, block new entries."""
+    """Gate 4: SPY below 50-day EMA — macro downtrend, block new entries.
+
+    2026-05-13: gated by ``gates.ema50_gate.enabled`` (default True so
+    baseline behaviour is unchanged). Setting to False allows research
+    sims to test offense-only configurations without code edits.
+    Disabling in production is NOT recommended — diagnosis showed the
+    gate adds ~12pt mean alpha in bear regimes.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         from kernel.market_gates import check_spy_ema_trend  # noqa: PLC0415
+
+        gate_cfg = (getattr(ctx, "config", None) or {}).get(
+            "gates", {}).get("ema50_gate", {})
+        if not gate_cfg.get("enabled", True):
+            return None
 
         spy_df = ctx.ohlcv.get("SPY")
         # 2026-05-04 audit Issue 06 fix: fail-SAFE on missing SPY data.
