@@ -88,8 +88,14 @@ class ShortCandidateSelectionTask(Task):
             ctx.short_candidates = []
             return None
 
-        # Exclusion sets
-        long_tickers = {c.ticker for c in (ctx.candidates or [])}
+        # Exclusion sets — only ACTIVELY HELD tickers (overlap with long
+        # candidate pool is OK; `BuildSourceMapTask` precedence guarantees
+        # the long candidate wins when a ticker is in both sets).
+        # Pre-fix this also excluded ctx.candidates (the broad admission
+        # pool of 60-70 tickers), leaving the eligible set empty in 2026-05-14
+        # smoke. The intent was "don't short tickers we're about to buy long" —
+        # but ctx.candidates ⊃ {actual longs}, so excluding the whole pool
+        # over-filters. The QP's source-map merging already handles overlap.
         held_tickers = set((ctx.holdings or {}).keys())
         blacklist = frozenset(
             ls_cfg.get("etf_blacklist", DEFAULT_ETF_BLACKLIST)
@@ -97,7 +103,6 @@ class ShortCandidateSelectionTask(Task):
 
         # Filter and sort ascending (lowest panel score first)
         eligible = scores.dropna().sort_values(ascending=True)
-        eligible = eligible[~eligible.index.isin(long_tickers)]
         eligible = eligible[~eligible.index.isin(held_tickers)]
         eligible = eligible[~eligible.index.isin(blacklist)]
 

@@ -60,16 +60,22 @@ class TestShortCandidateSelectionTask:
             f"Expected bottom 2 (T00, T01); got {tickers}"
         )
 
-    def test_excludes_long_candidates(self):
-        """Tickers already in ctx.candidates are not shorted."""
+    def test_long_candidate_overlap_allowed(self):
+        """Tickers in ctx.candidates CAN be short candidates. The QP source
+        map (BuildSourceMapTask) handles overlap by long-precedence. This
+        replaces the prior over-aggressive exclusion that left the
+        eligible set empty in 2026-05-14 smoke (60-of-70 candidates).
+        """
         from kernel.pipeline.task_short_candidates import ShortCandidateSelectionTask
         scores = {"TSLA": -1.0, "NFLX": -0.9, "AAPL": 0.5}
+        # TSLA is a long candidate but also has the lowest score
         ctx = _mk_ctx(scores, long_tickers=["TSLA"],
                       ls_cfg={"enabled": True, "short_decile": 0.5})
         ShortCandidateSelectionTask().run(ctx)
         tickers = [c.ticker for c in ctx.short_candidates]
-        assert "TSLA" not in tickers
-        assert "NFLX" in tickers  # next-lowest after TSLA excluded
+        # TSLA SHOULD be picked (lowest score) — QP resolves the long/short
+        # collision at source-map merge time, not here
+        assert "TSLA" in tickers
 
     def test_excludes_holdings(self):
         """Tickers already held long are not shorted."""
