@@ -269,12 +269,19 @@ class InferencePipeline:
         # NGBoost). Default off — opt-in via score_db.enabled. Doesn't
         # affect decisions; only persists the distribution to runs.db
         # for percentile-based admission in a future Phase 2.
+        # 2026-05-14 Phase 2B: ShortCandidateJob runs after PanelScoringJob
+        # (which writes ctx._panel_scores_all) and before JointActionJob
+        # (whose BuildSourceMapTask reads ctx.short_candidates). No-op
+        # when long_short.enabled=false (default).
+        from .job_short_candidates import ShortCandidateJob  # noqa: PLC0415
         if joint_enabled and not ctx.bear_only:
             phase3_jobs = (PanelScoringJob(), PanelRankVetoJob(),
+                           ShortCandidateJob(),
                            RankingJob(), JointActionJob(),
                            ScoreDistributionJob())
         else:
             phase3_jobs = (PanelScoringJob(), PanelRankVetoJob(),
+                           ShortCandidateJob(),
                            RankingJob(),
                            RotationJob(), SelectionJob(),
                            ScoreDistributionJob())

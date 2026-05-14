@@ -478,6 +478,11 @@ class ApplyScoresTask(Task):
         else:
             scores: pd.Series = scorer.score(X)
 
+        # 2026-05-14 Phase 2B: stash the full-universe score series for the
+        # short-candidate selection task. Only kept; not consumed unless
+        # long_short.enabled=true. ApplyScoresTask's only mutation here.
+        ctx._panel_scores_all = scores  # noqa: SLF001
+
         n_cand_scored = 0
         for cand in ctx.candidates:
             v = scores.get(cand.ticker)
