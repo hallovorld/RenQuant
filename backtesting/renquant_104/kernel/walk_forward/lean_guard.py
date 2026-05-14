@@ -58,7 +58,19 @@ def assert_lean_panel_no_leakage(
     if not panel_cfg.get("enabled", True):
         return
 
-    artifact_rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
+    # §5.13.14: require explicit artifact_path. A sim/research LEAN config
+    # that forgot to override panel_ltr.artifact_path used to read the
+    # prod artifact's trained_date and validate against THIS sim's
+    # backtest_end — silently misleading.
+    artifact_rel = panel_cfg.get("artifact_path")
+    if not artifact_rel:
+        import logging as _logging  # noqa: PLC0415
+        _logging.getLogger("kernel.walk_forward.lean_guard").warning(
+            "assert_lean_no_leakage: panel_scoring.enabled=true but no "
+            "artifact_path set — skipping leakage guard. Set artifact_path "
+            "explicitly to re-enable the trained_date check."
+        )
+        return
     artifact_full = Path(strategy_dir) / artifact_rel
 
     trained_date = _read_trained_date(artifact_full)

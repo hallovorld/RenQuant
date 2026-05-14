@@ -678,18 +678,30 @@ class LoadGlobalCalibrationTask(Task):
         from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
 
         # Pooled calibrator — always attempted (acts as fallback).
+        # §5.13.14: require explicit artifact_path. Pre-fix this defaulted
+        # to artifacts/prod/panel-rank-calibration.json, so a sim that
+        # forgot to override would silently load the prod calibrator and
+        # report misleading sim results (no corruption, just confusion).
         if getattr(ctx, "_global_calibrator", None) is None:
-            pooled_path = _resolve(Path(gc_cfg.get(
-                "artifact_path", "artifacts/prod/panel-rank-calibration.json",
-            )))
-            try:
-                ctx._global_calibrator = GlobalPanelCalibration.load(pooled_path)  # noqa: SLF001
-                log.info("LoadGlobalCalibrationTask: loaded pooled (pool_IC=%s)",
-                         ctx._global_calibrator.metadata.get("pool_ic"))
-            except Exception as exc:
-                log.warning("LoadGlobalCalibrationTask: pooled load %s failed — %s",
-                            pooled_path, exc)
+            pooled_rel = gc_cfg.get("artifact_path")
+            if not pooled_rel:
+                log.error(
+                    "LoadGlobalCalibrationTask: global_calibration.enabled=true "
+                    "but artifact_path is not set in cfg.ranking.panel_scoring."
+                    "global_calibration. Refusing to default to any prod path — "
+                    "calibrator disabled for this run."
+                )
                 ctx._global_calibrator = None  # noqa: SLF001
+            else:
+                pooled_path = _resolve(Path(pooled_rel))
+                try:
+                    ctx._global_calibrator = GlobalPanelCalibration.load(pooled_path)  # noqa: SLF001
+                    log.info("LoadGlobalCalibrationTask: loaded pooled (pool_IC=%s)",
+                             ctx._global_calibrator.metadata.get("pool_ic"))
+                except Exception as exc:
+                    log.warning("LoadGlobalCalibrationTask: pooled load %s failed — %s",
+                                pooled_path, exc)
+                    ctx._global_calibrator = None  # noqa: SLF001
 
         # Regime-conditional (Plan F) — opt-in.
         rc_cfg = gc_cfg.get("regime_conditional", {})
