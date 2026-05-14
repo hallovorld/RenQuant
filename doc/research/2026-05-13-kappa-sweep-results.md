@@ -155,3 +155,34 @@ sanity protocol.
 **Action taken**: EMA50 gate stays enabled in production. The new
 `gates.ema50_gate.enabled` flag remains for future research (per the
 bug-bounty fix that introduced it).
+
+## κ=0.05 panel — verdict (final, completes the κ sweep)
+
+| metric | value |
+|---|---:|
+| mean Δ annualised | **−1.22%** |
+| Newey-West SE | (HAC) |
+| t-statistic | −0.41 |
+| Deflated Sharpe | +0.000 (K_trials=100) |
+| Window consistency | 6/16 (38%) |
+| 95% bootstrap CI | [−7.29%, +4.86%] |
+
+### Verdict: **TIER 1 REJECT**
+
+## κ-knob sweep — final summary
+
+| κ | verdict | mean Δ/yr | t_pool | DSR |
+|---:|---|---:|---:|---:|
+| 0.001 (range-find) | inconclusive | — | — | — |
+| 0.003 | NEITHER | +0.48% | +0.22 | 0.69 |
+| 0.01 (range-find) | identical to baseline | 0.00 | — | — |
+| **0.05** | **TIER 1 REJECT** | **−1.22%** | **−0.41** | **0.00** |
+| 0.1 | NEITHER | +0.58% | +0.17 | 0.51 |
+
+**Conclusion**: The QP `cost_kappa` knob is **conclusively exhausted**.
+Across 5 magnitudes (3 decades), every variant either ties baseline
+or loses. No κ value produces a Tier 3 promotable improvement. The
+QP under-prices friction theory is correct in principle but the
+strategy's μ-scale (panel z-scores) makes any κ that bites
+asymmetric: too low → no effect, too high → suppresses both losing
+AND winning trades. The fix must come from a different mechanism.
