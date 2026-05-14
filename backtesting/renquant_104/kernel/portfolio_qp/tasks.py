@@ -1338,22 +1338,74 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, cands):
 
 
 def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
+    """Emit SELL signal, including SHORT-OPEN when target_w < 0.
+
+    Three cases:
+    1. Closing a long (current shares > 0, target_w ≥ 0): emit qp_sell
+       up to held shares, capped at held.
+    2. Closing-and-flipping a long to short (current > 0, target_w < 0):
+       emit qp_close for the full long portion (held shares), THEN
+       emit qp_short_open for the remaining magnitude needed to reach
+       target_w.
+    3. Opening fresh short (current = 0 or None, target_w < 0): emit
+       qp_short_open with magnitude |shares|.
+
+    Phase 2A wiring fix (2026-05-14): pre-fix this function bailed when
+    holdings.get(ticker) was None or when qty went negative, so even
+    when the QP requested negative target weights, no short orders were
+    ever generated. Sim and live ran long-only regardless.
+    """
     from kernel.exits import ExitSignal
+    target_w = float(sol.target_w[i])
     hs = (ctx.holdings or {}).get(ticker)
-    if hs is None:
-        return False
-    held = int(getattr(hs, "shares", 0) or 0)
-    qty = min(shares, held)
-    if qty <= 0:
-        return False
-    exit_type = "qp_sell" if sol.target_w[i] > 1e-4 else "qp_close"
-    ctx.exits.append((ticker, ExitSignal(
-        should_exit=True, exit_type=exit_type,
-        quantity=float(qty), reason=f"qp_dw={dw:+.4f}",
-    )))
-    log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
-             ticker, dw, qty, exit_type)
-    return True
+    held = int(getattr(hs, "shares", 0) or 0) if hs is not None else 0
+    requested = int(shares)  # always positive; sign comes from target_w
+
+    # Case A: target ≥ 0 → just close-down/no-op of existing long
+    if target_w >= -1e-9:
+        if held <= 0:
+            return False
+        qty = min(requested, held)
+        if qty <= 0:
+            return False
+        exit_type = "qp_sell" if target_w > 1e-4 else "qp_close"
+        ctx.exits.append((ticker, ExitSignal(
+            should_exit=True, exit_type=exit_type,
+            quantity=float(qty), reason=f"qp_dw={dw:+.4f}",
+        )))
+        log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
+                 ticker, dw, qty, exit_type)
+        return True
+
+    # Case B/C: target_w < 0 → final position is short.
+    # Total |Δshares| comes from QP's |delta_w[i]| × NAV / price, which
+    # caller already converted to `shares`. We split into close-long
+    # and short-open portions.
+    long_close = min(held, requested) if held > 0 else 0
+    short_open = max(0, requested - long_close)
+
+    emitted = False
+    if long_close > 0:
+        ctx.exits.append((ticker, ExitSignal(
+            should_exit=True, exit_type="qp_close",
+            quantity=float(long_close), reason=f"qp_dw={dw:+.4f}",
+        )))
+        log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=qp_close",
+                 ticker, dw, long_close)
+        emitted = True
+    if short_open > 0:
+        # Append a SHORT-OPEN order. SimAdapter.commit reads ctx.orders
+        # for buys; for shorts we use ctx.exits with a special exit_type
+        # so the downstream consumer can route to a short-open code path
+        # in _apply_sell when shares > held.
+        ctx.exits.append((ticker, ExitSignal(
+            should_exit=True, exit_type="qp_short_open",
+            quantity=float(short_open), reason=f"qp_dw={dw:+.4f} target_w={target_w:+.4f}",
+        )))
+        log.info("QP_SHORT_OPEN %-6s  Δw=%+.4f  shares=%d  target_w=%+.4f",
+                 ticker, dw, short_open, target_w)
+        emitted = True
+    return emitted
 
 
 __all__ = [

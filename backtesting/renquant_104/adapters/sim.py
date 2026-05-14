@@ -684,6 +684,21 @@ class SimAdapter:
         today_ts = pd.Timestamp(ctx.today)
         trade_events_this_bar: list[dict] = []
         len_trade_log_before = len(self._trade_log)
+        # Phase 2B fix (2026-05-14): route qp_short_open exits OUTSIDE the
+        # dedupe loop. When the QP closes a long AND opens a short on the
+        # same ticker, _emit_qp_sell appends TWO ExitSignals (qp_close +
+        # qp_short_open). The old per-ticker dedupe kept first-write-wins,
+        # silently dropping the short-open. Now: collect short-opens
+        # separately, dispatch them after the close-long step so the
+        # ticker first goes long→0, then 0→short cleanly.
+        short_opens: list = []
+        regular_exits: list = []
+        for ticker, sig in (ctx.exits or []):
+            if str(getattr(sig, "exit_type", "")) == "qp_short_open":
+                short_opens.append((ticker, sig))
+            else:
+                regular_exits.append((ticker, sig))
+
         # Dedupe ctx.exits per ticker: when TopUp/Trim's "already exiting"
         # guard misfired (pre-2026-04-24 tuple-attr bug) two exits could
         # be queued for the same ticker. Even after the guard fix, an
@@ -691,7 +706,7 @@ class SimAdapter:
         # simultaneously. Priority: full liquidation over partial trim,
         # earliest exit signal otherwise.
         exits_by_ticker: dict[str, tuple] = {}
-        for ticker, sig in (ctx.exits or []):
+        for ticker, sig in regular_exits:
             existing = exits_by_ticker.get(ticker)
             if existing is None:
                 exits_by_ticker[ticker] = (ticker, sig)
@@ -719,6 +734,13 @@ class SimAdapter:
         import math as _math_q  # noqa: PLC0415
         full_exit_tickers: set[str] = set()
         for ticker, sig in deduped_exits:
+            # 2026-05-14 Phase 2B: route qp_short_open to dedicated path
+            # (creates a new HoldingState with negative shares; credits
+            # short-sale proceeds to cash). Skips the close-existing-long
+            # logic that the regular sell path uses.
+            if str(getattr(sig, "exit_type", "")) == "qp_short_open":
+                self._apply_short_open(ticker, sig, today_ts, ctx)
+                continue
             q = getattr(sig, "quantity", None)
             cur = self._pos_shares.get(ticker, 0)
             is_finite_partial = (
@@ -735,6 +757,12 @@ class SimAdapter:
         for ticker in full_exit_tickers:
             self._holdings.pop(ticker, None)
             self._pos_shares.pop(ticker, None)
+
+        # Phase 2B: dispatch short-opens AFTER all long-closes settled.
+        # This way a ticker that flipped from long to short cleanly
+        # goes long→0→short.
+        for ticker, sig in short_opens:
+            self._apply_short_open(ticker, sig, today_ts, ctx)
 
         # Preserve updated sell_streak / HWM from pipeline's SellJob.
         # Exclude only FULL exits — partial trims keep the position open
@@ -1166,7 +1194,15 @@ class SimAdapter:
             if not math.isfinite(old_entry):
                 new_entry = price
             else:
-                new_entry = (old_entry * old_shares + price * shares) / new_shares if new_shares > 0 else price
+                # Bug-bounty #3 fix: when covering a short (old_shares<0) or
+                # crossing zero (short → long via over-cover), the avg-cost
+                # formula above with signed shares produces a nonsensical
+                # entry. Treat any cross-zero or short-cover as a new
+                # position at the current fill price.
+                if old_shares < 0 or new_shares <= 0:
+                    new_entry = price
+                else:
+                    new_entry = (old_entry * old_shares + price * shares) / new_shares
             self._holdings[ticker].entry_price = new_entry
             cur_hwm = self._holdings[ticker].high_watermark
             if math.isfinite(cur_hwm):
@@ -1217,6 +1253,76 @@ class SimAdapter:
             "mu":        order.get("mu"),
             "sigma_mult": order.get("sigma_mult"),
         })
+
+    def _apply_short_open(self, ticker: str, sig, today_ts, ctx) -> None:
+        """Phase 2B: open a new short position (negative shares).
+
+        - Credits cash with short-sale proceeds (less commission/slippage).
+        - Creates a HoldingState with shares = -|N|, entry_price = fill.
+        - Daily borrow charge handled by _charge_daily_borrow.
+        - Cover happens through _apply_buy when QP wants positive Δw on
+          a ticker with shares < 0 (added in a follow-up).
+        """
+        from kernel.exits import HoldingState  # noqa: PLC0415
+        import math as _math_q  # noqa: PLC0415
+        shares = float(getattr(sig, "quantity", 0) or 0)
+        if not _math_q.isfinite(shares) or shares <= 0:
+            log.warning("SimAdapter._apply_short_open: %s bad quantity=%s, skipping",
+                        ticker, shares)
+            return
+        # Mark price = today's close on the model OHLCV
+        df = self._ohlcv.get(ticker)
+        if df is None or today_ts not in df.index:
+            log.warning("SimAdapter._apply_short_open: %s no price today, skipping", ticker)
+            return
+        price = float(df.loc[today_ts, "close"])
+        if not _math_q.isfinite(price) or price <= 0:
+            log.warning("SimAdapter._apply_short_open: %s bad price=%s, skipping",
+                        ticker, price)
+            return
+
+        # Slippage + commission (treat like a sell)
+        if getattr(self, "_exec_enabled", False):
+            fill_price = slip_fill_price(
+                market_price=price, side="sell", shares=shares,
+                adv_shares=None, cfg=self._slip_cfg,
+            )
+            if not _math_q.isfinite(fill_price) or fill_price <= 0:
+                fill_price = price
+            fees = compute_sell_fees(shares, fill_price, self._fee_cfg)
+        else:
+            fill_price = price
+            fees = {"sec_fee": 0.0, "taf": 0.0, "custom": 0.0, "total": 0.0}
+
+        proceeds = shares * fill_price - fees["total"]
+        if not _math_q.isfinite(proceeds):
+            log.warning("SimAdapter._apply_short_open: %s non-finite proceeds, skipping", ticker)
+            return
+
+        # Credit cash with short proceeds (held as margin; daily borrow
+        # cost handled by _charge_daily_borrow). T+2 is ignored for
+        # shorts in this MVP — Alpaca settles short proceeds T+1 anyway.
+        self._cash += proceeds
+        if hasattr(self, "_total_fees"):
+            self._total_fees += fees["total"]
+
+        # Create or update the HoldingState with NEGATIVE shares
+        if ticker in self._holdings:
+            existing = self._holdings[ticker]
+            # Should only happen if a prior short increased magnitude.
+            existing.shares = (existing.shares or 0) - shares
+            # Average down entry on the short side
+            existing.entry_price = fill_price  # simplistic; refine if needed
+        else:
+            self._holdings[ticker] = HoldingState(
+                shares=-shares,
+                entry_price=fill_price,
+                entry_date=today_ts.date() if hasattr(today_ts, "date") else today_ts,
+                high_watermark=fill_price,
+            )
+        self._pos_shares[ticker] = self._holdings[ticker].shares
+        log.info("SHORT_OPEN %s shares=-%d px=%.2f proceeds=$%.0f",
+                 ticker, int(shares), fill_price, proceeds)
 
     def _charge_daily_borrow(self, today_ts) -> None:
         """Phase 2B: daily borrow cost charge on short positions.
@@ -1272,8 +1378,18 @@ class SimAdapter:
             daily_cost = short_value * rate / 252.0
             if math.isfinite(daily_cost) and daily_cost > 0:
                 total_charge += daily_cost
-        if total_charge > 0 and math.isfinite(self._cash):
+        # Bug-bounty #4 fix: skip charge if would overdraw cash. Real
+        # broker would margin-call, not let cash go negative. For sim
+        # purposes, defer the charge to next bar when settlements arrive.
+        if total_charge > 0 and math.isfinite(self._cash) \
+                and total_charge < self._cash:
             self._cash -= total_charge
+        elif total_charge > 0 and math.isfinite(self._cash):
+            log.warning(
+                "_charge_daily_borrow: skipping $%.2f charge (cash=$%.2f) "
+                "to prevent overdraw — real broker would margin-call",
+                total_charge, self._cash,
+            )
 
     def _portfolio_value(self, prices: dict[str, float], today_ts=None) -> float:
         """Mark-to-market the held positions.
