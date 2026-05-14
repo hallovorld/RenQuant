@@ -259,6 +259,19 @@ class RunPanelTrainingTask(FullTrainingTask):
         # writes to the prod path the runner reads, not a flat orphan.
         panel_cfg.setdefault("artifact_path",       "artifacts/prod/panel-ltr.alpha158_fund.json")
 
+        # §5.13.13 guard: if this is a side config (sim/research), refuse to
+        # let it overwrite the production artifact via the default fallback.
+        # Catches the footgun where a sim training run forgets to override
+        # panel_ltr.artifact_path and silently corrupts the prod model.
+        side_label = config.get("_side_config_label") or ""
+        if side_label and "artifacts/prod/" in str(panel_cfg["artifact_path"]):
+            raise ValueError(
+                f"FullTrainingPipeline refusing to write to a prod artifact "
+                f"path from a side config (label={side_label!r}). "
+                f"Set panel_ltr.artifact_path to artifacts/sim/... explicitly "
+                f"in your side config to avoid breaching sim/prod isolation."
+            )
+
         artifact_out = Path(panel_cfg["artifact_path"])
         if not artifact_out.is_absolute():
             artifact_out = ctx.strategy_dir / artifact_out
