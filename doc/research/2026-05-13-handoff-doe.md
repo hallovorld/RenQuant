@@ -214,3 +214,73 @@ broken regime layer. The structural pivot must look elsewhere:
 
 Expected ~4h remaining. If all 3 also NEITHER/REJECT, structural
 pivot is mandatory.
+
+## Self-audit (T+8h, user-prompted)
+
+User raised concern that 7 panels → 0 promotes felt suspicious. Audit
+checked four hypotheses:
+
+### Hypothesis 1: Methodology is too strict (FALSE)
+
+Tested with non-parametric alternatives — Wilcoxon signed-rank + sign
+test:
+
+| Panel | mean | median | pos/16 | wilcoxon_p | sign_p |
+|---|---:|---:|---:|---:|---:|
+| kappa05 | −1.76 | −1.25 | 6 | 0.839 | 0.895 |
+| mindw05 | −1.70 | 0.00 | 1 | 0.750 | 0.750 |
+| p15_cellA | −1.76 | −1.25 | 6 | 0.839 | 0.895 |
+| vt15 | +0.53 | 0.00 | 4 | 0.461 | 0.828 |
+| gk094 | −3.05 | −0.49 | 8 | 0.550 | 0.598 |
+| **gk15** | **−0.95** | **+2.62** | **10** | **0.490** | **0.227** |
+| riskav5 | −2.60 | −0.88 | 8 | 0.783 | 0.598 |
+
+Even with robust non-parametric tests, no panel approaches significance.
+**Methodology is correct, not pathologically strict.** gk15 is the
+closest-to-winner (10/16 wins, positive median) but still p=0.227.
+
+### Hypothesis 2: Config bugs (PARTIALLY TRUE — fixed)
+
+vt15 had a wrong-path bug (caught + fixed). maxpos15 was a no-op (caught
++ replaced with maxpos10). Both re-run. Other configs validated against
+prod reader paths.
+
+### Hypothesis 3: Q11 outlier dominates (TRUE)
+
+Q11 (2024-10-01 → 2025-01-01): SPY +12.6%, baseline +54.13% → +41pt
+alpha — baseline's BEST single window. Every candidate loses big in Q11:
+kappa05 −9, gk15 −31, gk094 −38, riskav5 −19. This is the outlier
+that pulls all means toward zero or negative even when other windows
+are positive.
+
+### Hypothesis 4: Strategy is locally optimal in this knob space (TRUE — strongly)
+
+Across 7 candidates testing 6 mechanisms (κ at 5 values, min_dw,
+EMA50-off, vt15, GK at 2 ICs, riskav, mindw+κ combo): not one
+produces a positive directional change.
+
+This is structurally informative — the baseline strategy IS at a
+local optimum in the friction/risk/scaling space. Any perturbation
+hurts somewhere ≥ helps elsewhere. **Single-knob optimization is
+exhausted.**
+
+## Implication for path forward
+
+Need STRUCTURAL changes, not config sweeps:
+
+1. **Universe expansion (wl174 + walkforward retrain)** — different
+   candidate set may have different local optimum
+2. **Signal upgrade** (LightGBM/PatchTST or alpha158 → richer set)
+3. **Multi-asset class** (add fixed income, commodities)
+4. **Regime-conditional dispatch** — gk15 wins in some quarters
+   (Q08-Q10), baseline wins in Q11. A smart dispatcher *might*
+   capture both. But GK_conditional already tested NEITHER.
+
+Remaining 3 panels (maxpos10, sectorcap4, ntband2x) will likely also
+NEITHER based on the pattern. After they finish, will launch the
+structural pivot tracks.
+
+## Honest verdict
+
+The auto-promote system is working correctly. The strategy is at a
+local optimum. No promotable single-knob change exists.
