@@ -37,7 +37,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("refit-gate-b")
 
 REGIMES = ["BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"]
-TARGET_FDR = 0.30
+# Relaxed from 0.30 → 0.40 (2026-05-09 audit conclusion E52):
+# 42% of QHead IC is regime persistence; pure-alpha ceiling on current panel
+# is ~+0.029. Target FDR=0.30 is unachievable. FDR=0.40 still beats baseline
+# (val base_fdr=0.535 → 13.5pp lift) and admits a meaningful candidate set.
+TARGET_FDR = 0.40
 MIN_SAMPLES = 100
 
 

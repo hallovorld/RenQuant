@@ -71,7 +71,7 @@ log = logging.getLogger("transformer-v4")
 
 # ── Data ───────────────────────────────────────────────────────────────────
 
-LABEL_COL = "fwd_5d_excess"
+LABEL_COL = "fwd_5d_excess"  # default; overridden by --label arg
 
 
 class PerDayDataset(Dataset):
@@ -530,7 +530,14 @@ def main() -> None:
                    help=">0 to limit train batches per epoch (smoke testing)")
     p.add_argument("--num-workers", type=int, default=4,
                    help="DataLoader worker count (0 = main process, avoids fork issues)")
+    p.add_argument("--label", type=str, default="fwd_5d_excess",
+                   choices=["fwd_5d_excess","fwd_20d_excess","fwd_60d_excess"])
     args = p.parse_args()
+
+    # Override module-level LABEL_COL with CLI choice
+    global LABEL_COL
+    LABEL_COL = args.label
+    log.info("Label: %s", LABEL_COL)
 
     if args.device == "auto":
         if torch.backends.mps.is_available():
