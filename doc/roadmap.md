@@ -53,14 +53,50 @@ top_cfg    = ctx.config.get("<top_section>", {}) or {}
 value = rp_overlay.get("<knob>", top_cfg.get("<knob>", DEFAULT))
 ```
 
-### P1 — Special design decisions needed before coding
+### P1 — Design decisions (LOCKED 2026-05-14)
 
-1. **BEAR + shorts?** Current BEAR carve-out blocks shorts (`_qp_w_lower = 0.0`). Audit shows shorts in BEAR add +22pt. Decision needed:
-   - **Option α**: keep BEAR pure-defensive (current; 100% cash + GLD/TLT). Forfeit +22pt shorts upside.
-   - **Option β**: BEAR-OFFENSIVE mode (new): block longs (`max_position_pct=0`), allow shorts (`_qp_w_lower < 0`). Capture downside.
-   - **Option γ**: hybrid — BEAR-DEFENSIVE (current) for "regular" bears, BEAR-OFFENSIVE for "high-conviction" bears (BEAR + hard_bear flag).
+1. **BEAR + shorts → Option γ HYBRID (LOCKED)**
 
-2. **Defensive list expansion** (user-flagged 2026-05-14): add SHV/BIL/UUP to `defensive_tickers` so 2022-style rate-shock bears have working hedges. Optionally split into `defensive_tickers_inflationary` / `_deflationary`.
+   ```
+   regime=BEAR  AND  hard_bear=False
+     → BEAR-DEFENSIVE mode (current behavior)
+       max_position_pct=0, entry_mode=blocked
+       buy GLD/TLT/XLV/XLU via bear_defensive_slots=2 × 15%
+       Σ|w| ≤ 1.0; no shorts
+
+   regime=BEAR  AND  hard_bear=True
+     → BEAR-OFFENSIVE mode (NEW)
+       max_position_pct=0 (no longs)
+       _qp_w_lower < 0 (shorts allowed)
+       max_short_pct ~0.07-0.10 (high opportunity sizing)
+       no defensive tickers (capital is going short, not parked)
+   ```
+
+   **Trigger**: `hard_bear` already exists in `kernel/regime.py:432-442` — fires when
+   `spy_20d_vol > 0.35` OR `spy_20d_ret < -0.08`. This is "high-conviction
+   bear", distinct from "slow bear" (Hurst MOMENTUM + SPY < MA50). The
+   distinction is empirically meaningful: 2022 Q2 = slow bear (no hard_bear
+   most days) → defensive works; 2020 March COVID = hard_bear → shorts
+   would have made killing.
+
+   **Why this is the right call:**
+   - Slow bears (2022 Q2): defensive_tickers work, drawdown limited, no need for shorts
+   - Sharp bears (2020 March, 2008): defensive_tickers ALSO fall hard, shorts are the only real hedge
+   - hard_bear already wired and tested; this just routes its True branch to a different config
+
+2. **Defensive list expansion (user-flagged 2026-05-14)**
+
+   Current: `["GLD", "TLT", "XLV", "XLU"]`. 2022 rate-shock bear killed GLD
+   (−17%) and TLT (−31%). Adding short-duration treasuries that ROSE in
+   2022 as rate hedges:
+
+   - **SHV** (iShares Short Treasury Bond, ~3mo duration) — rose +1% in 2022
+   - **BIL** (SPDR 1-3 Month T-Bill) — flat/+1% in 2022
+   - Optionally **UUP** (Invesco DB US Dollar Index Bullish) — rose +7% in 2022
+
+   Approach: expand the single list (not split into inflationary/deflationary
+   yet — premature optimization). The bear_defensive_slots=2 selector already
+   ranks within the pool; just give it more options.
 
 ### P2 — Retest shorts conditional (after P1)
 
