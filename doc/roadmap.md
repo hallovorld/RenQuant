@@ -1,6 +1,84 @@
 # RenQuant — Roadmap
 
-**Single source of truth for what's next.** Ordered by ROI (Sharpe-lift-per-effort). Every item cites a paper or open-source reference. Last updated **2026-05-09 EOD** (post BUG #6/#7 + cost-aware wash-sale + NGB on/off A/B revert + sector-excess null + σ̂ calib + watchlist breadth audit).
+**Single source of truth for what's next.** Ordered by ROI (Sharpe-lift-per-effort). Every item cites a paper or open-source reference. Last updated **2026-05-14 EVENING** (regime detector fix + prime directive + per-regime knob wiring plan; prior update 2026-05-09 EOD).
+
+---
+
+## 🔴 PRIME DIRECTIVE (2026-05-14 user mandate)
+
+**RenQuant is a regime-conditional strategy.** Every feature, knob, experiment, and evaluation is regime-aware. Pooled-mean metrics buried the shorts +6.23pt NEITHER verdict that regime-stratified analysis shows is actually deployment-ready conditional alpha. See [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section for full rules.
+
+### Phase Plan (no rush, ship one phase per session)
+
+```
+[done 2026-05-14]                  [next session]               [+1-2 sessions]              [+1 session]
+P0 detector fix (Hurst direction) → P1 wire per-regime knobs → P2 retest shorts conditional → P3 promote
+                                     ↓                            ↓
+                                    P1a long_short.enabled       Tier 2/3 with regime-strat
+                                    P1b stop_loss_pct            (catastrophes eliminated)
+                                    P1c kappa / kelly / vt
+                                    P1d defensive_tickers
+```
+
+### P0 — Regime detector fix ✅ DONE (commit `3925c0d`, `e3fd4a1`)
+
+- Direction-aware Hurst: Hurst MOMENTUM + SPY < MA50 → BEAR (was always BULL_CALM)
+- Both code paths fixed: `kernel/regime.py::detect_regime` + `kernel/pipeline/task_regime.py::RegimeFinalizeTask`
+- Validated: Q01 2022-Q2 = 0% → **83% BEAR** labels; Q11 2024-Q4 = 92% BULL_CALM preserved
+- 6 new regression tests + 70 existing regime tests pass
+- Currently running: 16-window baseline rerun to measure net impact (panel A)
+
+### P1 — Wire per-regime knobs (next session)
+
+Priority order from 2026-05-14 audit (per-regime spread in longshort_clean panel):
+
+| Priority | Knob | Per-regime spread | Wire as |
+|---|---|---|---|
+| **P1a** | `long_short.enabled` | BEAR +22pt / BULL_STRONG −2pt (catastrophes) | `regime_params.<REGIME>.long_short_enabled` overlay; default falls back to global `long_short.enabled` |
+| **P1b** | `long_short.max_shorts` | tied to P1a | per-regime: BEAR/CHOPPY/BULL_VOL get 3-5; BULL_STRONG/BULL_CALM get 0 |
+| **P1c** | `max_short_pct` | spread informs sizing | BEAR 0.07-0.10 (high opportunity); BULL 0.02-0.03 (tight) |
+| **P1d** | `stop_loss_pct` | regime variance differs ~3× | CHOPPY 0.10 (tight, mean-reverting noise); BULL_VOL 0.20 (looser, normal vol); BEAR 0.05 (already in config) |
+| **P1e** | `kappa` (risk aversion) | regime-conditional QP gain | BEAR 1.5×; BULL_STRONG 0.5×; default 1.0× |
+| **P1f** | `vol_target` | per-regime budget | BEAR 0.08 (tight); BULL 0.15 (loose) |
+| **P1g** | `kelly_scale` | aggressiveness toggle | BEAR 0.3 (conservative); BULL_STRONG 0.8 |
+| **P1h** | `defensive_tickers` list | regime-specific | add SHV/BIL (short bonds) for inflationary bears, keep GLD/TLT for deflationary |
+
+Effort estimate: P1a alone ~2h (1 task edit + 1 config block + 2-3 tests). Full P1a-P1h ~8-10h.
+
+**Architectural pattern (set with P1a, reused everywhere):**
+```python
+# Resolution order: regime_params.<regime>.<knob> > top-level <knob> > default
+rp_overlay = ctx.config.get("regime_params", {}).get(ctx.regime, {})
+top_cfg    = ctx.config.get("<top_section>", {}) or {}
+value = rp_overlay.get("<knob>", top_cfg.get("<knob>", DEFAULT))
+```
+
+### P1 — Special design decisions needed before coding
+
+1. **BEAR + shorts?** Current BEAR carve-out blocks shorts (`_qp_w_lower = 0.0`). Audit shows shorts in BEAR add +22pt. Decision needed:
+   - **Option α**: keep BEAR pure-defensive (current; 100% cash + GLD/TLT). Forfeit +22pt shorts upside.
+   - **Option β**: BEAR-OFFENSIVE mode (new): block longs (`max_position_pct=0`), allow shorts (`_qp_w_lower < 0`). Capture downside.
+   - **Option γ**: hybrid — BEAR-DEFENSIVE (current) for "regular" bears, BEAR-OFFENSIVE for "high-conviction" bears (BEAR + hard_bear flag).
+
+2. **Defensive list expansion** (user-flagged 2026-05-14): add SHV/BIL/UUP to `defensive_tickers` so 2022-style rate-shock bears have working hedges. Optionally split into `defensive_tickers_inflationary` / `_deflationary`.
+
+### P2 — Retest shorts conditional (after P1)
+
+Re-run 16-window paired panel with:
+- Shorts ON in regimes ∈ {BEAR-OFFENSIVE if chosen, CHOPPY, BULL_VOL}
+- Shorts OFF in regimes ∈ {BULL_CALM, BULL_STRONG}
+
+Expected outcome (per audit + 5-test framework):
+- Mean Δ_APY ≈ +8.7pt (vs +6.23pt unconditional)
+- Catastrophes Q07/Q11 eliminated (BULL_STRONG no shorts)
+- Regime-stratified test: all 3-5 regimes WIN or NEUTRAL
+- Tier 2 SCREEN likely; Tier 3 possible if DSR > 0.95
+
+### P3 — Promote if Tier 3 (after P2)
+
+Per `feedback_auto_promote_to_prod.md`. Shorts feature is in the auto-promote EXCLUSION list (risk-loosening), so this requires user confirmation per `feedback_no_leverage_invariant`. Still gated to `long_short.enabled = false` + `regime_params.<regime>.long_short_enabled = true` per-regime for explicit auditability.
+
+---
 
 ---
 
