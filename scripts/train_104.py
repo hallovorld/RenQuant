@@ -67,7 +67,20 @@ def main() -> None:
         help="Bypass acceptance gates for this run (operator override). "
              "DANGEROUS — only use for known-broken-but-recoverable cases.",
     )
+    # 2026-05-15 fix: conditional_retrain_104.sh passes --trigger=<tag> to
+    # tag what fired the off-cadence retrain (anomaly_spy_2pct / anomaly_vix_5pct /
+    # anomaly_unknown). Used in audit logging; doesn't change training flow.
+    # Pre-fix: argparse rejected unknown arg → "ntfy: training failed" alert
+    # at 13:10 on 2026-05-15 (VIX +5.68% triggered retrain).
+    p.add_argument(
+        "--trigger",
+        default="cadence",
+        help="Tag identifying what fired this retrain (e.g. anomaly_vix_5pct). "
+             "Logged but does not alter training flow. Default: 'cadence'.",
+    )
     args = p.parse_args()
+    log.info("train_104: trigger=%s strategy=%s force=%s",
+             args.trigger, args.strategy, args.force)
 
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
     config_path  = strategy_dir / args.strategy_config_name
