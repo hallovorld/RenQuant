@@ -153,14 +153,26 @@ class TestBuyUniverseDefensiveOhlcv:
 class TestGateChainNoEarlyShortCircuit:
     def test_bear_branch_returns_none_not_false(self):
         """BEAR regime sets bear_only but doesn't halt the chain so
-        velocity/EMA50 can still set buy_blocked when applicable."""
+        velocity/EMA50 can still set buy_blocked when applicable.
+
+        2026-05-15 update: BEARBranchTask soft-gate (commit 2447dcb)
+        now requires confidence ≥ bear_branch_min_confidence (default 0.60)
+        AND not in_transition before setting bear_only=True. This test
+        retains the original audit #15 invariant ("chain continues")
+        AND covers the high-conf path that fires bear_only=True.
+        See tests/test_bear_branch_soft_gate.py for soft-gate-specific
+        invariants (transition / low-conf veto / legacy mode)."""
         from kernel.pipeline.task_gates import BEARBranchTask
         from kernel.config import BEAR
-        ctx = SimpleNamespace(regime=BEAR, bear_only=False, buy_blocked=False,
-                               counters={}, config={"regime": {}})
+        ctx = SimpleNamespace(
+            regime=BEAR, bear_only=False, buy_blocked=False,
+            confidence=1.0,  # high-conf path → bear_only=True
+            regime_state=SimpleNamespace(in_transition=False),
+            counters={}, config={"regime": {}},
+        )
         result = BEARBranchTask().run(ctx)
         assert result is None, \
-            "BEARBranchTask must continue chain (#15)"
+            "BEARBranchTask must continue chain (audit #15)"
         assert ctx.bear_only is True
 
     def test_confidence_veto_returns_none_when_triggered(self):

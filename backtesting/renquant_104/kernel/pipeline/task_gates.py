@@ -225,7 +225,10 @@ class BEARBranchTask(Task):
                         else False
         min_conf = float(regime_cfg.get("bear_branch_min_confidence", 0.60))
         import math
-        conf = ctx.confidence
+        # Defensive: pre-soft-gate test fixtures (e.g. test_audit_2026_04_24_fixes)
+        # construct ctx via SimpleNamespace() without setting confidence — treat
+        # missing attr as non-finite (same fail-SAFE branch as None/NaN/inf).
+        conf = getattr(ctx, "confidence", None)
         non_finite = (conf is None or not isinstance(conf, (int, float))
                       or not math.isfinite(float(conf)))
         if in_transition:
