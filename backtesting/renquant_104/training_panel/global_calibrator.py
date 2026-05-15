@@ -139,11 +139,44 @@ class GlobalPanelCalibration:
             raise ValueError(
                 f"Not a global_panel_calibration artifact: {path}",
             )
+        prob_y = np.asarray(payload["probability"]["y"],     dtype=float)
+        er_y   = np.asarray(payload["expected_return"]["y"], dtype=float)
+
+        # 2026-05-15 BUG #9 GUARD CLASS: load-time range-bound check.
+        # Defense in depth — CLAUDE.md §5.13.12 mandates clipping at the
+        # TRAIN site, but artifacts trained before the clip rule was added
+        # (e.g. 2026-05-09 prod and 2026-05-11 recent-12mo) have y values
+        # in [-0.93, +1.00] for expected_return. Loading such an artifact
+        # at inference time and feeding it into Kelly sizing would produce
+        # nonsense position sizes. Loud warning so the operator can spot
+        # this in startup logs; soft-clip the actual array values so the
+        # downstream interpolation doesn't return obviously-broken outputs.
+        prob_y_max, prob_y_min = float(prob_y.max(initial=0.0)), float(prob_y.min(initial=0.0))
+        er_y_absmax = float(np.max(np.abs(er_y), initial=0.0))
+        if prob_y_max > 1.0 or prob_y_min < 0.0:
+            log.warning(
+                "GlobalPanelCalibration.load: probability.y out of [0,1] "
+                "range [%.4f, %.4f] at %s — clipping. Train-site fix: "
+                "ensure isotonic targets are 0/1 indicators.",
+                prob_y_min, prob_y_max, path,
+            )
+            prob_y = np.clip(prob_y, 0.0, 1.0)
+        if er_y_absmax > 0.20:
+            log.warning(
+                "GlobalPanelCalibration.load: expected_return.y has "
+                "max|y|=%.4f > 0.20 sanity bound at %s — clipping to "
+                "±0.20. CLAUDE.md §5.13.12: clip at train site. Until "
+                "the calibrator is retrained with clipped targets, "
+                "Kelly sizing on this signal is suspect.",
+                er_y_absmax, path,
+            )
+            er_y = np.clip(er_y, -0.20, 0.20)
+
         return cls(
             prob_x = np.asarray(payload["probability"]["x"], dtype=float),
-            prob_y = np.asarray(payload["probability"]["y"], dtype=float),
+            prob_y = prob_y,
             er_x   = np.asarray(payload["expected_return"]["x"], dtype=float),
-            er_y   = np.asarray(payload["expected_return"]["y"], dtype=float),
+            er_y   = er_y,
             metadata = payload.get("metadata", {}),
         )
 

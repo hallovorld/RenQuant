@@ -824,6 +824,55 @@ class ApplyGlobalCalibrationTask(Task):
                     ranks, model_name="ApplyGlobalCalibrationTask",
                     expected_min=0.0, expected_max=1.0,
                 )
+                # 2026-05-15 BUG #7 GUARD: upper-tail saturation detection.
+                # User-observed silent failure since 2026-05-12: calibrator
+                # mapped >50% of candidates to rank_score >= 0.95 because the
+                # isotonic curve has no clip at +1.0 and the training-x
+                # range was narrower than live-x range. soft_check_score_series
+                # only catches CONSTANT output (std<1e-8); a saturated
+                # upper-tail has high std but is still un-rankable.
+                #
+                # Invariant: in a working calibrator, IQR(rank_score) > 0.05
+                # AND fraction of values >= 0.95 < 50%. If either fails,
+                # the calibrator is degenerate for today's input; loud
+                # warning so the operator notices in ntfy / log audit.
+                # Does NOT clear scores — that would change prod behavior;
+                # Phase 3 (calibrator retrain) is the real fix.
+                iqr = float(ranks.quantile(0.75) - ranks.quantile(0.25))
+                sat_top = float((ranks >= 0.95).mean())
+                if iqr < 0.05 or sat_top >= 0.50:
+                    log.warning(
+                        "CALIBRATOR-SATURATED: rank_score IQR=%.3f (<0.05) "
+                        "OR fraction>=0.95=%.0f%% (>=50%%). Ranking is "
+                        "degenerate today; top-K selection is tie-broken "
+                        "by panel_score / ticker order, not by calibrated "
+                        "probability. Calibrator artifact needs retraining "
+                        "with output clipped at train site (CLAUDE.md "
+                        "§5.13.12). [P0 detected 2026-05-15]",
+                        iqr, sat_top * 100,
+                    )
+                # 2026-05-15 BUG #8 GUARD: expected_return out-of-range
+                # detection. Live prod calibrator's expected_return.y has
+                # values up to +1.0 (= +100% expected return) — clearly
+                # broken. Any candidate hitting that knot would get a
+                # Kelly target of "full position regardless of σ". Fire
+                # warning if any |expected_return| > 0.20 (20% over
+                # 20-day horizon is the highest plausibly real bound).
+                ers = [c.expected_return for c in ctx.candidates
+                       if c.expected_return is not None
+                       and c.expected_return == c.expected_return]
+                if ers:
+                    max_abs_er = max(abs(x) for x in ers)
+                    if max_abs_er > 0.20:
+                        log.warning(
+                            "CALIBRATOR-ER-OUT-OF-RANGE: max|expected_return|"
+                            "=%.3f over %d candidates exceeds 0.20 sanity "
+                            "bound. Calibrator's expected_return head was "
+                            "not clipped at train site (CLAUDE.md §5.13.12 "
+                            "violation). Kelly sizing on this signal would "
+                            "over-leverage these positions. [P0 detected 2026-05-15]",
+                            max_abs_er, len(ers),
+                        )
 
 
 # ── NGBoost tasks (Stage 2 — optional) ────────────────────────────────────────
