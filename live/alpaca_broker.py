@@ -21,22 +21,41 @@ log = logging.getLogger(__name__)
 
 
 class AlpacaBroker(BaseBroker):
-    """Execute orders via Alpaca Markets API."""
+    """Execute orders via Alpaca Markets API.
+
+    Multi-account support (2026-05-15): credentials are loaded from
+    environment variables keyed by ``env_prefix`` (default ``ALPACA``).
+    This lets distinct broker instances target distinct Alpaca accounts:
+
+      env_prefix="ALPACA"          → ALPACA_API_KEY / ALPACA_SECRET_KEY (live or paper sandbox)
+      env_prefix="ALPACA_SHORTS"   → ALPACA_SHORTS_API_KEY / ALPACA_SHORTS_SECRET_KEY (paper, shorts-only testing)
+
+    The ``label`` parameter customizes ``broker_name`` so each account
+    gets its own state-file namespace (see kernel.state_paths). Without
+    label collisions, live_state.alpaca.json and live_state.alpaca-shorts.json
+    track positions independently.
+    """
 
     def __init__(
         self,
         api_key: str | None = None,
         secret_key: str | None = None,
         paper: bool = True,
+        env_prefix: str = "ALPACA",
+        label: str | None = None,
     ):
-        self._api_key = api_key or os.environ.get("ALPACA_API_KEY", "")
-        self._secret_key = secret_key or os.environ.get("ALPACA_SECRET_KEY", "")
+        self._env_prefix = env_prefix
+        self._api_key = api_key or os.environ.get(f"{env_prefix}_API_KEY", "")
+        self._secret_key = secret_key or os.environ.get(f"{env_prefix}_SECRET_KEY", "")
         self._paper = paper
+        self._label = label
         self._trading_client = None
         self._order_counter = 0
 
     @property
     def broker_name(self) -> str:  # state-file isolation tag (see kernel.state_paths)
+        if self._label is not None:
+            return self._label
         return "alpaca-paper" if self._paper else "alpaca"
 
     def connect(self) -> None:

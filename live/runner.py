@@ -68,6 +68,19 @@ def _get_broker(broker_type: str, initial_cash: float = 100_000) -> BaseBroker:
         return AlpacaBroker(paper=False)
     elif broker_type == "alpaca-paper":
         return AlpacaBroker(paper=True)
+    elif broker_type == "alpaca-shorts":
+        # 2026-05-15: dedicated paper account for shorts feature testing.
+        # Credentials in ALPACA_SHORTS_API_KEY / ALPACA_SHORTS_SECRET_KEY
+        # (separate from ALPACA_API_KEY which the regular crons use for
+        # the LIVE account). Distinct broker_name="alpaca-shorts" gives
+        # state-file isolation: live_state.alpaca-shorts.json separate
+        # from live_state.alpaca.json. No risk of position-tracking
+        # collision with live trading.
+        return AlpacaBroker(
+            paper=True,
+            env_prefix="ALPACA_SHORTS",
+            label="alpaca-shorts",
+        )
     elif broker_type == "ibkr":
         return IBKRBroker()
     else:
@@ -572,7 +585,7 @@ def _is_multi_stock(strategy_name: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="RenQuant live trading runner")
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
-    parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "ibkr"], default="paper")
+    parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "alpaca-shorts", "ibkr"], default="paper")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--sell-only", action="store_true",
                         help="Process exits only — skip buy scan (for intraday runs)")
