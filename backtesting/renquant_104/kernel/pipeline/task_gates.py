@@ -190,13 +190,60 @@ class BEARBranchTask(Task):
     when `buy_blocked AND bear_only` — defensives can still be entered
     in BEAR even during a velocity crash, which is the intended behaviour
     (defensives like GLD/TLT exist precisely for those conditions).
+
+    2026-05-14 Soft-BEAR fix (Kaminski-Lo 2014 + Garleanu-Pedersen 2013):
+    Pre-fix this task fired on a SINGLE bar of regime==BEAR, regardless
+    of detector confidence or persistence. With the 2026-05-14 direction-
+    aware Hurst detector, bull windows (Q10/Q11/Q15) get 5-11% transient
+    BEAR mis-labels. Each one triggered a full defensive switch → strategy
+    sold positions → drawdown_halt liquidated → missed the V-recovery.
+    Net Panel A regression: −4.10pt mean Δ_APY vs original GMM baseline.
+
+    Soft fix (config-gated, default ON per PRIME DIRECTIVE):
+      * Skip bear_only when in_transition=True (cooldown window after
+        regime switch — confidence is flat 0.5).
+      * Skip bear_only when confidence < `regime.bear_branch_min_confidence`
+        (default 0.60). Real BEARs reach ≥0.8 confidence in 2-3 bars
+        (hard_bear or GMM-BEAR>0.5 path → confidence=1.0); transient
+        Hurst-MOMENTUM-down mis-fires sit at 0.5.
+
+    Set `regime.bear_branch_legacy_mode=true` to restore pre-fix behavior.
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
-        if ctx.regime == BEAR:
+        if ctx.regime != BEAR:
+            return None
+        # Restore pre-2026-05-14 hard-switch behavior if explicitly requested
+        regime_cfg = ctx.config.get("regime", {}) or {}
+        if bool(regime_cfg.get("bear_branch_legacy_mode", False)):
             ctx.bear_only = True
-            log.info("BEARBranchTask: BEAR regime — defensives only")
-            # Continue chain (velocity/EMA macros may still apply).
+            log.info("BEARBranchTask: BEAR regime (legacy mode) — defensives only")
+            return None
+        # Soft path: require confidence > threshold AND not in transition
+        rs = getattr(ctx, "regime_state", None)
+        in_transition = bool(getattr(rs, "in_transition", False)) if rs is not None \
+                        else False
+        min_conf = float(regime_cfg.get("bear_branch_min_confidence", 0.60))
+        import math
+        conf = ctx.confidence
+        non_finite = (conf is None or not isinstance(conf, (int, float))
+                      or not math.isfinite(float(conf)))
+        if in_transition:
+            ctx.counters["bear_branch_skipped_transition"] = (
+                ctx.counters.get("bear_branch_skipped_transition", 0) + 1
+            )
+            log.info("BEARBranchTask: regime=BEAR but in_transition — bear_only NOT set")
+            return None
+        if non_finite or float(conf) < min_conf:
+            ctx.counters["bear_branch_skipped_lowconf"] = (
+                ctx.counters.get("bear_branch_skipped_lowconf", 0) + 1
+            )
+            log.info("BEARBranchTask: regime=BEAR but conf=%s < %.2f — bear_only NOT set",
+                     "non-finite" if non_finite else f"{float(conf):.2f}", min_conf)
+            return None
+        ctx.bear_only = True
+        log.info("BEARBranchTask: BEAR regime (conf=%.2f ≥ %.2f) — defensives only",
+                 float(conf), min_conf)
 
 
 class VelocityCrashTask(Task):
