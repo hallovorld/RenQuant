@@ -390,7 +390,7 @@
     "short_decile": 0.1,
     "max_shorts": 3,
     "max_short_pct": 0.05,
-    "max_gross_exposure": 1.15,
+    "max_gross_exposure": 1.0,
     "borrow_rate_etb": 0.005,
     "borrow_rate_htb": 0.05,
     "borrow_status_path": "data/alpaca_borrow_status.json",

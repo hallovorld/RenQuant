@@ -325,8 +325,17 @@ class ComputeQPConstraintsTask(Task):
         ctx._qp_w_upper = np.full(n, max_pct * scale)  # noqa: SLF001
         # 2026-05-13 Long-Short Phase 2A: allow w_lower < 0 when enabled.
         # Config: long_short.enabled (bool), max_short_pct (per-name short cap),
-        #         max_gross_exposure (Σ|w| cap, ≤ Reg-T 150%).
+        #         max_gross_exposure (Σ|w| cap).
         # Default 0 → long-only (current behavior preserved).
+        #
+        # 2026-05-14 SAFETY (user mandate, no leverage authorized):
+        # Hard-cap max_gross_exposure at 1.0. The QP can still use shorts
+        # to net to (long + abs(short)) ≤ NAV, so the strategy is
+        # dollar-neutral capped, NOT leveraged. Any config value > 1.0
+        # is silently clamped to 1.0. Re-enabling leverage requires:
+        # (1) explicit user authorization, (2) editing this hard-cap
+        # constant, (3) updating tests/test_no_leverage_invariant.py.
+        _LEVERAGE_HARDCAP = 1.0
         ls_cfg = ctx.config.get("long_short", {}) or {}
         if ls_cfg.get("enabled", False):
             max_short_pct = float(ls_cfg.get("max_short_pct", 0.05))
@@ -336,8 +345,8 @@ class ComputeQPConstraintsTask(Task):
                 ctx._qp_gross_max = None  # noqa: SLF001 — no shorts, no gross cap
             else:
                 ctx._qp_w_lower = -float(max_short_pct) * scale  # noqa: SLF001
-                # Reg-T spirit: cap gross at 1.5 max (default 1.3 = 100% long + 30% short)
-                ctx._qp_gross_max = float(ls_cfg.get("max_gross_exposure", 1.30))  # noqa: SLF001
+                _cfg_gross = float(ls_cfg.get("max_gross_exposure", _LEVERAGE_HARDCAP))
+                ctx._qp_gross_max = min(_cfg_gross, _LEVERAGE_HARDCAP)  # noqa: SLF001
         else:
             ctx._qp_w_lower = 0.0  # noqa: SLF001
             ctx._qp_gross_max = None  # noqa: SLF001 — long-only path; cp.sum(wp)≤1 binds
