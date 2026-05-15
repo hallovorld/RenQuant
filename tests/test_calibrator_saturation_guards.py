@@ -150,27 +150,37 @@ class TestCalibratorLoadGuards:
             f"train-site clip not enforced: er_y.min()={cal.er_y.min()}"
         )
 
-    def test_prod_artifact_today_triggers_guard(self, caplog):
-        """The actual prod calibrator on disk (as of 2026-05-15) violates
-        the ER bound — guard MUST fire."""
+    def test_preclip_snapshot_triggers_guard(self, caplog):
+        """The pre-clip snapshot (preserved as `.pre-2026-05-15-clip.json`)
+        is the live evidence of the bug class this guard catches. Verifies
+        the load-time guard fires + clips er_y to ±0.20 on the actual
+        broken artifact, AND that the CURRENT prod artifact (post-refit)
+        loads silently. Together these pin both branches of the invariant."""
         from training_panel.global_calibrator import GlobalPanelCalibration
 
-        prod_path = REPO_ROOT / ("backtesting/renquant_104/artifacts/"
-                                  "prod/panel-rank-calibration.json")
-        if not prod_path.exists():
-            pytest.skip(f"prod calibrator not on disk: {prod_path}")
+        snap = REPO_ROOT / ("backtesting/renquant_104/artifacts/prod/"
+                             "panel-rank-calibration.pre-2026-05-15-clip.json")
+        prod = REPO_ROOT / ("backtesting/renquant_104/artifacts/prod/"
+                             "panel-rank-calibration.json")
+        if not snap.exists() or not prod.exists():
+            pytest.skip(f"calibrator artifacts not on disk")
 
+        # Broken snapshot trips the guard
         with caplog.at_level(logging.WARNING):
-            cal = GlobalPanelCalibration.load(prod_path)
-
-        # After load + clip, the y arrays must be in-range
-        assert float(cal.er_y.max()) <= 0.20 + 1e-9
-        assert float(cal.er_y.min()) >= -0.20 - 1e-9
-        # And the guard must have fired
-        assert any("expected_return" in r.message
-                    and "0.20" in r.message
+            cal_bad = GlobalPanelCalibration.load(snap)
+        assert float(cal_bad.er_y.max()) <= 0.20 + 1e-9
+        assert any("expected_return" in r.message and "0.20" in r.message
                    for r in caplog.records), \
-            "prod calibrator has |er_y|>0.20 but guard didn't fire"
+            "snapshot has |er_y|>0.20 but guard didn't fire"
+
+        # Clean current prod loads silently — no clip warning
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            cal_good = GlobalPanelCalibration.load(prod)
+        assert float(cal_good.er_y.max()) <= 0.20 + 1e-9
+        assert not any("clipping" in r.message.lower()
+                       for r in caplog.records), \
+            "clean prod artifact triggered clip warning unexpectedly"
 
 
 class TestApplyGlobalCalibrationSaturationGuard:
