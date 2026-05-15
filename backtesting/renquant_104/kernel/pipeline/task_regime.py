@@ -107,11 +107,22 @@ class GMMTask(Task):
             ctx.regime_state.gmm_probs = {}
             return
 
-        ctx.regime_state.gmm_probs = gmm_predict(
-            ctx.gmm, spy_returns, spy_df, vol_window=vol_window
-        )
+        # 2026-05-14 P0/HMM upgrade (Hamilton 1989 Markov-switching):
+        # Route to hmm_predict when the loaded artifact carries
+        # `model_type=GaussianHMM`. Per-bar GMM is retained as
+        # fallback for legacy artifacts. This is the ONLY decision
+        # site — kernel/regime_hmm.py owns the forward algorithm.
+        from kernel.regime_hmm import is_hmm_artifact, hmm_predict  # noqa: PLC0415
+        if is_hmm_artifact(ctx.gmm):
+            ctx.regime_state.gmm_probs = hmm_predict(
+                ctx.gmm, spy_returns, spy_df, vol_window=vol_window,
+            )
+        else:
+            ctx.regime_state.gmm_probs = gmm_predict(
+                ctx.gmm, spy_returns, spy_df, vol_window=vol_window,
+            )
         if not ctx.regime_state.gmm_probs:
-            log.warning("GMMTask: gmm_predict returned empty probs.")
+            log.warning("GMMTask: prediction returned empty probs.")
             return
         dominant = max(ctx.regime_state.gmm_probs, key=ctx.regime_state.gmm_probs.get)
         log.debug("GMMTask: probs=%s  dominant=%s", ctx.regime_state.gmm_probs, dominant)
@@ -185,10 +196,27 @@ class RegimeFinalizeTask(Task):
 
         prev_regime = state.regime   # snapshot BEFORE mutating
 
+        # 2026-05-14 Direction-aware Hurst (mirrors kernel/regime.py fix):
+        # Hurst > 0.65 only tells us the market is TRENDING; pair with SPY
+        # direction (close vs MA50) to distinguish bull rally from bear
+        # decline. Pre-fix, 2022 Q2 (SPY −20%) labeled BULL_CALM 100%.
+        spy_trend_up = True  # default if SPY OHLCV missing
+        spy_df = (ctx.ohlcv or {}).get("SPY") if hasattr(ctx, "ohlcv") else None
+        if spy_df is not None and len(spy_df) >= 50:
+            try:
+                import math as _math
+                spy_close = float(spy_df["close"].iloc[-1])
+                spy_ma50 = float(spy_df["close"].rolling(50).mean().iloc[-1])
+                if _math.isfinite(spy_close) and _math.isfinite(spy_ma50):
+                    spy_trend_up = spy_close > spy_ma50
+            except Exception:
+                pass
+
         if state.hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
             new_regime = BEAR
         elif state.hurst_regime == "MOMENTUM":
-            new_regime = "BULL_CALM"
+            # Direction-aware: trending up = BULL_CALM, trending down = BEAR
+            new_regime = "BULL_CALM" if spy_trend_up else BEAR
         elif state.hurst_regime == "REVERSION":
             new_regime = "CHOPPY"
         else:
