@@ -4,6 +4,44 @@ Guidance for Claude Code working in this repository. **Concise on purpose** — 
 
 ---
 
+## 🔴 PRIME DIRECTIVE — RenQuant is a REGIME-CONDITIONAL strategy
+
+**This is non-negotiable architecture, set by user 2026-05-14.** Every feature, every knob, every experiment must be designed and evaluated through a regime-conditional lens. Pooled-mean metrics across regimes are MISLEADING and produce false NEITHER verdicts.
+
+### Implications
+
+1. **Every numeric knob should live in `regime_params.<REGIME>.<knob>`**, not as a global scalar. Examples that should be per-regime (most are not yet — wire them progressively):
+   - `long_short.enabled`, `long_short.max_short_pct`, `long_short.max_shorts`
+   - `stop_loss_pct`, `trailing_stop_trigger_pct`, `trailing_stop_trail_pct`
+   - `max_holding_days`, `take_profit_pct`, `drawdown_halt_pct`, `drawdown_resume_pct`
+   - `kappa` (risk aversion), `qp_dw_max` (rebalance throttle), `qp_turnover_penalty`
+   - `vol_target`, `kelly_scale`, `cash_reserve_pct`, `min_model_score`
+   - `bear_defensive_slots`, `bear_defensive_pct`, `defensive_tickers`
+   - `entry_mode`, `min_price_move_pct`
+
+2. **Every experiment design starts with: "which regime does this thesis apply to?"** If the thesis is regime-neutral, that's a red flag — most signals are not. The experiment config should differ per regime, not flip one global switch.
+
+3. **Every evaluation reports per-regime numbers first, pooled-mean second.** The 5-test framework already has a regime-stratified test — that test is the PRIMARY signal, not the pooled mean. A "WIN in 3 regimes / LOSE in 2 regimes" is actionable (deploy conditionally); a "+6.23pt pooled NEITHER" hides the signal.
+
+4. **Regime detector quality is P0.** If the detector mis-labels regimes (e.g., 2026-05-14 bug where 2022-Q2 bear labeled BULL_CALM 100% of bars), all regime-conditional logic is theatrical. Detector accuracy on known objective regimes must be tested whenever the detector code changes.
+
+5. **Promotion gating uses regime-stratified Tier 2/3 criteria.** A change that wins in regimes A+B and loses in regime C is promotable ONLY as a regime-conditional config edit (enable in A+B, leave default in C), NEVER as a global flip. No exceptions.
+
+### Why this exists
+
+2026-05-14 session: shorts ON pooled across 16 windows scored NEITHER (+6.23pt, p=0.23). But regime-stratified: BEAR +22pt / CHOPPY +14pt / BULL_VOL +13pt (wins) vs BULL_CALM −8pt / BULL_STRONG −2pt (losses with 2 catastrophes). The right answer was "deploy shorts conditional on regime ∈ {BEAR, CHOPPY, BULL_VOL}", not "reject shorts globally". Pooled-mean evaluation buried the actionable signal.
+
+Same week: regime detector was found to label 2022 Q2 bear market as BULL_CALM 100% of bars because Hurst > 0.65 (trending) routes to BULL_CALM regardless of direction. Fixed in commit `3925c0d` via SPY < MA50 direction signal. Without this fix, every `regime_params.BEAR.*` setting in the config was decorative.
+
+### Where to start reading
+
+- Current regime detector: `kernel/regime.py` (standalone) + `kernel/pipeline/task_regime.py` (production task path — both must stay in sync)
+- Current regime params: `strategy_config.golden.json::regime_params.{BULL_CALM,BULL_VOLATILE,BEAR,CHOPPY}`
+- Evaluation methodology: `feedback_eval_robust_methodology.md` memory + `doc/research/2026-05-14-longshort-clean-FINAL.md`
+- Promotion gating: `doc/research/promotion-methodology.md` (3-tier)
+
+---
+
 ## 🗂 Status (2026-05-12 EVENING — methodology rebuild + regime-conditional finding)
 
 > **EVENING UPDATE (2026-05-12 22:30 PT) — 3 NEW LOAD-BEARING FINDINGS:**
