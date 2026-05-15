@@ -196,27 +196,44 @@ class RegimeFinalizeTask(Task):
 
         prev_regime = state.regime   # snapshot BEFORE mutating
 
-        # 2026-05-14 Direction-aware Hurst (mirrors kernel/regime.py fix):
-        # Hurst > 0.65 only tells us the market is TRENDING; pair with SPY
-        # direction (close vs MA50) to distinguish bull rally from bear
-        # decline. Pre-fix, 2022 Q2 (SPY −20%) labeled BULL_CALM 100%.
-        spy_trend_up = True  # default if SPY OHLCV missing
+        # 2026-05-14 Direction-aware Hurst with MA200 confirmation:
+        # Hurst > 0.65 tells us the market is TRENDING; pair with TWO SPY
+        # direction signals (MA50 + MA200) to distinguish bull rally from
+        # bear decline.
+        #
+        # Why BOTH MAs are required (2026-05-14 audit):
+        # Initial fix (commit 3925c0d) used MA50 alone. Empirically, in
+        # bull markets (Q11 BULL_STRONG) SPY < MA50 happens on 8% of days
+        # (normal corrections). Those days mis-labeled BEAR → transition
+        # cooldown fired (3 bars at conf=0.5) → confidence_to_size_multiplier
+        # halved positions for 8 days → Q11 Panel A −27pt vs original baseline.
+        # MA200 is much stickier — 0/64 bars below MA200 in Q11 BULL_STRONG.
+        # Real bears (Q01 2022-Q2) have 94% bars below MA200 too — gate
+        # preserves true-BEAR detection while eliminating bull noise.
+        spy_below_ma50 = False
+        spy_below_ma200 = False
         spy_df = (ctx.ohlcv or {}).get("SPY") if hasattr(ctx, "ohlcv") else None
-        if spy_df is not None and len(spy_df) >= 50:
+        if spy_df is not None and len(spy_df) >= 200:
             try:
                 import math as _math
                 spy_close = float(spy_df["close"].iloc[-1])
                 spy_ma50 = float(spy_df["close"].rolling(50).mean().iloc[-1])
-                if _math.isfinite(spy_close) and _math.isfinite(spy_ma50):
-                    spy_trend_up = spy_close > spy_ma50
+                spy_ma200 = float(spy_df["close"].rolling(200).mean().iloc[-1])
+                if _math.isfinite(spy_close) and _math.isfinite(spy_ma50) \
+                   and _math.isfinite(spy_ma200):
+                    spy_below_ma50 = spy_close < spy_ma50
+                    spy_below_ma200 = spy_close < spy_ma200
             except Exception:
                 pass
+        spy_bearish_trend = spy_below_ma50 and spy_below_ma200
 
         if state.hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
             new_regime = BEAR
         elif state.hurst_regime == "MOMENTUM":
-            # Direction-aware: trending up = BULL_CALM, trending down = BEAR
-            new_regime = "BULL_CALM" if spy_trend_up else BEAR
+            # Direction-aware (both MA50 AND MA200 must be below):
+            #   trending up OR mixed (MA50/MA200 disagree)  → BULL_CALM
+            #   trending down (both MAs below)              → BEAR
+            new_regime = BEAR if spy_bearish_trend else "BULL_CALM"
         elif state.hurst_regime == "REVERSION":
             new_regime = "CHOPPY"
         else:

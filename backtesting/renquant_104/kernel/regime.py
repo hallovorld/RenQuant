@@ -444,30 +444,33 @@ def detect_regime(
         spy_20d_ret = 0.0
     hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
 
-    # 2026-05-14 Direction-aware Hurst fix (user mandate, regime-conditional
-    # strategy work): Hurst > trending_threshold only tells us the market is
-    # TRENDING; it does NOT distinguish up-trends from down-trends. Pre-fix,
-    # 2022 Q2 (a slow bear, SPY −20% in 3 months) had Hurst ≈ 0.72 and was
-    # routed to BULL_CALM — strategy went 100% long into the falling market.
-    #
-    # Fix: pair Hurst-MOMENTUM with SPY direction (close vs MA50). Down-
-    # trending momentum = BEAR; up-trending = BULL_CALM.
-    spy_trend_up = True  # default: assume up if MA50 unavailable
-    if spy_df is not None and len(spy_df) >= 50:
+    # 2026-05-14 Direction-aware Hurst with MA200 confirmation (audit):
+    # Initial fix used MA50 alone; empirically caused Panel A −27pt Q11
+    # regression because bull-market pullbacks brief-trip SPY<MA50.
+    # Now requires BOTH MA50 AND MA200 below — eliminates bull noise
+    # while preserving real bear detection (2022 Q2: 94% bars below MA200).
+    spy_below_ma50 = False
+    spy_below_ma200 = False
+    if spy_df is not None and len(spy_df) >= 200:
         try:
             spy_close = float(spy_df["close"].iloc[-1])
             spy_ma50 = float(spy_df["close"].rolling(50).mean().iloc[-1])
-            if math.isfinite(spy_close) and math.isfinite(spy_ma50):
-                spy_trend_up = spy_close > spy_ma50
+            spy_ma200 = float(spy_df["close"].rolling(200).mean().iloc[-1])
+            if math.isfinite(spy_close) and math.isfinite(spy_ma50) \
+               and math.isfinite(spy_ma200):
+                spy_below_ma50 = spy_close < spy_ma50
+                spy_below_ma200 = spy_close < spy_ma200
         except Exception:
             pass
+    spy_bearish_trend = spy_below_ma50 and spy_below_ma200
 
     # Resolve regime
     if hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
         new_regime = BEAR
     elif hurst_regime == "MOMENTUM":
-        # Direction-aware: trending up = BULL_CALM, trending down = BEAR
-        new_regime = BULL_CALM if spy_trend_up else BEAR
+        # Direction-aware: trending up OR mixed → BULL_CALM
+        #                  bearish trend (both MAs below) → BEAR
+        new_regime = BEAR if spy_bearish_trend else BULL_CALM
     elif hurst_regime == "REVERSION":
         new_regime = CHOPPY
     else:

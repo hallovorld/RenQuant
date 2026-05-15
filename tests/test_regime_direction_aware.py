@@ -95,7 +95,7 @@ class TestDirectionAwareHurst:
             rets = sub["ret"].dropna().values[-250:]
             if len(rets) < 100:
                 continue
-            detect_regime(rets, sub.tail(60), None, state, _BASE_CFG)
+            detect_regime(rets, sub.tail(250), None, state, _BASE_CFG)
             if state.regime == "BEAR":
                 bear_count += 1
             total += 1
@@ -121,7 +121,7 @@ class TestDirectionAwareHurst:
             rets = sub["ret"].dropna().values[-250:]
             if len(rets) < 100:
                 continue
-            detect_regime(rets, sub.tail(60), None, state, _BASE_CFG)
+            detect_regime(rets, sub.tail(250), None, state, _BASE_CFG)
             if state.regime == "BEAR":
                 bear_count += 1
             total += 1
