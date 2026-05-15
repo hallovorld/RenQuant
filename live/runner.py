@@ -488,13 +488,37 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         else:
             parts.append(f"no trade ({_why_no_trade()})")
 
-    # Always append system state snapshot for audit visibility
+    # Always append system state snapshot for audit visibility.
+    # 2026-05-15: expanded regime info — operator needs to see WHY
+    # regime was chosen + WHETHER it just flipped. Three new fields:
+    #   transition: cooldown active right after a regime switch (3-bar)
+    #   hard_bear:  extreme vol/return forced BEAR (>0.35 ann_vol or
+    #               -0.08 20d_ret per kernel.regime.detect_regime)
+    #   hurst:      0.5=random, >0.65=trending (MOMENTUM), <0.52=mean-rev
+    # Without these, "regime=BEAR" alone can't distinguish a transient
+    # mis-fire (low conf) from a real bear (hard_bear=T + high conf).
     ctx_bits: list[str] = [f"regime={regime}"]
     if conf is not None:
         try:
             ctx_bits.append(f"conf={float(conf):.2f}")
         except (TypeError, ValueError):
             pass
+    rs = getattr(ctx, "regime_state", None)
+    if rs is not None:
+        if getattr(rs, "in_transition", False):
+            ctx_bits.append("transition=T")
+        if getattr(rs, "hard_bear", False):
+            ctx_bits.append("hard_bear=T")
+        h = getattr(rs, "hurst", None)
+        if h is not None:
+            try:
+                ctx_bits.append(f"hurst={float(h):.2f}")
+            except (TypeError, ValueError):
+                pass
+        hr = getattr(rs, "hurst_regime", None)
+        if hr and hr != "AMBIGUOUS":
+            # Only surface non-default Hurst route to keep body terse
+            ctx_bits.append(f"hurst_reg={hr[:3]}")
     ctx_bits.append(f"held={n_held}")
     if eq is not None:
         try:

@@ -220,6 +220,67 @@ class TestBodyIncludesContextSnapshot:
         assert "held=2" in body
         assert "eq=$10,071" in body
 
+    def test_transition_flag_surfaced(self):
+        """When regime just changed, in_transition=True must show in ntfy
+        so operator can distinguish a fresh flip from a stable regime."""
+        notify = self._import()
+        ctx = _stub_ctx(regime_state=SimpleNamespace(
+            in_transition=True, hard_bear=False, hurst=0.55, hurst_regime="AMBIGUOUS"))
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "transition=T" in body
+
+    def test_hard_bear_flag_surfaced(self):
+        """hard_bear=True (extreme vol/return forced BEAR) is the most
+        important regime diagnostic — must always surface."""
+        notify = self._import()
+        ctx = _stub_ctx(regime="BEAR", confidence=1.0,
+                        regime_state=SimpleNamespace(
+                            in_transition=False, hard_bear=True,
+                            hurst=0.42, hurst_regime="REVERSION"))
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "regime=BEAR" in body
+        assert "hard_bear=T" in body
+
+    def test_hurst_value_surfaced(self):
+        """Hurst exponent tells operator how trending the market is."""
+        notify = self._import()
+        ctx = _stub_ctx(regime_state=SimpleNamespace(
+            in_transition=False, hard_bear=False, hurst=0.72,
+            hurst_regime="MOMENTUM"))
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "hurst=0.72" in body
+        # MOMENTUM truncated to first 3 chars to keep body terse
+        assert "hurst_reg=MOM" in body
+
+    def test_ambiguous_hurst_not_surfaced(self):
+        """AMBIGUOUS Hurst regime is the default — don't clutter ntfy."""
+        notify = self._import()
+        ctx = _stub_ctx(regime_state=SimpleNamespace(
+            in_transition=False, hard_bear=False, hurst=0.55,
+            hurst_regime="AMBIGUOUS"))
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "hurst=0.55" in body
+        assert "hurst_reg=" not in body
+
+    def test_stable_regime_no_transition_marker(self):
+        """When in_transition=False and hard_bear=False, those flags
+        should NOT appear (clean body when conditions are normal)."""
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "transition=" not in body
+        assert "hard_bear=" not in body
+
 
 class TestSilentIntradayNoOp:
     """User rule (2026-04-27): the every-30-min intraday sell-only cycle
