@@ -92,8 +92,9 @@ class TestLongShortPhase2A:
         # gross_max=None when long-only (no constraint imposed)
         assert ctx._qp_gross_max is None
 
-    def test_gross_max_set_when_shorts_enabled(self):
-        """long_short.enabled=true → gross_max read from config (default 1.30)."""
+    def test_gross_max_clamped_to_1_0_when_config_exceeds(self):
+        """2026-05-14 safety: any max_gross_exposure > 1.0 is silently clamped.
+        User has NOT authorized leverage. Pinned by test_no_leverage_invariant."""
         from kernel.portfolio_qp.tasks import ComputeQPConstraintsTask
         ctx = _make_ctx(
             regime_params={"BULL_CALM": {"max_position_pct": 0.20}},
@@ -101,17 +102,20 @@ class TestLongShortPhase2A:
                         "max_gross_exposure": 1.40},
         )
         ComputeQPConstraintsTask().run(ctx)
-        assert ctx._qp_gross_max == 1.40
+        assert ctx._qp_gross_max == 1.0, (
+            f"Hardcap broken: config said 1.40, got {ctx._qp_gross_max}. "
+            f"See tests/test_no_leverage_invariant.py for the full guard."
+        )
 
-    def test_gross_max_default_1_30(self):
-        """When max_gross_exposure not set, defaults to 1.30 (Reg-T conservative)."""
+    def test_gross_max_default_1_0_when_unset(self):
+        """When max_gross_exposure not set, defaults to 1.0 (no leverage)."""
         from kernel.portfolio_qp.tasks import ComputeQPConstraintsTask
         ctx = _make_ctx(
             regime_params={"BULL_CALM": {"max_position_pct": 0.20}},
             long_short={"enabled": True, "max_short_pct": 0.05},
         )
         ComputeQPConstraintsTask().run(ctx)
-        assert ctx._qp_gross_max == 1.30
+        assert ctx._qp_gross_max == 1.0
 
     def test_gross_max_bear_overrides_to_none(self):
         """BEAR regime: w_lower=0 AND gross_max=None (no gross constraint needed)."""
