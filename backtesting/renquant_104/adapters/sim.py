@@ -1338,6 +1338,22 @@ class SimAdapter:
         if hasattr(self, "_total_fees"):
             self._total_fees += fees["total"]
 
+        # 2026-05-14 audit Bug B fix: log short opens in _trade_log so
+        # downstream summaries (Avg P&L/trade, total trades, etc.) include
+        # them. Pre-fix shorts were invisible to the trade-level analytics.
+        self._trade_log.append({
+            "action":      "short_open",
+            "ticker":      ticker,
+            "date":        today_ts,
+            "price":       fill_price,
+            "shares":      shares,         # positive magnitude (short side)
+            "pnl_pct":     0.0,            # P&L realized only on cover
+            "hold_days":   0,
+            "tax":         0.0,
+            "exit_reason": "short_open",
+            "partial":     False,
+        })
+
         # Create or update the HoldingState with NEGATIVE shares
         if ticker in self._holdings:
             existing = self._holdings[ticker]
