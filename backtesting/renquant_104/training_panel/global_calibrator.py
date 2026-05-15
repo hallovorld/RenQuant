@@ -448,21 +448,28 @@ def fit_global_calibrator(
         # solver uses ctx.expected_return = calibrator.expected_return(score)
         # in the μ vector → high-score tickers got μ=+4 → wildly inflated
         # position weight + Kelly sizing.
-        # Clip to ±1 (±100% over the lookahead horizon) — defensive bound;
-        # individual rows with > 100% return are outliers, not signal-quality.
-        # Soft-warn + clip; don't reject the run since these can be legitimate
-        # tail events that should still inform "go long this kind of pattern".
-        fwd_clipped_count = int(np.sum(np.abs(fwd_all) > 1.0))
+        # 2026-05-15 P0 Phase 4: TIGHTENED clip from ±1.0 to ±0.20.
+        # ±1.0 (= ±100% expected return over horizon) was a "defensive"
+        # bound that was empirically not defensive at all — observed prod
+        # calibrator had expected_return.y up to +1.0 with no clipping
+        # effect, feeding +100% returns into Kelly = max-position sizing
+        # for any candidate landing in saturated tail. Real-world 10-day
+        # expected returns on equities are ~±2% at the extreme; ±20% is
+        # a generous bound covering crisis-period tails without enabling
+        # broken-calibrator catastrophes. CLAUDE.md §5.13.12.
+        ER_CLIP = 0.20
+        fwd_clipped_count = int(np.sum(np.abs(fwd_all) > ER_CLIP))
         if fwd_clipped_count > 0:
             log.warning(
                 "fit_global_calibrator: clipping %d/%d (%.2f%%) raw fwd_returns "
-                "to [-1.0, +1.0] before isotonic ER fit. Pre-fix, these flowed "
-                "to er_y unclipped → calibrator.expected_return() could output "
-                "+400%% for high-score tickers, wildly inflating QP μ vectors.",
+                "to [%+.2f, %+.2f] before isotonic ER fit. Tightened from "
+                "±1.0 in 2026-05-15 P0 (live prod calibrator had +100%% ER "
+                "saturated tail → broke Kelly μ vectors).",
                 fwd_clipped_count, len(fwd_all),
                 100 * fwd_clipped_count / max(1, len(fwd_all)),
+                -ER_CLIP, ER_CLIP,
             )
-        fwd_for_er = np.clip(fwd_all, -1.0, 1.0)
+        fwd_for_er = np.clip(fwd_all, -ER_CLIP, ER_CLIP)
         iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_for_er)
         # Extract knots for JSON serialization. Use the isotonic model's own knots.
         prob_x = np.asarray(iso_p.X_thresholds_, dtype=float)
@@ -473,7 +480,7 @@ def fit_global_calibrator(
         # cases extrapolates knot y_thresholds_ outside the training range
         # (e.g. degenerate data). Clip the EMITTED knots too so any caller
         # reading the artifact directly sees sane bounds.
-        er_y = np.clip(er_y, -1.0, 1.0)
+        er_y = np.clip(er_y, -ER_CLIP, ER_CLIP)
 
     # Audit fix CALIB-COLLAPSE-GUARD (2026-04-26 round-7): refuse to
     # ship a calibrator where the probability head has < 5 unique y

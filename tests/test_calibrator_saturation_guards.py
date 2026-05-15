@@ -119,6 +119,37 @@ class TestCalibratorLoadGuards:
                             for r in caplog.records), \
                 f"clean artifact should not warn; got: {[r.message for r in caplog.records]}"
 
+    def test_train_site_clips_er_to_20pct(self):
+        """Phase 4 — fit_global_calibrator must clip ER to ±0.20 at train
+        site. Pre-fix the clip was ±1.0 which let +100% returns flow into
+        er_y and saturate the calibrator's upper tail."""
+        from training_panel.global_calibrator import fit_global_calibrator
+        import pandas as pd
+
+        # Synthesize panel with deliberate tail-event returns (+200%, -150%).
+        n = 2000
+        rng = np.random.default_rng(seed=42)
+        scores = pd.Series(
+            rng.normal(0, 1, n),
+            index=pd.date_range("2024-01-01", periods=n, freq="D"),
+        )
+        # Returns: most ~ ±5%, but a few tail events at ±200%
+        returns = rng.normal(0, 0.05, n)
+        returns[0] = +2.0   # +200% — should be clipped to +0.20
+        returns[1] = -1.5   # -150% — should be clipped to -0.20
+        fwd = pd.Series(returns, index=scores.index)
+
+        cal = fit_global_calibrator(
+            {"T01": scores}, {"T01": fwd},
+            lookahead_days=10, min_rows=100,
+        )
+        assert float(cal.er_y.max()) <= 0.20 + 1e-9, (
+            f"train-site clip not enforced: er_y.max()={cal.er_y.max()}"
+        )
+        assert float(cal.er_y.min()) >= -0.20 - 1e-9, (
+            f"train-site clip not enforced: er_y.min()={cal.er_y.min()}"
+        )
+
     def test_prod_artifact_today_triggers_guard(self, caplog):
         """The actual prod calibrator on disk (as of 2026-05-15) violates
         the ER bound — guard MUST fire."""
