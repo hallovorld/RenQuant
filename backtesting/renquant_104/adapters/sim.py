@@ -1221,6 +1221,17 @@ class SimAdapter:
                                 "SHORT_COVER_TAX %s short_pnl=$%.2f tax=$%.2f cover_shares=%d",
                                 ticker, short_pnl, short_tax, int(covered_shares),
                             )
+                    # §1233(e) → §1091: short-cover loss creates a wash-sale
+                    # window for subsequent LONG buys of substantially identical
+                    # security within 30 days. Stamp _last_sell_date +
+                    # _last_sell_pls so WashSaleFilterTask sees this exposure.
+                    if short_pnl < 0:
+                        if not hasattr(self, "_last_sell_date"):
+                            self._last_sell_date = {}
+                        self._last_sell_date[ticker] = today_ts
+                        if not hasattr(self, "_last_sell_pls"):
+                            self._last_sell_pls = {}
+                        self._last_sell_pls[ticker] = float(short_pnl)
             # SAB-2 guard: if old_entry is NaN/inf (corrupted state), use
             # the current price as entry rather than corrupt new_entry.
             if not math.isfinite(old_entry):
