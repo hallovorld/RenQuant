@@ -63,7 +63,7 @@ class TestArtifactDiscrimination:
             "transition_matrix": [[0.95, 0.025, 0.025]] * 3,
             "means": [[0] * 4] * 3,
             "covariances": [],
-            "cluster_labels": ["BEAR", "BULL_CALM", "BULL_STRONG"],
+            "cluster_labels": ["BEAR", "BULL_CALM", "BULL_VOLATILE"],
         }
         assert is_hmm_artifact(hmm) is True
 

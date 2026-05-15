@@ -141,13 +141,27 @@ def main():
         f"Per Ang-Bekaert 2002, ≥0.85 is the floor; check feature quality."
     )
 
-    # Map cluster idx → regime label by r10d feature
+    # Map cluster idx → regime label using the EXISTING codebase taxonomy:
+    # {BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR}. CHOPPY is the Hurst-layer
+    # label (not HMM); HMM emits the other three.
+    # Heuristic: sort by r10d (mean) AND vol20 (vol).
+    #   lowest r10d  → BEAR
+    #   highest r10d + low vol  → BULL_CALM (low-vol uptrend)
+    #   highest r10d + high vol → BULL_VOLATILE (high-vol uptrend)
+    # Tie-break by vol20 (feature index 1).
     r10d_means = hmm.means_[:, 0]
+    vol_means = hmm.means_[:, 1]
     sorted_idx = np.argsort(r10d_means)
     cluster_labels = ["UNK"] * 3
-    cluster_labels[sorted_idx[0]] = "BEAR"
-    cluster_labels[sorted_idx[1]] = "BULL_CALM"
-    cluster_labels[sorted_idx[2]] = "BULL_STRONG"
+    cluster_labels[sorted_idx[0]] = "BEAR"  # lowest r10d
+    # The two upper clusters: lower-vol = BULL_CALM, higher-vol = BULL_VOLATILE
+    up1, up2 = sorted_idx[1], sorted_idx[2]
+    if vol_means[up1] <= vol_means[up2]:
+        cluster_labels[up1] = "BULL_CALM"
+        cluster_labels[up2] = "BULL_VOLATILE"
+    else:
+        cluster_labels[up1] = "BULL_VOLATILE"
+        cluster_labels[up2] = "BULL_CALM"
     print(f"Cluster r10d means (standardized): {r10d_means.round(3)}")
     print(f"Cluster → label mapping: "
           f"{ {i: cluster_labels[i] for i in range(3)} }")
