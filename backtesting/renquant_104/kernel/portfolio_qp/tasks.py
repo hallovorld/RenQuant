@@ -924,11 +924,23 @@ class SolveMarkowitzQPTask(Task):
 
     def run(self, ctx) -> bool | None:
         cfg = _qp_cfg(ctx)
-        # 2026-05-06 — choose backend at runtime. Both backends accept the
-        # same kwargs; cvxportfolio variant uses Boyd's reference policy
-        # classes directly. Default is cvxpy (faster, supports tax-aware
-        # sells + soft cash-drag). cvxportfolio backend is opt-in for
-        # users who want Boyd's class hierarchy verbatim.
+        backend, _solve = self._pick_backend(cfg)
+        kwargs = self._build_solver_kwargs(ctx, cfg)
+        if backend == "cvxportfolio":
+            self._strip_kwargs_for_cvxportfolio(kwargs, ctx)
+        sol = _solve(**kwargs)
+        sol = _retry_with_relaxed_c2_caps(sol, kwargs, _solve)
+        ctx._qp_solution = sol  # noqa: SLF001
+        ctx._qp_n_buys = 0  # noqa: SLF001
+        ctx._qp_n_sells = 0  # noqa: SLF001
+
+    @staticmethod
+    def _pick_backend(cfg: dict):
+        """Choose cvxpy (default) vs cvxportfolio (opt-in, Boyd ref).
+
+        2026-05-06: both backends accept the same kwargs; cvxportfolio
+        uses Boyd's reference policy classes verbatim.
+        """
         backend = str(cfg.get("qp_solver_backend", "cvxpy")).lower()
         if backend == "cvxportfolio":
             from kernel.portfolio_qp.cvxportfolio_backend import (  # noqa: PLC0415
@@ -938,8 +950,16 @@ class SolveMarkowitzQPTask(Task):
             from kernel.portfolio_qp.qp_solver import (  # noqa: PLC0415
                 solve_portfolio_qp as _solve,
             )
+        return backend, _solve
 
-        kwargs = dict(
+    @staticmethod
+    def _build_solver_kwargs(ctx, cfg: dict) -> dict:
+        """Marshal ctx + cfg into solve_portfolio_qp's kwargs.
+
+        Single source of truth for every QP knob; future additions go here.
+        See `qp_solver.solve_portfolio_qp` docstring for parameter semantics.
+        """
+        return dict(
             w_current=_get_path(ctx, "_qp_w_current"),
             mu=_get_path(ctx, "_qp_mu"),
             sigma=_get_path(ctx, "_qp_sigma"),
@@ -967,39 +987,23 @@ class SolveMarkowitzQPTask(Task):
             fixed_cost_beta=float(cfg.get("qp_fixed_cost_beta", 200.0)),
             budget_mode=str(cfg.get("qp_budget_mode", "inequality")),
             min_invested_pct=float(cfg.get("qp_min_invested_pct", 0.0)),
-            # NEW (2026-05-06): soft cash-drag penalty replaces the
-            # pre-2026-05-06 hard `Σwp ≥ min_invested_pct` floor that was
-            # mathematically infeasible from cash + tight turnover.
             cash_drag_lambda=float(cfg.get("qp_cash_drag_lambda", 0.05)),
-            # NEW (2026-05-10): C2 — hard sector + correlation pair caps.
-            # cvxportfolio backend doesn't see these (no parity yet); the
-            # cvxpy core solver takes them and emits diagnostic counters.
             sector_indicator=_get_path(ctx, "_qp_sector_indicator"),
             sector_cap_vec=_get_path(ctx, "_qp_sector_cap_vec"),
             corr_group_pairs=_get_path(ctx, "_qp_corr_group_pairs"),
-            # 2026-05-13 Long-Short Phase 2A: gross-exposure cap (Σ|wp|).
-            # Default None → no constraint (long-only path; sum(wp) ≤ 1 binds).
-            # When long_short.enabled, set to max_gross_exposure (≤ 1.5 by
-            # Reg-T spirit). Read from ctx so ComputeQPConstraintsTask can
-            # override.
             gross_max=_get_path(ctx, "_qp_gross_max"),
         )
-        # cvxportfolio backend additionally takes a `tickers` kwarg for
-        # pandas-Series labelling; cvxpy backend ignores it.
-        if backend == "cvxportfolio":
-            kwargs["tickers"] = _get_path(ctx, "_qp_tickers")
-            # cvxportfolio backend doesn't accept the new linear constraints
-            # yet — strip them so it doesn't TypeError. Fall back to soft
-            # diversification via Σ shrinkage only.
-            kwargs.pop("sector_indicator", None)
-            kwargs.pop("sector_cap_vec", None)
-            kwargs.pop("corr_group_pairs", None)
-            kwargs.pop("gross_max", None)  # Phase 2A: long-short not supported in cvxportfolio backend
-        sol = _solve(**kwargs)
-        sol = _retry_with_relaxed_c2_caps(sol, kwargs, _solve)
-        ctx._qp_solution = sol  # noqa: SLF001
-        ctx._qp_n_buys = 0  # noqa: SLF001
-        ctx._qp_n_sells = 0  # noqa: SLF001
+
+    @staticmethod
+    def _strip_kwargs_for_cvxportfolio(kwargs: dict, ctx) -> None:
+        """cvxportfolio backend doesn't accept the post-2026-05-10 linear
+        constraints (sector/corr/gross_max) — strip them so it doesn't
+        TypeError. Falls back to soft diversification via Σ shrinkage."""
+        kwargs["tickers"] = _get_path(ctx, "_qp_tickers")
+        kwargs.pop("sector_indicator", None)
+        kwargs.pop("sector_cap_vec", None)
+        kwargs.pop("corr_group_pairs", None)
+        kwargs.pop("gross_max", None)
 
 
 # ── Soft-fallback for C2 hard constraints (sector + corr pair caps) ───────
@@ -1132,87 +1136,108 @@ class EmitOrdersFromQPSolutionTask(Task):
             log.warning("EmitOrdersFromQPSolutionTask: status=%s — skip",
                          sol.status if sol else "none")
             return False
-        tickers = _get_path(ctx, "_qp_tickers") or []
-        prices = _get_path(ctx, "prices") or {}
-        nav = float(_get_path(ctx, "portfolio_value", 0.0) or 0.0)
+        env = self._build_env(ctx, sol)
+        self._log_holding_solves(env)
+        nb, ns, counters = self._emit_orders_loop(ctx, env)
+        self._log_summary(
+            n_blocked_buys=counters["blocked_buys"], buy_blocked=env["buy_blocked"],
+            n_blocked_earnings=counters["blocked_earnings"], earn_buf=env["earn_buf"],
+            n_skipped_nonfinite=counters["skipped_nonfinite"],
+            n_skipped_band=counters["skipped_band"], min_dw=env["min_dw"],
+            no_trade_factor=env["no_trade_factor"],
+        )
+        ctx._qp_n_buys = nb  # noqa: SLF001
+        ctx._qp_n_sells = ns  # noqa: SLF001
+
+    @staticmethod
+    def _build_env(ctx, sol) -> dict:
+        """Snapshot the per-run gates + thresholds in one dict so each
+        downstream helper sees a coherent view."""
         cfg = _qp_cfg(ctx)
-        min_dw = float(cfg.get("qp_min_dw_pct", 0.005))
-        no_trade_factor = float(cfg.get("qp_no_trade_band_factor", 0.0))
-        band_cap = float(cfg.get("qp_no_trade_band_cap", 0.05))
-        sigma_vec = _get_path(ctx, "_qp_sigma")
-        cands = {c.ticker: c for c in (ctx.candidates or [])}
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
-        skip_buys   = bool(getattr(ctx, "skip_buys",   False))
-        buys_gated  = buy_blocked or skip_buys
-        earnings_cal = getattr(ctx, "earnings_calendar", None) or {}
-        earn_buf = int((ctx.config.get("regime", {}) or {})
-                          .get("earnings_buffer_days", 3))
-        today = getattr(ctx, "today", None)
+        skip_buys = bool(getattr(ctx, "skip_buys", False))
+        return dict(
+            sol=sol,
+            tickers=_get_path(ctx, "_qp_tickers") or [],
+            prices=_get_path(ctx, "prices") or {},
+            nav=float(_get_path(ctx, "portfolio_value", 0.0) or 0.0),
+            min_dw=float(cfg.get("qp_min_dw_pct", 0.005)),
+            no_trade_factor=float(cfg.get("qp_no_trade_band_factor", 0.0)),
+            band_cap=float(cfg.get("qp_no_trade_band_cap", 0.05)),
+            sigma_vec=_get_path(ctx, "_qp_sigma"),
+            cands={c.ticker: c for c in (ctx.candidates or [])},
+            buy_blocked=buy_blocked,
+            buys_gated=buy_blocked or skip_buys,
+            earnings_cal=getattr(ctx, "earnings_calendar", None) or {},
+            earn_buf=int((ctx.config.get("regime", {}) or {})
+                          .get("earnings_buffer_days", 3)),
+            today=getattr(ctx, "today", None),
+            holdings_set=set((ctx.holdings or {}).keys()),
+        )
+
+    @staticmethod
+    def _log_holding_solves(env: dict) -> None:
+        """2026-05-09 BA QP audit: log every holding's per-asset solution
+        so we can see why a name (e.g. high-negative-μ̂ BA) wasn't sold
+        even after BUG #7 band-cap fix. Holdings only — buys are visible
+        via QP_BUY. Diagnostic-only; no behavior change."""
         import math as _m  # noqa: PLC0415
+        sol = env["sol"]; sigma_vec = env["sigma_vec"]
+        for i, t in enumerate(env["tickers"]):
+            if t not in env["holdings_set"]:
+                continue
+            tw = float(sol.target_w[i]) if hasattr(sol, "target_w") else float("nan")
+            dw_h = float(sol.delta_w[i]) if hasattr(sol, "delta_w") else float("nan")
+            sig_h = float(sigma_vec[i]) if (sigma_vec is not None and i < len(sigma_vec)) else float("nan")
+            eff_band = max(env["min_dw"], min(env["band_cap"],
+                                                env["no_trade_factor"] * (sig_h if _m.isfinite(sig_h) else 0)))
+            will_skip = (abs(dw_h) < eff_band) if _m.isfinite(dw_h) else None
+            log.info(
+                "QP_HOLDING_SOLVE %s: target_w=%+.4f Δw=%+.4f σ=%.3f "
+                "eff_band=%.4f will_skip=%s",
+                t, tw, dw_h, sig_h, eff_band, will_skip,
+            )
 
+    @staticmethod
+    def _emit_orders_loop(ctx, env: dict) -> tuple[int, int, dict]:
+        """Iterate tickers, apply no-trade-band + earnings/halt gates,
+        emit buys/sells. Returns (n_buys, n_sells, counters)."""
+        import math as _m  # noqa: PLC0415
+        sol = env["sol"]; sigma_vec = env["sigma_vec"]
         nb = ns = 0
-        n_blocked_buys = n_blocked_earnings = 0
-        n_skipped_nonfinite = n_skipped_band = 0
-
-        # 2026-05-09 BA QP audit: log every holding's per-asset solution
-        # so we can see why BA (high negative μ̂) wasn't sold even after
-        # BUG #7 band-cap fix. Holdings only — buys are visible via QP_BUY.
-        holdings_set = set((ctx.holdings or {}).keys())
-        for i, t in enumerate(tickers):
-            if t in holdings_set:
-                tw = float(sol.target_w[i]) if hasattr(sol, "target_w") else float("nan")
-                dw_h = float(sol.delta_w[i]) if hasattr(sol, "delta_w") else float("nan")
-                sig_h = float(sigma_vec[i]) if (sigma_vec is not None and i < len(sigma_vec)) else float("nan")
-                eff_band = max(min_dw, min(band_cap, no_trade_factor * (sig_h if _m.isfinite(sig_h) else 0)))
-                will_skip = (abs(dw_h) < eff_band) if _m.isfinite(dw_h) else None
-                log.info(
-                    "QP_HOLDING_SOLVE %s: target_w=%+.4f Δw=%+.4f σ=%.3f "
-                    "eff_band=%.4f will_skip=%s",
-                    t, tw, dw_h, sig_h, eff_band, will_skip,
-                )
-
-        for i, t in enumerate(tickers):
+        c = dict(blocked_buys=0, blocked_earnings=0,
+                 skipped_nonfinite=0, skipped_band=0)
+        for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
             if not _m.isfinite(dw):
-                n_skipped_nonfinite += 1
-                continue
+                c["skipped_nonfinite"] += 1; continue
             sig_i = 0.0
             if sigma_vec is not None and i < len(sigma_vec):
                 s = float(sigma_vec[i])
                 if _m.isfinite(s) and s > 0:
                     sig_i = s
-            ok, in_band = _passes_no_trade_band(dw, sig_i, min_dw, no_trade_factor, band_cap=band_cap)
+            ok, in_band = _passes_no_trade_band(dw, sig_i, env["min_dw"],
+                                                  env["no_trade_factor"], band_cap=env["band_cap"])
             if not ok:
-                if in_band:
-                    n_skipped_band += 1
+                if in_band: c["skipped_band"] += 1
                 continue
-            shares = _shares_from_dw(dw, nav, prices.get(t, 0.0))
+            shares = _shares_from_dw(dw, env["nav"], env["prices"].get(t, 0.0))
             if shares <= 0:
                 continue
             if dw > 0:
                 blocked = _gate_buy_or_block(
-                    t, dw, today, earnings_cal, earn_buf, buys_gated,
+                    t, dw, env["today"], env["earnings_cal"], env["earn_buf"],
+                    env["buys_gated"],
                 )
                 if blocked == "buys_gated":
-                    n_blocked_buys += 1
-                    continue
+                    c["blocked_buys"] += 1; continue
                 if blocked == "earnings":
-                    n_blocked_earnings += 1
-                    continue
-                _emit_qp_buy(ctx, t, shares, prices.get(t, 0.0), sol, i, cands)
+                    c["blocked_earnings"] += 1; continue
+                _emit_qp_buy(ctx, t, shares, env["prices"].get(t, 0.0), sol, i, env["cands"])
                 nb += 1
             elif _emit_qp_sell(ctx, t, shares, dw, sol, i):
                 ns += 1
-
-        self._log_summary(
-            n_blocked_buys=n_blocked_buys, buy_blocked=buy_blocked,
-            n_blocked_earnings=n_blocked_earnings, earn_buf=earn_buf,
-            n_skipped_nonfinite=n_skipped_nonfinite,
-            n_skipped_band=n_skipped_band, min_dw=min_dw,
-            no_trade_factor=no_trade_factor,
-        )
-        ctx._qp_n_buys = nb  # noqa: SLF001
-        ctx._qp_n_sells = ns  # noqa: SLF001
+        return nb, ns, c
 
     @staticmethod
     def _log_summary(

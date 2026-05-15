@@ -471,8 +471,15 @@ class TestApplyNGBoostScoring:
             for t in tickers
         ]
         ctx.holdings = {}
+        # 2026-05-15 fixture fix: panel-pipeline INPUT-VARIANCE GUARD
+        # (job_panel_scoring.py:990) clears candidates when >20% of feature
+        # columns are constant. Pre-fix fixture used [0.0]*n → all-constant
+        # → guard fired in tests. Use per-row varied values so the guard
+        # passes (per-row σ > 0). Test math still works because the fake
+        # head ignores input features (returns hard-coded mu/sigma per row).
         X = pd.DataFrame(
-            {c: [0.0] * len(tickers) for c in feature_cols},
+            {c: [float(j) + ci * 0.01 for j in range(len(tickers))]
+             for ci, c in enumerate(feature_cols)},
             index=tickers,
         )
         ctx._panel_matrix = X  # noqa: SLF001

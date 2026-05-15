@@ -583,13 +583,35 @@ class TestNGBoostSkipReasonsInstrumentation:
 
     def test_mu_nan_tagged(self):
         """When predict_distribution returns NaN μ for a ticker (NaN/inf
-        row passthrough with impute_features=False), tag it."""
+        row passthrough with impute_features=False), tag it.
+
+        2026-05-15 fixture fix: ApplyNGBoostTask now has an INPUT-VARIANCE
+        GUARD (job_panel_scoring.py:990) that clears candidates when >20%
+        of feature columns are zero-variance. A 2-feature fixture with inf
+        in x1 produces std(x1)=NaN→0 → 1/2=50% zero-var → guard fires.
+        Fixture now uses 5 features so the inf-tainted column is 1/5=20%
+        (not strictly >20%), guard passes, predict runs, mu/sigma NaN
+        propagates and the test's actual subject (mu_nan tagging) fires."""
         from kernel.panel_pipeline.job_panel_scoring import ApplyNGBoostTask
         head = self._train_minimal_head()
-        # Row CCC has inf input → NaN output (impute_features=False above)
+        # Train a head that accepts 5 features so it accepts our wider X
+        from training_panel.ngboost_head import NGBoostHead
+        import numpy as np
+        rng = np.random.default_rng(0)
+        n = 200
+        df = pd.DataFrame({
+            "x1": rng.normal(size=n), "x2": rng.normal(size=n),
+            "x3": rng.normal(size=n), "x4": rng.normal(size=n),
+            "x5": rng.normal(size=n),
+            "residual_return_raw": rng.normal(size=n),
+        })
+        head = NGBoostHead({"n_estimators": 30, "learning_rate": 0.05})
+        head.train(df, ["x1", "x2", "x3", "x4", "x5"], impute_features=False)
+        # Row CCC has inf in x1 → NaN output. Other 4 features finite.
         X = pd.DataFrame({
             "x1": [0.1, np.inf],
-            "x2": [0.2, 0.3],
+            "x2": [0.2, 0.3], "x3": [0.5, -0.1],
+            "x4": [-0.2, 0.4], "x5": [0.3, 0.1],
         }, index=["AAA", "CCC"])
         cand_aaa = SimpleNamespace(
             ticker="AAA", mu=None, sigma=None,
