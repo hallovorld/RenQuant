@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from kernel.pipeline.context import InferenceContext
@@ -783,6 +785,16 @@ class ApplyGlobalCalibrationTask(Task):
         if cal is None:
             return
 
+        # 2026-05-15 Phase 3: opt-in c.mu wiring. When
+        # ranking.kelly_sizing.use_calibrator_mu=true, the calibrator's
+        # expected_return head is wired into c.mu so Kelly sizing has a
+        # real μ value when NGBoost is OFF. Disabled by default so prod
+        # behavior is unchanged; flip to A/B test against current
+        # uniform-fallback QP path. See doc/AUDIT_2026-05-12_dead_paths.md
+        # and tests/test_calibrator_saturation_guards.py.
+        kelly_cfg = ctx.config.get("ranking", {}).get("kelly_sizing", {})
+        use_cal_mu = bool(kelly_cfg.get("use_calibrator_mu", False))
+
         n_cand = 0
         for c in ctx.candidates:
             if c.panel_score is None or c.panel_score != c.panel_score:
@@ -791,6 +803,12 @@ class ApplyGlobalCalibrationTask(Task):
             er   = cal.expected_return(c.panel_score)
             c.rank_score      = float(prob)
             c.expected_return = float(er)
+            if use_cal_mu and math.isfinite(er):
+                # c.expected_return is clipped to [-0.20, +0.20] at load time
+                # (GlobalPanelCalibration.load). Kelly numerator is therefore
+                # bounded; Kelly denominator (σ²) still needs σ via NGBoost
+                # OR the realized-vol fallback (see ApplyRealizedVolFallbackTask).
+                c.mu = float(er)
             n_cand += 1
 
         n_held = 0
@@ -800,6 +818,8 @@ class ApplyGlobalCalibrationTask(Task):
                 continue
             hs.rank_score      = cal.calibrate_probability(ps)
             hs.expected_return = cal.expected_return(ps)
+            if use_cal_mu and math.isfinite(hs.expected_return):
+                hs.mu = float(hs.expected_return)
             n_held += 1
 
         log.info(
@@ -1198,6 +1218,86 @@ class ApplyNGBoostTask(Task):
                 return False
 
 
+# ── σ fallback when NGBoost off (Phase 3 of 2026-05-15 P0) ──────────────────
+
+class ApplyRealizedVolFallbackTask(Task):
+    """Fill c.sigma with trailing realized vol when NGBoost OFF.
+
+    Background: NGBoost is the only task that writes `c.sigma` today.
+    When NGBoost is disabled (current prod since 2026-05-09), every
+    candidate's sigma is None → Kelly skips with `kelly_zero:sigma_none`.
+    This task provides a fallback: annualized stdev of trailing 60-day
+    daily returns from ctx.ohlcv[ticker]['close'].
+
+    OPT-IN via `ranking.kelly_sizing.use_realized_vol_fallback=true`.
+    Disabled by default so prod behavior is unchanged. Pairs with the
+    Phase-3 `use_calibrator_mu` flag — both must be on to re-enable
+    Kelly sizing with proper μ/σ via the calibrator + realized-vol path.
+
+    Runs AFTER ApplyGlobalCalibrationTask (so c.mu is set) and BEFORE
+    ApplyKellySizingTask (so Kelly sees the populated sigma).
+
+    Reuses the same helper logic as RealizedVolGateTask, kept local
+    here to avoid a kernel.pipeline import cycle.
+    """
+
+    def run(self, ctx: "InferenceContext") -> "bool | None":
+        kelly_cfg = ctx.config.get("ranking", {}).get("kelly_sizing", {})
+        if not bool(kelly_cfg.get("use_realized_vol_fallback", False)):
+            return
+        window = int(kelly_cfg.get("realized_vol_window_days", 60))
+        floor = float(kelly_cfg.get("realized_vol_floor", 0.05))     # 5% σ floor
+        ceiling = float(kelly_cfg.get("realized_vol_ceiling", 1.50)) # 150% σ cap
+
+        ohlcv = getattr(ctx, "ohlcv", None) or {}
+        n_filled = 0
+        for c in ctx.candidates:
+            if getattr(c, "sigma", None) is not None and math.isfinite(c.sigma):
+                continue  # already populated by NGBoost
+            sig = _realized_vol_annualized(ohlcv.get(c.ticker), window)
+            if sig is not None:
+                c.sigma = float(np.clip(sig, floor, ceiling))
+                n_filled += 1
+
+        for ticker, hs in ctx.holdings.items():
+            if getattr(hs, "sigma", None) is not None and math.isfinite(hs.sigma):
+                continue
+            sig = _realized_vol_annualized(ohlcv.get(ticker), window)
+            if sig is not None:
+                hs.sigma = float(np.clip(sig, floor, ceiling))
+
+        if n_filled:
+            log.info(
+                "ApplyRealizedVolFallbackTask: filled c.sigma from realized "
+                "vol (window=%dd, clip=[%.2f, %.2f]) for %d/%d candidates",
+                window, floor, ceiling, n_filled, len(ctx.candidates),
+            )
+
+
+def _realized_vol_annualized(df, window: int):
+    """Return annualized stdev of daily returns over last `window` bars,
+    or None if df is missing / has insufficient history.
+
+    Pure function — mirrors RealizedVolGateTask._realized_vol_annualized
+    so we don't create a kernel.pipeline → kernel.panel_pipeline cycle.
+    """
+    if df is None:
+        return None
+    try:
+        close = df["close"]
+    except (KeyError, TypeError):
+        return None
+    if len(close) < max(window, 5):
+        return None
+    rets = close.pct_change().tail(window).dropna()
+    if len(rets) < max(window // 2, 5):
+        return None
+    std = float(rets.std())
+    if not math.isfinite(std):
+        return None
+    return std * math.sqrt(252.0)
+
+
 # ── Kelly sizing (Plan C — the smart part) ───────────────────────────────────
 
 class ApplyKellySizingTask(Task):
@@ -1414,6 +1514,11 @@ class PanelScoringJob(Job):
             # rank_score, not raw XGB margin. See VetoWeakBuysTask
             # docstring for the production incident this resolves.
             VetoWeakBuysTask(),
+            # 2026-05-15 Phase 3: σ fallback to realized 60d vol when
+            # NGBoost OFF. No-op unless `kelly_sizing.use_realized_vol_
+            # fallback=true`. Pairs with `use_calibrator_mu` flag in
+            # ApplyGlobalCalibrationTask — both ON re-enables Kelly.
+            ApplyRealizedVolFallbackTask(),
             ApplyKellySizingTask(),   # Plan C — f*=μ/σ² (no-op unless kelly_sizing.enabled)
             # Buy-logic redesign Stage 0 (2026-04-26): quality gates
             # filter weak-signal candidates AFTER all scoring + sizing.
