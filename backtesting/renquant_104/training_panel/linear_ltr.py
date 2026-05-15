@@ -124,8 +124,13 @@ class PanelLinearScorer:
                 f"PanelLinearScorer.load: artifact kind={payload.get('kind')!r} "
                 f"≠ 'panel_linear'"
             )
+        # Keep `kind` IN metadata — downstream (ApplyScoresTask, DriftGuardTask)
+        # dispatches on `scorer.metadata["kind"]`. Removing it here was a
+        # bug: panel_linear dispatch silently fell through to the legacy
+        # 21-feature XGB code path → DriftGuard saw 158 alpha158 cols all
+        # NaN → FAIL-SAFE cleared all candidates → 0 trades over 128 days.
         meta = {k: v for k, v in payload.items()
-                if k not in ("coef", "intercept", "feature_cols", "kind",
+                if k not in ("coef", "intercept", "feature_cols",
                               "version", "feature_means", "feature_stds",
                               "clip_sigma")}
         means = payload.get("feature_means")

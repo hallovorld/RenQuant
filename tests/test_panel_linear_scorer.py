@@ -26,6 +26,26 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 
 class TestPanelLinearScorerCore:
+    def test_load_preserves_kind_in_metadata(self):
+        """REGRESSION (2026-05-06): early load() excluded "kind" from
+        metadata, so downstream dispatch (ApplyScoresTask + DriftGuardTask)
+        couldn't detect panel_linear scorers → 0-trade sim over 128 days.
+        Pin: kind MUST be in metadata after load.
+        """
+        import tempfile
+        from training_panel.linear_ltr import PanelLinearScorer
+        scorer = PanelLinearScorer(
+            coef=np.array([1.0]), intercept=0.0,
+            feature_cols=["a"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "scorer.json"
+            scorer.save(p)
+            loaded = PanelLinearScorer.load(p)
+            assert loaded.metadata.get("kind") == "panel_linear", (
+                f"load() lost kind from metadata: {loaded.metadata}"
+            )
+
     def test_save_load_roundtrip(self):
         from training_panel.linear_ltr import PanelLinearScorer
         coef = np.array([1.0, -0.5, 0.25])
