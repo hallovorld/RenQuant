@@ -323,33 +323,7 @@ class ComputeQPConstraintsTask(Task):
                                 ctx.config.get("max_position_pct", 0.20)))
         scale = confidence_to_size_multiplier(getattr(ctx, "confidence", None))
         ctx._qp_w_upper = np.full(n, max_pct * scale)  # noqa: SLF001
-        # 2026-05-13 Long-Short Phase 2A: allow w_lower < 0 when enabled.
-        # Config: long_short.enabled (bool), max_short_pct (per-name short cap),
-        #         max_gross_exposure (Σ|w| cap).
-        # Default 0 → long-only (current behavior preserved).
-        #
-        # 2026-05-14 SAFETY (user mandate, no leverage authorized):
-        # Hard-cap max_gross_exposure at 1.0. The QP can still use shorts
-        # to net to (long + abs(short)) ≤ NAV, so the strategy is
-        # dollar-neutral capped, NOT leveraged. Any config value > 1.0
-        # is silently clamped to 1.0. Re-enabling leverage requires:
-        # (1) explicit user authorization, (2) editing this hard-cap
-        # constant, (3) updating tests/test_no_leverage_invariant.py.
-        _LEVERAGE_HARDCAP = 1.0
-        ls_cfg = ctx.config.get("long_short", {}) or {}
-        if ls_cfg.get("enabled", False):
-            max_short_pct = float(ls_cfg.get("max_short_pct", 0.05))
-            # Bear regime: also block shorts to keep risk symmetric
-            if getattr(ctx, "regime", None) == "BEAR":
-                ctx._qp_w_lower = 0.0  # noqa: SLF001
-                ctx._qp_gross_max = None  # noqa: SLF001 — no shorts, no gross cap
-            else:
-                ctx._qp_w_lower = -float(max_short_pct) * scale  # noqa: SLF001
-                _cfg_gross = float(ls_cfg.get("max_gross_exposure", _LEVERAGE_HARDCAP))
-                ctx._qp_gross_max = min(_cfg_gross, _LEVERAGE_HARDCAP)  # noqa: SLF001
-        else:
-            ctx._qp_w_lower = 0.0  # noqa: SLF001
-            ctx._qp_gross_max = None  # noqa: SLF001 — long-only path; cp.sum(wp)≤1 binds
+        self._resolve_short_constraints(ctx, scale)
         ctx._qp_dw_max = np.full(n, float(cfg.get("qp_dw_max", 0.50)))  # noqa: SLF001
         ctx._qp_cash_reserve = float(rp.get(  # noqa: SLF001
             "cash_reserve_pct",
@@ -370,6 +344,51 @@ class ComputeQPConstraintsTask(Task):
             ctx._qp_turnover_max = float(tm) if tm else None  # noqa: SLF001
         except (TypeError, ValueError):
             ctx._qp_turnover_max = None  # noqa: SLF001
+
+    def _resolve_short_constraints(self, ctx, scale: float) -> None:
+        """Set ``_qp_w_lower`` and ``_qp_gross_max`` per the long/short policy.
+
+        PRIME DIRECTIVE: every knob resolves through regime overlay first,
+        global second. See CLAUDE.md + doc/roadmap.md P1.
+
+        Resolution: ``regime_params.<regime>.long_short_enabled``
+                    > ``long_short.enabled``
+                    > False
+
+        BEAR hybrid (option γ, 2026-05-14 LOCKED):
+          * shorts disabled globally → long-only (w_lower=0, gross unlimited)
+          * regime=BEAR + hard_bear=False → DEFENSIVE: still no shorts
+            (bear_defensive_slots picks up GLD/TLT)
+          * regime=BEAR + hard_bear=True  → OFFENSIVE: shorts allowed
+            (longs already blocked by max_position_pct=0)
+          * otherwise (BULL_*, CHOPPY)    → shorts at -max_short_pct
+
+        SAFETY: ``max_gross_exposure`` hard-capped at 1.0 (no leverage
+        authorized — see tests/test_no_leverage_invariant.py).
+        """
+        from kernel.regime_resolver import resolve_regime_knob
+        _LEVERAGE_HARDCAP = 1.0
+
+        shorts_enabled = bool(resolve_regime_knob(
+            ctx, "long_short", "enabled", default=False,
+        ))
+        regime = getattr(ctx, "regime", None)
+        hard_bear = bool(getattr(getattr(ctx, "regime_state", None),
+                                 "hard_bear", False))
+        if not shorts_enabled or (regime == "BEAR" and not hard_bear):
+            ctx._qp_w_lower = 0.0  # noqa: SLF001
+            ctx._qp_gross_max = None  # noqa: SLF001
+            return
+
+        max_short_pct = float(resolve_regime_knob(
+            ctx, "long_short", "max_short_pct", default=0.05,
+        ))
+        ctx._qp_w_lower = -float(max_short_pct) * scale  # noqa: SLF001
+        _cfg_gross = float(resolve_regime_knob(
+            ctx, "long_short", "max_gross_exposure",
+            default=_LEVERAGE_HARDCAP,
+        ))
+        ctx._qp_gross_max = min(_cfg_gross, _LEVERAGE_HARDCAP)  # noqa: SLF001
 
 
 _BuildADVVectorTask = None  # lazy class, defined below
