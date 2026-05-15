@@ -584,7 +584,32 @@
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
       "topup_conviction_floor": 0.2,
-      "base_rate": 0.273
+      "base_rate": 0.273,
+      "use_calibrator_mu": true,
+      "use_realized_vol_fallback": true,
+      "realized_vol_window_days": 60,
+      "realized_vol_floor": 0.05,
+      "realized_vol_ceiling": 1.50,
+      "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded ±0.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52)."
+    },
+    "buy_quality_gates": {
+      "regime_momentum": {
+        "enabled": true,
+        "momentum_regimes": ["BULL_CALM", "BULL_VOLATILE"],
+        "hurst_floor": 0.65,
+        "r60d_floor": 0.0,
+        "mismatch_scale": 0.5,
+        "attr": "rank_score"
+      },
+      "deep_drawdown_veto": {
+        "enabled": true,
+        "dd_threshold": 0.20,
+        "window_days": 252,
+        "sue_floor": 0.0,
+        "pead_floor": 0.0,
+        "require_either": true
+      },
+      "_2026-05-15_activation_reason": "Upgrades A+B from META trade evaluation. A: shrink rank_score by 0.5 when SPY regime is momentum-dominated (BULL_CALM/BULL_VOLATILE + hurst>0.65) but candidate's own 60d return is negative. B: veto candidates >20% below 52w high unless SUE or PEAD score is positive. Catches META-class trades (META today: r60=-4.66%, dd=-22.1%, no SUE → would have been score×0.5 then vetoed). See Asness-Moskowitz-Pedersen 2013, Hong-Stein 2003."
     },
     "ngboost_head": {
       "enabled": false

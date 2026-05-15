@@ -500,13 +500,41 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
             f"calibrator artifact absent at {p} — global_calibration may be disabled",
         )
     try:
-        meta = json.loads(p.read_text()).get("metadata", {}) or {}
+        payload = json.loads(p.read_text())
+        meta = payload.get("metadata", {}) or {}
     except Exception as exc:
         return PreflightCheck(
             "P-CALIBRATOR-HEALTH", "hard", False, f"unreadable: {exc}",
         )
     n_unique = meta.get("n_unique_prob_y")
     pool_ic = meta.get("pool_ic")
+
+    # 2026-05-15 P0 ADDITION: range-bound check on expected_return.y.
+    # Catches the bug class that caused the rank_score saturation incident:
+    # calibrator artifacts with er.y up to +1.00 (= +100% expected return)
+    # would feed catastrophically wrong μ into Kelly when use_calibrator_mu=
+    # true. Hard-fail before live trade so a bad artifact never reaches QP.
+    # Threshold matches the train-site clip (2026-05-15 Phase 4 commit).
+    try:
+        er_y = payload.get("expected_return", {}).get("y", []) or []
+        if er_y:
+            er_max_abs = max(abs(float(v)) for v in er_y
+                             if v is not None and v == v)  # NaN-safe
+            ER_BOUND = 0.20  # matches GlobalPanelCalibration.load() clip
+            if er_max_abs > ER_BOUND + 1e-9:
+                return PreflightCheck(
+                    "P-CALIBRATOR-HEALTH", "hard", False,
+                    f"calibrator expected_return.y has max|y|={er_max_abs:.4f} > "
+                    f"{ER_BOUND} sanity bound. CLAUDE.md §5.13.12 violation: "
+                    f"artifact was not clipped at train site. Kelly sizing on "
+                    f"this calibrator would produce broken position weights. "
+                    f"Refit via scripts/fit_calibrator_alpha158_fund.py before "
+                    f"live trade.",
+                    details={"max_abs_er_y": er_max_abs,
+                             "bound": ER_BOUND, "n_knots": len(er_y)},
+                )
+    except (TypeError, ValueError) as exc:
+        log.warning("P-CALIBRATOR-HEALTH: could not check er.y bounds: %s", exc)
     health_cfg = panel_cfg.get("calibrator_health", {}) or {}
     min_unique = int(health_cfg.get("min_unique_prob_y", 10))
     if n_unique is None:
