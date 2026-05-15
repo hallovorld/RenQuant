@@ -304,6 +304,19 @@ class InferencePipeline:
                     CrossSectionalPanelExitTask,
                 )
                 CrossSectionalPanelExitTask().run(ctx)
+                # 2026-05-15 Upgrades A+B: regime-vs-individual momentum
+                # alignment shrink + deep-drawdown veto. Both disabled by
+                # default; opt-in via
+                #   ranking.buy_quality_gates.regime_momentum.enabled
+                #   ranking.buy_quality_gates.deep_drawdown_veto.enabled
+                # Catches META-style "buy a beaten mega-cap in a momentum
+                # regime" trades. See task_buy_quality_gates.py docstring.
+                from .task_buy_quality_gates import (  # noqa: PLC0415
+                    RegimeMomentumAlignmentTask,
+                    DeepDrawdownVetoTask,
+                )
+                RegimeMomentumAlignmentTask().run(ctx)
+                DeepDrawdownVetoTask().run(ctx)
 
         # Plan C: Kelly-driven top-up for existing holdings whose panel
         # score has improved beyond kelly_target_pct. No-op unless
