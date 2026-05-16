@@ -5,6 +5,53 @@
 
 ---
 
+## ⏸ PAUSED 2026-05-15 ~20:00 PT — RESUME INSTRUCTIONS
+
+Operator paused mid-queue (computer needed for other use). State preserved:
+
+**Panels finished (committed):**
+* `re_stop007` ✓ 16/16
+* `p0activated_regime_aware` ✓ 16/16 (the CRITICAL one — see below)
+
+**Panel partially done:**
+* `re_sdl_n2` 12/16 (Q01–Q12 saved; Q13–Q16 killed mid-flight)
+
+**Panels not started:**
+* `re_trail015`, `re_cvar025`, `re_cvar050`, `re_kelly_t1_035`
+
+### To RESUME (next session, single command)
+
+```bash
+cd /Users/renhao/git/github/RenQuant
+nohup ./scripts/notify_when_panels_done.sh > logs/reeval_queue/notify.log 2>&1 &
+nohup ./scripts/run_regime_reeval_queue.sh > logs/reeval_queue/2026-05-15_resume.log 2>&1 &
+disown -a
+```
+
+Queue script `is_done` check skips panels with 16/16 already. Panel
+runner (now ALSO idempotent — see commit ?) skips individual windows
+that exist already. So:
+* `re_stop007`, `p0activated_regime_aware`, `re_sdl_n2` 12 windows →
+  skipped on resume (no work)
+* `re_sdl_n2` Q13–Q16 → resumed (~17 min)
+* `re_trail015`/`re_cvar025/050`/`re_kelly_t1_035` → fresh (~50 min each)
+
+**Total resume walltime: ~3.5 hours** (vs full 4h had it run straight).
+
+Notifier rebuilt fresh — polls until all 7 panels are 16/16 then ntfy
++ auto-runs `analyze_regime_stratified.py` per panel.
+
+### Quick check on resume
+
+```bash
+# Just look at what's done
+for label in re_stop007 p0activated_regime_aware re_sdl_n2 re_trail015 re_cvar025 re_cvar050 re_kelly_t1_035; do
+  printf "  %3s/16  %s\n" "$(ls data/logs/sim_2026-05-15_${label}/equity/ 2>/dev/null | wc -l | tr -d ' ')" "$label"
+done
+```
+
+---
+
 ## TL;DR
 
 Three big-payoff threads finished or in flight:
