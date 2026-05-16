@@ -8,6 +8,58 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## 2026-05-15 regime-reeval panels — NO-OP BUILD SCRIPT [2026-05-16]
+
+**Hypothesis.** Per CLAUDE.md PRIME DIRECTIVE, 6 previously-pooled-rejected knobs (stop_loss=0.07, sdl_n_sigma=2.0, trailing=0.15, cvar_lambda=0.25, cvar_lambda=0.50, kelly_tier1_rank_score=0.35) should be re-evaluated regime-stratified to surface conditional wins hidden by pooled-mean rejection.
+
+**What actually shipped (the bug).** `scripts/build_regime_reeval_configs.py` (prior version, commit `596ef0e`) wrote each knob to a config path that **NO kernel code reads**:
+
+| Knob | Wrote to | Kernel reads from |
+|---|---|---|
+| `stop_loss_pct` | `risk.stop_loss_pct` | `regime_params.<REGIME>.stop_loss_pct` (pp_inference.py:43) |
+| `trailing_stop_trigger_pct` | `risk.trailing_stop_trigger_pct` | `regime_params.<REGIME>.trailing_stop_trigger_pct` (pp_inference.py:41) |
+| `sdl_n_sigma` | `risk.sigma_aware_sdl.n_sigma` | `regime_params.<REGIME>.sdl_n_sigma` (pp_inference.py:55) |
+| `cvar_lambda` | `rotation.joint_actions.cvar_lambda` | `rotation.joint_actions.qp_cvar_lambda` (tasks.py:981 — key-name mismatch) |
+| `tier1_rank_score_threshold` | `ranking.kelly_sizing.tier1_rank_score_threshold` | (key doesn't exist; real lever is `tiered_thresholds[0].min_model_score`) |
+
+**Numbers (the smoking gun).** Three completed panels produced bit-identical APYs for all 16 windows:
+
+```
+                          Q01     Q02     Q03 … Q11    Q16
+re_stop007  APY:    -0.2476 -0.2018 +0.1178 … +0.5413 -0.1632
+re_trail015 APY:    -0.2476 -0.2018 +0.1178 … +0.5413 -0.1632     ← IDENTICAL
+re_cvar025  APY:    -0.2476 -0.2018 +0.1178 … +0.5413 -0.1632     ← IDENTICAL
+re_sdl_n2   APY:    -0.2476 -0.2018 +0.1178 … +0.5413 -0.1632     ← IDENTICAL Q01-Q13
+```
+
+Three "different configs" all == baseline. ~5h compute wasted.
+
+**Root cause.** Build script author wrote knobs to plausible-looking paths without grep-verifying the kernel reader. The CLAUDE.md memory `feedback_config_knob_path_audit` warned of exactly this pattern ("Grep-verify every new knob's JSON path against the kernel reader AND verify value differs from baseline; pre-flight ~30s saves ~80min per botched panel") and was ignored.
+
+**Fundamental fix (2026-05-16).**
+1. **`scripts/validate_sim_config_active.py`** — pre-flight validator. Static: walks the config diff, checks each key against a curated map of kernel-reachable paths (`ACTIVE_PATHS`), flags any DEAD_PATH. Optional `--smoke`: runs a 1-month sim window of both, fails if APY identical to 1e-6.
+2. **`scripts/build_regime_reeval_configs.py`** rewritten — uses correct paths (PRIME-DIRECTIVE-compliant per-regime overlay for stops/sdl; `qp_cvar_lambda` correct key for CVaR; `tiered_thresholds[0].min_model_score` for tier1). After each `dump()` it calls `validate()` which `sys.exit(2)` if static says NO-OP.
+3. **PRIME DIRECTIVE compliance** — for per-regime knobs, the build helper `set_per_regime(cfg, knob, value)` writes the value into ALL FIVE `regime_params.<REGIME>` blocks. Stratification happens downstream on the OUTPUT via `scripts/analyze_regime_stratified.py`, not on the INPUT config.
+
+**Reproduction recipe (verify the fix).**
+```bash
+# 1. Rebuild correctly (validator gates each write; aborts on NO-OP)
+python3 scripts/build_regime_reeval_configs.py     # validator passes ACTIVE for all 6
+
+# 2. Spot-check correct regime overlay
+python3 -c "import json; c=json.load(open('backtesting/renquant_104/strategy_config.sim_re_stop007.json')); print([(r, c['regime_params'][r]['stop_loss_pct']) for r in ('BULL_CALM','BEAR','CHOPPY','BULL_VOLATILE','BULL_STRONG')])"
+# → all five = 0.07
+
+# 3. Confirm validator catches a known no-op
+python3 scripts/validate_sim_config_active.py \
+  --baseline strategy_config.sim_baseline_hmm.json \
+  --candidate strategy_config.sim_baseline_hmm.json   # exit 1, 0 ACTIVE diffs
+```
+
+**Lessons.** §5.13.10 ("`if optional_field is not None` defaults to dead code unless verified") and `feedback_config_knob_path_audit` exist for this exact failure. Pre-flight validation must be machine-enforced, not memory-relied. The validator is now mandatory before any sim panel launches a config it has not seen before.
+
+---
+
 ## 24-mo continuous OOS confirmation — REJECT [2026-05-12]
 
 **Hypothesis.** 6-window walk-forward post-Bug-C showed mean APY +15.2% / Sharpe 0.41 / α-SPY −2.3 pt. A single 24-mo continuous OOS run (2024-04-01 → 2026-03-26, 499 trading days, walk-forward retrain every fold) should corroborate the multi-window picture: marginally profitable absolute but losing to SPY.

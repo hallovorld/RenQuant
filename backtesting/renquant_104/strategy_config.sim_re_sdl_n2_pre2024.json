@@ -170,7 +170,7 @@
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
       "max_single_day_loss_pct": 0.0,
-      "sdl_n_sigma": 3.0,
+      "sdl_n_sigma": 2.0,
       "_sdl_reason": "2026-05-04: \u03c3-scaled SDL threshold = 3\u00b7daily_vol; legacy 6% absolute tripped on noise for high-vol stocks (NVDA/RBLX). 2026-05-11 audit (A-7): BULL_CALM stop-loss block restored to golden.json values after v6 disaster (commit 2f10949 tightened stops to stop_loss=0.07 / trailing 0.10/0.07 / drawdown=0.15 + added stop_n_sigma=2.0 \u2192 APY -12.6%). Restored: stop_loss=0.15, trailing 0.20/0.18, drawdown=0.35, sdl_n_sigma=3.0, stop_n_sigma OFF.",
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.35,
@@ -199,7 +199,7 @@
       "trailing_stop_trail_pct": 0.1,
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
-      "sdl_n_sigma": 3.0,
+      "sdl_n_sigma": 2.0,
       "drawdown_resume_pct": 0.05
     },
     "CHOPPY": {
@@ -217,7 +217,7 @@
       "max_concurrent_positions": 4,
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
-      "sdl_n_sigma": 3.0,
+      "sdl_n_sigma": 2.0,
       "drawdown_resume_pct": 0.04
     },
     "BEAR": {
@@ -234,8 +234,11 @@
       "trailing_stop_trail_pct": 0.05,
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
-      "sdl_n_sigma": 3.0,
+      "sdl_n_sigma": 2.0,
       "drawdown_resume_pct": 0.025
+    },
+    "BULL_STRONG": {
+      "sdl_n_sigma": 2.0
     }
   },
   "defensive_tickers": [
@@ -253,10 +256,6 @@
       "panel_sell_floor": 0.2,
       "mu_sell_ceiling": 0.0,
       "trigger_mode": "and"
-    },
-    "sigma_aware_sdl": {
-      "enabled": true,
-      "n_sigma": 2.0
     }
   },
   "sector_map": {
@@ -826,6 +825,8 @@
   "_side_config_label": "sim_re_sdl_n2_pre2024",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
   "_2026-05-15_re_eval_hypothesis": {
-    "expected": "2\u03c3 SDL fires often in BEAR/VOL regimes (real catastrophe protection) but cuts winners in BULL_CALM (false positives). Pooled -10.4pt. Expected: BEAR/VOL +3~5pt, BULL_CALM -12~-15pt."
+    "expected": "2\u03c3 SDL fires often in BEAR/VOL (real catastrophe protection), cuts winners in BULL_CALM.",
+    "knob_path": "regime_params.<REGIME>.sdl_n_sigma",
+    "kernel_reader": "pp_inference.py:55"
   }
 }

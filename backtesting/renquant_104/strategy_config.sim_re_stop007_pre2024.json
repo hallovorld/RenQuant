@@ -168,7 +168,7 @@
     "BULL_CALM": {
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.0,
-      "stop_loss_pct": 0.15,
+      "stop_loss_pct": 0.07,
       "max_single_day_loss_pct": 0.0,
       "sdl_n_sigma": 3.0,
       "_sdl_reason": "2026-05-04: \u03c3-scaled SDL threshold = 3\u00b7daily_vol; legacy 6% absolute tripped on noise for high-vol stocks (NVDA/RBLX). 2026-05-11 audit (A-7): BULL_CALM stop-loss block restored to golden.json values after v6 disaster (commit 2f10949 tightened stops to stop_loss=0.07 / trailing 0.10/0.07 / drawdown=0.15 + added stop_n_sigma=2.0 \u2192 APY -12.6%). Restored: stop_loss=0.15, trailing 0.20/0.18, drawdown=0.35, sdl_n_sigma=3.0, stop_n_sigma OFF.",
@@ -188,7 +188,7 @@
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
       "cash_reserve_pct": 0.2,
-      "stop_loss_pct": 0.05,
+      "stop_loss_pct": 0.07,
       "max_single_day_loss_pct": 0.06,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.1,
@@ -205,7 +205,7 @@
     "CHOPPY": {
       "max_position_pct": 0.15,
       "cash_reserve_pct": 0.3,
-      "stop_loss_pct": 0.08,
+      "stop_loss_pct": 0.07,
       "max_single_day_loss_pct": 0.06,
       "max_hold_days": 40,
       "drawdown_halt_pct": 0.08,
@@ -223,7 +223,7 @@
     "BEAR": {
       "max_position_pct": 0.0,
       "cash_reserve_pct": 1.0,
-      "stop_loss_pct": 0.05,
+      "stop_loss_pct": 0.07,
       "max_single_day_loss_pct": 0.0,
       "max_hold_days": 500,
       "drawdown_halt_pct": 0.05,
@@ -236,6 +236,9 @@
       "stop_n_sigma": 0,
       "sdl_n_sigma": 3.0,
       "drawdown_resume_pct": 0.025
+    },
+    "BULL_STRONG": {
+      "stop_loss_pct": 0.07
     }
   },
   "defensive_tickers": [
@@ -253,8 +256,7 @@
       "panel_sell_floor": 0.2,
       "mu_sell_ceiling": 0.0,
       "trigger_mode": "and"
-    },
-    "stop_loss_pct": 0.07
+    }
   },
   "sector_map": {
     "AAPL": "giant_tech",
@@ -823,6 +825,8 @@
   "_side_config_label": "sim_re_stop007_pre2024",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
   "_2026-05-15_re_eval_hypothesis": {
-    "expected": "Tighter stops (-7% vs -15%) protect capital in BEAR/CHOPPY but clip winners in BULL_CALM. Pooled rejection -7.5pt hides regime heterogeneity. Expected: BEAR +2~5pt, BULL_CALM -12~-15pt."
+    "expected": "Tighter stops (-7%) in all regimes. Pooled rejection -7.5pt hides regime heterogeneity.",
+    "knob_path": "regime_params.<REGIME>.stop_loss_pct",
+    "kernel_reader": "pp_inference.py:43"
   }
 }

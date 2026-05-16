@@ -416,7 +416,7 @@
       "default_sigma": 0.05,
       "qp_signal_decay": 0.0,
       "qp_robust_mu_kappa": 0.0,
-      "qp_cvar_lambda": 0.0,
+      "qp_cvar_lambda": 0.5,
       "qp_drawdown_limit": 0.2,
       "qp_no_trade_band_factor": 1.0,
       "qp_no_trade_band_cap": 0.05,
@@ -427,8 +427,7 @@
       "qp_sector_cap_enabled": true,
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
-      "cvar_lambda": 0.5
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -823,6 +822,8 @@
   "_side_config_label": "sim_re_cvar050",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
   "_2026-05-15_re_eval_hypothesis": {
-    "expected": "Aggressive tail-risk penalty. Same regime split as \u03bb=0.25 but stronger effect both directions. Pooled -1.6pt."
+    "expected": "Stronger tail-risk penalty than \u03bb=0.25. Same regime split, larger magnitude.",
+    "knob_path": "rotation.joint_actions.qp_cvar_lambda",
+    "kernel_reader": "portfolio_qp/tasks.py:981 via _qp_cfg"
   }
 }

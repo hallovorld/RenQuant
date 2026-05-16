@@ -177,7 +177,7 @@
       "entry_mode": "momentum",
       "min_model_score": 0.1,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.2,
+      "trailing_stop_trigger_pct": 0.15,
       "trailing_stop_trail_pct": 0.18,
       "spy_velocity_halt_pct": 0.03,
       "spy_velocity_lookback_days": 3,
@@ -195,7 +195,7 @@
       "entry_mode": "capitulation",
       "min_model_score": 0.15,
       "min_price_move_pct": 0.005,
-      "trailing_stop_trigger_pct": 0.2,
+      "trailing_stop_trigger_pct": 0.15,
       "trailing_stop_trail_pct": 0.1,
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
@@ -230,12 +230,15 @@
       "entry_mode": "blocked",
       "min_model_score": 0.0,
       "min_price_move_pct": 0.0,
-      "trailing_stop_trigger_pct": 0.1,
+      "trailing_stop_trigger_pct": 0.15,
       "trailing_stop_trail_pct": 0.05,
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
       "sdl_n_sigma": 3.0,
       "drawdown_resume_pct": 0.025
+    },
+    "BULL_STRONG": {
+      "trailing_stop_trigger_pct": 0.15
     }
   },
   "defensive_tickers": [
@@ -253,8 +256,7 @@
       "panel_sell_floor": 0.2,
       "mu_sell_ceiling": 0.0,
       "trigger_mode": "and"
-    },
-    "trailing_stop_trigger_pct": 0.15
+    }
   },
   "sector_map": {
     "AAPL": "giant_tech",
@@ -823,6 +825,8 @@
   "_side_config_label": "sim_re_trail015_pre2024",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
   "_2026-05-15_re_eval_hypothesis": {
-    "expected": "Tighter trailing protects gains in CHOPPY/REVERT; cuts winners in TRENDING BULL_STRONG. Pooled negative; expect regime split."
+    "expected": "Tighter trailing protects CHOPPY gains; cuts BULL_STRONG winners.",
+    "knob_path": "regime_params.<REGIME>.trailing_stop_trigger_pct",
+    "kernel_reader": "pp_inference.py:41"
   }
 }

@@ -464,7 +464,7 @@
   },
   "tiered_thresholds": [
     {
-      "min_model_score": 0.27
+      "min_model_score": 0.35
     },
     {
       "min_model_score": 0.45
@@ -571,8 +571,7 @@
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
       "topup_conviction_floor": 0.2,
-      "base_rate": 0.273,
-      "tier1_rank_score_threshold": 0.35
+      "base_rate": 0.273
     },
     "ngboost_head": {
       "enabled": false
@@ -823,6 +822,8 @@
   "_side_config_label": "sim_re_kelly_t1_035_pre2024",
   "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
   "_2026-05-15_re_eval_hypothesis": {
-    "expected": "Higher quality gate (rank 0.35) \u2192 82%\u219291% hit-rate. Should help BEAR/CHOPPY (fewer bad trades), hurt BULL_CALM (fewer shots at mean-revert winners). Pooled -8.88pt APY / +0.74 Sharpe. Expected: BEAR +2~4pt, BULL_CALM -10~-12pt."
+    "expected": "Higher quality gate \u2192 fewer/better entries. BEAR/CHOPPY +, BULL_CALM -.",
+    "knob_path": "tiered_thresholds[0].min_model_score",
+    "kernel_reader": "selection.py:400, task_joint_actions.py:284"
   }
 }

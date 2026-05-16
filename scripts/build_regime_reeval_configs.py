@@ -1,33 +1,46 @@
 #!/usr/bin/env python3
 """Build sim configs for the 2026-05-15 regime-conditional re-evaluation.
 
-The PRIME DIRECTIVE (CLAUDE.md): RenQuant is REGIME-CONDITIONAL. Earlier
-pool-mean rejections (E55 NGBoost, stop-loss family, CVaR sweep, multi-
-horizon, Kelly tier-1 raise) were evaluated WITHOUT regime stratification.
-The long-short clean test showed pooled NEITHER (+6.23pt p=0.23) hid a
-3-regime WIN (+13~+22pt) — the same bias likely applies to these others.
+⚠️ POST-MORTEM (2026-05-16): the FIRST version of this script wrote
+every knob to a config path that no kernel code reads. Result: 5 panels
+× 16 windows = ~5h of compute wasted, every output bit-identical to
+baseline (no-ops). See `doc/research/failed-experiments-log.md` entry
+"2026-05-15 regime-reeval panels — no-op build script".
 
-This script generates 6 sim configs (+ pre2024 variants) from the
-sim_baseline_hmm template, each toggling exactly ONE knob. All other
-settings inherit from baseline_hmm — guarantees apples-to-apples vs
-the existing baseline panel.
+KERNEL READER PATHS (verified by grep on backtesting/renquant_104/kernel):
 
-Output files (all under backtesting/renquant_104/):
-  strategy_config.sim_re_stop007.json + _pre2024
-  strategy_config.sim_re_sdl_n2.json + _pre2024
-  strategy_config.sim_re_trail015.json + _pre2024
-  strategy_config.sim_re_cvar025.json + _pre2024
-  strategy_config.sim_re_cvar050.json + _pre2024
-  strategy_config.sim_re_kelly_t1_035.json + _pre2024
+  stop_loss_pct            ← regime_params.<REGIME>.stop_loss_pct
+                             (pp_inference.py:43 — `regime_p.get(...)`)
+  trailing_stop_trigger_pct ← regime_params.<REGIME>.trailing_stop_trigger_pct
+                             (pp_inference.py:41)
+  sdl_n_sigma              ← regime_params.<REGIME>.sdl_n_sigma
+                             (pp_inference.py:55)
+  qp_cvar_lambda           ← rotation.joint_actions.qp_cvar_lambda
+                             (portfolio_qp/tasks.py:981 via _qp_cfg)
+  min_model_score (tier1)  ← tiered_thresholds[0].min_model_score
+                             (selection.py:400, task_joint_actions.py:284)
+
+PRIME DIRECTIVE (CLAUDE.md): every numeric knob lives in
+`regime_params.<REGIME>` for per-regime knobs. The build script writes
+the SAME value into all five regimes so the panel sweeps the knob
+globally; downstream `scripts/analyze_regime_stratified.py` does the
+per-regime split on the OUTPUT.
+
+The script calls `scripts/validate_sim_config_active.py` after writing
+each config; if static validation reports NO-OP, the build aborts with
+non-zero so the bug is caught at config-write time, not 5h later.
 """
 from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CFG_DIR = REPO / "backtesting" / "renquant_104"
+REGIMES = ("BULL_CALM", "BEAR", "CHOPPY", "BULL_VOLATILE", "BULL_STRONG")
 
 
 def load(name: str) -> dict:
@@ -40,12 +53,32 @@ def dump(cfg: dict, name: str) -> None:
     print(f"  wrote {name}")
 
 
+def validate(name: str, baseline_name: str = "strategy_config.sim_baseline_hmm.json") -> None:
+    """Run static validator; abort if NO-OP."""
+    cmd = [
+        sys.executable, str(REPO / "scripts" / "validate_sim_config_active.py"),
+        "--baseline",  baseline_name,
+        "--candidate", name,
+    ]
+    r = subprocess.run(cmd, cwd=REPO)
+    if r.returncode != 0:
+        print(f"❌ VALIDATOR FAILED for {name} — config is a no-op. Aborting build.",
+              file=sys.stderr)
+        sys.exit(2)
+    print(f"  ✓ {name} validator passed (ACTIVE)")
+
+
+def set_per_regime(cfg: dict, knob: str, value) -> None:
+    """Write the same knob value into all 5 regime_params blocks."""
+    cfg.setdefault("regime_params", {})
+    for r in REGIMES:
+        cfg["regime_params"].setdefault(r, {})[knob] = value
+
+
 def make_pre2024_variant(cfg: dict, base_pre: dict) -> dict:
     """Mirror sim_baseline_hmm_pre2024 aux-artifact paths into a config."""
     out = copy.deepcopy(cfg)
-    # Copy the point-in-time aux artifact paths from baseline_hmm_pre2024
     for k in ("correlation_artifact", "earnings_artifact"):
-        # Search both top-level and any sub-dicts
         def _patch(d):
             for kk, vv in d.items():
                 if kk == k and isinstance(vv, str):
@@ -73,96 +106,87 @@ def build():
     base     = load("strategy_config.sim_baseline_hmm.json")
     base_pre = load("strategy_config.sim_baseline_hmm_pre2024.json")
 
-    # ── 1. stop-loss = 0.07 (tighter than golden 0.15) ─────────────────
+    # ── 1. stop-loss = 0.07 in ALL regimes (tighter than baseline mix) ──
     c = copy.deepcopy(base)
-    c.setdefault("risk", {})["stop_loss_pct"] = 0.07
-    c.setdefault("_2026-05-15_re_eval_hypothesis", {})
-    c["_2026-05-15_re_eval_hypothesis"]["expected"] = (
-        "Tighter stops (-7% vs -15%) protect capital in BEAR/CHOPPY but "
-        "clip winners in BULL_CALM. Pooled rejection -7.5pt hides regime "
-        "heterogeneity. Expected: BEAR +2~5pt, BULL_CALM -12~-15pt."
-    )
-    dump(c, "strategy_config.sim_re_stop007.json")
-    dump(make_pre2024_variant(c, base_pre),
-         "strategy_config.sim_re_stop007_pre2024.json")
-
-    # ── 2. σ-aware single-day-loss n_sigma = 2.0 (tightest) ─────────────
-    c = copy.deepcopy(base)
-    sdl = c.setdefault("risk", {}).setdefault("sigma_aware_sdl", {})
-    sdl["enabled"] = True
-    sdl["n_sigma"] = 2.0
+    set_per_regime(c, "stop_loss_pct", 0.07)
     c["_2026-05-15_re_eval_hypothesis"] = {
-        "expected": (
-            "2σ SDL fires often in BEAR/VOL regimes (real catastrophe "
-            "protection) but cuts winners in BULL_CALM (false positives). "
-            "Pooled -10.4pt. Expected: BEAR/VOL +3~5pt, BULL_CALM -12~-15pt."
-        ),
+        "expected": "Tighter stops (-7%) in all regimes. Pooled rejection -7.5pt hides regime heterogeneity.",
+        "knob_path": "regime_params.<REGIME>.stop_loss_pct",
+        "kernel_reader": "pp_inference.py:43",
+    }
+    dump(c, "strategy_config.sim_re_stop007.json")
+    dump(make_pre2024_variant(c, base_pre), "strategy_config.sim_re_stop007_pre2024.json")
+    validate("strategy_config.sim_re_stop007.json")
+
+    # ── 2. σ-aware SDL n_sigma = 2.0 in all regimes ─────────────────────
+    c = copy.deepcopy(base)
+    set_per_regime(c, "sdl_n_sigma", 2.0)
+    c["_2026-05-15_re_eval_hypothesis"] = {
+        "expected": "2σ SDL fires often in BEAR/VOL (real catastrophe protection), cuts winners in BULL_CALM.",
+        "knob_path": "regime_params.<REGIME>.sdl_n_sigma",
+        "kernel_reader": "pp_inference.py:55",
     }
     dump(c, "strategy_config.sim_re_sdl_n2.json")
-    dump(make_pre2024_variant(c, base_pre),
-         "strategy_config.sim_re_sdl_n2_pre2024.json")
+    dump(make_pre2024_variant(c, base_pre), "strategy_config.sim_re_sdl_n2_pre2024.json")
+    validate("strategy_config.sim_re_sdl_n2.json")
 
-    # ── 3. trailing-stop trigger 15% (was 25%) ──────────────────────────
+    # ── 3. trailing-stop trigger 15% in all regimes ─────────────────────
     c = copy.deepcopy(base)
-    c.setdefault("risk", {})["trailing_stop_trigger_pct"] = 0.15
+    set_per_regime(c, "trailing_stop_trigger_pct", 0.15)
     c["_2026-05-15_re_eval_hypothesis"] = {
-        "expected": (
-            "Tighter trailing protects gains in CHOPPY/REVERT; cuts "
-            "winners in TRENDING BULL_STRONG. Pooled negative; expect "
-            "regime split."
-        ),
+        "expected": "Tighter trailing protects CHOPPY gains; cuts BULL_STRONG winners.",
+        "knob_path": "regime_params.<REGIME>.trailing_stop_trigger_pct",
+        "kernel_reader": "pp_inference.py:41",
     }
     dump(c, "strategy_config.sim_re_trail015.json")
-    dump(make_pre2024_variant(c, base_pre),
-         "strategy_config.sim_re_trail015_pre2024.json")
+    dump(make_pre2024_variant(c, base_pre), "strategy_config.sim_re_trail015_pre2024.json")
+    validate("strategy_config.sim_re_trail015.json")
 
-    # ── 4. CVaR λ = 0.25 ────────────────────────────────────────────────
+    # ── 4. CVaR λ = 0.25 (rotation.joint_actions.qp_cvar_lambda) ────────
     c = copy.deepcopy(base)
-    qp = c.setdefault("rotation", {}).setdefault("joint_actions", {})
-    qp["cvar_lambda"] = 0.25
+    c.setdefault("rotation", {}).setdefault("joint_actions", {})["qp_cvar_lambda"] = 0.25
     c["_2026-05-15_re_eval_hypothesis"] = {
-        "expected": (
-            "Rockafellar-Uryasev 2002 tail-risk penalty. CVaR cuts "
-            "positions when tail VaR is high (BEAR/BULL_VOL). In "
-            "BULL_CALM tail is small → penalty cosmetic, costs upside. "
-            "Pooled -3.3pt. Expected: BEAR +1~3pt, BULL_CALM -4~-6pt."
-        ),
+        "expected": "Rockafellar-Uryasev 2002 tail-risk penalty. BEAR/VOL gain, BULL_CALM cosmetic cost.",
+        "knob_path": "rotation.joint_actions.qp_cvar_lambda",
+        "kernel_reader": "portfolio_qp/tasks.py:981 via _qp_cfg",
     }
     dump(c, "strategy_config.sim_re_cvar025.json")
-    dump(make_pre2024_variant(c, base_pre),
-         "strategy_config.sim_re_cvar025_pre2024.json")
+    dump(make_pre2024_variant(c, base_pre), "strategy_config.sim_re_cvar025_pre2024.json")
+    validate("strategy_config.sim_re_cvar025.json")
 
-    # ── 5. CVaR λ = 0.50 (more aggressive) ──────────────────────────────
+    # ── 5. CVaR λ = 0.50 ────────────────────────────────────────────────
     c = copy.deepcopy(base)
-    c.setdefault("rotation", {}).setdefault("joint_actions", {})["cvar_lambda"] = 0.50
+    c.setdefault("rotation", {}).setdefault("joint_actions", {})["qp_cvar_lambda"] = 0.50
     c["_2026-05-15_re_eval_hypothesis"] = {
-        "expected": (
-            "Aggressive tail-risk penalty. Same regime split as λ=0.25 "
-            "but stronger effect both directions. Pooled -1.6pt."
-        ),
+        "expected": "Stronger tail-risk penalty than λ=0.25. Same regime split, larger magnitude.",
+        "knob_path": "rotation.joint_actions.qp_cvar_lambda",
+        "kernel_reader": "portfolio_qp/tasks.py:981 via _qp_cfg",
     }
     dump(c, "strategy_config.sim_re_cvar050.json")
-    dump(make_pre2024_variant(c, base_pre),
-         "strategy_config.sim_re_cvar050_pre2024.json")
+    dump(make_pre2024_variant(c, base_pre), "strategy_config.sim_re_cvar050_pre2024.json")
+    validate("strategy_config.sim_re_cvar050.json")
 
-    # ── 6. Kelly tier-1 raise rank_score 0.27 → 0.35 ────────────────────
+    # ── 6. Kelly tier-1 raise: tiered_thresholds[0].min_model_score 0.27 → 0.35 ──
     c = copy.deepcopy(base)
-    ks = c.setdefault("ranking", {}).setdefault("kelly_sizing", {})
-    ks["tier1_rank_score_threshold"] = 0.35
+    tiered = c.setdefault("tiered_thresholds", [])
+    if not tiered:
+        tiered.append({"min_model_score": 0.35})
+    else:
+        # Defensive copy so we don't mutate base's list
+        tiered = copy.deepcopy(tiered)
+        c["tiered_thresholds"] = tiered
+        tiered[0]["min_model_score"] = 0.35
     c["_2026-05-15_re_eval_hypothesis"] = {
-        "expected": (
-            "Higher quality gate (rank 0.35) → 82%→91% hit-rate. Should "
-            "help BEAR/CHOPPY (fewer bad trades), hurt BULL_CALM (fewer "
-            "shots at mean-revert winners). Pooled -8.88pt APY / +0.74 "
-            "Sharpe. Expected: BEAR +2~4pt, BULL_CALM -10~-12pt."
-        ),
+        "expected": "Higher quality gate → fewer/better entries. BEAR/CHOPPY +, BULL_CALM -.",
+        "knob_path": "tiered_thresholds[0].min_model_score",
+        "kernel_reader": "selection.py:400, task_joint_actions.py:284",
     }
     dump(c, "strategy_config.sim_re_kelly_t1_035.json")
-    dump(make_pre2024_variant(c, base_pre),
-         "strategy_config.sim_re_kelly_t1_035_pre2024.json")
+    dump(make_pre2024_variant(c, base_pre), "strategy_config.sim_re_kelly_t1_035_pre2024.json")
+    validate("strategy_config.sim_re_kelly_t1_035.json")
 
 
 if __name__ == "__main__":
-    print("Building regime-conditional re-eval configs...")
+    print("Building regime-conditional re-eval configs (with active-path validation)...")
     build()
-    print("Done.")
+    print("All configs validated as ACTIVE.")
