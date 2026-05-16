@@ -74,6 +74,13 @@ class RegimeMomentumAlignmentTask(Task):
             return
         momentum_regimes = set(cfg.get("momentum_regimes",
                                          ["BULL_CALM", "BULL_VOLATILE"]))
+        # 2026-05-15 (post p0activated 16-window): empirical regime-conditional
+        # opt-out. The p0activated panel showed gates HELP in BEAR/CHOPPY/VOL
+        # (+8 to +30pp) but HURT in BULL_CALM/BULL_STRONG rallies (-10 to
+        # -25pp) where mean-revert mega-caps with negative r60 are exactly
+        # the bounce winners we want to keep. `disabled_in_regimes` is the
+        # operator's regime-conditional skip list. CLAUDE.md PRIME DIRECTIVE.
+        disabled_in_regimes = set(cfg.get("disabled_in_regimes", []))
         hurst_floor    = float(cfg.get("hurst_floor",    0.65))
         r60d_floor     = float(cfg.get("r60d_floor",     0.0))
         mismatch_scale = float(cfg.get("mismatch_scale", 0.5))
@@ -83,6 +90,12 @@ class RegimeMomentumAlignmentTask(Task):
         hurst = getattr(ctx, "hurst", None) or getattr(ctx, "_hurst", None)
         # No momentum regime → no-op
         if regime not in momentum_regimes:
+            return
+        # Empirical opt-out (per p0activated 16-window evidence)
+        if regime in disabled_in_regimes:
+            log.info("RegimeMomentumAlignment: regime=%s in disabled_in_regimes "
+                     "→ skip (operator opt-out per regime-conditional empirics)",
+                     regime)
             return
         if hurst is None or not math.isfinite(hurst) or hurst < hurst_floor:
             return
@@ -157,6 +170,15 @@ class DeepDrawdownVetoTask(Task):
         sue_floor      = float(cfg.get("sue_floor",      0.0))
         pead_floor     = float(cfg.get("pead_floor",     0.0))
         require_either = bool (cfg.get("require_either", True))
+        # 2026-05-15 regime-conditional opt-out (see RegimeMomentumAlignmentTask
+        # docstring for evidence). In BULL_CALM/BULL_STRONG rallies the deep-dd
+        # cohort IS the bounce winners (META, etc.); vetoing them costs +25pp.
+        disabled_in_regimes = set(cfg.get("disabled_in_regimes", []))
+        regime = getattr(ctx, "regime", None)
+        if regime in disabled_in_regimes:
+            log.info("DeepDrawdownVeto: regime=%s in disabled_in_regimes → skip",
+                     regime)
+            return
 
         candidates = list(getattr(ctx, "candidates", []) or [])
         if not candidates:
