@@ -51,6 +51,10 @@ def main() -> None:
                    help="Write daily equity curve to JSON (for paired-returns analysis)")
     p.add_argument("--no-compare", action="store_true",
                    help="Skip the golden-config comparison run.")
+    p.add_argument("--skip-preflight", action="store_true",
+                   help="Skip the static-path preflight on side configs. "
+                        "ONLY use when intentionally running a no-op (e.g. "
+                        "re-baselining against new artifacts).")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / STRATEGY
@@ -61,6 +65,37 @@ def main() -> None:
         log.error("Config not found: %s", cfg_path)
         sys.exit(1)
     config = json.loads(cfg_path.read_text())
+
+    # 2026-05-16: gate on static-path preflight for any side config to
+    # prevent the recurrence of the 5/15 no-op build script bug (5h of
+    # compute on configs whose knobs didn't reach the kernel). See
+    # scripts/validate_sim_config_active.py and the 2026-05-16 entry
+    # in doc/research/failed-experiments-log.md.
+    SIDE_CFG_BASELINE = "strategy_config.sim_baseline_hmm.json"
+    is_side = (args.strategy_config_name.startswith("strategy_config.sim_")
+               and not args.strategy_config_name.startswith("strategy_config.sim_baseline"))
+    if is_side and not args.skip_preflight:
+        import subprocess
+        validator = REPO_ROOT / "scripts" / "validate_sim_config_active.py"
+        if validator.exists():
+            log.info("preflight: static-path validator vs %s", SIDE_CFG_BASELINE)
+            r = subprocess.run(
+                [sys.executable, str(validator),
+                 "--baseline", SIDE_CFG_BASELINE,
+                 "--candidate", args.strategy_config_name],
+                cwd=str(strategy_dir), capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                log.error("PREFLIGHT FAILED for %s — config writes to a path "
+                          "the kernel does not read (NO-OP). Aborting to "
+                          "prevent wasted compute. Pass --skip-preflight to "
+                          "override.", args.strategy_config_name)
+                log.error("validator output:\n%s", r.stdout)
+                sys.exit(2)
+            log.info("preflight: ACTIVE — knob reaches kernel")
+        else:
+            log.warning("preflight skipped — validator not found at %s", validator)
+
     config["_strategy_dir"]         = str(strategy_dir)
     config["_strategy_config_name"] = args.strategy_config_name
     config["initial_cash"]          = args.initial_cash
