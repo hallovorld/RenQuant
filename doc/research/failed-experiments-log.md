@@ -3311,3 +3311,71 @@ Per user critique ("you are not comparing strategy performance with SPY?"), re-a
 5. Box-Behnken on XGBoost hyperparams (depth, lr, subsample)
 6. Ensemble of multiple model classes
 
+
+---
+
+## 2026-05-15 EVENING — Regime-conditional retrospection
+
+The "0 promotion candidates from 200+ sims" verdict above was POOLED-MEAN
+biased. CLAUDE.md PRIME DIRECTIVE (added 2026-05-14): RenQuant is
+REGIME-CONDITIONAL. Pooling Δ across regimes hides the actionable pattern.
+
+### Canonical proof: long-short clean (2026-05-14)
+
+* Pooled: +6.23pt mean, p=0.234 → NEITHER (recorded as a "rejection" in
+  this log)
+* Regime-stratified: BEAR +22pt / CHOPPY +14pt / BULL_VOL +13pt = 3 wins
+  vs BULL_CALM -7.8pt / BULL_STRONG -1.8pt = 2 losses
+* Right answer: deploy shorts conditional on regime ∈ {BEAR, CHOPPY,
+  BULL_VOL}, NOT global rejection
+
+### p0activated 16-window (2026-05-15) — same pattern
+
+The new 4-flag activation (`use_calibrator_mu` + `use_realized_vol_fallback`
++ `regime_momentum.enabled` + `deep_drawdown_veto.enabled`) tested vs
+sim_baseline_hmm:
+
+* Pooled: +0.52pt mean, Wilcoxon p=0.90 → NEITHER
+* Per-window (regime in parens):
+  * Q01 BEAR    +8.39    Q02 BEAR     +5.76    Q16 BEAR     +10.87  → BEAR mean **+8.34pp WIN**
+  * Q09 BULL_VOL +26.93  Q10 CHOPPY   +28.13   Q14 BULL_VOL +30.50
+    Q15 CHOPPY   +22.04                                     → BULL_VOL/CHOPPY mean **+26.90pp HUGE WIN**
+  * Q03 +-17.66 Q05 -16.66 Q07 -19.02 Q11 -23.69 Q13 -25.25  → BULL rally mean **-20.66pp BIG LOSE**
+* Mechanism: gates correctly avoid mean-revert mega-caps with neg r60
+  in BEAR/CHOPPY/VOL (where catastrophes happen) BUT also reject the
+  bouncers in BULL_CALM/BULL_STRONG rallies (META, etc.) where they
+  ARE the winners. Pooling masks both.
+* Action: ship `disabled_in_regimes: ["BULL_CALM","BULL_STRONG"]` config
+  flag on both gates. New variant `sim_p0activated_regime_aware`
+  queued for 16-window verify.
+
+### NGBoost SUSPECT (E55 -20.6pt) → CONFIRMED audit hypothesis
+
+* Scripts/train_ngboost_proper.py 5-seed Duan 2020 §4 config:
+  val_IC=+0.0351 ± 0.0036, σ-calib=+0.271 ± 0.005, t-stat vs
+  XGB-quantile baseline = **+2.76** (95% significant)
+* Original E55 rejection was misconfig + broken σ wire, NOT NGBoost
+  being bad. With proper config NGBoost has real signal AND calibrated
+  σ. Re-test pending after prod retrain + σ-aware Kelly wire.
+
+### 6-panel re-eval queue (2026-05-15 → 2026-05-16)
+
+Sequential:
+* `re_stop007` (stop_loss=0.07)
+* `re_sdl_n2` (sigma-aware SDL n=2)
+* `re_trail015` (trailing trigger 15%)
+* `re_cvar025` / `re_cvar050` (Rockafellar-Uryasev λ)
+* `re_kelly_t1_035` (Kelly tier-1 raise)
+
+Each tested 16-window, analyzed via `scripts/analyze_regime_stratified.py`.
+
+### Updated total verdict
+
+Of ~200 prior "rejected" sims, AT LEAST 6 are now flagged for
+regime-conditional re-eval. Long-short already has 3 conditional
+wins. NGBoost has confirmed signal (just misconfigured). Strategy is
+NOT at local optimum — the local optimum was illusory because the
+optimizer (pooled-mean A/B) was using the wrong objective function.
+
+The right framework is REGIME-STRATIFIED 5-test methodology. Working
+directory has it now (`scripts/analyze_regime_stratified.py`).

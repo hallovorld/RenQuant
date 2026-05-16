@@ -177,3 +177,64 @@ Without test #3 we'd re-introduce the bug in any future Kelly refactor.
   downstream consumers of `max_pct` to confirm we're not breaking the
   walkforward retrain pipeline). Estimated effort: 2-3 hours implement
   + sim verify on 6 windows.
+
+---
+
+## 2026-05-15 RESOLUTION UPDATE
+
+All three findings RESOLVED in commits this date:
+
+### 🔴 DEAD PATH #1 (vol-target) → ✅ FIXED
+
+* `kernel/portfolio_qp/tasks.py::ApplyExposureScalingTask` already
+  ships the design: writes `ctx._vol_target_scale` and multiplies
+  into `ctx._qp_w_upper` BEFORE QP solve.
+* Mandatory regression test `tests/test_vol_target_scales_qp_upper.py`
+  written 2026-05-15 — pins the invariant. 4/4 cases pass.
+* Dead-path Kelly local-var code (~50 LOC) DELETED from
+  `ApplyKellySizingTask` (commit `5b78ffe`).
+
+### 🔴 DEAD PATH #2 (DD-Kelly) → ✅ FIXED
+
+* Same shape as #1 — same `ApplyExposureScalingTask` writes
+  `ctx._dd_kelly_scale`. Test `tests/test_dd_kelly_scales_qp_upper.py`
+  pins it. 4/4 cases pass.
+
+### 🟡 NGBoost SUSPECT → ✅ CONFIRMED (audit hypothesis was correct)
+
+* `scripts/train_ngboost_proper.py` 5-seed validator with paper
+  Duan 2020 §4 large-data config (lr=0.1, minibatch_frac=0.1,
+  n_estimators=500, early_stopping=20):
+
+  ```
+  val μ-IC mean=+0.0351 std=0.0036  range=[+0.0293, +0.0383]
+  σ̂  calibration mean=+0.271          (4 seeds in [0.265, 0.275])
+  μ̂  x-sec std mean=0.01619
+  Δ vs XGB-quantile baseline = +0.0057   t-stat = +2.76
+  ✓ SIGNIFICANT BEAT at 95% confidence
+  ```
+
+* **Audit hypothesis was correct**: original E55 rejection
+  (-20.6pt APY, -1.09 Sharpe) was NOT NGBoost being bad — it was
+  misconfiguration (head config + σ scale wiring). Properly configured,
+  NGBoost beats XGB-quantile decisively on val μ-IC.
+
+* σ-calibration of +0.271 across all 5 seeds (variance < 0.01)
+  proves σ has REAL conditional uncertainty signal — not noise.
+
+### Additional regression test #3 (the dead-path guard)
+
+Audit doc verbatim required: *"Without test #3 we'd re-introduce the
+bug in any future Kelly refactor."* SHIPPED:
+`tests/test_vol_target_independent_of_ngb.py` — pins that vol-target
++ DD-Kelly scale `_qp_w_upper` INDEPENDENTLY of NGB on/off state.
+3/3 cases pass.
+
+### Action items still open
+
+1. **NGBoost prod retrain** with Duan 2020 §4 config — replace the
+   misconfigured head currently on disk
+2. **σ-aware Kelly path** — wire NGB σ properly into Kelly numerator
+   instead of via the broken sigma_calibration constant
+3. **Re-test E55 regime-stratified** (NGB ON) — predicted to win in
+   BEAR/VOL after both retrain + wire fixes

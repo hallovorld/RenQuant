@@ -39,7 +39,12 @@ REGIME_LINE_RE = re.compile(r"regime=([A-Z_]+)")
 
 def _dominant_regime_from_log(log_path: Path) -> Optional[str]:
     """Parse a sim window log for per-bar regime labels; return the
-    bar-weighted majority regime. None if log missing/empty."""
+    bar-weighted majority regime. None if log missing/empty.
+
+    NOTE: 2026-05-15 — the HMM regime detector is known to mis-label
+    2022 deep-bear windows as BULL_CALM (CLAUDE.md PRIME DIRECTIVE
+    documented this). Prefer _regime_from_spy_return below for analyzer
+    correctness."""
     if not log_path.exists():
         return None
     counts: dict[str, int] = {}
@@ -51,6 +56,43 @@ def _dominant_regime_from_log(log_path: Path) -> Optional[str]:
     if not counts:
         return None
     return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _regime_from_spy_return(start_iso: str, end_iso: str) -> str:
+    """Data-driven regime label from SPY's realized return + volatility
+    over the window. Bypasses the HMM detector entirely — mismatch with
+    in-sim regime is the WHOLE POINT (the HMM is buggy on 2022 windows).
+
+    Buckets (per CLAUDE.md regime taxonomy):
+      ret < -10%             → BEAR
+      ret in [-10%, -2%]     → CHOPPY
+      ret in [-2%, +2%]      → BULL_CALM
+      ret in [+2%, +10%]     → BULL_VOLATILE
+      ret > +10%             → BULL_STRONG
+
+    Volatility could be added (e.g. promote VOLATILE if ann_vol > 25%);
+    keeping it 1-D for now to avoid bucket explosion at n_window=16.
+    """
+    try:
+        import yfinance as yf
+        import pandas as pd
+        df = yf.download("SPY", start=start_iso, end=end_iso,
+                          progress=False, auto_adjust=False)
+        if df is None or df.empty:
+            return "UNKNOWN"
+        close = df["Close"].dropna()
+        if hasattr(close, "squeeze"):
+            close = close.squeeze()
+        if len(close) < 2:
+            return "UNKNOWN"
+        ret = float(close.iloc[-1] / close.iloc[0] - 1.0)
+    except Exception:
+        return "UNKNOWN"
+    if   ret < -0.10:  return "BEAR"
+    elif ret < -0.02:  return "CHOPPY"
+    elif ret <  0.02:  return "BULL_CALM"
+    elif ret <  0.10:  return "BULL_VOLATILE"
+    else:               return "BULL_STRONG"
 
 
 def _load_panel(eq_dir: Path) -> dict[str, dict]:
@@ -84,10 +126,15 @@ def analyze(baseline_dir: Path, treatment_dir: Path,
         t = treat_panel[win]
         delta_apy = float(t["apy"]) - float(b["apy"])
         delta_sharpe = float(t.get("sharpe", 0)) - float(b.get("sharpe", 0))
-        # Treatment regime (from treatment log preferred; fall back to base)
-        regime = _regime_for_window(treatment_dir / "logs", win) \
-              or _regime_for_window(baseline_dir / "logs", win) \
-              or "UNKNOWN"
+        # Regime label: PREFER data-driven SPY-return classification
+        # because the in-sim HMM detector is known buggy on 2022 windows
+        # (CLAUDE.md PRIME DIRECTIVE). Fall back to log-parsed if yfinance
+        # unavailable.
+        regime = _regime_from_spy_return(b["start"][:10], b["end"][:10])
+        if regime == "UNKNOWN":
+            regime = _regime_for_window(treatment_dir / "logs", win) \
+                  or _regime_for_window(baseline_dir / "logs", win) \
+                  or "UNKNOWN"
         rows.append({
             "window": win,
             "regime": regime,
