@@ -21,6 +21,78 @@ stratified results will tell us which knobs to flip per regime.**
 
 ---
 
+## 🔴 CRITICAL UPDATE (19:48 PT) — p0activated_regime_aware verdict
+
+**My hypothesis (gates 该在 BULL_CALM/BULL_STRONG 关掉) WAS WRONG.**
+
+Compare two 16-window panels:
+
+| Variant | Pooled ΔAPY | Wilcoxon p | Verdict |
+|---|---|---|---|
+| `p0activated` (gates ON everywhere) | +0.52pp | 0.90 | NEITHER (mild) |
+| `p0activated_regime_aware` (gates OFF in BULL_CALM/BULL_STRONG) | **-3.59pp** | 0.74 | **NEITHER (worse)** |
+
+Per-regime stratified `p0_regime_aware`:
+
+```
+BEAR           n=1   +8.74pp   ✓ WIN (Q01)
+CHOPPY         n=4   +7.01pp   ✓ WIN (3/4 positive: Q02 +15, Q06 +5, Q16 +22)
+BULL_VOLATILE  n=8   -2.24pp   ▼ Q05 -29 / Q11 -35 catastrophes (4/8 positive)
+BULL_STRONG    n=3   -25.40pp  🔴 BIG LOSE (Q07 -51pp)
+```
+
+### Why my reasoning was backwards
+
+I assumed gates "kill mean-revert mega-cap winners in BULL rallies".
+The data says the OPPOSITE:
+* Q07 BULL_STRONG with gates ON loses -19pp
+* Q07 BULL_STRONG with gates OFF loses **-51pp**
+* Gates in BULL_STRONG **PROTECT** rather than damage
+
+### Real culprit hypothesis
+
+Phase 3 (`use_calibrator_mu=true` + `use_realized_vol_fallback=true`) was
+ALSO ON in both variants. The Kelly μ/σ wiring may be the actual driver
+of BULL_STRONG losses — not the gates. The expected_return from
+calibrator is now sizing positions, and in BULL_STRONG it's putting
+weight on the wrong names.
+
+### What this means for next-session decisions
+
+**DO NOT just disable gates in BULL_CALM/BULL_STRONG.** That made
+things worse.
+
+The right experimental isolation:
+1. **Gates ON, Phase 3 OFF** — sim config needed: `sim_gates_only`
+2. **Phase 3 ON, gates OFF** — sim config needed: `sim_phase3_only`
+3. **Both OFF (= baseline_hmm)** — already have
+4. **Both ON** = `p0activated` — already have
+5. **Both ON but regime-conditional** = `p0activated_regime_aware` — already have
+
+After 1+2 land, can isolate which of (Phase 3 wiring, Upgrade A+B gates)
+is responsible for what in each regime.
+
+### Provisional verdict (pending isolation)
+
+* CHOPPY: regime_aware variant WINS (+7pp, 3/4) — **safe to deploy
+  Upgrade A+B + Phase 3 in CHOPPY**
+* BEAR: too small n=1 to be sure — keep current behavior
+* BULL_VOLATILE: mixed — Q11/Q05 catastrophes need root-cause before
+  any flip
+* BULL_STRONG: REVERT — turning off gates here makes things much worse
+
+**Concrete action for next session:**
+
+1. Build `sim_gates_only_pre2024.json` + `sim_phase3_only_pre2024.json`
+2. Run 2 new 16-window panels (sequential, ETA ~2h)
+3. With 5 variants × 5 regimes data, build decision matrix
+4. Flip configs per CLAUDE.md PRIME DIRECTIVE per regime
+
+The other 5 queued panels (re_sdl_n2 etc.) are still useful but their
+verdicts may also need this same isolation treatment.
+
+---
+
 ## What's in flight (will complete overnight)
 
 ### Background processes
