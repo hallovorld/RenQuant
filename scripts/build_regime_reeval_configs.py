@@ -53,19 +53,31 @@ def dump(cfg: dict, name: str) -> None:
     print(f"  wrote {name}")
 
 
-def validate(name: str, baseline_name: str = "strategy_config.sim_baseline_hmm.json") -> None:
-    """Run static validator; abort if NO-OP."""
-    cmd = [
-        sys.executable, str(REPO / "scripts" / "validate_sim_config_active.py"),
-        "--baseline",  baseline_name,
-        "--candidate", name,
-    ]
+def validate(name: str, baseline_name: str = "strategy_config.sim_baseline_hmm.json",
+             smoke: bool = False) -> None:
+    """Run pre-flight (static + optional smoke); abort if NO-OP.
+
+    When smoke=True, runs scripts/preflight_panel.sh which calls the validator
+    with --smoke (1-month sim window, ~5-10 min) to confirm the knob actually
+    fires given current artifacts and dates. Without smoke, only static path
+    check runs (~3s) — which catches DEAD_PATH but cannot catch knobs that
+    map to a kernel reader yet don't change behavior on the test windows
+    (e.g. tiered_thresholds[0] when no candidate in the score band exists).
+    """
+    if smoke:
+        cmd = [str(REPO / "scripts" / "preflight_panel.sh"), name, baseline_name]
+    else:
+        cmd = [
+            sys.executable, str(REPO / "scripts" / "validate_sim_config_active.py"),
+            "--baseline",  baseline_name,
+            "--candidate", name,
+        ]
     r = subprocess.run(cmd, cwd=REPO)
     if r.returncode != 0:
-        print(f"❌ VALIDATOR FAILED for {name} — config is a no-op. Aborting build.",
+        print(f"❌ {'PRE-FLIGHT' if smoke else 'STATIC'} FAILED for {name} — config is a no-op. Aborting build.",
               file=sys.stderr)
         sys.exit(2)
-    print(f"  ✓ {name} validator passed (ACTIVE)")
+    print(f"  ✓ {name} pre-flight passed ({'STATIC+SMOKE' if smoke else 'STATIC'})")
 
 
 def set_per_regime(cfg: dict, knob: str, value) -> None:
