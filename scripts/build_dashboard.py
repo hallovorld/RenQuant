@@ -205,6 +205,70 @@ def section_model_health() -> str:
     return "\n".join(out) + "\n\n"
 
 
+def section_regime_gates(live_state: dict) -> str:
+    """Show which regime-conditional gates fire for the CURRENT regime.
+
+    2026-05-15: critical operator visibility — when looking at today's
+    trades, we want to immediately see "in BULL_CALM, gates X,Y are OFF
+    so META-class buys WILL fire" or "in BEAR, gates X,Y,Z are ON so
+    deep-drawdown candidates WILL be vetoed".
+
+    Reads `regime_params` overlay + `disabled_in_regimes` config field
+    on each gate. Renders a per-gate fire/skip table.
+    """
+    out = ["## Regime-conditional gate status\n"]
+    regime = live_state.get("regime", "—")
+    confidence = live_state.get("regime_confidence", None)
+    out.append(f"**Current regime:** `{regime}`"
+               + (f" (conf={confidence:.2f})" if confidence is not None else "")
+               + "\n")
+
+    # Read golden config to check gate status
+    cfg_path = REPO_ROOT / "backtesting" / "renquant_104" / "strategy_config.json"
+    if not cfg_path.exists():
+        return "\n".join(out) + "\n_strategy_config.json missing._\n\n"
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except Exception as e:
+        return "\n".join(out) + f"\n_config unreadable: {e}_\n\n"
+
+    rank = cfg.get("ranking", {})
+    bqg = rank.get("buy_quality_gates", {})
+    ks  = rank.get("kelly_sizing", {})
+
+    # Per-gate: enabled? disabled_in_regimes? fires today?
+    def _gate_status(name: str, gate_cfg: dict, applies_in: list[str] | None = None) -> tuple[str, str]:
+        if not gate_cfg.get("enabled", False):
+            return "OFF", "config.enabled=false"
+        disabled = gate_cfg.get("disabled_in_regimes", [])
+        if regime in disabled:
+            return "SKIP", f"regime in disabled_in_regimes={disabled}"
+        if applies_in is not None and regime not in applies_in:
+            return "SKIP", f"regime not in applies_in={applies_in}"
+        return "**FIRE**", "active in current regime"
+
+    gates_table = [
+        ("regime_momentum",       bqg.get("regime_momentum", {}),
+         bqg.get("regime_momentum", {}).get("momentum_regimes")),
+        ("deep_drawdown_veto",    bqg.get("deep_drawdown_veto", {}), None),
+    ]
+    out.append("\n| Gate | Status | Why |")
+    out.append("|---|---|---|")
+    for name, gcfg, applies in gates_table:
+        status, reason = _gate_status(name, gcfg, applies)
+        out.append(f"| `{name}` | {status} | {reason} |")
+
+    # Kelly path status (use_calibrator_mu / use_realized_vol_fallback are
+    # global toggles — no regime conditional yet)
+    out.append("")
+    out.append(f"**Kelly μ source:** "
+               f"{'calibrator.expected_return' if ks.get('use_calibrator_mu') else 'NGBoost μ (likely None → uniform fallback)'}")
+    out.append(f"**Kelly σ source:** "
+               f"{'realized_vol_60d (clipped)' if ks.get('use_realized_vol_fallback') else 'NGBoost σ (likely None → Kelly returns 0)'}")
+
+    return "\n".join(out) + "\n\n"
+
+
 def section_priorities() -> str:
     """Top 5 open priorities from roadmap.md (parses ## headings and
     truncates long descriptions)."""
@@ -263,6 +327,7 @@ def build(broker: str, out_path: Path) -> str:
     parts = [
         section_header(broker, db, live_state),
         section_recent_trades(db),
+        section_regime_gates(live_state),  # 2026-05-15: gate fire-status visibility
         section_pnl_sparkline(db),
         section_model_health(),
         section_priorities(),

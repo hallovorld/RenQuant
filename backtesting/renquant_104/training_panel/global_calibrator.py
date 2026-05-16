@@ -100,6 +100,33 @@ class GlobalPanelCalibration:
                          left=self.er_y[0], right=self.er_y[-1])
 
     def save(self, path: str | Path, metadata: dict | None = None) -> None:
+        # G12 train-time gate (2026-05-15): refuse to save a calibrator
+        # whose expected_return.y exceeds ±0.20 (= ±20% horizon return).
+        # Real-world equity 60d expected returns are ±2% at the median;
+        # ±20% is the generous tail bound. The 2026-05-12 → 2026-05-15
+        # incident had er.y up to +1.0 because train-site clip was at
+        # ±1.0 (= ±100% — non-defense). Even with the fix, an operator
+        # constructing a calibrator object from raw arrays could bypass
+        # the train-side clip; this gate catches that.
+        ER_BOUND = 0.20
+        er_max_abs = float(np.max(np.abs(self.er_y), initial=0.0))
+        if er_max_abs > ER_BOUND + 1e-9:
+            raise ValueError(
+                f"G12 ACCEPTANCE GATE FAIL: expected_return.y has "
+                f"max|y|={er_max_abs:.4f} > {ER_BOUND} sanity bound. "
+                f"Refusing to save — would corrupt Kelly μ vectors. "
+                f"Either clip er_y to ±{ER_BOUND} at train site (per "
+                f"CLAUDE.md §5.13.12) or pass override flag in metadata."
+            )
+        # G12 prob_y bound: must be in [0, 1]
+        py_min, py_max = float(self.prob_y.min(initial=0.0)), float(self.prob_y.max(initial=0.0))
+        if py_min < -1e-9 or py_max > 1.0 + 1e-9:
+            raise ValueError(
+                f"G12 ACCEPTANCE GATE FAIL: probability.y out of [0,1] "
+                f"range [{py_min:.4f}, {py_max:.4f}]. Refusing to save — "
+                f"calibrator probability head must be a proper distribution."
+            )
+
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         payload = {

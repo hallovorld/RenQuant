@@ -183,6 +183,45 @@ class TestCalibratorLoadGuards:
             "clean prod artifact triggered clip warning unexpectedly"
 
 
+class TestG12SaveGate:
+    """G12 train-time gate (2026-05-15) — refuses to save a calibrator
+    with er.y outside ±0.20 OR prob.y outside [0, 1]. Defense-in-depth
+    on top of the train-site clip in fit_global_calibrator + load-time
+    clip in load(). Catches operator errors that bypass both."""
+
+    def test_save_rejects_er_out_of_bound(self):
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        cal = GlobalPanelCalibration(
+            prob_x=np.linspace(-1, 1, 5), prob_y=np.linspace(0.1, 0.9, 5),
+            er_x=np.linspace(-1, 1, 5), er_y=np.array([-0.5, -0.1, 0, 0.1, 1.0]),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with pytest.raises(ValueError, match="G12 ACCEPTANCE GATE FAIL"):
+                cal.save(Path(tmp) / "bad.json")
+
+    def test_save_rejects_prob_out_of_bound(self):
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        cal = GlobalPanelCalibration(
+            prob_x=np.linspace(-1, 1, 5),
+            prob_y=np.array([0.1, 0.3, 0.5, 0.7, 1.5]),  # 1.5 > 1.0
+            er_x=np.linspace(-1, 1, 5),
+            er_y=np.array([-0.05, 0, 0.05, 0.1, 0.15]),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with pytest.raises(ValueError, match="probability.y out of"):
+                cal.save(Path(tmp) / "bad.json")
+
+    def test_save_accepts_clean(self):
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        cal = GlobalPanelCalibration(
+            prob_x=np.linspace(-1, 1, 5), prob_y=np.linspace(0.1, 0.9, 5),
+            er_x=np.linspace(-1, 1, 5),
+            er_y=np.array([-0.10, -0.02, 0, 0.05, 0.18]),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cal.save(Path(tmp) / "good.json")  # should not raise
+
+
 class TestApplyGlobalCalibrationSaturationGuard:
     """Guard B — ApplyGlobalCalibrationTask warns on saturated output."""
 
