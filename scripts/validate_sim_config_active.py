@@ -65,6 +65,11 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     # ── QP knobs (rotation.joint_actions via _qp_cfg) ────────────────────
     ("rotation.joint_actions.qp_cvar_lambda",          "tasks.py:981"),
     ("rotation.joint_actions.qp_cvar_alpha",           "tasks.py"),
+    # 2026-05-16 B-track: per-regime QP override (kernel patch in _qp_cfg)
+    ("regime_params.*.qp_cvar_lambda",                 "tasks.py:_qp_cfg per-regime override"),
+    ("regime_params.*.qp_cvar_alpha",                  "tasks.py:_qp_cfg per-regime override"),
+    ("regime_params.*.qp_turnover_max",                "tasks.py:_qp_cfg per-regime override"),
+    ("regime_params.*.qp_risk_aversion",               "tasks.py:_qp_cfg per-regime override"),
     ("rotation.joint_actions.qp_robust_mu_kappa",      "tasks.py"),
     ("rotation.joint_actions.qp_use_full_sigma",       "tasks.py"),
     ("rotation.joint_actions.qp_ledoit_wolf_lambda",   "tasks.py"),

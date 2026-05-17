@@ -59,11 +59,18 @@ ntfy() {
 BASELINE_DIR=$(python3 -c "import json;print(json.load(open('$STATE_FILE'))['baseline_dir'])")
 RUNNER_PID=$(python3 -c "import json;print(json.load(open('$STATE_FILE'))['runner_pid'])")
 TREATMENT_DIRS=$(python3 -c "import json;print(' '.join(json.load(open('$STATE_FILE'))['treatment_dirs']))")
+# is_overlay_batch: when true, skip the "3 windows bit-identical = NO-OP" early
+# kill. Overlay configs (e.g. regime_params.{BEAR,CHOPPY}.<knob>) legitimately
+# produce bit-identical equity in windows that contain no BEAR or CHOPPY bars.
+# Killing such panels is a false positive (5/16 diagnosed: A1 sdl_n2_BC had
+# 9/14 NOOP windows in quarterly panel, all legitimate).
+IS_OVERLAY=$(python3 -c "import json;print(json.load(open('$STATE_FILE')).get('is_overlay_batch', False))" 2>/dev/null)
 
 log "Monitor started for batch '$BATCH'"
 log "  baseline:        $BASELINE_DIR"
 log "  treatments:      $TREATMENT_DIRS"
 log "  runner pid:      $RUNNER_PID"
+log "  is_overlay:      $IS_OVERLAY (skip no-op early kill if True)"
 
 LAST_PROGRESS_TS=$(date +%s)
 LAST_TOTAL_FILES=0
@@ -115,9 +122,10 @@ while true; do
     LAST_PROGRESS_TS=$NOW  # avoid spam
   fi
 
-  # ── No-op detection ──
-  # For each treatment, once it has ≥3 windows complete, compare per-window
-  # equity to baseline. If bit-identical, knob is a no-op → kill panel.
+  # ── No-op detection ── (skipped for overlay batches; see header)
+  if [[ "$IS_OVERLAY" == "True" ]]; then
+    : # skip — overlay knobs may legitimately not fire in non-target regimes
+  else
   for tdir in $TREATMENT_DIRS; do
     label=$(basename "$tdir" | sed 's/^sim_//')
     if [[ ",$ALERTED_NO_OP," == *",$label,"* ]]; then continue; fi
@@ -165,6 +173,7 @@ PY
       fi
     fi
   done
+  fi  # end IS_OVERLAY guard
 
   # ── Memory pressure (vm_stat compressor) ──
   comp_pages=$(vm_stat | awk '/Pages occupied by compressor/ {print $5}' | tr -d '.')

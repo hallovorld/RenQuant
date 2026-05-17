@@ -1271,8 +1271,27 @@ class EmitOrdersFromQPSolutionTask(Task):
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
+# Keys that support per-regime override. Reading order:
+#   regime_params.<ctx.regime>.<KEY>  →  rotation.joint_actions.<KEY>
+# Pattern matches CLAUDE.md PRIME DIRECTIVE (regime-conditional strategy).
+# Test pin: tests/test_qp_cfg_per_regime_override.py
+_QP_PER_REGIME_KEYS = (
+    "qp_cvar_lambda",
+    "qp_cvar_alpha",
+    "qp_turnover_max",
+    "qp_risk_aversion",
+)
+
+
 def _qp_cfg(ctx) -> dict:
-    return (ctx.config.get("rotation", {}).get("joint_actions", {})) or {}
+    base = dict((ctx.config.get("rotation", {}).get("joint_actions", {})) or {})
+    regime = getattr(ctx, "regime", None)
+    if regime:
+        regime_p = (ctx.config.get("regime_params", {}) or {}).get(regime, {}) or {}
+        for key in _QP_PER_REGIME_KEYS:
+            if key in regime_p:
+                base[key] = regime_p[key]
+    return base
 
 
 def _per_asset_tax(hs, price, w_i, nav, today, st_rate, lt_rate,
