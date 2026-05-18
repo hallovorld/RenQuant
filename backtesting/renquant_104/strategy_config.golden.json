@@ -462,7 +462,7 @@
       "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
       "qp_tax_aware": false,
       "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
-      "qp_tax_lot_method": "fifo",
+      "qp_tax_lot_method": "hifo",
       "_qp_tax_lot_method_reason": "G7 (2026-05-04): tax-lot disposal rule. 'fifo' = oldest lot first (broker default); 'hifo' = highest-cost lot first (minimises realized gain on partial sells); 'avg' = legacy single-cost-basis kill-switch.",
       "default_sigma": 0.05,
       "qp_signal_decay": 0.0,
