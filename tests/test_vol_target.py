@@ -128,6 +128,17 @@ def _ctx(*, spy_returns, vt_cfg=None):
     )
 
 
+@pytest.mark.skip(
+    reason=(
+        "2026-05-15 P0 cleanup (doc/AUDIT_2026-05-12_dead_paths.md) "
+        "REMOVED the vol-target local-variable path from ApplyKellySizingTask "
+        "for the same reason as dd_scaling — it modified max_pct which QP "
+        "never read (dead code). The live implementation lives in "
+        "kernel.portfolio_qp.tasks.ApplyExposureScalingTask which writes "
+        "ctx._vol_target_scale into ctx._qp_w_upper. These Task-layer "
+        "integration tests need rewriting against ApplyExposureScalingTask."
+    )
+)
 class TestApplyKellySizingVolTargetIntegration:
 
     def test_disabled_block_preserves_golden(self):

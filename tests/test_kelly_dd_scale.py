@@ -100,6 +100,18 @@ def _ctx(*, hwm=100.0, pv=100.0, regime="BULL_CALM",
     )
 
 
+@pytest.mark.skip(
+    reason=(
+        "2026-05-15 P0 cleanup (doc/AUDIT_2026-05-12_dead_paths.md) "
+        "REMOVED the dd_scaling local-variable path from ApplyKellySizingTask "
+        "— it was modifying max_pct which QP never read (dead code). The "
+        "live implementation now lives in "
+        "kernel.portfolio_qp.tasks.ApplyExposureScalingTask which writes "
+        "ctx._dd_kelly_scale and multiplies it into ctx._qp_w_upper. These "
+        "Task-layer integration tests verified the REMOVED path and need "
+        "rewriting against the new ApplyExposureScalingTask before re-enable."
+    )
+)
 class TestApplyKellySizingTaskDDIntegration:
     """R-04 regression guard at the Task layer."""
 

@@ -7,6 +7,7 @@ Four layers per CLAUDE.md §5.2 + user's directive on hand-rolled code:
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import sqlite3
@@ -29,7 +30,16 @@ _spec.loader.exec_module(dashboard)
 
 @pytest.fixture
 def fake_db(tmp_path):
-    """Tiny in-memory db with portfolio_daily_metrics + trades tables."""
+    """Tiny in-memory db with portfolio_daily_metrics + trades tables.
+
+    2026-05-17 fix: dates are computed relative to today so the
+    section_recent_trades 7-day filter always sees the fixture trades.
+    Pre-fix the hardcoded 2026-05-09 dates fell outside today's window
+    once the calendar advanced, breaking the test silently.
+    """
+    today = datetime.date.today()
+    def _d(days_back: int) -> str:
+        return (today - datetime.timedelta(days=days_back)).isoformat()
     db_path = tmp_path / "fake_runs.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -46,21 +56,21 @@ def fake_db(tmp_path):
     cur.executemany(
         "INSERT INTO portfolio_daily_metrics VALUES (?,?,?,?,?)",
         [
-            ("2026-05-07", "live", "renquant-104", 10_000.0, 0.005),
-            ("2026-05-08", "live", "renquant-104", 10_050.0, 0.005),
-            ("2026-05-09", "live", "renquant-104", 10_100.0, 0.005),
+            (_d(10), "live", "renquant-104", 10_000.0, 0.005),
+            (_d(9),  "live", "renquant-104", 10_050.0, 0.005),
+            (_d(8),  "live", "renquant-104", 10_100.0, 0.005),
             # Deployment-transition spike that should be filtered out
-            ("2026-04-25", "live", "renquant-104", 100_000.0, 8.87),
-            ("2026-04-26", "live", "renquant-104", 10_178.71, -0.898),
+            (_d(22), "live", "renquant-104", 100_000.0, 8.87),
+            (_d(21), "live", "renquant-104", 10_178.71, -0.898),
         ],
     )
     cur.executemany(
         "INSERT INTO trades VALUES (?,?,?,?,?,?,?)",
         [
-            ("2026-05-09-live-x1", "AAPL", "buy", 10.0, 200.0, None, None),
-            ("2026-05-09-live-x1", "MSFT", "buy", 5.0, 400.0, None, None),
-            ("2026-05-09-live-x2", "NVDA", "sell", 3.0, 1200.0, "qp_sell", 0.05),
-            ("2026-05-08-live-x3", "GOOG", "buy", 2.0, 180.0, None, None),
+            (f"{_d(2)}-live-x1", "AAPL", "buy",  10.0, 200.0,  None,      None),
+            (f"{_d(2)}-live-x1", "MSFT", "buy",   5.0, 400.0,  None,      None),
+            (f"{_d(1)}-live-x2", "NVDA", "sell",  3.0, 1200.0, "qp_sell", 0.05),
+            (f"{_d(3)}-live-x3", "GOOG", "buy",   2.0, 180.0,  None,      None),
         ],
     )
     conn.commit()

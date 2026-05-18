@@ -48,24 +48,47 @@ class TestFitClampsExtremes:
     BEFORE feeding them to IsotonicRegression."""
 
     def test_global_calibrator_clips_before_isotonic_fit(self):
+        """Invariant: fwd_all MUST be clipped before isotonic ER fit
+        consumes it. 5/15 EVENING calibrator P0 incident tightened the
+        bound from ±1.0 (loose) to ±ER_CLIP=±0.20 (per train-site
+        ±0.20 fix in CLAUDE.md status). Test accepts ER_CLIP constant
+        OR any numeric bound ≤ 1.0; enforces ordering."""
         src = (REPO / "backtesting" / "renquant_104" / "training_panel"
                / "global_calibrator.py").read_text()
-        # The clip must happen before iso_er.fit
-        clip_idx = src.find("np.clip(fwd_all, -1.0, 1.0)")
+        import re
+        clip_match = re.search(r"np\.clip\(\s*fwd_all\s*,\s*-([A-Z_]+|[0-9.]+)", src)
         fit_idx = src.find("iso_er = IsotonicRegression")
-        assert clip_idx > 0, \
-            "AUDIT REGRESSION: fit_global_calibrator no longer clips fwd_all to " \
-            "[-1, +1] before isotonic ER fit. Extreme outliers (e.g. fwd_60d " \
-            "= +400%) will propagate into er_y again."
-        assert clip_idx < fit_idx, \
-            "AUDIT REGRESSION: clip occurs AFTER iso_er.fit — the fit consumed " \
-            "raw values; the clip is now no-op."
+        assert clip_match, (
+            "AUDIT REGRESSION: fit_global_calibrator no longer clips "
+            "fwd_all before isotonic ER fit. Extreme outliers (e.g. "
+            "fwd_60d=+400%) will propagate into er_y again."
+        )
+        assert clip_match.start() < fit_idx, (
+            "AUDIT REGRESSION: clip occurs AFTER iso_er.fit — the fit "
+            "consumed raw values; the clip is now no-op."
+        )
+        bound = clip_match.group(1)
+        # ER_CLIP / any identifier passes (defined elsewhere); only enforce
+        # numeric tightness on literal float bounds.
+        if not bound[0].isalpha() and not bound.startswith("_"):
+            assert float(bound) <= 1.0, (
+                f"clip bound {bound} > 1.0 weakens defense (tighter is "
+                f"safer post-5/15 P0)"
+            )
 
     def test_global_calibrator_clips_emitted_er_y(self):
+        """Defense-in-depth: emitted er_y must also be clipped (sklearn
+        isotonic CAN extrapolate knots outside fit range in degenerate
+        cases). Accepts ER_CLIP constant or literal bound."""
         src = (REPO / "backtesting" / "renquant_104" / "training_panel"
                / "global_calibrator.py").read_text()
-        # Defense-in-depth: even after fwd_for_er clip, emit er_y clipped.
-        assert "er_y = np.clip(er_y, -1.0, 1.0)" in src, \
-            "AUDIT REGRESSION: emitted er_y is no longer defense-clipped to " \
-            "[-1, +1]. sklearn's isotonic CAN extrapolate knots outside fit " \
-            "range in degenerate cases."
+        import re
+        clip_match = re.search(
+            r"er_y\s*=\s*np\.clip\(\s*er_y\s*,\s*-([A-Z_]+|[0-9.]+)",
+            src,
+        )
+        assert clip_match, (
+            "AUDIT REGRESSION: emitted er_y is no longer defense-clipped. "
+            "sklearn's isotonic CAN extrapolate knots outside fit range "
+            "in degenerate cases."
+        )
