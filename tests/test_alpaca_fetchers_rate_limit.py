@@ -38,6 +38,90 @@ def iv_mod():
                          REPO / "scripts/fetch_options_iv_alpaca.py")
 
 
+# ── Chunking helper for News API (50-article cap workaround) ──────────────
+
+class TestIterChunks:
+    """Pin the 14-day chunking helper (Alpaca news cap workaround)."""
+
+    def test_yields_sub_windows_covering_range(self, news_mod):
+        from datetime import datetime, timezone, timedelta
+        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        end   = datetime(2025, 2, 1, tzinfo=timezone.utc)
+        chunks = list(news_mod._iter_chunks(start, end, days=14))
+        # Should cover entire window
+        assert chunks[0][0] == start
+        assert chunks[-1][1] == end
+        # Contiguous (no gaps, no overlaps)
+        for i in range(len(chunks) - 1):
+            assert chunks[i][1] == chunks[i + 1][0]
+        # Each chunk ≤ 14 days
+        for (a, b) in chunks:
+            assert (b - a) <= timedelta(days=14)
+
+    def test_default_14_day_chunk(self, news_mod):
+        from datetime import datetime, timezone
+        chunks = list(news_mod._iter_chunks(
+            datetime(2025, 1, 1, tzinfo=timezone.utc),
+            datetime(2025, 1, 28, tzinfo=timezone.utc),
+        ))
+        # 27 days @ 14-day step = 2 chunks
+        assert len(chunks) == 2
+
+    def test_short_range_single_chunk(self, news_mod):
+        from datetime import datetime, timezone
+        chunks = list(news_mod._iter_chunks(
+            datetime(2025, 1, 1, tzinfo=timezone.utc),
+            datetime(2025, 1, 5, tzinfo=timezone.utc),
+        ))
+        assert len(chunks) == 1
+
+
+class TestFetchOneSymbolChunks:
+    """The fetcher must call _fetch_window once per chunk + recurse on cap."""
+
+    def test_fetcher_chunks_by_default(self, news_mod, monkeypatch):
+        from datetime import datetime, timezone
+        calls: list[tuple] = []
+        def fake_window(client, bucket, symbol, a, b, max_per):
+            calls.append((a, b))
+            return []  # empty, no cap recursion
+        monkeypatch.setattr(news_mod, "_fetch_window", fake_window)
+        news_mod._fetch_one_symbol(
+            client=None, bucket=news_mod.TokenBucket(),
+            symbol="AAPL",
+            start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2025, 2, 1, tzinfo=timezone.utc),
+            max_per_request=50, chunk_days=14,
+        )
+        # 31 days @ 14-day step → 3 chunks (14 + 14 + 3)
+        assert len(calls) == 3
+
+    def test_recursive_halving_on_cap_hit(self, news_mod, monkeypatch):
+        """When a window returns the full 50 articles, halve and re-query
+        both halves to recover articles past the server-side cap."""
+        from datetime import datetime, timezone
+        calls: list[tuple] = []
+        def fake_window(client, bucket, symbol, a, b, max_per):
+            calls.append((a, b))
+            # First chunk hits the cap, halves return < 50
+            if len(calls) == 1:
+                return [{"symbol": "AAPL", "created_at": a,
+                         "updated_at": a, "headline": f"news {i}",
+                         "summary": "", "author": "", "url": "",
+                         "all_symbols": "AAPL"} for i in range(50)]
+            return []
+        monkeypatch.setattr(news_mod, "_fetch_window", fake_window)
+        news_mod._fetch_one_symbol(
+            client=None, bucket=news_mod.TokenBucket(),
+            symbol="AAPL",
+            start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2025, 1, 15, tzinfo=timezone.utc),
+            max_per_request=50, chunk_days=14,
+        )
+        # 1 parent chunk + 2 halved sub-chunks = 3 total calls
+        assert len(calls) == 3
+
+
 # ── TokenBucket: shared between both fetchers ─────────────────────────────
 
 class TestTokenBucket:

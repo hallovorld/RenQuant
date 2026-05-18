@@ -94,13 +94,18 @@ def _load_watchlist(strategy_dir: Path) -> list[str]:
     return list(wl)
 
 
-def _fetch_one_symbol(client, bucket: TokenBucket, symbol: str,
-                     start: datetime, end: datetime,
-                     max_per_request: int = 50) -> pd.DataFrame:
-    """Fetch ALL news for one symbol in [start, end), paginated.
+def _fetch_window(client, bucket: TokenBucket, symbol: str,
+                  start: datetime, end: datetime,
+                  max_per_request: int = 50) -> list[dict]:
+    """Fetch one [start, end) window for `symbol` with pagination + backoff.
 
-    Returns: DataFrame with columns symbol, created_at, headline, summary,
-    author, url, updated_at.
+    Returns list of dicts (NOT yet a DataFrame).
+
+    2026-05-18: Alpaca Free News API returns `next_page_token=None` even
+    when more articles exist past `limit=50`. Caller MUST chunk by short
+    date sub-windows to compensate; this helper only handles
+    server-provided pagination within one window (best effort, in case
+    Alpaca later re-enables proper page_token).
     """
     from alpaca.data.requests import NewsRequest
     rows: list[dict] = []
@@ -127,12 +132,8 @@ def _fetch_one_symbol(client, bucket: TokenBucket, symbol: str,
                 backoff = min(60.0, backoff * 2)
                 continue
             raise
-        backoff = 1.0  # reset on success
+        backoff = 1.0
 
-        # 2026-05-18: Alpaca NewsSet returns `data["news"]` (NOT
-        # `data[symbol]`) — single flat list of News objects regardless
-        # of how many symbols requested. Each News object's `symbols`
-        # field lists all tickers tagged in the article.
         if isinstance(resp, dict):
             news_list = resp.get("news", []) or resp.get("data", {}).get("news", [])
         else:
@@ -144,11 +145,6 @@ def _fetch_one_symbol(client, bucket: TokenBucket, symbol: str,
             d = n.model_dump() if hasattr(n, "model_dump") else (
                 n.dict() if hasattr(n, "dict") else (n if isinstance(n, dict) else {})
             )
-            # The API returns articles where ANY of the requested symbols
-            # is in `symbols`. Persist the canonical `symbol` column as
-            # the per-row symbol so downstream FinBERT scoring fans out
-            # correctly per ticker (one article → N ticker-rows if
-            # tagged with N symbols).
             rows.append({
                 "symbol":     symbol,
                 "created_at": d.get("created_at"),
@@ -159,15 +155,63 @@ def _fetch_one_symbol(client, bucket: TokenBucket, symbol: str,
                 "url":        d.get("url"),
                 "all_symbols": ",".join(d.get("symbols", []) or []),
             })
-        # Pagination
         next_token = getattr(resp, "next_page_token", None) or (
             resp.get("next_page_token") if isinstance(resp, dict) else None
         )
         if not next_token:
             break
         page_token = next_token
+    return rows
 
-    df = pd.DataFrame(rows)
+
+def _iter_chunks(start: datetime, end: datetime, days: int = 14):
+    """Yield (a, b) sub-windows of length `days` covering [start, end).
+
+    Alpaca Free News API caps a single response at 50 articles and the
+    server returns `next_page_token=None` past that cap (verified
+    2026-05-18). Chunking by 14 days keeps each window under the cap
+    for ~95% of watchlist tickers (median ~5-10 articles/2wk).
+    For ultra-high-traffic tickers (AAPL, META, TSLA) a few articles
+    may still be dropped at very busy news days — acceptable trade-off
+    given the alternative (1-day chunks = 365 calls × 103 tickers =
+    ~40k calls, > 3hr at 180/min limit).
+    """
+    a = start
+    step = timedelta(days=days)
+    while a < end:
+        b = min(a + step, end)
+        yield (a, b)
+        a = b
+
+
+def _fetch_one_symbol(client, bucket: TokenBucket, symbol: str,
+                     start: datetime, end: datetime,
+                     max_per_request: int = 50,
+                     chunk_days: int = 14) -> pd.DataFrame:
+    """Fetch ALL news for one symbol in [start, end) via 14-day chunking.
+
+    Returns: DataFrame with columns symbol, created_at, headline, summary,
+    author, url, updated_at, all_symbols.
+
+    Workaround for Alpaca Free News API: server returns
+    `next_page_token=None` past the 50-article cap. We chunk the date
+    range so each sub-window stays under the cap.
+    """
+    all_rows: list[dict] = []
+    for (a, b) in _iter_chunks(start, end, days=chunk_days):
+        chunk_rows = _fetch_window(client, bucket, symbol, a, b, max_per_request)
+        all_rows.extend(chunk_rows)
+        # If the chunk hit the 50-cap, halve and retry the chunk to
+        # capture more articles (best-effort recovery for high-traffic
+        # tickers).
+        if len(chunk_rows) >= max_per_request and chunk_days > 1:
+            mid = a + (b - a) / 2
+            extra1 = _fetch_window(client, bucket, symbol, a, mid, max_per_request)
+            extra2 = _fetch_window(client, bucket, symbol, mid, b, max_per_request)
+            all_rows.extend(extra1)
+            all_rows.extend(extra2)
+
+    df = pd.DataFrame(all_rows)
     if not df.empty:
         df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
         df["updated_at"] = pd.to_datetime(df["updated_at"], utc=True)
