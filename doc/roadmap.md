@@ -1,6 +1,34 @@
 # RenQuant — Roadmap
 
-**Single source of truth for what's next.** Ordered by ROI (Sharpe-lift-per-effort). Every item cites a paper or open-source reference. Last updated **2026-05-14 EVENING** (regime detector fix + prime directive + per-regime knob wiring plan; prior update 2026-05-09 EOD).
+**Single source of truth for what's next.** Ordered by ROI (Sharpe-lift-per-effort). Every item cites a paper or open-source reference. Last updated **2026-05-17 NIGHT** (12+ commits — detector A+C, per-regime σ-wire, 3 prod-corruption gates, HIFO, long-short SKIP, vol-adj NEG).
+
+## 2026-05-17 NIGHT — items shipped this session
+
+| Item | Status | Commit | Impact |
+|---|---|---|---|
+| P0 detector follow-up (5-day BEAR + vol-cluster CHOPPY) | ✅ shipped | `0a192c4` | Catches SVB / DeepSeek / Aug-2024 missed by 20-day rule |
+| Per-regime σ-wire kernel + hysteresis | ✅ shipped (dormant) | `0a192c4`, `e267101` | Infrastructure ready; flag still OFF per A/B verdict below |
+| σ-wire A/B (3 conditions: global / per-regime / +hysteresis) | ❌ ALL NULL/negative | — | Stay disabled in golden |
+| #0 Long-short pre-req empirical gate | ❌ **SKIP** | `28251c2` | Bottom-decile +0.58% (Kelly-Gu-Xiu 2020 needs −10 to −15%). **Saves 3-4 weeks engineering.** |
+| #5 Vol-adjusted label retest | ❌ **NEGATIVE** | `96af42b` | val_IC=−0.0189 vs raw +0.0352. Hypothesis rejected. |
+| #8 partial: HIFO default lot selection | ✅ shipped | `bc18795` | Tax-optimal vs FIFO; +0.5 APY pp expected. Berkin-Jeffrey 1990 / Wealthfront. |
+| #14 Acceptance gates for daily retrain | ✅ shipped | `96af42b` | Daily train_104 now STAGES only; weekly_wf_promote does the promote |
+| Sunday-sweep acceptance gate (NEW) | ✅ shipped | `477b94c` | Pre-sweep backup + H1-H4 + best-by-OOS-IC selection |
+| Monthly-calibrator acceptance gate (NEW) | ✅ shipped | `637594e` | Pre-refit backup + non-collapse + IC regression + rollback |
+| Bug: STATE-EXT-SELL pending-order false positive | ✅ shipped | `e267101` | HON / META weren't really externally sold (just pending) |
+| Bug: Preflight P-FEATURE-COVER per-regime gap | ✅ shipped | `e267101` | NGB feature coverage now checked when per-regime overlay activates |
+| DDV disabled globally | ✅ shipped | `d318060` | HXZ 2020 / FF 2008 / GH 2004 |
+| min_share_floor for high-price stocks (EQIX class) | ✅ shipped | `d318060` | Unblocks $700+ share-price names on small accounts |
+
+**3 LIVE orders queued for Monday open** (real Alpaca account):
+HON @ $213 / EQIX @ $1059 / META @ $614 = $2099 / $10557 acct ≈ 20% rebalance.
+
+**Tests**: 11747 pass / 8 pre-existing failures (Kelly DD scale, vol-target,
+calibrator clip, dashboard) — to investigate next session.
+
+---
+
+
 
 ---
 

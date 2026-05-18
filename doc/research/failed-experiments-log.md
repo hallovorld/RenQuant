@@ -8,6 +8,96 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## 2026-05-17 Long-short engineering — SKIP per empirical pre-req gate
+
+**Hypothesis.** Per Grinold-Kahn 1999 §5: long-short doubles breadth → IR_LS ≈ IR_long × √2 (~+40% IR). Per Kelly-Gu-Xiu 2020 RFS §3.4: ML long-short ~2× Sharpe of long-only. Worth 3-4 weeks engineering if model's bottom decile earns meaningfully negative returns.
+
+**Pre-req gate (cheap, 30 min)**: load production XGBoost panel-LTR booster (artifact `panel-ltr.alpha158_fund.json`, 169-feat, fingerprint `e885d0d`), score the full panel (715,629 rows × 292 tickers, 2016-2026), sort into deciles by predicted score, measure realized `fwd_60d_excess_raw` mean per decile.
+
+**Result** (script `scripts/long_short_prereq_gate.py`, verdict at `data/logs/long_short_prereq_2026-05-17.json`):
+
+```
+decile  60d-annualized mean
+D1   +0.58%   ← MODEL BOTTOM (should be negative if short alpha exists)
+D2   +2.98%
+...
+D9   +11.82%
+D10  +17.77%  ← MODEL TOP
+
+Bottom (D1) = +0.58%/yr  ← NOT NEGATIVE
+Top    (D10) = +17.77%/yr
+Spread = +17.19%/yr
+```
+
+**Verdict**: ❌ **SKIP** long-short. Kelly-Gu-Xiu 2020 RFS Table 4 standard for real short alpha is bottom-decile −10% to −15%/yr. Our +0.58% (essentially flat) means model can't pick LOSERS, only WINNERS. Shorting the model's bottom decile would yield ~0%/yr minus borrow fees + Reg-T margin overhead = NEGATIVE EV.
+
+**Implication**: ALL alpha is on the LONG side. Focus engineering on long-side improvements (vol-adjusted label, tax-aware exec, insider trading retest, options-implied features). Long-short architecture work is parked.
+
+**Reproduction**:
+```bash
+.venv/bin/python scripts/long_short_prereq_gate.py
+# Verdict written to data/logs/long_short_prereq_2026-05-17.json
+```
+
+---
+
+## 2026-05-17 σ-wire activation A/B (3 conditions) — ALL NULL/negative
+
+**Hypothesis.** New NGB head (proper Duan 2020 config, val_IC=+0.0352, σ-calib=+0.274) provides σ predictions; activating σ wire (score_mode=`mu_minus_lambda_sigma`, lambda_sigma=1.0) should add Sharpe via risk-adjusted ranking.
+
+**Three conditions tested** (8-window dense BEAR/CHOPPY panel, all using same fresh same-day baseline `sim_baseline_2026-05-16`):
+
+| Condition | Config | Mean Δ APY | CI 95% | NW t | DSR | Verdict |
+|---|---|---|---|---|---|---|
+| global σ-on | `ranking.panel_scoring.ngboost.enabled=true` | +3.01pp | [0.0, +9.4] | +1.17 | 0.92 | **NULL** (CI lower at 0) |
+| per-regime σ-on (BEAR/CHOPPY/BULL_VOL) | `regime_params.<R>.ngboost.*` overlay | −4.70pp | [−10.3, −0.4] | −1.60 | 0.02 | **SUSPECT-neg** |
+| per-regime + hysteresis N=10 | + sticky activation | **−7.89pp** | [−16.0, −0.3] | −1.80 | 0.05 | **SUSPECT-neg** |
+
+**Root cause of per-regime failure** (5/17 root cause analysis):
+- Detector A+C correctly catches SVB/Aug-2024/DeepSeek BEAR bars (this is intended)
+- But these BEAR bars come in 1-5 bar bursts surrounded by BULL_CALM
+- σ wire toggles ON↔OFF mid-window → strategy churn → re-rotates positions repeatedly
+- Hysteresis was supposed to fix this by keeping σ wire sticky 10 bars
+- But hysteresis made it WORSE (-7.89pp vs -4.70pp) — the sticky on/off boundary creates worse churn than no hysteresis at all
+
+**Conclusion**: σ wire integration with current QP/ranking is structurally lossy on this dataset. Not a parametric tuning issue.
+
+**Status**: σ wire stays OFF in golden. Per-regime overlay infrastructure is committed but dormant. NGB artifact promoted (μ available) but not consumed unless σ wire flipped.
+
+**Pre-existing related result**: 5/9 E55 27-month A/B measured global σ-on −3.78 APY pts. Today's 5/17 result is consistent (per-regime negative, global NULL).
+
+**Reproduction**:
+```bash
+./scripts/run_sigma_wire_ab.sh        # global σ-on (8 dense windows)
+./scripts/run_sigma_wire_BC_ab.sh     # per-regime σ-on
+# Reports: data/logs/reeval_results/sigma_wire_*_rigorous.md
+```
+
+---
+
+## 2026-05-17 Vol-adjusted label retest (roadmap #5) — NEGATIVE
+
+**Hypothesis** (Lim et al 2021 ICLR §3.4 + Qlib `qlib/contrib/data/handler.py`): label = `fwd_60d_excess_raw / vol_60d` reduces heteroscedasticity-driven noise → more stable Spearman IC → lift in walk-forward val_IC.
+
+**Implementation**: `scripts/train_ngb_vol_adjusted_label.py`. Use alpha158 STD60 as vol_60d proxy, clip-floor vol at 5% (avoid divide-by-tiny). Same NGB-proper config as baseline (Duan 2020 large-data), seed=42.
+
+**Result**:
+- Raw label baseline (5/17 same seed): val_IC = **+0.0352**, σ-calib = +0.274
+- Vol-adjusted label: val_IC = **−0.0189**, σ-calib = +0.647, best_iter=26 (157s)
+- **Δ = −0.054** (massive regression)
+
+**Why it failed**: vol-norm widened label std from 0.18 to 1.17. Wider tails likely dominated tree splits, pushing the model toward fitting volatility outliers rather than directional alpha. Quality gate (val_IC > XGB baseline +0.0294) correctly REFUSED save.
+
+**Verdict**: ❌ Hypothesis rejected on this panel + this NGB config. Could potentially work with (a) different vol estimator (Yang-Zhang OHLC vol vs STD60), (b) different clip floor, (c) post-hoc winsorization. Not pursuing — single-seed result far enough below baseline that 5-seed retest unlikely to flip.
+
+**Reproduction**:
+```bash
+OMP_NUM_THREADS=10 .venv/bin/python scripts/train_ngb_vol_adjusted_label.py
+# Quality gate refuses to write artifact when val_ic < 0.0294
+```
+
+---
+
 ## 2026-05-15 regime-reeval panels — NO-OP BUILD SCRIPT [2026-05-16]
 
 **Hypothesis.** Per CLAUDE.md PRIME DIRECTIVE, 6 previously-pooled-rejected knobs (stop_loss=0.07, sdl_n_sigma=2.0, trailing=0.15, cvar_lambda=0.25, cvar_lambda=0.50, kelly_tier1_rank_score=0.35) should be re-evaluated regime-stratified to surface conditional wins hidden by pooled-mean rejection.
