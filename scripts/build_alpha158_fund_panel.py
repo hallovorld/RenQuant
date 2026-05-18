@@ -44,6 +44,19 @@ SUE_WINDOW = 4         # Foster-Olsen-Shevlin 1984 — 4 prior quarters for std 
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--truncate-to-sec-max", action="store_true",
+                    help="2026-05-18: when alpha158 panel extends beyond "
+                         "SEC max date (SEC has natural 7d publication lag), "
+                         "truncate alpha158 rows to SEC max instead of "
+                         "hard-failing on the BUG #2 guard. Trains use "
+                         "cutoffs ≤ 2024-02 anyway so recent rows are "
+                         "label-irrelevant; this just lets the rebuild "
+                         "succeed for fixing historic data quality "
+                         "(e.g. asset_growth regeneration).")
+    args = ap.parse_args()
+
     alpha_p = REPO / "data" / "alpha158_qlib_dataset.parquet"
     fund_p  = REPO / "data" / "sec_fundamentals_daily.parquet"
     out_p   = REPO / "data" / "alpha158_291_fundamental_dataset.parquet"
@@ -72,15 +85,29 @@ def main():
     panel_max = alpha["date"].max()
     sec_max   = fund["date"].max()
     if panel_max > sec_max:
-        raise RuntimeError(
-            f"BUG #2 guard: alpha158 panel max date {panel_max.date()} > "
-            f"sec_fundamentals_daily max {sec_max.date()}. "
-            f"Refresh sec_fundamentals_daily before rebuilding panel — "
-            f"otherwise the {(panel_max - sec_max).days} unmatched day(s) "
-            f"will get fund features silently zero-filled (since "
-            f"cross-sectional median over all-NaN candidates is itself "
-            f"NaN, falling back to fillna(0))."
-        )
+        if args.truncate_to_sec_max:
+            n_drop = int((alpha["date"] > sec_max).sum())
+            alpha = alpha[alpha["date"] <= sec_max].reset_index(drop=True)
+            log.warning(
+                "BUG #2 guard bypassed by --truncate-to-sec-max: dropped "
+                "%d alpha158 rows (dates > %s) to align with SEC max. "
+                "Panel rebuild proceeds with truncated date range %s..%s. "
+                "Subsequent retraining cutoffs ≤ %s should be unaffected.",
+                n_drop, sec_max.date(),
+                alpha["date"].min().date(), alpha["date"].max().date(),
+                sec_max.date(),
+            )
+        else:
+            raise RuntimeError(
+                f"BUG #2 guard: alpha158 panel max date {panel_max.date()} > "
+                f"sec_fundamentals_daily max {sec_max.date()}. "
+                f"Refresh sec_fundamentals_daily before rebuilding panel — "
+                f"otherwise the {(panel_max - sec_max).days} unmatched day(s) "
+                f"will get fund features silently zero-filled (since "
+                f"cross-sectional median over all-NaN candidates is itself "
+                f"NaN, falling back to fillna(0)). Override: "
+                f"--truncate-to-sec-max (intended for historic data fixes)."
+            )
 
     # Left-join — every alpha158 row keeps its labels, fund cols may be NaN
     # where the ticker has no SEC coverage on that date.
