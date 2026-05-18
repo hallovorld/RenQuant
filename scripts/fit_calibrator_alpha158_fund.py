@@ -53,7 +53,17 @@ def main():
         help="ISO date. Drop scoring dates >= this. Must be ≤ "
              "(sim_start - lookahead_days - safety_buffer) for leak-free sim.",
     )
+    p.add_argument(
+        "--method", default="platt", choices=["platt", "isotonic"],
+        help="Calibration method. Default platt (sigmoid, strictly monotone, "
+             "no flat regions). Use isotonic ONLY for sim re-evaluation of "
+             "legacy artifacts; do NOT promote isotonic to prod (2026-05-18 "
+             "incident: 57%% flat region tied 79%% of candidates).",
+    )
     args = p.parse_args()
+    # Make args visible to fit logic
+    global cli_args
+    cli_args = args
 
     panel_path = Path(args.panel) if args.panel else REPO / "data" / "alpha158_291_fundamental_dataset.parquet"
     art_path = (
@@ -142,14 +152,25 @@ def main():
     # Fit calibrator. Use lookahead_days=60 to MATCH the label horizon,
     # threshold_mode=crosssectional so the base rate is ~50% regardless
     # of the bull-skew on 60-day windows (per global_calibrator.py docs).
+    #
+    # 2026-05-18 method=platt (was isotonic): isotonic creates wide FLAT
+    # regions where the model's negative scores don't reliably predict
+    # negative returns. Today's incident: ~57% of x-range [-0.59, +0.07]
+    # collapsed to single y=0.478. 79% of today's candidates landed in
+    # this region → tied → MCD rebuy via panel_score tie-break.
+    # Platt (sigmoid) is strictly monotone, no flat regions. Slightly less
+    # adaptive than isotonic but no degenerate ranking failures.
+    # See doc/research/2026-05-18-mcd-rebuy-incident.md.
+    method = (cli_args.method if hasattr(cli_args, "method") and cli_args.method
+              else "platt")
     from training_panel.global_calibrator import fit_global_calibrator
-    log.info("Fitting calibrator (method=isotonic, lookahead=60d, threshold_mode=crosssectional)")
+    log.info("Fitting calibrator (method=%s, lookahead=60d, threshold_mode=crosssectional)", method)
     calib = fit_global_calibrator(
         panel_scores, future_returns,
         lookahead_days=60,
         threshold=0.0,                # ignored when threshold_mode='crosssectional'
         threshold_mode="crosssectional",
-        method="isotonic",
+        method=method,
         min_rows=1000,
     )
 
