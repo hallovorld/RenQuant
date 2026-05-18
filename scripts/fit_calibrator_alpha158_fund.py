@@ -174,6 +174,37 @@ def main():
         min_rows=1000,
     )
 
+    # 2026-05-18 ACCEPTANCE GATE: refuse to save if curve has degenerate
+    # flat region. Even after switching isotonic → platt, a future
+    # regression / data shift could re-introduce flat regions. Catching
+    # at fit-time prevents bad artifacts from ever landing in prod.
+    p_x_check, p_y_check = calib.prob_x, calib.prob_y
+    x_total = float(p_x_check[-1] - p_x_check[0]) if len(p_x_check) > 1 else 1.0
+    longest_flat = 0.0
+    cur_start = 0; cur_y = p_y_check[0]
+    for i in range(1, len(p_y_check)):
+        if p_y_check[i] != cur_y:
+            # Only count maximal runs of ≥2 consecutive same-y points as flat
+            if i - cur_start >= 2:
+                span = float(p_x_check[i - 1] - p_x_check[cur_start])
+                if span > longest_flat: longest_flat = span
+            cur_start = i; cur_y = p_y_check[i]
+    if len(p_y_check) - cur_start >= 2:
+        span = float(p_x_check[-1] - p_x_check[cur_start])
+        if span > longest_flat: longest_flat = span
+    flat_frac = longest_flat / x_total
+    MAX_FLAT_FRAC = 0.30  # ≤ 30% of x-domain may be flat
+    if flat_frac > MAX_FLAT_FRAC:
+        log.error("ACCEPTANCE-GATE FAIL: calibrator probability curve has "
+                  "flat region spanning %.1f%% of x-domain (max allowed %.0f%%). "
+                  "Refusing to save artifact. Try a different method or "
+                  "investigate model signal quality on negative tail. See "
+                  "doc/research/2026-05-18-mcd-rebuy-incident.md.",
+                  flat_frac * 100, MAX_FLAT_FRAC * 100)
+        sys.exit(2)
+    log.info("ACCEPTANCE-GATE PASS: largest flat region %.1f%% ≤ %.0f%% (method=%s)",
+             flat_frac * 100, MAX_FLAT_FRAC * 100, method)
+
     # Hand-build the artifact since GlobalPanelCalibration.save isn't a one-liner
     log.info("Saving artifact to %s", out_path)
     p_x, p_y = calib.prob_x.tolist(), calib.prob_y.tolist()

@@ -597,8 +597,99 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
     )
 
 
+def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "PreflightCheck":
+    """P-CALIBRATOR-FLAT-REGION (2026-05-18, MCD-rebuy incident):
+    structural check that calibrator's probability curve has no
+    flat region wider than `max_flat_fraction` of the x-domain.
+
+    Why: isotonic regression can create wide flat regions where the
+    underlying signal is weak (e.g. low scores don't reliably predict
+    low returns). Those flat regions tie up to 79% of candidates at
+    one probability → ranking degenerates → top-K is tie-broken by
+    panel_score / ticker order → MCD-style rebuy ensues.
+
+    Hard-fail when the largest flat segment spans > max_flat_fraction
+    (default 0.30 = 30% of x-domain). Operator can override via
+    config.panel_ltr.calibrator_health.max_flat_fraction.
+
+    Reference: doc/research/2026-05-18-mcd-rebuy-incident.md
+    """
+    panel_cfg = config.get("panel_ltr", {})
+    rel = panel_cfg.get("calibrator_artifact_path",
+                          "artifacts/prod/panel-rank-calibration.json")
+    p = strategy_dir / rel
+    if not p.exists():
+        return PreflightCheck(
+            "P-CALIBRATOR-FLAT-REGION", "soft", True,
+            f"calibrator artifact missing at {p} — skip (other checks will fail)",
+        )
+    try:
+        cal = json.loads(p.read_text())
+        pr = cal.get("probability", {})
+        x = pr.get("x", [])
+        y = pr.get("y", [])
+        if not x or not y or len(x) != len(y):
+            return PreflightCheck(
+                "P-CALIBRATOR-FLAT-REGION", "soft", True,
+                "probability.x/y missing or mismatched — skip",
+            )
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        return PreflightCheck(
+            "P-CALIBRATOR-FLAT-REGION", "soft", True,
+            f"could not parse calibrator: {exc} — skip",
+        )
+
+    health_cfg = panel_cfg.get("calibrator_health", {}) or {}
+    max_flat_fraction = float(health_cfg.get("max_flat_fraction", 0.30))
+
+    # Compute largest flat region: maximal run of ≥2 consecutive same-y
+    # points, weighted by their x-span as fraction of total domain.
+    # Single-point segments (where each y differs from previous) don't
+    # count — they're not "flat" in any meaningful sense.
+    x_total = float(x[-1] - x[0]) if x[-1] > x[0] else 1.0
+    longest_flat_span = 0.0
+    cur_start = 0
+    cur_y = y[0]
+    for i in range(1, len(y)):
+        if y[i] != cur_y:
+            if i - cur_start >= 2:
+                span = float(x[i - 1] - x[cur_start])
+                if span > longest_flat_span:
+                    longest_flat_span = span
+            cur_start = i
+            cur_y = y[i]
+    if len(y) - cur_start >= 2:
+        span = float(x[-1] - x[cur_start])
+        if span > longest_flat_span:
+            longest_flat_span = span
+
+    flat_frac = longest_flat_span / x_total
+    if flat_frac > max_flat_fraction:
+        return PreflightCheck(
+            "P-CALIBRATOR-FLAT-REGION", "hard", False,
+            f"calibrator has flat region spanning {flat_frac*100:.1f}% of "
+            f"x-domain (>{max_flat_fraction*100:.0f}%). All μ̂ in that region "
+            f"map to one probability → ranking degenerates → tie-broken buys "
+            f"(MCD-rebuy class). Refit with method=platt or shrink flat region. "
+            f"See doc/research/2026-05-18-mcd-rebuy-incident.md.",
+            details={"longest_flat_span": longest_flat_span,
+                     "x_total": x_total,
+                     "flat_fraction": flat_frac,
+                     "max_flat_fraction": max_flat_fraction,
+                     "calibrator_kind": cal.get("kind", "unknown")},
+        )
+    return PreflightCheck(
+        "P-CALIBRATOR-FLAT-REGION", "hard", True,
+        f"largest flat region {flat_frac*100:.1f}% ≤ {max_flat_fraction*100:.0f}% "
+        f"of x-domain (n_knots={len(x)})",
+        details={"flat_fraction": flat_frac, "max_flat_fraction": max_flat_fraction},
+    )
+
+
 # Replace the placeholder in ALL_CHECKS with the actual function.
+# Also append the flat-region check.
 ALL_CHECKS = tuple(c if c is not None else _check_calibrator_health for c in ALL_CHECKS)
+ALL_CHECKS = ALL_CHECKS + (_check_calibrator_flat_region,)
 
 
 def run_preflight(
