@@ -228,7 +228,10 @@
       "spy_velocity_lookback_days": 3,
       "take_profit_pct": 0,
       "_bb14_meta_reason": "2026-05-11 P4.5 winner: BB_14 stops + meta-label classifier. Validated on 11-mo OOS 2025-04\u21922026-03: APY +0.2% / MaxDD 44.7% vs baseline -0.3% / 55.8%. Meta-label vetoed 5 SDLs. See doc/research/meta-labeling-results-2026-05-11.md.",
-      "drawdown_resume_pct": 0.175
+      "drawdown_resume_pct": 0.175,
+      "sentiment": {
+        "enabled": false
+      }
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -248,6 +251,9 @@
         "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
+      },
+      "sentiment": {
+        "enabled": true
       }
     },
     "CHOPPY": {
@@ -269,6 +275,9 @@
         "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
+      },
+      "sentiment": {
+        "enabled": true
       }
     },
     "BEAR": {
@@ -289,6 +298,59 @@
         "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
+      },
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "HIGH_SPIKED": {
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "HIGH_NORMAL": {
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "MED_CALM": {
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "MED_SPIKED": {
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "LOW_CALM": {
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "LOW_SPIKED": {
+      "sentiment": {
+        "enabled": false
+      }
+    },
+    "LOW_NORMAL": {
+      "sentiment": {
+        "enabled": false
+      }
+    },
+    "MED_NORMAL": {
+      "sentiment": {
+        "enabled": false
+      }
+    },
+    "HIGH_CALM": {
+      "sentiment": {
+        "enabled": true
+      }
+    },
+    "BULL_STRONG": {
+      "sentiment": {
+        "enabled": false
       }
     }
   },
@@ -648,7 +710,27 @@
         "enabled": true,
         "threshold": 0.1
       },
-      "kind": "panel_ltr_xgboost"
+      "kind": "panel_ltr_xgboost",
+      "sentiment": {
+        "enabled": true,
+        "regime_policy": {
+          "HIGH_SPIKED": true,
+          "HIGH_NORMAL": true,
+          "MED_CALM": true,
+          "MED_SPIKED": true,
+          "LOW_CALM": true,
+          "LOW_SPIKED": false,
+          "LOW_NORMAL": false,
+          "MED_NORMAL": false,
+          "HIGH_CALM": true,
+          "BULL_CALM": false,
+          "BULL_VOLATILE": true,
+          "BULL_STRONG": false,
+          "BEAR": true,
+          "CHOPPY": true
+        },
+        "_2026-05-18_provenance": "Tier 2 SCREEN per regime-stratified IC eval; see doc/research/2026-05-18-news-sentiment-ic-verdict.md"
+      }
     },
     "universe_floor": {
       "type": "sharpe",

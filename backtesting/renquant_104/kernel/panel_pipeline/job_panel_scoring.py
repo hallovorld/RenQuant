@@ -378,6 +378,66 @@ class ApplyScoresTask(Task):
                              today_ts.date().isoformat(), n_sue_active, len(rows),
                              n_sue_no_data, n_sue_oow)
 
+                # ── Sentiment features (2026-05-18 regime-conditional ─────────
+                # promotion): if the artifact's feature_cols include
+                # sentiment_* columns, load per-ticker scored news from
+                # data/news_sentiment_alpaca/ for today and apply the
+                # regime gate per _sentiment_cfg(ctx).
+                sent_cols = list(SENTIMENT_FEATURE_COLS)
+                needs_sent = any(sc in scorer.feature_cols for sc in sent_cols)
+                if needs_sent:
+                    from pathlib import Path as _P  # noqa: PLC0415
+                    repo_root = _P(__file__).resolve().parents[4]
+                    sent_dir = repo_root / "data" / "news_sentiment_alpaca"
+                    sent_gate = _sentiment_cfg(ctx)
+                    sent_enabled = bool(sent_gate.get("enabled", True))
+                    n_sent_hit = 0
+                    n_sent_miss = 0
+                    today_ts_sent = pd.Timestamp(today)
+                    for t in list(rows.keys()):
+                        sp = sent_dir / f"{t}.parquet"
+                        if not sp.exists():
+                            n_sent_miss += 1
+                            for sc in sent_cols: rows[t].setdefault(sc, 0.0)
+                            continue
+                        try:
+                            sdf = pd.read_parquet(sp)
+                        except Exception:
+                            n_sent_miss += 1
+                            for sc in sent_cols: rows[t].setdefault(sc, 0.0)
+                            continue
+                        sdf["date"] = pd.to_datetime(sdf["date"])
+                        # Most-recent sentiment date ≤ today (sentiment is daily;
+                        # weekend/holiday tickers fall back to last available)
+                        prior_sent = sdf[sdf["date"] <= today_ts_sent]
+                        if len(prior_sent) == 0:
+                            n_sent_miss += 1
+                            for sc in sent_cols: rows[t].setdefault(sc, 0.0)
+                            continue
+                        last = prior_sent.iloc[-1]
+                        if "sentiment_pos_share" in scorer.feature_cols:
+                            rows[t]["sentiment_pos_share"] = float(
+                                last.get("sentiment_pos_share", 0.0) or 0.0)
+                        if "mean_sentiment" in scorer.feature_cols:
+                            rows[t]["mean_sentiment"] = float(
+                                last.get("mean_sentiment", 0.0) or 0.0)
+                        if "n_articles_log" in scorer.feature_cols:
+                            # Source schema stores raw n_articles; log1p here
+                            raw_n = float(last.get("n_articles", 0.0) or 0.0)
+                            rows[t]["n_articles_log"] = float(np.log1p(raw_n))
+                        n_sent_hit += 1
+                    # Apply regime gate (zero cols if sentiment OFF for current regime)
+                    if not sent_enabled:
+                        for t in rows:
+                            for sc in sent_cols:
+                                if sc in rows[t]:
+                                    rows[t][sc] = 0.0
+                    log.info("ApplyScoresTask[panel_ltr_xgboost]: sentiment "
+                             "features (regime=%s gate=%s) hit=%d miss=%d",
+                             getattr(ctx, "regime", "?"),
+                             "ON" if sent_enabled else "OFF",
+                             n_sent_hit, n_sent_miss)
+
                 # ── Feature-health check (2026-05-08 path-bug regression guard) ─
                 # Catches the silent-zero failure mode that hid the parents[3]
                 # path bug: if EVERY ticker reports value 0.0 for a feature
@@ -1013,6 +1073,126 @@ def _ngb_cfg(ctx) -> dict:
     # else: cold — global defaults only.
 
     return base
+
+
+# ── Sentiment per-regime gate (added 2026-05-18) ─────────────────────────────
+# Per CLAUDE.md PRIME DIRECTIVE: every feature regime-conditional.
+# 2026-05-18 regime-stratified IC verdict:
+#   HIGH_SPIKED  IC +0.054 / +0.045 / +0.046 — DEPLOY
+#   HIGH_NORMAL  IC +0.041 (mean_sentiment × fwd_20d) — DEPLOY
+#   MED_CALM     IC +0.042 (sentiment_pos_share × fwd_20d) — DEPLOY
+#   MED_SPIKED   IC +0.030 (noise) — keep ON (positive direction, safe)
+#   LOW_*        mostly noise or slightly negative — gate OFF
+#   MED_NORMAL   net NEGATIVE — gate OFF
+#   LOW_NORMAL   net NEGATIVE — gate OFF
+#
+# Default policy: enable in regimes where the IC eval showed positive
+# net signal; disable where ts-30-placebo-adjusted net IC was negative.
+# Operator can override via regime_params.<R>.sentiment.enabled.
+
+SENTIMENT_FEATURE_COLS = ("sentiment_pos_share", "mean_sentiment", "n_articles_log")
+
+_SENTIMENT_DEFAULT_REGIME_POLICY = {
+    # Strict policy: ON only where regime-stratified IC eval clearly cleared
+    # ts-30 placebo. Off elsewhere keeps the model's prediction independent
+    # of sentiment in regimes where it hurts.
+    "HIGH_SPIKED": True,
+    "HIGH_NORMAL": True,
+    "MED_CALM":    True,
+    "MED_SPIKED":  True,   # weak positive net, keep ON conservatively
+    "LOW_CALM":    True,   # +0.040 (low n_d=21 but consistent sign)
+    "LOW_SPIKED":  False,  # ~zero (largest n_d=84, no signal)
+    "LOW_NORMAL":  False,  # NEGATIVE
+    "MED_NORMAL":  False,  # NEGATIVE
+    "HIGH_CALM":   True,   # n_d=4 (skipped in eval; benefit of doubt for high-trend)
+    # Strategy's HMM regimes (legacy naming) — passthrough for safety
+    "BULL_CALM":     False,
+    "BULL_VOLATILE": True,
+    "BULL_STRONG":   False,
+    "BEAR":          True,
+    "CHOPPY":        True,
+}
+
+
+def _sentiment_cfg(ctx) -> dict:
+    """Read sentiment-gate config with per-regime overlay.
+
+    Resolution order (highest first):
+      1) regime_params.<ctx.regime>.sentiment.enabled (live override)
+      2) ranking.panel_scoring.sentiment.regime_policy.<REGIME> (config policy)
+      3) _SENTIMENT_DEFAULT_REGIME_POLICY[REGIME] (hardcoded default per
+         2026-05-18 regime-stratified IC eval)
+      4) ranking.panel_scoring.sentiment.enabled (global on/off)
+      5) True (failsafe — don't zero out, let model decide)
+
+    Returns dict with key 'enabled': bool.
+    """
+    base_global = bool((ctx.config.get("ranking", {})
+                                  .get("panel_scoring", {})
+                                  .get("sentiment", {})
+                                  .get("enabled", True)))
+    regime = getattr(ctx, "regime", None)
+    if not regime:
+        return {"enabled": base_global}
+
+    # (1) live per-regime overlay
+    regime_p = (ctx.config.get("regime_params", {}) or {}).get(regime, {}) or {}
+    regime_sent = regime_p.get("sentiment") if isinstance(regime_p, dict) else None
+    if isinstance(regime_sent, dict) and "enabled" in regime_sent:
+        return {"enabled": bool(regime_sent["enabled"])}
+
+    # (2) config-level regime policy table
+    policy = (ctx.config.get("ranking", {}).get("panel_scoring", {})
+                        .get("sentiment", {}).get("regime_policy") or {})
+    if regime in policy:
+        return {"enabled": bool(policy[regime])}
+
+    # (3) hardcoded default policy
+    if regime in _SENTIMENT_DEFAULT_REGIME_POLICY:
+        return {"enabled": _SENTIMENT_DEFAULT_REGIME_POLICY[regime]}
+
+    # (4)/(5) fallthrough
+    return {"enabled": base_global}
+
+
+class ApplySentimentGateTask(Task):
+    """Zero out sentiment feature columns when regime gate is OFF.
+
+    Per CLAUDE.md PRIME DIRECTIVE: sentiment IC is regime-conditional.
+    HIGH_SPIKED IC +0.054, but LOW_NORMAL net NEGATIVE — same model
+    weights, opposite effective contribution. Zeroing the inputs in
+    OFF-regimes makes the sentiment terms drop out of the booster's
+    cumulative score, leaving the 169-feat backbone to act alone.
+
+    Runs after AssembleInferenceMatrixTask (X is built) and BEFORE
+    panel scoring (ApplyScoresTask consumes X to compute panel_score).
+
+    The zeroing is in-place on ctx._panel_matrix. Reads:
+      ctx._panel_matrix  (the feature DataFrame)
+      ctx.regime         (current regime label)
+      ctx.config         (regime_params overlay + sentiment.regime_policy)
+    """
+
+    name = "ApplySentimentGateTask"
+
+    def run(self, ctx) -> bool | None:
+        X = getattr(ctx, "_panel_matrix", None)
+        if X is None or X.empty:
+            return None
+        cfg = _sentiment_cfg(ctx)
+        if cfg.get("enabled", True):
+            # Sentiment ON for this regime — leave untouched
+            return None
+        # Sentiment OFF — zero the columns present in X
+        zeroed = []
+        for col in SENTIMENT_FEATURE_COLS:
+            if col in X.columns:
+                X[col] = 0.0
+                zeroed.append(col)
+        if zeroed:
+            log.info("ApplySentimentGateTask: regime=%s sentiment OFF — "
+                     "zeroed cols=%s", getattr(ctx, "regime", "?"), zeroed)
+        return None
 
 
 class ApplyNGBoostTask(Task):
