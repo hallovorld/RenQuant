@@ -343,6 +343,7 @@ def _add_sentiment_features(panel: pd.DataFrame) -> pd.DataFrame:
 
     parts = []
     n_with_sent = 0
+    n_pre2020_dropped = 0
     for f in sent_dir.glob("*.parquet"):
         df = pd.read_parquet(f)
         if df.empty:
@@ -351,11 +352,25 @@ def _add_sentiment_features(panel: pd.DataFrame) -> pd.DataFrame:
         # n_articles, sentiment_pos_share, sentiment_neg_share
         df = df.rename(columns={"symbol": "ticker"})
         df["date"] = pd.to_datetime(df["date"])
+        # 2026-05-18 SENTIMENT-PRE2020 noise filter: Alpaca News API
+        # occasionally returns articles with created_at outside the
+        # --since cutoff (per ~13 rows / 91k = 0.014% observed in 6y
+        # backfill). These are tied to legacy articles whose Alpaca
+        # metadata.created_at predates their actual publish, and they
+        # generate spurious sentiment values on near-empty dates
+        # (n_articles=1 with extreme score). Drop strictly.
+        pre = (df["date"] < pd.Timestamp("2020-01-01")).sum()
+        if pre:
+            n_pre2020_dropped += int(pre)
+            df = df[df["date"] >= pd.Timestamp("2020-01-01")]
         # Derive n_articles_log (compress heavy right tail; max is 42)
         df["n_articles_log"] = np.log1p(df["n_articles"].astype(float))
         keep = ["ticker", "date"] + SENT_COLS
         parts.append(df[keep])
         n_with_sent += 1
+    if n_pre2020_dropped:
+        log.info("  dropped %d pre-2020 sentiment rows (Alpaca metadata "
+                 "edge case, 0.014%% in 6y backfill)", n_pre2020_dropped)
     sent = pd.concat(parts, ignore_index=True)
     log.info("  sentiment coverage: %d/%d tickers  rows=%d  dates=[%s, %s]",
              n_with_sent, panel["ticker"].nunique(), len(sent),
