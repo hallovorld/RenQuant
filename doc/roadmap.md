@@ -122,21 +122,15 @@ References: Tetlock 2007 *JF*, Garcia 2013 *JF*, Ke-Kelly-Xiu 2019 NBER, Araci 2
 
 References: Grinold-Kahn 1999 §6, Hou-Xue-Zhang 2020 *RFS*, Cakici-Cooper-Schmidt 2023 *JFE*, Qlib universe-construction utilities.
 
-### 3. Smart-orders integration (VWAP execution wiring) (~+5-10bps/RT, 2-3 days)
+### 3. ~~Smart-orders integration (VWAP execution wiring)~~ — **DEFERRED**
 
-**Status**: `kernel/execution/smart_orders.py` module shipped 2026-05-17 (commit `947ca71`); pure-function helpers + 20 tests green. **NOT WIRED** to `alpaca_broker`.
+**Status (2026-05-18 re-scope)**: `kernel/execution/smart_orders.py` module exists + 20 tests; **DEFERRED until account scale ≥ $50k**.
 
-**Why ROI matters**: Almgren-Chriss 2000 says ~5-10 bps slippage savings per round-trip. At ~300 trades/yr × $5k avg notional = $750-1500/yr. Net ~+0.5pp APY on $10k account.
+**Why deferred**: at current $10k account, typical trade = 1-3 shares × $300 notional on liquid names (AAPL, SPY, EQIX). Slippage at this scale is already ~1bp (1 cent / share on a $200 share). Smart-orders' 5-10bps savings emerges at $50k+ accounts with multi-thousand-share orders. ROI/effort below other P0 items.
 
-**Engineering** (2-3 days):
-- D1: ADV source (yfinance 60d avg volume, daily refresh)
-- D2: wire `plan_execution()` to `alpaca_broker._place_order()` — limit-price children with arrival schedule
-- D3: cancel-on-stop logic (don't leave child orders open past intent change)
-- D4: integration test + 1-week shadow trade (compare child-order fills vs single MOO)
+**Resume trigger**: account NAV crosses $50k OR per-trade notional exceeds 1% of ticker ADV (would hit the Almgren-Chriss price-impact regime).
 
-**Pass gate**: real-money A/B vs single-MOO must show ≥ +3bps/RT improvement (the theoretical lower bound).
-
-References: Almgren-Chriss 2000 *J. Risk*, Bertsimas-Lo 1998 *J. Financial Markets*, Cont-Stoikov-Talreja 2010.
+References: Almgren-Chriss 2000 *J. Risk* §4 — linear price-impact regime ≤ 1% ADV/slice.
 
 ### 4. LightGBM with GICS sector encoding (~+0.05-0.10 Sharpe, 3 days)
 
