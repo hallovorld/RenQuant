@@ -295,24 +295,28 @@ class TestPanelScoringJob:
         ctx = _make_ctx(tmp_path, enabled=True)
         assert PanelScoringJob().should_skip(ctx) is False
 
-    def test_tasks_are_ten_in_order(self, tmp_path):
+    def test_tasks_are_eleven_in_order(self, tmp_path):
         """After the 2026-05-04 P0 fix VetoWeakBuysTask was MOVED to AFTER
         ApplyGlobalCalibrationTask (so it compares against calibrated
         rank_score, not raw XGB margin). See PanelScoringJob docstring +
         VetoWeakBuysTask docstring for the production incident this resolves.
 
-        Golden v4 (Kelly promoted) keeps ApplyKellySizingTask as #9 (post-veto).
-        Stage-0 buy-logic redesign (2026-04-26) keeps QualityFloorTask
-        as the 10th task — flag-OFF default preserves bit-for-bit parity.
+        Golden v4 (Kelly promoted) keeps ApplyKellySizingTask post-veto.
+        Stage-0 buy-logic redesign (2026-04-26) added QualityFloorTask
+        (flag-OFF default preserves bit-for-bit parity).
+        2026-05-15 Phase 3: ApplyRealizedVolFallbackTask inserted before
+        ApplyKellySizingTask so σ has a realized-vol source when NGBoost
+        is OFF (count grew from 10 → 11).
         """
         from kernel.panel_pipeline.job_panel_scoring import (
             ApplyGlobalCalibrationTask, ApplyKellySizingTask, ApplyNGBoostTask,
-            ApplyScoresTask, BuildFeatureMatrixTask, LoadGlobalCalibrationTask,
-            LoadNGBoostTask, LoadScorerTask, PanelScoringJob, VetoWeakBuysTask,
+            ApplyRealizedVolFallbackTask, ApplyScoresTask, BuildFeatureMatrixTask,
+            LoadGlobalCalibrationTask, LoadNGBoostTask, LoadScorerTask,
+            PanelScoringJob, VetoWeakBuysTask,
         )
         from kernel.panel_pipeline.task_quality_floor import QualityFloorTask
         tasks = PanelScoringJob().tasks
-        assert len(tasks) == 10
+        assert len(tasks) == 11
         assert isinstance(tasks[0], LoadScorerTask)
         assert isinstance(tasks[1], BuildFeatureMatrixTask)
         assert isinstance(tasks[2], ApplyScoresTask)
@@ -324,9 +328,12 @@ class TestPanelScoringJob:
         # 2026-05-04 P0: VetoWeakBuysTask MOVED here so it compares
         # calibrated rank_score (post-ApplyGlobalCalibration) not raw XGB.
         assert isinstance(tasks[7], VetoWeakBuysTask)
-        assert isinstance(tasks[8], ApplyKellySizingTask)
+        # 2026-05-15 Phase 3: realized-vol σ fallback (no-op unless
+        # kelly_sizing.use_realized_vol_fallback=true).
+        assert isinstance(tasks[8], ApplyRealizedVolFallbackTask)
+        assert isinstance(tasks[9], ApplyKellySizingTask)
         # Stage-0 quality gate (flag-OFF by default):
-        assert isinstance(tasks[9], QualityFloorTask)
+        assert isinstance(tasks[10], QualityFloorTask)
 
     def test_end_to_end_overrides_rank_scores(self, tmp_path):
         """Run the full Job chain — candidate rank_scores change to panel scores."""

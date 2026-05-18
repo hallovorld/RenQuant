@@ -315,7 +315,9 @@ class TestBearOverrideCumulativeProduct:
     def test_task_uses_prod(self):
         src = (_STRATEGY_DIR / "kernel" / "pipeline" / "task_regime.py").read_text()
         idx = src.find("class BEAROverrideTask")
-        body = src[idx:idx + 2000]
+        # Widened 2000 → 5000 after 2026-05-17 detector fix A+C added
+        # 5-day BEAR + vol-cluster CHOPPY logic via _vol_ret helper.
+        body = src[idx:idx + 5000]
         assert "np.prod" in body, "BEAR override must use cumulative product (#11)"
 
     def test_detect_regime_uses_prod(self):

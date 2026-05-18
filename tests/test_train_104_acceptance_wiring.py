@@ -52,15 +52,22 @@ class TestAcceptanceWiringPresent:
 
 class TestPromoteOrReject:
     def test_promote_called_on_pass(self):
-        """All-hard-pass path: must call promote(staging, active)."""
-        # The promotion line must reference both promote() and the
-        # all_hard_passed verdict.
+        """All-hard-pass path: must call promote(staging, active) when
+        RQ_ALLOW_NO_WF=1 is set externally (emergency override).
+        2026-05-17 §5.13.15 fix: by default, daily retrain STAGES only
+        and weekly_wf_promote.sh handles the actual promote with full
+        WF + sanity battery. The promote() call is now conditional on
+        external override, not the script-default."""
         idx = SCRIPT_SRC.find("verdict.all_hard_passed")
         assert idx >= 0
-        # Widened from 800 to 1500 — 2026-05-09 added WF gate override
-        # comment between hard-pass branch and promote() call
-        block = SCRIPT_SRC[idx:idx + 1500]
-        assert "promote(staging_path, active_path)" in block
+        # Widened to 3500 to span the new policy comment block + both
+        # branches of the if/else split.
+        block = SCRIPT_SRC[idx:idx + 3500]
+        assert "promote(staging_path, active_path)" in block, \
+            "promote() must still be reachable in the override branch"
+        # Confirm the default-branch IS stage-only (no promote)
+        assert "STAGED at" in block
+        assert "Production NOT updated" in block
 
     def test_reject_called_on_fail(self):
         """Hard-fail path: reject() to archive the bad artifact + log."""
