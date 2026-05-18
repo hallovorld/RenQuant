@@ -931,6 +931,27 @@ class ApplyGlobalCalibrationTask(Task):
                         "§5.13.12). [P0 detected 2026-05-15]",
                         iqr, sat_top * 100,
                     )
+                    # 2026-05-18 NEW-BUY GATE: when calibrator is degenerate,
+                    # the model has effectively NO conviction for today.
+                    # Tie-broken buys = strategy noise (MCD rebuy incident).
+                    # Mark ctx so downstream QP can refuse new positions.
+                    # Existing holdings can still be exited (sell logic doesn't
+                    # require calibrator conviction); only NEW buys gated.
+                    # Default ON unless config disables.
+                    abstain_on_sat = bool(
+                        (ctx.config or {}).get("ranking", {})
+                                            .get("panel_scoring", {})
+                                            .get("abstain_on_calibrator_saturation", True)
+                    )
+                    if abstain_on_sat:
+                        ctx._calibrator_saturated = True  # noqa: SLF001
+                        log.warning(
+                            "CALIBRATOR-SATURATED → ABSTAIN-NEW-BUYS "
+                            "(set ctx._calibrator_saturated=True). QP will "
+                            "skip new BUY actions today; existing holdings "
+                            "may still SELL. To disable: "
+                            "ranking.panel_scoring.abstain_on_calibrator_saturation=false"
+                        )
                 # 2026-05-15 BUG #8 GUARD: expected_return out-of-range
                 # detection. Live prod calibrator's expected_return.y has
                 # values up to +1.0 (= +100% expected return) — clearly

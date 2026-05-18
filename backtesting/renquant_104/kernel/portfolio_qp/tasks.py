@@ -296,7 +296,18 @@ class ComputeWashSaleMaskTask(Task):
         # are not blocked, only losses (or unknown-and-conservative).
         from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
         mask = np.zeros(len(tickers), dtype=bool)
-        n_wash, n_churn = 0, 0
+        n_wash, n_churn, n_sat = 0, 0, 0
+
+        # 2026-05-18 NEW-BUY GATE on calibrator saturation: when the
+        # calibrator is degenerate (rank_score IQR=0), the model has no
+        # conviction. Block NEW-BUY positions (tickers not currently held)
+        # by adding to the wash mask. Existing holdings can still be
+        # exited by sell logic; only new entries are blocked.
+        held_tickers = set()
+        if hasattr(ctx, "holdings") and ctx.holdings:
+            held_tickers = set(ctx.holdings.keys())
+        calibrator_saturated = bool(getattr(ctx, "_calibrator_saturated", False))
+
         for i, t in enumerate(tickers):
             # 1) Wash-sale (§1091, loss-sales only)
             if wash_days > 0:
@@ -319,13 +330,19 @@ class ComputeWashSaleMaskTask(Task):
                     if 0 <= days_since < min_reentry:
                         mask[i] = True
                         n_churn += 1
+                        continue
+            # 3) Calibrator-saturation NEW-BUY abstain: block tickers
+            # NOT currently held (existing holdings keep their decision)
+            if calibrator_saturated and t not in held_tickers:
+                mask[i] = True
+                n_sat += 1
         ctx._qp_wash_mask = mask  # noqa: SLF001
-        if n_wash or n_churn:
+        if n_wash or n_churn or n_sat:
             import logging
             logging.getLogger("kernel.portfolio_qp.tasks").info(
-                "ComputeWashSaleMaskTask: blocked %d wash + %d churn "
-                "(min_reentry=%dd) of %d tickers",
-                n_wash, n_churn, min_reentry, len(tickers))
+                "ComputeWashSaleMaskTask: blocked %d wash + %d churn + "
+                "%d calibrator-saturation-abstain (min_reentry=%dd) of %d tickers",
+                n_wash, n_churn, n_sat, min_reentry, len(tickers))
 
 
 # ── 5. Position caps + scalar constraints ──────────────────────────────────
