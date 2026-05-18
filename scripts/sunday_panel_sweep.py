@@ -229,6 +229,16 @@ def _gate_check_vs_baseline(strategy: str, baseline_metrics: dict) -> tuple[bool
       H3. pool_ic did not drop > 0.02 vs pre-sweep baseline
       H4. scorer_oos_mean_ic ≥ 0
 
+    H3 threshold (0.02) reference: Diebold-Mariano 1995 (J. Bus. Econ.
+    Stat.) "Comparing Predictive Accuracy" — establishes the formal
+    framework for testing forecast-accuracy differences. Diebold's own
+    2014 retrospective (NBER wp 18391) warns DM "was not intended for
+    comparing models, though much ensuing literature uses DM-type tests
+    in pseudo-OOS environments". 0.02 is therefore a heuristic IC
+    regression magnitude (~2σ given typical IC std ~0.01) NOT a formal
+    DM-significance test. Exploratory per CLAUDE.md §5.12 — would need
+    DM HAC-SE on paired forecast errors for rigorous significance.
+
     Soft checks (warn, don't block):
       S1. pool_ic dropped 0.005-0.02 vs baseline (suspicious but not fatal)
     """

@@ -120,6 +120,15 @@ fi
 #   H2 (new): pool_ic did not drop > 0.02 vs baseline (regression guard)
 #            n_unique_prob_y >= 10 (non-collapse, was display-only pre-fix)
 # Either fail → rollback to ROLLBACK_CAL + ntfy + exit non-zero.
+# References:
+#   - Diebold-Mariano 1995 (J. Bus. Econ. Stat.) "Comparing Predictive
+#     Accuracy" — framework for forecast-accuracy testing. 0.02 IC drop
+#     threshold ≈ 2σ given typical pool_ic std ~0.01; heuristic, not
+#     formal DM-test (CLAUDE.md §5.12 — exploratory tune-via-A/B).
+#   - n_unique_prob_y ≥ 10: internal "G2 calibrator non-collapse"
+#     invariant (kernel/model_acceptance.py:DEFAULT_GATES) — calibrator
+#     with fewer than 10 unique buckets degenerates to constant scores
+#     → ranking collapse; was display-only pre-fix.
 echo "--- Step 3: Validate calibrator ---"
 if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
     echo "Post-fit smoke test FAILED — rolling back to baseline calibrator."

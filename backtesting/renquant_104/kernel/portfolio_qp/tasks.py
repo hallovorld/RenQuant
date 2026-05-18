@@ -1236,6 +1236,12 @@ class EmitOrdersFromQPSolutionTask(Task):
                 # etc. entirely, biasing the strategy toward low-price names.
                 # Fix: if 1 share's weight is in [floor, ceiling], allow buying
                 # 1 share. ceiling caps the over-allocation vs intended target.
+                # Default range [5%, 15%]: floor 5% = minimum-conviction
+                # opening threshold; ceiling 15% < the `max_position_pct=20%`
+                # golden cap leaves safety buffer. Portfolio-construction
+                # engineering choices, not academic — exploratory per
+                # CLAUDE.md §5.12. (Proper fix is fractional-share support
+                # via Alpaca; out of today's scope.)
                 floor   = env["min_share_floor_pct"]
                 ceiling = env["min_share_ceiling_pct"]
                 if floor > 0:

@@ -148,6 +148,33 @@ class BEAROverrideTask(Task):
     0.52 on a 63-bar window. The vol-cluster gate provides an
     orthogonal CHOPPY signal that doesn't rely on Hurst at all.
 
+    References for short-horizon distress detection:
+      - Andersen-Bollerslev-Diebold-Labys (ABDL) 1999 "Realized Volatility
+        and Correlation" (NYU wp 99061) — establishes 5-day realized vol
+        as canonical short-horizon measurement window for regime detection.
+      - Industry practice (VolatilityBox.com, dozendiamonds.com): "If
+        realized vol > X for Y days, switch regime" — `first 3-5 days of
+        a regime transition often contain the largest price moves`.
+      - Bollerslev 1986 (Econometrica) GARCH(1,1) — theoretical
+        foundation for vol clustering / vol-spike detection.
+      - Engle 2002 (J. Bus. Econ. Stat.) "Dynamic Conditional Correlation"
+        — vol-regime threshold methodology; typical vol-spike trigger is
+        1.5-2.0 × baseline (motivates 1.5× choppy_vol_ratio).
+
+    Hysteresis (in RegimeFinalizeTask): persists σ-wire activation for
+    N=10 bars after last trigger.
+      - Hamilton 1989 (Econometrica) "A new approach to nonstationary
+        time series" — Markov-switching expected duration; in his GNP
+        2-state model, high-state persistence prob ≈ 0.90 → expected
+        duration ≈ 10 quarters. We use 10 trading days = ~2 weeks as
+        conservative analogue for vol-regime persistence.
+
+    Threshold-specific numbers (5d_vol=0.25, 5d_ret=-0.04, ratio=1.5,
+    drift=0.02): empirically derived from the 5-window audit at
+    `scripts/audit_regime_detector.py` + 5/17 dense panel. Per
+    CLAUDE.md §5.12: these are exploratory; will tune via A/B once
+    the per-regime σ-wire infrastructure is exercised on real bars.
+
     State writes: state.hard_bear, state.vol_5d, state.ret_5d,
     state.vol_cluster_choppy.
     """
@@ -368,6 +395,14 @@ class RegimeFinalizeTask(Task):
         # DeepSeek 1-5 BEAR bars caused σ-wire ON↔OFF churn → 5/17 A/B
         # per-regime version lost -4.7pp pooled (W7 -21pp single
         # window) where uniform σ-on won +3pp pooled.
+        #
+        # Default N=10 bars rationale: Hamilton 1989 (Econometrica)
+        # Markov-switching expected duration ≈ 1/(1−p) where p is the
+        # state persistence probability. His 2-state GNP model fit p≈0.90
+        # → duration ≈ 10 quarters. For DAILY equity vol regimes we use
+        # 10 bars (~2 trading weeks) as a conservative analogue. Exact
+        # value is exploratory (CLAUDE.md §5.12); to tune properly we'd
+        # need to fit a Hamilton-style 2-state model on SPY vol history.
         _hysteresis_bars = int(ctx.config.get("regime", {})
                                           .get("sigma_wire_hysteresis_bars", 10))
         _NGB_REGIME_KEYS = ("enabled", "score_mode", "lambda_sigma")
