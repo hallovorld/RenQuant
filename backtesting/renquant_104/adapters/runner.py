@@ -1179,9 +1179,30 @@ class RunnerAdapter:
         # Heuristic: ticker was in entry_dates at start-of-bar AND is not
         # currently held AND wasn't stamped as a runner-sell today
         # → treat as external disposition, stamp today.
+        #
+        # 2026-05-17 Bug fix: EXCLUDE tickers with a pending broker order.
+        # Pre-fix, a Sunday-afternoon BUY whose Alpaca order is still
+        # `status=accepted` (not yet filled) shows the position as missing
+        # at end-of-bar → STATE-EXT-SELL stamped wash-sale → next day's
+        # fill couldn't re-enter even though it was the runner's own buy.
+        # Today's HON (and 5/15's META) were both blocked this way.
+        # Invariant: pending-at-broker ≠ externally-sold.
+        pending_broker = set(getattr(ctx, "pending_broker_tickers", set()) or set())
         disappeared = [t for t in self._entry_dates
                        if t not in currently_held
+                       and t not in pending_broker
                        and self._last_sell_dates_str.get(t) != today_str]
+        skipped_pending = [t for t in self._entry_dates
+                           if t not in currently_held
+                           and t in pending_broker
+                           and self._last_sell_dates_str.get(t) != today_str]
+        if skipped_pending:
+            log.info(
+                "STATE-EXT-SELL: %d ticker(s) missing from positions but have "
+                "pending broker orders — skipping wash-sale stamp (in-flight buy, "
+                "not external sell): %s",
+                len(skipped_pending), sorted(skipped_pending),
+            )
         for t in disappeared:
             self._last_sell_dates_str[t] = today_str
             log.warning(
@@ -1197,13 +1218,19 @@ class RunnerAdapter:
 
         wash_sale_window_days = 30
         cutoff = ctx.today - datetime.timedelta(days=wash_sale_window_days)
+        # 2026-05-17: preserve state for tickers with pending broker orders.
+        # Same root as the STATE-EXT-SELL fix above: an in-flight buy is not
+        # yet a position but its entry_date / entry_signal / position_hwm
+        # are load-bearing for when it eventually fills (Monday open for
+        # weekend-queued orders). Pre-fix, GC dropped them as "stale".
+        held_or_pending = currently_held | pending_broker
         for store_name, store in (
             ("entry_dates",   self._entry_dates),
             ("entry_signals", self._entry_signals),
             ("sell_streaks",  self._sell_streaks),
             ("position_hwm",  self._position_hwm),
         ):
-            stale = [t for t in store if t not in currently_held]
+            stale = [t for t in store if t not in held_or_pending]
             for t in stale:
                 store.pop(t, None)
             if stale:

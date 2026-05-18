@@ -211,6 +211,40 @@ class TestCheckFeatureCoverage:
         assert not r.ok and r.severity == "hard"
         assert "vxx_z" in r.message or "hyg_z" in r.message
 
+    def test_runs_when_per_regime_overlay_enables_ngb(self, healthy_setup):
+        """2026-05-17 fix: per-regime overlay can enable NGB even when
+        global flag is False. Preflight must validate features in that
+        case too, otherwise CRIT-1 runtime hard-fail fires the first time
+        a BEAR/CHOPPY bar lands."""
+        cfg, sd = healthy_setup
+        cfg["ranking"] = {"panel_scoring": {"ngboost": {
+            "enabled": False,
+            "artifact_path": "artifacts/ngboost-head.json",
+        }}}
+        cfg["regime_params"] = {
+            "BEAR": {"ngboost": {"enabled": True,
+                                  "score_mode": "mu_minus_lambda_sigma",
+                                  "lambda_sigma": 1.0}},
+        }
+        # NGBoost head incompatible with panel (84% missing) → must hard-fail
+        (sd / "artifacts/ngboost-head.json").write_text(json.dumps({
+            "feature_cols": ["rsi", "macd", "bbp", "vxx_z", "hyg_z"],
+        }))
+        r = _check_feature_coverage(cfg, sd)
+        assert not r.ok and r.severity == "hard", \
+            "per-regime overlay should pull preflight into hard-check mode"
+
+    def test_skips_when_no_overlay_activates(self, healthy_setup):
+        """REGRESSION GUARD: per-regime entries that don't have
+        ngboost.enabled=True must NOT trigger feature-cover check."""
+        cfg, sd = healthy_setup
+        cfg["regime_params"] = {
+            "BEAR": {"stop_loss_pct": 0.07},  # no ngboost overlay
+            "CHOPPY": {"ngboost": {"enabled": False}},  # explicit False
+        }
+        r = _check_feature_coverage(cfg, sd)
+        assert r.ok and r.severity == "soft"
+
 
 # ── P-STATE-FILE ───────────────────────────────────────────────────────────
 

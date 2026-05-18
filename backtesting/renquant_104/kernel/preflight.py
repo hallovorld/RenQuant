@@ -300,10 +300,29 @@ def _check_feature_coverage(
     ngb_cfg = (config.get("ranking", {})
                        .get("panel_scoring", {})
                        .get("ngboost", {}))
-    if not ngb_cfg.get("enabled", False):
+
+    # 2026-05-17 Bug fix: a per-regime overlay can activate NGB even when
+    # the global flag is False. Pre-fix, P-FEATURE-COVER skipped entirely
+    # on global enabled=False, leaving NGB feature-drift risk un-validated
+    # whenever today's regime ∈ {BEAR, CHOPPY, BULL_VOLATILE} (or any
+    # regime with `regime_params.<R>.ngboost.enabled=True`). If panel-LTR
+    # and NGB head disagree on feature_cols, ApplyNGBoostTask hard-fails
+    # at runtime (CRIT-1) → all candidates blocked the moment σ-wire
+    # activates. Catch it at preflight instead.
+    regime_params = config.get("regime_params", {}) or {}
+    per_regime_activates = [
+        r for r, p in regime_params.items()
+        if isinstance(p, dict)
+        and isinstance(p.get("ngboost"), dict)
+        and p["ngboost"].get("enabled") is True
+    ]
+    ngb_potentially_active = (
+        bool(ngb_cfg.get("enabled", False)) or bool(per_regime_activates)
+    )
+    if not ngb_potentially_active:
         return PreflightCheck(
             "P-FEATURE-COVER", "soft", True,
-            "NGBoost disabled in config — skip",
+            "NGBoost disabled globally + no per-regime overlay activates — skip",
         )
     ngb_rel = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
 

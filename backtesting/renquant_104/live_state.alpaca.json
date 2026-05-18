@@ -1,0 +1,105 @@
+{
+  "regime": "BULL_CALM",
+  "regime_confidence": 0.6301,
+  "high_water_mark": 10699.69,
+  "entry_dates": {
+    "FTNT": "2026-04-27",
+    "MU": "2026-04-27",
+    "DOCU": "2026-05-12",
+    "MCD": "2026-05-12",
+    "VRT": "2026-05-12",
+    "GE": "2026-05-14",
+    "TXN": "2026-05-15"
+  },
+  "sell_streaks": {
+    "FTNT": 0,
+    "MU": 0,
+    "MCD": 0,
+    "VRT": 0,
+    "DOCU": 0,
+    "GE": 0,
+    "TXN": 0
+  },
+  "last_sell_dates": {
+    "AMZN": "2026-04-27",
+    "GOOG": "2026-04-27",
+    "PLTR": "2026-04-28",
+    "BA": "2026-05-15",
+    "CAT": "2026-05-01",
+    "TSM": "2026-04-28",
+    "SMCI": "2026-04-28",
+    "NVDA": "2026-04-30",
+    "GTLB": "2026-05-03",
+    "NET": "2026-05-03",
+    "NFLX": "2026-05-03",
+    "LITE": "2026-05-03",
+    "WMT": "2026-05-04",
+    "ORCL": "2026-05-04",
+    "ABBV": "2026-05-08",
+    "SOFI": "2026-05-08",
+    "LMT": "2026-05-08",
+    "ON": "2026-05-08",
+    "SPOT": "2026-05-09",
+    "GS": "2026-05-09",
+    "HD": "2026-05-09",
+    "RTX": "2026-05-09",
+    "TSLA": "2026-05-09",
+    "PANW": "2026-05-09",
+    "CVX": "2026-05-09",
+    "LLY": "2026-05-09",
+    "CSCO": "2026-05-12",
+    "XOM": "2026-05-12",
+    "GE": "2026-05-14",
+    "TXN": "2026-05-15"
+  },
+  "position_hwm": {
+    "FTNT": 123.2,
+    "MU": 812.36,
+    "DOCU": 48.14,
+    "MCD": 277.77,
+    "VRT": 379.145,
+    "GE": 295.9,
+    "TXN": 307.395
+  },
+  "monitor_state": {
+    "no_trade_streak": 1,
+    "no_candidate_streak": 0,
+    "last_activity_date": "2026-05-17",
+    "first_trade_date": "2026-04-23"
+  },
+  "regime_state": {
+    "regime": "BULL_CALM",
+    "confidence": 0.6301,
+    "in_transition": false,
+    "countdown": 0,
+    "cusum_pos": 0.0,
+    "cusum_neg": 0.0,
+    "cooldown_start": null
+  },
+  "entry_signals": {
+    "MU": {
+      "rank_score": 0.32513821903305495,
+      "panel_score": null,
+      "kelly_target_pct": null
+    },
+    "DOCU": {
+      "rank_score": 1.0,
+      "panel_score": null,
+      "kelly_target_pct": null
+    },
+    "MCD": {
+      "rank_score": 1.0,
+      "panel_score": null,
+      "kelly_target_pct": null
+    },
+    "VRT": {
+      "rank_score": 1.0,
+      "panel_score": null,
+      "kelly_target_pct": null
+    }
+  },
+  "stop_orders": {},
+  "last_stop_exit_dates": {
+    "BA": "2026-05-15"
+  }
+}

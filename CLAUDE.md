@@ -169,6 +169,18 @@ RenQuant — personal quantitative trading workstation for Apple Silicon. Glass-
 
 Activate the project venv: `source .venv/bin/activate` (NOT conda). Docker ≥ 16GB for LEAN. Alpaca creds in `.env` (gitignored). Full setup: [`doc/ops/environment.md`](doc/ops/environment.md).
 
+### "e2e" = LIVE Alpaca account (real money) — user mandate
+
+When the user says **"e2e"**, **"daily e2e"**, **"run with alpaca account"**, or any variant, run `python -m live.runner --strategy <name> --broker alpaca --once` against the **LIVE Alpaca account with real money**. Do NOT propose paper variants. Do NOT switch to `--broker alpaca-paper` or `--broker paper` silently or via a clarifying question. The `.env` only has LIVE credentials — paper-API calls 401.
+
+This overrides the 2026-05-11 PAPER safety mandate **for explicit e2e invocations**. The PAPER mandate still applies to launchd cron schedules and any non-explicit invocation. Locked in 2026-05-17 after user verbatim said: `"我他妈的说了一万遍了！live account！写进claude.md！"`.
+
+Standard invocation (venv + .env exported so Alpaca SDK reads keys):
+```bash
+nohup bash -c 'set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker alpaca --once' \
+  > logs/live_e2e/e2e_alpaca_live_$(date +%Y%m%d-%H%M%S).log 2>&1 &
+```
+
 ## Workflow modes
 
 | Mode | Command | Use when |

@@ -278,3 +278,38 @@ class TestExternalSellWashSaleClock:
             "External-sell detection must run before STATE-GC pops "
             "entry_dates, or the disappeared list will already be empty."
         )
+
+
+# ── 2026-05-17 STATE-EXT-SELL pending-order false-positive fix ───────────────
+
+class TestStateExtSellPendingOrderFix:
+    """Pre-fix: a Sunday/after-hours BUY queued at Alpaca (status=accepted,
+    filled_qty=0) was misclassified as STATE-EXT-SELL on the next runner
+    invocation because broker positions don't yet show it. 2026-05-17 HON
+    (and 5/15 META) both got 30-day wash-sale blocks for this reason.
+
+    Fix: exclude tickers with pending broker orders from the `disappeared`
+    list AND extend GC's `currently_held` with pending_broker_tickers to
+    preserve in-flight buy state (entry_date / entry_signal / position_hwm)
+    until the order eventually fills.
+
+    Invariant: pending-at-broker ≠ externally-sold. The STATE-EXT-SELL
+    stamp is reserved for "ticker was a real position, then disappeared".
+    """
+
+    def test_excludes_pending_from_disappeared(self):
+        assert "pending_broker_tickers" in RUNNER_SOURCE
+        assert "t not in pending_broker" in RUNNER_SOURCE, \
+            "disappeared filter must exclude pending broker orders"
+
+    def test_skipped_pending_logged(self):
+        assert "skipping wash-sale stamp" in RUNNER_SOURCE, \
+            "Skipped tickers should be logged for operator visibility"
+
+    def test_gc_preserves_pending_state(self):
+        assert "held_or_pending = currently_held | pending_broker" in RUNNER_SOURCE, \
+            "GC sweep must also consider pending broker orders"
+
+    def test_fix_tag_present(self):
+        assert "2026-05-17 Bug fix" in RUNNER_SOURCE
+        assert "pending-at-broker ≠ externally-sold" in RUNNER_SOURCE
