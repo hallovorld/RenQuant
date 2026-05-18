@@ -1,77 +1,81 @@
-# 2026-05-18 — News sentiment IC eval verdict
+# 2026-05-18 — News sentiment IC eval verdict (FINAL)
 
 ## TL;DR
 
-**SCREEN candidate** (Tier 2 per CLAUDE.md §5.13.4a). News sentiment shows real forward predictive power on fwd_60d_excess, but news is partially endogenous to recent returns. Best feature: `sentiment_pos_share × fwd_60d_excess` IC = **+0.046** with 5/5 WF cuts same sign and ts-30 placebo collapsing to +0.015 (near shuffle noise +0.017).
+**SHELVED** — signal evaporates with proper data discipline. Initial 8-month eval looked Tier 2 SCREEN (IC +0.046); honest 6-year eval shows IC +0.006 — well within shuffle-placebo noise. **Do NOT integrate.**
 
-NOT auto-promotable; integrate into panel as one of N features, let model down-weight if not additive to current 169-feat panel.
+## Setup evolution
 
-## Setup
+| Pass | News range | Merged rows | Panel dates | sentiment_pos_share × fwd_60d IC |
+|---|---|---|---|---|
+| 1 (this morning) | 1y (2025-05 → 2026-05) | 10,669 | 184 | +0.046 |
+| 2 (this afternoon) | 6y (2020-01 → 2026-05) | 78,751 | ~1,500 | **+0.006** |
 
-- Panel: `data/alpha158_291_fundamental_dataset.parquet` (292 tickers, 2016-01 → 2026-02-10)
-- Sentiment: `data/news_sentiment_alpaca/` (103 tickers, 2025-05-18 → 2026-05-17, 16,793 daily rows)
-- Merge: 10,669 rows (1.5% panel coverage — overlap window is only Aug 2025 – Feb 2026, ~6 months panel × sentiment)
-- IC: Spearman cross-sectional, averaged across dates
-- §5.2 sanity battery: shuffle-label, time-shift ±30d, A/A split, walk-forward 5-cut
+The first pass triggered a SCREEN verdict. The second pass — **with 8× more data** — shows the signal collapses to placebo level.
 
-## Headline results
+## Final 6-year results
 
-| Feature × Label | raw IC | placebo shuffle max | ts+30 placebo | ts-30 placebo | A/A even / odd | WF sign-consistent | Verdict |
-|---|---|---|---|---|---|---|---|
-| **sentiment_pos_share × fwd_60d_excess** | **+0.046** | +0.017 | +0.062 | **+0.015** | +0.040 / +0.052 | **5/5** | **SCREEN** |
-| sentiment_dispersion × fwd_60d_excess | +0.052 | +0.026 | +0.059 | +0.023 | +0.050 / +0.053 | 4/5 | SCREEN |
-| mean_sentiment × fwd_60d_excess | +0.044 | +0.007 | +0.090 | +0.028 | +0.041 / +0.047 | 3/5 | weak |
-| n_articles × fwd_60d_excess | +0.035 | +0.025 | +0.056 | +0.022 | +0.035 / +0.034 | 4/5 | placebo-overlap |
-| sentiment_neg_share × fwd_60d_excess | +0.006 | +0.022 | -0.038 | +0.003 | -0.003 / +0.015 | 3/5 | NULL — drop |
+| Feature × Label | raw IC | shuffle max | ts+30 (past returns) | ts-30 (far future) | WF sign-consistent | Verdict |
+|---|---|---|---|---|---|---|
+| sentiment_pos_share × fwd_60d | +0.006 | +0.005 | +0.023 | +0.007 | 2/5 | NULL |
+| mean_sentiment × fwd_60d | +0.003 | +0.004 | +0.051 | -0.002 | 2/5 | NULL |
+| sentiment_dispersion × fwd_60d | +0.018 | +0.005 | +0.026 | +0.015 | 5/5 | marginal (placebo eats most) |
+| n_articles × fwd_60d | +0.025 | +0.004 | +0.034 | +0.018 | 4/5 | marginal (placebo eats most) |
+| sentiment_neg_share × fwd_60d | +0.012 | +0.006 | -0.039 | +0.004 | 5/5 | NULL |
 
-**Best aggregate feature**: `sentiment_pos_share` (% articles with FinBERT signed score > +0.20).
+**Best surviving features** (sentiment_dispersion + n_articles) show raw IC slightly above shuffle, but the **ts-30 placebo (sentiment shifted 30d into future, i.e. corr with returns 31-90d post-news) ALSO shows ~0.018**, meaning ~80% of the apparent signal is news endogeneity (news lags returns), not forward predictive power.
 
-## Critical interpretation: time-shift placebo
+After subtracting ts-30 placebo: net forward IC ≈ +0.005-0.007. Below the +0.01 minimum required for Tier 2 SCREEN integration.
 
-The +30d placebo is HIGHER than raw IC for most features:
+## Why the first pass was misleading
 
-| Feature × fwd_20d_excess | raw IC | ts+30 (past returns) |
-|---|---|---|
-| mean_sentiment | +0.040 | **+0.108** |
-| sentiment_pos_share | +0.040 | **+0.077** |
+The 1-year window (2025-05 → 2026-05) coincided with a specific market regime where:
+1. Heavy AI-narrative news flow correlated with semiconductor / mega-cap winners
+2. News flow was concentrated in tickers that already had strong momentum
+3. The cross-sectional rank correlation was inflated by an extreme few outlier events (NVDA, META, AAPL news cycles)
 
-**Why**: ts+30 shifts the sentiment timestamp 30 days *backwards*. The panel's `fwd_60d_excess` at the new (earlier) date represents the return from `D+1 to D+60` where D is 30 days before the article date — so we're correlating the article with the PAST 30 days + future 30 days of returns.
+The 6-year sample captures multiple regimes (2020 COVID, 2021 meme stocks, 2022 bear, 2023-24 AI bull, 2025 broadening), washing out the period-specific signal.
 
-The high IC at ts+30 = **news lags recent returns**. Classic Tetlock 2007 finding: journalists write about what already moved.
+This is exactly the failure mode:
+- **López de Prado 2018 AFML §11** "Backtest Through Cross-Validation" — single-period IC inflates without out-of-sample purging
+- **Hou-Xue-Zhang 2020 RFS** "Replicating Anomalies" — 65% of factor anomalies fail to replicate when extended OOS
+- **Bailey-López de Prado 2014** *Notices of AMS* "Pseudo-Mathematics and Financial Charlatanism" — deflated Sharpe ratio adjusts for selection bias
 
-**Reassurance**: ts-30 (shift sentiment FORWARD 30 days; correlate with returns 31-90 days POST-news) drops to placebo noise (~0.015). The forward predictive component (days 1-30) is real but mixed with autocorrelation from days -30 to 0.
+## Decision
 
-## Integration plan (per CLAUDE.md PRIME DIRECTIVE)
+**SHELVED. Not promoted to integration.**
 
-1. **Add the 4 surviving features** to the alpha158 panel:
-   - `sentiment_pos_share` (✓ 5/5 WF, clean ts-30)
-   - `sentiment_dispersion` (✓ 4/5 WF)
-   - `mean_sentiment` (weak but additive)
-   - `n_articles` (low IC, but news flow as activity proxy)
-   - **DROP** `sentiment_neg_share` (NULL — overlap with shuffle)
+Closure rationale:
+- 6-year IC well below promotion gate (+0.01)
+- ts-30 placebo confirms most signal is news lag, not predictive
+- Engineering cost (panel join + retrain + ops) not justified by +0.006 raw IC
+- Lower-hanging P0 items remain (wl200 in flight, smart-orders shelved, LGBM with GICS ready after #4)
 
-2. **Treat as conditional feature, not universal**:
-   - 8.5 months of sentiment coverage means most of the 2016-2025 training set will have NULL values
-   - Option A: extend Alpaca News backfill to 2020+ (Alpaca history allegedly back to 2015; ~3-4 hours API time)
-   - Option B: train two-headed model — one path with sentiment, one without; ensemble at inference
-   - Option C: use sentiment ONLY for re-ranking or weight tilt, not as a panel feature
+What we keep:
+- ✅ Alpaca news fetcher (14-day chunked) — production-ready infra
+- ✅ FinBERT scorer (MPS-batched, sanity-gated) — production-ready infra
+- ✅ Per-ticker sentiment parquets (6y × 103 tickers, ~80k daily aggregates) — keep for future research (e.g. event-driven studies, intraday sentiment, news-shock asymmetry)
+- ❌ Panel integration — do NOT integrate
 
-   **Recommendation: Option A** — backfill 2020-2025 too (~2.6M article rows estimated; 5 years × ~500k/year). Disk ~150 MB. FinBERT scoring ~30 min.
+What we drop:
+- Daily news cron — not needed if not integrated
+- IC eval as gating logic — closed, won't re-run unless new feature engineering
 
-3. **Acceptance gate for retrained panel-LTR**:
-   - val_IC ≥ current baseline +0.0294 (per §5.13.15 quality gate)
-   - Per-feature SHAP/gain on sentiment columns must be > 0 (else feature is dead-weight in model)
-   - WF 3-cut sign-consistency on retrained model ≥ 2/3
-   - DSR > 0.5 OR PBO < 0.5
+## What this saves
 
-4. **Promote**: weekly Saturday WF promote path (already enforced).
+Engineering time NOT spent:
+- Panel builder integration (1 day)
+- panel-LTR retrain (3-4 hours compute)
+- side config + inference path (1 day)
+- Daily cron (1 day)
+- Test suite for new features
 
-## Decision: not auto-promote, requires extended backfill
+Total saved: ~1 week of engineering on a feature that 6-year evidence shows is null.
 
-Integration with only 8 months sentiment history is risky:
-- Training set 95% NULL sentiment → model learns "sentiment available = recent data" rather than "sentiment value predicts return"
-- Possible data leak via "is_recent" implicit feature
+## Reference for future
 
-Before integration, backfill sentiment to 2020-01-01 (~5 years; gives model years of varied regimes including 2020 COVID, 2022 bear, 2023-24 AI bull). Then retrain.
-
-ETA backfill: ~3.5 hours API + ~30 min FinBERT (MPS).
+If we revisit (e.g. intraday horizon, event-driven model), pre-conditions:
+1. Use ≥ 5y data (1y is selection-bias prone)
+2. ts-30 placebo MUST be < 30% of raw IC
+3. Per-regime stratified IC MUST be positive in ≥ 3 of 4 regimes
+4. Subtract a "naive news-lag" baseline (lag-1 news → return correlation) before claiming forward IC
