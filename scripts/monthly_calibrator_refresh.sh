@@ -77,8 +77,36 @@ fi
 # 2026-05-11 sim/prod isolation: explicit --out so the calibrator lands
 # under artifacts/prod/ (without --out the script derives a flat-path
 # orphan from the panel artifact's stem that prod runner won't read).
+#
+# 2026-05-17 ACCEPTANCE GATE — backup BEFORE refit + IC regression check
+# AFTER. Same bug class as today's Sunday-sweep corruption (NGB
+# val_IC=-0.0165 → prod silently). Pre-fix this script had no rollback
+# target if the new calibrator regressed.
 echo "--- Step 2: Re-fit global calibrator ---"
 PROD_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-rank-calibration.json"
+ROLLBACK_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-rank-calibration.monthly_rollback_$DATE.json"
+
+# Snapshot prior calibrator for rollback BEFORE any destructive write.
+BASELINE_POOL_IC="None"
+BASELINE_N_UNIQUE=0
+if [ -f "$PROD_CAL" ]; then
+    cp "$PROD_CAL" "$ROLLBACK_CAL"
+    echo "Pre-refit backup: $ROLLBACK_CAL"
+    BASELINE_POOL_IC=$("$PYTHON" -c "
+import json
+m = json.load(open('$PROD_CAL'))
+print(m.get('metadata', {}).get('pool_ic', 'None'))
+" 2>/dev/null || echo "None")
+    BASELINE_N_UNIQUE=$("$PYTHON" -c "
+import json
+m = json.load(open('$PROD_CAL'))
+print(m.get('metadata', {}).get('n_unique_prob_y', 0))
+" 2>/dev/null || echo "0")
+    echo "Baseline: pool_ic=$BASELINE_POOL_IC  n_unique_prob_y=$BASELINE_N_UNIQUE"
+else
+    echo "No prior calibrator at $PROD_CAL — first-ever fit (no regression baseline)"
+fi
+
 if ! "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104 \
         --out "$PROD_CAL"; then
     echo "Calibrator fit FAILED — prior calibrator preserved."
@@ -86,17 +114,76 @@ if ! "$PYTHON" scripts/fit_panel_calibrator.py --strategy renquant_104 \
     exit 1
 fi
 
-# ── Step 3: Validate calibrator non-collapse + diversity ─────────────────
-# Acceptance gate G2 invariant: n_unique_prob_y >= 10. Pre-fix, a
-# calibrator collapsed to a single bucket (XGB plateau at best_iter=4)
-# silently produced P(out) ≈ const → all candidates rank identical
-# → ranking degenerate. This guard catches that regression.
+# ── Step 3: Validate calibrator — non-collapse + IC-regression-vs-baseline ─
+# 2 hard checks:
+#   H1 (existing): smoke test passes
+#   H2 (new): pool_ic did not drop > 0.02 vs baseline (regression guard)
+#            n_unique_prob_y >= 10 (non-collapse, was display-only pre-fix)
+# Either fail → rollback to ROLLBACK_CAL + ntfy + exit non-zero.
 echo "--- Step 3: Validate calibrator ---"
 if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
-    echo "Post-fit smoke test FAILED — calibrator collapsed?"
-    notify "RenQuant 104 MONTHLY-FAIL" "Post-fit smoke test failed; calibrator may be collapsed"
+    echo "Post-fit smoke test FAILED — rolling back to baseline calibrator."
+    if [ -f "$ROLLBACK_CAL" ]; then cp "$ROLLBACK_CAL" "$PROD_CAL"; fi
+    notify "RenQuant 104 MONTHLY-FAIL" "Post-fit smoke test failed; rolled back."
     exit 1
 fi
+
+# IC-regression-vs-baseline check + non-collapse gate
+GATE_VERDICT=$("$PYTHON" - "$PROD_CAL" "$BASELINE_POOL_IC" "$BASELINE_N_UNIQUE" <<'PY'
+import json, sys, math
+prod_cal = sys.argv[1]
+base_ic_str = sys.argv[2]
+base_n_uniq_str = sys.argv[3]
+m = json.load(open(prod_cal))
+md = m.get("metadata", {}) or {}
+new_ic = md.get("pool_ic")
+new_n_uniq = md.get("n_unique_prob_y", 0)
+
+fails = []
+# H2a non-collapse hard guard
+try:
+    n_uniq = int(new_n_uniq)
+    if n_uniq < 10:
+        fails.append(f"n_unique_prob_y={n_uniq} < 10 (collapsed)")
+except (TypeError, ValueError):
+    fails.append(f"n_unique_prob_y={new_n_uniq!r} not int")
+
+# H2b IC regression vs baseline (only if baseline existed)
+if base_ic_str != "None":
+    try:
+        base_ic = float(base_ic_str)
+        if new_ic is None or not math.isfinite(float(new_ic)):
+            fails.append(f"new pool_ic={new_ic!r} not finite")
+        else:
+            new_ic = float(new_ic)
+            drop = base_ic - new_ic
+            if drop > 0.02:
+                fails.append(f"pool_ic dropped {base_ic:+.4f} → {new_ic:+.4f} (Δ {-drop:+.4f} > 2pp)")
+    except (TypeError, ValueError) as e:
+        fails.append(f"baseline pool_ic parse: {e}")
+
+if fails:
+    print("FAIL: " + "; ".join(fails))
+    sys.exit(1)
+print(f"OK pool_ic={new_ic} n_unique={new_n_uniq}")
+PY
+)
+GATE_RC=$?
+if [ $GATE_RC -ne 0 ]; then
+    echo "ACCEPTANCE GATE FAILED: $GATE_VERDICT"
+    echo "Rolling back to baseline calibrator."
+    if [ -f "$ROLLBACK_CAL" ]; then
+        cp "$ROLLBACK_CAL" "$PROD_CAL"
+        # Smoke test the rollback too
+        if "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104 >/dev/null 2>&1; then
+            notify "RenQuant 104 MONTHLY-REJECT" "Calibrator REJECTED ($GATE_VERDICT); rolled back to prior."
+        else
+            notify "RenQuant 104 MONTHLY-CRITICAL" "Calibrator rejected AND rollback failed smoke. Operator action REQUIRED."
+        fi
+    fi
+    exit 1
+fi
+echo "Gate: $GATE_VERDICT"
 
 CAL_INFO=$("$PYTHON" -c "
 import json
