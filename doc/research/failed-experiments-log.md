@@ -8,6 +8,46 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## 2026-05-18 Insider trading retest (roadmap #6) — NEGATIVE on 169-feat panel
+
+**Hypothesis.** Lakonishok-Lee 2001 (RFS) "Are Insider Trades Informative?" + Cohen-Malloy-Pomorski 2012 (JF) "Decoding Inside Information": executive Form 4 buys/sells contain alpha, especially when corrected for routine vs information-driven trades. Add 3 insider features to the 169-feat baseline and measure val_IC delta. E22 originally found neutral effect, but on a contaminated panel (side-config bug overwrote prod artifact); retest after fix.
+
+**Method**: `scripts/test_insider_features.py`. Single-seed XGBoost (same config as baseline) on the rolled-back-then-regenerated panel (post-A7 fix). Two feature variants:
+  - `insider_net_buy_90d`: 90-day trailing $ sum (Lakonishok-Lee base signal)
+  - `insider_xs_rank`: cross-sectional rank of net buy per date (size-adjusted)
+
+Each evaluated with §5.2 placebo (time-shifted label) to detect spurious fits.
+
+**Result** (val period 2024-02-01 → end):
+
+```
+Baseline 169-feat:                          val_IC = +0.0333
++ insider_signal (net_buy_90d):
+    val_IC = +0.0119  Δ = -0.0214 (WORSE)
+    placebo IC = +0.0169  persistence = 142%  ← placebo > real
++ insider_xs_rank (rank-normalized):
+    val_IC = +0.0234  Δ = -0.0099 (WORSE)
+    placebo IC = +0.0235  persistence = 101%  ← placebo ≡ real
+
+Insider data coverage: 8.0% of panel rows (56,938 / 715,629)
+```
+
+**Verdict**: ❌ Both insider features (a) **lowered val_IC** vs baseline AND (b) **failed the §5.2 placebo sanity check** — random-label placebo captured all of the apparent "signal" (persistence ratio ≥100%). The feature's measured contribution is statistical artifact of the model overfitting on noise + sparse coverage (8% non-zero).
+
+**Implication**: Cohen-Malloy-Pomorski 2012's signal exists in pooled-time-series at quarterly frequency but does NOT survive cross-sectional 60-day cuts at our universe (103 large-cap names with extremely sparse executive transaction history). Likely the signal is dominated by:
+  - Sparse coverage at large-cap (executives rarely transact relative to retail-traded small-caps where the original Lakonishok-Lee 2001 signal was strongest)
+  - Information already in earnings_surprise / SUE features added previously
+
+**Status**: SHELVED. Re-open only if (a) universe shifts to small-caps where executive buys are more informative or (b) feature engineering changes (e.g. quintile-rank with information-content filter per Cohen-Malloy-Pomorski 2012 §3).
+
+**Reproduction**:
+```bash
+.venv/bin/python scripts/test_insider_features.py
+# Builds insider features, fits baseline + augmented XGB, runs placebo
+```
+
+---
+
 ## 2026-05-17 Long-short engineering — SKIP per empirical pre-req gate
 
 **Hypothesis.** Per Grinold-Kahn 1999 §5: long-short doubles breadth → IR_LS ≈ IR_long × √2 (~+40% IR). Per Kelly-Gu-Xiu 2020 RFS §3.4: ML long-short ~2× Sharpe of long-only. Worth 3-4 weeks engineering if model's bottom decile earns meaningfully negative returns.
