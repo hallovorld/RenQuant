@@ -1173,6 +1173,11 @@ class EmitOrdersFromQPSolutionTask(Task):
                           .get("earnings_buffer_days", 3)),
             today=getattr(ctx, "today", None),
             holdings_set=set((ctx.holdings or {}).keys()),
+            # 2026-05-17 min_share_floor for high-price stocks. See
+            # _emit_orders_loop comment for rationale. Defaults: floor 5%,
+            # ceiling 15%. Disable by setting floor=0.0.
+            min_share_floor_pct=float(cfg.get("qp_min_share_floor_pct", 0.05)),
+            min_share_ceiling_pct=float(cfg.get("qp_min_share_ceiling_pct", 0.15)),
         )
 
     @staticmethod
@@ -1221,7 +1226,29 @@ class EmitOrdersFromQPSolutionTask(Task):
             if not ok:
                 if in_band: c["skipped_band"] += 1
                 continue
-            shares = _shares_from_dw(dw, env["nav"], env["prices"].get(t, 0.0))
+            px = env["prices"].get(t, 0.0)
+            shares = _shares_from_dw(dw, env["nav"], px)
+            if shares <= 0 and dw > 0 and px > 0 and env["nav"] > 0:
+                # 2026-05-17 min_share_floor for high-price stocks (EQIX/META class).
+                # Without this, any candidate whose share price exceeds the QP's
+                # dollar budget (target_w × NAV) gets silently dropped — for a
+                # $10k account this blocks EQIX ($1059), BKNG ($5k), NVR ($8k),
+                # etc. entirely, biasing the strategy toward low-price names.
+                # Fix: if 1 share's weight is in [floor, ceiling], allow buying
+                # 1 share. ceiling caps the over-allocation vs intended target.
+                floor   = env["min_share_floor_pct"]
+                ceiling = env["min_share_ceiling_pct"]
+                if floor > 0:
+                    one_share_pct = px / env["nav"]
+                    if floor <= one_share_pct <= ceiling:
+                        shares = 1
+                        log.info(
+                            "QP_MIN_SHARE_FLOOR %s: dw=%+.4f → 0 shares "
+                            "(px=$%.2f > target $%.0f) — buy 1 share "
+                            "(1 share = %.1f%% NAV, floor=%.1f%%, ceil=%.1f%%)",
+                            t, dw, px, abs(dw) * env["nav"],
+                            one_share_pct * 100, floor * 100, ceiling * 100,
+                        )
             if shares <= 0:
                 continue
             if dw > 0:
@@ -1271,7 +1298,8 @@ class EmitOrdersFromQPSolutionTask(Task):
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-# Keys that support per-regime override. Reading order:
+# Keys that support per-regime override (2026-05-16 B-track):
+# Reading order:
 #   regime_params.<ctx.regime>.<KEY>  →  rotation.joint_actions.<KEY>
 # Pattern matches CLAUDE.md PRIME DIRECTIVE (regime-conditional strategy).
 # Test pin: tests/test_qp_cfg_per_regime_override.py

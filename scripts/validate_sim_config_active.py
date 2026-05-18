@@ -80,6 +80,13 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("rotation.joint_actions.qp_no_trade_band_factor", "tasks.py"),
     ("rotation.joint_actions.qp_no_trade_band_cap",    "tasks.py"),
     ("rotation.joint_actions.qp_min_invested_pct",     "tasks.py"),
+    # 2026-05-17 EQIX-class fix: min_share floor for high-price stocks
+    ("rotation.joint_actions.qp_min_share_floor_pct",   "tasks.py:EmitOrdersFromQPSolutionTask"),
+    ("rotation.joint_actions.qp_min_share_ceiling_pct", "tasks.py:EmitOrdersFromQPSolutionTask"),
+    # DDV (regime-conditional re-enablement infrastructure)
+    ("ranking.buy_quality_gates.deep_drawdown_veto.enabled",                "task_buy_quality_gates.py:DeepDrawdownVetoTask"),
+    ("ranking.buy_quality_gates.deep_drawdown_veto.dd_threshold",           "task_buy_quality_gates.py:DeepDrawdownVetoTask"),
+    ("ranking.buy_quality_gates.deep_drawdown_veto.disabled_in_regimes",    "task_buy_quality_gates.py:DeepDrawdownVetoTask"),
     ("rotation.joint_actions.qp_sector_cap_enabled",   "tasks.py"),
     ("rotation.joint_actions.qp_correlation_cap_enabled", "tasks.py"),
     # ── QP regime overrides (_resolve_regime_override) ───────────────────

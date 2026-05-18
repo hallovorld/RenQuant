@@ -637,12 +637,13 @@
         "attr": "rank_score"
       },
       "deep_drawdown_veto": {
-        "enabled": true,
+        "enabled": false,
         "dd_threshold": 0.2,
         "window_days": 252,
         "sue_floor": 0.0,
         "pead_floor": 0.0,
-        "require_either": true
+        "require_either": true,
+        "_disable_reason_2026-05-17": "DISABLED 2026-05-17: Hou-Xue-Zhang 2020 (RFS) Replicating Anomalies showed 65% of published anomalies fail under NYSE-breakpoints + value-weighted returns. The distress / 52w-loser anomaly is among the failed ones in modern data. 5/17 e2e showed DDV vetoed META (rank #1, \u03bc=+0.146, mega-cap $1.4T \u2192 distress effect weakest per FF 2008) on dd=-22.2%. Author's own docstring warned this costs +25pp in BULL_CALM/BULL_STRONG rallies. Config retained for potential regime-conditional re-enablement in BEAR/CHOPPY only."
       },
       "_2026-05-15_activation_reason": "Upgrades A+B from META trade evaluation. A: shrink rank_score by 0.5 when SPY regime is momentum-dominated (BULL_CALM/BULL_VOLATILE + hurst>0.65) but candidate's own 60d return is negative. B: veto candidates >20% below 52w high unless SUE or PEAD score is positive. Catches META-class trades (META today: r60=-4.66%, dd=-22.1%, no SUE \u2192 would have been score\u00d70.5 then vetoed). See Asness-Moskowitz-Pedersen 2013, Hong-Stein 2003."
     },
