@@ -77,26 +77,20 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ## 🎯 ACTIVE — next P0 items (ROI ranked)
 
-### 1. ⭐ News-sentiment + Options-IV feature integration (IN PROGRESS, 2026-05-18)
+### 1. ~~News-sentiment integration~~ — **SHELVED** (2026-05-18)
 
-**Status**: data + scorer shipped; IC eval + integration pending.
-**Effort remaining**: ~3-5 days.
-**Expected lift**: +0.2-0.4 Sharpe (Tetlock 2007 / Bali-Hovakimian 2009).
+6y IC eval (296k articles, 78,751 merged rows): NULL.
+- sentiment_pos_share × fwd_60d_excess: raw IC +0.006 (= shuffle noise +0.005)
+- ts-30 placebo eats ~80% of remaining marginal signal
+- 1y initial eval (+0.046) was period-specific selection bias
 
-Roadmap:
-1. ✅ Alpaca News API fetcher with 14-day chunking workaround (commit `a6b8080`)
-2. ✅ FinBERT scorer with MPS batch inference, §5.2 sanity gate (commit `a6b8080`)
-3. ✅ 1y backfill: 57,827 articles / 103 tickers, 0 sanity fail
-4. ✅ IC eval framework with §5.2 battery (commit `43e9c83`)
-5. ⏳ Run IC eval on sentiment features (next, ~5min)
-6. ⏳ IC eval on IV features (after IV backfill)
-7. ⏳ IV 103-ticker backfill (~30min, daily snapshot pattern)
-8. ⏳ Wire sentiment + IV into `build_alpha158_fund_panel.py` (`task #57`)
-9. ⏳ Retrain panel-LTR 169 → 180 features + acceptance gate (`task #58`)
-10. ⏳ `strategy_config.json::panel_ltr.features.sentiment/iv.enabled` flag + inference path (`task #59`)
-11. ⏳ Daily refresh crons (`task #60`)
+Verdict: [`doc/research/2026-05-18-news-sentiment-ic-verdict.md`](research/2026-05-18-news-sentiment-ic-verdict.md). Saved ~1 week engineering. Keep fetcher + scorer + 296k scored parquets as research infrastructure.
 
-References: Tetlock 2007 *JF*, Garcia 2013 *JF*, Ke-Kelly-Xiu 2019 NBER, Araci 2019 *FinBERT* arXiv 1908.10063, Bali-Hovakimian 2009 *RFS*, Goyal-Saretto 2009 *JFE*, Cremers-Weinbaum 2010 *JFQA*.
+### 1b. Options-IV integration — accumulation phase
+
+**Status**: fetcher shipped; today's EOD snapshot done; daily cron staged. Alpaca Free Options gives current-snapshot only (no historical chains), so panel integration requires ~6 months of daily accumulation. Resume when n_daily_rows ≥ 120.
+
+Refs: Bali-Hovakimian 2009 *MSci*, Cremers-Weinbaum 2010 *JFQA*, Goyal-Saretto 2009 *JFE*.
 
 ### 2. ★★ Quality-first watchlist expansion to wl200 (~+0.20 Sharpe, 1 week, $0)
 
