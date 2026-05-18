@@ -313,6 +313,23 @@ python -m live.runner --strategy foo --broker paper --once
 
 ## Development Rules
 
+### 0. Execute immediately, never wait for next session (2026-05-18 mandate)
+
+**User verbatim**: "任何 planned job 马上开工, 不要等下个 session". When a job is planned (in this session's task list, in roadmap.md, or just verbally agreed), START IT NOW. Don't write "let me schedule for next session" or "I'll do this tomorrow". The user is here, the context is loaded, the env is warm — execute.
+
+Examples of what NOT to say:
+- "Will do in next session"
+- "Let me schedule wakeup for tomorrow"
+- "Planned for later sprint"
+- "Will start when prerequisites ready" (instead: start what CAN start, in parallel)
+
+What TO do:
+- Concurrent BG jobs when ROI permits (multiple training runs, multiple sims, multiple data fetches)
+- Maximize the user's session time. Their attention is the rate-limiting resource.
+- If a long compute is needed, START it BG and report estimated time + monitor.
+
+Caveat: still respect risk gates (don't ship to live without §5.2 sanity, don't promote without §5.13.4a Tier 3, don't skip preflight).
+
 ### 1. Code is the source of truth
 When code and doc conflict, **code wins, doc gets corrected**. Stale docs mislead future-Claude into writing wrong code. For renquant_104 specifically, start at `kernel/pipeline/pp_inference.py::InferencePipeline.run`.
 
