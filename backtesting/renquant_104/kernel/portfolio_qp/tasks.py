@@ -273,8 +273,18 @@ class ComputeWashSaleMaskTask(Task):
 
     def run(self, ctx) -> bool | None:
         wash_days = int((ctx.config or {}).get("wash_sale_days", 0))
+        # 2026-05-18 ANTI-CHURN: block any ticker sold within
+        # min_reentry_days regardless of P/L sign. Wash-sale (§1091)
+        # only handles loss-sales (tax rule). Re-buying a gain-sale
+        # the next day is legal but represents strategy CHURN — the
+        # model has no memory of the recent sell so it can immediately
+        # re-pick the same ticker, eating spread + slippage twice for
+        # no net new conviction. This guard adds a behavioral block
+        # that compounds with the wash-sale rule (either fires → block).
+        # See doc/research/2026-05-18-mcd-rebuy-incident.md.
+        min_reentry = int((ctx.config or {}).get("min_reentry_days", 0))
         tickers = _get_path(ctx, "_qp_tickers") or []
-        if wash_days <= 0 or not tickers:
+        if (wash_days <= 0 and min_reentry <= 0) or not tickers:
             ctx._qp_wash_mask = np.zeros(len(tickers), dtype=bool)  # noqa: SLF001
             return
         last_sells_d = _get_path(ctx, "last_sell_dates") or {}
@@ -286,16 +296,36 @@ class ComputeWashSaleMaskTask(Task):
         # are not blocked, only losses (or unknown-and-conservative).
         from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
         mask = np.zeros(len(tickers), dtype=bool)
+        n_wash, n_churn = 0, 0
         for i, t in enumerate(tickers):
-            blocked, _, _ = is_wash_sale_blocked_with_cost(
-                ticker=t,
-                today=today,
-                last_sell_dates=last_sells_d,
-                last_sell_pls=last_sells_p,
-                wash_sale_days=wash_days,
-            )
-            mask[i] = bool(blocked)
+            # 1) Wash-sale (§1091, loss-sales only)
+            if wash_days > 0:
+                blocked, _, _ = is_wash_sale_blocked_with_cost(
+                    ticker=t,
+                    today=today,
+                    last_sell_dates=last_sells_d,
+                    last_sell_pls=last_sells_p,
+                    wash_sale_days=wash_days,
+                )
+                if blocked:
+                    mask[i] = True
+                    n_wash += 1
+                    continue
+            # 2) Anti-churn (any sell within min_reentry_days)
+            if min_reentry > 0:
+                last = last_sells_d.get(t)
+                if last is not None:
+                    days_since = (today - last).days
+                    if 0 <= days_since < min_reentry:
+                        mask[i] = True
+                        n_churn += 1
         ctx._qp_wash_mask = mask  # noqa: SLF001
+        if n_wash or n_churn:
+            import logging
+            logging.getLogger("kernel.portfolio_qp.tasks").info(
+                "ComputeWashSaleMaskTask: blocked %d wash + %d churn "
+                "(min_reentry=%dd) of %d tickers",
+                n_wash, n_churn, min_reentry, len(tickers))
 
 
 # ── 5. Position caps + scalar constraints ──────────────────────────────────
