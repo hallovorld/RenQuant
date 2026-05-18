@@ -215,6 +215,76 @@ def _write_report(strategy: str, results: list[dict]) -> Path:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _gate_check_vs_baseline(strategy: str, baseline_metrics: dict) -> tuple[bool, str, dict]:
+    """2026-05-17 ACCEPTANCE GATE — refuse promote if new artifact regressed.
+
+    Today's incident (Sunday 5/17): sweep wrote panel-LTR 21-feat stub (vs
+    169-feat baseline) + ngboost-head with val_IC=-0.0165 directly to prod
+    because nothing validated artifact quality post-train. This gate is
+    the safety floor.
+
+    Hard checks (any FAIL → reject):
+      H1. pool_ic exists + is finite
+      H2. pool_ic ≥ 0 (negative IC = broken model)
+      H3. pool_ic did not drop > 0.02 vs pre-sweep baseline
+      H4. scorer_oos_mean_ic ≥ 0
+
+    Soft checks (warn, don't block):
+      S1. pool_ic dropped 0.005-0.02 vs baseline (suspicious but not fatal)
+    """
+    cur = _read_metrics(strategy)
+    failed = []
+    warned = []
+    pool_ic = cur.get("pool_ic")
+    base_pool = baseline_metrics.get("pool_ic")
+    scorer_ic = cur.get("scorer_oos_mean_ic")
+
+    if pool_ic is None:
+        failed.append("H1 pool_ic missing")
+    else:
+        try:
+            pool_ic = float(pool_ic)
+            if not (pool_ic == pool_ic):  # NaN check
+                failed.append(f"H1 pool_ic NaN")
+            if pool_ic < 0:
+                failed.append(f"H2 pool_ic={pool_ic:.4f} < 0 (negative IC = broken)")
+            if base_pool is not None:
+                try:
+                    base_pool = float(base_pool)
+                    drop = base_pool - pool_ic
+                    if drop > 0.02:
+                        failed.append(f"H3 pool_ic dropped {base_pool:.4f} → {pool_ic:.4f} (Δ {-drop:+.4f}, > 2pp)")
+                    elif drop > 0.005:
+                        warned.append(f"S1 pool_ic dropped {base_pool:.4f} → {pool_ic:.4f} (Δ {-drop:+.4f})")
+                except (TypeError, ValueError):
+                    pass
+        except (TypeError, ValueError):
+            failed.append(f"H1 pool_ic={pool_ic!r} not numeric")
+
+    if scorer_ic is not None:
+        try:
+            s = float(scorer_ic)
+            if s < 0:
+                failed.append(f"H4 scorer_oos_mean_ic={s:.4f} < 0")
+        except (TypeError, ValueError):
+            pass
+
+    passed = not failed
+    msg_bits = []
+    if failed: msg_bits.append(f"FAIL[{len(failed)}]: " + "; ".join(failed))
+    if warned: msg_bits.append(f"WARN[{len(warned)}]: " + "; ".join(warned))
+    if passed and not msg_bits:
+        msg_bits.append(f"OK pool_ic={pool_ic:.4f} scorer_ic={scorer_ic}")
+    return passed, " | ".join(msg_bits), {
+        "passed": passed,
+        "failed": failed,
+        "warned": warned,
+        "pool_ic": pool_ic,
+        "scorer_oos_mean_ic": scorer_ic,
+        "baseline_pool_ic": base_pool,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--strategy", default="renquant_104")
@@ -237,26 +307,69 @@ def main() -> int:
                                     .get("backend", "xgboost"))
     production_backend = backends_to_run[0]
 
+    # 2026-05-17 ACCEPTANCE GATE FIX: snapshot pre-sweep state first, so
+    # we ALWAYS have a known-good rollback even if every backend fails or
+    # produces garbage (today's incident: all 3 backends ended in a corrupt
+    # state because there was no pre-sweep .bak to fall back to).
+    baseline_metrics = _read_metrics(strategy)
+    log.info("Pre-sweep baseline: pool_ic=%s scorer_ic=%s",
+             baseline_metrics.get("pool_ic"),
+             baseline_metrics.get("scorer_oos_mean_ic"))
+    _backup_artifacts(strategy, "pre-sweep")
+
     results: list[dict] = []
     try:
         for backend in backends_to_run:
             ok, metrics = _train_backend(strategy, backend)
+            # 2026-05-17 acceptance gate — validate the just-written artifact
+            # against the pre-sweep baseline. Reject regressions before
+            # `_backup_artifacts` blesses this backend as a promote candidate.
+            if ok:
+                gate_passed, gate_msg, gate_report = _gate_check_vs_baseline(
+                    strategy, baseline_metrics
+                )
+                metrics["acceptance_gate"] = gate_report
+                if not gate_passed:
+                    log.error("backend=%s ACCEPTANCE GATE REJECTED: %s",
+                              backend, gate_msg)
+                    ok = False
+                    metrics["status"] = "GATE_REJECTED"
+                else:
+                    log.info("backend=%s acceptance gate %s", backend, gate_msg)
             results.append(metrics)
             # Always backup, OK or not (so partial artifacts can be inspected)
             _backup_artifacts(strategy, backend)
             if not ok:
-                log.warning("backend=%s training failed — see log", backend)
+                log.warning("backend=%s not OK (train fail OR gate reject)", backend)
     finally:
-        # Restore the production backend to be active.
-        log.info("restoring production backend=%s + its artifacts",
-                 production_backend)
-        _swap_backend(strategy, production_backend)
-        _restore_artifacts(strategy, production_backend)
+        # 2026-05-17 BEST-BY-OOS-IC SELECTION: pick best gate-passing
+        # backend instead of "first in list = production". If NO backend
+        # passed gates → restore pre-sweep state (silent corruption guard).
+        passing = [r for r in results if r.get("status") == "OK"]
+        if not passing:
+            log.warning(
+                "0/%d backends passed acceptance gates — restoring pre-sweep state "
+                "(prod stays on prior artifact; no silent degradation)",
+                len(results),
+            )
+            _swap_backend(strategy, original_backend)
+            _restore_artifacts(strategy, "pre-sweep")
+        else:
+            best = max(passing, key=lambda r: r.get("scorer_oos_mean_ic") or -999.0)
+            best_backend = best["backend"]
+            if best_backend != production_backend:
+                log.info(
+                    "Best backend by OOS-IC: %s (IC=%s) — overrides default %s",
+                    best_backend, best.get("scorer_oos_mean_ic"), production_backend,
+                )
+            log.info("restoring backend=%s + its artifacts", best_backend)
+            _swap_backend(strategy, best_backend)
+            _restore_artifacts(strategy, best_backend)
         # If original config had a different backend (e.g. someone manually
-        # swapped to lightgbm before sweep), respect that and warn.
+        # swapped before sweep), respect that and warn.
         if original_backend != production_backend:
             log.warning(
-                "original config had backend=%s; this sweep overrode to %s. "
+                "original config had backend=%s; this sweep defaulted to %s. "
                 "Re-edit strategy_config.json if you want to revert.",
                 original_backend, production_backend,
             )
