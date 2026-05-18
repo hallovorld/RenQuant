@@ -148,6 +148,13 @@ class TestProductionArtifactLoads:
         prod_path = REPO / "backtesting/renquant_104/artifacts/ngboost-head.alpha158_fund.json"
         if not prod_path.exists():
             pytest.skip("production quantile head artifact not present")
+        # 2026-05-17: top-level artifact can be QuantileHead or NGBoostHead
+        # (polymorphic loader supports both). This test is QuantileHead-
+        # specific; skip cleanly when the on-disk artifact is NGBoostHead.
+        import json as _json
+        kind = _json.loads(prod_path.read_text()).get("kind")
+        if kind != "quantile_head":
+            pytest.skip(f"artifact kind={kind!r}, not 'quantile_head' — skip")
         head = load_head_by_kind(prod_path)
         assert isinstance(head, QuantileHead)
         # Production panel grows over time as features are added:

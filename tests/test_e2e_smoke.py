@@ -142,6 +142,14 @@ class TestQuantileHeadSmoke:
     def _load(self):
         if not self.HEAD_PATH.exists():
             pytest.skip(f"head artifact not present: {self.HEAD_PATH}")
+        # 2026-05-17: top-level head artifact can be either QuantileHead
+        # (XGB-quantile triplet) or NGBoostHead — production loader is
+        # polymorphic. This smoke test is QuantileHead-specific; skip
+        # cleanly when the on-disk artifact is a different kind.
+        import json as _json
+        kind = _json.loads(self.HEAD_PATH.read_text()).get("kind")
+        if kind != "quantile_head":
+            pytest.skip(f"artifact kind={kind!r}, not 'quantile_head' — skip smoke")
         from training_panel.quantile_head import QuantileHead
         return QuantileHead.load(self.HEAD_PATH)
 
