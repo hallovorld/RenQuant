@@ -39,6 +39,11 @@ FUND_COLS = ["earnings_yield", "book_to_price", "gross_profitability",
              "roe", "asset_growth"]
 PEAD_COLS = ["days_since_earnings", "pead_signal", "pead_quintile_rank"]
 SUE_COLS  = ["sue_signal", "surprise_momentum", "surprise_streak"]
+# Sentiment columns (added 2026-05-18 after regime-stratified IC eval; survivors only).
+# Per 2026-05-18 verdict doc: sentiment_pos_share + mean_sentiment + n_articles
+# clear shuffle-noise in HIGH_SPIKED / HIGH_NORMAL / MED_CALM regimes.
+# Drop sentiment_dispersion (ts-30 placebo eats it) and sentiment_neg_share (NULL).
+SENT_COLS = ["sentiment_pos_share", "mean_sentiment", "n_articles_log"]
 PEAD_DECAY_DAYS = 60   # Bernard-Thomas 1989 drift window
 SUE_WINDOW = 4         # Foster-Olsen-Shevlin 1984 — 4 prior quarters for std denom
 
@@ -154,13 +159,20 @@ def main():
     merged = _add_sue_features(merged)
     log.info("  SUE features added in %.1fs", time.time()-t0)
 
-    # Verify final shape matches expected schema (alpha158 + fund + pead + sue)
-    expected_cols = len(alpha.columns) + len(FUND_COLS) + len(PEAD_COLS) + len(SUE_COLS)
+    # ── Add Sentiment features (2026-05-18, regime-conditional SCREEN) ─────
+    log.info("Merging sentiment features (Tetlock 2007, Garcia 2013)...")
+    t0 = time.time()
+    merged = _add_sentiment_features(merged)
+    log.info("  sentiment features added in %.1fs", time.time()-t0)
+
+    # Verify final shape matches expected schema (alpha158 + fund + pead + sue + sent)
+    expected_cols = (len(alpha.columns) + len(FUND_COLS) + len(PEAD_COLS)
+                     + len(SUE_COLS) + len(SENT_COLS))
     if len(merged.columns) != expected_cols:
         log.warning("Column count %d (expected %d) — extra cols: %s",
                     len(merged.columns), expected_cols,
                     set(merged.columns) - set(alpha.columns) - set(FUND_COLS)
-                    - set(PEAD_COLS) - set(SUE_COLS))
+                    - set(PEAD_COLS) - set(SUE_COLS) - set(SENT_COLS))
 
     log.info("Writing → %s", out_p.name)
     merged.to_parquet(out_p, index=False)
@@ -298,6 +310,75 @@ def _add_sue_features(panel: pd.DataFrame) -> pd.DataFrame:
         med = out.groupby("date")[c].transform("median")
         out[c] = out[c].fillna(med).fillna(0.0)
     return out
+
+
+def _add_sentiment_features(panel: pd.DataFrame) -> pd.DataFrame:
+    """Attach sentiment columns from data/news_sentiment_alpaca/{ticker}.parquet.
+
+    Added 2026-05-18 after regime-stratified IC eval revealed HIGH_SPIKED
+    winner (sentiment_pos_share × fwd_5d IC=+0.054, mean_sentiment IC=+0.045).
+    Pre-regime-stratification pooled IC looked NULL — see 2026-05-18
+    sentiment verdict doc.
+
+    Three features (regime-conditional integration, deploy via
+    `regime_params.<R>.sentiment.enabled` overlay at inference time):
+      sentiment_pos_share — fraction of articles scored > +0.2 (HIGH_SPIKED
+                             IC +0.054, cleanest signal)
+      mean_sentiment      — average per-article signed score in [-1, +1]
+                             (HIGH_SPIKED IC +0.045)
+      n_articles_log      — log(1 + n_articles), proxy for news flow
+                             intensity (HIGH_SPIKED fwd_60d IC +0.023)
+
+    For tickers without sentiment data (pre-2020-01 dates, or non-watchlist
+    tickers): NaN initially → cross-sectional median fill → final 0.
+    Refs: Tetlock 2007, Garcia 2013, Da-Engelberg-Gao 2011, Araci 2019.
+    """
+    sent_dir = REPO / "data" / "news_sentiment_alpaca"
+    if not sent_dir.exists() or not any(sent_dir.glob("*.parquet")):
+        log.warning("  no sentiment data at %s — filling SENT_COLS with 0",
+                    sent_dir)
+        for c in SENT_COLS:
+            panel[c] = 0.0
+        return panel
+
+    parts = []
+    n_with_sent = 0
+    for f in sent_dir.glob("*.parquet"):
+        df = pd.read_parquet(f)
+        if df.empty:
+            continue
+        # Source schema: symbol, date, mean_sentiment, sentiment_dispersion,
+        # n_articles, sentiment_pos_share, sentiment_neg_share
+        df = df.rename(columns={"symbol": "ticker"})
+        df["date"] = pd.to_datetime(df["date"])
+        # Derive n_articles_log (compress heavy right tail; max is 42)
+        df["n_articles_log"] = np.log1p(df["n_articles"].astype(float))
+        keep = ["ticker", "date"] + SENT_COLS
+        parts.append(df[keep])
+        n_with_sent += 1
+    sent = pd.concat(parts, ignore_index=True)
+    log.info("  sentiment coverage: %d/%d tickers  rows=%d  dates=[%s, %s]",
+             n_with_sent, panel["ticker"].nunique(), len(sent),
+             sent["date"].min().date(), sent["date"].max().date())
+
+    merged = panel.merge(sent, on=["ticker", "date"], how="left")
+    if len(merged) != len(panel):
+        raise RuntimeError(
+            f"sentiment merge changed row count: {len(panel)} → {len(merged)}. "
+            f"Check duplicate (ticker, date) pairs in sentiment parquets.")
+
+    # Cross-sectional median imputation per date for inference; final 0
+    # (Important: 2020-01 onwards has sentiment; pre-2020 dates get 0
+    # which is fine — the model learns sentiment effects mostly on
+    # 2020+ training data where coverage is real.)
+    for c in SENT_COLS:
+        nan_pct_pre = merged[c].isna().mean() * 100
+        med = merged.groupby("date")[c].transform("median")
+        merged[c] = merged[c].fillna(med).fillna(0.0)
+        log.info("  %-25s NaN%% pre=%.1f%%  post_median+zero=%.1f%%",
+                 c, nan_pct_pre, merged[c].isna().mean() * 100)
+
+    return merged
 
 
 if __name__ == "__main__":
