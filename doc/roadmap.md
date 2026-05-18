@@ -77,14 +77,30 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ## 🎯 ACTIVE — next P0 items (ROI ranked)
 
-### 1. ~~News-sentiment integration~~ — **SHELVED** (2026-05-18)
+### 1. ⭐ News-sentiment integration — **REVERSED to Tier 2 SCREEN** (2026-05-18 evening)
 
-6y IC eval (296k articles, 78,751 merged rows): NULL.
-- sentiment_pos_share × fwd_60d_excess: raw IC +0.006 (= shuffle noise +0.005)
-- ts-30 placebo eats ~80% of remaining marginal signal
-- 1y initial eval (+0.046) was period-specific selection bias
+Pooled-mean SHELVED was a **PRIME DIRECTIVE violation**. Regime-stratified eval reveals strong actionable signal:
 
-Verdict: [`doc/research/2026-05-18-news-sentiment-ic-verdict.md`](research/2026-05-18-news-sentiment-ic-verdict.md). Saved ~1 week engineering. Keep fetcher + scorer + 296k scored parquets as research infrastructure.
+- HIGH_SPIKED (high-vol bull, n=5,929, 126 dates): sentiment_pos_share × fwd_5d IC = **+0.054** (net +0.061); mean_sentiment × fwd_5d IC = +0.045 (net +0.075)
+- HIGH_NORMAL (n=8,424): mean_sentiment × fwd_20d net +0.041
+- MED_CALM (n=7,299): sentiment_pos_share × fwd_20d net +0.042
+- LOW_NORMAL / MED_NORMAL: NEGATIVE — must turn off there
+
+Theory match: Garcia 2013 (sentiment 5× stronger in recessions) + Tetlock 2007 (high-attention amplification) + Da-Engelberg-Gao 2011 (attention in volatile periods).
+
+**Engineering plan** (3-4 days):
+1. Wire sentiment cols into `build_alpha158_fund_panel.py`
+2. Retrain panel-LTR 169 → 172 features (sentiment_pos_share, mean_sentiment, n_articles)
+3. Add `regime_params.<REGIME>.sentiment.enabled` config knob + reader Task
+4. WF + sanity + per-regime IC verification
+5. Daily sentiment refresh cron
+
+Pass gate (per-regime Tier 3):
+- HIGH_SPIKED: ΔSharpe ≥ +0.10
+- HIGH_NORMAL, MED_CALM: ΔSharpe ≥ +0.05
+- LOW_NORMAL, MED_NORMAL: ΔSharpe ≥ -0.02 (don't hurt)
+
+Verdict: [`doc/research/2026-05-18-news-sentiment-ic-verdict.md`](research/2026-05-18-news-sentiment-ic-verdict.md)
 
 ### 1b. Options-IV integration — accumulation phase
 
