@@ -71,7 +71,7 @@ def load_panel_apys(panel_dir: Path) -> dict[str, float]:
     """Return {Q01: apy, Q02: apy, …} sorted by window label."""
     out = {}
     eq_dir = panel_dir / "equity"
-    for f in sorted(eq_dir.glob("Q*.json")):
+    for f in sorted(eq_dir.glob("[QW]*.json")):
         d = json.loads(f.read_text())
         out[f.stem] = float(d["apy"])
     return out

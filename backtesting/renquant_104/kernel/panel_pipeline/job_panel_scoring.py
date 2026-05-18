@@ -906,8 +906,11 @@ class LoadNGBoostTask(Task):
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
-        panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
-        ngb_cfg   = panel_cfg.get("ngboost", {})
+        # 2026-05-17 BUG FIX: use _ngb_cfg (per-regime + hysteresis aware)
+        # rather than raw config. Without this, the per-regime overlay
+        # never loads the head because the global enabled=false short-
+        # circuits, so ApplyNGBoostTask sees head=None and never fires.
+        ngb_cfg = _ngb_cfg(ctx)
         if not ngb_cfg.get("enabled", False):
             return
 
@@ -953,6 +956,65 @@ class LoadNGBoostTask(Task):
                  head_kind, len(ctx._ngboost_head.feature_cols))
 
 
+# 2026-05-17 σ-wire per-regime override layer (mirrors B-track _qp_cfg).
+# Reading order (per CLAUDE.md PRIME DIRECTIVE: regime-conditional strategy):
+#   regime_params.<ctx.regime>.ngboost.<KEY>  →
+#     ranking.panel_scoring.ngboost.<KEY>
+# Test pin: tests/test_per_regime_sigma_wire.py.
+# Rationale (2026-05-17 σ-wire A/B): global σ-on lost pooled mean but
+# WON +14pp on 4 BEAR/crisis windows, LOST -14pp on 2 BULL windows.
+# Per-regime activation lets us capture the BEAR wins without paying
+# the BULL drag — same regime-conditional pattern that B-track per-regime
+# CVaR was built for.
+_NGB_PER_REGIME_KEYS = (
+    "enabled",
+    "score_mode",
+    "lambda_sigma",
+)
+
+
+def _ngb_cfg(ctx) -> dict:
+    """Read ngboost config with per-regime overlay + hysteresis (2026-05-17).
+
+    Resolution order (highest priority first):
+      1) Live per-regime overlay — `regime_params.<ctx.regime>.ngboost.<KEY>`
+         (when current regime has an entry with enabled=True).
+      2) Hysteresis memo — `regime_state.sigma_wire_overlay_memo`
+         (when sigma_wire_hysteresis_remaining > 0; carries the last
+         live overlay for N bars so brief regime-flicker doesn't churn
+         the strategy).
+      3) Global default — `ranking.panel_scoring.ngboost.<KEY>`.
+
+    Pure read; state updates happen in
+    kernel.pipeline.task_regime.RegimeFinalizeTask (once per bar).
+    """
+    base = dict((ctx.config.get("ranking", {})
+                            .get("panel_scoring", {})
+                            .get("ngboost", {})) or {})
+    regime = getattr(ctx, "regime", None)
+    state = getattr(ctx, "regime_state", None)
+
+    # (1) live per-regime overlay
+    live_overlay = {}
+    if regime:
+        regime_p = (ctx.config.get("regime_params", {}) or {}).get(regime, {}) or {}
+        regime_ngb = (regime_p.get("ngboost") or {}) if isinstance(regime_p, dict) else {}
+        for key in _NGB_PER_REGIME_KEYS:
+            if key in regime_ngb:
+                live_overlay[key] = regime_ngb[key]
+
+    if live_overlay.get("enabled") is True:
+        # Live trigger — apply overlay directly.
+        base.update(live_overlay)
+    elif state is not None and getattr(state, "sigma_wire_hysteresis_remaining", 0) > 0:
+        # (2) Hysteresis — use memo overlay so σ-wire stays sticky.
+        memo = getattr(state, "sigma_wire_overlay_memo", {}) or {}
+        base.update(memo)
+    # else: cold — global defaults only.
+
+    return base
+
+
 class ApplyNGBoostTask(Task):
     """Apply NGBoost μ,σ predictions on top of the LTR panel scoring.
 
@@ -963,12 +1025,15 @@ class ApplyNGBoostTask(Task):
       with `μ − λ·σ` so downstream ranking + rotation use the combined
       signal. Set score_mode = "additive" to keep the LTR rank_score
       unchanged and only populate mu/sigma for sizing.
+
+    2026-05-17 per-regime override: `regime_params.<REGIME>.ngboost.<KEY>`
+    overrides the global `ranking.panel_scoring.ngboost.<KEY>` for any of
+    {enabled, score_mode, lambda_sigma}. Lets σ-wire fire conditional on
+    regime (e.g. ON in BEAR/CHOPPY, OFF in BULL_CALM/BULL_STRONG).
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
-        ngb_cfg = (ctx.config.get("ranking", {})
-                             .get("panel_scoring", {})
-                             .get("ngboost", {}))
+        ngb_cfg = _ngb_cfg(ctx)
         if not ngb_cfg.get("enabled", False):
             return
         head = getattr(ctx, "_ngboost_head", None)

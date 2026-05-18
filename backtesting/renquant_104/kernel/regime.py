@@ -39,6 +39,23 @@ class RegimeState:
     hurst_regime: str = "AMBIGUOUS"          # MOMENTUM | REVERSION | AMBIGUOUS
     gmm_probs: dict = field(default_factory=dict)  # Layer 3: P(regime) for each label
     hard_bear: bool = False                  # BEAR hard-override flag
+    # 2026-05-17 Detector fix A+C — short-horizon BEAR + vol-cluster CHOPPY.
+    # 5-day vol/ret diagnostics (catches SVB/DeepSeek/Aug-2024 brief crises
+    # the 20-day rule misses). vol_cluster_choppy resurrects CHOPPY without
+    # depending on dead Hurst<0.52 test. Wired by BEAROverrideTask,
+    # consumed by RegimeFinalizeTask.
+    vol_5d: float = 0.0                      # 5-day annualized realized vol
+    ret_5d: float = 0.0                      # 5-day cumulative return
+    vol_cluster_choppy: bool = False         # elevated short-vol + no-trend
+    # 2026-05-17 σ-wire hysteresis — owns sticky activation of the
+    # NGBoost σ-wire across bar-to-bar regime flicker. Without this,
+    # the 5-day BEAR detector caught SVB/Aug-2024/DeepSeek brief
+    # crises correctly (1-5 BEAR bars) but the σ-wire toggled ON↔OFF
+    # mid-window → strategy churn → W7 5/17 A/B lost -21pp where
+    # uniform σ-on won +5pp. RegimeFinalizeTask updates these per bar;
+    # _ngb_cfg in job_panel_scoring.py reads them.
+    sigma_wire_hysteresis_remaining: int = 0
+    sigma_wire_overlay_memo: dict = field(default_factory=dict)
     cusum_triggered: bool = False            # Layer 2 raw flag (diagnostic; cooldown
                                               # armed by RegimeFinalizeTask on regime switch)
 
@@ -407,6 +424,14 @@ def detect_regime(
     vol_window    = int(regime_cfg.get("vol_realized_window", 20))
     bear_vol_thr  = float(regime_cfg.get("bear_vol_threshold",    0.35))
     bear_ret_thr  = float(regime_cfg.get("bear_return_threshold", -0.08))
+    # 2026-05-17 Detector fix A+C — keep in sync with
+    # kernel/pipeline/task_regime.py::BEAROverrideTask.
+    vol_window_5d   = int(regime_cfg.get("vol_realized_window_5d", 5))
+    bear_vol_thr_5d = float(regime_cfg.get("bear_vol_threshold_5d",    0.25))
+    bear_ret_thr_5d = float(regime_cfg.get("bear_return_threshold_5d", -0.04))
+    choppy_baseline = int(regime_cfg.get("choppy_vol_baseline_window", 60))
+    choppy_vol_rat  = float(regime_cfg.get("choppy_vol_ratio_threshold", 1.5))
+    choppy_drift_th = float(regime_cfg.get("choppy_drift_threshold",     0.02))
 
     if len(spy_returns) < 30:
         return state   # not enough data yet
@@ -442,7 +467,31 @@ def detect_regime(
     else:
         spy_20d_vol = 0.0
         spy_20d_ret = 0.0
-    hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
+    hard_bear_20d = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
+
+    # 2026-05-17 fix A — 5-day check for brief crises (SVB / DeepSeek /
+    # Aug-2024 vol spike). Keep in sync with task_regime.py.
+    if len(spy_returns) >= vol_window_5d:
+        w5 = spy_returns[-vol_window_5d:]
+        spy_5d_vol = float(np.std(w5, ddof=1) * math.sqrt(252))
+        spy_5d_ret = float(np.prod(1.0 + w5) - 1.0)
+    else:
+        spy_5d_vol = 0.0
+        spy_5d_ret = 0.0
+    hard_bear_5d = spy_5d_vol > bear_vol_thr_5d or spy_5d_ret < bear_ret_thr_5d
+    hard_bear = hard_bear_20d or hard_bear_5d
+
+    # 2026-05-17 fix C — vol-cluster CHOPPY: elevated 5-day vol vs 60-day
+    # baseline AND no 20-day drift. Replaces dead Hurst<0.52 CHOPPY route.
+    vol_cluster_choppy = False
+    if len(spy_returns) >= max(vol_window_5d, choppy_baseline):
+        w60 = spy_returns[-choppy_baseline:]
+        vol_60d = float(np.std(w60, ddof=1) * math.sqrt(252))
+        if math.isfinite(spy_5d_vol) and math.isfinite(vol_60d) and vol_60d > 0:
+            vol_cluster_choppy = (
+                (spy_5d_vol > vol_60d * choppy_vol_rat)
+                and (abs(spy_20d_ret) < choppy_drift_th)
+            )
 
     # 2026-05-14 Direction-aware Hurst with MA200 confirmation (audit):
     # Initial fix used MA50 alone; empirically caused Panel A −27pt Q11
@@ -464,14 +513,18 @@ def detect_regime(
             pass
     spy_bearish_trend = spy_below_ma50 and spy_below_ma200
 
-    # Resolve regime
+    # Resolve regime — 2026-05-17 fix C adds vol_cluster_choppy as orthogonal
+    # CHOPPY trigger. BEAR routes still take precedence.
     if hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
         new_regime = BEAR
     elif hurst_regime == "MOMENTUM":
-        # Direction-aware: trending up OR mixed → BULL_CALM
-        #                  bearish trend (both MAs below) → BEAR
-        new_regime = BEAR if spy_bearish_trend else BULL_CALM
-    elif hurst_regime == "REVERSION":
+        if spy_bearish_trend:
+            new_regime = BEAR
+        elif vol_cluster_choppy:
+            new_regime = CHOPPY
+        else:
+            new_regime = BULL_CALM
+    elif hurst_regime == "REVERSION" or vol_cluster_choppy:
         new_regime = CHOPPY
     else:
         new_regime = dominant_gmm if dominant_gmm != BEAR else BULL_VOLATILE

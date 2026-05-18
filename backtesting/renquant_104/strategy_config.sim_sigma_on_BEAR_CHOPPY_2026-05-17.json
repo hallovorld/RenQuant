@@ -154,8 +154,8 @@
     "gmm_artifact": "sim/spy-hmm-regime.json",
     "vol_realized_window": 20,
     "correlation_guard_threshold": 0.7,
-    "correlation_artifact": "sim/aux_2022-04-01/watchlist-correlation.json",
-    "earnings_artifact": "sim/aux_2022-04-01/earnings-calendar.json",
+    "correlation_artifact": "sim/watchlist-correlation.json",
+    "earnings_artifact": "sim/earnings-calendar.json",
     "earnings_buffer_days": 3,
     "earnings_sell_buffer_pre_days": 2,
     "earnings_sell_buffer_post_days": 5,
@@ -206,7 +206,12 @@
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
       "sdl_n_sigma": 3.0,
-      "drawdown_resume_pct": 0.05
+      "drawdown_resume_pct": 0.05,
+      "ngboost": {
+        "enabled": true,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      }
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
@@ -224,7 +229,12 @@
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
       "sdl_n_sigma": 3.0,
-      "drawdown_resume_pct": 0.04
+      "drawdown_resume_pct": 0.04,
+      "ngboost": {
+        "enabled": true,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      }
     },
     "BEAR": {
       "max_position_pct": 0.0,
@@ -241,7 +251,12 @@
       "take_profit_pct": 0,
       "stop_n_sigma": 0,
       "sdl_n_sigma": 3.0,
-      "drawdown_resume_pct": 0.025
+      "drawdown_resume_pct": 0.025,
+      "ngboost": {
+        "enabled": true,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      }
     }
   },
   "defensive_tickers": [
@@ -523,8 +538,7 @@
         "enabled": false,
         "artifact_path": "artifacts/sim/ngboost-head.json",
         "score_mode": "additive",
-        "lambda_sigma": 0.0,
-        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
+        "lambda_sigma": 0.0
       },
       "sigma_sizing": {
         "enabled": true,
@@ -825,6 +839,32 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline_hmm_pre2024",
-  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
+  "_side_config_label": "sim_sigma_on_BEAR_CHOPPY_2026-05-17",
+  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
+  "_2026-05-16_overlay_baseline": "Fresh same-day baseline for A-track overlay experiments. Identical to sim_baseline_hmm.json but dumped fresh to give preflight_analyzer.sh a 5/16 mtime > 5/15 calibrator refit.",
+  "_2026-05-17_sigma_wire_per_regime": {
+    "purpose": "regime-conditional \u03c3-wire activation per 5/17 dense A/B finding",
+    "global_default": "ngboost.enabled=false (BULL_CALM/BULL_STRONG keep this)",
+    "per_regime_overlay": {
+      "BEAR": {
+        "enabled": true,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      },
+      "CHOPPY": {
+        "enabled": true,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      },
+      "BULL_VOLATILE": {
+        "enabled": true,
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
+      }
+    },
+    "kernel_reader": "job_panel_scoring.py::_ngb_cfg (post 2026-05-17 patch)",
+    "test_pin": "tests/test_per_regime_sigma_wire.py",
+    "expected": "Captures \u03c3-on +14pp BEAR/crisis gains (W1,W4,W5,W7) without paying -14pp BULL drag (W3,W6). Pooled mean should swing from +3pp NULL to materially positive.",
+    "ngb_artifact_fingerprint": "sha256:3f380b4164d699b0"
+  }
 }

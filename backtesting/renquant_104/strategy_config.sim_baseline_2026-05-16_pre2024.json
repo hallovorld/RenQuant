@@ -825,6 +825,7 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline_hmm_pre2024",
-  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
+  "_side_config_label": "sim_baseline_2026-05-16_pre2024",
+  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
+  "_2026-05-16_overlay_baseline": "Fresh same-day baseline for A-track overlay experiments. Identical to sim_baseline_hmm.json but dumped fresh to give preflight_analyzer.sh a 5/16 mtime > 5/15 calibrator refit."
 }

@@ -117,11 +117,23 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("long_short.max_shorts",             "task_short_candidates.py"),
     ("long_short.max_short_pct",          "task_short_candidates.py"),
     ("long_short.max_gross_exposure",     "tasks.py"),
+    # ── NGBoost σ-wire scoring (job_panel_scoring.py::ApplyNGBoostTask) ──
+    ("ranking.panel_scoring.ngboost.enabled",       "job_panel_scoring.py:ApplyNGBoostTask"),
+    ("ranking.panel_scoring.ngboost.score_mode",    "job_panel_scoring.py:ApplyNGBoostTask"),
+    ("ranking.panel_scoring.ngboost.lambda_sigma",  "job_panel_scoring.py:ApplyNGBoostTask"),
+    ("ranking.panel_scoring.ngboost.artifact_path", "job_panel_scoring.py:LoadNGBoostTask"),
+    ("ranking.panel_scoring.ngboost.max_feature_drift_pct", "job_panel_scoring.py:ApplyNGBoostTask"),
+    # 2026-05-17 σ-wire per-regime override (kernel patch in _ngb_cfg)
+    ("regime_params.*.ngboost.enabled",       "job_panel_scoring.py:_ngb_cfg per-regime override"),
+    ("regime_params.*.ngboost.score_mode",    "job_panel_scoring.py:_ngb_cfg per-regime override"),
+    ("regime_params.*.ngboost.lambda_sigma",  "job_panel_scoring.py:_ngb_cfg per-regime override"),
     # ── known METADATA / comment fields (always inert) ───────────────────
     # listed so the validator marks them INERT_METADATA, not DEAD_PATH
 ]
 INERT_KEYS = {
     "_2026-05-15_re_eval_hypothesis", "_side_config_label",
+    "_2026-05-17_sigma_wire_test", "_2026-05-16_btrack_hypothesis",
+    "ranking.panel_scoring.ngboost._disable_reason",
     "_activation_log", "_backtest_start_note",
 }
 

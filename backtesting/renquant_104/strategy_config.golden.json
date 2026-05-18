@@ -162,7 +162,13 @@
     "choppy_hurst_floor": 0.2,
     "confidence_veto_threshold": 0.0,
     "cusum_cooldown_mode": "wall_time",
-    "cusum_cooldown_days": 3.0
+    "cusum_cooldown_days": 3.0,
+    "bear_vol_threshold_5d": 0.25,
+    "bear_return_threshold_5d": -0.04,
+    "vol_realized_window_5d": 5,
+    "choppy_vol_baseline_window": 60,
+    "choppy_vol_ratio_threshold": 1.5,
+    "choppy_drift_threshold": 0.02
   },
   "regime_params": {
     "BULL_CALM": {
@@ -395,8 +401,25 @@
     "borrow_rate_htb": 0.05,
     "borrow_status_path": "data/alpaca_borrow_status.json",
     "etf_blacklist": [
-      "SPY", "GLD", "QQQ", "IWM", "DIA", "TLT", "HYG", "LQD", "VXX",
-      "XLF", "XLE", "XLK", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE"
+      "SPY",
+      "GLD",
+      "QQQ",
+      "IWM",
+      "DIA",
+      "TLT",
+      "HYG",
+      "LQD",
+      "VXX",
+      "XLF",
+      "XLE",
+      "XLK",
+      "XLV",
+      "XLY",
+      "XLP",
+      "XLI",
+      "XLB",
+      "XLU",
+      "XLRE"
     ]
   },
   "rotation": {
@@ -589,13 +612,16 @@
       "use_realized_vol_fallback": true,
       "realized_vol_window_days": 60,
       "realized_vol_floor": 0.05,
-      "realized_vol_ceiling": 1.50,
-      "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded ±0.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52)."
+      "realized_vol_ceiling": 1.5,
+      "_2026-05-15_activation_reason": "Phase 3 of calibrator P0 (commits b16e2a1, 00f94ff, 342309e). Pre-fix: mu_none=33 across every panel, Kelly returned 0 for every candidate, QP fell back to uniform 10.17% sizing. Post-fix: c.mu = c.expected_return (bounded \u00b10.20 by train-site + load-site clips); c.sigma = trailing 60d annualized realized vol (clipped to [0.05, 1.50]). Calibrator artifact refitted with bounded ER (2026-05-15 15:52)."
     },
     "buy_quality_gates": {
       "regime_momentum": {
         "enabled": true,
-        "momentum_regimes": ["BULL_CALM", "BULL_VOLATILE"],
+        "momentum_regimes": [
+          "BULL_CALM",
+          "BULL_VOLATILE"
+        ],
         "hurst_floor": 0.65,
         "r60d_floor": 0.0,
         "mismatch_scale": 0.5,
@@ -603,13 +629,13 @@
       },
       "deep_drawdown_veto": {
         "enabled": true,
-        "dd_threshold": 0.20,
+        "dd_threshold": 0.2,
         "window_days": 252,
         "sue_floor": 0.0,
         "pead_floor": 0.0,
         "require_either": true
       },
-      "_2026-05-15_activation_reason": "Upgrades A+B from META trade evaluation. A: shrink rank_score by 0.5 when SPY regime is momentum-dominated (BULL_CALM/BULL_VOLATILE + hurst>0.65) but candidate's own 60d return is negative. B: veto candidates >20% below 52w high unless SUE or PEAD score is positive. Catches META-class trades (META today: r60=-4.66%, dd=-22.1%, no SUE → would have been score×0.5 then vetoed). See Asness-Moskowitz-Pedersen 2013, Hong-Stein 2003."
+      "_2026-05-15_activation_reason": "Upgrades A+B from META trade evaluation. A: shrink rank_score by 0.5 when SPY regime is momentum-dominated (BULL_CALM/BULL_VOLATILE + hurst>0.65) but candidate's own 60d return is negative. B: veto candidates >20% below 52w high unless SUE or PEAD score is positive. Catches META-class trades (META today: r60=-4.66%, dd=-22.1%, no SUE \u2192 would have been score\u00d70.5 then vetoed). See Asness-Moskowitz-Pedersen 2013, Hong-Stein 2003."
     },
     "ngboost_head": {
       "enabled": false

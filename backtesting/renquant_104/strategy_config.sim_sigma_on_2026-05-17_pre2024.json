@@ -520,11 +520,10 @@
         "min_mult": 0.5
       },
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "artifact_path": "artifacts/sim/ngboost-head.json",
-        "score_mode": "additive",
-        "lambda_sigma": 0.0,
-        "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
+        "score_mode": "mu_minus_lambda_sigma",
+        "lambda_sigma": 1.0
       },
       "sigma_sizing": {
         "enabled": true,
@@ -825,6 +824,21 @@
     "n_trials": 39,
     "risk_free_rate_annual": 0.05
   },
-  "_side_config_label": "sim_baseline_hmm_pre2024",
-  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today."
+  "_side_config_label": "sim_sigma_on_2026-05-17_pre2024",
+  "_backtest_start_note": "2026-05-11 G1: shifted from 2024-01-02 to 2024-04-01 (= first manifest cutoff 2024-01-01 + 60 trading days for fwd_60d_excess label horizon + safety buffer). Without this shift, sim bars in (2024-01-02, 2024-03-28] fall inside fold 2024-01-01's leak window \u2014 leakage_guard now enforces cutoff + lookahead < today.",
+  "_2026-05-16_overlay_baseline": "Fresh same-day baseline for A-track overlay experiments. Identical to sim_baseline_hmm.json but dumped fresh to give preflight_analyzer.sh a 5/16 mtime > 5/15 calibrator refit.",
+  "_2026-05-17_sigma_wire_test": {
+    "purpose": "re-test \u03c3-wire activation after env changes since 5/9 E55",
+    "delta_vs_baseline": "ranking.panel_scoring.ngboost: enabled=False\u2192True, score_mode=additive\u2192mu_minus_lambda_sigma, lambda_sigma=0.0\u21921.0",
+    "ngb_artifact_fingerprint": "sha256:3f380b4164d699b0",
+    "ngb_val_ic": 0.0352,
+    "ngb_sigma_calib": 0.274,
+    "reference_5_9_E55": "NGB-on lost -3.78 APY pts on 27-mo A/B",
+    "env_changes_since_5_9": [
+      "Phase 3 \u03bc/\u03c3 wiring + Upgrades A+B gates ON",
+      "Calibrator P0 fixed (5/15 EVENING)",
+      "Calibrator pool_ic improved to +0.094",
+      "Fresh NGB head (5/17) with \u03c3-calib +0.274"
+    ]
+  }
 }

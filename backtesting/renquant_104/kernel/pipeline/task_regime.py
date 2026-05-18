@@ -129,46 +129,105 @@ class GMMTask(Task):
 
 
 class BEAROverrideTask(Task):
-    """Hard BEAR override: fire if realized vol or cumulative return cross thresholds."""
+    """Hard BEAR override + vol-cluster CHOPPY detection.
+
+    Fires `state.hard_bear` if any of:
+      • 20-day vol > bear_vol_threshold        (default 0.35 = GFC-level)
+      • 20-day cum-ret < bear_return_threshold (default -0.08)
+      • 5-day vol > bear_vol_threshold_5d      (default 0.25)  ← 2026-05-17 fix A
+      • 5-day cum-ret < bear_return_threshold_5d (default -0.04)  ← 2026-05-17 fix A
+
+    Also computes `state.vol_cluster_choppy` (2026-05-17 fix C):
+      vol_5d > vol_60d × choppy_vol_ratio_threshold (1.5)
+        AND |cum_ret_20d| < choppy_drift_threshold (0.02)
+
+    Rationale: 2026-05-17 dense panel + detector audit. The 20-day vol
+    threshold (35%) is GFC-calibrated; SVB / DeepSeek+tariff / Aug-2024
+    crises never crossed it (max 19% / 18% / 22% respectively). The
+    Hurst-REVERSION CHOPPY route is dead because SPY rarely has Hurst <
+    0.52 on a 63-bar window. The vol-cluster gate provides an
+    orthogonal CHOPPY signal that doesn't rely on Hurst at all.
+
+    State writes: state.hard_bear, state.vol_5d, state.ret_5d,
+    state.vol_cluster_choppy.
+    """
 
     def run(self, ctx: InferenceContext) -> bool | None:
         cfg = ctx.config.get("regime", {})
-        vol_window   = int(cfg.get("vol_realized_window", 20))
-        bear_vol_thr = float(cfg.get("bear_vol_threshold",    0.35))
-        bear_ret_thr = float(cfg.get("bear_return_threshold", -0.08))
+        vol_window      = int(cfg.get("vol_realized_window", 20))
+        bear_vol_thr    = float(cfg.get("bear_vol_threshold",    0.35))
+        bear_ret_thr    = float(cfg.get("bear_return_threshold", -0.08))
+        vol_window_5d   = int(cfg.get("vol_realized_window_5d",  5))
+        bear_vol_thr_5d = float(cfg.get("bear_vol_threshold_5d",    0.25))
+        bear_ret_thr_5d = float(cfg.get("bear_return_threshold_5d", -0.04))
+        choppy_baseline = int(cfg.get("choppy_vol_baseline_window", 60))
+        choppy_vol_rat  = float(cfg.get("choppy_vol_ratio_threshold", 1.5))
+        choppy_drift_th = float(cfg.get("choppy_drift_threshold",     0.02))
 
         spy_returns = np.array(ctx.spy_returns)
         state = ctx.regime_state
 
+        # ── NaN/inf guard (Audit RG-1/RG-2) — fail-SAFE to BEAR ──
+        if len(spy_returns) >= vol_window and (
+            np.isnan(spy_returns[-max(vol_window, choppy_baseline):]).any()
+            or np.isinf(spy_returns[-max(vol_window, choppy_baseline):]).any()
+        ):
+            state.hard_bear = True
+            state.vol_cluster_choppy = False
+            log.warning(
+                "BEAROverrideTask: SPY returns contain NaN/inf — "
+                "fail-SAFE forcing hard_bear=True (block buys)",
+            )
+            return
+
+        def _vol_ret(arr: np.ndarray) -> tuple[float, float]:
+            """Annualized vol + strict cumulative product return."""
+            if len(arr) < 2:
+                return 0.0, 0.0
+            v = float(np.std(arr, ddof=1) * math.sqrt(252))
+            r = float(np.prod(1.0 + arr) - 1.0)
+            return v, r
+
+        # ── 20-day check (existing) ──
+        hard_bear_20d = False
         if len(spy_returns) >= vol_window:
-            window = spy_returns[-vol_window:]
-            # Audit fix RG-1/RG-2 (Round 2 deep audit, 2026-04-25):
-            # pre-fix, NaN in `window` propagated through np.std/np.prod
-            # to NaN. Then `vol > bear_vol_thr` and `ret < bear_ret_thr`
-            # both evaluated False → state.hard_bear = False → BEAR
-            # override silently disabled on bad SPY data. This is a
-            # safety gate; failing silent is unacceptable. Now: on
-            # non-finite vol/ret, fail-SAFE to True (assume BEAR).
-            if np.isnan(window).any() or np.isinf(window).any():
-                state.hard_bear = True
-                log.warning(
-                    "BEAROverrideTask: SPY returns contain NaN/inf — "
-                    "fail-SAFE forcing hard_bear=True (block buys)",
-                )
-            else:
-                spy_20d_vol = float(np.std(window, ddof=1) * math.sqrt(252))
-                # Audit #11: prior implementation used np.sum() which approximates
-                # cumulative return only for tiny daily moves. For a real selloff
-                # (e.g. -3% × 5 days), arithmetic sum overestimates the cumulative
-                # drop vs prod(1+r)-1. Use the strict cumulative product so the
-                # threshold matches what "cumulative return < -8%" actually means.
-                spy_20d_ret = float(np.prod(1.0 + window) - 1.0)
-                state.hard_bear = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
+            spy_20d_vol, spy_20d_ret = _vol_ret(spy_returns[-vol_window:])
+            hard_bear_20d = spy_20d_vol > bear_vol_thr or spy_20d_ret < bear_ret_thr
         else:
-            state.hard_bear = False
+            spy_20d_vol = spy_20d_ret = 0.0
+
+        # ── 5-day check (2026-05-17 fix A) ──
+        hard_bear_5d = False
+        if len(spy_returns) >= vol_window_5d:
+            vol_5d, ret_5d = _vol_ret(spy_returns[-vol_window_5d:])
+            hard_bear_5d = vol_5d > bear_vol_thr_5d or ret_5d < bear_ret_thr_5d
+        else:
+            vol_5d = ret_5d = 0.0
+        state.vol_5d = vol_5d
+        state.ret_5d = ret_5d
+
+        state.hard_bear = hard_bear_20d or hard_bear_5d
+
+        # ── vol-cluster CHOPPY (2026-05-17 fix C) ──
+        # Elevated 5-day vol relative to 60-day baseline, AND market not trending.
+        # Requires enough history for both windows.
+        vol_cluster = False
+        if len(spy_returns) >= max(vol_window_5d, choppy_baseline):
+            vol_60d, _ = _vol_ret(spy_returns[-choppy_baseline:])
+            if math.isfinite(vol_5d) and math.isfinite(vol_60d) and vol_60d > 0:
+                vol_elevated = vol_5d > vol_60d * choppy_vol_rat
+                no_trend     = abs(spy_20d_ret) < choppy_drift_th
+                vol_cluster  = vol_elevated and no_trend
+        state.vol_cluster_choppy = vol_cluster
 
         if state.hard_bear:
-            log.info("BEAROverrideTask: hard BEAR override triggered")
+            which = []
+            if hard_bear_20d: which.append(f"20d_vol={spy_20d_vol:.2f},ret={spy_20d_ret:+.2%}")
+            if hard_bear_5d:  which.append(f"5d_vol={vol_5d:.2f},ret={ret_5d:+.2%}")
+            log.info("BEAROverrideTask: hard BEAR triggered (%s)", "; ".join(which))
+        elif state.vol_cluster_choppy:
+            log.info("BEAROverrideTask: vol-cluster CHOPPY (vol5d=%.2f vol60d=%.2f drift20d=%+.2%%)",
+                     vol_5d, vol_60d if 'vol_60d' in locals() else 0.0, spy_20d_ret*100)
 
 
 class RegimeFinalizeTask(Task):
@@ -227,14 +286,25 @@ class RegimeFinalizeTask(Task):
                 pass
         spy_bearish_trend = spy_below_ma50 and spy_below_ma200
 
+        # 2026-05-17 fix C: vol-cluster CHOPPY signal (set by BEAROverrideTask)
+        # is an orthogonal CHOPPY trigger that doesn't rely on Hurst<0.52
+        # (which essentially never fires on SPY's 63-bar window). BEAR routes
+        # still take precedence — vol_cluster only fires if hard_bear is False.
+        vol_cluster_choppy = bool(getattr(state, "vol_cluster_choppy", False))
+
         if state.hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
             new_regime = BEAR
         elif state.hurst_regime == "MOMENTUM":
             # Direction-aware (both MA50 AND MA200 must be below):
             #   trending up OR mixed (MA50/MA200 disagree)  → BULL_CALM
             #   trending down (both MAs below)              → BEAR
-            new_regime = BEAR if spy_bearish_trend else "BULL_CALM"
-        elif state.hurst_regime == "REVERSION":
+            if spy_bearish_trend:
+                new_regime = BEAR
+            elif vol_cluster_choppy:
+                new_regime = "CHOPPY"
+            else:
+                new_regime = "BULL_CALM"
+        elif state.hurst_regime == "REVERSION" or vol_cluster_choppy:
             new_regime = "CHOPPY"
         else:
             new_regime = dominant_gmm if dominant_gmm != BEAR else BULL_VOLATILE
@@ -287,6 +357,31 @@ class RegimeFinalizeTask(Task):
         ctx.regime       = new_regime
         ctx.confidence   = confidence
         ctx.regime_counts[new_regime] = ctx.regime_counts.get(new_regime, 0) + 1
+
+        # 2026-05-17 σ-wire hysteresis update.
+        # If the newly-resolved regime has a per-regime ngboost overlay
+        # that activates σ wire, memo the overlay and arm the hysteresis
+        # counter. Decrement (without re-arming) on bars that don't
+        # activate. _ngb_cfg in job_panel_scoring.py reads these state
+        # fields to keep σ-wire sticky across bar-to-bar regime flicker.
+        # Without this, the 5-day BEAR detector catching SVB/Aug-2024/
+        # DeepSeek 1-5 BEAR bars caused σ-wire ON↔OFF churn → 5/17 A/B
+        # per-regime version lost -4.7pp pooled (W7 -21pp single
+        # window) where uniform σ-on won +3pp pooled.
+        _hysteresis_bars = int(ctx.config.get("regime", {})
+                                          .get("sigma_wire_hysteresis_bars", 10))
+        _NGB_REGIME_KEYS = ("enabled", "score_mode", "lambda_sigma")
+        regime_p = (ctx.config.get("regime_params", {}) or {}).get(new_regime, {}) or {}
+        regime_ngb = (regime_p.get("ngboost") or {}) if isinstance(regime_p, dict) else {}
+        live_overlay = {k: regime_ngb[k] for k in _NGB_REGIME_KEYS if k in regime_ngb}
+        if live_overlay.get("enabled") is True:
+            state.sigma_wire_overlay_memo = dict(live_overlay)
+            state.sigma_wire_hysteresis_remaining = _hysteresis_bars
+        elif getattr(state, "sigma_wire_hysteresis_remaining", 0) > 0:
+            state.sigma_wire_hysteresis_remaining -= 1
+        # else: counter at 0, memo untouched (don't clear so introspection
+        # can see what was last memorized, but counter==0 means it's not
+        # actively applied).
 
         log.info("RegimeFinalizeTask: regime=%s  conf=%.2f  transition=%s",
                  new_regime, confidence, state.in_transition)
