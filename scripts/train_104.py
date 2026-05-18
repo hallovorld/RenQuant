@@ -172,24 +172,46 @@ def main() -> None:
         archive_dir = strategy_dir / "artifacts" / "_acceptance_log"
         try:
             if verdict.all_hard_passed:
-                log.info("Acceptance: ALL HARD GATES PASSED → promoting new model")
-                # 2026-05-09 P0 #1: WF gate enforcement now blocks promote()
-                # without wf_gate_metadata. Daily retrain runs gates G1-G11
-                # (cheap, IC + sim Sharpe vs prior) but does NOT run the
-                # 75-minute walk-forward sim. We use RQ_ALLOW_NO_WF=1
-                # override here with a loud log so the operator can audit.
-                # Roadmap follow-up: refactor daily cron to stage-only + add
-                # weekly promote-with-WF cron.
+                # 2026-05-17 §5.13.15 fix — REMOVE daily RQ_ALLOW_NO_WF bypass.
+                # Pre-fix: every daily retrain set RQ_ALLOW_NO_WF=1 + called
+                # promote() → §5.13.15 "every daily promote set
+                # RQ_ALLOW_NO_WF=1 — theatrical gate". Today's Sunday-sweep
+                # incident (NGB val_IC=-0.0165 to prod) showed the
+                # consequence: light G1-G11 gates aren't enough to catch
+                # silent quality regressions on their own.
+                #
+                # New policy: daily retrain STAGES the new artifact at
+                # *.staging.json. Promotion happens via weekly_wf_promote.sh
+                # (Saturday 04:00 PT) which runs the full WF 3-cut +
+                # §5.2 sanity battery + run_wf_gate.py before flipping
+                # the production symlink. Daily retrain keeps the panel
+                # warm but does NOT touch production.
+                #
+                # Emergency override: set RQ_ALLOW_NO_WF=1 in the calling
+                # shell environment (NOT here — must be explicit per cron
+                # invocation, not script-default).
                 import os as _os                                   # noqa: PLC0415
-                _os.environ.setdefault("RQ_ALLOW_NO_WF", "1")
-                log.warning(
-                    "DAILY RETRAIN: setting RQ_ALLOW_NO_WF=1 to bypass walk-"
-                    "forward gate (G1-G11 already passed). Weekly retrain "
-                    "with run_wf_gate.py is the proper path; daily uses "
-                    "lightweight gates only. CLAUDE.md §5.5 rollback "
-                    "rehearsal mandate still applies."
-                )
-                promote(staging_path, active_path)
+                if _os.environ.get("RQ_ALLOW_NO_WF") == "1":
+                    log.warning(
+                        "DAILY RETRAIN: RQ_ALLOW_NO_WF=1 set externally — "
+                        "promoting without WF gate. This is emergency-only "
+                        "(CLAUDE.md §5.5 rollback rehearsal applies)."
+                    )
+                    promote(staging_path, active_path)
+                else:
+                    log.info(
+                        "Acceptance: ALL HARD GATES PASSED → STAGED at %s. "
+                        "Production NOT updated. weekly_wf_promote.sh "
+                        "(Saturday 04:00 PT) runs WF 3-cut + sanity + "
+                        "promotes if gate passes. Set RQ_ALLOW_NO_WF=1 "
+                        "to override (emergency only).",
+                        staging_path.name,
+                    )
+                    # Restore the active path file from the pre-train
+                    # snapshot since we already moved active→staging at line
+                    # 162. Without this, the active path is "the pre-train
+                    # copy we restored at line 165" which is correct already.
+                    # Just leave it.
             else:
                 log.error("Acceptance: HARD GATE FAILED → keeping prior model")
                 reject(staging_path, archive_dir, verdict)
