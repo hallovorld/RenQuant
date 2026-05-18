@@ -438,13 +438,22 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         # ctx.exits is list[(ticker, ExitSignal)] — unpack the tuple.
         # getattr(tuple, "ticker") always returned the default, so every
         # exit historically logged as "EXIT ? (?)" in ntfy.
+        # 2026-05-18: include explicit $ realized P/L when adapter has
+        # stamped it on the ExitSignal (per user mandate; cost basis
+        # from broker avg_entry_price / HoldingState.entry_price).
         if isinstance(e, tuple) and len(e) == 2:
             tkr, sig = e
             reason = getattr(sig, "exit_type", getattr(sig, "reason", "sell"))
         else:
             tkr    = getattr(e, "ticker", "?")
             reason = getattr(e, "exit_type", getattr(e, "reason", "sell"))
-        parts.append(f"EXIT {tkr} ({reason})")
+            sig = e
+        pnl_d = getattr(sig, "realized_pnl_dollar", None)
+        pnl_p = getattr(sig, "realized_pnl_pct", None)
+        if pnl_d is not None and pnl_p is not None:
+            parts.append(f"EXIT {tkr} ({reason}) P/L=${pnl_d:+.2f} ({pnl_p:+.2f}%)")
+        else:
+            parts.append(f"EXIT {tkr} ({reason})")
 
     # EXITS-FAIL: surface failed sells distinctly so the operator
     # doesn't confuse a broker rejection with a successful exit. Each

@@ -945,12 +945,46 @@ class RunnerAdapter:
                     "error":      str(exc),
                 })
                 continue
+
+            # 2026-05-18: stamp P/L on the ExitSignal so live/runner.py's
+            # _notify_decision can render explicit $ realized P/L in ntfy.
+            # User mandate: "每次卖出的时候 ntfy 里给我算一下具体 pl 是多少".
+            # Cost basis comes from broker avg_entry_price (FIFO/HIFO-aware
+            # via Alpaca's tax-lot accounting on its side). Sell price is
+            # the current ctx.prices snapshot (close-to-fill at market;
+            # bracket/limit orders would refine this).
+            price = ctx.prices.get(ticker, 0.0)
+            cost_basis = float(positions_cache.get(ticker, {}).get(
+                "avg_entry_price", 0.0
+            )) if hasattr(self, "_positions_cache_for_pl") else 0.0
+            # `positions_cache` was a local in commit(); not available here.
+            # Use HoldingState.entry_price as the running avg-cost fallback.
+            hs = (ctx.holdings or {}).get(ticker)
+            if hs is not None and cost_basis <= 0:
+                cost_basis = float(getattr(hs, "entry_price", 0.0) or 0.0)
+            if cost_basis > 0 and price > 0:
+                gain_per_share = price - cost_basis
+                gain_dollar = gain_per_share * sell_qty
+                gain_pct = (price / cost_basis - 1.0) * 100.0
+                try:
+                    sig.realized_pnl_dollar = float(gain_dollar)
+                    sig.realized_pnl_pct = float(gain_pct)
+                    sig.cost_basis = float(cost_basis)
+                    sig.sell_price = float(price)
+                    sig.shares_sold = float(sell_qty)
+                except Exception:
+                    pass
+
             ctx.exits_placed.append((ticker, sig))
 
-            price = ctx.prices.get(ticker, 0.0)
             tag   = "TRIM" if is_partial else "SELL"
-            log.info("%s  %s  [%s]  %.0f shares @ %.2f  %s",
-                     tag, ticker, sig.exit_type, sell_qty, price, sig.reason)
+            pl_str = ""
+            if getattr(sig, "realized_pnl_dollar", None) is not None:
+                pl_str = (f"  P/L=${sig.realized_pnl_dollar:+.2f} "
+                          f"({sig.realized_pnl_pct:+.2f}%)")
+            log.info("%s  %s  [%s]  %.0f shares @ %.2f%s  %s",
+                     tag, ticker, sig.exit_type, sell_qty, price, pl_str,
+                     sig.reason)
 
             # Wash-sale clock: stamp ONLY on full liquidation. Partial
             # trims (Kelly rebalance) intentionally don't block subsequent
