@@ -20,38 +20,13 @@ PROD_CAL = (REPO / "backtesting/renquant_104/artifacts/prod"
             / "panel-rank-calibration.json")
 
 
-def _largest_flat_fraction(x: list[float], y: list[float]) -> float:
-    """Return the largest flat region as fraction of total x-domain.
-
-    A "flat region" is a maximal run of ≥2 consecutive same-y points.
-    Single-point segments don't count (every change is a "segment of 1"
-    by the cur_start logic, but those aren't flat in any meaningful sense).
+def _largest_flat_fraction(x, y):
+    """2026-05-18 user audit: DRY — delegate to single source of truth
+    in kernel/calibrator_quality.py (was duplicated 3× across files).
     """
-    if not x or not y or len(x) != len(y) or len(x) < 2:
-        return 0.0
-    x_total = float(x[-1] - x[0])
-    if x_total <= 0:
-        return 0.0
-    longest = 0.0
-    cur_start = 0
-    cur_y = y[0]
-    for i in range(1, len(y)):
-        if y[i] != cur_y:
-            # Segment spans cur_start to i-1 inclusive.
-            # Only count as flat if >=2 points (i.e., at least one same-y
-            # consecutive transition occurred within the segment).
-            if i - cur_start >= 2:
-                span = float(x[i - 1] - x[cur_start])
-                if span > longest:
-                    longest = span
-            cur_start = i
-            cur_y = y[i]
-    # Final segment
-    if len(y) - cur_start >= 2:
-        span = float(x[-1] - x[cur_start])
-        if span > longest:
-            longest = span
-    return longest / x_total
+    sys.path.insert(0, str(REPO / "backtesting/renquant_104"))
+    from kernel.calibrator_quality import largest_flat_fraction
+    return largest_flat_fraction(x, y)
 
 
 class TestProdCalibratorFlatRegion:

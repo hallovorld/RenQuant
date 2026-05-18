@@ -178,21 +178,12 @@ def main():
     # flat region. Even after switching isotonic → platt, a future
     # regression / data shift could re-introduce flat regions. Catching
     # at fit-time prevents bad artifacts from ever landing in prod.
-    p_x_check, p_y_check = calib.prob_x, calib.prob_y
-    x_total = float(p_x_check[-1] - p_x_check[0]) if len(p_x_check) > 1 else 1.0
-    longest_flat = 0.0
-    cur_start = 0; cur_y = p_y_check[0]
-    for i in range(1, len(p_y_check)):
-        if p_y_check[i] != cur_y:
-            # Only count maximal runs of ≥2 consecutive same-y points as flat
-            if i - cur_start >= 2:
-                span = float(p_x_check[i - 1] - p_x_check[cur_start])
-                if span > longest_flat: longest_flat = span
-            cur_start = i; cur_y = p_y_check[i]
-    if len(p_y_check) - cur_start >= 2:
-        span = float(p_x_check[-1] - p_x_check[cur_start])
-        if span > longest_flat: longest_flat = span
-    flat_frac = longest_flat / x_total
+    # 2026-05-18 user audit: DRY — single source of truth in
+    # backtesting/renquant_104/kernel/calibrator_quality.py
+    import sys as _sys
+    _sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+    from kernel.calibrator_quality import largest_flat_fraction  # noqa: PLC0415
+    flat_frac = largest_flat_fraction(calib.prob_x, calib.prob_y)
     MAX_FLAT_FRAC = 0.30  # ≤ 30% of x-domain may be flat
     if flat_frac > MAX_FLAT_FRAC:
         log.error("ACCEPTANCE-GATE FAIL: calibrator probability curve has "

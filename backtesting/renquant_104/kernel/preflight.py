@@ -642,28 +642,10 @@ def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "Prefligh
     health_cfg = panel_cfg.get("calibrator_health", {}) or {}
     max_flat_fraction = float(health_cfg.get("max_flat_fraction", 0.30))
 
-    # Compute largest flat region: maximal run of ≥2 consecutive same-y
-    # points, weighted by their x-span as fraction of total domain.
-    # Single-point segments (where each y differs from previous) don't
-    # count — they're not "flat" in any meaningful sense.
-    x_total = float(x[-1] - x[0]) if x[-1] > x[0] else 1.0
-    longest_flat_span = 0.0
-    cur_start = 0
-    cur_y = y[0]
-    for i in range(1, len(y)):
-        if y[i] != cur_y:
-            if i - cur_start >= 2:
-                span = float(x[i - 1] - x[cur_start])
-                if span > longest_flat_span:
-                    longest_flat_span = span
-            cur_start = i
-            cur_y = y[i]
-    if len(y) - cur_start >= 2:
-        span = float(x[-1] - x[cur_start])
-        if span > longest_flat_span:
-            longest_flat_span = span
-
-    flat_frac = longest_flat_span / x_total
+    # 2026-05-18 user audit: DRY — extracted to kernel/calibrator_quality.py
+    # to prevent silent drift between preflight + fit_script + test impls.
+    from kernel.calibrator_quality import largest_flat_fraction  # noqa: PLC0415
+    flat_frac = largest_flat_fraction(x, y)
     if flat_frac > max_flat_fraction:
         return PreflightCheck(
             "P-CALIBRATOR-FLAT-REGION", "hard", False,
