@@ -55,6 +55,8 @@ def main() -> None:
     p.add_argument("--train-end-date", default=None,
                    help="Override split_label: use ALL rows with date ≤ this "
                         "date as train. Required for daily-retrain walk-forward.")
+    p.add_argument("--seed", type=int, default=42,
+                   help="XGB seed for reproducibility / variance estimation")
     p.add_argument("--val-days", type=int, default=20,
                    help="With --train-end-date, last N trading days reserved as val.")
     args = p.parse_args()
@@ -106,7 +108,7 @@ def main() -> None:
         "colsample_bytree": 0.5,
         "reg_lambda": 5.0,
         "reg_alpha": 2.0,
-        "seed": 42,
+        "seed": args.seed,
         "nthread": 10,
     }
     model = PanelLTRModel(params=params)
