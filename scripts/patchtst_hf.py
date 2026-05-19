@@ -120,13 +120,35 @@ def winsorize_label(panel: pd.DataFrame, label_col: str,
 
 def load_panel_with_split(dataset_path: Path, cut_name: str,
                           label_col: str,
-                          preprocess: bool = True) -> tuple[pd.DataFrame, list[str]]:
+                          preprocess: bool = True,
+                          val_tail_pct: float = 0.0) -> tuple[pd.DataFrame, list[str]]:
+    """Load panel + assign train/val/test split.
+
+    Modes:
+      cut_name = "all": full-data PROD training. Final val_tail_pct of dates
+                         used as val (early-stopping). No test. Use this for
+                         prod artifact training, NOT for walk-forward validation.
+      cut_name = "cut1_covid" etc: walk-forward VALIDATION mode. Splits per
+                                    kernel.walk_forward_splits (train < val_start,
+                                    val = val_start→val_end, rest = test).
+    """
     panel = pd.read_parquet(dataset_path)
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
     panel = panel.dropna(subset=[label_col])
-    cut = next(c for c in build_default_cuts() if c.name == cut_name)
-    panel["split_label"] = assign_split_column(panel, cut)
+    if cut_name == "all":
+        # Full-data prod training: tail val_tail_pct dates → val, rest → train
+        dates_sorted = sorted(panel["date"].unique())
+        if val_tail_pct > 0:
+            n_val = max(1, int(len(dates_sorted) * val_tail_pct))
+            val_start = dates_sorted[-n_val]
+            panel["split_label"] = "train"
+            panel.loc[panel["date"] >= val_start, "split_label"] = "val"
+        else:
+            panel["split_label"] = "train"
+    else:
+        cut = next(c for c in build_default_cuts() if c.name == cut_name)
+        panel["split_label"] = assign_split_column(panel, cut)
     feat_cols = [c for c in panel.columns
                  if c not in {"date", "ticker", "split_label",
                               "fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"}
@@ -180,7 +202,8 @@ def train_one(args: argparse.Namespace) -> dict:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     panel, feat_cols = load_panel_with_split(
-        Path(args.dataset), args.cut, args.label)
+        Path(args.dataset), args.cut, args.label,
+        val_tail_pct=getattr(args, "val_tail_pct", 0.10))
     train_b = build_per_day_batches(panel, feat_cols, args.label,
                                       args.seq_len, "train")
     val_b = build_per_day_batches(panel, feat_cols, args.label,
@@ -312,7 +335,10 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", default="data/transformer_v4_wl200_clean.parquet")
     p.add_argument("--cut", default="cut1_covid",
-                   help="Walk-forward cut name from kernel.walk_forward_splits")
+                   help="Walk-forward cut name OR 'all' for full-data prod training")
+    p.add_argument("--val-tail-pct", type=float, default=0.10,
+                   help="If cut='all', fraction of latest dates → val (early stop). "
+                        "Default 0.10 = 10%% recent dates held out.")
     p.add_argument("--label", default="fwd_60d_excess")
     p.add_argument("--seq-len", type=int, default=32)
     p.add_argument("--patch-length", type=int, default=4)

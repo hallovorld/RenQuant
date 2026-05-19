@@ -744,7 +744,7 @@
               },
               "hf_patchtst": {
                 "kind": "hf_patchtst",
-                "artifact_path": "artifacts/hf_patchtst_prod/router_hf_v1/hf_patchtst_cut1_covid_seed42_model.pt"
+                "artifact_path": "artifacts/hf_patchtst_prod/router_hf_v2/hf_patchtst_all_seed42_model.pt"
               }
             },
             "routing": {
@@ -756,7 +756,7 @@
             },
             "default_scorer_key": "xgb"
           },
-          "_2026-05-19_provenance": "Phase 0 finding: XGB collapses in BEAR (-0.27 cut1_covid), HF stable (+0.107). Inverse problem in 2024 unwind. Router: HF for BEAR/CHOPPY, XGB elsewhere. SHADOW first per [[auto_promote_to_prod]] (architecture-swap exclusion)."
+          "_2026-05-19_provenance": "Phase 0 finding (HF artifact: full-data train 2016\u21922025 + 10% recent val for early stop; NOT cut1-restricted \u2014 that's validation methodology, not prod training): XGB collapses in BEAR (-0.27 cut1_covid), HF stable (+0.107). Inverse problem in 2024 unwind. Router: HF for BEAR/CHOPPY, XGB elsewhere. SHADOW first per [[auto_promote_to_prod]] (architecture-swap exclusion)."
         }
       ],
       "shadow_tracking_uri": "file:./mlruns",
