@@ -9,7 +9,8 @@ PBO > 0.5 → overfit; PBO < 0.5 → robust.
 ## Per-Point: bull_ic + DSR
 | Point | lr | wd | warmup | seq | bull_ic_mean | bull_ic_std | DSR | n_cuts |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 1.0e-04 | 1.0e-02 | 4 | 24 | +0.0578 | 0.0791 | -0.784 | 3 |
+| 2 | 1.0e-05 | 3.0e-01 | 4 | 24 | +0.0845 | 0.0637 | -0.206 | 2 |
+| 1 | 1.0e-04 | 1.0e-02 | 4 | 24 | +0.0580 | 0.0787 | -0.777 | 3 |
 | 0 | 1.0e-05 | 1.0e-02 | 4 | 8 | +0.0136 | 0.0250 | -0.983 | 3 |
 
 ## Main Effects (sorted by |β|)
@@ -22,5 +23,5 @@ PBO > 0.5 → overfit; PBO < 0.5 → robust.
 
 ## §5.14 Pass-Gate Check
 - ❌ PBO < 0.5 (PBO=nan)
-- ❌ Best DSR > 0 (DSR=-0.784)
-- ✅ Best bull_ic > 0 (bull_ic=+0.0578)
+- ❌ Best DSR > 0 (DSR=-0.206)
+- ✅ Best bull_ic > 0 (bull_ic=+0.0845)

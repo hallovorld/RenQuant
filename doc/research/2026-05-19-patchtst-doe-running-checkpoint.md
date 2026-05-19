@@ -17,7 +17,25 @@ computes bull_regime_IC + DSR.
 
 ---
 
-## 🚨 REVERSAL: Point 1 NO LONGER passes (as of 2026-05-19 03:27 PT, 16/81 trials)
+## Update 2026-05-19 04:27 PT (21/81): pt_02 takes lead (still fails XGB)
+
+| Point | lr | wd | seq | bull_ic_mean | DSR | n_cuts | verdict |
+|---|---|---|---|---|---|---|---|
+| **2** | 1.0e-05 | 3.0e-01 | 24 | **+0.085** | −0.21 | 2 | NEW leader, still fails |
+| 1 | 1.0e-04 | 1.0e-02 | 24 | +0.058 | −0.78 | 3 | failed cut5 |
+| 0 | 1.0e-05 | 1.0e-02 | 8 | +0.014 | −0.98 | 3 | underfit |
+
+XGB baseline pool_ic = +0.094. NONE of pt_0/1/2 beats it yet.
+
+**Status (post 21/81)**: 6/9 points still pending. pt_02 leadership
+hint suggests **high wd + lower lr** direction. pt_06 (wd=3e-1, seq=8)
++ pt_07 (high wd + long seq) yet to come might show similar pattern.
+
+**Shadow training (PID 25572) KILLED at 04:27** — 57 min/epoch was too
+slow, pt_01 already failed gates so artifact unneeded. Freed 5GB RAM
++ CPU to speed up DOE.
+
+## 🚨 Earlier REVERSAL: Point 1 NO LONGER passes (16/81 trials)
 
 cut5_unwind data flipped pt_01 verdict. Earlier 2-cut data was misleading.
 
