@@ -108,8 +108,17 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 - User criterion: "PatchTST 只要不是比 xgb 差很多就换" — even tie acceptable for architectural diversification
 
 **Next steps after DOE finishes**:
-- IF best point passes: BBD (Box-Behnken) zoom-in around best knob region → predicted optimum → confirmatory run → promote as **shadow** first (zero-risk rollout), then primary swap via config flip
+- IF best point passes: BBD (Box-Behnken) zoom-in around best knob region → predicted optimum → confirmatory run → **shadow registration** (user 2026-05-18 decision: HF PatchTST = first real shadow model, 1-2 wk MLflow log of rank divergence vs XGB primary, THEN decide promote-to-primary)
 - IF best point fails per-regime gate: close research thread, archive to `failed-experiments-log.md`
+
+**Shadow model wiring (sequencing after HF DOE)**:
+1. Train confirmatory HF PatchTST on full 5-cut walk-forward at predicted optimum
+2. Add `hf_patchtst` kind to `kernel/panel_pipeline/model_registry.py`
+3. Write `HFPatchTSTScorer` adapter (sequence input → score; mirror existing `PatchTSTPanelScorer` API)
+4. Register in `golden.json::ranking.panel_scoring.shadow_models` as kind=hf_patchtst
+5. e2e Alpaca live run → verify `mlruns/renquant_104_shadow/` populated
+6. Daily: prod runs primary XGB; ApplyShadowScoringTask logs HF rank + mean_diff + corr + top5_overlap to MLflow
+7. Weekly review: `optuna-dashboard` or `mlflow ui` → if HF shadow consistently leads XGB primary on per-regime metrics, propose promote-to-primary via config flip
 
 References: Nie et al 2023 ICLR *PatchTST*, Lim et al 2021 ICLR *TFT*, Box-Hunter-Hunter 2005 (FrFact), Qlib `pytorch_*_ts.py`.
 
