@@ -176,4 +176,67 @@ class HFPatchTSTHandler(_ModelHandler):
         ]
 
 
+@registry.register("regime_router")
+class RegimeRouterHandler(_ModelHandler):
+    """Regime-conditional model router — per Phase 0 finding that XGB and
+    HF PatchTST fail in different regimes. Config schema:
+
+      ranking.panel_scoring.kind = "regime_router"
+      ranking.panel_scoring.regime_router = {
+        "scorers": {
+          "xgb": {"kind": "xgb", "artifact_path": "..."},
+          "hf_patchtst": {"kind": "hf_patchtst", "artifact_path": "..."},
+        },
+        "routing": {"BEAR": "hf_patchtst", "CHOPPY": "hf_patchtst",
+                     "BULL_CALM": "xgb", "BULL_VOLATILE": "xgb"},
+        "default_scorer_key": "xgb",
+      }
+    """
+    requires_history = True  # router may dispatch to history-requiring scorer
+
+    @classmethod
+    def scorer_loader(cls, artifact_path, config):
+        from kernel.panel_pipeline.regime_router_scorer import (  # noqa: PLC0415
+            RegimeRouterScorer, DEFAULT_ROUTING)
+        from pathlib import Path as _P  # noqa: PLC0415
+        rr_cfg = (config.get("ranking", {}).get("panel_scoring", {})
+                          .get("regime_router", {}))
+        sub_scorers_cfg = rr_cfg.get("scorers", {})
+        if not sub_scorers_cfg:
+            raise ValueError("regime_router config missing 'scorers' dict "
+                              "(at ranking.panel_scoring.regime_router.scorers)")
+        strategy_dir = config.get("_strategy_dir") or _REPO / "backtesting/renquant_104"
+        loaded = {}
+        for key, sub in sub_scorers_cfg.items():
+            sub_kind = sub["kind"]
+            sub_handler = registry.get(sub_kind)  # recursive registry dispatch
+            p = _P(sub["artifact_path"])
+            if not p.is_absolute():
+                p = _P(strategy_dir) / p
+            # Build a temp config so sub-handler sees its own panel_scoring section
+            sub_config = dict(config)
+            sub_config.setdefault("ranking", {})
+            sub_config["ranking"] = dict(config["ranking"])
+            sub_panel_cfg = dict(sub_config["ranking"].get("panel_scoring", {}))
+            sub_panel_cfg["kind"] = sub_kind
+            sub_panel_cfg["artifact_path"] = str(p)
+            # Pass any sub-specific feature_cols / seq_len
+            for k in ("feature_cols", "seq_len"):
+                if k in sub:
+                    sub_panel_cfg[k] = sub[k]
+            sub_config["ranking"]["panel_scoring"] = sub_panel_cfg
+            loaded[key] = sub_handler.scorer_loader(p, sub_config)
+        return RegimeRouterScorer(
+            scorers=loaded,
+            routing=rr_cfg.get("routing", DEFAULT_ROUTING),
+            default_scorer_key=rr_cfg.get("default_scorer_key", "xgb"),
+        )
+
+    @classmethod
+    def train_cmd(cls, args) -> list[str]:
+        raise NotImplementedError(
+            "regime_router is an inference-only composition; train each "
+            "sub-model independently then wire via config.")
+
+
 __all__ = ["registry", "_ModelHandler"]
