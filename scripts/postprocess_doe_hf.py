@@ -134,17 +134,81 @@ def fit_effects(points_df: pd.DataFrame, score_col: str = "bull_ic_mean"
     return main_df.reset_index(drop=True), inter_df.reset_index(drop=True)
 
 
+def assemble_runs_from_val_preds(doe_dir: Path, design: pd.DataFrame
+                                  ) -> pd.DataFrame:
+    """Build runs.csv-equivalent from completed val_preds files. Enables
+    partial verdict even if DOE script hasn't finished + written runs.csv."""
+    import sys as _sys
+    _sys.path.insert(0, str(REPO))
+    from kernel.hmm_regime_labels import (compute_hmm_regime_labels,
+                                            per_hmm_regime_ic, bull_regime_ic)
+    import json as _json
+
+    hmm = compute_hmm_regime_labels(REPO / "data/ohlcv/SPY/1d.parquet")
+    rows = []
+    # Group val_preds by (point_id, cut), ensemble across seeds
+    pred_files: dict[tuple, list[Path]] = {}
+    for vp in sorted(doe_dir.rglob("*val_preds.parquet")):
+        parts = vp.parent.name.split("_")  # pt_00_cut1_covid_seed_42
+        if len(parts) < 5: continue
+        pid = int(parts[1])
+        cut = "_".join(parts[2:-2])  # handle cut names like "cut1_covid"
+        pred_files.setdefault((pid, cut), []).append(vp)
+
+    for (pid, cut), files in pred_files.items():
+        dfs = [pd.read_parquet(f) for f in files]
+        n_rows = len(dfs[0])
+        if all(len(d) == n_rows for d in dfs):
+            ens_pred = np.mean([d["pred"].values for d in dfs], axis=0)
+            ensembled = pd.DataFrame({
+                "date": dfs[0]["date"].values, "pred": ens_pred,
+                "label": dfs[0]["label"].values,
+            })
+        else:
+            ensembled = dfs[0][["date", "pred", "label"]].copy()
+        per_regime = per_hmm_regime_ic(ensembled, hmm,
+                                        min_samples_per_day=5,
+                                        min_days_per_regime=5)
+        bull_ic = bull_regime_ic(per_regime)
+        rows.append({
+            "point_id": pid, "cut": cut, "n_seeds_ok": len(files),
+            "bull_regime_ic": bull_ic,
+            "per_regime_json": _json.dumps(per_regime),
+        })
+    runs = pd.DataFrame(rows)
+    if runs.empty:
+        return runs
+    runs = runs.merge(
+        design[["point_id", "lr", "weight_decay", "warmup_epochs", "seq_len",
+                "lr_coded", "weight_decay_coded", "warmup_epochs_coded",
+                "seq_len_coded", "is_center"]],
+        on="point_id", how="left")
+    return runs
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--doe-dir", default="artifacts/patchtst_doe_hf",
                    help="HF DOE output directory")
+    p.add_argument("--partial", action="store_true",
+                   help="Assemble runs.csv from val_preds if missing (DOE still running)")
     args = p.parse_args()
 
     np.random.seed(42)  # DSR's null-distribution sample
     doe_dir = REPO / args.doe_dir
-    runs = pd.read_csv(doe_dir / "runs.csv")
     design = pd.read_csv(doe_dir / "design.csv")
+
+    runs_path = doe_dir / "runs.csv"
+    if runs_path.exists():
+        runs = pd.read_csv(runs_path)
+    elif args.partial:
+        print("runs.csv missing — assembling from val_preds files (partial mode)")
+        runs = assemble_runs_from_val_preds(doe_dir, design)
+        runs.to_csv(doe_dir / "runs_partial.csv", index=False)
+        print(f"  wrote runs_partial.csv ({len(runs)} (point,cut) combos)")
+    else:
+        raise SystemExit(f"runs.csv missing at {runs_path}. Use --partial to assemble from val_preds.")
 
     # ── Aggregate per-point across cuts ────────────────────────────────────
     valid = runs.dropna(subset=["bull_regime_ic"])
