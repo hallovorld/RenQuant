@@ -58,6 +58,9 @@ knowledge/chromadb/
 backtesting/renquant_104/strategy_config.json.pre-*
 backtesting/renquant_104/strategy_config.json.preview_backup_*
 
-# Optuna sweep databases (regeneratable)
-optuna_patchtst*.db
-artifacts/optuna_trials/
+
+# DOE: per-trial dirs are large (val_preds parquets) — only commit aggregates
+artifacts/patchtst_doe_hf/pt_*/
+artifacts/patchtst_doe_hf_smoke/
+artifacts/hf_smoke/
+artifacts/hf_swa_smoke/
