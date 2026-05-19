@@ -68,13 +68,27 @@ class LoadScorerTask(Task):
             strategy_dir = ctx.config.get("_strategy_dir")
             if strategy_dir:
                 p = Path(strategy_dir) / p
+        # 2026-05-18 Model registry dispatch — supports XGB/PatchTST/future kinds
+        # via single config knob `ranking.panel_scoring.kind`. Default xgb
+        # for back-compat. Each kind's handler in kernel/panel_pipeline/
+        # model_registry.py decides how to load its scorer.
+        from kernel.panel_pipeline.model_registry import registry  # noqa: PLC0415
+        kind = panel_cfg.get("kind", "xgb")
         try:
-            ctx._panel_scorer = PanelScorer.load(p)  # noqa: SLF001
-        except Exception as exc:
-            log.error("LoadScorerTask: failed to load %s — %s", p, exc)
+            handler = registry.get(kind)
+        except ValueError as exc:
+            log.error("LoadScorerTask: %s", exc)
             return False
-        log.info("LoadScorerTask: loaded artifact (features=%d)",
-                 len(ctx._panel_scorer.feature_cols))
+        try:
+            ctx._panel_scorer = handler.scorer_loader(p, ctx.config)  # noqa: SLF001
+        except Exception as exc:
+            log.error("LoadScorerTask: failed to load %s artifact %s — %s",
+                      kind, p, exc)
+            return False
+        log.info("LoadScorerTask: loaded %s artifact (features=%d, "
+                 "requires_history=%s)", kind,
+                 len(ctx._panel_scorer.feature_cols),
+                 getattr(ctx._panel_scorer, "requires_history", False))
 
         # 2026-04-28 self-audit: config / model consistency check.
         # Invariant: a fingerprint mismatch must — by default — prevent
@@ -534,9 +548,51 @@ class ApplyScoresTask(Task):
                     log.info("ApplyScoresTask[panel_ltr_xgboost]: applied artifact normalization "
                              "(mean/std for %d features)", len(fmeans))
 
-                scores: pd.Series = scorer.score(X_aligned)
-                log.info("ApplyScoresTask[panel_ltr_xgboost]: scored %d tickers via alpha158%s",
-                         len(rows), "+fund" if needs_fund else "")
+                # 2026-05-18 PatchTST dispatch: if scorer requires history
+                # (PatchTST sequence model), call score_with_history instead
+                # of legacy snapshot score().
+                if getattr(scorer, "requires_history", False):
+                    panel_history = getattr(ctx, "_panel_history", None)
+                    if panel_history is None:
+                        # 2026-05-18 FIRST-WIRE-IN: lazy-load from training
+                        # panel parquet. TODO: replace with rolling fresh-
+                        # compute via compute_alpha158_at for live inference
+                        # past panel-max-date. For SIM tests on dates ≤
+                        # 2026-02-10 this is correct.
+                        from pathlib import Path as _P  # noqa: PLC0415
+                        repo = _P(__file__).resolve().parents[4]
+                        panel_path = repo / "data" / "alpha158_291_fundamental_dataset.parquet"
+                        try:
+                            full_panel = pd.read_parquet(panel_path)
+                            full_panel["date"] = pd.to_datetime(full_panel["date"])
+                        except Exception as exc:
+                            log.error("PatchTST: failed to load panel parquet: %s", exc)
+                            scores = pd.Series([], dtype=float)
+                        else:
+                            target_tickers = list(rows.keys())
+                            today_ts = pd.Timestamp(today)
+                            past = full_panel[full_panel["date"] < today_ts]
+                            # Use last seq_len dates × candidate tickers
+                            recent_dates = sorted(past["date"].unique())[-scorer.seq_len:]
+                            history = past[
+                                (past["ticker"].isin(target_tickers)) &
+                                (past["date"].isin(recent_dates))]
+                            log.info("PatchTST: lazy-loaded panel history "
+                                     "(%d rows × %d tickers × %d dates) for %d candidates",
+                                     len(history), history["ticker"].nunique(),
+                                     len(recent_dates), len(target_tickers))
+                            scores = scorer.score_with_history(history, target_tickers)
+                    else:
+                        target_tickers = list(rows.keys())
+                        scores = scorer.score_with_history(panel_history,
+                                                            target_tickers)
+                    log.info("ApplyScoresTask[patchtst]: scored %d via "
+                             "PatchTST (seq_len=%d)",
+                             len(scores), scorer.seq_len)
+                else:
+                    scores: pd.Series = scorer.score(X_aligned)
+                    log.info("ApplyScoresTask[panel_ltr_xgboost]: scored %d tickers via alpha158%s",
+                             len(rows), "+fund" if needs_fund else "")
         else:
             scores: pd.Series = scorer.score(X)
 
