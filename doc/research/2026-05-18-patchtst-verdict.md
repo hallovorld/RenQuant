@@ -68,17 +68,15 @@ PatchTST has limited value-add given:
 
 ## Pivot
 
-Per user "I want trend-following even with drawback":
+User explicitly rejected dual-strategy (E) and rules-based pivots. The thread is **within model-architecture space** (D). Options inside D:
 
-**Start renquant_106** — rules-based CTA strategy (separate from 104). Different DNA:
-- Signal: 12-month return ranking (Jegadeesh-Titman 1993)
-- Filter: 200-day MA crossover (Hurst-Ooi-Pedersen 2017)
-- Exit: trailing 20% from peak
-- Universe: wl200 top-30 by momentum
-- No ML — pure rules
-- 50+ years of academic + industry validation
+1. **Different sequence length** (32 → 64 → 128 days) — capture longer-horizon patterns
+2. **Different label** (binary "outperform top-decile" classification, not regression) — easier signal
+3. **Different transformer variant** (TFT with covariate masking, iTransformer with better config)
+4. **Smaller model** (under 50K params to fight overfit on small dataset)
+5. **Different feature inputs to PatchTST** (raw OHLCV sequences directly, NOT alpha158 pre-cooked features)
 
-Expected: low correlation with renquant_104 (mean-rev style), portfolio hedge.
+Awaiting user direction within D.
 
 ## Time saved by killing 5-seed early
 
