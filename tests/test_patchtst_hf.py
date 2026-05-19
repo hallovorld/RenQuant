@@ -110,6 +110,82 @@ class TestModelArchitecture:
         assert 0.4 < loss < 1.0, f"random loss should be near ln 2, got {loss}"
 
 
+class TestPreprocessing:
+    """Variance-reduction preprocessing per roadmap PatchTST §variance protocol:
+    CSRankNorm features per-day + Winsorize label ±0.5%.
+    """
+
+    def _load_mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("patchtst_hf", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_csrank_norm_range_minus_half_to_plus_half(self):
+        import pandas as pd
+        import numpy as np
+        mod = self._load_mod()
+        rng = np.random.default_rng(0)
+        dates = pd.date_range("2024-01-01", periods=10)
+        panel = pd.DataFrame({
+            "date": np.tile(dates, 5),
+            "ticker": np.repeat(list("ABCDE"), 10),
+            "f1": rng.normal(0, 100, 50),  # large scale
+            "f2": rng.normal(0, 0.01, 50),  # small scale
+        })
+        out = mod.csrank_norm_per_day(panel, ["f1", "f2"])
+        # All normalized to [-0.5, +0.5]
+        assert out["f1"].min() >= -0.5 - 1e-9
+        assert out["f1"].max() <= +0.5 + 1e-9
+        assert out["f2"].min() >= -0.5 - 1e-9
+        assert out["f2"].max() <= +0.5 + 1e-9
+
+    def test_csrank_norm_per_day_independence(self):
+        """Each day's normalization must be independent of other days."""
+        import pandas as pd
+        import numpy as np
+        mod = self._load_mod()
+        # Day 1: values [1,2,3,4,5]; Day 2: values [100,200,300,400,500]
+        # After CSRankNorm both should be uniformly ranked to [-0.5, +0.5]
+        panel = pd.DataFrame({
+            "date": [pd.Timestamp("2024-01-01")] * 5 + [pd.Timestamp("2024-01-02")] * 5,
+            "ticker": list("ABCDE") * 2,
+            "f1": [1, 2, 3, 4, 5, 100, 200, 300, 400, 500],
+        })
+        out = mod.csrank_norm_per_day(panel, ["f1"])
+        # Both days should give the same rank-norm values
+        day1_vals = out[out["date"] == "2024-01-01"]["f1"].sort_values().tolist()
+        day2_vals = out[out["date"] == "2024-01-02"]["f1"].sort_values().tolist()
+        assert day1_vals == pytest.approx(day2_vals)
+
+    def test_winsorize_caps_extremes(self):
+        import pandas as pd
+        import numpy as np
+        mod = self._load_mod()
+        # Most values in [-1, +1], with a few extreme outliers
+        rng = np.random.default_rng(0)
+        labels = rng.normal(0, 1, 1000).tolist() + [1000.0, -1000.0, 999.0, -999.0]
+        panel = pd.DataFrame({"y": labels})
+        out = mod.winsorize_label(panel, "y", pct=0.005)
+        # All extreme outliers should be clipped to within sane range
+        assert out["y"].max() < 10.0, f"max not clipped: {out['y'].max()}"
+        assert out["y"].min() > -10.0, f"min not clipped: {out['y'].min()}"
+        # Non-extreme values preserved
+        assert (out["y"].abs() <= 1.0).sum() >= 600  # most still ≤1
+
+    def test_winsorize_preserves_median(self):
+        import pandas as pd
+        import numpy as np
+        mod = self._load_mod()
+        rng = np.random.default_rng(0)
+        labels = rng.normal(0, 1, 1000)
+        panel = pd.DataFrame({"y": labels})
+        out = mod.winsorize_label(panel, "y", pct=0.005)
+        # Median should be roughly preserved (symmetric winsorize)
+        assert abs(out["y"].median() - np.median(labels)) < 0.01
+
+
 class TestSmokeArtifacts:
     """If the smoke run artifact exists (from manual smoke), check shape."""
 

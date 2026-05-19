@@ -97,8 +97,30 @@ def per_day_csrankic(preds: np.ndarray, labels: np.ndarray,
     return float(np.mean(ics)), float(np.median(ics))
 
 
+def csrank_norm_per_day(panel: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
+    """Kelly-Gu-Xiu 2020 RFS standard: cross-sectional rank-norm each
+    feature per-day to [-0.5, +0.5]. Removes scale drift + outlier
+    sensitivity. No temporal leakage (within-date only)."""
+    panel = panel.copy()
+    panel[feat_cols] = (panel.groupby("date")[feat_cols].rank(pct=True) - 0.5)
+    panel[feat_cols] = panel[feat_cols].fillna(0.0)
+    return panel
+
+
+def winsorize_label(panel: pd.DataFrame, label_col: str,
+                    pct: float = 0.005) -> pd.DataFrame:
+    """Winsorize label ±pct percentile (default 0.5% each side ≈ ±3σ for
+    near-normal). Removes extreme returns that destabilize ranking loss."""
+    panel = panel.copy()
+    lo = panel[label_col].quantile(pct)
+    hi = panel[label_col].quantile(1 - pct)
+    panel[label_col] = panel[label_col].clip(lower=lo, upper=hi)
+    return panel
+
+
 def load_panel_with_split(dataset_path: Path, cut_name: str,
-                          label_col: str) -> tuple[pd.DataFrame, list[str]]:
+                          label_col: str,
+                          preprocess: bool = True) -> tuple[pd.DataFrame, list[str]]:
     panel = pd.read_parquet(dataset_path)
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -109,6 +131,11 @@ def load_panel_with_split(dataset_path: Path, cut_name: str,
                  if c not in {"date", "ticker", "split_label",
                               "fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"}
                  and panel[c].dtype.kind in "fiub"]
+    if preprocess:
+        # Variance-reduction preprocessing (roadmap PatchTST P0 §variance protocol)
+        panel = csrank_norm_per_day(panel, feat_cols)
+        panel = winsorize_label(panel, label_col, pct=0.005)
+        log.info("preprocessing: CSRankNorm + Winsorize(±0.5%%) applied")
     log.info("panel %d rows | cut=%s | train=%d val=%d test=%d | n_feat=%d",
              len(panel), cut_name,
              (panel["split_label"] == "train").sum(),
