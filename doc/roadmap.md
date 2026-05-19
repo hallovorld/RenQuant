@@ -198,6 +198,36 @@ Independent strategy dir `backtesting/renquant_105/`. Easley-Lopez de Prado-O'Ha
 | Test suite hygiene (trim slow, add sim-level integration) | ~14k tests; some slow; coverage gaps in sim path | ongoing |
 | Daily sentiment + IV refresh crons | After integration | 1 day (`task #60`) |
 | 12 pre-existing test failures | Kelly DD scale / vol-target / dashboard / calibrator clip | 1-2 days |
+| **架构肃清: 删所有 self-written + unused 代码** | **NEW 2026-05-18**: user mandate "所有代码". See dedicated section below | 1-2 days |
+
+### 🧹 Architectural cleanup — delete all self-written + unused code
+
+**User mandate 2026-05-18**: "自己写的，且没有用的代码都尽量删掉" + "我是说所有代码！". Defer批量执行后再做; precondition is current DOE finish + HF pivot land. Until then, list candidates so nothing slips.
+
+**Tier A — confirmed dead today (deferred until DOE finishes ~23:15 PT 2026-05-18)**:
+- `scripts/transformer_v4.py` — 784 LOC custom transformer/iTransformer/PatchTST/LSTM/MLP. Replaced by `scripts/patchtst_hf.py` (HF transformers backbone).
+- `scripts/qlib_transformer_v5.py` — another custom impl, untested in prod
+- `scripts/patchtst_doe_sweep.py` + `tests/test_patchtst_doe_sweep.py` — custom DOE orchestrator; will be replaced by `scripts/patchtst_doe_hf.py` (5-cut walk-forward + HF backbone)
+- `backtesting/renquant_104/kernel/panel_pipeline/patchtst_scorer.py` — custom scorer; replace with HF version
+- `kernel/panel_pipeline/model_registry.py` PatchTST handler — point at HF script
+
+**Tier B — broader audit pending (when bored)**:
+Per §5.13.2 "any new module is dead until grep proves prod imports it" — sweep entire codebase, list every `kernel/` or `scripts/` file with 0 non-test imports. Likely candidates from memory:
+- Old `archive/` / `legacy/` / `_old.py` files (if any)
+- Stub scripts in `scripts/` that haven't been touched since pre-Bug-C era
+- Test fixtures that test deleted code
+
+**Tier C — custom impl candidates for lib replacement** (not necessarily dead, but violates §5.12 "use canonical refs"):
+- Anywhere we hand-roll regression/classification/optimization when sklearn/cvxpy/qlib exists
+- Hand-written feature engineering when `pandas_ta_classic` / `qlib.contrib.data.handler` covers it
+- Custom NaN/inf guards when pandera/numpy native handles it
+
+**Protocol** (per §5.6 "fixed = 24h audit clean"):
+1. Sweep `grep -rln 'import X\|from X' --include='*.py' | grep -v __pycache__ | grep -v 'tests/'` for each candidate
+2. If 0 non-test prod imports → mark for delete
+3. Delete in commit of ≤10 files at a time (rollback-friendly)
+4. Verify full test suite green after each batch
+5. Update this section as items are cleared
 
 ---
 
