@@ -141,4 +141,39 @@ class PatchTSTHandler(_ModelHandler):
         ]
 
 
+@registry.register("hf_patchtst")
+class HFPatchTSTHandler(_ModelHandler):
+    """HF transformers PatchTST (replaces custom-impl 'patchtst' kind).
+
+    Trained by scripts/patchtst_hf.py --save-model. Inference via
+    HFPatchTSTPanelScorer (mirrors PatchTSTPanelScorer API but uses HF
+    backbone). Artifact stores feature_cols + config_dict internally so
+    no config-side feature_cols list required.
+    """
+    requires_history = True
+
+    @classmethod
+    def scorer_loader(cls, artifact_path, config):
+        from kernel.panel_pipeline.hf_patchtst_scorer import HFPatchTSTPanelScorer  # noqa: PLC0415
+        return HFPatchTSTPanelScorer.load(artifact_path)
+
+    @classmethod
+    def train_cmd(cls, args) -> list[str]:
+        # NOTE: --warmup-epochs not yet wired in scripts/patchtst_hf.py
+        # (DOE warmup_epochs knob is decorative until LR scheduler added).
+        return [
+            sys.executable, str(_REPO / "scripts/patchtst_hf.py"),
+            "--dataset", args.dataset,
+            "--label", args.label,
+            "--cut", getattr(args, "cut", "cut1_covid"),
+            "--seq-len", str(getattr(args, "seq_len", 24)),
+            "--epochs", str(getattr(args, "epochs", 15)),
+            "--lr", str(getattr(args, "lr", 1e-4)),
+            "--weight-decay", str(getattr(args, "weight_decay", 1e-2)),
+            "--output-dir", args.output_dir or str(_REPO / "artifacts/hf_patchtst_prod"),
+            "--device", getattr(args, "device", "mps"),
+            "--save-model",
+        ]
+
+
 __all__ = ["registry", "_ModelHandler"]

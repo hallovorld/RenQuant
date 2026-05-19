@@ -288,6 +288,22 @@ def train_one(args: argparse.Namespace) -> dict:
     }
     (out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_summary.json").write_text(
         json.dumps(summary, indent=2, default=str))
+
+    if args.save_model:
+        # Save weights + config + feature_cols for inference reuse (e.g. shadow)
+        model_path = out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_model.pt"
+        torch.save({
+            "state_dict": final_model.state_dict(),
+            "config_dict": cfg.to_dict(),
+            "feature_cols": feat_cols,
+            "seq_len": args.seq_len,
+            "label_col": args.label,
+            "best_val_ic": best_val_ic,
+            "uses_swa": args.swa,
+            "uses_csranknorm_preprocessing": True,
+            "uses_winsorize_label_preprocessing": True,
+        }, model_path)
+        log.info("model saved: %s", model_path)
     return summary
 
 
@@ -314,6 +330,8 @@ def main():
                         "— late-epoch weight averaging for wider minimum")
     p.add_argument("--swa-start-epoch", type=int, default=2,
                    help="Epoch after which SWA starts averaging weights")
+    p.add_argument("--save-model", action="store_true",
+                   help="Save final model state_dict + config for inference reuse")
     p.add_argument("--output-dir", default="artifacts/hf_patchtst")
     args = p.parse_args()
 
