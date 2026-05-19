@@ -17,6 +17,33 @@ computes bull_regime_IC + DSR.
 
 ---
 
+## 🏁 FINAL VERDICT (2026-05-19 12:57 PT, 70/81 — pt_07 cut5 confirms)
+
+**No single HF config beats XGB across all 3 cuts.**
+
+pt_07 (lr=1e-4, wd=3e-1, seq=24) was the architectural-limit test:
+all knobs HIGH (high lr + high wd + long seq). Hypothesis was that
+high wd would stabilize cut5_unwind like it did for pt_03 (the only
+HF config to not fail cut5).
+
+Result: pt_07 cut5 = **−0.032** (similar to pt_01 −0.033) → high wd
+does NOT save cut5 when seq=24. The pt_03 cut5 stability came from
+**short seq=8**, not from high wd. Long seq = model overfits to
+2018-2024 patterns that don't transfer to 2024 unwind.
+
+pt_07 final 3-cut mean: +0.055 (≈ pt_01 +0.058).
+
+**Conclusion**: HF PatchTST has architectural limit — can't simultaneously
+get cut1+cut3 strength (needs long seq) AND cut5 stability (needs short
+seq). No hyperparameter combo resolves the conflict.
+
+**But regime-router thesis still holds**:
+  cut1 COVID BEAR: HF +0.10 beats XGB -0.27 (Δ +0.37)
+  cut3 inflpk: XGB +0.22 beats HF +0.09
+  cut5 unwind: XGB +0.09 beats HF -0.03
+  → Router (BEAR/CHOPPY → HF, BULL_* → XGB) captures cut1 lift
+    while not losing cut3/cut5
+
 ## 🎯 PHASE 0 — Fair XGB Baseline (2026-05-19 09:35 PT) — CRITICAL FINDING
 
 Per CLAUDE.md §5.11 range-finding (was missing day 1): trained XGB on

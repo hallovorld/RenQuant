@@ -9,8 +9,8 @@ PBO > 0.5 → overfit; PBO < 0.5 → robust.
 ## Per-Point: bull_ic + DSR
 | Point | lr | wd | warmup | seq | bull_ic_mean | bull_ic_std | DSR | n_cuts |
 |---|---|---|---|---|---|---|---|---|
-| 7 | 1.0e-04 | 3.0e-01 | 10 | 24 | +0.0982 | 0.0056 | +15.992 | 2 |
 | 1 | 1.0e-04 | 1.0e-02 | 4 | 24 | +0.0580 | 0.0787 | -0.777 | 3 |
+| 7 | 1.0e-04 | 3.0e-01 | 10 | 24 | +0.0546 | 0.0755 | -0.788 | 3 |
 | 2 | 1.0e-05 | 3.0e-01 | 4 | 24 | +0.0460 | 0.0807 | -0.960 | 3 |
 | 4 | 1.0e-05 | 1.0e-02 | 10 | 24 | +0.0458 | 0.0810 | -0.955 | 3 |
 | 0 | 1.0e-05 | 1.0e-02 | 4 | 8 | +0.0136 | 0.0250 | -0.983 | 3 |
@@ -21,22 +21,22 @@ PBO > 0.5 → overfit; PBO < 0.5 → robust.
 ## Main Effects (sorted by |β|)
 | Knob | β |
 |---|---|
-| `seq_len` | +0.0256 |
-| `lr` | +0.0070 |
-| `warmup_epochs` | +0.0051 |
-| `weight_decay` | +0.0045 |
+| `seq_len` | +0.0202 |
+| `lr` | +0.0016 |
+| `weight_decay` | -0.0009 |
+| `warmup_epochs` | -0.0003 |
 
 ## 2-Way Interactions (sorted by |β|)
 | A | B | β |
 |---|---|---|
-| `weight_decay` | `warmup_epochs` | +0.0045 |
-| `lr` | `seq_len` | +0.0045 |
-| `lr` | `warmup_epochs` | +0.0028 |
-| `weight_decay` | `seq_len` | +0.0028 |
-| `warmup_epochs` | `seq_len` | +0.0024 |
-| `lr` | `weight_decay` | +0.0024 |
+| `weight_decay` | `warmup_epochs` | +0.0018 |
+| `lr` | `seq_len` | +0.0018 |
+| `lr` | `weight_decay` | -0.0003 |
+| `warmup_epochs` | `seq_len` | -0.0003 |
+| `lr` | `warmup_epochs` | +0.0001 |
+| `weight_decay` | `seq_len` | +0.0001 |
 
 ## §5.14 Pass-Gate Check
 - ✅ PBO < 0.5 (PBO=0.33)
-- ✅ Best DSR > 0 (DSR=+15.992)
-- ✅ Best bull_ic > 0 (bull_ic=+0.0982)
+- ❌ Best DSR > 0 (DSR=-0.777)
+- ✅ Best bull_ic > 0 (bull_ic=+0.0580)
