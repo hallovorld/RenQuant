@@ -111,6 +111,25 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 - IF best point passes: BBD (Box-Behnken) zoom-in around best knob region → predicted optimum → confirmatory run → **shadow registration** (user 2026-05-18 decision: HF PatchTST = first real shadow model, 1-2 wk MLflow log of rank divergence vs XGB primary, THEN decide promote-to-primary)
 - IF best point fails per-regime gate: close research thread, archive to `failed-experiments-log.md`
 
+**Variance-reduction protocol for HF DOE (preprocessing + ensemble)**:
+
+Current DOE shows pt_00 best point with **mean min_regime=+0.078 ± 0.058** (CoV 0.7) — high upside but high seed variance. Standard literature stack to reduce variance (CLAUDE §5.12 canonical refs):
+
+Preprocessing (bake into `scripts/patchtst_hf.py` data loader):
+1. **CSRankNorm** features per-day (Kelly-Gu-Xiu 2020 RFS standard): `df.groupby('date')[feats].rank(pct=True) - 0.5`
+2. **Label Winsorize ±3σ** (`scipy.stats.mstats.winsorize`)
+3. **HF default `scaling=std`** ≡ RevIN (Kim 2021 ICLR) — already free
+
+Training-side (in DOE script):
+4. **N-seed Ensemble** (predict-average across 5 seeds) — Lakshminarayanan 2017 NIPS; variance ↓ √N → pt_00 σ 0.058 → 0.026
+5. **SWA** (`torch.optim.swa_utils.AveragedModel + SWALR`) for confirmatory final training only — Izmailov 2018 UAI; 5-15% variance reduction without ensemble cost
+
+NOT doing (ROI low / off-mandate):
+- T-Fixup init (§5.12 violation — custom code)
+- Snapshot ensemble (SWA strictly better)
+- Time-series augmentation (ranking task incompatible)
+- Sector residualization (overlaps with sector_mom feature)
+
 **Shadow model wiring (sequencing after HF DOE)**:
 1. Train confirmatory HF PatchTST on full 5-cut walk-forward at predicted optimum
 2. Add `hf_patchtst` kind to `kernel/panel_pipeline/model_registry.py`
