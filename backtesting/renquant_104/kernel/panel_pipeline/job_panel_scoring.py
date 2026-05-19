@@ -1779,10 +1779,15 @@ class PanelScoringJob(Job):
         from kernel.panel_pipeline.task_quality_floor import (  # noqa: PLC0415
             QualityFloorTask,
         )
+        # 2026-05-18 SHADOW SCORING — register here so it runs AFTER
+        # ApplyScoresTask (which writes primary scores). Lazy-imported to
+        # avoid forcing import cost on configs that don't use shadow.
+        from kernel.panel_pipeline.shadow_scoring import ApplyShadowScoringTask  # noqa: PLC0415
         return [
             LoadScorerTask(),
             BuildFeatureMatrixTask(),
             ApplyScoresTask(),
+            ApplyShadowScoringTask(),   # NEW: no-op if no shadow_models configured
             LoadNGBoostTask(),
             ApplyNGBoostTask(),
             LoadGlobalCalibrationTask(),
