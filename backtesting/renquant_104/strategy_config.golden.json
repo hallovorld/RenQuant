@@ -730,7 +730,37 @@
           "CHOPPY": true
         },
         "_2026-05-18_provenance": "Tier 2 SCREEN per regime-stratified IC eval; see doc/research/2026-05-18-news-sentiment-ic-verdict.md"
-      }
+      },
+      "shadow_models": [
+        {
+          "name": "regime_router_v1",
+          "kind": "regime_router",
+          "artifact_path": "n/a",
+          "regime_router": {
+            "scorers": {
+              "xgb": {
+                "kind": "xgb",
+                "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json"
+              },
+              "hf_patchtst": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/hf_patchtst_prod/router_hf_v1/hf_patchtst_cut1_covid_seed42_model.pt"
+              }
+            },
+            "routing": {
+              "BEAR": "hf_patchtst",
+              "CHOPPY": "hf_patchtst",
+              "BULL_CALM": "xgb",
+              "BULL_VOLATILE": "xgb",
+              "BULL_STRONG": "xgb"
+            },
+            "default_scorer_key": "xgb"
+          },
+          "_2026-05-19_provenance": "Phase 0 finding: XGB collapses in BEAR (-0.27 cut1_covid), HF stable (+0.107). Inverse problem in 2024 unwind. Router: HF for BEAR/CHOPPY, XGB elsewhere. SHADOW first per [[auto_promote_to_prod]] (architecture-swap exclusion)."
+        }
+      ],
+      "shadow_tracking_uri": "file:./mlruns",
+      "shadow_experiment": "renquant_104_shadow"
     },
     "universe_floor": {
       "type": "sharpe",

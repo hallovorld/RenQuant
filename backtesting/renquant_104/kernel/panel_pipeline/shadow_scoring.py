@@ -206,12 +206,14 @@ class ApplyShadowScoringTask(Task):
                 log.warning("ApplyShadowScoringTask: %s", exc)
                 continue
 
-            # Inject shadow's feature_cols + seq_len into a config copy
+            # Inject shadow's feature_cols + seq_len + regime_router into config copy
             shadow_panel_cfg = dict(panel_cfg)
             if "feature_cols" in sm:
                 shadow_panel_cfg["feature_cols"] = sm["feature_cols"]
             if "seq_len" in sm:
                 shadow_panel_cfg["seq_len"] = sm["seq_len"]
+            if "regime_router" in sm:  # composite scorer sub-config
+                shadow_panel_cfg["regime_router"] = sm["regime_router"]
             shadow_cfg = dict(ctx.config)
             shadow_cfg.setdefault("ranking", {})["panel_scoring"] = shadow_panel_cfg
 
@@ -238,7 +240,16 @@ class ApplyShadowScoringTask(Task):
                         panel_history = past[
                             past["ticker"].isin(target_tickers) &
                             past["date"].isin(dates)]
-                    series = scorer.score_with_history(panel_history, target_tickers)
+                    # If scorer accepts current_regime (RegimeRouterScorer), pass it
+                    import inspect as _inspect  # noqa: PLC0415
+                    sig = _inspect.signature(scorer.score_with_history)
+                    if "current_regime" in sig.parameters:
+                        series = scorer.score_with_history(
+                            panel_history, target_tickers,
+                            current_regime=getattr(ctx, "regime", "BULL_CALM"))
+                    else:
+                        series = scorer.score_with_history(
+                            panel_history, target_tickers)
                 else:
                     X = getattr(ctx, "_panel_matrix", None)
                     if X is None or X.empty:
