@@ -1,42 +1,38 @@
-"""Shadow model scoring — record what alternative models WOULD have done,
-without affecting primary trading decisions.
+"""Shadow model scoring — record alt-model decisions via MLflow tracking.
 
-Per 2026-05-18 user request: "inference 能不能接受一个 shadow 模型, 只
-跟着走流程算参数但是不做最后一步下单, 所有数据进数据库为以后 review 做
-备份".
+Per 2026-05-18 user request: inference accepts shadow models that run
+the full pipeline but DON'T submit orders; all data recorded for review.
 
-Industry standard pattern:
-  - Primary model (config.ranking.panel_scoring.kind) makes REAL trading
-    decisions (orders to broker)
-  - Shadow models (config.ranking.panel_scoring.shadow_models[]) run
-    in parallel: same candidates, same Tasks, but ZERO order submission
-  - Shadow scores recorded to SQLite (data/shadow_scores.db) for later
-    review / A/B analysis / promotion-readiness check
+Per 2026-05-18 second update: use 3rd-party library (MLflow) instead of
+custom SQLite — battle-tested experiment tracking, built-in UI for
+comparison, standard schema.
 
-Workflow:
-  1. ApplyScoresTask runs primary model → writes scores to candidates
-  2. ApplyShadowScoringTask runs (this Task) → for each shadow model:
-     - Load via registry
-     - Score same candidates (handles sequence vs snapshot dispatch)
-     - Record (date, shadow_name, ticker, shadow_score, primary_score,
-       primary_minus_shadow_diff) to shadow_scores table
-  3. Primary decisions flow downstream unchanged (calibrator, Kelly, QP,
-     broker submission). Shadow NEVER touches order flow.
+MLflow tracking layout:
+  experiment_name = ranking.panel_scoring.shadow_experiment
+                    (default: "renquant_104_shadow")
+  per inference: ONE MLflow Run per (date, shadow_model)
+    tags:    as_of_date / shadow_name / shadow_kind / primary_kind
+    metrics: mean_primary_score / mean_shadow_score / mean_diff
+             corr_primary_shadow / rank_agreement_top5 / top5_overlap
+    artifact: comparison.csv (per-ticker primary vs shadow scores)
 
-DB schema (SQLite at data/shadow_scores.db):
-  CREATE TABLE shadow_scores (
-    as_of_date    DATE,
-    ticker        TEXT,
-    shadow_name   TEXT,    -- e.g. "patchtst_seed42"
-    shadow_kind   TEXT,    -- e.g. "patchtst"
-    primary_score REAL,
-    shadow_score  REAL,
-    diff          REAL,    -- shadow - primary (positive = shadow more bullish)
-    primary_rank  INT,
-    shadow_rank   INT,
-    rank_diff     INT,     -- shadow_rank - primary_rank
-    inserted_at   TIMESTAMP
-  )
+Query later (UI or programmatic):
+  $ mlflow ui --backend-store-uri file:./mlruns
+  → http://127.0.0.1:5000 → experiment → compare runs
+
+  # Or programmatic:
+  import mlflow
+  exp = mlflow.get_experiment_by_name("renquant_104_shadow")
+  runs = mlflow.search_runs(exp.experiment_id, filter_string="tags.shadow_name='patchtst_v1'")
+  print(runs[["start_time", "metrics.mean_diff", "metrics.corr_primary_shadow"]])
+
+Why MLflow over custom SQLite:
+  - Standard schema, well-documented
+  - Built-in comparison UI
+  - Run-level filtering/aggregation
+  - Artifact storage (per-bar comparison tables)
+  - 3rd-party maintained, battle-tested in production
+  - No new dependency (mlflow 3.12.0 already installed)
 
 Tests in tests/test_shadow_scoring.py.
 """
@@ -44,7 +40,6 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-import sqlite3
 from pathlib import Path
 from typing import Optional
 
@@ -61,76 +56,103 @@ log = logging.getLogger("kernel.panel_pipeline.shadow_scoring")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
-
-_DB_PATH_DEFAULT = "data/shadow_scores.db"
-
-
-def _init_shadow_db(db_path: Path) -> None:
-    """Create the shadow_scores table if it doesn't exist."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS shadow_scores (
-                as_of_date    DATE,
-                ticker        TEXT,
-                shadow_name   TEXT,
-                shadow_kind   TEXT,
-                primary_score REAL,
-                shadow_score  REAL,
-                diff          REAL,
-                primary_rank  INT,
-                shadow_rank   INT,
-                rank_diff     INT,
-                inserted_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (as_of_date, ticker, shadow_name)
-            )
-        """)
-        # Index for review queries
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_shadow_date_name
-            ON shadow_scores(as_of_date, shadow_name)
-        """)
-        conn.commit()
-    finally:
-        conn.close()
+# Default MLflow tracking URI: file-based local store at repo/mlruns
+_DEFAULT_TRACKING_URI = "file:" + str(Path(__file__).resolve().parents[4] / "mlruns")
+_DEFAULT_EXPERIMENT = "renquant_104_shadow"
 
 
-def _persist_shadow_rows(db_path: Path, rows: list[dict]) -> None:
-    """Insert rows into shadow_scores. INSERT OR REPLACE on PK conflict."""
-    if not rows:
+def _ensure_mlflow_setup(tracking_uri: Optional[str] = None,
+                         experiment_name: Optional[str] = None) -> str:
+    """Set MLflow tracking URI + experiment. Returns experiment_id."""
+    import mlflow  # noqa: PLC0415
+    mlflow.set_tracking_uri(tracking_uri or _DEFAULT_TRACKING_URI)
+    name = experiment_name or _DEFAULT_EXPERIMENT
+    exp = mlflow.get_experiment_by_name(name)
+    if exp is None:
+        exp_id = mlflow.create_experiment(name)
+    else:
+        exp_id = exp.experiment_id
+    return exp_id
+
+
+def _log_shadow_run(experiment_id: str, as_of_date, shadow_name: str,
+                    shadow_kind: str, primary_kind: str,
+                    primary_scores: dict[str, float],
+                    shadow_scores: dict[str, float],
+                    primary_ranks: dict[str, int],
+                    shadow_ranks: dict[str, int]) -> None:
+    """Persist one shadow run's comparison to MLflow."""
+    import mlflow  # noqa: PLC0415
+
+    # Aggregate metrics
+    tickers = sorted(set(primary_scores) & set(shadow_scores))
+    if not tickers:
         return
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executemany("""
-            INSERT OR REPLACE INTO shadow_scores
-              (as_of_date, ticker, shadow_name, shadow_kind,
-               primary_score, shadow_score, diff,
-               primary_rank, shadow_rank, rank_diff, inserted_at)
-            VALUES (:as_of_date, :ticker, :shadow_name, :shadow_kind,
-                    :primary_score, :shadow_score, :diff,
-                    :primary_rank, :shadow_rank, :rank_diff,
-                    CURRENT_TIMESTAMP)
-        """, rows)
-        conn.commit()
-    finally:
-        conn.close()
+    ps = np.array([primary_scores[t] for t in tickers])
+    ss = np.array([shadow_scores[t] for t in tickers])
+    diffs = ss - ps
+    # Rank agreement: how many of top-5 primary are in top-5 shadow
+    n_top = min(5, len(tickers))
+    top_primary = sorted(primary_ranks.items(), key=lambda x: x[1])[:n_top]
+    top_shadow = sorted(shadow_ranks.items(), key=lambda x: x[1])[:n_top]
+    top_primary_set = {t for t, _ in top_primary}
+    top_shadow_set = {t for t, _ in top_shadow}
+    overlap = len(top_primary_set & top_shadow_set)
+    # Pearson correlation
+    if np.std(ps) > 1e-9 and np.std(ss) > 1e-9:
+        corr = float(np.corrcoef(ps, ss)[0, 1])
+    else:
+        corr = float("nan")
+
+    run_name = f"{shadow_name}_{as_of_date}"
+    with mlflow.start_run(experiment_id=experiment_id, run_name=run_name):
+        mlflow.set_tags({
+            "as_of_date": str(as_of_date),
+            "shadow_name": shadow_name,
+            "shadow_kind": shadow_kind,
+            "primary_kind": primary_kind,
+            "n_candidates": str(len(tickers)),
+        })
+        mlflow.log_metrics({
+            "mean_primary_score": float(np.mean(ps)),
+            "mean_shadow_score": float(np.mean(ss)),
+            "mean_diff": float(np.mean(diffs)),
+            "std_diff": float(np.std(diffs)),
+            "corr_primary_shadow": corr,
+            f"top{n_top}_overlap": float(overlap),
+            f"top{n_top}_overlap_pct": float(overlap / n_top) if n_top else 0.0,
+        })
+        # Per-ticker comparison table as artifact
+        comparison = pd.DataFrame({
+            "ticker": tickers,
+            "primary_score": ps,
+            "shadow_score": ss,
+            "diff": diffs,
+            "primary_rank": [primary_ranks.get(t, -1) for t in tickers],
+            "shadow_rank": [shadow_ranks.get(t, -1) for t in tickers],
+            "rank_diff": [shadow_ranks.get(t, 0) - primary_ranks.get(t, 0)
+                          for t in tickers],
+        })
+        # MLflow log_table writes to artifacts/<artifact_file>
+        mlflow.log_table(comparison, "comparison.json")
 
 
 class ApplyShadowScoringTask(Task):
     """Run each configured shadow model on the SAME candidates as primary,
-    record scores to DB. Read-only — no mutations to ctx.candidates.
+    record scores via MLflow tracking. Read-only — no order submission.
 
     Reads:
-      - ctx.candidates (with .ticker and .panel_score already set by main)
-      - ctx.config["ranking"]["panel_scoring"]["shadow_models"] (list)
-      - ctx.config["ranking"]["panel_scoring"]["shadow_db_path"] (optional)
-      - ctx._panel_history (set by adapter or lazy-loaded for PatchTST shadows)
+      - ctx.candidates (with .panel_score set by main)
+      - ctx.config["ranking"]["panel_scoring"]["shadow_models"]
+      - ctx.config["ranking"]["panel_scoring"]["shadow_tracking_uri"]
+        (default: file:<repo>/mlruns)
+      - ctx.config["ranking"]["panel_scoring"]["shadow_experiment"]
+        (default: "renquant_104_shadow")
 
     Writes:
-      - data/shadow_scores.db (or config override)
+      - MLflow run per shadow model per inference bar
 
-    Soft-fail: shadow scoring errors are logged but don't stop the pipeline.
+    Soft-fail: shadow errors logged, primary pipeline unaffected.
     """
 
     name = "ApplyShadowScoringTask"
@@ -141,13 +163,7 @@ class ApplyShadowScoringTask(Task):
         if not shadow_models:
             return None
 
-        # Resolve DB path
-        db_rel = panel_cfg.get("shadow_db_path", _DB_PATH_DEFAULT)
-        repo = Path(__file__).resolve().parents[4]
-        db_path = Path(db_rel) if Path(db_rel).is_absolute() else (repo / db_rel)
-        _init_shadow_db(db_path)
-
-        # Primary scores (from main ApplyScoresTask)
+        # Primary scores (must be set by main ApplyScoresTask)
         cands = list(ctx.candidates) if ctx.candidates else []
         if not cands:
             log.info("ApplyShadowScoringTask: 0 candidates — skip")
@@ -155,22 +171,23 @@ class ApplyShadowScoringTask(Task):
         primary_scores = {c.ticker: float(c.panel_score)
                           for c in cands if c.panel_score is not None}
         if not primary_scores:
-            log.info("ApplyShadowScoringTask: no primary scores set — skip")
             return None
-
-        # Primary ranks (descending)
-        primary_ranks = (
-            pd.Series(primary_scores)
-            .sort_values(ascending=False)
-            .reset_index()
-            .reset_index()
-            .set_index("index")["level_0"]  # original ticker → rank
-        )
-        # Wait — actually simpler:
         sorted_primary = sorted(primary_scores.items(), key=lambda x: -x[1])
         primary_ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_primary)}
+        primary_kind = panel_cfg.get("kind", "xgb")
+
+        # MLflow setup (once per inference bar)
+        try:
+            exp_id = _ensure_mlflow_setup(
+                panel_cfg.get("shadow_tracking_uri"),
+                panel_cfg.get("shadow_experiment"))
+        except Exception as exc:
+            log.warning("ApplyShadowScoringTask: MLflow setup failed: %s — skip",
+                         exc)
+            return None
 
         from kernel.panel_pipeline.model_registry import registry  # noqa: PLC0415
+        repo = Path(__file__).resolve().parents[4]
 
         for sm in shadow_models:
             name = sm.get("name", "unnamed_shadow")
@@ -178,7 +195,7 @@ class ApplyShadowScoringTask(Task):
             artifact_path = sm.get("artifact_path")
             if not kind or not artifact_path:
                 log.warning("ApplyShadowScoringTask: shadow %s missing "
-                             "kind/artifact_path — skip", name)
+                             "kind/artifact_path", name)
                 continue
             p = Path(artifact_path)
             if not p.is_absolute():
@@ -186,32 +203,30 @@ class ApplyShadowScoringTask(Task):
             try:
                 handler = registry.get(kind)
             except ValueError as exc:
-                log.warning("ApplyShadowScoringTask: %s — skip", exc)
+                log.warning("ApplyShadowScoringTask: %s", exc)
                 continue
 
-            # Inject shadow's feature_cols + seq_len into the config copy
-            shadow_cfg = dict(ctx.config)
+            # Inject shadow's feature_cols + seq_len into a config copy
             shadow_panel_cfg = dict(panel_cfg)
             if "feature_cols" in sm:
                 shadow_panel_cfg["feature_cols"] = sm["feature_cols"]
             if "seq_len" in sm:
                 shadow_panel_cfg["seq_len"] = sm["seq_len"]
+            shadow_cfg = dict(ctx.config)
             shadow_cfg.setdefault("ranking", {})["panel_scoring"] = shadow_panel_cfg
 
             try:
                 scorer = handler.scorer_loader(p, shadow_cfg)
             except Exception as exc:
-                log.warning("ApplyShadowScoringTask: shadow %s (%s) failed to "
-                             "load — %s", name, kind, exc)
+                log.warning("ApplyShadowScoringTask: shadow %s (%s) load failed: %s",
+                             name, kind, exc)
                 continue
 
-            # Score the same candidates
             target_tickers = list(primary_scores.keys())
             try:
                 if getattr(scorer, "requires_history", False):
                     panel_history = getattr(ctx, "_panel_history", None)
                     if panel_history is None:
-                        # Lazy load like main path
                         panel_parquet = (repo / "data"
                                           / "alpha158_291_fundamental_dataset.parquet")
                         full = pd.read_parquet(panel_parquet)
@@ -223,60 +238,41 @@ class ApplyShadowScoringTask(Task):
                         panel_history = past[
                             past["ticker"].isin(target_tickers) &
                             past["date"].isin(dates)]
-                    shadow_scores_series = scorer.score_with_history(
-                        panel_history, target_tickers)
+                    series = scorer.score_with_history(panel_history, target_tickers)
                 else:
-                    # Snapshot — need feature matrix. For shadow, just use
-                    # ctx._panel_matrix if available (built by main path).
                     X = getattr(ctx, "_panel_matrix", None)
                     if X is None or X.empty:
                         log.warning("ApplyShadowScoringTask: shadow %s needs "
-                                     "feature matrix but ctx._panel_matrix is empty",
-                                     name)
+                                     "matrix but ctx._panel_matrix empty", name)
                         continue
-                    # Re-align to shadow's feature_cols (may differ)
                     fc = scorer.feature_cols
                     missing = [c for c in fc if c not in X.columns]
                     if missing:
                         log.warning("ApplyShadowScoringTask: shadow %s missing "
-                                     "cols in matrix: %s", name, missing[:5])
+                                     "cols: %s", name, missing[:5])
                         continue
-                    shadow_scores_series = scorer.score(X[fc].fillna(0))
+                    series = scorer.score(X[fc].fillna(0))
             except Exception as exc:
-                log.warning("ApplyShadowScoringTask: shadow %s scoring failed: %s",
+                log.warning("ApplyShadowScoringTask: shadow %s score failed: %s",
                              name, exc)
                 continue
 
-            # Build shadow ranks
-            shadow_dict = shadow_scores_series.to_dict()
+            shadow_dict = series.to_dict()
             sorted_shadow = sorted(shadow_dict.items(), key=lambda x: -x[1])
             shadow_ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_shadow)}
 
-            # Build rows for DB
-            rows = []
-            today = getattr(ctx, "today", datetime.date.today())
-            for t in target_tickers:
-                ps = primary_scores.get(t)
-                ss = shadow_dict.get(t)
-                if ps is None or ss is None:
-                    continue
-                rows.append({
-                    "as_of_date":    str(today),
-                    "ticker":        t,
-                    "shadow_name":   name,
-                    "shadow_kind":   kind,
-                    "primary_score": float(ps),
-                    "shadow_score":  float(ss),
-                    "diff":          float(ss - ps),
-                    "primary_rank":  int(primary_ranks.get(t, 0)),
-                    "shadow_rank":   int(shadow_ranks.get(t, 0)),
-                    "rank_diff":     int(shadow_ranks.get(t, 0)
-                                          - primary_ranks.get(t, 0)),
-                })
-            _persist_shadow_rows(db_path, rows)
-            log.info("ApplyShadowScoringTask: shadow %s (%s) recorded %d rows "
-                     "to %s  mean_diff=%+.4f", name, kind, len(rows),
-                     db_path.name, float(np.mean([r["diff"] for r in rows])))
+            try:
+                _log_shadow_run(
+                    exp_id, getattr(ctx, "today", datetime.date.today()),
+                    name, kind, primary_kind,
+                    primary_scores, shadow_dict,
+                    primary_ranks, shadow_ranks,
+                )
+                log.info("ApplyShadowScoringTask: shadow %s (%s) logged %d "
+                         "candidates via MLflow", name, kind, len(shadow_dict))
+            except Exception as exc:
+                log.warning("ApplyShadowScoringTask: MLflow log failed for %s: %s",
+                             name, exc)
 
         return None
 
