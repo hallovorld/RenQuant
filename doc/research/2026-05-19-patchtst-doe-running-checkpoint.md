@@ -17,31 +17,36 @@ computes bull_regime_IC + DSR.
 
 ---
 
-## Current best (as of 2026-05-19 02:27 PT, 14/81 trials done)
+## 🚨 REVERSAL: Point 1 NO LONGER passes (as of 2026-05-19 03:27 PT, 16/81 trials)
 
-### 👑 Point 1 — leading candidate
+cut5_unwind data flipped pt_01 verdict. Earlier 2-cut data was misleading.
+
+### Point 1 — current 3-cut verdict (still leading but now FAILS gates)
 
 | | |
 |---|---|
-| **lr** | 1.0e-04 |
-| **weight_decay** | 1.0e-02 |
-| **warmup_epochs** | 4 |
-| **seq_len** | 24 |
-| **bull_regime_IC mean** | **+0.103** |
-| **bull_regime_IC std** | 0.004 |
-| **DSR (Bailey-LdP 2014)** | +21.9 (very significant) |
-| **n_cuts** | 2 (cut1_covid + cut3_inflpk) |
+| lr | 1.0e-04 |
+| weight_decay | 1.0e-02 |
+| warmup_epochs | 4 (NOTE: knob is decorative, not wired in trainer) |
+| seq_len | 24 |
+| **bull_regime_IC mean (3 cuts)** | **+0.058** ← down from +0.103 |
+| **DSR (Bailey-LdP 2014)** | **−0.78** ❌ (was +21.9 with 2 cuts) |
+| n_cuts | 3 (cut1, cut3, cut5) |
 
-**Per-cut, per-HMM-regime breakdown**:
-- cut1_covid (2020 Q1 COVID):
-  - BULL_VOLATILE: **+0.107** ← bull contribution
-  - BEAR: **+0.179** (model strong in bear too)
-  - CHOPPY: +0.066
-- cut3_inflpk (2022 Q4 inflation peak):
-  - BULL_VOLATILE: **+0.100** ← bull contribution
-  - BEAR: -0.025
+**Per-cut breakdown reveals regime fragility**:
+- cut1_covid (2020 Q1 COVID): BULL_VOLATILE +0.107 ✅
+- cut3_inflpk (2022 Q4 inflation): BULL_VOLATILE +0.100 ✅
+- **cut5_unwind (2024 Q3 unwind): BULL_VOLATILE −0.033 ❌**
 
-Pending: cut5_unwind seeds + pt_2 through pt_7 + pt_8 (center)
+**Implication**: pt_01 fails in 2024 carry-trade unwind regime. NOT
+ready for shadow primary candidate. Continue DOE to find pt_X that
+holds up across ALL 3 cuts.
+
+This is a textbook PRIME DIRECTIVE finding — partial data (2 cuts) gave
+misleading +0.103 verdict; full data (3 cuts) reveals regime-conditional
+failure.
+
+Pending: pt_2-pt_8 cut5 data + full main effects fit
 
 ### ❌ Point 0 — confirmed underfit
 
@@ -66,17 +71,27 @@ Note: XGB pool_ic is pooled across all regimes, not stratified.
 
 ## Pass-gate status (CLAUDE.md §5.14.4 + §5.13.4a)
 
-| Gate | Threshold | Best so far | Pass? |
+| Gate | Threshold | Best so far (3-cut) | Pass? |
 |---|---|---|---|
-| Best DSR > 0 | required | +21.9 | ✅ |
-| Best bull_ic > 0 | required | +0.103 | ✅ |
-| Best bull_ic ≥ XGB pool_ic | criterion for swap | +0.103 vs +0.094 (+9.6%) | ✅ |
-| PBO < 0.5 | required | nan (only 2 cuts) | 🟡 wait for cut5 |
+| Best DSR > 0 | required | −0.78 | ❌ |
+| Best bull_ic > 0 | required | +0.058 | ✅ marginal |
+| Best bull_ic ≥ XGB pool_ic | criterion for swap | +0.058 vs +0.094 (−38%) | ❌ |
+| PBO < 0.5 | required | nan (only 2 points done) | 🟡 wait |
 | Main effects regression | ≥5 points | only 2 points | 🟡 wait |
 
-**Tentative verdict**: pt_01 config wins on partial data. **If DOE
-killed now, this becomes the verdict** — HF PatchTST primary swap
-approved with lr=1e-4, wd=1e-2, warmup=4, seq=24.
+**Updated verdict (3-cut data)**: pt_01 **FAILS** DSR + XGB-comparison
+gates. Earlier 2-cut "+9.6% over XGB" was a partial-data illusion
+masking cut5 regime failure.
+
+**Shadow promote DECISION (per user 2026-05-19 03:27 update)**:
+- Shadow training artifact (pt_01 cut5 train) will COMPLETE for data
+  collection, but golden.shadow_models entry NOT committed yet.
+- Wait for pt_02-pt_08 data to find a config that holds across cuts.
+- pt_02-pt_08 first cut1+cut3+cut5 results will determine real winner.
+
+**Crash-resume invariant**: if killed now, best 3-cut config is pt_01
+(+0.058) but FAILS XGB comparison → keep XGB primary, no shadow until
+better DOE point emerges.
 
 ---
 
