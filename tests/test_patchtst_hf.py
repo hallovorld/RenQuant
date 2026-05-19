@@ -186,6 +186,70 @@ class TestPreprocessing:
         assert abs(out["y"].median() - np.median(labels)) < 0.01
 
 
+class TestSWA:
+    """SWA (Izmailov 2018) — late-epoch weight averaging for variance reduction.
+
+    Pins:
+    - --swa CLI flag exists
+    - Uses torch.optim.swa_utils.AveragedModel + SWALR (3rd-party lib, not custom)
+    - Eval uses SWA model after start_epoch
+    """
+
+    def test_swa_cli_flag_exists(self):
+        src = SCRIPT.read_text()
+        assert "--swa" in src
+        assert "--swa-start-epoch" in src
+
+    def test_uses_torch_swa_utils(self):
+        """Must use canonical torch.optim.swa_utils, NOT custom impl."""
+        src = SCRIPT.read_text()
+        assert "torch.optim.swa_utils" in src
+        assert "AveragedModel" in src
+        assert "SWALR" in src
+        # And NO custom averaging implementation
+        for f in ("def manual_average", "running_avg_weights",
+                  "class CustomSWA"):
+            assert f not in src
+
+    def test_swa_cites_izmailov(self):
+        src = SCRIPT.read_text()
+        assert "Izmailov" in src or "2018" in src
+
+    def test_swa_runs_end_to_end(self):
+        """SWA model should run + dump preds without error."""
+        import subprocess
+        import sys
+        out_dir = REPO / "artifacts/hf_swa_smoke"
+        if out_dir.exists():
+            import shutil
+            shutil.rmtree(out_dir)
+        # 2 epochs, tiny model, CPU — verifies SWA pipeline
+        result = subprocess.run([
+            sys.executable, str(SCRIPT),
+            "--cut", "cut1_covid",
+            "--epochs", "3",
+            "--swa", "--swa-start-epoch", "1",
+            "--device", "cpu",
+            "--seq-len", "8",
+            "--d-model", "16", "--n-heads", "2", "--n-layers", "1",
+            "--patch-length", "4",
+            "--seed", "42",
+            "--output-dir", str(out_dir),
+        ], capture_output=True, text=True, timeout=900)
+        assert result.returncode == 0, (
+            f"SWA run failed: rc={result.returncode}\n"
+            f"stderr: {result.stderr[-500:]}\nstdout: {result.stdout[-500:]}"
+        )
+        # Verify val_preds dumped
+        import glob
+        preds = glob.glob(str(out_dir / "*val_preds.parquet"))
+        assert len(preds) == 1, f"expected 1 val_preds file, found {preds}"
+        # Verify SWA marker appeared in log output (Python logging → stderr)
+        combined = result.stdout + result.stderr
+        assert "[SWA]" in combined, "SWA not active in eval output"
+        assert "SWA enabled" in combined, "SWA setup log line missing"
+
+
 class TestSmokeArtifacts:
     """If the smoke run artifact exists (from manual smoke), check shape."""
 

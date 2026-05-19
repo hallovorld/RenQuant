@@ -204,6 +204,17 @@ def train_one(args: argparse.Namespace) -> dict:
     n_params = sum(p.numel() for p in model.parameters())
     log.info("HF PatchTST n_params=%.2fM", n_params / 1e6)
 
+    # SWA (Izmailov 2018 UAI) — late-epoch weight averaging, wider minimum
+    swa_model = None
+    swa_scheduler = None
+    if args.swa:
+        from torch.optim.swa_utils import AveragedModel, SWALR  # noqa: PLC0415
+        swa_model = AveragedModel(model)
+        swa_scheduler = SWALR(opt, swa_lr=args.lr * 0.5, anneal_epochs=2,
+                               anneal_strategy="cos")
+        log.info("SWA enabled: start_epoch=%d, swa_lr=%.1e",
+                 args.swa_start_epoch, args.lr * 0.5)
+
     best_val_ic = -1e9
     for ep in range(args.epochs):
         model.train()
@@ -219,12 +230,21 @@ def train_one(args: argparse.Namespace) -> dict:
             opt.step()
             losses.append(loss.item())
 
-        model.eval()
+        # SWA: after swa_start_epoch, update averaged model
+        if swa_model is not None and ep >= args.swa_start_epoch:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
+
+        # Use SWA model for eval if active and past start_epoch
+        eval_model = (swa_model
+                      if swa_model is not None and ep >= args.swa_start_epoch
+                      else model)
+        eval_model.eval()
         all_p, all_y, all_d = [], [], []
         with torch.no_grad():
             for b in val_b:
                 x = torch.from_numpy(b["x"]).to(device)
-                scores = model(x).cpu().numpy()
+                scores = eval_model(x).cpu().numpy()
                 all_p.append(scores); all_y.append(b["y"]); all_d.append(b["date"])
         if all_p:
             val_mean_ic, val_med_ic = per_day_csrankic(
@@ -232,20 +252,24 @@ def train_one(args: argparse.Namespace) -> dict:
                 np.concatenate(all_d))
         else:
             val_mean_ic = val_med_ic = 0.0
-        log.info("ep %02d  loss=%.4f  val_ic=%+.4f (med %+.4f)",
-                 ep, np.mean(losses), val_mean_ic, val_med_ic)
+        log.info("ep %02d  loss=%.4f  val_ic=%+.4f (med %+.4f)%s",
+                 ep, np.mean(losses), val_mean_ic, val_med_ic,
+                 " [SWA]" if swa_model is not None and ep >= args.swa_start_epoch else "")
         if val_mean_ic > best_val_ic + 1e-4:
             best_val_ic = val_mean_ic
+
+    # Final model: use SWA if active, else regular model
+    final_model = swa_model if swa_model is not None else model
 
     # Dump val predictions for downstream regime-stratified IC
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     all_p, all_y, all_d = [], [], []
-    model.eval()
+    final_model.eval()
     with torch.no_grad():
         for b in val_b:
             x = torch.from_numpy(b["x"]).to(device)
-            scores = model(x).cpu().numpy()
+            scores = final_model(x).cpu().numpy()
             all_p.append(scores); all_y.append(b["y"]); all_d.append(b["date"])
     if all_p:
         preds_df = pd.DataFrame({
@@ -285,6 +309,11 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cpu",
                    choices=["cpu", "mps", "cuda"])
+    p.add_argument("--swa", action="store_true",
+                   help="Stochastic Weight Averaging (Izmailov 2018) "
+                        "— late-epoch weight averaging for wider minimum")
+    p.add_argument("--swa-start-epoch", type=int, default=2,
+                   help="Epoch after which SWA starts averaging weights")
     p.add_argument("--output-dir", default="artifacts/hf_patchtst")
     args = p.parse_args()
 
