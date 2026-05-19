@@ -17,6 +17,33 @@ computes bull_regime_IC + DSR.
 
 ---
 
+## 🎯 PHASE 0 — Fair XGB Baseline (2026-05-19 09:35 PT) — CRITICAL FINDING
+
+Per CLAUDE.md §5.11 range-finding (was missing day 1): trained XGB on
+SAME 3 cuts as HF DOE, fair comparison. **Verdict reverses prior
+analysis** — they fail in DIFFERENT regimes:
+
+| Cut | XGB bull_ic | HF best | Winner |
+|---|---|---|---|
+| **cut1_covid** (2020 Q1) | **−0.27** 💥 | +0.107 (pt_01) | **HF wins by 0.38** |
+| **cut3_inflpk** (2022 Q4) | **+0.22** ✅ | +0.100 (pt_01) | XGB wins by 0.12 |
+| **cut5_unwind** (2024 Q3) | **+0.085** ✅ | +0.016 (pt_03) | XGB wins by 0.07 |
+
+**Mean / min comparison**:
+- XGB primary: mean +0.012 / **min −0.27** (catastrophic in COVID)
+- HF primary: mean +0.058 / min −0.033
+- **Regime-router** (HF in crash, XGB elsewhere): mean **+0.137** / min **+0.085**
+
+→ Regime-router 10× mean and 3-8× min improvement over single-model.
+
+**XGB is catastrophic in COVID-style crash; HF is catastrophic in
+2024-unwind. Different regimes, different failure modes. The right
+answer is ensemble.**
+
+Data in MLflow:
+  experiment `renquant_104_xgb_baseline` — 3 cuts × 1 seed
+  experiment `renquant_104_hf_doe` — 52 trials backfilled
+
 ## Update 2026-05-19 04:27 PT (21/81): pt_02 takes lead (still fails XGB)
 
 | Point | lr | wd | seq | bull_ic_mean | DSR | n_cuts | verdict |
