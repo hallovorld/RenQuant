@@ -3,6 +3,7 @@
 **Single source of truth for what's next.** All items ranked by **expected ROI (Sharpe-lift ÷ effort)** with status flag. Past dated plans archived to [`doc/archives/plans/`](archives/plans/) for provenance.
 
 **Last consolidated**: 2026-05-18 NIGHT (consolidated 7 plan/backlog files → 1)
+**Last incremental sync**: 2026-05-18 18:35 PT (anti-churn 4-layer, Platt switch, PatchTST scorer + DOE in flight, sentiment fully wired ON)
 
 ---
 
@@ -25,8 +26,9 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 | Walk-forward gate | ENFORCED: daily train STAGES only; weekly Saturday 04:00 PT promote with full WF + sanity battery |
 | Tax / lot accounting | HIFO default (commit `bc18795`, Berkin-Jeffrey 1990); IRC §1091 wash-sale + §1233 short-sale rules wired |
 | Live broker | Alpaca LIVE (real money). 11 launchd plists active. PAPER mandate overridden ONLY for explicit `--broker alpaca` e2e invocations |
-| **C5 news sentiment** | **2026-05-18 IN PROGRESS**: 57,827 articles scored by FinBERT, sanity 0 fail. Pending IC eval + integration |
-| **C1 options-IV** | **2026-05-18 IN PROGRESS**: fetcher + parser shipped, 3-ticker smoke pass. Pending 103-ticker backfill + IC eval + integration |
+| **C5 news sentiment** | **2026-05-18 LIVE**: 14 regime entries `enabled`; panel-LTR retrained 169→172 feats; daily refresh cron staged |
+| **C1 options-IV** | **2026-05-18 ACCUMULATION**: fetcher + parser shipped, daily snapshot cron staged. Wait n_daily_rows ≥ 120 (~6mo) |
+| **PatchTST sequence model** | **2026-05-18 P0 ACTIVE**: scorer + registry + shadow shipped; DOE sweep in flight (PID 7998, ETA 20:15 PT) |
 
 ---
 
@@ -50,6 +52,15 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 | 6 silent-feature bugs fixed | 2026-05-09 | various | 70 regression tests + 4 universal model contracts |
 | QP refactor to cvxpy + CLARABEL | 2026-05-06 | — | Boyd cvxportfolio reference |
 | Sentiment data fetcher (Alpaca News, 14-day chunked) + FinBERT scorer | 2026-05-18 | `a6b8080` | 57827 rows backfilled, 0 sanity fail |
+| C5 sentiment WIRED ON: 14 regimes enabled + panel-LTR retrained 169→172 + daily cron | 2026-05-18 | `e539a17`, `e8168f7`, `aad7b97`, `b3809b0`, `82c3be5` | Regime-conditional gate; HIGH_SPIKED expected primary lift |
+| wl200 watchlist promotion (replace wl103, 142-ticker overlap, quality-first) | 2026-05-18 | `a21904e` | Breadth √(142/103)=1.17× IR per Grinold-Kahn |
+| MCD anti-churn 4-layer: min_reentry_days=5 + calibrator-saturation NEW-BUY abstain | 2026-05-18 | `7e17e65`, `91e188a` | Blocks same-day rebuy + abstains when prob flat |
+| Calibrator isotonic→Platt switch + flat-region preflight (P-CALIBRATOR-FLAT-REGION) | 2026-05-18 | `1428c26`, `1d0317a`, `467e824` | Eliminates flat-region tie-breaks; n_unique_prob_y 100 |
+| Live inference μ̂ 17× tighter than training — root cause documented | 2026-05-18 | `f71f8ae` | Foundation-level finding driving Platt switch |
+| PatchTST infra: scorer + model registry + shadow scoring (MLflow) | 2026-05-18 | `c7f710e`, `9a6cca1`, `a80ba96`, `5bad1a8` | One-config swap xgb↔patchtst; zero-risk shadow rollout |
+| Momentum features: J-T 12-1 + 52w-distance + sector_mom (pandas_ta_classic) | 2026-05-18 | `fc32385`, `a355a69`, `72` | Mature library, 11 tests |
+| 3 LIVE Alpaca orders FILLED at Monday open (HON, EQIX, META) | 2026-05-18 | — | $2,099 / $10,578 equity (~20% rebalance) |
+| CLAUDE.md §0: execute immediately, never wait for next session | 2026-05-18 | `a7bb9b7` | User mandate locked in |
 
 ## ❌ CLOSED / REJECTED — do NOT re-open without new evidence
 
@@ -77,30 +88,36 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ## 🎯 ACTIVE — next P0 items (ROI ranked)
 
-### 1. ⭐ News-sentiment integration — **REVERSED to Tier 2 SCREEN** (2026-05-18 evening)
+### 1. 🔬 PatchTST sequence model — **DOE sweep in flight** (2026-05-18 PM)
 
-Pooled-mean SHELVED was a **PRIME DIRECTIVE violation**. Regime-stratified eval reveals strong actionable signal:
+**Status (2026-05-18 PM)**:
+- Scorer shipped (`c7f710e`): `PatchTSTPanelScorer` with `score_with_history()` end-to-end working in prod inference (OMP fix at module top for xgboost↔PyTorch coexistence).
+- Model registry shipped (`9a6cca1`): one-config-knob swap `kind: xgb | patchtst` via decorator pattern; extensible for LGBM/NGBoost/future.
+- Shadow scoring shipped (`a80ba96`, `5bad1a8`): alt-model runs full pipeline + records via MLflow, **no order submission** — safe rollout pattern.
+- 5-seed prototype verdict (`4ee09c3`): seed-42 val_IC +0.050 / seed-43 val_IC −0.143. High variance ≠ confirmed signal; **not a winner over XGB at current data scale**.
+- Optuna sweep tried + DELETED today (PRIME DIRECTIVE violation: pooled-mean objective picks regime-fragile models).
+- **DOE sweep IN FLIGHT** (PID 7998, started 18:27 PT): 2^(4-1) Resolution IV fractional factorial + 1 center = 9 points × 3 seeds = 27 runs, ETA ~20:15 PT.
+  - Knobs: `lr ∈ {1e-4, 1e-3}`, `weight_decay ∈ {1e-4, 1e-1}`, `warmup_epochs ∈ {2, 6}`, `seq_len ∈ {16, 60}`
+  - **Objective = min-across-regime val IC** (PRIME DIRECTIVE compliant, NOT pooled mean)
+  - Output: `artifacts/patchtst_doe/{runs.csv, main_effects.csv, interactions.csv, summary.md}`
 
-- HIGH_SPIKED (high-vol bull, n=5,929, 126 dates): sentiment_pos_share × fwd_5d IC = **+0.054** (net +0.061); mean_sentiment × fwd_5d IC = +0.045 (net +0.075)
-- HIGH_NORMAL (n=8,424): mean_sentiment × fwd_20d net +0.041
-- MED_CALM (n=7,299): sentiment_pos_share × fwd_20d net +0.042
-- LOW_NORMAL / MED_NORMAL: NEGATIVE — must turn off there
+**Pass gate (per CLAUDE.md §5.14.4 + PRIME DIRECTIVE)**:
+- DOE finds a point where **min-regime val_IC ≥ XGB-equivalent min-regime val_IC** (per-regime, not pooled)
+- 3-seed confirmation at predicted optimum with std/mean ≤ 0.5 (low variance)
+- DSR > 0.5 OR PBO < 0.5 at confirmation (Bailey-Lopez de Prado 2014)
+- User criterion: "PatchTST 只要不是比 xgb 差很多就换" — even tie acceptable for architectural diversification
 
-Theory match: Garcia 2013 (sentiment 5× stronger in recessions) + Tetlock 2007 (high-attention amplification) + Da-Engelberg-Gao 2011 (attention in volatile periods).
+**Next steps after DOE finishes**:
+- IF best point passes: BBD (Box-Behnken) zoom-in around best knob region → predicted optimum → confirmatory run → promote as **shadow** first (zero-risk rollout), then primary swap via config flip
+- IF best point fails per-regime gate: close research thread, archive to `failed-experiments-log.md`
 
-**Engineering plan** (3-4 days):
-1. Wire sentiment cols into `build_alpha158_fund_panel.py`
-2. Retrain panel-LTR 169 → 172 features (sentiment_pos_share, mean_sentiment, n_articles)
-3. Add `regime_params.<REGIME>.sentiment.enabled` config knob + reader Task
-4. WF + sanity + per-regime IC verification
-5. Daily sentiment refresh cron
+References: Nie et al 2023 ICLR *PatchTST*, Lim et al 2021 ICLR *TFT*, Box-Hunter-Hunter 2005 (FrFact), Qlib `pytorch_*_ts.py`.
 
-Pass gate (per-regime Tier 3):
-- HIGH_SPIKED: ΔSharpe ≥ +0.10
-- HIGH_NORMAL, MED_CALM: ΔSharpe ≥ +0.05
-- LOW_NORMAL, MED_NORMAL: ΔSharpe ≥ -0.02 (don't hurt)
+### 1c. ~~News-sentiment integration~~ — **SHIPPED 2026-05-18** (was P0 #1)
 
-Verdict: [`doc/research/2026-05-18-news-sentiment-ic-verdict.md`](research/2026-05-18-news-sentiment-ic-verdict.md)
+Moved to DONE: regime-conditional gate live across 14 regimes; panel-LTR retrained 169→172 features (`sentiment_pos_share`, `mean_sentiment`, `n_articles`); daily refresh cron staged. Per-regime A/B verdicts will accumulate via prod data; revisit pass-gate (HIGH_SPIKED ΔSharpe ≥ +0.10) once we have 8+ live weeks.
+
+Original IC verdict (regime-stratified): [`doc/research/2026-05-18-news-sentiment-ic-verdict.md`](research/2026-05-18-news-sentiment-ic-verdict.md)
 
 ### 1b. Options-IV integration — accumulation phase
 
@@ -108,29 +125,13 @@ Verdict: [`doc/research/2026-05-18-news-sentiment-ic-verdict.md`](research/2026-
 
 Refs: Bali-Hovakimian 2009 *MSci*, Cremers-Weinbaum 2010 *JFQA*, Goyal-Saretto 2009 *JFE*.
 
-### 2. ★★ Quality-first watchlist expansion to wl200 (~+0.20 Sharpe, 1 week, $0)
+### 2. ~~Quality-first watchlist expansion to wl200~~ — **SHIPPED 2026-05-18** (was P0 #2)
 
-**Why now**: no $$$ blocker, single biggest free lift. E26 wl183 bottom-up failed (transfer-coef collapse); needs quality filter.
+**Outcome**: wl200 (142 ticker, quality-first) promoted to LIVE; replaced wl103 (commit `a21904e`). Panel-LTR retrained on expanded universe. Breadth lift √(142/103) ≈ 1.17× per Grinold-Kahn `IR = IC × √Breadth`.
 
-**Theory**: Grinold-Kahn 1999 §6 Fundamental Law `IR ≈ IC × √Breadth`. Expanding 103 → 200 lifts IR by √(200/103) ≈ 1.39× IF transfer coefficient holds.
+**Followup (still open)**: 16-window WF Sharpe vs old baseline — accumulating as prod runs. Revisit if Sharpe ≥ baseline floor not met after 8 weeks.
 
-**Selection filter** (per E26 post-mortem):
-- Avg daily $ volume ≥ $50M
-- Market cap ≥ $5B
-- Earnings reporting consistency (≥ 8 of last 8 quarters)
-- No SEC enforcement / delisting risk in last 5y
-- SIC sector stability (no recent reverse mergers)
-
-**Engineering** (1 week):
-- D1: source SimFin / Quandl Sharadar / Alpha Vantage quality data
-- D2: apply 5 filters → ~200 candidates
-- D3: backtest with current 169-feat model on 6 WF cuts; verify IC doesn't collapse
-- D4-5: refit calibrator + acceptance gate; measure pool_IC, σ-calib
-- D6-7: dense panel sim on 8-window post-promote A/B
-
-**Pass gate**: post-expansion pool_IC ≥ 95% of current AND 16-window WF Sharpe ≥ baseline.
-
-References: Grinold-Kahn 1999 §6, Hou-Xue-Zhang 2020 *RFS*, Cakici-Cooper-Schmidt 2023 *JFE*, Qlib universe-construction utilities.
+References: Grinold-Kahn 1999 §6, Hou-Xue-Zhang 2020 *RFS*, Cakici-Cooper-Schmidt 2023 *JFE*.
 
 ### 3. ~~Smart-orders integration (VWAP execution wiring)~~ — **DEFERRED**
 
@@ -171,11 +172,7 @@ References: Lopez de Prado 2018 AFML §15, Romano-Patterson-Candès 2019 NeurIPS
 
 ## ⏳ DEFERRED — P1 architecture (medium-cost, less-clear ROI)
 
-### 6. PatchTST sequence model (~+0.10 Sharpe, 2-3 weeks)
-
-**Risk**: param/sample ratio constraint per CLAUDE.md §5.12. TFT/PatchTST OOS often disappoints on individual-name returns vs index forecasting. Stage-gate after items #1-#4 land.
-
-References: Nie et al 2023 ICLR *PatchTST*, Lim et al 2021 ICLR *TFT*, Qlib `pytorch_*_ts.py`.
+> **Note**: PatchTST moved to **P0 #1** (2026-05-18) — DOE sweep in flight, scorer + registry + shadow infra shipped.
 
 ### 7. Microstructure features (paid data, 1-2 weeks, $10/mo)
 
