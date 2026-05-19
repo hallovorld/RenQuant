@@ -57,3 +57,7 @@ knowledge/chromadb/
 # Strategy config backups + preview snapshots (P5 deploy artefact)
 backtesting/renquant_104/strategy_config.json.pre-*
 backtesting/renquant_104/strategy_config.json.preview_backup_*
+
+# Optuna sweep databases (regeneratable)
+optuna_patchtst*.db
+artifacts/optuna_trials/
