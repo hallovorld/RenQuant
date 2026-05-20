@@ -67,16 +67,36 @@ def build_default_cuts() -> list[WalkForwardCut]:
 
 
 def assign_split_column(panel: pd.DataFrame, cut: WalkForwardCut,
-                        date_col: str = "date") -> pd.Series:
+                        date_col: str = "date",
+                        embargo_days: int = 60) -> pd.Series:
     """Returns a Series with values train / val / test / oos per panel row.
 
-    train: panel[date_col] < cut.val_start
+    PURGE+EMBARGO (López de Prado 2018 ch.7, FIXED 2026-05-20 per audit P0-1):
+    train rows whose LABEL window reaches into val period are EXCLUDED via
+    the embargo. With default `embargo_days=60` (matching fwd_60d_excess
+    label horizon), train cuts off 60 trading days BEFORE val_start.
+
+    Without embargo this function leaked train→val labels and produced
+    inflated IC. The same codebase's `kernel.purged_cv.PurgedKFold` had
+    correct embargo all along; §5.13.5 dual-splitter divergence.
+
+    Args:
+      embargo_days: trading days gap between train_end and val_start.
+                    Must be ≥ lookahead_days of label. Default 60.
+
+    train: panel[date_col] < cut.val_start - embargo_days
     val:   cut.val_start ≤ panel[date_col] < cut.val_end
     test:  panel[date_col] ≥ cut.val_end  (held-out for final OOS)
+    embargo: cut.val_start - embargo_days ≤ panel[date_col] < cut.val_start
+             (rows here go to NEITHER train NOR val; excluded from both)
     """
     dates = pd.to_datetime(panel[date_col])
+    # Use business-day arithmetic so weekends don't dilute the embargo
+    train_end = cut.val_start - pd.offsets.BDay(embargo_days)
     out = pd.Series("test", index=panel.index, dtype="object")
-    out.loc[dates < cut.val_start] = "train"
+    out.loc[dates < train_end] = "train"
+    mask_embargo = (dates >= train_end) & (dates < cut.val_start)
+    out.loc[mask_embargo] = "embargo"
     mask_val = (dates >= cut.val_start) & (dates < cut.val_end)
     out.loc[mask_val] = "val"
     return out

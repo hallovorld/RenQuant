@@ -169,6 +169,14 @@ Each rule names the bug-class it prevents. Source incidents: [`doc/archives/audi
 
 **5.2 Every new number ships with at least one sanity check.** Mandatory triad — A/A (resplit → does lift persist?), shuffled-label (IC ≈ 0), time-shift placebo (IC ≈ 0). Without one, the number is a guess. Track F's +98bp "win" was regime-persistence fitting that the placebo would have caught.
 
+**5.2a Audit the data-pipeline foundation BEFORE reporting numbers from new training code.** (2026-05-20 walk-forward leakage incident, see `doc/research/2026-05-20-jiantaoshu.md`.) Any new training / eval script that depends on a splitter, label, or calibrator MUST audit those dependencies at WRITE time:
+1. **Splitter invariant**: `max(train_date) + label_lookahead_days < min(val_date)`. Grep the actual `assign_split_column` / equivalent for an `embargo` or `purge` parameter. **Default to absent = bug.** Use `kernel.purged_cv.PurgedKFold` or pin embargo explicitly.
+2. **Label causality**: every feature input to the model has timestamp `t`; label uses only data from `t+1` to `t+lookahead_days`. Grep feature builder for `iloc[-1]` / `tail(1)` / `.last(...)` broadcast-to-history patterns — those are look-ahead red flags.
+3. **Calibrator scope**: calibrator fit on train rows ONLY (NOT val OR test). Verify the script reads `split_label == "train"` (not `!= "val"` which includes test).
+4. **§5.2 sanity triad executed** on the new code path before the FIRST log line reporting an IC/Sharpe number. If `--label-shift-days 10` doesn't drop IC to ≈ 0, there is leakage — STOP, audit, do not report numbers.
+
+**Pinned invariant**: `tests/test_walk_forward_splits.py::TestEmbargo::test_no_train_row_has_label_window_overlapping_val` (added 2026-05-20).
+
 **5.3 Every "fix" names the invariant that prevents the entire bug class.** A patch fixes the symptom; a fix names "what invariant would have made this impossible". Example: NGBoost feature drift → `max_feature_drift_pct` hard guard + config-fingerprint stamping (architectural impossibility), not "retrain the head".
 
 **5.4 Don't edit on-disk files of running scripts.** Mid-run edits to chain scripts are silent failures. Stop+restart, or use `ScheduleWakeup`.
@@ -246,6 +254,18 @@ Apply to: model architecture, loss, optimizer, preprocessing, label construction
 **5.13.14 No tool defaults to a hardcoded artifact filename.** Every load resolves through `cfg["ranking"]["panel_scoring"]["artifact_path"]`. After alpha158 promotion, `panel-ltr.json` became a 21-feat stub while inference loaded the 169-feat artifact — 5 tools were comparing nonsense for days because they hardcoded the filename.
 
 **5.13.15 Safety gate in code ≠ safety gate enforced in production.** Every safety gate ships TWO artifacts: (a) gate function + tests, AND (b) a scheduled cron (plist + `.sh`) that invokes it WITHOUT override. If only (a), the gate is decoration. (`_check_wf_gate` was committed with tests, but every daily promote set `RQ_ALLOW_NO_WF=1` — theatrical gate.)
+
+**5.13.16 Splitter embargo invariant.** (2026-05-20 walk-forward leakage, see `doc/research/2026-05-20-jiantaoshu.md`.) Every train/val splitter MUST enforce: `max(train_date) + label_lookahead_days < min(val_date)`. Pinned by `tests/test_walk_forward_splits.py::TestEmbargo`. Two splitters with divergent semantics = §5.13.5 violation — use canonical `kernel.purged_cv.PurgedKFold` and delete the parallel impl. Specific symptoms of an embargo-missing splitter:
+- `assign_split_column(panel, cut)` has no `embargo_days` parameter
+- Train rows in the last `lookahead_days` of train have label windows that reach into val
+- IC numbers are inflated by leakage; different model capacities exploit leakage asymmetrically (simpler models often benefit more)
+
+**5.13.17 After-session code audit.** (2026-05-20 audit found 17 P0 items I should have caught at write time.) Before declaring any refactor/new-feature session "done":
+1. `git diff --name-only main..HEAD` enumerates touched files
+2. For each touched .py, run the 6-category audit (§5.12, dead code, logic bugs, logging gaps, BUGS, missed parallelism)
+3. For each new eval/training driver, audit its data dependencies (splitter, label, calibrator) end-to-end against known invariants (§5.2a)
+4. Any code that REPORTS A NUMBER must have its data pipeline audited before the number is trusted in a status report
+Do not wait for the user to request a deep audit — self-trigger at session end. User-triggered audit = the safety net you should not have needed.
 
 ### 5.14 — Design of Experiments (DOE) for parameter sweeps
 

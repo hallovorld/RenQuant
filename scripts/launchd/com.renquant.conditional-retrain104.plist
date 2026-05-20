@@ -27,7 +27,15 @@
 
     <key>StartCalendarInterval</key>
     <array>
-        <!-- Mon (2) / Tue (3) / Wed (4) / Thu (5) / Fri (6) at 13:10 PT -->
+        <!-- Mon (1) / Tue (2) / Wed (3) / Thu (4) / Fri (5) at 13:10 PT.
+             Apple launchd: Mon=1..Fri=5, Sat=6, Sun=0/7. Was 2..6
+             (Tue..Sat) — silent skip of Mondays + Saturday-with-stale-data
+             fires until 2026-05-20 audit caught it. -->
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>10</integer>
+        </dict>
         <dict>
             <key>Weekday</key><integer>2</integer>
             <key>Hour</key><integer>13</integer>
@@ -45,11 +53,6 @@
         </dict>
         <dict>
             <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>13</integer>
-            <key>Minute</key><integer>10</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>6</integer>
             <key>Hour</key><integer>13</integer>
             <key>Minute</key><integer>10</integer>
         </dict>

@@ -163,12 +163,28 @@ def section_pnl_sparkline(db: sqlite3.Connection | None) -> str:
     return "\n".join(out) + "\n\n"
 
 
+def _resolve_prod_panel_path() -> Path:
+    """Resolve panel-LTR prod artifact via strategy_config.golden.json (canonical
+    source per §5.13.14 — never hardcode `panel-ltr.json`). Falls back to the
+    legacy data/ path if config read fails (e.g. partial install)."""
+    try:
+        cfg_path = REPO_ROOT / "backtesting/renquant_104/strategy_config.golden.json"
+        cfg = json.loads(cfg_path.read_text())
+        rel = cfg["ranking"]["panel_scoring"]["artifact_path"]
+        # Path is relative to renquant_104/ per convention
+        return REPO_ROOT / "backtesting/renquant_104" / rel
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        # Legacy fallback (pre 2026-05-11 sim/prod isolation) — flagged 🔴 in
+        # doc/audits/2026-05-20-deep-code-audit.md P0-5; should never hit.
+        return REPO_ROOT / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
+
+
 def section_model_health() -> str:
     """Panel fingerprint, retrain age, latest WF mean IC."""
     out = ["## Model health\n"]
 
-    # Panel artifact
-    panel_path = REPO_ROOT / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
+    # Panel artifact — resolved via golden config, not hardcoded
+    panel_path = _resolve_prod_panel_path()
     if panel_path.exists():
         try:
             mtime = datetime.datetime.fromtimestamp(panel_path.stat().st_mtime)

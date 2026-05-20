@@ -32,10 +32,12 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Saturday (7 in launchd's Sun=1..Sat=7 OR macOS uses Sun=0..Sat=6;
-             use Weekday=7 which is Sat in modern macOS launchd convention.
-             04:00 PT = ~07:00 ET = market closed all weekend. -->
-        <key>Weekday</key><integer>7</integer>
+        <!-- Saturday (Apple launchd.plist(5) man page: 0 and 7 BOTH = Sunday;
+             Saturday = 6). 04:00 PT = ~07:00 ET = market closed all weekend.
+             Was Weekday=7 (= Sunday) — silent 24h delay until 2026-05-20
+             audit caught it. Sibling weekly-fundamental-refresh.plist
+             correctly uses 6. -->
+        <key>Weekday</key><integer>6</integer>
         <key>Hour</key><integer>4</integer>
         <key>Minute</key><integer>0</integer>
     </dict>
