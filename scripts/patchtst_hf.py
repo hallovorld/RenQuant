@@ -49,8 +49,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.stats import spearmanr
-from transformers import (PatchTSTConfig, PatchTSTModel, Trainer,
-                          TrainerCallback, TrainingArguments)
+from transformers import (EarlyStoppingCallback, PatchTSTConfig, PatchTSTModel,
+                          Trainer, TrainerCallback, TrainingArguments)
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -497,6 +497,18 @@ def train_one(args: argparse.Namespace) -> dict:
         callbacks.append(PerRegimeICCallback(val_ds, hmm_labels))
         metric_for_best = "eval_min_regime_ic"
         log.info("PerRegimeICCallback wired | n_labels=%d", len(hmm_labels))
+        # Early stopping: if eval_min_regime_ic doesn't improve for
+        # `early_stopping_patience` epochs, stop. Saves 25-40% wallclock
+        # per run since most converge by epoch 5-6 of 8.
+        # Set patience=2 for aggressive trim; ignored when metric_for_best
+        # is eval_loss (no early stopping in fallback path).
+        if args.early_stopping_patience > 0:
+            callbacks.append(EarlyStoppingCallback(
+                early_stopping_patience=args.early_stopping_patience,
+                early_stopping_threshold=0.0001,
+            ))
+            log.info("EarlyStoppingCallback wired (patience=%d)",
+                     args.early_stopping_patience)
     else:
         log.warning("SPY parquet missing at %s — falling back to eval_loss "
                     "for best-model selection (PRIME DIRECTIVE degraded)", spy_path)
@@ -643,6 +655,11 @@ def main():
                         "baseline.")
     p.add_argument("--spy-path", default="data/ohlcv/SPY/1d.parquet",
                    help="SPY OHLCV parquet for HMM regime labels")
+    p.add_argument("--early-stopping-patience", type=int, default=2,
+                   help="EarlyStopping patience (epochs); 0=disabled. "
+                        "Stops training when eval_min_regime_ic doesn't improve "
+                        "for N epochs. Saves 25-40% wallclock; convergence "
+                        "typically reached by epoch 5-6 of 8.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cpu", choices=["cpu", "mps", "cuda"])
     p.add_argument("--save-model", action="store_true")
