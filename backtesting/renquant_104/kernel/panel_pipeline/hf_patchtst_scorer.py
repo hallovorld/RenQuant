@@ -72,28 +72,33 @@ class HFPatchTSTPanelScorer:
 
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         cfg = PatchTSTConfig(**ckpt["config_dict"])
-        model = hf_mod.HFPatchTSTRanker(cfg)
-        # SWA-wrapped state has different prefix
+        uses_dist = ckpt.get("uses_distributional_head", False)
+        model = hf_mod.HFPatchTSTRanker(cfg, use_distributional_head=uses_dist)
         state = ckpt["state_dict"]
-        # If saved from AveragedModel (SWA), strip "module." prefix
+        # Legacy: SWA-wrapped state had "module." prefix (pre-2026-05-19 refactor)
         if any(k.startswith("module.") for k in state):
             state = {k.removeprefix("module."): v for k, v in state.items()
                      if k != "n_averaged"}
-        model.load_state_dict(state)
+        # Legacy: pre-refactor checkpoints had key `head.*` instead of `rank_head.*`
+        if any(k.startswith("head.") for k in state) and not any(
+                k.startswith("rank_head.") for k in state):
+            state = {("rank_head." + k.removeprefix("head.")) if k.startswith("head.") else k: v
+                     for k, v in state.items()}
+        model.load_state_dict(state, strict=False)
         model.eval()
         log.info("HFPatchTSTPanelScorer loaded: n_feat=%d seq_len=%d "
-                 "val_ic=%.4f swa=%s",
+                 "val_ic=%.4f dist_head=%s",
                  len(ckpt["feature_cols"]), ckpt["seq_len"],
-                 float(ckpt.get("best_val_ic", float("nan"))),
-                 ckpt.get("uses_swa", False))
+                 float(ckpt.get("best_val_ic", float("nan"))), uses_dist)
         return cls(model=model, feature_cols=ckpt["feature_cols"],
                    seq_len=ckpt["seq_len"],
                    metadata={
                        "val_ic": float(ckpt.get("best_val_ic", float("nan"))),
-                       "uses_swa": ckpt.get("uses_swa", False),
+                       "uses_distributional_head": uses_dist,
                        "uses_csranknorm": ckpt.get(
                            "uses_csranknorm_preprocessing", False),
                        "label_col": ckpt.get("label_col"),
+                       "per_regime_ic": ckpt.get("per_regime_ic", {}),
                    })
 
     def score_with_history(self, panel_history: pd.DataFrame,
@@ -134,7 +139,18 @@ class HFPatchTSTPanelScorer:
         X = np.stack(sequences, axis=0)
         x_tensor = torch.from_numpy(X)
         with torch.no_grad():
-            scores = self._model(x_tensor).cpu().numpy()
+            outputs = self._model(x_tensor)
+        # New API (post 2026-05-19 HF Trainer refactor): forward returns dict
+        if isinstance(outputs, dict):
+            scores = outputs["score"].cpu().numpy()
+            # Store σ for downstream Kelly/QP if distributional head present
+            if "scale" in outputs:
+                self._last_sigma = pd.Series(
+                    outputs["scale"].cpu().numpy(),
+                    index=valid_tickers, name="panel_sigma")
+        else:
+            # Legacy tensor-output checkpoints (pre-refactor)
+            scores = outputs.cpu().numpy()
         result = pd.Series(scores, index=valid_tickers, name="panel_score")
         log.info("HFPatchTSTPanelScorer.score_with_history: scored %d/%d "
                  "(mean=%+.4f std=%.4f)", len(result), len(target_tickers),

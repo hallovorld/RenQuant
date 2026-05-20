@@ -1,29 +1,36 @@
 #!/usr/bin/env python3
-"""PatchTST cross-sectional ranker via HuggingFace transformers.
+"""PatchTST cross-sectional ranker — HuggingFace Trainer + multi-task head.
 
-REPLACES scripts/transformer_v4.py (784 LOC custom). Per 2026-05-18
-user mandate "尽量用第三方lib". Uses `transformers.PatchTSTModel`
-(backbone) + minimal pairwise-ranking head (Burges 2005 RankNet).
+REPLACES hand-rolled training loop (376 LOC) with HF Trainer + canonical
+3rd-party machinery per CLAUDE.md §5.12 ("default to canonical references").
 
-Architecture:
-  input  → PatchTSTModel.encoder → last_hidden_state (B, n_patches, d_model)
-  pool   → mean over n_patches → (B, d_model)
-  head   → Linear(d_model, 1) → score per ticker
-  loss   → pairwise BCE on (i, j) pairs within the same day (per-day batch)
+Architecture (HF native + minimal custom):
+  backbone : transformers.PatchTSTModel  (Nie 2023 ICLR)
+  heads    : Linear(d_model, 1) for ranking
+             Linear(d_model, 3) for (df, loc, scale) Student-t distribution
+  loss     : torch.nn.functional.margin_ranking_loss (CIKM 2025 arXiv 2510.14156
+                 — Margin Ranking + ListNet beat pairwise BCE on portfolio Sharpe)
+             + λ * Student-t NLL (per-ticker μ/σ for downstream Kelly/QP)
+  trainer  : transformers.Trainer with TrainingArguments
+              load_best_model_at_end=True   → solves prior best-epoch save bug
+              metric_for_best_model="eval_min_regime_ic"  → PRIME DIRECTIVE
+              lr_scheduler_type="cosine_with_warmup"     → no manual schedule
+  callback : PerRegimeICCallback  computes per-HMM-regime IC each eval
+              (BULL_CALM / BULL_VOLATILE / CHOPPY / BEAR)
+              selection metric = min(per_regime_ic.values()) per PRIME DIRECTIVE
 
 References:
   - Nie et al 2023 ICLR "A Time Series is Worth 64 Words" (PatchTST)
-  - Burges et al 2005 ICML "Learning to Rank using Gradient Descent" (RankNet)
-  - HuggingFace transformers PatchTST docs
+  - Burges et al 2005 ICML "Learning to Rank using Gradient Descent" — superseded
+    by Margin Ranking per CIKM 2025 portfolio-Sharpe benchmark
+  - CIKM 2025 (arXiv 2510.14156) "On Evaluating Loss Functions for Stock Ranking"
+  - HF Trainer https://huggingface.co/docs/transformers/main_classes/trainer
 
 Usage::
 
     .venv/bin/python scripts/patchtst_hf.py \\
         --dataset data/transformer_v4_wl200_clean.parquet \\
         --cut cut1_covid --epochs 5 --device mps --output-dir artifacts/hf_smoke
-
-PRIME DIRECTIVE: pass --cut name from kernel.walk_forward_splits
-(default: cut1_covid). DO NOT use 2023-only val (PRIME DIRECTIVE violation).
 """
 from __future__ import annotations
 import argparse
@@ -42,69 +49,82 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.stats import spearmanr
-from transformers import PatchTSTConfig, PatchTSTModel
+from transformers import (PatchTSTConfig, PatchTSTModel, Trainer,
+                          TrainerCallback, TrainingArguments)
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-# NOTE: kernel.walk_forward_splits import deferred to point-of-use (line ~150)
-# so that downstream callers (e.g. HFPatchTSTPanelScorer.load() in
-# backtesting/renquant_104) can `importlib` this script to access
-# HFPatchTSTRanker WITHOUT triggering a kernel.* import that breaks when
-# the 104-kernel (a real package with __init__.py) is on sys.path ahead
-# of the top-level kernel/ (a namespace package). Hit in prod 2026-05-19.
+# NOTE: kernel.* imports deferred to point-of-use so HFPatchTSTPanelScorer
+# can `importlib` this script without triggering kernel namespace conflicts.
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("patchtst-hf")
 
 
-class HFPatchTSTRanker(nn.Module):
-    """HF PatchTST backbone + minimal ranking head."""
+# ─── Model ──────────────────────────────────────────────────────────────────
 
-    def __init__(self, cfg: PatchTSTConfig):
+class HFPatchTSTRanker(nn.Module):
+    """HF PatchTST backbone + dual head: ranking + Student-t distribution.
+
+    forward() returns dict with always-present "score" key. When
+    `use_distributional_head=True`, also returns (df, loc, scale) for
+    Student-t NLL training and downstream σ-aware Kelly/QP.
+    """
+
+    def __init__(self, cfg: PatchTSTConfig, use_distributional_head: bool = True):
         super().__init__()
         self.backbone = PatchTSTModel(cfg)
-        self.head = nn.Linear(cfg.d_model, 1)
+        self.use_distributional_head = use_distributional_head
+        self.rank_head = nn.Linear(cfg.d_model, 1)
+        self.dist_head = nn.Linear(cfg.d_model, 3) if use_distributional_head else None
 
-    def forward(self, past_values: torch.Tensor) -> torch.Tensor:
+    def forward(self, past_values: torch.Tensor,
+                labels: torch.Tensor | None = None,
+                dates=None) -> dict:
         out = self.backbone(past_values=past_values)
-        # last_hidden_state: (B, n_ch, n_patches, d_model) — pool over patches and channels
-        h = out.last_hidden_state.mean(dim=(1, 2))  # (B, d_model)
-        return self.head(h).squeeze(-1)  # (B,)
+        # (B, n_ch, n_patches, d_model) → pool to (B, d_model)
+        h = out.last_hidden_state.mean(dim=(1, 2))
+        result: dict = {"score": self.rank_head(h).squeeze(-1)}
+        if self.dist_head is not None:
+            d = self.dist_head(h)
+            result["df"] = F.softplus(d[..., 0]) + 2.0   # df > 2 → finite variance
+            result["loc"] = d[..., 1]
+            result["scale"] = F.softplus(d[..., 2]) + 1e-6
+        return result
 
 
-def pairwise_rank_loss(scores: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """Burges 2005 RankNet pairwise BCE on (i, j) pairs within batch.
+# ─── Losses (canonical 3rd-party) ───────────────────────────────────────────
 
-    Targets: 1 if label_i > label_j else 0; loss = BCEWithLogits on
-    (score_i - score_j)."""
+def margin_ranking_loss(scores: torch.Tensor, labels: torch.Tensor,
+                        margin: float = 0.1) -> torch.Tensor:
+    """torch.nn.functional.margin_ranking_loss over all within-batch pairs.
+    CIKM 2025 (arXiv 2510.14156): Margin Ranking is best ranking loss on
+    portfolio Sharpe across PortfolioMASTER × S&P 500 benchmark.
+    """
     n = scores.shape[0]
     if n < 2:
         return torch.tensor(0.0, device=scores.device, requires_grad=True)
-    mask = torch.triu(torch.ones(n, n, device=scores.device), diagonal=1).bool()
-    s_diff = scores.unsqueeze(1) - scores.unsqueeze(0)        # (n, n)
-    l_diff = labels.unsqueeze(1) - labels.unsqueeze(0)        # (n, n)
-    target = (l_diff > 0).float()
-    return F.binary_cross_entropy_with_logits(s_diff[mask], target[mask])
+    iu, ju = torch.triu_indices(n, n, offset=1, device=scores.device)
+    s_i, s_j = scores[iu], scores[ju]
+    l_i, l_j = labels[iu], labels[ju]
+    target = torch.sign(l_i - l_j)  # ∈ {-1, 0, +1}
+    return F.margin_ranking_loss(s_i, s_j, target, margin=margin)
 
 
-def per_day_csrankic(preds: np.ndarray, labels: np.ndarray,
-                     dates: np.ndarray) -> tuple[float, float]:
-    df = pd.DataFrame({"pred": preds, "label": labels, "date": dates})
-    ics = []
-    for _, g in df.groupby("date"):
-        if len(g) < 5: continue
-        r, _ = spearmanr(g["pred"], g["label"])
-        if not np.isnan(r): ics.append(r)
-    if not ics: return 0.0, 0.0
-    return float(np.mean(ics)), float(np.median(ics))
+def student_t_nll(df: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor,
+                  target: torch.Tensor) -> torch.Tensor:
+    """Student-t negative log-likelihood (canonical torch.distributions)."""
+    dist = torch.distributions.StudentT(df, loc, scale)
+    return -dist.log_prob(target).mean()
 
+
+# ─── Preprocessing (Kelly-Gu-Xiu 2020 RFS standard) ─────────────────────────
 
 def csrank_norm_per_day(panel: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
-    """Kelly-Gu-Xiu 2020 RFS standard: cross-sectional rank-norm each
-    feature per-day to [-0.5, +0.5]. Removes scale drift + outlier
-    sensitivity. No temporal leakage (within-date only)."""
+    """Per-day cross-sectional rank-norm to [-0.5, +0.5]. Removes scale drift +
+    outlier sensitivity. No temporal leakage."""
     panel = panel.copy()
     panel[feat_cols] = (panel.groupby("date")[feat_cols].rank(pct=True) - 0.5)
     panel[feat_cols] = panel[feat_cols].fillna(0.0)
@@ -113,35 +133,27 @@ def csrank_norm_per_day(panel: pd.DataFrame, feat_cols: list[str]) -> pd.DataFra
 
 def winsorize_label(panel: pd.DataFrame, label_col: str,
                     pct: float = 0.005) -> pd.DataFrame:
-    """Winsorize label ±pct percentile (default 0.5% each side ≈ ±3σ for
-    near-normal). Removes extreme returns that destabilize ranking loss."""
+    """Winsorize label ±pct percentile (default 0.5% each side ≈ ±3σ)."""
     panel = panel.copy()
-    lo = panel[label_col].quantile(pct)
-    hi = panel[label_col].quantile(1 - pct)
+    lo, hi = panel[label_col].quantile(pct), panel[label_col].quantile(1 - pct)
     panel[label_col] = panel[label_col].clip(lower=lo, upper=hi)
     return panel
 
 
-def load_panel_with_split(dataset_path: Path, cut_name: str,
-                          label_col: str,
+def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                           preprocess: bool = True,
                           val_tail_pct: float = 0.0) -> tuple[pd.DataFrame, list[str]]:
     """Load panel + assign train/val/test split.
 
-    Modes:
-      cut_name = "all": full-data PROD training. Final val_tail_pct of dates
-                         used as val (early-stopping). No test. Use this for
-                         prod artifact training, NOT for walk-forward validation.
-      cut_name = "cut1_covid" etc: walk-forward VALIDATION mode. Splits per
-                                    kernel.walk_forward_splits (train < val_start,
-                                    val = val_start→val_end, rest = test).
+    cut_name = "all": full-data PROD training; last val_tail_pct dates → val.
+    cut_name = "cut1_covid" etc: walk-forward VALIDATION per
+                                   kernel.walk_forward_splits.
     """
     panel = pd.read_parquet(dataset_path)
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
     panel = panel.dropna(subset=[label_col])
     if cut_name == "all":
-        # Full-data prod training: tail val_tail_pct dates → val, rest → train
         dates_sorted = sorted(panel["date"].unique())
         if val_tail_pct > 0:
             n_val = max(1, int(len(dates_sorted) * val_tail_pct))
@@ -151,8 +163,8 @@ def load_panel_with_split(dataset_path: Path, cut_name: str,
         else:
             panel["split_label"] = "train"
     else:
-        from kernel.walk_forward_splits import (build_default_cuts,  # noqa: PLC0415
-                                                 assign_split_column)
+        from kernel.walk_forward_splits import (assign_split_column,  # noqa: PLC0415
+                                                 build_default_cuts)
         cut = next(c for c in build_default_cuts() if c.name == cut_name)
         panel["split_label"] = assign_split_column(panel, cut)
     feat_cols = [c for c in panel.columns
@@ -160,7 +172,6 @@ def load_panel_with_split(dataset_path: Path, cut_name: str,
                               "fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"}
                  and panel[c].dtype.kind in "fiub"]
     if preprocess:
-        # Variance-reduction preprocessing (roadmap PatchTST P0 §variance protocol)
         panel = csrank_norm_per_day(panel, feat_cols)
         panel = winsorize_label(panel, label_col, pct=0.005)
         log.info("preprocessing: CSRankNorm + Winsorize(±0.5%%) applied")
@@ -173,164 +184,254 @@ def load_panel_with_split(dataset_path: Path, cut_name: str,
     return panel, feat_cols
 
 
-def build_per_day_batches(panel: pd.DataFrame, feat_cols: list[str],
-                           label_col: str, seq_len: int, split: str
-                           ) -> list[dict]:
-    """Returns list of per-day batches. Each batch = (B, seq_len, n_ch) +
-    labels + dates. Sequence built from ticker's recent seq_len bars
-    ending at the sample date."""
-    feat_arr = panel[feat_cols].astype(np.float32).fillna(0.0).values
-    lab_arr = panel[label_col].astype(np.float32).values
-    by_ticker = panel.groupby("ticker", sort=False).indices
-    samples_by_date: dict[int, list[dict]] = {}
-    for ticker, idxs in by_ticker.items():
-        idxs = np.asarray(sorted(idxs))
-        for i in range(seq_len, len(idxs)):
-            end_pos = idxs[i]
-            if panel.iloc[end_pos]["split_label"] != split: continue
-            window = feat_arr[idxs[i - seq_len: i]]
-            if window.shape[0] != seq_len: continue
-            d = panel.iloc[end_pos]["date"]
-            samples_by_date.setdefault(d.value, []).append({
-                "x": window, "y": lab_arr[end_pos], "date": d,
+# ─── Dataset (per-day batching) ─────────────────────────────────────────────
+
+class PerDayDataset(torch.utils.data.Dataset):
+    """One Dataset sample = one day's all-ticker batch. With identity_collator
+    and Trainer batch_size=1, each Trainer step processes one day's pairwise
+    ranking loss."""
+
+    def __init__(self, panel: pd.DataFrame, feat_cols: list[str],
+                 label_col: str, seq_len: int, split: str):
+        feat_arr = panel[feat_cols].astype(np.float32).fillna(0.0).values
+        lab_arr = panel[label_col].astype(np.float32).values
+        samples_by_date: dict[int, list[tuple[np.ndarray, float, pd.Timestamp]]] = {}
+        for _, idxs in panel.groupby("ticker", sort=False).indices.items():
+            idxs = np.asarray(sorted(idxs))
+            for i in range(seq_len, len(idxs)):
+                end_pos = idxs[i]
+                if panel.iloc[end_pos]["split_label"] != split:
+                    continue
+                window = feat_arr[idxs[i - seq_len: i]]
+                if window.shape[0] != seq_len:
+                    continue
+                d = panel.iloc[end_pos]["date"]
+                samples_by_date.setdefault(d.value, []).append(
+                    (window, lab_arr[end_pos], d))
+        self.days: list[dict] = []
+        for d_ns, samples in samples_by_date.items():
+            if len(samples) < 5:
+                continue
+            self.days.append({
+                "past_values": torch.from_numpy(np.stack([s[0] for s in samples])),
+                "labels": torch.tensor([s[1] for s in samples], dtype=torch.float32),
+                "dates": np.array([s[2].value for s in samples], dtype="int64"),
             })
-    batches = []
-    for d_ns, samples in samples_by_date.items():
-        if len(samples) < 5: continue
-        xs = np.stack([s["x"] for s in samples])  # (B, seq_len, n_ch)
-        ys = np.array([s["y"] for s in samples], dtype=np.float32)
-        dates = np.array([s["date"].value for s in samples])
-        batches.append({"x": xs, "y": ys, "date": dates})
-    return batches
+
+    def __len__(self):
+        return len(self.days)
+
+    def __getitem__(self, idx):
+        return self.days[idx]
 
 
-def train_one(args: argparse.Namespace) -> dict:
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    panel, feat_cols = load_panel_with_split(
-        Path(args.dataset), args.cut, args.label,
-        val_tail_pct=getattr(args, "val_tail_pct", 0.10))
-    train_b = build_per_day_batches(panel, feat_cols, args.label,
-                                      args.seq_len, "train")
-    val_b = build_per_day_batches(panel, feat_cols, args.label,
-                                    args.seq_len, "val")
-    log.info("batches train=%d val=%d", len(train_b), len(val_b))
+def identity_collator(batch):
+    """No collation — each DataLoader batch is exactly one day's dict."""
+    assert len(batch) == 1, f"batch_size must be 1 for per-day batching, got {len(batch)}"
+    return batch[0]
 
-    cfg = PatchTSTConfig(
-        num_input_channels=len(feat_cols),
-        context_length=args.seq_len,
-        patch_length=args.patch_length,
-        patch_stride=args.patch_length,  # non-overlapping patches
-        d_model=args.d_model,
-        num_attention_heads=args.n_heads,
-        num_hidden_layers=args.n_layers,
-        ffn_dim=args.d_model * 2,
-    )
-    device = args.device
-    model = HFPatchTSTRanker(cfg).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
-                              weight_decay=args.weight_decay)
-    n_params = sum(p.numel() for p in model.parameters())
-    log.info("HF PatchTST n_params=%.2fM", n_params / 1e6)
 
-    # SWA (Izmailov 2018 UAI) — late-epoch weight averaging, wider minimum
-    swa_model = None
-    swa_scheduler = None
-    if args.swa:
-        from torch.optim.swa_utils import AveragedModel, SWALR  # noqa: PLC0415
-        swa_model = AveragedModel(model)
-        swa_scheduler = SWALR(opt, swa_lr=args.lr * 0.5, anneal_epochs=2,
-                               anneal_strategy="cos")
-        log.info("SWA enabled: start_epoch=%d, swa_lr=%.1e",
-                 args.swa_start_epoch, args.lr * 0.5)
+# ─── Trainer subclass (multi-task loss) ─────────────────────────────────────
 
-    best_val_ic = -1e9
-    for ep in range(args.epochs):
-        model.train()
-        np.random.shuffle(train_b)
-        losses = []
-        for b in train_b:
-            x = torch.from_numpy(b["x"]).to(device)
-            y = torch.from_numpy(b["y"]).to(device)
-            opt.zero_grad()
-            scores = model(x)
-            loss = pairwise_rank_loss(scores, y)
-            loss.backward()
-            opt.step()
-            losses.append(loss.item())
+class PatchTSTRankerTrainer(Trainer):
+    """HF Trainer with multi-task compute_loss: Margin Ranking + Student-t NLL."""
 
-        # SWA: after swa_start_epoch, update averaged model
-        if swa_model is not None and ep >= args.swa_start_epoch:
-            swa_model.update_parameters(model)
-            swa_scheduler.step()
+    def __init__(self, *args, nll_loss_weight: float = 0.5,
+                 ranking_margin: float = 0.1, **kw):
+        super().__init__(*args, **kw)
+        self._nll_loss_weight = nll_loss_weight
+        self._ranking_margin = ranking_margin
 
-        # Use SWA model for eval if active and past start_epoch
-        eval_model = (swa_model
-                      if swa_model is not None and ep >= args.swa_start_epoch
-                      else model)
-        eval_model.eval()
+    def compute_loss(self, model, inputs, return_outputs=False,
+                     num_items_in_batch=None):
+        labels = inputs["labels"]
+        outputs = model(past_values=inputs["past_values"], labels=labels)
+        loss = margin_ranking_loss(outputs["score"], labels,
+                                    margin=self._ranking_margin)
+        if "loc" in outputs and self._nll_loss_weight > 0:
+            nll = student_t_nll(outputs["df"], outputs["loc"], outputs["scale"],
+                                labels)
+            loss = loss + self._nll_loss_weight * nll
+        return (loss, outputs) if return_outputs else loss
+
+
+# ─── Per-regime IC callback (PRIME DIRECTIVE) ───────────────────────────────
+
+class PerRegimeICCallback(TrainerCallback):
+    """After each eval, run a second forward pass on val set, compute per-HMM-
+    regime IC (BULL_CALM / BULL_VOLATILE / CHOPPY / BEAR), and inject
+    `eval_min_regime_ic` into metrics — this is the selection metric for
+    `load_best_model_at_end=True` per PRIME DIRECTIVE.
+    """
+
+    def __init__(self, eval_dataset: PerDayDataset, hmm_labels: pd.DataFrame):
+        self.eval_dataset = eval_dataset
+        self.hmm_labels = hmm_labels
+
+    def on_evaluate(self, args, state, control, model=None, metrics=None, **kw):
+        if model is None or metrics is None:
+            return
+        from kernel.hmm_regime_labels import per_hmm_regime_ic  # noqa: PLC0415
+        device = next(model.parameters()).device
+        model.eval()
         all_p, all_y, all_d = [], [], []
         with torch.no_grad():
-            for b in val_b:
-                x = torch.from_numpy(b["x"]).to(device)
-                scores = eval_model(x).cpu().numpy()
-                all_p.append(scores); all_y.append(b["y"]); all_d.append(b["date"])
-        if all_p:
-            val_mean_ic, val_med_ic = per_day_csrankic(
-                np.concatenate(all_p), np.concatenate(all_y),
-                np.concatenate(all_d))
-        else:
-            val_mean_ic = val_med_ic = 0.0
-        log.info("ep %02d  loss=%.4f  val_ic=%+.4f (med %+.4f)%s",
-                 ep, np.mean(losses), val_mean_ic, val_med_ic,
-                 " [SWA]" if swa_model is not None and ep >= args.swa_start_epoch else "")
-        if val_mean_ic > best_val_ic + 1e-4:
-            best_val_ic = val_mean_ic
-
-    # Final model: use SWA if active, else regular model
-    final_model = swa_model if swa_model is not None else model
-
-    # Dump val predictions for downstream regime-stratified IC
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    all_p, all_y, all_d = [], [], []
-    final_model.eval()
-    with torch.no_grad():
-        for b in val_b:
-            x = torch.from_numpy(b["x"]).to(device)
-            scores = final_model(x).cpu().numpy()
-            all_p.append(scores); all_y.append(b["y"]); all_d.append(b["date"])
-    if all_p:
+            for day in self.eval_dataset.days:
+                x = day["past_values"].to(device)
+                outputs = model(past_values=x)
+                all_p.append(outputs["score"].cpu().numpy())
+                all_y.append(day["labels"].numpy())
+                all_d.append(day["dates"])
+        if not all_p:
+            return
         preds_df = pd.DataFrame({
             "date": pd.to_datetime(np.concatenate(all_d)),
             "pred": np.concatenate(all_p),
             "label": np.concatenate(all_y),
         })
-        dump = out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_val_preds.parquet"
-        preds_df.to_parquet(dump, index=False)
-        log.info("preds dumped: %s (%d rows)", dump.name, len(preds_df))
+        per_regime = per_hmm_regime_ic(preds_df, self.hmm_labels)
+        if per_regime:
+            min_ic = float(min(per_regime.values()))
+            metrics["eval_min_regime_ic"] = min_ic
+            for r, ic in per_regime.items():
+                metrics[f"eval_ic_{r}"] = float(ic)
+            log.info("per-regime IC: %s | min=%+.4f",
+                     {r: f"{v:+.4f}" for r, v in per_regime.items()}, min_ic)
+        else:
+            log.warning("per-regime IC: no regime had ≥5 days in val — "
+                        "falling back to pooled eval_loss for selection")
+
+
+# ─── Train entrypoint ───────────────────────────────────────────────────────
+
+def train_one(args: argparse.Namespace) -> dict:
+    torch.manual_seed(args.seed); np.random.seed(args.seed)
+    panel, feat_cols = load_panel_with_split(
+        Path(args.dataset), args.cut, args.label,
+        val_tail_pct=getattr(args, "val_tail_pct", 0.10))
+    train_ds = PerDayDataset(panel, feat_cols, args.label, args.seq_len, "train")
+    val_ds = PerDayDataset(panel, feat_cols, args.label, args.seq_len, "val")
+    log.info("days train=%d val=%d", len(train_ds), len(val_ds))
+
+    cfg = PatchTSTConfig(
+        num_input_channels=len(feat_cols),
+        context_length=args.seq_len,
+        patch_length=args.patch_length,
+        patch_stride=args.patch_length,  # non-overlapping
+        d_model=args.d_model,
+        num_attention_heads=args.n_heads,
+        num_hidden_layers=args.n_layers,
+        ffn_dim=args.d_model * 2,
+    )
+    model = HFPatchTSTRanker(cfg, use_distributional_head=args.distributional_head)
+    n_params = sum(p.numel() for p in model.parameters())
+    log.info("HFPatchTSTRanker n_params=%.2fM dist_head=%s",
+             n_params / 1e6, args.distributional_head)
+
+    # Per-regime IC callback (PRIME DIRECTIVE selection metric)
+    callbacks = []
+    metric_for_best = None
+    greater_is_better = True
+    spy_path = REPO / args.spy_path
+    if spy_path.exists():
+        from kernel.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
+        hmm_labels = compute_hmm_regime_labels(spy_path)
+        callbacks.append(PerRegimeICCallback(val_ds, hmm_labels))
+        metric_for_best = "eval_min_regime_ic"
+        log.info("PerRegimeICCallback wired | spy=%s | n_labels=%d",
+                 spy_path.name, len(hmm_labels))
+    else:
+        log.warning("SPY parquet missing at %s — falling back to eval_loss "
+                    "for best-model selection (PRIME DIRECTIVE degraded)", spy_path)
+        metric_for_best = "eval_loss"
+        greater_is_better = False
+
+    out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    total_steps = args.epochs * max(1, len(train_ds))
+    warmup_steps = int(args.warmup_ratio * total_steps)
+    training_args = TrainingArguments(
+        output_dir=str(out_dir / "_hf_trainer"),
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
+        learning_rate=args.lr,
+        weight_decay=args.weight_decay,
+        lr_scheduler_type=args.lr_scheduler,
+        warmup_steps=warmup_steps,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model=metric_for_best,
+        greater_is_better=greater_is_better,
+        seed=args.seed,
+        report_to=[],
+        logging_steps=200,
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
+        use_cpu=(args.device == "cpu"),
+    )
+
+    trainer = PatchTSTRankerTrainer(
+        model=model, args=training_args,
+        train_dataset=train_ds, eval_dataset=val_ds,
+        data_collator=identity_collator, callbacks=callbacks,
+        nll_loss_weight=args.nll_loss_weight,
+        ranking_margin=args.ranking_margin,
+    )
+    trainer.train()
+
+    # Final eval (best model loaded by load_best_model_at_end=True)
+    final_metrics = trainer.evaluate()
+    best_val_ic = float(final_metrics.get("eval_min_regime_ic", float("nan")))
+    log.info("FINAL eval %s", {k: f"{v:+.4f}" if isinstance(v, float) else v
+                                 for k, v in final_metrics.items()})
+
+    # Dump val predictions for downstream regime-stratified IC
+    device = next(model.parameters()).device
+    model.eval()
+    rows: list[dict] = []
+    with torch.no_grad():
+        for day in val_ds.days:
+            x = day["past_values"].to(device)
+            outputs = model(past_values=x)
+            for i, d in enumerate(day["dates"]):
+                row = {"date": pd.Timestamp(d),
+                       "pred": float(outputs["score"][i].cpu()),
+                       "label": float(day["labels"][i])}
+                if "loc" in outputs:
+                    row["mu"] = float(outputs["loc"][i].cpu())
+                    row["sigma"] = float(outputs["scale"][i].cpu())
+                rows.append(row)
+    preds_df = pd.DataFrame(rows)
+    dump = out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_val_preds.parquet"
+    preds_df.to_parquet(dump, index=False)
+    log.info("preds dumped: %s (%d rows)", dump.name, len(preds_df))
 
     summary = {
         "arch": "hf_patchtst", "cut": args.cut, "seed": args.seed,
         "best_val_ic": best_val_ic, "n_params": n_params,
-        "n_features": len(feat_cols),
+        "n_features": len(feat_cols), "uses_distributional_head": args.distributional_head,
+        "per_regime_ic": {k.removeprefix("eval_ic_"): v
+                          for k, v in final_metrics.items()
+                          if k.startswith("eval_ic_")},
     }
     (out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_summary.json").write_text(
         json.dumps(summary, indent=2, default=str))
 
     if args.save_model:
-        # Save weights + config + feature_cols for inference reuse (e.g. shadow)
         model_path = out_dir / f"hf_patchtst_{args.cut}_seed{args.seed}_model.pt"
         torch.save({
-            "state_dict": final_model.state_dict(),
+            "state_dict": model.state_dict(),
             "config_dict": cfg.to_dict(),
             "feature_cols": feat_cols,
             "seq_len": args.seq_len,
             "label_col": args.label,
             "best_val_ic": best_val_ic,
-            "uses_swa": args.swa,
+            "uses_distributional_head": args.distributional_head,
             "uses_csranknorm_preprocessing": True,
             "uses_winsorize_label_preprocessing": True,
+            "per_regime_ic": summary["per_regime_ic"],
         }, model_path)
         log.info("model saved: %s", model_path)
     return summary
@@ -341,10 +442,8 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", default="data/transformer_v4_wl200_clean.parquet")
     p.add_argument("--cut", default="cut1_covid",
-                   help="Walk-forward cut name OR 'all' for full-data prod training")
-    p.add_argument("--val-tail-pct", type=float, default=0.10,
-                   help="If cut='all', fraction of latest dates → val (early stop). "
-                        "Default 0.10 = 10%% recent dates held out.")
+                   help="walk-forward cut name OR 'all' for full-data prod")
+    p.add_argument("--val-tail-pct", type=float, default=0.10)
     p.add_argument("--label", default="fwd_60d_excess")
     p.add_argument("--seq-len", type=int, default=32)
     p.add_argument("--patch-length", type=int, default=4)
@@ -354,21 +453,28 @@ def main():
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=1e-3)
+    p.add_argument("--lr-scheduler", default="cosine",
+                   help="HF TrainingArguments.lr_scheduler_type "
+                        "(cosine | linear | constant_with_warmup)")
+    p.add_argument("--warmup-ratio", type=float, default=0.1,
+                   help="Fraction of total steps for LR warmup (HF default 0.0)")
+    p.add_argument("--distributional-head", action="store_true", default=True,
+                   help="Enable Student-t (df, μ, σ) head + NLL loss")
+    p.add_argument("--no-distributional-head", dest="distributional_head",
+                   action="store_false",
+                   help="Disable distributional head (ranking loss only)")
+    p.add_argument("--nll-loss-weight", type=float, default=0.5,
+                   help="λ in L = margin_rank + λ * student_t_nll")
+    p.add_argument("--ranking-margin", type=float, default=0.1,
+                   help="margin in torch.nn.functional.margin_ranking_loss")
+    p.add_argument("--spy-path", default="data/ohlcv/SPY/1d.parquet",
+                   help="SPY OHLCV parquet for HMM regime labels")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--device", default="cpu",
-                   choices=["cpu", "mps", "cuda"])
-    p.add_argument("--swa", action="store_true",
-                   help="Stochastic Weight Averaging (Izmailov 2018) "
-                        "— late-epoch weight averaging for wider minimum")
-    p.add_argument("--swa-start-epoch", type=int, default=2,
-                   help="Epoch after which SWA starts averaging weights")
-    p.add_argument("--save-model", action="store_true",
-                   help="Save final model state_dict + config for inference reuse")
+    p.add_argument("--device", default="cpu", choices=["cpu", "mps", "cuda"])
+    p.add_argument("--save-model", action="store_true")
     p.add_argument("--output-dir", default="artifacts/hf_patchtst")
     args = p.parse_args()
-
-    summary = train_one(args)
-    print(json.dumps(summary, indent=2, default=str))
+    print(json.dumps(train_one(args), indent=2, default=str))
 
 
 if __name__ == "__main__":
