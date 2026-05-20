@@ -30,8 +30,12 @@ PT07 = dict(lr="1e-4", weight_decay="0.3", seq_len="24")
 EPOCHS = "8"
 DEVICE = "mps"
 
-OUT_ROOT = REPO / "artifacts/hf_trainer_5cut_5seed_pt07"
-LOG_ROOT = REPO / "logs/hf_trainer_5cut_5seed_pt07"
+import os as _os  # noqa: E402
+# Env-overridable output paths (so 3-way orchestrator can run separate
+# embargo-clean variants without text-replace hacks)
+_TAG = _os.environ.get("EVAL_OUT_TAG", "hf_trainer_5cut_5seed_pt07")
+OUT_ROOT = REPO / f"artifacts/{_TAG}"
+LOG_ROOT = REPO / f"logs/{_TAG}"
 
 
 def run_one(cut: str, seed: int) -> dict:

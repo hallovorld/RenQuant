@@ -29,8 +29,10 @@ PT07 = dict(lr="1e-4", weight_decay="0.3", seq_len="24")
 EPOCHS = "8"
 DEVICE = "mps"
 
-OUT_ROOT = REPO / "artifacts/hf_cross_stock_5cut_5seed_pt07"
-LOG_ROOT = REPO / "logs/hf_cross_stock_5cut_5seed_pt07"
+import os as _os  # noqa: E402
+_TAG = _os.environ.get("EVAL_OUT_TAG", "hf_cross_stock_5cut_5seed_pt07")
+OUT_ROOT = REPO / f"artifacts/{_TAG}"
+LOG_ROOT = REPO / f"logs/{_TAG}"
 
 
 def run_one(cut: str, seed: int) -> dict:
