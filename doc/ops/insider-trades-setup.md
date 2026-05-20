@@ -19,8 +19,14 @@ Cohen-Malloy-Pomorski 2012). When the env var is unset:
 - XGBoost trees never split on it; effective signal contribution = 0.
 
 Symptom: training logs show
-`LoadInsiderTradesTask: 0 / 103 tickers with insider rows` even though
-the panel config has the feature enabled.
+`LoadInsiderTradesTask: 0 / 142 tickers with insider rows` even though
+the panel config has the feature enabled. (Universe is now wl200 — 142 tickers
+post-2026-05-18 promotion; pre-promotion was wl103.)
+
+**Note (2026-05-18)**: Insider features (E22) were REJECTED via retest with
+placebo persistence 100-142%. The infrastructure stays wired for future
+re-evaluation but `panel_ltr.insider_features` may be disabled in golden.
+Refresh cron still useful for the cache if re-enabled.
 
 ## One-time setup (interactive shells)
 
@@ -38,9 +44,10 @@ Reload: `source ~/.zshrc`. Verify: `python -c "import os; print(os.environ.get('
 spawns a Python process touching insider data must declare the var
 in `EnvironmentVariables`.
 
-**Affected plists** (Sunday weekly retrain + daily refresh):
-- `~/Library/LaunchAgents/com.renquant.retrain-panel104.plist` — Sunday full retrain
+**Affected plists** (any plist whose Python process touches `kernel/insider_trades.py`):
 - `~/Library/LaunchAgents/com.renquant.daily104.plist` — daily refresh
+- `~/Library/LaunchAgents/com.renquant.weekly-wf-promote.plist` — Saturday 04:00 PT weekly walk-forward promote (replaced Sunday retrain-panel104 post-2026-05-17 walk-forward gate enforcement)
+- `~/Library/LaunchAgents/com.renquant.retrain-panel104.plist` — daily STAGES retrain (NOTE: NOT checked into repo `scripts/launchd/`; must be installed manually)
 
 For each plist, ensure the `EnvironmentVariables` block contains:
 
@@ -79,8 +86,9 @@ python scripts/fetch_insider_trades.py \
   --per-ticker-sec 60
 ```
 
-Wallclock: ~60-90 min for 103 tickers fresh. Subsequent daily refreshes
-run in <30 s because the cache only updates filings newer than 7 days.
+Wallclock: ~85-125 min for wl200 142 tickers fresh (scales linearly from
+prior 60-90 min for 103 tickers). Subsequent daily refreshes run in <30 s
+because the cache only updates filings newer than 7 days.
 
 ## SEC rate limit reference
 

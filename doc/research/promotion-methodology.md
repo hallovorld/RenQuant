@@ -94,22 +94,42 @@ Tier 2 criteria + ONE of:
 - **Library refs.** `kernel/metrics/deflated_sharpe.py`,
   `kernel/metrics/pbo.py`.
 
-## Worked example (this session)
+## Worked examples
+
+### Example 1 (2026-05-11 session — historical)
 
 53 configs analyzed across 6 OOS windows post-Bug-C. Baseline
 `lambda_000` mean APY +15.2%, mean Sharpe 0.41, mean SPY-α −2.3 pt.
 
-Result:
+Result: TIER3_CONFIRMED 0 / TIER2_SCREEN 0 / NEITHER 16 (knob inert) / TIER1_REJECT 20.
 
-  TIER3_CONFIRMED  :  0
-  TIER2_SCREEN     :  0
-  NEITHER          : 16  (knob inert; bit-identical to baseline)
-  TIER1_REJECT     : 20
+Best candidate `E42_fwd60d`: mean ΔAPY +3.3, ΔSharpe +0.12, but consistency
+only 3/6 → falls short of Tier 2 (needs ≥ 4/6). Kept prod baseline.
 
-Best candidate `E42_fwd60d` (60-day label window): mean ΔAPY +3.3,
-mean ΔSharpe +0.12, but consistency only 3/6 → falls short of Tier 2
-(needs ≥ 4/6). Verdict: **keep prod baseline**, retest with extended
-walk-forward.
+### Example 2 (2026-05-17 σ-wire A/B — historical, gate fired)
+
+3 σ-wire conditions tested:
+- global σ-on (8 dense windows): mean Δ=+3.01pp NULL (CI crosses 0)
+- per-regime σ-on (BEAR/CHOPPY/BULL_VOL): mean Δ=−4.70pp negative
+- per-regime + hysteresis: mean Δ=−7.89pp negative
+
+All NEITHER/REJECT. σ-wire stays OFF in golden per Tier 3 gate. Per-regime
+overlay infrastructure ADDED to golden as DORMANT for future re-evaluation.
+
+### Example 3 (2026-05-17 long-short Phase 1 gate — SKIP)
+
+Empirical pre-requisite test (commit `28251c2`): model bottom decile 60d-ann
+return = +0.58% (positive!). All alpha on LONG side. Kelly-Gu-Xiu 2020 RFS
+needs −10% to −15%/yr short alpha to justify infrastructure. **Verdict:
+SKIP. Saves 3-4 weeks engineering.**
+
+### Example 4 (2026-05-19 PatchTST DOE Phase 2 — pending verdict)
+
+Pt_07 best (lr=1e-4, wd=0.3, seq_len=24): bull_IC +0.098, DSR +15.99 cut3
+BUT fails cut5_unwind. 70/81 trials confirms "structural limit, router
+thesis holds" (commit `1863a4d`). Triggered HF Trainer refactor + FiLM
+Pillar B 2026-05-19 (commits `ca21654`, `78e59d3`); 5-cut × 5-seed eval
+running in-flight to confirm.
 
 ## Cadence
 
