@@ -10,7 +10,24 @@
 
 All three implement the same indicators with identical semantics. The kernel versions are LEAN-safe (zero `common/` imports). **Always use the kernel version of the strategy you're working in** — `common/indicators/` is for the legacy 101/102 path only.
 
-Note (2026-04-25 Tier 1 cleanup): the 104 panel-LTR model intentionally drops `rsi`, `macd_hist`, and `obv_slope` from its `feature_cols` via `panel_ltr.drop_cols` — they're computed but excluded from the cross-sectional ranker because per-ticker IC was too low. They remain available to per-symbol models in the baseline tournament. See [strategy-104.md §S1 resolution](strategy-104.md).
+## Panel-LTR feature catalog (172 features, 2026-05-20)
+
+The active production artifact (`artifacts/prod/panel-ltr.alpha158_fund.json`) consumes 172 features, organized as:
+
+- **158 alpha158 features** — Qlib-faithful (`Alpha158` per Qlib reference): KMID, KLEN, KMID2, KUP, KUP2, KLOW, KLOW2, KSFT, KSFT2, OPEN0, HIGH0, LOW0, VWAP0, ROC{5-60}, MA{5-60}, STD{5-60}, BETA{5-60}, RSQR{5-60}, RESI{5-60}, MAX{5-60}, MIN{5-60}, QTLU{5-60}, QTLD{5-60}, RANK{5-60}, RSV{5-60}, IMAX{5-60}, IMIN{5-60}, IMXD{5-60}, CORR{5-60}, CORD{5-60}, CNTP{5-60}, CNTN{5-60}, CNTD{5-60}, SUMP{5-60}, SUMN{5-60}, SUMD{5-60}, VMA{5-60}, VSTD{5-60}, WVMA{5-60}, VSUMP{5-60}, VSUMN{5-60}, VSUMD{5-60}.
+- **5 SEC fundamental features** — `earnings_yield`, `book_to_price`, `gross_profitability`, `roe`, `asset_growth` (Cooper-Gulen-Schill 2008 `pct_change(periods=252d)` post-Bug-5 fix).
+- **3 PEAD features** — `days_since_earnings`, `pead_signal`, `pead_quintile_rank` (post-earnings drift).
+- **3 SUE features** — `sue_signal`, `surprise_momentum`, `surprise_streak`.
+- **3 news sentiment features** — `sentiment_pos_share`, `mean_sentiment`, `n_articles` (2026-05-18 shipped, regime-conditional gate live across 14 regimes).
+
+## Momentum features added 2026-05-18 (Jegadeesh-Titman / 52w distance / sector momentum)
+
+Per `doc/research/2026-05-18-model-regime-mismatch.md` finding ("model is mean-reversion in a momentum market"), 3 new momentum features were wired into the panel via pandas_ta_classic:
+- Jegadeesh-Titman 12-1 month momentum
+- 52-week distance from high
+- Sector-cross-sectional momentum rank
+
+These are part of the 172 feature count above where applicable; see commits `fc32385` / `a355a69`.
 
 ## Usage (common/)
 

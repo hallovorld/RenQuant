@@ -31,7 +31,15 @@ This keeps one champion model per symbol while putting mixed model families onto
 
 ### renquant_104 — Panel-LTR override
 
-In renquant_104 the per-ticker `rank_score` above is **overwritten cross-sectionally** by `PanelScoringJob` (see `doc/arch/strategy-104.md`) whenever `ranking.panel_scoring.enabled=true` in `strategy_config.json`. A single XGBoost learning-to-rank model, trained on neutralized forward excess returns across the whole watchlist, emits `panel_score` — which is also written into `rank_score` so every downstream consumer (ranking blend, tier thresholds, rotation advantage) sees a directly comparable cross-sectional score. Short-circuits to the per-ticker calibrated score when the flag is off.
+In renquant_104 the per-ticker `rank_score` above is **overwritten cross-sectionally** by `PanelScoringJob` (see `doc/arch/strategy-104.md`) whenever `ranking.panel_scoring.enabled=true` in `strategy_config.json`.
+
+**Backends registered in `kernel/panel_pipeline/model_registry.py`**:
+- `kind: xgb` — XGBoost rank:pairwise on 172 features (primary, production)
+- `kind: hf_patchtst` — HF PatchTST shadow (active since 2026-05-19, commits `cf6311c`, `4e156e2`); see `scripts/patchtst_hf.py` for HF Trainer-based training with multi-task head (rank + Student-t dist) + optional FiLM regime conditioning
+- `kind: patchtst` — legacy custom PatchTST (pre-2026-05-19 refactor; retained for old shadow checkpoints)
+- `kind: regime_router` — frozen as dormant baseline per arXiv 2603.13252 (hard routing + market-state gate AUROC < 0.5)
+
+A single XGBoost learning-to-rank model emits `panel_score` — which is also written into `rank_score` so every downstream consumer (ranking blend, tier thresholds, rotation advantage) sees a directly comparable cross-sectional score. HF PatchTST shadow scoring runs in parallel and logs divergence vs primary to MLflow without submitting orders.
 
 ## Manual Model — Dual Momentum + Trend Following
 
@@ -167,9 +175,12 @@ All models are subject to execution constraints during simulation and LEAN backt
 
 | Constraint | Value | Purpose |
 |------------|-------|---------|
-| Wash sale | 30 days | Cannot buy within 30 calendar days of selling |
+| Wash sale | 30 calendar days (IRC §1091, cost-aware) | Cannot buy within 30 days of a loss-side sell; gain-side has no cost; loss-side carries NPV deferred-tax cost |
+| Anti-churn re-entry | 5 business days (`min_reentry_days`, 2026-05-18) | Compounds on §1091 — prevents same-day rebuy even on gains (MCD incident motivation) |
 | Min hold | 5 days (renquant_104) / 30 days (renquant_103) | Prevents noise-driven model-signal exits during early hold period — tuned per strategy via `min_hold_days` in `strategy_config.json` |
 | Max hold | 500 days (BULL / BEAR), 40 days (CHOPPY) | Forces position review (allows long-term tax rate) |
+| Lot accounting | HIFO (2026-05-17, was FIFO) | Tax-optimal lot selection; pure accounting change, `feedback_no_tax_driven_logic`-safe |
+| Min share floor | 1 share if 1-share-weight ∈ [5%, 15%] (2026-05-17) | Unblocks high-priced stocks (EQIX-class, $1059/share) that target_w × NAV < share_price would skip |
 
 ## Position Sizing
 
@@ -187,7 +198,7 @@ Buy logic: `invest = min(max_position_pct * portfolio, available_cash - cash_res
 
 ### Kelly-optimal sizing (golden v4+)
 
-When `ranking.kelly_sizing.enabled=true`, `ApplyKellySizingTask` computes a per-candidate target weight directly from μ/σ² (NGBoost predictions):
+When `ranking.kelly_sizing.enabled=true`, `ApplyKellySizingTask` computes a per-candidate target weight from μ/σ². As of 2026-05-15: μ comes from the **calibrator's `expected_return.y`** (`use_calibrator_mu=true`), σ comes from **realized_vol_60d fallback** (`use_realized_vol_fallback=true`). NGB head is in production (μ available) but the σ-wire from NGB is dormant per 2026-05-17 3-condition A/B (all NULL/negative).
 
 ```
 f* = μ / σ²
@@ -251,16 +262,17 @@ by `PanelScoringJob` in the inference pipeline, after per-symbol
 candidates have been scored. It produces a single cross-sectional
 ranking that overrides per-ticker `rank_score` when `panel_scoring.enabled=true`.
 
-| Backend | Artifact | API | Activation |
+| Backend | Artifact | Activation | Status |
 |---|---|---|---|
-| XGBoost (default) | `panel-ltr.json` (kind=`panel_ltr_xgboost`) | `panel_pipeline.PanelScorer.load(path).score(X)` | `panel_ltr.backend: "xgboost"` |
-| LightGBM | `panel-ltr.json` (kind=`panel_ltr_lightgbm`) | same | `panel_ltr.backend: "lightgbm"` |
-| Transformer (Stage C-3) | `panel-ltr.json` + `panel-transformer.pt` | same; native Rust scorer for inference | `panel_ltr.backend: "transformer"` (also enables hourly bars) |
+| XGBoost (default) | `artifacts/prod/panel-ltr.alpha158_fund.json` | `ranking.panel_scoring.kind: "xgb"` | PRIMARY production, 172 features |
+| HF PatchTST shadow | `artifacts/patchtst_shadow/.../hf_patchtst_*.pt` | `ranking.panel_scoring.kind: "hf_patchtst"` | SHADOW since 2026-05-19 (HF Trainer + multi-task head + FiLM optional) |
+| Legacy custom PatchTST | `artifacts/patchtst_5seed_v3_promote/patchtst_seed*.pt` | `ranking.panel_scoring.kind: "patchtst"` | Pre-2026-05-19 refactor, retained for old checkpoints |
+| RegimeRouter (dormant baseline) | composes XGB + HF PatchTST per-regime | `ranking.panel_scoring.kind: "regime_router"` | FROZEN — hard routing on HMM-on-SPY gate per arXiv 2603.13252 has AUROC < 0.5 |
 
 Sidecars (always written):
-- `ngboost-head.json` — μ/σ residual head trained on top of panel score
-- `panel-rank-calibration.json` — isotonic regression mapping raw → `rank_score ∈ [0,1]`
+- `artifacts/prod/ngboost-head.alpha158_fund.json` — μ/σ residual head (val_IC +0.0352, promoted 2026-05-17)
+- `artifacts/prod/panel-rank-calibration.json` — Platt-scaling mapping raw → `rank_score ∈ [0,1]` (switched from isotonic 2026-05-18)
 
-Backups (per-experiment): `panel-ltr.{xgboost,lightgbm,transformer,macro-enabled,...}.bak.json` + matching sidecar `.bak`s. Tournament via `scripts/select_best_model.py`.
+Tournament via `scripts/select_best_model.py`. Model registry at `kernel/panel_pipeline/model_registry.py` exposes the `kind`-based dispatcher (decorator pattern, extensible).
 
-Full design: [`../components/panel-ltr.md`](../components/panel-ltr.md), [`../components/training-pipeline.md`](../components/training-pipeline.md), [`../components/transformer.md`](../components/transformer.md), [`../components/calibration.md`](../components/calibration.md), [`../components/model-selection.md`](../components/model-selection.md).
+Full design: [`../components/panel-ltr.md`](../components/panel-ltr.md), [`../components/training-pipeline.md`](../components/training-pipeline.md), [`../components/calibration.md`](../components/calibration.md), [`../../doc/research/2026-05-19-patchtst-improvement-plan.md`](../research/2026-05-19-patchtst-improvement-plan.md) (PatchTST Pillar A/B/C × Tier 1/2/3 roadmap).

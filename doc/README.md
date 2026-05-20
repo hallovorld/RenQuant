@@ -1,8 +1,10 @@
 # RenQuant Documentation
 
-Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking, 169 features, cvxpy + CLARABEL portfolio QP, NGBoost OFF). `renquant_103` archived.
+Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking, **172 features**, cvxpy + CLARABEL portfolio QP, **NGBoost head ON in prod / σ-wire dormant**, HF PatchTST shadow active). `renquant_103` archived.
 
-> **Where to start:** [`STATUS.md`](STATUS.md) → [`arch/strategy-104.md`](arch/strategy-104.md) → [`arch/overview.md`](arch/overview.md) → [`components/portfolio-qp.md`](components/portfolio-qp.md) → [`ops/usage.md`](ops/usage.md).
+> **Where to start:** [`roadmap.md`](roadmap.md) → [`arch/strategy-104.md`](arch/strategy-104.md) → [`arch/overview.md`](arch/overview.md) → [`components/portfolio-qp.md`](components/portfolio-qp.md) → [`ops/usage.md`](ops/usage.md).
+>
+> For PatchTST capability roadmap: [`research/2026-05-19-patchtst-improvement-plan.md`](research/2026-05-19-patchtst-improvement-plan.md) + lessons [`experiments/2026-05-19-hf-trainer-refactor-journal.md`](experiments/2026-05-19-hf-trainer-refactor-journal.md).
 
 ---
 
@@ -10,8 +12,8 @@ Active strategy: **`renquant_104`** (panel-LTR cross-sectional ranking, 169 feat
 
 | Doc | Contents |
 |---|---|
-| [STATUS.md](STATUS.md) | **Read first** — current state, performance, open priorities |
-| [roadmap.md](roadmap.md) | Living roadmap — ROI-ranked items, paper citations, pass-gate criteria |
+| [roadmap.md](roadmap.md) | **Read first** — current state, ROI-ranked active items, closed/rejected items, paper citations |
+| [STATUS.md](STATUS.md) | Thin pointer (was duplicating roadmap.md "Current state"; now lists deltas since 2026-05-09) |
 
 ## arch/ — architecture & strategy specs
 
