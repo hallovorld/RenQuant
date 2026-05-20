@@ -710,7 +710,8 @@
         "enabled": true,
         "threshold": 0.1
       },
-      "kind": "panel_ltr_xgboost",
+      "kind": "xgb",
+      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask using registry.get(kind), but registry only registers 'xgb'. Config still used legacy name → LoadScorerTask fails silently every bar (logs ERROR, returns False) → ApplyScoresTask never runs → candidates fall back to per-ticker scores → conviction_floor=0.20 blocks all top-ups → QP returns optimal_no_signal → zero trades on 2026-05-19 daily run. Artifact JSON still has kind=panel_ltr_xgboost (legacy alpha158-feature-path dispatch), unchanged.",
       "sentiment": {
         "enabled": true,
         "regime_policy": {
@@ -733,30 +734,10 @@
       },
       "shadow_models": [
         {
-          "name": "regime_router_v1",
-          "kind": "regime_router",
-          "artifact_path": "n/a",
-          "regime_router": {
-            "scorers": {
-              "xgb": {
-                "kind": "xgb",
-                "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json"
-              },
-              "hf_patchtst": {
-                "kind": "hf_patchtst",
-                "artifact_path": "artifacts/hf_patchtst_prod/router_hf_v2/hf_patchtst_all_seed42_model.pt"
-              }
-            },
-            "routing": {
-              "BEAR": "hf_patchtst",
-              "CHOPPY": "hf_patchtst",
-              "BULL_CALM": "xgb",
-              "BULL_VOLATILE": "xgb",
-              "BULL_STRONG": "xgb"
-            },
-            "default_scorer_key": "xgb"
-          },
-          "_2026-05-19_provenance": "Phase 0 finding (HF artifact: full-data train 2016\u21922025 + 10% recent val for early stop; NOT cut1-restricted \u2014 that's validation methodology, not prod training): XGB collapses in BEAR (-0.27 cut1_covid), HF stable (+0.107). Inverse problem in 2024 unwind. Router: HF for BEAR/CHOPPY, XGB elsewhere. SHADOW first per [[auto_promote_to_prod]] (architecture-swap exclusion)."
+          "name": "hf_patchtst_canonical_seed44",
+          "kind": "hf_patchtst",
+          "artifact_path": "artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt",
+          "_2026-05-19_provenance": "Replaces dead regime_router_v1 shadow. Two bugs caught 2026-05-19: (a) HFPatchTSTPanelScorer.load() imported scripts/patchtst_hf.py which triggered `from kernel.walk_forward_splits` that fails when 104-kernel is on sys.path ahead of top-level namespace kernel/ \u2014 fixed by deferring that import. (b) router_hf_v2 artifact path was phantom (empty directory) \u2014 shadow had never loaded successfully. Now points at canonical 5-seed run winner. seed_44 had highest LAST-EPOCH val_ic=+0.0644 (best of saved); seed_46 hit higher in-epoch peak +0.0834 but save-best bug in patchtst_hf.py:318 saves last not best. vs XGB prod +0.0909 on same 142-ticker last-10%-dates val window: PatchTST loses by ~0.027 \u2014 shadow is observation/infra-validation, not a promotion candidate. Config knob: ranking.panel_scoring.kind stays 'xgb' (primary unchanged)."
         }
       ],
       "shadow_tracking_uri": "file:./mlruns",

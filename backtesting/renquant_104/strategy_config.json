@@ -704,7 +704,8 @@
         "enabled": true,
         "threshold": 0.1
       },
-      "kind": "panel_ltr_xgboost",
+      "kind": "xgb",
+      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask. Synced from strategy_config.golden.json (also fixed). Without this fix LoadScorerTask logs ERROR + returns False, panel scorer never runs, candidates get only per-ticker scores, QP returns optimal_no_signal, zero trades.",
       "sentiment": {
         "enabled": true,
         "regime_policy": {
@@ -724,7 +725,17 @@
           "CHOPPY": true
         },
         "_2026-05-18_provenance": "Tier 2 SCREEN per regime-stratified IC eval; see doc/research/2026-05-18-news-sentiment-ic-verdict.md"
-      }
+      },
+      "shadow_models": [
+        {
+          "name": "hf_patchtst_canonical_seed44",
+          "kind": "hf_patchtst",
+          "artifact_path": "artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt",
+          "_2026-05-19_provenance": "Synced from strategy_config.golden.json. HF PatchTST seed_44 from canonical 5-seed run 2026-05-19. last-epoch val_ic=+0.0644 on 142-ticker last-10%-dates val window. vs XGB primary +0.0909 on same window: PatchTST loses by ~0.027. SHADOW only — observation + infra validation, primary stays XGB."
+        }
+      ],
+      "shadow_tracking_uri": "file:./mlruns",
+      "shadow_experiment": "renquant_104_shadow"
     },
     "universe_floor": {
       "type": "sharpe",

@@ -47,8 +47,12 @@ from transformers import PatchTSTConfig, PatchTSTModel
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from kernel.walk_forward_splits import (build_default_cuts,
-                                          assign_split_column)
+# NOTE: kernel.walk_forward_splits import deferred to point-of-use (line ~150)
+# so that downstream callers (e.g. HFPatchTSTPanelScorer.load() in
+# backtesting/renquant_104) can `importlib` this script to access
+# HFPatchTSTRanker WITHOUT triggering a kernel.* import that breaks when
+# the 104-kernel (a real package with __init__.py) is on sys.path ahead
+# of the top-level kernel/ (a namespace package). Hit in prod 2026-05-19.
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -147,6 +151,8 @@ def load_panel_with_split(dataset_path: Path, cut_name: str,
         else:
             panel["split_label"] = "train"
     else:
+        from kernel.walk_forward_splits import (build_default_cuts,  # noqa: PLC0415
+                                                 assign_split_column)
         cut = next(c for c in build_default_cuts() if c.name == cut_name)
         panel["split_label"] = assign_split_column(panel, cut)
     feat_cols = [c for c in panel.columns

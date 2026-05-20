@@ -272,6 +272,39 @@ class ApplyShadowScoringTask(Task):
             sorted_shadow = sorted(shadow_dict.items(), key=lambda x: -x[1])
             shadow_ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_shadow)}
 
+            # 2026-05-19 (user mandate "want to know what shadow will do in
+            # ntfy"): stash a compact summary on ctx so live.runner can
+            # surface it. Single-line-of-ntfy friendly: shadow top-3 picks,
+            # top-10 overlap with primary, Spearman rank correlation.
+            try:
+                import numpy as _np  # noqa: PLC0415
+                top10_primary = set(t for t, _ in sorted_primary[:10])
+                top10_shadow = set(t for t, _ in sorted_shadow[:10])
+                overlap = len(top10_primary & top10_shadow)
+                common = sorted(set(primary_scores) & set(shadow_dict))
+                if len(common) >= 5:
+                    pr = _np.array([primary_ranks[t] for t in common])
+                    sr = _np.array([shadow_ranks[t] for t in common])
+                    from scipy.stats import spearmanr as _sp  # noqa: PLC0415
+                    rho, _ = _sp(pr, sr)
+                    rho = float(rho) if _np.isfinite(rho) else float("nan")
+                else:
+                    rho = float("nan")
+                top3 = [t for t, _ in sorted_shadow[:3]]
+                summary = {
+                    "name": name, "kind": kind,
+                    "top3": top3,
+                    "top10_overlap": overlap,
+                    "n_candidates": len(shadow_dict),
+                    "spearman_vs_primary": rho,
+                }
+                if not hasattr(ctx, "_shadow_summary"):
+                    ctx._shadow_summary = []  # noqa: SLF001
+                ctx._shadow_summary.append(summary)  # noqa: SLF001
+            except Exception as exc:
+                log.warning("ApplyShadowScoringTask: ctx summary failed for %s: %s",
+                             name, exc)
+
             try:
                 _log_shadow_run(
                     exp_id, getattr(ctx, "today", datetime.date.today()),
