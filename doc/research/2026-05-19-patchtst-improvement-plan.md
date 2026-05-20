@@ -103,7 +103,7 @@ User pushed §5.12 ("注意 principals") — pointed out the MVP plan (3 separat
 | Head | `Linear(d_model, 1)` mean-pooled | 单 head linear; 没有 distributional output |
 | Loss | Pairwise RankNet BCE 每日内 | CIKM 2025 evidence: Margin Ranking + ListNet 在 Sharpe 上胜过 pairwise |
 | Preprocessing | CSRankNorm per-day (rank → [-0.5, +0.5]) + Winsorize ±0.5% | OK — Kelly-Gu-Xiu 2020 标准 |
-| Features | Alpha158 + fund + PEAD + SUE = 169 features | mean-reversion biased (memo `2026-05-18-model-regime-mismatch`) |
+| Features | Alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment = 172 features | mean-reversion biased (memo `2026-05-18-model-regime-mismatch`) |
 | Optimizer | AdamW, fixed lr (no schedule) | **Bug**: 无 warmup / cosine decay — DOE 已确认 warmup 在 noise 范围内但仍是 best practice |
 | Save | `patchtst_hf.py:291` 用 LAST epoch (or SWA) | **🔴 BUG** — best-by-val-IC 在 line 287 被 track 但没用于 save |
 | Validation | `per_day_csrankic()` pooled 全 cut | **🔴 PRIME DIRECTIVE 违规** — 没有 per-regime IC stratification |
