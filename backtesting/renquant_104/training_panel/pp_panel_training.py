@@ -1532,23 +1532,43 @@ class FactorZScoreTask(PanelTask):
         z = {col: cross_sectional_zscore(per_col[col]) for col in raw_cols if per_col[col]}
 
         # Fundamentals: static scalar per (ticker, col). Fill missing by
-        # sector median, then cross-sectionally z-score across tickers once.
-        fund_z_by_col: dict[str, dict[str, float]] = {}
+        # sector median, then cross-sectionally z-score across tickers PER DATE.
+        #
+        # P0-2 FIX 2026-05-20 audit: previous impl used `df[col].iloc[-1]`
+        # (broadcast LATEST value to history) — that was a look-ahead bias:
+        # every historical training row saw the most recent fundamental, not
+        # the as-of-bar fundamental. The "broadcast scalar — any row works"
+        # comment was the bug talking. Per CLAUDE.md §5.2a (label causality),
+        # each (ticker, date) row's z-score must use only data available at
+        # that date.
+        #
+        # Now: per-date cross-sectional z-score. For each date d, collect each
+        # ticker's fundamental-as-of-d, sector-median-fill, z-score across the
+        # cross-section, store per-(ticker, date). REQUIRES PROD RETRAIN to
+        # eliminate the look-ahead from the current alpha158+fund artifact.
+        # ⚠️ requires data regen: python scripts/build_alpha158_fund.py
+        fund_z_by_col_date: dict[str, dict] = {}
         has_fundamentals = any(
             col in next(iter(ctx.raw_factor_frames.values())).columns
             for col in FUNDAMENTAL_COLS
         ) if ctx.raw_factor_frames else False
         if has_fundamentals:
+            # Union of all dates across all tickers
+            all_dates = sorted(set().union(
+                *(df.index for df in ctx.raw_factor_frames.values())))
             for col in FUNDAMENTAL_COLS:
-                raw_vals = {}
-                for t, df in ctx.raw_factor_frames.items():
-                    if col in df.columns and not df[col].empty:
-                        v = df[col].iloc[-1]   # broadcast scalar — any row works
-                        raw_vals[t] = float(v) if pd.notna(v) else float("nan")
-                    else:
-                        raw_vals[t] = float("nan")
-                filled = _sector_median_fill(raw_vals, ctx.ticker_sectors)
-                fund_z_by_col[col] = _cross_sectional_zscore_static(filled)
+                per_date: dict = {}
+                for d in all_dates:
+                    raw_vals: dict[str, float] = {}
+                    for t, df in ctx.raw_factor_frames.items():
+                        if col in df.columns and d in df.index:
+                            v = df[col].loc[d]
+                            raw_vals[t] = float(v) if pd.notna(v) else float("nan")
+                        else:
+                            raw_vals[t] = float("nan")
+                    filled = _sector_median_fill(raw_vals, ctx.ticker_sectors)
+                    per_date[d] = _cross_sectional_zscore_static(filled)
+                fund_z_by_col_date[col] = per_date
 
         out: dict[str, pd.DataFrame] = {}
         for t, raw in ctx.raw_factor_frames.items():
@@ -1582,9 +1602,15 @@ class FactorZScoreTask(PanelTask):
                 if c in z:
                     cols[f"{c}_z"] = z[c].get(t, pd.Series(index=idx)).reindex(idx)
             for col in FUNDAMENTAL_COLS:
-                if col in fund_z_by_col:
-                    v = fund_z_by_col[col].get(t, float("nan"))
-                    cols[f"{col}_z"] = pd.Series(v, index=idx)
+                # P0-2 fix: per-date z-score lookup (not single scalar broadcast)
+                if col in fund_z_by_col_date:
+                    per_date_map = fund_z_by_col_date[col]
+                    z_series = pd.Series(
+                        {d: per_date_map.get(d, {}).get(t, float("nan"))
+                         for d in idx},
+                        index=idx,
+                    )
+                    cols[f"{col}_z"] = z_series
             out[t] = pd.DataFrame(cols, index=idx)
         ctx.factor_frames = out
         log.info("FactorZScoreTask: z-scored %d factor frames (fundamentals=%s)",
