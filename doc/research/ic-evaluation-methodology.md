@@ -194,7 +194,12 @@ All on 7-cut WF: train rolling 3 years, embargo 21 days, test 1 year. Cuts cover
 
 ### 2026-05-08 baselines
 
-#### Wave 1: 3 labels × 6 models (Linear / Ridge / XGB) on 291-ticker alpha158+fund
+#### Wave 1: 3 labels × 6 models (Linear / Ridge / XGB) on 291-ticker alpha158+fund (HISTORICAL — pre-wl200)
+
+> **Note (2026-05-20)**: This wave was on the legacy 291-ticker R1K panel. Production
+> universe switched to **wl200 (142 tickers, quality-first)** on 2026-05-18. Features
+> went 169 → 172 (added 3 sentiment) on the same date. Re-run on current panel
+> pending; do NOT cite these numbers as current production baseline.
 
 ```
 Label         Model           Mean IC    Std       Pos/7  IR (mean/std)
@@ -234,19 +239,17 @@ alpha158+fund          +0.0660  0.0722  -
 
 **Theoretical interpretation**: XGB depth=5 with 158+5 alpha158/fund features can already implicitly learn regime structure from VMA, VSTD, BETA features. Adding 3 explicit regime probabilities is information-redundant for this model class.
 
-#### Wave 3: R2K small-cap universe (in progress)
+#### Wave 3: R2K small-cap universe (CLOSED — Cakici hypothesis NOT confirmed)
 
 Hypothesis (Cakici et al. 2023 JEDC): ML alpha is 2.4× larger on small-caps than large-caps for US.
-- R1K (291 tickers): IC +0.066 (current baseline)
-- R2K target: > +0.10 if Cakici holds
 
-Status:
-- ✓ Fetched OHLCV for 1910/1919 R2K tickers via yfinance
-- ✓ Built alpha158 dataset for 1640 R2K with 5+ years history (3.7M rows, 5.6× larger than R1K)
-- ⚠ SEC fundamentals coverage = 0 for R2K (only fetched for R1K) — re-fetching now (~30 min)
-- ✓ WF on R2K alpha158-only: IC +0.015 (Cakici fails without fund)
-- ✓ WF on R2K + fund: IC +0.026 — fund adds +0.011 to R2K BUT still loses to R1K+fund (+0.066)
-- ✗ Cakici 2023 hypothesis NOT CONFIRMED for US daily ML with alpha158+5-fund features (testing if Cakici holds without fundamentals first)
+Verdict (closed): NOT CONFIRMED for US daily ML with alpha158+5-fund features.
+- R1K (291 ticker R1K era): IC +0.066
+- R2K alpha158-only: IC +0.015
+- R2K + fund: IC +0.026 (fund adds +0.011 to R2K but still loses to R1K+fund)
+
+Logged in `doc/research/failed-experiments-log.md`. Production stayed on R1K-quality
+subset (wl200 142 ticker post-2026-05-18 promotion).
 
 ---
 

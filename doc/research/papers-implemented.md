@@ -1,15 +1,22 @@
-# Papers & Algorithms Implemented in the Rust Transformer Stack
+# Papers & Algorithms Implemented Across the Codebase
 
-Catalogue of academic papers, algorithms, and engineering patterns ported into
-the `rust/transformer_scorer/` workspace as part of the 2026-04-25 transformer
-sprint. Each entry: paper → what we implemented → which file → what we
-measured.
+Catalogue of academic papers, algorithms, and engineering patterns wired into production code.
 
-This is the receipt for the user's "你要给我出一份报告，实现了哪些论文的什么
-理论" request. **Honest framing**: we implemented all the listed methods; their
-empirical benefit on real data was mixed (see `doc/experiments/rust-transformer-ic.md`
-for the head-to-head — production LightGBM still wins +0.0850 vs transformer
-+0.0519 on identical data).
+**Scope (2026-05-20 update)**: originally focused on the 2026-04-25 Rust transformer
+sprint at `rust/transformer_scorer/` (legacy). Expanded to cover the broader stack
+per CLAUDE.md §5.12 "default to canonical references":
+- HF Trainer-based PatchTST shadow (`scripts/patchtst_hf.py`, shipped 2026-05-19)
+- FiLM regime conditioning (Perez 2017)
+- Margin Ranking loss (CIKM 2025 arXiv 2510.14156)
+- Student-t multi-task head via `torch.distributions.StudentT`
+- cvxportfolio / Almgren-Chriss / Ledoit-Wolf for portfolio QP
+- HXZ 2020 "Replicating Anomalies" (DDV disable rationale)
+- Kelly-Gu-Xiu 2020 RFS firm characteristics
+- Bailey-López de Prado 2014 DSR + 2015 PBO/CSCV
+- Box-Behnken 1960 / Plackett-Burman 1946 DOE methodology (§5.14)
+
+**Honest framing**: implementing a method ≠ confirming empirical benefit. Each entry
+notes status (PRODUCTION / SHADOW / REJECTED / EXPLORATORY).
 
 ## Architecture
 
@@ -290,4 +297,129 @@ Empirical losers (kept, not promoted):
 
 The transformer itself: validated on synthetic (val_IC +0.2314 within 0.003
 of the MLP ceiling — port is correct) but lost to production LightGBM on
-real data (+0.0519 vs +0.0850). Stays as research artifact, not promoted.
+real data (+0.0519 vs +0.0850). Rust transformer stays as research artifact,
+not promoted.
+
+---
+
+## Papers added 2026-05-19 / 2026-05-20 (HF Trainer refactor + Pillar B)
+
+### 21. Nie et al., 2023 ICLR — *A Time Series is Worth 64 Words: Long-term Forecasting with Transformers* ([arXiv 2211.14730](https://arxiv.org/abs/2211.14730))
+
+PatchTST — patches the lookback into non-overlapping subseries, embeds each
+patch as a token, channel-independent Transformer encoder.
+
+* **Implemented in:** `scripts/patchtst_hf.py` (HF `transformers.PatchTSTModel` backbone)
+* **What we ported:** vanilla PatchTST backbone via Hugging Face. Per `CLAUDE.md §5.12`
+  canonical-lib mandate, the 2026-05-19 refactor swapped a hand-rolled custom
+  PatchTST/iTransformer/LSTM/MLP implementation (784 LOC `scripts/transformer_v4.py`,
+  shelved) for the HF version + custom multi-task head.
+* **Status:** SHADOW since 2026-05-19 (commits `cf6311c`, `4e156e2`).
+  Channel-independence is the documented #1 failure mode for cross-sectional
+  finance (arXiv 2502.09683, 2505.12761). Cross-stock attention planned T2.1.
+
+### 22. CIKM 2025 — *On Evaluating Loss Functions for Stock Ranking* ([arXiv 2510.14156](https://arxiv.org/abs/2510.14156))
+
+Loss function benchmark on PortfolioMASTER × S&P 500 top-110. Margin Ranking
++ ListNet beat pairwise BCE + MSE on portfolio Sharpe + annual return.
+
+* **Implemented in:** `scripts/patchtst_hf.py::margin_ranking_loss` (uses canonical
+  `torch.nn.functional.margin_ranking_loss`)
+* **Reported gain:** Margin Ranking 0.75 Sharpe / 16.23% AR vs MSE 0.58 / 12.0%
+  on PortfolioMASTER. NDCG (ranking accuracy) does NOT correlate with portfolio
+  Sharpe — pick loss for downstream metric.
+* **Status:** Default loss for HF PatchTST shadow.
+
+### 23. Perez et al., 2017 — *FiLM: Visual Reasoning with a General Conditioning Layer* ([arXiv 1709.07871](https://arxiv.org/abs/1709.07871))
+
+Feature-wise Linear Modulation: `γ, β = MLP(context); h' = γ ⊙ h + β`.
+Lightweight conditional learning — shared backbone, context-aware modulation.
+
+* **Implemented in:** `scripts/patchtst_hf.py::FiLMLayer` (~25 LOC)
+* **Status:** Pillar B foundation shipped 2026-05-19 commit `78e59d3`.
+  `--film-regime-cond` opt-in flag. Zero-init last layer → identity at init
+  → strict superset of FiLM-OFF baseline.
+* **Empirical:** 5-cut × 5-seed A/B against baseline pending (driver:
+  `scripts/eval_hf_film_5cut_5seed.py`).
+
+### 24. Student-t NLL via `torch.distributions.StudentT`
+
+Multi-task distributional head emits (df, loc, scale) — Student-t negative
+log-likelihood as auxiliary loss for σ-calibrated predictions.
+
+* **Implemented in:** `scripts/patchtst_hf.py::student_t_nll` + `dist_head`
+* **Why:** NGB σ wire failed in 3 prior A/B (2026-05-17). End-to-end Student-t
+  in HF Trainer shares representation with ranking head — no train/serve skew.
+  Inference outputs (μ, σ) for downstream Kelly/QP.
+* **Status:** Shipped 2026-05-19. σ-calibration verifier at
+  `scripts/verify_sigma_calibration.py`. Target: σ-calibration coefficient
+  ≥ 0.20 (NGB Duan 2020 §4 baseline).
+
+### 25. Zeng et al., 2023 AAAI — *Are Transformers Effective for Time Series Forecasting?* ([arXiv 2205.13504](https://arxiv.org/abs/2205.13504))
+
+DLinear / NLinear — single-matmul trend+seasonal decompose. Beats 8 transformer
+variants on ETT/Electricity benchmarks; mandatory baseline per §5.12.
+
+* **Implemented in:** `scripts/dlinear_baseline.py` (adapted for cross-sectional
+  ranking — per-channel collapse T→1, then head over channels → score)
+* **Status:** Shipped 2026-05-19 commit `97f6f35`. 5-cut × 5-seed eval driver
+  at `scripts/eval_dlinear_5cut_5seed.py`.
+* **§5.12 gate:** if PatchTST cannot beat DLinear by ≥+0.005 min-regime IC,
+  architecture is NOT the bottleneck (labels/features/sample size is).
+
+### 26. Bailey-López de Prado 2014 — *The Deflated Sharpe Ratio* ([SSRN 2460551](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551))
+
+DSR accounts for multiple-comparison selection bias. Mandatory for promotion
+gating per CLAUDE.md §5.13.4a Tier 3 (`DSR > 0.5 OR PBO < 0.5 OR n ≥ 30 + t > 3.0`).
+
+* **Implemented in:** `kernel/model_acceptance.py`, `sim/runner.py::run_backtest_multi_seed`
+* **Status:** PRODUCTION — every multi-trial batch must quote DSR alongside raw Sharpe.
+
+### 27. Bailey-Borwein-López de Prado-Zhu 2015 — *Probability of Backtest Overfitting via CSCV* ([J. Comp. Finance 14(1)](https://www.davidhbailey.com/dhbpapers/backtest-overfitting.pdf))
+
+PBO via combinatorially-symmetric cross-validation. Complement to DSR.
+
+* **Implemented in:** `kernel/cscv_pbo.py`, returned by `run_backtest_multi_seed` when N ≥ 2
+* **Status:** PRODUCTION (used in DOE summary stats)
+
+### 28. Hou-Xue-Zhang 2020 RFS — *Replicating Anomalies* ([RFS 33(5)](https://academic.oup.com/rfs/article/33/5/2019/5236625))
+
+65% factor replication failure rate. Justified disabling `deep_drawdown_veto`
+(DDV) globally on 2026-05-17 — distress/loser anomaly fails to replicate
+post-Fama-French 2008.
+
+* **Status:** Drives §5.14.5 "no decoration-citing" + DDV disable.
+
+### 29. Kelly-Gu-Xiu 2020 RFS — *Empirical Asset Pricing via Machine Learning* / firm characteristics list
+
+Canonical 102 firm characteristics. CSRankNorm per-day is their standard
+preprocessing for ranking-based panel models.
+
+* **Implemented in:** `scripts/patchtst_hf.py::csrank_norm_per_day`
+* **Status:** PRODUCTION (applied to all 172 features at train + inference)
+
+### 30. cvxportfolio (Boyd, Stanford) + Almgren-Chriss 2000 + Ledoit-Wolf 2004
+
+Portfolio QP backend.
+
+* **Implemented in:** `kernel/portfolio_qp/qp_solver.py` (cvxpy + CLARABEL),
+  `kernel/portfolio_qp/cvxportfolio_backend.py` (full cvxportfolio SinglePeriodOpt)
+* **Status:** PRODUCTION — cvxpy CLARABEL is primary path; cvxportfolio backend
+  shipped 2026-05-07 as alternate.
+
+### 31. Berkin-Jeffrey 1990 — HIFO tax-lot accounting
+
+Highest-In-First-Out for tax-optimal lot disposal.
+
+* **Implemented in:** `kernel/portfolio_qp/tasks.py::qp_tax_lot_method=hifo`
+* **Status:** PRODUCTION default 2026-05-17 commit `bc18795` (was FIFO).
+  Pure accounting change — `feedback_no_tax_driven_logic`-safe.
+
+### 32. IRC §1091 cost-aware wash sale + min_reentry_days anti-churn
+
+US tax code §1091 wash-sale rule applied as cost-aware QP constraint (gain =
+no cost; loss = NPV deferred-tax cost). Compounded with `min_reentry_days=5`
+business days anti-churn (2026-05-18 MCD incident).
+
+* **Implemented in:** `kernel/portfolio_qp/`, `kernel/wash_sale.py`
+* **Status:** PRODUCTION

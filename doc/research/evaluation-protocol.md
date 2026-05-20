@@ -109,9 +109,11 @@ the 8 windows. Emit daily equity curves via `--equity-json`.
 6. Cohen's d: d = μ_pool / σ_pool (effect size)
 
 **Multiple-comparison correction:**
-- K_trials = cumulative number of variants tested in this session +
-  prior sessions (currently ≈ 100+)
-- DSR computed with this K
+- K_trials = cumulative number of variants tested across sessions; must
+  be tracked (use `runs.db::training_runs` row count as proxy, or `mlruns/`
+  if MLflow is wired). DO NOT hardcode a specific count.
+- DSR computed with this K (Bailey-López de Prado 2014)
+- PBO via CSCV (Bailey-Borwein-LdP-Zhu 2015) as complement
 - Bonferroni-Holm at α=0.01 OR BH-FDR at q=0.05
 
 ## Promotion tiers (rewritten)
@@ -137,19 +139,37 @@ NOT eligible for live config flip.
 
 ### Tier 3 — CONFIRMED (live-promotable)
 
-Tier 2 + ALL of:
-- t_pool > 3.0 (Harvey-Liu-Zhu 2016 multi-test threshold for real
-  anomalies in factor research)
-- **DSR > 0.5** (probability true SR > 0 exceeds 50% AFTER
-  selection-bias correction with K_trials)
-- **PBO < 0.5** (probability of overfitting below random)
-- Newey-West p-value < 0.01
-- Pre-registered hypothesis match (effect direction predicted in
-  advance of run)
-- |Cohen's d| > 0.50 (medium-or-larger effect)
+Tier 2 + ANY of (per `doc/research/promotion-methodology.md` authoritative spec, CLAUDE.md §5.13.4a):
+- **DSR > 0.5** (probability true SR > 0 exceeds 50% AFTER selection-bias correction with K_trials, Bailey-López de Prado 2014)
+- **PBO < 0.5** (probability of overfitting below random, Bailey-Borwein-LdP-Zhu 2015 CSCV)
+- **n ≥ 30 AND t > 3.0** (large-sample t-test, Harvey-Liu-Zhu 2016 multi-test threshold)
 
-→ Live-promotable. Flip prod config in same commit; pin via
-regression test.
+→ Live-promotable. Flip prod config in same commit; pin via regression test.
+
+(Earlier draft of this section required ALL three conditions with AND — that
+was inconsistent with `promotion-methodology.md` which is the canonical source.
+Reconciled 2026-05-20 to OR per CLAUDE.md ground truth.)
+
+**Also recommended (Tier 2+ soft requirements)**:
+- Newey-West p-value < 0.01
+- Pre-registered hypothesis match
+- |Cohen's d| > 0.50
+
+---
+
+## Walk-forward cuts (RenQuant-specific protocol)
+
+In addition to the generic ML walk-forward protocol above (8 non-overlapping 3-month windows for paired daily comparison), RenQuant uses 5 named cuts in `kernel/walk_forward_splits.py::build_default_cuts()` for IC walk-forward evaluation:
+
+| Cut | Val window | Regime intent |
+|---|---|---|
+| `cut1_covid` | 2020-01-01 → 2020-04-30 | BEAR-heavy / COVID crash |
+| `cut2_fed` | 2022-01-01 → 2022-04-30 | Fed rate hike tech selloff (trending) |
+| `cut3_inflpk` | 2022-10-01 → 2022-12-31 | Inflation peak (transitional) |
+| `cut4_svb` | 2023-01-01 → 2023-04-30 | SVB / regional bank shock |
+| `cut5_unwind` | 2024-06-01 → 2024-09-30 | Late-cycle unwind |
+
+PRIME DIRECTIVE compliance: each val window deliberately contains at least one SPIKED regime. Models that win in BULL_CALM only will fail at least one cut. Min-regime IC across these cuts (not pooled mean) is the canonical selection metric in the HF Trainer refactor (`scripts/patchtst_hf.py::PerRegimeICCallback`).
 
 ## Pre-registration (mandatory)
 
