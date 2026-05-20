@@ -2,7 +2,7 @@
 
 Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline: data ingestion → cross-sectional ML signal generation → backtesting (LEAN) → live trading (Alpaca/IBKR). Statistically interpretable, strictly decoupled.
 
-**Active strategy: `renquant_104`** — panel learning-to-rank (cross-sectional XGBoost ranker + NGBoost μ/σ residual head + isotonic calibrator + portfolio QP) with an 11-gate model-acceptance system, shadow-mode challenger infrastructure, and the Phase 4 SOP at [`doc/components/model-selection.md`](doc/components/model-selection.md).
+**Active strategy: `renquant_104`** — panel learning-to-rank (cross-sectional XGBoost ranker + NGBoost μ/σ residual head + **Platt-scaled** calibrator + portfolio QP with HIFO lot accounting) with an 11-gate model-acceptance system, shadow-mode challenger infrastructure, and **HF PatchTST shadow active since 2026-05-19** (HF Trainer refactor + FiLM regime conditioning).
 
 `renquant_103` (single-stock per-symbol scanner) is retained as the rollback strategy. `renquant_101` / `renquant_102` are reference scaffolding.
 
@@ -53,30 +53,29 @@ Personal quantitative trading workstation for Apple Silicon. Glass-box pipeline:
 ## Quick Start (104)
 
 ```bash
-# Setup (one-time)
-conda create -n renquant python=3.10
-conda activate renquant
-pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost lightgbm \
-            ngboost jupyterlab pyarrow pandas-market-calendars
-pip install "openbb[all]" openbb-cli backtesting scipy lean alpaca-py
+# Setup (one-time) — use .venv (NOT conda; per feedback_python_env)
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.lock.txt
+# For HF PatchTST: transformers >= 5.8.1, accelerate >= 1.1.0 (auto-installed via lockfile)
 lean login
 
 # Daily workflow (104 — the active strategy)
-python scripts/train_104.py                       # full retrain (gates auto-validate)
+python scripts/train_104.py                       # daily STAGES only (per 2026-05-17 walk-forward gate enforcement)
 python scripts/train_104.py --skip-baseline       # panel + recalibrate only
+# Weekly promote happens via weekly_wf_promote.sh (Saturday 04:00 PT cron)
 python scripts/model_dashboard.py                 # production state + tournament
-python scripts/select_best_model.py --strategy renquant_104  # backend tournament
-python scripts/finalize_challenger.py             # close shadow window (when applicable)
 
-# Live trading
-python -m live.runner --strategy renquant_104 --broker alpaca --once
+# Live trading (CAUTION: --broker alpaca = LIVE real money per 2026-05-17 e2e mandate)
+python -m live.runner --strategy renquant_104 --broker alpaca --once       # LIVE
+python -m live.runner --strategy renquant_104 --broker alpaca-paper --once # PAPER (cron default)
 
 # Backtesting via LEAN (Docker)
 python scripts/export_lean_watchlist.py --strategy renquant_104
 cd backtesting/renquant_104 && lean backtest .
 
-# Scheduled (macOS launchd)
-# Plists in scripts/launchd/; daily_104.sh fires post-close on weekdays
+# Scheduled (macOS launchd) — 11 active plists per doc/ops/schedule.md
+# Cron schedules use --broker alpaca-paper per 2026-05-11 safety mandate
 ```
 
 `.env` holds Alpaca / IBKR creds (gitignored). Detailed setup: [`doc/ops/setup.md`](doc/ops/setup.md).
@@ -122,7 +121,7 @@ RenQuant/
 │   ├── check_challenger_window.sh   daily cron poll for window closure
 │   ├── daily_104.sh / daily_103.sh  launchd-fired daily drivers
 │   └── …                            ~50 ops/analysis tools
-├── tests/                           ★ 2418 tests; pytest tests/ -v
+├── tests/                           ★ ~11.7k tests passing (12 pre-existing failures); pytest tests/ -v
 ├── data/                            local parquet cache + runs.db (gitignored)
 ├── doc/                             documentation (themed subdirs — see below)
 └── CLAUDE.md                        AI-collaboration ground rules
@@ -140,14 +139,13 @@ The `doc/` tree is themed; start at [`doc/README.md`](doc/README.md) for a navig
   - [`doc/arch/decision-graph-103.md`](doc/arch/decision-graph-103.md) — decision flowchart (shared trunk)
   - [`doc/arch/strategy-103.md`](doc/arch/strategy-103.md) — rollback strategy spec
 - **Components**
-  - [`doc/components/model-selection.md`](doc/components/model-selection.md) — 4-tier acceptance + tournament + shadow SOP
   - [`doc/components/panel-ltr.md`](doc/components/panel-ltr.md) — primer + glossary
   - [`doc/components/buy-logic.md`](doc/components/buy-logic.md) — quality gates + portfolio QP
   - [`doc/components/sell-logic.md`](doc/components/sell-logic.md) — SellGateB + LimitSellsPerBar
   - [`doc/components/calibration.md`](doc/components/calibration.md) — saturation + score-DB
-  - [`doc/components/transformer.md`](doc/components/transformer.md) — daily + hourly + Bug #21/#23/#24
-  - [`doc/components/macro-factor-frame-design.md`](doc/components/macro-factor-frame-design.md) — VIX/HYG/UUP cross-asset
-  - [`doc/components/portfolio-qp.md`](doc/components/portfolio-qp.md), [`rotation.md`](doc/components/rotation.md), [`databases.md`](doc/components/databases.md), [`training-pipeline.md`](doc/components/training-pipeline.md), [`trade-evaluation.md`](doc/components/trade-evaluation.md)
+  - [`doc/components/portfolio-qp.md`](doc/components/portfolio-qp.md), [`rotation.md`](doc/components/rotation.md), [`databases.md`](doc/components/databases.md), [`training-pipeline.md`](doc/components/training-pipeline.md)
+  - PatchTST / FiLM regime conditioning: [`doc/research/2026-05-19-patchtst-improvement-plan.md`](doc/research/2026-05-19-patchtst-improvement-plan.md)
+  - HF Trainer refactor lessons: [`doc/experiments/2026-05-19-hf-trainer-refactor-journal.md`](doc/experiments/2026-05-19-hf-trainer-refactor-journal.md)
 - **Operations**
   - [`doc/ops/usage.md`](doc/ops/usage.md) — workflow modes (research / validation / analysis / live / scheduled)
   - [`doc/ops/golden-config.md`](doc/ops/golden-config.md) — current golden config snapshot
@@ -167,7 +165,7 @@ See [`CLAUDE.md`](CLAUDE.md) for the full set; key ones:
 
 1. **Logic graph is the source of truth.** Notebook ↔ LEAN ↔ kernel must agree on every decision branch.
 2. **Every logical unit is a Task / Job / Pipeline.** New decision logic goes into `kernel/pipeline/` or `kernel/panel_pipeline/` as a Task wired into the appropriate Job. No hand-written loops bypassing the orchestration layer.
-3. **Tests for every feature — and every bug.** A bug without a regression test is a bug you'll see again. 2418 tests as of 2026-04-26 round-7.
+3. **Tests for every feature — and every bug.** A bug without a regression test is a bug you'll see again. ~11.7k tests passing (12 pre-existing failures).
 4. **Promotion thresholds are not floors for theoretically-sound wins.** Default promotion: APY win ≥ +2 pts on 27-mo OOS. Exception: live/sim parity fixes, theory-aligned wins where the predicted magnitude matches, mechanism-clean changes ship at < +2 pt.
 5. **Unexpected A/B results = audit before accepting.** When theory predicts X and the result is ¬X, the first hypothesis is "my implementation has a bug", not "the theory is wrong".
 

@@ -1,9 +1,28 @@
-# Long-Short Architecture (Phase 2, 2026-05-13)
+# Long-Short Architecture (Phase 2, 2026-05-13) — SHELVED
+
+> **🛑 OBSOLETE 2026-05-17 — SKIP verdict.**
+>
+> Phase 1 empirical re-test (commit `28251c2`, 2026-05-17) showed:
+> - Model bottom decile 60d-ann return = **+0.58%** (POSITIVE)
+> - Model top decile = +17.77%
+> - All alpha on LONG side; short side has no negative alpha to harvest
+> - Kelly-Gu-Xiu 2020 RFS standard: short alpha needs −10% to −15%/yr to justify infrastructure
+> - **Verdict: SKIP. Saves 3-4 weeks engineering.**
+>
+> Roadmap moved long-short to CLOSED/REJECTED. The design below is kept for historical
+> reference in case the model class changes and short-side alpha re-emerges.
+>
+> See `doc/research/failed-experiments-log.md` + `doc/research/2026-05-14-longshort-clean-FINAL.md`.
+
+---
+
+# Original design (historical reference)
 
 Strategy currently long-only. Phase 1 empirical gate showed
-cross-sectional L-S spread +29.2%/yr (doc/research/2026-05-13-short-phase1-gate.md).
+cross-sectional L-S spread +29.2%/yr (doc/research/2026-05-13-short-phase1-gate.md)
+— but the bottom-decile re-test 2026-05-17 reversed the verdict (above).
 This document specifies the architectural changes to enable a
-**risk-controlled market-neutral long-short** strategy.
+**risk-controlled market-neutral long-short** strategy, should it ever be revived.
 
 ## Design principle: long-short as a SCALE on the existing rank
 

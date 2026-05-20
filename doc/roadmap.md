@@ -3,7 +3,7 @@
 **Single source of truth for what's next.** All items ranked by **expected ROI (Sharpe-lift ÷ effort)** with status flag. Past dated plans archived to [`doc/archives/plans/`](archives/plans/) for provenance.
 
 **Last consolidated**: 2026-05-18 NIGHT (consolidated 7 plan/backlog files → 1)
-**Last incremental sync**: 2026-05-18 18:35 PT (anti-churn 4-layer, Platt switch, PatchTST scorer + DOE in flight, sentiment fully wired ON)
+**Last incremental sync**: 2026-05-20 (HF Trainer refactor + FiLM + DLinear baseline + 5×5 eval infra + DOE Phase 2 verdict landed 2026-05-19; doc/research/2026-05-19-patchtst-improvement-plan.md is canonical for current PatchTST roadmap)
 
 ---
 
@@ -15,20 +15,24 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ---
 
-## 📍 Current state (2026-05-18)
+## 📍 Current state (2026-05-20)
 
 | | |
 |---|---|
-| Production model | `panel-ltr.alpha158_fund.json` — XGBoost rank:pairwise, **169 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE) |
+| Production model | `artifacts/prod/panel-ltr.alpha158_fund.json` — XGBoost rank:pairwise, **172 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment) |
 | NGBoost head | Trained + promoted, val_IC +0.0352, σ-calib +0.274 (commit `e267101`). σ-wire stays OFF in golden per 3-condition A/B |
-| Calibrator | pool_IC +0.094, er.y ∈ [-0.105, +0.200] (post 5/15 P0 refit, train-site clip) |
+| Calibrator | Platt scaling (was isotonic pre-2026-05-18); pool_IC +0.094, er.y ∈ [-0.105, +0.200] (5/15 P0 refit, train-site clip) |
 | Regime detector | 5-day BEAR + vol-cluster CHOPPY (commit `0a192c4`); HMM hysteresis sticky N=10 bars |
 | Walk-forward gate | ENFORCED: daily train STAGES only; weekly Saturday 04:00 PT promote with full WF + sanity battery |
-| Tax / lot accounting | HIFO default (commit `bc18795`, Berkin-Jeffrey 1990); IRC §1091 wash-sale + §1233 short-sale rules wired |
-| Live broker | Alpaca LIVE (real money). 11 launchd plists active. PAPER mandate overridden ONLY for explicit `--broker alpaca` e2e invocations |
+| Tax / lot accounting | HIFO default (commit `bc18795`, Berkin-Jeffrey 1990); IRC §1091 wash-sale + §1233 short-sale rules wired; min_share_floor for high-priced stocks |
+| Anti-churn | `min_reentry_days=5` business days (2026-05-18 MCD incident) compounds on §1091 wash-sale |
+| DDV | DISABLED globally 2026-05-17 per HXZ 2020 "Replicating Anomalies" (was vetoing META rank #1) |
+| Live broker | Alpaca LIVE (real money) for explicit `--broker alpaca` e2e invocations; PAPER for 11 launchd plists per 2026-05-11 safety mandate |
+| Watchlist | wl200 (142 ticker quality-first, promoted 2026-05-18 — replaced wl103) |
 | **C5 news sentiment** | **2026-05-18 LIVE**: 14 regime entries `enabled`; panel-LTR retrained 169→172 feats; daily refresh cron staged |
 | **C1 options-IV** | **2026-05-18 ACCUMULATION**: fetcher + parser shipped, daily snapshot cron staged. Wait n_daily_rows ≥ 120 (~6mo) |
-| **PatchTST sequence model** | **2026-05-18 P0 ACTIVE**: scorer + registry + shadow shipped; DOE sweep in flight (PID 7998, ETA 20:15 PT) |
+| **HF PatchTST shadow** | **2026-05-19 SHIPPED**: shadow scorer wired (commits `cf6311c`, `4e156e2`); HF Trainer refactor + multi-task head + FiLM regime conditioning all landed; 5-cut × 5-seed eval drivers ready |
+| **PatchTST improvement plan** | **2026-05-19**: full systematic plan at `doc/research/2026-05-19-patchtst-improvement-plan.md` (Pillar A/B/C × Tier 1/2/3) |
 
 ---
 
@@ -88,58 +92,51 @@ Full rules: [`CLAUDE.md`](../CLAUDE.md) PRIME DIRECTIVE section.
 
 ## 🎯 ACTIVE — next P0 items (ROI ranked)
 
-### 1. 🔬 PatchTST sequence model — **DOE sweep in flight** (2026-05-18 PM)
+### 1. 🔬 PatchTST sequence model — **HF Trainer refactor LANDED 2026-05-19, 5×5 eval in flight**
 
-**Status (2026-05-18 PM)**:
-- Scorer shipped (`c7f710e`): `PatchTSTPanelScorer` with `score_with_history()` end-to-end working in prod inference (OMP fix at module top for xgboost↔PyTorch coexistence).
-- Model registry shipped (`9a6cca1`): one-config-knob swap `kind: xgb | patchtst` via decorator pattern; extensible for LGBM/NGBoost/future.
-- Shadow scoring shipped (`a80ba96`, `5bad1a8`): alt-model runs full pipeline + records via MLflow, **no order submission** — safe rollout pattern.
-- 5-seed prototype verdict (`4ee09c3`): seed-42 val_IC +0.050 / seed-43 val_IC −0.143. High variance ≠ confirmed signal; **not a winner over XGB at current data scale**.
-- Optuna sweep tried + DELETED today (PRIME DIRECTIVE violation: pooled-mean objective picks regime-fragile models).
-- **DOE sweep IN FLIGHT** (PID 7998, started 18:27 PT): 2^(4-1) Resolution IV fractional factorial + 1 center = 9 points × 3 seeds = 27 runs, ETA ~20:15 PT.
-  - Knobs: `lr ∈ {1e-4, 1e-3}`, `weight_decay ∈ {1e-4, 1e-1}`, `warmup_epochs ∈ {2, 6}`, `seq_len ∈ {16, 60}`
-  - **Objective = min-across-regime val IC** (PRIME DIRECTIVE compliant, NOT pooled mean)
-  - Output: `artifacts/patchtst_doe/{runs.csv, main_effects.csv, interactions.csv, summary.md}`
+**Status (2026-05-20)** — see `doc/research/2026-05-19-patchtst-improvement-plan.md` for full Pillar A/B/C × Tier 1/2/3 roadmap.
+
+**Shipped 2026-05-19**:
+- Scorer wired in prod (commits `c7f710e`, `9a6cca1`, `a80ba96`, `5bad1a8`, `cf6311c`, `4e156e2`): full HF PatchTST shadow path active.
+- Model registry: `kind: xgb | patchtst | hf_patchtst | regime_router` (commit `f611601`).
+- DOE Phase 2 verdict (commit `1863a4d`): 70/81 — pt_07 best at `lr=1e-4, wd=0.3, seq_len=24` confirmed "structural limit, router thesis holds". Parameter tuning hit ceiling.
+- **HF Trainer refactor of `scripts/patchtst_hf.py`** (commit `ca21654`): swapped hand-rolled train loop to `transformers.Trainer`; multi-task head (`rank_head` + `dist_head` for Student-t df/loc/scale); Margin Ranking loss (CIKM 2025 arXiv 2510.14156); `PerRegimeICCallback` for min-regime IC selection (PRIME DIRECTIVE in code); cosine LR + warmup; `load_best_model_at_end=True`. Solves prior best-epoch save bug.
+- **FiLM regime conditioning** (commit `78e59d3`): `--film-regime-cond` flag; FiLMLayer (Perez 2017 arXiv 1709.07871); identity-at-init = strict superset of baseline.
+- **DLinear baseline** (commit `97f6f35`): §5.12 must-have — single-matmul cure-lab/LTSF-Linear adapted for cross-sectional ranking. 5-cut × 5-seed eval done.
+- 5×5 eval drivers + arch comparator + σ-calibration verifier shipped (commit `d821a46`).
+- FiLM A/B eval driver shipped (commit `dc4c049`); auto-launches after baseline 5×5 completes.
+
+**In flight (~2.5h ETA from 2026-05-20 morning)**:
+- `eval_hf_trainer_5cut_5seed.py` (PID 37764, MPS) — 5 cuts × 5 seeds × 8 epochs × pt_07 knobs
+- Orchestrator (PID 43856) auto-chains: baseline → FiLM A/B → 3-way comparison (PatchTST baseline / PatchTST+FiLM / DLinear)
+- Total wallclock ~11h; verdict ETA ~6:30 PM PT
+
+**Tier 1 remaining** (per plan doc):
+- T1.4 DLinear baseline ✓ done
+- T1.7 SKIPPED: regime constant on a day → 0 cross-sectional info → naive regime-as-feature can't help ranking (Perez FiLM at T2.2 is the right answer instead)
+
+**Tier 2 next** (pending Tier 1 verdict):
+- T2.1 cross-stock attention (iTransformer-style)
+- T2.2 FiLM ✓ shipped (A/B running)
+- T2.3 GroupDRO loss (Sagawa 2019, arXiv 1911.08731)
+- T2.4 SSL masked-patch pretrain (Nie 2023 §5.2)
 
 **Pass gate (per CLAUDE.md §5.14.4 + PRIME DIRECTIVE)**:
-- DOE finds a point where **min-regime val_IC ≥ XGB-equivalent min-regime val_IC** (per-regime, not pooled)
-- 3-seed confirmation at predicted optimum with std/mean ≤ 0.5 (low variance)
+- **min-regime val_IC** (not pooled) for selection — wired in `PerRegimeICCallback`
+- 5-seed × 5-cut confirmation with std/mean ≤ 0.5
 - DSR > 0.5 OR PBO < 0.5 at confirmation (Bailey-Lopez de Prado 2014)
 - User criterion: "PatchTST 只要不是比 xgb 差很多就换" — even tie acceptable for architectural diversification
 
-**Next steps after DOE finishes**:
-- IF best point passes: BBD (Box-Behnken) zoom-in around best knob region → predicted optimum → confirmatory run → **shadow registration** (user 2026-05-18 decision: HF PatchTST = first real shadow model, 1-2 wk MLflow log of rank divergence vs XGB primary, THEN decide promote-to-primary)
-- IF best point fails per-regime gate: close research thread, archive to `failed-experiments-log.md`
+**Preprocessing + variance-reduction shipped in HF Trainer refactor**:
+1. **CSRankNorm** features per-day (Kelly-Gu-Xiu 2020 RFS) — in `csrank_norm_per_day()`
+2. **Label Winsorize ±0.5%** — in `winsorize_label()`
+3. **HF default `scaling=std`** ≡ RevIN (Kim 2021 ICLR) — backbone config
+4. **N-seed Ensemble** at eval level via `eval_*_5cut_5seed.py` drivers — 5 seeds × 5 cuts
+5. SWA removed (was custom impl; HF Trainer's `load_best_model_at_end` replaces the actual need — best-epoch save not late-epoch averaging)
 
-**Variance-reduction protocol for HF DOE (preprocessing + ensemble)**:
+**Shadow model wiring**: ✅ shipped 2026-05-19 via commits `cf6311c` / `4e156e2`. HF PatchTST runs as shadow alongside XGB primary; weekly review feeds promote-to-primary decision.
 
-Current DOE shows pt_00 best point with **mean min_regime=+0.078 ± 0.058** (CoV 0.7) — high upside but high seed variance. Standard literature stack to reduce variance (CLAUDE §5.12 canonical refs):
-
-Preprocessing (bake into `scripts/patchtst_hf.py` data loader):
-1. **CSRankNorm** features per-day (Kelly-Gu-Xiu 2020 RFS standard): `df.groupby('date')[feats].rank(pct=True) - 0.5`
-2. **Label Winsorize ±3σ** (`scipy.stats.mstats.winsorize`)
-3. **HF default `scaling=std`** ≡ RevIN (Kim 2021 ICLR) — already free
-
-Training-side (in DOE script):
-4. **N-seed Ensemble** (predict-average across 5 seeds) — Lakshminarayanan 2017 NIPS; variance ↓ √N → pt_00 σ 0.058 → 0.026
-5. **SWA** (`torch.optim.swa_utils.AveragedModel + SWALR`) for confirmatory final training only — Izmailov 2018 UAI; 5-15% variance reduction without ensemble cost
-
-NOT doing (ROI low / off-mandate):
-- T-Fixup init (§5.12 violation — custom code)
-- Snapshot ensemble (SWA strictly better)
-- Time-series augmentation (ranking task incompatible)
-- Sector residualization (overlaps with sector_mom feature)
-
-**Shadow model wiring (sequencing after HF DOE)**:
-1. Train confirmatory HF PatchTST on full 5-cut walk-forward at predicted optimum
-2. Add `hf_patchtst` kind to `kernel/panel_pipeline/model_registry.py`
-3. Write `HFPatchTSTScorer` adapter (sequence input → score; mirror existing `PatchTSTPanelScorer` API)
-4. Register in `golden.json::ranking.panel_scoring.shadow_models` as kind=hf_patchtst
-5. e2e Alpaca live run → verify `mlruns/renquant_104_shadow/` populated
-6. Daily: prod runs primary XGB; ApplyShadowScoringTask logs HF rank + mean_diff + corr + top5_overlap to MLflow
-7. Weekly review: `optuna-dashboard` or `mlflow ui` → if HF shadow consistently leads XGB primary on per-regime metrics, propose promote-to-primary via config flip
-
-References: Nie et al 2023 ICLR *PatchTST*, Lim et al 2021 ICLR *TFT*, Box-Hunter-Hunter 2005 (FrFact), Qlib `pytorch_*_ts.py`.
+References: Nie et al 2023 ICLR *PatchTST*, Perez 2017 arXiv 1709.07871 *FiLM*, CIKM 2025 arXiv 2510.14156 *Margin Ranking for stock ranking*, Box-Hunter-Hunter 2005 (FrFact), Qlib `pytorch_*_ts.py`.
 
 ### 1c. ~~News-sentiment integration~~ — **SHIPPED 2026-05-18** (was P0 #1)
 
@@ -171,18 +168,18 @@ References: Grinold-Kahn 1999 §6, Hou-Xue-Zhang 2020 *RFS*, Cakici-Cooper-Schmi
 
 References: Almgren-Chriss 2000 *J. Risk* §4 — linear price-impact regime ≤ 1% ADV/slice.
 
-### 4. LightGBM with GICS sector encoding (~+0.05-0.10 Sharpe, 3 days)
+### 4. LightGBM with GICS sector encoding (~+0.05-0.10 Sharpe, 1-2 days)
 
-**Status**: BLOCKED on GICS sector mapping. E48 LGB retest was on alpha158+5fund+3PEAD; marginal NO-GO without categorical handling.
+**Status (2026-05-20)**: ✅ **UNBLOCKED** — GICS data lives at `data/ticker_sectors.json` (304 tickers, fetched via `scripts/fetch_gics_sectors_yfinance.py` + `scripts/build_sector_map.py`). E48 LGB retest pending.
 
 **Theory**: Ke et al 2017 NeurIPS — LightGBM native categorical encoding handles sector membership without one-hot blow-up. Cat embedding learns sector-level mean offsets / risk parameters automatically.
 
-**Engineering** (3 days):
-- D1: source GICS sector data (SimFin or yfinance.Ticker.info)
-- D2: add `sector` column to panel; retrain LGB with `categorical_feature=['sector']`
-- D3: WF + sanity battery vs current XGB baseline
+**Engineering** (1-2 days):
+- D1: ✓ DONE — GICS data fetched + mapping in `data/ticker_sectors.json` (304 tickers)
+- D2: add `sector` column to panel via training_panel/ pipeline + retrain LGB with `categorical_feature=['sector']`
+- D3: 5-cut WF + sanity battery vs current XGB baseline (use `kernel/walk_forward_splits.build_default_cuts()`)
 
-**Pass gate**: ΔIC ≥ +0.01 (5-seed std) AND placebo persistence < 70%.
+**Pass gate**: per-regime min IC ≥ XGB baseline + 0.005 AND placebo persistence < 70%.
 
 References: Ke et al 2017 NeurIPS *LightGBM*, Prokhorenkova et al 2018 *CatBoost*, Qlib `LGBModel`.
 
@@ -230,14 +227,14 @@ Independent strategy dir `backtesting/renquant_105/`. Easley-Lopez de Prado-O'Ha
 
 ### 🧹 Architectural cleanup — delete all self-written + unused code
 
-**User mandate 2026-05-18**: "自己写的，且没有用的代码都尽量删掉" + "我是说所有代码！". Defer批量执行后再做; precondition is current DOE finish + HF pivot land. Until then, list candidates so nothing slips.
+**User mandate 2026-05-18**: "自己写的，且没有用的代码都尽量删掉" + "我是说所有代码！". DOE Phase 2 finished + HF Trainer refactor landed 2026-05-19. Ready to execute.
 
-**Tier A — confirmed dead today (deferred until DOE finishes ~23:15 PT 2026-05-18)**:
-- `scripts/transformer_v4.py` — 784 LOC custom transformer/iTransformer/PatchTST/LSTM/MLP. Replaced by `scripts/patchtst_hf.py` (HF transformers backbone).
+**Tier A — confirmed dead now (DOE done, HF pivot landed — execute cleanup)**:
+- `scripts/transformer_v4.py` — 784 LOC custom transformer/iTransformer/PatchTST/LSTM/MLP. Replaced by `scripts/patchtst_hf.py` (HF Trainer + multi-task head, 2026-05-19 refactor).
 - `scripts/qlib_transformer_v5.py` — another custom impl, untested in prod
-- `scripts/patchtst_doe_sweep.py` + `tests/test_patchtst_doe_sweep.py` — custom DOE orchestrator; will be replaced by `scripts/patchtst_doe_hf.py` (5-cut walk-forward + HF backbone)
-- `backtesting/renquant_104/kernel/panel_pipeline/patchtst_scorer.py` — custom scorer; replace with HF version
-- `kernel/panel_pipeline/model_registry.py` PatchTST handler — point at HF script
+- `scripts/patchtst_doe_sweep.py` + `tests/test_patchtst_doe_sweep.py` — custom DOE orchestrator; replaced by `scripts/patchtst_doe_hf.py` (5-cut walk-forward + HF backbone)
+- `backtesting/renquant_104/kernel/panel_pipeline/patchtst_scorer.py` — custom scorer; replaced by `hf_patchtst_scorer.py` (dict-aware post-refactor)
+- `kernel/panel_pipeline/model_registry.py` PatchTST handler — point at HF script (legacy `patchtst` kind kept for backward-compat with old shadow checkpoints; new training uses `hf_patchtst`)
 
 **Tier B — broader audit pending (when bored)**:
 Per §5.13.2 "any new module is dead until grep proves prod imports it" — sweep entire codebase, list every `kernel/` or `scripts/` file with 0 non-test imports. Likely candidates from memory:

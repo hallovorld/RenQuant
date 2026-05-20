@@ -4,19 +4,17 @@
 
 RenQuant is built around **strict layer decoupling**. Each layer has one job, communicates via well-defined interfaces (JSON files), and can be developed or replaced independently. Every decision in the pipeline is inspectable — no end-to-end black boxes.
 
-> **2026-05-07 status banner**: portfolio QP is now cvxpy + CLARABEL
-> primary (`solve_portfolio_qp` in `kernel/portfolio_qp/qp_solver.py`)
-> with an opt-in `cvxportfolio.SinglePeriodOpt` backend. Soft cash-drag
-> penalty replaces the hard `min_invested_pct` floor. Two panel-LTR
-> backends shipped: legacy 27-feat XGB (live) + alpha158_linear (158
-> features, researched winner — pending walk-forward validation +
-> daily-retrain wiring before re-promotion). See [`../STATUS.md`](../STATUS.md)
-> for current state and [`../components/portfolio-qp.md`](../components/portfolio-qp.md)
-> for the QP architecture.
+> **2026-05-20 status**: Production artifact is `artifacts/prod/panel-ltr.alpha158_fund.json`
+> (172 features = alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment). NGBoost head
+> promoted to prod (val_IC +0.0352); σ-wire dormant per A/B. Portfolio QP cvxpy + CLARABEL
+> with HIFO lot accounting and min_share_floor for high-price stocks. HF PatchTST shadow
+> active since 2026-05-19 (commits `cf6311c`, `4e156e2`) — HF Trainer refactor + FiLM
+> regime conditioning shipped same day. See [`../roadmap.md`](../roadmap.md)
+> § "📍 Current state" for full snapshot.
 
 ---
 
-## Current architecture (renquant_104, 2026-04-26 base + 2026-05-07 QP refactor)
+## Current architecture (renquant_104, 2026-05-20)
 
 The active strategy is `renquant_104`. Its inference and training are organized as **Pipelines composed of Jobs composed of Tasks** (see CLAUDE.md §1b "Every Logical Unit Is a Task, Job, or Pipeline"). Adapters bridge the kernel to LEAN / live runner / sim.
 

@@ -1,37 +1,40 @@
 # renquant_104 — Panel-LTR Cross-Sectional Ranking
 
 **Status:** Active daily strategy.
-**Last updated:** 2026-05-09 EOD (post BUG #6/#7/#5 + cost-aware wash-sale + NGB on/off A/B revert + WF 3-cut)
+**Last updated:** 2026-05-20 (post HF Trainer refactor + FiLM + 5-day BEAR detector + HIFO + anti-churn + sentiment + wl200 + NGB head promote)
 **Based on:** renquant_103 (adaptive regime multi-stock, kept for rollback)
 
 ---
 
-## Production snapshot (2026-05-09)
+## Production snapshot (2026-05-20)
 
 | | |
 |---|---|
-| Active model | **XGB rank:pairwise on 169 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE) |
-| Artifact | `artifacts/panel-ltr.alpha158_fund.json` fingerprint `4f1e25989d475225` |
-| Feature count | 169 (158 alpha158-faithful per Qlib + 5 SEC fund + 3 PEAD + 3 SUE) |
-| 7-cut WF mean IC | **+0.039 ± 0.046** (par with Qlib alpha158 benchmarks) |
-| Pure alpha (post-persistence) | **~+0.018** (E53/E55) |
-| Watchlist | 103 live / 292 train panel / wl162 quality-first selected |
-| Panel size | 715,629 rows × 292 tickers × ~2455 dates |
-| Portfolio QP | cvxpy + CLARABEL (Boyd/Stanford cvxportfolio.SinglePeriodOpt idiom) |
+| Active model | **XGB rank:pairwise on 172 features** (alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment) |
+| Artifact | `artifacts/prod/panel-ltr.alpha158_fund.json` |
+| Feature count | 172 (158 alpha158-faithful per Qlib + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment: `sentiment_pos_share`, `mean_sentiment`, `n_articles`) |
+| 5-cut WF mean IC | **+0.039 ± 0.046** (cuts: cut1_covid / cut2_fed / cut3_inflpk / cut4_svb / cut5_unwind) |
+| Watchlist | wl200 (142 ticker quality-first, promoted 2026-05-18; replaced wl103) |
+| Portfolio QP | cvxpy + CLARABEL (Boyd/Stanford cvxportfolio.SinglePeriodOpt idiom); `min_share_floor` for high-price stocks |
 | QP no-trade band | `max(min_dw=2%, min(0.05, 1.0σ × σ̂))` — capped at 5% per BUG #7 |
-| Wash-sale | Cost-aware per IRC §1091 (gain → no cost; loss → NPV deferred-tax cost) |
-| NGBoost head | DISABLED (27-mo A/B: -3.78 APY pp / -0.14 Sharpe; 63% persistence per E55) |
-| Promote gate | `wf_gate_metadata.passed=True` required (commit 5b8c891) |
+| Wash-sale | Cost-aware per IRC §1091 + `min_reentry_days=5` business days anti-churn layer (2026-05-18 MCD incident) |
+| Lot accounting | HIFO default (2026-05-17, was FIFO) — pure accounting change, `feedback_no_tax_driven_logic`-safe |
+| NGBoost head | TRAINED + PROMOTED to prod 2026-05-17 (val_IC +0.0352, σ-calib +0.274). μ predictions available but σ-wire OFF in golden per 3-condition A/B all null/negative |
+| Calibrator | Platt scaling (switched from isotonic 2026-05-18); pool_IC +0.094; `expected_return.y` clipped to [-0.20, +0.20] at train-site |
+| Regime detector | 5-day BEAR + vol-cluster CHOPPY (2026-05-17, commit `0a192c4`); HMM hysteresis sticky N=10 bars |
+| DDV | DISABLED globally 2026-05-17 per HXZ 2020 "Replicating Anomalies" (was vetoing META rank #1) |
+| Promote gate | Daily retrain STAGES only; weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) does promote with full WF + sanity (commit `96af42b` removed `RQ_ALLOW_NO_WF=1` setdefault) |
+| Shadow model | HF PatchTST shadow registered 2026-05-19 (commits `cf6311c`, `4e156e2`); HF Trainer refactor + FiLM regime conditioning shipped same day |
 
 ---
 
-## Performance — TBD pending bug-fix baseline (audit 2026-05-09)
+## Performance baseline (post-Bug-C, 2026-05-12+)
 
-Prior "27-mo APY +6.77% / Sharpe +0.40" and "3-cut WF mean +5.26%/+0.32" claims were single-measurement, **not reproducible** when re-run on same config+artifact. See `doc/AUDIT_2026-05-09.md` for root-cause analysis.
+Post Bug-C fix (commit `29e34b0` 2026-05-11) NAV invariant: `NAV ≡ free_cash + pending_settle + Σ(shares × price)`. Pinned by `tests/test_sim_nav_t2_settlement.py`.
 
-**Until a multi-seed A/A baseline is established (CLAUDE.md §5.2 mandate), no APY/Sharpe number from this strategy can be cited as ground truth.** All historical numbers in commit messages, prior STATUS.md, and the failed-experiments-log are upper-bound exploratory measurements, not reproducible benchmarks.
+3-window post-fix baseline: **APY +11.6%, Sharpe 0.77, MaxDD 8.2%**. See `doc/research/2026-05-12-findings-and-next.md` for industry-grade 8-window paired evaluation; `doc/research/2026-05-14-longshort-clean-FINAL.md`, `2026-05-15-conditional-shorts-verdict.md`, `2026-05-16-regime-reeval-clean-verdicts.md` for subsequent regime-stratified verdicts.
 
-Today's 5 fix commits closed: cost-aware wash-sale (sim+QP+selection), broker-tagged DB, stale panel-ltr.json. Remaining: BUG #5 parquet regen, WF gate cron schedule.
+Walk-forward gate enforced via `weekly_wf_promote.sh` (commit `96af42b` removed daily `RQ_ALLOW_NO_WF=1` setdefault).
 
 ---
 
@@ -42,20 +45,26 @@ Three pipelines own the decision logic (`kernel/pipeline/` and `kernel/panel_pip
 ### InferencePipeline / SellOnlyPipeline (LEAN, live, sim)
 
 ```
-Preflight (8 HARD checks)
+Phase 0: LoadUniverseJob — wl200 admission gate
 ↓
-DataFreshnessGate → Regime detection (SPY-GMM) → Drawdown halt
+Preflight (8 HARD checks) → DataFreshnessGate
 ↓
-Buy gates (Sharpe floor, vol cap, wash-sale cost-aware, earnings blackout)
+Regime detection (5-day BEAR + vol-cluster CHOPPY, hysteresis sticky N=10) → Drawdown halt
 ↓
-Sell jobs (parallel) — model_sell + path rules + SellGateB
+Buy gates (regime_momentum, wash-sale cost-aware, earnings blackout, anti-churn min_reentry_days=5,
+           min_share_floor for high-price stocks; DDV DISABLED per HXZ 2020)
+↓
+Sell jobs (parallel) — model_sell + path rules + SellGateB + meta-label veto + post-stop cooldown
 ↓
 Candidate jobs (parallel) — earnings + wash-sale + features + score + threshold + RS
 ↓
 PanelScoringJob:
-  AssembleInferenceMatrix → ApplyScores (XGB rank) → ApplyNGBoost (skipped — disabled)
-  → ApplyGlobalCalibration → ApplyKellySizing → SortCandidates
-  → JointPortfolioQPJob (cvxpy CLARABEL) → EmitOrders
+  AssembleInferenceMatrix → ApplyScores (XGB rank or hf_patchtst shadow)
+  → ApplyNGBoost (μ promoted to prod; σ-wire dormant)
+  → ApplyGlobalCalibration (Platt)
+  → ApplyKellySizing (μ from calibrator + σ from realized_vol_60d fallback)
+  → SortCandidates
+  → JointPortfolioQPJob (cvxpy CLARABEL, HIFO lot selection, min_share_floor) → EmitOrders
 ↓
 Universal model contracts (post-predict diversity, pre-predict input variance — guards BUG #1/#2/#6 class)
 ```
@@ -66,25 +75,28 @@ Universal model contracts (post-predict diversity, pre-predict input variance �
 
 ### PanelTrainingPipeline
 
-`PanelDataJob → PanelFeatureJob → PanelAssemblyJob → PanelModelJob → RefreshPanelCalibratorJob`
+`PanelDataJob → PanelFeatureJob → PanelAssemblyJob → PanelModelJob → PanelNGBoostJob → RefreshPanelCalibratorJob`
 
 ---
 
-## What's currently OFF (NGB-off baseline)
+## What's currently OFF / dormant
 
 | Feature | Status | Reason |
 |---|---|---|
-| NGBoost head + σ-aware Kelly | DISABLED | E55: 27-mo A/B -3.78 APY / -0.14 Sharpe; 63% persistence; pure-alpha too weak vs friction |
+| NGBoost σ-wire to Kelly | DORMANT (head IS in prod) | 3-condition A/B 2026-05-17 all NULL/negative; head μ available, σ wire stays OFF in golden. Per-regime overlay infrastructure added but no-op (today's regime BULL_CALM) |
+| DDV (deep_drawdown_veto) | DISABLED 2026-05-17 | HXZ 2020 "Replicating Anomalies" — distress/loser anomaly fails to replicate; vetoed META rank #1 μ=+0.146; author's own docstring warned +25pp cost in BULL_CALM |
 | edge_sharpe_floor (Conformal Gate B) | DISABLED | Pure-alpha ceiling makes target FDR=0.30 unachievable |
 | Macro factor frame v1-v4 | DISABLED | All variants net-negative IC at panel size 103 |
 | Asset embeddings (T2-2) | DISABLED | +0.0001 IC delta = no lift |
-| LightGBM panel (E48) | REJECTED | -60% IC vs XGBoost; with sector categorical still net-negative |
-| Boyd rotation (T2-4) | DISABLED | -2.5 APY pts default OFF, infra retained |
+| LightGBM panel (E48) | RE-OPEN | UNBLOCKED 2026-05-20: `data/ticker_sectors.json` exists (304 tickers). Roadmap #4 active. |
+| Boyd rotation (T2-4) | SHIPPED (cvxportfolio backend) | `kernel/portfolio_qp/cvxportfolio_backend.py` |
 | Triple-barrier label (E25) | REJECTED | val_ic negative + placebo matches real |
-| Multi-horizon ensemble (E42) | REJECTED | Shorter horizons dilute H=60 (today retest reproduced) |
+| Multi-horizon ensemble (E42) | REJECTED | Shorter horizons dilute H=60 |
 | Per-sector excess label | REJECTED | 89% persistence, pure-alpha drops to +0.005 |
-| Vol-adj label (Lim 2021) | REJECTED | -5bp on raw_y eval |
-| Insider features (E22) | REJECTED | 8% panel coverage; needs full EDGAR backfill + opportunistic split |
+| Vol-adj label | REJECTED 2026-05-17 | NGB val_IC=-0.019 vs raw +0.035 (Δ=-0.054) |
+| Insider features (E22) | REJECTED 2026-05-18 | placebo persistence 100-142% |
+| RegimeRouterScorer (hard router) | FROZEN as dormant baseline | arXiv 2603.13252 "When Alpha Breaks" — market-stress gate AUROC < 0.5 (worse than random); Pillar B going FiLM (soft) instead |
+| Long-short Phase 2 | SKIPPED 2026-05-17 | Bottom decile 60d-ann +0.58% positive — all alpha on LONG side; saves 3-4 weeks engineering per Kelly-Gu-Xiu 2020 |
 
 ---
 
@@ -106,7 +118,7 @@ G10 sim Sharpe drop < 0.10                HARD
 G11 turnover ratio < 1.5x prior
 ```
 
-Plus walk-forward gate (post 2026-05-09): `wf_gate_metadata.passed=True` required for promote(). Daily cron uses `RQ_ALLOW_NO_WF=1` override (cheap gates only); manual / weekly promote runs `scripts/run_wf_gate.py` first.
+Plus walk-forward gate (ENFORCED 2026-05-17 commit `96af42b`): daily retrain STAGES only; weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) does the actual promote with full WF + sanity battery. Emergency shell-env `RQ_ALLOW_NO_WF=1` override still works.
 
 ---
 
