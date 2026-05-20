@@ -412,6 +412,103 @@ class TestFiLMRegimeConditioning:
         assert "regime_context" not in ds[0]
 
 
+# ─── Cross-stock attention (Tier 2 T2.1, iTransformer-style) ───────────────
+
+
+class TestCrossStockAttention:
+    """iTransformer-style variate-as-token attention (Liu 2024, arXiv 2310.06625).
+    Each ticker attends to all other tickers on the same day. Addresses
+    PatchTST's documented #1 failure for cross-sectional finance."""
+
+    def test_module_exists(self):
+        mod = _load_mod()
+        assert hasattr(mod, "CrossStockAttentionLayer")
+
+    def test_identity_at_init(self):
+        """Learnable alpha gate, init=0 → output exactly equals input.
+        Strict superset of cross-stock-OFF baseline (worst case = same)."""
+        import torch
+        mod = _load_mod()
+        csa = mod.CrossStockAttentionLayer(d_model=32, n_heads=4)
+        csa.eval()
+        h = torch.randn(7, 32)
+        with torch.no_grad():
+            out = csa(h)
+        assert torch.allclose(out, h, atol=1e-6), \
+            f"CSA not identity at init: max|diff| = {(out-h).abs().max():.2e}"
+
+    def test_gradient_flows_through_alpha(self):
+        import torch
+        mod = _load_mod()
+        csa = mod.CrossStockAttentionLayer(d_model=32, n_heads=4)
+        h = torch.randn(7, 32, requires_grad=True)
+        loss = csa(h).sum()
+        loss.backward()
+        assert csa.alpha.grad is not None
+        assert csa.alpha.grad.abs().item() > 0, \
+            "alpha must be learnable (non-zero grad after backward)"
+
+    def test_output_shape_preserved(self):
+        import torch
+        mod = _load_mod()
+        csa = mod.CrossStockAttentionLayer(d_model=64, n_heads=8)
+        h = torch.randn(20, 64)
+        out = csa(h)
+        assert out.shape == h.shape
+
+    def test_each_ticker_can_attend_to_others_after_training(self):
+        """After training (alpha grows non-zero AND projections trained),
+        each ticker's output should be a function of OTHER tickers' inputs.
+        Simulate by manually fill ing alpha + projections."""
+        import torch
+        mod = _load_mod()
+        torch.manual_seed(0)
+        csa = mod.CrossStockAttentionLayer(d_model=16, n_heads=2)
+        # Simulate trained state: alpha non-zero AND projections re-initialized
+        with torch.no_grad():
+            csa.alpha.fill_(1.0)
+            nn = torch.nn
+            nn.init.normal_(csa.attn.out_proj.weight, std=0.1)
+            nn.init.normal_(csa.ffn[-1].weight, std=0.1)
+        h1 = torch.zeros(5, 16)
+        h1[0] = 1.0  # only first ticker has signal
+        h2 = h1.clone()
+        h2[2] = 1.0  # add signal to third ticker
+        with torch.no_grad():
+            out1 = csa(h1)
+            out2 = csa(h2)
+        # Ticker 0's output should differ between scenarios (info-routing)
+        diff_t0 = (out1[0] - out2[0]).abs().max().item()
+        assert diff_t0 > 1e-4, \
+            "ticker 0's output unchanged when ticker 2's input changes — " \
+            "cross-stock attention is NOT routing information after training"
+
+    def test_model_with_cross_stock_identity_at_init(self):
+        """Model with cross-stock ON should give same output as OFF at init."""
+        import torch
+        from transformers import PatchTSTConfig
+        mod = _load_mod()
+        cfg = PatchTSTConfig(num_input_channels=8, context_length=16,
+                              patch_length=4, patch_stride=4, d_model=32,
+                              num_attention_heads=4, num_hidden_layers=1,
+                              ffn_dim=64)
+        m_csa_on = mod.HFPatchTSTRanker(cfg, use_distributional_head=False,
+                                          use_cross_stock_attn=True)
+        m_csa_off = mod.HFPatchTSTRanker(cfg, use_distributional_head=False,
+                                           use_cross_stock_attn=False)
+        # Sync backbone + rank_head weights (only CSA differs)
+        m_csa_off.load_state_dict(
+            {k: v for k, v in m_csa_on.state_dict().items()
+             if 'cross_stock' not in k}, strict=False)
+        m_csa_on.eval(); m_csa_off.eval()
+        x = torch.randn(5, 16, 8)
+        with torch.no_grad():
+            s_on = m_csa_on(past_values=x)["score"]
+            s_off = m_csa_off(past_values=x)["score"]
+        assert torch.allclose(s_on, s_off, atol=1e-6), \
+            f"cross_stock ON ≠ OFF at init: max|diff|={(s_on-s_off).abs().max():.2e}"
+
+
 # ─── Per-regime IC callback ─────────────────────────────────────────────────
 
 

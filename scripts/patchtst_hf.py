@@ -107,6 +107,59 @@ class FiLMLayer(nn.Module):
         return (1.0 + delta_gamma) * h + beta
 
 
+class CrossStockAttentionLayer(nn.Module):
+    """iTransformer-style variate-as-token attention across tickers (Liu 2024,
+    arXiv 2310.06625). Addresses PatchTST's documented #1 failure mode for
+    cross-sectional finance: channel-independence (each ticker forward
+    independently, no cross-stock information sharing per arXiv 2502.09683).
+
+    For one day's batch of N tickers each represented by `d_model`-dim vec:
+      input h: (N, d_model)
+      query/key/value: each ticker as token
+      attention: each ticker attends to ALL other tickers on the same day
+      output: (N, d_model) — each ticker enriched with cross-stock context
+
+    Residual + LayerNorm (canonical transformer block). Init: zero-init
+    output projection so the residual passes through unchanged at start →
+    strict superset of no-cross-stock baseline.
+
+    Compute: O(N²) per day in attention. N=142 (wl200) → ~20k pairs.
+    Fine on MPS/CPU.
+    """
+
+    def __init__(self, d_model: int, n_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout,
+                                           batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Linear(d_model * 2, d_model),
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+        # IDENTITY-AT-INIT via learnable scalar gate (FiLM pattern):
+        # output = h + alpha * (transformed(h) - h). With alpha=0 at init,
+        # output exactly equals h. Pure zero-init of attn+ffn alone
+        # doesn't suffice because LayerNorm transforms h regardless.
+        self.alpha = nn.Parameter(torch.zeros(1))
+        # Also zero-init final projections for cleaner gradient signal early
+        nn.init.zeros_(self.ffn[-1].weight)
+        nn.init.zeros_(self.ffn[-1].bias)
+        nn.init.zeros_(self.attn.out_proj.weight)
+        nn.init.zeros_(self.attn.out_proj.bias)
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        # h: (N, d_model)  — N tickers on one day
+        h_batched = h.unsqueeze(0)  # (1, N, d_model)
+        attn_out, _ = self.attn(h_batched, h_batched, h_batched)
+        h_attn = self.norm1(h_batched + attn_out)
+        h_ffn = self.norm2(h_attn + self.ffn(h_attn))
+        transformed = h_ffn.squeeze(0)  # (N, d_model)
+        # Gated residual: alpha=0 at init → exactly h
+        return h + self.alpha * (transformed - h)
+
+
 class HFPatchTSTRanker(nn.Module):
     """HF PatchTST backbone + dual head: ranking + Student-t distribution.
 
@@ -117,14 +170,22 @@ class HFPatchTSTRanker(nn.Module):
     """
 
     def __init__(self, cfg: PatchTSTConfig, use_distributional_head: bool = True,
-                 use_film_regime: bool = False, n_regimes: int = len(REGIMES)):
+                 use_film_regime: bool = False,
+                 use_cross_stock_attn: bool = False,
+                 n_regimes: int = len(REGIMES)):
         super().__init__()
         self.backbone = PatchTSTModel(cfg)
         self.use_distributional_head = use_distributional_head
         self.use_film_regime = use_film_regime
+        self.use_cross_stock_attn = use_cross_stock_attn
         self.rank_head = nn.Linear(cfg.d_model, 1)
         self.dist_head = nn.Linear(cfg.d_model, 3) if use_distributional_head else None
         self.film = FiLMLayer(cfg.d_model, n_regimes) if use_film_regime else None
+        # Cross-stock attention layer between backbone and heads
+        self.cross_stock = (
+            CrossStockAttentionLayer(cfg.d_model, n_heads=cfg.num_attention_heads)
+            if use_cross_stock_attn else None
+        )
 
     def forward(self, past_values: torch.Tensor,
                 labels: torch.Tensor | None = None,
@@ -135,6 +196,10 @@ class HFPatchTSTRanker(nn.Module):
         h = out.last_hidden_state.mean(dim=(1, 2))
         if self.film is not None and regime_context is not None:
             h = self.film(h, regime_context)
+        # Cross-stock attention: each ticker attends to all other tickers
+        # on the same day (since batch IS one day's tickers per identity_collator)
+        if self.cross_stock is not None:
+            h = self.cross_stock(h)
         result: dict = {"score": self.rank_head(h).squeeze(-1)}
         if self.dist_head is not None:
             d = self.dist_head(h)
@@ -417,10 +482,12 @@ def train_one(args: argparse.Namespace) -> dict:
         ffn_dim=args.d_model * 2,
     )
     model = HFPatchTSTRanker(cfg, use_distributional_head=args.distributional_head,
-                              use_film_regime=args.film_regime_cond)
+                              use_film_regime=args.film_regime_cond,
+                              use_cross_stock_attn=args.cross_stock_attn)
     n_params = sum(p.numel() for p in model.parameters())
-    log.info("HFPatchTSTRanker n_params=%.2fM dist_head=%s film=%s",
-             n_params / 1e6, args.distributional_head, args.film_regime_cond)
+    log.info("HFPatchTSTRanker n_params=%.2fM dist_head=%s film=%s cross_stock=%s",
+             n_params / 1e6, args.distributional_head, args.film_regime_cond,
+             args.cross_stock_attn)
 
     # Per-regime IC callback (PRIME DIRECTIVE selection metric)
     callbacks = []
@@ -523,6 +590,7 @@ def train_one(args: argparse.Namespace) -> dict:
             "best_val_ic": best_val_ic,
             "uses_distributional_head": args.distributional_head,
             "uses_film_regime": args.film_regime_cond,
+            "uses_cross_stock_attn": args.cross_stock_attn,
             "uses_csranknorm_preprocessing": True,
             "uses_winsorize_label_preprocessing": True,
             "per_regime_ic": summary["per_regime_ic"],
@@ -565,6 +633,14 @@ def main():
                    help="FiLM regime conditioning (Perez 2017): γ, β = MLP(regime) "
                         "modulates encoder output. Identity at init → strict "
                         "superset of FiLM-OFF baseline. Requires --spy-path.")
+    p.add_argument("--cross-stock-attn", action="store_true",
+                   help="iTransformer-style cross-stock attention (Liu 2024, "
+                        "arXiv 2310.06625). Each ticker attends to all other "
+                        "tickers on the same day. Addresses PatchTST channel-"
+                        "independence — documented #1 failure mode for cross-"
+                        "sectional finance (arXiv 2502.09683). Identity-at-init "
+                        "via zero-init output projections → strict superset of "
+                        "baseline.")
     p.add_argument("--spy-path", default="data/ohlcv/SPY/1d.parquet",
                    help="SPY OHLCV parquet for HMM regime labels")
     p.add_argument("--seed", type=int, default=42)
