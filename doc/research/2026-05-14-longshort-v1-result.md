@@ -1,5 +1,11 @@
 # 2026-05-14 — longshort_v1 = TIER 3 PROMOTE candidate (5/5 tests pass)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Final v6 panel result (after 6 bug fixes in short-execution chain)
 
 ### Pooled HAC

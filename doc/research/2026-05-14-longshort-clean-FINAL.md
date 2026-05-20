@@ -1,5 +1,11 @@
 # Long-short clean panel (no leverage) — FINAL 16-window verdict
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Date:** 2026-05-14 evening
 **Config:** `strategy_config.sim_longshort_clean.json` — `long_short.enabled=true`,
 `max_gross_exposure=1.00` (NO implicit leverage from short proceeds),

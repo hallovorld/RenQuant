@@ -1,5 +1,11 @@
 # 2026-05-15 — MA200-gate Postmortem (Panel A regression fully diagnosed + fixed)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Headline
 
 Panel A's −4.10pt mean regression was caused by a single mechanism that

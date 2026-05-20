@@ -1,5 +1,11 @@
 # 2026-05-13 — Handsoff overnight results
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 User went to sleep around 22:30 PT 2026-05-12. This is the morning
 status. No production changes (correctly — no candidate cleared Tier 3
 auto-promote gate).

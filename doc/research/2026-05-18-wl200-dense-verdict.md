@@ -1,5 +1,11 @@
 # 2026-05-18 — wl200 dense panel verdict
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## TL;DR
 
 **Tier 2 SCREEN, regime-conditional**. Pooled NULL but regime-stratified shows STRONG winner in HIGH_SPIKED (t=+2.89, p=0.004, +80%/yr Δ APY). Big-window losses concentrated in HIGH_NORMAL (n=8, t=-3.23). Net regime-weighted expected: ~+2.5pp APY but with high variance.

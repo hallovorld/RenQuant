@@ -1,5 +1,11 @@
 # Overnight PatchTST Optimization Plan — Resume Guide
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Created**: 2026-05-18 21:45 PT
 **Authority**: User mandate "不管结果如何都做推进优化... 直接 promote 进 product"
 **Cron**: `00975833` every 30min (session-only — dies if Claude Code window closes)

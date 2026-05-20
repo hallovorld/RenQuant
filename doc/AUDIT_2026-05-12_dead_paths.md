@@ -1,5 +1,11 @@
 # 2026-05-12 — Dead-path audit of "bit-identical to baseline" rejections
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 User invoked CLAUDE.md §2b principle: well-regarded published methods
 shouldn't destroy performance. Surprising rejections must be audited
 for implementation bugs before being shelved.

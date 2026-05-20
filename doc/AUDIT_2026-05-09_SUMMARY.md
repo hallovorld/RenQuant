@@ -1,5 +1,11 @@
 # 2026-05-09 审计总结 — Bug 全集 + 开发准则
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **触发：** 用户对一系列"performance numbers"复现失败、模型推理异常的质疑（"bug 这么多，没有任何数字值得相信"），要求所有 bug 必须先修好才有可信数字。
 
 **结果：** 15 个 RED bug 找到 + 修了，**14550 / 14554 测试通过（67 → 4，下降 94%）**，47 个新 AUDIT REGRESSION GUARD 测试。

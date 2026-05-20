@@ -1,5 +1,11 @@
 # 2026-05-19 Session Self-Audit — Cascading Errors
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 Honest retrospective of all errors made during the PatchTST DOE +
 shadow promote work (2026-05-18 night → 2026-05-19 morning).
 Compiled at user instruction.

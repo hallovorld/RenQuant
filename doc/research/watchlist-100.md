@@ -1,5 +1,11 @@
 # Watchlist expansion candidates: 43 → ~100 (curated)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Status:** PROPOSAL only. Nothing added to live watchlist yet.
 
 User spec (2026-04-24): include holdings of major active mutual funds —

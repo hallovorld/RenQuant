@@ -1,5 +1,11 @@
 # 2026-05-14 — longshort_v1 v7 FINAL verdict (post §1233 fix)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Status: TIER 3 STATS / NOT AUTO-PROMOTABLE
 
 Pre-registered 5-test methodology: **5/5 PASS**. Pooled HAC t=+2.99,

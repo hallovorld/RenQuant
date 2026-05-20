@@ -1,5 +1,11 @@
 # Sim A/B Results — 2026-04-26 (5th attempt, real numbers)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Window**: 2024-01-01 → 2026-04-26 (27 months OOS)
 **Universe**: 100/101 tickers (with fundamentals + insider + hourly bars)
 

@@ -1,5 +1,11 @@
 # 2026-05-13 — Today's GE trade audit + risk-control verification
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## What happened
 
 Daily104 at 14:06 PT placed: **BUY GE x3 @ $297.45 = $892** (8.4% of $10,686 NAV).

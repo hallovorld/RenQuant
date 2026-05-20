@@ -1,5 +1,11 @@
 # 2026-05-13 — v2 conditional GK with rigorous LOO methodology
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Setup
 
 After 16-window panel showed GK_conditional v1 = NEITHER (t=+0.20), the

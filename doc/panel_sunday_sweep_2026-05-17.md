@@ -1,4 +1,4 @@
-# Sunday Panel-LTR Sweep — 2026-04-26
+# Sunday Panel-LTR Sweep — 2026-05-17
 
 
 > **📅 Historical snapshot — content below reflects state at the date in filename/header.**
@@ -12,11 +12,11 @@ Strategy: `renquant_104`. All 3 backends trained on the same panel with identica
 
 | backend | scorer_oos_mean_ic | pool_ic | train_ic | n_rows | elapsed | status |
 |---|---:|---:|---:|---:|---:|---|
-| xgboost | 0.0482 | 0.0011 | — | 225506 | 1954s | OK |
-| lightgbm | 0.0291 | 0.0097 | — | 225506 | 1974s | OK |
-| transformer | — | — | — | — | 1670s | FAILED |
+| xgboost | — | — | — | — | 1856s | FAILED |
+| lightgbm | — | — | — | — | 1871s | FAILED |
+| transformer | — | — | — | — | 1956s | FAILED |
 
-## Winner — xgboost (OOS IC = 0.0482)
+## Winner — none (all backends failed)
 
 ## Active artifacts
 

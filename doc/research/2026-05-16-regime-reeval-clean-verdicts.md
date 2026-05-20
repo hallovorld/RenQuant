@@ -1,5 +1,11 @@
 # 2026-05-16 regime-reeval: clean knob-only verdicts
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## TL;DR
 
 After fixing the 2026-05-15 no-op build script and re-running 6 panels with

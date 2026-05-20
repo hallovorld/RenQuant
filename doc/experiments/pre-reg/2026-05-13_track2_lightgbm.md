@@ -1,5 +1,11 @@
 # Pre-registration: Track 2 — LightGBM model class swap
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## ⚠️ UPDATE 2026-05-13 13:10 PT — SHELVED
 
 Prior work `scripts/wf_lightgbm_paired.py` (2026-05-08) already

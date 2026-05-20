@@ -1,5 +1,11 @@
 # A/B Experiment Log
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 Per-experiment journal. Prepend new runs to top. Every entry contains:
 - **Date** (when the A/B ran)
 - **Hypothesis** (what we expected and why)

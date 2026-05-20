@@ -1,5 +1,11 @@
 # 2026-05-13 Baseline structural diagnosis — over-trading is the chronic lag
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Question
 
 User flagged: 7 literature-backed candidates all REJECTED across 16-window

@@ -1,5 +1,11 @@
 # Alpaca Crypto Trading — BTC Feasibility & Plan (2026-04-26)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **User question**: 用 Alpaca 交易 BTC 等虚拟货币的可行性？需要哪些改动？
 BTC 太贵了，怎么买？
 

@@ -1,5 +1,11 @@
 # Rigorous verdicts: 5 treatments vs baseline `sim_2026-05-16_re_kelly_t1_035`
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 - bootstrap iterations: 5000 (stationary block, block ≈ N^(1/3))
 - DSR n_trials: 5 (= number of knobs tested in this batch)
 - CSCV splits: 1000 (or all C(N, N/2) if fewer)

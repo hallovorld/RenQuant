@@ -1,5 +1,11 @@
 # Panel-LTR Training Runs — Log
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 Running log of `scripts/train_104.py` invocations that produce `artifacts/panel-ltr.json` + `artifacts/ngboost-head.json`. One entry per run. Prepend every new run to the **top** so the most recent is first.
 
 Template:

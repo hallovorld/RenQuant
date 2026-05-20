@@ -1,5 +1,11 @@
 # 2026-05-12 — Session findings + forward research plan
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 Captures the structural findings from the 2026-05-12 dead-path audit +
 industry-grade evaluation rebuild. Pinned here so the conditional-feature
 discoveries and the prerequisites to act on them are not lost.

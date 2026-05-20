@@ -1,5 +1,11 @@
 # 2026-05-18 — Strategic finding: model is mean-reversion in a momentum market
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Verbatim user critique
 
 > "这行情不买芯片不卖能源就买工业股？这真的有道理吗？"

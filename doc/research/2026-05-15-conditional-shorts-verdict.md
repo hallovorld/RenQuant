@@ -1,5 +1,11 @@
 # 2026-05-15 — Conditional Shorts (P1a overlay) Verdict: NEITHER
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## TL;DR
 
 First production application of the per-regime overlay (P1a, commit

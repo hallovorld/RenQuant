@@ -1,5 +1,11 @@
 # Research: Per-Stock Modeling & Calibrated Scoring
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 > **Status (2026-04-22): MOST OF THE TL;DR IS NOW SHIPPED.**
 > This doc drove the renquant_104 Stage-1 work in April 2026. As of the
 > April 22 session, items (A)–(G) from the TL;DR are implemented and tested.

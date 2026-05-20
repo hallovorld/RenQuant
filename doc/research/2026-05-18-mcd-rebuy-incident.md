@@ -1,5 +1,11 @@
 # 2026-05-18 — MCD rebuy incident postmortem
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Incident
 
 **13:53 PT**: Live runner placed `BUY MCD 3 shares @ $276.39` (= $829 invest).

@@ -1,5 +1,11 @@
 # 2026-05-11 — Risk Management & Stop-Loss Experiment Battery
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 > **One-line takeaway**: After 30+ sim configurations across 6 tiers on the
 > 27-month OOS window (2024-04-01 → 2026-03-26), **baseline (golden)
 > remains the APY winner at +6.2% APY / 44.4% MaxDD**. Every mechanism

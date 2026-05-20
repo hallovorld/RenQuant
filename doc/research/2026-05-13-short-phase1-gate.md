@@ -1,5 +1,11 @@
 # Phase 1 short-selling empirical gate — PASSED (2026-05-13)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Method
 
 Cross-sectional decile bucketing of model predictions vs realized

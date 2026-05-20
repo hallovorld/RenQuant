@@ -1,5 +1,11 @@
 # Rotation algorithm — literature review + design proposals
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Session 2026-04-24 PT.** User: "rotation 是我算法的强点！APY 冲 50% 的核心竞争力！" Deep-research request to bring academic / industry rigor to the design space.
 
 ## 1. Why current rotation under-performs — empirical diagnosis

@@ -1,5 +1,11 @@
 # 2026-05-18 — PatchTST verdict: NOT a winner over XGB
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## TL;DR
 
 PatchTST on alpha158 features ≈ XGB on alpha158 features. **Architecture change alone doesn't solve trend-following problem** — both models learn the same mean-reversion bias from the same feature set.

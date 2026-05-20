@@ -1,5 +1,11 @@
 # 2026-05-13 — QP transaction-cost penalty sweep
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Method
 
 Single-knob sweep of `rotation.joint_actions.qp_cost_kappa` (the L1 penalty

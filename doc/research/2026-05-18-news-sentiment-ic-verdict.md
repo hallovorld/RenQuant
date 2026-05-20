@@ -1,5 +1,11 @@
 # 2026-05-18 — News sentiment IC eval verdict (FINAL after regime-stratified rerun)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## TL;DR
 
 **REVERSED — Tier 2 SCREEN candidate, regime-conditional**.

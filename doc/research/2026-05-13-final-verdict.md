@@ -1,5 +1,11 @@
 # 2026-05-13 — Final verdict on regime-conditional GK (16-window panel)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 After Phase 2 (9 windows 2024-04 → 2026-03) suggested GK_conditional
 was approaching Tier 2 (t=+1.46), we extended the OOS panel to 16
 non-overlapping 3-month windows spanning 2022-04 → 2026-03 (48 months,

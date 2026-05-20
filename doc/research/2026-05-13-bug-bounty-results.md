@@ -1,5 +1,11 @@
 # 2026-05-13 — Bug-bounty session results (while panel sweeps run)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## Methodology
 
 Read-only audit agent walked CLAUDE.md §5.13 anti-pattern list against

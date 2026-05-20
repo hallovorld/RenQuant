@@ -1,5 +1,11 @@
 # 2026-05-14 — Detector vs Response Function (counter-intuitive finding)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 ## TL;DR
 
 Both regime detector upgrades shipped today (MA50 direction-aware Hurst,

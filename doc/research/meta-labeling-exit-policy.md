@@ -1,5 +1,11 @@
 # Meta-Labeling for Smart Exit Policies — Literature & Implementation Plan
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 > **Thesis**: Mechanical stop-loss rules (fixed % thresholds) exit on signal
 > shape, not signal *content*. A secondary ML model trained on per-day
 > position-level features can veto false-positive exits ("the stop is about

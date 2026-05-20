@@ -1,15 +1,25 @@
 # RenQuant Dashboard — `alpaca` broker
 
-**Refreshed:** 2026-05-15 19:08  ·  **As-of:** 2026-05-15  ·  **Strategy:** renquant_104
+**Refreshed:** 2026-05-19 14:13  ·  **As-of:** 2026-05-19  ·  **Strategy:** renquant_104
 
 | Portfolio value | Daily return | High-water mark | Regime |
 |---|---|---|---|
-| $10,628.95 | -0.44% | $10,699.69 | BULL_CALM (0.68)| 
+| $10,603.95 | +0.24% | $10,699.69 | BULL_CALM (0.58)| 
 
-## Recent trades (last 7d) — 28 fills
+## Recent trades (last 7d) — 17 fills
 
 | Date | Ticker | Action | Shares | Price | Reason | P/L% |
 |---|---|---|---|---|---|---|
+| 2026-05-18 | HON | buy | 2 | $217.70 | — | — |
+| 2026-05-18 | GE | sell | — | $285.75 | qp_sell | -3.31% |
+| 2026-05-18 | MCD | buy | 3 | $276.39 | — | — |
+| 2026-05-18 | DUK | buy | 6 | $121.96 | — | — |
+| 2026-05-18 | VRT | sell | — | $335.08 | single_day_loss | -11.08% |
+| 2026-05-18 | MCD | sell | — | $279.29 | model_sell | +1.97% |
+| 2026-05-18 | DOCU | sell | — | $48.42 | model_sell | +8.66% |
+| 2026-05-17 | META | buy | 1 | $614.23 | — | — |
+| 2026-05-17 | EQIX | buy | 1 | $1,059.44 | — | — |
+| 2026-05-17 | HON | buy | 2 | $213.24 | — | — |
 | 2026-05-15 | META | buy | 1 | $618.43 | — | — |
 | 2026-05-15 | BA | sell | — | $222.89 | single_day_loss | -3.51% |
 | 2026-05-14 | TXN | buy | 3 | $306.34 | — | — |
@@ -17,38 +27,17 @@
 | 2026-05-12 | VRT | buy | 2 | $367.92 | — | — |
 | 2026-05-12 | MCD | buy | 3 | $274.60 | — | — |
 | 2026-05-12 | DOCU | buy | 23 | $45.49 | — | — |
-| 2026-05-09 | XOM | buy | 6 | $144.57 | — | — |
-| 2026-05-09 | CSCO | buy | 6 | $96.57 | — | — |
-| 2026-05-09 | BA | sell | — | $237.36 | qp_sell | +2.75% |
-| 2026-05-09 | LLY | buy | 1 | $948.45 | — | — |
-| 2026-05-09 | CVX | buy | 5 | $181.62 | — | — |
-| 2026-05-09 | TSLA | buy | 2 | $428.35 | — | — |
-| 2026-05-09 | RTX | buy | 5 | $176.09 | — | — |
-| 2026-05-09 | PANW | buy | 4 | $207.88 | — | — |
-| 2026-05-09 | TSLA | buy | 2 | $428.35 | — | — |
-| 2026-05-09 | RTX | buy | 5 | $176.09 | — | — |
-| 2026-05-09 | GLD | buy | 2 | $433.77 | — | — |
-| 2026-05-08 | SPOT | buy | 2 | $427.43 | — | — |
-| 2026-05-08 | HD | buy | 2 | $322.64 | — | — |
-| 2026-05-08 | GS | buy | 1 | $925.87 | — | — |
-| 2026-05-08 | SPOT | buy | 2 | $427.43 | — | — |
-| 2026-05-08 | ON | buy | 10 | $100.61 | — | — |
-| 2026-05-08 | LMT | buy | 1 | $512.41 | — | — |
-| 2026-05-08 | ON | buy | 10 | $100.61 | — | — |
-| 2026-05-08 | LMT | buy | 1 | $512.41 | — | — |
-| 2026-05-08 | SOFI | buy | 63 | $16.00 | — | — |
-| 2026-05-08 | ABBV | buy | 5 | $202.71 | — | — |
 
 
 ## Regime-conditional gate status
 
-**Current regime:** `BULL_CALM` (conf=0.68)
+**Current regime:** `BULL_CALM` (conf=0.58)
 
 
 | Gate | Status | Why |
 |---|---|---|
 | `regime_momentum` | **FIRE** | active in current regime |
-| `deep_drawdown_veto` | **FIRE** | active in current regime |
+| `deep_drawdown_veto` | OFF | config.enabled=false |
 
 **Kelly μ source:** calibrator.expected_return
 **Kelly σ source:** realized_vol_60d (clipped)
@@ -58,42 +47,34 @@
 
 | Date | Value | Daily |
 |---|---|---|
-| 2026-04-23 | $10,119.12 | +0.83% |
-| 2026-04-24 | $10,175.07 | +0.55% |
 | 2026-04-25 | $10,178.71 | +0.04% |
 | 2026-04-26 | $10,178.71 | +0.00% |
 | 2026-04-27 | $10,192.39 | +0.13% |
-| 2026-04-28 | $9,983.42 | -2.05% |
-| 2026-04-29 | $10,023.35 | +0.40% |
-| 2026-04-30 | $10,015.98 | -0.07% |
-| 2026-05-01 | $10,074.76 | +0.59% |
-| 2026-05-03 | $10,072.99 | -0.02% |
-| 2026-05-04 | $10,110.48 | +0.37% |
-| 2026-05-05 | $10,190.23 | +0.79% |
-| 2026-05-06 | $10,222.03 | +0.31% |
-| 2026-05-07 | $10,401.32 | +1.75% |
-| 2026-05-08 | $10,555.48 | +1.48% |
+| 2026-04-28 | $9,987.59 | -2.01% |
+| 2026-04-29 | $9,992.26 | +0.05% |
+| 2026-04-30 | $10,015.98 | +0.24% |
+| 2026-05-01 | $10,086.82 | +0.71% |
+| 2026-05-03 | $10,072.99 | -0.14% |
+| 2026-05-04 | $10,132.79 | +0.59% |
+| 2026-05-05 | $10,186.24 | +0.53% |
+| 2026-05-06 | $10,222.03 | +0.35% |
+| 2026-05-07 | $10,461.04 | +2.34% |
+| 2026-05-08 | $10,555.48 | +0.90% |
 | 2026-05-09 | $10,578.91 | +0.22% |
-| 2026-05-12 | $10,576.08 | -0.03% |
-| 2026-05-13 | $10,642.79 | +0.63% |
-| 2026-05-14 | $10,675.86 | +0.31% |
-| 2026-05-15 | $10,628.95 | -0.44% |
+| 2026-05-12 | $10,533.49 | -0.43% |
+| 2026-05-13 | $10,636.63 | +0.98% |
+| 2026-05-14 | $10,675.86 | +0.37% |
+| 2026-05-15 | $10,593.80 | -0.77% |
+| 2026-05-17 | $10,557.00 | -0.35% |
+| 2026-05-18 | $10,578.74 | +0.21% |
+| 2026-05-19 | $10,603.95 | +0.24% |
 
 
 ## Model health
 
-- **Panel artifact:** `panel-ltr-prod-alpha158-fund-fwd60d.json`  ·  fingerprint `sha256:4f1e25989d4`
-- **Last retrain:** 2026-05-09 03:44  (159.4h ago)
+- **Panel artifact:** `panel-ltr-prod-alpha158-fund-fwd60d.json`  ·  fingerprint `sha256:9333f7bf91d`
+- **Last retrain:** 2026-05-18 13:28  (24.7h ago)
 - **Latest WF:** `wf_insider_paired.json`  ·  IC unavailable
-
-
-## Open priorities (top 5 from `doc/roadmap.md`)
-
-1. ★ Regime-conditional path (2026-05-12 EVENING discovery)
-2. Methodology lock-in (2026-05-12)
-3. Execution-tactic block (added 2026-05-09 EOD after trade-level audit)
-4. 🆕 Long-short extension (added 2026-05-13 — STRUCTURAL, highest expected ROI)
-5. Walk-forward gate enforcement (free; prevents fictional regressions)
 
 
 ---

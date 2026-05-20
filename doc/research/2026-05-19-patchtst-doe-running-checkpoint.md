@@ -1,5 +1,11 @@
 # HF PatchTST DOE — Running Checkpoint (Crash-Safe Verdict)
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Updated**: cron every 30min during DOE run
 **Source raw data**: `artifacts/patchtst_doe_hf/runs_partial.csv`
 **Source summary**: `artifacts/patchtst_doe_hf/summary_full.md`

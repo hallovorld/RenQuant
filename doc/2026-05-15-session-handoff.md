@@ -1,5 +1,11 @@
 # 2026-05-15 EVENING Session Handoff
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **For: next-session Claude (or operator returning).**
 **Status as of:** 2026-05-15 ~19:15 PT.
 

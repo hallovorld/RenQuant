@@ -1,5 +1,11 @@
 # Pre-registration: Track 5 — FinBERT sentiment features
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 **Date**: 2026-05-13
 **Pre-registered BEFORE experiment. STATUS: planning, execution deferred (needs NLP pipeline + news data).**
 

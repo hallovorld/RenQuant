@@ -1,5 +1,11 @@
 # 2026-05-11 — Meta-Labeling Exit Policy: Results & Final Winner
 
+
+> **📅 Historical snapshot — content below reflects state at the date in filename/header.**
+> Verify against current code per CLAUDE.md §1 "code is the source of truth" before acting on
+> present-tense claims. For current state see `doc/roadmap.md` § "📍 Current state" +
+> `CLAUDE.md` § "🗂 Current state".
+
 > **TL;DR**: On the 11-month chronological-split OOS window (2025-04-01 →
 > 2026-03-26), **BB_14 + meta-label** is the empirical winner:
 > APY +0.2% (vs baseline −0.3%, BB_14-alone −0.9%) and MaxDD 44.7%
