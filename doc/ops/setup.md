@@ -1,6 +1,6 @@
 # Setup Guide
 
-Optimized for Apple Silicon (M-Series). All packages are arm64-native via Miniconda with `conda-forge` configured as the primary channel.
+Optimized for Apple Silicon M4 Pro (14 cores: 10P + 4E, 20 GPU cores, 48 GB unified RAM). All packages are arm64-native via the project `.venv` (not conda — per `feedback_python_env`).
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ Optimized for Apple Silicon (M-Series). All packages are arm64-native via Minico
 ### 2. Docker Desktop
 - Download the **Apple Silicon** version from docker.com
 - After install: Docker Settings → Resources → Memory → set to **16GB minimum**
-  - This prevents LEAN from crashing during backtests. With 48GB unified memory, 16GB is safe.
+  - This prevents LEAN from crashing during backtests. With 48 GB unified memory, 16 GB is safe.
 
 ### 3. QuantConnect Account
 - Create a free account at quantconnect.com
@@ -22,36 +22,23 @@ Optimized for Apple Silicon (M-Series). All packages are arm64-native via Minico
 
 ## Environment Setup
 
-RenQuant uses a **single conda environment** for everything — research, data, ML, and live trading.
+RenQuant uses a project-local `.venv` (Python 3.10) for everything — research, data, ML, and live trading. All dependencies pinned in `requirements.lock.txt`.
 
 ```bash
-# Install Miniconda (Apple Silicon arm64 build)
-brew install miniconda
-source ~/miniconda3/bin/activate
+# From repo root:
+python3.10 -m venv .venv
+source .venv/bin/activate
 
-# Configure channels
-conda config --add channels conda-forge
-conda config --set channel_priority strict
-
-# Create the unified environment
-conda create -n renquant python=3.10 -y
-conda activate renquant
-
-# Core dependencies
-pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
-
-# OpenBB + optimization + backtesting
-pip install "openbb[all]" openbb-cli backtesting scipy
-
-# Live trading (Alpaca)
-pip install alpaca-py
+# Install pinned dependencies (xgboost, lightgbm, ngboost, pandas, numpy, scikit-learn,
+# yfinance, jupyterlab, pyarrow, scipy, alpaca-py, lean, openbb, transformers >= 5.8.1,
+# accelerate >= 1.1.0 for HF Trainer-based PatchTST shadow, etc.)
+pip install -r requirements.lock.txt
 
 # Notifications (macOS + iPhone)
 brew install terminal-notifier   # macOS banner notifications
 # Install ntfy app on iPhone; subscribe to 'renquant' topic
 
-# Install and authenticate LEAN CLI
-pip install lean
+# Authenticate LEAN CLI
 lean login          # enter your QuantConnect User ID and API Token
 ```
 
@@ -74,8 +61,20 @@ lean init
 ## Daily Activation
 
 ```bash
-conda activate renquant
+source .venv/bin/activate
 jupyter lab
 ```
 
 That's it — one command to start working.
+
+---
+
+## HF PatchTST shadow model (2026-05-19)
+
+If working on the HF PatchTST shadow path, the lockfile includes `transformers>=5.8.1` and `accelerate>=1.1.0` (required by HF `Trainer`). Verify:
+
+```bash
+.venv/bin/python -c "import transformers, accelerate; print(transformers.__version__, accelerate.__version__)"
+```
+
+Multi-task head (rank + Student-t dist), Margin Ranking loss, FiLM regime conditioning all live in `scripts/patchtst_hf.py`. See `doc/research/2026-05-19-patchtst-improvement-plan.md`.

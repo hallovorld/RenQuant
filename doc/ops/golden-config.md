@@ -1,33 +1,35 @@
-# Golden Config — v4.1 (Kelly half + A-gate + CUSUM wall-time) + round-7 acceptance block
+# Golden Config — Current state (2026-05-20)
 
-**Current golden.** Promoted 2026-04-24 (v4.1 from +37.85 → +39.82 APY), builds on v4 (`eb8fab5`, Kelly half + A-gate). Round-7 additions on 2026-04-26 (acceptance gates Phase 1+2, challenger infra) added to the golden snapshot but do NOT change measured APY — they are infrastructure for future safe retrains.
+> **⚠️ This file is partial.** Authoritative golden config is the on-disk
+> `backtesting/renquant_104/strategy_config.golden.json` (~1000 lines). Historical
+> v3/v4/v4.1/v5/v6 promotion narratives below are kept for git provenance but
+> are NOT the current source of truth. Read the JSON for current state.
+>
+> For current production-state snapshot: see `doc/roadmap.md` § "📍 Current state"
+> and `CLAUDE.md` § "🗂 Current state".
 
-> **2026-05-08 status**: golden promoted to **alpha158+SEC-fund XGBoost**
-> (`panel-ltr.alpha158_fund.json`, 163 features = 158 alpha158 + 5
-> point-in-time SEC fundamentals: earnings_yield, book_to_price,
-> gross_profitability, roe, asset_growth). Model trained on R1K 291
-> tickers, fwd_60d_excess label, XGB d=5 e=0.05 100 rounds.
->
-> **Validation evidence** (vs the prior failed V7 promotion on 2026-05-07):
->
-> 1. Walk-forward **7-cut** mean OOS IC = **+0.066** (std 0.072), 6/7 cuts
->    positive — not a regime-lucky single window. Sanity-adjusted real
->    signal ~+0.041 after stock-type residual subtracted.
-> 2. Portfolio sim (long-only top decile, 7-cut WF) Sharpe 1.06,
->    MaxDD −42%; long-short Sharpe 1.04. Consistent with Grinold's Law
->    given measured IC and 291-ticker breadth.
-> 3. NGBoost head disabled (`ranking.panel_scoring.ngboost.enabled=false`)
->    until retrained on the 163-feature space — the previous head was
->    trained on 21 prod features and would fingerprint-mismatch.
-> 4. E2E paper sim 2026-05-07 produced 3 BUY orders (LMT, MPWR, ON)
->    after all production safety gates (EarningsFilter, WashSale, Vol,
->    Parabolic, VetoWeakBuys, JointPortfolioQP).
->
-> Backups of pre-promotion golden + live are preserved as
-> `strategy_config.golden.previous_2026-05-08.json` +
-> `strategy_config.live.previous_2026-05-08.json` for fast rollback.
-> The earlier `.previous.json` (no date suffix) preserves the
-> 2026-05-07 V7 revert state.
+**Current golden (2026-05-20)**:
+- Production artifact: `artifacts/prod/panel-ltr.alpha158_fund.json` — XGBoost rank:pairwise on **172 features** (158 alpha158 + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment)
+- NGBoost head: `artifacts/prod/ngboost-head.alpha158_fund.json` — promoted 2026-05-17 (val_IC +0.0352, σ-calib +0.274). σ-wire dormant per 3-condition A/B all NULL/negative.
+- Calibrator: `artifacts/prod/panel-rank-calibration.json` — **Platt scaling** (switched from isotonic 2026-05-18). `expected_return.y` clipped to [-0.20, +0.20] at train-site (P0 fix 2026-05-15).
+- Universe: wl200 (142 ticker quality-first, promoted 2026-05-18; replaced wl103)
+- Regime detector: 5-day BEAR + vol-cluster CHOPPY (2026-05-17 `0a192c4`); HMM hysteresis sticky N=10 bars
+- Tax / lot accounting: HIFO default (`qp_tax_lot_method=hifo`, 2026-05-17); IRC §1091 wash-sale cost-aware + `min_reentry_days=5` anti-churn (2026-05-18)
+- DDV (deep_drawdown_veto): DISABLED globally 2026-05-17 per HXZ 2020
+- min_share_floor: 2026-05-17 unblock for high-priced stocks (EQIX-class)
+- Walk-forward gate: ENFORCED via `weekly_wf_promote.sh` (2026-05-17 commit `96af42b` removed `RQ_ALLOW_NO_WF=1` setdefault); daily retrain STAGES only, weekly Saturday 04:00 PT does the actual promote
+- Shadow model: HF PatchTST since 2026-05-19 (commits `cf6311c`, `4e156e2`); HF Trainer refactor + FiLM regime conditioning landed same day
+
+**Validation evidence** (post Bug-C fix 2026-05-11):
+- 3-window post-fix baseline: APY +11.6%, Sharpe 0.77, MaxDD 8.2% (vs pre-fix +0% / 0.60 / 46.4% — all artifacts of Bug C). See `doc/AUDIT_2026-05-09.md` for Bug C details.
+- 8-window industry-grade paired panel (2026-05-12+): pooled t-stats NEITHER for vt15/GK094 (regime-conditional structure detected — see `doc/research/2026-05-12-findings-and-next.md`)
+- 16-window long-short clean (2026-05-14): SKIP — pooled +6.23pt NEITHER, regime-stratified BEAR/CHOPPY/BULL_VOL win but BULL_CALM lose 2 catastrophes
+
+---
+
+## Historical promotion narratives (kept for provenance — NOT current truth)
+
+Old golden v4.1 was promoted 2026-04-24 (+37.85 → +39.82 APY claim). Round-7 additions 2026-04-26 added acceptance gates Phase 1+2 + challenger infra. **All pre-Bug-C APY claims are inflated by ~75× Vol artifact per Bug C audit.** Do not cite these numbers.
 
 **Frozen snapshot:** `backtesting/renquant_104/strategy_config.golden.json`
 **Live config file:** `backtesting/renquant_104/strategy_config.json`

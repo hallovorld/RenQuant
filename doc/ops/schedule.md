@@ -1,6 +1,11 @@
 # RenQuant Cadence — Single Source of Truth
 
-**Last updated:** 2026-05-09 (audit FIX-C). Authoritative table of every scheduled or event-triggered job in the system.
+**Last updated:** 2026-05-20 (HF Trainer refactor + isotonic→Platt + walk-forward gate enforcement landed). Authoritative table of every scheduled or event-triggered job in the system.
+
+> **Broker mode** (2026-05-11 safety mandate + 2026-05-17 e2e override):
+> - All cron schedules use `--broker alpaca-paper` (paper API, real Alpaca endpoints, no real money)
+> - Explicit operator `--broker alpaca` = LIVE Alpaca account (real money)
+> - `.env` holds LIVE credentials; paper-API calls 401
 
 ## Why this doc exists
 
@@ -20,9 +25,9 @@ Every job below documents: **what it does, what files it touches, what alerts on
 | Field | Value |
 |---|---|
 | **Script** | `scripts/daily_104.sh` |
-| **Plist** | `scripts/launchd/com.renquant.conditional-retrain104.plist` (the existing "daily 104" cron) |
-| **Trigger** | Mon-Fri 14:00 PT (existing existing) |
-| **Wallclock** | ~5-15 min |
+| **Plist** | `~/Library/LaunchAgents/com.renquant.daily104.plist` (separate from `conditional-retrain104.plist`) |
+| **Trigger** | Mon-Fri 14:00 PT |
+| **Wallclock** | ~5-15 min on M4 Pro 14c (was 5-15 min on M2 Pro 10c too — daily is I/O-bound not CPU) |
 | **Touches (mutates)** | `live_state.alpaca.json`, broker positions (Alpaca), `runs.alpaca.db`, `doc/dashboard.md`, `data/portfolio_daily_metrics` rows |
 | **Touches (read-only)** | `panel-ltr.alpha158_fund.json`, `panel-rank-calibration.json`, OHLCV cache |
 | **Does NOT touch** | model artifacts (no retrain, no promote) |
@@ -46,21 +51,22 @@ Every job below documents: **what it does, what files it touches, what alerts on
 | **Script** | `scripts/weekly_wf_promote.sh` |
 | **Plist** | `scripts/launchd/com.renquant.weekly-wf-promote.plist` |
 | **Trigger** | Saturday 04:00 PT (07:00 ET, NYSE closed weekend) |
-| **Wallclock** | ~90 min (75 min train + 15 min WF + sanity) |
+| **Wallclock** | ~60-70 min on M4 Pro 14c (75-90 min on prior M2 Pro 10c) |
 | **Touches (mutates)** | `panel-ltr.alpha158_fund.json` (only on WF pass), `panel-rank-calibration.json` (refit), `data/sec_fundamentals_daily.parquet` (if `daily_retrain_alpha158_fund.sh` regenerates) |
 | **Touches (read-only)** | training panel, OHLCV cache |
 | **Alert (success)** | "RenQuant 104 WEEKLY-PROMOTE ✓" with WF Sharpe + APY + sanity IC |
 | **Alert (failure)** | "RenQuant 104 WEEKLY-FAIL" — prior model preserved |
 
 **Steps:**
-1. Pre-flight smoke test (abort if model broken before 90-min commit)
-2. Retrain via `daily_retrain_alpha158_fund.sh` (panel-LTR + alpha158 + fund + PEAD + SUE)
-3. `scripts/run_wf_gate.py --strict` — 3-cut WF + §5.2 sanity (shuffled-label + time-shift placebo)
-4. **`promote()` WITHOUT `RQ_ALLOW_NO_WF` override** — `_check_wf_gate` refuses if metadata missing or `passed=False`
-5. Refresh dashboard
-6. ntfy with verdict
+1. Pre-flight smoke test (abort if model broken before 60-min commit)
+2. Daily retrain has STAGED panel-LTR + NGB head (per 2026-05-17 commit `96af42b` — removed `RQ_ALLOW_NO_WF=1` setdefault); weekly picks up the staging artifact
+3. `scripts/run_wf_gate.py --strict` — 5-cut WF (cut1_covid / cut2_fed / cut3_inflpk / cut4_svb / cut5_unwind) + §5.2 sanity (shuffled-label + time-shift placebo)
+4. **`promote()` WITHOUT `RQ_ALLOW_NO_WF` override** — `_check_wf_gate` refuses if metadata missing or `passed=False`. Emergency shell-env `RQ_ALLOW_NO_WF=1` still works for manual one-off.
+5. Acceptance gates including per-backend best-by-OOS-IC + Sunday-sweep H1-H4 gates (commit `477b94c`)
+6. Refresh dashboard
+7. ntfy with verdict
 
-**Trust invariant:** EVERY model that ships to production (live trading) passes through this gate. The daily cron has no path to promote. The only override is `scripts/manual_promote.sh` (3-confirmation manual) — and even that requires a follow-up weekly run within 24h.
+**Trust invariant:** EVERY model that ships to production (live trading) passes through this gate. The daily cron has no path to promote (staging only). The only override is `scripts/manual_promote.sh` (3-confirmation manual) — and even that requires a follow-up weekly run within 24h.
 
 ---
 
@@ -77,20 +83,23 @@ Every job below documents: **what it does, what files it touches, what alerts on
 | **Alert (success)** | "RenQuant 104 MONTHLY-CAL ✓" with knot count + n_unique_prob_y |
 | **Alert (failure)** | "RenQuant 104 MONTHLY-FAIL" — prior calibrator preserved |
 
-**Why monthly:** isotonic calibrator's knot positions can drift as score distribution shifts (regime change, watchlist evolution). Refit catches drift without model change. n_unique_prob_y ≥ 10 invariant prevents the "calibrator collapsed to 7 buckets" failure mode (acceptance gate G2).
+**Why monthly:** Platt-scaling calibrator (switched from isotonic 2026-05-18) parameters drift as score distribution shifts (regime change, watchlist evolution). Refit catches drift without model change. n_unique_prob_y ≥ 10 invariant prevents the "calibrator collapsed to 7 buckets" failure mode (acceptance gate G2). 2026-05-17 monthly cron added H2a (non-collapse) + H2b (IC-regression) hard gates with auto-rollback (commit `637594e`).
 
 **Steps:**
-1. Pre-flight smoke test
-2. `scripts/fit_panel_calibrator.py --strategy renquant_104` — refit isotonic on current (model, panel) pair
-3. Post-fit smoke test — abort if calibrator collapsed
-4. ntfy summary
+1. Pre-fit pre-refit backup (commit `637594e`)
+2. Pre-flight smoke test
+3. `scripts/fit_panel_calibrator.py --strategy renquant_104 --method platt` — refit Platt scaling on current (model, panel) pair; clip `expected_return.y` to [-0.20, +0.20] at train-site (per 2026-05-15 P0 fix)
+4. H2a non-collapse hard gate (n_unique_prob_y ≥ 10)
+5. H2b IC-regression hard gate (pool_ic drop > 2pp → rollback)
+6. Post-fit smoke test
+7. ntfy summary
 
 ---
 
 ## 🔔 Event-triggered (manual, no cron)
 
 ### `scripts/event_watchlist_change.sh`
-**When:** after `strategy_config.json` watchlist changes (e.g. wl103 → wl162). Watchlist edits require panel rebuild on the new universe.
+**When:** after `strategy_config.json` watchlist changes (e.g. 2026-05-18 wl103 → wl200 promotion). Watchlist edits require panel rebuild on the new universe.
 **Behavior:** prompts for confirmation, then delegates to `weekly_wf_promote.sh` (same trust boundary).
 
 ### `scripts/event_sec_schema_change.sh`

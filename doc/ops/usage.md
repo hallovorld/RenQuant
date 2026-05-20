@@ -72,7 +72,7 @@ python scripts/migrate_experiment_configs_to_db.py inflate --label alpha158_line
 ## Research mode
 
 ```bash
-conda activate renquant
+source .venv/bin/activate
 jupyter lab
 ```
 
@@ -139,21 +139,27 @@ When `tax` is configured in `strategy_config.json`, LEAN reports after-tax metri
 
 ## Live mode
 
+> **⚠️ Broker mode (2026-05-17 e2e mandate)**:
+> `--broker alpaca` = **LIVE Alpaca account, real money** (per `feedback_e2e_means_real_broker`)
+> `--broker alpaca-paper` = paper API (no real money). Cron schedules use `alpaca-paper` per 2026-05-11 safety mandate.
+> When user says "e2e" without paper qualifier, they mean `--broker alpaca` LIVE. Locked in via CLAUDE.md Environment §"e2e".
+
 ```bash
-# Paper (no real money, no broker)
+# Local sim (no broker; for development only)
 python -m live.runner --strategy renquant_104 --broker paper --once
 
-# Alpaca paper
+# Alpaca paper (real API, no real money — cron default)
 python -m live.runner --strategy renquant_104 --broker alpaca-paper --once
 
-# Alpaca live
-python -m live.runner --strategy renquant_104 --broker alpaca --once
+# Alpaca LIVE (real money — e2e / user explicit mandate only)
+nohup bash -c 'set -a; source .env; set +a; .venv/bin/python -m live.runner --strategy renquant_104 --broker alpaca --once' \
+  > logs/live_e2e/e2e_alpaca_live_$(date +%Y%m%d-%H%M%S).log 2>&1 &
 
 # IBKR (stub — see live/ibkr_broker.py)
 python -m live.runner --strategy renquant_104 --broker ibkr --once
 ```
 
-Broker options: `paper`, `alpaca-paper`, `alpaca`, `ibkr`. Set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in `.env` (gitignored).
+Broker options: `paper`, `alpaca-paper`, `alpaca`, `ibkr`. Set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in `.env` (gitignored). `.env` only has LIVE credentials — paper-API calls 401.
 
 The runner auto-detects strategy shape from `strategy_config.json`. For 104, `RunnerAdapter` builds an `InferenceContext`, runs `prepare_inference_panel_frames` to populate `_panel_feature_frames` / `_panel_factor_frames` / `_panel_macro_frame`, then dispatches `InferencePipeline().run(ctx)`. Trade summaries land in `live/logs/<strategy>/<date>.json`.
 
@@ -163,15 +169,23 @@ The runner auto-detects strategy shape from `strategy_config.json`. For 104, `Ru
 
 ## Scheduled mode (macOS launchd)
 
-Active 104 plists, all NYSE-holiday-aware:
+**11 active plists** (cross-reference `doc/ops/schedule.md` for the authoritative table). Cron schedules use `--broker alpaca-paper` per 2026-05-11 safety mandate. All NYSE-holiday-aware.
 
-| Run | Time (PT) | Time (ET) | Script | Behavior |
-|-----|-----------|-----------|--------|----------|
-| Market open | 6:32 AM | 9:32 AM | `live_only_104.sh --sell-only` | Exit stop-loss / gap-down using opening price |
-| Pre-close | 12:44 PM | 3:44 PM | `live_only_104.sh --sell-only` | Exit intraday stop breaches before close |
-| After close | 1:55 PM | 4:55 PM | `daily_104.sh` | Full retrain (FullTrainingPipeline) → export LEAN data → buy + sell |
-| Conditional | 1:10 PM | 4:10 PM | `conditional_retrain_104.sh` | SPY/VIX anomaly → force retrain (Mon-Fri only) |
-| Sun screen | 12:05 PM | 3:05 PM | `screen_watchlist.py` | Weekly DROP/ADD candidate report |
+Daily 104 cron family (highlights):
+
+| Run | Time (PT) | Script | Behavior |
+|-----|-----------|--------|----------|
+| Market open | 6:32 AM | `live_only_104.sh --sell-only` (DISABLED `.disabled.20260513`) | Sell-side only at open |
+| Pre-close | 12:44 PM | `live_only_104.sh --sell-only` (DISABLED `.disabled.20260513`) | Sell-side at pre-close |
+| Intraday | 1:30 PM | `intraday104.sh` | Mid-day intraday check |
+| After close | 1:55 PM | `daily_104.sh` | Daily retrain (STAGES only — promotion via weekly) → trade |
+| Conditional | 1:10 PM | `conditional_retrain_104.sh` | SPY/VIX anomaly → force retrain (Mon-Fri) |
+| Weekly WF promote | Sat 04:00 AM | `weekly_wf_promote.sh` | Walk-forward gate + sanity → actual promote (post 2026-05-17 enforcement) |
+| Monthly calibrator | 1st-of-month | `monthly_calibrator_refresh.sh` | Calibrator refit + H2a/H2b hard gates |
+| Sun screen | 12:05 PM | `screen_watchlist.py` | Weekly DROP/ADD candidate report |
+| Backup | 07:00 / 11:00 / 15:00 / 19:00 / 23:00 PT | `daily_backup.sh` | Live state + DB to cloud |
+| Daily news sentiment | 06:00 AM PT | `daily_news_sentiment_refresh.sh` | 2026-05-18 shipped — refresh sentiment features pre-market |
+| Weekly fundamentals | Sat 03:00 AM | `weekly_fundamental_refresh.sh` | SEC EDGAR fundamentals refresh |
 
 Plists live in `scripts/launchd/`. One-shot install:
 
@@ -211,7 +225,7 @@ python -m live.runner --strategy foo --broker paper --once
 
 This scaffolds a 101-style single-stock layout. For panel-LTR-style strategies, copy the `renquant_104/` directory shape (kernel/, training_panel/, adapters/) and adapt.
 
-Available model types via `common.create_model()`: `manual`, `classification`, `qlearning`, `fqi`, `optimization`, `xgboost`. See [`../arch/models.md`](../arch/models.md).
+Available model types via `common.create_model()` (legacy 101/102 path): `manual`, `classification`, `qlearning`, `fqi`, `optimization`, `xgboost`. For renquant_104 panel-LTR: see model registry kinds (`xgb`, `hf_patchtst`, `patchtst`, `regime_router`) at `kernel/panel_pipeline/model_registry.py`. See [`../arch/models.md`](../arch/models.md).
 
 ---
 
@@ -219,11 +233,22 @@ Available model types via `common.create_model()`: `manual`, `classification`, `
 
 ```
 scripts/
-├── train_104.py                 ★ FullTrainingPipeline driver + acceptance gates
+├── train_104.py                 ★ FullTrainingPipeline driver — STAGES only (2026-05-17 walk-forward gate enforcement)
+├── weekly_wf_promote.sh         ★ Saturday 04:00 PT — runs full WF gate + sanity → promote
+├── monthly_calibrator_refresh.sh ★ 1st-of-month — Platt refit + H2a/H2b hard gates
+├── monthly_meta_label_retrain.sh Monthly meta-label retrain (currently retraining a disabled artifact)
 ├── model_dashboard.py           ★ Single-screen production state (read-only)
 ├── select_best_model.py         ★ Backend tournament + --promote
-├── finalize_challenger.py       ★ Shadow-window verdict report + ntfy
-├── check_challenger_window.sh   ★ Daily cron poll for window closure
+├── patchtst_hf.py               ★ HF Trainer-based PatchTST shadow training (multi-task head + FiLM opt)
+├── eval_hf_trainer_5cut_5seed.py 5-cut × 5-seed PatchTST baseline eval driver
+├── eval_hf_film_5cut_5seed.py   FiLM A/B eval driver
+├── eval_dlinear_5cut_5seed.py   DLinear baseline eval driver (§5.12 must-have)
+├── compare_arch_5cut_5seed.py   Architecture comparison aggregator + verdict
+├── verify_sigma_calibration.py  σ-calibration test (Student-t head)
+├── dlinear_baseline.py          cure-lab/LTSF-Linear DLinear for cross-sectional ranking
+├── daily_news_sentiment_refresh.sh Daily sentiment feature refresh (2026-05-18 ship)
+├── weekly_fundamental_refresh.sh Weekly SEC EDGAR refresh
+├── daily_iv_snapshot.sh         Daily options-IV snapshot (accumulation phase)
 ├── analyze_backtest.py          Render charts from a LEAN run
 ├── backtest_and_analyze.py      Run LEAN + render + notify
 ├── compare_panel_backends.py    A/B between two panel backends (retrains both)
@@ -273,15 +298,15 @@ backtesting/renquant_104/
 │   ├── ltr_model.py               XGBoost backend
 │   ├── lgbm_ltr.py                LightGBM backend
 │   ├── transformer_model.py       Stage C-3 hourly transformer
-│   ├── ngboost_head.py            μ/σ residual head
-│   └── global_calibrator.py       Isotonic regression
+│   ├── ngboost_head.py            μ/σ residual head (promoted to prod 2026-05-17)
+│   └── global_calibrator.py       Platt scaling (switched from isotonic 2026-05-18)
 ├── adapters/
 │   ├── lean.py / runner.py / sim.py
 └── artifacts/
-    ├── panel-ltr.json             ★ active production
-    ├── panel-ltr.previous.json    rollback target
-    ├── panel-ltr.{xgboost,lightgbm,transformer,macro-enabled,...}.bak.json
-    ├── ngboost-head.json + sidecar .bak.json variants
-    ├── panel-rank-calibration.json + sidecar .bak.json
-    └── _acceptance_log/           rejected staging artifacts + verdict.txt logs
+    ├── prod/
+    │   ├── panel-ltr.alpha158_fund.json       ★ active production (172 features)
+    │   ├── ngboost-head.alpha158_fund.json    promoted 2026-05-17 (val_IC +0.0352)
+    │   ├── panel-rank-calibration.json        Platt scaling, pool_IC +0.094
+    │   └── *.bak_* / *.broken_*               rollback + incident archive
+    └── sim/                                    sim-only artifacts (sim/prod isolated per §sim_prod_artifact_isolation memory)
 ```

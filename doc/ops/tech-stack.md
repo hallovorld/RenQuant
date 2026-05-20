@@ -4,22 +4,22 @@
 
 | Layer | Tool | Role |
 |-------|------|------|
-| Data | yfinance + OpenBB + Alpaca IEX (intraday) | OHLCV + intraday bars + macro factors |
-| Data cache | Parquet (pyarrow) | Local storage for fetched data (`data/ohlcv/`, `data/intraday/`, `data/macro/`) |
+| Data | yfinance + OpenBB + Alpaca IEX (intraday) | OHLCV + intraday bars + macro factors + news sentiment |
+| Data cache | Parquet (pyarrow) | Local storage for fetched data (`data/ohlcv/`, `data/intraday/`, `data/macro/`, `data/news_sentiment/`) |
 | Research | JupyterLab + `scripts/train_104.py` | Interactive 101/102/103; CLI-driven for 104 (`FullTrainingPipeline`) |
-| Panel ranker | XGBoost (rank:pairwise), LightGBM (lambdarank), Stage C-3 PyTorch transformer | Cross-sectional learning-to-rank backends (104) |
-| Probabilistic head | NGBoost (Normal distn) | μ/σ residual estimator on top of panel scorer |
-| Calibration | scikit-learn isotonic regression | Score-DB global calibrator with non-collapse gate |
+| Panel ranker | XGBoost (rank:pairwise, PRIMARY), HF PatchTST (shadow, 2026-05-19 ship), legacy custom PatchTST (deprecated) | Cross-sectional learning-to-rank backends (104); registry at `kernel/panel_pipeline/model_registry.py` |
+| Sequence model training | Hugging Face `transformers` 5.8.1 + `accelerate` 1.13.0 | HF Trainer-based PatchTST shadow with multi-task head (rank + Student-t dist) + optional FiLM regime conditioning (Perez 2017) |
+| Probabilistic head | NGBoost (Normal distn) + Student-t via `torch.distributions` in HF PatchTST | μ/σ residual estimator (NGB head promoted 2026-05-17; σ-wire dormant); Student-t NLL multi-task head in HF PatchTST replaces NGB σ wire long-term |
+| Calibration | scikit-learn Platt scaling (switched from isotonic 2026-05-18) | Score-DB global calibrator with non-collapse gate (H2a) + IC-regression gate (H2b) |
 | Per-symbol learners | RTLearner, BagLearner, TabularQLearner, XGBoost (`XGBClassifier`) | 101/102/103 tournament backends + 104 baseline |
-| Portfolio QP | cvxpy + OSQP solver | Rotation under correlation + sector + concentration constraints (104) |
-| Optimization | SciPy (Nelder-Mead) | Indicator parameter search (legacy 101) |
+| Portfolio QP | cvxpy + CLARABEL solver | Rotation under correlation + sector + concentration constraints + HIFO lot accounting + min_share_floor (104) |
 | State store | SQLite (runs.db) + parquet | pipeline_runs / candidate_scores / trades / training_runs / challenger_decisions / etc. |
-| Native acceleration | Rust (rust/transformer_scorer/) | Hourly transformer inference with parity test vs PyTorch |
+| Native acceleration | Rust (`rust/transformer_scorer/`) | Pre-2026-05-19 transformer-inference path (legacy); HF PatchTST is the current shadow path |
 | Calendar | pandas-market-calendars | NYSE holiday + early-close awareness for cron + trading-day math |
 | Final backtest | QuantConnect LEAN (Docker) | Industrial-grade event-driven backtesting |
-| Live trading | Alpaca (alpaca-py) + IBKR (stub) | Real-time order execution |
+| Live trading | Alpaca (alpaca-py) + IBKR (stub) | Real-time order execution (PAPER for cron; LIVE for explicit `--broker alpaca`) |
 | Notifications | macOS osascript + ntfy.sh | Banner + iPhone push for trade summaries / acceptance failures |
-| Runtime | Miniconda (arm64) | Apple Silicon-native Python environment |
+| Runtime | Project-local `.venv` (Python 3.10) on Apple Silicon M4 Pro 14c (10P+4E) / 48 GB / 20 GPU cores | Per `feedback_python_env` — NOT conda |
 | Containers | Docker Desktop | LEAN engine isolation |
 
 ---
@@ -50,12 +50,15 @@ JupyterLab provides an interactive environment for the entire research pipeline:
 - **RTLearner / BagLearner / TabularQLearner**: ported from ML4T, cleaned up — Random tree, bagging wrapper (Random Forest when wrapping RTLearner), Q-table with epsilon-greedy + optional Dyna experience replay
 
 **Cross-sectional panel-LTR backends** (104 active):
-- **XGBoost** (`rank:pairwise`, default): current production. `eta=0.02`, `max_depth=3`, `min_child_weight=60`. Trained CPCV (6 splits, 2 test groups, 10d embargo). Artifact at `panel-ltr.json`.
-- **LightGBM** (`lambdarank`, NDCG@5/10 metric): alternative backend. Switch via `panel_ltr.backend: "lightgbm"`. Artifact at `panel-ltr.lgbm.bak.json`.
-- **PyTorch transformer** (Stage C-3, daily + hourly): self-attention encoder over (ticker × time × features). Artifact at `panel-ltr.transformer.bak.json` + `panel-transformer.pt` weights. Inference runs through native **Rust scorer** (`rust/transformer_scorer/`) with Python parity test in `tests/test_rust_transformer_parity.py`.
+- **XGBoost** (`rank:pairwise`, PRIMARY): production. 172 features (alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment). Verify `xgb_params` against current `strategy_config.golden.json::panel_ltr.xgb_params`. Artifact at `artifacts/prod/panel-ltr.alpha158_fund.json`.
+- **HF PatchTST** (shadow since 2026-05-19): `transformers.PatchTSTModel` backbone + dual head (rank_head Linear→1, dist_head Linear→3 for Student-t df/loc/scale). Margin Ranking loss + Student-t NLL multi-task. HF Trainer with `load_best_model_at_end=True` + PerRegimeICCallback (PRIME DIRECTIVE) + cosine LR + warmup. Optional FiLM regime conditioning via `--film-regime-cond`. Training: `scripts/patchtst_hf.py`. Plan: `doc/research/2026-05-19-patchtst-improvement-plan.md`.
+- **Legacy custom PatchTST**: pre-2026-05-19 refactor (hand-rolled train loop); retained for old shadow checkpoints. Replaced by HF Trainer-based.
+- **LightGBM** (`lambdarank`): RE-OPENED 2026-05-20 — GICS sector data unblock (`data/ticker_sectors.json` 304 tickers). E48 retest pending.
+- **RegimeRouterScorer** (`regime_router_scorer.py`, commit `c52ad8d`): FROZEN as dormant baseline per arXiv 2603.13252 — hard routing + market-state gate AUROC < 0.5.
 
 **Probabilistic head** (104):
-- **NGBoost** (Normal distribution): trained on top of the panel scorer's output to estimate per-prediction μ and σ. Used by `mu_minus_lambda_sigma` score mode for risk-adjusted ranking + edge-Sharpe sell gates.
+- **NGBoost** (Normal distribution): trained 2026-05-17 + promoted to prod (val_IC +0.0352, σ-calib +0.274 vs XGB baseline +0.0294); quality gate refuses save below baseline. σ-wire to Kelly is dormant per 3-condition A/B all NULL/negative. μ available, σ not consumed.
+- **Student-t multi-task head in HF PatchTST**: end-to-end calibrated σ via `torch.distributions.StudentT` NLL alongside Margin Ranking loss. Shared representation = no train/serve skew that broke NGB σ wire repeatedly.
 
 **Calibration** (104):
 - **scikit-learn isotonic regression**: monotonic mapping from raw panel scores → `rank_score ∈ [0, 1]`. Defended by acceptance gates G2 (≥5 unique probabilities) and G3 (pool_ic > 0).

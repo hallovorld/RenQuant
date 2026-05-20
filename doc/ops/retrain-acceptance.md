@@ -35,19 +35,24 @@ anomaly retrains run the SAME pipeline and SAME gates.
 
 ```
 FullTrainingPipeline
-├─ BaselineTournamentJob       — per-ticker baseline XGBoost (103 watchlist tickers, parallel)
-├─ PanelTrainingJob            — alpha158 panel-LTR (169-feature XGB rank:pairwise)
+├─ BaselineTournamentJob       — per-ticker baseline XGBoost (142 wl200 tickers, parallel)
+├─ PanelTrainingJob            — alpha158 panel-LTR (172-feature XGB rank:pairwise)
 │   └─ PanelTrainingPipeline
 │       ├─ PanelDataJob
 │       ├─ PanelFeatureJob
 │       ├─ PanelAssemblyJob
-│       ├─ PanelModelJob       — writes artifacts/panel-ltr.alpha158_fund.json
-│       ├─ PanelNGBoostJob     — writes ngboost-head.json (NGBoost OFF in prod since 2026-05-11)
-│       └─ RefreshPanelCalibratorJob
-└─ RecalibrationJob            — isotonic calibrator pool_ic
+│       ├─ PanelModelJob       — writes artifacts/prod/panel-ltr.alpha158_fund.json (172 features)
+│       ├─ PanelNGBoostJob     — writes artifacts/prod/ngboost-head.alpha158_fund.json (promoted 2026-05-17, val_IC +0.0352, σ-wire dormant)
+│       └─ RefreshPanelCalibratorJob — Platt scaling (switched from isotonic 2026-05-18); pool_IC +0.094
+└─ RecalibrationJob            — Platt-scaling calibrator pool_ic + H2a/H2b hard gates (2026-05-17 commit `637594e`)
 ```
 
-Walltime: ~2-3 hours on 10-core M2 Pro (BaselineTournamentJob is the bottleneck).
+Walltime: ~60-70 min on M4 Pro 14c (was ~90-120 min on M2 Pro 10c). BaselineTournamentJob remains the bottleneck.
+
+**Daily vs Weekly distinction (2026-05-17 walk-forward gate enforcement, commit `96af42b`)**:
+- Daily retrain (Mon-Fri 14:00 PT via `daily_104.sh`): runs FullTrainingPipeline → STAGES the new artifact (DOES NOT promote)
+- Weekly walk-forward (Sat 04:00 PT via `weekly_wf_promote.sh`): picks up staged artifact → runs full WF gate (5 cuts) + §5.2 sanity battery → ACTUAL promote
+- Removed `RQ_ALLOW_NO_WF=1` setdefault from `train_104.py`. Emergency shell-env override still works.
 
 ### Not retrained by this path (separate crons)
 
