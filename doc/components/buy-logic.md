@@ -1,10 +1,20 @@
-# Buy Logic — Three Quality Gates + Portfolio QP
+# Buy Logic — Quality Gates + Portfolio QP
 
-**Status (2026-04-26 round-7):**
-- ✅ Gate B (Edge-Sharpe floor τ=0.10) — **enabled in production**
-- ✅ Sell-side Gate B (symmetric μ/σ guard for model_sell) — **enabled in production**
-- ✅ Portfolio QP solver — **enabled in production**
-- ⏳ Gate A (distribution floor), Gate C (no-trade band), QP Stages 2/4/5/7 — implemented, default OFF, awaiting sim verification
+**Status (2026-05-20)** — recent changes:
+- ✅ Anti-churn `min_reentry_days=5` business days (2026-05-18 MCD incident) — compounds on top of §1091 wash-sale
+- ❌ DDV (`deep_drawdown_veto`) **DISABLED globally 2026-05-17** per HXZ 2020 "Replicating Anomalies" — distress/loser anomaly fails to replicate post Fama-French 2008
+- ✅ `min_share_floor` for high-price stocks (2026-05-17): allow 1-share buy when target_w × NAV < share_price IF 1-share-weight ∈ [5%, 15%] — unblocks EQIX-class ($1059/share)
+- ✅ HIFO lot-selection default (2026-05-17, was FIFO) via `qp_tax_lot_method=hifo` — pure accounting change
+- ✅ Regime-conditional sentiment gate (2026-05-18): 14 regime entries enabled for `sentiment_pos_share`, `mean_sentiment`, `n_articles`
+- ✅ `regime_momentum` gate ON
+
+Active gates live under `ranking.panel_scoring.buy_quality_gates.*` in `strategy_config.golden.json` (NOT under `ranking.panel_scoring.quality_floor.*` as earlier draft sections suggest — that schema didn't ship).
+
+**Historical** (2026-04-26 round-7):
+- ✅ Gate B (Edge-Sharpe floor τ=0.10) — was enabled but is shelved per Conformal Gate B being DISABLED (pure-alpha ceiling)
+- ✅ Sell-side Gate B (symmetric μ/σ guard for model_sell)
+- ✅ Portfolio QP solver
+- ⏳ Gate A (distribution floor), Gate C (no-trade band) — implemented but quality_floor schema unshipped
 
 > **2026-05-07 update**: portfolio QP migrated from
 > `scipy.optimize.SLSQP + cvxpy fallback` (700-line hand-rolled solver)

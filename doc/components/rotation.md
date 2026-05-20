@@ -1,17 +1,14 @@
 # Rotation Algorithm — Design + References
 
-**Last updated**: 2026-04-25 (post Bug F/Y/M/Q/S/L/MM/PR1-CASH batch); 2026-05-07 cvxpy QP refactor banner.
+**Last updated**: 2026-05-20
 
-> **2026-05-07 update**: rotation now flows through the cvxpy + CLARABEL
-> portfolio QP (commit `b0acf90`) which decides buy/sell/rotate as a
-> single Δw vector — see [`portfolio-qp.md`](portfolio-qp.md). The
-> legacy 3-pass greedy `JointActionTask` (700 lines) stays as the
-> opt-in fallback (`rotation.joint_actions.solver = "greedy"`); the QP
-> path is `solver = "qp"` (default). The Boyd `cvxportfolio` opt-in
-> backend is `qp_solver_backend = "cvxportfolio"`. The
-> `kernel/rotation_convex.py` per-position-cap fix (commit `7712c76`)
-> closed a leverage hole in the cvxpy rotation-only path used by the
-> rotation_convex tests.
+> **2026-05-20 update**:
+> - Active rotation: `joint_actions.enabled=true` + `solver="qp"` (cvxpy + CLARABEL) — Phase 2 IS the default now, NOT opt-in
+> - Phase 3 Boyd MPC: SHIPPED via `kernel/portfolio_qp/cvxportfolio_backend.py` (toggle `qp_solver_backend="cvxportfolio"`)
+> - Current golden thresholds: `panel_buy_floor=0.30`, `panel_sell_floor=0.20`, `min_expected_advantage_pct=0.06`, `min_rotation_hold_days=7`, `max_rotations_per_bar=2`
+> - HIFO lot-selection: `joint_actions.qp_tax_lot_method=hifo` (2026-05-17, was FIFO)
+> - Anti-churn `min_reentry_days=5` (2026-05-18) compounds on §1091 wash-sale in `is_wash_sale_blocked` path
+> - Legacy 3-pass greedy `JointActionTask` (700 lines) is fallback only (`solver="greedy"`)
 
 ## Purpose
 
@@ -25,9 +22,9 @@ formulation, fixes, and academic references.
 
 | Phase | Module | Purpose | Default |
 |-------|--------|---------|---------|
-| **Phase 1 — Pairwise** | `kernel/pipeline/task_rotation.py` | Find swap pairs via per-pair net advantage; ER-based selection with thesis/Kelly/symmetric variants. | **on** |
-| **Phase 2 — JointAction** | `kernel/pipeline/task_joint_actions.py` | Build unified BUY/SELL/ROTATE menu; multi-pass greedy joint optimisation. | flag-gated, default off |
-| **Phase 3 — Boyd MPC** *(roadmap)* | not yet implemented | True convex QP joint optimisation per Boyd 2017. | not built |
+| **Phase 1 — Pairwise** | `kernel/pipeline/task_rotation.py` | Find swap pairs via per-pair net advantage; ER-based selection with thesis/Kelly/symmetric variants. | on (fallback) |
+| **Phase 2 — JointAction (QP)** | `kernel/pipeline/task_joint_actions.py` + `kernel/portfolio_qp/` | Unified BUY/SELL/ROTATE Δw vector via cvxpy CLARABEL convex QP; HIFO lot accounting; min_share_floor. | **DEFAULT ON since 2026-05-07** (`solver="qp"`) |
+| **Phase 3 — Boyd MPC (cvxportfolio)** | `kernel/portfolio_qp/cvxportfolio_backend.py` | Full `cvxportfolio.SinglePeriodOpt` reference policy with Boyd/Stanford idioms. | opt-in via `qp_solver_backend="cvxportfolio"` |
 
 When the Phase 2 flag is OFF (current default), the legacy chain runs:
 `RotationJob → SelectionJob → SizeAndEmitTask → TopUpHeldTask`. When ON,

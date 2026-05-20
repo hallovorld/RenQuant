@@ -11,6 +11,19 @@ This is the framework production funds use (AQR, Two Sigma, Renaissance
 all employ variants). It generalizes Constantinides, Garleanu-Pedersen,
 Boyd, and Markowitz into one solver.
 
+> **2026-05-20 update**:
+> - `qp_tax_lot_method=hifo` (HIFO default since 2026-05-17, was FIFO) — pure
+>   accounting change for tax-optimal lot disposal; `feedback_no_tax_driven_logic`-safe
+> - `min_share_floor` (2026-05-17): when `target_w × NAV < share_price`, allow
+>   1-share buy IF 1-share-weight ∈ [5%, 15%] — unblocks high-priced stocks
+>   (EQIX-class $1059/share)
+> - Anti-churn: `min_reentry_days=5` business days compounds on §1091 wash-sale
+>   block (2026-05-18, MCD incident)
+> - Upstream gates (2026-05-17) that protect QP inputs from corruption:
+>   `fix(monthly-cal)` commit `637594e` (calibrator H2a/H2b hard gates +
+>   auto-rollback); `fix(sunday-sweep)` commit `477b94c` (best-by-OOS-IC +
+>   per-backend acceptance gates H1-H4)
+
 ---
 
 ## 0. Solver architecture (2026-05-06 cvxpy refactor) — READ FIRST

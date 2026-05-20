@@ -1,10 +1,18 @@
 # Sell-Side Quality Floor — Design (2026-04-26)
 
-**Authors**: RenQuant team (round-7 audit)
-**Status**: Shipped (default OFF; opt-in per CLAUDE.md feature-flag protocol)
-**Files**: `kernel/pipeline/task_sell.py::SellGateBTask`,
-          `kernel/pipeline/task_limit_sells.py::LimitSellsPerBarTask`
-**Tests**: `tests/test_sell_gate_b.py` (27), `tests/test_limit_sells_per_bar.py` (21)
+**Status (2026-05-20) — recent additions**:
+- ✅ `DrawdownFlattenTask` (S-2 kill switch, default OFF) — flatten on portfolio drawdown breach
+- ✅ `MetaLabelVetoTask` (P4.4, meta-label artifact disabled but task wired)
+- ✅ `PostStopCooldownFilterTask` (G8) — blocks new buys for N days post-stop on same ticker
+- ✅ `min_reentry_days=5` anti-churn (2026-05-18, MCD incident) — interacts with sell→re-buy flow
+- ✅ HIFO lot-selection (2026-05-17) affects realized-PnL on sell-side; `qp_tax_lot_method=hifo`
+- ✅ State-EXT-SELL pending-order false-positive fix (2026-05-17, commit `0a192c4`): pending broker tickers excluded from "disappeared = externally sold" detection (META/HON Sunday-queued unfilled BUY would have triggered 30-day wash-sale block — fixed)
+
+**Files** (current): `kernel/pipeline/task_sell.py::SellGateBTask`,
+`kernel/pipeline/task_limit_sells.py::LimitSellsPerBarTask`,
+`kernel/pipeline/task_dd_flatten.py::DrawdownFlattenTask`,
+`kernel/meta_label/task_meta_label_veto.py::MetaLabelVetoTask`,
+`kernel/pipeline/task_post_stop_cooldown.py::PostStopCooldownFilterTask`
 
 ## Motivation (the bug we're fixing)
 

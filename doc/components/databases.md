@@ -2,6 +2,17 @@
 
 **The database is a core asset.** Every pipeline decision, every trade, every retrain, every held-position snapshot is logged so future analysis can introspect *why* the system did what it did without re-running anything.
 
+> **2026-05-20 update**:
+> - Universe grew 103 → wl200 (142 tickers, 2026-05-18). Projection: ~3.4× more
+>   candidate_scores per day → ~2.4 GB/yr growth (was 700 MB/yr at 42-ticker projection)
+> - `training_runs.artifact_type` enum extended for model_registry kinds:
+>   `xgb`, `patchtst`, `hf_patchtst`, `regime_router`
+> - `pending_orders` / `pending_broker_tickers` tracking (2026-05-17 State-EXT-SELL
+>   fix) — needed so Sunday-queued unfilled BUY isn't misclassified as
+>   "externally sold". Lives in `live_state.alpaca.json`
+> - HF PatchTST shadow scoring outputs persist via `mlruns/renquant_104_shadow/`
+>   (MLflow), not in runs.db directly; cross-ref via `pipeline_run_id`
+
 > **2026-05-07 addition**: `experiment_configs` table (Task #38) —
 > side-config storage as DB rows. Replaces the file-system
 > `strategy_config.*.json` proliferation. Schema + helpers in

@@ -5,16 +5,15 @@
 适用对象:不熟悉这两个模块的使用者/维护者。
 前置要求:对 OHLCV 数据和"横截面 vs 时间序列"有基本概念即可。
 
-> **2026-05-07 update**: production has TWO panel-LTR backends now.
-> The long-running 27-feature XGBoost (`kind: panel_ltr_xgboost`,
-> `panel-ltr.json`) is live. The 158-feature **alpha158 + sklearn
-> LinearRegression** variant (`kind: panel_linear`,
-> `panel-ltr.alpha158_linear.json`) is the researched winner for
-> single-cut Sharpe (V7 = +2.009) — pending walk-forward validation +
-> daily-retrain wiring before re-promotion. See [`STATUS.md`](../STATUS.md).
-> NGBoost head is currently OFF in the alpha158_linear path because the
-> 21-feature trained head is incompatible with the 158-feature panel; σ
-> falls back to rolling realized vol (Markowitz / Almgren-Chriss).
+> **2026-05-20 update**: production is **alpha158+fund XGBoost** (`kind: xgb`,
+> `artifacts/prod/panel-ltr.alpha158_fund.json`, **172 features** = 158 alpha158
+> + 5 SEC fund + 3 PEAD + 3 SUE + 3 sentiment). NGBoost head **trained + promoted
+> to prod 2026-05-17** (val_IC +0.0352, σ-calib +0.274) but the σ-wire to Kelly
+> stays OFF per 3-condition A/B all NULL/negative. μ from calibrator (Platt,
+> switched from isotonic 2026-05-18); σ from `realized_vol_60d` fallback.
+> **HF PatchTST shadow** wired 2026-05-19 (commits `cf6311c`, `4e156e2`) — see
+> `scripts/patchtst_hf.py` + `doc/research/2026-05-19-patchtst-improvement-plan.md`.
+> The legacy 27-feat XGB and alpha158_linear paths are dormant.
 
 相关代码:
 - `backtesting/renquant_104/training_panel/pp_panel_training.py` — 5 阶段 XGB 训练 pipeline
@@ -31,9 +30,9 @@
 
 ## 1. 核心定位:这是一个横截面排序问题
 
-**问题:** 每天从 38 只股票中挑 8 只买入。
+**问题:** 每天从 wl200 (142 只股票, quality-first) 中挑 ~8 只买入。
 
-这**不是**一个时间序列回归(预测某只股票未来 5 天涨多少)问题,而是一个**横截面排序**问题(今天这 38 只股票的相对强弱次序)。不同的目标函数和训练方式。
+这**不是**一个时间序列回归(预测某只股票未来 60 天涨多少)问题,而是一个**横截面排序**问题(今天这 142 只股票的相对强弱次序)。不同的目标函数和训练方式。
 
 ### 为什么这个分别很重要
 

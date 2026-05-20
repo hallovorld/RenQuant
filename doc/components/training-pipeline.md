@@ -1,26 +1,43 @@
 # Model Training — Design + References
 
-**Last updated**: 2026-04-26 (round-7 acceptance gate flow); 2026-05-07 alpha158_linear additions.
+**Last updated**: 2026-05-20 (HF Trainer refactor + FiLM + DLinear baseline + 172 features + Platt calibrator + NGB head promote + walk-forward gate enforcement)
 
-> **2026-05-07 update**: in addition to the production XGB sweep
-> (`scripts/sunday_panel_sweep.py` + `scripts/retrain_panel.sh`,
-> producing `panel-ltr.json`), there's now an alpha158_linear training
-> path:
-> - `scripts/build_alpha158_qlib.py` → `data/alpha158_qlib_dataset.parquet`
->   (Qlib-faithful 158 features, embargoed walk-forward split).
-> - `scripts/train_panel_linear.py --estimator ols|ridge --label
->   fwd_5d_excess|fwd_20d_excess|fwd_60d_excess` → `panel-ltr.alpha158_linear.json`
->   (sklearn LinearRegression on z-scored cross-sectional labels —
->   Qlib `LinearModel` equivalent).
-> - `scripts/fit_alpha158_linear_calibrator.py` refits the
->   alpha158-specific calibrator.
-> - `scripts/retrain_alpha158_linear.sh` wraps the 3-phase chain;
->   not yet scheduled (P0 in roadmap).
+> **2026-05-20 update — training paths**:
 >
-> alpha158_linear walk-forward NO-GO documented as E29 in
-> [`../research/failed-experiments-log.md`](../research/failed-experiments-log.md).
-> Production stays on XGB until the daily-retrain wiring lands and a
-> retrain-aware walk-forward shows mean Sharpe ≥ 1.0.
+> **1. Production XGBoost panel-LTR** (PRIMARY):
+> - `scripts/daily_retrain_alpha158_fund.sh` + `scripts/retrain_panel.sh` → STAGES `artifacts/prod/panel-ltr.alpha158_fund.json` (172 features = alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment)
+> - Daily retrain STAGES only (2026-05-17 commit `96af42b` removed `RQ_ALLOW_NO_WF=1` setdefault); weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) does actual promote with full 5-cut WF + sanity battery
+> - Label: `fwd_60d_excess` (60-day forward excess return), `lookahead_days=60`
+>
+> **2. NGBoost head** (PROMOTED 2026-05-17, σ-wire dormant):
+> - `scripts/train_ngboost_proper.py` (best-by-val_IC selection + XGB-baseline quality gate refusing save when val_IC < +0.0294)
+> - Artifact: `artifacts/prod/ngboost-head.alpha158_fund.json` (val_IC +0.0352, σ-calib +0.274)
+> - σ-wire stays OFF per 3-condition A/B all NULL/negative (2026-05-17)
+>
+> **3. Calibrator** (Platt scaling, switched from isotonic 2026-05-18):
+> - `scripts/fit_panel_calibrator.py --method platt`
+> - Monthly cron `monthly_calibrator_refresh.sh` with H2a (non-collapse) + H2b (IC-regression) hard gates + auto-rollback (commit `637594e`)
+> - ER clip [-0.20, +0.20] at train-site + load-time guard (P0 2026-05-15)
+>
+> **4. HF PatchTST shadow** (NEW 2026-05-19, multi-task head):
+> - `scripts/patchtst_hf.py` — HF `transformers.Trainer` + `PatchTSTModel` backbone + dual head (rank_head + dist_head Student-t df/loc/scale)
+> - Margin Ranking loss (CIKM 2025) + Student-t NLL multi-task
+> - `PerRegimeICCallback` selects best epoch by min-across-regime IC (PRIME DIRECTIVE in code)
+> - `load_best_model_at_end=True` + cosine LR + warmup
+> - Optional `--film-regime-cond` FiLM regime conditioning (Perez 2017)
+> - **Known issue (project_patchtst_hf_save_mismatch memory)**: pre-refactor checkpoints saved LAST epoch not best — fixed post-2026-05-19 via HF Trainer's `load_best_model_at_end`. Old checkpoints loaded by `hf_patchtst_scorer.py` with `head.*` → `rank_head.*` rename map.
+> - Drivers: `eval_hf_trainer_5cut_5seed.py`, `eval_hf_film_5cut_5seed.py`
+>
+> **5. DLinear baseline** (§5.12 must-have, 2026-05-19):
+> - `scripts/dlinear_baseline.py` — single-matmul trend+seasonal decompose, Margin Ranking loss
+> - Driver: `eval_dlinear_5cut_5seed.py`
+> - Gate: if PatchTST cannot beat DLinear by ≥+0.005 min-regime IC, architecture is NOT the bottleneck
+>
+> **Per-regime IC tracking**: `kernel/hmm_regime_labels.py` provides stateless 4-regime taxonomy (BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR) via SPY OHLCV thresholds. Used by `PerRegimeICCallback` and downstream analysis scripts.
+>
+> **Backends registered in model_registry.py**: `xgb` (primary), `hf_patchtst` (shadow), `patchtst` (legacy custom, pre-2026-05-19 refactor), `regime_router` (FROZEN as dormant baseline per arXiv 2603.13252).
+>
+> **alpha158_linear** (E29): walk-forward NO-GO 2026-05-07; dormant.
 
 ## Overview
 

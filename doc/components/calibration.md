@@ -1,15 +1,17 @@
 # Calibration
 
-**What it is:** maps the panel scorer's raw output (LightGBM/XGBoost LTR rank score, or μ−λσ from NGBoost, or sklearn-LinearRegression dot-product for alpha158_linear) to a calibrated probability `P(outperform SPY by threshold% in lookahead_days)`. Lives at `artifacts/panel-rank-calibration.json` (production) or `panel-rank-calibration.alpha158_linear.json` (alpha158_linear path) and is fitted by `scripts/recalibrate_scores.py` or `scripts/fit_alpha158_linear_calibrator.py`.
+**What it is:** maps the panel scorer's raw output to a calibrated probability `P(outperform SPY by threshold% in lookahead_days=60)`. Lives at `artifacts/prod/panel-rank-calibration.json` and is fitted by `scripts/fit_panel_calibrator.py` (monthly cron `monthly_calibrator_refresh.sh`).
 
-The calibrator is **isotonic regression** by default; falls back to Platt scaling for small samples (per CLAUDE.md sample-size policy).
+The calibrator is **Platt scaling (sigmoid)** by default since 2026-05-18 (switched from isotonic — isotonic was creating wide flat plateaus per saturation incidents). Isotonic remains opt-in via `--method isotonic` for cases where Platt over-extrapolates.
 
-> **2026-05-07 status**: production runs the XGB-trained calibrator
-> (`panel-rank-calibration.json`). `n_unique_prob_y=7 < 10` runtime
-> floor → SOFT-WARN; refit when panel-LTR best_iter floor is bumped
-> (P1 in roadmap). The alpha158_linear-trained calibrator
-> (`panel-rank-calibration.alpha158_linear.json`) is fitted but only
-> used when the alpha158_linear path is active.
+> **2026-05-20 status**:
+> - Calibrator type: **Platt** (default), trained on Platt with `expected_return.y` clipped to `[-0.20, +0.20]` at train-site per 2026-05-15 P0 fix (`b16e2a1`, `00f94ff`, `342309e`)
+> - Production metadata: `pool_IC=+0.102`, `per_date_ic_mean=+0.115`, `n_unique_prob_y=100`, `n_dates_eval=2541`
+> - Load-time guard against `expected_return.y > 0.20` saturation; raises warning
+> - G12 preflight check enforces sane ER range
+> - 2026-05-17 monthly cron added H2a (non-collapse, n_unique_prob_y ≥ 10) + H2b (IC-regression, pool_ic drop > 2pp → rollback) hard gates with auto-rollback (commit `637594e`)
+
+**Why the 2026-05-15 P0 was critical**: prior prod calibrator had `expected_return.y` up to +1.0 (= +100% predicted return) which corrupted Kelly μ. Refit with ±0.20 clip + load-time guard + saturation warning + G12 preflight. Post-refit: pool_IC=+0.094 preserved.
 
 ## 1. Architecture
 
