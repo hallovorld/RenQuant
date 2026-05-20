@@ -103,15 +103,22 @@ class TestSourceContracts:
         assert "val_preds.parquet" in src
 
     def test_loc_budget(self):
-        """Multi-task head + HF Trainer wrapper budget: 450 LOC.
+        """HF Trainer wrapper + dual head + FiLM regime conditioning: 550 LOC.
 
-        Raised from 350 to absorb distributional head + per-regime callback
-        + cosine+warmup + argparse expansion. All additions are config flags
-        or canonical-lib glue, not custom training code (which is gone)."""
+        Trajectory: 350 (pre-refactor) → 450 (HF Trainer + dual head + per-
+        regime callback) → 550 (+ FiLM Pillar B). All additions are config
+        flags / canonical-lib glue / clean opt-in modules, not custom
+        training infrastructure."""
         src = SCRIPT.read_text()
         loc = sum(1 for line in src.splitlines()
                   if line.strip() and not line.strip().startswith("#"))
-        assert loc <= 450, f"wrapper grew to {loc} LOC — too thick"
+        assert loc <= 550, f"wrapper grew to {loc} LOC — too thick"
+
+    def test_film_layer_class_exported(self):
+        """FiLM (Perez 2017) regime conditioning module — Pillar B foundation."""
+        src = SCRIPT.read_text()
+        assert "class FiLMLayer" in src
+        assert "Perez 2017" in src or "1709.07871" in src
 
 
 # ─── Forward pass + heads ───────────────────────────────────────────────────
@@ -280,6 +287,129 @@ class TestPreprocessing:
         out = mod.winsorize_label(panel, "y", pct=0.005)
         assert out["y"].max() < 10.0
         assert out["y"].min() > -10.0
+
+
+# ─── FiLM regime conditioning ───────────────────────────────────────────────
+
+
+class TestFiLMRegimeConditioning:
+    """Perez 2017 (arXiv 1709.07871) Feature-wise Linear Modulation:
+    γ, β = MLP(regime_context); h' = γ ⊙ h + β. Init must be identity."""
+
+    def test_regimes_tuple_matches_hmm_emitter(self):
+        """The 4-tuple must match kernel/regime.py production emitter."""
+        mod = _load_mod()
+        assert mod.REGIMES == ("BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR")
+
+    def test_regime_to_onehot_known_labels(self):
+        mod = _load_mod()
+        import numpy as np
+        for i, r in enumerate(mod.REGIMES):
+            oh = mod.regime_to_onehot(r)
+            assert oh.shape == (4,)
+            expected = np.zeros(4, dtype=np.float32)
+            expected[i] = 1.0
+            assert np.array_equal(oh, expected)
+
+    def test_regime_to_onehot_unknown_returns_zero(self):
+        """Unknown label → all-zero vector (model gets no regime signal,
+        safer than guessing)."""
+        import numpy as np
+        mod = _load_mod()
+        oh = mod.regime_to_onehot("UNKNOWN_REGIME")
+        assert np.array_equal(oh, np.zeros(4, dtype=np.float32))
+
+    def test_film_is_identity_at_init(self):
+        """Zero-init last layer → (γ, β) = (1, 0) → FiLM(h, ctx) == h
+        regardless of ctx. Strict superset property of no-FiLM baseline."""
+        import torch
+        mod = _load_mod()
+        film = mod.FiLMLayer(d_model=32, n_regimes=4)
+        h = torch.randn(7, 32)
+        ctx = torch.randn(7, 4)
+        out = film(h, ctx)
+        assert torch.allclose(out, h, atol=1e-7), \
+            f"FiLM not identity at init: max diff {(out - h).abs().max().item():.2e}"
+
+    def test_film_gradients_flow(self):
+        """After backward, FiLM params have non-zero grad — modulation
+        is learnable."""
+        import torch
+        mod = _load_mod()
+        film = mod.FiLMLayer(d_model=32, n_regimes=4)
+        h = torch.randn(7, 32, requires_grad=True)
+        ctx = torch.randn(7, 4)
+        loss = film(h, ctx).sum()
+        loss.backward()
+        # FiLM's last layer was zero-init; after one backward must have grad
+        assert film.net[-1].weight.grad is not None
+        assert film.net[-1].weight.grad.abs().sum() > 0
+
+    def test_model_with_film_identity_at_init(self):
+        """Model with FiLM ON + ctx given == model with FiLM ON + no ctx
+        at init (because FiLM is identity at init when ctx provided, AND
+        is skipped when ctx is None)."""
+        import torch
+        from transformers import PatchTSTConfig
+        mod = _load_mod()
+        cfg = PatchTSTConfig(num_input_channels=8, context_length=16,
+                              patch_length=4, patch_stride=4, d_model=32,
+                              num_attention_heads=2, num_hidden_layers=1,
+                              ffn_dim=64)
+        model = mod.HFPatchTSTRanker(cfg, use_distributional_head=False,
+                                       use_film_regime=True)
+        model.eval()
+        x = torch.randn(5, 16, 8)
+        ctx = torch.tensor([[1.0, 0, 0, 0]] * 5)
+        with torch.no_grad():
+            out_ctx = model(past_values=x, regime_context=ctx)["score"]
+            out_no = model(past_values=x)["score"]
+        assert torch.allclose(out_ctx, out_no, atol=1e-6)
+
+    def test_dataset_injects_regime_context_when_hmm_provided(self):
+        import pandas as pd
+        import numpy as np
+        mod = _load_mod()
+        rng = np.random.default_rng(0)
+        dates = pd.date_range("2024-01-01", periods=10)
+        rows = []
+        for d in dates:
+            for tkr in "ABCDEFGH":
+                rows.append({"date": d, "ticker": tkr,
+                              "f1": rng.normal(), "f2": rng.normal(),
+                              "fwd_60d_excess": rng.normal(),
+                              "split_label": "train"})
+        panel = pd.DataFrame(rows)
+        hmm = pd.DataFrame({"date": dates,
+                             "regime": ["BULL_CALM"] * 5 + ["BEAR"] * 5})
+        ds = mod.PerDayDataset(panel, ["f1", "f2"], "fwd_60d_excess",
+                                seq_len=3, split="train", hmm_labels=hmm)
+        assert len(ds) > 0
+        sample = ds[0]
+        assert "regime_context" in sample
+        # All rows for the same day share the same regime one-hot
+        ctx = sample["regime_context"]
+        assert ctx.shape[1] == 4
+        assert (ctx[0] == ctx).all()
+
+    def test_dataset_omits_regime_context_when_no_hmm(self):
+        import pandas as pd
+        import numpy as np
+        mod = _load_mod()
+        rng = np.random.default_rng(0)
+        dates = pd.date_range("2024-01-01", periods=10)
+        rows = []
+        for d in dates:
+            for tkr in "ABCDEFGH":
+                rows.append({"date": d, "ticker": tkr,
+                              "f1": rng.normal(), "f2": rng.normal(),
+                              "fwd_60d_excess": rng.normal(),
+                              "split_label": "train"})
+        panel = pd.DataFrame(rows)
+        ds = mod.PerDayDataset(panel, ["f1", "f2"], "fwd_60d_excess",
+                                seq_len=3, split="train")  # no hmm_labels
+        assert len(ds) > 0
+        assert "regime_context" not in ds[0]
 
 
 # ─── Per-regime IC callback ─────────────────────────────────────────────────

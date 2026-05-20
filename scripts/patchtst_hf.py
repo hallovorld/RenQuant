@@ -65,27 +65,76 @@ log = logging.getLogger("patchtst-hf")
 
 # ─── Model ──────────────────────────────────────────────────────────────────
 
+# Canonical ordering for one-hot regime context. Must match kernel/regime.py
+# emitter (BULL_STRONG is config-legacy phantom — detector doesn't emit it).
+REGIMES = ("BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR")
+
+
+def regime_to_onehot(regime_label: str) -> np.ndarray:
+    """Map categorical regime label → (K=4,) one-hot float32. Unknown
+    label → all zeros (model gets no regime signal; safer than guess)."""
+    out = np.zeros(len(REGIMES), dtype=np.float32)
+    if regime_label in REGIMES:
+        out[REGIMES.index(regime_label)] = 1.0
+    return out
+
+
+class FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation (Perez 2017, arXiv 1709.07871).
+
+    γ, β = MLP(context); h' = γ ⊙ h + β. Lightweight regime conditioning:
+    shared backbone learns cross-regime features; FiLM modulates them
+    per-regime via ~500 extra params for K=4 regimes, d_model=64.
+
+    Init: last layer zero-init → at start (γ, β) = (1, 0) → FiLM is
+    identity → strict superset of no-FiLM baseline.
+    """
+
+    def __init__(self, d_model: int, n_regimes: int = len(REGIMES),
+                 hidden: int = 32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_regimes, hidden), nn.ReLU(),
+            nn.Linear(hidden, 2 * d_model),
+        )
+        # Zero-init final layer → (γ, β) = (0, 0) at output, then γ ← 1+γ
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, h: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        gb = self.net(context)
+        delta_gamma, beta = gb.chunk(2, dim=-1)
+        return (1.0 + delta_gamma) * h + beta
+
+
 class HFPatchTSTRanker(nn.Module):
     """HF PatchTST backbone + dual head: ranking + Student-t distribution.
 
-    forward() returns dict with always-present "score" key. When
+    Optional FiLM regime conditioning (Perez 2017) between encoder and
+    heads. forward() returns dict with always-present "score" key. When
     `use_distributional_head=True`, also returns (df, loc, scale) for
     Student-t NLL training and downstream σ-aware Kelly/QP.
     """
 
-    def __init__(self, cfg: PatchTSTConfig, use_distributional_head: bool = True):
+    def __init__(self, cfg: PatchTSTConfig, use_distributional_head: bool = True,
+                 use_film_regime: bool = False, n_regimes: int = len(REGIMES)):
         super().__init__()
         self.backbone = PatchTSTModel(cfg)
         self.use_distributional_head = use_distributional_head
+        self.use_film_regime = use_film_regime
         self.rank_head = nn.Linear(cfg.d_model, 1)
         self.dist_head = nn.Linear(cfg.d_model, 3) if use_distributional_head else None
+        self.film = FiLMLayer(cfg.d_model, n_regimes) if use_film_regime else None
 
     def forward(self, past_values: torch.Tensor,
                 labels: torch.Tensor | None = None,
+                regime_context: torch.Tensor | None = None,
                 dates=None) -> dict:
         out = self.backbone(past_values=past_values)
         # (B, n_ch, n_patches, d_model) → pool to (B, d_model)
         h = out.last_hidden_state.mean(dim=(1, 2))
+        if self.film is not None and regime_context is not None:
+            h = self.film(h, regime_context)
         result: dict = {"score": self.rank_head(h).squeeze(-1)}
         if self.dist_head is not None:
             d = self.dist_head(h)
@@ -189,10 +238,16 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
 class PerDayDataset(torch.utils.data.Dataset):
     """One Dataset sample = one day's all-ticker batch. With identity_collator
     and Trainer batch_size=1, each Trainer step processes one day's pairwise
-    ranking loss."""
+    ranking loss.
+
+    If `hmm_labels` is provided, each day's dict gets a `regime_context`
+    tensor of shape (N_tickers, K=4) — one-hot for the day's HMM regime.
+    All tickers on the same day share the same regime row (regime is a
+    market-wide signal, broadcast for FiLM convenience)."""
 
     def __init__(self, panel: pd.DataFrame, feat_cols: list[str],
-                 label_col: str, seq_len: int, split: str):
+                 label_col: str, seq_len: int, split: str,
+                 hmm_labels: pd.DataFrame | None = None):
         feat_arr = panel[feat_cols].astype(np.float32).fillna(0.0).values
         lab_arr = panel[label_col].astype(np.float32).values
         samples_by_date: dict[int, list[tuple[np.ndarray, float, pd.Timestamp]]] = {}
@@ -208,15 +263,30 @@ class PerDayDataset(torch.utils.data.Dataset):
                 d = panel.iloc[end_pos]["date"]
                 samples_by_date.setdefault(d.value, []).append(
                     (window, lab_arr[end_pos], d))
+
+        # Build per-day regime context lookup (if HMM labels provided)
+        regime_map: dict[int, str] | None = None
+        if hmm_labels is not None:
+            regime_map = {pd.Timestamp(d).value: r
+                          for d, r in zip(hmm_labels["date"], hmm_labels["regime"])}
+
         self.days: list[dict] = []
         for d_ns, samples in samples_by_date.items():
             if len(samples) < 5:
                 continue
-            self.days.append({
+            day = {
                 "past_values": torch.from_numpy(np.stack([s[0] for s in samples])),
                 "labels": torch.tensor([s[1] for s in samples], dtype=torch.float32),
                 "dates": np.array([s[2].value for s in samples], dtype="int64"),
-            })
+            }
+            if regime_map is not None:
+                regime = regime_map.get(int(d_ns), "BULL_CALM")  # fallback
+                onehot = regime_to_onehot(regime)
+                n = len(samples)
+                day["regime_context"] = torch.from_numpy(
+                    np.broadcast_to(onehot, (n, len(REGIMES))).copy())
+                day["regime_label"] = regime
+            self.days.append(day)
 
     def __len__(self):
         return len(self.days)
@@ -245,7 +315,10 @@ class PatchTSTRankerTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False,
                      num_items_in_batch=None):
         labels = inputs["labels"]
-        outputs = model(past_values=inputs["past_values"], labels=labels)
+        fwd_kwargs = {"past_values": inputs["past_values"], "labels": labels}
+        if "regime_context" in inputs:
+            fwd_kwargs["regime_context"] = inputs["regime_context"]
+        outputs = model(**fwd_kwargs)
         loss = margin_ranking_loss(outputs["score"], labels,
                                     margin=self._ranking_margin)
         if "loc" in outputs and self._nll_loss_weight > 0:
@@ -278,7 +351,10 @@ class PerRegimeICCallback(TrainerCallback):
         with torch.no_grad():
             for day in self.eval_dataset.days:
                 x = day["past_values"].to(device)
-                outputs = model(past_values=x)
+                fwd_kwargs = {"past_values": x}
+                if "regime_context" in day:
+                    fwd_kwargs["regime_context"] = day["regime_context"].to(device)
+                outputs = model(**fwd_kwargs)
                 all_p.append(outputs["score"].cpu().numpy())
                 all_y.append(day["labels"].numpy())
                 all_d.append(day["dates"])
@@ -309,8 +385,25 @@ def train_one(args: argparse.Namespace) -> dict:
     panel, feat_cols = load_panel_with_split(
         Path(args.dataset), args.cut, args.label,
         val_tail_pct=getattr(args, "val_tail_pct", 0.10))
-    train_ds = PerDayDataset(panel, feat_cols, args.label, args.seq_len, "train")
-    val_ds = PerDayDataset(panel, feat_cols, args.label, args.seq_len, "val")
+
+    # Compute HMM regime labels once — reused for FiLM dataset injection
+    # AND for per-regime IC callback selection metric.
+    hmm_labels = None
+    spy_path = REPO / args.spy_path
+    if spy_path.exists():
+        from kernel.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
+        hmm_labels = compute_hmm_regime_labels(spy_path)
+    elif args.film_regime_cond:
+        raise FileNotFoundError(
+            f"FiLM regime conditioning requires SPY parquet at {spy_path}")
+
+    # Inject regime context into datasets only when FiLM is ON (FiLM-OFF
+    # dataset stays lean — no spurious regime_context broadcast)
+    ds_hmm = hmm_labels if args.film_regime_cond else None
+    train_ds = PerDayDataset(panel, feat_cols, args.label, args.seq_len, "train",
+                              hmm_labels=ds_hmm)
+    val_ds = PerDayDataset(panel, feat_cols, args.label, args.seq_len, "val",
+                            hmm_labels=ds_hmm)
     log.info("days train=%d val=%d", len(train_ds), len(val_ds))
 
     cfg = PatchTSTConfig(
@@ -323,23 +416,20 @@ def train_one(args: argparse.Namespace) -> dict:
         num_hidden_layers=args.n_layers,
         ffn_dim=args.d_model * 2,
     )
-    model = HFPatchTSTRanker(cfg, use_distributional_head=args.distributional_head)
+    model = HFPatchTSTRanker(cfg, use_distributional_head=args.distributional_head,
+                              use_film_regime=args.film_regime_cond)
     n_params = sum(p.numel() for p in model.parameters())
-    log.info("HFPatchTSTRanker n_params=%.2fM dist_head=%s",
-             n_params / 1e6, args.distributional_head)
+    log.info("HFPatchTSTRanker n_params=%.2fM dist_head=%s film=%s",
+             n_params / 1e6, args.distributional_head, args.film_regime_cond)
 
     # Per-regime IC callback (PRIME DIRECTIVE selection metric)
     callbacks = []
     metric_for_best = None
     greater_is_better = True
-    spy_path = REPO / args.spy_path
-    if spy_path.exists():
-        from kernel.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
-        hmm_labels = compute_hmm_regime_labels(spy_path)
+    if hmm_labels is not None:
         callbacks.append(PerRegimeICCallback(val_ds, hmm_labels))
         metric_for_best = "eval_min_regime_ic"
-        log.info("PerRegimeICCallback wired | spy=%s | n_labels=%d",
-                 spy_path.name, len(hmm_labels))
+        log.info("PerRegimeICCallback wired | n_labels=%d", len(hmm_labels))
     else:
         log.warning("SPY parquet missing at %s — falling back to eval_loss "
                     "for best-model selection (PRIME DIRECTIVE degraded)", spy_path)
@@ -394,7 +484,10 @@ def train_one(args: argparse.Namespace) -> dict:
     with torch.no_grad():
         for day in val_ds.days:
             x = day["past_values"].to(device)
-            outputs = model(past_values=x)
+            fwd_kwargs = {"past_values": x}
+            if "regime_context" in day:
+                fwd_kwargs["regime_context"] = day["regime_context"].to(device)
+            outputs = model(**fwd_kwargs)
             for i, d in enumerate(day["dates"]):
                 row = {"date": pd.Timestamp(d),
                        "pred": float(outputs["score"][i].cpu()),
@@ -429,6 +522,7 @@ def train_one(args: argparse.Namespace) -> dict:
             "label_col": args.label,
             "best_val_ic": best_val_ic,
             "uses_distributional_head": args.distributional_head,
+            "uses_film_regime": args.film_regime_cond,
             "uses_csranknorm_preprocessing": True,
             "uses_winsorize_label_preprocessing": True,
             "per_regime_ic": summary["per_regime_ic"],
@@ -467,6 +561,10 @@ def main():
                    help="λ in L = margin_rank + λ * student_t_nll")
     p.add_argument("--ranking-margin", type=float, default=0.1,
                    help="margin in torch.nn.functional.margin_ranking_loss")
+    p.add_argument("--film-regime-cond", action="store_true",
+                   help="FiLM regime conditioning (Perez 2017): γ, β = MLP(regime) "
+                        "modulates encoder output. Identity at init → strict "
+                        "superset of FiLM-OFF baseline. Requires --spy-path.")
     p.add_argument("--spy-path", default="data/ohlcv/SPY/1d.parquet",
                    help="SPY OHLCV parquet for HMM regime labels")
     p.add_argument("--seed", type=int, default=42)
