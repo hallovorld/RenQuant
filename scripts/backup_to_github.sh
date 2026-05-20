@@ -118,6 +118,17 @@ fi
 [ -f "$REPO_ROOT/scripts/stage3_final_watchlist.json" ] && \
     cp "$REPO_ROOT/scripts/stage3_final_watchlist.json" "$BACKUP_REPO/stage3_final_watchlist.json"
 
+# ── 3.5. P0-17 audit: GitHub blocks pushes > 100 MB per file. SQLite db
+#        grows ~50 KB/day at wl200 scale; will cross 100 MB sometime
+#        in 2026. Pre-emptive size guard with ntfy if any tracked file
+#        approaches 90 MB (10 MB safety margin).
+LARGE_FILES=$(find "$BACKUP_REPO" -type f -size +90M 2>/dev/null)
+if [ -n "$LARGE_FILES" ]; then
+    notify_payload="LARGE_FILES_DETECTED_>90MB:\n$LARGE_FILES\nMigrate to Git LFS before next backup."
+    curl -s -d "$notify_payload" "ntfy.sh/renquant" >/dev/null 2>&1 || true
+    echo "WARNING: files near 100MB limit — Git LFS needed: $LARGE_FILES"
+fi
+
 # ── 4. Commit + push if changed ───────────────────────────────────────────────
 git add -A
 if git diff --cached --quiet; then
@@ -126,5 +137,12 @@ if git diff --cached --quiet; then
 fi
 
 git commit -m "backup $TS_ISO" --quiet
-git push origin main 2>&1 | tail -3
+# Capture push exit to detect silent rejections (P0-17: 100MB block returns
+# non-zero exit but tee swallows in plain pipe; explicit check here).
+if ! git push origin main 2>&1 | tail -3; then
+    PUSH_RC=$?
+    curl -s -d "Backup push FAILED rc=$PUSH_RC at $TS_ISO" "ntfy.sh/renquant" >/dev/null 2>&1 || true
+    echo "ERROR: push failed; backup commit is local-only"
+    exit "$PUSH_RC"
+fi
 echo "Backup pushed at $TS_ISO"

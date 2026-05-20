@@ -191,9 +191,15 @@ class DeepDrawdownVetoTask(Task):
             if dd is None or dd > -dd_threshold:
                 kept.append(cand)
                 continue
-            # Deep drawdown — check fundamental confirmation
-            sue  = _feature(cand, "sue_score")
-            pead = _feature(cand, "pead_score")
+            # Deep drawdown — check fundamental confirmation.
+            # FIX 2026-05-20 audit P0-13: attr names are sue_signal /
+            # pead_signal in ApplyScoresTask (job_panel_scoring.py:441,372),
+            # NOT sue_score / pead_score. Pre-fix _feature() returned None
+            # 100% of time → confirmed=False → all deep-DD candidates vetoed
+            # unconditionally. Masked while DDV disabled globally 2026-05-17,
+            # would silent-misfire on regime-conditional re-enable.
+            sue  = _feature(cand, "sue_signal")
+            pead = _feature(cand, "pead_signal")
             sue_ok  = sue  is not None and math.isfinite(sue)  and sue  > sue_floor
             pead_ok = pead is not None and math.isfinite(pead) and pead > pead_floor
             confirmed = (sue_ok or pead_ok) if require_either else (sue_ok and pead_ok)

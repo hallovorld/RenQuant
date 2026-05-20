@@ -105,8 +105,18 @@ def main():
     # save its ensemble to the sim artifact path. Quality gate prevents the
     # silent-degrade incident (today's Sunday sweep saved val_IC=-0.0165
     # straight to prod with no gate).
-    XGB_BASELINE_MEAN = 0.0294
-    XGB_BASELINE_STD  = 0.0029
+    #
+    # P0-15 (audit 2026-05-20): baseline values below are hardcoded from
+    # a 2026-05-15 measurement on the PRE-wl200 panel. Stale for post-
+    # 2026-05-18 wl200 (142 ticker) + 172-feature panel. Override via env
+    # to refresh after each universe/feature change:
+    #   XGB_BASELINE_MEAN=<measured> XGB_BASELINE_STD=<measured> ./train_ngboost_proper.py
+    # TODO: auto-refresh by reading the most recent panel-ltr.json's val IC.
+    import os as _os_baseline  # noqa: PLC0415
+    XGB_BASELINE_MEAN = float(_os_baseline.environ.get("XGB_BASELINE_MEAN", "0.0294"))
+    XGB_BASELINE_STD  = float(_os_baseline.environ.get("XGB_BASELINE_STD",  "0.0029"))
+    log.info("XGB baseline (override via XGB_BASELINE_MEAN/STD env): "
+             "mean=%.4f std=%.4f", XGB_BASELINE_MEAN, XGB_BASELINE_STD)
 
     # Params dict — used in artifact metadata so downstream tools know
     # exactly how the model was fitted. Mirrors NGBRegressor() kwargs below.
@@ -123,12 +133,13 @@ def main():
     fit_times = []
     best_iters = []
     models = []
-    # 2026-05-17: env-overridable seed list. Full 5-seed (5/15-validated
-    # config) takes 2-4h on a contended machine; single seed=42 gives the
-    # representative result (5/15 measured +0.0354) in ~5min. Set
-    # NGB_SEEDS=42,7,123,2024,31415 to run the full panel.
+    # 2026-05-17: env-overridable seed list.
+    # P0-15 (audit 2026-05-20): default flipped from single seed to 5-seed.
+    # Single-seed default was §5.13.4 violation (claiming significance from
+    # one measurement). 5-seed takes 2-4h but produces honest σ. Override
+    # for quick smoke via NGB_SEEDS=42 (single-seed = exploratory only).
     import os as _os
-    _seed_csv = _os.environ.get("NGB_SEEDS", "42")
+    _seed_csv = _os.environ.get("NGB_SEEDS", "42,7,123,2024,31415")
     SEED_LIST = [int(s) for s in _seed_csv.split(",") if s.strip()]
     log.info("Running %d seed(s): %s", len(SEED_LIST), SEED_LIST)
     for SEED in SEED_LIST:

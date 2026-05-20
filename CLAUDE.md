@@ -112,22 +112,37 @@ python -m live.runner --strategy foo --broker paper --once
 
 ## Development Rules
 
-### 0. Execute immediately, never wait for next session (2026-05-18 mandate)
+### 0. Execute immediately, never wait for next session (2026-05-18 mandate, re-emphasized 2026-05-20)
 
-**User verbatim**: "任何 planned job 马上开工, 不要等下个 session". When a job is planned (in this session's task list, in roadmap.md, or just verbally agreed), START IT NOW. Don't write "let me schedule for next session" or "I'll do this tomorrow". The user is here, the context is loaded, the env is warm — execute.
+**User verbatim** (2026-05-18): "任何 planned job 马上开工, 不要等下个 session". **Re-emphasis 2026-05-20**: "我说过很多次了！不要推迟到下个session！" (after I violated by proposing "明天重跑 ..." for a planned eval).
 
-Examples of what NOT to say:
+When a job is planned (in this session's task list, in roadmap.md, or just verbally agreed), START IT NOW. Don't write "let me schedule for next session" or "I'll do this tomorrow". The user is here, the context is loaded, the env is warm — execute.
+
+**Sessions are MY implementation detail, not the user's project unit.** A task too big for one session doesn't get split into "today" + "tomorrow" — it just runs as far as it can. The user resumes themselves when ready.
+
+Examples of what NOT to say (ALL §0 violations):
 - "Will do in next session"
 - "Let me schedule wakeup for tomorrow"
 - "Planned for later sprint"
 - "Will start when prerequisites ready" (instead: start what CAN start, in parallel)
+- "Next step: rerun X tomorrow" / "明天重跑 X" / "下次 session 继续"
+- "Wait for verdict, then ship Y" (when Y can prep in parallel)
+- ANY sentence with "next session", "tomorrow", "later this week", "明天", "下次" about agreed work
 
 What TO do:
 - Concurrent BG jobs when ROI permits (multiple training runs, multiple sims, multiple data fetches)
+- Foreground tasks that don't compete for the BG resource (CPU vs MPS GPU)
 - Maximize the user's session time. Their attention is the rate-limiting resource.
 - If a long compute is needed, START it BG and report estimated time + monitor.
+- When asking for triage, frame as "which order should I execute" NOT "should we save X for later"
 
-Caveat: still respect risk gates (don't ship to live without §5.2 sanity, don't promote without §5.13.4a Tier 3, don't skip preflight).
+**Self-check before any "later" / "next" word**: would the user be happier if this work were running BG right now, vs deferred? If yes — start it.
+
+Caveat: still respect risk gates (don't ship to live without §5.2 sanity, don't promote without §5.13.4a Tier 3, don't skip preflight). But "respect gates" ≠ "defer to next session" — gates fail fast, then execute the next plan.
+
+**Source incidents** (chronological violations I committed):
+- 2026-05-19 14:30 PT: shipped HF Trainer + eval drivers without §5.2 sanity (P0-1 leakage rooted here)
+- 2026-05-20 11:18 PT: proposed "下一步建议: 明天重跑 PatchTST + iTransformer + FiLM 三方对比" after partial P0 fixes — user response: "我说过很多次了！不要推迟到下个session！"
 
 ### 1. Code is the source of truth
 When code and doc conflict, **code wins, doc gets corrected**. Stale docs mislead future-Claude into writing wrong code. For renquant_104 specifically, start at `kernel/pipeline/pp_inference.py::InferencePipeline.run`.

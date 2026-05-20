@@ -90,7 +90,9 @@ ROLLBACK_CAL="$REPO_DIR/backtesting/renquant_104/artifacts/prod/panel-rank-calib
 BASELINE_POOL_IC="None"
 BASELINE_N_UNIQUE=0
 if [ -f "$PROD_CAL" ]; then
-    cp "$PROD_CAL" "$ROLLBACK_CAL"
+    # ATOMIC: write to .tmp then mv (POSIX cp is two syscalls;
+    # SIGKILL mid-cp → half-written rollback). Audit P0-16.
+    cp "$PROD_CAL" "$ROLLBACK_CAL.tmp" && mv "$ROLLBACK_CAL.tmp" "$ROLLBACK_CAL"
     echo "Pre-refit backup: $ROLLBACK_CAL"
     BASELINE_POOL_IC=$("$PYTHON" -c "
 import json
@@ -132,7 +134,10 @@ fi
 echo "--- Step 3: Validate calibrator ---"
 if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
     echo "Post-fit smoke test FAILED — rolling back to baseline calibrator."
-    if [ -f "$ROLLBACK_CAL" ]; then cp "$ROLLBACK_CAL" "$PROD_CAL"; fi
+    # ATOMIC rollback (audit P0-16)
+    if [ -f "$ROLLBACK_CAL" ]; then
+        cp "$ROLLBACK_CAL" "$PROD_CAL.tmp" && mv "$PROD_CAL.tmp" "$PROD_CAL"
+    fi
     notify "RenQuant 104 MONTHLY-FAIL" "Post-fit smoke test failed; rolled back."
     exit 1
 fi
@@ -182,7 +187,8 @@ if [ $GATE_RC -ne 0 ]; then
     echo "ACCEPTANCE GATE FAILED: $GATE_VERDICT"
     echo "Rolling back to baseline calibrator."
     if [ -f "$ROLLBACK_CAL" ]; then
-        cp "$ROLLBACK_CAL" "$PROD_CAL"
+        # ATOMIC rollback (audit P0-16)
+        cp "$ROLLBACK_CAL" "$PROD_CAL.tmp" && mv "$PROD_CAL.tmp" "$PROD_CAL"
         # Smoke test the rollback too
         if "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104 >/dev/null 2>&1; then
             notify "RenQuant 104 MONTHLY-REJECT" "Calibrator REJECTED ($GATE_VERDICT); rolled back to prior."

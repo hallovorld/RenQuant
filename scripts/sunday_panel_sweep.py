@@ -326,6 +326,11 @@ def main() -> int:
              baseline_metrics.get("pool_ic"),
              baseline_metrics.get("scorer_oos_mean_ic"))
     _backup_artifacts(strategy, "pre-sweep")
+    # P0-14 (audit 2026-05-20) investigated: gate-check below compares each
+    # backend's just-trained output (read via _read_metrics) against the
+    # IMMUTABLE `baseline_metrics` captured above. No cross-backend
+    # contamination — backend N's gate reads backend N's output, NOT N-1's.
+    # The pre-sweep .bak (line above) is the rollback for "0 backends pass".
 
     results: list[dict] = []
     try:

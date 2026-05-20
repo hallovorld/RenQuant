@@ -157,16 +157,19 @@ class TestProductionArtifactParity:
         m = json.loads(artifact.read_text())
         feature_cols = m.get("feature_cols", [])
 
-        # Production artifact is alpha158 + 5 fund + 3 PEAD + 3 SUE = 169
-        assert len(feature_cols) == 169, \
-            f"Production artifact has {len(feature_cols)} features, expected 169"
+        # Production artifact is alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment
+        # = 172 (post-2026-05-18 sentiment shipment per CLAUDE.md status).
+        # Bumped from 169 → 172 on 2026-05-20 audit P0-12.
+        assert len(feature_cols) == 172, \
+            f"Production artifact has {len(feature_cols)} features, expected 172"
 
-        # Required fund + PEAD + SUE columns must be present
+        # Required fund + PEAD + SUE + sentiment columns must be present
         required_extras = {
             "earnings_yield", "book_to_price", "gross_profitability",
             "roe", "asset_growth",
             "days_since_earnings", "pead_signal", "pead_quintile_rank",
             "sue_signal", "surprise_momentum", "surprise_streak",
+            "sentiment_pos_share", "mean_sentiment", "n_articles_log",
         }
         missing = required_extras - set(feature_cols)
         assert not missing, \

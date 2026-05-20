@@ -958,7 +958,7 @@
       "kind": "exp_decay",
       "half_life_days": 252
     },
-    "calibration_method": "isotonic",
+    "calibration_method": "platt",
     "imputation": {
       "fill_zero": true,
       "add_missingness_indicators": true,

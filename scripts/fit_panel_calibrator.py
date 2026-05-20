@@ -341,12 +341,13 @@ def main() -> None:
         future_returns[t] = fwd_rel
 
     # ── Fit global calibrator ──────────────────────────────────────────────
-    # 2026-05-05 — calibration_method config knob. Default "isotonic"
-    # (legacy). Set "platt" for sigmoid-fit logistic regression that
-    # cannot collapse on coarse XGB outputs. Pass via panel_ltr config
-    # so side configs can opt in independently.
+    # 2026-05-18: default flipped isotonic → platt. Platt avoids the wide
+    # flat plateaus that isotonic creates on coarse XGB outputs (G2
+    # n_unique_prob_y collapse incidents 2026-05-05). 2026-05-20 audit P0-6:
+    # script default + golden config now both = "platt" (was: docs said
+    # Platt, golden said isotonic, script default isotonic — three-way drift).
     calib_method = str(
-        panel_cfg.get("calibration_method", "isotonic")
+        panel_cfg.get("calibration_method", "platt")
     ).lower()
     log.info(f"Fitting calibrator: method={calib_method}")
     calib = fit_global_calibrator(

@@ -83,9 +83,34 @@ class AlpacaBroker(BaseBroker):
         account = self._trading_client.get_account()
         mode = "paper" if self._paper else "LIVE"
         log.info(
-            "Alpaca connected (%s) — equity=$%s, cash=$%s, status=%s",
-            mode, account.equity, account.cash, account.status,
+            "Alpaca connected (%s) — account=%s, equity=$%s, cash=$%s, status=%s",
+            mode, account.account_number, account.equity, account.cash, account.status,
         )
+
+        # P0-10 (audit 2026-05-20) — defensive guard against silent
+        # paper-key-vs-live-broker mismatch. If RENQUANT_EXPECTED_LIVE_ACCOUNT
+        # is set in .env, assert connected account matches expected. Per
+        # 2026-05-17 e2e mandate "我他妈说了一万遍了 LIVE account": never
+        # silently flip to paper. If env not set, log warning so operator
+        # can pin it once they know the account number.
+        if not self._paper:
+            expected = os.environ.get("RENQUANT_EXPECTED_LIVE_ACCOUNT")
+            actual = str(account.account_number)
+            if expected:
+                if actual != expected:
+                    raise RuntimeError(
+                        f"ALPACA LIVE-ACCOUNT MISMATCH: connected to "
+                        f"account_number={actual} but RENQUANT_EXPECTED_LIVE_ACCOUNT={expected}. "
+                        f"This guard prevents silent paper/live key swap. If new account is "
+                        f"intentional, update .env and restart."
+                    )
+                log.info("LIVE account guard PASSED (account_number=%s matches expected)", actual)
+            else:
+                log.warning(
+                    "RENQUANT_EXPECTED_LIVE_ACCOUNT not set in env — "
+                    "no positive verification of LIVE account identity. "
+                    "Pin in .env: RENQUANT_EXPECTED_LIVE_ACCOUNT=%s", actual,
+                )
 
         if account.status != "ACTIVE":
             log.warning("Account status is %s — trading may be restricted", account.status)
@@ -108,8 +133,35 @@ class AlpacaBroker(BaseBroker):
         return float(account.equity)
 
     def get_cash(self) -> float:
-        """Return available cash (non-margin)."""
+        """Return available cash for new orders.
+
+        P0-9 (BUG D, audit 2026-05-20) — fixed 2026-05-20.
+        Pre-fix: returned `account.cash` (SETTLED ONLY) — excludes T+2
+        pending sell proceeds that Alpaca's margin account treats as
+        immediately spendable buying power. Result: live under-stated
+        cash for 2 bars post-sell vs sim path (which includes T+2 pending
+        via `sim.py:_t2_queue.pending_total()`).
+
+        Post-fix: returns `account.non_marginable_buying_power` which is
+        Alpaca's "cash + T+2 unsettled, no margin" field. Matches sim's
+        T+2-aware accounting. For non-margin (cash) accounts this equals
+        `cash`. For margin accounts it's `cash + pending`.
+
+        We deliberately do NOT use `account.buying_power` (the 2× / 4× margin
+        amount) — that would over-state available cash and break the
+        non-margin policy.
+        """
         account = self._trading_client.get_account()
+        # Field availability check (older alpaca-py may lack it)
+        nmbp = getattr(account, 'non_marginable_buying_power', None)
+        if nmbp is not None:
+            try:
+                return float(nmbp)
+            except (TypeError, ValueError):
+                pass
+        # Fallback to settled cash (legacy behavior; logged as warning)
+        log.warning("alpaca account.non_marginable_buying_power unavailable; "
+                    "falling back to settled cash (T+2 pending NOT counted)")
         return float(account.cash)
 
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:
