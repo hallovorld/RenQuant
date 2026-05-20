@@ -167,6 +167,63 @@ class ApplyScoresTask(Task):
             # return None (continue) and let them no-op individually.
             return None
 
+        # 2026-05-19 (full-e2e shadow): when a sequence-input scorer
+        # (hf_patchtst, future PatchTST kinds) is the PRIMARY panel scorer,
+        # bypass the snapshot-X path entirely. The scorer builds its own
+        # per-ticker sequences from a panel_history DataFrame and applies
+        # its own preprocessing (CSRankNorm per day for HF PatchTST). The
+        # legacy `if scorer_kind in (panel_linear, panel_ltr_xgboost)`
+        # block below ALSO has a requires_history dispatch, but only for
+        # the alpha158-feature-path which expects scorer_kind to be
+        # panel_ltr_xgboost. For hf_patchtst (scorer_kind=hf_patchtst),
+        # we never enter that block, so we'd fall through to the bare
+        # snapshot scorer.score(X) which raises NotImplementedError. Caught
+        # in first shadow-as-primary smoke 2026-05-19 19:43.
+        scorer_kind_early = (scorer.metadata.get("kind")
+                             if hasattr(scorer, "metadata") else None)
+        if (scorer_kind_early not in ("panel_linear", "panel_ltr_xgboost")
+                and getattr(scorer, "requires_history", False)):
+            today = getattr(ctx, "today", None)
+            target_tickers = list(X.index)
+            panel_history = getattr(ctx, "_panel_history", None)
+            if panel_history is None:
+                from pathlib import Path as _P  # noqa: PLC0415
+                repo = _P(__file__).resolve().parents[4]
+                panel_path = repo / "data" / "alpha158_291_fundamental_dataset.parquet"
+                try:
+                    full_panel = pd.read_parquet(panel_path)
+                    full_panel["date"] = pd.to_datetime(full_panel["date"])
+                except Exception as exc:
+                    log.error("ApplyScoresTask[%s]: failed to load panel history: %s",
+                              scorer_kind_early, exc)
+                    return None
+                today_ts = pd.Timestamp(today)
+                past = full_panel[full_panel["date"] < today_ts]
+                recent_dates = sorted(past["date"].unique())[-scorer.seq_len:]
+                panel_history = past[
+                    (past["ticker"].isin(target_tickers)) &
+                    (past["date"].isin(recent_dates))]
+                log.info("ApplyScoresTask[%s]: lazy-loaded panel history "
+                         "(%d rows × %d tickers × %d dates) for %d candidates",
+                         scorer_kind_early, len(panel_history),
+                         panel_history["ticker"].nunique(),
+                         len(recent_dates), len(target_tickers))
+            scores = scorer.score_with_history(panel_history, target_tickers)
+            log.info("ApplyScoresTask[%s]: scored %d via score_with_history "
+                     "(seq_len=%d)", scorer_kind_early, len(scores), scorer.seq_len)
+            ctx._panel_scores_all = scores  # noqa: SLF001
+            n_cand_scored = 0
+            for cand in ctx.candidates:
+                v = scores.get(cand.ticker)
+                if v is None or pd.isna(v):
+                    continue
+                cand.rank_score = float(v)
+                cand.panel_score = float(v)
+                n_cand_scored += 1
+            log.info("ApplyScoresTask[%s]: assigned panel_score to %d/%d candidates",
+                     scorer_kind_early, n_cand_scored, len(ctx.candidates))
+            return None
+
         # Phase 3 (2026-05-06): alpha158 models need different features than
         # the production XGB pipeline produces. `BuildFeatureMatrixJob` builds
         # the 21-feature matrix; alpha158 models expect 158 features computed

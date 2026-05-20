@@ -28,7 +28,10 @@ from pathlib import Path
 # new brokers here when wiring them through live/runner.py.
 ALLOWED_BROKERS: frozenset[str] = frozenset({
     "paper", "alpaca", "alpaca-paper",
-    "alpaca_paper",   # post-replace form (allow both)
+    "alpaca_paper",     # post-replace form (allow both)
+    "alpaca-shorts",
+    "alpaca_shorts",
+    "alpaca_shadow",    # 2026-05-19 full-e2e shadow via ReadOnlyBrokerWrapper
     "ibkr",
 })
 

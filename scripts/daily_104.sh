@@ -371,6 +371,40 @@ print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today=
     --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tee -a "$LOG" \
     || echo "dashboard refresh failed (non-fatal)"
 
+# ── Step 4: SHADOW e2e run (2026-05-19) ──────────────────────────────────
+# Per user mandate "整条 pipeline 都参考 shadow model 的 output — 跑两遍
+# e2e，但是 shadow 那一遍虽然连 alpaca 洗数据，但是并不真下单!"
+# Plus: "或者你直接搞一个 shadow 的 config — 避免污染么，隔离干净".
+#
+# Runs full InferencePipeline with HF PatchTST (seed_44 from canonical
+# 5-seed 2026-05-19) as PRIMARY. Broker = readonly-alpaca wrapper:
+# reads (account / holdings / quotes / fills) hit LIVE alpaca for ground
+# truth, writes (place_order / cancel / stop) get swallowed locally.
+# State writes to live_state.alpaca_shadow.json + runs_alpaca_shadow.db
+# (broker_name="alpaca_shadow" → automatic path isolation). Prod state
+# files are NOT touched.
+#
+# Non-fatal: a shadow failure doesn't abort the prod cycle (prod already
+# completed + committed by this point). Logs to a separate file for
+# clean diff between prod and shadow outcomes.
+#
+# ntfy uses "[SHADOW]RENQUANT-104" prefix so the operator's phone shows
+# two distinct ntfy entries per day: prod + shadow side-by-side.
+echo "--- Step 4: Shadow e2e run (HF PatchTST primary, no real orders) ---"
+SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
+if "$PYTHON" -m live.runner --strategy renquant_104 \
+        --broker readonly-alpaca --once \
+        --strategy-config-name strategy_config.shadow.json \
+        > "$SHADOW_LOG" 2>&1; then
+    echo "Shadow run finished — see $SHADOW_LOG"
+    # Surface the shadow ntfy line in the prod log so the operator can
+    # see both decisions in one place if the daily log is what they read.
+    grep "ntfy sent:" "$SHADOW_LOG" | tail -1 || echo "shadow ntfy line not found in shadow log"
+else
+    echo "Shadow run FAILED (non-fatal) — see $SHADOW_LOG"
+    notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e run failed today — primary unaffected. See $SHADOW_LOG."
+fi
+
 else
     echo "=== daily_104 FAILED at $(date) ==="
     notify "RenQuant 104 ERROR" "Live trader failed — check $LOG"

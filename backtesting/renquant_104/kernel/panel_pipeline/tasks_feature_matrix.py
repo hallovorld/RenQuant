@@ -178,6 +178,16 @@ class DriftGuardTask(Task):
                        if hasattr(scorer, "metadata") else None)
         if scorer_kind in ("panel_linear", "panel_ltr_xgboost"):
             return None
+        # 2026-05-19 (shadow full-e2e): sequence-input scorers (PatchTST,
+        # HF PatchTST) have requires_history=True and pull their own
+        # per-ticker sequence data inside score_with_history(). They don't
+        # consume ctx._panel_matrix, so checking the matrix columns against
+        # scorer.feature_cols is meaningless. Caught in first shadow run
+        # 2026-05-19 19:23: HFPatchTSTPanelScorer has 172 feature_cols but
+        # _panel_matrix is the 21-col XGB shape → 100% structural drift
+        # → fail-safe cleared all candidates → no_candidates.
+        if getattr(scorer, "requires_history", False):
+            return None
         nan_cols = [c for c in scorer.feature_cols if X[c].isna().all()]
         if not nan_cols:
             return

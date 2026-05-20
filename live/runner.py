@@ -83,6 +83,19 @@ def _get_broker(broker_type: str, initial_cash: float = 100_000) -> BaseBroker:
         )
     elif broker_type == "ibkr":
         return IBKRBroker()
+    elif broker_type == "readonly-alpaca":
+        # 2026-05-19 user mandate: full-e2e shadow pipeline. Wraps real
+        # AlpacaBroker so reads (account / holdings / quotes / fills) hit
+        # LIVE alpaca API for ground-truth state, but writes (place_order /
+        # cancel_order / place_stop_order) are swallowed locally with a
+        # synthesised filled response. broker_name="alpaca_shadow" gives
+        # state-file isolation: live_state.alpaca_shadow.json + runs_alpaca_shadow.db
+        # never collide with prod live_state.alpaca.json. Pair with
+        # `--strategy-config-name strategy_config.shadow.json` so the
+        # panel scorer also swaps (HF PatchTST instead of XGB).
+        from .broker_readonly import ReadOnlyBrokerWrapper  # noqa: PLC0415
+        real = AlpacaBroker(paper=False)
+        return ReadOnlyBrokerWrapper(real)
     else:
         raise ValueError(f"Unknown broker: {broker_type}")
 
@@ -289,6 +302,11 @@ def _run_once_multi_pipeline(
     sep = "=" * 62
     log.info(sep)
     label = strategy_dir.name.upper().replace("_", "-")
+    # 2026-05-19: shadow run uses ReadOnlyBrokerWrapper (broker_name=alpaca_shadow).
+    # Prefix label with [SHADOW] so log + ntfy + state-file path all carry the
+    # distinction. Hard isolation per user mandate "隔离干净".
+    if getattr(broker, "broker_name", "") == "alpaca_shadow":
+        label = f"[SHADOW]{label}"
     log.info("%s  %s  [%s]", label, datetime.now().strftime("%Y-%m-%d %H:%M PT"), run_mode.upper())
     log.info(sep)
 
@@ -616,7 +634,7 @@ def _is_multi_stock(strategy_name: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="RenQuant live trading runner")
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
-    parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "alpaca-shorts", "ibkr"], default="paper")
+    parser.add_argument("--broker", choices=["paper", "alpaca", "alpaca-paper", "alpaca-shorts", "ibkr", "readonly-alpaca"], default="paper")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--sell-only", action="store_true",
                         help="Process exits only — skip buy scan (for intraday runs)")
@@ -637,14 +655,24 @@ def main():
     args = parser.parse_args()
 
     # 2026-04-27: thread broker tag through to UniverseContext for
-    # broker-isolated live_state read. args.broker is the canonical name
-    # used as the state-file suffix (paper / alpaca / alpaca-paper / ibkr).
+    # broker-isolated live_state read.
+    # 2026-05-19 ORDER-OF-OPS FIX: must construct broker BEFORE loading
+    # the strategy so the broker's class-level broker_name (NOT the CLI arg)
+    # threads through. e.g. --broker readonly-alpaca produces a wrapper
+    # whose broker_name="alpaca_shadow" — using args.broker would feed the
+    # un-wrapped CLI tag and break state-path isolation. Old order also
+    # leaked the raw CLI arg into ALLOWED_BROKERS validation.
+    initial_cash = 100_000  # placeholder; real value set after config load below
+    broker = _get_broker(args.broker, initial_cash=initial_cash)
     config, models, strategy_dir = _load_strategy_multi(
-        args.strategy, broker_name=args.broker,
+        args.strategy, broker_name=broker.broker_name,
         config_name=args.strategy_config_name,
     )
+    # Reconstruct broker with real initial_cash from config (PaperBroker
+    # needs it; AlpacaBroker / wrapper ignore it but cheap to re-init).
     initial_cash = config.get("initial_cash", 100_000)
-    broker = _get_broker(args.broker, initial_cash=initial_cash)
+    if isinstance(broker, PaperBroker):
+        broker = _get_broker(args.broker, initial_cash=initial_cash)
     broker.connect()
     run_fn = lambda: run_once_multi(
         config, models, broker, strategy_dir,
