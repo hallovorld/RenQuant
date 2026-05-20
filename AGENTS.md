@@ -1,25 +1,32 @@
 # AGENTS.md
 
+> **📅 See `CLAUDE.md` for canonical agent guidance.** This file is a Codex-specific
+> mirror that may lag CLAUDE.md. Treat CLAUDE.md as source of truth; reconcile any
+> conflict in CLAUDE.md's favor.
+
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
 
 RenQuant is a personal quantitative trading workstation for Apple Silicon. It implements a "Glass-box" pipeline: data ingestion → ML signal generation → backtesting (LEAN) → live trading (Alpaca/IBKR). All components are statistically interpretable and strictly decoupled.
 
+**Active strategy**: `renquant_104` (panel-LTR cross-sectional ranking on 172 features, XGBoost rank:pairwise primary + HF PatchTST shadow since 2026-05-19). Universe: wl200 (142 ticker quality-first). Calibrator: Platt scaling. NGBoost head promoted (σ-wire dormant).
+
 ## Environment Setup
 
-Single conda environment (Miniconda, Apple Silicon arm64):
+Project-local `.venv` (Python 3.10) on Apple Silicon M4 Pro 14c (10P+4E) / 48 GB / 20 GPU cores. **NOT conda** (per `feedback_python_env` memory).
 
 ```bash
-conda create -n renquant python=3.10
-conda activate renquant
-pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab pyarrow
-pip install "openbb[all]" openbb-cli backtesting scipy
-pip install lean alpaca-py
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.lock.txt
+# Includes transformers >= 5.8.1 + accelerate >= 1.1.0 for HF Trainer-based PatchTST shadow
 lean login
 ```
 
 Docker must be allocated 16GB+ memory for LEAN engine.
+
+**Broker mode** (2026-05-17 e2e mandate): `--broker alpaca` = LIVE real money; `--broker alpaca-paper` = paper. Cron schedules use paper per 2026-05-11 safety mandate.
 
 ## Workflow: Four Modes
 

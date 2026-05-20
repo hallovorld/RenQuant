@@ -1,46 +1,23 @@
 # RenQuant Setup Guide ⚙️
 
-This guide is specifically tailored for the **Apple Silicon (M4 Pro)** architecture. To avoid complex C++ compilation errors and package conflicts, we use `Miniconda` for base environment management and strictly isolate the research, modeling, and backtesting environments.
+> **📅 Superseded — see [`doc/ops/setup.md`](doc/ops/setup.md) for current setup.**
+> The instructions previously in this file directed users to Miniconda; the project
+> now uses a project-local `.venv` per `feedback_python_env` memory. CLAUDE.md
+> Environment section + `doc/ops/setup.md` are the canonical references.
 
-## 0. Prerequisites
-
-1. **Install Homebrew**: The essential package manager for macOS.
-2. **Install Docker Desktop**: 
-   - Ensure you download the Apple Silicon version.
-   - **⚠️ Crucial Performance Tweak**: Open Docker Settings -> `Resources` -> `Memory`, and **allocate at least 16GB** (leveraging the host's 48GB capacity). This prevents the LEAN engine from crashing during heavy backtests.
-
-## 1. Base Environment Management (Miniconda)
-
-Avoid the full Anaconda distribution. Instead, install the Apple Silicon `arm64` build of Miniconda:
+## Quick reference
 
 ```bash
-# Configure miniconda3
-brew install miniconda
-source ~/miniconda3/bin/activate
-conda config --add channels conda-forge
-conda config --set channel_priority strict
-
-# Create and activate the single unified environment
-conda create -n renquant python=3.10 -y
-conda activate renquant
-
-# Install all dependencies in one environment
-# XGBoost will automatically detect and utilize the Mac's multi-core CPU for acceleration
-pip install pandas numpy matplotlib seaborn yfinance scikit-learn xgboost jupyterlab
-pip install "openbb[all]" openbb-cli
-pip install backtesting
-
-# Build OpenBB extensions
-openbb-build
-
-# Test OpenBB installation (launches the interactive terminal)
-openbb
-
-# Install the LEAN CLI tool
-pip install lean
-
-# Log into your QuantConnect account (create a free account on their website first to get an API Token)
+# Current setup (2026-05-20)
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.lock.txt
+# Includes transformers >= 5.8.1 + accelerate >= 1.1.0 for HF Trainer-based
+# PatchTST shadow path
 lean login
+```
 
-# Initialize the LEAN workspace in your current RenQuant directory
-lean init
+For HF PatchTST training context: `doc/research/2026-05-19-patchtst-improvement-plan.md`.
+For broker mode (LIVE vs PAPER): CLAUDE.md Environment §"e2e".
+
+Full setup guide: [`doc/ops/setup.md`](doc/ops/setup.md).
