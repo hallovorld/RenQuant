@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import json
 import logging
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -45,13 +46,153 @@ log = logging.getLogger("wf-gate")
 
 REPO = Path(__file__).resolve().parent.parent
 GATE_VERSION = 1
+STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
+PYTHON = sys.executable
+CUTS = [
+    ("2024-01-02", "2024-12-31"),
+    ("2024-07-01", "2025-06-30"),
+    ("2025-04-01", "2026-03-28"),
+]
+
+
+def _resolve_strategy_path(raw: str | None) -> Path | None:
+    if not raw:
+        return None
+    p = Path(raw)
+    return p if p.is_absolute() else STRATEGY_DIR / p
+
+
+def inspect_artifact_usage(strategy_config: str, artifact_path: Path) -> dict:
+    """Return whether this WF sim config actually evaluates `artifact_path`.
+
+    Static artifact configs can directly validate a candidate artifact. A
+    walk-forward manifest validates a retraining recipe / manifest instead;
+    it must not silently stamp the candidate artifact as passed.
+    """
+    cfg_path = STRATEGY_DIR / strategy_config
+    if not cfg_path.exists():
+        return {
+            "candidate_artifact_used": False,
+            "eval_scope": "missing_config",
+            "strategy_config": strategy_config,
+            "reason": f"config not found: {cfg_path}",
+        }
+    cfg = json.loads(cfg_path.read_text())
+    wf_cfg = cfg.get("walkforward", {}) or {}
+    if bool(wf_cfg.get("enabled", False)):
+        manifest = _resolve_strategy_path(
+            str(wf_cfg.get("manifest_path", "artifacts/walkforward_manifest.json"))
+        )
+        return {
+            "candidate_artifact_used": False,
+            "eval_scope": "walkforward_manifest",
+            "strategy_config": strategy_config,
+            "manifest_path": str(manifest) if manifest is not None else None,
+            "reason": (
+                "strategy config uses walkforward manifest; the candidate artifact "
+                "is not the static scorer evaluated by the sim"
+            ),
+        }
+
+    panel_cfg = (cfg.get("ranking", {}) or {}).get("panel_scoring", {}) or {}
+    configured = _resolve_strategy_path(
+        panel_cfg.get("artifact_path")
+        or cfg.get("panel_ltr", {}).get("artifact_path")
+        or "artifacts/prod/panel-ltr.alpha158_fund.json"
+    )
+    try:
+        used = configured is not None and configured.resolve() == artifact_path.resolve()
+    except OSError:
+        used = False
+    return {
+        "candidate_artifact_used": bool(used),
+        "eval_scope": "static_artifact",
+        "strategy_config": strategy_config,
+        "configured_artifact_path": str(configured) if configured is not None else None,
+        "candidate_artifact_path": str(artifact_path),
+        "reason": (
+            "configured artifact matches candidate"
+            if used else
+            "configured artifact does not match candidate"
+        ),
+    }
+
+
+def cut_market_context(start: str, end: str) -> dict:
+    """SPY benchmark + regime distribution for one WF cut."""
+    import pandas as _pd
+    from kernel.hmm_regime_labels import compute_hmm_regime_labels  # noqa: PLC0415
+    from kernel.regime_labels import compute_spy_regime_labels  # noqa: PLC0415
+
+    spy_path = REPO / "data" / "ohlcv" / "SPY" / "1d.parquet"
+    if not spy_path.exists():
+        return {"benchmark": "SPY", "error": f"missing {spy_path}"}
+    start_ts = _pd.Timestamp(start)
+    end_ts = _pd.Timestamp(end)
+    spy = _pd.read_parquet(spy_path).sort_index()
+    spy.index = _pd.to_datetime(spy.index)
+    mask = (spy.index >= start_ts) & (spy.index <= end_ts)
+    cut = spy.loc[mask].copy()
+    ret = cut["close"].pct_change().dropna()
+    vol = float(ret.std(ddof=1)) if len(ret) > 1 else float("nan")
+    sharpe = (
+        float(ret.mean() / vol * math.sqrt(252.0))
+        if len(ret) > 2 and math.isfinite(vol) and vol > 0
+        else float("nan")
+    )
+    apy = float("nan")
+    if len(cut) > 1 and len(ret) > 0:
+        apy = float((cut["close"].iloc[-1] / cut["close"].iloc[0]) ** (252.0 / len(ret)) - 1.0)
+
+    hmm = compute_hmm_regime_labels(spy_path)
+    grid = compute_spy_regime_labels(spy_path)
+    hmm_counts = (
+        hmm[(hmm.date >= start_ts) & (hmm.date <= end_ts)]
+        .regime.value_counts().to_dict()
+    )
+    grid_counts = (
+        grid[(grid.date >= start_ts) & (grid.date <= end_ts)]
+        .regime.value_counts().to_dict()
+    )
+    return {
+        "benchmark": "SPY",
+        "spy_sharpe": sharpe,
+        "spy_apy": apy,
+        "n_trading_days": int(len(ret)),
+        "hmm_regime_counts": {str(k): int(v) for k, v in hmm_counts.items()},
+        "spy_grid_regime_counts": {str(k): int(v) for k, v in grid_counts.items()},
+    }
+
+
+def _finite_number(value) -> float | None:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _top_regime(counts: dict | None) -> str | None:
+    if not counts:
+        return None
+    return str(max(counts.items(), key=lambda kv: kv[1])[0])
+
+
+def _merge_counts(rows: list[dict], key: str) -> dict:
+    merged: dict[str, int] = {}
+    for row in rows:
+        counts = ((row.get("market_context") or {}).get(key) or {})
+        for label, n in counts.items():
+            merged[str(label)] = merged.get(str(label), 0) + int(n)
+    return dict(sorted(merged.items(), key=lambda kv: kv[1], reverse=True))
 
 
 def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
     """Run one sim cut, parse Sharpe + APY from log."""
     log.info("Sim cut: %s → %s", start, end)
+    market_context = cut_market_context(start, end)
     cmd = [
-        "/Users/renhao/miniconda3/envs/renquant/bin/python",
+        PYTHON,
         str(REPO / "scripts/run_sim_104.py"),
         "--strategy-config-name", strategy_config,
         "--start", start, "--end", end,
@@ -69,6 +210,7 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
             "end": end,
             "sharpe": float("nan"),
             "apy": float("nan"),
+            "market_context": market_context,
             "returncode": int(proc.returncode),
             "error_tail": tail,
         }
@@ -77,23 +219,34 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
     apy_m = re.search(r"APY:\s+([+\-\d.]+)%", out)
     sharpe = float(sharpe_m.group(1)) if sharpe_m else float("nan")
     apy = float(apy_m.group(1)) / 100 if apy_m else float("nan")
-    log.info("  → Sharpe=%+.3f  APY=%+.2f%%", sharpe, apy * 100)
+    spy_sharpe = _finite_number(market_context.get("spy_sharpe"))
+    spy_apy = _finite_number(market_context.get("spy_apy"))
+    sharpe_vs_spy = sharpe - spy_sharpe if spy_sharpe is not None else float("nan")
+    apy_vs_spy = apy - spy_apy if spy_apy is not None else float("nan")
+    log.info(
+        "  → Sharpe=%+.3f  APY=%+.2f%%  SPY Sharpe=%s  ΔSharpe=%s",
+        sharpe,
+        apy * 100,
+        f"{spy_sharpe:+.3f}" if spy_sharpe is not None else "n/a",
+        f"{sharpe_vs_spy:+.3f}" if math.isfinite(sharpe_vs_spy) else "n/a",
+    )
     return {
         "start": start,
         "end": end,
         "sharpe": sharpe,
         "apy": apy,
+        "sharpe_vs_spy": sharpe_vs_spy,
+        "apy_vs_spy": apy_vs_spy,
+        "dominant_hmm_regime": _top_regime(market_context.get("hmm_regime_counts")),
+        "dominant_spy_grid_regime": _top_regime(market_context.get("spy_grid_regime_counts")),
+        "market_context": market_context,
         "returncode": 0,
     }
 
 
 def run_walk_forward(strategy_config: str, jobs: int = 1) -> dict:
     """Run 3-cut walk-forward, return mean/std/per-cut."""
-    cuts = [
-        ("2024-01-02", "2024-12-31"),
-        ("2024-07-01", "2025-06-30"),
-        ("2025-04-01", "2026-03-28"),
-    ]
+    cuts = CUTS
     jobs = max(1, min(int(jobs), len(cuts)))
     results: list[dict | None] = [None] * len(cuts)
     if jobs == 1:
@@ -138,19 +291,67 @@ def run_walk_forward(strategy_config: str, jobs: int = 1) -> dict:
     std_sharpe = _s.stdev(sharpes) if len(sharpes) > 1 else 0.0
     mean_apy = _s.mean(apys) if apys else float("nan")
     n_pos = sum(1 for s in sharpes if s > 0)
+    spy_sharpes = [
+        _finite_number((r.get("market_context") or {}).get("spy_sharpe"))
+        for r in results
+    ]
+    spy_sharpes = [s for s in spy_sharpes if s is not None]
+    spy_apys = [
+        _finite_number((r.get("market_context") or {}).get("spy_apy"))
+        for r in results
+    ]
+    spy_apys = [a for a in spy_apys if a is not None]
+    mean_spy_sharpe = _s.mean(spy_sharpes) if spy_sharpes else float("nan")
+    mean_spy_apy = _s.mean(spy_apys) if spy_apys else float("nan")
+    mean_sharpe_vs_spy = (
+        mean_sharpe - mean_spy_sharpe
+        if math.isfinite(mean_spy_sharpe) else float("nan")
+    )
+    mean_apy_vs_spy = (
+        mean_apy - mean_spy_apy
+        if math.isfinite(mean_apy) and math.isfinite(mean_spy_apy) else float("nan")
+    )
+    n_beat_spy_sharpe = sum(
+        1 for r in results
+        if _finite_number(r.get("sharpe")) is not None
+        and _finite_number((r.get("market_context") or {}).get("spy_sharpe")) is not None
+        and float(r["sharpe"]) > float((r.get("market_context") or {})["spy_sharpe"])
+    )
+    n_beat_spy_apy = sum(
+        1 for r in results
+        if _finite_number(r.get("apy")) is not None
+        and _finite_number((r.get("market_context") or {}).get("spy_apy")) is not None
+        and float(r["apy"]) > float((r.get("market_context") or {})["spy_apy"])
+    )
     pass_sharpe = mean_sharpe >= 0.40 and n_pos >= 2
+    benchmark_suffix = (
+        f"; SPY mean Sharpe {mean_spy_sharpe:+.3f}, "
+        f"ΔSharpe {mean_sharpe_vs_spy:+.3f}, "
+        f"beat SPY Sharpe {n_beat_spy_sharpe}/3"
+        if math.isfinite(mean_spy_sharpe) else ""
+    )
     return {
         "passed": pass_sharpe,
         "wf_3cut_sharpe_mean": float(mean_sharpe),
         "wf_3cut_sharpe_std": float(std_sharpe),
         "wf_3cut_apy_mean": float(mean_apy),
+        "spy_sharpe_mean": float(mean_spy_sharpe),
+        "strategy_minus_spy_sharpe_mean": float(mean_sharpe_vs_spy),
+        "spy_apy_mean": float(mean_spy_apy),
+        "strategy_minus_spy_apy_mean": float(mean_apy_vs_spy),
+        "n_cuts_beat_spy_sharpe": int(n_beat_spy_sharpe),
+        "n_cuts_beat_spy_apy": int(n_beat_spy_apy),
+        "hmm_regime_counts_total": _merge_counts(results, "hmm_regime_counts"),
+        "spy_grid_regime_counts_total": _merge_counts(results, "spy_grid_regime_counts"),
         "n_positive_cuts": n_pos,
         "wf_jobs": jobs,
         "cuts": results,
         "reason": (
             f"PASS: mean Sharpe {mean_sharpe:+.3f} ≥ 0.40 and {n_pos}/3 cuts > 0"
+            f"{benchmark_suffix}"
             if pass_sharpe else
             f"FAIL: mean Sharpe {mean_sharpe:+.3f} or only {n_pos}/3 cuts > 0"
+            f"{benchmark_suffix}"
         ),
     }
 
@@ -297,6 +498,9 @@ def main():
     log.info("Artifact: %s  (kind=%s)", artifact_path, artifact.get("kind"))
     log.info("=" * 60)
 
+    artifact_usage = inspect_artifact_usage(args.strategy_config, artifact_path)
+    log.info("Artifact usage: %s", artifact_usage)
+
     wf_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf:
         wf_result = run_walk_forward(args.strategy_config, jobs=args.jobs)
@@ -307,15 +511,35 @@ def main():
         sanity_result = run_sanity_battery(artifact_path)
         log.info("Sanity result: %s", sanity_result["reason"])
 
-    overall_pass = bool(wf_result["passed"]) and bool(sanity_result["passed"])
+    artifact_scope_ok = bool(artifact_usage.get("candidate_artifact_used"))
+    if not artifact_scope_ok:
+        wf_result["passed"] = False
+        prior_reason = wf_result.get("reason", "")
+        wf_result["reason"] = (
+            f"{prior_reason}; candidate artifact was not evaluated "
+            f"(scope={artifact_usage.get('eval_scope')})"
+        ).strip("; ")
+
+    overall_pass = bool(wf_result["passed"]) and bool(sanity_result["passed"]) and artifact_scope_ok
     wf_meta = {
         "passed": overall_pass,
         "wf_3cut_sharpe_mean": wf_result.get("wf_3cut_sharpe_mean"),
         "wf_3cut_sharpe_std":  wf_result.get("wf_3cut_sharpe_std"),
         "wf_3cut_apy_mean":    wf_result.get("wf_3cut_apy_mean"),
+        "spy_sharpe_mean":     wf_result.get("spy_sharpe_mean"),
+        "strategy_minus_spy_sharpe_mean": wf_result.get("strategy_minus_spy_sharpe_mean"),
+        "spy_apy_mean":        wf_result.get("spy_apy_mean"),
+        "strategy_minus_spy_apy_mean": wf_result.get("strategy_minus_spy_apy_mean"),
+        "n_cuts_beat_spy_sharpe": wf_result.get("n_cuts_beat_spy_sharpe"),
+        "n_cuts_beat_spy_apy": wf_result.get("n_cuts_beat_spy_apy"),
+        "hmm_regime_counts_total": wf_result.get("hmm_regime_counts_total"),
+        "spy_grid_regime_counts_total": wf_result.get("spy_grid_regime_counts_total"),
         "n_positive_cuts":     wf_result.get("n_positive_cuts"),
         "wf_jobs":             wf_result.get("wf_jobs"),
         "cuts":                wf_result.get("cuts"),
+        "candidate_artifact_used": artifact_usage.get("candidate_artifact_used"),
+        "wf_eval_scope":       artifact_usage.get("eval_scope"),
+        "artifact_usage":      artifact_usage,
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),
         "sanity_placebo_ic":   sanity_result.get("sanity_placebo_ic"),

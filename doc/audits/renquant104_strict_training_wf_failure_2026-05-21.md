@@ -1,10 +1,19 @@
-# renquant_104 Strict Retrain / WF Gate Failure — 2026-05-21
+# renquant_104 Strict Retrain / WF Gate Correction — 2026-05-21
 
 ## Verdict
 
 Do not promote the strict-contract retrained production artifact from this run.
 
-The model trained successfully, passed strict contract dry-run, and passed the current acceptance gate, but failed the 3-cut walk-forward gate and failed the placebo sanity threshold. The active production artifact was rolled back to the pre-run backup.
+Correction after deeper review: the 3-cut WF numbers below did **not** prove
+that the strict-contract candidate artifact failed historical WF. The default
+sim config (`strategy_config.sim_wl200.json`) has `walkforward.enabled=true`,
+so the sim evaluated the configured walk-forward manifest chain, not the static
+candidate artifact passed via `--artifact`.
+
+The operational decision is unchanged: do not promote the strict-contract
+artifact. It remains unpromoted because the gate run was not a valid candidate
+artifact evaluation, and the artifact also narrowly failed the placebo sanity
+threshold. The active production artifact was rolled back to the pre-run backup.
 
 No full daily live run should be executed from the failed artifact.
 
@@ -31,7 +40,8 @@ Post-rollback dry-run preflight passed with 0 hard failures. It is legacy-compat
 - missing `oos_mean_ic`
 - missing `oos_std_ic`
 
-That is intentional after rollback. Safety beats keeping a strict artifact that failed WF.
+That is intentional after rollback. Safety beats keeping an artifact whose
+promotion gate was not validly established.
 
 ## Training Result
 
@@ -100,22 +110,44 @@ Command:
   --strict
 ```
 
+Critical correction: these are the observed results from the
+`strategy_config.sim_wl200.json` walk-forward manifest path. They should be
+treated as an XGB walk-forward chain diagnostic, not as direct evidence that the
+static strict-contract artifact was evaluated.
+
 3-cut WF result:
 
-| Cut | Window | Sharpe | APY |
-| --- | --- | ---: | ---: |
-| 1 | 2024-01-02 to 2024-12-31 | `+0.170` | `+6.40%` |
-| 2 | 2024-07-01 to 2025-06-30 | `-0.300` | `-0.00%` |
-| 3 | 2025-04-01 to 2026-03-28 | `+0.170` | `+6.60%` |
+| Cut | Window | Strategy Sharpe | Strategy APY | SPY Sharpe | SPY APY | Dominant HMM Regime |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 2024-01-02 to 2024-12-31 | `+0.170` | `+6.40%` | `+1.728` | `+24.00%` | `BULL_VOLATILE` |
+| 2 | 2024-07-01 to 2025-06-30 | `-0.300` | `-0.00%` | `+0.724` | `+13.41%` | `BULL_VOLATILE` |
+| 3 | 2025-04-01 to 2026-03-28 | `+0.170` | `+6.60%` | `+0.763` | `+13.20%` | `BULL_VOLATILE` |
 
 Aggregate:
 
 - mean Sharpe: `+0.013`
 - Sharpe std: `0.271`
 - mean APY: `+4.33%`
+- SPY mean Sharpe: `+1.072`
+- mean Sharpe minus SPY: `-1.059`
+- cuts beating SPY Sharpe: 0 / 3
 - positive cuts: 2 / 3
 - WF verdict: FAIL
 - WF reason: mean Sharpe is far below required `+0.40`
+
+Regime context:
+
+- Cut 1 HMM counts: `BULL_VOLATILE=223`, `CHOPPY=14`, `BULL_CALM=8`, `BEAR=7`
+- Cut 2 HMM counts: `BULL_VOLATILE=198`, `BEAR=39`, `CHOPPY=13`
+- Cut 3 HMM counts: `BULL_VOLATILE=207`, `BEAR=27`, `CHOPPY=15`
+
+The earlier interpretation was too coarse in two ways:
+
+1. It averaged Sharpe without showing benchmark-relative performance.
+2. It did not prove the candidate artifact was the scorer used by the sim.
+
+Both issues are now treated as gate-contract failures, not just reporting
+defects.
 
 Sanity battery:
 
@@ -125,7 +157,8 @@ Sanity battery:
 - placebo threshold: `0.5 × real_ic = +0.0388`
 - sanity verdict: FAIL by a narrow margin
 
-The placebo miss is small numerically, but the WF miss is decisive.
+The placebo miss is small numerically. The decisive issue is that the candidate
+artifact still lacks a valid promotion-quality WF proof.
 
 ## Source Fixes Landed
 
@@ -137,6 +170,16 @@ Relevant commits pushed:
 - `6ba6dcb` — repair WF gate runner defaults and historical sim path
 - `2321fb8` — audit PatchTST experiment design
 - `330d061` — add bounded WF gate parallelism via `--jobs`
+
+Follow-up fix implemented after this correction:
+
+- `scripts/run_wf_gate.py` now records SPY benchmark and regime context per cut.
+- `scripts/run_wf_gate.py` now refuses to mark a candidate artifact as passed
+  when the strategy config evaluates a walk-forward manifest instead.
+- `model_acceptance.py` now rejects metadata that explicitly says the candidate
+  artifact was not evaluated.
+- `scripts/run_wf_gate.py` now uses the invoking Python interpreter instead of
+  a hard-coded old conda path.
 
 ## Important Operational Decision
 

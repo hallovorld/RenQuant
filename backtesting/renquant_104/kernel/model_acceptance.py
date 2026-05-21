@@ -642,6 +642,14 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
             f"placebo_ic={wf.get('sanity_placebo_ic')}. "
             f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
         )
+    if wf.get("candidate_artifact_used") is False:
+        raise ValueError(
+            f"promote: refused — wf_gate_metadata says the WF sim did not "
+            f"evaluate the candidate artifact ({staging_path.name}); "
+            f"scope={wf.get('wf_eval_scope')!r}. Re-run the gate with a "
+            f"static artifact config or use an explicitly documented "
+            f"manifest-scope promotion path."
+        )
     # Staleness check: WF results older than 14 days are not credible
     # for current model state (panel data + bug-fix lineage may differ).
     run_at = wf.get("run_at")
