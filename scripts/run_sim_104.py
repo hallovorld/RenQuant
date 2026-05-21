@@ -65,6 +65,14 @@ def main() -> None:
         log.error("Config not found: %s", cfg_path)
         sys.exit(1)
     config = json.loads(cfg_path.read_text())
+    # Historical sims/WF cuts are not live inference. The live freshness
+    # guard correctly requires every symbol to include the latest completed
+    # NYSE close, but old windows can contain IPO/new-listing gaps and would
+    # be falsely rejected. Live runner keeps the default enabled.
+    data_freshness = config.setdefault("data_freshness", {})
+    if "enabled" not in data_freshness:
+        data_freshness["enabled"] = False
+        log.info("data_freshness.enabled=false by default for historical sim")
 
     # 2026-05-16: gate on static-path preflight for any side config to
     # prevent the recurrence of the 5/15 no-op build script bug (5h of

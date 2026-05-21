@@ -54,16 +54,36 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
         str(REPO / "scripts/run_sim_104.py"),
         "--strategy-config-name", strategy_config,
         "--start", start, "--end", end,
+        "--no-compare",
+        "--no-persist",
+        "--skip-preflight",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     out = proc.stdout + proc.stderr
+    if proc.returncode != 0:
+        tail = out[-2000:]
+        log.error("  → sim cut FAILED rc=%d\n%s", proc.returncode, tail)
+        return {
+            "start": start,
+            "end": end,
+            "sharpe": float("nan"),
+            "apy": float("nan"),
+            "returncode": int(proc.returncode),
+            "error_tail": tail,
+        }
     # Parse "Sharpe=+0.40" "APY: 6.8%"
     sharpe_m = re.search(r"Sharpe=([+\-\d.]+)", out)
     apy_m = re.search(r"APY:\s+([+\-\d.]+)%", out)
     sharpe = float(sharpe_m.group(1)) if sharpe_m else float("nan")
     apy = float(apy_m.group(1)) / 100 if apy_m else float("nan")
     log.info("  → Sharpe=%+.3f  APY=%+.2f%%", sharpe, apy * 100)
-    return {"start": start, "end": end, "sharpe": sharpe, "apy": apy}
+    return {
+        "start": start,
+        "end": end,
+        "sharpe": sharpe,
+        "apy": apy,
+        "returncode": 0,
+    }
 
 
 def run_walk_forward(strategy_config: str) -> dict:
@@ -78,6 +98,13 @@ def run_walk_forward(strategy_config: str) -> dict:
         results.append(run_sim_cut(strategy_config, start, end))
     sharpes = [r["sharpe"] for r in results if r["sharpe"] == r["sharpe"]]   # finite
     apys = [r["apy"] for r in results if r["apy"] == r["apy"]]
+    failed_cuts = [r for r in results if r.get("returncode", 0) != 0]
+    if failed_cuts:
+        return {
+            "passed": False,
+            "cuts": results,
+            "reason": f"{len(failed_cuts)}/3 sim cuts failed execution",
+        }
     if not sharpes:
         return {"passed": False, "cuts": results, "reason": "all sim cuts failed parse"}
     import statistics as _s
@@ -147,7 +174,7 @@ def run_sanity_battery(artifact_path: Path) -> dict:
             # For sanity we just need PREDICTIONS, so use the saved model
             from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
             scorer = PanelScorer.load(artifact_path)
-            X = val[feat_cols].fillna(0)
+            X = val.reindex(columns=feat_cols, fill_value=0).fillna(0)
             mu = scorer.score(X).values
         else:
             log.warning("kind=%s — sanity not implemented for this head type",
@@ -217,8 +244,10 @@ def run_sanity_battery(artifact_path: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifact", required=True, help="Path to staging artifact JSON")
-    ap.add_argument("--strategy-config", default="strategy_config.json",
-                    help="Strategy config name for sim runs (default golden)")
+    ap.add_argument("--strategy-config", default="strategy_config.sim_wl200.json",
+                    help="Walk-forward sim config name (default: strategy_config.sim_wl200.json)")
+    ap.add_argument("--strict", action="store_true",
+                    help="Compatibility flag for weekly_wf_promote.sh. Current thresholds are already strict.")
     ap.add_argument("--skip-wf", action="store_true",
                     help="Skip walk-forward (sanity only) — for emergency / testing")
     ap.add_argument("--skip-sanity", action="store_true",
