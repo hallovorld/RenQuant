@@ -27,17 +27,23 @@ def test_normalize_targets_expands_all_once():
 
 
 def test_true_oos_chain_uses_one_artifact_dir_contract():
-    ctx = _dry_ctx(targets=("true-oos",), artifact_dir=Path("tmp/oos"))
+    ctx = _dry_ctx(
+        targets=("true-oos",),
+        artifact_dir=Path("tmp/walkforward_oos"),
+        eval_json_path=Path("tmp/prod_eval/eval_truly_oos.json"),
+    )
     ResearchAcceptancePipeline(("true-oos",)).run(ctx)
 
     commands = {spec.name: spec.argv for spec in ctx.executed}
-    assert commands["retrain_true_oos"][-2:] == ("--output-dir", str(REPO / "tmp/oos"))
+    assert commands["retrain_true_oos"][-2:] == (
+        "--output-dir", str(REPO / "tmp/walkforward_oos"),
+    )
     assert commands["eval_true_oos"][-4:] == (
-        "--artifact-dir", str(REPO / "tmp/oos"),
-        "--out", str(REPO / "tmp/oos/eval_truly_oos.json"),
+        "--artifact-dir", str(REPO / "tmp/walkforward_oos"),
+        "--out", str(REPO / "tmp/prod_eval/eval_truly_oos.json"),
     )
     assert commands["stamp_dsr_pbo"][-2:] == (
-        "--eval-json", str(REPO / "tmp/oos/eval_truly_oos.json"),
+        "--eval-json", str(REPO / "tmp/prod_eval/eval_truly_oos.json"),
     )
 
 

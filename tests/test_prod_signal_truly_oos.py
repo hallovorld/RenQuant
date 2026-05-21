@@ -7,8 +7,9 @@ during dashboards/eval — all in-sample. Any IC claim under this setup is
 fit-quality, not OOS skill.
 
 This test forces a TRULY OOS measurement:
-  1. Use a cutoff-trained artifact (artifacts/prod/truly_oos_eval/) trained
-     with --train-cutoff 2024-07-01.
+  1. Use a cutoff-trained artifact
+     (artifacts/walkforward_truly_oos_2024-07-01/) trained with
+     --train-cutoff 2024-07-01.
   2. Compute IC on dates STRICTLY AFTER cutoff up to last labeled date
      (panel_max - 60d).
   3. Assert mean IC > 0 and at least 55% of days have positive IC.
@@ -36,8 +37,7 @@ def _skip_if_missing() -> None:
     if not EVAL_JSON.exists():
         pytest.skip(
             f"Truly-OOS eval not run yet — produce via\n"
-            f"  python scripts/retrain_prod_truly_oos.py --train-cutoff 2024-07-01\n"
-            f"  python scripts/eval_truly_oos.py --artifact-dir {ART}\n"
+            f"  python scripts/research_acceptance_104.py --target true-oos\n"
             f"Expected JSON at: {EVAL_JSON}"
         )
 

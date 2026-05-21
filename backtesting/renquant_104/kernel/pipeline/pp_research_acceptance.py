@@ -63,6 +63,7 @@ class ResearchAcceptanceContext:
     dry_run: bool = False
     train_cutoff: str = "2024-07-01"
     artifact_dir: Path | None = None
+    eval_json_path: Path | None = None
     artifact: Path | None = None
     strategy_config: str = "strategy_config.sim_wl200.json"
     wf_jobs: int = 3
@@ -75,9 +76,14 @@ class ResearchAcceptanceContext:
         self.repo = Path(self.repo)
         if self.artifact_dir is None:
             self.artifact_dir = Path(
-                "backtesting/renquant_104/artifacts/prod/truly_oos_eval"
+                "backtesting/renquant_104/artifacts/walkforward_truly_oos_2024-07-01"
             )
         self.artifact_dir = self._resolve(self.artifact_dir)
+        if self.eval_json_path is None:
+            self.eval_json_path = Path(
+                "backtesting/renquant_104/artifacts/prod/truly_oos_eval/eval_truly_oos.json"
+            )
+        self.eval_json_path = self._resolve(self.eval_json_path)
         if self.artifact is not None:
             self.artifact = self._resolve(self.artifact)
 
@@ -87,7 +93,7 @@ class ResearchAcceptanceContext:
 
     @property
     def eval_json(self) -> Path:
-        return self.artifact_dir / "eval_truly_oos.json"
+        return self.eval_json_path
 
     def command(self, name: str, *argv: str | Path) -> CommandSpec:
         return CommandSpec(

@@ -6,7 +6,7 @@ The standard prod train uses ALL panel rows with valid fwd_60d label
 all in-sample. To estimate true OOS skill we need an earlier cutoff and
 eval on dates strictly AFTER it.
 
-Output: backtesting/renquant_104/artifacts/prod/truly_oos_eval/panel-ltr.json
+Output: backtesting/renquant_104/artifacts/walkforward_truly_oos_2024-07-01/panel-ltr.json
 
 This DOES NOT touch the live prod artifact. It writes to a side path used
 ONLY by the companion eval script + tests/test_prod_signal_truly_oos.py.
@@ -36,7 +36,7 @@ def main() -> int:
     p.add_argument("--train-cutoff", default="2024-07-01",
                    help="Drop panel rows with date >= cutoff during training")
     p.add_argument("--output-dir",
-                   default="backtesting/renquant_104/artifacts/prod/truly_oos_eval",
+                   default="backtesting/renquant_104/artifacts/walkforward_truly_oos_2024-07-01",
                    help="Side-path directory for truly-OOS artifacts")
     args = p.parse_args()
 

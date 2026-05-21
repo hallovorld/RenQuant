@@ -33,8 +33,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--train-cutoff", default="2024-07-01")
     p.add_argument(
         "--artifact-dir",
-        default="backtesting/renquant_104/artifacts/prod/truly_oos_eval",
-        help="True-OOS side artifact directory.",
+        default="backtesting/renquant_104/artifacts/walkforward_truly_oos_2024-07-01",
+        help="True-OOS cutoff artifact directory. Must remain a walkforward side path.",
+    )
+    p.add_argument(
+        "--eval-json",
+        default="backtesting/renquant_104/artifacts/prod/truly_oos_eval/eval_truly_oos.json",
+        help="True-OOS eval JSON path consumed by promotion tests.",
     )
     p.add_argument("--skip-retrain", action="store_true",
                    help="For true-oos: evaluate/stamp an existing cutoff artifact.")
@@ -59,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         train_cutoff=args.train_cutoff,
         artifact_dir=Path(args.artifact_dir),
+        eval_json_path=Path(args.eval_json),
         artifact=Path(args.artifact) if args.artifact else None,
         strategy_config=args.strategy_config,
         wf_jobs=args.wf_jobs,
