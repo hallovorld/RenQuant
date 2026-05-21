@@ -31,6 +31,7 @@ References:
 """
 from __future__ import annotations
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import json
 import logging
@@ -86,16 +87,41 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
     }
 
 
-def run_walk_forward(strategy_config: str) -> dict:
+def run_walk_forward(strategy_config: str, jobs: int = 1) -> dict:
     """Run 3-cut walk-forward, return mean/std/per-cut."""
     cuts = [
         ("2024-01-02", "2024-12-31"),
         ("2024-07-01", "2025-06-30"),
         ("2025-04-01", "2026-03-28"),
     ]
-    results = []
-    for start, end in cuts:
-        results.append(run_sim_cut(strategy_config, start, end))
+    jobs = max(1, min(int(jobs), len(cuts)))
+    results: list[dict | None] = [None] * len(cuts)
+    if jobs == 1:
+        for idx, (start, end) in enumerate(cuts):
+            results[idx] = run_sim_cut(strategy_config, start, end)
+    else:
+        log.info("Running %d WF cuts with jobs=%d", len(cuts), jobs)
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            future_to_idx = {
+                pool.submit(run_sim_cut, strategy_config, start, end): idx
+                for idx, (start, end) in enumerate(cuts)
+            }
+            for fut in as_completed(future_to_idx):
+                idx = future_to_idx[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as exc:  # defensive: preserve a stamped failure
+                    start, end = cuts[idx]
+                    log.exception("  → sim cut crashed: %s → %s", start, end)
+                    results[idx] = {
+                        "start": start,
+                        "end": end,
+                        "sharpe": float("nan"),
+                        "apy": float("nan"),
+                        "returncode": -1,
+                        "error_tail": repr(exc),
+                    }
+    results = [r for r in results if r is not None]
     sharpes = [r["sharpe"] for r in results if r["sharpe"] == r["sharpe"]]   # finite
     apys = [r["apy"] for r in results if r["apy"] == r["apy"]]
     failed_cuts = [r for r in results if r.get("returncode", 0) != 0]
@@ -119,6 +145,7 @@ def run_walk_forward(strategy_config: str) -> dict:
         "wf_3cut_sharpe_std": float(std_sharpe),
         "wf_3cut_apy_mean": float(mean_apy),
         "n_positive_cuts": n_pos,
+        "wf_jobs": jobs,
         "cuts": results,
         "reason": (
             f"PASS: mean Sharpe {mean_sharpe:+.3f} ≥ 0.40 and {n_pos}/3 cuts > 0"
@@ -252,6 +279,10 @@ def main():
                     help="Skip walk-forward (sanity only) — for emergency / testing")
     ap.add_argument("--skip-sanity", action="store_true",
                     help="Skip sanity battery — for emergency / testing")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="Number of walk-forward cuts to run concurrently. "
+                         "Default 1 preserves the conservative historical path; "
+                         "use 3 for full cut-level parallelism.")
     args = ap.parse_args()
 
     artifact_path = Path(args.artifact)
@@ -268,7 +299,7 @@ def main():
 
     wf_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf:
-        wf_result = run_walk_forward(args.strategy_config)
+        wf_result = run_walk_forward(args.strategy_config, jobs=args.jobs)
         log.info("WF result: %s", wf_result["reason"])
 
     sanity_result = {"passed": True, "reason": "skipped"}
@@ -283,6 +314,7 @@ def main():
         "wf_3cut_sharpe_std":  wf_result.get("wf_3cut_sharpe_std"),
         "wf_3cut_apy_mean":    wf_result.get("wf_3cut_apy_mean"),
         "n_positive_cuts":     wf_result.get("n_positive_cuts"),
+        "wf_jobs":             wf_result.get("wf_jobs"),
         "cuts":                wf_result.get("cuts"),
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),

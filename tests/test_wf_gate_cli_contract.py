@@ -31,6 +31,13 @@ def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     assert "val.reindex(columns=feat_cols, fill_value=0).fillna(0)" in src
 
 
+def test_wf_gate_supports_bounded_cut_parallelism() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert '"--jobs"' in src
+    assert "ThreadPoolExecutor" in src
+    assert "wf_jobs" in src
+
+
 def test_run_sim_disables_live_freshness_by_default_for_historical_sims() -> None:
     src = (REPO / "scripts/run_sim_104.py").read_text()
     assert 'data_freshness["enabled"] = False' in src
