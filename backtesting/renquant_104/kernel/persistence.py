@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     n_exits          INTEGER,
     n_rotations      INTEGER,
     n_buys           INTEGER,
+    buy_blocked      INTEGER,
+    skip_buys        INTEGER,
+    bear_only        INTEGER,
+    counters_json    TEXT,
     commit_sha       TEXT,
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -221,6 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_training_runs_date ON training_runs(run_date);
 -- Goal: post-hoc analysis can answer "what did we KNOW about XYZ on
 -- 2026-04-26 and WHY didn't we trade it?".
 CREATE TABLE IF NOT EXISTS ticker_daily_state (
+    run_id            TEXT NOT NULL,
     date              TEXT NOT NULL,
     ticker            TEXT NOT NULL,
     -- Bar-level context (joined for query convenience, denormalized)
@@ -250,12 +255,13 @@ CREATE TABLE IF NOT EXISTS ticker_daily_state (
     selected          INTEGER,        -- 1 if BUY order placed this bar
     blocked_by        TEXT,           -- reason if blocked: 'sector_cap'|'corr'|'wash_sale'|'tier'|'universe_floor'|'broker_pending'|'no_model_signal'
     sector            TEXT,
-    PRIMARY KEY (date, ticker)
+    PRIMARY KEY (run_id, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_tds_date ON ticker_daily_state(date);
 CREATE INDEX IF NOT EXISTS idx_tds_ticker ON ticker_daily_state(ticker);
 
 CREATE TABLE IF NOT EXISTS score_distribution (
+    run_id        TEXT NOT NULL,
     date          TEXT NOT NULL,        -- YYYY-MM-DD (string for sqlite friendliness)
     ticker        TEXT NOT NULL,
     raw_panel     REAL,                 -- pre-calibration scorer output (panel_score)
@@ -264,7 +270,7 @@ CREATE TABLE IF NOT EXISTS score_distribution (
     sigma         REAL,                 -- NGBoost σ if active
     regime        TEXT,                 -- BULL_CALM / etc.
     is_holding    INTEGER DEFAULT 0,    -- 0 = candidate, 1 = held
-    PRIMARY KEY (date, ticker)
+    PRIMARY KEY (run_id, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_score_dist_date ON score_distribution(date);
 
@@ -272,7 +278,8 @@ CREATE INDEX IF NOT EXISTS idx_score_dist_date ON score_distribution(date);
 -- Computed at end of each bar from that day's score_distribution rows.
 -- Phase 2 JointAction reads this to convert "top X%" → absolute threshold.
 CREATE TABLE IF NOT EXISTS score_percentiles_daily (
-    date          TEXT PRIMARY KEY,
+    run_id        TEXT PRIMARY KEY,
+    date          TEXT NOT NULL,
     n_cands       INTEGER NOT NULL,
     p01           REAL,
     p05           REAL,
@@ -288,7 +295,8 @@ CREATE TABLE IF NOT EXISTS score_percentiles_daily (
     score_max     REAL,
     score_mean    REAL,
     score_std     REAL,
-    regime        TEXT
+    regime        TEXT,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_pctiles_date ON score_percentiles_daily(date);
 
@@ -359,6 +367,12 @@ CREATE INDEX IF NOT EXISTS idx_trade_eval_run     ON trade_evaluations(run_id);
 # SQLite's `CREATE TABLE IF NOT EXISTS` is a no-op on pre-existing tables, so
 # any column added to _SCHEMA_SQL after first creation must also be listed here.
 _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "pipeline_runs": [
+        ("buy_blocked",   "INTEGER"),
+        ("skip_buys",     "INTEGER"),
+        ("bear_only",     "INTEGER"),
+        ("counters_json", "TEXT"),
+    ],
     "training_runs": [
         ("elapsed_sec",           "REAL"),
         ("trigger",               "TEXT"),
@@ -382,6 +396,177 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+def _pk_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return [r[1] for r in sorted((r for r in rows if int(r[5] or 0) > 0),
+                                 key=lambda r: int(r[5]))]
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _legacy_run_id_expr(table: str) -> str:
+    cols = {r[1] for r in table_info_cache.get(table, [])}
+    if "run_id" in cols:
+        return "COALESCE(run_id, 'legacy-' || date)"
+    return "'legacy-' || date"
+
+
+table_info_cache: dict[str, list] = {}
+
+
+def _rebuild_ticker_daily_state_if_needed(conn: sqlite3.Connection) -> None:
+    """Migrate date-keyed ticker_daily_state to append-only run scope.
+
+    Pre-2026-05-21 schema keyed by (date, ticker), so a same-day e2e/gate
+    replay overwrote the real daily decision tree. Rebuild the table when the
+    primary key is not (run_id, ticker). Existing rows are preserved under
+    synthetic run_id='legacy-{date}'.
+    """
+    if not _has_table(conn, "ticker_daily_state"):
+        return
+    if _pk_columns(conn, "ticker_daily_state") == ["run_id", "ticker"]:
+        return
+
+    tmp = f"ticker_daily_state__old_{uuid.uuid4().hex[:8]}"
+    table_info_cache["ticker_daily_state"] = conn.execute(
+        "PRAGMA table_info(ticker_daily_state)"
+    ).fetchall()
+    run_expr = _legacy_run_id_expr("ticker_daily_state")
+    conn.execute(f"ALTER TABLE ticker_daily_state RENAME TO {tmp}")
+    conn.execute(
+        """CREATE TABLE ticker_daily_state (
+            run_id            TEXT NOT NULL,
+            date              TEXT NOT NULL,
+            ticker            TEXT NOT NULL,
+            regime            TEXT,
+            confidence        REAL,
+            in_watchlist      INTEGER,
+            in_universe       INTEGER,
+            pending_at_broker INTEGER,
+            has_position      INTEGER,
+            position_qty      REAL,
+            position_pct      REAL,
+            model_type        TEXT,
+            model_action      TEXT,
+            sell_streak       INTEGER,
+            panel_score       REAL,
+            rank_score        REAL,
+            expected_return   REAL,
+            kelly_target_pct  REAL,
+            mu                REAL,
+            sigma             REAL,
+            in_candidates     INTEGER,
+            selected          INTEGER,
+            blocked_by        TEXT,
+            sector            TEXT,
+            PRIMARY KEY (run_id, ticker)
+        )"""
+    )
+    conn.execute(
+        f"""INSERT OR REPLACE INTO ticker_daily_state
+              (run_id, date, ticker, regime, confidence,
+               in_watchlist, in_universe, pending_at_broker,
+               has_position, position_qty, position_pct,
+               model_type, model_action, sell_streak,
+               panel_score, rank_score, expected_return, kelly_target_pct,
+               mu, sigma, in_candidates, selected, blocked_by, sector)
+            SELECT {run_expr}, date, ticker, regime, confidence,
+                   in_watchlist, in_universe, pending_at_broker,
+                   has_position, position_qty, position_pct,
+                   model_type, model_action, sell_streak,
+                   panel_score, rank_score, expected_return, kelly_target_pct,
+                   mu, sigma, in_candidates, selected, blocked_by, sector
+              FROM {tmp}"""
+    )
+    conn.execute(f"DROP TABLE {tmp}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tds_date ON ticker_daily_state(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tds_ticker ON ticker_daily_state(ticker)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tds_run ON ticker_daily_state(run_id)")
+
+
+def _rebuild_score_tables_if_needed(conn: sqlite3.Connection) -> None:
+    """Migrate score distribution tables from date scope to run scope."""
+    if _has_table(conn, "score_distribution") and _pk_columns(conn, "score_distribution") != ["run_id", "ticker"]:
+        tmp = f"score_distribution__old_{uuid.uuid4().hex[:8]}"
+        table_info_cache["score_distribution"] = conn.execute(
+            "PRAGMA table_info(score_distribution)"
+        ).fetchall()
+        run_expr = _legacy_run_id_expr("score_distribution")
+        conn.execute(f"ALTER TABLE score_distribution RENAME TO {tmp}")
+        conn.execute(
+            """CREATE TABLE score_distribution (
+                run_id        TEXT NOT NULL,
+                date          TEXT NOT NULL,
+                ticker        TEXT NOT NULL,
+                raw_panel     REAL,
+                rank_score    REAL,
+                mu            REAL,
+                sigma         REAL,
+                regime        TEXT,
+                is_holding    INTEGER DEFAULT 0,
+                PRIMARY KEY (run_id, ticker)
+            )"""
+        )
+        conn.execute(
+            f"""INSERT OR REPLACE INTO score_distribution
+                  (run_id, date, ticker, raw_panel, rank_score, mu, sigma, regime, is_holding)
+                SELECT {run_expr}, date, ticker, raw_panel, rank_score, mu, sigma, regime, is_holding
+                  FROM {tmp}"""
+        )
+        conn.execute(f"DROP TABLE {tmp}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_score_dist_date ON score_distribution(date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_score_dist_run ON score_distribution(run_id)")
+
+    if _has_table(conn, "score_percentiles_daily") and _pk_columns(conn, "score_percentiles_daily") != ["run_id"]:
+        tmp = f"score_percentiles_daily__old_{uuid.uuid4().hex[:8]}"
+        table_info_cache["score_percentiles_daily"] = conn.execute(
+            "PRAGMA table_info(score_percentiles_daily)"
+        ).fetchall()
+        run_expr = _legacy_run_id_expr("score_percentiles_daily")
+        conn.execute(f"ALTER TABLE score_percentiles_daily RENAME TO {tmp}")
+        conn.execute(
+            """CREATE TABLE score_percentiles_daily (
+                run_id        TEXT PRIMARY KEY,
+                date          TEXT NOT NULL,
+                n_cands       INTEGER NOT NULL,
+                p01           REAL,
+                p05           REAL,
+                p10           REAL,
+                p25           REAL,
+                p50           REAL,
+                p75           REAL,
+                p85           REAL,
+                p90           REAL,
+                p95           REAL,
+                p99           REAL,
+                score_min     REAL,
+                score_max     REAL,
+                score_mean    REAL,
+                score_std     REAL,
+                regime        TEXT,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        conn.execute(
+            f"""INSERT OR REPLACE INTO score_percentiles_daily
+                  (run_id, date, n_cands, p01, p05, p10, p25, p50, p75,
+                   p85, p90, p95, p99, score_min, score_max, score_mean,
+                   score_std, regime)
+                SELECT {run_expr}, date, n_cands, p01, p05, p10, p25, p50, p75,
+                       p85, p90, p95, p99, score_min, score_max, score_mean,
+                       score_std, regime
+                  FROM {tmp}"""
+        )
+        conn.execute(f"DROP TABLE {tmp}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pctiles_date ON score_percentiles_daily(date)")
+
+
 def _apply_column_migrations(conn: sqlite3.Connection) -> None:
     for table, columns in _COLUMN_MIGRATIONS.items():
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -395,6 +580,10 @@ def _apply_column_migrations(conn: sqlite3.Connection) -> None:
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_SQL)
     _apply_column_migrations(conn)
+    _rebuild_ticker_daily_state_if_needed(conn)
+    _rebuild_score_tables_if_needed(conn)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tds_run ON ticker_daily_state(run_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_score_dist_run ON score_distribution(run_id)")
     conn.commit()
 
 
@@ -468,6 +657,9 @@ def get_connection(
 # survive the reset.
 _SIM_RESET_TABLES = [
     "candidate_scores",
+    "score_distribution",
+    "score_percentiles_daily",
+    "ticker_daily_state",
     "trades",
     "rotations",
     "live_state_snapshots",
@@ -537,19 +729,28 @@ def record_pipeline_run(
     n_exits: int = 0,
     n_rotations: int = 0,
     n_buys: int = 0,
+    buy_blocked: bool | None = None,
+    skip_buys: bool | None = None,
+    bear_only: bool | None = None,
+    counters: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> str | None:
     """Insert a pipeline_runs row and return the generated run_id."""
     if conn is None:
         return None
-    run_id = f"{run_date.isoformat()}-{run_type}-{uuid.uuid4().hex[:8]}"
+    run_id = run_id or f"{run_date.isoformat()}-{run_type}-{uuid.uuid4().hex[:8]}"
     conn.execute(
-        """INSERT INTO pipeline_runs
+        """INSERT OR REPLACE INTO pipeline_runs
               (run_id, run_date, run_type, strategy, regime, confidence,
                portfolio_value, cash, n_candidates, n_exits, n_rotations, n_buys,
-               commit_sha)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               buy_blocked, skip_buys, bear_only, counters_json, commit_sha)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (run_id, run_date.isoformat(), run_type, strategy, regime, confidence,
          portfolio_value, cash, n_candidates, n_exits, n_rotations, n_buys,
+         None if buy_blocked is None else int(bool(buy_blocked)),
+         None if skip_buys is None else int(bool(skip_buys)),
+         None if bear_only is None else int(bool(bear_only)),
+         json.dumps(counters or {}, sort_keys=True, default=str),
          _commit_sha()),
     )
     return run_id
@@ -944,6 +1145,7 @@ def record_ticker_daily_state(
     *,
     run_date: datetime.date,
     rows: Iterable[dict],
+    run_id: str | None = None,
 ) -> int:
     """Upsert ticker_daily_state rows — one per watchlist ticker per bar.
 
@@ -962,10 +1164,12 @@ def record_ticker_daily_state(
         return 0
     payload = []
     rd_str = run_date.isoformat() if hasattr(run_date, "isoformat") else str(run_date)
+    rid = run_id or f"{rd_str}-unscoped"
     for r in rows:
         if not r.get("ticker"):
             continue
         payload.append((
+            rid,
             rd_str,
             r["ticker"],
             r.get("regime"),
@@ -994,13 +1198,13 @@ def record_ticker_daily_state(
         return 0
     conn.executemany(
         """INSERT OR REPLACE INTO ticker_daily_state
-              (date, ticker, regime, confidence,
+              (run_id, date, ticker, regime, confidence,
                in_watchlist, in_universe, pending_at_broker,
                has_position, position_qty, position_pct,
                model_type, model_action, sell_streak,
                panel_score, rank_score, expected_return, kelly_target_pct,
                mu, sigma, in_candidates, selected, blocked_by, sector)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         payload,
     )
     return len(payload)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -659,6 +660,7 @@ class RunnerAdapter:
         ctx = InferenceContext(
             config            = config,
             today             = today,
+            run_timestamp     = datetime.datetime.now().astimezone(),
             broker_name       = self._broker_name,
             ohlcv             = ohlcv,
             spy_returns       = spy_returns,
@@ -689,6 +691,7 @@ class RunnerAdapter:
             regime_counts     = {r: 0 for r in REGIMES},
             monitor_state     = dict(state.get("monitor_state", {}) or {}),
         )
+        ctx.run_id = f"{today.isoformat()}-live-{uuid.uuid4().hex[:8]}"
 
         # Bug 11 fix (2026-04-24): Rotation V4 (thesis_symmetric scoring
         # mode) needs ctx._db to look up candidate scores on each held's
@@ -777,6 +780,84 @@ class RunnerAdapter:
         stops needed."""
         regime_p = ctx.config.get("regime_params", {}).get(ctx.regime, {})
         return float(regime_p.get("max_single_day_loss_pct", 0.06))
+
+    def _override_no_trade_streak_from_broker(self, ctx) -> None:  # noqa: ANN001
+        """Replace stateful no_trade_streak counter with broker-derived truth.
+
+        Stateful counter has bug surface: per-invocation vs per-day inflation,
+        SIGKILL mid-write corrupting live_state.json, race between intraday
+        SellOnly and daily full pipeline writing the same field. Real source
+        of truth = the broker's order book. Logs both for cross-validation.
+
+        2026-05-20: introduced after the per-trading-day fix exposed how
+        much state-file divergence had accumulated (counter=32 while LIVE
+        Alpaca had fills on 16 of last 25 trading days).
+        """
+        if not hasattr(self._broker, "get_filled_orders"):
+            return
+        from datetime import date, timedelta  # noqa: PLC0415
+        import datetime as _dt  # noqa: PLC0415
+        from kernel.exits import _is_nyse_trading_day  # noqa: PLC0415
+
+        # Look back ~120 calendar days = enough cushion to detect very long
+        # idle periods without paging more than necessary.
+        today = ctx.today if isinstance(ctx.today, date) else _dt.date.today()
+        after = (today - timedelta(days=120)).isoformat()
+        try:
+            fills = self._broker.get_filled_orders(after=after)
+        except Exception as exc:
+            log.warning("broker.get_filled_orders failed: %s", exc)
+            return
+
+        fill_dates: set[date] = set()
+        for f in fills:
+            iso = f.get("filled_at")
+            if not iso:
+                continue
+            try:
+                # Tolerate Z, +HH:MM, naive ISO
+                if iso.endswith("Z"):
+                    iso = iso[:-1] + "+00:00"
+                fill_dates.add(_dt.datetime.fromisoformat(iso).date())
+            except Exception:
+                continue
+
+        if not fill_dates:
+            broker_streak = 120  # capped at lookback
+            most_recent: date | None = None
+        else:
+            most_recent = max(fill_dates)
+            # Count NYSE trading days strictly between most_recent and today.
+            broker_streak = 0
+            d = most_recent + timedelta(days=1)
+            while d <= today:
+                if _is_nyse_trading_day(d):
+                    broker_streak += 1
+                d += timedelta(days=1)
+
+        mon = self._state.setdefault("monitor_state", {}) or {}
+        counter_streak = int(mon.get("no_trade_streak", 0))
+        log.info(
+            "no_trade_streak: broker-derived=%d  stateful-counter=%d  "
+            "most_recent_fill=%s  fill_dates_in_window=%d",
+            broker_streak, counter_streak,
+            most_recent.isoformat() if most_recent else "none",
+            len(fill_dates),
+        )
+        if broker_streak != counter_streak:
+            log.warning(
+                "no_trade_streak DIVERGENCE: counter=%d vs broker=%d — "
+                "overriding with broker truth. Counter bug or state corruption.",
+                counter_streak, broker_streak,
+            )
+        mon["no_trade_streak"] = broker_streak
+        mon["no_trade_streak_source"] = "broker_filled_orders"
+        mon["last_fill_date"] = most_recent.isoformat() if most_recent else None
+        if most_recent is not None:
+            mon["last_activity_date"] = most_recent.isoformat()
+            if mon.get("first_trade_date") is None:
+                mon["first_trade_date"] = mon["last_activity_date"]
+        self._state["monitor_state"] = mon
 
     def _z9_place_or_replace_stop(
         self, ticker: str, qty: float, reference_price: float, today_str: str,
@@ -1335,6 +1416,20 @@ class RunnerAdapter:
             # MonitorIdleStreakTask counters — persisted across scheduled runs
             "monitor_state":     dict(getattr(ctx, "monitor_state", {}) or {}),
         })
+        # 2026-05-20 fix: prefer broker-driven no_trade_streak when the broker
+        # exposes get_filled_orders. Stateful counter has been bug-prone
+        # (per-invocation vs per-day inflation, state-file corruption from
+        # SIGKILL mid-write, …). Real source of truth = Alpaca's order book.
+        try:
+            self._override_no_trade_streak_from_broker(ctx)
+        except Exception as exc:
+            log.warning(
+                "broker-driven no_trade_streak query failed (%s) — keeping "
+                "stateful counter (value=%d). Counter is best-effort but may "
+                "drift; investigate if persists.",
+                exc,
+                int(self._state.get("monitor_state", {}).get("no_trade_streak", 0)),
+            )
         # Audit fix LS-ATOM (Round 2 deep audit, 2026-04-25): same atomic
         # write pattern as the parquet stores (DC-2-CACHE / FU-1 /
         # INT-ATOM / etc). Pre-fix, `write_text` opened the file in
@@ -1421,6 +1516,11 @@ class RunnerAdapter:
                 # double-counting rotations that were never executed.
                 n_rotations     = int(ctx.counters.get("rotations", 0)),
                 n_buys          = len(ctx.orders),
+                buy_blocked     = bool(getattr(ctx, "buy_blocked", False)),
+                skip_buys        = bool(getattr(ctx, "skip_buys", False)),
+                bear_only        = bool(getattr(ctx, "bear_only", False)),
+                counters         = getattr(ctx, "counters", {}) or {},
+                run_id          = getattr(ctx, "run_id", None),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)
@@ -1467,7 +1567,11 @@ class RunnerAdapter:
             # and WHY didn't we trade it?" — instead of just the cands.
             try:
                 wl = list(self._config.get("watchlist", []) or [])
-                cand_by_t  = {c.ticker: c for c in ctx.candidates}
+                tds_cand_pool = (
+                    getattr(ctx, "_full_candidate_snapshot", None)
+                    or ctx.candidates
+                )
+                cand_by_t  = {c.ticker: c for c in tds_cand_pool}
                 pf_value = float(ctx.portfolio_value) if ctx.portfolio_value else 0.0
                 # Bug #20 fix (2026-04-26): pending_broker_tickers is a local
                 # of make_context() (line 170), not visible in commit()'s
@@ -1539,6 +1643,7 @@ class RunnerAdapter:
                     })
                 n_tds = record_ticker_daily_state(
                     self._db, run_date=ctx.today, rows=tds_rows,
+                    run_id=run_id,
                 )
                 log.info("ticker_daily_state: wrote %d row(s) for %s",
                          n_tds, ctx.today.isoformat())

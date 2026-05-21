@@ -9,8 +9,9 @@ Before fix:
   6 live orders submitted to Alpaca on stale data Sunday evening.
 
 Invariant: ``has_range`` and the inference data-freshness gate must REFUSE
-any market data older than the last completed NYSE session strictly before
-the reference date (today / ctx.today).
+any market data older than the last completed NYSE session as of the
+reference timestamp. Before today's close, yesterday is enough; after
+today's close, today's bar is required.
 """
 from __future__ import annotations
 
@@ -84,6 +85,27 @@ class TestHasRangeNYSEFreshness(unittest.TestCase):
             "Thursday cache passes on Friday — Thursday is last completed close",
         )
 
+    def test_thursday_cache_after_friday_close_is_rejected(self) -> None:
+        """Friday after close — Friday's session is now required."""
+        self._save("LITE", ["2026-04-29", "2026-04-30"])
+        self.assertFalse(
+            self.store.has_range(
+                "LITE",
+                end=pd.Timestamp("2026-05-01 16:05", tz="America/New_York"),
+            ),
+            "Thursday cache must fail after Friday market close",
+        )
+
+    def test_friday_cache_after_friday_close_is_accepted(self) -> None:
+        self._save("LITE", ["2026-04-29", "2026-04-30", "2026-05-01"])
+        self.assertTrue(
+            self.store.has_range(
+                "LITE",
+                end=pd.Timestamp("2026-05-01 16:05", tz="America/New_York"),
+            ),
+            "Friday cache must pass after Friday market close",
+        )
+
     def test_end_none_uses_today_implicitly(self) -> None:
         """The actual buggy call site: fetch_ohlcv passed end=None."""
         # Build cache 5 trading days behind today
@@ -128,6 +150,7 @@ class TestDataFreshnessGateTask(unittest.TestCase):
             (),
             {
                 "today": _dt.date(2026, 5, 3),  # Sunday
+                "run_timestamp": None,
                 "ohlcv": {},
                 "config": {},
                 "counters": {},
@@ -181,6 +204,19 @@ class TestDataFreshnessGateTask(unittest.TestCase):
         self.ctx.today = _dt.date(2024, 6, 15)  # Saturday
         self.ctx.ohlcv = self._ohlcv({"AAPL": "2024-06-14"})  # Friday
         self.Task().run(self.ctx)  # passes — 2024-06-14 is last NYSE close
+
+    def test_friday_after_close_requires_friday_bar(self) -> None:
+        self.ctx.today = _dt.date(2026, 5, 1)
+        self.ctx.run_timestamp = pd.Timestamp("2026-05-01 16:05", tz="America/New_York")
+        self.ctx.ohlcv = self._ohlcv({"AAPL": "2026-04-30"})
+        with self.assertRaises(RuntimeError):
+            self.Task().run(self.ctx)
+
+    def test_friday_before_close_accepts_thursday_bar(self) -> None:
+        self.ctx.today = _dt.date(2026, 5, 1)
+        self.ctx.run_timestamp = pd.Timestamp("2026-05-01 15:55", tz="America/New_York")
+        self.ctx.ohlcv = self._ohlcv({"AAPL": "2026-04-30"})
+        self.Task().run(self.ctx)
 
 
 class TestInferencePipelineWiring(unittest.TestCase):

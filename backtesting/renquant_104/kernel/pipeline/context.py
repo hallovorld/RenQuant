@@ -21,6 +21,9 @@ class InferenceContext:
     # ── Required inputs (set by adapter before pipeline) ─────────────────────
     config: dict
     today: datetime.date
+    # Wall-clock timestamp for live/session-aware checks. Sim/LEAN may leave
+    # this None to preserve bar-date-only historical semantics.
+    run_timestamp: datetime.datetime | None = None
 
     # Broker-isolation tag (set by RunnerAdapter from broker.broker_name).
     # None for sim/lean paths. When None the legacy live_state.json is read.

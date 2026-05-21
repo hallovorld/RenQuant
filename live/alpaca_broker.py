@@ -82,35 +82,37 @@ class AlpacaBroker(BaseBroker):
 
         account = self._trading_client.get_account()
         mode = "paper" if self._paper else "LIVE"
+        nmbp = getattr(account, "non_marginable_buying_power", None)
         log.info(
-            "Alpaca connected (%s) — account=%s, equity=$%s, cash=$%s, status=%s",
-            mode, account.account_number, account.equity, account.cash, account.status,
+            "Alpaca connected (%s) — account=%s, equity=$%s, settled_cash=$%s, "
+            "non_marginable_buying_power=$%s, status=%s",
+            mode, account.account_number, account.equity, account.cash, nmbp,
+            account.status,
         )
 
         # P0-10 (audit 2026-05-20) — defensive guard against silent
         # paper-key-vs-live-broker mismatch. If RENQUANT_EXPECTED_LIVE_ACCOUNT
         # is set in .env, assert connected account matches expected. Per
         # 2026-05-17 e2e mandate "我他妈说了一万遍了 LIVE account": never
-        # silently flip to paper. If env not set, log warning so operator
-        # can pin it once they know the account number.
+        # silently flip to paper. If env is missing in LIVE mode, fail closed
+        # so a daily e2e cannot proceed without positive account identity.
         if not self._paper:
             expected = os.environ.get("RENQUANT_EXPECTED_LIVE_ACCOUNT")
             actual = str(account.account_number)
-            if expected:
-                if actual != expected:
-                    raise RuntimeError(
-                        f"ALPACA LIVE-ACCOUNT MISMATCH: connected to "
-                        f"account_number={actual} but RENQUANT_EXPECTED_LIVE_ACCOUNT={expected}. "
-                        f"This guard prevents silent paper/live key swap. If new account is "
-                        f"intentional, update .env and restart."
-                    )
-                log.info("LIVE account guard PASSED (account_number=%s matches expected)", actual)
-            else:
-                log.warning(
-                    "RENQUANT_EXPECTED_LIVE_ACCOUNT not set in env — "
-                    "no positive verification of LIVE account identity. "
-                    "Pin in .env: RENQUANT_EXPECTED_LIVE_ACCOUNT=%s", actual,
+            if not expected:
+                raise RuntimeError(
+                    "RENQUANT_EXPECTED_LIVE_ACCOUNT is required for LIVE Alpaca "
+                    f"connections; connected account_number={actual}. Pin this "
+                    "in .env before running real-money daily e2e."
                 )
+            if actual != expected:
+                raise RuntimeError(
+                    f"ALPACA LIVE-ACCOUNT MISMATCH: connected to "
+                    f"account_number={actual} but RENQUANT_EXPECTED_LIVE_ACCOUNT={expected}. "
+                    f"This guard prevents silent paper/live key swap. If new account is "
+                    f"intentional, update .env and restart."
+                )
+            log.info("LIVE account guard PASSED (account_number=%s matches expected)", actual)
 
         if account.status != "ACTIVE":
             log.warning("Account status is %s — trading may be restricted", account.status)

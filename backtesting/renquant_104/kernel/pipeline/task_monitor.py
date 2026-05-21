@@ -49,8 +49,37 @@ class MonitorIdleStreakTask(Task):
         had_activity   = bool(ctx.orders) or bool(ctx.exits)
         had_candidates = bool(ctx.candidates)
 
-        new_no_trade = 0 if had_activity   else int(state.get("no_trade_streak",     0)) + 1
-        new_no_cand  = 0 if had_candidates else int(state.get("no_candidate_streak", 0)) + 1
+        # 2026-05-20 fix: counter is PER-TRADING-DAY, not per-invocation.
+        # Pre-fix, intraday SellOnlyPipeline ran every ~12 min during market
+        # hours (~33 runs/day); each no-activity tick incremented the streak
+        # by 1, inflating "consecutive days zero orders" by ~34× per actual
+        # idle day. Observed 2026-05-20: streak=32 falsely alerted while
+        # LIVE Alpaca account had 47 fills over 16 trading days in the prior
+        # 40 calendar days (incl. TXN sell at 06:54:58 the same morning,
+        # which DID reset streak to 0 — but ~33 intraday cron firings after
+        # the reset then brought it back to 32 by the 14:17 daily run).
+        # Track last_check_date; only increment once per trading day.
+        today_str = str(ctx.today)
+        last_check = state.get("last_check_date")
+
+        prev_no_trade = int(state.get("no_trade_streak",     0))
+        prev_no_cand  = int(state.get("no_candidate_streak", 0))
+
+        if had_activity:
+            new_no_trade = 0
+        elif last_check == today_str:
+            new_no_trade = prev_no_trade   # already counted this day
+        else:
+            new_no_trade = prev_no_trade + 1
+
+        if had_candidates:
+            new_no_cand = 0
+        elif last_check == today_str:
+            new_no_cand = prev_no_cand
+        else:
+            new_no_cand = prev_no_cand + 1
+
+        state["last_check_date"] = today_str
 
         first_trade = state.get("first_trade_date")
         last_activity = state.get("last_activity_date")

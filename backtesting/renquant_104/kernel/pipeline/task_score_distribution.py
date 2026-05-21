@@ -36,8 +36,8 @@ class RecordScoreDistributionTask(Task):
       ctx._db         (sqlite3 connection injected by adapters)
 
     Writes:
-      score_distribution    INSERT OR REPLACE per (date, ticker)
-      score_percentiles_daily  INSERT OR REPLACE one row for today
+      score_distribution    INSERT OR REPLACE per (run_id, ticker)
+      score_percentiles_daily  INSERT OR REPLACE one row for this run
     """
 
     PERCENTILES = [1, 5, 10, 25, 50, 75, 85, 90, 95, 99]
@@ -53,12 +53,17 @@ class RecordScoreDistributionTask(Task):
             return False
 
         date_iso = ctx.today.isoformat()
+        run_id = (
+            getattr(ctx, "run_id", None)
+            or getattr(ctx, "_run_id", None)
+            or f"{date_iso}-unscoped"
+        )
         regime = str(ctx.regime or "")
 
         rows: list[tuple] = []
         for c in ctx.candidates:
             rows.append((
-                date_iso, c.ticker,
+                run_id, date_iso, c.ticker,
                 getattr(c, "panel_score", None),
                 getattr(c, "rank_score", None),
                 getattr(c, "mu", None),
@@ -68,7 +73,7 @@ class RecordScoreDistributionTask(Task):
             ))
         for ticker, hs in ctx.holdings.items():
             rows.append((
-                date_iso, ticker,
+                run_id, date_iso, ticker,
                 getattr(hs, "panel_score", None),
                 getattr(hs, "rank_score", None),
                 getattr(hs, "mu", None),
@@ -81,9 +86,9 @@ class RecordScoreDistributionTask(Task):
             cur = db.cursor()
             cur.executemany(
                 """INSERT OR REPLACE INTO score_distribution
-                   (date, ticker, raw_panel, rank_score, mu, sigma,
+                   (run_id, date, ticker, raw_panel, rank_score, mu, sigma,
                     regime, is_holding)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -101,11 +106,12 @@ class RecordScoreDistributionTask(Task):
                 p_vals = np.percentile(arr, self.PERCENTILES)
                 cur.execute(
                     """INSERT OR REPLACE INTO score_percentiles_daily
-                       (date, n_cands, p01, p05, p10, p25, p50, p75, p85,
+                       (run_id, date, n_cands, p01, p05, p10, p25, p50, p75, p85,
                         p90, p95, p99, score_min, score_max, score_mean,
                         score_std, regime)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
+                        run_id,
                         date_iso,
                         len(cand_scores),
                         float(p_vals[0]), float(p_vals[1]), float(p_vals[2]),
@@ -120,8 +126,8 @@ class RecordScoreDistributionTask(Task):
             db.commit()
             log.info(
                 "RecordScoreDistributionTask: saved %d ticker rows + percentiles "
-                "(n_cands=%d) for date=%s",
-                len(rows), len(cand_scores), date_iso,
+                "(n_cands=%d) for run_id=%s date=%s",
+                len(rows), len(cand_scores), run_id, date_iso,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("RecordScoreDistributionTask: skip — %s", exc)
@@ -146,10 +152,19 @@ def get_score_percentile_threshold(
         raise ValueError(f"Unsupported percentile {percentile}")
     cur = db.cursor()
     cur.execute(
-        f"""SELECT {col} FROM score_percentiles_daily
-            WHERE date <= ?
-            ORDER BY date DESC
-            LIMIT ?""",
+        f"""SELECT {col}
+              FROM (
+                    SELECT date, {col},
+                           ROW_NUMBER() OVER (
+                               PARTITION BY date
+                               ORDER BY created_at DESC, run_id DESC
+                           ) AS rn
+                      FROM score_percentiles_daily
+                     WHERE date <= ?
+                   )
+             WHERE rn = 1
+             ORDER BY date DESC
+             LIMIT ?""",
         (today_iso, lookback_days),
     )
     rows = [r[0] for r in cur.fetchall() if r[0] is not None]

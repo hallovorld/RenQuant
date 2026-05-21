@@ -769,6 +769,17 @@ class TestTournamentOOSWindow30d:
         assert c == pd.Timestamp("2024-12-01"), \
             f"explicit oos_days=30 must produce sample_end - 30d"
 
+    def test_future_sample_end_clamps_to_today(self):
+        from training.tournament import resolve_oos_cutoff
+        import pandas as pd
+        c = resolve_oos_cutoff({
+            "sample_end": "2999-12-31",
+            "oos_days": 30,
+        })
+        delta = (pd.Timestamp.today().normalize() - c).days
+        assert 28 <= delta <= 32, \
+            f"future sample_end must not anchor cutoff in the future; got {delta}d"
+
     def test_legacy_oos_years_still_honored(self):
         from training.tournament import resolve_oos_cutoff
         import pandas as pd

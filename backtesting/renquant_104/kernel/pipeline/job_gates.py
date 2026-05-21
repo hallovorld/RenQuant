@@ -5,15 +5,15 @@ from .pipeline import Job, Task
 from .task_gates import (
     FlattenCooldownGateTask,
     DrawdownGateTask, TransitionWindowTask, ConfidenceVetoTask,
-    BullVolOffensiveBlockTask, BEARBranchTask, VelocityCrashTask,
-    EMA50GateTask,
+    BullVolOffensiveBlockTask, RegimeAlphaGateTask, BEARBranchTask,
+    VelocityCrashTask, EMA50GateTask,
 )
 
 
 class BuyGatesJob(Job):
     """Task chain: FlattenCooldown → DrawdownGate → TransitionWindow →
-                  ConfidenceVeto → BullVolOffensiveBlock → BEARBranch →
-                  VelocityCrash → EMA50
+                  ConfidenceVeto → BullVolOffensiveBlock → RegimeAlphaGate →
+                  BEARBranch → VelocityCrash → EMA50
 
     FlattenCooldownGateTask (2026-05-11) sits FIRST so post-flatten
     cooldown overrides DrawdownGate's resume threshold — see task
@@ -24,6 +24,11 @@ class BuyGatesJob(Job):
     force defensives-only on low-confidence regimes) and BEFORE
     BEARBranch (which does the same for BEAR) — BULL_VOL is treated as
     "near-BEAR" when the AA-surfaced IC inversion flag is on.
+
+    RegimeAlphaGateTask (2026-05-20) sits AFTER BullVol and BEFORE BEARBranch:
+    per-regime "model has no OOS alpha" block. Sourced from
+    artifacts/prod/truly_oos_eval/eval_truly_oos.json — BULL_CALM has
+    top-10 OOS alpha −0.045, so we block new buys there.
     """
 
     @property
@@ -34,6 +39,7 @@ class BuyGatesJob(Job):
             TransitionWindowTask(),
             ConfidenceVetoTask(),
             BullVolOffensiveBlockTask(),
+            RegimeAlphaGateTask(),
             BEARBranchTask(),
             VelocityCrashTask(),
             EMA50GateTask(),

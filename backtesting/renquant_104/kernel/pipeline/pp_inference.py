@@ -207,7 +207,18 @@ class InferencePipeline:
         from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415
         LimitSellsPerBarTask().run(ctx)
 
-        if not (ctx.buy_blocked and not ctx.bear_only):
+        score_db_cfg = ctx.config.get("score_db") or {}
+        scan_when_buy_blocked = bool(score_db_cfg.get("scan_when_buy_blocked", True))
+        audit_scan = bool(ctx.buy_blocked and not ctx.bear_only and scan_when_buy_blocked)
+        if not (ctx.buy_blocked and not ctx.bear_only) or audit_scan:
+            if audit_scan:
+                ctx.counters["buy_blocked_candidate_scan"] = (
+                    ctx.counters.get("buy_blocked_candidate_scan", 0) + 1
+                )
+                log.info(
+                    "Phase 2b (buy scan): buy_blocked=True; scanning candidates "
+                    "for decision audit, order-emission remains gated"
+                )
             universe   = _buy_universe(ctx)
             cand_tctxs = [_make_cand_tctx(ctx, t) for t in universe]
             run_parallel(cand_tctxs, TickerCandidateJob())

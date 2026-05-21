@@ -140,6 +140,21 @@ class TestAlwaysFiresOnCycle:
         assert "EXIT XLU (trailing_stop)" in req.data.decode()
         assert req.headers.get("Title") == "RENQUANT-104 [sell-only] TRADE"
 
+    def test_shadow_exit_is_marked_hypothetical_not_live_trade(self):
+        notify = self._import()
+        exit_sig = SimpleNamespace(ticker="FTNT", exit_type="qp_sell")
+        ctx = _stub_ctx(exits=[exit_sig])
+        with patch("urllib.request.urlopen") as m:
+            notify("[SHADOW]RENQUANT-104", "full", ctx)
+        req = m.call_args[0][0]
+        body = req.data.decode()
+        assert req.headers.get("Title") == (
+            "[SHADOW]RENQUANT-104 [full] SHADOW-ACTION"
+        )
+        assert req.headers.get("Priority") == "default"
+        assert "SHADOW/HYPOTHETICAL (no live orders)" in body
+        assert "EXIT FTNT (qp_sell)" in body
+
     def test_combines_buys_and_exits(self):
         notify = self._import()
         exit_sig = SimpleNamespace(ticker="XLU", exit_type="rotation")
@@ -199,6 +214,31 @@ class TestWhyNoTradeRollup:
             notify("RENQUANT-104", "full", ctx)
         body = m.call_args[0][0].data.decode()
         assert "sector_full(3)" in body
+
+    def test_qp_reason_beats_unsuppressing_buy_gate(self):
+        """A buy gate is context, not cause, when QP produced no buy-sized delta."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            buy_blocked=True,
+            counters={"qp_delta_below_min_dw": 70, "qp_skipped_band": 6},
+            ranked=[SimpleNamespace(ticker="X")],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "qp_delta_below_min_dw(70)" in body
+
+    def test_buy_gate_surfaces_when_it_suppressed_qp_buys(self):
+        notify = self._import()
+        ctx = _stub_ctx(
+            buy_blocked=True,
+            counters={"qp_blocked_buys": 2, "qp_delta_below_min_dw": 70},
+            ranked=[SimpleNamespace(ticker="X")],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "full", ctx)
+        body = m.call_args[0][0].data.decode()
+        assert "buy_blocked" in body
 
 
 class TestBodyIncludesContextSnapshot:

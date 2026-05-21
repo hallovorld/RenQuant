@@ -399,6 +399,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # 21:22 — a pending pre-market order from 21:04 caused a repeat
     # pipeline cycle to emit a second BUY TSM which the guard correctly
     # skipped, but the old ntfy misreported it as a trade).
+    is_shadow      = label.startswith("[SHADOW]")
     orders         = list(getattr(ctx, "orders_placed",  []) or [])
     orders_skipped = list(getattr(ctx, "orders_skipped", []) or [])
     # Audit fix EXITS-FAIL (Round 2 deep audit, 2026-04-25): prefer
@@ -427,12 +428,35 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         rs = getattr(ctx, "regime_state", None)
         if rs is not None and getattr(rs, "in_transition", False):
             return "transition_window"
+        counters = getattr(ctx, "counters", {}) or {}
+        # A global buy gate is the cause only when it actually suppressed a
+        # QP buy. If every QP delta was below action thresholds anyway, keep
+        # the summary on the tighter per-solver reason.
+        if counters.get("qp_blocked_buys", 0):
+            if getattr(ctx, "skip_buys", False):
+                return "drawdown_halt"
+            if getattr(ctx, "buy_blocked", False):
+                return "buy_blocked"
+        qp_reasons = (
+            ("qp_skipped_band", "qp_no_trade_band"),
+            ("qp_delta_below_min_dw", "qp_delta_below_min_dw"),
+            ("qp_zero_shares", "qp_zero_shares"),
+            ("qp_no_buy_delta", "qp_no_buy_delta"),
+            ("qp_not_selected", "qp_not_selected"),
+        )
+        qp_counts = [
+            (int(counters.get(key, 0) or 0), label)
+            for key, label in qp_reasons
+            if int(counters.get(key, 0) or 0) > 0
+        ]
+        if qp_counts:
+            n_qp, qp_label = max(qp_counts, key=lambda item: item[0])
+            return f"{qp_label}({n_qp})"
         if getattr(ctx, "skip_buys", False):
             return "drawdown_halt"
         if getattr(ctx, "buy_blocked", False):
             return "buy_blocked"
         # Counter-based: if we had candidates but none were selected
-        counters = getattr(ctx, "counters", {}) or {}
         if counters.get("defensive_non_bear_blocks", 0):
             return f"defensives_filtered({counters['defensive_non_bear_blocks']})"
         if counters.get("sector_blocks", 0):
@@ -590,8 +614,13 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
             log.warning("ntfy shadow segment failed: %s", exc)
 
     topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
-    tag      = "TRADE" if has_trade else "DECISION"
-    priority = "high"  if has_trade else "default"
+    if is_shadow:
+        parts.insert(0, "SHADOW/HYPOTHETICAL (no live orders)")
+        tag = "SHADOW-ACTION" if has_trade else "SHADOW-DECISION"
+        priority = "default"
+    else:
+        tag = "TRADE" if has_trade else "DECISION"
+        priority = "high"  if has_trade else "default"
     title    = f"{label} [{run_mode}] {tag}"
     body     = " | ".join(parts)
     url      = f"https://ntfy.sh/{topic}"

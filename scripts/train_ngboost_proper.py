@@ -24,7 +24,9 @@ Param/sample math at our scale:
   Per iter: 2 trees (loc, log-scale) × DecisionTreeRegressor depth=3
   Cost ≈ O(N · log(N) · n_features · p) per tree ≈ feasible
 
-Compare to our XGB-quantile baseline +0.0294 ± 0.0029 (E51).
+Compare to a caller-supplied same-panel XGB baseline. The old E51
+baseline (+0.0294 ± 0.0029) is historical context only and is no longer
+accepted as an implicit quality gate.
 Hypothesis: NGBoost with proper config + natural gradient should
 match or beat XGB-quantile on val_mu_ic, with strictly proper LogScore
 (NLL) optimization.
@@ -35,7 +37,8 @@ References:
 - ngboost source: github.com/stanfordmlgroup/ngboost
 """
 from __future__ import annotations
-import json, time, sys, logging, hashlib
+import argparse
+import json, time, sys, logging, hashlib, os
 from pathlib import Path
 from datetime import datetime
 import numpy as np, pandas as pd
@@ -53,6 +56,77 @@ LABEL = "fwd_60d_excess_raw"
 HORIZON = 60
 
 
+def _env_float(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    return float(raw)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train the experimental NGBoost head on the 104 panel. "
+            "Refuses artifact save unless a current XGB baseline is supplied."
+        )
+    )
+    parser.add_argument(
+        "--panel-path",
+        type=Path,
+        default=REPO / "data" / "alpha158_291_fundamental_dataset_rawlabel.parquet",
+        help="Raw-label panel parquet used for NGBoost residual training.",
+    )
+    parser.add_argument(
+        "--panel-artifact",
+        type=Path,
+        default=REPO / "backtesting/renquant_104/artifacts/panel-ltr.alpha158_fund.json",
+        help="Panel-LTR artifact whose feature_cols define the NGBoost input contract.",
+    )
+    parser.add_argument(
+        "--output-path",
+        type=Path,
+        default=REPO / "backtesting/renquant_104/artifacts/sim/ngboost-head.json",
+        help="Destination for the best-seed NGBoost artifact.",
+    )
+    parser.add_argument(
+        "--seeds",
+        default=os.environ.get("NGB_SEEDS", "42,7,123,2024,31415"),
+        help="Comma-separated random seeds. Default is 5 seeds; single seed is exploratory only.",
+    )
+    parser.add_argument(
+        "--missing-feature-policy",
+        choices=("error", "zero"),
+        default="error",
+        help=(
+            "How to handle feature_cols present in the artifact but absent from the panel. "
+            "'error' is production-safe; 'zero' is only for controlled exploratory runs."
+        ),
+    )
+    parser.add_argument(
+        "--xgb-baseline-mean",
+        type=float,
+        default=_env_float("XGB_BASELINE_MEAN"),
+        help="Current same-panel XGB baseline mean IC. Env fallback: XGB_BASELINE_MEAN.",
+    )
+    parser.add_argument(
+        "--xgb-baseline-std",
+        type=float,
+        default=_env_float("XGB_BASELINE_STD"),
+        help="Current same-panel XGB baseline IC std. Env fallback: XGB_BASELINE_STD.",
+    )
+    parser.add_argument(
+        "--allow-save-without-baseline",
+        action="store_true",
+        help="Allow artifact save without a current XGB baseline gate. Research only.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate inputs, split, and feature matrix contract without fitting NGBoost.",
+    )
+    return parser.parse_args(argv)
+
+
 def cs_ic(mu, y, dates):
     df = pd.DataFrame({"p": mu, "y": y, "d": dates})
     ics = [spearmanr(g["p"], g["y"])[0] for _, g in df.groupby("d") if len(g) >= 5]
@@ -60,14 +134,60 @@ def cs_ic(mu, y, dates):
     return float(np.mean(ics)) if ics else float("nan")
 
 
-def main():
-    panel_path = REPO / "data" / "alpha158_291_fundamental_dataset_rawlabel.parquet"
-    art_panel  = REPO / "backtesting/renquant_104/artifacts/panel-ltr.alpha158_fund.json"
+def _seed_list(seed_csv: str) -> list[int]:
+    seeds = [int(s) for s in seed_csv.split(",") if s.strip()]
+    if not seeds:
+        raise ValueError("at least one seed is required")
+    return seeds
+
+
+def _apply_missing_feature_policy(
+    panel: pd.DataFrame,
+    feat_cols: list[str],
+    *,
+    policy: str,
+) -> tuple[pd.DataFrame, list[str]]:
+    missing = [c for c in feat_cols if c not in panel.columns]
+    if not missing:
+        return panel, []
+    sample = ", ".join(missing[:10])
+    suffix = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+    if policy == "error":
+        raise ValueError(
+            f"Panel is missing {len(missing)} feature column(s) required by "
+            f"the panel artifact: {sample}{suffix}. Regenerate the raw-label "
+            "panel from the same feature pipeline, or rerun with "
+            "--missing-feature-policy zero for an explicitly exploratory run."
+        )
+    panel = panel.copy()
+    for col in missing:
+        panel[col] = 0.0
+    return panel, missing
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
+    panel_path = args.panel_path
+    art_panel = args.panel_artifact
 
     panel_meta = json.loads(art_panel.read_text())
     feat_cols = list(panel_meta["feature_cols"])
 
     panel = pd.read_parquet(panel_path)
+    try:
+        panel, missing_cols = _apply_missing_feature_policy(
+            panel, feat_cols, policy=args.missing_feature_policy,
+        )
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    if missing_cols:
+        log.warning(
+            "Missing-feature policy '%s' filled %d column(s) with 0.0: %s",
+            args.missing_feature_policy,
+            len(missing_cols),
+            ", ".join(missing_cols[:10]) + (" ..." if len(missing_cols) > 10 else ""),
+        )
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.dropna(subset=[LABEL])
     distinct_dates = sorted(panel["date"].unique())
@@ -86,6 +206,13 @@ def main():
     ytr = train[LABEL].clip(-0.5, 0.5).values.astype(np.float64)
     yva = val[LABEL].clip(-0.5, 0.5).values.astype(np.float64)
     val_dates = val["date"].values
+    log.info(
+        "Feature contract: %d columns, missing_filled=%d, Xtr=%s, Xva=%s",
+        len(feat_cols), len(missing_cols), Xtr.shape, Xva.shape,
+    )
+    if args.dry_run:
+        log.info("DRY RUN OK — no NGBoost fit or artifact write performed.")
+        return 0
 
     # Paper-recommended large-data config (§4 Year MSD)
     # n_estimators=500 with early_stopping_rounds for safety
@@ -100,23 +227,25 @@ def main():
     log.info("Config: Normal dist, LogScore, max_depth=3, lr=0.1, minibatch_frac=0.1, n_est=500")
 
     # 5-seed A/A per CLAUDE.md §5.2 — single-seed +0.0356 was promising;
-    # need σ characterization to claim significance vs XGB +0.0294 ± 0.0029.
+    # need σ characterization to claim significance vs a current XGB baseline.
     # 2026-05-17: keep all 5 models in memory + pick the best by val_IC and
     # save its ensemble to the sim artifact path. Quality gate prevents the
     # silent-degrade incident (today's Sunday sweep saved val_IC=-0.0165
     # straight to prod with no gate).
     #
-    # P0-15 (audit 2026-05-20): baseline values below are hardcoded from
-    # a 2026-05-15 measurement on the PRE-wl200 panel. Stale for post-
-    # 2026-05-18 wl200 (142 ticker) + 172-feature panel. Override via env
-    # to refresh after each universe/feature change:
-    #   XGB_BASELINE_MEAN=<measured> XGB_BASELINE_STD=<measured> ./train_ngboost_proper.py
-    # TODO: auto-refresh by reading the most recent panel-ltr.json's val IC.
-    import os as _os_baseline  # noqa: PLC0415
-    XGB_BASELINE_MEAN = float(_os_baseline.environ.get("XGB_BASELINE_MEAN", "0.0294"))
-    XGB_BASELINE_STD  = float(_os_baseline.environ.get("XGB_BASELINE_STD",  "0.0029"))
-    log.info("XGB baseline (override via XGB_BASELINE_MEAN/STD env): "
-             "mean=%.4f std=%.4f", XGB_BASELINE_MEAN, XGB_BASELINE_STD)
+    XGB_BASELINE_MEAN = args.xgb_baseline_mean
+    XGB_BASELINE_STD = args.xgb_baseline_std
+    if (XGB_BASELINE_MEAN is None) ^ (XGB_BASELINE_STD is None):
+        log.error("Supply both --xgb-baseline-mean and --xgb-baseline-std, or neither.")
+        return 2
+    if XGB_BASELINE_MEAN is None:
+        log.warning(
+            "No current XGB baseline supplied; t-stat and quality gate are disabled. "
+            "Artifact save will be refused unless --allow-save-without-baseline is set."
+        )
+    else:
+        log.info("XGB baseline (same-panel required): mean=%.4f std=%.4f",
+                 XGB_BASELINE_MEAN, XGB_BASELINE_STD)
 
     # Params dict — used in artifact metadata so downstream tools know
     # exactly how the model was fitted. Mirrors NGBRegressor() kwargs below.
@@ -133,14 +262,13 @@ def main():
     fit_times = []
     best_iters = []
     models = []
-    # 2026-05-17: env-overridable seed list.
-    # P0-15 (audit 2026-05-20): default flipped from single seed to 5-seed.
-    # Single-seed default was §5.13.4 violation (claiming significance from
-    # one measurement). 5-seed takes 2-4h but produces honest σ. Override
-    # for quick smoke via NGB_SEEDS=42 (single-seed = exploratory only).
-    import os as _os
-    _seed_csv = _os.environ.get("NGB_SEEDS", "42,7,123,2024,31415")
-    SEED_LIST = [int(s) for s in _seed_csv.split(",") if s.strip()]
+    # 2026-05-17: default flipped from single seed to 5-seed. Single-seed
+    # runs are exploratory only; production claims need the full variance.
+    try:
+        SEED_LIST = _seed_list(args.seeds)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
     log.info("Running %d seed(s): %s", len(SEED_LIST), SEED_LIST)
     for SEED in SEED_LIST:
         log.info("Fitting NGBoost (seed=%d)...", SEED)
@@ -192,23 +320,26 @@ def main():
     log.info("  μ̂ x-sec std mean=%.5f", np.mean(mu_xs_stds))
     log.info("  fit time mean=%.1fs total=%.0fs", np.mean(fit_times), sum(fit_times))
     log.info("")
-    log.info("Compare baseline XGB-quantile: mean=+%.4f std=%.4f  (E51 5-seed A/A)",
-             XGB_BASELINE_MEAN, XGB_BASELINE_STD)
-    delta = np.mean(val_ics) - XGB_BASELINE_MEAN
     n_seeds = len(val_ics)
-    if n_seeds > 1:
-        se = np.sqrt(XGB_BASELINE_STD**2/5 + np.std(val_ics, ddof=1)**2/n_seeds)
+    if XGB_BASELINE_MEAN is not None:
+        log.info("Compare baseline XGB-quantile: mean=+%.4f std=%.4f",
+                 XGB_BASELINE_MEAN, XGB_BASELINE_STD)
+        delta = np.mean(val_ics) - XGB_BASELINE_MEAN
+        if n_seeds > 1:
+            se = np.sqrt(XGB_BASELINE_STD**2/5 + np.std(val_ics, ddof=1)**2/n_seeds)
+        else:
+            # Single-seed: just use XGB baseline std as the noise floor (rough)
+            se = XGB_BASELINE_STD
+        t = delta / se if se > 0 else float("inf")
+        log.info("Δ(NGB-proper - XGB) = %+.4f  t-stat = %+.2f", delta, t)
+        if abs(t) > 2.0 and delta > 0:
+            log.info("SIGNIFICANT BEAT — NGBoost-proper > XGB-quantile at 95%%")
+        elif delta > 0:
+            log.info("Trend positive but not 2σ significant on n=%d", n_seeds)
+        else:
+            log.info("NGBoost-proper does NOT beat XGB-quantile")
     else:
-        # Single-seed: just use XGB baseline std as the noise floor (rough)
-        se = XGB_BASELINE_STD
-    t = delta / se if se > 0 else float("inf")
-    log.info("Δ(NGB-proper - XGB) = %+.4f  t-stat = %+.2f", delta, t)
-    if abs(t) > 2.0 and delta > 0:
-        log.info("✓ SIGNIFICANT BEAT — NGBoost-proper > XGB-quantile at 95%%")
-    elif delta > 0:
-        log.info("? Trend positive but not 2σ significant on n=%d", n_seeds)
-    else:
-        log.info("✗ NGBoost-proper does NOT beat XGB-quantile")
+        log.info("No baseline comparison computed.")
     if n_seeds == 1:
         log.info("[reference: 5/15 full 5-seed validation = +0.0360 ± 0.0036, "
                  "t=+2.76 vs XGB baseline; logged in CLAUDE.md status]")
@@ -229,9 +360,16 @@ def main():
 
     # Quality gate — refuse save if even the BEST seed doesn't beat XGB baseline.
     # This is the safety mechanism missing from Sunday sweep (today's 11:20 incident).
-    if best_val_ic < XGB_BASELINE_MEAN:
+    if XGB_BASELINE_MEAN is None and not args.allow_save_without_baseline:
         log.warning(
-            "✗ QUALITY GATE FAILED — best val_IC=%+.4f < XGB baseline %+.4f. "
+            "QUALITY GATE UNAVAILABLE — no current same-panel XGB baseline supplied. "
+            "Refusing to save artifact. Pass --xgb-baseline-mean/--xgb-baseline-std "
+            "or explicitly add --allow-save-without-baseline for research."
+        )
+        return 1
+    if XGB_BASELINE_MEAN is not None and best_val_ic < XGB_BASELINE_MEAN:
+        log.warning(
+            "QUALITY GATE FAILED — best val_IC=%+.4f < XGB baseline %+.4f. "
             "Refusing to save artifact (would silently degrade prod). "
             "Best-seed model NOT saved.",
             best_val_ic, XGB_BASELINE_MEAN,
@@ -274,12 +412,17 @@ def main():
         "train_run_id": f"proper_5seed_{datetime.utcnow().strftime('%Y%m%dT%H%M')}",
         "training_notes": (
             f"NGBoost-proper 5-seed training (Duan 2020 §4 large-data config). "
-            f"Selected best-by-val_IC seed={best_seed} from 5 seeds. "
+            f"Selected best-by-val_IC seed={best_seed} from {len(SEED_LIST)} seeds. "
             f"All-seed val_IC: {[round(v,4) for v in val_ics]}. "
             f"Best val_IC={best_val_ic:+.4f}, σ-calib={best_sigma_calib:+.3f}, "
             f"μ_xs_std={best_mu_xs_std:.5f}. "
-            f"XGB-quantile baseline mean=+{XGB_BASELINE_MEAN:.4f}±{XGB_BASELINE_STD:.4f}. "
-            f"Quality gate: val_IC > XGB baseline (passed). "
+            + (
+                f"XGB-quantile baseline mean=+{XGB_BASELINE_MEAN:.4f}±{XGB_BASELINE_STD:.4f}. "
+                "Quality gate: val_IC > XGB baseline (passed). "
+                if XGB_BASELINE_MEAN is not None
+                else "Quality gate: bypassed by --allow-save-without-baseline. "
+            )
+            +
             f"Panel fingerprint={fp_fields['panel_artifact_fingerprint']}."
         ),
         "train_mu_mean":    float(mu_tr.mean()),
@@ -297,7 +440,7 @@ def main():
         "config_fingerprint":        f"sha256:{fp}",
         "config_fingerprint_fields": fp_fields,
     }
-    out_path = REPO / "backtesting/renquant_104/artifacts/sim/ngboost-head.json"
+    out_path = args.output_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(artifact))
     log.info("✓ Saved → %s  (size=%.1f MB)", out_path,

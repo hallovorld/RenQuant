@@ -136,8 +136,11 @@ class JointPortfolioQPJob(Job):
     def should_skip(self, ctx: InferenceContext) -> bool:
         # The atom-based skip gates inside `tasks` cover this too, but
         # short-circuiting at Job level avoids per-task method calls.
-        joint = (ctx.config.get("rotation", {})
-                            .get("joint_actions", {}))
+        rotation = ctx.config.get("rotation", {})
+        allowed_regimes = set(rotation.get("enabled_regimes", []) or [])
+        if allowed_regimes and getattr(ctx, "regime", None) not in allowed_regimes:
+            return True
+        joint = rotation.get("joint_actions", {})
         if not joint.get("enabled", False):
             return True
         if str(joint.get("solver", "greedy")).lower() != "qp":

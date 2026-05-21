@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
+import cvxpy as cp
 
 log = logging.getLogger("kernel.portfolio_qp.qp_solver")
 
@@ -72,7 +73,6 @@ def _solve_cvx(prob, primary, fallbacks, *, verbose: bool = False) -> str:
     last attempt's status (or "exception") is returned. The cvxportfolio
     pattern: never let one solver's quirks define correctness.
     """
-    import cvxpy as cp  # noqa: PLC0415
     chain: list = [primary] + list(fallbacks)
     last_status = "exception"
     for solver in chain:
@@ -150,8 +150,6 @@ def solve_portfolio_qp(
       - 0.05 (default) → moderate push to deploy; signal of ~50bp net wins
       - 0.50 → aggressive deployment; only strong negative signal stays cash
     """
-    import cvxpy as cp  # noqa: PLC0415
-
     w_current = np.asarray(w_current, dtype=float)
     mu_raw    = np.asarray(mu,        dtype=float)
     n         = len(w_current)

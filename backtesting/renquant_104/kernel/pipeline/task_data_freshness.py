@@ -9,8 +9,10 @@ silently accepting stale cache (``tolerance_days=5`` legacy default plus the
 
 This gate is the second line of defense — even if cache logic regresses
 again, the inference pipeline will refuse to submit orders when ANY symbol's
-OHLCV data does not include the last completed NYSE trading session
-strictly before ``ctx.today``.
+OHLCV data does not include the last completed NYSE trading session.
+When the adapter provides ``ctx.run_timestamp`` the gate is time-aware:
+after today's NYSE close, today's session is required; before close,
+yesterday's completed session is sufficient.
 
 Invariant: no order leaves this pipeline based on market data older than
 the most recent completed NYSE session.
@@ -35,7 +37,8 @@ class DataFreshnessGateTask(Task):
     """Hard-fail when ctx.ohlcv is older than last completed NYSE session.
 
     Reads:
-      ctx.today, ctx.ohlcv, ctx.config['data_freshness']['enabled'] (default True)
+      ctx.today, ctx.run_timestamp, ctx.ohlcv,
+      ctx.config['data_freshness']['enabled'] (default True)
     Raises:
       RuntimeError when any symbol's max date is < last_completed_close.
     """
@@ -58,8 +61,9 @@ class DataFreshnessGateTask(Task):
             )
             return True
 
-        ref_date = self._ref_date(getattr(ctx, "today", None))
-        last_close = self._last_completed_nyse_close(ref_date)
+        ref_ts = self._ref_timestamp(ctx)
+        ref_date = self._ref_date(getattr(ctx, "today", None), ref_ts)
+        last_close = self._last_completed_nyse_close(ref_date, ref_ts)
 
         if last_close is None:
             log.warning(
@@ -106,8 +110,10 @@ class DataFreshnessGateTask(Task):
         return True
 
     @staticmethod
-    def _ref_date(today) -> _dt.date:
+    def _ref_date(today, ref_ts: pd.Timestamp | None = None) -> _dt.date:
         if today is None:
+            if ref_ts is not None:
+                return ref_ts.tz_convert("America/New_York").date()
             return _dt.date.today()
         if isinstance(today, _dt.datetime):
             return today.date()
@@ -116,7 +122,22 @@ class DataFreshnessGateTask(Task):
         return pd.to_datetime(today).date()
 
     @staticmethod
-    def _last_completed_nyse_close(ref: _dt.date) -> _dt.date | None:
+    def _ref_timestamp(ctx) -> pd.Timestamp | None:
+        for attr in ("run_timestamp", "now", "timestamp"):
+            raw = getattr(ctx, attr, None)
+            if raw is None:
+                continue
+            ts = pd.Timestamp(raw)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("America/New_York")
+            return ts.tz_convert("UTC")
+        return None
+
+    @staticmethod
+    def _last_completed_nyse_close(
+        ref: _dt.date,
+        now_ts: pd.Timestamp | None = None,
+    ) -> _dt.date | None:
         try:
             import pandas_market_calendars as mcal  # noqa: PLC0415
         except ImportError:
@@ -127,6 +148,16 @@ class DataFreshnessGateTask(Task):
             start_date=ref - _dt.timedelta(days=14),
             end_date=ref,
         )
+        if now_ts is not None:
+            todays_session = sched[sched.index.date == ref]
+            if not todays_session.empty:
+                market_close = pd.Timestamp(todays_session["market_close"].iloc[-1])
+                if market_close.tzinfo is None:
+                    market_close = market_close.tz_localize("UTC")
+                else:
+                    market_close = market_close.tz_convert("UTC")
+                if now_ts >= market_close:
+                    return ref
         sched_before = sched[sched.index.date < ref]
         if sched_before.empty:
             return None

@@ -40,6 +40,7 @@ class _Hold:
 class _Ctx:
     config: dict = field(default_factory=dict)
     today: datetime.date = datetime.date(2026, 4, 26)
+    run_id: str = "2026-04-26-test-a"
     regime: str = "BULL_CALM"
     candidates: list = field(default_factory=list)
     holdings: dict = field(default_factory=dict)
@@ -101,7 +102,7 @@ class TestRecordCandidates:
         assert row == ("X", 0.55, 1)
 
     def test_idempotent_via_replace(self):
-        """Running twice on same date doesn't duplicate rows."""
+        """Running twice in the same run doesn't duplicate rows."""
         ctx = _Ctx(config=_cfg_on())
         ctx._db = _make_db()
         ctx.candidates = [_Cand("A", rank_score=0.5)]
@@ -111,8 +112,27 @@ class TestRecordCandidates:
         cur = ctx._db.cursor()
         cur.execute("SELECT COUNT(*), MAX(rank_score) FROM score_distribution")
         n, max_score = cur.fetchone()
-        assert n == 1, "INSERT OR REPLACE should keep one row per (date, ticker)"
+        assert n == 1, "INSERT OR REPLACE should keep one row per (run_id, ticker)"
         assert max_score == 0.7
+
+    def test_same_date_ticker_preserved_across_runs(self):
+        db = _make_db()
+        ctx_a = _Ctx(config=_cfg_on(), run_id="2026-04-26-live-a")
+        ctx_a._db = db
+        ctx_a.candidates = [_Cand("A", rank_score=0.5)]
+        ctx_b = _Ctx(config=_cfg_on(), run_id="2026-04-26-live-b")
+        ctx_b._db = db
+        ctx_b.candidates = [_Cand("A", rank_score=0.7)]
+        RecordScoreDistributionTask().run(ctx_a)
+        RecordScoreDistributionTask().run(ctx_b)
+        out = db.execute(
+            "SELECT COUNT(*), MIN(rank_score), MAX(rank_score) "
+            "FROM score_distribution WHERE date=? AND ticker=?",
+            ("2026-04-26", "A"),
+        ).fetchone()
+        assert out[0] == 2
+        assert out[1] == pytest.approx(0.5)
+        assert out[2] == pytest.approx(0.7)
 
 
 class TestPercentilesAggregation:
@@ -156,8 +176,8 @@ class TestPercentileLookup:
         for i, day in enumerate(["2026-04-24", "2026-04-25", "2026-04-26"]):
             cur.execute(
                 """INSERT INTO score_percentiles_daily
-                   (date, n_cands, p85) VALUES (?, ?, ?)""",
-                (day, 10, 0.4 + 0.05 * i),  # 0.40, 0.45, 0.50
+                   (run_id, date, n_cands, p85) VALUES (?, ?, ?, ?)""",
+                (f"{day}-test", day, 10, 0.4 + 0.05 * i),  # 0.40, 0.45, 0.50
             )
         db.commit()
         # lookback 3 days from today → mean(0.40, 0.45, 0.50) = 0.45

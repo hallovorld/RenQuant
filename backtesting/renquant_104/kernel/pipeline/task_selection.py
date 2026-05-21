@@ -105,6 +105,25 @@ class SizeAndEmitTask(Task):
     """Size each selected ticker and emit buy orders → ctx.orders."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
+        buy_blocked = bool(getattr(ctx, "buy_blocked", False)) and not bool(getattr(ctx, "bear_only", False))
+        skip_buys = bool(getattr(ctx, "skip_buys", False))
+        if buy_blocked or skip_buys:
+            reason = "buy_blocked" if buy_blocked else "skip_buys"
+            selected = list(getattr(ctx, "_selected", []) or [])  # noqa: SLF001
+            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            if blocked_map is None:
+                blocked_map = {}
+                ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+            for ticker in selected:
+                blocked_map.setdefault(ticker, reason)
+            key = f"selection_{reason}"
+            ctx.counters[key] = ctx.counters.get(key, 0) + len(selected)
+            log.info(
+                "SizeAndEmitTask: %s — suppressed %d selected buy(s)",
+                reason, len(selected),
+            )
+            return False
+
         from kernel.sizing import (  # noqa: PLC0415
             compute_position_size,
             conviction_multiplier,

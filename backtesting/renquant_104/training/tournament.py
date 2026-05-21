@@ -43,8 +43,9 @@ def resolve_oos_cutoff(config: dict) -> pd.Timestamp:
 
     Anchor:
       * If `config["sample_end"]` is set (B2 hold-out path): cutoff =
-        sample_end - oos_days. Train data ends at cutoff; OOS slice is
-        cutoff → sample_end.
+        min(sample_end, today) - oos_days. Train data ends at cutoff; OOS
+        slice is cutoff → available data. Future-dated configs must not
+        shift the OOS window forward before those bars exist.
       * Else (live / generic train): cutoff = today - oos_days.
     """
     raw = config.get("oos_cutoff") if config else None
@@ -52,8 +53,10 @@ def resolve_oos_cutoff(config: dict) -> pd.Timestamp:
         return pd.Timestamp(raw)
 
     sample_end = config.get("sample_end") if config else None
-    anchor = (pd.Timestamp(sample_end).normalize()
-              if sample_end else pd.Timestamp.today().normalize())
+    today = pd.Timestamp.today().normalize()
+    anchor = pd.Timestamp(sample_end).normalize() if sample_end else today
+    if anchor > today:
+        anchor = today
 
     # Prefer days-based config; fall back to legacy years key only when
     # operator explicitly opted in via `oos_years` (no implicit promotion).

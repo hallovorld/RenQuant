@@ -14,7 +14,7 @@ in an otherwise momentum-friendly regime" trades:
 
   B. DeepDrawdownVetoTask — veto buy candidates trading > 20% below
      their 52-week high UNLESS a positive fundamental confirmation
-     (sue_score > 0 OR pead_score > 0) is also present. Catches
+     (sue_signal > 0 OR pead_signal > 0) is also present. Catches
      "falling knife" mega-caps. Inspired by Hong-Stein 2003 underreaction
      and Daniel-Hirshleifer-Subrahmanyam 1998 overconfidence: stocks
      20%+ off highs without earnings-driven revisions tend to keep
@@ -155,7 +155,7 @@ class DeepDrawdownVetoTask(Task):
 
     A candidate is vetoed iff:
       dd_from_52w_high < -dd_threshold AND
-      neither (sue_score > sue_floor) NOR (pead_score > pead_floor)
+      neither (sue_signal > sue_floor) NOR (pead_signal > pead_floor)
     """
     name = "DeepDrawdownVetoTask"
 

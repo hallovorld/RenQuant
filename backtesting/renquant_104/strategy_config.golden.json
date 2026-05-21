@@ -231,7 +231,9 @@
       "drawdown_resume_pct": 0.175,
       "sentiment": {
         "enabled": false
-      }
+      },
+      "disable_new_buys": false,
+      "_disable_new_buys_reason": "2026-05-21 operator override: BULL_CALM is the normal-risk accumulation regime, so new buys are re-enabled. Known warning remains: the 2026-05-20 truly-OOS eval (artifacts/prod/truly_oos_eval, train cutoff 2024-07-01) reported PROD top-10 alpha = -0.045 and IC near zero in BULL_CALM. Keep downstream QP, Kelly, min-dw, cash, wash-sale, earnings, and quality gates active; revisit with graduated de-risking instead of a full regime kill switch."
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -711,7 +713,7 @@
         "threshold": 0.1
       },
       "kind": "xgb",
-      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask using registry.get(kind), but registry only registers 'xgb'. Config still used legacy name → LoadScorerTask fails silently every bar (logs ERROR, returns False) → ApplyScoresTask never runs → candidates fall back to per-ticker scores → conviction_floor=0.20 blocks all top-ups → QP returns optimal_no_signal → zero trades on 2026-05-19 daily run. Artifact JSON still has kind=panel_ltr_xgboost (legacy alpha158-feature-path dispatch), unchanged.",
+      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask using registry.get(kind), but registry only registers 'xgb'. Config still used legacy name \u2192 LoadScorerTask fails silently every bar (logs ERROR, returns False) \u2192 ApplyScoresTask never runs \u2192 candidates fall back to per-ticker scores \u2192 conviction_floor=0.20 blocks all top-ups \u2192 QP returns optimal_no_signal \u2192 zero trades on 2026-05-19 daily run. Artifact JSON still has kind=panel_ltr_xgboost (legacy alpha158-feature-path dispatch), unchanged.",
       "sentiment": {
         "enabled": true,
         "regime_policy": {

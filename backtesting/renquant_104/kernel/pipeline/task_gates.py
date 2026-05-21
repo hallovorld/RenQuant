@@ -181,6 +181,45 @@ class BullVolOffensiveBlockTask(Task):
         # Continue chain so velocity/EMA50 still set buy_blocked when applicable.
 
 
+class RegimeAlphaGateTask(Task):
+    """Gate 1d (2026-05-20): block new buys in regimes where PROD has no
+    truly-OOS alpha. Sourced from artifacts/prod/truly_oos_eval/eval_truly_oos.json
+    (train cutoff 2024-07-01, eval 404 dates strictly post-cutoff):
+
+      BEAR:          IC +0.345  top10_α +0.696  → KEEP buys
+      CHOPPY:        IC +0.103  top10_α +0.259  → KEEP buys
+      BULL_VOLATILE: IC +0.105  top10_α +0.129  → KEEP buys
+      BULL_STRONG:   IC +0.060  top10_α +0.245  → KEEP buys
+      BULL_CALM:     IC +0.005  top10_α -0.045  → optional block knob
+
+    Knob: `regime_params[<regime>].disable_new_buys = True`. PRIME DIRECTIVE
+    requires per-regime knobs, not a global. Default False so legacy
+    configs are unchanged. Production BULL_CALM was re-enabled by operator
+    override on 2026-05-21; this task remains available for future regime
+    risk policy changes.
+
+    SELL logic unaffected: only blocks NEW buys (sets ctx.buy_blocked=True).
+    Existing positions can still exit via stop-loss / trailing / model_sell /
+    QP trim per usual sell-side tasks.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        regime_p = (ctx.config.get("regime_params", {}) or {}).get(ctx.regime, {})
+        if not bool(regime_p.get("disable_new_buys", False)):
+            return None
+        ctx.counters["regime_alpha_blocks"] = (
+            ctx.counters.get("regime_alpha_blocks", 0) + 1
+        )
+        ctx.buy_blocked = True
+        log.info(
+            "RegimeAlphaGateTask: regime=%s with disable_new_buys=True — "
+            "buys blocked (truly-OOS top10 alpha non-positive). Existing "
+            "holdings may still exit.",
+            ctx.regime,
+        )
+        return False
+
+
 class BEARBranchTask(Task):
     """Gate 2: BEAR regime — allow defensive tickers only.
 

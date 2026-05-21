@@ -120,12 +120,20 @@ fi
 
 # ── 3.5. P0-17 audit: GitHub blocks pushes > 100 MB per file. SQLite db
 #        grows ~50 KB/day at wl200 scale; will cross 100 MB sometime
-#        in 2026. Pre-emptive size guard with ntfy if any tracked file
-#        approaches 90 MB (10 MB safety margin).
+#        in 2026. Hard-fail before git add if a file is already at the
+#        block threshold; warn at 90 MB so the operator can migrate to LFS.
+TOO_LARGE_FILES=$(find "$BACKUP_REPO" -type f -size +99M 2>/dev/null)
+if [ -n "$TOO_LARGE_FILES" ]; then
+    notify_failure "GitHub backup blocked: files exceed 99MB:\n$TOO_LARGE_FILES\nMigrate to Git LFS before next backup."
+    echo "ERROR: files exceed GitHub 100MB push limit — migrate to Git LFS first:"
+    echo "$TOO_LARGE_FILES"
+    exit 1
+fi
+
 LARGE_FILES=$(find "$BACKUP_REPO" -type f -size +90M 2>/dev/null)
 if [ -n "$LARGE_FILES" ]; then
     notify_payload="LARGE_FILES_DETECTED_>90MB:\n$LARGE_FILES\nMigrate to Git LFS before next backup."
-    curl -s -d "$notify_payload" "ntfy.sh/renquant" >/dev/null 2>&1 || true
+    curl -s -d "$notify_payload" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
     echo "WARNING: files near 100MB limit — Git LFS needed: $LARGE_FILES"
 fi
 
@@ -139,9 +147,15 @@ fi
 git commit -m "backup $TS_ISO" --quiet
 # Capture push exit to detect silent rejections (P0-17: 100MB block returns
 # non-zero exit but tee swallows in plain pipe; explicit check here).
-if ! git push origin main 2>&1 | tail -3; then
+PUSH_LOG="$(mktemp)"
+if git push origin main >"$PUSH_LOG" 2>&1; then
+    tail -3 "$PUSH_LOG"
+    rm -f "$PUSH_LOG"
+else
     PUSH_RC=$?
-    curl -s -d "Backup push FAILED rc=$PUSH_RC at $TS_ISO" "ntfy.sh/renquant" >/dev/null 2>&1 || true
+    tail -20 "$PUSH_LOG"
+    rm -f "$PUSH_LOG"
+    notify_failure "Backup push FAILED rc=$PUSH_RC at $TS_ISO"
     echo "ERROR: push failed; backup commit is local-only"
     exit "$PUSH_RC"
 fi

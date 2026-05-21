@@ -105,6 +105,82 @@ class TestStreakLogic:
         assert ctx.monitor_state["last_activity_date"] == "2024-06-04"
 
 
+class TestStreakPerTradingDayInvariant:
+    """2026-05-20 fix regression guard: streak counts PER TRADING DAY, not
+    per pipeline invocation. Pre-fix bug: SellOnlyPipeline (intraday cron,
+    ~33 firings/day) incremented streak by 1 each tick → 33×-inflated
+    counter → false NoTradeAlert at 32 days while LIVE Alpaca account had
+    47 fills in 16 trading days.
+    """
+
+    def test_multiple_idle_invocations_same_day_count_as_one(self):
+        from kernel.pipeline.task_monitor import MonitorIdleStreakTask
+        prior = {"no_trade_streak": 3, "no_candidate_streak": 3,
+                  "last_check_date": "2024-06-03"}  # yesterday
+        # First invocation of the day: idle → +1
+        ctx1 = _make_ctx(has_order=False, has_exit=False, has_candidate=False,
+                         prior_state=prior)
+        MonitorIdleStreakTask().run(ctx1)
+        assert ctx1.monitor_state["no_trade_streak"] == 4
+        assert ctx1.monitor_state["last_check_date"] == "2024-06-04"
+
+        # 30 subsequent same-day idle invocations: must stay at 4, not climb to 34
+        state_carry = dict(ctx1.monitor_state)
+        for _ in range(30):
+            ctx_n = _make_ctx(has_order=False, has_exit=False, has_candidate=False,
+                              prior_state=state_carry)
+            MonitorIdleStreakTask().run(ctx_n)
+            state_carry = dict(ctx_n.monitor_state)
+        assert state_carry["no_trade_streak"] == 4, (
+            f"streak inflated to {state_carry['no_trade_streak']} after 30 "
+            f"same-day idle ticks (must stay 4 per per-trading-day invariant)"
+        )
+
+    def test_intraday_activity_resets_streak_then_same_day_idle_does_not_re_increment(self):
+        """Reproduces 2026-05-20 bug exactly:
+        - prior streak high
+        - 06:54 SellOnly with TXN exit → reset to 0
+        - 33 subsequent SellOnly + 1 daily, all no-activity → must stay 0 (or 1 if next day)
+        Pre-fix: each tick added +1 → ~34.
+        """
+        from kernel.pipeline.task_monitor import MonitorIdleStreakTask
+        # 06:31 SellOnly: idle (1st of day)
+        prior = {"no_trade_streak": 5,
+                  "last_check_date": "2024-06-03"}
+        ctx1 = _make_ctx(has_order=False, has_exit=False, has_candidate=False,
+                         prior_state=prior)
+        MonitorIdleStreakTask().run(ctx1)
+        assert ctx1.monitor_state["no_trade_streak"] == 6
+
+        # 06:54 SellOnly: TXN exit → reset
+        s = dict(ctx1.monitor_state)
+        ctx2 = _make_ctx(has_order=False, has_exit=True, has_candidate=False,
+                         prior_state=s)
+        MonitorIdleStreakTask().run(ctx2)
+        assert ctx2.monitor_state["no_trade_streak"] == 0
+
+        # 33 subsequent SellOnly + 1 daily, all idle, same day:
+        s = dict(ctx2.monitor_state)
+        for _ in range(34):
+            ctx_n = _make_ctx(has_order=False, has_exit=False, has_candidate=False,
+                              prior_state=s)
+            MonitorIdleStreakTask().run(ctx_n)
+            s = dict(ctx_n.monitor_state)
+        assert s["no_trade_streak"] == 0, (
+            f"streak inflated to {s['no_trade_streak']} (must stay 0 — "
+            f"same trading day after activity)"
+        )
+
+    def test_next_trading_day_with_idle_increments_by_one(self):
+        from kernel.pipeline.task_monitor import MonitorIdleStreakTask
+        # Today = 2024-06-04; prior last_check yesterday with streak=4
+        prior = {"no_trade_streak": 4, "last_check_date": "2024-06-03"}
+        ctx = _make_ctx(has_order=False, has_exit=False, has_candidate=False,
+                        prior_state=prior)
+        MonitorIdleStreakTask().run(ctx)
+        assert ctx.monitor_state["no_trade_streak"] == 5  # +1 once for the new day
+
+
 # ── Layer 2: SimResult exposes the metric ────────────────────────────────────
 
 class TestSimResultMonitoring:

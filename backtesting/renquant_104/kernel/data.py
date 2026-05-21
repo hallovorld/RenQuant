@@ -15,6 +15,45 @@ import pandas as pd
 log = logging.getLogger("kernel.data")
 
 
+def _market_timestamp(value=None) -> pd.Timestamp:
+    """Return a timezone-aware timestamp for NYSE freshness checks."""
+    if value is None:
+        ts = pd.Timestamp.now(tz="America/New_York")
+    else:
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("America/New_York")
+        else:
+            ts = ts.tz_convert("America/New_York")
+    return ts
+
+
+def _last_completed_nyse_session(ref_ts: pd.Timestamp):
+    """Most recent completed NYSE session as of ref_ts."""
+    try:
+        import pandas_market_calendars as mcal  # noqa: PLC0415
+        cal = mcal.get_calendar("NYSE")
+        ref_date = ref_ts.date()
+        sched = cal.schedule(
+            start_date=ref_date - pd.Timedelta(days=14),
+            end_date=ref_date,
+        )
+        todays_session = sched[sched.index.date == ref_date]
+        if not todays_session.empty:
+            close = pd.Timestamp(todays_session["market_close"].iloc[-1])
+            if close.tzinfo is None:
+                close = close.tz_localize("UTC")
+            close_ny = close.tz_convert("America/New_York")
+            if ref_ts >= close_ny:
+                return ref_date
+        sched_before = sched[sched.index.date < ref_date]
+        if sched_before.empty:
+            return None
+        return sched_before.index[-1].date()
+    except Exception:
+        return None
+
+
 # 2026-04-28 audit fix (Z3): yfinance uses `BRK-B` (dash) for class shares
 # but the canonical / Alpaca / config form is `BRK.B` (dot). Pre-fix this
 # mismatch produced "$BRK.B: possibly delisted; no timezone found" errors
@@ -119,8 +158,11 @@ class LocalStore:
         """Check whether the local cache covers [start, end] AND is fresh.
 
         Freshness rule (default, ``tolerance_days=None``): cache.max_date
-        must be ≥ the last completed NYSE session strictly before the
-        reference date. Reference is ``end`` if given, else today.
+        must be ≥ the last completed NYSE session as of the reference
+        timestamp. Reference is ``end`` if given, else the current wall
+        clock. If ``end`` is a date-only string, it is interpreted as
+        pre-close on that date; pass a timezone-aware post-close timestamp
+        to require that same day's bar.
 
         2026-05-03 P0 fix: legacy default ``tolerance_days=5`` plus the
         ``end=None`` short-circuit silently accepted a 3-trading-day-stale
@@ -143,29 +185,25 @@ class LocalStore:
         if start and df.index.min() > pd.Timestamp(start):
             return False
 
-        ref = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+        ref = _market_timestamp(end)
         cache_max = df.index.max()
+        cache_max_ts = pd.Timestamp(cache_max)
+        if cache_max_ts.tzinfo is None:
+            cache_max_ts = cache_max_ts.tz_localize(ref.tz)
+        else:
+            cache_max_ts = cache_max_ts.tz_convert(ref.tz)
 
         if tolerance_days is not None:
-            if cache_max < ref - pd.Timedelta(days=tolerance_days):
+            if cache_max_ts < ref - pd.Timedelta(days=tolerance_days):
                 return False
             return True
 
         # NYSE-aware staleness
-        try:
-            import pandas_market_calendars as mcal  # noqa: PLC0415
-            cal = mcal.get_calendar("NYSE")
-            sched = cal.schedule(
-                start_date=ref - pd.Timedelta(days=14),
-                end_date=ref,
-            )
-            sched_before = sched[sched.index.date < ref.date()]
-            if sched_before.empty:
-                return True
-            last_complete = sched_before.index[-1].date()
+        last_complete = _last_completed_nyse_session(ref)
+        if last_complete is not None:
             if cache_max.date() < last_complete:
                 return False
-        except Exception:
+        else:
             # Calendar lib unavailable — fall back to a conservative 2-day cap.
             if cache_max < ref - pd.Timedelta(days=2):
                 return False

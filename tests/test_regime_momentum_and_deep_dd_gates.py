@@ -160,8 +160,8 @@ class TestDeepDrawdownVeto:
                 "deep_drawdown_veto": {"enabled": True, "dd_threshold": 0.20}
             }}},
             candidates=[
-                _cand("OK",    features={"sue_score": 0.5, "pead_score": 0.0}),
-                _cand("DEEP",  features={"sue_score": 0.0, "pead_score": 0.0}),
+                _cand("OK",    features={"sue_signal": 0.5, "pead_signal": 0.0}),
+                _cand("DEEP",  features={"sue_signal": 0.0, "pead_signal": 0.0}),
                 _cand("META",  features={}),
             ],
             ohlcv={
@@ -185,8 +185,8 @@ class TestDeepDrawdownVeto:
                 "deep_drawdown_veto": {"enabled": True}
             }}},
             candidates=[
-                _cand("CONFIRMED",   features={"sue_score": 1.5, "pead_score": 0.0}),
-                _cand("UNCONFIRMED", features={"sue_score": 0.0, "pead_score": 0.0}),
+                _cand("CONFIRMED",   features={"sue_signal": 1.5, "pead_signal": 0.0}),
+                _cand("UNCONFIRMED", features={"sue_signal": 0.0, "pead_signal": 0.0}),
             ],
             ohlcv={
                 "CONFIRMED":   _ohlcv_with_dd("CONFIRMED",   -0.25),

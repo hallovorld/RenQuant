@@ -12,7 +12,9 @@ any test). User: "能不能靠谱点！另外这些没有 test guard 吗？！"
 from __future__ import annotations
 import json
 import re
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -135,6 +137,11 @@ class TestP0_10_LiveAccountAssertion:
         assert "ALPACA LIVE-ACCOUNT MISMATCH" in src, \
             "must raise on account number mismatch (don't silently connect to wrong account)"
 
+    def test_alpaca_connect_requires_expected_live_account_env(self):
+        src = (REPO / "live/alpaca_broker.py").read_text()
+        assert "RENQUANT_EXPECTED_LIVE_ACCOUNT is required for LIVE Alpaca" in src, \
+            "LIVE connect must fail closed when account pin env is missing"
+
 
 class TestP0_11_ShadowConfigPathsExistOnDisk:
     """If shadow config artifact_path doesn't exist on disk, the shadow
@@ -234,11 +241,100 @@ class TestP0_17_BackupSizeGuard:
         # Look for the find -size +XXM check
         assert "find" in sh and "-size" in sh, \
             "backup script must `find -size` check before push (GitHub 100MB)"
-        assert "90M" in sh or "100M" in sh, \
-            "backup script must reference 90M or 100M size threshold"
+        assert "TOO_LARGE_FILES" in sh and "99M" in sh, \
+            "backup script must hard-fail near GitHub's 100MB file limit"
+        assert "90M" in sh, \
+            "backup script must retain early warning threshold before the hard fail"
 
     def test_backup_checks_push_exit_code(self):
         sh = (REPO / "scripts/backup_to_github.sh").read_text()
-        # The push must check rc, not silently swallow via tee
-        assert "PUSH_RC" in sh or "if ! git push" in sh, \
-            "backup script must check git push exit code (was silently swallowed)"
+        # The push must capture rc directly; `if ! git push | tail` makes
+        # `$?` equal 0 inside the failure branch because of shell negation.
+        assert "if ! git push" not in sh, \
+            "backup script must not use `if ! git push`; it masks PUSH_RC"
+        assert "PUSH_LOG" in sh and "if git push origin main >\"$PUSH_LOG\" 2>&1" in sh, \
+            "backup script must capture git push output and exit code directly"
+
+
+class TestP0_19_QPProductionPath:
+    """QP must use the same production gates/artifacts as rotation."""
+
+    def test_joint_qp_respects_rotation_enabled_regimes(self):
+        sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+        try:
+            from kernel.portfolio_qp.job_qp import JointPortfolioQPJob  # noqa: PLC0415
+        finally:
+            sys.path.remove(str(REPO / "backtesting" / "renquant_104"))
+        job = JointPortfolioQPJob()
+        ctx = SimpleNamespace(
+            config={"rotation": {
+                "enabled_regimes": ["BULL_CALM"],
+                "joint_actions": {"enabled": True, "solver": "qp"},
+            }},
+            regime="BULL_VOLATILE",
+            bear_only=False,
+        )
+        assert job.should_skip(ctx) is True
+        ctx.regime = "BULL_CALM"
+        assert job.should_skip(ctx) is False
+
+    def test_compute_full_sigma_uses_loaded_corr_matrix(self):
+        import numpy as np
+
+        sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+        try:
+            from kernel.portfolio_qp.tasks import ComputeFullSigmaTask  # noqa: PLC0415
+        finally:
+            sys.path.remove(str(REPO / "backtesting" / "renquant_104"))
+        ctx = SimpleNamespace(
+            config={"rotation": {"joint_actions": {"qp_use_full_sigma": True}}},
+            corr_matrix={"AAA": {"BBB": 0.5}},
+            _qp_tickers=["AAA", "BBB"],
+            _qp_sigma=np.array([0.10, 0.20]),
+        )
+        ComputeFullSigmaTask().run(ctx)
+        assert ctx._qp_Sigma_full is not None
+        assert ctx._qp_Sigma_full.shape == (2, 2)
+        assert ctx._qp_Sigma_full[0, 1] == pytest.approx(0.01)
+
+    def test_compute_full_sigma_resolves_configured_prod_artifact_path(self):
+        src = (REPO / "backtesting/renquant_104/kernel/portfolio_qp/tasks.py").read_text()
+        assert "correlation_artifact" in src, \
+            "ComputeFullSigmaTask must read regime.correlation_artifact"
+        assert "prod/watchlist-correlation.json" in src, \
+            "ComputeFullSigmaTask default must match production artifact layout"
+
+
+class TestP0_18_PanelScorerHFPatchTSTDispatch:
+    """PanelScorer.load(.pt) must HF-detect and route to HFPatchTSTPanelScorer
+    if the checkpoint has 'config_dict'+'feature_cols' marker keys.
+
+    Pre-fix (commit before 2026-05-20): all .pt files fell through to legacy
+    TransformerPanelScorer.load() which expects a sidecar JSON. Loading a
+    sidecar-less HF PatchTST checkpoint (e.g. shadow seed44) raised
+    'PanelTransformerModel.load: sidecar JSON not found' and SimAdapter
+    silently dropped the panel scorer (returned None from
+    _try_load_panel_scorer). The model_registry kind='hf_patchtst' path
+    (registered 2026-05-18 in model_registry.py) was HF-aware but
+    PanelScorer.load() was the split-brain twin that wasn't — §1c violation.
+    """
+
+    def test_panel_scorer_loads_hf_patchtst_pt_checkpoint(self):
+        import sys
+        sys.path.insert(0, str(REPO / "backtesting/renquant_104"))
+        try:
+            from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
+            from kernel.panel_pipeline.hf_patchtst_scorer import HFPatchTSTPanelScorer  # noqa: PLC0415
+        finally:
+            sys.path.remove(str(REPO / "backtesting/renquant_104"))
+        pt = REPO / "artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt"
+        if not pt.exists():
+            pytest.skip("shadow PatchTST seed44 artifact not present")
+        s = PanelScorer.load(pt)
+        assert isinstance(s, HFPatchTSTPanelScorer), (
+            f"PanelScorer.load returned {type(s).__name__}; expected "
+            f"HFPatchTSTPanelScorer (HF-format .pt detection broken)"
+        )
+        assert s.requires_history is True
+        assert len(s.feature_cols) == 172
+        assert s.seq_len == 32

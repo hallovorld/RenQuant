@@ -113,6 +113,26 @@ class TestUpsert:
         assert out[1] == pytest.approx(0.55)
         assert out[2] == "hold"
 
+    def test_same_date_ticker_preserved_across_runs(self):
+        db = _db()
+        rd = datetime.date(2026, 4, 26)
+        record_ticker_daily_state(
+            db, run_date=rd, run_id="2026-04-26-live-a",
+            rows=[{"ticker": "AAPL", "model_action": "buy", "rank_score": 0.10}],
+        )
+        record_ticker_daily_state(
+            db, run_date=rd, run_id="2026-04-26-live-b",
+            rows=[{"ticker": "AAPL", "model_action": "hold", "rank_score": 0.55}],
+        )
+        out = db.execute(
+            "SELECT COUNT(*), MIN(rank_score), MAX(rank_score) "
+            "FROM ticker_daily_state WHERE date=? AND ticker=?",
+            ("2026-04-26", "AAPL"),
+        ).fetchone()
+        assert out[0] == 2
+        assert out[1] == pytest.approx(0.10)
+        assert out[2] == pytest.approx(0.55)
+
     def test_two_dates_two_rows(self):
         db = _db()
         record_ticker_daily_state(db, run_date=datetime.date(2026, 4, 25),

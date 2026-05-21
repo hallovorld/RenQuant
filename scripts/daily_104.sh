@@ -306,15 +306,17 @@ def _safe(fn, default=None):
     try: return fn()
     except Exception: return default
 
-# Account snapshot from Alpaca
-equity = cash = None
+# Account snapshot from Alpaca. Use non-margin buying power for cash parity
+# with live broker sizing; settled_cash is logged separately for audit.
+equity = cash = settled_cash = None
 n_positions = 0
 try:
     from alpaca.trading.client import TradingClient
     client = TradingClient(os.environ['ALPACA_API_KEY'], os.environ['ALPACA_SECRET_KEY'], paper=False)
     acct = client.get_account()
-    equity = float(acct.equity)
-    cash   = float(acct.cash)
+    equity       = float(acct.equity)
+    settled_cash = float(acct.cash)
+    cash         = float(getattr(acct, 'non_marginable_buying_power', acct.cash))
     n_positions = len(client.get_all_positions())
 except Exception as exc:
     pass
@@ -352,6 +354,7 @@ row = {
     'timestamp':       datetime.utcnow().isoformat(timespec='seconds') + 'Z',
     'equity':          round(equity, 2) if equity is not None else None,
     'cash':            round(cash, 2)   if cash   is not None else None,
+    'settled_cash':    round(settled_cash, 2) if settled_cash is not None else None,
     'hwm':             round(hwm, 2)    if hwm    is not None else None,
     'drawdown_pct':    drawdown,
     'n_positions':     n_positions,

@@ -1,4 +1,4 @@
-"""Smoke tests for 6 newly-shipped scripts that drive Tier 1+2 verdicts.
+"""Smoke tests for newly-shipped scripts that drive Tier 1+2 verdicts.
 
 Per audit P0-8 (2026-05-20): these scripts went 0% test coverage at
 ship time despite being on the critical promote-decision path. compare_arch
@@ -27,6 +27,7 @@ SCRIPTS = [
     "scripts/compare_arch_5cut_5seed.py",
     "scripts/dlinear_baseline.py",
     "scripts/verify_sigma_calibration.py",
+    "scripts/train_ngboost_proper.py",
 ]
 
 # Scripts that have argparse + --help (CLI entry). The 3 eval drivers
@@ -35,6 +36,7 @@ ARGPARSE_SCRIPTS = [
     "scripts/compare_arch_5cut_5seed.py",
     "scripts/dlinear_baseline.py",
     "scripts/verify_sigma_calibration.py",
+    "scripts/train_ngboost_proper.py",
 ]
 
 
@@ -63,10 +65,45 @@ def test_script_help_works(script_rel: str):
         [sys.executable, str(p), "--help"],
         capture_output=True, text=True, timeout=30,
     )
-    assert result.returncode in (0, 1, 2), (
+    assert result.returncode == 0, (
         f"{script_rel} --help crashed rc={result.returncode}\n"
         f"stderr: {result.stderr[-500:]}"
     )
+
+
+class TestTrainNGBoostProperCLI:
+    """P0-15: help/dry-run must not accidentally start real NGBoost training."""
+
+    def test_missing_feature_policy_defaults_to_error(self):
+        import importlib.util
+        import pandas as pd
+
+        p = REPO / "scripts/train_ngboost_proper.py"
+        spec = importlib.util.spec_from_file_location("ngb_proper", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        panel = pd.DataFrame({"date": ["2026-01-01"], "present": [1.0]})
+        with pytest.raises(ValueError, match="missing 1 feature"):
+            mod._apply_missing_feature_policy(
+                panel, ["present", "missing"], policy="error",
+            )
+
+    def test_missing_feature_policy_zero_fills(self):
+        import importlib.util
+        import pandas as pd
+
+        p = REPO / "scripts/train_ngboost_proper.py"
+        spec = importlib.util.spec_from_file_location("ngb_proper", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        panel = pd.DataFrame({"date": ["2026-01-01"], "present": [1.0]})
+        out, missing = mod._apply_missing_feature_policy(
+            panel, ["present", "missing"], policy="zero",
+        )
+        assert missing == ["missing"]
+        assert out["missing"].iloc[0] == 0.0
 
 
 @pytest.mark.parametrize("script_rel",

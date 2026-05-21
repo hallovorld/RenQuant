@@ -77,9 +77,10 @@ class BuildWeightVectorTask(Task):
 # ── 2. Build full Σ from a cached correlation matrix ────────────────────────
 
 class ComputeFullSigmaTask(Task):
-    """Build n×n Σ_full = ρ × σ_i × σ_j from `watchlist-correlation.json`.
+    """Build n×n Σ_full = ρ × σ_i × σ_j from loaded/configured correlations.
 
-    Reads:  ctx._qp_tickers, ctx._qp_sigma, ctx.config['_strategy_dir'],
+    Reads:  ctx._qp_tickers, ctx._qp_sigma, ctx.corr_matrix,
+             ctx.config['_strategy_dir'], ctx.config['regime']['correlation_artifact'],
              ctx.config['rotation']['joint_actions']['qp_use_full_sigma']
     Writes: ctx._qp_Sigma_full (np.ndarray | None — None falls back to
              diagonal Σ in the solver)
@@ -91,22 +92,16 @@ class ComputeFullSigmaTask(Task):
         if not bool(cfg.get("qp_use_full_sigma", True)):
             ctx._qp_Sigma_full = None  # noqa: SLF001
             return
-        sd = (ctx.config or {}).get("_strategy_dir", "")
-        path = Path(sd) / "artifacts" / "watchlist-correlation.json" if sd else None
-        if not path or not path.exists():
+        corr = getattr(ctx, "corr_matrix", None)
+        if not corr:
+            corr = self._load_corr_from_artifact(ctx)
+        if not corr:
+            log.warning(
+                "ComputeFullSigmaTask: qp_use_full_sigma=true but no "
+                "correlation matrix was loaded; falling back to diagonal Σ."
+            )
             ctx._qp_Sigma_full = None  # noqa: SLF001
             return
-        try:
-            raw = json.loads(path.read_text())
-        except Exception as exc:
-            log.warning("ComputeFullSigmaTask: corr load failed (%s)", exc)
-            ctx._qp_Sigma_full = None  # noqa: SLF001
-            return
-        # 2026-05-10 audit §5.13.5: unwrap v1/v2 schema. SimAdapter
-        # has already enforced the as-of-date guard at __init__ time,
-        # so we only unwrap here (no second guard call).
-        from kernel.walk_forward import parse_correlation_artifact  # noqa: PLC0415
-        corr, _ = parse_correlation_artifact(raw)
         tickers = _get_path(ctx, "_qp_tickers") or []
         sig = _get_path(ctx, "_qp_sigma")
         n = len(tickers)
@@ -123,6 +118,29 @@ class ComputeFullSigmaTask(Task):
                     rho_f = 0.0
                 Sigma[i, j] = rho_f * sig[i] * sig[j]
         ctx._qp_Sigma_full = Sigma + 1e-8 * np.eye(n)  # noqa: SLF001
+
+    @staticmethod
+    def _load_corr_from_artifact(ctx) -> dict | None:
+        sd = (ctx.config or {}).get("_strategy_dir", "")
+        if not sd:
+            return None
+        rel = (
+            (ctx.config or {})
+            .get("regime", {})
+            .get("correlation_artifact", "prod/watchlist-correlation.json")
+        )
+        rel_path = Path(str(rel))
+        path = rel_path if rel_path.is_absolute() else Path(sd) / "artifacts" / rel_path
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text())
+            from kernel.walk_forward import parse_correlation_artifact  # noqa: PLC0415
+            corr, _ = parse_correlation_artifact(raw)
+            return corr
+        except Exception as exc:
+            log.warning("ComputeFullSigmaTask: corr load failed from %s (%s)", path, exc)
+            return None
 
 
 # ── 2b. Ledoit-Wolf 2004 Σ shrinkage (post-step on full Σ) ──────────────────
@@ -273,69 +291,22 @@ class ComputeWashSaleMaskTask(Task):
 
     def run(self, ctx) -> bool | None:
         wash_days = int((ctx.config or {}).get("wash_sale_days", 0))
-        # 2026-05-18 ANTI-CHURN: block any ticker sold within
-        # min_reentry_days regardless of P/L sign. Wash-sale (§1091)
-        # only handles loss-sales (tax rule). Re-buying a gain-sale
-        # the next day is legal but represents strategy CHURN — the
-        # model has no memory of the recent sell so it can immediately
-        # re-pick the same ticker, eating spread + slippage twice for
-        # no net new conviction. This guard adds a behavioral block
-        # that compounds with the wash-sale rule (either fires → block).
-        # See doc/research/2026-05-18-mcd-rebuy-incident.md.
         min_reentry = int((ctx.config or {}).get("min_reentry_days", 0))
         tickers = _get_path(ctx, "_qp_tickers") or []
         if (wash_days <= 0 and min_reentry <= 0) or not tickers:
             ctx._qp_wash_mask = np.zeros(len(tickers), dtype=bool)  # noqa: SLF001
             return
-        last_sells_d = _get_path(ctx, "last_sell_dates") or {}
-        last_sells_p = _get_path(ctx, "last_sell_pls") or {}
-        today = ctx.today
-
-        # Use the SAME helper as the upstream candidate filter so the two
-        # wash-sale paths can never silently diverge. Cost-aware: gains
-        # are not blocked, only losses (or unknown-and-conservative).
-        from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
-        mask = np.zeros(len(tickers), dtype=bool)
-        n_wash, n_churn, n_sat = 0, 0, 0
-
-        # 2026-05-18 NEW-BUY GATE on calibrator saturation: when the
-        # calibrator is degenerate (rank_score IQR=0), the model has no
-        # conviction. Block NEW-BUY positions (tickers not currently held)
-        # by adding to the wash mask. Existing holdings can still be
-        # exited by sell logic; only new entries are blocked.
-        held_tickers = set()
-        if hasattr(ctx, "holdings") and ctx.holdings:
-            held_tickers = set(ctx.holdings.keys())
-        calibrator_saturated = bool(getattr(ctx, "_calibrator_saturated", False))
-
-        for i, t in enumerate(tickers):
-            # 1) Wash-sale (§1091, loss-sales only)
-            if wash_days > 0:
-                blocked, _, _ = is_wash_sale_blocked_with_cost(
-                    ticker=t,
-                    today=today,
-                    last_sell_dates=last_sells_d,
-                    last_sell_pls=last_sells_p,
-                    wash_sale_days=wash_days,
-                )
-                if blocked:
-                    mask[i] = True
-                    n_wash += 1
-                    continue
-            # 2) Anti-churn (any sell within min_reentry_days)
-            if min_reentry > 0:
-                last = last_sells_d.get(t)
-                if last is not None:
-                    days_since = (today - last).days
-                    if 0 <= days_since < min_reentry:
-                        mask[i] = True
-                        n_churn += 1
-                        continue
-            # 3) Calibrator-saturation NEW-BUY abstain: block tickers
-            # NOT currently held (existing holdings keep their decision)
-            if calibrator_saturated and t not in held_tickers:
-                mask[i] = True
-                n_sat += 1
+        held_tickers = set(ctx.holdings.keys()) if getattr(ctx, "holdings", None) else set()
+        mask, n_wash, n_churn, n_sat = _compute_qp_wash_mask(
+            tickers=tickers,
+            today=ctx.today,
+            last_sell_dates=_get_path(ctx, "last_sell_dates") or {},
+            last_sell_pls=_get_path(ctx, "last_sell_pls") or {},
+            wash_days=wash_days,
+            min_reentry=min_reentry,
+            held_tickers=held_tickers,
+            calibrator_saturated=bool(getattr(ctx, "_calibrator_saturated", False)),
+        )
         ctx._qp_wash_mask = mask  # noqa: SLF001
         if n_wash or n_churn or n_sat:
             import logging
@@ -1186,12 +1157,20 @@ class EmitOrdersFromQPSolutionTask(Task):
         env = self._build_env(ctx, sol)
         self._log_holding_solves(env)
         nb, ns, counters = self._emit_orders_loop(ctx, env)
+        for key, value in counters.items():
+            if value:
+                ckey = f"qp_{key}"
+                ctx.counters[ckey] = ctx.counters.get(ckey, 0) + int(value)
         self._log_summary(
             n_blocked_buys=counters["blocked_buys"], buy_blocked=env["buy_blocked"],
             n_blocked_earnings=counters["blocked_earnings"], earn_buf=env["earn_buf"],
             n_skipped_nonfinite=counters["skipped_nonfinite"],
             n_skipped_band=counters["skipped_band"], min_dw=env["min_dw"],
             no_trade_factor=env["no_trade_factor"],
+            n_delta_below_min_dw=counters["delta_below_min_dw"],
+            n_zero_shares=counters["zero_shares"],
+            n_no_buy_delta=counters["no_buy_delta"],
+            n_not_selected=counters["not_selected"],
         )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
@@ -1257,12 +1236,27 @@ class EmitOrdersFromQPSolutionTask(Task):
         import math as _m  # noqa: PLC0415
         sol = env["sol"]; sigma_vec = env["sigma_vec"]
         nb = ns = 0
+        candidate_tickers = set(env["cands"].keys())
+        emitted_candidates: set[str] = set()
+        blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked_map is None:
+            blocked_map = {}
+            ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+
+        def stamp(ticker: str, reason: str) -> None:
+            if ticker in candidate_tickers:
+                blocked_map.setdefault(ticker, reason)
+
         c = dict(blocked_buys=0, blocked_earnings=0,
-                 skipped_nonfinite=0, skipped_band=0)
+                 skipped_nonfinite=0, skipped_band=0,
+                 delta_below_min_dw=0, zero_shares=0,
+                 no_buy_delta=0, not_selected=0)
         for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
             if not _m.isfinite(dw):
-                c["skipped_nonfinite"] += 1; continue
+                c["skipped_nonfinite"] += 1
+                stamp(t, "qp_nonfinite_delta")
+                continue
             sig_i = 0.0
             if sigma_vec is not None and i < len(sigma_vec):
                 s = float(sigma_vec[i])
@@ -1271,7 +1265,12 @@ class EmitOrdersFromQPSolutionTask(Task):
             ok, in_band = _passes_no_trade_band(dw, sig_i, env["min_dw"],
                                                   env["no_trade_factor"], band_cap=env["band_cap"])
             if not ok:
-                if in_band: c["skipped_band"] += 1
+                if in_band:
+                    c["skipped_band"] += 1
+                    stamp(t, "qp_no_trade_band")
+                else:
+                    c["delta_below_min_dw"] += 1
+                    stamp(t, "qp_delta_below_min_dw")
                 continue
             px = env["prices"].get(t, 0.0)
             shares = _shares_from_dw(dw, env["nav"], px)
@@ -1303,6 +1302,13 @@ class EmitOrdersFromQPSolutionTask(Task):
                             one_share_pct * 100, floor * 100, ceiling * 100,
                         )
             if shares <= 0:
+                if t in candidate_tickers:
+                    if dw > 0:
+                        c["zero_shares"] += 1
+                        stamp(t, "qp_zero_shares")
+                    else:
+                        c["no_buy_delta"] += 1
+                        stamp(t, "qp_no_buy_delta")
                 continue
             if dw > 0:
                 blocked = _gate_buy_or_block(
@@ -1310,19 +1316,31 @@ class EmitOrdersFromQPSolutionTask(Task):
                     env["buys_gated"],
                 )
                 if blocked == "buys_gated":
-                    c["blocked_buys"] += 1; continue
+                    c["blocked_buys"] += 1
+                    stamp(t, "buy_blocked" if env["buy_blocked"] else "skip_buys")
+                    continue
                 if blocked == "earnings":
-                    c["blocked_earnings"] += 1; continue
+                    c["blocked_earnings"] += 1
+                    stamp(t, "earnings")
+                    continue
                 _emit_qp_buy(ctx, t, shares, env["prices"].get(t, 0.0), sol, i, env["cands"])
+                emitted_candidates.add(t)
                 nb += 1
             elif _emit_qp_sell(ctx, t, shares, dw, sol, i):
                 ns += 1
+            else:
+                stamp(t, "qp_no_sell_position")
+        for ticker in candidate_tickers - emitted_candidates:
+            if ticker not in blocked_map:
+                c["not_selected"] += 1
+                blocked_map[ticker] = "qp_not_selected"
         return nb, ns, c
 
     @staticmethod
     def _log_summary(
         *, n_blocked_buys, buy_blocked, n_blocked_earnings, earn_buf,
         n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
+        n_delta_below_min_dw, n_zero_shares, n_no_buy_delta, n_not_selected,
     ) -> None:
         if n_blocked_buys:
             reason = ("buy_blocked=True" if buy_blocked
@@ -1346,6 +1364,30 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "EmitOrdersFromQPSolutionTask: skipped %d trades by "
                 "no-trade band (min_dw=%.2f%%, factor=%.1fσ — Davis-Norman)",
                 n_skipped_band, min_dw * 100, no_trade_factor,
+            )
+        if n_delta_below_min_dw:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: skipped %d trades below "
+                "minimum Δw %.2f%%",
+                n_delta_below_min_dw, min_dw * 100,
+            )
+        if n_zero_shares:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: skipped %d candidate buy(s) "
+                "because Δw rounded to 0 shares",
+                n_zero_shares,
+            )
+        if n_no_buy_delta:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: skipped %d candidate buy(s) "
+                "because QP assigned no positive buy delta",
+                n_no_buy_delta,
+            )
+        if n_not_selected:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: %d candidate(s) received no "
+                "QP allocation reason after solve",
+                n_not_selected,
             )
 
 
@@ -1373,6 +1415,48 @@ def _qp_cfg(ctx) -> dict:
             if key in regime_p:
                 base[key] = regime_p[key]
     return base
+
+
+def _compute_qp_wash_mask(
+    *,
+    tickers: list[str],
+    today,
+    last_sell_dates: dict,
+    last_sell_pls: dict,
+    wash_days: int,
+    min_reentry: int,
+    held_tickers: set[str],
+    calibrator_saturated: bool,
+) -> tuple[np.ndarray, int, int, int]:
+    """Build QP block mask for wash-sale, anti-churn, and saturation abstain."""
+    from kernel.selection import is_wash_sale_blocked_with_cost  # noqa: PLC0415
+    mask = np.zeros(len(tickers), dtype=bool)
+    n_wash = n_churn = n_sat = 0
+    for i, t in enumerate(tickers):
+        if wash_days > 0:
+            blocked, _, _ = is_wash_sale_blocked_with_cost(
+                ticker=t,
+                today=today,
+                last_sell_dates=last_sell_dates,
+                last_sell_pls=last_sell_pls,
+                wash_sale_days=wash_days,
+            )
+            if blocked:
+                mask[i] = True
+                n_wash += 1
+                continue
+        if min_reentry > 0:
+            last = last_sell_dates.get(t)
+            if last is not None:
+                days_since = (today - last).days
+                if 0 <= days_since < min_reentry:
+                    mask[i] = True
+                    n_churn += 1
+                    continue
+        if calibrator_saturated and t not in held_tickers:
+            mask[i] = True
+            n_sat += 1
+    return mask, n_wash, n_churn, n_sat
 
 
 def _per_asset_tax(hs, price, w_i, nav, today, st_rate, lt_rate,

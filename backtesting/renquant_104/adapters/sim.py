@@ -29,6 +29,7 @@ import datetime
 import json
 import logging
 import math
+import uuid
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -629,6 +630,7 @@ class SimAdapter:
             regime_counts    = self._regime_counts,
             feature_cache    = self._feature_cache,
         )
+        ctx.run_id = f"{today_date.isoformat()}-sim-{uuid.uuid4().hex[:8]}"
 
         # Hand prior streak counters to MonitorIdleStreakTask; it writes back.
         ctx.monitor_state = dict(self._monitor_state)
@@ -840,6 +842,11 @@ class SimAdapter:
                 n_exits         = len(ctx.exits),
                 n_rotations     = int(ctx.counters.get("rotations", 0)),  # ROT-COUNTER fix: emitted, not considered
                 n_buys          = len(ctx.orders),
+                buy_blocked     = bool(getattr(ctx, "buy_blocked", False)),
+                skip_buys        = bool(getattr(ctx, "skip_buys", False)),
+                bear_only        = bool(getattr(ctx, "bear_only", False)),
+                counters         = getattr(ctx, "counters", {}) or {},
+                run_id          = getattr(ctx, "run_id", None),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)

@@ -225,7 +225,9 @@
       "drawdown_resume_pct": 0.175,
       "sentiment": {
         "enabled": false
-      }
+      },
+      "disable_new_buys": false,
+      "_disable_new_buys_reason": "2026-05-21 operator override: BULL_CALM is the normal-risk accumulation regime, so new buys are re-enabled. Known warning remains: the 2026-05-20 truly-OOS eval (artifacts/prod/truly_oos_eval, train cutoff 2024-07-01) reported PROD top-10 alpha = -0.045 and IC near zero in BULL_CALM. Keep downstream QP, Kelly, min-dw, cash, wash-sale, earnings, and quality gates active; revisit with graduated de-risking instead of a full regime kill switch."
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
@@ -731,7 +733,7 @@
           "name": "hf_patchtst_canonical_seed44",
           "kind": "hf_patchtst",
           "artifact_path": "artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt",
-          "_2026-05-19_provenance": "Synced from strategy_config.golden.json. HF PatchTST seed_44 from canonical 5-seed run 2026-05-19. last-epoch val_ic=+0.0644 on 142-ticker last-10%-dates val window. vs XGB primary +0.0909 on same window: PatchTST loses by ~0.027. SHADOW only — observation + infra validation, primary stays XGB."
+          "_2026-05-19_provenance": "Synced from strategy_config.golden.json. HF PatchTST seed_44 from canonical 5-seed run 2026-05-19. last-epoch val_ic=+0.0644 on 142-ticker last-10%-dates val window. vs XGB primary +0.0909 on same window: PatchTST loses by ~0.027. SHADOW only \u2014 observation + infra validation, primary stays XGB."
         }
       ],
       "shadow_tracking_uri": "file:./mlruns",

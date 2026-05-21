@@ -73,10 +73,19 @@ class TestPipelineRun:
             n_exits=2,
             n_rotations=1,
             n_buys=3,
+            buy_blocked=True,
+            skip_buys=False,
+            bear_only=False,
+            counters={"qp_delta_below_min_dw": 7},
         )
         assert rid is not None
-        row = conn.execute("SELECT * FROM pipeline_runs WHERE run_id = ?", (rid,)).fetchone()
-        assert row is not None
+        row = conn.execute(
+            """SELECT buy_blocked, skip_buys, bear_only, counters_json
+                 FROM pipeline_runs WHERE run_id = ?""",
+            (rid,),
+        ).fetchone()
+        assert row[:3] == (1, 0, 0)
+        assert '"qp_delta_below_min_dw": 7' in row[3]
         conn.close()
 
     def test_noop_when_disabled(self, tmp_path):
