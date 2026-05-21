@@ -77,7 +77,7 @@ def detect_regime(panel_dates: pd.Series) -> pd.Series:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--artifact-dir",
-                   default="backtesting/renquant_104/artifacts/walkforward_truly_oos_2024-07-01")
+                   default="backtesting/renquant_104/artifacts/prod/truly_oos_eval")
     p.add_argument("--panel", default="data/alpha158_291_fundamental_dataset.parquet")
     p.add_argument("--label", default="fwd_60d_excess")
     p.add_argument("--out",

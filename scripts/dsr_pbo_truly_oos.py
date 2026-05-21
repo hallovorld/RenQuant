@@ -15,6 +15,7 @@ Per CLAUDE.md §5.13.4: any quoted performance number gets DSR + PBO when
 n_trials > 1. Here n_trials = 5 (one IC track per regime).
 """
 from __future__ import annotations
+import argparse
 import json
 import logging
 import sys
@@ -78,7 +79,17 @@ def cscv_pbo(returns_matrix: np.ndarray, n_splits: int = 16) -> float:
 
 
 def main() -> int:
-    src = REPO / "backtesting/renquant_104/artifacts/prod/truly_oos_eval/eval_truly_oos.json"
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--eval-json",
+        default="backtesting/renquant_104/artifacts/prod/truly_oos_eval/eval_truly_oos.json",
+        help="Path to eval_truly_oos.json to stamp with DSR/PBO.",
+    )
+    args = ap.parse_args()
+
+    src = Path(args.eval_json)
+    if not src.is_absolute():
+        src = REPO / src
     if not src.exists():
         log.error("Missing: %s — run scripts/eval_truly_oos.py first", src)
         return 2
