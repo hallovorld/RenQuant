@@ -448,6 +448,23 @@ def _resolve_regime_override(base_cfg: dict, ctx) -> dict:
     return merged
 
 
+def _has_finite_attr(obj: Any, attr: str) -> bool:
+    if obj is None:
+        return False
+    try:
+        return math.isfinite(float(getattr(obj, attr)))
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _inc_counter(ctx, key: str, amount: int = 1) -> None:
+    counters = getattr(ctx, "counters", None)
+    if not isinstance(counters, dict):
+        counters = {}
+        ctx.counters = counters
+    counters[key] = int(counters.get(key, 0)) + int(amount)
+
+
 # ── 4a. Force μ_QP source (Option A: validate NGBoost theory) ───────────────
 
 class ForceMuSourceTask(Task):
@@ -575,10 +592,66 @@ class ApplyGrinoldKahnTransformTask(Task):
         z = np.zeros_like(mu_arr)
         z[finite] = (mu_arr[finite] - m) / sd
         ctx._qp_mu = ic * sigma_arr * z  # noqa: SLF001
+        ctx._qp_mu_transformed = True  # noqa: SLF001
         log.info(
             "ApplyGrinoldKahnTransform: IC=%.3f raw_μ̄=%.4f raw_σ_μ=%.4f → μ̄_QP=%.4f",
             ic, m, sd, float(np.abs(ctx._qp_mu).mean()),
         )
+
+
+class ValidateQPMuContractTask(Task):
+    """Guard QP μ semantics.
+
+    The QP objective expects μ to be an expected-return-like quantity. A
+    raw ranking score is acceptable only after the Grinold-Kahn
+    ``alpha_to_mu`` transform normalizes it to volatility units. Default
+    mode is ``warn`` for production continuity; promotion/dry-run configs
+    can set ``rotation.joint_actions.qp_mu_contract = "strict"``.
+    """
+    name = "ValidateQPMuContractTask"
+
+    def run(self, ctx) -> bool | None:
+        cfg = _qp_cfg(ctx)
+        mode = str(cfg.get("qp_mu_contract", "warn")).lower()
+        if mode in {"off", "disabled", "none"}:
+            return None
+
+        alpha_cfg = (ctx.config or {}).get("ranking", {}).get("alpha_to_mu", {})
+        alpha_cfg = _resolve_regime_override(alpha_cfg, ctx)
+        alpha_applied = bool(getattr(ctx, "_qp_mu_transformed", False))
+        forced = str((ctx.config or {}).get("ranking", {}).get("qp_mu_source", "mu")).lower()
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        src = _get_path(ctx, "_qp_mu_source_map") or {}
+        missing_mu = [
+            t for t in tickers
+            if not _has_finite_attr(src.get(t), "mu")
+        ]
+        forced_raw = forced not in {"", "none", "mu"}
+        ok = alpha_applied or (not missing_mu and not forced_raw)
+        ctx._qp_mu_contract = {  # noqa: SLF001
+            "ok": ok,
+            "mode": mode,
+            "alpha_to_mu_enabled": bool(alpha_cfg.get("enabled", False)),
+            "alpha_to_mu_applied": alpha_applied,
+            "forced_source": forced,
+            "missing_mu_count": len(missing_mu),
+            "missing_mu_sample": missing_mu[:10],
+        }
+        if ok:
+            return None
+
+        _inc_counter(ctx, "qp_mu_contract_fallback", len(missing_mu) or int(forced_raw))
+        msg = (
+            "ValidateQPMuContract: QP μ uses raw score semantics "
+            f"(missing_mu={len(missing_mu)}, forced_source={forced}) while "
+            "alpha_to_mu was not applied"
+        )
+        if mode in {"strict", "hard", "error", "enforce"}:
+            _inc_counter(ctx, "qp_mu_contract_block", 1)
+            log.error("%s — stopping QP job", msg)
+            return False
+        log.warning("%s — continuing in warn mode", msg)
+        return None
 
 
 # ── 5a. Exposure scaling (vol-target + DD-Kelly) ────────────────────────────

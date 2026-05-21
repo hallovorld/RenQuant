@@ -581,7 +581,9 @@
       "qp_sector_cap_enabled": true,
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
+      "qp_mu_contract": "warn",
+      "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Warn when raw rank_score/panel_score reaches QP without alpha_to_mu transform; promotion/dry-run can set strict."
     },
     "enabled_regimes": [
       "BULL_CALM"

@@ -829,6 +829,14 @@ class SimAdapter:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
             )
+            from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
+            run_bundle = build_run_bundle(
+                self._config,
+                self._strategy_dir,
+                run_id=str(getattr(ctx, "run_id", "")),
+                run_type="sim",
+                ctx=ctx,
+            )
             run_id = record_pipeline_run(
                 self._db,
                 run_type        = "sim",
@@ -846,6 +854,7 @@ class SimAdapter:
                 skip_buys        = bool(getattr(ctx, "skip_buys", False)),
                 bear_only        = bool(getattr(ctx, "bear_only", False)),
                 counters         = getattr(ctx, "counters", {}) or {},
+                run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}

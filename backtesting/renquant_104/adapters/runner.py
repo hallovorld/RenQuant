@@ -1459,6 +1459,7 @@ class RunnerAdapter:
                 record_pipeline_run, record_candidate_scores, record_trades,
                 record_live_state_snapshot, record_ticker_daily_state,
             )
+            from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
             # Reconstruct trade events from ctx (live path doesn't keep an
             # in-memory trade list — we synthesise from exits + orders).
             #
@@ -1498,6 +1499,14 @@ class RunnerAdapter:
                     "mu":          o.get("mu"),
                     "sigma":       o.get("sigma"),
                 })
+            run_bundle = build_run_bundle(
+                self._config,
+                self._strategy_dir,
+                run_id=str(getattr(ctx, "run_id", "")),
+                run_type="live",
+                ctx=ctx,
+                broker_mode=self._broker_name,
+            )
             run_id = record_pipeline_run(
                 self._db,
                 run_type        = "live",
@@ -1520,6 +1529,7 @@ class RunnerAdapter:
                 skip_buys        = bool(getattr(ctx, "skip_buys", False)),
                 bear_only        = bool(getattr(ctx, "bear_only", False)),
                 counters         = getattr(ctx, "counters", {}) or {},
+                run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}

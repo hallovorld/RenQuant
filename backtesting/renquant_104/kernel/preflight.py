@@ -102,6 +102,49 @@ def _check_model_artifact(config: dict, strategy_dir: Path) -> PreflightCheck:
     )
 
 
+def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> PreflightCheck:
+    """P-PANEL-CONTRACT: panel artifact carries evidence metadata.
+
+    Default is soft so legacy production artifacts continue to trade while
+    the next retrain stamps the full contract. Set
+    ``preflight.artifact_contract.strict=true`` to hard-fail missing OOS
+    evidence during promotion/dry-run gates.
+    """
+    panel_cfg = (
+        config.get("ranking", {})
+        .get("panel_scoring", {})
+        or config.get("panel_ltr", {})
+    )
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
+    p = strategy_dir / rel
+    if not p.exists():
+        return PreflightCheck("P-PANEL-CONTRACT", "hard", False, f"artifact missing: {p}")
+    try:
+        payload = json.loads(p.read_text())
+    except Exception as exc:
+        return PreflightCheck("P-PANEL-CONTRACT", "hard", False, f"unreadable: {exc}")
+    strict_contract = bool(
+        config.get("preflight", {})
+        .get("artifact_contract", {})
+        .get("strict", False)
+    )
+    from kernel.artifact_contract import validate_panel_artifact_contract  # noqa: PLC0415
+    result = validate_panel_artifact_contract(payload, strict=strict_contract)
+    severity = "hard" if strict_contract else "soft"
+    if not result.ok:
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", severity, False,
+            "; ".join(result.errors),
+            details=result.details | {"warnings": result.warnings},
+        )
+    msg = "contract ok"
+    if result.warnings:
+        msg = "contract legacy-compatible; " + "; ".join(result.warnings[:3])
+    return PreflightCheck(
+        "P-PANEL-CONTRACT", severity, True, msg, details=result.details,
+    )
+
+
 def _check_best_iter(config: dict, strategy_dir: Path) -> PreflightCheck:
     """P-BEST-ITER: model's best_iter ≥ min_best_iter (BUG-CV-2 class).
 
@@ -473,6 +516,7 @@ def _check_artifact_run_id_alignment(
 
 ALL_CHECKS = (
     _check_model_artifact,
+    _check_panel_artifact_contract,
     _check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,

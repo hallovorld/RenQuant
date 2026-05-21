@@ -63,6 +63,7 @@ class TestGrinoldKahnTransform:
         # z-scores: (2-0)/2=1, (0-0)/2=0, (-2-0)/2=-1
         # μ_QP = 0.10 × 0.10 × [1, 0, -1] = [0.01, 0, -0.01]
         assert ctx._qp_mu == pytest.approx([0.01, 0.0, -0.01], abs=1e-9)
+        assert ctx._qp_mu_transformed is True
 
     def test_scale_invariance_fixes_ngboost_bug_class(self):
         """The §5.13.10 NGBoost guard: same RANK ordering produces same
@@ -149,3 +150,63 @@ class TestWiredIntoJointPortfolioQPJob:
         idx_sig = names.index("_BuildSigmaVectorTask")
         idx_gk  = names.index("ApplyGrinoldKahnTransformTask")
         assert idx_gk > idx_mu and idx_gk > idx_sig
+
+
+class TestQPMuContract:
+    """QP must not silently optimize raw rank scores as expected returns."""
+
+    def test_warn_mode_records_raw_score_fallback(self):
+        from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
+        src = {
+            "AAA": SimpleNamespace(ticker="AAA", panel_score=1.2),
+            "BBB": SimpleNamespace(ticker="BBB", mu=0.01, panel_score=0.5),
+        }
+        ctx = SimpleNamespace(
+            _qp_tickers=["AAA", "BBB"],
+            _qp_mu_source_map=src,
+            counters={},
+            config={"rotation": {"joint_actions": {"qp_mu_contract": "warn"}}},
+        )
+
+        assert ValidateQPMuContractTask().run(ctx) is None
+        assert ctx.counters["qp_mu_contract_fallback"] == 1
+        assert ctx._qp_mu_contract["ok"] is False
+
+    def test_strict_mode_stops_when_raw_scores_are_untransformed(self):
+        from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
+        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=1.2)}
+        ctx = SimpleNamespace(
+            _qp_tickers=["AAA"],
+            _qp_mu_source_map=src,
+            counters={},
+            config={"rotation": {"joint_actions": {"qp_mu_contract": "strict"}}},
+        )
+
+        assert ValidateQPMuContractTask().run(ctx) is False
+        assert ctx.counters["qp_mu_contract_block"] == 1
+
+    def test_grinold_kahn_transform_satisfies_contract(self):
+        from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
+        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=1.2)}
+        ctx = SimpleNamespace(
+            _qp_tickers=["AAA"],
+            _qp_mu_source_map=src,
+            _qp_mu_transformed=True,
+            counters={},
+            config={
+                "ranking": {"alpha_to_mu": {"enabled": True, "ic": 0.10}},
+                "rotation": {"joint_actions": {"qp_mu_contract": "strict"}},
+            },
+        )
+
+        assert ValidateQPMuContractTask().run(ctx) is None
+        assert ctx._qp_mu_contract["ok"] is True
+
+    def test_task_is_wired_between_transform_and_weights(self):
+        from kernel.portfolio_qp.job_qp import JointPortfolioQPJob
+        job = JointPortfolioQPJob()
+        names = [type(t).__name__ for t in job.tasks]
+        idx_gk = names.index("ApplyGrinoldKahnTransformTask")
+        idx_contract = names.index("ValidateQPMuContractTask")
+        idx_weights = names.index("BuildWeightVectorTask")
+        assert idx_gk < idx_contract < idx_weights

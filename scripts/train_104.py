@@ -78,6 +78,18 @@ def main() -> None:
         help="Tag identifying what fired this retrain (e.g. anomaly_vix_5pct). "
              "Logged but does not alter training flow. Default: 'cadence'.",
     )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run preflight/artifact contract checks only. Does not train, "
+             "write artifacts, or touch acceptance staging.",
+    )
+    p.add_argument(
+        "--strict-contract",
+        action="store_true",
+        help="With --dry-run, hard-fail legacy panel artifacts that lack "
+             "OOS evidence fields such as oos_mean_ic/oos_per_fold_ic.",
+    )
     args = p.parse_args()
     log.info("train_104: trigger=%s strategy=%s force=%s",
              args.trigger, args.strategy, args.force)
@@ -90,11 +102,6 @@ def main() -> None:
     if str(strategy_dir) not in sys.path:
         sys.path.insert(0, str(strategy_dir))
 
-    from kernel.pipeline.pp_training_full import (  # noqa: PLC0415
-        FullTrainingContext,
-        FullTrainingPipeline,
-    )
-
     config = json.loads(config_path.read_text())
     # 2026-04-28 evening: stamp the active strategy_config filename.
     config["_strategy_config_name"] = args.strategy_config_name
@@ -104,6 +111,51 @@ def main() -> None:
     # mismatch means one artifact came from a different run (stale model).
     import uuid as _uuid  # noqa: PLC0415
     config["_train_run_id"] = str(_uuid.uuid4())[:8]  # 8-char prefix is enough
+
+    if args.dry_run:
+        from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
+        from kernel.preflight import PreflightFailed, run_preflight  # noqa: PLC0415
+
+        if args.strict_contract:
+            config.setdefault("preflight", {}).setdefault(
+                "artifact_contract", {}
+            )["strict"] = True
+        try:
+            results = run_preflight(
+                config,
+                broker=None,
+                strategy_dir=strategy_dir,
+                broker_name=None,
+                strict=args.strict_contract,
+            )
+        except PreflightFailed as exc:
+            log.error("dry-run preflight failed:\n%s", exc)
+            sys.exit(2)
+        failures = [r for r in results if not r.ok]
+        bundle = build_run_bundle(
+            config,
+            strategy_dir,
+            run_id=f"dryrun-{config['_train_run_id']}",
+            run_type="train-dry-run",
+        )
+        log.info(
+            "dry-run complete: checks=%d failures=%d panel_contract=%s "
+            "watchlist=%s",
+            len(results),
+            len(failures),
+            bundle.get("panel_contract", {}).get("ok"),
+            bundle.get("watchlist_size"),
+        )
+        if failures:
+            for res in failures:
+                log.warning("dry-run check not ok: %s [%s] %s",
+                            res.name, res.severity, res.message)
+        return
+
+    from kernel.pipeline.pp_training_full import (  # noqa: PLC0415
+        FullTrainingContext,
+        FullTrainingPipeline,
+    )
     # Audit fix #152 (2026-04-26 round-7): acceptance gates wrap the
     # FullTrainingPipeline output. If the new artifact fails any hard
     # gate, the prior production artifact is preserved at panel-ltr.json

@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     skip_buys        INTEGER,
     bear_only        INTEGER,
     counters_json    TEXT,
+    run_bundle_json  TEXT,
     commit_sha       TEXT,
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -372,6 +373,7 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("skip_buys",     "INTEGER"),
         ("bear_only",     "INTEGER"),
         ("counters_json", "TEXT"),
+        ("run_bundle_json", "TEXT"),
     ],
     "training_runs": [
         ("elapsed_sec",           "REAL"),
@@ -733,6 +735,7 @@ def record_pipeline_run(
     skip_buys: bool | None = None,
     bear_only: bool | None = None,
     counters: dict[str, Any] | None = None,
+    run_bundle: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> str | None:
     """Insert a pipeline_runs row and return the generated run_id."""
@@ -743,14 +746,16 @@ def record_pipeline_run(
         """INSERT OR REPLACE INTO pipeline_runs
               (run_id, run_date, run_type, strategy, regime, confidence,
                portfolio_value, cash, n_candidates, n_exits, n_rotations, n_buys,
-               buy_blocked, skip_buys, bear_only, counters_json, commit_sha)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               buy_blocked, skip_buys, bear_only, counters_json, run_bundle_json,
+               commit_sha)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (run_id, run_date.isoformat(), run_type, strategy, regime, confidence,
          portfolio_value, cash, n_candidates, n_exits, n_rotations, n_buys,
          None if buy_blocked is None else int(bool(buy_blocked)),
          None if skip_buys is None else int(bool(skip_buys)),
          None if bear_only is None else int(bool(bear_only)),
          json.dumps(counters or {}, sort_keys=True, default=str),
+         json.dumps(run_bundle or {}, sort_keys=True, default=str),
          _commit_sha()),
     )
     return run_id

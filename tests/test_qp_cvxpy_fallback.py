@@ -159,15 +159,17 @@ class TestCvxpyFallback:
                 raise ImportError("Mocked: cvxpy not available")
             return real_import(name, *args, **kwargs)
 
-        from kernel.portfolio_qp.qp_solver import solve_portfolio_qp
-        with patch.object(builtins, "__import__", side_effect=fake_import):
-            with pytest.raises(ImportError, match="cvxpy"):
-                solve_portfolio_qp(
-                    w_current=np.zeros(8), mu=np.zeros(8),
-                    Sigma=np.eye(8) * 1e-3,
-                    risk_aversion=3.0, cost_kappa=0.0001, cash_reserve=0.05,
-                    w_upper=0.2, w_lower=0.0, dw_max=0.5,
-                )
+        import importlib
+        module_name = "kernel.portfolio_qp.qp_solver"
+        existing = sys.modules.pop(module_name, None)
+        try:
+            with patch.object(builtins, "__import__", side_effect=fake_import):
+                with pytest.raises(ImportError, match="cvxpy"):
+                    importlib.import_module(module_name)
+        finally:
+            sys.modules.pop(module_name, None)
+            if existing is not None:
+                sys.modules[module_name] = existing
 
     def test_fallback_clamps_turnover_infeasible_floor(self):
         """REGRESSION (2026-05-06 V5 sim 0-trade): from-cash with

@@ -77,15 +77,17 @@ class TestPipelineRun:
             skip_buys=False,
             bear_only=False,
             counters={"qp_delta_below_min_dw": 7},
+            run_bundle={"artifact_hashes": {"panel": "sha256:test"}},
         )
         assert rid is not None
         row = conn.execute(
-            """SELECT buy_blocked, skip_buys, bear_only, counters_json
+            """SELECT buy_blocked, skip_buys, bear_only, counters_json, run_bundle_json
                  FROM pipeline_runs WHERE run_id = ?""",
             (rid,),
         ).fetchone()
         assert row[:3] == (1, 0, 0)
         assert '"qp_delta_below_min_dw": 7' in row[3]
+        assert '"panel": "sha256:test"' in row[4]
         conn.close()
 
     def test_noop_when_disabled(self, tmp_path):

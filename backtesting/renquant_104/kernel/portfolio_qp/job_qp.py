@@ -51,6 +51,7 @@ from .tasks import (
     EmitOrdersFromQPSolutionTask,
     ShrinkSigmaLedoitWolfTask,
     SolveMarkowitzQPTask,
+    ValidateQPMuContractTask,
 )
 
 log = logging.getLogger("kernel.portfolio_qp.job")
@@ -171,6 +172,10 @@ class JointPortfolioQPJob(Job):
             # from input scale. See doc/AUDIT_2026-05-12_dead_paths.md
             # §NGBoost SUSPECT — μ-scale mismatch.
             ApplyGrinoldKahnTransformTask(),
+            # QP expects μ to be expected-return-like. Warn by default
+            # when raw rank/panel scores reach the optimizer without the
+            # α→μ transform; strict mode is used by promotion/dry-run gates.
+            ValidateQPMuContractTask(),
             BuildWeightVectorTask(),
             ComputeFullSigmaTask(),
             ShrinkSigmaLedoitWolfTask(),           # G5: LW shrinkage (off by default)
