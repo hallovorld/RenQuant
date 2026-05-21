@@ -23,6 +23,10 @@ def largest_flat_fraction(x: Sequence[float], y: Sequence[float]) -> float:
         Fraction in [0, 1]. 0 means no flat region; 1 means entire
         x-domain is one flat y.
     """
+    if x is None or y is None:
+        return 0.0
+    x = list(x)
+    y = list(y)
     if not x or not y or len(x) != len(y) or len(x) < 2:
         return 0.0
     x_total = float(x[-1] - x[0])

@@ -121,6 +121,12 @@ class TestHelperFunctionCorrectness:
         y = [0.1, 0.2, 0.3, 0.4, 0.5]
         assert _largest_flat_fraction(x, y) == 0.0
 
+    def test_numpy_arrays_are_accepted(self):
+        import numpy as np
+        x = np.array([0, 1, 2, 3, 4], dtype=float)
+        y = np.array([0.1, 0.2, 0.5, 0.5, 0.5], dtype=float)
+        assert _largest_flat_fraction(x, y) == 0.5
+
     def test_full_flat_returns_one(self):
         x = [0, 1, 2, 3, 4]
         y = [0.5, 0.5, 0.5, 0.5, 0.5]
