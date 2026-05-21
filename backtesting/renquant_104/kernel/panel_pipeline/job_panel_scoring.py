@@ -1025,24 +1025,40 @@ class ApplyGlobalCalibrationTask(Task):
                 # only catches CONSTANT output (std<1e-8); a saturated
                 # upper-tail has high std but is still un-rankable.
                 #
-                # Invariant: in a working calibrator, IQR(rank_score) > 0.05
-                # AND fraction of values >= 0.95 < 50%. If either fails,
-                # the calibrator is degenerate for today's input; loud
-                # warning so the operator notices in ntfy / log audit.
-                # Does NOT clear scores — that would change prod behavior;
-                # Phase 3 (calibrator retrain) is the real fix.
+                # 2026-05-21 correction: low probability IQR alone is not a
+                # trade-stop condition for a smooth Platt calibrator. A
+                # sigmoid may compress probabilities while still preserving a
+                # fully usable monotone ordering. Abstain only when the
+                # cross-section is actually un-rankable: too few unique scores,
+                # a dominant exact-tie bucket, or saturated upper tail.
                 iqr = float(ranks.quantile(0.75) - ranks.quantile(0.25))
                 sat_top = float((ranks >= 0.95).mean())
-                if iqr < 0.05 or sat_top >= 0.50:
+                rounded = ranks.round(6)
+                n_unique = int(rounded.nunique())
+                dominant_tie_frac = (
+                    float(rounded.value_counts(normalize=True).iloc[0])
+                    if len(rounded) else 0.0
+                )
+                sat_cfg = (
+                    (ctx.config or {}).get("ranking", {})
+                                    .get("panel_scoring", {})
+                                    .get("calibrator_saturation", {})
+                )
+                iqr_warn_floor = float(sat_cfg.get("iqr_warn_floor", 0.05))
+                min_unique = int(sat_cfg.get("min_unique_scores", 5))
+                max_tie_frac = float(sat_cfg.get("max_tie_fraction", 0.50))
+                low_iqr = iqr < iqr_warn_floor
+                score_collapse = n_unique < min_unique or dominant_tie_frac >= max_tie_frac
+                upper_tail_saturation = sat_top >= 0.50
+                if low_iqr or score_collapse or upper_tail_saturation:
                     log.warning(
-                        "CALIBRATOR-SATURATED: rank_score IQR=%.3f (<0.05) "
-                        "OR fraction>=0.95=%.0f%% (>=50%%). Ranking is "
-                        "degenerate today; top-K selection is tie-broken "
-                        "by panel_score / ticker order, not by calibrated "
-                        "probability. Calibrator artifact needs retraining "
-                        "with output clipped at train site (CLAUDE.md "
-                        "§5.13.12). [P0 detected 2026-05-15]",
-                        iqr, sat_top * 100,
+                        "CALIBRATOR-SATURATED: rank_score IQR=%.3f "
+                        "(warn_floor=%.3f), fraction>=0.95=%.0f%%, "
+                        "n_unique=%d, dominant_tie=%.0f%%. Abstain requires "
+                        "upper-tail saturation or true score collapse; low "
+                        "IQR alone is diagnostic for Platt-style compression.",
+                        iqr, iqr_warn_floor, sat_top * 100,
+                        n_unique, dominant_tie_frac * 100,
                     )
                     # 2026-05-18 NEW-BUY GATE: when calibrator is degenerate,
                     # the model has effectively NO conviction for today.
@@ -1057,14 +1073,23 @@ class ApplyGlobalCalibrationTask(Task):
                                             .get("abstain_on_calibrator_saturation", True)
                     )
                     if abstain_on_sat:
-                        ctx._calibrator_saturated = True  # noqa: SLF001
-                        log.warning(
-                            "CALIBRATOR-SATURATED → ABSTAIN-NEW-BUYS "
-                            "(set ctx._calibrator_saturated=True). QP will "
-                            "skip new BUY actions today; existing holdings "
-                            "may still SELL. To disable: "
-                            "ranking.panel_scoring.abstain_on_calibrator_saturation=false"
-                        )
+                        if score_collapse or upper_tail_saturation:
+                            ctx._calibrator_saturated = True  # noqa: SLF001
+                            log.warning(
+                                "CALIBRATOR-SATURATED → ABSTAIN-NEW-BUYS "
+                                "(reason=%s%s). QP will skip new BUY actions "
+                                "today; existing holdings may still SELL. To "
+                                "disable: ranking.panel_scoring."
+                                "abstain_on_calibrator_saturation=false",
+                                "score_collapse" if score_collapse else "",
+                                "+upper_tail" if upper_tail_saturation else "",
+                            )
+                        else:
+                            log.warning(
+                                "CALIBRATOR-SATURATED diagnostic only: low "
+                                "rank_score IQR without score collapse; new "
+                                "buys remain enabled."
+                            )
                 # 2026-05-15 BUG #8 GUARD: expected_return out-of-range
                 # detection. Live prod calibrator's expected_return.y has
                 # values up to +1.0 (= +100% expected return) — clearly

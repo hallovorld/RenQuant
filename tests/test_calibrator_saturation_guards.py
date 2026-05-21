@@ -16,6 +16,8 @@ These tests pin:
   A. GlobalPanelCalibration.load() clips out-of-range y values and warns.
   B. ApplyGlobalCalibrationTask logs CALIBRATOR-SATURATED when post-
      calibrate rank_score IQR < 0.05 or upper-tail saturation >= 50%.
+     Low IQR alone is diagnostic only after the 2026-05-21 Platt fix;
+     new-buy abstain requires true score collapse or upper-tail saturation.
   C. ApplyGlobalCalibrationTask logs CALIBRATOR-ER-OUT-OF-RANGE when
      any |expected_return| > 0.20.
 
@@ -289,13 +291,16 @@ class TestApplyGlobalCalibrationSaturationGuard:
         assert any("CALIBRATOR-SATURATED" in r.message
                    for r in caplog.records), \
             f"saturation guard didn't fire; logs: {[r.message for r in caplog.records]}"
+        assert getattr(ctx, "_calibrator_saturated", False) is True
 
     def test_low_iqr_warns(self, caplog):
-        """IQR < 0.05 → guard fires (collapsed ranking)."""
+        """IQR < 0.05 warns, but does not abstain when scores remain unique."""
         from kernel.panel_pipeline.job_panel_scoring import (
             ApplyGlobalCalibrationTask,
         )
-        # All scores in [0.50, 0.51] — IQR ~ 0.005
+        # All scores in [0.50, 0.51] — IQR ~ 0.005, but all values are
+        # unique. This is Platt-style probability compression, not a
+        # tie-broken ranking collapse.
         ctx = self._make_ctx(
             [0.500, 0.502, 0.504, 0.506, 0.508, 0.510],
         )
@@ -303,6 +308,21 @@ class TestApplyGlobalCalibrationSaturationGuard:
             ApplyGlobalCalibrationTask().run(ctx)
         assert any("CALIBRATOR-SATURATED" in r.message
                    for r in caplog.records)
+        assert any("diagnostic only" in r.message for r in caplog.records)
+        assert getattr(ctx, "_calibrator_saturated", False) is False
+
+    def test_low_iqr_with_score_collapse_abstains(self, caplog):
+        """Low IQR plus exact score collapse abstains from new buys."""
+        from kernel.panel_pipeline.job_panel_scoring import (
+            ApplyGlobalCalibrationTask,
+        )
+        ctx = self._make_ctx(
+            [0.500, 0.500, 0.500, 0.500, 0.501, 0.501],
+        )
+        with caplog.at_level(logging.WARNING):
+            ApplyGlobalCalibrationTask().run(ctx)
+        assert any("ABSTAIN-NEW-BUYS" in r.message for r in caplog.records)
+        assert getattr(ctx, "_calibrator_saturated", False) is True
 
     def test_healthy_distribution_no_warning(self, caplog):
         """Spread-out rank_scores → no saturation warning."""
