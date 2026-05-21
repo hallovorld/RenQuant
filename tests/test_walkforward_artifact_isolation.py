@@ -80,6 +80,14 @@ class TestConfigurePanelCutoffSetsBothPaths:
         assert out["ranking"]["panel_scoring"]["artifact_path"] == WF_PATH
 
 
+def test_train_walkforward_panel_supports_cutoff_parallelism():
+    src = (_REPO_ROOT / "scripts" / "train_walkforward_panel.py").read_text()
+    assert '"--jobs"' in src
+    assert "ThreadPoolExecutor" in src
+    assert "as_completed" in src
+    assert "entries_by_cutoff" in src
+
+
 class TestNonWalkforwardPathRejected:
     """Sanity guard per §5.13.3 — refuse production-shaped paths."""
 

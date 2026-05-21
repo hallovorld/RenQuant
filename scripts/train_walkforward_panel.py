@@ -42,6 +42,7 @@ cannot collide with v1 (``walkforward/``) or production artifacts.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 import os
@@ -218,9 +219,76 @@ def parse_args() -> argparse.Namespace:
                    help="JSON config file to filter panel to a custom watchlist")
     p.add_argument("--artifact-root", default=None,
                    help="Override artifacts/<root>/ subdirectory (default: walkforward_v2)")
+    p.add_argument("--jobs", type=int, default=1,
+                   help="Number of cutoff retrains to run concurrently. "
+                        "Default 1 preserves historical behavior.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print retrain dates and exit (no training).")
     return p.parse_args()
+
+
+def train_cutoffs(retrain_dates: list[pd.Timestamp],
+                  args: argparse.Namespace) -> tuple[list, list[tuple[str, str]]]:
+    """Train all requested cutoffs, optionally in parallel."""
+    jobs = max(1, min(int(args.jobs), len(retrain_dates)))
+    entries_by_cutoff: dict[str, object] = {}
+    failed: list[tuple[str, str]] = []
+
+    def _run(cutoff: pd.Timestamp):
+        ok, artifact_path, err = train_one_cutoff(
+            cutoff, STRATEGY_DIR,
+            label=args.label,
+            watchlist_file=args.watchlist_file,
+            artifact_root=args.artifact_root,
+        )
+        if not ok:
+            return cutoff, None, err
+        try:
+            trained_dt = read_trained_date(artifact_path)
+        except Exception as exc:  # noqa: BLE001
+            return cutoff, None, f"read_trained_date: {exc}"
+        return cutoff, build_retrain_entry(
+            cutoff=cutoff,
+            trained_dt=trained_dt,
+            artifact_uri=str(artifact_path),
+        ), ""
+
+    if jobs == 1:
+        for i, cutoff in enumerate(retrain_dates):
+            log.info("── retrain %d/%d  cutoff=%s ──",
+                     i + 1, len(retrain_dates), cutoff.date().isoformat())
+            cutoff, entry, err = _run(cutoff)
+            cutoff_iso = cutoff.date().isoformat()
+            if entry is None:
+                failed.append((cutoff_iso, err))
+            else:
+                entries_by_cutoff[cutoff_iso] = entry
+    else:
+        log.info("Running %d cutoff retrains with jobs=%d", len(retrain_dates), jobs)
+        with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="wf-train") as pool:
+            futures = {pool.submit(_run, cutoff): cutoff for cutoff in retrain_dates}
+            for fut in as_completed(futures):
+                cutoff = futures[fut]
+                cutoff_iso = cutoff.date().isoformat()
+                try:
+                    _, entry, err = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    failed.append((cutoff_iso, repr(exc)))
+                    log.exception("cutoff=%s crashed", cutoff_iso)
+                    continue
+                if entry is None:
+                    failed.append((cutoff_iso, err))
+                else:
+                    entries_by_cutoff[cutoff_iso] = entry
+                    log.info("cutoff=%s collected (%d/%d)",
+                             cutoff_iso, len(entries_by_cutoff), len(retrain_dates))
+
+    entries = [
+        entries_by_cutoff[d.date().isoformat()]
+        for d in retrain_dates
+        if d.date().isoformat() in entries_by_cutoff
+    ]
+    return entries, failed
 
 
 def main() -> None:
@@ -242,31 +310,7 @@ def main() -> None:
     # Lazy imports — only when actually training.
     from kernel.walk_forward import WalkForwardManifest, write_manifest  # noqa: PLC0415
 
-    entries = []
-    failed = []
-    for i, cutoff in enumerate(retrain_dates):
-        log.info("── retrain %d/%d  cutoff=%s ──",
-                 i + 1, len(retrain_dates), cutoff.date().isoformat())
-        ok, artifact_path, err = train_one_cutoff(
-            cutoff, STRATEGY_DIR,
-            label=args.label,
-            watchlist_file=args.watchlist_file,
-            artifact_root=args.artifact_root,
-        )
-        if not ok:
-            failed.append((cutoff.date().isoformat(), err))
-            continue
-        try:
-            trained_dt = read_trained_date(artifact_path)
-        except Exception as exc:  # noqa: BLE001
-            log.error("read_trained_date failed for %s: %s", artifact_path, exc)
-            failed.append((cutoff.date().isoformat(), f"read_trained_date: {exc}"))
-            continue
-        entries.append(build_retrain_entry(
-            cutoff=cutoff,
-            trained_dt=trained_dt,
-            artifact_uri=str(artifact_path),
-        ))
+    entries, failed = train_cutoffs(retrain_dates, args)
 
     manifest = WalkForwardManifest(
         cadence_days=int(args.cadence_days),
