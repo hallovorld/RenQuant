@@ -47,6 +47,10 @@ log = logging.getLogger("wf-gate")
 REPO = Path(__file__).resolve().parent.parent
 GATE_VERSION = 1
 STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
+for _p in (REPO, STRATEGY_DIR):
+    _s = str(_p)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 PYTHON = sys.executable
 CUTS = [
     ("2024-01-02", "2024-12-31"),
@@ -472,8 +476,9 @@ def run_sanity_battery(artifact_path: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifact", required=True, help="Path to staging artifact JSON")
-    ap.add_argument("--strategy-config", default="strategy_config.sim_wl200.json",
-                    help="Walk-forward sim config name (default: strategy_config.sim_wl200.json)")
+    ap.add_argument("--strategy-config", default="strategy_config.json",
+                    help="Static sim config name used to evaluate the candidate artifact "
+                         "(default: strategy_config.json)")
     ap.add_argument("--strict", action="store_true",
                     help="Compatibility flag for weekly_wf_promote.sh. Current thresholds are already strict.")
     ap.add_argument("--skip-wf", action="store_true",

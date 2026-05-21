@@ -65,7 +65,7 @@ class ResearchAcceptanceContext:
     artifact_dir: Path | None = None
     eval_json_path: Path | None = None
     artifact: Path | None = None
-    strategy_config: str = "strategy_config.sim_wl200.json"
+    strategy_config: str = "strategy_config.json"
     wf_jobs: int = 3
     strict: bool = True
     skip_retrain: bool = False

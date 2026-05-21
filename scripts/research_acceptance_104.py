@@ -45,7 +45,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="For true-oos: evaluate/stamp an existing cutoff artifact.")
     p.add_argument("--artifact", default=None,
                    help="Staging artifact for wf-gate target.")
-    p.add_argument("--strategy-config", default="strategy_config.sim_wl200.json")
+    p.add_argument("--strategy-config", default="strategy_config.json")
     p.add_argument("--wf-jobs", type=int, default=3,
                    help="Concurrent walk-forward cuts for scripts/run_wf_gate.py.")
     p.add_argument("--no-strict", action="store_true",

@@ -68,6 +68,8 @@ def test_wf_gate_command_uses_parallel_cut_jobs_and_strict():
     ResearchAcceptancePipeline(("wf-gate",)).run(ctx)
     argv = ctx.executed[0].argv
     assert "--jobs" in argv and argv[argv.index("--jobs") + 1] == "3"
+    assert "--strategy-config" in argv
+    assert argv[argv.index("--strategy-config") + 1] == "strategy_config.json"
     assert "--strict" in argv
 
 

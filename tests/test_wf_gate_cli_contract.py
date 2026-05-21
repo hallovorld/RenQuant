@@ -13,9 +13,10 @@ def test_wf_gate_accepts_weekly_strict_flag() -> None:
     )
 
 
-def test_wf_gate_defaults_to_walkforward_sim_config() -> None:
+def test_wf_gate_defaults_to_static_candidate_config() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
-    assert 'default="strategy_config.sim_wl200.json"' in src
+    assert 'default="strategy_config.json"' in src
+    assert "Static sim config name used to evaluate the candidate artifact" in src
 
 
 def test_wf_gate_sim_cuts_do_not_use_live_static_path_or_persistence() -> None:
@@ -42,6 +43,12 @@ def test_wf_gate_uses_current_python_environment_for_sim_cuts() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "PYTHON = sys.executable" in src
     assert '"/Users/renhao/miniconda3/envs/renquant/bin/python"' not in src
+
+
+def test_wf_gate_bootstraps_repo_and_strategy_import_paths() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert "for _p in (REPO, STRATEGY_DIR):" in src
+    assert "sys.path.insert(0, _s)" in src
 
 
 def test_wf_gate_stamps_benchmark_and_regime_context() -> None:
