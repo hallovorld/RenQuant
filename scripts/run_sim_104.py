@@ -179,6 +179,14 @@ def main() -> None:
     if any([args.trade_log_json, args.trade_log_csv,
             args.round_trips_csv, args.trade_report_md]):
         from sim_trade_ledger import write_trade_outputs  # noqa: PLC0415
+        end_prices = {}
+        for sym, df in ohlcv.items():
+            try:
+                hist = df.loc[:args.end]
+                if not hist.empty and "close" in hist.columns:
+                    end_prices[sym] = float(hist["close"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                pass
         written = write_trade_outputs(
             result           = result,
             config           = config,
@@ -186,6 +194,7 @@ def main() -> None:
             trade_csv        = args.trade_log_csv,
             round_trips_csv  = args.round_trips_csv,
             report_md        = args.trade_report_md,
+            end_prices       = end_prices,
             title            = (
                 f"renquant_104 sim trade forensics "
                 f"({args.strategy_config_name}, {args.start} to {args.end})"

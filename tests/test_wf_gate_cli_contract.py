@@ -109,3 +109,9 @@ def test_run_sim_can_dump_trade_forensics() -> None:
     assert '"--round-trips-csv"' in src
     assert '"--trade-report-md"' in src
     assert "write_trade_outputs" in src
+    assert "end_prices" in src
+
+
+def test_sim_buy_trade_log_falls_back_to_context_regime() -> None:
+    src = (REPO / "backtesting/renquant_104/adapters/sim.py").read_text()
+    assert 'order.get("regime") or getattr(ctx, "regime", None)' in src

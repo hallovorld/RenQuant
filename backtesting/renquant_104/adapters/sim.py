@@ -1305,7 +1305,7 @@ class SimAdapter:
             "price":     price,
             "shares":    shares,
             "invest":    invest,
-            "regime":    order.get("regime"),
+            "regime":    order.get("regime") or getattr(ctx, "regime", None),
             "rank_score": order.get("rank_score"),
             "rs_score":  order.get("rs_score"),
             "sigma":     order.get("sigma"),

@@ -84,6 +84,29 @@ def trade_log_frame(trade_log: list[dict]) -> pd.DataFrame:
     return df
 
 
+def _equity_regime_map(result: Any) -> dict[str, str]:
+    equity = getattr(result, "equity_df", None)
+    if equity is None or getattr(equity, "empty", True) or "regime" not in equity.columns:
+        return {}
+    out: dict[str, str] = {}
+    for idx, regime in equity["regime"].items():
+        if regime is not None and regime == regime:
+            out[_as_date(idx)] = str(regime)
+    return out
+
+
+def _enrich_trade_log_from_result(result: Any) -> list[dict]:
+    """Fill audit-only fields that older order emitters may omit."""
+    regime_by_date = _equity_regime_map(result)
+    enriched: list[dict] = []
+    for event in list(getattr(result, "trade_log", []) or []):
+        row = dict(event)
+        if row.get("action") == "buy" and not row.get("regime"):
+            row["regime"] = regime_by_date.get(_as_date(row.get("date")))
+        enriched.append(row)
+    return enriched
+
+
 def round_trips_from_trade_log(
     trade_log: list[dict],
     *,
@@ -367,12 +390,14 @@ def write_trade_outputs(
     trade_csv: str | Path | None = None,
     round_trips_csv: str | Path | None = None,
     report_md: str | Path | None = None,
+    end_prices: dict[str, float] | None = None,
     title: str = "Sim Trade Forensics",
     extra_metrics: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Write requested trade-ledger artifacts and return written paths."""
-    raw = trade_log_frame(list(getattr(result, "trade_log", []) or []))
-    trips = round_trips_from_trade_log(list(getattr(result, "trade_log", []) or []))
+    trade_log = _enrich_trade_log_from_result(result)
+    raw = trade_log_frame(trade_log)
+    trips = round_trips_from_trade_log(trade_log, end_prices=end_prices)
     metrics = {
         "final_value": float(getattr(result, "final_value", 0.0)),
         "total_return": float(getattr(result, "total_return", 0.0)),
@@ -415,4 +440,3 @@ def write_trade_outputs(
         )
         written["report_md"] = str(p)
     return written
-

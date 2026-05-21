@@ -161,3 +161,48 @@ def test_write_trade_outputs_creates_raw_roundtrip_and_report_files(tmp_path) ->
     assert (tmp_path / "round.csv").exists()
     assert "Sim Trade Forensics" in (tmp_path / "report.md").read_text()
 
+
+def test_write_trade_outputs_enriches_missing_buy_regime_and_marks_open_lots(tmp_path) -> None:
+    trade_log = [
+        {
+            "action": "buy",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-02"),
+            "price": 100.0,
+            "shares": 2,
+            "invest": 200.0,
+            "rank_score": 0.70,
+            # QP orders historically omitted regime; result.equity_df must
+            # backfill it so per-regime forensic reports are not empty.
+            "regime": None,
+        },
+    ]
+    result = SimpleNamespace(
+        trade_log=trade_log,
+        buys=trade_log,
+        sells=[],
+        final_value=220.0,
+        total_return=0.10,
+        apy=0.10,
+        sharpe=1.0,
+        max_dd=0.0,
+        win_rate=0.0,
+        equity_df=pd.DataFrame(
+            [{"portfolio": 200.0, "regime": "BULL_CALM"}],
+            index=[pd.Timestamp("2024-01-02")],
+        ),
+    )
+
+    write_trade_outputs(
+        result=result,
+        trade_csv=tmp_path / "trades.csv",
+        round_trips_csv=tmp_path / "round.csv",
+        end_prices={"AAPL": 110.0},
+    )
+
+    raw = pd.read_csv(tmp_path / "trades.csv")
+    trips = pd.read_csv(tmp_path / "round.csv")
+    assert raw.loc[0, "regime"] == "BULL_CALM"
+    assert trips.loc[0, "status"] == "open"
+    assert trips.loc[0, "entry_regime"] == "BULL_CALM"
+    assert trips.loc[0, "gross_pnl"] == 20.0
