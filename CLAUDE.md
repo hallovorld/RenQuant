@@ -212,7 +212,7 @@ P0 fixes ─────────→ retrain ──────────�
                     P1 fixes 同时跑
 ```
 
-**5.10 Saturate hardware.** M2 Pro = 10 cores + 32 GB RAM. Before any long compute job: `OMP_NUM_THREADS=10`, `MKL_NUM_THREADS=10`, `OPENBLAS_NUM_THREADS=10`; XGBoost `nthread=10` / `n_jobs=-1`; sklearn `n_jobs=-1`. Datasets < 5 GB load fully into RAM. **Verify** ≥80% user CPU via `top -l 1 | grep CPU` after dispatch — fix bottleneck BEFORE letting it eat hours.
+**5.10 Saturate hardware.** M4 Pro = 14 cores + 48 GB RAM. Before any long compute job: `OMP_NUM_THREADS=14`, `MKL_NUM_THREADS=14`, `OPENBLAS_NUM_THREADS=14`; XGBoost `nthread=14` / `n_jobs=-1`; sklearn `n_jobs=-1`. Datasets < 5 GB load fully into RAM. **Verify** ≥80% user CPU via `top -l 1 | grep CPU` after dispatch — fix bottleneck BEFORE letting it eat hours.
 
 **5.11 Experiment design optimizes for time-to-answer.** Decision tree before any multi-hour run:
 1. **Range-finding** ("does X work at all?") → top-down single endpoint, 30 min wallclock.

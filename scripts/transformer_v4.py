@@ -473,9 +473,12 @@ def per_day_csrankic(preds: np.ndarray, labels: np.ndarray,
     return float(np.mean(ics)), float(np.median(ics))
 
 
-def evaluate(model: nn.Module, loader: DataLoader, device: str
+def evaluate(model: nn.Module, loader: DataLoader, device: str,
+             dump_path: "Path | None" = None
              ) -> tuple[float, float, float]:
-    """Returns (mean_ic, median_ic, mse)."""
+    """Returns (mean_ic, median_ic, mse). If dump_path given, writes
+    per-(date, sample) predictions to parquet — used by downstream
+    regime-stratified IC (PRIME DIRECTIVE objective)."""
     model.eval()
     all_preds, all_labels, all_dates = [], [], []
     total_se, total_n = 0.0, 0
@@ -495,6 +498,13 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str
     preds = np.concatenate(all_preds)
     labels = np.concatenate(all_labels)
     dates = np.concatenate(all_dates)
+    if dump_path is not None:
+        dump_df = pd.DataFrame({
+            "date": pd.to_datetime(dates),
+            "pred": preds,
+            "label": labels,
+        })
+        dump_df.to_parquet(dump_path, index=False)
     mean_ic, median_ic = per_day_csrankic(preds, labels, dates)
     mse = total_se / max(1, total_n)
     return mean_ic, median_ic, mse
@@ -749,9 +759,16 @@ def train_one_seed(arch, train_ds, val_ds, test_ds, channel_cols, seq_len,
              best_epoch, best_val_ic)
     ckpt = torch.load(out_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["state_dict"])
-    test_mean_ic, test_med_ic, test_mse = evaluate(model, test_loader, device)
+    # Dump val + test predictions for downstream PRIME-DIRECTIVE
+    # regime-stratified IC eval (Optuna sweep + paired analysis).
+    val_dump  = out_path.parent / f"{out_path.stem}_val_preds.parquet"
+    test_dump = out_path.parent / f"{out_path.stem}_test_preds.parquet"
+    _val_mean_ic, _val_med_ic, _ = evaluate(model, val_loader,  device, dump_path=val_dump)
+    test_mean_ic, test_med_ic, test_mse = evaluate(
+        model, test_loader, device, dump_path=test_dump)
     log.info("══ Test: mean_ic=%+.4f  median_ic=%+.4f  mse=%.4f ══",
              test_mean_ic, test_med_ic, test_mse)
+    log.info("Predictions dumped: %s, %s", val_dump.name, test_dump.name)
 
     return {
         "best_epoch": best_epoch,
