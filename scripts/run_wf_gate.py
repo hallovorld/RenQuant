@@ -2,9 +2,10 @@
 """Walk-forward gate runner — write wf_gate_metadata to artifact.
 
 Per CLAUDE.md §5.9 + roadmap P0 #1 (post E55 NGB revert): every promote
-requires walk-forward 3-cut Sharpe + §5.2 sanity battery. This script
-runs both checks and stamps the artifact's metadata so kernel.model_acceptance.promote()
-will accept it.
+requires walk-forward 3-cut Sharpe + §5.2 sanity battery. Historical WF
+validates a point-in-time retrain manifest, so this script also verifies
+that the manifest artifacts match the candidate artifact's training recipe
+before stamping metadata accepted by kernel.model_acceptance.promote().
 
 Usage:
     python scripts/run_wf_gate.py --artifact path/to/staging.json
@@ -33,6 +34,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
+import hashlib
 import json
 import logging
 import math
@@ -66,6 +68,109 @@ def _resolve_strategy_path(raw: str | None) -> Path | None:
     return p if p.is_absolute() else STRATEGY_DIR / p
 
 
+def _recipe_projection(artifact: dict) -> dict:
+    """Return the model-recipe fields a WF manifest must match.
+
+    A current production artifact cannot be replayed into old sim windows
+    without look-ahead leakage. For historical walk-forward, we therefore
+    validate the retraining recipe instead: same model kind, ordered feature
+    contract, label horizon, and learner params.
+    """
+    return {
+        "kind": artifact.get("kind"),
+        "feature_cols": list(artifact.get("feature_cols") or []),
+        "label_col": artifact.get("label_col"),
+        "lookahead_days": int(artifact.get("lookahead_days") or 0),
+        "params": artifact.get("params") or {},
+    }
+
+
+def _recipe_fingerprint(artifact: dict) -> str:
+    payload = json.dumps(
+        _recipe_projection(artifact),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _manifest_recipe_usage(manifest_path: Path | None, artifact_path: Path) -> dict:
+    if manifest_path is None or not manifest_path.exists():
+        return {
+            "recipe_validated": False,
+            "reason": f"manifest not found: {manifest_path}",
+        }
+    try:
+        payload = json.loads(manifest_path.read_text())
+        rows = payload.get("retrains", []) if isinstance(payload, dict) else payload
+    except Exception as exc:  # noqa: BLE001
+        return {"recipe_validated": False, "reason": f"manifest parse failed: {exc}"}
+    if not isinstance(rows, list) or not rows:
+        return {"recipe_validated": False, "reason": "manifest has no retrain rows"}
+
+    candidate = json.loads(artifact_path.read_text())
+    candidate_fp = _recipe_fingerprint(candidate)
+    candidate_recipe = _recipe_projection(candidate)
+    samples = [rows[0], rows[len(rows) // 2], rows[-1]]
+    seen: set[str] = set()
+    sample_reports: list[dict] = []
+    for row in samples:
+        uri = str((row or {}).get("artifact_uri") or "")
+        if not uri or uri in seen:
+            continue
+        seen.add(uri)
+        p = Path(uri)
+        if not p.is_absolute():
+            p = STRATEGY_DIR / p
+        if not p.exists():
+            sample_reports.append({
+                "artifact_uri": uri,
+                "exists": False,
+                "recipe_matches": False,
+            })
+            continue
+        try:
+            sample = json.loads(p.read_text())
+            sample_fp = _recipe_fingerprint(sample)
+            sample_recipe = _recipe_projection(sample)
+        except Exception as exc:  # noqa: BLE001
+            sample_reports.append({
+                "artifact_uri": str(p),
+                "exists": True,
+                "recipe_matches": False,
+                "error": str(exc),
+            })
+            continue
+        sample_reports.append({
+            "artifact_uri": str(p),
+            "exists": True,
+            "recipe_matches": sample_fp == candidate_fp,
+            "recipe_fingerprint": sample_fp,
+            "n_features": len(sample_recipe["feature_cols"]),
+            "missing_features_vs_candidate": sorted(
+                set(candidate_recipe["feature_cols"]) - set(sample_recipe["feature_cols"])
+            )[:10],
+            "extra_features_vs_candidate": sorted(
+                set(sample_recipe["feature_cols"]) - set(candidate_recipe["feature_cols"])
+            )[:10],
+        })
+
+    if not sample_reports:
+        return {"recipe_validated": False, "reason": "no sample artifacts found in manifest"}
+    all_match = all(r.get("recipe_matches") for r in sample_reports)
+    return {
+        "recipe_validated": bool(all_match),
+        "candidate_recipe_fingerprint": candidate_fp,
+        "candidate_n_features": len(candidate_recipe["feature_cols"]),
+        "manifest_sample_reports": sample_reports,
+        "reason": (
+            "manifest sample artifacts match candidate recipe"
+            if all_match else
+            "manifest sample artifacts do not match candidate recipe"
+        ),
+    }
+
+
 def inspect_artifact_usage(strategy_config: str, artifact_path: Path) -> dict:
     """Return whether this WF sim config actually evaluates `artifact_path`.
 
@@ -87,15 +192,17 @@ def inspect_artifact_usage(strategy_config: str, artifact_path: Path) -> dict:
         manifest = _resolve_strategy_path(
             str(wf_cfg.get("manifest_path", "artifacts/walkforward_manifest.json"))
         )
+        recipe_usage = _manifest_recipe_usage(manifest, artifact_path)
         return {
             "candidate_artifact_used": False,
             "eval_scope": "walkforward_manifest",
             "strategy_config": strategy_config,
             "manifest_path": str(manifest) if manifest is not None else None,
             "reason": (
-                "strategy config uses walkforward manifest; the candidate artifact "
-                "is not the static scorer evaluated by the sim"
+                "strategy config uses walkforward manifest; validating candidate "
+                "recipe against manifest artifacts"
             ),
+            **recipe_usage,
         }
 
     panel_cfg = (cfg.get("ranking", {}) or {}).get("panel_scoring", {}) or {}
@@ -476,9 +583,10 @@ def run_sanity_battery(artifact_path: Path) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifact", required=True, help="Path to staging artifact JSON")
-    ap.add_argument("--strategy-config", default="strategy_config.json",
-                    help="Static sim config name used to evaluate the candidate artifact "
-                         "(default: strategy_config.json)")
+    ap.add_argument("--strategy-config", default="strategy_config.sim_wl200.json",
+                    help="WF sim config name. Manifest configs validate the candidate "
+                         "training recipe; static configs evaluate the artifact "
+                         "directly when leakage-safe (default: strategy_config.sim_wl200.json)")
     ap.add_argument("--strict", action="store_true",
                     help="Compatibility flag for weekly_wf_promote.sh. Current thresholds are already strict.")
     ap.add_argument("--skip-wf", action="store_true",
@@ -508,24 +616,38 @@ def main():
 
     wf_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf:
-        wf_result = run_walk_forward(args.strategy_config, jobs=args.jobs)
-        log.info("WF result: %s", wf_result["reason"])
+        manifest_scope = artifact_usage.get("eval_scope") == "walkforward_manifest"
+        if manifest_scope and not bool(artifact_usage.get("recipe_validated")):
+            wf_result = {
+                "passed": False,
+                "reason": (
+                    "manifest recipe mismatch; refusing to spend sim compute on "
+                    f"non-comparable WF evidence: {artifact_usage.get('reason')}"
+                ),
+            }
+            log.error("WF result: %s", wf_result["reason"])
+        else:
+            wf_result = run_walk_forward(args.strategy_config, jobs=args.jobs)
+            log.info("WF result: %s", wf_result["reason"])
 
     sanity_result = {"passed": True, "reason": "skipped"}
     if not args.skip_sanity:
         sanity_result = run_sanity_battery(artifact_path)
         log.info("Sanity result: %s", sanity_result["reason"])
 
-    artifact_scope_ok = bool(artifact_usage.get("candidate_artifact_used"))
-    if not artifact_scope_ok:
+    validation_scope_ok = bool(artifact_usage.get("candidate_artifact_used")) or bool(
+        artifact_usage.get("recipe_validated")
+    )
+    if not validation_scope_ok:
         wf_result["passed"] = False
         prior_reason = wf_result.get("reason", "")
         wf_result["reason"] = (
-            f"{prior_reason}; candidate artifact was not evaluated "
+            f"{prior_reason}; candidate artifact was not directly evaluated "
+            f"and no matching manifest recipe was validated "
             f"(scope={artifact_usage.get('eval_scope')})"
         ).strip("; ")
 
-    overall_pass = bool(wf_result["passed"]) and bool(sanity_result["passed"]) and artifact_scope_ok
+    overall_pass = bool(wf_result["passed"]) and bool(sanity_result["passed"]) and validation_scope_ok
     wf_meta = {
         "passed": overall_pass,
         "wf_3cut_sharpe_mean": wf_result.get("wf_3cut_sharpe_mean"),
@@ -543,6 +665,8 @@ def main():
         "wf_jobs":             wf_result.get("wf_jobs"),
         "cuts":                wf_result.get("cuts"),
         "candidate_artifact_used": artifact_usage.get("candidate_artifact_used"),
+        "recipe_validated":    artifact_usage.get("recipe_validated"),
+        "candidate_recipe_fingerprint": artifact_usage.get("candidate_recipe_fingerprint"),
         "wf_eval_scope":       artifact_usage.get("eval_scope"),
         "artifact_usage":      artifact_usage,
         "real_ic":             sanity_result.get("real_ic"),

@@ -599,12 +599,16 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
         wf_3cut_apy_mean:     float
         sanity_shuffled_ic:   float       # must be ≈ 0
         sanity_placebo_ic:    float       # must be < 0.5 × real_ic
+        candidate_artifact_used: bool     # True for leakage-safe static eval
+        recipe_validated:      bool       # True for matching manifest eval
         run_at:               str (ISO-8601)
         gate_version:         int
 
     Failure modes:
       - missing wf_gate_metadata        → refuse promote
       - passed != True                  → refuse promote
+      - neither static artifact nor matching manifest recipe was evaluated
+                                           → refuse promote
       - run_at older than 14 days       → refuse promote (must re-run)
 
     Emergency override: set env `RQ_ALLOW_NO_WF=1` (logged loudly,
@@ -642,13 +646,14 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
             f"placebo_ic={wf.get('sanity_placebo_ic')}. "
             f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
         )
-    if wf.get("candidate_artifact_used") is False:
+    if wf.get("candidate_artifact_used") is False and wf.get("recipe_validated") is not True:
         raise ValueError(
             f"promote: refused — wf_gate_metadata says the WF sim did not "
-            f"evaluate the candidate artifact ({staging_path.name}); "
+            f"evaluate the candidate artifact ({staging_path.name}) and did "
+            f"not validate a matching manifest recipe; "
             f"scope={wf.get('wf_eval_scope')!r}. Re-run the gate with a "
-            f"static artifact config or use an explicitly documented "
-            f"manifest-scope promotion path."
+            f"leakage-safe static artifact config or a manifest whose "
+            f"artifacts match the candidate recipe."
         )
     # Staleness check: WF results older than 14 days are not credible
     # for current model state (panel data + bug-fix lineage may differ).

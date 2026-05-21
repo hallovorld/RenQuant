@@ -68,14 +68,14 @@ artifacts/sim/walkforward_manifest_merged.json
 ```
 
 Therefore the probe **did not directly evaluate** the candidate artifact
-`artifacts/prod/panel-ltr.alpha158_fund.json`. The gate correctly stamped
-`candidate_artifact_used=false`, and model acceptance should reject this
-metadata for promotion.
+`artifacts/prod/panel-ltr.alpha158_fund.json`. A manifest-scoped result is
+promotion evidence only when the manifest artifacts match the candidate's
+training recipe.
 
 ## Follow-Up Fix
 
-The WF gate default strategy config has been changed from
-`strategy_config.sim_wl200.json` to `strategy_config.json` so weekly promote
-and research acceptance evaluate the actual candidate artifact by default.
-The manifest path remains useful for manifest-level research, but it must be
-passed explicitly and must not be accepted as candidate-artifact evidence.
+The WF gate now keeps `strategy_config.sim_wl200.json` as the default
+historical WF path, but adds a recipe fingerprint check. If the manifest
+artifacts do not match the candidate recipe, the gate fails before spending
+sim compute. A static artifact config remains supported for leakage-safe
+windows, but a current production artifact cannot be replayed into old WF cuts.

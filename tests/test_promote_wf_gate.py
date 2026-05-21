@@ -80,8 +80,16 @@ class TestCheckWFGate:
         wf["candidate_artifact_used"] = False
         wf["wf_eval_scope"] = "walkforward_manifest"
         data = {"metadata": {"wf_gate_metadata": wf}}
-        with pytest.raises(ValueError, match="did not.*candidate artifact"):
+        with pytest.raises(ValueError, match="matching manifest recipe"):
             _check_wf_gate(data, Path("/fake.json"))
+
+    def test_accepts_manifest_scope_when_recipe_validated(self):
+        wf = _wf_meta(passed=True)
+        wf["candidate_artifact_used"] = False
+        wf["recipe_validated"] = True
+        wf["wf_eval_scope"] = "walkforward_manifest"
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        _check_wf_gate(data, Path("/fake.json"))
 
     def test_stale_run_at_raises(self):
         data = {"metadata": {"wf_gate_metadata": _wf_meta(passed=True, age_days=20)}}
@@ -141,10 +149,20 @@ class TestPromoteEndToEnd:
         wf["wf_eval_scope"] = "walkforward_manifest"
         staging = _staging_artifact(tmp_path, wf=wf)
         active = tmp_path / "active.json"
-        with pytest.raises(ValueError, match="did not.*candidate artifact"):
+        with pytest.raises(ValueError, match="matching manifest recipe"):
             promote(staging, active)
         assert staging.exists()
         assert not active.exists()
+
+    def test_promote_accepts_manifest_scope_with_recipe_validated(self, tmp_path):
+        wf = _wf_meta(passed=True)
+        wf["candidate_artifact_used"] = False
+        wf["recipe_validated"] = True
+        wf["wf_eval_scope"] = "walkforward_manifest"
+        staging = _staging_artifact(tmp_path, wf=wf)
+        active = tmp_path / "active.json"
+        promote(staging, active)
+        assert active.exists()
 
     def test_promote_succeeds_with_passed_wf(self, tmp_path):
         staging = _staging_artifact(tmp_path, wf=_wf_meta(passed=True))

@@ -13,10 +13,10 @@ def test_wf_gate_accepts_weekly_strict_flag() -> None:
     )
 
 
-def test_wf_gate_defaults_to_static_candidate_config() -> None:
+def test_wf_gate_defaults_to_manifest_recipe_config() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
-    assert 'default="strategy_config.json"' in src
-    assert "Static sim config name used to evaluate the candidate artifact" in src
+    assert 'default="strategy_config.sim_wl200.json"' in src
+    assert "Manifest configs validate the candidate" in src
 
 
 def test_wf_gate_sim_cuts_do_not_use_live_static_path_or_persistence() -> None:
@@ -66,15 +66,24 @@ def test_wf_gate_refuses_to_stamp_manifest_as_candidate_artifact() -> None:
     assert "inspect_artifact_usage" in src
     assert "candidate_artifact_used" in src
     assert '"--allow-manifest-scope"' not in src
-    assert 'artifact_scope_ok = bool(artifact_usage.get("candidate_artifact_used"))' in src
-    assert "candidate artifact was not evaluated" in src
+    assert "recipe_validated" in src
+    assert "manifest recipe mismatch" in src
+    assert "no matching manifest recipe was validated" in src
 
 
 def test_model_acceptance_rejects_non_candidate_wf_metadata() -> None:
     src = (REPO / "backtesting/renquant_104/kernel/model_acceptance.py").read_text()
-    assert 'wf.get("candidate_artifact_used") is False' in src
-    assert "WF sim did not" in src
-    assert "evaluate the candidate artifact" in src
+    assert 'wf.get("candidate_artifact_used") is False and wf.get("recipe_validated") is not True' in src
+    assert "not validate" in src
+    assert "matching manifest recipe" in src
+
+
+def test_wf_gate_has_recipe_fingerprint_contract() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert "def _recipe_projection" in src
+    assert "def _recipe_fingerprint" in src
+    assert "candidate_recipe_fingerprint" in src
+    assert "missing_features_vs_candidate" in src
 
 
 def test_run_sim_disables_live_freshness_by_default_for_historical_sims() -> None:

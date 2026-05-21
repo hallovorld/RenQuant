@@ -12,8 +12,9 @@
 # Steps:
 #   1. Smoke test (catch immediate breakage before 90 min train)
 #   2. Retrain → produces panel-ltr.staging.alpha158_fund.json
-#   3. Run scripts/run_wf_gate.py — 3-cut WF + §5.2 sanity, stamps
-#      wf_gate_metadata into staging artifact on success
+#   3. Run scripts/run_wf_gate.py — 3-cut WF + §5.2 sanity. Historical
+#      WF uses a manifest, so the gate first verifies the manifest artifacts
+#      match the candidate recipe before stamping wf_gate_metadata.
 #   4. _check_wf_gate inside promote() refuses to swap if metadata
 #      missing or .passed=False — NO RQ_ALLOW_NO_WF override here
 #   5. ntfy alert with verdict + Sharpe / IC numbers
@@ -126,7 +127,10 @@ echo "Training pipeline finished at $(date)"
 
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
-if ! "$PYTHON" scripts/run_wf_gate.py --artifact "$ACTIVE_ART" --strict; then
+if ! "$PYTHON" scripts/run_wf_gate.py \
+    --artifact "$ACTIVE_ART" \
+    --strategy-config strategy_config.sim_wl200.json \
+    --strict; then
     echo "WF gate FAILED — ROLLING BACK to prior production model."
     if [ -f "$ROLLBACK_ART" ]; then
         cp "$ROLLBACK_ART" "$ACTIVE_ART"
