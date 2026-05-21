@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Optional
 import numpy as np, pandas as pd, xgboost as xgb
 from datetime import datetime
+import uuid
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("train-prod")
@@ -61,6 +62,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--watchlist-file", type=str, default=None,
         help="JSON config or list file; filter panel rows to tickers in this watchlist. Track 1 wl retrain.",
+    )
+    p.add_argument(
+        "--cv-n-splits", type=int, default=3,
+        help="Number of purged walk-forward folds stamped into the artifact.",
+    )
+    p.add_argument(
+        "--cv-embargo-days", type=int, default=60,
+        help="Trading-day embargo between each train window and validation fold.",
+    )
+    p.add_argument(
+        "--skip-cv", action="store_true",
+        help="Emergency only: skip OOS contract evaluation. Production strict "
+             "contract will fail when this is used.",
     )
     return p.parse_args()
 
@@ -204,6 +218,98 @@ def train_xgb(train: pd.DataFrame, feat_cols: list[str], label: str = LABEL) -> 
     return booster, train_ic_mean
 
 
+def cross_sectional_ic(pred: np.ndarray, y: np.ndarray, dates: np.ndarray) -> dict:
+    """Mean daily Spearman IC for a prediction vector."""
+    from scipy.stats import spearmanr
+
+    df = pd.DataFrame({"pred": pred, "y": y, "date": dates})
+    ics = []
+    for _, g in df.groupby("date"):
+        if len(g) < 5:
+            continue
+        ic, _ = spearmanr(g["pred"], g["y"])
+        if not np.isnan(ic):
+            ics.append(float(ic))
+    return {
+        "mean_ic": float(np.mean(ics)) if ics else float("nan"),
+        "n_dates": int(len(ics)),
+        "per_date_ic": ics,
+    }
+
+
+def evaluate_walk_forward_cv(
+    train: pd.DataFrame,
+    feat_cols: list[str],
+    *,
+    label: str = LABEL,
+    n_splits: int = 3,
+    embargo_days: int = 60,
+) -> dict:
+    """Purged expanding-window CV used for artifact contract metadata.
+
+    Each fold trains only on dates strictly before the validation fold,
+    leaving ``embargo_days`` trading dates between train and validation.
+    """
+    n_splits = max(1, int(n_splits))
+    embargo_days = max(0, int(embargo_days))
+    dates = np.array(sorted(pd.to_datetime(train["date"].unique())))
+    if len(dates) < (n_splits + 1) * 5:
+        raise ValueError(f"not enough dates for {n_splits} folds: {len(dates)}")
+
+    fold_indices = np.array_split(np.arange(len(dates)), n_splits + 1)[1:]
+    folds = []
+    for fold_no, val_idx in enumerate(fold_indices, start=1):
+        if len(val_idx) == 0:
+            continue
+        train_end_pos = int(val_idx[0]) - embargo_days
+        if train_end_pos <= 0:
+            log.warning("CV fold %d skipped: embargo leaves no train dates", fold_no)
+            continue
+        tr_dates = set(dates[:train_end_pos])
+        va_dates = set(dates[val_idx])
+        tr = train[train["date"].isin(tr_dates)]
+        va = train[train["date"].isin(va_dates)]
+        if tr["date"].nunique() < 20 or va.empty:
+            log.warning(
+                "CV fold %d skipped: n_train_dates=%d n_val_rows=%d",
+                fold_no, tr["date"].nunique(), len(va),
+            )
+            continue
+
+        booster, train_ic = train_xgb(tr, feat_cols, label=label)
+        pred = booster.predict(xgb.DMatrix(va[feat_cols].fillna(0).values.astype(np.float64)))
+        y = va[label].clip(-5, 5).values.astype(np.float64)
+        ic_info = cross_sectional_ic(pred, y, va["date"].values)
+        fold_ic = float(ic_info["mean_ic"])
+        folds.append({
+            "fold": fold_no,
+            "train_start": pd.Timestamp(tr["date"].min()).date().isoformat(),
+            "train_end": pd.Timestamp(tr["date"].max()).date().isoformat(),
+            "val_start": pd.Timestamp(va["date"].min()).date().isoformat(),
+            "val_end": pd.Timestamp(va["date"].max()).date().isoformat(),
+            "n_train_rows": int(len(tr)),
+            "n_val_rows": int(len(va)),
+            "train_ic": float(train_ic),
+            "ic": fold_ic,
+            "n_ic_dates": int(ic_info["n_dates"]),
+        })
+        log.info("CV fold %d/%d IC=%+.4f train_dates=%d val_dates=%d",
+                 fold_no, n_splits, fold_ic, tr["date"].nunique(), va["date"].nunique())
+
+    per_fold = [f["ic"] for f in folds if np.isfinite(f["ic"])]
+    if not per_fold:
+        raise ValueError("walk-forward CV produced no finite folds")
+    return {
+        "cv_method": "purged_walk_forward",
+        "cv_n_splits": n_splits,
+        "cv_embargo_days": embargo_days,
+        "oos_mean_ic": float(np.mean(per_fold)),
+        "oos_std_ic": float(np.std(per_fold, ddof=1)) if len(per_fold) > 1 else 0.0,
+        "oos_per_fold_ic": [float(v) for v in per_fold],
+        "folds": folds,
+    }
+
+
 def stamp_fingerprint(artifact: dict) -> str:
     """Stamp config_fingerprint_fields + config_fingerprint (production only).
 
@@ -224,7 +330,12 @@ def stamp_fingerprint(artifact: dict) -> str:
 def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    mu: np.ndarray, sd: np.ndarray, train: pd.DataFrame,
                    cutoff_date: Optional[pd.Timestamp],
-                   side_label: Optional[str]) -> dict:
+                   side_label: Optional[str],
+                   *,
+                   label_used: str = LABEL,
+                   train_ic: float | None = None,
+                   cv_result: dict | None = None,
+                   train_run_id: str | None = None) -> dict:
     """Build artifact dict, stamping cutoff_date + side_label when set."""
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
     base_notes = (
@@ -248,10 +359,26 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
             "tickers": int(train["ticker"].nunique()),
             "dates":   int(train["date"].nunique()),
         },
-        "label_col": LABEL,
+        "label_col": label_used,
         "lookahead_days": 60,
+        "train_run_id": train_run_id,
+        "training_train_ic": train_ic,
         "training_notes": notes,
     }
+    if cv_result:
+        artifact.update({
+            "oos_mean_ic": cv_result.get("oos_mean_ic"),
+            "oos_std_ic": cv_result.get("oos_std_ic"),
+            "oos_per_fold_ic": cv_result.get("oos_per_fold_ic"),
+            "cv_method": cv_result.get("cv_method"),
+            "cv_n_splits": cv_result.get("cv_n_splits"),
+            "cv_embargo_days": cv_result.get("cv_embargo_days"),
+            "cv_folds": cv_result.get("folds"),
+            "eval_ic": (
+                cv_result.get("oos_per_fold_ic")[-1]
+                if cv_result.get("oos_per_fold_ic") else None
+            ),
+        })
     if cutoff_date is not None:
         artifact["cutoff_date"] = cutoff_date.isoformat()
     if side_label is not None:
@@ -267,9 +394,31 @@ def main():
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
     )
     mu, sd, _ = build_normalization(train, feat_cols)
-    booster, _ic = train_xgb(train, feat_cols, label=label_used)
+    cv_result = None
+    if not args.skip_cv:
+        cv_result = evaluate_walk_forward_cv(
+            train,
+            feat_cols,
+            label=label_used,
+            n_splits=args.cv_n_splits,
+            embargo_days=args.cv_embargo_days,
+        )
+        log.info(
+            "OOS contract CV: mean_ic=%+.4f std=%+.4f folds=%s",
+            cv_result["oos_mean_ic"],
+            cv_result["oos_std_ic"],
+            [round(x, 4) for x in cv_result["oos_per_fold_ic"]],
+        )
+    else:
+        log.warning("--skip-cv set: artifact will not satisfy strict contract")
+
+    booster, train_ic = train_xgb(train, feat_cols, label=label_used)
     artifact = build_artifact(booster, feat_cols, mu, sd, train,
-                              cutoff_date, args.side_label)
+                              cutoff_date, args.side_label,
+                              label_used=label_used,
+                              train_ic=train_ic,
+                              cv_result=cv_result,
+                              train_run_id=str(uuid.uuid4())[:8])
 
     if not is_walkforward:
         fp = stamp_fingerprint(artifact)

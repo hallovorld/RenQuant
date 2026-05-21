@@ -189,6 +189,7 @@ class TestArtifactStampedCutoff:
             booster, feat_cols, mu, sd, train,
             cutoff_date=pd.Timestamp("2024-01-01"),
             side_label="walkforward_v2_2024-01-01",
+            train_run_id="abc12345",
         )
         assert art["cutoff_date"] == "2024-01-01T00:00:00"
         assert art["side_label"] == "walkforward_v2_2024-01-01"
@@ -202,6 +203,7 @@ class TestArtifactStampedCutoff:
         art = TPM.build_artifact(
             booster, ["feat_a"], np.zeros(1), np.ones(1), train,
             cutoff_date=None, side_label=None,
+            train_run_id="abc12345",
         )
         assert "cutoff_date" not in art
         assert "side_label" not in art
@@ -218,9 +220,76 @@ class TestSideLabelInArtifact:
             booster, ["feat_a"], np.zeros(1), np.ones(1), train,
             cutoff_date=pd.Timestamp("2024-06-01"),
             side_label="walkforward_v2_2024-06-01",
+            train_run_id="abc12345",
         )
         assert "walkforward_v2_2024-06-01" in art["training_notes"]
         assert "side_label" in art["training_notes"]
+
+
+class TestStrictContractStamp:
+    """Production artifacts must carry machine-checkable OOS evidence."""
+
+    def test_build_artifact_stamps_strict_contract_fields(self):
+        booster = mock.MagicMock()
+        booster.save_raw.return_value = b"{}"
+        train = _make_synthetic_panel(n_tickers=3, n_dates=10).dropna(subset=["fwd_60d_excess"])
+        cv_result = {
+            "cv_method": "purged_walk_forward",
+            "cv_n_splits": 3,
+            "cv_embargo_days": 60,
+            "oos_mean_ic": 0.032,
+            "oos_std_ic": 0.004,
+            "oos_per_fold_ic": [0.02, 0.03, 0.046],
+            "folds": [{"fold": 1, "ic": 0.02}],
+        }
+
+        art = TPM.build_artifact(
+            booster, ["feat_a"], np.zeros(1), np.ones(1), train,
+            cutoff_date=None,
+            side_label=None,
+            label_used="fwd_60d_excess",
+            train_ic=0.10,
+            cv_result=cv_result,
+            train_run_id="abc12345",
+        )
+
+        assert art["train_run_id"] == "abc12345"
+        assert art["oos_mean_ic"] == pytest.approx(0.032)
+        assert art["oos_std_ic"] == pytest.approx(0.004)
+        assert art["oos_per_fold_ic"] == [0.02, 0.03, 0.046]
+        assert art["cv_method"] == "purged_walk_forward"
+        assert art["cv_embargo_days"] == 60
+        assert art["training_train_ic"] == pytest.approx(0.10)
+        assert art["eval_ic"] == pytest.approx(0.046)
+
+    def test_walk_forward_cv_purges_embargo_before_validation(self, monkeypatch):
+        panel = _make_synthetic_panel(n_tickers=8, n_dates=90, start="2023-01-02")
+        calls = []
+
+        class FakeBooster:
+            def predict(self, _dmatrix):
+                return np.arange(len(_dmatrix.get_label() if hasattr(_dmatrix, "get_label") else []))
+
+        def fake_train_xgb(train, feat_cols, label=TPM.LABEL):
+            calls.append(train["date"].max())
+            booster = mock.MagicMock()
+            booster.predict.side_effect = lambda dmat: np.arange(dmat.num_row())
+            return booster, 0.1
+
+        monkeypatch.setattr(TPM, "train_xgb", fake_train_xgb)
+        result = TPM.evaluate_walk_forward_cv(
+            panel,
+            ["feat_a", "feat_b"],
+            label="fwd_60d_excess",
+            n_splits=2,
+            embargo_days=5,
+        )
+
+        assert len(result["oos_per_fold_ic"]) == 2
+        for fold in result["folds"]:
+            train_end = pd.Timestamp(fold["train_end"])
+            val_start = pd.Timestamp(fold["val_start"])
+            assert train_end < val_start
 
 
 class TestBackwardCompat:
