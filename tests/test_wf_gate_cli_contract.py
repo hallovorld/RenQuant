@@ -27,6 +27,16 @@ def test_wf_gate_sim_cuts_do_not_use_live_static_path_or_persistence() -> None:
     assert "returncode" in src and "sim cuts failed execution" in src
 
 
+def test_wf_gate_persists_trade_trace_by_default() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert '"--trace-dir"' in src
+    assert '"--no-trade-trace"' in src
+    assert "wf_trade_traces" in src
+    assert '"--trade-log-json"' in src
+    assert '"--round-trips-csv"' in src
+    assert "wf_trade_trace_dir" in src
+
+
 def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "val.reindex(columns=feat_cols, fill_value=0).fillna(0)" in src
@@ -90,3 +100,12 @@ def test_run_sim_disables_live_freshness_by_default_for_historical_sims() -> Non
     src = (REPO / "scripts/run_sim_104.py").read_text()
     assert 'data_freshness["enabled"] = False' in src
     assert "historical sim" in src
+
+
+def test_run_sim_can_dump_trade_forensics() -> None:
+    src = (REPO / "scripts/run_sim_104.py").read_text()
+    assert '"--trade-log-json"' in src
+    assert '"--trade-log-csv"' in src
+    assert '"--round-trips-csv"' in src
+    assert '"--trade-report-md"' in src
+    assert "write_trade_outputs" in src

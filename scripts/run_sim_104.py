@@ -49,6 +49,14 @@ def main() -> None:
                    help="Disable persistence entirely (fastest; no DB writes).")
     p.add_argument("--equity-json", default=None,
                    help="Write daily equity curve to JSON (for paired-returns analysis)")
+    p.add_argument("--trade-log-json", default=None,
+                   help="Write raw SimResult.trade_log events to JSON.")
+    p.add_argument("--trade-log-csv", default=None,
+                   help="Write raw SimResult.trade_log events to CSV.")
+    p.add_argument("--round-trips-csv", default=None,
+                   help="Write FIFO-matched round trips to CSV.")
+    p.add_argument("--trade-report-md", default=None,
+                   help="Write a Markdown trade-forensics report.")
     p.add_argument("--no-compare", action="store_true",
                    help="Skip the golden-config comparison run.")
     p.add_argument("--skip-preflight", action="store_true",
@@ -167,6 +175,29 @@ def main() -> None:
         _P(args.equity_json).parent.mkdir(parents=True, exist_ok=True)
         _P(args.equity_json).write_text(json.dumps(payload, indent=2))
         log.info("Wrote daily equity → %s (%d days)", args.equity_json, len(eq))
+
+    if any([args.trade_log_json, args.trade_log_csv,
+            args.round_trips_csv, args.trade_report_md]):
+        from sim_trade_ledger import write_trade_outputs  # noqa: PLC0415
+        written = write_trade_outputs(
+            result           = result,
+            config           = config,
+            trade_json       = args.trade_log_json,
+            trade_csv        = args.trade_log_csv,
+            round_trips_csv  = args.round_trips_csv,
+            report_md        = args.trade_report_md,
+            title            = (
+                f"renquant_104 sim trade forensics "
+                f"({args.strategy_config_name}, {args.start} to {args.end})"
+            ),
+            extra_metrics    = {
+                "config": args.strategy_config_name,
+                "start": args.start,
+                "end": args.end,
+            },
+        )
+        for kind, path in sorted(written.items()):
+            log.info("Wrote %s → %s", kind, path)
 
     # Compare to golden if available (skip with --no-compare to halve runtime)
     if args.no_compare:

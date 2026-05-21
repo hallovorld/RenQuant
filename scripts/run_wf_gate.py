@@ -298,10 +298,29 @@ def _merge_counts(rows: list[dict], key: str) -> dict:
     return dict(sorted(merged.items(), key=lambda kv: kv[1], reverse=True))
 
 
-def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
+def _trace_paths(trace_dir: Path | None, start: str, end: str) -> dict[str, str]:
+    if trace_dir is None:
+        return {}
+    safe = f"{start}_to_{end}"
+    return {
+        "equity_json": str(trace_dir / f"{safe}.equity.json"),
+        "trade_json": str(trace_dir / f"{safe}.trades.json"),
+        "trade_csv": str(trace_dir / f"{safe}.trades.csv"),
+        "round_trips_csv": str(trace_dir / f"{safe}.round_trips.csv"),
+        "report_md": str(trace_dir / f"{safe}.report.md"),
+    }
+
+
+def run_sim_cut(
+    strategy_config: str,
+    start: str,
+    end: str,
+    trace_dir: Path | None = None,
+) -> dict:
     """Run one sim cut, parse Sharpe + APY from log."""
     log.info("Sim cut: %s → %s", start, end)
     market_context = cut_market_context(start, end)
+    traces = _trace_paths(trace_dir, start, end)
     cmd = [
         PYTHON,
         str(REPO / "scripts/run_sim_104.py"),
@@ -311,6 +330,15 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
         "--no-persist",
         "--skip-preflight",
     ]
+    if traces:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        cmd.extend([
+            "--equity-json", traces["equity_json"],
+            "--trade-log-json", traces["trade_json"],
+            "--trade-log-csv", traces["trade_csv"],
+            "--round-trips-csv", traces["round_trips_csv"],
+            "--trade-report-md", traces["report_md"],
+        ])
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     out = proc.stdout + proc.stderr
     if proc.returncode != 0:
@@ -322,6 +350,7 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
             "sharpe": float("nan"),
             "apy": float("nan"),
             "market_context": market_context,
+            "trace_paths": traces,
             "returncode": int(proc.returncode),
             "error_tail": tail,
         }
@@ -351,23 +380,28 @@ def run_sim_cut(strategy_config: str, start: str, end: str) -> dict:
         "dominant_hmm_regime": _top_regime(market_context.get("hmm_regime_counts")),
         "dominant_spy_grid_regime": _top_regime(market_context.get("spy_grid_regime_counts")),
         "market_context": market_context,
+        "trace_paths": traces,
         "returncode": 0,
     }
 
 
-def run_walk_forward(strategy_config: str, jobs: int = 1) -> dict:
+def run_walk_forward(
+    strategy_config: str,
+    jobs: int = 1,
+    trace_dir: Path | None = None,
+) -> dict:
     """Run 3-cut walk-forward, return mean/std/per-cut."""
     cuts = CUTS
     jobs = max(1, min(int(jobs), len(cuts)))
     results: list[dict | None] = [None] * len(cuts)
     if jobs == 1:
         for idx, (start, end) in enumerate(cuts):
-            results[idx] = run_sim_cut(strategy_config, start, end)
+            results[idx] = run_sim_cut(strategy_config, start, end, trace_dir)
     else:
         log.info("Running %d WF cuts with jobs=%d", len(cuts), jobs)
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             future_to_idx = {
-                pool.submit(run_sim_cut, strategy_config, start, end): idx
+                pool.submit(run_sim_cut, strategy_config, start, end, trace_dir): idx
                 for idx, (start, end) in enumerate(cuts)
             }
             for fut in as_completed(future_to_idx):
@@ -597,6 +631,12 @@ def main():
                     help="Number of walk-forward cuts to run concurrently. "
                          "Default 1 preserves the conservative historical path; "
                          "use 3 for full cut-level parallelism.")
+    ap.add_argument("--trace-dir", default=None,
+                    help="Directory for per-cut equity/trade ledgers. Default: "
+                         "artifacts/diagnostics/wf_trade_traces/<utc timestamp>.")
+    ap.add_argument("--no-trade-trace", action="store_true",
+                    help="Do not persist per-cut trade ledgers. Intended only "
+                         "for quick parser tests.")
     args = ap.parse_args()
 
     artifact_path = Path(args.artifact)
@@ -614,6 +654,20 @@ def main():
     artifact_usage = inspect_artifact_usage(args.strategy_config, artifact_path)
     log.info("Artifact usage: %s", artifact_usage)
 
+    trace_dir: Path | None = None
+    if not args.no_trade_trace:
+        if args.trace_dir:
+            trace_dir = Path(args.trace_dir)
+            if not trace_dir.is_absolute():
+                trace_dir = STRATEGY_DIR / trace_dir
+        else:
+            run_stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            trace_dir = (
+                STRATEGY_DIR / "artifacts" / "diagnostics"
+                / "wf_trade_traces" / run_stamp
+            )
+        log.info("WF trade trace dir: %s", trace_dir)
+
     wf_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf:
         manifest_scope = artifact_usage.get("eval_scope") == "walkforward_manifest"
@@ -627,7 +681,11 @@ def main():
             }
             log.error("WF result: %s", wf_result["reason"])
         else:
-            wf_result = run_walk_forward(args.strategy_config, jobs=args.jobs)
+            wf_result = run_walk_forward(
+                args.strategy_config,
+                jobs=args.jobs,
+                trace_dir=trace_dir,
+            )
             log.info("WF result: %s", wf_result["reason"])
 
     sanity_result = {"passed": True, "reason": "skipped"}
@@ -664,6 +722,7 @@ def main():
         "n_positive_cuts":     wf_result.get("n_positive_cuts"),
         "wf_jobs":             wf_result.get("wf_jobs"),
         "cuts":                wf_result.get("cuts"),
+        "wf_trade_trace_dir":   str(trace_dir) if trace_dir is not None else None,
         "candidate_artifact_used": artifact_usage.get("candidate_artifact_used"),
         "recipe_validated":    artifact_usage.get("recipe_validated"),
         "candidate_recipe_fingerprint": artifact_usage.get("candidate_recipe_fingerprint"),
