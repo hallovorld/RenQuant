@@ -605,14 +605,14 @@ class ValidateQPMuContractTask(Task):
     The QP objective expects μ to be an expected-return-like quantity. A
     raw ranking score is acceptable only after the Grinold-Kahn
     ``alpha_to_mu`` transform normalizes it to volatility units. Default
-    mode is ``warn`` for production continuity; promotion/dry-run configs
-    can set ``rotation.joint_actions.qp_mu_contract = "strict"``.
+    mode is ``strict``: sim/WF results are invalid if QP falls back to raw
+    score semantics.
     """
     name = "ValidateQPMuContractTask"
 
     def run(self, ctx) -> bool | None:
         cfg = _qp_cfg(ctx)
-        mode = str(cfg.get("qp_mu_contract", "warn")).lower()
+        mode = str(cfg.get("qp_mu_contract", "strict")).lower()
         if mode in {"off", "disabled", "none"}:
             return None
 
@@ -1198,6 +1198,35 @@ def _shares_from_dw(dw: float, nav: float, px: float) -> int:
     return int(abs(dw) * nav / px)
 
 
+def _buy_cost_multiplier(config: dict) -> float:
+    """Return conservative cash multiplier for a buy order."""
+    exec_cfg = (config or {}).get("execution", {}) or {}
+    if bool(exec_cfg.get("legacy_no_fees", False)):
+        return 1.0
+    if not bool(exec_cfg.get("enabled", True)):
+        return 1.0
+    bps = (
+        float(exec_cfg.get("half_spread_bps", 2.0) or 0.0)
+        + float(exec_cfg.get("commission_bps", 0.0) or 0.0)
+        + float(exec_cfg.get("qp_buy_cash_buffer_bps", 1.0) or 0.0)
+    )
+    return 1.0 + max(0.0, bps) / 10000.0
+
+
+def _cap_buy_shares_to_cash(
+    shares: int,
+    px: float,
+    cash_left: float,
+    cost_multiplier: float,
+) -> tuple[int, float]:
+    """Cap buy shares so emitted QP orders fit free cash."""
+    if shares <= 0 or px <= 0 or cash_left <= 0:
+        return 0, 0.0
+    unit_cost = px * max(1.0, float(cost_multiplier))
+    capped = min(int(shares), int(cash_left // unit_cost))
+    return capped, capped * unit_cost
+
+
 class EmitOrdersFromQPSolutionTask(Task):
     """Translate Δw → ctx.orders (buys/top-ups) + ctx.exits (closes/trims).
 
@@ -1244,6 +1273,8 @@ class EmitOrdersFromQPSolutionTask(Task):
             n_zero_shares=counters["zero_shares"],
             n_no_buy_delta=counters["no_buy_delta"],
             n_not_selected=counters["not_selected"],
+            n_cash_capped=counters["cash_capped"],
+            n_cash_exhausted=counters["cash_exhausted"],
         )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
@@ -1260,6 +1291,11 @@ class EmitOrdersFromQPSolutionTask(Task):
             tickers=_get_path(ctx, "_qp_tickers") or [],
             prices=_get_path(ctx, "prices") or {},
             nav=float(_get_path(ctx, "portfolio_value", 0.0) or 0.0),
+            cash=float(_get_path(
+                ctx, "cash", _get_path(ctx, "portfolio_value", 0.0),
+            ) or 0.0),
+            cash_reserve=float(_get_path(ctx, "_qp_cash_reserve", 0.0) or 0.0),
+            buy_cost_multiplier=_buy_cost_multiplier(ctx.config or {}),
             min_dw=float(cfg.get("qp_min_dw_pct", 0.005)),
             no_trade_factor=float(cfg.get("qp_no_trade_band_factor", 0.0)),
             band_cap=float(cfg.get("qp_no_trade_band_cap", 0.05)),
@@ -1323,7 +1359,9 @@ class EmitOrdersFromQPSolutionTask(Task):
         c = dict(blocked_buys=0, blocked_earnings=0,
                  skipped_nonfinite=0, skipped_band=0,
                  delta_below_min_dw=0, zero_shares=0,
-                 no_buy_delta=0, not_selected=0)
+                 no_buy_delta=0, not_selected=0,
+                 cash_capped=0, cash_exhausted=0)
+        buy_cash_left = max(0.0, env["cash"] - env["nav"] * env["cash_reserve"])
         for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
             if not _m.isfinite(dw):
@@ -1396,6 +1434,18 @@ class EmitOrdersFromQPSolutionTask(Task):
                     c["blocked_earnings"] += 1
                     stamp(t, "earnings")
                     continue
+                capped_shares, used_cash = _cap_buy_shares_to_cash(
+                    shares, px, buy_cash_left, env["buy_cost_multiplier"],
+                )
+                if capped_shares <= 0:
+                    c["cash_exhausted"] += 1
+                    stamp(t, "qp_cash_exhausted")
+                    continue
+                if capped_shares < shares:
+                    c["cash_capped"] += 1
+                    stamp(t, "qp_cash_capped")
+                    shares = capped_shares
+                buy_cash_left = max(0.0, buy_cash_left - used_cash)
                 _emit_qp_buy(ctx, t, shares, env["prices"].get(t, 0.0), sol, i, env["cands"])
                 emitted_candidates.add(t)
                 nb += 1
@@ -1414,6 +1464,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         *, n_blocked_buys, buy_blocked, n_blocked_earnings, earn_buf,
         n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
         n_delta_below_min_dw, n_zero_shares, n_no_buy_delta, n_not_selected,
+        n_cash_capped, n_cash_exhausted,
     ) -> None:
         if n_blocked_buys:
             reason = ("buy_blocked=True" if buy_blocked
@@ -1461,6 +1512,16 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "EmitOrdersFromQPSolutionTask: %d candidate(s) received no "
                 "QP allocation reason after solve",
                 n_not_selected,
+            )
+        if n_cash_capped:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: capped %d QP buy(s) to available cash",
+                n_cash_capped,
+            )
+        if n_cash_exhausted:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: skipped %d QP buy(s) because cash was exhausted",
+                n_cash_exhausted,
             )
 
 

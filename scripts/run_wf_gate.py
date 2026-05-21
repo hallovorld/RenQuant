@@ -42,6 +42,10 @@ import subprocess
 import sys
 from pathlib import Path
 import re
+import pandas as pd
+
+from qp_contracts import validate_qp_contract_config
+from trade_monotonicity import evaluate_trade_monotonicity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("wf-gate")
@@ -501,6 +505,51 @@ def run_walk_forward(
     }
 
 
+def run_trade_monotonicity_gate(
+    wf_result: dict,
+    *,
+    min_n_per_regime: int = 30,
+    min_spearman: float = 0.02,
+    min_top_bottom_spread: float = 0.0,
+) -> dict:
+    """Evaluate trade score monotonicity from persisted round-trip ledgers."""
+    frames = []
+    missing = []
+    for cut in wf_result.get("cuts") or []:
+        rt_path = ((cut.get("trace_paths") or {}).get("round_trips_csv"))
+        if not rt_path:
+            missing.append(f"{cut.get('start')}->{cut.get('end')}: no round-trip path")
+            continue
+        p = Path(rt_path)
+        if not p.exists():
+            missing.append(str(p))
+            continue
+        frames.append(pd.read_csv(p))
+    if missing:
+        return {
+            "passed": False,
+            "reason": "missing round-trip ledger(s): " + "; ".join(missing[:5]),
+            "missing": missing,
+        }
+    if not frames:
+        return {"passed": False, "reason": "no round-trip ledgers found"}
+    report = evaluate_trade_monotonicity(
+        pd.concat(frames, ignore_index=True),
+        min_n_per_regime=min_n_per_regime,
+        min_spearman=min_spearman,
+        min_top_bottom_spread=min_top_bottom_spread,
+    )
+    return {
+        "passed": bool(report.passed),
+        "reason": report.reason,
+        "pooled": report.pooled,
+        "regimes": report.regimes,
+        "min_n_per_regime": int(min_n_per_regime),
+        "min_spearman": float(min_spearman),
+        "min_top_bottom_spread": float(min_top_bottom_spread),
+    }
+
+
 def run_sanity_battery(artifact_path: Path) -> dict:
     """§5.2 shuffled-label + time-shift placebo on the artifact's training pipeline.
 
@@ -637,6 +686,8 @@ def main():
     ap.add_argument("--no-trade-trace", action="store_true",
                     help="Do not persist per-cut trade ledgers. Intended only "
                          "for quick parser tests.")
+    ap.add_argument("--skip-trade-gates", action="store_true",
+                    help="Skip trade-level monotonicity acceptance gates.")
     args = ap.parse_args()
 
     artifact_path = Path(args.artifact)
@@ -653,6 +704,14 @@ def main():
 
     artifact_usage = inspect_artifact_usage(args.strategy_config, artifact_path)
     log.info("Artifact usage: %s", artifact_usage)
+    cfg_path = STRATEGY_DIR / args.strategy_config
+    qp_contract = (
+        validate_qp_contract_config(json.loads(cfg_path.read_text()))
+        if cfg_path.exists() else
+        None
+    )
+    if qp_contract is not None:
+        log.info("QP contract: %s", qp_contract.summary())
 
     trace_dir: Path | None = None
     if not args.no_trade_trace:
@@ -671,7 +730,18 @@ def main():
     wf_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf:
         manifest_scope = artifact_usage.get("eval_scope") == "walkforward_manifest"
-        if manifest_scope and not bool(artifact_usage.get("recipe_validated")):
+        if qp_contract is not None and not qp_contract.passed:
+            wf_result = {
+                "passed": False,
+                "reason": qp_contract.summary(),
+                "qp_contract": {
+                    "passed": False,
+                    "issues": qp_contract.issues,
+                    "evidence": qp_contract.evidence,
+                },
+            }
+            log.error("WF result: %s", wf_result["reason"])
+        elif manifest_scope and not bool(artifact_usage.get("recipe_validated")):
             wf_result = {
                 "passed": False,
                 "reason": (
@@ -687,6 +757,17 @@ def main():
                 trace_dir=trace_dir,
             )
             log.info("WF result: %s", wf_result["reason"])
+
+    trade_gate_result = {"passed": True, "reason": "skipped"}
+    if not args.skip_wf and not args.skip_trade_gates:
+        if trace_dir is None:
+            trade_gate_result = {
+                "passed": False,
+                "reason": "trade gates require persisted round-trip ledgers",
+            }
+        elif wf_result.get("cuts"):
+            trade_gate_result = run_trade_monotonicity_gate(wf_result)
+        log.info("Trade gate result: %s", trade_gate_result["reason"])
 
     sanity_result = {"passed": True, "reason": "skipped"}
     if not args.skip_sanity:
@@ -705,7 +786,12 @@ def main():
             f"(scope={artifact_usage.get('eval_scope')})"
         ).strip("; ")
 
-    overall_pass = bool(wf_result["passed"]) and bool(sanity_result["passed"]) and validation_scope_ok
+    overall_pass = (
+        bool(wf_result["passed"])
+        and bool(sanity_result["passed"])
+        and bool(trade_gate_result["passed"])
+        and validation_scope_ok
+    )
     wf_meta = {
         "passed": overall_pass,
         "wf_3cut_sharpe_mean": wf_result.get("wf_3cut_sharpe_mean"),
@@ -728,6 +814,15 @@ def main():
         "candidate_recipe_fingerprint": artifact_usage.get("candidate_recipe_fingerprint"),
         "wf_eval_scope":       artifact_usage.get("eval_scope"),
         "artifact_usage":      artifact_usage,
+        "qp_contract":         (
+            {
+                "passed": qp_contract.passed,
+                "issues": qp_contract.issues,
+                "evidence": qp_contract.evidence,
+            }
+            if qp_contract is not None else None
+        ),
+        "trade_monotonicity":  trade_gate_result,
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),
         "sanity_placebo_ic":   sanity_result.get("sanity_placebo_ic"),

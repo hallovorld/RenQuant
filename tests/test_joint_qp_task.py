@@ -264,6 +264,66 @@ class TestNonFiniteDeltaWGuard:
         assert ctx.orders == [], "inf Δw must be skipped, not produce an order"
 
 
+class TestQPCashBudget:
+    """QP order emission must fit executable free cash."""
+
+    def test_qp_buy_orders_are_capped_to_available_cash(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        cfg = _qp_on()
+        cfg["execution"] = {"enabled": False}
+        ctx = _Ctx(config=cfg, cash=1000.0, portfolio_value=10000.0)
+        ctx._qp_tickers = ["A", "B"]
+        ctx._qp_sigma = np.array([0.05, 0.05])
+        ctx.candidates = [
+            _Cand("A", mu=0.05, sigma=0.05),
+            _Cand("B", mu=0.04, sigma=0.05),
+        ]
+        ctx.prices = {"A": 100.0, "B": 100.0}
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.08, 0.08]),
+            target_w=np.array([0.08, 0.08]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert sum(o["invest"] for o in ctx.orders) <= ctx.cash
+        assert [o["shares"] for o in ctx.orders] == [8, 2]
+        assert ctx.counters["qp_cash_capped"] == 1
+
+    def test_qp_buy_orders_skip_when_cash_cannot_buy_one_share(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        cfg = _qp_on()
+        cfg["execution"] = {"enabled": False}
+        ctx = _Ctx(config=cfg, cash=50.0, portfolio_value=10000.0)
+        ctx._qp_tickers = ["A"]
+        ctx._qp_sigma = np.array([0.05])
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.05)]
+        ctx.prices = {"A": 100.0}
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.08]),
+            target_w=np.array([0.08]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx.counters["qp_cash_exhausted"] == 1
+
+
 class TestNoTradeBandDavisNorman:
     """Bug-bounty round 4 (2026-05-05): cash-drag mitigation via
     Davis-Norman (1990) / Constantinides (1979) per-asset no-trade

@@ -472,7 +472,9 @@
       "qp_sector_cap_enabled": true,
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
-      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4)."
+      "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
+      "qp_mu_contract": "strict",
+      "_qp_mu_contract_reason": "2026-05-21 Codex audit: sim/WF QP must consume expected-return-like \u03bc, not raw rank_score/panel_score. Strictly require calibrator expected_return, NGBoost \u03bc, or alpha_to_mu."
     },
     "enabled_regimes": [
       "BULL_CALM"
@@ -616,7 +618,11 @@
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
       "topup_conviction_floor": 0.2,
-      "base_rate": 0.273
+      "base_rate": 0.273,
+      "use_calibrator_mu": true,
+      "use_realized_vol_fallback": true,
+      "realized_vol_window_days": 60,
+      "_strict_qp_mu_sigma_reason": "2026-05-21 Codex audit: WL200 sim must match prod \u03bc/\u03c3 semantics. Calibrator expected_return feeds QP/Kelly \u03bc; realized vol supplies \u03c3 when NGBoost is off."
     },
     "ngboost_head": {
       "enabled": false

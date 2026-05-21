@@ -172,9 +172,8 @@ class JointPortfolioQPJob(Job):
             # from input scale. See doc/AUDIT_2026-05-12_dead_paths.md
             # §NGBoost SUSPECT — μ-scale mismatch.
             ApplyGrinoldKahnTransformTask(),
-            # QP expects μ to be expected-return-like. Warn by default
-            # when raw rank/panel scores reach the optimizer without the
-            # α→μ transform; strict mode is used by promotion/dry-run gates.
+            # QP expects μ to be expected-return-like. Strict by default:
+            # raw rank/panel scores cannot silently reach the optimizer.
             ValidateQPMuContractTask(),
             BuildWeightVectorTask(),
             ComputeFullSigmaTask(),

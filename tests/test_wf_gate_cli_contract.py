@@ -37,6 +37,14 @@ def test_wf_gate_persists_trade_trace_by_default() -> None:
     assert "wf_trade_trace_dir" in src
 
 
+def test_wf_gate_runs_qp_contract_and_trade_monotonicity_gates() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert "validate_qp_contract_config" in src
+    assert "run_trade_monotonicity_gate" in src
+    assert "trade_monotonicity" in src
+    assert '"--skip-trade-gates"' in src
+
+
 def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "val.reindex(columns=feat_cols, fill_value=0).fillna(0)" in src
@@ -110,6 +118,13 @@ def test_run_sim_can_dump_trade_forensics() -> None:
     assert '"--trade-report-md"' in src
     assert "write_trade_outputs" in src
     assert "end_prices" in src
+
+
+def test_run_sim_enforces_qp_contract_before_simulation() -> None:
+    src = (REPO / "scripts/run_sim_104.py").read_text()
+    assert "validate_qp_contract_config" in src
+    assert '"--allow-raw-qp-mu"' in src
+    assert "sys.exit(3)" in src
 
 
 def test_sim_buy_trade_log_falls_back_to_context_regime() -> None:

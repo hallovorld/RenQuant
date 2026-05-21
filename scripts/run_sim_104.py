@@ -63,6 +63,9 @@ def main() -> None:
                    help="Skip the static-path preflight on side configs. "
                         "ONLY use when intentionally running a no-op (e.g. "
                         "re-baselining against new artifacts).")
+    p.add_argument("--allow-raw-qp-mu", action="store_true",
+                   help="Emergency/debug override: allow QP configs that do "
+                        "not have a strict expected-return μ contract.")
     args = p.parse_args()
 
     strategy_dir = REPO_ROOT / "backtesting" / STRATEGY
@@ -73,6 +76,15 @@ def main() -> None:
         log.error("Config not found: %s", cfg_path)
         sys.exit(1)
     config = json.loads(cfg_path.read_text())
+    from qp_contracts import validate_qp_contract_config  # noqa: PLC0415
+    qp_contract = validate_qp_contract_config(config)
+    if not qp_contract.passed and not args.allow_raw_qp_mu:
+        log.error(qp_contract.summary())
+        log.error("QP contract evidence: %s", qp_contract.evidence)
+        sys.exit(3)
+    if qp_contract.qp_enabled:
+        log.info("QP contract: %s  evidence=%s",
+                 qp_contract.summary(), qp_contract.evidence)
     # Historical sims/WF cuts are not live inference. The live freshness
     # guard correctly requires every symbol to include the latest completed
     # NYSE close, but old windows can contain IPO/new-listing gaps and would
