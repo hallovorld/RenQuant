@@ -69,6 +69,25 @@ class PanelScorer:
                 f"(2026-05-04 snapshot side-config fix)."
             )
         if path.suffix == ".pt":
+            # 2026-05-20 fix: `.pt` no longer auto-routes to legacy custom
+            # TransformerPanelScorer. HF PatchTST (scripts/patchtst_hf.py
+            # --save-model, registered as kind=hf_patchtst in
+            # model_registry.py 2026-05-18) saves a checkpoint with
+            # `config_dict`+`feature_cols` keys and NO sidecar JSON. Pre-fix,
+            # SimAdapter trying to load such an artifact failed with
+            # "PanelTransformerModel.load: sidecar JSON not found" — split-
+            # brain between model_registry (HF-aware) and PanelScorer.load
+            # (HF-blind) per §1c violation.
+            # Detect HF format via marker keys without loading state_dict.
+            ckpt = None
+            try:
+                import torch  # noqa: PLC0415
+                ckpt = torch.load(path, map_location="cpu", weights_only=False)
+            except Exception:
+                pass  # fall through to legacy if checkpoint peek failed
+            if isinstance(ckpt, dict) and "config_dict" in ckpt and "feature_cols" in ckpt:
+                from kernel.panel_pipeline.hf_patchtst_scorer import HFPatchTSTPanelScorer  # noqa: PLC0415
+                return HFPatchTSTPanelScorer.load(path)
             from kernel.panel_pipeline.transformer_scorer import TransformerPanelScorer  # noqa: PLC0415
             return TransformerPanelScorer.load(path)
         try:
