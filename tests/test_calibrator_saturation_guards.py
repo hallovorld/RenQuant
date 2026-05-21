@@ -119,10 +119,11 @@ class TestCalibratorLoadGuards:
                             for r in caplog.records), \
                 f"clean artifact should not warn; got: {[r.message for r in caplog.records]}"
 
-    def test_train_site_clips_er_to_20pct(self):
+    @pytest.mark.parametrize("method", ["isotonic", "platt"])
+    def test_train_site_clips_er_to_20pct(self, method):
         """Phase 4 — fit_global_calibrator must clip ER to ±0.20 at train
-        site. Pre-fix the clip was ±1.0 which let +100% returns flow into
-        er_y and saturate the calibrator's upper tail."""
+        site for every calibration method. Pre-fix the isotonic path clipped,
+        but Platt's linear ER head fit raw returns and could emit >±0.20."""
         from training_panel.global_calibrator import fit_global_calibrator
         import pandas as pd
 
@@ -141,13 +142,13 @@ class TestCalibratorLoadGuards:
 
         cal = fit_global_calibrator(
             {"T01": scores}, {"T01": fwd},
-            lookahead_days=10, min_rows=100,
+            lookahead_days=10, min_rows=100, method=method,
         )
         assert float(cal.er_y.max()) <= 0.20 + 1e-9, (
-            f"train-site clip not enforced: er_y.max()={cal.er_y.max()}"
+            f"{method} train-site clip not enforced: er_y.max()={cal.er_y.max()}"
         )
         assert float(cal.er_y.min()) >= -0.20 - 1e-9, (
-            f"train-site clip not enforced: er_y.min()={cal.er_y.min()}"
+            f"{method} train-site clip not enforced: er_y.min()={cal.er_y.min()}"
         )
 
     def test_preclip_snapshot_triggers_guard(self, caplog):
@@ -220,6 +221,14 @@ class TestG12SaveGate:
         )
         with tempfile.TemporaryDirectory() as tmp:
             cal.save(Path(tmp) / "good.json")  # should not raise
+
+    def test_production_fit_script_uses_save_gate(self):
+        """Production refits must not hand-write JSON around save() gates."""
+        src = (REPO_ROOT / "scripts/fit_calibrator_alpha158_fund.py").read_text()
+        assert "calib.save(out_path" in src, (
+            "fit_calibrator_alpha158_fund.py must save through "
+            "GlobalPanelCalibration.save() so G12 gates cannot be bypassed."
+        )
 
 
 class TestApplyGlobalCalibrationSaturationGuard:

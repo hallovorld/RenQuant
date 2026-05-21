@@ -435,6 +435,23 @@ def fit_global_calibrator(
             prob_labels = (fwd_all >= threshold).astype(float)
     else:
         prob_labels = (fwd_all >= threshold).astype(float)
+    # G12/CLAUDE.md §5.13.12: expected-return targets are consumed as Kelly μ
+    # downstream. Keep this bound shared across calibration methods so Platt
+    # and isotonic cannot diverge silently.
+    ER_CLIP = 0.20
+    fwd_clipped_count = int(np.sum(np.abs(fwd_all) > ER_CLIP))
+    if fwd_clipped_count > 0:
+        log.warning(
+            "fit_global_calibrator: clipping %d/%d (%.2f%%) raw fwd_returns "
+            "to [%+.2f, %+.2f] before ER fit. Tightened from ±1.0 in "
+            "2026-05-15 P0 (live prod calibrator had +100%% ER saturated "
+            "tail → broke Kelly μ vectors).",
+            fwd_clipped_count, len(fwd_all),
+            100 * fwd_clipped_count / max(1, len(fwd_all)),
+            -ER_CLIP, ER_CLIP,
+        )
+    fwd_for_er = np.clip(fwd_all, -ER_CLIP, ER_CLIP)
+
     method_lc = (method or "isotonic").lower()
     if method_lc == "platt":
         # Platt scaling — sigmoid logistic regression on raw_score → P(label).
@@ -463,9 +480,10 @@ def fit_global_calibrator(
         # ER head — also linear regression for symmetry (LinearRegression
         # gives smooth ER curve, no plateau).
         from sklearn.linear_model import LinearRegression  # noqa: PLC0415
-        lin_er = LinearRegression().fit(X, fwd_all)
+        lin_er = LinearRegression().fit(X, fwd_for_er)
         er_x = prob_x.copy()
         er_y = lin_er.predict(er_x.reshape(-1, 1))
+        er_y = np.clip(er_y, -ER_CLIP, ER_CLIP)
     else:
         iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
         # ER head: direct regression — but FIRST clip extreme forward returns.
@@ -484,19 +502,6 @@ def fit_global_calibrator(
         # expected returns on equities are ~±2% at the extreme; ±20% is
         # a generous bound covering crisis-period tails without enabling
         # broken-calibrator catastrophes. CLAUDE.md §5.13.12.
-        ER_CLIP = 0.20
-        fwd_clipped_count = int(np.sum(np.abs(fwd_all) > ER_CLIP))
-        if fwd_clipped_count > 0:
-            log.warning(
-                "fit_global_calibrator: clipping %d/%d (%.2f%%) raw fwd_returns "
-                "to [%+.2f, %+.2f] before isotonic ER fit. Tightened from "
-                "±1.0 in 2026-05-15 P0 (live prod calibrator had +100%% ER "
-                "saturated tail → broke Kelly μ vectors).",
-                fwd_clipped_count, len(fwd_all),
-                100 * fwd_clipped_count / max(1, len(fwd_all)),
-                -ER_CLIP, ER_CLIP,
-            )
-        fwd_for_er = np.clip(fwd_all, -ER_CLIP, ER_CLIP)
         iso_er = IsotonicRegression(out_of_bounds="clip").fit(raw_all, fwd_for_er)
         # Extract knots for JSON serialization. Use the isotonic model's own knots.
         prob_x = np.asarray(iso_p.X_thresholds_, dtype=float)

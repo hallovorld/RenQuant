@@ -196,11 +196,10 @@ def main():
     log.info("ACCEPTANCE-GATE PASS: largest flat region %.1f%% ≤ %.0f%% (method=%s)",
              flat_frac * 100, MAX_FLAT_FRAC * 100, method)
 
-    # Hand-build the artifact since GlobalPanelCalibration.save isn't a one-liner
+    # Save through GlobalPanelCalibration.save so the G12 acceptance gate
+    # (probability.y in [0,1], expected_return.y within ±20%) cannot be
+    # bypassed by this production script.
     log.info("Saving artifact to %s", out_path)
-    p_x, p_y = calib.prob_x.tolist(), calib.prob_y.tolist()
-    e_x, e_y = calib.er_x.tolist(),   calib.er_y.tolist()
-
     metadata = dict(calib.metadata)
     # Stamp the source artifact path so we can detect drift later
     metadata["scorer_artifact"] = str(art_path)
@@ -213,15 +212,7 @@ def main():
         metadata["data_window_end"] = args.data_end
     metadata["lookahead_days_used"] = 60
 
-    payload = {
-        "version": 1,
-        "kind":    "global_panel_calibration",
-        "trained_date": pd.Timestamp.utcnow().date().isoformat(),
-        "probability":      {"x": p_x, "y": p_y},
-        "expected_return":  {"x": e_x, "y": e_y},
-        "metadata":         metadata,
-    }
-    out_path.write_text(json.dumps(payload, default=str))
+    calib.save(out_path, metadata=metadata)
     log.info("Saved: n_unique_prob_y=%d  pool_ic=%+.4f  per_date_ic=%+.4f  base_rate=%.4f",
              metadata["n_unique_prob_y"],
              metadata["pool_ic"],
