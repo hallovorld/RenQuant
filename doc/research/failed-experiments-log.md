@@ -3561,3 +3561,48 @@ optimizer (pooled-mean A/B) was using the wrong objective function.
 
 The right framework is REGIME-STRATIFIED 5-test methodology. Working
 directory has it now (`scripts/analyze_regime_stratified.py`).
+
+
+---
+
+## 2026-05-22 — PatchTST seed44 raw-signal promotion check failed
+
+**Hypothesis:** HF PatchTST seed44 may provide a stronger shadow signal than
+XGB when evaluated directly as a cross-sectional top-K scorer.
+
+**Protocol:** `scripts/eval_raw_signal_baseline.py`, top 10 / bottom 10,
+60-trading-day hold, 60-trading-day rebalance, local OHLCV close-to-close
+returns, regime-first reporting, with A/A, shuffle, reverse, and 20-day
+time-shift controls.
+
+**Result:** PatchTST actual pooled APY was +11.37%, but it did not beat
+controls:
+
+| Metric | Actual | Shuffle | Reverse | 20-day time-shift |
+|---|---:|---:|---:|---:|
+| Events | 5 | 5 | 5 | 4 |
+| Pooled APY | +11.37% | +29.57% | +20.00% | +70.48% |
+| Pooled Sharpe | +0.553 | +1.689 | +2.527 | +2.526 |
+| Alpha vs SPY | -0.29% | +3.24% | +1.12% | +7.99% |
+| Long-short spread | -1.41% | +1.46% | +1.41% | +7.81% |
+| Pooled mean IC | -0.016 | n/a | n/a | n/a |
+
+**Conclusion:** failed promotion. PatchTST seed44 can remain shadow/research,
+but it is not eligible for primary or shadow-primary without a future 5-cut x
+5-seed run beating the same raw-signal controls per regime.
+
+**Reproduction:**
+
+```bash
+.venv/bin/python scripts/eval_raw_signal_baseline.py \
+  --artifact artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt \
+  --kind hf_patchtst \
+  --start 2025-02-06 \
+  --end 2026-02-10 \
+  --top-k 10 \
+  --bottom-k 10 \
+  --hold-days 60 \
+  --rebalance-days 60 \
+  --out-json artifacts/diagnostics/raw_signal_baseline_patchtst_seed44_20260522.json \
+  --out-md doc/research/2026-05-22-raw-signal-baseline-patchtst-seed44.md
+```
