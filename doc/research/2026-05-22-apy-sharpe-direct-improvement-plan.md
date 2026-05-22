@@ -225,15 +225,52 @@ Done in this slice:
 - Read-only trade decision attribution analyzer.
 - Unit tests for legacy schema, decision payload preservation, FIFO pairing,
   win rate, and profit factor.
+- Read-only exit counterfactual replay:
+  - `scripts/analyze_exit_counterfactuals.py`
+  - `tests/test_exit_counterfactuals.py`
 - First local diagnostics written to the paths below. These are intentionally
   local generated artifacts because they can contain real trade history:
   - `artifacts/trade_decision_attribution_alpaca_all.json`
   - `artifacts/trade_decision_attribution_alpaca_since_2026-05-01.json`
   - `artifacts/trade_decision_attribution_alpaca_db_sim_rows.json`
   - `artifacts/trade_decision_attribution_sim_runs_current.json`
+  - `artifacts/exit_counterfactuals_sim_runs_current.json`
+
+## Exit Counterfactual Replay Result
+
+Command:
+
+```bash
+.venv/bin/python scripts/analyze_exit_counterfactuals.py \
+  --db data/sim_runs.db \
+  --run-type sim \
+  --horizons 20,60,120 \
+  --barrier-window 20 \
+  --min-n 20
+```
+
+Result summary:
+
+| Group | Actual net P&L | Hold-20d delta | Hold-60d delta | Hold-120d delta | Interpretation |
+|---|---:|---:|---:|---:|---|
+| all exits | +$9,147 | -$37,090 | +$46,377 | +$276,612 | Not all exits are too early; 20d blanket hold hurts. |
+| `stop_loss` | -$76,198 | +$12,004 | +$6,847 | +$50,204 | Stop-loss is the main false-positive suspect. |
+| `single_day_loss` | -$7,591 | +$849 | +$23,147 | +$37,733 | SDL also looks too aggressive in some paths. |
+| `model_sell` | +$33,575 | -$31,866 | -$13,617 | +$59,048 | Model sell is useful at 20d/60d horizon. |
+| `qp_sell` | +$44,863 | -$18,978 | +$10,159 | +$68,318 | QP sell is useful at 20d, mixed longer. |
+| `CHOPPY` | -$3,486 | -$1,353 | +$5,481 | +$14,034 | CHOPPY needs separate deployment logic. |
+
+Interpretation:
+
+- The result does **not** support a blanket "hold longer" rule.
+- It does support targeted work on path-rule exits, especially `stop_loss` and
+  `single_day_loss`.
+- `model_sell` and `qp_sell` should not be casually weakened; they improve
+  short-horizon net P&L in this trace.
+- Longer 120d counterfactual gains are interesting but not automatically
+  promotable; they may increase drawdown, capital lockup, and benchmark risk.
 
 Not done yet:
 
-- Exit counterfactual replay.
 - Tax/cost hurdle integration.
 - Any production behavior change.
