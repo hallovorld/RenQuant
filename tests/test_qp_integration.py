@@ -163,6 +163,44 @@ class TestRealisticBars:
             assert ctx.orders[0]["shares"] <= 1   # rounding artefact
 
 
+# ── μ-contract integration ───────────────────────────────────────────────────
+
+class TestQPMuContractIntegration:
+    def test_strict_mu_contract_stops_before_solver_on_raw_score_fallback(self):
+        """Strict QP must not optimize raw panel/rank scores as return μ.
+
+        Unit tests pin ValidateQPMuContractTask itself. This integration guard
+        proves the production QP task chain stops before BuildWeight/Solve/Emit
+        when a candidate lacks finite μ and only has score-like fields.
+        """
+        ctx = _make_ctx(
+            candidates=[
+                _Cand(
+                    "RAW",
+                    mu=None,
+                    sigma=0.10,
+                    panel_score=1.50,
+                    rank_score=0.95,
+                )
+            ],
+            holdings={},
+            prices={"RAW": 100.0},
+            cash=10000.0,
+            portfolio_value=10000.0,
+        )
+        ctx.config["rotation"]["joint_actions"]["qp_mu_contract"] = "strict"
+
+        ret = JointPortfolioQPTask().run(ctx)
+
+        assert ret is True
+        assert ctx.counters["qp_mu_contract_block"] == 1
+        assert ctx._qp_mu_contract["ok"] is False
+        assert ctx.orders == []
+        assert ctx.exits == []
+        assert not hasattr(ctx, "_qp_w_current")
+        assert not hasattr(ctx, "_qp_solution")
+
+
 # ── Wash-sale interaction ─────────────────────────────────────────────────────
 
 class TestWashSaleIntegration:

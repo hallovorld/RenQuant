@@ -125,7 +125,7 @@ Reference support:
 
 ### P0-2 — QP/Kelly μ Contract Must Be Executable Or Disabled
 
-Status: next code fix.
+Status: implemented and guarded.
 
 Bug-class:
 
@@ -173,6 +173,24 @@ Acceptance:
 - Integration test: SimAdapter path records selected rows with μ source and no
   contradictory blocker.
 - WF acceptance: no `selected=1 AND blocked_by IS NOT NULL` rows.
+
+Implemented guardrails:
+
+- `JointPortfolioQPJob` runs `ValidateQPMuContractTask` after μ-source forcing
+  and Grinold-Kahn transform, before weight construction and solver emission.
+- `strategy_config.json`, `strategy_config.golden.json`, and
+  `strategy_config.sim_wl200_172_sentiment.json` set
+  `rotation.joint_actions.qp_mu_contract = "strict"`.
+- `ranking.kelly_sizing.use_calibrator_mu = true` wires the calibrated
+  expected-return head into Kelly μ when NGBoost μ is unavailable.
+- New production-chain acceptance:
+  `tests/test_qp_integration.py::TestQPMuContractIntegration::test_strict_mu_contract_stops_before_solver_on_raw_score_fallback`.
+
+Focused verification:
+
+```text
+36 passed in 3.00s
+```
 
 ### P0-3 — Align Exit Horizon With Observed Signal Horizon
 
