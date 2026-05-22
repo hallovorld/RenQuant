@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -115,6 +116,31 @@ class TestBuildInferenceMatrix:
                                      feature_cols=["x1", "x2", "missing_col"])
         assert list(mat.columns) == ["x1", "x2", "missing_col"]
         assert np.isnan(mat.loc["AAA", "missing_col"])
+
+    def test_many_missing_columns_do_not_fragment_frame(self):
+        from kernel.panel_pipeline.feature_matrix import build_inference_matrix
+
+        dates = pd.bdate_range("2024-01-01", periods=3)
+        ff = {"AAA": _make_feature_frame(dates, [1.0, 2.0, 3.0], [1.0] * 3)}
+        missing_cols = [f"missing_{i}" for i in range(180)]
+        feature_cols = ["x1", "x2", *missing_cols]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            mat = build_inference_matrix(
+                ff,
+                None,
+                today=dates[-1],
+                feature_cols=feature_cols,
+            )
+
+        perf_warnings = [
+            w for w in caught
+            if issubclass(w.category, pd.errors.PerformanceWarning)
+        ]
+        assert perf_warnings == []
+        assert list(mat.columns) == feature_cols
+        assert mat.loc["AAA", missing_cols].isna().all()
 
     def test_factor_frames_merged(self):
         from kernel.panel_pipeline.feature_matrix import build_inference_matrix

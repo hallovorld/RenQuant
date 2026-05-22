@@ -145,6 +145,11 @@ class BuildFeatureMatrixTask(Task):
         BuildFeatureMatrixTask._job.run(ctx)
 
 
+def _scorer_requires_history(scorer: object) -> bool:
+    """Return True only when a scorer explicitly opts into sequence history."""
+    return getattr(scorer, "requires_history", False) is True
+
+
 class ApplyScoresTask(Task):
     """Score the matrix and write panel_score onto candidates AND holdings.
 
@@ -182,7 +187,7 @@ class ApplyScoresTask(Task):
         scorer_kind_early = (scorer.metadata.get("kind")
                              if hasattr(scorer, "metadata") else None)
         if (scorer_kind_early not in ("panel_linear", "panel_ltr_xgboost")
-                and getattr(scorer, "requires_history", False)):
+                and _scorer_requires_history(scorer)):
             today = getattr(ctx, "today", None)
             target_tickers = list(X.index)
             panel_history = getattr(ctx, "_panel_history", None)
@@ -608,7 +613,7 @@ class ApplyScoresTask(Task):
                 # 2026-05-18 PatchTST dispatch: if scorer requires history
                 # (PatchTST sequence model), call score_with_history instead
                 # of legacy snapshot score().
-                if getattr(scorer, "requires_history", False):
+                if _scorer_requires_history(scorer):
                     panel_history = getattr(ctx, "_panel_history", None)
                     if panel_history is None:
                         # 2026-05-18 FIRST-WIRE-IN: lazy-load from training
@@ -1832,9 +1837,11 @@ class PanelScoringJob(Job):
     """Overwrite rank_score on surviving candidates with cross-sectional panel scores.
 
     Task chain:
-      LoadScorer → BuildFeatureMatrix → ApplyScores → VetoWeakBuys
+      LoadScorer → BuildFeatureMatrix → ApplyScores → ApplyShadowScoring
         → LoadNGBoost → ApplyNGBoost                 (no-op if ngboost.enabled is false)
         → LoadGlobalCalibration → ApplyGlobalCalibration (always-runs; see below)
+        → VetoWeakBuys → ApplyRealizedVolFallback → ApplyKellySizing
+        → QualityFloor
 
     Ordering rationale (task #2, 2026-04-23):
       NGBoost runs BEFORE global calibration so that when NGBoost's

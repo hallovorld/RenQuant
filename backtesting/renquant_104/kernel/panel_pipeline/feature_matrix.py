@@ -159,11 +159,9 @@ def build_inference_matrix(
             out = out.join(emb_df, how="left")
             out[emb_cols] = out[emb_cols].fillna(0.0)
 
-    # Guarantee all required columns exist (fill missing ones with NaN).
-    for c in feature_cols:
-        if c not in out.columns:
-            out[c] = np.nan
-    return out[feature_cols]
+    # Guarantee exact artifact order and fill absent columns in one shot.
+    # Repeated column insertion fragments pandas frames and swamps daily-run logs.
+    return out.reindex(columns=feature_cols)
 
 
 def run_panel_inference(

@@ -385,6 +385,71 @@ Acceptance:
 - No aggregate file can be produced from a partial or concurrently written run.
 - Comparison refuses duplicate output dirs.
 
+### P1 — Panel Matrix Assembly Must Be One-Shot, Not Column-By-Column
+
+Status: implemented.
+
+Observed issue:
+
+- The paper daily acceptance run finished, but the panel-frame/scoring path was
+  noisy and slow. `TickerCandidateJob` took `470s`, and the logs emitted many
+  pandas fragmentation warnings from
+  `kernel/panel_pipeline/feature_matrix.py`.
+- The warnings are operationally dangerous because the NGBoost feature-drift
+  hard-fail warning can be buried under performance noise.
+- This fix does not claim to solve the full `20` minute daily runtime. It
+  removes a proven hot-path anti-pattern and restores signal-to-noise in logs;
+  candidate and panel-frame preparation profiling remains a separate P1 item.
+
+Invariant:
+
+- `build_inference_matrix` must construct the artifact feature layout in one
+  DataFrame alignment operation.
+- Missing artifact columns are still present and filled with NaN.
+- Column order exactly matches `feature_cols`.
+- A large missing-column set must not produce
+  `pandas.errors.PerformanceWarning`.
+
+Reference support:
+
+- pandas `DataFrame.reindex(columns=...)` is the canonical label-alignment API:
+  it conforms the frame to requested columns and places NaN where no previous
+  value exists. Reference:
+  <https://pandas.pydata.org/pandas-docs/version/2.2/reference/api/pandas.DataFrame.reindex.html>
+- pandas warns that repeated column insertion can fragment a DataFrame; the
+  operational fix is to add/align columns in bulk. Reference:
+  <https://github.com/pandas-dev/pandas/issues/60075>
+
+Implementation:
+
+- Replaced per-column `out[c] = np.nan` insertion with a one-shot
+  `out.reindex(columns=feature_cols)`.
+- Updated the `PanelScoringJob` task-order contract to include the existing
+  `ApplyShadowScoringTask` inserted after primary panel scoring.
+- Tightened `ApplyScoresTask` sequence-model dispatch so the history path is
+  used only when a scorer explicitly sets `requires_history is True`; legacy
+  XGB scorers continue through `score(X)`.
+
+Verification:
+
+- The new regression test fails on the old code with `81` captured
+  `PerformanceWarning` instances.
+- After the patch:
+
+```text
+tests/test_panel_feature_matrix.py::TestBuildInferenceMatrix::test_many_missing_columns_do_not_fragment_frame
+1 passed in 2.05s
+
+tests/test_panel_feature_matrix.py tests/test_panel_scoring_job.py tests/test_panel_pipeline_e2e.py
+42 passed in 8.62s
+
+tests/test_apply_scores_panel_linear_dispatch.py::TestApplyScoresPanelLinearDispatch::test_xgb_path_unchanged_for_legacy_scorer
+1 passed in 4.48s
+
+tests/test_hf_patchtst_scorer.py tests/test_model_registry.py tests/test_regime_router_scorer.py
+33 passed, 2 skipped in 4.57s
+```
+
 ## Immediate Execution Order
 
 ```
@@ -416,16 +481,18 @@ Focused command:
   tests/test_kelly_sizing.py -q
 ```
 
-Full-suite status after this patch:
+Current full-suite status after the P1 matrix/dispatch patch:
 
 ```text
-9 failed, 11925 passed, 7955 skipped, 1 xfailed in 242.35s
+7 failed, 11939 passed, 7955 skipped, 1 xfailed in 214.60s
 ```
 
-The full-suite failures are not in the P0-1 touched files. They include existing
-source-contract drift in monthly calibrator / panel scoring / HF wrapper tests,
-one `python` executable PATH assumption, and one sandboxed process-pool semaphore
-failure. Treat the repo as not globally green until those are repaired.
+The remaining full-suite failures are not in the P1 touched feature-matrix or
+panel-dispatch paths. They include existing source-contract drift in monthly
+calibrator rollback tests, the missing QP anti-churn marker, one `python`
+executable PATH assumption, one sandboxed process-pool semaphore failure, and
+the PatchTST wrapper LOC budget. Treat the repo as not globally green until
+those are repaired.
 
 Acceptance notes after the patch:
 
