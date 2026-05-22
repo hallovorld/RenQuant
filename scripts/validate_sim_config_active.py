@@ -134,6 +134,10 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("regime_params.*.ngboost.enabled",       "job_panel_scoring.py:_ngb_cfg per-regime override"),
     ("regime_params.*.ngboost.score_mode",    "job_panel_scoring.py:_ngb_cfg per-regime override"),
     ("regime_params.*.ngboost.lambda_sigma",  "job_panel_scoring.py:_ngb_cfg per-regime override"),
+    # ── AFML meta-label exit veto (SimAdapter + MetaLabelVetoTask) ───────
+    ("ranking.meta_label.enabled",       "adapters/sim.py:263, task_meta_label_veto.py:182"),
+    ("ranking.meta_label.threshold",     "task_meta_label_veto.py:187"),
+    ("ranking.meta_label.artifact_path", "adapters/sim.py:266"),
     # ── known METADATA / comment fields (always inert) ───────────────────
     # listed so the validator marks them INERT_METADATA, not DEAD_PATH
 ]
@@ -165,9 +169,12 @@ def _match_glob(path: str, pattern: str) -> bool:
 
 
 def _is_active(path: str) -> tuple[bool, str]:
-    # Skip top-level inert metadata
-    head = path.split(".", 1)[0]
-    if head in INERT_KEYS:
+    # Skip inert metadata/comment fields at any nesting depth. Side-config
+    # generators deliberately stamp `_reason`/`_note` fields next to the real
+    # knobs; those must not make an otherwise-active experiment look dead.
+    parts = path.split(".")
+    head = parts[0]
+    if head in INERT_KEYS or any(p.startswith("_") or p in INERT_KEYS for p in parts):
         return False, "INERT_METADATA"
     for pat, evidence in ACTIVE_PATHS:
         if _match_glob(path, pat):
