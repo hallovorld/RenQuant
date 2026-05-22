@@ -1,0 +1,81 @@
+{
+  "arch": "hf_patchtst",
+  "cut": "all",
+  "seed": 44,
+  "best_val_ic": 0.030657318920158994,
+  "n_params": 67908,
+  "n_features": 172,
+  "uses_distributional_head": true,
+  "training_contract": {
+    "contract_version": 1,
+    "git_head": "94385418b82a687f8b0a83ff1b7e51310925774c",
+    "dataset": "data/transformer_v4_wl200_clean.parquet",
+    "cut": "all",
+    "label_col": "fwd_60d_excess",
+    "seed": 44,
+    "n_features": 172,
+    "n_params": 67908,
+    "split_counts": {
+      "train": 302144,
+      "val": 36068,
+      "embargo": 7810
+    },
+    "split_days": {
+      "embargo": 55,
+      "train": 2232,
+      "val": 254
+    },
+    "preprocessing": {
+      "csrank_norm_per_day": true,
+      "label_winsor": {
+        "enabled": true,
+        "fit_split": "train",
+        "pct": 0.005,
+        "lower": -2.6202194998994552,
+        "upper": 4.037451226632865
+      }
+    },
+    "hyperparameters": {
+      "seq_len": 24,
+      "patch_length": 4,
+      "d_model": 64,
+      "n_heads": 4,
+      "n_layers": 2,
+      "epochs": 8,
+      "lr": 0.0001,
+      "weight_decay": 0.3,
+      "lr_scheduler": "cosine",
+      "warmup_ratio": 0.1,
+      "warmup_steps": 1766,
+      "total_steps": 17664,
+      "early_stopping_patience": 2,
+      "embargo_days": 60,
+      "nll_loss_weight": 0.5,
+      "ranking_margin": 0.1,
+      "distributional_head": true,
+      "film_regime_cond": false,
+      "cross_stock_attn": false,
+      "device": "mps"
+    },
+    "selection": {
+      "metric_for_best_model": "eval_min_regime_ic",
+      "best_val_ic": 0.030657318920158994,
+      "final_metrics": {
+        "eval_loss": 0.810863196849823,
+        "eval_runtime": 11.5717,
+        "eval_samples_per_second": 21.95,
+        "eval_steps_per_second": 21.95,
+        "epoch": 4.0,
+        "eval_min_regime_ic": 0.030657318920158994,
+        "eval_ic_BULL_VOLATILE": 0.05242489684029087,
+        "eval_ic_BEAR": 0.19161528898685545,
+        "eval_ic_CHOPPY": 0.030657318920158994
+      }
+    }
+  },
+  "per_regime_ic": {
+    "BULL_VOLATILE": 0.05242489684029087,
+    "BEAR": 0.19161528898685545,
+    "CHOPPY": 0.030657318920158994
+  }
+}

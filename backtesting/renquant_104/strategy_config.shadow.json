@@ -649,11 +649,12 @@
     "ranking": {
         "blend_updated": "2026-05-06",
         "blend_n_symbols": 103,
-        "_2026-05-19_shadow_purpose": "Shadow config for full-e2e shadow run. Cloned from strategy_config.json, swapped panel scorer XGB\u2192HF PatchTST (seed44 from canonical 5-seed run 2026-05-19). Hard-isolated state via --broker readonly-alpaca (broker_name=alpaca_shadow \u2192 live_state.alpaca_shadow.json + runs_alpaca_shadow.db). Run AFTER prod via daily_104.sh. ntfy gets [SHADOW] prefix.",
+        "_2026-05-19_shadow_purpose": "Shadow config for full-e2e shadow run. Cloned from strategy_config.json, swapped panel scorer XGB\u2192HF PatchTST. Hard-isolated state via --broker readonly-alpaca (broker_name=alpaca_shadow \u2192 live_state.alpaca_shadow.json + runs_alpaca_shadow.db). Run AFTER prod via daily_104.sh. ntfy gets [SHADOW] prefix.",
+        "_2026-05-22_patchtst_contract": "Updated from old canonical seed44 to strict-contract PT07 seed44: tail-val 10%, 60BD embargo, train-only label winsor, seq_len=24, lr=1e-4, wd=0.3, warmup=0.1. Final min-regime IC=+0.0307. This is a cleaner shadow instrument, not a promotion claim.",
         "panel_scoring": {
             "enabled": true,
             "bypass_ticker_gate": true,
-            "artifact_path": "../../artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt",
+            "artifact_path": "../../artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
             "nan_prone_cols": [],
             "buy_floor": "adaptive_mean_std",
             "buy_floor_adaptive_cap": 0.3,

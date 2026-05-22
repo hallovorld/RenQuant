@@ -271,10 +271,7 @@ Verification:
 # 46 passed
 ```
 
-## Open Item: PatchTST Strict Shadow Retrain
-
-The strict PatchTST shadow retrain is still running and must not be promoted
-until the full summary JSON and checkpoint training contract are inspected.
+## Codex Addendum: PatchTST Strict Shadow Retrain Completed
 
 Current run:
 
@@ -286,12 +283,33 @@ Current run:
   --output-dir artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44
 ```
 
-Interim observations from training log:
+Final observations:
 
 - split: train `302144`, val `36068`, embargo gap inserted before tail-val
 - train-only label winsor bounds: `[-2.620219, +4.037451]`
-- latest observed per-regime IC: BULL_VOLATILE around `+0.046`, BEAR around
-  `+0.196`, CHOPPY around `+0.020`
+- final best/min-regime IC: `+0.0307`
+- per-regime IC: BULL_VOLATILE `+0.0524`, BEAR `+0.1916`, CHOPPY `+0.0307`
+- checkpoint `training_contract` verified via `torch.load`
 
-Promotion gate remains: no shadow config update until final IC, summary JSON,
-and checkpoint `training_contract` are verified.
+Config update:
+
+- `strategy_config.json` and `strategy_config.golden.json` shadow model now
+  point to the strict artifact.
+- `strategy_config.shadow.json` full shadow e2e config now points to the
+  strict artifact.
+- Old canonical seed44 artifact is not deleted.
+
+Interpretation: this is a cleaner shadow instrument, not a stronger model. Its
+strict min-regime IC is materially lower than the older non-embargo headline IC,
+so it should remain shadow-only.
+
+Verification:
+
+```bash
+.venv/bin/python -m json.tool backtesting/renquant_104/strategy_config.json >/dev/null
+.venv/bin/python -m json.tool backtesting/renquant_104/strategy_config.golden.json >/dev/null
+.venv/bin/python -m json.tool backtesting/renquant_104/strategy_config.shadow.json >/dev/null
+.venv/bin/python scripts/train_104.py --dry-run --strategy-config-name strategy_config.shadow.json
+# P-PANEL-CONTRACT ok: hf_patchtst checkpoint contract ok: val_ic=+0.0307 n_features=172
+# dry-run complete: checks=12 failures=0
+```

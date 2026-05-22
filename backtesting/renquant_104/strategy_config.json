@@ -750,10 +750,10 @@
       },
       "shadow_models": [
         {
-          "name": "hf_patchtst_canonical_seed44",
+          "name": "hf_patchtst_pt07_strict_seed44",
           "kind": "hf_patchtst",
-          "artifact_path": "artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt",
-          "_2026-05-19_provenance": "Synced from strategy_config.golden.json. HF PatchTST seed_44 from canonical 5-seed run 2026-05-19. last-epoch val_ic=+0.0644 on 142-ticker last-10%-dates val window. vs XGB primary +0.0909 on same window: PatchTST loses by ~0.027. SHADOW only \u2014 observation + infra validation, primary stays XGB."
+          "artifact_path": "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
+          "_2026-05-22_provenance": "Strict-contract PatchTST shadow: tail-val 10%, 60BD embargo, train-only label winsor, seq_len=24, lr=1e-4, wd=0.3, warmup=0.1, seed=44. Final min-regime IC=+0.0307 (BULL_VOLATILE +0.0524, BEAR +0.1916, CHOPPY +0.0307). Cleaner than the old canonical seed44 path, but weaker than old non-embargo IC; SHADOW only, no promotion."
         }
       ],
       "shadow_tracking_uri": "file:./mlruns",
