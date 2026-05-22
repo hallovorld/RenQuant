@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse, json, logging, sys
 from pathlib import Path
 from typing import Optional
+import re
 import numpy as np, pandas as pd, xgboost as xgb
 from datetime import datetime
 import uuid
@@ -72,6 +73,11 @@ def parse_args() -> argparse.Namespace:
         help="Trading-day embargo between each train window and validation fold.",
     )
     p.add_argument(
+        "--cutoff-embargo-days", type=int, default=None,
+        help="Trading-day label embargo before --train-cutoff. Defaults to the "
+             "lookahead encoded in --label, e.g. fwd_60d_excess -> 60.",
+    )
+    p.add_argument(
         "--skip-cv", action="store_true",
         help="Emergency only: skip OOS contract evaluation. Production strict "
              "contract will fail when this is used.",
@@ -112,9 +118,16 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Optional[pd.Timestamp], Pat
     return cutoff_date, out_path, is_walkforward
 
 
+def infer_label_lookahead_days(label: str) -> int:
+    """Infer label lookahead from names such as fwd_60d_excess."""
+    m = re.search(r"fwd_(\d+)d", str(label))
+    return int(m.group(1)) if m else 60
+
+
 def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
                          watchlist_file: Optional[str] = None,
-                         label_override: Optional[str] = None) -> tuple[pd.DataFrame, list[str], str]:
+                         label_override: Optional[str] = None,
+                         cutoff_embargo_days: Optional[int] = None) -> tuple[pd.DataFrame, list[str], str]:
     """Load alpha158 panel, optionally filter by cutoff/watchlist, return (train_df, feat_cols, label_used)."""
     label_used = label_override or LABEL
     log.info("Loading R1K + 5-fund panel (already normalized: alpha158=zscore, fund=robust-zscore)...")
@@ -137,12 +150,21 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     train = panel.dropna(subset=[label_used])
     if cutoff_date is not None:
         before = len(train)
-        train = train[train["date"] < cutoff_date]
-        log.info("Cutoff filter: %s — %d → %d rows (max date %s)",
-                 cutoff_date.date().isoformat(), before, len(train),
+        embargo_days = (
+            infer_label_lookahead_days(label_used)
+            if cutoff_embargo_days is None else int(cutoff_embargo_days)
+        )
+        effective_cutoff = cutoff_date - pd.offsets.BDay(max(0, embargo_days))
+        train = train[train["date"] < effective_cutoff]
+        log.info("Cutoff filter: cutoff=%s embargo=%dBD effective<%s — %d → %d rows (max date %s)",
+                 cutoff_date.date().isoformat(), embargo_days,
+                 effective_cutoff.date().isoformat(), before, len(train),
                  train["date"].max().date() if len(train) else "EMPTY")
         if len(train) == 0:
-            raise SystemExit(f"No training rows with date < {cutoff_date.date()}")
+            raise SystemExit(
+                f"No training rows with date < {effective_cutoff.date()} "
+                f"(cutoff={cutoff_date.date()}, embargo={embargo_days}BD)"
+            )
 
     log.info("Train rows: %d (panel total: %d), tickers: %d, dates: %s → %s, label: %s",
              len(train), len(panel), train["ticker"].nunique(),
@@ -335,6 +357,7 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    label_used: str = LABEL,
                    train_ic: float | None = None,
                    cv_result: dict | None = None,
+                   cutoff_embargo_days: int | None = None,
                    train_run_id: str | None = None) -> dict:
     """Build artifact dict, stamping cutoff_date + side_label when set."""
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
@@ -381,6 +404,13 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         })
     if cutoff_date is not None:
         artifact["cutoff_date"] = cutoff_date.isoformat()
+        artifact["cutoff_embargo_days"] = int(
+            infer_label_lookahead_days(label_used)
+            if cutoff_embargo_days is None else cutoff_embargo_days
+        )
+        artifact["effective_train_cutoff_date"] = (
+            cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])
+        ).isoformat()
     if side_label is not None:
         artifact["side_label"] = side_label
     return artifact
@@ -392,6 +422,7 @@ def main():
 
     train, feat_cols, label_used = load_and_slice_panel(
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
+        cutoff_embargo_days=args.cutoff_embargo_days,
     )
     mu, sd, _ = build_normalization(train, feat_cols)
     cv_result = None
@@ -418,6 +449,7 @@ def main():
                               label_used=label_used,
                               train_ic=train_ic,
                               cv_result=cv_result,
+                              cutoff_embargo_days=args.cutoff_embargo_days,
                               train_run_id=str(uuid.uuid4())[:8])
 
     if not is_walkforward:

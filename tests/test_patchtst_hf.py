@@ -103,16 +103,16 @@ class TestSourceContracts:
         assert "val_preds.parquet" in src
 
     def test_loc_budget(self):
-        """HF Trainer wrapper + dual head + FiLM regime conditioning: 550 LOC.
+        """HF Trainer wrapper + dual head + FiLM + artifact contract: 660 LOC.
 
         Trajectory: 350 (pre-refactor) → 450 (HF Trainer + dual head + per-
-        regime callback) → 550 (+ FiLM Pillar B). All additions are config
-        flags / canonical-lib glue / clean opt-in modules, not custom
-        training infrastructure."""
+        regime callback) → 550 (+ FiLM Pillar B) → 660 (train-fit
+        preprocessing + model contract stamp). All additions are config flags /
+        canonical-lib glue / audit metadata, not custom training infrastructure."""
         src = SCRIPT.read_text()
         loc = sum(1 for line in src.splitlines()
                   if line.strip() and not line.strip().startswith("#"))
-        assert loc <= 550, f"wrapper grew to {loc} LOC — too thick"
+        assert loc <= 660, f"wrapper grew to {loc} LOC — too thick"
 
     def test_film_layer_class_exported(self):
         """FiLM (Perez 2017) regime conditioning module — Pillar B foundation."""
@@ -287,6 +287,72 @@ class TestPreprocessing:
         out = mod.winsorize_label(panel, "y", pct=0.005)
         assert out["y"].max() < 10.0
         assert out["y"].min() > -10.0
+
+    def test_load_panel_winsorizes_from_train_split_only(self, tmp_path):
+        import pandas as pd
+        import numpy as np
+        mod = _load_mod()
+
+        dates = pd.date_range("2024-01-01", periods=10)
+        rows = []
+        for d_i, d in enumerate(dates):
+            for t_i, ticker in enumerate(list("ABCDE")):
+                is_val_tail = d_i >= 8
+                rows.append({
+                    "date": d,
+                    "ticker": ticker,
+                    "f1": float(d_i + t_i),
+                    "fwd_60d_excess": 1000.0 if is_val_tail else float(d_i * 5 + t_i),
+                })
+        path = tmp_path / "panel.parquet"
+        pd.DataFrame(rows).to_parquet(path, index=False)
+
+        panel, _ = mod.load_panel_with_split(
+            path, "all", "fwd_60d_excess", preprocess=True,
+            val_tail_pct=0.2, embargo_days=1)
+
+        meta = panel.attrs["label_winsor"]
+        assert meta["fit_split"] == "train"
+        assert meta["upper"] < 1000.0
+        assert (panel["split_label"] == "embargo").any()
+        val = panel[panel["split_label"] == "val"]["fwd_60d_excess"]
+        assert np.isclose(val.max(), meta["upper"])
+
+    def test_training_contract_stamps_hyperparameters(self):
+        import argparse
+        import pandas as pd
+        mod = _load_mod()
+        args = argparse.Namespace(
+            dataset="data/example.parquet", cut="all", label="fwd_60d_excess",
+            seed=44, seq_len=24, patch_length=4, d_model=64, n_heads=4,
+            n_layers=2, epochs=8, lr=1e-4, weight_decay=0.3,
+            lr_scheduler="cosine", warmup_ratio=0.1,
+            early_stopping_patience=2, nll_loss_weight=0.5,
+            ranking_margin=0.1, distributional_head=True,
+            film_regime_cond=False, cross_stock_attn=False, device="cpu",
+            embargo_days=60,
+        )
+        panel = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=4),
+            "split_label": ["train", "train", "val", "test"],
+        })
+        panel.attrs["label_winsor"] = {
+            "enabled": True, "fit_split": "train",
+            "lower": -1.0, "upper": 1.0,
+        }
+
+        contract = mod.build_training_contract(
+            args, ["f1", "f2"], panel, n_params=1234,
+            total_steps=80, warmup_steps=8,
+            metric_for_best="eval_min_regime_ic",
+            final_metrics={"eval_min_regime_ic": 0.12},
+        )
+
+        assert contract["hyperparameters"]["seq_len"] == 24
+        assert contract["hyperparameters"]["lr"] == 1e-4
+        assert contract["hyperparameters"]["weight_decay"] == 0.3
+        assert contract["preprocessing"]["label_winsor"]["fit_split"] == "train"
+        assert contract["selection"]["metric_for_best_model"] == "eval_min_regime_ic"
 
 
 # ─── FiLM regime conditioning ───────────────────────────────────────────────

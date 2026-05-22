@@ -127,6 +127,7 @@ def _train_one_cut_seed(point_id: int, cut: str, seed: int,
         "--seed", str(seed),
         "--lr", str(lr),
         "--weight-decay", str(weight_decay),
+        "--warmup-ratio", str(min(0.8, warmup_epochs / max(1, epochs))),
         "--output-dir", str(out_dir),
         "--device", device,
     ]

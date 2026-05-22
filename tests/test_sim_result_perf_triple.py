@@ -60,6 +60,9 @@ class TestSimResultFieldsAdded:
                 f"{field} default should be NaN, got {getattr(r, field)}"
         # n_trials defaults to 1 (single-config-search → no DSR deflation).
         assert r.n_trials == 1
+        assert r.event_level_tax_debited == 0.0
+        assert r.annual_net_tax_estimate == 0.0
+        assert math.isnan(r.annual_net_apy_estimate)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +132,54 @@ class TestBuildResultPopulatesPerfTriple:
         assert math.isfinite(result.information_ratio_vs_spy)
         # β clipped per §5.13.12 to |β| ≤ 10.
         assert abs(result.beta_vs_spy) <= 10.0
+
+    def test_annual_net_tax_reporting_offsets_same_year_losses(self):
+        adapter = _make_synthetic_adapter(n_days=252, sharpe_target=0.0,
+                                          seed=7, n_trials=1)
+        adapter._initial_cash = 1_000.0
+        idx = pd.date_range("2024-01-02", periods=252, freq="B")
+        adapter._equity_curve = [
+            {"date": idx[0], "portfolio": 1_000.0, "regime": "BULL_CALM"},
+            {"date": idx[-1], "portfolio": 970.0, "regime": "BULL_CALM"},
+        ]
+        adapter._trade_log = [
+            {
+                "action": "sell",
+                "ticker": "A",
+                "date": pd.Timestamp("2024-02-01"),
+                "gross_pnl": 100.0,
+                "pnl_pct": 0.10,
+                "hold_days": 20,
+                "tax": 50.0,
+                "exit_reason": "test",
+            },
+            {
+                "action": "sell",
+                "ticker": "B",
+                "date": pd.Timestamp("2024-03-01"),
+                "gross_pnl": -80.0,
+                "pnl_pct": -0.08,
+                "hold_days": 10,
+                "tax": 0.0,
+                "exit_reason": "test",
+            },
+        ]
+        adapter._config = {
+            "performance": {"n_trials": 1},
+            "tax": {
+                "short_term_rate": 0.50,
+                "long_term_rate": 0.20,
+                "long_term_threshold_days": 365,
+            },
+        }
+
+        result = adapter.build_result()
+
+        assert result.event_level_tax_debited == pytest.approx(50.0)
+        assert result.annual_net_tax_estimate == pytest.approx(10.0)
+        assert result.tax_overstatement_vs_annual_net == pytest.approx(40.0)
+        assert result.annual_net_final_value_estimate == pytest.approx(1_010.0)
+        assert result.annual_net_total_return_estimate == pytest.approx(0.01)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

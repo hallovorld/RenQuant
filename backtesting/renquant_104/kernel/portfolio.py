@@ -4,7 +4,11 @@ Pure functions — stdlib only.  No common/ imports.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import math
+from collections import defaultdict
+from collections.abc import Iterable
+from typing import Any
 
 
 def update_drawdown_circuit_breaker(
@@ -64,3 +68,113 @@ def compute_trade_tax(
         return 0.0
     rate = long_term_rate if hold_days >= long_term_threshold_days else short_term_rate
     return gross_pnl * rate
+
+
+def compute_netted_capital_gains_tax(
+    short_term_net: float,
+    long_term_net: float,
+    short_term_rate: float,
+    long_term_rate: float,
+) -> float:
+    """Tax positive capital gains after same-bucket and cross netting.
+
+    This is a reporting helper, not a filing engine. It mirrors the economic
+    shape of Schedule D: short-term gains/losses are netted, long-term
+    gains/losses are netted, then opposite-sign buckets offset each other.
+    Loss carryforwards, wash-sale basis deferrals, NIIT, brackets, and state
+    taxes remain outside this simplified simulator scope.
+    """
+    if not (
+        math.isfinite(short_term_net)
+        and math.isfinite(long_term_net)
+        and math.isfinite(short_term_rate)
+        and math.isfinite(long_term_rate)
+    ):
+        return 0.0
+    if short_term_net >= 0 and long_term_net >= 0:
+        return short_term_net * short_term_rate + long_term_net * long_term_rate
+    if short_term_net <= 0 and long_term_net <= 0:
+        return 0.0
+    if short_term_net > 0 and long_term_net < 0:
+        return max(0.0, short_term_net + long_term_net) * short_term_rate
+    if long_term_net > 0 and short_term_net < 0:
+        return max(0.0, long_term_net + short_term_net) * long_term_rate
+    return 0.0
+
+
+def compute_annual_net_capital_gains_tax(
+    realized_events: Iterable[dict[str, Any]],
+    short_term_rate: float,
+    long_term_rate: float,
+    long_term_threshold_days: int = 365,
+    *,
+    date_key: str = "date",
+    pnl_key: str = "gross_pnl",
+    hold_days_key: str = "hold_days",
+) -> dict[str, Any]:
+    """Estimate annual tax after calendar-year short/long netting.
+
+    ``compute_trade_tax`` is deliberately event-level and conservative for
+    cash-stress simulations. This helper gives reports the complementary
+    annual-net estimate so losing trades offset winning trades within the
+    same calendar year instead of making tax drag look mechanically larger
+    than the strategy's net realized gain.
+    """
+    buckets: dict[int, dict[str, float]] = defaultdict(
+        lambda: {"short_term_net": 0.0, "long_term_net": 0.0},
+    )
+    for event in realized_events:
+        year = _coerce_year(event.get(date_key) or event.get("exit_date"))
+        if year is None:
+            continue
+        gross_pnl = _coerce_finite_float(event.get(pnl_key))
+        if gross_pnl is None:
+            continue
+        hold_days = _coerce_finite_float(event.get(hold_days_key), default=0.0)
+        if hold_days is None:
+            hold_days = 0.0
+        bucket = (
+            "long_term_net"
+            if int(hold_days) >= int(long_term_threshold_days)
+            else "short_term_net"
+        )
+        buckets[year][bucket] += gross_pnl
+
+    rows: list[dict[str, float | int]] = []
+    total_tax = 0.0
+    for year in sorted(buckets):
+        st_net = buckets[year]["short_term_net"]
+        lt_net = buckets[year]["long_term_net"]
+        tax = compute_netted_capital_gains_tax(
+            st_net, lt_net, short_term_rate, long_term_rate,
+        )
+        total_tax += tax
+        rows.append({
+            "year": int(year),
+            "short_term_net": float(st_net),
+            "long_term_net": float(lt_net),
+            "estimated_tax": float(tax),
+        })
+    return {"total_estimated_tax": float(total_tax), "years": rows}
+
+
+def _coerce_finite_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _coerce_year(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, _dt.datetime | _dt.date):
+        return int(value.year)
+    year = getattr(value, "year", None)
+    if isinstance(year, int):
+        return year
+    text = str(value)
+    if len(text) >= 4 and text[:4].isdigit():
+        return int(text[:4])
+    return None

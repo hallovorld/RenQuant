@@ -833,7 +833,12 @@ class TestCheckSpyEmaTrend:
 
 # ── kernel.portfolio ──────────────────────────────────────────────────────────
 
-from kernel.portfolio import update_drawdown_circuit_breaker, compute_trade_tax
+from kernel.portfolio import (
+    compute_annual_net_capital_gains_tax,
+    compute_netted_capital_gains_tax,
+    compute_trade_tax,
+    update_drawdown_circuit_breaker,
+)
 
 
 class TestUpdateDrawdownCircuitBreaker:
@@ -884,6 +889,29 @@ class TestComputeTradeTax:
 
     def test_zero_pnl_no_tax(self):
         assert compute_trade_tax(0.0, 200, 0.35, 0.20) == 0.0
+
+
+class TestAnnualNetCapitalGainsTax:
+    def test_same_year_losses_offset_event_level_winner_tax(self):
+        events = [
+            {"date": "2024-02-01", "gross_pnl": 100.0, "hold_days": 20},
+            {"date": "2024-03-01", "gross_pnl": -80.0, "hold_days": 10},
+        ]
+
+        summary = compute_annual_net_capital_gains_tax(events, 0.50, 0.20)
+
+        assert summary["total_estimated_tax"] == pytest.approx(10.0)
+        assert summary["years"][0]["short_term_net"] == pytest.approx(20.0)
+
+    def test_short_loss_cross_offsets_long_gain_at_long_rate(self):
+        tax = compute_netted_capital_gains_tax(
+            short_term_net=-40.0,
+            long_term_net=100.0,
+            short_term_rate=0.50,
+            long_term_rate=0.20,
+        )
+
+        assert tax == pytest.approx(12.0)
 
 
 # ── kernel.selection.compute_relative_strength ────────────────────────────────

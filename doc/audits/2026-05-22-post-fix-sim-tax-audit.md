@@ -148,3 +148,150 @@ The next valid promotion path must provide:
 - explicit SPY comparison
 - clean trade contract and clean regenerated tax ledger
 - full preflight pass with `P-WF-GATE`
+
+## Codex Addendum: Tax Reporting Contract Tightened
+
+Timestamp: 2026-05-22 13:55 PT
+
+User challenge: "tax的问题你都解决干净了吗？" The precise answer is now split into
+implementation accounting and reporting methodology.
+
+Implementation accounting is fixed and regression-covered:
+
+- `SimAdapter._apply_sell` records the actual disposed-lot `gross_pnl`,
+  `proceeds_basis`, and `net_pnl_after_tax` on every sell event.
+- Event-level tax still debits cash immediately. This remains the conservative
+  stress path used by the simulator's historical equity curve.
+- The sell-decision payload no longer assumes every `ExitSignal` has a
+  `.reason` attribute; synthetic/vectorbt-style tests now run through the same
+  code path without `AttributeError`.
+
+Reporting methodology is now dual-track:
+
+- `total_tax` / `event_level_tax_debited`: conservative event-level tax debited
+  by the simulator.
+- `annual_net_tax_estimate`: same-calendar-year short/long bucket netting
+  estimate from realized events.
+- `annual_net_final_value_estimate`, `annual_net_total_return_estimate`, and
+  `annual_net_apy_estimate`: report-only estimates that add back event-level
+  tax and subtract the annual-net estimate.
+
+This does not alter buy/sell decisions. It prevents the conservative tax stress
+metric from being mistaken for the only economically meaningful APY. It also
+keeps the more punitive event-level metric visible as a liquidity/cash-drag
+stress test.
+
+Reference basis:
+
+- IRS Topic 409 notes that capital gains and losses are classified as short- or
+  long-term, then reported on Schedule D / Form 8949:
+  https://www.irs.gov/taxtopics/tc409
+- IRS Schedule D instructions describe the short-term and long-term net gain or
+  loss workflow:
+  https://www.irs.gov/instructions/i1040sd
+
+Limitations intentionally not modeled here: wash-sale basis deferrals in the
+annual report estimate, loss carryforwards, tax brackets, NIIT, state taxes, and
+actual payment timing. The simulator remains an engineering stress model, not a
+tax filing system.
+
+Verification after addendum:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_kernel_units.py::TestComputeTradeTax \
+  tests/test_kernel_units.py::TestAnnualNetCapitalGainsTax \
+  tests/test_sim_result_perf_triple.py::TestSimResultFieldsAdded \
+  tests/test_sim_result_perf_triple.py::TestBuildResultPopulatesPerfTriple \
+  -q
+# 12 passed
+
+.venv/bin/python -m pytest \
+  tests/test_long_pnl_vectorbt_validator.py \
+  tests/test_hifo_lot_selection.py \
+  tests/test_partial_sell.py \
+  tests/test_sim_trade_ledger.py \
+  tests/test_trade_decision_attribution.py \
+  tests/test_sim_result_perf_triple.py \
+  -q
+# 38 passed
+```
+
+## Codex Addendum: XGB True-OOS IC Recomputed With Label Embargo
+
+Timestamp: 2026-05-22 13:55 PT
+
+The prior `--train-cutoff 2024-07-01` retrain was not strict enough for
+`fwd_60d_excess` labels because rows close to the cutoff still contained
+forward-return information crossing into the validation period. `scripts/
+train_production_model.py` now infers the lookahead from labels such as
+`fwd_60d_excess` and applies a default business-day embargo before the cutoff.
+
+Strict retrain/eval:
+
+- requested cutoff: `2024-07-01`
+- inferred embargo: `60BD`
+- effective max train date: `2024-04-05`
+- eval window: `2024-07-02` to `2026-02-10`
+- output: `backtesting/renquant_104/artifacts/prod/truly_oos_eval/eval_truly_oos_embargo60_20260522.json`
+
+Results:
+
+| Metric | Value |
+|---|---:|
+| mean IC | +0.0648 |
+| median IC | +0.0588 |
+| positive IC days | 261 / 404 |
+| top-10 alpha mean | +0.1294 |
+| bottom-10 alpha mean | -0.1311 |
+| long-short mean | +0.2605 |
+
+Per-regime result:
+
+| Regime | n days | IC | top10 alpha | long-short |
+|---|---:|---:|---:|---:|
+| BEAR | 17 | +0.2984 | +0.6358 | +1.2398 |
+| BULL_CALM | 234 | -0.0025 | -0.0296 | -0.0310 |
+| BULL_STRONG | 38 | +0.1105 | +0.2047 | +0.5404 |
+| BULL_VOLATILE | 65 | +0.1580 | +0.3036 | +0.5560 |
+| CHOPPY | 50 | +0.1442 | +0.4173 | +0.6947 |
+
+Interpretation: XGB has real cross-sectional signal outside BULL_CALM, but the
+dominant BULL_CALM regime remains the core failure mode. A positive aggregate IC
+does not justify enabling broad production buys if the buy-heavy regime has
+negative IC and negative top-decile alpha.
+
+Verification:
+
+```bash
+.venv/bin/python -m pytest tests/test_train_production_model_cutoff.py -q
+# 16 passed
+
+.venv/bin/python -m pytest tests/test_patchtst_hf.py -q
+# 46 passed
+```
+
+## Open Item: PatchTST Strict Shadow Retrain
+
+The strict PatchTST shadow retrain is still running and must not be promoted
+until the full summary JSON and checkpoint training contract are inspected.
+
+Current run:
+
+```bash
+.venv/bin/python scripts/patchtst_hf.py \
+  --cut all --val-tail-pct 0.10 --embargo-days 60 \
+  --epochs 8 --seq-len 24 --lr 1e-4 --weight-decay 0.3 \
+  --warmup-ratio 0.1 --device mps --seed 44 --save-model \
+  --output-dir artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44
+```
+
+Interim observations from training log:
+
+- split: train `302144`, val `36068`, embargo gap inserted before tail-val
+- train-only label winsor bounds: `[-2.620219, +4.037451]`
+- latest observed per-regime IC: BULL_VOLATILE around `+0.046`, BEAR around
+  `+0.196`, CHOPPY around `+0.020`
+
+Promotion gate remains: no shadow config update until final IC, summary JSON,
+and checkpoint `training_contract` are verified.

@@ -1132,12 +1132,16 @@ class SimAdapter:
         regime_p = (ctx.config.get("regime_params", {}) or {}).get(
             getattr(ctx, "regime", None), {},
         ) if ctx is not None else {}
+        sig_reason = getattr(sig, "reason", None)
         self._trade_log.append({
             "action":      "sell",
             "ticker":      ticker,
             "date":        today_ts,
             "price":       price,
             "shares":      sell_shares,
+            "gross_pnl":   gross_pnl,
+            "proceeds_basis": proceeds_basis,
+            "net_pnl_after_tax": gross_pnl - tax,
             "pnl_pct":     _pnl_pct,
             "hold_days":   hold_days,
             "tax":         tax,
@@ -1170,9 +1174,9 @@ class SimAdapter:
                 "regime": getattr(ctx, "regime", None),
             },
             "decision_inputs": {
-                "acceptance_reason": sig.exit_type or sig.reason,
+                "acceptance_reason": sig.exit_type or sig_reason,
                 "exit_reason": sig.exit_type,
-                "signal_reason": sig.reason,
+                "signal_reason": sig_reason,
                 "partial": is_partial,
                 "quantity": getattr(sig, "quantity", None),
                 "hold_days": hold_days,
@@ -1628,6 +1632,22 @@ class SimAdapter:
         avg_pnl   = sum(t.get("pnl_pct",   0) for t in sells) / len(sells) if sells else 0.0
         total_tax = sum(t.get("tax",       0) for t in sells)
         exit_reasons = dict(Counter(t.get("exit_reason", "?") for t in sells))
+        tax_cfg = (getattr(self, "_config", {}) or {}).get("tax", {}) or {}
+        from kernel.portfolio import compute_annual_net_capital_gains_tax  # noqa: PLC0415
+        annual_tax_summary = compute_annual_net_capital_gains_tax(
+            sells,
+            short_term_rate=float(tax_cfg.get("short_term_rate", 0.50)),
+            long_term_rate=float(tax_cfg.get("long_term_rate", 0.32)),
+            long_term_threshold_days=int(tax_cfg.get("long_term_threshold_days", 365)),
+        )
+        annual_net_tax = float(annual_tax_summary["total_estimated_tax"])
+        annual_net_final_val = final_val + float(total_tax) - annual_net_tax
+        annual_net_total_ret = annual_net_final_val / self._initial_cash - 1.0
+        annual_net_apy = (
+            (1 + annual_net_total_ret) ** (1 / n_years) - 1
+            if n_years > 0 and annual_net_total_ret > -1
+            else 0.0
+        )
 
         # Rotation sell/buy pairs (same-day sell with exit_reason=rotation + same-day rotation buy)
         rotations: list[dict] = []
@@ -1763,6 +1783,13 @@ class SimAdapter:
             total_tax     = total_tax,
             exit_reasons  = exit_reasons,
             rotations     = rotations,
+            event_level_tax_debited       = float(total_tax),
+            annual_net_tax_estimate       = annual_net_tax,
+            tax_overstatement_vs_annual_net = float(total_tax) - annual_net_tax,
+            annual_net_final_value_estimate = annual_net_final_val,
+            annual_net_total_return_estimate = annual_net_total_ret,
+            annual_net_apy_estimate       = annual_net_apy,
+            annual_net_tax_years          = annual_tax_summary["years"],
             longest_no_trade_streak     = longest_streak,
             longest_no_candidate_streak = int(self._monitor_state.get("no_candidate_streak", 0)),
             first_trade_date            = first_trade,

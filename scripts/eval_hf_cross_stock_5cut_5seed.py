@@ -25,7 +25,7 @@ CUTS = ["cut1_covid", "cut2_fed", "cut3_inflpk", "cut4_svb", "cut5_unwind"]
 SEEDS = [42, 43, 44, 45, 46]
 
 # Phase 2 DOE best-point knobs (pt_07)
-PT07 = dict(lr="1e-4", weight_decay="0.3", seq_len="24")
+PT07 = dict(lr="1e-4", weight_decay="0.3", seq_len="24", warmup_ratio="0.1")
 EPOCHS = "8"
 DEVICE = "mps"
 
@@ -46,6 +46,7 @@ def run_one(cut: str, seed: int) -> dict:
         "--seq-len", PT07["seq_len"],
         "--lr", PT07["lr"],
         "--weight-decay", PT07["weight_decay"],
+        "--warmup-ratio", PT07["warmup_ratio"],
         "--device", DEVICE,
         "--save-model",
         "--cross-stock-attn",  # Tier 2 T2.1 — iTransformer cross-stock attention

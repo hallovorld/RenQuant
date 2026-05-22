@@ -25,8 +25,9 @@ log = logging.getLogger("eval-5cut-5seed")
 CUTS = ["cut1_covid", "cut2_fed", "cut3_inflpk", "cut4_svb", "cut5_unwind"]
 SEEDS = [42, 43, 44, 45, 46]
 
-# Phase 2 DOE best-point knobs (pt_07: lr=1e-4, wd=0.3, seq_len=24, warmup=10)
-PT07 = dict(lr="1e-4", weight_decay="0.3", seq_len="24")
+# Phase 2 DOE best-point knobs (pt_07). Warmup is expressed as HF's
+# warmup_ratio; the old DOE warmup_epochs field was not a live CLI knob.
+PT07 = dict(lr="1e-4", weight_decay="0.3", seq_len="24", warmup_ratio="0.1")
 EPOCHS = "8"
 DEVICE = "mps"
 
@@ -42,6 +43,15 @@ def run_one(cut: str, seed: int) -> dict:
     out_dir = OUT_ROOT / cut / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / f"hf_patchtst_{cut}_seed{seed}_summary.json"
+    preds_path = out_dir / f"hf_patchtst_{cut}_seed{seed}_val_preds.parquet"
+    model_path = out_dir / f"hf_patchtst_{cut}_seed{seed}_model.pt"
+    if summary_path.exists() and preds_path.exists() and model_path.exists():
+        summary = json.loads(summary_path.read_text())
+        summary["status"] = "ok"
+        summary["skipped_existing"] = True
+        log.info("[%s seed %d] SKIP existing summary/model/preds", cut, seed)
+        return summary
     cmd = [
         sys.executable, str(REPO / "scripts/patchtst_hf.py"),
         "--cut", cut, "--seed", str(seed),
@@ -49,6 +59,7 @@ def run_one(cut: str, seed: int) -> dict:
         "--seq-len", PT07["seq_len"],
         "--lr", PT07["lr"],
         "--weight-decay", PT07["weight_decay"],
+        "--warmup-ratio", PT07["warmup_ratio"],
         "--device", DEVICE,
         "--save-model",
         "--output-dir", str(out_dir),
@@ -61,7 +72,6 @@ def run_one(cut: str, seed: int) -> dict:
         log.warning("[%s seed %d] FAILED rc=%d (see %s)",
                     cut, seed, result.returncode, log_path)
         return {"status": "fail", "cut": cut, "seed": seed}
-    summary_path = out_dir / f"hf_patchtst_{cut}_seed{seed}_summary.json"
     if not summary_path.exists():
         return {"status": "no_summary", "cut": cut, "seed": seed}
     summary = json.loads(summary_path.read_text())

@@ -151,13 +151,28 @@ class TestCutoffSlicing:
         panel.to_parquet(tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet")
 
         cutoff = pd.Timestamp("2024-01-01")
-        train, feat_cols, _label = TPM.load_and_slice_panel(cutoff)
+        train, feat_cols, _label = TPM.load_and_slice_panel(
+            cutoff, cutoff_embargo_days=0,
+        )
         assert train["date"].max() < cutoff
         assert len(train) > 0
         # Feature cols exclude the meta + label columns
         for excl in {"ticker", "date", "split_label",
                      "fwd_5d_excess", "fwd_20d_excess", "fwd_60d_excess"}:
             assert excl not in feat_cols
+
+    def test_default_cutoff_embargo_purges_forward_label_window(self, tmp_path, monkeypatch):
+        panel = _make_synthetic_panel(n_tickers=5, n_dates=320, start="2023-01-02")
+        (tmp_path / "data").mkdir(exist_ok=True)
+        panel.to_parquet(tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet")
+        monkeypatch.chdir(tmp_path)
+
+        cutoff = pd.Timestamp("2024-01-02")
+        train, _, label = TPM.load_and_slice_panel(cutoff)
+        expected_effective = cutoff - pd.offsets.BDay(60)
+
+        assert label == "fwd_60d_excess"
+        assert train["date"].max() < expected_effective
 
     def test_no_cutoff_uses_all_labeled_rows(self, tmp_path, monkeypatch):
         panel = _make_synthetic_panel(n_tickers=5, n_dates=40, start="2023-01-01")
@@ -192,6 +207,10 @@ class TestArtifactStampedCutoff:
             train_run_id="abc12345",
         )
         assert art["cutoff_date"] == "2024-01-01T00:00:00"
+        assert art["cutoff_embargo_days"] == 60
+        assert art["effective_train_cutoff_date"] == (
+            pd.Timestamp("2024-01-01") - pd.offsets.BDay(60)
+        ).isoformat()
         assert art["side_label"] == "walkforward_v2_2024-01-01"
         assert "panel_shape" in art and isinstance(art["panel_shape"], dict)
         assert art["panel_shape"]["rows"] == len(train)
@@ -325,7 +344,9 @@ class TestAuditP3v2Regression:
         panel.to_parquet(tmp_path / "data" / "alpha158_291_fundamental_dataset.parquet")
         monkeypatch.chdir(tmp_path)
         train_full, _, _ = TPM.load_and_slice_panel(None)
-        train_cut, _, _ = TPM.load_and_slice_panel(pd.Timestamp("2024-01-01"))
+        train_cut, _, _ = TPM.load_and_slice_panel(
+            pd.Timestamp("2024-01-01"), cutoff_embargo_days=0,
+        )
         assert train_cut["date"].nunique() < train_full["date"].nunique()
         assert len(train_cut) < len(train_full)
         # The bug class this prevents: walkforward training using the

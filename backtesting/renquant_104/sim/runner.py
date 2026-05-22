@@ -50,6 +50,18 @@ class SimResult:
     exit_reasons: dict[str, int]
     rotations:    list[dict]                    # paired sell/buy summary
 
+    # Tax reporting is intentionally dual-track. ``total_tax`` is the
+    # event-level cash stress already debited by the simulator. The annual-net
+    # fields estimate Schedule-D-style same-year short/long netting for
+    # performance reporting without changing the historical decision path.
+    event_level_tax_debited:       float = 0.0
+    annual_net_tax_estimate:       float = 0.0
+    tax_overstatement_vs_annual_net: float = 0.0
+    annual_net_final_value_estimate: float = float("nan")
+    annual_net_total_return_estimate: float = float("nan")
+    annual_net_apy_estimate:       float = float("nan")
+    annual_net_tax_years:          list[dict] = field(default_factory=list)
+
     # Activity monitoring — see kernel.pipeline.task_monitor.MonitorIdleStreakTask.
     # These are computed post-hoc from trade_log so they always reflect the
     # entire run, even if the pipeline's streak counters reset between bars.
@@ -126,6 +138,18 @@ class SimResult:
             print(f"Avg hold: {self.avg_hold:.0f}d  |  "
                   f"Avg P&L/trade: {self.avg_pnl:.1%}  |  "
                   f"Total tax: ${self.total_tax:,.0f}")
+            if _m.isfinite(self.annual_net_tax_estimate):
+                apy_s = (
+                    f"{self.annual_net_apy_estimate:.1%}"
+                    if _m.isfinite(self.annual_net_apy_estimate)
+                    else "—"
+                )
+                print(
+                    "Tax reporting: "
+                    f"event=${self.event_level_tax_debited:,.0f}  "
+                    f"annual-net est=${self.annual_net_tax_estimate:,.0f}  "
+                    f"annual-net APY est={apy_s}"
+                )
             print(f"Exit reasons: {self.exit_reasons}")
         if self.longest_no_trade_streak:
             marker = "⚠️  " if self.longest_no_trade_streak > 15 else ""

@@ -37,6 +37,7 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -244,18 +245,43 @@ def csrank_norm_per_day(panel: pd.DataFrame, feat_cols: list[str]) -> pd.DataFra
     return panel
 
 
+def label_winsor_bounds(panel: pd.DataFrame, label_col: str,
+                        pct: float = 0.005,
+                        fit_mask: pd.Series | None = None) -> tuple[float, float]:
+    """Fit label clipping bounds on an explicit sample.
+
+    For walk-forward validation this must be the training split only; using
+    validation/test labels to choose clipping quantiles is a small but real
+    lookahead channel.
+    """
+    fit = panel.loc[fit_mask, label_col] if fit_mask is not None else panel[label_col]
+    fit = fit.dropna()
+    if fit.empty:
+        raise ValueError(f"cannot fit winsor bounds: no non-null {label_col}")
+    return float(fit.quantile(pct)), float(fit.quantile(1 - pct))
+
+
 def winsorize_label(panel: pd.DataFrame, label_col: str,
-                    pct: float = 0.005) -> pd.DataFrame:
+                    pct: float = 0.005,
+                    bounds: tuple[float, float] | None = None) -> pd.DataFrame:
     """Winsorize label ±pct percentile (default 0.5% each side ≈ ±3σ)."""
     panel = panel.copy()
-    lo, hi = panel[label_col].quantile(pct), panel[label_col].quantile(1 - pct)
+    lo, hi = bounds or label_winsor_bounds(panel, label_col, pct=pct)
     panel[label_col] = panel[label_col].clip(lower=lo, upper=hi)
+    panel.attrs["label_winsor"] = {
+        "enabled": True,
+        "fit_split": "train" if bounds is not None else "all_rows",
+        "pct": pct,
+        "lower": lo,
+        "upper": hi,
+    }
     return panel
 
 
 def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                           preprocess: bool = True,
-                          val_tail_pct: float = 0.0) -> tuple[pd.DataFrame, list[str]]:
+                          val_tail_pct: float = 0.0,
+                          embargo_days: int = 60) -> tuple[pd.DataFrame, list[str]]:
     """Load panel + assign train/val/test split.
 
     cut_name = "all": full-data PROD training; last val_tail_pct dates → val.
@@ -271,7 +297,10 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
         if val_tail_pct > 0:
             n_val = max(1, int(len(dates_sorted) * val_tail_pct))
             val_start = dates_sorted[-n_val]
+            train_end = val_start - pd.offsets.BDay(embargo_days)
             panel["split_label"] = "train"
+            panel.loc[(panel["date"] >= train_end) &
+                      (panel["date"] < val_start), "split_label"] = "embargo"
             panel.loc[panel["date"] >= val_start, "split_label"] = "val"
         else:
             panel["split_label"] = "train"
@@ -286,8 +315,13 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                  and panel[c].dtype.kind in "fiub"]
     if preprocess:
         panel = csrank_norm_per_day(panel, feat_cols)
-        panel = winsorize_label(panel, label_col, pct=0.005)
-        log.info("preprocessing: CSRankNorm + Winsorize(±0.5%%) applied")
+        winsor_bounds = label_winsor_bounds(
+            panel, label_col, pct=0.005,
+            fit_mask=panel["split_label"].eq("train"))
+        panel = winsorize_label(panel, label_col, pct=0.005,
+                                bounds=winsor_bounds)
+        log.info("preprocessing: CSRankNorm + train-fit Winsorize(±0.5%%) "
+                 "applied bounds=[%+.6f, %+.6f]", *winsor_bounds)
     log.info("panel %d rows | cut=%s | train=%d val=%d test=%d | n_feat=%d",
              len(panel), cut_name,
              (panel["split_label"] == "train").sum(),
@@ -295,6 +329,71 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
              (panel["split_label"] == "test").sum(),
              len(feat_cols))
     return panel, feat_cols
+
+
+def git_head() -> str | None:
+    """Best-effort source stamp for model artifacts."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO,
+                           capture_output=True, text=True, check=False)
+    except Exception:
+        return None
+    return r.stdout.strip() or None
+
+
+def build_training_contract(args: argparse.Namespace, feat_cols: list[str],
+                            panel: pd.DataFrame, n_params: int,
+                            total_steps: int, warmup_steps: int,
+                            metric_for_best: str,
+                            final_metrics: dict) -> dict:
+    """Compact, auditable model contract persisted with every artifact."""
+    split_counts = panel["split_label"].value_counts().to_dict()
+    split_days = (panel.groupby("split_label")["date"].nunique()
+                  .astype(int).to_dict())
+    return {
+        "contract_version": 1,
+        "git_head": git_head(),
+        "dataset": str(args.dataset),
+        "cut": args.cut,
+        "label_col": args.label,
+        "seed": args.seed,
+        "n_features": len(feat_cols),
+        "n_params": n_params,
+        "split_counts": {k: int(v) for k, v in split_counts.items()},
+        "split_days": {k: int(v) for k, v in split_days.items()},
+        "preprocessing": {
+            "csrank_norm_per_day": True,
+            "label_winsor": panel.attrs.get("label_winsor", {}),
+        },
+        "hyperparameters": {
+            "seq_len": args.seq_len,
+            "patch_length": args.patch_length,
+            "d_model": args.d_model,
+            "n_heads": args.n_heads,
+            "n_layers": args.n_layers,
+            "epochs": args.epochs,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay,
+            "lr_scheduler": args.lr_scheduler,
+            "warmup_ratio": args.warmup_ratio,
+            "warmup_steps": warmup_steps,
+            "total_steps": total_steps,
+            "early_stopping_patience": args.early_stopping_patience,
+            "embargo_days": args.embargo_days,
+            "nll_loss_weight": args.nll_loss_weight,
+            "ranking_margin": args.ranking_margin,
+            "distributional_head": args.distributional_head,
+            "film_regime_cond": args.film_regime_cond,
+            "cross_stock_attn": args.cross_stock_attn,
+            "device": args.device,
+        },
+        "selection": {
+            "metric_for_best_model": metric_for_best,
+            "best_val_ic": float(final_metrics.get("eval_min_regime_ic", float("nan"))),
+            "final_metrics": {k: float(v) if isinstance(v, (int, float)) else v
+                              for k, v in final_metrics.items()},
+        },
+    }
 
 
 # ─── Dataset (per-day batching) ─────────────────────────────────────────────
@@ -448,7 +547,8 @@ def train_one(args: argparse.Namespace) -> dict:
     torch.manual_seed(args.seed); np.random.seed(args.seed)
     panel, feat_cols = load_panel_with_split(
         Path(args.dataset), args.cut, args.label,
-        val_tail_pct=getattr(args, "val_tail_pct", 0.10))
+        val_tail_pct=getattr(args, "val_tail_pct", 0.10),
+        embargo_days=getattr(args, "embargo_days", 60))
 
     # Compute HMM regime labels once — reused for FiLM dataset injection
     # AND for per-regime IC callback selection metric.
@@ -554,6 +654,9 @@ def train_one(args: argparse.Namespace) -> dict:
     best_val_ic = float(final_metrics.get("eval_min_regime_ic", float("nan")))
     log.info("FINAL eval %s", {k: f"{v:+.4f}" if isinstance(v, float) else v
                                  for k, v in final_metrics.items()})
+    training_contract = build_training_contract(
+        args, feat_cols, panel, n_params, total_steps, warmup_steps,
+        metric_for_best, final_metrics)
 
     # Dump val predictions for downstream regime-stratified IC
     device = next(model.parameters()).device
@@ -583,6 +686,7 @@ def train_one(args: argparse.Namespace) -> dict:
         "arch": "hf_patchtst", "cut": args.cut, "seed": args.seed,
         "best_val_ic": best_val_ic, "n_params": n_params,
         "n_features": len(feat_cols), "uses_distributional_head": args.distributional_head,
+        "training_contract": training_contract,
         "per_regime_ic": {k.removeprefix("eval_ic_"): v
                           for k, v in final_metrics.items()
                           if k.startswith("eval_ic_")},
@@ -604,6 +708,7 @@ def train_one(args: argparse.Namespace) -> dict:
             "uses_cross_stock_attn": args.cross_stock_attn,
             "uses_csranknorm_preprocessing": True,
             "uses_winsorize_label_preprocessing": True,
+            "training_contract": training_contract,
             "per_regime_ic": summary["per_regime_ic"],
         }, model_path)
         log.info("model saved: %s", model_path)
@@ -617,6 +722,9 @@ def main():
     p.add_argument("--cut", default="cut1_covid",
                    help="walk-forward cut name OR 'all' for full-data prod")
     p.add_argument("--val-tail-pct", type=float, default=0.10)
+    p.add_argument("--embargo-days", type=int, default=60,
+                   help="Business-day embargo before validation when --cut all "
+                        "uses a tail validation split.")
     p.add_argument("--label", default="fwd_60d_excess")
     p.add_argument("--seq-len", type=int, default=32)
     p.add_argument("--patch-length", type=int, default=4)
