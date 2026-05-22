@@ -48,14 +48,18 @@ References
 """
 from __future__ import annotations
 
-import datetime
 import logging
 import math
-from typing import Any
 
 from kernel.exits import ExitSignal
 from .context import InferenceContext
 from .pipeline import Task
+from .soft_exit_guards import (
+    lt_gate_suppression,
+    resolve_current_price,
+    soft_exit_horizon_suppression,
+    tax_adjusted_soft_exit_suppression,
+)
 
 log = logging.getLogger("kernel.pipeline.panel_conviction_xs")
 
@@ -129,12 +133,6 @@ class CrossSectionalPanelExitTask(Task):
             if sig is not None and getattr(sig, "should_exit", False)
         }
 
-        # LT-hold tax gate config (same as legacy PanelConvictionExit)
-        risk_cfg     = ctx.config.get("risk") or {}
-        lt_gate_days  = int  (risk_cfg.get("lt_hold_gate_days",  30))
-        lt_thresh_d   = int  (risk_cfg.get("lt_hold_threshold_days", 365))
-        lt_min_gain   = float(risk_cfg.get("lt_hold_min_gain",   0.10))
-
         n_fires = 0
         for ticker, hs in ctx.holdings.items():
             if ticker in already_exiting:
@@ -160,28 +158,56 @@ class CrossSectionalPanelExitTask(Task):
             trigger_kind = "xs+mu" if fires_xs and fires_strong \
                            else ("xs" if fires_xs else "strong_mu")
 
-            # LT-hold tax gate — skip if 30d-of-LT with ≥10% unrealized gain.
-            # Same logic as legacy PanelConvictionExitTask; CLAUDE.md §5.13.5
-            # would have us factor this into a shared helper but for now
-            # mirror the existing pattern.
-            entry_date  = getattr(hs, "entry_date",  None)
-            entry_price = getattr(hs, "entry_price", 0.0)
-            cur_price   = (ctx.prices.get(ticker)
-                            if hasattr(ctx, "prices") else None)
-            if (lt_gate_days > 0 and entry_date is not None
-                    and entry_price and entry_price > 0
-                    and cur_price and cur_price > 0
-                    and isinstance(ctx.today, datetime.date)):
-                days_held = (ctx.today - entry_date).days
-                unrealized_gain = (cur_price - entry_price) / entry_price
-                if (lt_gate_days <= days_held < lt_thresh_d
-                        and unrealized_gain >= lt_min_gain):
-                    log.info(
-                        "CrossSectionalPanelExit [%s]: SUPPRESSED by LT tax gate "
-                        "(held=%dd  gain=%+.1f%%  panel=%+.3f  mu=%+.4f)",
-                        ticker, days_held, unrealized_gain * 100, pf, mf,
-                    )
-                    continue
+            suppress, why = soft_exit_horizon_suppression(
+                panel_cfg=cfg,
+                regime=getattr(ctx, "regime", None),
+                today=getattr(ctx, "today", None),
+                holding=hs,
+            )
+            if suppress:
+                ctx.counters["xs_panel_exit_horizon_suppressed"] = (
+                    ctx.counters.get("xs_panel_exit_horizon_suppressed", 0) + 1
+                )
+                log.info(
+                    "CrossSectionalPanelExit [%s]: SUPPRESSED by horizon gate "
+                    "(%s panel=%+.3f mu=%+.4f)",
+                    ticker, why, pf, mf,
+                )
+                continue
+
+            cur_price = resolve_current_price(ctx, hs, ticker)
+            suppress, why = lt_gate_suppression(
+                config=ctx.config,
+                today=getattr(ctx, "today", None),
+                holding=hs,
+                current_price=cur_price,
+            )
+            if suppress:
+                log.info(
+                    "CrossSectionalPanelExit [%s]: SUPPRESSED by LT tax gate "
+                    "(%s panel=%+.3f mu=%+.4f)",
+                    ticker, why, pf, mf,
+                )
+                continue
+
+            suppress, why = tax_adjusted_soft_exit_suppression(
+                panel_cfg=cfg,
+                tax_cfg=ctx.config.get("tax") or {},
+                today=getattr(ctx, "today", None),
+                holding=hs,
+                current_price=cur_price,
+                mu=mf,
+            )
+            if suppress:
+                ctx.counters["xs_panel_exit_tax_suppressed"] = (
+                    ctx.counters.get("xs_panel_exit_tax_suppressed", 0) + 1
+                )
+                log.info(
+                    "CrossSectionalPanelExit [%s]: SUPPRESSED by tax-adjusted gate "
+                    "(%s panel=%+.3f mu=%+.4f)",
+                    ticker, why, pf, mf,
+                )
+                continue
 
             sig = ExitSignal(
                 should_exit = True,

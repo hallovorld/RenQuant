@@ -127,6 +127,59 @@ class TestThresholds:
         assert tc.exit_signal is None
 
 
+class TestSoftExitGuards:
+    def test_bull_calm_min_holding_days_suppresses_legacy_panel_exit(self):
+        today = datetime.date(2026, 2, 1)
+        h = _hs(0.10, -0.05)
+        h.entry_date = today - datetime.timedelta(days=3)
+        tc = SimpleNamespace(
+            ticker="NVDA",
+            holding=h,
+            exit_signal=None,
+            today=today,
+            regime="BULL_CALM",
+            price=95.0,
+            config={"risk": {"panel_exit": {
+                "enabled": True,
+                "panel_sell_floor": 0.20,
+                "mu_sell_ceiling": 0.0,
+                "min_holding_days_by_regime": {"BULL_CALM": 10},
+            }}},
+        )
+        PanelConvictionExitTask().run(tc)
+        assert tc.exit_signal is None
+
+    def test_tax_adjusted_gate_suppresses_marginal_short_term_gain_exit(self):
+        today = datetime.date(2026, 2, 1)
+        h = _hs(0.10, -0.02)
+        h.entry_date = today - datetime.timedelta(days=30)
+        tc = SimpleNamespace(
+            ticker="NVDA",
+            holding=h,
+            exit_signal=None,
+            today=today,
+            regime="BULL_CALM",
+            price=120.0,
+            config={
+                "lt_hold_gate_days": 330,
+                "lt_hold_min_gain": 0.10,
+                "tax": {
+                    "short_term_rate": 0.50,
+                    "long_term_rate": 0.32,
+                    "long_term_threshold_days": 365,
+                },
+                "risk": {"panel_exit": {
+                    "enabled": True,
+                    "panel_sell_floor": 0.20,
+                    "mu_sell_ceiling": 0.0,
+                    "tax_adjusted_soft_exit": {"enabled": True},
+                }},
+            },
+        )
+        PanelConvictionExitTask().run(tc)
+        assert tc.exit_signal is None
+
+
 # ── Audit 2026-04-24: scale-correctness regression ───────────────────────────
 
 class TestUnitMismatchAudit:

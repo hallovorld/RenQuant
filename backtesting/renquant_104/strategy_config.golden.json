@@ -374,6 +374,19 @@
       "xs_panel_percentile_floor": 0.2,
       "mu_strong_sell_ceiling": -0.05,
       "min_universe": 5,
+      "min_holding_days_by_regime": {
+        "BULL_CALM": 10
+      },
+      "_min_holding_days_reason": "2026-05-21 P0-3: selected-score forensics show the panel edge is weak at 1d/5d but positive at 10d/20d. In BULL_CALM, panel_conviction is a soft model exit, not a hard risk exit, so it must wait 10 calendar days before firing. Regime deterioration bypasses this because the key is only BULL_CALM; hard stops/trailing/SDL/max_hold are unaffected.",
+      "tax_adjusted_soft_exit": {
+        "enabled": true,
+        "short_term_only": true,
+        "min_unrealized_gain": 0.0,
+        "tax_drag_fraction": 1.0,
+        "transaction_cost_pct": 0.0,
+        "min_exit_edge": 0.0,
+        "_reason": "2026-05-21 P0-4: model-driven soft exits on short-term unrealized gains must have enough negative expected return to pay immediate tax drag. Uses the same fraction-of-position tax_drag convention as kernel.rotation.tax_drag. Path-risk exits remain exempt."
+      },
       "_deployment_reason": "2026-05-11 audit fix: legacy PanelConvictionExitTask had 0/12336 historical fire rate due to calibrator-saturation rank_score gating. NEW CrossSectionalPanelExitTask post-PanelScoringJob uses raw panel_score with cross-sectional percentile (AND mu) + strong-mu OR-bypass. Catches BA-style cases: panel=+0.198 (32%ile) mu=-0.123 \u2192 fires via strong_mu bypass."
     }
   },

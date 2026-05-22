@@ -36,7 +36,7 @@ def _holding(panel: float | None, mu: float | None, *,
               entry_price=100.0, days_back=20) -> HoldingState:
     return HoldingState(
         entry_price=entry_price,
-        entry_date=datetime.date(2025, 1, 1) - datetime.timedelta(days=days_back),
+        entry_date=datetime.date(2025, 6, 15) - datetime.timedelta(days=days_back),
         high_watermark=entry_price * 1.05,
         panel_score=panel,
         mu=mu,
@@ -48,10 +48,12 @@ def _cand(ticker: str, panel: float) -> SimpleNamespace:
 
 
 def _ctx(*, holdings: dict, candidates: list, cfg_panel_exit: dict | None = None,
-         exits=None, regime="BULL_CALM"):
-    cfg = {"risk": {}}
+         exits=None, regime="BULL_CALM", prices=None, tax=None):
+    cfg = {"risk": {}, "lt_hold_gate_days": 330, "lt_hold_min_gain": 0.10}
     if cfg_panel_exit is not None:
         cfg["risk"]["panel_exit"] = cfg_panel_exit
+    if tax is not None:
+        cfg["tax"] = tax
     return SimpleNamespace(
         config=cfg,
         today=datetime.date(2025, 6, 15),
@@ -60,6 +62,7 @@ def _ctx(*, holdings: dict, candidates: list, cfg_panel_exit: dict | None = None
         candidates=candidates,
         exits=exits if exits is not None else [],
         counters={},
+        prices=prices or {},
     )
 
 
@@ -221,3 +224,106 @@ class TestFireGates:
         )
         CrossSectionalPanelExitTask().run(ctx)
         assert ctx.exits == []
+
+
+class TestHorizonAndTaxGates:
+    def _bearish_cfg(self, **extras):
+        cfg = {
+            "enabled": True,
+            "xs_panel_percentile_floor": 0.20,
+            "mu_sell_ceiling": 0.0,
+            "mu_strong_sell_ceiling": -0.05,
+            "min_universe": 5,
+        }
+        cfg.update(extras)
+        return cfg
+
+    def test_bull_calm_soft_exit_waits_for_configured_thesis_days(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"EARLY": _holding(panel=0.05, mu=-0.20, days_back=3)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(
+                min_holding_days_by_regime={"BULL_CALM": 10},
+            ),
+            prices={"EARLY": 95.0},
+            regime="BULL_CALM",
+        )
+        CrossSectionalPanelExitTask().run(ctx)
+        assert ctx.exits == []
+        assert ctx.counters.get("xs_panel_exit_horizon_suppressed") == 1
+
+    def test_deteriorated_regime_can_exit_before_bull_calm_thesis_days(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"EARLY": _holding(panel=0.05, mu=-0.20, days_back=3)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(
+                min_holding_days_by_regime={"BULL_CALM": 10},
+            ),
+            prices={"EARLY": 95.0},
+            regime="CHOPPY",
+        )
+        CrossSectionalPanelExitTask().run(ctx)
+        assert len(ctx.exits) == 1
+        assert ctx.exits[0][0] == "EARLY"
+
+    def test_root_level_lt_gate_330_does_not_act_like_30_day_default(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"GAIN": _holding(panel=0.05, mu=-0.20, days_back=60)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(),
+            prices={"GAIN": 120.0},
+        )
+        CrossSectionalPanelExitTask().run(ctx)
+        assert len(ctx.exits) == 1
+        assert ctx.exits[0][0] == "GAIN"
+
+    def test_tax_drag_blocks_marginal_short_term_gain_exit(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"TAX": _holding(panel=0.05, mu=-0.02, days_back=30)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(
+                tax_adjusted_soft_exit={"enabled": True},
+            ),
+            prices={"TAX": 120.0},
+            tax={"short_term_rate": 0.50, "long_term_rate": 0.32,
+                 "long_term_threshold_days": 365},
+        )
+        CrossSectionalPanelExitTask().run(ctx)
+        assert ctx.exits == []
+        assert ctx.counters.get("xs_panel_exit_tax_suppressed") == 1
+
+    def test_large_negative_mu_can_pay_short_term_tax_drag(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"TAX": _holding(panel=0.05, mu=-0.12, days_back=30)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(
+                tax_adjusted_soft_exit={"enabled": True},
+            ),
+            prices={"TAX": 120.0},
+            tax={"short_term_rate": 0.50, "long_term_rate": 0.32,
+                 "long_term_threshold_days": 365},
+        )
+        CrossSectionalPanelExitTask().run(ctx)
+        assert len(ctx.exits) == 1
+        assert ctx.exits[0][0] == "TAX"
+
+    def test_unrealized_loss_has_no_tax_drag_suppression(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"LOSS": _holding(panel=0.05, mu=-0.02, days_back=30)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(
+                tax_adjusted_soft_exit={"enabled": True},
+            ),
+            prices={"LOSS": 90.0},
+            tax={"short_term_rate": 0.50, "long_term_rate": 0.32,
+                 "long_term_threshold_days": 365},
+        )
+        CrossSectionalPanelExitTask().run(ctx)
+        assert len(ctx.exits) == 1
+        assert ctx.exits[0][0] == "LOSS"

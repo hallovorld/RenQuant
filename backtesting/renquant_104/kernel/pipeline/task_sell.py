@@ -6,6 +6,12 @@ import logging
 
 from .context import TickerInferenceContext
 from .pipeline import Task
+from .soft_exit_guards import (
+    lt_gate_suppression,
+    resolve_current_price,
+    soft_exit_horizon_suppression,
+    tax_adjusted_soft_exit_suppression,
+)
 
 log = logging.getLogger("kernel.pipeline.sell")
 
@@ -356,38 +362,54 @@ class PanelConvictionExitTask(Task):
             fires = (prob_score < panel_floor) and (mu <= mu_ceiling)
 
         if fires:
+            suppress, why = soft_exit_horizon_suppression(
+                panel_cfg=cfg,
+                regime=getattr(tc, "regime", None),
+                today=getattr(tc, "today", None),
+                holding=hs,
+            )
+            if suppress:
+                log.info(
+                    "PanelConvictionExitTask [%s]: SUPPRESSED by horizon gate (%s)",
+                    tc.ticker, why,
+                )
+                return
+
+            current_price = resolve_current_price(tc, hs, getattr(tc, "ticker", None))
+
             # Audit fix 2026-04-29: respect the LT-hold tax gate.
             # compute_exits() suppresses model_sell when a position is in the
             # last N days before the 1-year LT capital-gain threshold AND has
             # an unrealized gain ≥ lt_hold_min_gain. PanelConvictionExit was
             # bypassing this — could trigger a forced ST exit on a position
             # 30 days from LT. Skip the exit if we're in the LT-protected window.
-            risk_cfg = tc.config.get("risk", {})
-            lt_gate = int(risk_cfg.get("lt_hold_gate_days", 30))
-            lt_thresh = int(risk_cfg.get("lt_hold_threshold_days", 365))
-            lt_min_gain = float(risk_cfg.get("lt_hold_min_gain", 0.10))
-            entry_date = getattr(hs, "entry_date", None)
-            entry_price = getattr(hs, "entry_price", 0)
-            current_price = getattr(tc, "today_close", None) or getattr(hs, "current_price", entry_price)
-            if (lt_gate > 0 and entry_date is not None and entry_price > 0
-                    and current_price > 0):
-                # Defensive: tc may be a SimpleNamespace mock without `today`.
-                # Use getattr — without this, `tc.today` raises AttributeError
-                # before isinstance() can even run.
-                from datetime import date as _date  # noqa: PLC0415
-                tc_today = getattr(tc, "today", None)
-                today = tc_today if isinstance(tc_today, _date) else None
-                if today is not None:
-                    days_held = (today - entry_date).days
-                    unrealized_gain = (current_price - entry_price) / entry_price
-                    if (lt_gate <= days_held < lt_thresh
-                            and unrealized_gain >= lt_min_gain):
-                        log.info(
-                            "PanelConvictionExitTask [%s]: SUPPRESSED by LT tax gate "
-                            "(held=%dd, gain=%+.1f%%, target_LT=%dd)",
-                            tc.ticker, days_held, unrealized_gain * 100, lt_thresh,
-                        )
-                        return  # skip exit — let LT threshold pass
+            suppress, why = lt_gate_suppression(
+                config=tc.config,
+                today=getattr(tc, "today", None),
+                holding=hs,
+                current_price=current_price,
+            )
+            if suppress:
+                log.info(
+                    "PanelConvictionExitTask [%s]: SUPPRESSED by LT tax gate (%s)",
+                    tc.ticker, why,
+                )
+                return  # skip exit — let LT threshold pass
+
+            suppress, why = tax_adjusted_soft_exit_suppression(
+                panel_cfg=cfg,
+                tax_cfg=tc.config.get("tax") or {},
+                today=getattr(tc, "today", None),
+                holding=hs,
+                current_price=current_price,
+                mu=mu,
+            )
+            if suppress:
+                log.info(
+                    "PanelConvictionExitTask [%s]: SUPPRESSED by tax-adjusted gate (%s)",
+                    tc.ticker, why,
+                )
+                return
 
             # Build signal via existing ExitSignal dataclass
             from kernel.exits import ExitSignal  # noqa: PLC0415

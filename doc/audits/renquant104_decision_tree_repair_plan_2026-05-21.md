@@ -229,7 +229,7 @@ band economics, not from a stale `disable buy` or missing-μ bug.
 
 ### P0-3 — Align Exit Horizon With Observed Signal Horizon
 
-Status: design pending; no config flip yet.
+Status: implemented for model-driven soft panel exits.
 
 Observed issue:
 
@@ -259,21 +259,29 @@ Reference support:
 Design:
 
 - Do not globally loosen stops.
-- First run regime-stratified A/B:
-  - baseline current exits
-  - delayed panel-conviction exit until day 10 in BULL_CALM
-  - no panel-conviction exit before day 10 unless market regime deteriorates
-  - stop-loss unchanged for hard risk control
-- Require 5+ cuts/seeds or bar-order variants before claiming improvement.
+- `panel_conviction` is a model-driven soft exit. In `BULL_CALM`, it now waits
+  `10` calendar days before firing, matching the first horizon where selected
+  candidate evidence turned positive.
+- Regime deterioration can still exit early because the configured minimum is
+  keyed only to `BULL_CALM`; `CHOPPY`, `BULL_VOLATILE`, and `BEAR` are not
+  delayed by this thesis-age gate.
+- Hard path exits remain exempt: stop-loss, trailing stop, single-day loss,
+  max-hold, rotation, Kelly trim, and joint/QP exits do not call this guard.
+- The rule is shared by both legacy `PanelConvictionExitTask` and
+  pipeline-level `CrossSectionalPanelExitTask` via
+  `kernel/pipeline/soft_exit_guards.py`.
 
 Acceptance:
 
 - Report per-regime APY, Sharpe, max drawdown, tax, and trade count.
 - Must beat SPY-relative excess return in BULL_CALM, not just pooled APY.
+- Unit coverage:
+  - `tests/test_panel_conviction_xs_exit.py::TestHorizonAndTaxGates`
+  - `tests/test_panel_conviction_exit.py::TestSoftExitGuards`
 
 ### P0-4 — Tax-Aware Objective Must Match Taxable Account Reality
 
-Status: design pending.
+Status: implemented for model-driven soft panel exits.
 
 Observed issue:
 
@@ -299,16 +307,31 @@ Reference support:
 
 Design:
 
-- Add tax-adjusted exit threshold:
-  `exit_edge = expected_loss_avoided - tax_drag - transaction_cost`.
-- For gains near long-term holding threshold, require stronger sell evidence.
-- Keep stop-loss exempt from tax delay when downside risk is large.
+- Added tax-adjusted soft-exit threshold:
+  `expected_loss_avoided >= tax_drag + transaction_cost + min_exit_edge`.
+- `expected_loss_avoided = max(0, -mu)` and `tax_drag` follows the existing
+  project convention used by `kernel.rotation.tax_drag`: unrealized gain × tax
+  rate, in fraction-of-position units.
+- Default production config enables this only for short-term unrealized gains
+  and only for model-driven `panel_conviction` exits.
+- Hard path exits remain exempt. If a position hits stop-loss, trailing stop,
+  single-day loss, or max-hold, tax does not block the exit.
+- Bug fixed while implementing this: cross-sectional and legacy panel exits
+  read `lt_hold_gate_days` from `risk`, but production stores the single source
+  at the config root (`lt_hold_gate_days = 330`). The prior fallback acted like
+  a 30-day LT gate in tests/stubs. The shared helper now prefers root-level
+  config and falls back to risk-level legacy fields only when needed.
 
 Acceptance:
 
 - Realized tax as percentage of gross PnL must decline without increasing
   max drawdown beyond the regime-specific budget.
 - Report gross PnL, tax, net PnL by exit reason.
+- Unit coverage:
+  - marginal short-term gain with weak negative μ is suppressed
+  - large negative μ can still pay tax drag and exit
+  - unrealized loss has no tax-drag suppression
+  - root-level `lt_hold_gate_days=330` no longer behaves like a 30-day default
 
 ### P0-5 — PatchTST/CSA/FiLM Artifact Isolation
 
