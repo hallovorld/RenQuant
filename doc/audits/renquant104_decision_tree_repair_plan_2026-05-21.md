@@ -121,6 +121,13 @@ Historical DB repair:
   violations and `0` `ticker_daily_state` violations.
 - Applied repair cleared `1234` stale labels without deleting rows.
 - Post-check: `remaining = 0`.
+- Dry-run on `data/runs.paper.db` after the paper daily acceptance run found
+  `24` stale `candidate_scores` violations and `12` stale
+  `ticker_daily_state` violations, all from legacy `2026-05-07` to
+  `2026-05-11` runs. The fresh `2026-05-21-live-b8542b38` run introduced no
+  new violation.
+- Applied repair cleared those `36` stale paper labels without deleting rows.
+  Post-check: `remaining = 0`.
 
 Reference support:
 
@@ -200,6 +207,25 @@ Focused verification:
 ```text
 36 passed in 3.00s
 ```
+
+Paper daily acceptance, `2026-05-21-live-b8542b38`:
+
+- Broker: `paper` only.
+- Regime: `BULL_CALM`, confidence `0.59`, Hurst `0.71`.
+- Candidate flow: `114` loaded model symbols, `93` raw candidates, `79`
+  panel-scored candidates after earnings/wash-sale/realized-vol gates.
+- Kelly/QP contract: `ApplyKellySizingTask` sized `59/79` candidates with
+  non-zero Kelly target; the only zero reason was `mu_le_min_edge=20`.
+  No `kelly_zero:mu_none` appeared in the fresh run.
+- QP result: `0` buys and `0` sells because all proposed deltas were either
+  inside the no-trade band or below `min_delta_weight`:
+  `qp_delta_below_min_dw(73)`.
+- Invariant check after run:
+  `selected=1 AND blocked_by IS NOT NULL` returned `0` for the fresh run.
+
+Interpretation: buy is enabled and the tree is no longer globally blocking
+BULL_CALM buys; the current no-trade decision is coming from optimizer/no-trade
+band economics, not from a stale `disable buy` or missing-μ bug.
 
 ### P0-3 — Align Exit Horizon With Observed Signal Horizon
 
@@ -325,19 +351,23 @@ PatchTST monitor -> isolate if incomplete/dirty -> compare only complete runs
 
 ## Current Implemented Patch
 
-P0-1 has been implemented and focused tests passed:
+P0-1 through P0-2 have been implemented and focused tests passed:
 
 ```text
-22 passed in 1.81s
+39 passed in 2.48s
 ```
 
 Focused command:
 
 ```text
-.venv/bin/python -m pytest tests/test_persistence.py::TestCandidateScores \
+.venv/bin/python -m pytest \
+  tests/test_persistence.py::TestCandidateScores \
   tests/test_analyze_decision_factors.py \
-  tests/test_blocked_by_population.py \
-  tests/test_db_separation.py -q
+  tests/test_repair_decision_trace_invariants.py \
+  tests/test_qp_force_mu_source.py \
+  tests/test_qp_grinold_kahn_transform.py \
+  tests/test_qp_integration.py \
+  tests/test_kelly_sizing.py -q
 ```
 
 Full-suite status after this patch:
@@ -351,5 +381,22 @@ source-contract drift in monthly calibrator / panel scoring / HF wrapper tests,
 one `python` executable PATH assumption, and one sandboxed process-pool semaphore
 failure. Treat the repo as not globally green until those are repaired.
 
-This is not the end of the repair. It removes a false attribution bug so the
-next measurements are not garbage.
+Acceptance notes after the patch:
+
+- `scripts/smoke_test_model.py --strategy renquant_104` passed on the prod
+  panel artifact.
+- A static historical prod sim correctly refused to run because the artifact
+  training date would create look-ahead leakage for a February/March 2026
+  replay. Treat this as a good fail; historical evaluation must use
+  walk-forward manifests.
+- `strategy_config.sim_wl200_172_sentiment.json` currently fails static-path
+  preflight as a no-op/stale-path config and was not forced through with
+  `--skip-preflight`.
+- The paper daily run completed end-to-end, but the per-ticker candidate phase
+  took about `454s` and emitted pandas fragmentation warnings in
+  `kernel/panel_pipeline/feature_matrix.py`. This is a performance/reliability
+  item for P1, not a reason to promote.
+
+This is not the end of the repair. It removes a false attribution bug, enforces
+the strict μ contract before optimizer emission, and gives us a cleaner base for
+P0-3/P0-4 horizon and tax A/B work.
