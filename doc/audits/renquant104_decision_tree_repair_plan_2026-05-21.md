@@ -112,6 +112,15 @@ Tests:
 - `tests/test_persistence.py::TestCandidateScores::test_selected_candidate_clears_stale_block_reason`
 - `tests/test_persistence.py::TestCandidateScores::test_ticker_daily_state_selected_clears_stale_block_reason`
 - `tests/test_analyze_decision_factors.py::TestBlockReasonAttribution::test_selected_rows_override_stale_blocked_by`
+- `tests/test_repair_decision_trace_invariants.py`
+
+Historical DB repair:
+
+- Tool: `scripts/repair_decision_trace_invariants.py`
+- Dry-run on `data/sim_runs.db` found `1234` stale `candidate_scores`
+  violations and `0` `ticker_daily_state` violations.
+- Applied repair cleared `1234` stale labels without deleting rows.
+- Post-check: `remaining = 0`.
 
 Reference support:
 
