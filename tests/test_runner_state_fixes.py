@@ -145,11 +145,15 @@ class TestExitsFailDB:
         assert "EXITS-FAIL-DB" in RUNNER_SOURCE
 
     def test_uses_exits_placed_not_ctx_exits(self):
-        # The fix introduces exits_for_db = exits_placed-or-fallback
+        # The fix introduces explicit placed-vs-intent selection. An empty
+        # broker-confirmed list is meaningful and must not fall back to intent.
         assert "exits_for_db" in RUNNER_SOURCE
         # Used in both record_trades (loop) and record_pipeline_run (count)
         assert "for t, sig in exits_for_db" in RUNNER_SOURCE
         assert "n_exits         = len(exits_for_db)" in RUNNER_SOURCE
+        assert "orders_for_db" in RUNNER_SOURCE
+        assert "for o in orders_for_db" in RUNNER_SOURCE
+        assert "n_buys          = len(orders_for_db)" in RUNNER_SOURCE
 
 
 # ── ROT-BLOCKED-NTFY (Bug L) ──────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -229,6 +230,61 @@ class TestTrades:
         # spot-check the sell row
         sell = next(r for r in rows if r[1] == "sell")
         assert sell[3] == "trailing_stop"
+        conn.close()
+
+    def test_records_trade_decision_tree_payloads(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "buy",
+            "date": datetime.date(2026, 5, 22),
+            "shares": 4,
+            "price": 125.0,
+            "invest": 500.0,
+            "order_type": "QP_BUY",
+            "source": "JointPortfolioQPJob.JointPortfolioQPTask",
+            "source_job": "JointPortfolioQPJob",
+            "source_task": "JointPortfolioQPTask",
+            "order_source": "JointPortfolioQPJob.JointPortfolioQPTask",
+            "attribution_version": "order_attribution_v1",
+            "score_snapshot": {
+                "rank_score": 0.61,
+                "panel_score": 0.58,
+                "mu": 0.014,
+                "sigma": 0.032,
+                "kelly_target_pct": 0.08,
+                "confidence": 0.72,
+                "regime": "BULL_CALM",
+            },
+            "decision_inputs": {
+                "acceptance_reason": "qp_target_weight_increase",
+                "target_w": 0.08,
+                "current_w": 0.00,
+                "delta_w": 0.08,
+            },
+        }])
+        row = conn.execute(
+            """SELECT trade_date, order_type, source_job, source_task,
+                      order_source, attribution_version,
+                      score_snapshot_json, decision_inputs_json
+                 FROM trades WHERE run_id = ? AND ticker = 'AAA'""",
+            (rid,),
+        ).fetchone()
+        assert row[0] == "2026-05-22"
+        assert row[1] == "QP_BUY"
+        assert row[2] == "JointPortfolioQPJob"
+        assert row[3] == "JointPortfolioQPTask"
+        assert row[4] == "JointPortfolioQPJob.JointPortfolioQPTask"
+        assert row[5] == "order_attribution_v1"
+        score_snapshot = json.loads(row[6])
+        decision_inputs = json.loads(row[7])
+        assert score_snapshot["rank_score"] == pytest.approx(0.61)
+        assert score_snapshot["regime"] == "BULL_CALM"
+        assert decision_inputs["acceptance_reason"] == "qp_target_weight_increase"
+        assert decision_inputs["delta_w"] == pytest.approx(0.08)
         conn.close()
 
 

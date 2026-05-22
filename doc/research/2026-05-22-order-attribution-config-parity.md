@@ -65,6 +65,38 @@ Emit paths now stamped:
 
 Invariant: no buy order can be appended by a known emitter without attribution.
 
+## P0b: Executed-Trade DB Decision Trace
+
+Added/extended:
+
+- `backtesting/renquant_104/kernel/persistence.py`
+- `backtesting/renquant_104/adapters/sim.py`
+- `backtesting/renquant_104/adapters/runner.py`
+- `tests/test_persistence.py`
+- `tests/test_runner_state_fixes.py`
+
+`trades` is now an executed-trade table with decision trace columns:
+
+- `trade_date`
+- `order_type`
+- `source`
+- `source_job`
+- `source_task`
+- `order_source`
+- `attribution_version`
+- `score_snapshot_json`
+- `decision_inputs_json`
+
+Buy rows persist the order-attribution payload emitted by the strategy path.
+Sell rows persist the exit path (`exit_reason`, `signal_reason`, hold days,
+P&L, and regime exit thresholds). Live DB writes now use broker-confirmed
+`orders_placed` / `exits_placed`; an empty confirmed list is treated as empty,
+not as permission to fall back to pipeline intent.
+
+Invariant: a row in `trades` represents an executed trade plus the decision
+state that produced it, while rejected/skipped intents remain outside the
+executed-trade table and are handled by the broader pipeline trace.
+
 ## P1: WF Config Parity Guard
 
 Added:
@@ -136,3 +168,17 @@ Result at implementation time:
 
 - order attribution / buy emit / joint / rotation: 38 passed
 - WF config parity: 3 passed
+
+Additional DB contract check:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_persistence.py \
+  tests/test_runner_state_fixes.py \
+  tests/test_order_attribution_contract.py \
+  -q
+```
+
+Result at implementation time:
+
+- 55 passed

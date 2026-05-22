@@ -1470,25 +1470,72 @@ class RunnerAdapter:
             # written to `trades` table as successful — distorting PnL
             # analytics + n_exits count. Match the ntfy logic at
             # live/runner.py which already prefers exits_placed.
-            exits_for_db = list(getattr(ctx, "exits_placed", None)
-                                or ctx.exits or [])
+            # `*_placed` may legitimately be an empty list when every broker
+            # attempt failed or was skipped. Do not fall back to pipeline
+            # intent in that case; `trades` is an executed-trade table.
+            if hasattr(ctx, "exits_placed"):
+                exits_for_db = list(getattr(ctx, "exits_placed", []) or [])
+            else:
+                exits_for_db = list(ctx.exits or [])
+            if hasattr(ctx, "orders_placed"):
+                orders_for_db = list(getattr(ctx, "orders_placed", []) or [])
+            else:
+                orders_for_db = list(ctx.orders or [])
             trade_events: list[dict] = []
+            regime_p = (self._config.get("regime_params", {}) or {}).get(
+                ctx.regime, {},
+            ) or {}
             for t, sig in exits_for_db:
                 hs    = ctx.holdings.get(t)
                 price = ctx.prices.get(t, 0.0)
                 entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
+                hold_days = (ctx.today - hs.entry_date).days if hs and hs.entry_date else 0
+                pnl_pct = (price - entry_p) / entry_p if entry_p > 0 else 0.0
                 trade_events.append({
                     "ticker":      t,
                     "action":      "sell",
+                    "date":        ctx.today,
                     "price":       price,
                     "exit_reason": sig.exit_type,
-                    "pnl_pct":     (price - entry_p) / entry_p if entry_p > 0 else 0.0,
-                    "hold_days":   (ctx.today - hs.entry_date).days if hs and hs.entry_date else 0,
+                    "pnl_pct":     pnl_pct,
+                    "hold_days":   hold_days,
+                    "order_type":  f"SELL_{sig.exit_type}" if sig.exit_type else "SELL",
+                    "source":      "ExitPipeline",
+                    "source_job":  "TickerSellJob",
+                    "source_task": sig.exit_type or "sell",
+                    "order_source": f"TickerSellJob.{sig.exit_type or 'sell'}",
+                    "attribution_version": "exit_decision_v1",
+                    "score_snapshot": {
+                        "rank_score": getattr(hs, "rank_score", None),
+                        "panel_score": getattr(hs, "panel_score", None),
+                        "mu": getattr(hs, "mu", None),
+                        "sigma": getattr(hs, "sigma", None),
+                        "kelly_target_pct": getattr(hs, "kelly_target_pct", None),
+                        "confidence": getattr(ctx, "confidence", None),
+                        "regime": getattr(ctx, "regime", None),
+                    },
+                    "decision_inputs": {
+                        "acceptance_reason": sig.exit_type or sig.reason,
+                        "exit_reason": sig.exit_type,
+                        "signal_reason": sig.reason,
+                        "quantity": getattr(sig, "quantity", None),
+                        "hold_days": hold_days,
+                        "pnl_pct": pnl_pct,
+                        "stop_loss_pct": regime_p.get("stop_loss_pct"),
+                        "stop_n_sigma": regime_p.get("stop_n_sigma"),
+                        "max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
+                        "sdl_n_sigma": regime_p.get("sdl_n_sigma"),
+                        "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
+                        "trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
+                        "atr_n_multiplier": regime_p.get("atr_n_multiplier"),
+                        "max_hold_days": regime_p.get("max_hold_days"),
+                    },
                 })
-            for o in ctx.orders:
+            for o in orders_for_db:
                 trade_events.append({
                     "ticker":      o.get("ticker"),
                     "action":      "buy",
+                    "date":        ctx.today,
                     "shares":      o.get("shares"),
                     "price":       o.get("price"),
                     "invest":      o.get("invest"),
@@ -1498,6 +1545,20 @@ class RunnerAdapter:
                     "sigma_mult":  o.get("sigma_mult"),
                     "mu":          o.get("mu"),
                     "sigma":       o.get("sigma"),
+                    "order_type":  o.get("order_type"),
+                    "source":      o.get("source"),
+                    "source_job":  o.get("source_job"),
+                    "source_task": o.get("source_task"),
+                    "order_source": o.get("order_source"),
+                    "attribution_version": o.get("attribution_version"),
+                    "score_snapshot": o.get("score_snapshot"),
+                    "decision_inputs": o.get("decision_inputs"),
+                    "panel_score": o.get("panel_score"),
+                    "rs_score": o.get("rs_score"),
+                    "kelly_target_pct": o.get("kelly_target_pct"),
+                    "expected_return": o.get("expected_return"),
+                    "confidence": o.get("confidence", ctx.confidence),
+                    "regime": o.get("regime", ctx.regime),
                 })
             run_bundle = build_run_bundle(
                 self._config,
@@ -1524,7 +1585,7 @@ class RunnerAdapter:
                 # Kelly/cash filters). Stops SQLite analytics from
                 # double-counting rotations that were never executed.
                 n_rotations     = int(ctx.counters.get("rotations", 0)),
-                n_buys          = len(ctx.orders),
+                n_buys          = len(orders_for_db),
                 buy_blocked     = bool(getattr(ctx, "buy_blocked", False)),
                 skip_buys        = bool(getattr(ctx, "skip_buys", False)),
                 bear_only        = bool(getattr(ctx, "bear_only", False)),

@@ -87,6 +87,7 @@ CREATE INDEX IF NOT EXISTS idx_cand_ticker ON candidate_scores(ticker);
 
 CREATE TABLE IF NOT EXISTS trades (
     run_id         TEXT,
+    trade_date     DATE,
     ticker         TEXT,
     action         TEXT,
     shares         REAL,
@@ -102,10 +103,19 @@ CREATE TABLE IF NOT EXISTS trades (
     sigma_mult     REAL,
     mu             REAL,
     sigma          REAL,
+    order_type     TEXT,
+    source         TEXT,
+    source_job     TEXT,
+    source_task    TEXT,
+    order_source   TEXT,
+    attribution_version TEXT,
+    score_snapshot_json  TEXT,
+    decision_inputs_json TEXT,
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
 CREATE INDEX IF NOT EXISTS idx_trades_action ON trades(action);
+CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(trade_date);
 
 CREATE TABLE IF NOT EXISTS rotations (
     run_id        TEXT,
@@ -394,6 +404,21 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("model_type",         "TEXT"),
         ("sector",             "TEXT"),
         ("panel_ltr_artifact", "TEXT"),
+    ],
+    # 2026-05-22: persist the per-trade decision tree, not just scalar P&L.
+    # Buy orders already carry order-attribution fields at emission time;
+    # sell events carry exit diagnostics. These columns make the executed
+    # trade table replayable without joining back to JSON logs.
+    "trades": [
+        ("trade_date",            "DATE"),
+        ("order_type",            "TEXT"),
+        ("source",                "TEXT"),
+        ("source_job",            "TEXT"),
+        ("source_task",           "TEXT"),
+        ("order_source",          "TEXT"),
+        ("attribution_version",   "TEXT"),
+        ("score_snapshot_json",   "TEXT"),
+        ("decision_inputs_json",  "TEXT"),
     ],
 }
 
@@ -860,14 +885,33 @@ def record_trades(
     Expected keys (all optional except ticker + action):
       ticker, action ('buy'|'sell'), shares, price, invest, target_pct,
       exit_reason, pnl_pct, hold_days, tax, rank_score, conviction,
-      sigma_mult, mu, sigma
+      sigma_mult, mu, sigma, order_type/source/source_job/source_task/
+      order_source/attribution_version, score_snapshot, decision_inputs.
     """
     if conn is None or run_id is None:
         return
+
+    def _json_or_none(value: Any) -> str | None:
+        if value is None:
+            return None
+        return json.dumps(value, sort_keys=True, default=str)
+
+    def _score_snapshot_or_none(t: dict) -> dict[str, Any] | None:
+        snap = t.get("score_snapshot")
+        if isinstance(snap, dict):
+            return snap
+        keys = (
+            "rank_score", "panel_score", "rs_score", "mu", "sigma",
+            "kelly_target_pct", "expected_return", "confidence", "regime",
+        )
+        fallback = {k: t.get(k) for k in keys if k in t and t.get(k) is not None}
+        return fallback or None
+
     rows = []
     for t in trade_events:
         rows.append((
             run_id,
+            str(t.get("date") or t.get("trade_date") or "") or None,
             t.get("ticker"),
             t.get("action"),
             _none_or_float(t.get("shares")),
@@ -883,14 +927,24 @@ def record_trades(
             _none_or_float(t.get("sigma_mult")),
             _none_or_float(t.get("mu")),
             _none_or_float(t.get("sigma")),
+            t.get("order_type"),
+            t.get("source"),
+            t.get("source_job"),
+            t.get("source_task"),
+            t.get("order_source"),
+            t.get("attribution_version"),
+            _json_or_none(_score_snapshot_or_none(t)),
+            _json_or_none(t.get("decision_inputs")),
         ))
     if rows:
         conn.executemany(
             """INSERT INTO trades
-                  (run_id, ticker, action, shares, price, invest, target_pct,
+                  (run_id, trade_date, ticker, action, shares, price, invest, target_pct,
                    exit_reason, pnl_pct, hold_days, tax,
-                   rank_score, conviction, sigma_mult, mu, sigma)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   rank_score, conviction, sigma_mult, mu, sigma,
+                   order_type, source, source_job, source_task, order_source,
+                   attribution_version, score_snapshot_json, decision_inputs_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 

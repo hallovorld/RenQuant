@@ -1154,6 +1154,38 @@ class SimAdapter:
             "exit_trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
             "exit_atr_n_multiplier": regime_p.get("atr_n_multiplier"),
             "exit_max_hold_days": regime_p.get("max_hold_days"),
+            "order_type":  f"SELL_{sig.exit_type}" if sig.exit_type else "SELL",
+            "source":      "ExitPipeline",
+            "source_job":  "TickerSellJob",
+            "source_task": sig.exit_type or "sell",
+            "order_source": f"TickerSellJob.{sig.exit_type or 'sell'}",
+            "attribution_version": "exit_decision_v1",
+            "score_snapshot": {
+                "rank_score": getattr(hs, "rank_score", None),
+                "panel_score": getattr(hs, "panel_score", None),
+                "mu": getattr(hs, "mu", None),
+                "sigma": getattr(hs, "sigma", None),
+                "kelly_target_pct": getattr(hs, "kelly_target_pct", None),
+                "confidence": getattr(ctx, "confidence", None),
+                "regime": getattr(ctx, "regime", None),
+            },
+            "decision_inputs": {
+                "acceptance_reason": sig.exit_type or sig.reason,
+                "exit_reason": sig.exit_type,
+                "signal_reason": sig.reason,
+                "partial": is_partial,
+                "quantity": getattr(sig, "quantity", None),
+                "hold_days": hold_days,
+                "pnl_pct": _pnl_pct,
+                "stop_loss_pct": regime_p.get("stop_loss_pct"),
+                "stop_n_sigma": regime_p.get("stop_n_sigma"),
+                "max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
+                "sdl_n_sigma": regime_p.get("sdl_n_sigma"),
+                "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
+                "trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
+                "atr_n_multiplier": regime_p.get("atr_n_multiplier"),
+                "max_hold_days": regime_p.get("max_hold_days"),
+            },
         })
 
     def _apply_buy(self, order: dict, today_ts: pd.Timestamp, ctx) -> None:
@@ -1329,6 +1361,14 @@ class SimAdapter:
             "order_type": order.get("order_type"),
             "confidence": order.get("confidence"),
             "kelly_target_pct": order.get("kelly_target_pct"),
+            "attribution_version": order.get("attribution_version"),
+            "source_job": order.get("source_job"),
+            "source_task": order.get("source_task"),
+            "order_source": order.get("order_source"),
+            "panel_score": order.get("panel_score"),
+            "expected_return": order.get("expected_return"),
+            "score_snapshot": order.get("score_snapshot"),
+            "decision_inputs": order.get("decision_inputs"),
         })
 
     def _apply_short_open(self, ticker: str, sig, today_ts, ctx) -> None:
