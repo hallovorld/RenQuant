@@ -103,9 +103,9 @@ class TestRealisticBars:
     def test_typical_bullish_bar_emits_buys(self):
         """3 candidates with positive μ, no holdings → QP fills cash."""
         cands = [
-            _Cand("AAPL", mu=0.04, sigma=0.10),
-            _Cand("MSFT", mu=0.03, sigma=0.09),
-            _Cand("GOOG", mu=0.02, sigma=0.11),
+            _Cand("AAPL", mu=0.04, sigma=0.10, rank_score=0.72, panel_score=1.1, rs_score=0.2),
+            _Cand("MSFT", mu=0.03, sigma=0.09, rank_score=0.66, panel_score=0.9, rs_score=0.1),
+            _Cand("GOOG", mu=0.02, sigma=0.11, rank_score=0.58, panel_score=0.5, rs_score=0.0),
         ]
         prices = {"AAPL": 200.0, "MSFT": 400.0, "GOOG": 150.0}
         ctx = _make_ctx(candidates=cands, holdings={}, prices=prices)
@@ -115,6 +115,15 @@ class TestRealisticBars:
         # Should be sized below per-position cap = 0.20 × confidence(0.6→0.6)
         for o in ctx.orders:
             assert o["invest"] <= 0.21 * ctx.portfolio_value
+            assert o["source"] == "qp"
+            assert o["order_type"] == "QP_BUY"
+            assert o["regime"] == "BULL_CALM"
+            assert o["confidence"] == pytest.approx(0.6)
+            assert o["mu"] is not None
+            assert o["sigma"] is not None
+            assert o["rank_score"] is not None
+            assert o["panel_score"] is not None
+            assert "rs_score" in o
         # Cash budget respected: total invest ≤ (1 - cash_reserve) × NAV
         total_invest = sum(o["invest"] for o in ctx.orders)
         assert total_invest <= (1 - 0.10) * 10000.0 + 1.0   # +$1 numerical

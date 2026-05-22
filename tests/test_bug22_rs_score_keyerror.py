@@ -69,9 +69,11 @@ class TestBug22RsScoreKeyError:
 
 
 class TestQPOrderShape:
-    """Confirm the QP order producer omits the keys (so our defensive
-    .get() is actually load-bearing). If the QP producer adds these
-    fields later, this test points at the right spot."""
+    """Confirm the QP order producer stamps audit keys.
+
+    The runner still uses defensive .get(), but the producer now carries
+    the model and regime provenance so sim/live trade ledgers are auditable.
+    """
 
     # 2026-05-04: legacy task_joint_qp.py is now a back-compat shim;
     # the order-emit code lives in tasks.py (EmitOrdersFromQPSolutionTask
@@ -79,17 +81,13 @@ class TestQPOrderShape:
     QP_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/portfolio_qp/tasks.py"
     QP_SOURCE = QP_PATH.read_text()
 
-    def test_qp_order_dict_does_not_set_rs_score(self):
-        """QP producer's BUY ctx.orders.append({...}) doesn't include
-        rs_score. If it ever does, the runner's defensive .get() default
-        of 0.0 still works — but the test reminds us to remove this
-        comment block too."""
+    def test_qp_order_dict_sets_trade_audit_fields(self):
         anchor = "ctx.orders.append({"
         assert anchor in self.QP_SOURCE
         idx = self.QP_SOURCE.find(anchor)
-        block = self.QP_SOURCE[idx:idx + 600]
-        assert '"rs_score"' not in block, (
-            "QP order producer now sets rs_score — update runner.py "
-            "comment block to reflect that the .get() default is no "
-            "longer load-bearing for this producer."
-        )
+        block = self.QP_SOURCE[idx:idx + 900]
+        for key in (
+            "rs_score", "panel_score", "mu", "sigma", "regime",
+            "confidence", "kelly_target_pct", "order_type",
+        ):
+            assert f'"{key}"' in block

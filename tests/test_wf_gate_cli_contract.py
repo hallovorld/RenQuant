@@ -40,6 +40,8 @@ def test_wf_gate_persists_trade_trace_by_default() -> None:
 def test_wf_gate_runs_qp_contract_and_trade_monotonicity_gates() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "validate_qp_contract_config" in src
+    assert "run_trade_contract_gate" in src
+    assert "trade_contract" in src
     assert "run_trade_monotonicity_gate" in src
     assert "trade_monotonicity" in src
     assert '"--skip-trade-gates"' in src

@@ -11,6 +11,7 @@ if str(REPO / "scripts") not in sys.path:
     sys.path.insert(0, str(REPO / "scripts"))
 
 from sim_trade_ledger import (  # noqa: E402
+    annual_net_tax_summary,
     build_forensic_report,
     round_trips_from_trade_log,
     write_trade_outputs,
@@ -53,6 +54,14 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
             "pnl_pct": 0.20,
             "exit_reason": "qp_sell",
             "partial": True,
+            "regime": "BULL_CALM",
+            "confidence": 0.8,
+            "exit_stop_loss_pct": 0.15,
+            "exit_max_single_day_loss_pct": 0.0,
+            "exit_sdl_n_sigma": 3.0,
+            "exit_trailing_stop_trigger_pct": 0.12,
+            "exit_trailing_stop_trail_pct": 0.25,
+            "exit_max_hold_days": 500,
         },
     ]
 
@@ -66,6 +75,8 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
     assert closed["tax"].round(6).tolist() == [20.0, 4.0]
     assert closed.iloc[0]["entry_regime"] == "BULL_CALM"
     assert closed.iloc[1]["entry_regime"] == "BULL_VOLATILE"
+    assert closed.iloc[0]["exit_regime"] == "BULL_CALM"
+    assert closed.iloc[0]["exit_stop_loss_pct"] == 0.15
     assert open_lots.iloc[0]["shares"] == 3
     assert open_lots.iloc[0]["gross_pnl"] == 60.0
 
@@ -79,6 +90,13 @@ def test_forensic_report_groups_by_regime_and_exit_reason() -> None:
             "exit_date": "2024-02-01",
             "entry_regime": "BULL_CALM",
             "exit_reason": "qp_sell",
+            "exit_regime": "BULL_CALM",
+            "exit_stop_loss_pct": 0.15,
+            "exit_max_single_day_loss_pct": 0.0,
+            "exit_sdl_n_sigma": 3.0,
+            "exit_trailing_stop_trigger_pct": 0.12,
+            "exit_trailing_stop_trail_pct": 0.25,
+            "exit_max_hold_days": 500,
             "shares": 10.0,
             "entry_price": 100.0,
             "exit_price": 90.0,
@@ -103,7 +121,10 @@ def test_forensic_report_groups_by_regime_and_exit_reason() -> None:
 
     assert "Theoretical Frame" in report
     assert "By entry_regime" in report
+    assert "By exit_regime" in report
     assert "By exit_reason" in report
+    assert "Annual Net Tax" not in report  # heading is Tax Stress
+    assert "Tax Stress" in report
     assert "Worst 25 Closed Round Trips" in report
 
 
@@ -128,6 +149,13 @@ def test_write_trade_outputs_creates_raw_roundtrip_and_report_files(tmp_path) ->
             "tax": 0.0,
             "pnl_pct": -0.10,
             "exit_reason": "stop_loss",
+            "regime": "BULL_CALM",
+            "exit_stop_loss_pct": 0.15,
+            "exit_max_single_day_loss_pct": 0.0,
+            "exit_sdl_n_sigma": 3.0,
+            "exit_trailing_stop_trigger_pct": 0.12,
+            "exit_trailing_stop_trail_pct": 0.25,
+            "exit_max_hold_days": 500,
         },
     ]
     result = SimpleNamespace(
@@ -206,3 +234,28 @@ def test_write_trade_outputs_enriches_missing_buy_regime_and_marks_open_lots(tmp
     assert trips.loc[0, "status"] == "open"
     assert trips.loc[0, "entry_regime"] == "BULL_CALM"
     assert trips.loc[0, "gross_pnl"] == 20.0
+
+
+def test_annual_net_tax_summary_nets_same_year_wins_and_losses() -> None:
+    trips = pd.DataFrame([
+        {
+            "status": "closed",
+            "exit_date": "2024-02-01",
+            "hold_days": 30,
+            "gross_pnl": 100.0,
+        },
+        {
+            "status": "closed",
+            "exit_date": "2024-03-01",
+            "hold_days": 20,
+            "gross_pnl": -80.0,
+        },
+    ])
+
+    summary = annual_net_tax_summary(
+        trips,
+        {"short_term_rate": 0.50, "long_term_rate": 0.32, "long_term_threshold_days": 365},
+    )
+
+    assert summary["total_estimated_tax"] == 10.0
+    assert summary["years"][0]["short_term_net"] == 20.0

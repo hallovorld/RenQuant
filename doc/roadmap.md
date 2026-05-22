@@ -288,7 +288,7 @@ Bug C (commit `29e34b0` 2026-05-11) inflated Vol by ~75× and corrupted every pr
 | Box-Behnken for multi-knob | Box-Behnken 1960 *Technometrics*, CLAUDE.md §5.14 | `pyDOE2.bbdesign` |
 | Regime-stratified analysis (PRIMARY) | CLAUDE.md PRIME DIRECTIVE | `scripts/analyze_regime_stratified.py` |
 | Rigorous batch analyzer (Newey-West HAC + block bootstrap) | Romano-Wolf 2005, López de Prado 2018 | `scripts/analyze_panels_rigorous.py` |
-| Acceptance gates on every promote artifact | CLAUDE.md §5.13.15 | `_check_wf_gate`, `weekly_wf_promote.sh` |
+| Acceptance gates on every promote artifact | CLAUDE.md §5.13.15 | `_check_wf_gate`, `weekly_wf_promote.sh`, `scripts/run_wf_gate.py::trade_contract` |
 
 ---
 

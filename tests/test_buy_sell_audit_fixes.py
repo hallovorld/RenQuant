@@ -114,26 +114,22 @@ class TestBuyFloor:
     def test_buy_floor_is_set_and_principled(self):
         """buy_floor must be set (not null) so the veto runs.
 
-        2026-05-04: the original test pinned `floor == 0.30` (a hard-
-        coded magic number). Per user mandate "0.3 is not a scientific
-        number", the floor moved to the adaptive
-        `min(mean + std, cap)` mode where `cap` is the 0.30 legacy
-        ceiling. Either form is acceptable — the contract is "veto
-        active, threshold defined".
+        2026-05-21: production moved from capped mean+std to uncapped
+        mean+std because the 0.30 cap became a no-op after calibration
+        shifted scores above 0.50. Old capped mode remains accepted for
+        archived experiment configs.
         """
         import json
         cfg = json.loads((REPO_ROOT / "backtesting/renquant_104/strategy_config.json").read_text())
         floor = cfg["ranking"]["panel_scoring"].get("buy_floor")
         assert floor is not None, "buy_floor must not be null"
         if isinstance(floor, str):
-            assert floor == "adaptive_mean_std_cap", (
+            assert floor in {"adaptive_mean_std", "adaptive_mean_std_cap"}, (
                 f"unsupported buy_floor mode: {floor!r}"
             )
-            cap = cfg["ranking"]["panel_scoring"].get("buy_floor_adaptive_cap")
-            assert cap is not None, (
-                "adaptive mode requires buy_floor_adaptive_cap"
-            )
-            assert 0.0 < float(cap) < 1.0
+            min_fl = cfg["ranking"]["panel_scoring"].get("buy_floor_min")
+            assert min_fl is not None
+            assert 0.0 < float(min_fl) < 1.0
         else:
             # Legacy absolute mode — must still be in (0, 1)
             assert 0.0 < float(floor) < 1.0

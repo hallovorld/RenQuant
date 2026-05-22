@@ -212,6 +212,7 @@
   "regime_params": {
     "BULL_CALM": {
       "max_position_pct": 0.15,
+      "max_sector_weight_pct": 0.35,
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
       "max_single_day_loss_pct": 0.0,
@@ -232,6 +233,7 @@
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
+      "max_sector_weight_pct": 0.3,
       "cash_reserve_pct": 0.2,
       "stop_loss_pct": 0.05,
       "max_single_day_loss_pct": 0.06,
@@ -249,6 +251,7 @@
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
+      "max_sector_weight_pct": 0.3,
       "cash_reserve_pct": 0.3,
       "stop_loss_pct": 0.08,
       "max_single_day_loss_pct": 0.06,
@@ -267,6 +270,7 @@
     },
     "BEAR": {
       "max_position_pct": 0.0,
+      "max_sector_weight_pct": 0.2,
       "cash_reserve_pct": 1.0,
       "stop_loss_pct": 0.05,
       "max_single_day_loss_pct": 0.0,
@@ -456,7 +460,7 @@
       "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
       "qp_tax_aware": false,
       "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
-      "qp_tax_lot_method": "fifo",
+      "qp_tax_lot_method": "hifo",
       "_qp_tax_lot_method_reason": "G7 (2026-05-04): tax-lot disposal rule. 'fifo' = oldest lot first (broker default); 'hifo' = highest-cost lot first (minimises realized gain on partial sells); 'avg' = legacy single-cost-basis kill-switch.",
       "default_sigma": 0.05,
       "qp_signal_decay": 0.0,
@@ -549,10 +553,11 @@
       "bypass_ticker_gate": true,
       "artifact_path": "artifacts/sim/walkforward_retrains/2024-01-01/panel-ltr.json",
       "nan_prone_cols": [],
-      "buy_floor": "adaptive_mean_std_cap",
+      "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,
       "buy_floor_min": 0.2,
-      "_buy_floor_reason": "2026-05-04 user spec ('\u6682\u65f6\u6539\u6210\uff0c\u53d6min[mean+std, 0.3]'): per-bar adaptive floor = min(mean(rank_score) + std(rank_score), 0.30). Two interpretations of 'scientific': (a) data-driven per-bar (mean+std uses today's distribution); (b) bounded above by the legacy 0.30 absolute so we never get LESS strict than pre-fix. min(mean+std, cap) satisfies both. Diagnostic 2026-05-04: with the prior absolute floor=0.30 and prob_base_rate=0.278, ALL 50 candidates per bar were vetoed (strategy made 0 trades for 252 days). Adaptive mode keeps top ~16% per bar by score \u2014 Kelly+QP downstream still filter on \u03bc>0. Pre-veto rank_scores are also persisted to candidate_scores via ctx._full_candidate_snapshot for offline distribution analysis.",
+      "buy_floor_std_mult": 1.0,
+      "_buy_floor_reason": "2026-05-21 Codex audit: use uncapped cross-sectional mean+1*std on calibrated rank_score. The prior adaptive_mean_std_cap mode capped the floor at 0.30; once calibrated scores clustered around 0.55-0.65, the floor became a no-op and admitted nearly every candidate. This follows cross-sectional normalization/ranking practice (Qlib CSRankNorm/CSZFillna) while preserving the no-signal behavior when mean+std exceeds all compressed scores. adaptive_mean_std_cap remains for old experiments only.",
       "rotation_advantage": 0.0,
       "sizing": {
         "enabled": false,
@@ -605,7 +610,7 @@
         "enabled": true,
         "threshold": 0.1
       },
-      "kind": "panel_ltr_xgboost"
+      "kind": "xgb"
     },
     "universe_floor": {
       "type": "sharpe",

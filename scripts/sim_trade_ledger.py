@@ -36,6 +36,75 @@ REGIME_THESES = {
 }
 
 
+def annual_net_tax_summary(
+    round_trips: pd.DataFrame,
+    tax_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Estimate calendar-year capital-gains tax after annual netting.
+
+    The simulator debits tax on every winning sale immediately and gives no
+    same-year credit for losses. That is intentionally conservative for cash
+    stress, but it is not how Schedule D economics are summarized: gains and
+    losses are netted by short/long bucket, then cross-netted. This helper
+    gives reports a second, IRS-aligned stress lens without changing sim cash.
+
+    Simplifications: wash-sale basis deferrals and loss carryforwards are not
+    modeled here; this is a same-calendar-year closed-trade estimate.
+    """
+    if round_trips is None or round_trips.empty:
+        return {"total_estimated_tax": 0.0, "years": []}
+    cfg = tax_config or {}
+    st_rate = float(cfg.get("short_term_rate", 0.50))
+    lt_rate = float(cfg.get("long_term_rate", 0.32))
+    lt_days = int(cfg.get("long_term_threshold_days", 365))
+    df = round_trips.copy()
+    if "status" in df.columns:
+        df = df[df["status"].astype(str).str.lower() == "closed"]
+    if df.empty or "exit_date" not in df.columns or "gross_pnl" not in df.columns:
+        return {"total_estimated_tax": 0.0, "years": []}
+    df["gross_pnl"] = pd.to_numeric(df["gross_pnl"], errors="coerce")
+    if "hold_days" in df.columns:
+        df["hold_days"] = pd.to_numeric(df["hold_days"], errors="coerce")
+    else:
+        df["hold_days"] = 0
+    df["exit_year"] = pd.to_datetime(df["exit_date"], errors="coerce").dt.year
+    df = df.replace([float("inf"), float("-inf")], pd.NA).dropna(
+        subset=["gross_pnl", "exit_year"]
+    )
+    rows = []
+    total_tax = 0.0
+    for year, g in df.groupby("exit_year"):
+        st = g[g["hold_days"].fillna(0) < lt_days]["gross_pnl"].sum()
+        lt = g[g["hold_days"].fillna(0) >= lt_days]["gross_pnl"].sum()
+        tax = _tax_on_netted_capital_gains(float(st), float(lt), st_rate, lt_rate)
+        total_tax += tax
+        rows.append({
+            "year": int(year),
+            "short_term_net": float(st),
+            "long_term_net": float(lt),
+            "estimated_tax": float(tax),
+        })
+    return {"total_estimated_tax": float(total_tax), "years": rows}
+
+
+def _tax_on_netted_capital_gains(
+    st_net: float,
+    lt_net: float,
+    st_rate: float,
+    lt_rate: float,
+) -> float:
+    """Tax positive net capital gains after same-bucket and cross-netting."""
+    if st_net >= 0 and lt_net >= 0:
+        return st_net * st_rate + lt_net * lt_rate
+    if st_net <= 0 and lt_net <= 0:
+        return 0.0
+    if st_net > 0 and lt_net < 0:
+        return max(0.0, st_net + lt_net) * st_rate
+    if lt_net > 0 and st_net < 0:
+        return max(0.0, lt_net + st_net) * lt_rate
+    return 0.0
+
+
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -101,7 +170,7 @@ def _enrich_trade_log_from_result(result: Any) -> list[dict]:
     enriched: list[dict] = []
     for event in list(getattr(result, "trade_log", []) or []):
         row = dict(event)
-        if row.get("action") == "buy" and not row.get("regime"):
+        if row.get("action") in {"buy", "sell"} and not row.get("regime"):
             row["regime"] = regime_by_date.get(_as_date(row.get("date")))
         enriched.append(row)
     return enriched
@@ -187,6 +256,17 @@ def round_trips_from_trade_log(
                 "sim_sell_pnl_pct": event.get("pnl_pct"),
                 "exit_reason": event.get("exit_reason"),
                 "partial_exit": bool(event.get("partial", False)),
+                "exit_regime": event.get("regime"),
+                "exit_confidence": event.get("confidence"),
+                "exit_signal_reason": event.get("exit_signal_reason"),
+                "exit_stop_loss_pct": event.get("exit_stop_loss_pct"),
+                "exit_stop_n_sigma": event.get("exit_stop_n_sigma"),
+                "exit_max_single_day_loss_pct": event.get("exit_max_single_day_loss_pct"),
+                "exit_sdl_n_sigma": event.get("exit_sdl_n_sigma"),
+                "exit_trailing_stop_trigger_pct": event.get("exit_trailing_stop_trigger_pct"),
+                "exit_trailing_stop_trail_pct": event.get("exit_trailing_stop_trail_pct"),
+                "exit_atr_n_multiplier": event.get("exit_atr_n_multiplier"),
+                "exit_max_hold_days": event.get("exit_max_hold_days"),
                 "entry_regime": lot.get("entry_regime"),
                 "entry_rank_score": lot.get("entry_rank_score"),
                 "entry_rs_score": lot.get("entry_rs_score"),
@@ -218,6 +298,17 @@ def round_trips_from_trade_log(
                 "sim_sell_pnl_pct": event.get("pnl_pct"),
                 "exit_reason": event.get("exit_reason"),
                 "partial_exit": bool(event.get("partial", False)),
+                "exit_regime": event.get("regime"),
+                "exit_confidence": event.get("confidence"),
+                "exit_signal_reason": event.get("exit_signal_reason"),
+                "exit_stop_loss_pct": event.get("exit_stop_loss_pct"),
+                "exit_stop_n_sigma": event.get("exit_stop_n_sigma"),
+                "exit_max_single_day_loss_pct": event.get("exit_max_single_day_loss_pct"),
+                "exit_sdl_n_sigma": event.get("exit_sdl_n_sigma"),
+                "exit_trailing_stop_trigger_pct": event.get("exit_trailing_stop_trigger_pct"),
+                "exit_trailing_stop_trail_pct": event.get("exit_trailing_stop_trail_pct"),
+                "exit_atr_n_multiplier": event.get("exit_atr_n_multiplier"),
+                "exit_max_hold_days": event.get("exit_max_hold_days"),
             })
 
     end_prices = end_prices or {}
@@ -252,6 +343,17 @@ def round_trips_from_trade_log(
                 "sim_sell_pnl_pct": None,
                 "exit_reason": "open",
                 "partial_exit": False,
+                "exit_regime": None,
+                "exit_confidence": None,
+                "exit_signal_reason": None,
+                "exit_stop_loss_pct": None,
+                "exit_stop_n_sigma": None,
+                "exit_max_single_day_loss_pct": None,
+                "exit_sdl_n_sigma": None,
+                "exit_trailing_stop_trigger_pct": None,
+                "exit_trailing_stop_trail_pct": None,
+                "exit_atr_n_multiplier": None,
+                "exit_max_hold_days": None,
                 "entry_regime": lot.get("entry_regime"),
                 "entry_rank_score": lot.get("entry_rank_score"),
                 "entry_rs_score": lot.get("entry_rs_score"),
@@ -334,7 +436,24 @@ def build_forensic_report(
         )
         lines.append("")
 
-        for group_col in ("entry_regime", "exit_reason", "ticker"):
+        tax_summary = annual_net_tax_summary(
+            closed, (config or {}).get("tax") if config else None,
+        )
+        lines.append("### Tax Stress")
+        lines.append(
+            f"- event_level_tax_debited: {total_tax:+.2f}"
+        )
+        lines.append(
+            f"- annual_net_tax_estimate: "
+            f"{tax_summary['total_estimated_tax']:+.2f}"
+        )
+        if tax_summary["years"]:
+            lines.append(pd.DataFrame(tax_summary["years"]).to_markdown(index=False, floatfmt=".2f"))
+        lines.append("")
+
+        for group_col in ("entry_regime", "exit_regime", "exit_reason", "ticker"):
+            if group_col not in closed.columns:
+                continue
             grp = (
                 closed.groupby(group_col, dropna=False)
                 .agg(
@@ -352,11 +471,13 @@ def build_forensic_report(
             lines.append("")
 
         worst_cols = [
-            "ticker", "entry_date", "exit_date", "entry_regime", "exit_reason",
+            "ticker", "entry_date", "exit_date", "entry_regime", "exit_regime", "exit_reason",
             "shares", "entry_price", "exit_price", "gross_pnl",
             "net_pnl_after_tax", "pnl_pct", "hold_days", "entry_rank_score",
-            "entry_mu", "entry_sigma",
+            "entry_mu", "entry_sigma", "exit_stop_loss_pct",
+            "exit_sdl_n_sigma", "exit_trailing_stop_trigger_pct",
         ]
+        worst_cols = [c for c in worst_cols if c in closed.columns]
         lines.append("### Worst 25 Closed Round Trips")
         lines.append(closed.sort_values("net_pnl_after_tax").head(25)[worst_cols].to_markdown(index=False, floatfmt=".4f"))
         lines.append("")

@@ -206,6 +206,7 @@
   "regime_params": {
     "BULL_CALM": {
       "max_position_pct": 0.15,
+      "max_sector_weight_pct": 0.35,
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
       "max_single_day_loss_pct": 0.0,
@@ -231,6 +232,7 @@
     },
     "BULL_VOLATILE": {
       "max_position_pct": 0.2,
+      "max_sector_weight_pct": 0.3,
       "cash_reserve_pct": 0.2,
       "stop_loss_pct": 0.05,
       "max_single_day_loss_pct": 0.06,
@@ -254,6 +256,7 @@
     },
     "CHOPPY": {
       "max_position_pct": 0.15,
+      "max_sector_weight_pct": 0.3,
       "cash_reserve_pct": 0.3,
       "stop_loss_pct": 0.08,
       "max_single_day_loss_pct": 0.06,
@@ -278,6 +281,7 @@
     },
     "BEAR": {
       "max_position_pct": 0.0,
+      "max_sector_weight_pct": 0.2,
       "cash_reserve_pct": 1.0,
       "stop_loss_pct": 0.05,
       "max_single_day_loss_pct": 0.0,
@@ -665,10 +669,11 @@
       "bypass_ticker_gate": true,
       "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
       "nan_prone_cols": [],
-      "buy_floor": "adaptive_mean_std_cap",
+      "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,
       "buy_floor_min": 0.2,
-      "_buy_floor_reason": "2026-05-04 user spec ('\u6682\u65f6\u6539\u6210\uff0c\u53d6min[mean+std, 0.3]'): per-bar adaptive floor = min(mean(rank_score) + std(rank_score), 0.30). Two interpretations of 'scientific': (a) data-driven per-bar (mean+std uses today's distribution); (b) bounded above by the legacy 0.30 absolute so we never get LESS strict than pre-fix. min(mean+std, cap) satisfies both. Diagnostic 2026-05-04: with the prior absolute floor=0.30 and prob_base_rate=0.278, ALL 50 candidates per bar were vetoed (strategy made 0 trades for 252 days). Adaptive mode keeps top ~16% per bar by score \u2014 Kelly+QP downstream still filter on \u03bc>0. Pre-veto rank_scores are also persisted to candidate_scores via ctx._full_candidate_snapshot for offline distribution analysis.",
+      "buy_floor_std_mult": 1.0,
+      "_buy_floor_reason": "2026-05-21 Codex audit: use uncapped cross-sectional mean+1*std on calibrated rank_score. The prior adaptive_mean_std_cap mode capped the floor at 0.30; once calibrated scores clustered around 0.55-0.65, the floor became a no-op and admitted nearly every candidate. This follows cross-sectional normalization/ranking practice (Qlib CSRankNorm/CSZFillna) while preserving the no-signal behavior when mean+std exceeds all compressed scores. adaptive_mean_std_cap remains for old experiments only.",
       "rotation_advantage": 0.0,
       "sizing": {
         "enabled": false,

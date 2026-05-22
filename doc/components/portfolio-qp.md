@@ -168,6 +168,11 @@ Where:
 - `Σ` ∈ ℝⁿˣⁿ : forecast covariance (panel residuals + Ledoit-Wolf shrinkage)
 - `γ` : risk aversion (default 3.0; modulated by DD and confidence)
 - `φ(Δw)` : cost function, see §2.3
+- `sec_cap_s` : sector exposure cap. Current production resolves this as
+  `min(max_positions_per_sector × per_name_cap, max_sector_weight_pct)` where
+  `max_sector_weight_pct` can be set per regime under
+  `regime_params.<REGIME>`. This mirrors mature optimizer APIs that model
+  sector exposure as a direct sum-of-weights constraint, not only a count cap.
 
 ### 2.2 Multi-period (Boyd-Busseti-Diamond-Kahn 2017, Gârleanu-Pedersen 2013)
 

@@ -262,3 +262,26 @@ class TestSectorCapSingleSourceOfTruth:
         ctx._qp_w_upper = np.array([0.15, 0.15])
         BuildSectorConstraintMatrixTask().run(ctx)
         np.testing.assert_allclose(ctx._qp_sector_cap_vec, [0.60])
+
+    def test_regime_max_sector_weight_tightens_count_cap(self):
+        """AUDIT REGRESSION GUARD: count×per-name can be too loose
+        (6×15%=90%). A regime-level direct sector max caps the linear
+        group constraint the way mature optimizers model sector exposure."""
+        from types import SimpleNamespace
+        ctx = SimpleNamespace(
+            regime="BULL_CALM",
+            config={
+                "sector_map": {"A": "tech", "B": "tech", "C": "tech"},
+                "max_positions_per_sector": 6,
+                "max_position_pct": 0.15,
+                "regime_params": {"BULL_CALM": {"max_sector_weight_pct": 0.35}},
+                "rotation": {"joint_actions": {}},
+            },
+        )
+        ctx._qp_tickers = ["A", "B", "C"]
+        ctx._qp_w_upper = np.array([0.15, 0.15, 0.15])
+
+        BuildSectorConstraintMatrixTask().run(ctx)
+
+        np.testing.assert_allclose(ctx._qp_sector_cap_vec, [0.35])
+        assert ctx._qp_sector_cap_source == "regime_or_global_max_sector_weight_pct"

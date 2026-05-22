@@ -771,27 +771,48 @@ class VetoWeakBuysTask(Task):
         # mean+std happens to land low.
         floor: float
         floor_label: str
-        if isinstance(raw_floor, str) and raw_floor == "adaptive_mean_std_cap":
+        if isinstance(raw_floor, str) and raw_floor in {"adaptive_mean_std_cap", "adaptive_mean_std"}:
             cap     = float(panel_cfg.get("buy_floor_adaptive_cap", 0.30))
             min_fl  = float(panel_cfg.get("buy_floor_min",          0.20))
-            scores = [getattr(c, "rank_score", None) for c in ctx.candidates]
-            scores = [float(s) for s in scores
-                       if s is not None and not pd.isna(s)]
+            std_mult = float(panel_cfg.get("buy_floor_std_mult",     1.0))
+            raw_scores = [getattr(c, "rank_score", None) for c in ctx.candidates]
+            scores = []
+            for s in raw_scores:
+                try:
+                    f = float(s)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(f):
+                    scores.append(f)
             if len(scores) >= 2:
                 import statistics as _stats  # noqa: PLC0415
                 mean_s = _stats.fmean(scores)
                 std_s  = _stats.stdev(scores)
-                adaptive = mean_s + std_s
-                # Clamp mean+std to [min_fl, cap].
-                floor = min(max(min_fl, adaptive), cap)
-                floor_label = (
-                    f"min(max(min={min_fl:.2f}, mean+std={adaptive:.3f}), "
-                    f"cap={cap:.2f}) = {floor:.3f}  (n={len(scores)})"
-                )
+                adaptive = mean_s + std_mult * std_s
+                if raw_floor == "adaptive_mean_std":
+                    # New production mode (2026-05-21): keep the
+                    # cross-sectional mean+σ threshold on the calibrated
+                    # probability scale, but do not cap it at 0.30. The old
+                    # cap became a no-op once scores clustered around
+                    # 0.55-0.65; floor=0.30 admitted everything and let the
+                    # QP sort weak signals by tiny μ differences.
+                    floor = max(min_fl, adaptive)
+                    floor_label = (
+                        f"max(min={min_fl:.2f}, mean+{std_mult:.2f}*std="
+                        f"{adaptive:.3f}) = {floor:.3f}  (n={len(scores)})"
+                    )
+                else:
+                    # Back-compat experiment mode: clamp mean+std to [min, cap].
+                    floor = min(max(min_fl, adaptive), cap)
+                    floor_label = (
+                        f"min(max(min={min_fl:.2f}, mean+std={adaptive:.3f}), "
+                        f"cap={cap:.2f}) = {floor:.3f}  (n={len(scores)})"
+                    )
             else:
-                # Insufficient sample — collapse to the safe upper end.
-                floor = cap
-                floor_label = f"{cap:.3f} (cap; n<2 for stats)"
+                # Insufficient cross-section — use the absolute minimum for
+                # uncapped mode, legacy cap for capped mode.
+                floor = min_fl if raw_floor == "adaptive_mean_std" else cap
+                floor_label = f"{floor:.3f} (fallback; n<2 for stats)"
         else:
             floor = float(raw_floor)
             floor_label = f"{floor:.3f} (absolute)"

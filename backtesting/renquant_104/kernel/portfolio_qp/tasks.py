@@ -848,9 +848,12 @@ class BuildSectorConstraintMatrixTask(Task):
             ctx._qp_sector_names     = []    # noqa: SLF001
             return
         # Per-name cap (post-confidence scaling) is in ctx._qp_w_upper.
-        # Use the max element as the per-position anchor — all entries are
-        # the same scalar today, but keeping max-based makes this robust
-        # if/when ComputeQPConstraintsTask becomes per-asset.
+        # Use the max element as the per-position anchor, then optionally
+        # tighten with a regime-level direct sector weight cap. Mature
+        # optimizers expose sector caps as "sum of group weights <= upper"
+        # (PyPortfolioOpt add_sector_constraints, cvxportfolio factor/holding
+        # limits); converting only from a count cap can be too loose when
+        # max_positions_per_sector is high.
         w_upper = _get_path(ctx, "_qp_w_upper")
         per_name_cap = (
             float(np.max(w_upper)) if (w_upper is not None and len(w_upper))
@@ -868,10 +871,13 @@ class BuildSectorConstraintMatrixTask(Task):
         for row, name in enumerate(sector_names):
             for j in sector_to_idx[name]:
                 S[row, j] = 1.0
-        cap_vec = np.full(m, max_per_sector * per_name_cap, dtype=float)
+        legacy_cap = max_per_sector * per_name_cap
+        cap, source = _resolve_sector_weight_cap(ctx, legacy_cap)
+        cap_vec = np.full(m, cap, dtype=float)
         ctx._qp_sector_indicator = S            # noqa: SLF001
         ctx._qp_sector_cap_vec   = cap_vec      # noqa: SLF001
         ctx._qp_sector_names     = sector_names # noqa: SLF001
+        ctx._qp_sector_cap_source = source       # noqa: SLF001
 
     @staticmethod
     def _build_sector_index(tickers, sector_map) -> dict[str, list[int]]:
@@ -883,6 +889,34 @@ class BuildSectorConstraintMatrixTask(Task):
                 continue
             out.setdefault(sec, []).append(j)
         return out
+
+
+def _resolve_sector_weight_cap(ctx, legacy_cap: float) -> tuple[float, str]:
+    """Return QP sector cap with regime override support.
+
+    Resolution:
+      regime_params.<regime>.max_sector_weight_pct
+        > config.max_sector_weight_pct
+        > max_positions_per_sector * per_name_cap
+
+    The final cap is min(configured, legacy_count_cap), so count-based
+    diversification remains a hard ceiling while regime-level exposure
+    tightening can reduce concentration in dominant regimes.
+    """
+    from kernel.regime_resolver import resolve_regime_knob  # noqa: PLC0415
+    cap = legacy_cap
+    source = "count_x_per_name"
+    configured = resolve_regime_knob(
+        ctx, None, "max_sector_weight_pct", default=None,
+    )
+    try:
+        cfg_cap = float(configured) if configured is not None else float("nan")
+    except (TypeError, ValueError):
+        cfg_cap = float("nan")
+    if math.isfinite(cfg_cap) and cfg_cap > 0:
+        cap = min(float(legacy_cap), cfg_cap)
+        source = "regime_or_global_max_sector_weight_pct"
+    return float(max(0.0, cap)), source
 
 
 # ── 5a-bis. High-correlation pair group cap ────────────────────────────────
@@ -1701,11 +1735,21 @@ def _per_asset_tax_lots(hs, price, w_i, nav, today, st_rate, lt_rate,
 
 
 def _emit_qp_buy(ctx, ticker, shares, px, sol, i, cands):
+    cand = cands.get(ticker)
     ctx.orders.append({
         "ticker": ticker, "shares": shares, "price": px,
         "invest": shares * px,
         "target_pct": float(sol.target_w[i]),
-        "rank_score": getattr(cands.get(ticker), "rank_score", None),
+        "regime": getattr(ctx, "regime", None),
+        "confidence": getattr(ctx, "confidence", None),
+        "rank_score": getattr(cand, "rank_score", None),
+        "rs_score": getattr(cand, "rs_score", None),
+        "panel_score": getattr(cand, "panel_score", None),
+        "mu": getattr(cand, "mu", None),
+        "sigma": getattr(cand, "sigma", None),
+        "kelly_target_pct": getattr(cand, "kelly_target_pct", None),
+        "detail": getattr(cand, "detail", ""),
+        "order_type": "QP_BUY",
         "source": "qp",
     })
     log.info("QP_BUY  %-6s  Δw=%+.4f  shares=%d  px=%.2f  invest=$%.0f",

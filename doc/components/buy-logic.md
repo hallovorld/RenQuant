@@ -30,6 +30,13 @@ Active gates live under `ranking.panel_scoring.buy_quality_gates.*` in `strategy
 
 Pre-2026-04-26 the pipeline had `panel_buy_floor = null` → any candidate with μ > fee passed. R6/R7 evidence showed buys at edge_sharpe ≈ 0.10 (~random within the panel's noise floor). This doc covers the redesign + operational runbook.
 
+2026-05-21 update: production panel admission uses
+`ranking.panel_scoring.buy_floor = "adaptive_mean_std"`, i.e.
+`max(buy_floor_min, cross_sectional_mean(rank_score) + k * std(rank_score))`
+on the calibrated candidate distribution for the current bar. The old
+`adaptive_mean_std_cap` mode remains for archived experiments, but the 0.30
+cap is no longer production-safe after calibrator scores moved above 0.50.
+
 ---
 
 ## 1. Theory — three gates, each grounded in literature

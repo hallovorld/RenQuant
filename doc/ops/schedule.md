@@ -60,7 +60,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 **Steps:**
 1. Pre-flight smoke test (abort if model broken before 60-min commit)
 2. Daily retrain has STAGED panel-LTR + NGB head (per 2026-05-17 commit `96af42b` — removed `RQ_ALLOW_NO_WF=1` setdefault); weekly picks up the staging artifact
-3. `scripts/run_wf_gate.py --strict` — 5-cut WF (cut1_covid / cut2_fed / cut3_inflpk / cut4_svb / cut5_unwind) + §5.2 sanity (shuffled-label + time-shift placebo)
+3. `scripts/run_wf_gate.py --strict` — WF + §5.2 sanity (shuffled-label + time-shift placebo) + trade-ledger gates (`trade_contract`, `trade_monotonicity`)
 4. **`promote()` WITHOUT `RQ_ALLOW_NO_WF` override** — `_check_wf_gate` refuses if metadata missing or `passed=False`. Emergency shell-env `RQ_ALLOW_NO_WF=1` still works for manual one-off.
 5. Acceptance gates including per-backend best-by-OOS-IC + Sunday-sweep H1-H4 gates (commit `477b94c`)
 6. Refresh dashboard

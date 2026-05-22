@@ -312,6 +312,34 @@ class TestAdaptiveSkipsOnNoSignalDays(unittest.TestCase):
                          "model is saying 'no signal', do not force buys")
 
 
+class TestAdaptiveMeanStdUncapped(unittest.TestCase):
+    """AUDIT REGRESSION GUARD: calibrated scores above 0.30 still need a
+    cross-sectional floor. The old capped mode made floor=0.30 a no-op."""
+
+    def test_uncapped_mode_uses_mean_plus_std_above_legacy_cap(self):
+        from types import SimpleNamespace
+        from kernel.panel_pipeline.job_panel_scoring import VetoWeakBuysTask
+
+        ctx = SimpleNamespace(
+            config={"ranking": {"panel_scoring": {
+                "buy_floor": "adaptive_mean_std",
+                "buy_floor_min": 0.20,
+                "buy_floor_std_mult": 1.0,
+            }}},
+            candidates=[
+                _make_cand(f"T{i}", panel_score=0.0, rank_score=s)
+                for i, s in enumerate([0.55, 0.57, 0.59, 0.61, 0.63])
+            ],
+            holdings={},
+            counters={},
+        )
+
+        VetoWeakBuysTask().run(ctx)
+
+        kept = {c.ticker for c in ctx.candidates}
+        assert kept == {"T4"}
+
+
 # 2026-05-04 user mandate: "rank_score need to be collected properly
 # for future fine tune". Snapshot the full pre-veto candidate list so
 # the persistence layer captures BOTH kept and vetoed rows.

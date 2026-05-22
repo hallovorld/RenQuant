@@ -45,13 +45,14 @@ import re
 import pandas as pd
 
 from qp_contracts import validate_qp_contract_config
+from trade_contracts import evaluate_trade_contract
 from trade_monotonicity import evaluate_trade_monotonicity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("wf-gate")
 
 REPO = Path(__file__).resolve().parent.parent
-GATE_VERSION = 1
+GATE_VERSION = 2
 STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
 for _p in (REPO, STRATEGY_DIR):
     _s = str(_p)
@@ -513,18 +514,7 @@ def run_trade_monotonicity_gate(
     min_top_bottom_spread: float = 0.0,
 ) -> dict:
     """Evaluate trade score monotonicity from persisted round-trip ledgers."""
-    frames = []
-    missing = []
-    for cut in wf_result.get("cuts") or []:
-        rt_path = ((cut.get("trace_paths") or {}).get("round_trips_csv"))
-        if not rt_path:
-            missing.append(f"{cut.get('start')}->{cut.get('end')}: no round-trip path")
-            continue
-        p = Path(rt_path)
-        if not p.exists():
-            missing.append(str(p))
-            continue
-        frames.append(pd.read_csv(p))
+    frames, missing = _load_round_trip_frames(wf_result)
     if missing:
         return {
             "passed": False,
@@ -548,6 +538,59 @@ def run_trade_monotonicity_gate(
         "min_spearman": float(min_spearman),
         "min_top_bottom_spread": float(min_top_bottom_spread),
     }
+
+
+def run_trade_contract_gate(wf_result: dict, config: dict) -> dict:
+    """Require WF trade ledgers to carry QP/Kelly audit provenance."""
+    frames, missing = _load_round_trip_frames(wf_result)
+    if missing:
+        return {
+            "passed": False,
+            "reason": "missing round-trip ledger(s): " + "; ".join(missing[:5]),
+            "missing": missing,
+        }
+    if not frames:
+        return {"passed": False, "reason": "no round-trip ledgers found"}
+    joint = ((config.get("rotation") or {}).get("joint_actions") or {})
+    ranking = config.get("ranking") or {}
+    panel = (ranking.get("panel_scoring") or {})
+    kelly = ranking.get("kelly_sizing") or {}
+    qp_enabled = bool(joint.get("enabled")) and str(joint.get("solver", "")).lower() == "qp"
+    strict_qp = str(joint.get("qp_mu_contract", "strict")).lower() in {
+        "strict", "hard", "error", "enforce",
+    }
+    require_mu = bool(qp_enabled and strict_qp)
+    require_sigma = bool(kelly.get("enabled") or panel.get("ngboost", {}).get("enabled"))
+    report = evaluate_trade_contract(
+        pd.concat(frames, ignore_index=True),
+        require_entry_mu=require_mu,
+        require_entry_sigma=require_sigma,
+        require_exit_regime=True,
+        require_exit_thresholds=True,
+    )
+    return {
+        "passed": bool(report.passed),
+        "reason": report.reason,
+        "evidence": report.evidence,
+        "require_entry_mu": require_mu,
+        "require_entry_sigma": require_sigma,
+    }
+
+
+def _load_round_trip_frames(wf_result: dict) -> tuple[list[pd.DataFrame], list[str]]:
+    frames = []
+    missing = []
+    for cut in wf_result.get("cuts") or []:
+        rt_path = ((cut.get("trace_paths") or {}).get("round_trips_csv"))
+        if not rt_path:
+            missing.append(f"{cut.get('start')}->{cut.get('end')}: no round-trip path")
+            continue
+        p = Path(rt_path)
+        if not p.exists():
+            missing.append(str(p))
+            continue
+        frames.append(pd.read_csv(p))
+    return frames, missing
 
 
 def run_sanity_battery(artifact_path: Path) -> dict:
@@ -705,8 +748,9 @@ def main():
     artifact_usage = inspect_artifact_usage(args.strategy_config, artifact_path)
     log.info("Artifact usage: %s", artifact_usage)
     cfg_path = STRATEGY_DIR / args.strategy_config
+    gate_config = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     qp_contract = (
-        validate_qp_contract_config(json.loads(cfg_path.read_text()))
+        validate_qp_contract_config(gate_config)
         if cfg_path.exists() else
         None
     )
@@ -759,14 +803,18 @@ def main():
             log.info("WF result: %s", wf_result["reason"])
 
     trade_gate_result = {"passed": True, "reason": "skipped"}
+    trade_contract_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf and not args.skip_trade_gates:
         if trace_dir is None:
             trade_gate_result = {
                 "passed": False,
                 "reason": "trade gates require persisted round-trip ledgers",
             }
+            trade_contract_result = dict(trade_gate_result)
         elif wf_result.get("cuts"):
+            trade_contract_result = run_trade_contract_gate(wf_result, gate_config)
             trade_gate_result = run_trade_monotonicity_gate(wf_result)
+        log.info("Trade contract result: %s", trade_contract_result["reason"])
         log.info("Trade gate result: %s", trade_gate_result["reason"])
 
     sanity_result = {"passed": True, "reason": "skipped"}
@@ -789,6 +837,7 @@ def main():
     overall_pass = (
         bool(wf_result["passed"])
         and bool(sanity_result["passed"])
+        and bool(trade_contract_result["passed"])
         and bool(trade_gate_result["passed"])
         and validation_scope_ok
     )
@@ -822,6 +871,7 @@ def main():
             }
             if qp_contract is not None else None
         ),
+        "trade_contract":      trade_contract_result,
         "trade_monotonicity":  trade_gate_result,
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),

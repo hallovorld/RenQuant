@@ -1129,6 +1129,9 @@ class SimAdapter:
             _pnl_pct = (price - _disposed_basis) / _disposed_basis
         else:
             _pnl_pct = 0.0
+        regime_p = (ctx.config.get("regime_params", {}) or {}).get(
+            getattr(ctx, "regime", None), {},
+        ) if ctx is not None else {}
         self._trade_log.append({
             "action":      "sell",
             "ticker":      ticker,
@@ -1140,6 +1143,17 @@ class SimAdapter:
             "tax":         tax,
             "exit_reason": sig.exit_type,
             "partial":     is_partial,
+            "regime":      getattr(ctx, "regime", None),
+            "confidence":  getattr(ctx, "confidence", None),
+            "exit_signal_reason": getattr(sig, "reason", None),
+            "exit_stop_loss_pct": regime_p.get("stop_loss_pct"),
+            "exit_stop_n_sigma": regime_p.get("stop_n_sigma"),
+            "exit_max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
+            "exit_sdl_n_sigma": regime_p.get("sdl_n_sigma"),
+            "exit_trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
+            "exit_trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
+            "exit_atr_n_multiplier": regime_p.get("atr_n_multiplier"),
+            "exit_max_hold_days": regime_p.get("max_hold_days"),
         })
 
     def _apply_buy(self, order: dict, today_ts: pd.Timestamp, ctx) -> None:
@@ -1311,6 +1325,10 @@ class SimAdapter:
             "sigma":     order.get("sigma"),
             "mu":        order.get("mu"),
             "sigma_mult": order.get("sigma_mult"),
+            "source":     order.get("source"),
+            "order_type": order.get("order_type"),
+            "confidence": order.get("confidence"),
+            "kelly_target_pct": order.get("kelly_target_pct"),
         })
 
     def _apply_short_open(self, ticker: str, sig, today_ts, ctx) -> None:
