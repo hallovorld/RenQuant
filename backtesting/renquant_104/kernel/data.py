@@ -5,7 +5,10 @@ Self-contained — no common/ imports.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
+import threading
+import uuid
 
 import pandas as pd
 
@@ -142,7 +145,9 @@ class LocalStore:
                 df = df[~df.index.duplicated(keep="last")]
                 df = df.sort_index()
 
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_name(
+            f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        )
         df.to_parquet(tmp)
         tmp.replace(path)
         return path

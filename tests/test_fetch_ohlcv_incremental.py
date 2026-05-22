@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -208,3 +209,38 @@ class TestDedupConcurrent:
         assert call_count[0] == 1, f"expected 1 fetch, got {call_count[0]}"
         for r in results:
             assert r is not None and len(r) > 0
+
+
+class TestLocalStoreAtomicWrites:
+    def test_concurrent_saves_use_unique_tmp_files(self, tmp_path, monkeypatch):
+        """Atomic writes must not share one fixed .tmp path across writers."""
+        import pandas as pd
+        from kernel.data import LocalStore
+
+        store = LocalStore(data_dir=tmp_path / "ohlcv")
+        barrier = threading.Barrier(2)
+        seen_tmp_paths: list[Path] = []
+        seen_lock = threading.Lock()
+        original_to_parquet = pd.DataFrame.to_parquet
+
+        def _blocked_to_parquet(self, path, *args, **kwargs):
+            p = Path(path)
+            with seen_lock:
+                seen_tmp_paths.append(p)
+            original_to_parquet(self, p, *args, **kwargs)
+            barrier.wait(timeout=5)
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", _blocked_to_parquet)
+        frames = [
+            _fake_ohlcv("2024-01-02", "2024-01-05"),
+            _fake_ohlcv("2024-01-08", "2024-01-10"),
+        ]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda df: store.save(df, "RACE_TICKER"), frames))
+
+        assert len(results) == 2
+        assert len(seen_tmp_paths) == 2
+        assert len(set(seen_tmp_paths)) == 2
+        assert all(not p.exists() for p in seen_tmp_paths)
+        assert (tmp_path / "ohlcv" / "RACE_TICKER" / "1d.parquet").exists()

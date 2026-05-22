@@ -275,6 +275,47 @@ class TestApplyScoresTask:
         survived = next(c for c in ctx.candidates if c.ticker == dropped)
         assert survived.rank_score == pytest.approx(prior)
 
+    def test_history_scorer_scores_holdings_too(self, tmp_path):
+        """HF/PatchTST primary must populate holding.panel_score for QP μ wiring."""
+        from kernel.exits import HoldingState
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+
+        class _HistoryScorer:
+            requires_history = True
+            seq_len = 2
+            feature_cols = ["f1"]
+            metadata = {"kind": "hf_patchtst"}
+
+            def score_with_history(self, panel_history, target_tickers):
+                return pd.Series(
+                    {ticker: float(i + 1) / 10.0
+                     for i, ticker in enumerate(target_tickers)}
+                )
+
+        ctx = _make_ctx(tmp_path, enabled=True, tickers=("AAA", "BBB"),
+                        with_frames=False)
+        ctx.holdings = {
+            "HLD": HoldingState(
+                entry_price=100.0,
+                entry_date=datetime.date(2026, 3, 1),
+                high_watermark=100.0,
+                shares=10,
+            )
+        }
+        ctx._panel_scorer = _HistoryScorer()
+        ctx._panel_matrix = pd.DataFrame({"f1": [1.0, 2.0, 3.0]},
+                                         index=["AAA", "BBB", "HLD"])
+        ctx._panel_history = pd.DataFrame({
+            "date": pd.to_datetime(["2026-03-18", "2026-03-19"] * 3),
+            "ticker": ["AAA", "AAA", "BBB", "BBB", "HLD", "HLD"],
+            "f1": [1.0, 1.1, 2.0, 2.1, 3.0, 3.1],
+        })
+
+        ApplyScoresTask().run(ctx)
+
+        assert [c.panel_score for c in ctx.candidates] == pytest.approx([0.1, 0.2])
+        assert ctx.holdings["HLD"].panel_score == pytest.approx(0.3)
+
 
 # ── PanelScoringJob ──────────────────────────────────────────────────────────
 

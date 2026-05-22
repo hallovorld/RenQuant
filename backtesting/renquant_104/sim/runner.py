@@ -264,6 +264,7 @@ def run_backtest(
     # before a single bar runs. Errors-out if backtest_end is before /
     # equal to the model's trained_date (i.e. the prod model has already
     # seen labels inside the sim window).
+    _bs = backtest_start or config.get("backtest_start")
     _be = backtest_end or config.get("backtest_end")
     adapter = SimAdapter(
         config               = config,
@@ -275,6 +276,7 @@ def run_backtest(
         fallback_corr        = fallback_corr,
         panel_feature_frames = panel_feature_frames,
         panel_factor_frames  = panel_factor_frames,
+        backtest_start       = _bs,
         backtest_end         = _be,
     )
 

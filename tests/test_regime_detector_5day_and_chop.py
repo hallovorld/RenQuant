@@ -142,6 +142,25 @@ class TestVolClusterChoppy:
             f"ret_5d={ctx.regime_state.ret_5d:.3f}, " \
             f"hard_bear={ctx.regime_state.hard_bear})"
 
+    def test_vol_cluster_log_format_is_valid(self, monkeypatch):
+        """Audit logs are part of the decision trace; formatting must not
+        throw when the CHOPPY vol-cluster branch fires."""
+        np.random.seed(7)
+        base = np.random.normal(0.0, 0.005, 60)
+        spike = np.array([+0.015, -0.015, +0.015, -0.015, +0.001])
+        ctx = _ctx(np.concatenate([base, spike]), config={})
+
+        messages: list[str] = []
+
+        def strict_info(msg, *args, **kwargs):
+            messages.append(msg % args if args else msg)
+
+        monkeypatch.setattr("kernel.pipeline.task_regime.log.info", strict_info)
+        BEAROverrideTask().run(ctx)
+
+        assert ctx.regime_state.vol_cluster_choppy is True
+        assert any("vol-cluster CHOPPY" in m and "drift20d=" in m for m in messages)
+
     def test_trending_market_does_not_fire_choppy(self):
         """REGRESSION GUARD: a strong trend (|ret_20d| > 0.02) MUST NOT
         fire CHOPPY even if 5-day vol elevated."""

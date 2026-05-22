@@ -225,8 +225,19 @@ class ApplyScoresTask(Task):
                 cand.rank_score = float(v)
                 cand.panel_score = float(v)
                 n_cand_scored += 1
-            log.info("ApplyScoresTask[%s]: assigned panel_score to %d/%d candidates",
-                     scorer_kind_early, n_cand_scored, len(ctx.candidates))
+            n_held_scored = 0
+            for ticker, hs in ctx.holdings.items():
+                v = scores.get(ticker)
+                if v is None or pd.isna(v):
+                    continue
+                hs.panel_score = float(v)
+                n_held_scored += 1
+            log.info(
+                "ApplyScoresTask[%s]: assigned panel_score to %d/%d candidates, "
+                "%d/%d holdings",
+                scorer_kind_early, n_cand_scored, len(ctx.candidates),
+                n_held_scored, len(ctx.holdings),
+            )
             return None
 
         # Phase 3 (2026-05-06): alpha158 models need different features than

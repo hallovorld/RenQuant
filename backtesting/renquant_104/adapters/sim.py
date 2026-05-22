@@ -64,6 +64,7 @@ class SimAdapter:
         fallback_corr: dict | None = None,
         panel_feature_frames: dict[str, pd.DataFrame] | None = None,
         panel_factor_frames: dict[str, pd.DataFrame] | None = None,
+        backtest_start: "pd.Timestamp | str | None" = None,
         backtest_end: "pd.Timestamp | str | None" = None,
     ) -> None:
         # Walk-forward feature flag (Track P2, 2026-05-10). Config schema:
@@ -84,6 +85,11 @@ class SimAdapter:
         self._spy_df         = spy_df
         self._sector_etf_map = sector_etf_map
         # Stored for the legacy-path leakage assertion (see end of init).
+        self._backtest_start: "pd.Timestamp | None" = (
+            pd.Timestamp(backtest_start) if backtest_start is not None
+            else pd.Timestamp(config.get("backtest_start"))
+            if config.get("backtest_start") is not None else None
+        )
         self._backtest_end: "pd.Timestamp | None" = (
             pd.Timestamp(backtest_end) if backtest_end is not None else None
         )
@@ -471,7 +477,8 @@ class SimAdapter:
 
         See `kernel.walk_forward.leakage_guard` for the canonical helper.
         """
-        if self._panel_scorer is None or self._backtest_end is None:
+        sim_first_bar = self._backtest_start or self._backtest_end
+        if self._panel_scorer is None or sim_first_bar is None:
             return
         meta = getattr(self._panel_scorer, "metadata", {}) or {}
         trained_date = meta.get("trained_date")
@@ -487,12 +494,19 @@ class SimAdapter:
         # scorer's metadata so the legacy guard catches forward-label
         # bleed too (e.g. fwd_60d_excess-trained model would silently
         # pass `trained_date < backtest_end` even when bar-by-bar leak).
+        leakage_anchor = (
+            meta.get("effective_train_cutoff_date")
+            or meta.get("train_cutoff_date")
+            or meta.get("cutoff_date")
+            or trained_date
+        )
         lookahead = int(meta.get("lookahead_days", 0) or 0)
         assert_no_leakage(
-            trained_date,
-            self._backtest_end,
+            leakage_anchor,
+            sim_first_bar,
             context=f"SimAdapter legacy load "
-                    f"(artifact={meta.get('feature_cols', ['?'])[:1]}…)",
+                    f"(anchor={leakage_anchor}, "
+                    f"artifact={meta.get('feature_cols', ['?'])[:1]}…)",
             lookahead_days=lookahead,
         )
 

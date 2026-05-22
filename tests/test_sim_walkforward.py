@@ -54,6 +54,7 @@ def _write_synthetic_panel_artifact(
     *,
     trained_date: str,
     tag: str = "synthetic",
+    **extra_payload,
 ) -> None:
     """Write a minimal panel-LTR XGBoost artifact PanelScorer.load can read.
 
@@ -80,6 +81,7 @@ def _write_synthetic_panel_artifact(
         "booster_raw_json": raw,
         "tag": tag,
     }
+    payload.update(extra_payload)
     path.write_text(json.dumps(payload, default=str))
 
 
@@ -190,6 +192,62 @@ class TestLegacyPathLeakageGuard:
             backtest_end="2024-09-30",
         )
         assert adapter._panel_scorer is not None  # noqa: SLF001
+
+    def test_static_cutoff_artifact_uses_first_sim_bar(self, tmp_path: Path):
+        from adapters.sim import SimAdapter
+        art = tmp_path / "panel-ltr.json"
+        _write_synthetic_panel_artifact(
+            art,
+            trained_date="2026-05-22",
+            effective_train_cutoff_date="2024-04-08",
+            lookahead_days=60,
+        )
+        ohlcv = {"SPY": _tiny_ohlcv()}
+        cfg = {
+            "watchlist": [], "sector_etf_map": {}, "tax": {}, "regime": {},
+            "ranking": {
+                "panel_scoring": {
+                    "enabled": True,
+                    "artifact_path": str(art),
+                },
+            },
+        }
+        adapter = SimAdapter(
+            config=cfg, strategy_dir=tmp_path,
+            ohlcv=ohlcv, spy_df=ohlcv["SPY"], sector_etf_map={},
+            initial_cash=100_000,
+            backtest_start="2024-07-02",
+            backtest_end="2026-03-31",
+        )
+        assert adapter._panel_scorer is not None  # noqa: SLF001
+
+    def test_static_cutoff_artifact_blocks_pre_cutoff_window(self, tmp_path: Path):
+        from adapters.sim import SimAdapter
+        art = tmp_path / "panel-ltr.json"
+        _write_synthetic_panel_artifact(
+            art,
+            trained_date="2026-05-22",
+            effective_train_cutoff_date="2024-04-08",
+            lookahead_days=60,
+        )
+        ohlcv = {"SPY": _tiny_ohlcv()}
+        cfg = {
+            "watchlist": [], "sector_etf_map": {}, "tax": {}, "regime": {},
+            "ranking": {
+                "panel_scoring": {
+                    "enabled": True,
+                    "artifact_path": str(art),
+                },
+            },
+        }
+        with pytest.raises(ValueError, match="leakage"):
+            SimAdapter(
+                config=cfg, strategy_dir=tmp_path,
+                ohlcv=ohlcv, spy_df=ohlcv["SPY"], sector_etf_map={},
+                initial_cash=100_000,
+                backtest_start="2024-06-28",
+                backtest_end="2026-03-31",
+            )
 
 
 class TestWalkforwardLoading:

@@ -253,7 +253,7 @@ class BEAROverrideTask(Task):
             if hard_bear_5d:  which.append(f"5d_vol={vol_5d:.2f},ret={ret_5d:+.2%}")
             log.info("BEAROverrideTask: hard BEAR triggered (%s)", "; ".join(which))
         elif state.vol_cluster_choppy:
-            log.info("BEAROverrideTask: vol-cluster CHOPPY (vol5d=%.2f vol60d=%.2f drift20d=%+.2%%)",
+            log.info("BEAROverrideTask: vol-cluster CHOPPY (vol5d=%.2f vol60d=%.2f drift20d=%+.2f%%)",
                      vol_5d, vol_60d if 'vol_60d' in locals() else 0.0, spy_20d_ret*100)
 
 
