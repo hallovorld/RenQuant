@@ -72,13 +72,54 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
     assert len(closed) == 2
     assert len(open_lots) == 1
     assert list(closed["shares"]) == [10, 2]
-    assert closed["tax"].round(6).tolist() == [20.0, 4.0]
+    assert closed["tax"].round(6).tolist() == [21.818182, 2.181818]
     assert closed.iloc[0]["entry_regime"] == "BULL_CALM"
     assert closed.iloc[1]["entry_regime"] == "BULL_VOLATILE"
     assert closed.iloc[0]["exit_regime"] == "BULL_CALM"
     assert closed.iloc[0]["exit_stop_loss_pct"] == 0.15
     assert open_lots.iloc[0]["shares"] == 3
     assert open_lots.iloc[0]["gross_pnl"] == 60.0
+
+
+def test_round_trip_tax_allocation_does_not_tax_losing_lots() -> None:
+    trade_log = [
+        {
+            "action": "buy",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-02"),
+            "price": 100.0,
+            "shares": 1,
+            "invest": 100.0,
+        },
+        {
+            "action": "buy",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-03"),
+            "price": 130.0,
+            "shares": 1,
+            "invest": 130.0,
+        },
+        {
+            "action": "sell",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-02-01"),
+            "price": 120.0,
+            "shares": 2,
+            "tax": 5.0,
+            "pnl_pct": 10.0 / 230.0,
+            "exit_reason": "qp_sell",
+        },
+    ]
+
+    trips = round_trips_from_trade_log(trade_log)
+    closed = trips[trips["status"] == "closed"].reset_index(drop=True)
+
+    assert closed.loc[0, "gross_pnl"] == 20.0
+    assert closed.loc[0, "tax"] == 5.0
+    assert closed.loc[1, "gross_pnl"] == -10.0
+    assert closed.loc[1, "tax"] == 0.0
+    assert not ((closed["gross_pnl"] <= 0) & (closed["tax"] > 0)).any()
+    assert not ((closed["gross_pnl"] > 0) & (closed["tax"] > closed["gross_pnl"])).any()
 
 
 def test_forensic_report_groups_by_regime_and_exit_reason() -> None:

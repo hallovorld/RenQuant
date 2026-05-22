@@ -186,9 +186,12 @@ def round_trips_from_trade_log(
     The simulator can top up and partially trim positions. Per-trade sell rows
     contain event-level realized P&L, but root-cause analysis needs entry-side
     fields (regime, rank_score, mu/sigma) joined to each realized exit. FIFO is
-    deliberately conservative and transparent for this diagnostic ledger; tax
-    lots may use HIFO internally, so tax attribution is allocated
-    proportionally from the simulator's sell event.
+    deliberately conservative and transparent for this diagnostic ledger.
+    Event-level tax is allocated only across profitable matched lots, in
+    proportion to their positive gross P&L. This preserves the simulator's
+    total tax debit while avoiding impossible forensic rows such as a losing
+    lot carrying positive tax or a small winning lot showing tax greater than
+    its own gross profit.
     """
     lots: dict[str, deque[dict]] = defaultdict(deque)
     rows: list[dict] = []
@@ -226,6 +229,7 @@ def round_trips_from_trade_log(
         remaining = sell_shares
         exit_price = _as_float(event.get("price"))
         event_tax = _as_float(event.get("tax"))
+        matched_rows: list[dict[str, Any]] = []
         while remaining > 1e-9 and lots[ticker]:
             lot = lots[ticker][0]
             take = min(remaining, lot["remaining_shares"])
@@ -233,10 +237,9 @@ def round_trips_from_trade_log(
             gross_pnl = (exit_price - entry_price) * take
             entry_value = entry_price * take
             pnl_pct = gross_pnl / entry_value if entry_value > 0 else 0.0
-            tax_alloc = event_tax * (take / sell_shares) if sell_shares > 0 else 0.0
             entry_date = lot.get("entry_date", "")
             exit_date = _as_date(event.get("date"))
-            rows.append({
+            matched_rows.append({
                 "status": "closed",
                 "ticker": ticker,
                 "entry_event_id": lot.get("event_id"),
@@ -250,8 +253,9 @@ def round_trips_from_trade_log(
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "gross_pnl": gross_pnl,
-                "tax": tax_alloc,
-                "net_pnl_after_tax": gross_pnl - tax_alloc,
+                "tax": 0.0,
+                "net_pnl_after_tax": gross_pnl,
+                "tax_allocation_method": "positive_gross",
                 "pnl_pct": pnl_pct,
                 "sim_sell_pnl_pct": event.get("pnl_pct"),
                 "exit_reason": event.get("exit_reason"),
@@ -279,6 +283,19 @@ def round_trips_from_trade_log(
             if lot["remaining_shares"] <= 1e-9:
                 lots[ticker].popleft()
 
+        if matched_rows:
+            positive_gross = sum(
+                max(0.0, _as_float(r.get("gross_pnl")))
+                for r in matched_rows
+            )
+            if event_tax > 0 and positive_gross > 0:
+                for r in matched_rows:
+                    gp = max(0.0, _as_float(r.get("gross_pnl")))
+                    tax_alloc = event_tax * (gp / positive_gross)
+                    r["tax"] = tax_alloc
+                    r["net_pnl_after_tax"] = _as_float(r.get("gross_pnl")) - tax_alloc
+            rows.extend(matched_rows)
+
         if remaining > 1e-9:
             rows.append({
                 "status": "unmatched_sell",
@@ -292,8 +309,9 @@ def round_trips_from_trade_log(
                 "entry_price": None,
                 "exit_price": exit_price,
                 "gross_pnl": None,
-                "tax": event_tax * (remaining / sell_shares),
+                "tax": 0.0,
                 "net_pnl_after_tax": None,
+                "tax_allocation_method": "unmatched_sell_unallocated",
                 "pnl_pct": event.get("pnl_pct"),
                 "sim_sell_pnl_pct": event.get("pnl_pct"),
                 "exit_reason": event.get("exit_reason"),

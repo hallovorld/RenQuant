@@ -153,6 +153,38 @@ class TestCalibratorLoadGuards:
             f"{method} train-site clip not enforced: er_y.min()={cal.er_y.min()}"
         )
 
+    def test_platt_er_head_does_not_hard_saturate_tail(self):
+        """Range safety cannot come from hard clipping alone.
+
+        Regression: prod had 47/100 expected_return knots exactly at +0.20,
+        tying Kelly/QP μ for many top candidates. Platt's ER head must be
+        smooth-bounded, not hard-clipped into a plateau.
+        """
+        from training_panel.global_calibrator import fit_global_calibrator
+        from kernel.calibrator_quality import flat_region_stats
+        import pandas as pd
+
+        n = 2500
+        rng = np.random.default_rng(seed=7)
+        scores = pd.Series(
+            rng.normal(0, 1, n),
+            index=pd.date_range("2021-01-01", periods=n, freq="D"),
+        )
+        returns = 0.55 * scores.to_numpy() + rng.normal(0, 0.03, n)
+        returns[::137] = 2.0
+        returns[1::149] = -1.5
+        fwd = pd.Series(returns, index=scores.index)
+
+        cal = fit_global_calibrator(
+            {"T01": scores}, {"T01": fwd},
+            lookahead_days=60, min_rows=100, method="platt",
+        )
+        stats = flat_region_stats(cal.er_x, cal.er_y)
+
+        assert float(np.max(np.abs(cal.er_y))) <= 0.20 + 1e-9
+        assert stats["fraction"] <= 0.30
+        assert len({round(float(v), 8) for v in cal.er_y}) >= 90
+
     def test_preclip_snapshot_triggers_guard(self, caplog):
         """The pre-clip snapshot (preserved as `.pre-2026-05-15-clip.json`)
         is the live evidence of the bug class this guard catches. Verifies
@@ -213,6 +245,17 @@ class TestG12SaveGate:
         with tempfile.TemporaryDirectory() as tmp:
             with pytest.raises(ValueError, match="probability.y out of"):
                 cal.save(Path(tmp) / "bad.json")
+
+    def test_save_rejects_er_flat_plateau_inside_bounds(self):
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        cal = GlobalPanelCalibration(
+            prob_x=np.linspace(-1, 1, 100), prob_y=np.linspace(0.1, 0.9, 100),
+            er_x=np.linspace(-1, 1, 100),
+            er_y=np.array([-0.01] * 10 + list(np.linspace(0.0, 0.19, 43)) + [0.20] * 47),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with pytest.raises(ValueError, match="G13 ACCEPTANCE GATE FAIL"):
+                cal.save(Path(tmp) / "bad-flat.json")
 
     def test_save_accepts_clean(self):
         from training_panel.global_calibrator import GlobalPanelCalibration

@@ -100,6 +100,7 @@ class GlobalPanelCalibration:
                          left=self.er_y[0], right=self.er_y[-1])
 
     def save(self, path: str | Path, metadata: dict | None = None) -> None:
+        merged_meta = {**self.metadata, **(metadata or {})}
         # G12 train-time gate (2026-05-15): refuse to save a calibrator
         # whose expected_return.y exceeds ±0.20 (= ±20% horizon return).
         # Real-world equity 60d expected returns are ±2% at the median;
@@ -117,6 +118,20 @@ class GlobalPanelCalibration:
                 f"Refusing to save — would corrupt Kelly μ vectors. "
                 f"Either clip er_y to ±{ER_BOUND} at train site (per "
                 f"CLAUDE.md §5.13.12) or pass override flag in metadata."
+            )
+        # G13 train-time gate (2026-05-22): the ER curve is consumed as μ by
+        # Kelly/QP. A hard-clipped plateau inside ±0.20 is range-safe but still
+        # destroys ranking because many candidates receive identical μ.
+        from kernel.calibrator_quality import flat_region_stats  # noqa: PLC0415
+        max_er_flat = float(merged_meta.get("max_expected_return_flat_fraction", 0.30))
+        er_flat = flat_region_stats(self.er_x, self.er_y)
+        if er_flat["fraction"] > max_er_flat:
+            raise ValueError(
+                f"G13 ACCEPTANCE GATE FAIL: expected_return.y has flat region "
+                f"spanning {er_flat['fraction']*100:.1f}% of x-domain "
+                f"(max allowed {max_er_flat*100:.0f}%). Range clipping alone "
+                f"is not enough: Kelly/QP μ vectors would tie large candidate "
+                f"sets. Use a smooth bounded ER head instead of hard clipping."
             )
         # G12 prob_y bound: must be in [0, 1]
         py_min, py_max = float(self.prob_y.min(initial=0.0)), float(self.prob_y.max(initial=0.0))
@@ -141,7 +156,11 @@ class GlobalPanelCalibration:
                 "x": self.er_x.tolist(),
                 "y": self.er_y.tolist(),
             },
-            "metadata": {**self.metadata, **(metadata or {})},
+            "metadata": {
+                **merged_meta,
+                "expected_return_flat_fraction": er_flat["fraction"],
+                "expected_return_longest_flat_span": er_flat["longest_span"],
+            },
         }
         p.write_text(json.dumps(payload, default=str))
 
@@ -477,14 +496,34 @@ def fit_global_calibrator(
             x_max += 1.0
         prob_x = np.linspace(x_min, x_max, K)
         prob_y = platt.predict_proba(prob_x.reshape(-1, 1))[:, 1]
-        # ER head — also linear regression for symmetry (LinearRegression
-        # gives smooth ER curve, no plateau).
-        from sklearn.linear_model import LinearRegression  # noqa: PLC0415
-        lin_er = LinearRegression().fit(X, fwd_for_er)
+        # ER head — robust linear fit plus smooth bounded link. Pre-fix this
+        # fit clipped targets and then hard-clipped predictions to ±ER_CLIP,
+        # creating a 47% flat plateau at +0.20 in prod. Huber keeps the fit
+        # robust to tail events; tanh bounds the emitted μ smoothly so QP/Kelly
+        # still see score ordering inside the safe range.
+        from sklearn.linear_model import HuberRegressor, LinearRegression  # noqa: PLC0415
+        er_head_method = "huber_tanh_bound"
+        x_mean = float(np.mean(raw_all))
+        x_std = float(np.std(raw_all))
+        if x_std < 1e-12:
+            x_std = 1.0
+        X_er = ((raw_all - x_mean) / x_std).reshape(-1, 1)
+        try:
+            er_model = HuberRegressor(epsilon=1.35, alpha=1e-4, max_iter=1000)
+            er_model.fit(X_er, fwd_all)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "fit_global_calibrator: Huber ER head failed (%s); falling "
+                "back to LinearRegression on clipped targets.",
+                exc,
+            )
+            er_head_method = "linear_tanh_bound_fallback"
+            er_model = LinearRegression().fit(X_er, fwd_for_er)
         er_x = prob_x.copy()
-        er_y = lin_er.predict(er_x.reshape(-1, 1))
-        er_y = np.clip(er_y, -ER_CLIP, ER_CLIP)
+        er_pred = er_model.predict(((er_x - x_mean) / x_std).reshape(-1, 1))
+        er_y = ER_CLIP * np.tanh(er_pred / ER_CLIP)
     else:
+        er_head_method = "isotonic_clipped"
         iso_p = IsotonicRegression(out_of_bounds="clip").fit(raw_all, prob_labels)
         # ER head: direct regression — but FIRST clip extreme forward returns.
         # 2026-05-09 audit fix: pre-fix, fwd_all could contain individual ticker
@@ -542,6 +581,25 @@ def fit_global_calibrator(
             f"This usually means the scorer's signal is below the noise "
             f"floor for the calibrator pool — fix scorer or threshold first.",
         )
+    from kernel.calibrator_quality import flat_region_stats  # noqa: PLC0415
+    er_flat = flat_region_stats(er_x, er_y)
+    max_er_flat = 0.30
+    if er_flat["fraction"] > max_er_flat and method_lc == "platt":
+        raise ValueError(
+            f"fit_global_calibrator: expected_return head has flat region "
+            f"spanning {er_flat['fraction']*100:.1f}% of x-domain "
+            f"(max allowed {max_er_flat*100:.0f}). This would tie Kelly/QP "
+            f"μ values across many candidates; use method='platt' with the "
+            f"smooth Huber+tanh ER head or improve scorer signal."
+        )
+    if er_flat["fraction"] > max_er_flat:
+        log.warning(
+            "fit_global_calibrator: expected_return head flat region %.1f%% "
+            "> %.0f%% for method=%s. Returning for legacy research use; "
+            "production save/preflight gates will reject this artifact.",
+            er_flat["fraction"] * 100, max_er_flat * 100, method_lc,
+        )
+    n_unique_er_y = int(len(set(np.round(er_y, 8))))
 
     metadata = {
         "n_rows":             int(len(raw_all)),
@@ -557,6 +615,11 @@ def fit_global_calibrator(
         "er_mean":            float(fwd_all.mean()),
         "er_std":             float(fwd_all.std()),
         "calibration_method": method_lc,
+        "er_clip_bound":       ER_CLIP,
+        "er_target_clip_count": fwd_clipped_count,
+        "er_head_method":      er_head_method,
+        "n_unique_er_y":       n_unique_er_y,
+        "expected_return_flat_fraction": er_flat["fraction"],
     }
     log.info(
         "fit_global_calibrator: n=%d tickers=%d pool_ic=%+.4f "

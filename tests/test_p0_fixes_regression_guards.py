@@ -181,6 +181,44 @@ class TestP0_11_ShadowConfigPathsExistOnDisk:
             "\n  ".join(f"{k} = {v}" for k, v in missing)
         )
 
+    def test_shadow_config_keeps_production_risk_contracts(self):
+        """Shadow should only swap the scorer and isolated artifact/state paths.
+
+        If risk knobs drift, prod-vs-shadow daily decisions stop being an
+        apples-to-apples model comparison.
+        """
+        strategy_dir = REPO / "backtesting/renquant_104"
+        prod = json.loads((strategy_dir / "strategy_config.json").read_text())
+        shadow = json.loads((strategy_dir / "strategy_config.shadow.json").read_text())
+
+        prod_panel = prod["ranking"]["panel_scoring"]
+        shadow_panel = shadow["ranking"]["panel_scoring"]
+        for key in ("buy_floor", "buy_floor_min", "buy_floor_std_mult"):
+            assert shadow_panel.get(key) == prod_panel.get(key)
+
+        prod_joint = prod["rotation"]["joint_actions"]
+        shadow_joint = shadow["rotation"]["joint_actions"]
+        for key in ("qp_mu_contract", "qp_tax_lot_method",
+                    "qp_min_dw_pct", "qp_no_trade_band_cap"):
+            assert shadow_joint.get(key) == prod_joint.get(key)
+
+        for regime in ("BULL_CALM", "BULL_VOLATILE", "CHOPPY", "BEAR"):
+            assert (
+                shadow["regime_params"][regime].get("max_sector_weight_pct")
+                == prod["regime_params"][regime].get("max_sector_weight_pct")
+            )
+
+
+class TestP0_12_DryRunHardFailuresFailClosed:
+    """Training dry-run must not return success when any HARD preflight fails."""
+
+    def test_train_dry_run_enforces_hard_preflight_even_without_strict_contract(self):
+        src = (REPO / "scripts/train_104.py").read_text()
+        dry_run_block = src.split("if args.dry_run:")[1].split("from kernel.pipeline")[0]
+
+        assert "strict=True" in dry_run_block
+        assert "strict=args.strict_contract" not in dry_run_block
+
 
 class TestP0_13_DDVAttrName:
     """DDV reads sue_signal / pead_signal (NOT sue_score / pead_score) —

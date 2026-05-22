@@ -91,7 +91,10 @@ class TestFit:
 class TestPersistence:
     def test_save_load_roundtrip(self, tmp_path):
         ps, fr = _synthetic_panel(seed=7)
-        cal = fit_global_calibrator(ps, fr)
+        # Production calibrators use Platt + smooth bounded ER. Legacy isotonic
+        # can legitimately produce flat ER plateaus that the G13 save gate now
+        # rejects before they reach Kelly/QP.
+        cal = fit_global_calibrator(ps, fr, method="platt")
         path = tmp_path / "panel-cal.json"
         cal.save(path, metadata={"training_notes": "unit-test"})
         assert path.exists()

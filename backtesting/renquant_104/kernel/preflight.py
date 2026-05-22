@@ -20,12 +20,14 @@ Checks (each returns ok / soft-warn / hard-fail):
   3. P-CONFIG-FP        — config fingerprint matches artifact's stored fp
                           (BUG-CV-G7-mismatch class)
   4. P-WATCHLIST        — config watchlist size matches training watchlist
-  5. P-FEATURE-COVER    — NGBoost head's feature_cols all present in
-                          current panel pipeline output (≥ 95%)
-  6. P-STATE-FILE       — live_state.{broker}.json parses (or absent
-                          which is fine — first run)
-  7. P-BROKER-CONNECT   — broker.connect() / get_account_value() works
-                          (only if broker is provided; skipped in dry-run)
+	  5. P-WF-GATE          — active artifact must not carry failed WF gate
+	                          evidence
+	  6. P-FEATURE-COVER    — NGBoost head's feature_cols all present in
+	                          current panel pipeline output (≥ 95%)
+	  7. P-STATE-FILE       — live_state.{broker}.json parses (or absent
+	                          which is fine — first run)
+	  8. P-BROKER-CONNECT   — broker.connect() / get_account_value() works
+	                          (only if broker is provided; skipped in dry-run)
 
 Usage in live/runner.py:
     from kernel.preflight import run_preflight, PreflightFailed
@@ -40,11 +42,112 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("kernel.preflight")
+
+
+def _resolve_artifact_path(strategy_dir: Path, rel: str | Path) -> Path:
+    """Resolve config artifact paths relative to the strategy directory."""
+    p = Path(rel)
+    if p.is_absolute():
+        return p
+    return strategy_dir / p
+
+
+def _patchtst_summary_path(path: Path) -> Path:
+    """Return the lightweight JSON sidecar expected for HF PatchTST .pt files."""
+    if path.name.endswith("_model.pt"):
+        return path.with_name(path.name[:-len("_model.pt")] + "_summary.json")
+    return path.with_suffix(".summary.json")
+
+
+def _check_sequence_artifact_contract(
+    *,
+    kind: str,
+    artifact_path: Path,
+    strict_contract: bool,
+) -> PreflightCheck:
+    """Backend-aware contract for non-JSON sequence scorers.
+
+    HF PatchTST checkpoints are PyTorch zip/pickle files, not JSON panel-LTR
+    artifacts. Preflight must validate their lightweight JSON sidecar instead
+    of trying to decode the binary checkpoint as UTF-8.
+    """
+    if not artifact_path.exists():
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", "hard", False,
+            f"{kind} checkpoint missing: {artifact_path}",
+        )
+    if artifact_path.stat().st_size <= 0:
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", "hard", False,
+            f"{kind} checkpoint is empty: {artifact_path}",
+        )
+
+    summary_path = _patchtst_summary_path(artifact_path)
+    if not summary_path.exists():
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", "hard", False,
+            f"{kind} summary sidecar missing: {summary_path}",
+        )
+    try:
+        summary = json.loads(summary_path.read_text())
+    except Exception as exc:
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", "hard", False,
+            f"{kind} summary unreadable: {exc}",
+        )
+
+    arch = summary.get("arch")
+    if arch and arch != kind:
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", "hard", False,
+            f"{kind} summary arch mismatch: arch={arch!r}",
+        )
+    best_val_ic = summary.get("best_val_ic")
+    n_features = summary.get("n_features")
+    try:
+        best_val_ic_f = float(best_val_ic)
+    except (TypeError, ValueError):
+        best_val_ic_f = float("nan")
+    try:
+        n_features_i = int(n_features)
+    except (TypeError, ValueError):
+        n_features_i = 0
+
+    errors = []
+    if not math.isfinite(best_val_ic_f):
+        errors.append("best_val_ic missing or non-finite")
+    if n_features_i <= 0:
+        errors.append("n_features missing or non-positive")
+    if strict_contract and summary.get("seed") is None:
+        errors.append("seed missing")
+    if strict_contract and summary.get("cut") is None:
+        errors.append("cut missing")
+    if errors:
+        return PreflightCheck(
+            "P-PANEL-CONTRACT", "hard", False,
+            f"{kind} sidecar contract failed: {'; '.join(errors)}",
+            details={"summary_path": str(summary_path), "checkpoint": str(artifact_path)},
+        )
+    return PreflightCheck(
+        "P-PANEL-CONTRACT", "hard", True,
+        f"{kind} checkpoint contract ok: val_ic={best_val_ic_f:+.4f} "
+        f"n_features={n_features_i}",
+        details={
+            "kind": kind,
+            "checkpoint": str(artifact_path),
+            "summary_path": str(summary_path),
+            "best_val_ic": best_val_ic_f,
+            "n_features": n_features_i,
+            "seed": summary.get("seed"),
+            "cut": summary.get("cut"),
+        },
+    )
 
 
 @dataclass
@@ -115,19 +218,26 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
         .get("panel_scoring", {})
         or config.get("panel_ltr", {})
     )
+    kind = str(panel_cfg.get("kind") or config.get("panel_ltr", {}).get("backend") or "xgb")
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
-    p = strategy_dir / rel
+    p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
         return PreflightCheck("P-PANEL-CONTRACT", "hard", False, f"artifact missing: {p}")
-    try:
-        payload = json.loads(p.read_text())
-    except Exception as exc:
-        return PreflightCheck("P-PANEL-CONTRACT", "hard", False, f"unreadable: {exc}")
     strict_contract = bool(
         config.get("preflight", {})
         .get("artifact_contract", {})
         .get("strict", False)
     )
+    if kind in {"hf_patchtst", "patchtst"} or p.suffix == ".pt":
+        return _check_sequence_artifact_contract(
+            kind=kind,
+            artifact_path=p,
+            strict_contract=strict_contract,
+        )
+    try:
+        payload = json.loads(p.read_text())
+    except Exception as exc:
+        return PreflightCheck("P-PANEL-CONTRACT", "hard", False, f"unreadable: {exc}")
     from kernel.artifact_contract import validate_panel_artifact_contract  # noqa: PLC0415
     result = validate_panel_artifact_contract(payload, strict=strict_contract)
     severity = "hard" if strict_contract else "soft"
@@ -142,6 +252,82 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
         msg = "contract legacy-compatible; " + "; ".join(result.warnings[:3])
     return PreflightCheck(
         "P-PANEL-CONTRACT", severity, True, msg, details=result.details,
+    )
+
+
+def _check_wf_gate_metadata(config: dict, strategy_dir: Path) -> PreflightCheck:
+    """P-WF-GATE: a known-failed WF artifact must not trade.
+
+    CLAUDE.md makes weekly WF + sanity gates the production trust boundary.
+    Pre-fix, the active artifact could carry ``metadata.wf_gate_metadata`` with
+    ``passed=false`` while runtime preflight ignored it and continued to buy.
+    That is worse than missing evidence: it is known negative evidence.
+    """
+    panel_cfg = (
+        config.get("ranking", {})
+        .get("panel_scoring", {})
+        or config.get("panel_ltr", {})
+    )
+    kind = str(panel_cfg.get("kind") or config.get("panel_ltr", {}).get("backend") or "xgb")
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
+    p = _resolve_artifact_path(strategy_dir, rel)
+    if kind in {"hf_patchtst", "patchtst"} or p.suffix == ".pt":
+        return PreflightCheck(
+            "P-WF-GATE", "soft", True,
+            f"WF gate not applicable to sequence shadow artifact ({kind})",
+        )
+    if not p.exists():
+        return PreflightCheck(
+            "P-WF-GATE", "soft", True,
+            f"artifact missing at {p}; P-MODEL-ARTIFACT/P-PANEL-CONTRACT will handle",
+        )
+    try:
+        payload = json.loads(p.read_text())
+    except Exception as exc:
+        return PreflightCheck(
+            "P-WF-GATE", "soft", True,
+            f"artifact unreadable: {exc}; P-PANEL-CONTRACT will handle",
+        )
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else {}
+    if not wf:
+        return PreflightCheck(
+            "P-WF-GATE", "soft", True,
+            "WF gate metadata absent; next promotion must stamp pass/fail evidence",
+        )
+    passed = wf.get("passed")
+    details = {
+        "passed": passed,
+        "wf_3cut_sharpe_mean": wf.get("wf_3cut_sharpe_mean"),
+        "wf_3cut_apy_mean": wf.get("wf_3cut_apy_mean"),
+        "spy_sharpe_mean": wf.get("spy_sharpe_mean"),
+        "strategy_minus_spy_sharpe_mean": wf.get("strategy_minus_spy_sharpe_mean"),
+        "wf_reason": wf.get("wf_reason"),
+        "run_at": wf.get("run_at"),
+    }
+    if passed is False:
+        return PreflightCheck(
+            "P-WF-GATE", "hard", False,
+            "active panel artifact carries failed WF gate evidence: "
+            f"wf_sharpe_mean={wf.get('wf_3cut_sharpe_mean')} "
+            f"spy_sharpe_mean={wf.get('spy_sharpe_mean')} "
+            f"reason={wf.get('wf_reason')}. Refusing new live decisions until "
+            "a WF-passing artifact is promoted or buy mode is explicitly isolated "
+            "to shadow/research.",
+            details=details,
+        )
+    if passed is True:
+        return PreflightCheck(
+            "P-WF-GATE", "hard", True,
+            f"WF gate passed: wf_sharpe_mean={wf.get('wf_3cut_sharpe_mean')} "
+            f"spy_sharpe_mean={wf.get('spy_sharpe_mean')}",
+            details=details,
+        )
+    return PreflightCheck(
+        "P-WF-GATE", "soft", True,
+        "WF gate metadata present but no boolean passed field; next promotion "
+        "must stamp pass/fail evidence",
+        details=details,
     )
 
 
@@ -515,9 +701,10 @@ def _check_artifact_run_id_alignment(
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 ALL_CHECKS = (
-    _check_model_artifact,
-    _check_panel_artifact_contract,
-    _check_best_iter,
+	_check_model_artifact,
+	_check_panel_artifact_contract,
+	_check_wf_gate_metadata,
+	_check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,
     _check_feature_coverage,
@@ -580,6 +767,7 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
     # Threshold matches the train-site clip (2026-05-15 Phase 4 commit).
     try:
         er_y = payload.get("expected_return", {}).get("y", []) or []
+        er_x = payload.get("expected_return", {}).get("x", []) or []
         if er_y:
             er_max_abs = max(abs(float(v)) for v in er_y
                              if v is not None and v == v)  # NaN-safe
@@ -595,6 +783,27 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
                     f"live trade.",
                     details={"max_abs_er_y": er_max_abs,
                              "bound": ER_BOUND, "n_knots": len(er_y)},
+                )
+            from kernel.calibrator_quality import flat_region_stats  # noqa: PLC0415
+            er_flat = flat_region_stats(er_x, er_y)
+            max_er_flat = float(
+                config.get("panel_ltr", {})
+                .get("calibrator_health", {})
+                .get("max_expected_return_flat_fraction", 0.30)
+            )
+            if er_flat["fraction"] > max_er_flat:
+                return PreflightCheck(
+                    "P-CALIBRATOR-HEALTH", "hard", False,
+                    f"calibrator expected_return.y has flat region spanning "
+                    f"{er_flat['fraction']*100:.1f}% of x-domain "
+                    f"(>{max_er_flat*100:.0f}%). Kelly/QP consumes this curve "
+                    f"as μ, so a plateau ties candidate target weights even "
+                    f"when probability.y is healthy. Refit calibrator with "
+                    f"smooth bounded ER head.",
+                    details={"expected_return_flat_fraction": er_flat["fraction"],
+                             "longest_flat_span": er_flat["longest_span"],
+                             "x_total": er_flat["x_total"],
+                             "max_expected_return_flat_fraction": max_er_flat},
                 )
     except (TypeError, ValueError) as exc:
         log.warning("P-CALIBRATOR-HEALTH: could not check er.y bounds: %s", exc)
@@ -659,9 +868,15 @@ def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "Prefligh
     Reference: doc/research/2026-05-18-mcd-rebuy-incident.md
     """
     panel_cfg = config.get("panel_ltr", {})
-    rel = panel_cfg.get("calibrator_artifact_path",
-                          "artifacts/prod/panel-rank-calibration.json")
-    p = strategy_dir / rel
+    cal_cfg = ((config.get("ranking", {})
+                       .get("panel_scoring", {})
+                       .get("global_calibration", {})) or {})
+    rel = (
+        cal_cfg.get("artifact_path")
+        or panel_cfg.get("calibrator_artifact_path")
+        or "artifacts/prod/panel-rank-calibration.json"
+    )
+    p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
         return PreflightCheck(
             "P-CALIBRATOR-FLAT-REGION", "soft", True,
@@ -688,8 +903,9 @@ def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "Prefligh
 
     # 2026-05-18 user audit: DRY — extracted to kernel/calibrator_quality.py
     # to prevent silent drift between preflight + fit_script + test impls.
-    from kernel.calibrator_quality import largest_flat_fraction  # noqa: PLC0415
-    flat_frac = largest_flat_fraction(x, y)
+    from kernel.calibrator_quality import flat_region_stats  # noqa: PLC0415
+    stats = flat_region_stats(x, y)
+    flat_frac = stats["fraction"]
     if flat_frac > max_flat_fraction:
         return PreflightCheck(
             "P-CALIBRATOR-FLAT-REGION", "hard", False,
@@ -698,8 +914,8 @@ def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "Prefligh
             f"map to one probability → ranking degenerates → tie-broken buys "
             f"(MCD-rebuy class). Refit with method=platt or shrink flat region. "
             f"See doc/research/2026-05-18-mcd-rebuy-incident.md.",
-            details={"longest_flat_span": longest_flat_span,
-                     "x_total": x_total,
+            details={"longest_flat_span": stats["longest_span"],
+                     "x_total": stats["x_total"],
                      "flat_fraction": flat_frac,
                      "max_flat_fraction": max_flat_fraction,
                      "calibrator_kind": cal.get("kind", "unknown")},

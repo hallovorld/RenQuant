@@ -126,7 +126,11 @@ def main() -> None:
                 broker=None,
                 strategy_dir=strategy_dir,
                 broker_name=None,
-                strict=args.strict_contract,
+                # Hard preflight failures must always make dry-run fail
+                # closed. --strict-contract only controls whether legacy
+                # missing OOS fields in P-PANEL-CONTRACT are promoted from
+                # soft warnings to hard failures.
+                strict=True,
             )
         except PreflightFailed as exc:
             log.error("dry-run preflight failed:\n%s", exc)

@@ -21,6 +21,8 @@ from kernel.preflight import (  # noqa: E402
     PreflightFailed,
     run_preflight,
     _check_model_artifact,
+    _check_panel_artifact_contract,
+    _check_wf_gate_metadata,
     _check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,
@@ -81,6 +83,108 @@ class TestCheckModelArtifact:
         (tmp_path / "artifacts/x.json").write_text("{not json")
         r = _check_model_artifact(cfg, tmp_path)
         assert not r.ok
+
+
+# ── P-PANEL-CONTRACT ──────────────────────────────────────────────────────
+
+class TestCheckPanelArtifactContract:
+    def test_hf_patchtst_binary_uses_summary_sidecar(self, tmp_path):
+        """Shadow PatchTST artifacts are .pt checkpoints. Preflight must
+        validate the JSON sidecar instead of decoding the binary as UTF-8."""
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        ckpt = art_dir / "hf_patchtst_all_seed44_model.pt"
+        ckpt.write_bytes(b"\x80PYTORCH-CHECKPOINT")
+        (art_dir / "hf_patchtst_all_seed44_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "cut": "all",
+            "seed": 44,
+            "best_val_ic": 0.0657,
+            "n_features": 172,
+        }))
+        cfg = {
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/hf_patchtst_all_seed44_model.pt",
+            }},
+        }
+
+        r = _check_panel_artifact_contract(cfg, tmp_path)
+
+        assert r.ok and r.severity == "hard"
+        assert "hf_patchtst checkpoint contract ok" in r.message
+        assert r.details["n_features"] == 172
+
+    def test_hf_patchtst_missing_sidecar_fails_hard(self, tmp_path):
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        (art_dir / "hf_patchtst_all_seed44_model.pt").write_bytes(b"\x80PT")
+        cfg = {
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/hf_patchtst_all_seed44_model.pt",
+            }},
+        }
+
+        r = _check_panel_artifact_contract(cfg, tmp_path)
+
+        assert not r.ok and r.severity == "hard"
+        assert "summary sidecar missing" in r.message
+
+
+# ── P-WF-GATE ────────────────────────────────────────────────────────────────
+
+class TestCheckWFGateMetadata:
+    def test_failed_wf_metadata_fails_hard(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": {
+                "passed": False,
+                "wf_3cut_sharpe_mean": -0.23,
+                "spy_sharpe_mean": 1.08,
+                "wf_reason": "FAIL: mean Sharpe below floor",
+            }},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path)
+
+        assert not r.ok and r.severity == "hard"
+        assert "failed WF gate evidence" in r.message
+        assert r.details["passed"] is False
+
+    def test_passed_wf_metadata_passes_hard(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": {
+                "passed": True,
+                "wf_3cut_sharpe_mean": 0.91,
+                "spy_sharpe_mean": 0.65,
+            }},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path)
+
+        assert r.ok and r.severity == "hard"
+        assert r.details["passed"] is True
+
+    def test_sequence_shadow_skips_wf_gate(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+
+        r = _check_wf_gate_metadata(cfg, tmp_path)
+
+        assert r.ok and r.severity == "soft"
+        assert "not applicable" in r.message
 
 
 # ── P-BEST-ITER (BUG-CV-2 invariant) ───────────────────────────────────────
@@ -328,6 +432,31 @@ class TestCheckCalibratorHealth:
         r = check(cfg, sd)
         assert r.ok and r.severity == "hard"
         assert "n_unique_prob_y=50" in r.message
+
+    def test_hard_fails_expected_return_flat_plateau(self, tmp_path):
+        """P-CALIBRATOR-HEALTH must protect the μ curve, not only prob_y."""
+        from kernel.preflight import _check_calibrator_health
+        cfg = {
+            "panel_ltr": {"calibrator_health": {
+                "max_expected_return_flat_fraction": 0.30,
+            }},
+            "ranking": {"panel_scoring": {"global_calibration": {
+                "artifact_path": "artifacts/panel-rank-calibration.json",
+            }}},
+        }
+        (tmp_path / "artifacts").mkdir()
+        x = [i / 99 for i in range(100)]
+        er_y = [-0.01] * 10 + [i / 1000 for i in range(43)] + [0.20] * 47
+        (tmp_path / "artifacts/panel-rank-calibration.json").write_text(json.dumps({
+            "metadata": {"n_unique_prob_y": 100, "pool_ic": 0.03},
+            "probability": {"x": x, "y": [0.2 + 0.6 * v for v in x]},
+            "expected_return": {"x": x, "y": er_y},
+        }))
+
+        r = _check_calibrator_health(cfg, tmp_path)
+
+        assert not r.ok and r.severity == "hard"
+        assert "expected_return.y has flat region" in r.message
 
     def test_warn_when_n_unique_below_floor(self, tmp_path):
         # Reproduce the 2026-05-04 incident exactly: n_unique=7

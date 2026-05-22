@@ -112,6 +112,47 @@ class TestPreflightCheck:
         )
         assert "P-CALIBRATOR-FLAT-REGION" == result.name
 
+    def test_check_fails_hard_on_bad_side_config_calibrator(self, tmp_path):
+        """Side configs must validate their own calibrator artifact path.
+
+        Regression: preflight used the production default path here, so a
+        bad shadow/sim calibrator could pass because prod was healthy.
+        """
+        fn, _ = self._load_preflight()
+        art_dir = tmp_path / "artifacts"
+        (art_dir / "prod").mkdir(parents=True)
+        (art_dir / "shadow").mkdir()
+        good = {
+            "kind": "global_panel_calibration",
+            "probability": {
+                "x": [0, 1, 2, 3, 4],
+                "y": [0.1, 0.2, 0.3, 0.4, 0.5],
+            },
+        }
+        bad = {
+            "kind": "global_panel_calibration",
+            "probability": {
+                "x": [0, 1, 2, 3, 4],
+                "y": [0.5, 0.5, 0.5, 0.5, 0.6],
+            },
+        }
+        (art_dir / "prod/panel-rank-calibration.json").write_text(json.dumps(good))
+        (art_dir / "shadow/panel-rank-calibration.shadow.json").write_text(json.dumps(bad))
+        cfg = {
+            "panel_ltr": {"calibrator_health": {"max_flat_fraction": 0.30}},
+            "ranking": {"panel_scoring": {"global_calibration": {
+                "artifact_path": "artifacts/shadow/panel-rank-calibration.shadow.json",
+            }}},
+        }
+
+        result = fn(cfg, tmp_path)
+
+        assert not result.ok
+        assert result.severity == "hard"
+        assert result.details["flat_fraction"] > 0.30
+        assert result.details["longest_flat_span"] > 0
+        assert result.details["x_total"] > 0
+
 
 class TestHelperFunctionCorrectness:
     """Pin the _largest_flat_fraction utility used by tests + preflight."""
