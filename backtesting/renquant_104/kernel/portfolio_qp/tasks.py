@@ -279,6 +279,10 @@ class ComputeWashSaleMaskTask(Task):
     mask and were silently locked from increases. Result: post-gain re-
     entries were architecturally impossible despite §1091 not applying.
 
+    2026-05-18 ANTI-CHURN: `min_reentry_days` additionally blocks recent
+    sold tickers regardless of gain/loss, preventing immediate same-name
+    QP rebuys unless enough time has passed for new information.
+
     Reads:  ctx._qp_tickers, ctx.last_sell_dates, ctx.last_sell_pls,
              ctx.config['wash_sale_days']
     Writes: ctx._qp_wash_mask (np.ndarray of bool)

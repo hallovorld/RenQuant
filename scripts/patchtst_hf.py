@@ -58,8 +58,7 @@ sys.path.insert(0, str(REPO))
 # NOTE: kernel.* imports deferred to point-of-use so HFPatchTSTPanelScorer
 # can `importlib` this script without triggering kernel namespace conflicts.
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("patchtst-hf")
 
 

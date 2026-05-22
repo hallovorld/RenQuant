@@ -481,18 +481,23 @@ Focused command:
   tests/test_kelly_sizing.py -q
 ```
 
-Current full-suite status after the P1 matrix/dispatch patch:
+Current full-suite status after the P1 matrix/dispatch and contract cleanup:
 
 ```text
-7 failed, 11939 passed, 7955 skipped, 1 xfailed in 214.60s
+11946 passed, 7955 skipped, 1 xfailed, 163 warnings in 203.62s
 ```
 
-The remaining full-suite failures are not in the P1 touched feature-matrix or
-panel-dispatch paths. They include existing source-contract drift in monthly
-calibrator rollback tests, the missing QP anti-churn marker, one `python`
-executable PATH assumption, one sandboxed process-pool semaphore failure, and
-the PatchTST wrapper LOC budget. Treat the repo as not globally green until
-those are repaired.
+Contract cleanup applied after the first full-suite pass:
+
+- Monthly calibrator tests now assert the script's safer atomic
+  backup/rollback pattern instead of the older bare `cp` substring.
+- QP anti-churn source marker is present next to the implemented
+  `min_reentry_days` guard.
+- The backfill help test uses the active interpreter instead of assuming
+  `python` is on PATH.
+- Tournament training falls back to serial execution when the local sandbox
+  denies `ProcessPoolExecutor` semaphore checks.
+- PatchTST HF wrapper is back under its LOC budget without changing behavior.
 
 Acceptance notes after the patch:
 

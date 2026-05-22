@@ -225,8 +225,9 @@ class TestBackfillBenchmark:
 
     def test_script_accepts_benchmarks_flag(self):
         import subprocess
+        import sys
         out = subprocess.run(
-            ["python", str(REPO_ROOT / "scripts" / "backfill_forward_returns.py"),
+            [sys.executable, str(REPO_ROOT / "scripts" / "backfill_forward_returns.py"),
              "--help"],
             capture_output=True, text=True, timeout=30,
         )

@@ -388,28 +388,57 @@ def run_tournament_all(
     spy_close = ohlcv["SPY"]["close"]
     results: dict[str, dict] = {}
 
-    with ProcessPoolExecutor(max_workers=n_workers) as pool:
-        futures = {
-            pool.submit(
-                run_tournament,
-                ticker,
-                feature_frames[ticker],
-                ohlcv[ticker]["close"],
-                spy_close,
-                model_params,
-                sharpe_floor,
-                tax_config,
-                xgb_nthread,
-                oos_cutoff,
-                exclude_models,
-                winner_metric,
-            ): ticker
-            for ticker in tickers
-        }
-        for future in as_completed(futures):
-            ticker = futures[future]
+    try:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(
+                    run_tournament,
+                    ticker,
+                    feature_frames[ticker],
+                    ohlcv[ticker]["close"],
+                    spy_close,
+                    model_params,
+                    sharpe_floor,
+                    tax_config,
+                    xgb_nthread,
+                    oos_cutoff,
+                    exclude_models,
+                    winner_metric,
+                ): ticker
+                for ticker in tickers
+            }
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    result = future.result()
+                    for line in result.pop("_log", []):
+                        print(line)
+                    results[ticker] = result
+                except Exception as e:
+                    print(f"{ticker}: tournament failed — {e}")
+                    results[ticker] = {
+                        "sharpe": -99.0, "passes_floor": False, "best_approach": None,
+                        "model": None, "oos_signals": None, "oos_raw_scores": None,
+                        "score_calibration": None, "train_rows": 0, "oos_rows": 0,
+                    }
+    except (PermissionError, NotImplementedError) as e:
+        print(f"Tournament: ProcessPool unavailable ({e}) — falling back to serial")
+        xgb_nthread = max(1, os.cpu_count() or 4)
+        for ticker in tickers:
             try:
-                result = future.result()
+                result = run_tournament(
+                    ticker,
+                    feature_frames[ticker],
+                    ohlcv[ticker]["close"],
+                    spy_close,
+                    model_params,
+                    sharpe_floor,
+                    tax_config,
+                    xgb_nthread,
+                    oos_cutoff,
+                    exclude_models,
+                    winner_metric,
+                )
                 for line in result.pop("_log", []):
                     print(line)
                 results[ticker] = result

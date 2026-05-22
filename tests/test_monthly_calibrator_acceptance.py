@@ -19,12 +19,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = (REPO / "scripts/monthly_calibrator_refresh.sh").read_text()
+ATOMIC_BACKUP = 'cp "$PROD_CAL" "$ROLLBACK_CAL.tmp" && mv "$ROLLBACK_CAL.tmp" "$ROLLBACK_CAL"'
+ATOMIC_ROLLBACK = 'cp "$ROLLBACK_CAL" "$PROD_CAL.tmp" && mv "$PROD_CAL.tmp" "$PROD_CAL"'
 
 
 class TestPreRefitBackup:
     def test_backup_called_before_fit(self):
-        assert 'cp "$PROD_CAL" "$ROLLBACK_CAL"' in SRC
-        idx_backup = SRC.index('cp "$PROD_CAL" "$ROLLBACK_CAL"')
+        assert ATOMIC_BACKUP in SRC
+        idx_backup = SRC.index(ATOMIC_BACKUP)
         # Locate the actual python invocation, not the comment mention
         idx_fit = SRC.index('"$PYTHON" scripts/fit_panel_calibrator.py')
         assert idx_backup < idx_fit, "backup must precede the fit invocation"
@@ -39,7 +41,7 @@ class TestAcceptanceGate:
         # Find the smoke-failure branch
         smoke_fail_idx = SRC.index("Post-fit smoke test FAILED")
         nearby = SRC[smoke_fail_idx: smoke_fail_idx + 400]
-        assert 'cp "$ROLLBACK_CAL" "$PROD_CAL"' in nearby, \
+        assert ATOMIC_ROLLBACK in nearby, \
             "smoke-fail branch must rollback to baseline"
 
     def test_non_collapse_hard_gate(self):
@@ -53,7 +55,7 @@ class TestAcceptanceGate:
     def test_gate_failure_rolls_back(self):
         gate_fail_idx = SRC.index("ACCEPTANCE GATE FAILED")
         nearby = SRC[gate_fail_idx: gate_fail_idx + 800]
-        assert 'cp "$ROLLBACK_CAL" "$PROD_CAL"' in nearby
+        assert ATOMIC_ROLLBACK in nearby
         assert "MONTHLY-REJECT" in nearby
 
     def test_rollback_smoke_test_catches_double_failure(self):
