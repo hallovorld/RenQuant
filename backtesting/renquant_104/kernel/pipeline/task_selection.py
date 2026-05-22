@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from .context import InferenceContext
+from .order_attribution import stamp_order_attribution
 from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.selection")
@@ -277,7 +278,7 @@ class SizeAndEmitTask(Task):
                 )
                 continue
             target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
-            ctx.orders.append({
+            ctx.orders.append(stamp_order_attribution({
                 "ticker":     ticker,
                 "shares":     shares,
                 "price":      price,
@@ -303,7 +304,18 @@ class SizeAndEmitTask(Task):
                 # vs rotation vs QP). TopUpHeldTask sets "TOP_UP" on its
                 # orders; this is the fresh-entry path.
                 "order_type": "NEW_BUY",
-            })
+            }, ctx=ctx, source_job="SelectionJob",
+                source_task="SizeAndEmitTask",
+                acceptance_reason="selected_by_greedy_loop",
+                source_obj=c,
+                decision_inputs={
+                    "max_pct": max_pct,
+                    "reserve_pct": reserve_pct,
+                    "remaining_cash_before": remaining_cash,
+                    "conviction": conv,
+                    "sigma_mult": sig_m,
+                    "kelly_enabled": kelly_on,
+                }))
             remaining_cash -= invest
             log.info(
                 "SizeAndEmitTask: %s NEW_BUY %d shares @ %.2f "

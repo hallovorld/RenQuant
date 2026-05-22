@@ -37,6 +37,7 @@ import numpy as np
 
 from kernel.pipeline.atoms.ctx_ops import _get_path, _set_path
 from kernel.pipeline.context import InferenceContext
+from kernel.pipeline.order_attribution import stamp_order_attribution
 from kernel.pipeline.pipeline import Task
 
 log = logging.getLogger("kernel.portfolio_qp.tasks")
@@ -1736,7 +1737,7 @@ def _per_asset_tax_lots(hs, price, w_i, nav, today, st_rate, lt_rate,
 
 def _emit_qp_buy(ctx, ticker, shares, px, sol, i, cands):
     cand = cands.get(ticker)
-    ctx.orders.append({
+    ctx.orders.append(stamp_order_attribution({
         "ticker": ticker, "shares": shares, "price": px,
         "invest": shares * px,
         "target_pct": float(sol.target_w[i]),
@@ -1751,7 +1752,15 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, cands):
         "detail": getattr(cand, "detail", ""),
         "order_type": "QP_BUY",
         "source": "qp",
-    })
+    }, ctx=ctx, source_job="JointPortfolioQPJob",
+        source_task="JointPortfolioQPTask",
+        acceptance_reason="qp_target_weight_increase",
+        source_obj=cand,
+        decision_inputs={
+            "delta_w": float(sol.delta_w[i]),
+            "target_w": float(sol.target_w[i]),
+            "solver_status": getattr(sol, "status", None),
+        }))
     log.info("QP_BUY  %-6s  Δw=%+.4f  shares=%d  px=%.2f  invest=$%.0f",
              ticker, float(sol.delta_w[i]), shares, px, shares * px)
 

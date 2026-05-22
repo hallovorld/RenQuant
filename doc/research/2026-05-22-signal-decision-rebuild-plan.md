@@ -166,6 +166,9 @@ primary unless a future 5-cut x 5-seed run beats these controls per regime.
 
 ### P0: Decision Attribution Guard
 
+Status: implemented in `db6ad1e` successor patch. See
+`doc/research/2026-05-22-order-attribution-config-parity.md`.
+
 Add a production trace assertion that every emitted order has:
 
 - source job/task
@@ -179,6 +182,9 @@ Invariant: no order exists without an accountable pipeline owner and score
 state.
 
 ### P1: Config Parity Guard
+
+Status: implemented in `db6ad1e` successor patch. `run_wf_gate.py` now calls
+`scripts/wf_config_parity.py` by default before spending WF compute.
 
 The last WF bug showed `strategy_config.sim_wl200.json` could drift from the
 current 172-feature prod artifact and decision semantics. Add a guard that

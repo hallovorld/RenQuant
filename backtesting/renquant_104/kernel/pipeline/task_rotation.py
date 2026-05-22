@@ -18,6 +18,7 @@ import logging
 import math
 
 from .context  import InferenceContext
+from .order_attribution import stamp_order_attribution
 from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.rotation")
@@ -874,7 +875,7 @@ class EmitRotationsTask(Task):
 
             invest     = shares * price
             target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
-            ctx.orders.append({
+            ctx.orders.append(stamp_order_attribution({
                 "ticker":     pair.buy_ticker,
                 "shares":     shares,
                 "price":      price,
@@ -894,7 +895,20 @@ class EmitRotationsTask(Task):
                                f"net_adv={pair.net_advantage:+.4f} "
                                f"horizon={pair.horizon_days}d"),
                 "order_type": "ROTATION",
-            })
+            }, ctx=ctx, source_job="RotationJob",
+                source_task="EmitRotationsTask",
+                acceptance_reason="rotation_net_advantage_passed",
+                source_obj=buy_cand,
+                decision_inputs={
+                    "sell_ticker": pair.sell_ticker,
+                    "buy_ticker": pair.buy_ticker,
+                    "net_advantage": pair.net_advantage,
+                    "raw_advantage": pair.raw_advantage,
+                    "tax_drag": pair.tax_drag,
+                    "transaction_cost": pair.transaction_cost,
+                    "threshold": pair.threshold,
+                    "horizon_days": pair.horizon_days,
+                }))
             rotated_buys.add(pair.buy_ticker)
             # PR1-CASH: roll the cash forward — credit sell, debit buy.
             cash_remaining = cash_remaining + sell_proceeds - invest

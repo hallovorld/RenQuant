@@ -69,6 +69,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .context import InferenceContext
+from .order_attribution import stamp_order_attribution
 from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.joint_actions")
@@ -769,7 +770,7 @@ class JointActionTask(Task):
                 used_cands.add(a.cand_ticker)
                 virtual_held.append(a.cand_ticker)
                 target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
-                ctx.orders.append({
+                ctx.orders.append(stamp_order_attribution({
                     "ticker":     a.cand_ticker,
                     "shares":     shares,
                     "price":      price,
@@ -787,7 +788,17 @@ class JointActionTask(Task):
                     "kelly_target_pct": getattr(a.cand_obj, "kelly_target_pct", None),
                     "detail":     getattr(a.cand_obj, "detail", "") + " (joint_buy)",
                     "order_type": "JOINT_BUY",
-                })
+                }, ctx=ctx, source_job="JointActionJob",
+                    source_task="JointActionTask",
+                    acceptance_reason="joint_action_buy_net_alpha_ranked",
+                    source_obj=a.cand_obj,
+                    decision_inputs={
+                        "net_alpha": a.net_alpha,
+                        "rank_score": getattr(a.cand_obj, "rank_score", None),
+                        "cash_remaining_before": cash_remaining + invest,
+                        "fee_pct": fee_pct,
+                        "slippage_pct": slip_pct,
+                    }))
                 ctx.counters["joint_buys"] = ctx.counters.get("joint_buys", 0) + 1
                 log.info(
                     "JOINT_BUY    %-6s  shares=%d  net_alpha=%+.4f  cash_after=%.0f",
@@ -834,7 +845,7 @@ class JointActionTask(Task):
                     ),
                 ))
                 target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
-                ctx.orders.append({
+                ctx.orders.append(stamp_order_attribution({
                     "ticker":     a.cand_ticker,
                     "shares":     shares,
                     "price":      price,
@@ -853,7 +864,20 @@ class JointActionTask(Task):
                     "detail":     (f"joint_rotation←{a.held_ticker} "
                                    f"net_alpha={a.net_alpha:+.4f}"),
                     "order_type": "ROTATION",
-                })
+                }, ctx=ctx, source_job="JointActionJob",
+                    source_task="JointActionTask",
+                    acceptance_reason="joint_action_rotation_net_alpha_ranked",
+                    source_obj=a.cand_obj,
+                    decision_inputs={
+                        "sell_ticker": a.held_ticker,
+                        "buy_ticker": a.cand_ticker,
+                        "net_alpha": a.net_alpha,
+                        "sell_score": getattr(a.held_obj, "rank_score", None),
+                        "buy_score": getattr(a.cand_obj, "rank_score", None),
+                        "tax_drag": pair.tax_drag,
+                        "transaction_cost": pair.transaction_cost,
+                        "horizon_days": horizon,
+                    }))
                 ctx.counters["rotations"] = ctx.counters.get("rotations", 0) + 1
                 log.info(
                     "JOINT_ROT    %-6s→%-6s  shares=%d  net_alpha=%+.4f  "

@@ -47,6 +47,7 @@ import pandas as pd
 from qp_contracts import validate_qp_contract_config
 from trade_contracts import evaluate_trade_contract
 from trade_monotonicity import evaluate_trade_monotonicity
+from wf_config_parity import evaluate_wf_config_parity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("wf-gate")
@@ -731,6 +732,9 @@ def main():
                          "for quick parser tests.")
     ap.add_argument("--skip-trade-gates", action="store_true",
                     help="Skip trade-level monotonicity acceptance gates.")
+    ap.add_argument("--skip-config-parity", action="store_true",
+                    help="Skip prod/WF decision-semantics parity guard. "
+                         "Use only for explicitly exploratory runs.")
     args = ap.parse_args()
 
     artifact_path = Path(args.artifact)
@@ -749,6 +753,25 @@ def main():
     log.info("Artifact usage: %s", artifact_usage)
     cfg_path = STRATEGY_DIR / args.strategy_config
     gate_config = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    parity_result = (
+        {"passed": True, "reason": "skipped"}
+        if args.skip_config_parity or not cfg_path.exists()
+        else evaluate_wf_config_parity(
+            STRATEGY_DIR / "strategy_config.json",
+            cfg_path,
+            candidate_artifact=artifact_path,
+            strategy_dir=STRATEGY_DIR,
+        )
+    )
+    if not parity_result.get("passed", True):
+        log.error(
+            "WF config parity FAILED with %d issue(s)",
+            len(parity_result.get("issues", [])),
+        )
+        for issue in parity_result.get("issues", [])[:10]:
+            log.error("  parity issue: %s", issue)
+    else:
+        log.info("WF config parity: PASS")
     qp_contract = (
         validate_qp_contract_config(gate_config)
         if cfg_path.exists() else
@@ -783,6 +806,16 @@ def main():
                     "issues": qp_contract.issues,
                     "evidence": qp_contract.evidence,
                 },
+            }
+            log.error("WF result: %s", wf_result["reason"])
+        elif not parity_result.get("passed", True):
+            wf_result = {
+                "passed": False,
+                "reason": (
+                    "WF config parity failed; refusing to spend sim compute "
+                    "on non-production-equivalent decision semantics"
+                ),
+                "config_parity": parity_result,
             }
             log.error("WF result: %s", wf_result["reason"])
         elif manifest_scope and not bool(artifact_usage.get("recipe_validated")):
@@ -840,6 +873,7 @@ def main():
         and bool(trade_contract_result["passed"])
         and bool(trade_gate_result["passed"])
         and validation_scope_ok
+        and bool(parity_result.get("passed", True))
     )
     wf_meta = {
         "passed": overall_pass,
@@ -863,6 +897,7 @@ def main():
         "candidate_recipe_fingerprint": artifact_usage.get("candidate_recipe_fingerprint"),
         "wf_eval_scope":       artifact_usage.get("eval_scope"),
         "artifact_usage":      artifact_usage,
+        "config_parity":       parity_result,
         "qp_contract":         (
             {
                 "passed": qp_contract.passed,

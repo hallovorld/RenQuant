@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 
 from .context import InferenceContext
+from .order_attribution import stamp_order_attribution
 from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.topup")
@@ -191,7 +192,7 @@ class TopUpHeldTask(Task):
             # reflect the post-fill weight, not the abstract Kelly target.
             actual_delta = (extra_shares * price) / portfolio if portfolio > 0 else 0.0
             target_pct = (current_pct + actual_delta)
-            ctx.orders.append({
+            ctx.orders.append(stamp_order_attribution({
                 "ticker":      ticker,
                 "shares":      extra_shares,
                 "price":       price,
@@ -208,7 +209,18 @@ class TopUpHeldTask(Task):
                 "mu":          getattr(hs, "mu",    None),
                 "detail":      "top_up_kelly",
                 "order_type":  "TOP_UP",
-            })
+            }, ctx=ctx, source_job="TopUpJob",
+                source_task="TopUpHeldTask",
+                acceptance_reason="kelly_target_above_current_weight",
+                source_obj=hs,
+                decision_inputs={
+                    "current_pct": current_pct,
+                    "kelly_target_pct": float(kelly_target),
+                    "delta_pct": delta,
+                    "top_up_threshold": top_up_thresh,
+                    "topup_conviction_floor": topup_floor,
+                    "cash_before": cash,
+                }))
             added += 1
             log.info(
                 "TopUpHeldTask: %s +%d shares (current=%.1f%% target=%.1f%% delta=%.1f%%)",
