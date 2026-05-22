@@ -227,6 +227,29 @@ Interpretation: buy is enabled and the tree is no longer globally blocking
 BULL_CALM buys; the current no-trade decision is coming from optimizer/no-trade
 band economics, not from a stale `disable buy` or missing-μ bug.
 
+Post P0-3/P0-4 paper acceptance, `2026-05-21-live-147cf79b`:
+
+- Broker: `paper` only.
+- Preflight: hard checks passed, including config fingerprint
+  `sha256:9333f7bf91d10cc4`.
+- Regime: `BULL_CALM`, confidence `0.59`, Hurst `0.71`.
+- Candidate flow: `114` loaded model symbols, `93` raw candidates, `79`
+  panel-scored candidates after earnings/wash-sale/realized-vol gates.
+- Kelly/QP contract: `59/79` candidates had non-zero Kelly target;
+  zero reasons were `mu_le_min_edge=20`, not `mu_none`.
+- QP result: `0` buys and `0` sells; `73` proposed trades were below
+  `min_delta_weight=2%`, and `6` were inside the no-trade band.
+- DB invariant: `selected=1 AND blocked_by IS NOT NULL` returned `0` in
+  `data/runs.paper.db` after the run.
+- Performance warning remains: panel-frame preparation plus candidate scan took
+  about `20` minutes total (`TickerCandidateJob` alone `470s`) and still emits
+  pandas fragmentation warnings from `kernel/panel_pipeline/feature_matrix.py`.
+
+Interpretation: the new soft-exit horizon/tax guards did not break daily
+startup, panel scoring, Kelly/QP, or persistence. This paper run had no
+holdings, so it validates the full daily path but not live sell-trigger
+frequency; the sell behavior is pinned by focused unit tests.
+
 ### P0-3 — Align Exit Horizon With Observed Signal Horizon
 
 Status: implemented for model-driven soft panel exits.
@@ -419,7 +442,12 @@ Acceptance notes after the patch:
   took about `454s` and emitted pandas fragmentation warnings in
   `kernel/panel_pipeline/feature_matrix.py`. This is a performance/reliability
   item for P1, not a reason to promote.
+- After P0-3/P0-4, a second paper daily run completed end-to-end with
+  `79` candidates, `0` orders, and no decision-trace invariant violations.
+  No holdings were present, so soft-exit behavior is covered by unit tests
+  rather than this run.
 
 This is not the end of the repair. It removes a false attribution bug, enforces
-the strict μ contract before optimizer emission, and gives us a cleaner base for
-P0-3/P0-4 horizon and tax A/B work.
+the strict μ contract before optimizer emission, and adds horizon/tax guardrails
+to model-driven soft exits. The remaining heavy lift is trusted walk-forward
+evaluation plus the P1 performance fix.
