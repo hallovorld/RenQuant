@@ -168,7 +168,13 @@ def _print_block_outcomes(df: "pd.DataFrame") -> None:
     """Did each block reason save us money? fwd_N on blocked-but-unselected
     candidates, grouped by reason."""
     rows = []
-    for reason, sub in df.groupby(df["blocked_by"].fillna("(selected/passed)")):
+    # selected=1 is an executed outcome, not a block reason. Older DB rows can
+    # contain stale blocked_by values from pre-selection Kelly diagnostics; keep
+    # attribution semantics clean even when reading those historical rows.
+    reason_series = df["blocked_by"].fillna("(passed/unselected)")
+    if "selected" in df.columns:
+        reason_series = reason_series.mask(df["selected"] == 1, "(selected)")
+    for reason, sub in df.groupby(reason_series):
         n = len(sub)
         base = float((sub["fwd"] > 0).mean())
         mean_fwd = float(sub["fwd"].mean())

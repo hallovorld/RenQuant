@@ -803,6 +803,7 @@ def record_candidate_scores(
     sector_map = sector_map or {}
     model_types = model_types or {}
     for c in candidates:
+        selected = c.ticker in selected_tickers
         rows.append((
             run_id, c.ticker, "candidate",
             _safe_float_or_default(getattr(c, "raw_score",  None)),
@@ -811,8 +812,8 @@ def record_candidate_scores(
             _safe_float_or_default(getattr(c, "rs_score",   None)),
             _none_or_float(getattr(c, "mu",    None)),
             _none_or_float(getattr(c, "sigma", None)),
-            1 if c.ticker in selected_tickers else 0,
-            blocked_map.get(c.ticker),
+            1 if selected else 0,
+            None if selected else blocked_map.get(c.ticker),
             # New decision-factor columns
             _none_or_float(getattr(c, "expected_return", None)),
             _none_or_float(getattr(c, "kelly_target_pct", None)),
@@ -1173,6 +1174,7 @@ def record_ticker_daily_state(
     for r in rows:
         if not r.get("ticker"):
             continue
+        selected = bool(_none_or_int(r.get("selected")))
         payload.append((
             rid,
             rd_str,
@@ -1196,7 +1198,7 @@ def record_ticker_daily_state(
             _none_or_float(r.get("sigma")),
             _none_or_int(r.get("in_candidates")),
             _none_or_int(r.get("selected")),
-            r.get("blocked_by"),
+            None if selected else r.get("blocked_by"),
             r.get("sector"),
         ))
     if not payload:

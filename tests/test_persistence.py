@@ -19,6 +19,7 @@ from kernel.persistence import (  # noqa: E402
     record_candidate_scores,
     record_trades,
     record_training_run,
+    record_ticker_daily_state,
 )
 
 
@@ -152,6 +153,56 @@ class TestCandidateScores:
             (rid, "AAA"),
         ).fetchone()
         assert row[0] == "sector_cap"
+        conn.close()
+
+    def test_selected_candidate_clears_stale_block_reason(self, tmp_path):
+        """AUDIT REGRESSION GUARD: selected rows are outcomes, not blocks.
+
+        Kelly/QP diagnostics can stamp zero reasons before a later portfolio
+        layer emits a buy. Persisting both selected=1 and blocked_by corrupts
+        decision-factor attribution.
+        """
+        from kernel.selection import CandidateResult
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        c1 = CandidateResult(ticker="AAA", raw_score=0, rank_score=0.9,
+                             rs_score=0, detail="", expected_return=0)
+        c2 = CandidateResult(ticker="BBB", raw_score=0, rank_score=0.4,
+                             rs_score=0, detail="", expected_return=0)
+        record_candidate_scores(
+            conn, rid, [c1, c2], {}, selected_tickers={"AAA"},
+            blocked_map={"AAA": "kelly_zero:mu_none", "BBB": "tier"},
+        )
+        rows = dict(conn.execute(
+            "SELECT ticker, blocked_by FROM candidate_scores WHERE run_id = ?",
+            (rid,),
+        ).fetchall())
+        assert rows == {"AAA": None, "BBB": "tier"}
+        conn.close()
+
+    def test_ticker_daily_state_selected_clears_stale_block_reason(self, tmp_path):
+        """AUDIT REGRESSION GUARD: ticker_daily_state uses the same
+        selected=>not-blocked invariant as candidate_scores."""
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 4, 22),
+            rows=[
+                {"ticker": "AAA", "selected": 1, "blocked_by": "kelly_zero:mu_none"},
+                {"ticker": "BBB", "selected": 0, "blocked_by": "tier"},
+            ],
+        )
+        rows = dict(conn.execute(
+            "SELECT ticker, blocked_by FROM ticker_daily_state WHERE run_id = ?",
+            (rid,),
+        ).fetchall())
+        assert rows == {"AAA": None, "BBB": "tier"}
         conn.close()
 
 
