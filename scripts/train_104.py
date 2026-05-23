@@ -28,6 +28,7 @@ for _k, _v in (("OMP_NUM_THREADS", "10"),
     _os.environ.setdefault(_k, _v)
 
 import argparse
+import copy
 import json
 import logging
 import sys
@@ -41,6 +42,70 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("train-104")
+
+
+def _resolve_strategy_path(strategy_dir: Path, value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else strategy_dir / path
+
+
+def _strategy_relative(strategy_dir: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(strategy_dir))
+    except ValueError:
+        return str(path)
+
+
+def _staging_path_for(path: Path) -> Path:
+    return path.with_suffix(".staging.json")
+
+
+def _stage_training_artifact_paths(config: dict, strategy_dir: Path) -> tuple[dict, Path, Path, Path | None]:
+    """Return a training config that writes all mutable artifacts to staging.
+
+    The production safety boundary is: training may create candidate artifacts,
+    but active production files are touched only by ``promote()`` after
+    acceptance/WF gates.  This avoids the transient prod-clobber window where a
+    long calibrator refresh can leave live readers pointed at an unaccepted
+    model.
+    """
+    staged = copy.deepcopy(config)
+    ranking = staged.setdefault("ranking", {}).setdefault("panel_scoring", {})
+    panel_cfg = staged.setdefault("panel_ltr", {})
+
+    panel_rel = ranking.get("artifact_path") or panel_cfg.get(
+        "artifact_path", "artifacts/panel-ltr.json"
+    )
+    active_panel = _resolve_strategy_path(strategy_dir, panel_rel)
+    candidate_panel = _staging_path_for(active_panel)
+    candidate_panel_rel = _strategy_relative(strategy_dir, candidate_panel)
+    panel_cfg["artifact_path"] = candidate_panel_rel
+    ranking["artifact_path"] = candidate_panel_rel
+
+    candidate_calibrator: Path | None = None
+    gc_cfg = ranking.setdefault("global_calibration", {})
+    cal_rel = gc_cfg.get("artifact_path")
+    if cal_rel:
+        candidate_calibrator = _staging_path_for(_resolve_strategy_path(strategy_dir, cal_rel))
+        gc_cfg["artifact_path"] = _strategy_relative(strategy_dir, candidate_calibrator)
+
+    ngb_train = panel_cfg.setdefault("ngboost", {})
+    ngb_infer = ranking.setdefault("ngboost", {})
+    ngb_rel = ngb_infer.get("artifact_path") or ngb_train.get("artifact_path")
+    if ngb_rel:
+        candidate_ngb = _staging_path_for(_resolve_strategy_path(strategy_dir, ngb_rel))
+        candidate_ngb_rel = _strategy_relative(strategy_dir, candidate_ngb)
+        ngb_train["artifact_path"] = candidate_ngb_rel
+        ngb_infer["artifact_path"] = candidate_ngb_rel
+
+    staged["_acceptance_staging"] = {
+        "active_panel_artifact_path": str(active_panel),
+        "candidate_panel_artifact_path": str(candidate_panel),
+        "candidate_calibrator_artifact_path": (
+            str(candidate_calibrator) if candidate_calibrator is not None else None
+        ),
+    }
+    return staged, active_panel, candidate_panel, candidate_calibrator
 
 
 def main() -> None:
@@ -183,8 +248,24 @@ def main() -> None:
     # model actually had mean_ic=+0.0067. The "PASS" was the prior
     # production model passing against itself, not the new model.
     panel_cfg = config.get("panel_ltr", {})
-    artifact_rel = panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
-    active_path = strategy_dir / artifact_rel
+    artifact_rel = (
+        config.get("ranking", {}).get("panel_scoring", {}).get("artifact_path")
+        or panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
+    )
+    active_path = _resolve_strategy_path(strategy_dir, artifact_rel)
+    candidate_panel_path: Path | None = None
+    candidate_calibrator_path: Path | None = None
+    if acceptance_enabled:
+        config, active_path, candidate_panel_path, candidate_calibrator_path = (
+            _stage_training_artifact_paths(config, strategy_dir)
+        )
+        log.info(
+            "Acceptance: training writes to staging panel=%s calibrator=%s; "
+            "active remains %s",
+            candidate_panel_path,
+            candidate_calibrator_path,
+            active_path,
+        )
     pre_train_snapshot = None
     if acceptance_enabled and active_path.exists():
         import shutil
@@ -207,18 +288,19 @@ def main() -> None:
         from kernel.model_acceptance import (  # noqa: PLC0415
             ModelAcceptanceGate, promote, reject,
         )
-        # The pipeline writes new content to the SAME path (panel-ltr.json)
-        # via SaveArtifactTask + shim. So at this point, panel-ltr.json
-        # = NEW (staging), pre-train snapshot = PRIOR.
-        # Move new content to .staging.json so the gate APIs match
-        # (separate staging vs active paths).
-        staging_path = active_path.with_suffix(".staging.json")
-        if active_path.exists():
+        # The pipeline now writes directly to the candidate staging path.
+        # Legacy fallback is retained for side/diagnostic configurations that
+        # intentionally disable the staging rewrite.
+        staging_path = candidate_panel_path or active_path.with_suffix(".staging.json")
+        if candidate_panel_path is None and active_path.exists():
             import shutil
             shutil.move(str(active_path), str(staging_path))
-        # Restore prior at active for gate evaluation context.
-        if pre_train_snapshot is not None and pre_train_snapshot.exists():
-            shutil.copy2(str(pre_train_snapshot), str(active_path))
+            if pre_train_snapshot is not None and pre_train_snapshot.exists():
+                shutil.copy2(str(pre_train_snapshot), str(active_path))
+        if not staging_path.exists():
+            raise FileNotFoundError(
+                f"Acceptance expected staging artifact but it is missing: {staging_path}"
+            )
 
         # Phase 1 (2026-04-26): pass acceptance config so operator can
         # tune G4 max_degradation, G7 floor, severities without forking gate code.

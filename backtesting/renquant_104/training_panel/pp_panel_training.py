@@ -3190,7 +3190,7 @@ class NGBoostSaveTask(PanelTask):
         # already gone — no recovery path. Mirror panel-LTR's snapshot +
         # acceptance pattern: write to .staging.json, hard-gate on
         # val_mu_ic floor, atomic-rename to final path on pass.
-        ngb_min_val_ic = cfg.get("min_val_mu_ic")
+        ngb_min_val_ic = cfg.get("min_val_mu_ic", 0.0)
         val_mu_ic = ctx.ngboost_fit.get("val_mu_ic")
 
         # Snapshot prior production artifact for rollback (if it exists).
@@ -3359,6 +3359,19 @@ class RefreshPanelCalibratorTask(PanelTask):
         )
         if calib_threshold_mode:
             cmd.extend(["--threshold-mode", calib_threshold_mode])
+        # Acceptance-safe retrains write the candidate panel scorer to a
+        # staging path. Pair the calibrator with that exact candidate scorer
+        # and write the calibrator to its configured staging path too; never
+        # let an in-flight retrain overwrite the production calibrator before
+        # model acceptance/WF gates have run.
+        if getattr(ctx, "artifact_path", None) is not None:
+            cmd.extend(["--scorer-artifact", str(ctx.artifact_path)])
+        cal_artifact = gc_cfg.get("artifact_path")
+        if cal_artifact:
+            cal_path = Path(cal_artifact)
+            if not cal_path.is_absolute():
+                cal_path = ctx.strategy_dir / cal_path
+            cmd.extend(["--out", str(cal_path)])
         log.info("RefreshPanelCalibratorTask: %s", " ".join(cmd))
         t0 = _time.monotonic()
         try:

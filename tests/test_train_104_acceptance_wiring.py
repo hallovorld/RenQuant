@@ -107,6 +107,18 @@ class TestStagingActiveFlow:
         """Convention: staging artifact at panel-ltr.staging.json."""
         assert '.staging.json' in SCRIPT_SRC
 
+    def test_training_writes_candidate_not_active(self):
+        """Training must route candidate artifacts to staging before gates run.
+
+        This pins the regression found on 2026-05-22: the pipeline wrote the
+        candidate model to the production path, then spent many minutes fitting
+        the calibrator before acceptance restored the prior artifact.
+        """
+        assert "_stage_training_artifact_paths" in SCRIPT_SRC
+        assert '"candidate_panel_artifact_path"' in SCRIPT_SRC
+        assert 'ranking["artifact_path"] = candidate_panel_rel' in SCRIPT_SRC
+        assert 'panel_cfg["artifact_path"] = candidate_panel_rel' in SCRIPT_SRC
+
     def test_active_path_resolved_from_config(self):
         """BUG-G7 fix (2026-04-28): active_path comes from
         config.panel_ltr.artifact_path (default `artifacts/panel-ltr.json`),

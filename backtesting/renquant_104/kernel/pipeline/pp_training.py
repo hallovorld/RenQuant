@@ -118,6 +118,22 @@ class TickerTrainingContext:
     ttl_skipped: bool = False   # True when model-TTL gate skipped this ticker
 
 
+def _model_params_for_tournament(config: dict[str, Any]) -> dict[str, Any]:
+    """Return tournament model params with post-2026-05-10 defaults restored.
+
+    ``model_params.lookahead`` was intentionally removed from the production
+    config to stop it shadowing the panel-LTR horizon.  The per-ticker
+    tournament still owns a separate short-horizon baseline, historically 5
+    trading days.  Without this fallback, ``TickerFeatureJob`` swallowed a
+    KeyError and every ticker produced no feature frame.
+    """
+    mp = dict(config.get("model_params", {}) or {})
+    training_cfg = config.get("training", {}) or {}
+    mp.setdefault("lookahead", int(training_cfg.get("tournament_lookahead_days", 5)))
+    mp.setdefault("threshold", 0.03)
+    return mp
+
+
 # ── Task + Job ABCs ────────────────────────────────────────────────────────────
 
 class TrainingTask(ABC):
@@ -550,7 +566,7 @@ class ExportJob(TrainingJob):
         if not ctx.strategy_dir:
             return
         today = str(_date.today())
-        mp = ctx.config["model_params"]
+        mp = _model_params_for_tournament(ctx.config)
         ctx.exported, _ = export_models(
             ctx.results, ctx.strategy_dir, today,
             lookahead=mp["lookahead"],
@@ -640,7 +656,7 @@ class TickerFeatureJob(TrainingTickerJob):
     def run(self, tc: TickerTrainingContext) -> None:
         from training.features import build_training_features
 
-        mp = tc.config["model_params"]
+        mp = _model_params_for_tournament(tc.config)
         try:
             tc.feature_frame = build_training_features(
                 tc.ticker,
@@ -661,7 +677,7 @@ class TickerTournamentJob(TrainingTickerJob):
 
         if tc.feature_frame is None or tc.feature_frame.empty:
             return
-        mp = tc.config["model_params"]
+        mp = _model_params_for_tournament(tc.config)
         try:
             result = run_tournament(
                 tc.ticker,
@@ -690,7 +706,7 @@ class TickerExportJob(TrainingTickerJob):
         if not tc.result or not tc.strategy_dir:
             return
         today = str(_date.today())
-        mp = tc.config["model_params"]
+        mp = _model_params_for_tournament(tc.config)
         try:
             exported = export_one_model(
                 tc.ticker, tc.result, tc.strategy_dir, today,
@@ -722,7 +738,7 @@ class TickerCalibrationJob(TrainingTickerJob):
 
         import json as _json
 
-        mp = tc.config["model_params"]
+        mp = _model_params_for_tournament(tc.config)
         res = tc.result
         best = res.get("best_approach")
         model_obj = res.get(best, {}).get("model") if best else None

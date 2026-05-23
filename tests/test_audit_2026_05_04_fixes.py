@@ -300,6 +300,25 @@ class TestCalibratorRefreshFailLoud:
             # Must NOT raise — backwards compat for staged migrations.
             RefreshPanelCalibratorTask().run(ctx)
 
+    def test_refresh_pairs_candidate_scorer_and_staged_output(self, tmp_path):
+        from training_panel.pp_panel_training import RefreshPanelCalibratorTask
+        ctx = self._make_ctx(tmp_path)
+        ctx.artifact_path = tmp_path / "backtesting" / "renquant_104" / "artifacts" / "prod" / "panel-ltr.staging.json"
+        ctx.config["ranking"]["panel_scoring"]["global_calibration"]["artifact_path"] = (
+            "artifacts/prod/panel-rank-calibration.staging.json"
+        )
+
+        fake_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=fake_result) as run:
+            RefreshPanelCalibratorTask().run(ctx)
+
+        cmd = run.call_args.args[0]
+        assert "--scorer-artifact" in cmd
+        assert str(ctx.artifact_path) in cmd
+        assert "--out" in cmd
+        out_arg = cmd[cmd.index("--out") + 1]
+        assert out_arg.endswith("artifacts/prod/panel-rank-calibration.staging.json")
+
 
 # ── Issue 23 + 24 — quality-floor NaN sigma fail-OPEN ─────────────────────────
 
