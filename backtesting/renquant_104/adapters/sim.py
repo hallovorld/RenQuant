@@ -1231,6 +1231,11 @@ class SimAdapter:
             getattr(ctx, "regime", None), {},
         ) if ctx is not None else {}
         sig_reason = getattr(sig, "reason", None)
+        source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
+        source_task = str(getattr(sig, "source_task", None) or sig.exit_type or "sell")
+        order_source = str(
+            getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
+        )
         self._trade_log.append({
             "action":      "sell",
             "ticker":      ticker,
@@ -1257,10 +1262,10 @@ class SimAdapter:
             "exit_atr_n_multiplier": regime_p.get("atr_n_multiplier"),
             "exit_max_hold_days": regime_p.get("max_hold_days"),
             "order_type":  f"SELL_{sig.exit_type}" if sig.exit_type else "SELL",
-            "source":      "ExitPipeline",
-            "source_job":  "TickerSellJob",
-            "source_task": sig.exit_type or "sell",
-            "order_source": f"TickerSellJob.{sig.exit_type or 'sell'}",
+            "source":      str(getattr(sig, "source", None) or "ExitPipeline"),
+            "source_job":  source_job,
+            "source_task": source_task,
+            "order_source": order_source,
             "attribution_version": "exit_decision_v1",
             "score_snapshot": {
                 "rank_score": getattr(hs, "rank_score", None),

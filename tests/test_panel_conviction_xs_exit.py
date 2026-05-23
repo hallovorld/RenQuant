@@ -48,10 +48,21 @@ def _cand(ticker: str, panel: float) -> SimpleNamespace:
 
 
 def _ctx(*, holdings: dict, candidates: list, cfg_panel_exit: dict | None = None,
-         exits=None, regime="BULL_CALM", prices=None, tax=None):
-    cfg = {"risk": {}, "lt_hold_gate_days": 330, "lt_hold_min_gain": 0.10}
+         exits=None, regime="BULL_CALM", prices=None, tax=None,
+         earnings_calendar=None, max_sells_per_bar: int | None = None):
+    cfg = {
+        "risk": {},
+        "regime": {
+            "earnings_sell_buffer_pre_days": 2,
+            "earnings_sell_buffer_post_days": 5,
+        },
+        "lt_hold_gate_days": 330,
+        "lt_hold_min_gain": 0.10,
+    }
     if cfg_panel_exit is not None:
         cfg["risk"]["panel_exit"] = cfg_panel_exit
+    if max_sells_per_bar is not None:
+        cfg["risk"]["max_sells_per_bar"] = max_sells_per_bar
     if tax is not None:
         cfg["tax"] = tax
     return SimpleNamespace(
@@ -63,6 +74,7 @@ def _ctx(*, holdings: dict, candidates: list, cfg_panel_exit: dict | None = None
         exits=exits if exits is not None else [],
         counters={},
         prices=prices or {},
+        earnings_calendar=earnings_calendar,
     )
 
 
@@ -327,3 +339,51 @@ class TestHorizonAndTaxGates:
         CrossSectionalPanelExitTask().run(ctx)
         assert len(ctx.exits) == 1
         assert ctx.exits[0][0] == "LOSS"
+
+
+class TestPortfolioLevelGuards:
+    def _bearish_cfg(self):
+        return {
+            "enabled": True,
+            "xs_panel_percentile_floor": 0.20,
+            "mu_sell_ceiling": 0.0,
+            "mu_strong_sell_ceiling": -0.05,
+            "min_universe": 5,
+        }
+
+    def test_xs_panel_exit_respects_earnings_blackout(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={"CAT": _holding(panel=0.05, mu=-0.20, days_back=60)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(),
+            earnings_calendar={"CAT": ["2025-06-14"]},
+        )
+
+        CrossSectionalPanelExitTask().run(ctx)
+
+        assert ctx.exits == [], (
+            "pipeline-level panel_conviction is model-driven and must obey "
+            "the same post-earnings blackout as TickerSellJob exits"
+        )
+
+    def test_xs_panel_exit_reapplies_max_sells_per_bar_cap(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={
+                "A": _holding(panel=0.05, mu=-0.20, days_back=60),
+                "B": _holding(panel=0.06, mu=-0.10, days_back=60),
+            },
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(),
+            max_sells_per_bar=1,
+            prices={"A": 95.0, "B": 95.0},
+        )
+
+        CrossSectionalPanelExitTask().run(ctx)
+
+        assert [ticker for ticker, _ in ctx.exits] == ["A"], (
+            "xs panel exits are soft model exits; after adding them in Phase 3 "
+            "the portfolio-level same-bar sell cap must be applied again"
+        )
+        assert ctx.counters.get("model_sell_throttled") == 1

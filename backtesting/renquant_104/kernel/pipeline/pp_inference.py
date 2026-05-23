@@ -53,6 +53,10 @@ def _build_exit_params(regime_p: dict, config: dict) -> dict:
         # but the config key was never threaded through _build_exit_params,
         # so it was dead. Now config-driven (industry value 2.0-2.5).
         "sdl_n_sigma":               regime_p.get("sdl_n_sigma",               0),
+        "sdl_skip_if_unrealized_above": regime_p.get("sdl_skip_if_unrealized_above", 0),
+        "take_profit_pct":           regime_p.get("take_profit_pct",           0),
+        "stop_decay_days":           regime_p.get("stop_decay_days",           0),
+        "stop_decay_floor":          regime_p.get("stop_decay_floor",          0),
         "max_hold_days":             regime_p.get("max_hold_days",             0),
         "consecutive_sell_signals":  int(config.get("consecutive_sell_signals", 3)),
         "min_hold_days":             int(config.get("min_hold_days", 0)),

@@ -52,7 +52,7 @@ import logging
 import math
 
 from kernel.exits import ExitSignal
-from .context import InferenceContext
+from .context import InferenceContext, TickerInferenceContext
 from .pipeline import Task
 from .soft_exit_guards import (
     lt_gate_suppression,
@@ -62,6 +62,43 @@ from .soft_exit_guards import (
 )
 
 log = logging.getLogger("kernel.pipeline.panel_conviction_xs")
+
+
+def _apply_earnings_blackout(
+    ctx: InferenceContext,
+    ticker: str,
+    holding,
+    signal: ExitSignal,
+    current_price: float,
+) -> ExitSignal | None:
+    """Route XS panel exits through the canonical earnings veto task."""
+    from .task_sell import EarningsBlackoutSellTask  # noqa: PLC0415
+
+    tc = TickerInferenceContext(
+        ticker=ticker,
+        ohlcv=getattr(ctx, "ohlcv", {}) or {},
+        model=None,
+        config=ctx.config,
+        today=ctx.today,
+        regime=getattr(ctx, "regime", ""),
+        regime_params=(ctx.config.get("regime_params", {}) or {}).get(
+            getattr(ctx, "regime", None), {}
+        ),
+        exit_params={},
+        holding=holding,
+        price=current_price,
+        earnings_calendar=getattr(ctx, "earnings_calendar", None),
+    )
+    tc.exit_signal = signal
+    EarningsBlackoutSellTask().run(tc)
+    return tc.exit_signal
+
+
+def _reapply_soft_sell_cap(ctx: InferenceContext) -> None:
+    """Re-run the canonical same-bar soft-sell cap after Phase-3 exits."""
+    from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415
+
+    LimitSellsPerBarTask().run(ctx)
 
 
 class CrossSectionalPanelExitTask(Task):
@@ -133,7 +170,7 @@ class CrossSectionalPanelExitTask(Task):
             if sig is not None and getattr(sig, "should_exit", False)
         }
 
-        n_fires = 0
+        fired_tickers: set[str] = set()
         for ticker, hs in ctx.holdings.items():
             if ticker in already_exiting:
                 continue
@@ -218,8 +255,16 @@ class CrossSectionalPanelExitTask(Task):
                 ),
                 exit_type   = "panel_conviction",
             )
+            sig.source_job = "InferencePipeline"
+            sig.source_task = "CrossSectionalPanelExitTask"
+            sig = _apply_earnings_blackout(ctx, ticker, hs, sig, cur_price)
+            if sig is None:
+                ctx.counters["xs_panel_exit_earnings_suppressed"] = (
+                    ctx.counters.get("xs_panel_exit_earnings_suppressed", 0) + 1
+                )
+                continue
             ctx.exits.append((ticker, sig))
-            n_fires += 1
+            fired_tickers.add(ticker)
             log.info(
                 "CrossSectionalPanelExit [%s]: EXIT (%s)  panel=%+.3f thr=%+.3f "
                 "mu=%+.4f (mu_ceiling=%.4f mu_strong=%s)",
@@ -227,7 +272,14 @@ class CrossSectionalPanelExitTask(Task):
                 f"{mu_strong:+.4f}" if mu_strong is not None else "off",
             )
 
-        if n_fires:
+        if fired_tickers:
+            _reapply_soft_sell_cap(ctx)
+            n_fires = sum(
+                1
+                for ticker, sig in (ctx.exits or [])
+                if ticker in fired_tickers
+                and getattr(sig, "exit_type", None) == "panel_conviction"
+            )
             ctx.counters["xs_panel_exit"] = (
                 ctx.counters.get("xs_panel_exit", 0) + n_fires
             )

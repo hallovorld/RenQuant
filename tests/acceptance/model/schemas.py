@@ -105,7 +105,9 @@ PANEL_LTR_SCHEMA: dict[str, dict] = {
                             "bounds": (0, 10000)},
     # CV metadata
     "cv_method":           {"type": (str, type(None)), "required": False,
-                            "allowed_optional": {"purged", "cpcv", None}},
+                            "allowed_optional": {
+                                "purged", "cpcv", "purged_walk_forward", None
+                            }},
     "cv_n_splits":         {"type": (int, type(None)), "required": False,
                             "bounds": (2, 50)},
     "cv_n_test_groups":    {"type": (int, type(None)), "required": False,
