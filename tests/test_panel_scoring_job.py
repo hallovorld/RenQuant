@@ -111,6 +111,26 @@ class TestAlpha158TargetOnlyMatrix:
         assert out is None
         assert ctx._panel_matrix is None
 
+    def test_missing_legacy_frames_ok_for_history_scorer(self):
+        from kernel.panel_pipeline.tasks_feature_matrix import ResolveInferenceFramesTask
+
+        ctx = SimpleNamespace(
+            candidates=[SimpleNamespace(ticker="BBB"), SimpleNamespace(ticker="AAA")],
+            holdings={"CCC": SimpleNamespace()},
+            _panel_scorer=SimpleNamespace(
+                metadata={"kind": "hf_patchtst"},
+                requires_history=True,
+            ),
+            _panel_feature_frames=None,
+            config={},
+        )
+
+        out = ResolveInferenceFramesTask().run(ctx)
+
+        assert out is False
+        assert list(ctx._panel_matrix.index) == ["AAA", "BBB", "CCC"]
+        assert list(ctx._panel_matrix.columns) == ["__history_target__"]
+
 
 def _train_mini_booster():
     rng = np.random.default_rng(0)
@@ -401,6 +421,72 @@ class TestApplyScoresTask:
 
         assert [c.panel_score for c in ctx.candidates] == pytest.approx([0.1, 0.2])
         assert ctx.holdings["HLD"].panel_score == pytest.approx(0.3)
+
+    def test_history_scorer_uses_ctx_history_without_parquet_read(self, tmp_path, monkeypatch):
+        """Adapter-provided history must keep parquet I/O out of the per-bar task."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+
+        class _HistoryScorer:
+            requires_history = True
+            seq_len = 2
+            feature_cols = ["f1"]
+            metadata = {"kind": "hf_patchtst"}
+
+            def score_with_history(self, panel_history, target_tickers):
+                assert set(panel_history["ticker"]) == {"AAA", "BBB", "CCC"}
+                return pd.Series({t: 0.4 for t in target_tickers})
+
+        ctx = _make_ctx(tmp_path, enabled=True, tickers=("AAA", "BBB"),
+                        with_frames=False)
+        ctx._panel_scorer = _HistoryScorer()
+        ctx._panel_matrix = pd.DataFrame({"__history_target__": [1.0, 1.0]},
+                                         index=["AAA", "BBB"])
+        ctx._panel_history = pd.DataFrame({
+            "date": pd.to_datetime(["2026-03-18"] * 3),
+            "ticker": ["AAA", "BBB", "CCC"],
+            "f1": [1.0, 2.0, 3.0],
+        })
+
+        def forbidden_read(*_args, **_kwargs):
+            raise AssertionError("ApplyScoresTask should not read parquet with ctx._panel_history")
+
+        monkeypatch.setattr(pd, "read_parquet", forbidden_read)
+        ApplyScoresTask().run(ctx)
+
+        assert [c.panel_score for c in ctx.candidates] == pytest.approx([0.4, 0.4])
+
+    def test_history_fallback_keeps_full_universe_for_rank_norm(self, tmp_path, monkeypatch):
+        """Lazy fallback should not candidate-filter the history frame."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+
+        captured = {}
+
+        class _HistoryScorer:
+            requires_history = True
+            seq_len = 2
+            feature_cols = ["f1"]
+            metadata = {"kind": "hf_patchtst"}
+
+            def score_with_history(self, panel_history, target_tickers):
+                captured["tickers"] = set(panel_history["ticker"])
+                return pd.Series({t: 0.5 for t in target_tickers})
+
+        full_panel = pd.DataFrame({
+            "date": pd.to_datetime(
+                ["2026-03-17", "2026-03-18", "2026-03-19"] * 3
+            ),
+            "ticker": ["AAA", "AAA", "AAA", "BBB", "BBB", "BBB", "CCC", "CCC", "CCC"],
+            "f1": range(9),
+        })
+        monkeypatch.setattr(pd, "read_parquet", lambda *_args, **_kwargs: full_panel)
+        ctx = _make_ctx(tmp_path, enabled=True, tickers=("AAA",), with_frames=False)
+        ctx.today = datetime.date(2026, 3, 20)
+        ctx._panel_scorer = _HistoryScorer()
+        ctx._panel_matrix = pd.DataFrame({"__history_target__": [1.0]}, index=["AAA"])
+
+        ApplyScoresTask().run(ctx)
+
+        assert captured["tickers"] == {"AAA", "BBB", "CCC"}
 
 
 # ── PanelScoringJob ──────────────────────────────────────────────────────────

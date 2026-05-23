@@ -341,19 +341,81 @@ Plan:
 
 Current state:
 
-- User continues receiving noisy/error ntfy alerts.
-- This has not been fully repaired in this turn.
+- Partially repaired on 2026-05-23:
+  - added `live.alerts.AlertEvent` + persisted dedupe state;
+  - wired `live.runner` decision/preflight ntfy through retry + taxonomy +
+    idempotency;
+  - real `TRADE`, failed-exit, unmanaged-position, and rotation-blocked alerts
+    bypass dedupe with `force=True`;
+  - pre-open cancel now writes `logs/alerts/preopen_cancel_ledger.jsonl`;
+  - runner treats pre-open-cancelled, never-filled buys as `STALE_STATE` and
+    clears local optimistic entry state without stamping wash-sale;
+  - live/sim decision telemetry now marks `selected=1` from broker-confirmed
+    or sim-applied buys, not raw pipeline intent.
+- Remaining noisy source: shell wrapper success summaries in
+  `daily_104.sh` / `live_only_104.sh` can still duplicate runner success
+  alerts. Failure alerts should remain loud.
 
 Plan:
 
-- Add alert taxonomy:
-  - `ACTION_REQUIRED`: live order/broker state mismatch.
-  - `INFO`: successful run, no orders.
-  - `SUPPRESSED_DUPLICATE`: same issue within cooldown window.
-  - `STALE_STATE`: state repair advisory, not emergency.
-- Add idempotency key per alert:
-  `date + run_type + broker + strategy + normalized_error`.
-- Add tests for duplicate suppression and reopen/cancel false positives.
+- Route wrapper success summaries through the same helper or suppress them after
+  runner success. Keep wrapper failure alerts.
+- Extend cancel failure taxonomy if Alpaca rejects a pre-open cancel.
+
+Validation:
+
+- `tests/test_alerts.py`
+- `tests/test_runner_trade_ntfy.py`
+- `tests/test_preopen_cancel_gate.py`
+- `tests/test_runner_state_fixes.py`
+
+### 7b. PatchTST History Sim Bottleneck
+
+Current state:
+
+- Partially repaired on 2026-05-23:
+  - sequence/history scorers no longer require legacy panel ff/fac frames just
+    to build a target index;
+  - `SimAdapter` preloads PatchTST panel history once when primary or shadow
+    scoring requires history;
+  - each sim bar attaches only dates `< today` and the most recent `seq_len`
+    dates;
+  - forbidden label/forward-return columns are stripped from the inference
+    history;
+  - lazy fallback now keeps the full same-date universe for CSRankNorm parity
+    instead of candidate-filtering the history.
+- This improves the PatchTST sim hot path, but the persistent ff/fac cache is
+  still default-off and should stay off until a full cached-vs-uncached parity
+  run is complete.
+
+Validation:
+
+- `tests/test_panel_scoring_job.py`
+- `tests/test_patchtst_history_cache.py`
+- `tests/test_inference_frame_cache.py`
+
+### 7c. Stop-Loss Loss Bucket
+
+Current state:
+
+- QP tax/cost issues look mostly repaired; the cleaner APY/Sharpe target is now
+  the stop-loss loss bucket, especially BULL_CALM bleeders.
+- Production config has not been changed in this slice.
+- Added regression tests proving the existing stop-decay mechanism tightens
+  stale losers and that `compute_exits()` passes `stop_decay_days` /
+  `stop_decay_floor`.
+
+Plan:
+
+- Use baseline trade forensics to choose side-config stop-decay candidates by
+  stop-loss hold-age distribution, not by winner-picking.
+- Run per-regime A/B with annual-net APY, Sharpe, MaxDD, turnover, median hold,
+  stop-loss gross P/L, and stop-loss count.
+
+Validation:
+
+- `tests/test_sigma_aware_stop_loss.py`
+- `tests/test_exit_param_wiring.py`
 
 ### 8. Full Live Daily Run
 
@@ -371,17 +433,19 @@ Plan:
   - verify today's config drift guard passes;
   - tail ntfy/log output live.
 
-## Suggested Next-Session Order
+## Remaining Order
 
-1. Implement or at least spec the inference-frame cache, because PatchTST
-   primary full sim spends most of its wall time before the first bar.
-2. Implement PatchTST walk-forward manifest generation and causal calibrator
+1. Finish wrapper alert dedupe: remove or route duplicate shell success ntfy.
+2. Run stop-decay side-config A/B from trade-forensics-derived hold-age
+   thresholds.
+3. Implement PatchTST walk-forward manifest generation and causal calibrator
    training.
-3. Run PatchTST-vs-XGB paired acceptance: per-regime IC, raw TopK, full sim,
+4. Run PatchTST-vs-XGB paired acceptance: per-regime IC, raw TopK, full sim,
    SPY comparison, DSR/PBO.
-4. Add decision-tree contract doc + tests.
-5. Add tax/no-trade objective improvements to QP and rotation.
-6. Fix ntfy alert idempotency.
+5. Add sell-side attribution helper for non-`TickerSellJob` exits and enrich
+   live JSON trade logs with the same attribution payloads as SQLite.
+6. Add rotation persistence rows or explicitly mark rotation-table support
+   incomplete.
 7. Only then consider a live daily full run.
 
 ## Bottom Line

@@ -32,6 +32,7 @@ from .broker import BaseBroker
 from .alpaca_broker import AlpacaBroker
 from .ibkr_broker import IBKRBroker
 from .paper_broker import PaperBroker
+from .alerts import AlertEvent, post_ntfy_alert, stable_alert_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -342,6 +343,12 @@ def _run_once_multi_pipeline(
                     title=f"{label} [{run_mode}] PREFLIGHT-FAIL",
                     body=str(exc),
                     priority="urgent",
+                    taxonomy="ACTION_REQUIRED",
+                    key=stable_alert_key(
+                        "preflight", label, run_mode,
+                        type(exc).__name__, str(exc)[:500],
+                    ),
+                    cooldown_seconds=6 * 60 * 60,
                 )
             raise SystemExit(2) from exc
         except ImportError:
@@ -384,93 +391,27 @@ def _post_ntfy_with_retries(
     title: str,
     body: str,
     priority: str,
+    taxonomy: str = "INFO",
+    key: str | None = None,
+    cooldown_seconds: int = 0,
+    force: bool = False,
 ) -> bool:
-    """Best-effort ntfy publish with urllib retries and a curl fallback.
+    """Best-effort ntfy publish with retry, curl fallback, and dedupe.
 
     Live trading state is already committed before notification, so this
     function must never raise. A transient ntfy/SSL failure is common enough
     that a single `urlopen(..., timeout=5)` is not acceptable for trade alerts.
     """
-    import os
-    import subprocess
-    import time
-    import urllib.request
-
-    def _env_int(name: str, default: int, *, lo: int, hi: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
-        try:
-            val = int(raw)
-        except ValueError:
-            return default
-        return min(max(val, lo), hi)
-
-    def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
-        try:
-            val = float(raw)
-        except ValueError:
-            return default
-        return min(max(val, lo), hi)
-
-    attempts = _env_int("RENQUANT_NTFY_RETRIES", 3, lo=1, hi=5)
-    timeout = _env_float("RENQUANT_NTFY_TIMEOUT_SECONDS", 5.0, lo=1.0, hi=30.0)
-    backoff = _env_float("RENQUANT_NTFY_BACKOFF_SECONDS", 1.0, lo=0.0, hi=10.0)
-    body_bytes = body.encode("utf-8")
-    last_exc: Exception | None = None
-
-    for attempt in range(1, attempts + 1):
-        try:
-            req = urllib.request.Request(
-                url,
-                data=body_bytes,
-                method="POST",
-                headers={"Title": title, "Priority": priority},
-            )
-            urllib.request.urlopen(req, timeout=timeout).read()
-            log.info("ntfy sent: %s | %s", title, body)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if attempt < attempts:
-                log.warning(
-                    "ntfy publish attempt %d/%d failed (%s); retrying",
-                    attempt, attempts, exc,
-                )
-                if backoff > 0:
-                    time.sleep(backoff * attempt)
-
-    if os.environ.get("RENQUANT_NTFY_DISABLE_CURL_FALLBACK") != "1":
-        try:
-            subprocess.run(
-                [
-                    "curl", "-fsS",
-                    "--connect-timeout", str(min(timeout, 10.0)),
-                    "--max-time", str(max(timeout + 5.0, 10.0)),
-                    "-H", f"Title: {title}",
-                    "-H", f"Priority: {priority}",
-                    "--data-binary", "@-",
-                    url,
-                ],
-                input=body_bytes,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                check=True,
-                timeout=max(timeout + 7.0, 12.0),
-            )
-            log.info("ntfy sent via curl fallback: %s | %s", title, body)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ntfy curl fallback FAILED (%s)", exc)
-
-    log.warning(
-        "ntfy publish FAILED after %d urllib attempt(s) (%s) — cycle still committed: %s",
-        attempts, last_exc, body,
+    event = AlertEvent(
+        taxonomy=taxonomy,
+        title=title,
+        body=body,
+        key=key,
+        priority=priority,
+        cooldown_seconds=cooldown_seconds,
+        force=force,
     )
-    return False
+    return post_ntfy_alert(url, event, logger=log)
 
 
 def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = False) -> None:
@@ -723,7 +664,35 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     title    = f"{label} [{run_mode}] {tag}"
     body     = " | ".join(parts)
     url      = f"https://ntfy.sh/{topic}"
-    _post_ntfy_with_retries(url, title=title, body=body, priority=priority)
+    actionable = bool(
+        has_trade or exits_failed or non_wl_holds or rot_blocked
+    )
+    if actionable:
+        taxonomy = "TRADE" if has_trade else "ACTION_REQUIRED"
+        key = None
+        cooldown = 0
+        force = True
+    else:
+        why = "skipped_order" if orders_skipped else _why_no_trade()
+        taxonomy = "DECISION"
+        key = stable_alert_key(
+            "decision", label, run_mode, regime, why,
+            bool(getattr(ctx, "bear_only", False)),
+            bool(getattr(ctx, "skip_buys", False)),
+            bool(getattr(ctx, "buy_blocked", False)),
+        )
+        cooldown = int(os.environ.get("RENQUANT_DECISION_NTFY_COOLDOWN_SECONDS", "1800"))
+        force = False
+    _post_ntfy_with_retries(
+        url,
+        title=title,
+        body=body,
+        priority=priority,
+        taxonomy=taxonomy,
+        key=key,
+        cooldown_seconds=cooldown,
+        force=force,
+    )
 
 
 def run_once_multi(

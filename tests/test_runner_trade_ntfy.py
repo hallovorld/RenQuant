@@ -25,6 +25,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def _allow_mocked_ntfy(monkeypatch):
+    """pytest.ini suppresses real notifications; these tests mock urlopen."""
+    monkeypatch.delenv("RENQUANT_NO_NOTIFY", raising=False)
+
+
 class TestSourceLevel:
     """Contract: _notify_decision exists and is called after commit."""
 
@@ -494,6 +500,33 @@ class TestFailSafe:
             with patch.dict("os.environ", {"RENQUANT_NTFY_TOPIC": "alt-topic"}):
                 notify("RENQUANT-104", "full", ctx)
         assert m.call_args[0][0].full_url == "https://ntfy.sh/alt-topic"
+
+    def test_repeated_no_trade_decision_suppressed_within_cooldown(self, tmp_path):
+        notify = self._import()
+        ctx = _stub_ctx()
+        with patch.dict("os.environ", {
+            "RENQUANT_ALERT_STATE_PATH": str(tmp_path / "alert_state.json"),
+            "RENQUANT_NTFY_BACKOFF_SECONDS": "0",
+        }):
+            with patch("urllib.request.urlopen") as m:
+                notify("RENQUANT-104", "full", ctx)
+                notify("RENQUANT-104", "full", ctx)
+        assert m.call_count == 1
+
+    def test_failed_exit_still_sends_every_time(self, tmp_path):
+        notify = self._import()
+        ctx = _stub_ctx(
+            exits_failed=[{"ticker": "AAPL", "exit_type": "stop_loss",
+                            "qty": 5, "error": "insufficient_qty"}],
+        )
+        with patch.dict("os.environ", {
+            "RENQUANT_ALERT_STATE_PATH": str(tmp_path / "alert_state.json"),
+            "RENQUANT_NTFY_BACKOFF_SECONDS": "0",
+        }):
+            with patch("urllib.request.urlopen") as m:
+                notify("RENQUANT-104", "sell-only", ctx)
+                notify("RENQUANT-104", "sell-only", ctx)
+        assert m.call_count == 2
 
 
 if __name__ == "__main__":

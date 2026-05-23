@@ -67,6 +67,22 @@ class ResolveInferenceFramesTask(Task):
                     scorer_kind, len(target),
                 )
                 return False
+            if getattr(scorer, "requires_history", False):
+                # Sequence-input scorers (PatchTST / regime routers that may
+                # dispatch to PatchTST) score from ctx._panel_history, not from
+                # the legacy ff/fac matrix. Keep only the target ticker index
+                # so ApplyScoresTask can assign scores back to candidates and
+                # holdings without forcing a costly frame build.
+                target = sorted({c.ticker for c in ctx.candidates} | set(ctx.holdings.keys()))
+                ctx._panel_matrix = pd.DataFrame(  # noqa: SLF001
+                    {"__history_target__": 1.0}, index=target,
+                )
+                log.info(
+                    "ResolveInferenceFramesTask: history scorer %s using "
+                    "target-only matrix for %d tickers",
+                    scorer_kind, len(target),
+                )
+                return False
             log.warning("ResolveInferenceFramesTask: ctx._panel_feature_frames "
                         "missing — adapter must populate; matrix unset")
             ctx._panel_matrix = None  # noqa: SLF001

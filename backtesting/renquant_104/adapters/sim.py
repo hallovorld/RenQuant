@@ -50,6 +50,9 @@ log = logging.getLogger("adapters.sim")
 
 
 _ALPHA158_SCORER_KINDS = {"panel_linear", "panel_ltr_xgboost"}
+_HISTORY_SCORER_KINDS = {"hf_patchtst", "patchtst", "regime_router"}
+_FORBIDDEN_HISTORY_COL_PREFIXES = ("fwd_",)
+_FORBIDDEN_HISTORY_COLS = {"label", "split_label"}
 
 
 def _artifact_kind(path: Path) -> str | None:
@@ -63,6 +66,15 @@ def _artifact_kind(path: Path) -> str | None:
     if isinstance(payload, dict) and payload.get("kind"):
         return str(payload.get("kind"))
     return None
+
+
+def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
+    forbidden = [
+        c for c in df.columns
+        if c in _FORBIDDEN_HISTORY_COLS
+        or any(str(c).startswith(prefix) for prefix in _FORBIDDEN_HISTORY_COL_PREFIXES)
+    ]
+    return df.drop(columns=forbidden) if forbidden else df
 
 
 def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
@@ -252,6 +264,14 @@ class SimAdapter:
         # normalization still happens inside PanelScoringJob each bar.
         self._panel_runtime_cache: dict = {}
         self._alpha158_feature_cache: dict[str, pd.DataFrame] = {}
+        self._panel_history_cache: pd.DataFrame | None = None
+        self._panel_history_seq_len = int(
+            self._config.get("ranking", {})
+                        .get("panel_scoring", {})
+                        .get("seq_len", 64)
+        )
+        if self._history_cache_required():
+            self._panel_history_cache = self._load_panel_history_cache()
 
         # ── Panel feature/factor frames (audit P-1, 2026-04-24) ─────────────
         # Architecture symmetry with LeanAdapter / RunnerAdapter: if the
@@ -686,6 +706,8 @@ class SimAdapter:
     def _panel_frames_required(self) -> bool:
         """Whether legacy panel feature/factor frames are required for scoring."""
         if self._panel_scorer is not None:
+            if getattr(self._panel_scorer, "requires_history", False):
+                return False
             kind = (getattr(self._panel_scorer, "metadata", {}) or {}).get("kind")
             return kind not in _ALPHA158_SCORER_KINDS
         if self._walkforward_loader is not None:
@@ -698,6 +720,57 @@ class SimAdapter:
                     return True
             return False
         return False
+
+    def _history_cache_required(self) -> bool:
+        """Whether sim should preload the full panel history once."""
+        if self._panel_scorer is not None and getattr(
+            self._panel_scorer, "requires_history", False,
+        ):
+            self._panel_history_seq_len = int(
+                getattr(self._panel_scorer, "seq_len", self._panel_history_seq_len)
+            )
+            return True
+        panel_cfg = self._config.get("ranking", {}).get("panel_scoring", {}) or {}
+        if str(panel_cfg.get("kind", "")).lower() in _HISTORY_SCORER_KINDS:
+            return True
+        shadows = panel_cfg.get("shadow_models", []) or []
+        for shadow in shadows:
+            if not isinstance(shadow, dict):
+                continue
+            if str(shadow.get("kind", "")).lower() in _HISTORY_SCORER_KINDS:
+                self._panel_history_seq_len = max(
+                    self._panel_history_seq_len,
+                    int(shadow.get("seq_len", self._panel_history_seq_len)),
+                )
+                return True
+        return False
+
+    def _load_panel_history_cache(self) -> pd.DataFrame | None:
+        """Load PatchTST history once per sim and strip label/forward columns."""
+        panel_cfg = self._config.get("ranking", {}).get("panel_scoring", {}) or {}
+        raw_path = panel_cfg.get(
+            "panel_history_path",
+            self._config.get("panel_history_path", "data/alpha158_291_fundamental_dataset.parquet"),
+        )
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = self._strategy_dir.parent.parent / path
+        try:
+            hist = pd.read_parquet(path)
+            hist = _drop_inference_forbidden_cols(hist)
+            hist["date"] = pd.to_datetime(hist["date"])
+            watchlist = set(self._config.get("watchlist", []) or [])
+            if watchlist and "ticker" in hist.columns:
+                hist = hist[hist["ticker"].isin(watchlist)]
+            hist = hist.sort_values(["date", "ticker"]).reset_index(drop=True)
+            log.info(
+                "SimAdapter: loaded panel history cache %s (%d rows, %d tickers)",
+                path, len(hist), hist["ticker"].nunique() if "ticker" in hist else 0,
+            )
+            return hist
+        except Exception as exc:  # noqa: BLE001
+            log.warning("SimAdapter: panel history cache load failed — %s", exc)
+            return None
 
     def _assert_legacy_no_leakage(self) -> None:
         """Defense-in-depth: legacy static model trained_date < backtest_end.
@@ -947,6 +1020,12 @@ class SimAdapter:
             ctx._ngboost_head = self._ngboost_head  # noqa: SLF001
         ctx._panel_runtime_cache = self._panel_runtime_cache  # noqa: SLF001
         ctx._alpha158_feature_cache = self._alpha158_feature_cache  # noqa: SLF001
+        if self._panel_history_cache is not None:
+            past = self._panel_history_cache[
+                self._panel_history_cache["date"] < today_ts
+            ]
+            recent_dates = sorted(past["date"].unique())[-self._panel_history_seq_len:]
+            ctx._panel_history = past[past["date"].isin(recent_dates)]  # noqa: SLF001
         if self._panel_feature_frames is not None:
             # Slice feature/factor frames to today_ts too (no future leak)
             ctx._panel_feature_frames = {                              # noqa: SLF001
@@ -1120,6 +1199,11 @@ class SimAdapter:
                 run_type="sim",
                 ctx=ctx,
             )
+            selected_tickers = {
+                t.get("ticker")
+                for t in trade_events_this_bar
+                if t.get("action") == "buy" and t.get("ticker")
+            }
             run_id = record_pipeline_run(
                 self._db,
                 run_type        = "sim",
@@ -1132,7 +1216,7 @@ class SimAdapter:
                 n_candidates    = len(ctx.candidates),
                 n_exits         = len(ctx.exits),
                 n_rotations     = int(ctx.counters.get("rotations", 0)),  # ROT-COUNTER fix: emitted, not considered
-                n_buys          = len(ctx.orders),
+                n_buys          = len(selected_tickers),
                 buy_blocked     = bool(getattr(ctx, "buy_blocked", False)),
                 skip_buys        = bool(getattr(ctx, "skip_buys", False)),
                 bear_only        = bool(getattr(ctx, "bear_only", False)),
@@ -1140,7 +1224,6 @@ class SimAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
-            selected_tickers = {o["ticker"] for o in ctx.orders}
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)
             sector_map = self._config.get("sector_map", {}) or {}
             model_types = {}

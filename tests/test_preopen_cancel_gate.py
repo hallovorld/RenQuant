@@ -68,7 +68,7 @@ class TestBelowThresholdPasses:
 
 class TestAboveThresholdCancels:
 
-    def test_severity_above_threshold_cancels_market_orders(self):
+    def test_severity_above_threshold_cancels_market_orders(self, tmp_path):
         from scripts import preopen_cancel_gate as gate
         metrics = {
             "source": "ES=F", "prior_close": 5000.0, "latest": 4700.0,
@@ -83,7 +83,9 @@ class TestAboveThresholdCancels:
         with patch.object(gate, "compute_overnight_severity",
                           return_value=metrics), \
              patch.dict("os.environ", {"ALPACA_API_KEY": "k", "ALPACA_SECRET_KEY": "s"}):
-            with patch("alpaca.trading.client.TradingClient") as MockClient:
+            with patch("alpaca.trading.client.TradingClient") as MockClient, \
+                 patch.object(gate, "PREOPEN_CANCEL_LEDGER", tmp_path / "ledger.jsonl"), \
+                 patch.object(gate, "post_ntfy_alert") as ntfy:
                 client_inst = MockClient.return_value
                 client_inst.get_orders.return_value = [m1, m2, lim]
                 result = gate.cancel_stale_market_orders(
@@ -95,8 +97,9 @@ class TestAboveThresholdCancels:
                 cancel_calls = client_inst.cancel_order_by_id.call_args_list
                 cancelled_ids = sorted(c.args[0] for c in cancel_calls)
                 assert cancelled_ids == ["o-1", "o-2"]
+                ntfy.assert_called_once()
 
-    def test_dry_run_does_not_actually_cancel(self):
+    def test_dry_run_does_not_actually_cancel(self, tmp_path):
         from scripts import preopen_cancel_gate as gate
         metrics = {
             "source": "ES=F", "prior_close": 5000.0, "latest": 4700.0,
@@ -107,7 +110,9 @@ class TestAboveThresholdCancels:
         with patch.object(gate, "compute_overnight_severity",
                           return_value=metrics), \
              patch.dict("os.environ", {"ALPACA_API_KEY": "k", "ALPACA_SECRET_KEY": "s"}):
-            with patch("alpaca.trading.client.TradingClient") as MockClient:
+            with patch("alpaca.trading.client.TradingClient") as MockClient, \
+                 patch.object(gate, "PREOPEN_CANCEL_LEDGER", tmp_path / "ledger.jsonl"), \
+                 patch.object(gate, "post_ntfy_alert") as ntfy:
                 client_inst = MockClient.return_value
                 client_inst.get_orders.return_value = [m1]
                 result = gate.cancel_stale_market_orders(
@@ -117,8 +122,9 @@ class TestAboveThresholdCancels:
                 assert result["cancelled"] == []  # nothing actually cancelled
                 assert result["considered"] == 1
                 client_inst.cancel_order_by_id.assert_not_called()
+                ntfy.assert_not_called()
 
-    def test_cancel_failure_does_not_abort_batch(self):
+    def test_cancel_failure_does_not_abort_batch(self, tmp_path):
         from scripts import preopen_cancel_gate as gate
         metrics = {
             "source": "ES=F", "prior_close": 5000.0, "latest": 4700.0,
@@ -131,7 +137,9 @@ class TestAboveThresholdCancels:
         with patch.object(gate, "compute_overnight_severity",
                           return_value=metrics), \
              patch.dict("os.environ", {"ALPACA_API_KEY": "k", "ALPACA_SECRET_KEY": "s"}):
-            with patch("alpaca.trading.client.TradingClient") as MockClient:
+            with patch("alpaca.trading.client.TradingClient") as MockClient, \
+                 patch.object(gate, "PREOPEN_CANCEL_LEDGER", tmp_path / "ledger.jsonl"), \
+                 patch.object(gate, "post_ntfy_alert") as ntfy:
                 client_inst = MockClient.return_value
                 client_inst.get_orders.return_value = [m1, m2]
                 # First cancel fails; second succeeds. Batch should continue.
@@ -144,6 +152,8 @@ class TestAboveThresholdCancels:
                 )
                 # TXN succeeded; META failure logged but not raised
                 assert result["cancelled"] == ["TXN"]
+                assert result["failed"][0]["symbol"] == "META"
+                ntfy.assert_called_once()
 
 
 class TestSeverityCompute:

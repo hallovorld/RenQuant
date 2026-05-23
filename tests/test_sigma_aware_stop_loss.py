@@ -32,7 +32,7 @@ if str(_STRATEGY_DIR) not in sys.path:
 
 from kernel.exits import (  # noqa: E402
     HoldingState, check_stop_loss, check_single_day_loss,
-    _resolve_daily_sigma,
+    compute_exits, _resolve_daily_sigma,
 )
 
 
@@ -237,6 +237,66 @@ class TestStopLossSigmaAwareSqrtTCapAuditA9:
         )
         assert sig.should_exit is False, \
             "15-day position with -10% loss should be within σ-band"
+
+
+class TestStopLossDecay:
+    """B1 stop decay tightens stale bleeders without changing young positions."""
+
+    def test_decay_tightens_after_configured_days(self):
+        today = datetime.date(2024, 6, 21)
+        hs = _hs(today, entry_price=100.0, days_ago=15)
+
+        no_decay = check_stop_loss(
+            current_price=92.0, state=hs,
+            stop_pct=0.10, today=today,
+            stop_decay_days=0,
+        )
+        decayed = check_stop_loss(
+            current_price=92.0, state=hs,
+            stop_pct=0.10, today=today,
+            stop_decay_days=10, stop_decay_floor=0.50,
+        )
+
+        assert no_decay.should_exit is False
+        assert decayed.should_exit is True
+        assert "abs=7.5%" in decayed.reason
+
+    def test_no_decay_before_configured_days(self):
+        today = datetime.date(2024, 6, 11)
+        hs = _hs(today, entry_price=100.0, days_ago=10)
+
+        sig = check_stop_loss(
+            current_price=91.0, state=hs,
+            stop_pct=0.10, today=today,
+            stop_decay_days=10, stop_decay_floor=0.50,
+        )
+
+        assert sig.should_exit is False
+
+    def test_compute_exits_passes_stop_decay_params(self):
+        today = datetime.date(2024, 6, 21)
+        hs = _hs(today, entry_price=100.0, days_ago=15)
+        params = {
+            "stop_loss_pct": 0.10,
+            "stop_decay_days": 10,
+            "stop_decay_floor": 0.50,
+            "trailing_stop_trigger_pct": 0.0,
+            "trailing_stop_trail_pct": 0.0,
+            "take_profit_pct": 0.0,
+            "max_single_day_loss_pct": 0.0,
+        }
+
+        sig, _ = compute_exits(
+            current_price=92.0,
+            today=today,
+            model_action="hold",
+            state=hs,
+            params=params,
+        )
+
+        assert sig.should_exit is True
+        assert sig.exit_type == "stop_loss"
+        assert "abs=7.5%" in sig.reason
 
 
 # ─────────────────────────────────────────────────────────────────────────

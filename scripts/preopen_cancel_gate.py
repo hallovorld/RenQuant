@@ -44,18 +44,25 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
-import subprocess
 from pathlib import Path
+import sys
+import time
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from live.alerts import AlertEvent, post_ntfy_alert, stable_alert_key
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("preopen-gate")
+PREOPEN_CANCEL_LEDGER = REPO_ROOT / "logs" / "alerts" / "preopen_cancel_ledger.jsonl"
 
 
 def _load_env() -> None:
@@ -349,6 +356,8 @@ def cancel_stale_market_orders(*, threshold_sigma: float, dry_run: bool) -> dict
     )
 
     cancelled = []
+    cancelled_rows = []
+    failed = []
     for o in pending_market:
         log.warning("  → CANCEL %s %s qty=%s (id=%s, intent=%s)",
                     o.side, o.symbol, o.qty, o.id,
@@ -357,30 +366,58 @@ def cancel_stale_market_orders(*, threshold_sigma: float, dry_run: bool) -> dict
             try:
                 client.cancel_order_by_id(o.id)
                 cancelled.append(o.symbol)
+                row = {
+                    "date": time.strftime("%Y-%m-%d"),
+                    "broker": "alpaca",
+                    "order_id": str(o.id),
+                    "symbol": str(o.symbol),
+                    "side": str(getattr(o, "side", "")),
+                    "qty": str(getattr(o, "qty", "")),
+                }
+                cancelled_rows.append(row)
             except Exception as exc:
                 log.error("  ! cancel failed for %s: %s", o.symbol, exc)
+                failed.append({"symbol": str(o.symbol), "order_id": str(o.id), "error": str(exc)})
 
     if cancelled:
-        try:
-            msg = (
-                f"PREOPEN-CANCEL: {metrics['source']} current-vs-cash-close "
-                f"{pct*100:+.2f}% ({sev:+.1f}σ >= +/-{threshold_sigma:.1f}σ) "
-                f"→ cancelled {len(cancelled)} pending order(s): "
-                f"{','.join(cancelled)}"
-            )
-            subprocess.run(
-                ["curl", "-sf",
-                 "-H", "Title: RenQuant 104 PREOPEN CANCEL",
-                 "-H", "Priority: high",
-                 "-d", msg, "https://ntfy.sh/renquant"],
-                timeout=10, check=False,
-            )
-        except Exception:
-            pass
+        _append_preopen_cancel_ledger(cancelled_rows)
+        msg = (
+            f"PREOPEN-CANCEL: {metrics['source']} current-vs-cash-close "
+            f"{pct*100:+.2f}% ({sev:+.1f}σ >= +/-{threshold_sigma:.1f}σ) "
+            f"cancelled {len(cancelled)} pending order(s): "
+            f"{','.join(cancelled)}"
+        )
+        topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+        post_ntfy_alert(
+            f"https://ntfy.sh/{topic}",
+            AlertEvent(
+                taxonomy="PREOPEN_CANCEL",
+                title="RenQuant 104 PREOPEN CANCEL",
+                body=msg,
+                key=stable_alert_key(
+                    "preopen_cancel",
+                    time.strftime("%Y-%m-%d"),
+                    sorted(str(o["order_id"]) for o in cancelled_rows),
+                    sorted(cancelled),
+                ),
+                priority="high",
+                cooldown_seconds=24 * 60 * 60,
+            ),
+            logger=log,
+        )
 
     action = "dry-run" if dry_run else "cancelled"
     return {"metrics": metrics, "cancelled": cancelled,
-            "considered": len(pending_market), "action": action}
+            "failed": failed, "considered": len(pending_market), "action": action}
+
+
+def _append_preopen_cancel_ledger(rows: list[dict]) -> None:
+    if not rows:
+        return
+    PREOPEN_CANCEL_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with PREOPEN_CANCEL_LEDGER.open("a") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
 def main() -> None:

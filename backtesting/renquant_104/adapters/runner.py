@@ -105,6 +105,28 @@ def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | No
     return capped, "cash_budget_resized"
 
 
+def _preopen_cancel_symbols(strategy_dir: Path, broker_name: str | None, today_str: str) -> set[str]:
+    """Symbols whose queued orders were cancelled by the pre-open gate today."""
+    if broker_name != "alpaca":
+        return set()
+    ledger = strategy_dir.parent.parent / "logs" / "alerts" / "preopen_cancel_ledger.jsonl"
+    if not ledger.exists():
+        return set()
+    out: set[str] = set()
+    try:
+        for line in ledger.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("date") == today_str and row.get("broker") == broker_name:
+                sym = str(row.get("symbol") or "").strip().upper()
+                if sym:
+                    out.add(sym)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("preopen cancel ledger read failed: %s", exc)
+    return out
+
+
 def build_sell_trade_event_for_db(
     *,
     ticker: str,
@@ -1444,9 +1466,30 @@ class RunnerAdapter:
         # Today's HON (and 5/15's META) were both blocked this way.
         # Invariant: pending-at-broker ≠ externally-sold.
         pending_broker = set(getattr(ctx, "pending_broker_tickers", set()) or set())
+        preopen_canceled = _preopen_cancel_symbols(
+            self._strategy_dir, self._broker_name, today_str,
+        )
+        stale_canceled = [t for t in self._entry_dates
+                          if t not in currently_held
+                          and t not in pending_broker
+                          and t in preopen_canceled
+                          and self._last_sell_dates_str.get(t) != today_str]
+        if stale_canceled:
+            for t in stale_canceled:
+                self._entry_dates.pop(t, None)
+                self._entry_signals.pop(t, None)
+                self._sell_streaks.pop(t, None)
+                self._position_hwm.pop(t, None)
+            log.warning(
+                "STALE_STATE: %d ticker(s) missing from positions after "
+                "pre-open cancelled order — clearing local entry state without "
+                "wash-sale stamp: %s",
+                len(stale_canceled), sorted(stale_canceled),
+            )
         disappeared = [t for t in self._entry_dates
                        if t not in currently_held
                        and t not in pending_broker
+                       and t not in preopen_canceled
                        and self._last_sell_dates_str.get(t) != today_str]
         skipped_pending = [t for t in self._entry_dates
                            if t not in currently_held
@@ -1701,8 +1744,13 @@ class RunnerAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
-            selected_tickers = {o["ticker"] for o in ctx.orders}
-            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            selected_tickers = {o["ticker"] for o in orders_for_db if o.get("ticker")}
+            blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
+            for o in getattr(ctx, "orders_skipped", []) or []:
+                if isinstance(o, dict) and o.get("ticker"):
+                    blocked_map.setdefault(
+                        o["ticker"], f"broker_skip:{o.get('skip_reason', 'skipped')}",
+                    )
             # Audit fix DB-DECISION-FACTORS (2026-04-26 round-5): include
             # sector_map + model_types + panel_artifact path so post-hoc
             # analysis has the FULL decision context per (date, ticker).

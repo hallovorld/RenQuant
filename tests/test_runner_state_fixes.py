@@ -360,3 +360,32 @@ class TestStateExtSellPendingOrderFix:
     def test_fix_tag_present(self):
         assert "2026-05-17 Bug fix" in RUNNER_SOURCE
         assert "pending-at-broker ≠ externally-sold" in RUNNER_SOURCE
+
+
+# ── 2026-05-23 preopen-cancel stale state fix ───────────────────────────────
+
+class TestPreopenCancelDoesNotStampWashSale:
+    """A queued buy cancelled before open never became a position.
+
+    If broker no longer reports the order as pending, the runner must clear
+    local optimistic entry state without converting the vanished order into an
+    external sell / wash-sale block.
+    """
+
+    def test_reads_preopen_cancel_ledger(self):
+        assert "_preopen_cancel_symbols" in RUNNER_SOURCE
+        assert "preopen_cancel_ledger.jsonl" in RUNNER_SOURCE
+
+    def test_canceled_state_excluded_from_external_sell(self):
+        assert "t not in preopen_canceled" in RUNNER_SOURCE
+        assert "STALE_STATE" in RUNNER_SOURCE
+        assert "clearing local entry state without" in RUNNER_SOURCE
+        assert "wash-sale stamp" in RUNNER_SOURCE
+
+
+class TestSelectedMeansActuallyPlaced:
+    """Decision telemetry selected=1 means accepted/applied order, not intent."""
+
+    def test_live_selected_uses_broker_confirmed_orders(self):
+        assert 'selected_tickers = {o["ticker"] for o in orders_for_db' in RUNNER_SOURCE
+        assert "broker_skip:" in RUNNER_SOURCE

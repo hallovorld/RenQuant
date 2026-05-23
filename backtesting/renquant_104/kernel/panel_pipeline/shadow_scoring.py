@@ -246,9 +246,7 @@ class ApplyShadowScoringTask(Task):
                                                           datetime.date.today()))
                         past = full[full["date"] < today_ts]
                         dates = sorted(past["date"].unique())[-scorer.seq_len:]
-                        panel_history = past[
-                            past["ticker"].isin(target_tickers) &
-                            past["date"].isin(dates)]
+                        panel_history = past[past["date"].isin(dates)]
                     # If scorer accepts current_regime (RegimeRouterScorer), pass it
                     import inspect as _inspect  # noqa: PLC0415
                     sig = _inspect.signature(scorer.score_with_history)

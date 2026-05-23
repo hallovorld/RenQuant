@@ -266,9 +266,7 @@ class ApplyScoresTask(Task):
                 today_ts = pd.Timestamp(today)
                 past = full_panel[full_panel["date"] < today_ts]
                 recent_dates = sorted(past["date"].unique())[-scorer.seq_len:]
-                panel_history = past[
-                    (past["ticker"].isin(target_tickers)) &
-                    (past["date"].isin(recent_dates))]
+                panel_history = past[past["date"].isin(recent_dates)]
                 log.info("ApplyScoresTask[%s]: lazy-loaded panel history "
                          "(%d rows × %d tickers × %d dates) for %d candidates",
                          scorer_kind_early, len(panel_history),
@@ -716,9 +714,7 @@ class ApplyScoresTask(Task):
                             past = full_panel[full_panel["date"] < today_ts]
                             # Use last seq_len dates × candidate tickers
                             recent_dates = sorted(past["date"].unique())[-scorer.seq_len:]
-                            history = past[
-                                (past["ticker"].isin(target_tickers)) &
-                                (past["date"].isin(recent_dates))]
+                            history = past[past["date"].isin(recent_dates)]
                             log.info("PatchTST: lazy-loaded panel history "
                                      "(%d rows × %d tickers × %d dates) for %d candidates",
                                      len(history), history["ticker"].nunique(),
