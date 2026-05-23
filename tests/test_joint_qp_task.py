@@ -274,11 +274,15 @@ class TestQPSoftSellGuard:
     and realize tax drag even when expected avoided loss is too small.
     """
 
-    def _ctx_for_qp_sell(self, *, mu=-0.02, entry_price=80.0, entry_days=40):
+    def _ctx_for_qp_sell(
+        self, *, mu=-0.02, entry_price=80.0, entry_days=40,
+        qp_tax_aware=False, lt_hold_gate_days=0,
+    ):
         from kernel.portfolio_qp.qp_solver import QPSolution
         import numpy as np
 
         cfg = _qp_on()
+        cfg["rotation"]["joint_actions"]["qp_tax_aware"] = qp_tax_aware
         cfg["risk"] = {"panel_exit": {
             "tax_adjusted_soft_exit": {
                 "enabled": True,
@@ -292,7 +296,7 @@ class TestQPSoftSellGuard:
             "long_term_rate": 0.20,
             "long_term_threshold_days": 365,
         }
-        cfg["lt_hold_gate_days"] = 0
+        cfg["lt_hold_gate_days"] = lt_hold_gate_days
         today = datetime.date(2026, 4, 26)
         ctx = _Ctx(config=cfg, today=today)
         ctx._qp_tickers = ["H"]
@@ -318,10 +322,55 @@ class TestQPSoftSellGuard:
         )
         return ctx
 
-    def test_tax_drag_blocks_weak_qp_trim_of_short_term_winner(self):
+    def test_qp_tax_aware_false_ignores_tax_drag_for_qp_trim(self):
+        """AUDIT REGRESSION GUARD: qp_tax_aware=false means QP has no tax
+        driven sell/hold logic, including the order-emission soft-sell stage.
+        """
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
 
-        ctx = self._ctx_for_qp_sell(mu=-0.02, entry_price=80.0)
+        ctx = self._ctx_for_qp_sell(mu=-0.02, entry_price=80.0, qp_tax_aware=False)
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert len(ctx.exits) == 1
+        assert ctx.counters.get("qp_soft_sell_blocked", 0) == 0
+
+    def test_qp_tax_aware_true_blocks_weak_qp_trim_of_short_term_winner(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.02, entry_price=80.0, qp_tax_aware=True)
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters["qp_soft_sell_blocked"] == 1
+
+    def test_qp_tax_aware_false_ignores_lt_tax_gate_for_qp_trim(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(
+            mu=-0.02,
+            entry_price=80.0,
+            entry_days=340,
+            qp_tax_aware=False,
+            lt_hold_gate_days=330,
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert len(ctx.exits) == 1
+        assert ctx.counters.get("qp_soft_sell_blocked", 0) == 0
+
+    def test_qp_tax_aware_true_respects_lt_tax_gate_for_qp_trim(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(
+            mu=-0.20,
+            entry_price=80.0,
+            entry_days=340,
+            qp_tax_aware=True,
+            lt_hold_gate_days=330,
+        )
 
         EmitOrdersFromQPSolutionTask().run(ctx)
 
@@ -331,7 +380,7 @@ class TestQPSoftSellGuard:
     def test_strong_negative_mu_can_pay_tax_drag_and_sell(self):
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
 
-        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=80.0)
+        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=80.0, qp_tax_aware=True)
 
         EmitOrdersFromQPSolutionTask().run(ctx)
 

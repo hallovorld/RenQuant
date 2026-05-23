@@ -1308,10 +1308,10 @@ def _cap_buy_shares_to_cash(
 def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     """Apply model-soft-exit guards to QP long trims/closes.
 
-    QP sells are optimizer-driven, not hard risk exits, so they must respect
-    the same horizon/LT/tax gates as panel-conviction exits. This prevents
-    short-term profitable trims from realizing tax drag unless μ is negative
-    enough to pay for the exit.
+    QP sells are optimizer-driven, not hard risk exits, so they respect the
+    same thesis-age horizon gate as panel-conviction exits. Tax-aware soft
+    sell gates are different: the production contract says `qp_tax_aware=false`
+    means no QP tax-driven sell/hold logic, including the order-emission stage.
     """
     cfg = _qp_cfg(ctx)
     guard_cfg = cfg.get("qp_soft_sell_guard", {})
@@ -1339,6 +1339,8 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     if suppress:
         return "qp_soft_sell_horizon:" + why
     current_price = resolve_current_price(ctx, hs, ticker)
+    if not _qp_soft_sell_tax_gates_enabled(cfg, guard_cfg):
+        return None
     suppress, why = lt_gate_suppression(
         config=getattr(ctx, "config", {}) or {},
         today=getattr(ctx, "today", None),
@@ -1770,6 +1772,13 @@ def _round_trip_cost(cfg: dict) -> float:
     fee = float(cfg.get("fee_pct", cfg.get("qp_cost_kappa", 0.0)) or 0.0)
     slip = float(cfg.get("slippage_pct", 0.0) or 0.0)
     return 2.0 * (fee + slip)
+
+
+def _qp_soft_sell_tax_gates_enabled(cfg: dict, guard_cfg: object) -> bool:
+    """Return whether QP order emission may suppress sells for tax reasons."""
+    if isinstance(guard_cfg, dict) and "apply_tax_gates" in guard_cfg:
+        return bool(guard_cfg.get("apply_tax_gates"))
+    return bool(cfg.get("qp_tax_aware", False))
 
 
 def _compute_qp_wash_mask(
