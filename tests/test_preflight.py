@@ -156,6 +156,28 @@ class TestCheckWFGateMetadata:
         assert "failed WF gate evidence" in r.message
         assert r.details["passed"] is False
 
+    def test_failed_wf_metadata_allows_sell_only_risk_exits(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": {
+                "passed": False,
+                "wf_3cut_sharpe_mean": -0.23,
+                "spy_sharpe_mean": 1.08,
+                "wf_reason": "FAIL: mean Sharpe below floor",
+            }},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
+        assert r.details["passed"] is False
+        assert r.details["run_mode"] == "sell-only"
+
     def test_passed_wf_metadata_passes_hard(self, tmp_path):
         cfg = {"ranking": {"panel_scoring": {
             "kind": "xgb",
@@ -571,6 +593,27 @@ class TestRunPreflight:
         hards = [r for r in results if r.severity == "hard"]
         assert all(r.ok for r in hards), \
             f"hard failures: {[r.message for r in hards if not r.ok]}"
+
+    def test_failed_wf_gate_blocks_full_but_not_sell_only(self, healthy_setup):
+        cfg, sd = healthy_setup
+        art = sd / cfg["panel_ltr"]["artifact_path"]
+        payload = json.loads(art.read_text())
+        payload["metadata"] = {"wf_gate_metadata": {
+            "passed": False,
+            "wf_3cut_sharpe_mean": -1.23,
+            "spy_sharpe_mean": 1.08,
+            "wf_reason": "FAIL: beat SPY Sharpe 0/3",
+        }}
+        art.write_text(json.dumps(payload))
+
+        with pytest.raises(PreflightFailed, match="failed WF gate evidence"):
+            run_preflight(cfg, broker=None, strategy_dir=sd, run_mode="full")
+
+        results = run_preflight(
+            cfg, broker=None, strategy_dir=sd, run_mode="sell-only"
+        )
+        wf = next(r for r in results if r.name == "P-WF-GATE")
+        assert wf.ok and wf.severity == "soft"
 
 
 # ── PreflightFailed exception ──────────────────────────────────────────────

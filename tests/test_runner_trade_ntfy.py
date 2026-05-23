@@ -44,6 +44,18 @@ class TestSourceLevel:
         assert idx_notify > idx_commit
         assert idx_notify - idx_commit < 1200
 
+    def test_daily_wrapper_can_suppress_inner_preflight_ntfy(self):
+        """AUDIT REGRESSION GUARD: daily_104.sh owns fallback alerts.
+
+        If live.runner sends its own urgent preflight ntfy before the daily
+        wrapper can fall back to sell-only, the operator gets a false ERROR
+        even though risk exits complete successfully.
+        """
+        src = (REPO_ROOT / "live" / "runner.py").read_text()
+        assert "RENQUANT_SUPPRESS_PREFLIGHT_NTFY" in src
+        assert "preflight ntfy suppressed" in src
+        assert "log_fn = log.warning if suppress_preflight_ntfy else log.error" in src
+
 
 def _stub_ctx(**kwargs) -> SimpleNamespace:
     """Baseline ctx with sensible defaults; override fields via kwargs."""

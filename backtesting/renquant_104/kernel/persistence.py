@@ -115,7 +115,6 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker);
 CREATE INDEX IF NOT EXISTS idx_trades_action ON trades(action);
-CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(trade_date);
 
 CREATE TABLE IF NOT EXISTS rotations (
     run_id        TEXT,
@@ -609,6 +608,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _apply_column_migrations(conn)
     _rebuild_ticker_daily_state_if_needed(conn)
     _rebuild_score_tables_if_needed(conn)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(trade_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tds_run ON ticker_daily_state(run_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_score_dist_run ON score_distribution(run_id)")
     conn.commit()

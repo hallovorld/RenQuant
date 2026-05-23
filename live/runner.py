@@ -324,21 +324,30 @@ def _run_once_multi_pipeline(
                 config, broker=broker, strategy_dir=strategy_dir,
                 broker_name=getattr(broker, "broker_name", None),
                 strict=bool(preflight_cfg.get("strict", True)),
+                run_mode=run_mode,
             )
         except PreflightFailed as exc:
-            log.error("PRE-FLIGHT FAILED — aborting cron, no orders placed:\n%s", exc)
-            try:
-                import os as _os, urllib.request as _ureq  # noqa: PLC0415
-                topic = _os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
-                req = _ureq.Request(
-                    f"https://ntfy.sh/{topic}",
-                    data=str(exc).encode("utf-8"), method="POST",
-                    headers={"Title": f"{label} [{run_mode}] PREFLIGHT-FAIL",
-                             "Priority": "urgent"},
-                )
-                _ureq.urlopen(req, timeout=5.0).read()
-            except Exception:
-                pass
+            import os as _os  # noqa: PLC0415
+            suppress_preflight_ntfy = (
+                _os.environ.get("RENQUANT_SUPPRESS_PREFLIGHT_NTFY") == "1"
+            )
+            log_fn = log.warning if suppress_preflight_ntfy else log.error
+            log_fn("PRE-FLIGHT FAILED — aborting cron, no orders placed:\n%s", exc)
+            if suppress_preflight_ntfy:
+                log.info("preflight ntfy suppressed by RENQUANT_SUPPRESS_PREFLIGHT_NTFY")
+            else:
+                try:
+                    import urllib.request as _ureq  # noqa: PLC0415
+                    topic = _os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+                    req = _ureq.Request(
+                        f"https://ntfy.sh/{topic}",
+                        data=str(exc).encode("utf-8"), method="POST",
+                        headers={"Title": f"{label} [{run_mode}] PREFLIGHT-FAIL",
+                                 "Priority": "urgent"},
+                    )
+                    _ureq.urlopen(req, timeout=5.0).read()
+                except Exception:
+                    pass
             raise SystemExit(2) from exc
         except ImportError:
             # preflight module not yet on PYTHONPATH (during a transitional

@@ -169,6 +169,29 @@ class TestNoRetrainInDailyShell:
         assert "smoke_test_model.py" in daily, \
             "daily_104.sh must call smoke_test_model.py post-FIX-C"
 
+    def test_daily_suppresses_inner_preflight_ntfy_for_fallback_probe(self):
+        """AUDIT REGRESSION GUARD: full-mode probe is wrapped by daily.
+
+        P-WF-GATE should produce the daily BUY-BLOCKED fallback summary, not
+        an additional urgent live.runner ERROR before sell-only completes.
+        """
+        daily = (REPO / "scripts" / "daily_104.sh").read_text()
+        assert "RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1" in daily
+        assert "Full live trader blocked by P-WF-GATE" in daily
+
+    def test_shadow_e2e_has_wall_clock_timeout(self):
+        """AUDIT REGRESSION GUARD: shadow must not hang the daily script."""
+        daily = (REPO / "scripts" / "daily_104.sh").read_text()
+        assert "SHADOW_TIMEOUT_SEC" in daily
+        assert "subprocess.TimeoutExpired" in daily
+        assert "SHADOW-TIMEOUT" in daily
+
+    def test_daily_does_not_double_append_log_after_exec_redirect(self):
+        """AUDIT REGRESSION GUARD: exec already redirects stdout to LOG."""
+        daily = (REPO / "scripts" / "daily_104.sh").read_text()
+        redirected_body = daily.split('exec >> "$LOG" 2>&1', 1)[1]
+        assert '| tee -a "$LOG"' not in redirected_body
+
 
 class TestWeeklyShellInvariants:
 

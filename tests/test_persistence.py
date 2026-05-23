@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -56,6 +57,39 @@ class TestConnectionLifecycle:
         )}
         assert {"pipeline_runs", "candidate_scores", "trades", "rotations",
                 "training_runs"}.issubset(tables)
+        conn.close()
+
+    def test_legacy_trades_table_migrates_before_trade_date_index(self, tmp_path):
+        """Regression: live DBs created before trade_date existed failed
+        ensure_schema at CREATE INDEX idx_trades_date before ALTER TABLE ran."""
+        db = tmp_path / "runs.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE trades (
+                run_id TEXT,
+                ticker TEXT,
+                action TEXT,
+                shares REAL,
+                price REAL,
+                invest REAL,
+                target_pct REAL,
+                exit_reason TEXT,
+                pnl_pct REAL,
+                hold_days INTEGER,
+                tax REAL,
+                rank_score REAL,
+                conviction REAL,
+                sigma_mult REAL,
+                mu REAL,
+                sigma REAL
+            );
+        """)
+        ensure_schema(conn)
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+        indexes = {r[1] for r in conn.execute("PRAGMA index_list(trades)")}
+        assert "trade_date" in cols
+        assert "idx_trades_date" in indexes
         conn.close()
 
 

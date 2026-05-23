@@ -255,13 +255,21 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
     )
 
 
-def _check_wf_gate_metadata(config: dict, strategy_dir: Path) -> PreflightCheck:
-    """P-WF-GATE: a known-failed WF artifact must not trade.
+def _check_wf_gate_metadata(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
+    """P-WF-GATE: a known-failed WF artifact must not open new risk.
 
     CLAUDE.md makes weekly WF + sanity gates the production trust boundary.
     Pre-fix, the active artifact could carry ``metadata.wf_gate_metadata`` with
     ``passed=false`` while runtime preflight ignored it and continued to buy.
     That is worse than missing evidence: it is known negative evidence.
+
+    Sell-only runs are risk-reduction paths. They must keep working even when
+    buy-side evidence fails, otherwise the same guard that blocks bad entries
+    can also block exits.
     """
     panel_cfg = (
         config.get("ranking", {})
@@ -298,6 +306,7 @@ def _check_wf_gate_metadata(config: dict, strategy_dir: Path) -> PreflightCheck:
     passed = wf.get("passed")
     details = {
         "passed": passed,
+        "run_mode": run_mode,
         "wf_3cut_sharpe_mean": wf.get("wf_3cut_sharpe_mean"),
         "wf_3cut_apy_mean": wf.get("wf_3cut_apy_mean"),
         "spy_sharpe_mean": wf.get("spy_sharpe_mean"),
@@ -306,6 +315,15 @@ def _check_wf_gate_metadata(config: dict, strategy_dir: Path) -> PreflightCheck:
         "run_at": wf.get("run_at"),
     }
     if passed is False:
+        normalized_mode = str(run_mode or "").lower().replace("_", "-")
+        if normalized_mode.startswith("sell-only"):
+            return PreflightCheck(
+                "P-WF-GATE", "soft", True,
+                "active panel artifact carries failed WF gate evidence; "
+                "sell-only risk exits are allowed, but new buys remain blocked "
+                "until a WF-passing artifact is promoted.",
+                details=details,
+            )
         return PreflightCheck(
             "P-WF-GATE", "hard", False,
             "active panel artifact carries failed WF gate evidence: "
@@ -941,6 +959,7 @@ def run_preflight(
     broker_name: str | None = None,
     *,
     strict: bool = True,
+    run_mode: str | None = None,
 ) -> list[PreflightCheck]:
     """Run all checks. Raise PreflightFailed if any HARD check fails
     (when strict=True). Returns the full result list either way."""
@@ -949,6 +968,7 @@ def run_preflight(
     sd = Path(strategy_dir)
     if broker is not None and broker_name is None:
         broker_name = getattr(broker, "broker_name", None)
+    effective_run_mode = run_mode or config.get("_run_mode")
 
     results: list[PreflightCheck] = []
     for fn in ALL_CHECKS:
@@ -959,6 +979,8 @@ def run_preflight(
                 kwargs["strategy_dir"] = sd
             if "broker_name" in sig:
                 kwargs["broker_name"] = broker_name
+            if "run_mode" in sig:
+                kwargs["run_mode"] = effective_run_mode
             if "broker" in sig:
                 kwargs = {"broker": broker}    # broker check has different sig
             res = fn(**kwargs) if "broker" in sig else fn(**kwargs)

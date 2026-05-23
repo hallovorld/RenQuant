@@ -31,7 +31,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 | **Touches (mutates)** | `live_state.alpaca.json`, broker positions (Alpaca), `runs.alpaca.db`, `doc/dashboard.md`, `data/portfolio_daily_metrics` rows |
 | **Touches (read-only)** | `panel-ltr.alpha158_fund.json`, `panel-rank-calibration.json`, OHLCV cache |
 | **Does NOT touch** | model artifacts (no retrain, no promote) |
-| **Alert** | ntfy "RenQuant 104 SMOKE-FAIL" if pre-flight smoke test fails (live trade is then ABORTED) |
+| **Alert** | ntfy "RenQuant 104 SMOKE-FAIL" if pre-flight smoke test fails (live trade is then ABORTED); ntfy "BUY-BLOCKED" if the active artifact has failed WF evidence and daily falls back to sell-only risk exits |
 
 **Steps:**
 1. Lock + NYSE-open guard + drift check
@@ -39,8 +39,9 @@ Every job below documents: **what it does, what files it touches, what alerts on
 3. Active-model age check (alert if > 14 days — weekly cron may be failing)
 4. Export LEAN watchlist data
 5. Backfill forward returns + recompute portfolio metrics (broker-tagged DB)
-6. Run `live.runner --strategy renquant_104 --broker alpaca --once`
+6. Run `live.runner --strategy renquant_104 --broker alpaca --once`; if P-WF-GATE blocks full mode, rerun `--sell-only` so exits/risk controls still execute while new buys remain blocked
 7. Refresh `doc/dashboard.md`
+8. Run PatchTST shadow read-only e2e with a wall-clock timeout (`RENQUANT_SHADOW_TIMEOUT_SEC`, default 420s); timeout/failure is non-fatal after the primary path has completed
 
 ---
 
@@ -144,6 +145,8 @@ launchctl list | grep renquant
 | Daily smoke test fails | `logs/daily_104/<date>.log` | ntfy "SMOKE-FAIL", live trade aborted |
 | Active model > 14 days old | dashboard headline + ntfy | ntfy "STALE-MODEL" |
 | Weekly WF gate rejects | `logs/weekly_wf_promote/<date>.log` | ntfy "WEEKLY-FAIL", prior preserved |
+| Daily full mode blocked by failed active WF evidence | `logs/daily_104/<date>.log` | ntfy "BUY-BLOCKED"; daily reruns sell-only risk exits |
+| Daily shadow e2e timeout | `logs/daily_104/<date>_shadow.log` | ntfy "SHADOW-TIMEOUT"; primary path already completed |
 | Weekly cron didn't run | dashboard age field shows N+ days | (caught by next daily age check) |
 | Monthly calibrator collapses | `logs/monthly_calibrator/<date>.log` | ntfy "MONTHLY-FAIL", prior preserved |
 | Live broker error | `logs/daily_104/<date>.log` + ntfy "ERROR" | ntfy "ERROR" |

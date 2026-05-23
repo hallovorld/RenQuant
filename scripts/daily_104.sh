@@ -236,11 +236,43 @@ except Exception:
     print(0)
 " 2>/dev/null || echo "0")
 
-if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once; then
+BUY_BLOCKED_BY_WF=0
+FULL_RUN_LOG=$(mktemp "/tmp/renquant_104_daily_full.XXXXXX")
+if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
+        "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
+        > "$FULL_RUN_LOG" 2>&1; then
+    cat "$FULL_RUN_LOG"
+    rm -f "$FULL_RUN_LOG"
     echo "=== daily_104 finished at $(date) ==="
+else
+    FULL_RC=$?
+    cat "$FULL_RUN_LOG"
+    if grep -q "P-WF-GATE" "$FULL_RUN_LOG"; then
+        BUY_BLOCKED_BY_WF=1
+        echo "Full live trader blocked by P-WF-GATE — rerunning sell-only so exits/risk controls still execute."
+        SELL_ONLY_LOG=$(mktemp "/tmp/renquant_104_daily_sell_only.XXXXXX")
+        if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only > "$SELL_ONLY_LOG" 2>&1; then
+            cat "$SELL_ONLY_LOG"
+            rm -f "$SELL_ONLY_LOG" "$FULL_RUN_LOG"
+            echo "=== daily_104 finished sell-only fallback at $(date) ==="
+        else
+            SELL_RC=$?
+            cat "$SELL_ONLY_LOG"
+            rm -f "$SELL_ONLY_LOG" "$FULL_RUN_LOG"
+            echo "=== daily_104 FAILED sell-only fallback at $(date) (full_rc=$FULL_RC sell_rc=$SELL_RC) ==="
+            notify "RenQuant 104 ERROR" "Full run blocked by WF gate, and sell-only fallback failed — check $LOG"
+            exit 1
+        fi
+    else
+        rm -f "$FULL_RUN_LOG"
+        echo "=== daily_104 FAILED at $(date) ==="
+        notify "RenQuant 104 ERROR" "Live trader failed — check $LOG"
+        exit 1
+    fi
+fi
 
-    # Build trade summary from THIS run's new entries only
-    SUMMARY=$("$PYTHON" -c "
+# Build trade summary from THIS run's new entries only
+SUMMARY=$("$PYTHON" -c "
 import json, sys
 from pathlib import Path
 log_path = Path('$TRADE_LOG')
@@ -274,8 +306,8 @@ for t in trades:
         parts.append(f'TRAIL-STOP {sym}')
 print('; '.join(parts) if parts else 'No trades this run')
 " 2>/dev/null || echo "No trades this run")
-    # Append current holdings to notification
-    HOLDINGS=$("$PYTHON" -c "
+# Append current holdings to notification
+HOLDINGS=$("$PYTHON" -c "
 import os
 try:
     from alpaca.trading.client import TradingClient
@@ -286,18 +318,22 @@ try:
 except Exception:
     print('')
 " 2>/dev/null || echo "")
-    FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
+FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
+if [ "$BUY_BLOCKED_BY_WF" -eq 1 ]; then
+    notify "RenQuant 104 BUY-BLOCKED" "${FULL_MSG} | New buys blocked by failed WF gate"
+else
     notify "RenQuant 104" "$FULL_MSG"
+fi
 
-    # Sustainability audit (Plan D, 2026-04-23): append one JSONL row
-    # to logs/live_104/audit.jsonl summarizing today's live state.
-    # scripts/weekly_apy_check.py consumes this stream to compute
-    # rolling 30-day APY and fire ntfy alerts when live deviates from
-    # the golden backtest baseline.
-    AUDIT_DIR="$REPO_DIR/logs/live_104"
-    AUDIT_LOG="$AUDIT_DIR/audit.jsonl"
-    mkdir -p "$AUDIT_DIR"
-    "$PYTHON" -c "
+# Sustainability audit (Plan D, 2026-04-23): append one JSONL row
+# to logs/live_104/audit.jsonl summarizing today's live state.
+# scripts/weekly_apy_check.py consumes this stream to compute
+# rolling 30-day APY and fire ntfy alerts when live deviates from
+# the golden backtest baseline.
+AUDIT_DIR="$REPO_DIR/logs/live_104"
+AUDIT_LOG="$AUDIT_DIR/audit.jsonl"
+mkdir -p "$AUDIT_DIR"
+"$PYTHON" -c "
 import json, os
 from datetime import datetime
 from pathlib import Path
@@ -365,13 +401,13 @@ row = {
 with open('$AUDIT_LOG', 'a') as f:
     f.write(json.dumps(row) + '\n')
 print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today={n_orders}  regime={regime}\")
-" 2>&1 | tee -a "$LOG" || echo "audit write failed (non-fatal)"
+" 2>&1 || echo "audit write failed (non-fatal)"
 
 # Refresh the metrics dashboard (non-fatal — purely informational).
 # Reads from runs.alpaca.db + live_state.alpaca.json that the live runner
 # just updated above. Output: doc/dashboard.md (auto-rendered on GitHub).
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \
-    --out "$REPO_DIR/doc/dashboard.md" 2>&1 | tee -a "$LOG" \
+    --out "$REPO_DIR/doc/dashboard.md" 2>&1 \
     || echo "dashboard refresh failed (non-fatal)"
 
 # ── Step 4: SHADOW e2e run (2026-05-19) ──────────────────────────────────
@@ -395,21 +431,40 @@ print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today=
 # two distinct ntfy entries per day: prod + shadow side-by-side.
 echo "--- Step 4: Shadow e2e run (HF PatchTST primary, no real orders) ---"
 SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
-if "$PYTHON" -m live.runner --strategy renquant_104 \
-        --broker readonly-alpaca --once \
-        --strategy-config-name strategy_config.shadow.json \
-        > "$SHADOW_LOG" 2>&1; then
+SHADOW_TIMEOUT_SEC="${RENQUANT_SHADOW_TIMEOUT_SEC:-420}"
+if "$PYTHON" - <<PY > "$SHADOW_LOG" 2>&1
+import subprocess
+import sys
+
+cmd = [
+    sys.executable, "-m", "live.runner",
+    "--strategy", "renquant_104",
+    "--broker", "readonly-alpaca",
+    "--once",
+    "--strategy-config-name", "strategy_config.shadow.json",
+]
+try:
+    raise SystemExit(subprocess.run(
+        cmd,
+        cwd="$REPO_DIR",
+        timeout=float("$SHADOW_TIMEOUT_SEC"),
+    ).returncode)
+except subprocess.TimeoutExpired:
+    print("SHADOW TIMEOUT after ${SHADOW_TIMEOUT_SEC}s", flush=True)
+    raise SystemExit(124)
+PY
+then
     echo "Shadow run finished — see $SHADOW_LOG"
     # Surface the shadow ntfy line in the prod log so the operator can
     # see both decisions in one place if the daily log is what they read.
     grep "ntfy sent:" "$SHADOW_LOG" | tail -1 || echo "shadow ntfy line not found in shadow log"
 else
-    echo "Shadow run FAILED (non-fatal) — see $SHADOW_LOG"
-    notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e run failed today — primary unaffected. See $SHADOW_LOG."
-fi
-
-else
-    echo "=== daily_104 FAILED at $(date) ==="
-    notify "RenQuant 104 ERROR" "Live trader failed — check $LOG"
-    exit 1
+    SHADOW_RC=$?
+    if [ "$SHADOW_RC" -eq 124 ]; then
+        echo "Shadow run TIMED OUT after ${SHADOW_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_LOG"
+        notify "RenQuant 104 SHADOW-TIMEOUT" "Shadow e2e exceeded ${SHADOW_TIMEOUT_SEC}s; primary already completed. See $SHADOW_LOG."
+    else
+        echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
+        notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e failed today (rc=$SHADOW_RC) — primary already completed. See $SHADOW_LOG."
+    fi
 fi
