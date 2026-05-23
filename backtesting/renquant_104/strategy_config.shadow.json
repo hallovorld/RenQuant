@@ -732,7 +732,8 @@
             },
             "global_calibration": {
                 "enabled": true,
-                "artifact_path": "artifacts/shadow/panel-rank-calibration.shadow.json",
+                "artifact_path": "artifacts/shadow/panel-rank-calibration.hf_patchtst_seed44_trainfit_20230103_20240409.json",
+                "strict_scorer_match": true,
                 "regime_conditional": {
                     "enabled": false,
                     "artifact_pattern": "artifacts/panel-calibration-{regime}.json",

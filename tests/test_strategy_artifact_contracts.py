@@ -31,6 +31,11 @@ def _artifact_path(rel: str) -> Path:
     return path if path.is_absolute() else STRATEGY_DIR / "artifacts" / path
 
 
+def _resolve_config_path(rel: str) -> Path:
+    path = Path(rel)
+    return path if path.is_absolute() else (STRATEGY_DIR / path).resolve()
+
+
 def test_active_prod_correlation_artifact_covers_watchlist() -> None:
     cfg = _load_config("strategy_config.json")
     corr_rel = cfg["regime"]["correlation_artifact"]
@@ -107,3 +112,17 @@ def test_patchtst_shadow_artifact_has_selection_contract_sidecar() -> None:
             context="patchtst sidecar contract",
             lookahead_days=int(raw["lookahead_days"]),
         )
+
+
+def test_shadow_patchtst_calibration_matches_shadow_scorer() -> None:
+    cfg = _load_config("strategy_config.shadow.json")
+    panel_cfg = cfg["ranking"]["panel_scoring"]
+    scorer = _resolve_config_path(panel_cfg["artifact_path"])
+    calib_cfg = panel_cfg["global_calibration"]
+    calib = json.loads(_resolve_config_path(calib_cfg["artifact_path"]).read_text())
+    calib_meta = calib.get("metadata") or {}
+
+    assert calib_cfg.get("strict_scorer_match") is True
+    assert Path(calib_meta["scorer_artifact"]).resolve() == scorer
+    assert "patchtst_shadow" in panel_cfg["artifact_path"]
+    assert "patchtst_shadow" in calib_meta["scorer_artifact"]
