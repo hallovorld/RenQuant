@@ -233,3 +233,32 @@ class TestWeeklyShellInvariants:
         assert retrain_idx > 0, "weekly_wf_promote.sh must call retrain"
         assert smoke_idx < retrain_idx, \
             "smoke test must precede retrain (don't waste compute on broken pipeline)"
+
+    def test_weekly_uses_project_venv_and_detected_threads(self):
+        weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+        non_comment = "\n".join(
+            line for line in weekly.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "CONDA_PREFIX" not in non_comment
+        assert 'VENV_DIR="$REPO_DIR/.venv"' in weekly
+        assert "os.cpu_count()" in weekly
+        for var in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            assert f'export {var}="$THREADS"' in weekly
+
+    def test_weekly_trains_to_unique_staging_before_gate(self):
+        weekly = (REPO / "scripts" / "weekly_wf_promote.sh").read_text()
+        assert "RUN_ID=" in weekly
+        assert "STAGING_ART=" in weekly
+        assert "STAGING_CAL=" in weekly
+        assert "--xgb-artifact-out \"$STAGING_ART\"" in weekly
+        assert "--calibrator-out \"$STAGING_CAL\"" in weekly
+        assert '--artifact "$STAGING_ART"' in weekly
+        assert "bash scripts/daily_retrain_alpha158_fund.sh;" not in weekly
+        assert "bash scripts/daily_retrain_alpha158_fund.sh; then" not in weekly

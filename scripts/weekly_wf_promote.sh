@@ -28,13 +28,14 @@
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
-CONDA_PREFIX="/Users/renhao/miniconda3/envs/renquant"
-PYTHON="$CONDA_PREFIX/bin/python"
+VENV_DIR="$REPO_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/weekly_wf_promote"
 NTFY_TOPIC="renquant"
 mkdir -p "$LOG_DIR"
 
 DATE=$(date +%Y-%m-%d)
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
 LOG="$LOG_DIR/$DATE.log"
 
 notify() {
@@ -72,10 +73,19 @@ if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
 fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
-# Saturate the M2 Pro per CLAUDE.md §5.10
-export OMP_NUM_THREADS=10
-export MKL_NUM_THREADS=10
-export OPENBLAS_NUM_THREADS=10
+# Saturate this host per CLAUDE.md §5.10; do not carry stale laptop-specific
+# constants across Apple Silicon upgrades.
+THREADS=$("$PYTHON" - <<'PY'
+import os
+print(os.cpu_count() or 1)
+PY
+)
+export OMP_NUM_THREADS="$THREADS"
+export MKL_NUM_THREADS="$THREADS"
+export OPENBLAS_NUM_THREADS="$THREADS"
+export VECLIB_MAXIMUM_THREADS="$THREADS"
+export NUMEXPR_NUM_THREADS="$THREADS"
+echo "Hardware threads: $THREADS"
 
 cd "$REPO_DIR"
 
@@ -87,12 +97,10 @@ if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
     exit 1
 fi
 
-# ── Step 2: BACKUP current production before destructive retrain ──────────
-# Architectural caveat (audit 2026-05-09): daily_retrain_alpha158_fund.sh
-# writes DIRECTLY to the active artifact path — there's no staging step.
-# If WF gate then rejects, the prior trustworthy model would be gone.
-# Per CLAUDE.md §5.5 (rollback rehearsal mandate), backup BEFORE retrain
-# and restore on WF failure.
+# ── Step 2: BACKUP current production before final promote ────────────────
+# The retrain below writes to unique staging paths. Active production should
+# remain unchanged until the strict WF gate has passed; the backup is retained
+# as an explicit rollback target for the final active swap.
 # 2026-05-11 sim/prod isolation: prod artifacts moved to artifacts/prod/.
 # Before this fix, ACTIVE_ART pointed at the now-empty flat path, so the
 # `[ -f "$ACTIVE_ART" ]` backup guard always failed silently and rollback
@@ -102,6 +110,8 @@ ACTIVE_ART="$ART_DIR/panel-ltr.alpha158_fund.json"
 ACTIVE_CAL="$ART_DIR/panel-rank-calibration.json"
 ROLLBACK_ART="$ART_DIR/panel-ltr.alpha158_fund.weekly_rollback_$DATE.json"
 ROLLBACK_CAL="$ART_DIR/panel-rank-calibration.weekly_rollback_$DATE.json"
+STAGING_ART="$ART_DIR/panel-ltr.alpha158_fund.weekly_${RUN_ID}.staging.json"
+STAGING_CAL="$ART_DIR/panel-rank-calibration.weekly_${RUN_ID}.staging.json"
 
 echo "--- Step 2: Backup prior production artifacts (rollback rehearsal) ---"
 if [ -f "$ACTIVE_ART" ]; then
@@ -113,14 +123,23 @@ if [ -f "$ACTIVE_CAL" ]; then
     echo "Backup calibrator: $ROLLBACK_CAL"
 fi
 
-# ── Step 3: Retrain on the alpha158+fund 169-feat pipeline ─────────────
+# ── Step 3: Retrain on the alpha158+fund+sentiment pipeline ─────────────
 # Note: this also REFITS the calibrator (per daily_retrain_alpha158_fund.py
-# step 4). If WF gate then fails, the calibrator on disk is the NEW one
-# (matched to the rejected model), so we restore BOTH on rollback.
-echo "--- Step 3: Retrain panel-LTR + calibrator (alpha158+fund+PEAD+SUE) ---"
-if ! bash scripts/daily_retrain_alpha158_fund.sh; then
-    echo "Training FAILED — prior production artifact still in place (no overwrite happened)."
+# step 4). It must write to staging paths; active prod is swapped only after
+# the strict WF gate passes.
+echo "--- Step 3: Retrain panel-LTR + calibrator to staging ---"
+echo "Staging model: $STAGING_ART"
+echo "Staging calibrator: $STAGING_CAL"
+if ! bash scripts/daily_retrain_alpha158_fund.sh \
+    --xgb-artifact-out "$STAGING_ART" \
+    --calibrator-out "$STAGING_CAL"; then
+    echo "Training FAILED — production artifact unchanged."
     notify "RenQuant 104 WEEKLY-FAIL" "Training failed; production model unchanged. Check $LOG"
+    exit 1
+fi
+if [ ! -f "$STAGING_ART" ] || [ ! -f "$STAGING_CAL" ]; then
+    echo "Training FAILED — staging artifacts missing."
+    notify "RenQuant 104 WEEKLY-FAIL" "Training finished but staging artifact/calibrator missing. Check $LOG"
     exit 1
 fi
 echo "Training pipeline finished at $(date)"
@@ -128,33 +147,21 @@ echo "Training pipeline finished at $(date)"
 # ── Step 4: Run WF gate (3-cut WF + §5.2 sanity battery) ──────────────────
 echo "--- Step 4: Walk-forward gate (3-cut + sanity) ---"
 if ! "$PYTHON" scripts/run_wf_gate.py \
-    --artifact "$ACTIVE_ART" \
-    --strategy-config strategy_config.sim_wl200.json \
-    --strict; then
-    echo "WF gate FAILED — ROLLING BACK to prior production model."
-    if [ -f "$ROLLBACK_ART" ]; then
-        cp "$ROLLBACK_ART" "$ACTIVE_ART"
-        echo "Restored model from $ROLLBACK_ART"
-    fi
-    if [ -f "$ROLLBACK_CAL" ]; then
-        cp "$ROLLBACK_CAL" "$ACTIVE_CAL"
-        echo "Restored calibrator from $ROLLBACK_CAL"
-    fi
-    # Smoke-test the rolled-back state to confirm we're back to a working model
-    if ! "$PYTHON" scripts/smoke_test_model.py --strategy renquant_104; then
-        notify "RenQuant 104 WEEKLY-CRITICAL" \
-            "Rollback FAILED smoke test — operator action REQUIRED. Production may be in unknown state."
-    else
-        notify "RenQuant 104 WEEKLY-FAIL" \
-            "Walk-forward gate REJECTED the new model. Rolled back to prior + calibrator. Check $LOG."
-    fi
+    --artifact "$STAGING_ART" \
+    --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json \
+    --derive-config-from-prod \
+    --strict \
+    --jobs 3; then
+    echo "WF gate FAILED — production unchanged."
+    notify "RenQuant 104 WEEKLY-FAIL" \
+        "Walk-forward gate REJECTED the staged model. Production unchanged. Check $LOG."
     exit 1
 fi
 
-# ── Step 5: Inspect gate metadata + summarize ─────────────────────────────
+# ── Step 5: Inspect gate metadata + promote staged pair ───────────────────
 GATE_SUMMARY=$("$PYTHON" -c "
 import json
-m = json.load(open('$ACTIVE_ART'))
+m = json.load(open('$STAGING_ART'))
 gate = m.get('wf_gate_metadata') or m.get('metadata', {}).get('wf_gate_metadata') or {}
 sharpe = gate.get('wf_3cut_sharpe_mean')
 apy    = gate.get('wf_3cut_apy_mean')
@@ -168,6 +175,29 @@ if plac is not None:   parts.append(f'placebo_IC {plac:+.4f}')
 print('  '.join(parts) if parts else '(no metadata)')
 " 2>/dev/null || echo "(metadata parse failed)")
 echo "Gate metadata: $GATE_SUMMARY"
+
+"$PYTHON" - <<PY
+from pathlib import Path
+import json
+import os
+import shutil
+
+pairs = [
+    (Path("$STAGING_ART"), Path("$ACTIVE_ART")),
+    (Path("$STAGING_CAL"), Path("$ACTIVE_CAL")),
+]
+model = json.loads(pairs[0][0].read_text())
+gate = model.get("wf_gate_metadata") or model.get("metadata", {}).get("wf_gate_metadata") or {}
+if gate.get("passed") is not True:
+    raise SystemExit(f"staged artifact has no passing wf_gate_metadata: {gate}")
+for src, dst in pairs:
+    if not src.exists():
+        raise SystemExit(f"missing staging artifact: {src}")
+    incoming = dst.with_suffix(".incoming.json")
+    shutil.copy2(src, incoming)
+    os.replace(incoming, dst)
+    print(f"Promoted {src.name} -> {dst.name}")
+PY
 
 # ── Step 6: Refresh dashboard ─────────────────────────────────────────────
 "$PYTHON" "$REPO_DIR/scripts/build_dashboard.py" --broker alpaca \

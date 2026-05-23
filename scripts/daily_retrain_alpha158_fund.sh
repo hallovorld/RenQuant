@@ -20,7 +20,7 @@
 #   panel-rank-calibration.json
 #
 # Usage:
-#   bash scripts/daily_retrain_alpha158_fund.sh
+#   bash scripts/daily_retrain_alpha158_fund.sh [pipeline args]
 #
 # Designed to run BEFORE the live trading step in daily_104.sh. Lock
 # file prevents concurrent invocations. Errors bubble up as non-zero
@@ -60,7 +60,7 @@ echo "═══ daily_retrain_alpha158_fund started $(date -u +'%Y-%m-%dT%H:%M:%
 
 # Delegate the actual work to the Python pipeline (Task/Job per CLAUDE.md §1b).
 # Bash only handles: lock, log redirect, ntfy on failure.
-if "$PYTHON" -m training_panel.daily_retrain_alpha158_fund; then
+if "$PYTHON" -m training_panel.daily_retrain_alpha158_fund "$@"; then
     echo "═══ daily_retrain_alpha158_fund DONE ═══"
     exit 0
 else

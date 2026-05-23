@@ -87,6 +87,12 @@ def test_staging_path_convention(tmp_path):
     )
 
 
+def test_shell_wrapper_forwards_pipeline_args():
+    """Weekly promote passes unique staging paths through the bash wrapper."""
+    wrapper = (REPO / "scripts" / "daily_retrain_alpha158_fund.sh").read_text()
+    assert 'training_panel.daily_retrain_alpha158_fund "$@"' in wrapper
+
+
 # ── BuildAlpha158PanelTask.should_skip ───────────────────────────────────────
 
 class TestBuildAlpha158PanelTaskSkip:
