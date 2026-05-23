@@ -77,6 +77,89 @@ def resolve_hwm(stored_hwm: float, account_value: float,
     return float(max(stored_hwm, account_value)), False
 
 
+def build_sell_trade_event_for_db(
+    *,
+    ticker: str,
+    sig: Any,
+    holding: Any,
+    price: float,
+    today: datetime.date,
+    regime: str | None,
+    confidence: float | None,
+    regime_params: dict,
+) -> dict:
+    """Build the executed-sell row persisted by the live runner.
+
+    The source fields are part of the decision-tree contract. Portfolio-level
+    exits (QP, rotation, panel-conviction) stamp their own source metadata on
+    ``ExitSignal``; defaulting those to ``TickerSellJob`` makes later audits
+    diagnose the wrong pipeline step.
+    """
+    entry_p = float(getattr(holding, "entry_price", 0.0) or 0.0)
+    entry_date = getattr(holding, "entry_date", None)
+    hold_days = (today - entry_date).days if holding and entry_date else 0
+    pnl_pct = (price - entry_p) / entry_p if entry_p > 0 else 0.0
+    exit_type = getattr(sig, "exit_type", "") or ""
+    reason = getattr(sig, "reason", None)
+    source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
+    source_task = str(getattr(sig, "source_task", None) or exit_type or "sell")
+    order_source = str(
+        getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
+    )
+    source = str(getattr(sig, "source", None) or "ExitPipeline")
+
+    return {
+        "ticker": ticker,
+        "action": "sell",
+        "date": today,
+        "price": price,
+        "exit_reason": exit_type,
+        "pnl_pct": pnl_pct,
+        "hold_days": hold_days,
+        "order_type": f"SELL_{exit_type}" if exit_type else "SELL",
+        "source": source,
+        "source_job": source_job,
+        "source_task": source_task,
+        "order_source": order_source,
+        "attribution_version": "exit_decision_v1",
+        "score_snapshot": {
+            "rank_score": getattr(holding, "rank_score", None),
+            "panel_score": getattr(holding, "panel_score", None),
+            "mu": getattr(holding, "mu", None),
+            "sigma": getattr(holding, "sigma", None),
+            "kelly_target_pct": getattr(holding, "kelly_target_pct", None),
+            "confidence": confidence,
+            "regime": regime,
+        },
+        "decision_inputs": {
+            "acceptance_reason": exit_type or reason,
+            "exit_reason": exit_type,
+            "signal_reason": reason,
+            "quantity": getattr(sig, "quantity", None),
+            "hold_days": hold_days,
+            "pnl_pct": pnl_pct,
+            "stop_loss_pct": regime_params.get("stop_loss_pct"),
+            "stop_n_sigma": regime_params.get("stop_n_sigma"),
+            "take_profit_pct": regime_params.get("take_profit_pct"),
+            "stop_decay_days": regime_params.get("stop_decay_days"),
+            "stop_decay_floor": regime_params.get("stop_decay_floor"),
+            "max_single_day_loss_pct": regime_params.get("max_single_day_loss_pct"),
+            "sdl_n_sigma": regime_params.get("sdl_n_sigma"),
+            "sdl_skip_if_unrealized_above": regime_params.get(
+                "sdl_skip_if_unrealized_above"
+            ),
+            "trailing_stop_trigger_pct": regime_params.get(
+                "trailing_stop_trigger_pct"
+            ),
+            "trailing_stop_trail_pct": regime_params.get(
+                "trailing_stop_trail_pct"
+            ),
+            "atr_n_multiplier": regime_params.get("atr_n_multiplier"),
+            "max_hold_days": regime_params.get("max_hold_days"),
+        },
+    }
+
+
 class RunnerAdapter:
     """Translate between the live broker/state and InferenceContext.
 
@@ -1488,49 +1571,16 @@ class RunnerAdapter:
             for t, sig in exits_for_db:
                 hs    = ctx.holdings.get(t)
                 price = ctx.prices.get(t, 0.0)
-                entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
-                hold_days = (ctx.today - hs.entry_date).days if hs and hs.entry_date else 0
-                pnl_pct = (price - entry_p) / entry_p if entry_p > 0 else 0.0
-                trade_events.append({
-                    "ticker":      t,
-                    "action":      "sell",
-                    "date":        ctx.today,
-                    "price":       price,
-                    "exit_reason": sig.exit_type,
-                    "pnl_pct":     pnl_pct,
-                    "hold_days":   hold_days,
-                    "order_type":  f"SELL_{sig.exit_type}" if sig.exit_type else "SELL",
-                    "source":      "ExitPipeline",
-                    "source_job":  "TickerSellJob",
-                    "source_task": sig.exit_type or "sell",
-                    "order_source": f"TickerSellJob.{sig.exit_type or 'sell'}",
-                    "attribution_version": "exit_decision_v1",
-                    "score_snapshot": {
-                        "rank_score": getattr(hs, "rank_score", None),
-                        "panel_score": getattr(hs, "panel_score", None),
-                        "mu": getattr(hs, "mu", None),
-                        "sigma": getattr(hs, "sigma", None),
-                        "kelly_target_pct": getattr(hs, "kelly_target_pct", None),
-                        "confidence": getattr(ctx, "confidence", None),
-                        "regime": getattr(ctx, "regime", None),
-                    },
-                    "decision_inputs": {
-                        "acceptance_reason": sig.exit_type or sig.reason,
-                        "exit_reason": sig.exit_type,
-                        "signal_reason": sig.reason,
-                        "quantity": getattr(sig, "quantity", None),
-                        "hold_days": hold_days,
-                        "pnl_pct": pnl_pct,
-                        "stop_loss_pct": regime_p.get("stop_loss_pct"),
-                        "stop_n_sigma": regime_p.get("stop_n_sigma"),
-                        "max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
-                        "sdl_n_sigma": regime_p.get("sdl_n_sigma"),
-                        "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
-                        "trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
-                        "atr_n_multiplier": regime_p.get("atr_n_multiplier"),
-                        "max_hold_days": regime_p.get("max_hold_days"),
-                    },
-                })
+                trade_events.append(build_sell_trade_event_for_db(
+                    ticker=t,
+                    sig=sig,
+                    holding=hs,
+                    price=price,
+                    today=ctx.today,
+                    regime=getattr(ctx, "regime", None),
+                    confidence=getattr(ctx, "confidence", None),
+                    regime_params=regime_p,
+                ))
             for o in orders_for_db:
                 trade_events.append({
                     "ticker":      o.get("ticker"),

@@ -48,7 +48,14 @@ def test_apply_sell_preserves_exit_signal_source_metadata():
                 "long_term_rate": 0.20,
                 "long_term_threshold_days": 365,
             },
-            "regime_params": {"BULL_CALM": {}},
+            "regime_params": {
+                "BULL_CALM": {
+                    "take_profit_pct": 0.30,
+                    "stop_decay_days": 60,
+                    "stop_decay_floor": 0.08,
+                    "sdl_skip_if_unrealized_above": 0.02,
+                },
+            },
         },
         regime="BULL_CALM",
         confidence=0.8,
@@ -69,3 +76,9 @@ def test_apply_sell_preserves_exit_signal_source_metadata():
     assert row["source_task"] == "EmitOrdersFromQPSolutionTask"
     assert row["order_source"] == "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
     assert row["source"] == "ExitPipeline"
+    assert row["exit_take_profit_pct"] == 0.30
+    assert row["exit_sdl_skip_if_unrealized_above"] == 0.02
+    assert row["decision_inputs"]["take_profit_pct"] == 0.30
+    assert row["decision_inputs"]["stop_decay_days"] == 60
+    assert row["decision_inputs"]["stop_decay_floor"] == 0.08
+    assert row["decision_inputs"]["sdl_skip_if_unrealized_above"] == 0.02

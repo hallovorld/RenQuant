@@ -1255,8 +1255,14 @@ class SimAdapter:
             "exit_signal_reason": getattr(sig, "reason", None),
             "exit_stop_loss_pct": regime_p.get("stop_loss_pct"),
             "exit_stop_n_sigma": regime_p.get("stop_n_sigma"),
+            "exit_take_profit_pct": regime_p.get("take_profit_pct"),
+            "exit_stop_decay_days": regime_p.get("stop_decay_days"),
+            "exit_stop_decay_floor": regime_p.get("stop_decay_floor"),
             "exit_max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
             "exit_sdl_n_sigma": regime_p.get("sdl_n_sigma"),
+            "exit_sdl_skip_if_unrealized_above": regime_p.get(
+                "sdl_skip_if_unrealized_above"
+            ),
             "exit_trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
             "exit_trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
             "exit_atr_n_multiplier": regime_p.get("atr_n_multiplier"),
@@ -1286,8 +1292,14 @@ class SimAdapter:
                 "pnl_pct": _pnl_pct,
                 "stop_loss_pct": regime_p.get("stop_loss_pct"),
                 "stop_n_sigma": regime_p.get("stop_n_sigma"),
+                "take_profit_pct": regime_p.get("take_profit_pct"),
+                "stop_decay_days": regime_p.get("stop_decay_days"),
+                "stop_decay_floor": regime_p.get("stop_decay_floor"),
                 "max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
                 "sdl_n_sigma": regime_p.get("sdl_n_sigma"),
+                "sdl_skip_if_unrealized_above": regime_p.get(
+                    "sdl_skip_if_unrealized_above"
+                ),
                 "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
                 "trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
                 "atr_n_multiplier": regime_p.get("atr_n_multiplier"),
