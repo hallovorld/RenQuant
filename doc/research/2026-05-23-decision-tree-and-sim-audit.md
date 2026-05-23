@@ -7,6 +7,179 @@ contract and sim hot-path fixes. It is intentionally blunt: the current
 decision tree is cleaner, but not yet scientifically sufficient as a
 profitable trading system.
 
+## Component I/O Contract Audit — 2026-05-23 Addendum
+
+I audited the production decision path as code, not as documentation:
+`SimAdapter/RunnerAdapter/LeanAdapter -> InferenceContext ->
+InferencePipeline -> PanelScoringJob -> JointPortfolioQPJob -> Execution/sim
+ledger`. The expected contracts below are the contracts that matter for
+APY/Sharpe, because any unit mistake here can make a good raw signal lose
+money.
+
+### Pipeline Contract Map
+
+| Component | Expected input | Expected output | Numeric contract | Current audit verdict |
+|---|---|---|---|---|
+| Adapter -> `InferenceContext` | `config`, `today`, OHLCV frames through `today`, `models`, `holdings`, `cash`, `portfolio_value`, `prices`, `corr_matrix`, `spy_returns`, calendar/state maps | Mutable context consumed by jobs | No future bars; all prices and NAV positive; holdings carry entry date/price/shares/lots; sim disables live freshness | Mostly OK in sim path. Historical freshness is disabled deliberately. State/trace path bug existed in WF wrapper and is now fixed. |
+| `DataFreshnessGateTask` | Context OHLCV + config freshness knob | Pass or exception | Live only; historical sim should not reject old bars | OK for sim after `run_sim_104` disables freshness by default. |
+| `RegimeJob` | SPY/history, GMM/regime state, thresholds | `ctx.regime`, `ctx.confidence`, `ctx.regime_state` | Regime in `{BULL_CALM,BULL_VOLATILE,CHOPPY,BEAR}`; confidence in `[0,1]`; every trade needs a recorded regime thesis | Mechanically OK, but economic quality is not OK: closed entries are dominated by `BULL_CALM`, where score vs realized P&L is negative. |
+| `BuyGatesJob` | Regime, drawdown, transition, confidence, SPY velocity/EMA | `ctx.buy_blocked`, `ctx.bear_only` | Buy block must be explainable and must not prevent candidate scoring audit when configured | OK as a gate. Not the main source of low APY; the system still trades. |
+| `TickerSellJob` | Holding state, current price, features, model, exit params from current and entry regime | `(ticker, ExitSignal)` in `ctx.exits` | Path exits before model exits; exit reason, params, regime, quantity, score snapshot recorded | Mechanically OK. Forensics show stop-loss/qp-sell losses dominate; current exit logic often realizes BULL_CALM entries after regime deterioration. |
+| `TickerCandidateJob` | Candidate ticker OHLCV/features/model/wash/earnings/sector data | `CandidateResult(ticker, raw_score, rank_score, rs_score, ...)` | Candidate score finite; rs_score diagnostic only; no held/pending ticker in buy universe | Mostly OK. Candidate admission is not the primary failure; post-score selection is. |
+| `PanelScoringJob` | Candidate/holding set, panel scorer, feature matrix, global calibrator, optional NGBoost | Writes `panel_score`, calibrated `rank_score`, `expected_return`, `mu`, `sigma`, `kelly_target_pct` | `rank_score` probability-like `[0,1]`; `panel_score` raw rank model score; `expected_return/mu` same horizon; `sigma` same horizon or explicitly converted | Contract is only partly scientific. Calibrator expected-return metadata says `lookahead_days=60`, while realized-vol fallback is annualized 60d vol. The code treats them together in Kelly/QP without an explicit horizon conversion. This is a live suspect. |
+| `VetoWeakBuysTask` / quality floors | Scored candidates | Filtered candidates | Weak-buy threshold must be regime-conditional and strong enough to matter | Current adaptive cap is toothless for this trace: admitted trade `rank_score` range is `0.4836..0.6762`, while `buy_floor` cap is effectively `0.30`. Gate B is disabled in the sim config. |
+| `RankingJob` | Candidates with calibrated scores | `ctx.ranked` sorted candidates | Sorting must preserve the signal actually used for execution | Mechanically OK. The problem is that the executed slice is compressed and not discriminative in BULL_CALM. |
+| `JointPortfolioQPJob` | Holdings + candidates, `mu`, `sigma`, covariance/correlation, sector caps, no-trade bands, cash, constraints | `ctx.orders` and extra soft exits | `mu` must be expected-return-like; `sigma` same horizon/unit as `mu`; caps/sector/corr constraints finite; buys must not be forced when edge is weak | Strict μ contract passes, but scientific unit contract is incomplete. `qp_min_invested_pct=0.7` can force deployment even when BULL_CALM score is anti-predictive. QP target weight is mildly anti-correlated with signal in the audited trace. |
+| Execution/sim ledger | Orders/exits and price/cash state | Trade log, equity curve, round trips, tax report | Raw events immutable; round-trip FIFO; event-level tax is cash stress; annual-net tax is reporting/gate metric | Fixed two bugs here: annual-net is now first-class in WF metrics; losing lots are no longer mislabeled as `positive_gross`. Event-level tax can still exceed gross by design; it is no longer the main performance metric. |
+
+### Actual Numeric Flow From Latest WF Trace
+
+Trace root audited:
+`backtesting/renquant_104/backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/codex_20260523_annualnet_20260523T170643Z`.
+The duplicate path segment is itself a fixed wrapper bug; new `--trace-dir`
+resolution will not double-prefix repo-relative paths.
+
+Across the three WF cuts:
+
+| Metric | Value |
+|---|---:|
+| Closed round trips | 229 |
+| Closed gross P&L | +$9,975.26 |
+| Event-level tax debited | $20,645.68 |
+| Event-level net P&L | -$10,670.42 |
+| Closed win rate | 31.88% |
+| Average / median hold | 67.2d / 40.0d |
+
+Annual-net reporting changes the interpretation but not the strategy verdict:
+
+| Cut | Event APY | Event Sharpe | Annual-net APY | Annual-net Sharpe | Event tax | Annual-net tax |
+|---|---:|---:|---:|---:|---:|---:|
+| 2024-01-02 -> 2024-12-31 | -0.14% | +0.033 | +4.74% | +0.578 | $5,240.55 | $387.53 |
+| 2024-07-01 -> 2025-06-30 | -0.64% | -0.017 | +4.96% | +0.624 | $6,474.69 | $936.21 |
+| 2025-04-01 -> 2026-03-28 | +3.80% | +0.399 | +8.88% | +0.905 | $9,049.17 | $4,056.12 |
+
+WF still fails because it lags SPY and fails regime/monotonicity gates.
+The corrected mean annual-net Sharpe is about `+0.702`, but
+`strategy_minus_spy_sharpe_mean=-0.379`, `n_cuts_beat_spy_sharpe=1`, and
+`n_cuts_beat_spy_apy=0`.
+
+### Weird Numeric Findings
+
+1. BULL_CALM is the main broken area.
+
+| Entry regime | n | Gross P&L | Event tax | Event net | Win rate | Mean P&L pct | Median hold |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| BULL_CALM | 199 | +$11,125.92 | $19,434.96 | -$8,309.05 | 30.65% | +0.72% | 35d |
+| BULL_VOLATILE | 30 | -$1,150.66 | $1,210.72 | -$2,361.38 | 40.00% | +3.07% | 111d |
+
+Per-regime score IC on closed trades:
+
+| Regime | rank_score rho vs P&L | panel_score rho | mu rho | sigma rho | kelly_target rho |
+|---|---:|---:|---:|---:|---:|
+| BULL_CALM | -0.118 | -0.120 | -0.072 | +0.001 | -0.282 |
+| BULL_VOLATILE | +0.518 | +0.440 | +0.350 | +0.355 | n/a |
+
+This is not a small cosmetic problem. In the regime where the system trades
+most, the entry score is anti-monotonic. That means the model/decision tree is
+not selecting the right names under the BULL_CALM thesis.
+
+2. The QP input bands look numerically valid but economically compressed.
+
+Executed closed-trade inputs:
+
+| Field | min | p10 | median | p90 | max |
+|---|---:|---:|---:|---:|---:|
+| `entry_rank_score` | 0.4836 | 0.5246 | 0.5374 | 0.6216 | 0.6762 |
+| `entry_panel_score` | -0.2895 | -0.1627 | -0.0991 | +0.2291 | +0.4305 |
+| `entry_mu` | +0.0018 | +0.0146 | +0.0187 | +0.0452 | +0.0653 |
+| `entry_sigma` | 0.1251 | 0.1307 | 0.1455 | 0.2134 | 0.3711 |
+| `entry_kelly_target_pct` | 0.0750 | 0.0750 | 0.0750 | 0.0997 | 0.1132 |
+
+The values are finite and within their intended ranges. The weird part is
+selection: many Kelly targets sit at the lower cap (`0.075`), so sizing does
+not carry much cross-sectional information. In the audited buys, QP target
+weight is mildly anti-correlated with `rank_score`, `mu`, and `sigma`. That is
+a portfolio-construction smell even if the solver is numerically optimal.
+
+3. The weak-buy veto is not actually weak-buy protection in this trace.
+
+The configured `buy_floor="adaptive_mean_std_cap"` with cap `0.30` allows all
+executed trade scores because executed `rank_score` never comes close to that
+floor. Gate B (`quality_floor.edge_sharpe_floor`) is disabled even though
+earlier full-OOS ablation suggested a BULL_CALM risk-adjusted admission floor
+improves APY/Sharpe. This is not promotable yet, but the current live-like
+path lacks an active pre-QP edge floor.
+
+4. Tax accounting is now separated correctly, but it revealed the real issue.
+
+Event-level tax is a cash-stress path. Annual netting is a reporting/gate
+metric. The IRS classifies gains/losses as short-term or long-term and nets
+capital gains/losses in that framework; losses beyond gains have deduction and
+carryforward rules. Reference: IRS Topic 409
+<https://www.irs.gov/taxtopics/tc409>. The simulator now reports both views:
+event-level for conservative cash stress, annual-net for economic performance.
+
+After the fix, annual-net Sharpe improves materially, but the strategy still
+loses to SPY. Therefore "tax was the bug" is false. Tax was one bug in the
+reporting/gating layer; the core BULL_CALM selection problem remains.
+
+5. QP formulation is structurally reasonable but unit completeness is suspect.
+
+Using an optimization policy with return forecast, risk model, costs, and
+constraints follows the cvxportfolio/convex portfolio-control pattern:
+<https://www.cvxportfolio.com/en/stable/optimization_policies.html>. Cost and
+constraint support are also mature concepts in cvxportfolio:
+<https://www.cvxportfolio.com/en/1.1.1/costs.html>. The code follows that
+shape, but the project-specific μ/σ inputs are not yet scientifically stamped
+enough:
+
+- Calibrator expected return metadata says `lookahead_days=60`.
+- Realized-vol fallback uses a 60-day rolling volatility and is annualized.
+- Kelly/QP consumes `mu / sigma^2` style inputs without a clear horizon
+  conversion in the live trace.
+
+If μ is a 60-trading-day return and σ is annualized volatility, either σ must
+be converted to the 60-day horizon or μ must be annualized before optimizer
+use. The current code has a "strict μ source" contract, but not a complete
+"same horizon μ/σ" contract. This needs a regression test before changing
+behavior.
+
+### Bugs Fixed In This Addendum
+
+1. WF trace path resolution.
+   `scripts/run_wf_gate.py --trace-dir backtesting/renquant_104/...` used to
+   write under
+   `backtesting/renquant_104/backtesting/renquant_104/...`. Added
+   `_resolve_trace_dir_arg()` and tests for repo-relative and strategy-relative
+   trace dirs.
+
+2. Round-trip tax allocation labels.
+   `scripts/sim_trade_ledger.py` used to label every matched closed lot as
+   `positive_gross`, including 156 losing rows. Tax dollars were not assigned
+   to those losing rows, but the audit label was wrong. It now emits:
+   `loss_no_tax`, `positive_gross_prorata`, or `event_tax_zero`.
+
+3. WF tax metric metadata.
+   `run_wf_gate.py` now imports exact annual-net APY/Sharpe from equity JSON
+   and keeps event-level APY/Sharpe/tax plus annual-net tax in metadata. The
+   promotion gate no longer depends on rounded console strings or event-level
+   tax Sharpe when an annual-net trace exists.
+
+### Not Fixed Yet
+
+1. BULL_CALM entry score monotonicity is broken. This must block promotion.
+
+2. QP `qp_min_invested_pct=0.7` may be forcing capital into a weak/anti-
+   predictive BULL_CALM score slice. Needs regime-conditional A/B, not a global
+   flip.
+
+3. μ/σ horizon units are insufficiently stamped. Need a contract test that
+   proves QP consumes either both 60-day units or both annualized units.
+
+4. Gate B should be re-tested as BULL_CALM-only, not globally. The earlier
+   full-OOS improvement is useful evidence, but CLAUDE.md requires
+   regime-stratified WF before golden/live changes.
+
 Artifacts:
 
 - Equity: `backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.equity.json`

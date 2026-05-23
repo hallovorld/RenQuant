@@ -60,6 +60,12 @@ class SimResult:
     annual_net_final_value_estimate: float = float("nan")
     annual_net_total_return_estimate: float = float("nan")
     annual_net_apy_estimate:       float = float("nan")
+    annual_net_equity_df_estimate: pd.DataFrame = field(default_factory=pd.DataFrame)
+    annual_net_sharpe_estimate:    float = float("nan")
+    annual_net_sortino_estimate:   float = float("nan")
+    annual_net_calmar_estimate:    float = float("nan")
+    annual_net_max_dd_estimate:    float = float("nan")
+    annual_net_ann_vol_estimate:   float = float("nan")
     annual_net_tax_years:          list[dict] = field(default_factory=list)
 
     # Activity monitoring — see kernel.pipeline.task_monitor.MonitorIdleStreakTask.
@@ -144,11 +150,17 @@ class SimResult:
                     if _m.isfinite(self.annual_net_apy_estimate)
                     else "—"
                 )
+                sharpe_s = (
+                    f"{self.annual_net_sharpe_estimate:+.2f}"
+                    if _m.isfinite(self.annual_net_sharpe_estimate)
+                    else "—"
+                )
                 print(
                     "Tax reporting: "
                     f"event=${self.event_level_tax_debited:,.0f}  "
                     f"annual-net est=${self.annual_net_tax_estimate:,.0f}  "
-                    f"annual-net APY est={apy_s}"
+                    f"annual-net APY est={apy_s}  "
+                    f"annual-net Sharpe est={sharpe_s}"
                 )
             print(f"Exit reasons: {self.exit_reasons}")
         if self.longest_no_trade_streak:

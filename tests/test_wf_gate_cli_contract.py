@@ -172,6 +172,91 @@ def test_wf_gate_rejects_positive_sharpe_when_all_cuts_lag_spy(monkeypatch) -> N
     assert "SPY" in result["reason"]
 
 
+def test_wf_gate_prefers_exact_annual_net_metrics_from_trace(monkeypatch, tmp_path) -> None:
+    """AUDIT REGRESSION GUARD: WF metrics come from machine-readable trace.
+
+    Pre-fix, run_wf_gate parsed rounded console strings like ``Sharpe=+0.10``
+    and ``APY: 1.0%``. When the trace JSON carries annual-net metrics, the
+    promotion gate must use those exact values and retain event-level fields
+    for audit.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    class _Proc:
+        returncode = 0
+        stdout = "Risk: Sharpe=+0.10\nFinal value: $101,000  |  Return: 1.0%  |  APY: 1.0%\n"
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, timeout):
+        del capture_output, text, timeout
+        eq_path = Path(cmd[cmd.index("--equity-json") + 1])
+        eq_path.parent.mkdir(parents=True, exist_ok=True)
+        eq_path.write_text(json.dumps({
+            "apy": 0.0100,
+            "sharpe": 0.1000,
+            "annual_net_apy": 0.123456,
+            "annual_net_sharpe": 0.654321,
+            "event_level_apy": 0.0100,
+            "event_level_sharpe": 0.1000,
+            "event_level_tax_debited": 50.0,
+            "annual_net_tax_estimate": 8.0,
+            "tax_overstatement_vs_annual_net": 42.0,
+            "equity": {"2024-01-02": 100000.0},
+        }))
+        return _Proc()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "cut_market_context", lambda start, end: {
+        "spy_sharpe": 0.20,
+        "spy_apy": 0.02,
+    })
+
+    result = mod.run_sim_cut(
+        "unit_config.json",
+        "2024-01-02",
+        "2024-12-31",
+        tmp_path,
+    )
+
+    assert result["sharpe"] == 0.654321
+    assert result["apy"] == 0.123456
+    assert result["event_level_sharpe"] == 0.1000
+    assert result["event_level_apy"] == 0.0100
+    assert result["event_level_tax_debited"] == 50.0
+    assert result["annual_net_tax_estimate"] == 8.0
+    assert result["performance_tax_basis"] == "annual_net"
+    assert result["tax_overstatement_vs_annual_net"] == 42.0
+
+
+def test_wf_gate_trace_dir_repo_relative_path_is_not_double_prefixed() -> None:
+    """Operators often pass repo-relative trace dirs from automation wrappers."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    trace_dir = mod._resolve_trace_dir_arg(
+        "backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/unit"
+    )
+
+    assert trace_dir == (
+        REPO / "backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/unit"
+    )
+    assert "backtesting/renquant_104/backtesting/renquant_104" not in str(trace_dir)
+
+
+def test_wf_gate_trace_dir_artifacts_path_stays_strategy_relative() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    trace_dir = mod._resolve_trace_dir_arg(
+        "artifacts/diagnostics/wf_trade_traces/unit"
+    )
+
+    assert trace_dir == (
+        REPO / "backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/unit"
+    )
+
+
 def test_wf_gate_refuses_to_stamp_manifest_as_candidate_artifact() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "inspect_artifact_usage" in src

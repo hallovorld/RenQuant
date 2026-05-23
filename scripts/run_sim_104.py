@@ -180,10 +180,55 @@ def main() -> None:
             "total_return":  float(result.total_return),
             "apy":           float(result.apy),
             "sharpe":        float(result.sharpe) if result.sharpe == result.sharpe else None,
+            "event_level_apy": float(result.apy),
+            "event_level_sharpe": (
+                float(result.sharpe) if result.sharpe == result.sharpe else None
+            ),
+            "event_level_tax_debited": float(result.event_level_tax_debited),
+            "annual_net_tax_estimate": float(result.annual_net_tax_estimate),
+            "tax_overstatement_vs_annual_net": (
+                float(result.tax_overstatement_vs_annual_net)
+            ),
+            "annual_net_final_value": (
+                float(result.annual_net_final_value_estimate)
+                if result.annual_net_final_value_estimate
+                == result.annual_net_final_value_estimate else None
+            ),
+            "annual_net_total_return": (
+                float(result.annual_net_total_return_estimate)
+                if result.annual_net_total_return_estimate
+                == result.annual_net_total_return_estimate else None
+            ),
+            "annual_net_apy": (
+                float(result.annual_net_apy_estimate)
+                if result.annual_net_apy_estimate
+                == result.annual_net_apy_estimate else None
+            ),
+            "annual_net_sharpe": (
+                float(result.annual_net_sharpe_estimate)
+                if result.annual_net_sharpe_estimate
+                == result.annual_net_sharpe_estimate else None
+            ),
+            "annual_net_ann_vol": (
+                float(result.annual_net_ann_vol_estimate)
+                if result.annual_net_ann_vol_estimate
+                == result.annual_net_ann_vol_estimate else None
+            ),
+            "annual_net_max_dd": (
+                float(result.annual_net_max_dd_estimate)
+                if result.annual_net_max_dd_estimate
+                == result.annual_net_max_dd_estimate else None
+            ),
             "ann_vol":       float(result.ann_vol) if result.ann_vol == result.ann_vol else None,
             "max_dd":        float(result.max_dd) if result.max_dd == result.max_dd else None,
             "equity":        eq["portfolio"].astype(float).to_dict(),
         }
+        annual_eq = result.annual_net_equity_df_estimate.copy()
+        if (not annual_eq.empty and "portfolio" in annual_eq.columns):
+            annual_eq.index = annual_eq.index.astype(str)
+            payload["annual_net_equity"] = (
+                annual_eq["portfolio"].astype(float).to_dict()
+            )
         _P(args.equity_json).parent.mkdir(parents=True, exist_ok=True)
         _P(args.equity_json).write_text(json.dumps(payload, indent=2))
         log.info("Wrote daily equity → %s (%d days)", args.equity_json, len(eq))

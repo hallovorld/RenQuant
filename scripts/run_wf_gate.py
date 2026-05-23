@@ -75,6 +75,22 @@ def _resolve_strategy_path(raw: str | None) -> Path | None:
     return p if p.is_absolute() else STRATEGY_DIR / p
 
 
+def _resolve_trace_dir_arg(raw: str) -> Path:
+    """Resolve --trace-dir without double-prefixing repo-relative paths.
+
+    Most operators pass strategy-relative paths such as
+    ``artifacts/diagnostics/...``. Some automation passes repo-relative paths
+    such as ``backtesting/renquant_104/artifacts/...``. Treat the latter as
+    repo-relative so persisted WF evidence lands where the caller asked.
+    """
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    if len(p.parts) >= 2 and p.parts[:2] == ("backtesting", "renquant_104"):
+        return REPO / p
+    return STRATEGY_DIR / p
+
+
 _EXECUTION_ONLY_PARAM_KEYS = {
     "nthread",
     "n_jobs",
@@ -464,6 +480,55 @@ def _trade_trace_summary(traces: dict[str, str]) -> dict:
     }
 
 
+def _sim_metrics_from_trace(traces: dict[str, str]) -> dict:
+    """Load exact sim metrics from the equity JSON trace.
+
+    ``run_sim_104.py`` prints rounded human-readable metrics. Acceptance must
+    use the machine-readable trace when present, and it should prefer the
+    annual-net tax reporting path while keeping event-level cash-stress
+    metrics for audit.
+    """
+    p_raw = traces.get("equity_json")
+    if not p_raw:
+        return {}
+    p = Path(p_raw)
+    if not p.exists():
+        return {}
+    try:
+        payload = json.loads(p.read_text())
+    except Exception as exc:  # noqa: BLE001
+        return {"trace_metric_error": f"failed to parse {p}: {exc}"}
+
+    event_sharpe = _finite_number(payload.get("event_level_sharpe"))
+    event_apy = _finite_number(payload.get("event_level_apy"))
+    if event_sharpe is None:
+        event_sharpe = _finite_number(payload.get("sharpe"))
+    if event_apy is None:
+        event_apy = _finite_number(payload.get("apy"))
+
+    annual_sharpe = _finite_number(payload.get("annual_net_sharpe"))
+    annual_apy = _finite_number(payload.get("annual_net_apy"))
+    use_annual = annual_sharpe is not None and annual_apy is not None
+    return {
+        "sharpe": annual_sharpe if use_annual else event_sharpe,
+        "apy": annual_apy if use_annual else event_apy,
+        "event_level_sharpe": event_sharpe,
+        "event_level_apy": event_apy,
+        "annual_net_sharpe": annual_sharpe,
+        "annual_net_apy": annual_apy,
+        "event_level_tax_debited": _finite_number(
+            payload.get("event_level_tax_debited")
+        ),
+        "annual_net_tax_estimate": _finite_number(
+            payload.get("annual_net_tax_estimate")
+        ),
+        "tax_overstatement_vs_annual_net": _finite_number(
+            payload.get("tax_overstatement_vs_annual_net")
+        ),
+        "performance_tax_basis": "annual_net" if use_annual else "event_level",
+    }
+
+
 def _trace_paths(trace_dir: Path | None, start: str, end: str) -> dict[str, str]:
     if trace_dir is None:
         return {}
@@ -520,11 +585,23 @@ def run_sim_cut(
             "returncode": int(proc.returncode),
             "error_tail": tail,
         }
-    # Parse "Sharpe=+0.40" "APY: 6.8%"
+    # Prefer exact machine-readable trace metrics. Fall back to the rounded
+    # console summary only for legacy runs without --equity-json.
+    trace_metrics = _sim_metrics_from_trace(traces)
     sharpe_m = re.search(r"Sharpe=([+\-\d.]+)", out)
     apy_m = re.search(r"APY:\s+([+\-\d.]+)%", out)
-    sharpe = float(sharpe_m.group(1)) if sharpe_m else float("nan")
-    apy = float(apy_m.group(1)) / 100 if apy_m else float("nan")
+    parsed_sharpe = float(sharpe_m.group(1)) if sharpe_m else float("nan")
+    parsed_apy = float(apy_m.group(1)) / 100 if apy_m else float("nan")
+    sharpe = (
+        float(trace_metrics["sharpe"])
+        if _finite_number(trace_metrics.get("sharpe")) is not None
+        else parsed_sharpe
+    )
+    apy = (
+        float(trace_metrics["apy"])
+        if _finite_number(trace_metrics.get("apy")) is not None
+        else parsed_apy
+    )
     spy_sharpe = _finite_number(market_context.get("spy_sharpe"))
     spy_apy = _finite_number(market_context.get("spy_apy"))
     sharpe_vs_spy = sharpe - spy_sharpe if spy_sharpe is not None else float("nan")
@@ -542,6 +619,18 @@ def run_sim_cut(
         "end": end,
         "sharpe": sharpe,
         "apy": apy,
+        "event_level_sharpe": trace_metrics.get("event_level_sharpe"),
+        "event_level_apy": trace_metrics.get("event_level_apy"),
+        "annual_net_sharpe": trace_metrics.get("annual_net_sharpe"),
+        "annual_net_apy": trace_metrics.get("annual_net_apy"),
+        "event_level_tax_debited": trace_metrics.get("event_level_tax_debited"),
+        "annual_net_tax_estimate": trace_metrics.get("annual_net_tax_estimate"),
+        "tax_overstatement_vs_annual_net": trace_metrics.get(
+            "tax_overstatement_vs_annual_net"
+        ),
+        "performance_tax_basis": trace_metrics.get(
+            "performance_tax_basis", "console_parse"
+        ),
         "sharpe_vs_spy": sharpe_vs_spy,
         "apy_vs_spy": apy_vs_spy,
         "dominant_hmm_regime": _top_regime(market_context.get("hmm_regime_counts")),
@@ -1016,9 +1105,7 @@ def main():
     trace_dir: Path | None = None
     if not args.no_trade_trace:
         if args.trace_dir:
-            trace_dir = Path(args.trace_dir)
-            if not trace_dir.is_absolute():
-                trace_dir = STRATEGY_DIR / trace_dir
+            trace_dir = _resolve_trace_dir_arg(args.trace_dir)
         else:
             run_stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             trace_dir = (

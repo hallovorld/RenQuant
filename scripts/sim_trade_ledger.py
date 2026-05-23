@@ -311,7 +311,7 @@ def round_trips_from_trade_log(
                 "gross_pnl": gross_pnl,
                 "tax": 0.0,
                 "net_pnl_after_tax": gross_pnl,
-                "tax_allocation_method": "positive_gross",
+                "tax_allocation_method": "pending",
                 "pnl_pct": pnl_pct,
                 "sim_sell_pnl_pct": event.get("pnl_pct"),
                 "exit_reason": event.get("exit_reason"),
@@ -351,10 +351,20 @@ def round_trips_from_trade_log(
             )
             if event_tax > 0 and positive_gross > 0:
                 for r in matched_rows:
-                    gp = max(0.0, _as_float(r.get("gross_pnl")))
-                    tax_alloc = event_tax * (gp / positive_gross)
+                    gross = _as_float(r.get("gross_pnl"))
+                    if gross <= 0:
+                        r["tax_allocation_method"] = "loss_no_tax"
+                        continue
+                    tax_alloc = event_tax * (gross / positive_gross)
                     r["tax"] = tax_alloc
-                    r["net_pnl_after_tax"] = _as_float(r.get("gross_pnl")) - tax_alloc
+                    r["net_pnl_after_tax"] = gross - tax_alloc
+                    r["tax_allocation_method"] = "positive_gross_prorata"
+            else:
+                for r in matched_rows:
+                    gross = _as_float(r.get("gross_pnl"))
+                    r["tax_allocation_method"] = (
+                        "loss_no_tax" if gross <= 0 else "event_tax_zero"
+                    )
             rows.extend(matched_rows)
 
         if remaining > 1e-9:

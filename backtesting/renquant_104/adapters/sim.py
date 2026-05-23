@@ -70,6 +70,70 @@ def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
     return p if p.is_absolute() else manifest_path.parent / p
 
 
+def _annual_net_equity_curve(
+    equity_df: pd.DataFrame,
+    sells: list[dict[str, Any]],
+    annual_tax_summary: dict[str, Any],
+) -> pd.DataFrame:
+    """Return an annual-net tax reporting equity curve.
+
+    The simulator debits event-level tax from cash on each sell to stress-test
+    liquidity. Performance reporting needs the complementary Schedule-D-style
+    annual netting estimate: add event taxes back to the path, then subtract
+    the year's estimated net capital-gains tax on the final sim date for that
+    calendar year. This does not alter the historical decision path.
+    """
+    if equity_df.empty or "portfolio" not in equity_df.columns:
+        return pd.DataFrame(columns=list(equity_df.columns))
+
+    out = equity_df.copy()
+    values = pd.to_numeric(out["portfolio"], errors="coerce").astype(float).to_numpy()
+    n = len(out)
+    event_tax = np.zeros(n, dtype=float)
+    annual_tax = np.zeros(n, dtype=float)
+    dates = pd.DatetimeIndex(pd.to_datetime(out.index)).normalize()
+
+    for sell in sells:
+        tax = _finite_float(sell.get("tax"), default=0.0)
+        if tax <= 0.0:
+            continue
+        raw_date = sell.get("date") or sell.get("exit_date")
+        if raw_date is None:
+            continue
+        try:
+            d = pd.Timestamp(raw_date).normalize()
+        except Exception:
+            continue
+        pos = int(dates.searchsorted(d, side="left"))
+        if 0 <= pos < n:
+            event_tax[pos] += float(tax)
+
+    years = annual_tax_summary.get("years") or []
+    for row in years:
+        tax = _finite_float(row.get("estimated_tax"), default=0.0)
+        year = row.get("year")
+        try:
+            year_i = int(year)
+        except (TypeError, ValueError):
+            continue
+        if tax <= 0.0:
+            continue
+        positions = np.flatnonzero(dates.year == year_i)
+        if len(positions):
+            annual_tax[int(positions[-1])] += float(tax)
+
+    out["portfolio"] = values + np.cumsum(event_tax) - np.cumsum(annual_tax)
+    return out
+
+
+def _finite_float(value: Any, *, default: float = float("nan")) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 class SimAdapter:
     """Translate between a simulated portfolio and InferenceContext."""
 
@@ -1919,6 +1983,9 @@ class SimAdapter:
             if n_years > 0 and annual_net_total_ret > -1
             else 0.0
         )
+        annual_net_equity_df = _annual_net_equity_curve(
+            equity_df, sells, annual_tax_summary,
+        )
 
         # Rotation sell/buy pairs (same-day sell with exit_reason=rotation + same-day rotation buy)
         rotations: list[dict] = []
@@ -1997,6 +2064,20 @@ class SimAdapter:
                 "ann_vol": float("nan"),
                 "sharpe_geometric": float("nan"),
             }
+        if (not annual_net_equity_df.empty
+                and "portfolio" in annual_net_equity_df.columns):
+            annual_net_risk = compute_risk_metrics(
+                annual_net_equity_df["portfolio"],
+                apy=annual_net_apy,
+                risk_free_rate=_rf_annual,
+                include_geometric=True,
+            )
+        else:
+            annual_net_risk = {
+                "sharpe":  float("nan"), "sortino": float("nan"),
+                "calmar":  float("nan"), "max_dd":  float("nan"),
+                "ann_vol": float("nan"),
+            }
 
         # 2026-05-10 audit (§5.13.4): single-Sharpe-without-falsifiability
         # is an unverified claim. Wire DSR (Bailey/Borwein/López de Prado
@@ -2060,6 +2141,12 @@ class SimAdapter:
             annual_net_final_value_estimate = annual_net_final_val,
             annual_net_total_return_estimate = annual_net_total_ret,
             annual_net_apy_estimate       = annual_net_apy,
+            annual_net_equity_df_estimate = annual_net_equity_df,
+            annual_net_sharpe_estimate    = annual_net_risk["sharpe"],
+            annual_net_sortino_estimate   = annual_net_risk["sortino"],
+            annual_net_calmar_estimate    = annual_net_risk["calmar"],
+            annual_net_max_dd_estimate    = annual_net_risk["max_dd"],
+            annual_net_ann_vol_estimate   = annual_net_risk["ann_vol"],
             annual_net_tax_years          = annual_tax_summary["years"],
             longest_no_trade_streak     = longest_streak,
             longest_no_candidate_streak = int(self._monitor_state.get("no_candidate_streak", 0)),

@@ -142,8 +142,10 @@ def test_round_trip_tax_allocation_does_not_tax_losing_lots() -> None:
 
     assert closed.loc[0, "gross_pnl"] == 20.0
     assert closed.loc[0, "tax"] == 5.0
+    assert closed.loc[0, "tax_allocation_method"] == "positive_gross_prorata"
     assert closed.loc[1, "gross_pnl"] == -10.0
     assert closed.loc[1, "tax"] == 0.0
+    assert closed.loc[1, "tax_allocation_method"] == "loss_no_tax"
     assert not ((closed["gross_pnl"] <= 0) & (closed["tax"] > 0)).any()
     assert not ((closed["gross_pnl"] > 0) & (closed["tax"] > closed["gross_pnl"])).any()
 

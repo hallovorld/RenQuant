@@ -180,6 +180,74 @@ class TestBuildResultPopulatesPerfTriple:
         assert result.tax_overstatement_vs_annual_net == pytest.approx(40.0)
         assert result.annual_net_final_value_estimate == pytest.approx(1_010.0)
         assert result.annual_net_total_return_estimate == pytest.approx(0.01)
+        assert result.annual_net_equity_df_estimate["portfolio"].iloc[-1] == pytest.approx(1_010.0)
+        assert result.annual_net_sharpe_estimate != result.sharpe
+
+    def test_annual_net_tax_path_is_first_class_perf_metric(self):
+        """AUDIT REGRESSION GUARD: annual-net tax reporting must carry its
+        own equity path and Sharpe, not just a final-value footnote.
+
+        Pre-fix, run_sim_104 could only export event-level Sharpe/APY, so WF
+        promotion evaluated a tax-cash-stress path while merely printing the
+        annual-net estimate. That made "tax exceeds gross" diagnostics hard to
+        interpret and could make APY/Sharpe look worse than the annual netting
+        model used in the forensic report.
+        """
+        adapter = _make_synthetic_adapter(n_days=252, sharpe_target=0.0,
+                                          seed=9, n_trials=1)
+        adapter._initial_cash = 1_000.0
+        idx = pd.date_range("2024-01-02", periods=4, freq="B")
+        adapter._equity_curve = [
+            {"date": idx[0], "portfolio": 1_000.0, "regime": "BULL_CALM"},
+            {"date": idx[1], "portfolio": 1_050.0, "regime": "BULL_CALM"},
+            {"date": idx[2], "portfolio": 970.0, "regime": "BULL_CALM"},
+            {"date": idx[3], "portfolio": 970.0, "regime": "BULL_CALM"},
+        ]
+        adapter._trade_log = [
+            {
+                "action": "sell",
+                "ticker": "A",
+                "date": idx[1],
+                "gross_pnl": 100.0,
+                "pnl_pct": 0.10,
+                "hold_days": 20,
+                "tax": 50.0,
+                "exit_reason": "test",
+            },
+            {
+                "action": "sell",
+                "ticker": "B",
+                "date": idx[2],
+                "gross_pnl": -80.0,
+                "pnl_pct": -0.08,
+                "hold_days": 10,
+                "tax": 0.0,
+                "exit_reason": "test",
+            },
+        ]
+        adapter._spy_df = pd.DataFrame({"close": [100, 101, 100, 102]}, index=idx)
+        adapter._config = {
+            "performance": {"n_trials": 1},
+            "tax": {
+                "short_term_rate": 0.50,
+                "long_term_rate": 0.20,
+                "long_term_threshold_days": 365,
+            },
+        }
+
+        result = adapter.build_result()
+
+        assert result.annual_net_equity_df_estimate["portfolio"].tolist() == pytest.approx([
+            1_000.0,
+            1_100.0,
+            1_020.0,
+            1_010.0,
+        ])
+        assert result.annual_net_final_value_estimate == pytest.approx(1_010.0)
+        assert math.isfinite(result.annual_net_sharpe_estimate)
+        assert result.annual_net_sharpe_estimate == pytest.approx(
+            result.annual_net_sharpe_estimate
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
