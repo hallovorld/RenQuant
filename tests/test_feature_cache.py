@@ -124,6 +124,39 @@ class TestEquivalence:
                 check_dtype=False,
             )
 
+    def test_precomputed_feature_assembly_matches_public_builder(self):
+        """Sim cache assembly must match the public live-style feature builder."""
+        from kernel.indicators import (
+            assemble_feature_frame_from_indicators,
+            build_feature_frame,
+            build_spy_context_series,
+            compute_all,
+        )
+        import pandas as pd
+
+        spy = _synthetic_ohlcv()
+        stock = _synthetic_ohlcv()
+        spec = {}
+        vol_win = 20
+
+        public_frame = build_feature_frame(stock, spy, spec, vol_win)
+        assert public_frame is not None and not public_frame.empty
+
+        stock_ind = compute_all(stock, spec)
+        spy_ind = compute_all(spy, spec)
+        spy_context = build_spy_context_series(spy, vol_window=vol_win)
+        cached_frame = assemble_feature_frame_from_indicators(
+            stock_ind, spy_ind, spy_context,
+        )
+
+        pd.testing.assert_frame_equal(
+            cached_frame,
+            public_frame,
+            rtol=1e-9,
+            atol=1e-12,
+            check_dtype=False,
+        )
+
 
 class TestContextPlumbing:
     def test_context_has_feature_cache_field(self):
@@ -194,13 +227,26 @@ class TestSimAdapterCacheBounds:
         spy = _synthetic_ohlcv(140)
         assert stock.index.max() > end
 
-        seen: list[pd.Timestamp] = []
+        seen_compute: list[pd.Timestamp] = []
+        seen_context: list[pd.Timestamp] = []
 
-        def fake_build_feature_frame(df, *_args, **_kwargs):
-            seen.append(df.index.max())
-            return pd.DataFrame({"rsi": [50.0]}, index=[df.index.max()])
+        def fake_compute_all(df, *_args, **_kwargs):
+            seen_compute.append(df.index.max())
+            return pd.DataFrame({"close": range(len(df))}, index=df.index)
 
-        monkeypatch.setattr("kernel.indicators.build_feature_frame", fake_build_feature_frame)
+        def fake_context(df, *_args, **_kwargs):
+            seen_context.append(df.index.max())
+            return pd.DataFrame({"spy_trend": [1.0] * len(df)}, index=df.index)
+
+        def fake_assemble(stock_ind, *_args, **_kwargs):
+            return pd.DataFrame({"rsi": [50.0]}, index=[stock_ind.index.max()])
+
+        monkeypatch.setattr("kernel.indicators.compute_all", fake_compute_all)
+        monkeypatch.setattr("kernel.indicators.build_spy_context_series", fake_context)
+        monkeypatch.setattr(
+            "kernel.indicators.assemble_feature_frame_from_indicators",
+            fake_assemble,
+        )
         adapter = SimAdapter.__new__(SimAdapter)
         adapter._ohlcv = {"SPY": spy, "NVDA": stock}
         adapter._config = {}
@@ -209,8 +255,46 @@ class TestSimAdapterCacheBounds:
 
         adapter._build_feature_cache()
 
-        assert seen == [end]
+        assert seen_context == [end]
+        assert seen_compute == [end, end]  # SPY once, stock once
         assert adapter._feature_cache["NVDA"].index.max() == end
+
+    def test_feature_cache_reuses_spy_context_once(self, monkeypatch):
+        """SPY regime context is shared across tickers during cache prebuild."""
+        from adapters.sim import SimAdapter
+        import pandas as pd
+
+        stock = _synthetic_ohlcv(140)
+        spy = _synthetic_ohlcv(140)
+        context_calls = 0
+
+        def fake_compute_all(df, *_args, **_kwargs):
+            return pd.DataFrame({"close": range(len(df))}, index=df.index)
+
+        def fake_context(df, *_args, **_kwargs):
+            nonlocal context_calls
+            context_calls += 1
+            return pd.DataFrame({"spy_trend": [1.0] * len(df)}, index=df.index)
+
+        def fake_assemble(stock_ind, *_args, **_kwargs):
+            return pd.DataFrame({"rsi": [50.0]}, index=[stock_ind.index.max()])
+
+        monkeypatch.setattr("kernel.indicators.compute_all", fake_compute_all)
+        monkeypatch.setattr("kernel.indicators.build_spy_context_series", fake_context)
+        monkeypatch.setattr(
+            "kernel.indicators.assemble_feature_frame_from_indicators",
+            fake_assemble,
+        )
+        adapter = SimAdapter.__new__(SimAdapter)
+        adapter._ohlcv = {"SPY": spy, "AAPL": stock, "MSFT": stock}
+        adapter._config = {}
+        adapter._backtest_end = None
+        adapter._feature_cache = {}
+
+        adapter._build_feature_cache()
+
+        assert context_calls == 1
+        assert sorted(adapter._feature_cache) == ["AAPL", "MSFT"]
 
     def test_alpha158_cache_clips_source_ohlcv_to_backtest_end(self, monkeypatch):
         """The alpha158 cache should obey the same sim-window bound."""
