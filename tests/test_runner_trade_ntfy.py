@@ -426,11 +426,52 @@ class TestFailSafe:
         )
         import logging
         caplog.set_level(logging.WARNING)
-        with patch("urllib.request.urlopen",
-                   side_effect=ConnectionError("no network")):
-            notify("RENQUANT-104", "full", ctx)   # must not raise
+        with patch.dict("os.environ", {
+            "RENQUANT_NTFY_RETRIES": "2",
+            "RENQUANT_NTFY_BACKOFF_SECONDS": "0",
+            "RENQUANT_NTFY_DISABLE_CURL_FALLBACK": "1",
+        }):
+            with patch("urllib.request.urlopen",
+                       side_effect=ConnectionError("no network")):
+                notify("RENQUANT-104", "full", ctx)   # must not raise
         assert any("ntfy publish FAILED" in rec.message
                    for rec in caplog.records)
+
+    def test_retries_transient_urlopen_failure(self):
+        """Trade ntfy must not be single-shot: transient SSL timeouts happen."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders=[{"ticker": "BAC", "shares": 13, "price": 51.80}],
+            orders_placed=[{"ticker": "BAC", "shares": 13, "price": 51.80}],
+        )
+        ok_response = SimpleNamespace(read=lambda: b"ok")
+        with patch.dict("os.environ", {
+            "RENQUANT_NTFY_RETRIES": "3",
+            "RENQUANT_NTFY_BACKOFF_SECONDS": "0",
+        }):
+            with patch("urllib.request.urlopen",
+                       side_effect=[TimeoutError("ssl handshake"), ok_response]) as m:
+                notify("RENQUANT-104", "full", ctx)
+        assert m.call_count == 2
+
+    def test_uses_curl_fallback_after_urllib_retries(self):
+        """If Python urllib keeps failing, fall back to curl before giving up."""
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders=[{"ticker": "WFC", "shares": 7, "price": 76.40}],
+            orders_placed=[{"ticker": "WFC", "shares": 7, "price": 76.40}],
+        )
+        with patch.dict("os.environ", {
+            "RENQUANT_NTFY_RETRIES": "2",
+            "RENQUANT_NTFY_BACKOFF_SECONDS": "0",
+        }):
+            with patch("urllib.request.urlopen",
+                       side_effect=TimeoutError("ssl handshake")) as urlopen:
+                with patch("subprocess.run") as curl:
+                    notify("RENQUANT-104", "full", ctx)
+        assert urlopen.call_count == 2
+        curl.assert_called_once()
+        assert b"BUY WFC x7" in curl.call_args.kwargs["input"]
 
     def test_respects_topic_env_var(self):
         notify = self._import()

@@ -336,18 +336,13 @@ def _run_once_multi_pipeline(
             if suppress_preflight_ntfy:
                 log.info("preflight ntfy suppressed by RENQUANT_SUPPRESS_PREFLIGHT_NTFY")
             else:
-                try:
-                    import urllib.request as _ureq  # noqa: PLC0415
-                    topic = _os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
-                    req = _ureq.Request(
-                        f"https://ntfy.sh/{topic}",
-                        data=str(exc).encode("utf-8"), method="POST",
-                        headers={"Title": f"{label} [{run_mode}] PREFLIGHT-FAIL",
-                                 "Priority": "urgent"},
-                    )
-                    _ureq.urlopen(req, timeout=5.0).read()
-                except Exception:
-                    pass
+                topic = _os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+                _post_ntfy_with_retries(
+                    f"https://ntfy.sh/{topic}",
+                    title=f"{label} [{run_mode}] PREFLIGHT-FAIL",
+                    body=str(exc),
+                    priority="urgent",
+                )
             raise SystemExit(2) from exc
         except ImportError:
             # preflight module not yet on PYTHONPATH (during a transitional
@@ -383,6 +378,101 @@ def _run_once_multi_pipeline(
     _notify_decision(label, run_mode, ctx, silent_if_quiet=silent_if_quiet)
 
 
+def _post_ntfy_with_retries(
+    url: str,
+    *,
+    title: str,
+    body: str,
+    priority: str,
+) -> bool:
+    """Best-effort ntfy publish with urllib retries and a curl fallback.
+
+    Live trading state is already committed before notification, so this
+    function must never raise. A transient ntfy/SSL failure is common enough
+    that a single `urlopen(..., timeout=5)` is not acceptable for trade alerts.
+    """
+    import os
+    import subprocess
+    import time
+    import urllib.request
+
+    def _env_int(name: str, default: int, *, lo: int, hi: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            val = int(raw)
+        except ValueError:
+            return default
+        return min(max(val, lo), hi)
+
+    def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            val = float(raw)
+        except ValueError:
+            return default
+        return min(max(val, lo), hi)
+
+    attempts = _env_int("RENQUANT_NTFY_RETRIES", 3, lo=1, hi=5)
+    timeout = _env_float("RENQUANT_NTFY_TIMEOUT_SECONDS", 5.0, lo=1.0, hi=30.0)
+    backoff = _env_float("RENQUANT_NTFY_BACKOFF_SECONDS", 1.0, lo=0.0, hi=10.0)
+    body_bytes = body.encode("utf-8")
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body_bytes,
+                method="POST",
+                headers={"Title": title, "Priority": priority},
+            )
+            urllib.request.urlopen(req, timeout=timeout).read()
+            log.info("ntfy sent: %s | %s", title, body)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < attempts:
+                log.warning(
+                    "ntfy publish attempt %d/%d failed (%s); retrying",
+                    attempt, attempts, exc,
+                )
+                if backoff > 0:
+                    time.sleep(backoff * attempt)
+
+    if os.environ.get("RENQUANT_NTFY_DISABLE_CURL_FALLBACK") != "1":
+        try:
+            subprocess.run(
+                [
+                    "curl", "-fsS",
+                    "--connect-timeout", str(min(timeout, 10.0)),
+                    "--max-time", str(max(timeout + 5.0, 10.0)),
+                    "-H", f"Title: {title}",
+                    "-H", f"Priority: {priority}",
+                    "--data-binary", "@-",
+                    url,
+                ],
+                input=body_bytes,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=max(timeout + 7.0, 12.0),
+            )
+            log.info("ntfy sent via curl fallback: %s | %s", title, body)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ntfy curl fallback FAILED (%s)", exc)
+
+    log.warning(
+        "ntfy publish FAILED after %d urllib attempt(s) (%s) — cycle still committed: %s",
+        attempts, last_exc, body,
+    )
+    return False
+
+
 def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = False) -> None:
     """Fire ntfy on every decision cycle.
 
@@ -400,7 +490,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     unmanaged broker position to surface. Kept LOUD for trades + any
     failure mode the operator should see.
     """
-    import os, urllib.request  # noqa: PLC0415
+    import os  # noqa: PLC0415
     # IMPORTANT: read the BROKER-CONFIRMED order list (orders_placed),
     # populated by adapter.commit AFTER the duplicate-order guard and
     # broker submission. `ctx.orders` is merely the pipeline intent and
@@ -633,16 +723,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     title    = f"{label} [{run_mode}] {tag}"
     body     = " | ".join(parts)
     url      = f"https://ntfy.sh/{topic}"
-    try:
-        req = urllib.request.Request(
-            url, data=body.encode("utf-8"), method="POST",
-            headers={"Title": title, "Priority": priority},
-        )
-        urllib.request.urlopen(req, timeout=5.0).read()
-        log.info("ntfy sent: %s | %s", title, body)
-    except Exception as exc:
-        log.warning("ntfy publish FAILED (%s) — cycle still committed: %s",
-                    exc, body)
+    _post_ntfy_with_retries(url, title=title, body=body, priority=priority)
 
 
 def run_once_multi(
