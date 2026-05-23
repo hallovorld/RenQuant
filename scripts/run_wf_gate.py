@@ -75,6 +75,32 @@ def _resolve_strategy_path(raw: str | None) -> Path | None:
     return p if p.is_absolute() else STRATEGY_DIR / p
 
 
+_EXECUTION_ONLY_PARAM_KEYS = {
+    "nthread",
+    "n_jobs",
+    "num_threads",
+    "verbosity",
+    "verbose",
+    "silent",
+}
+
+
+def _semantic_params(params: dict) -> dict:
+    """Return learner params that define the statistical recipe.
+
+    Thread counts and logging verbosity are execution controls. Treating them
+    as recipe fields makes a hardware upgrade invalidate otherwise comparable
+    walk-forward manifests, while leaving learning parameters such as eta,
+    max_depth, objective, seed, and tree_method in the fingerprint.
+    """
+    if not isinstance(params, dict):
+        return {}
+    return {
+        k: v for k, v in params.items()
+        if str(k) not in _EXECUTION_ONLY_PARAM_KEYS
+    }
+
+
 def _recipe_projection(artifact: dict) -> dict:
     """Return the model-recipe fields a WF manifest must match.
 
@@ -88,7 +114,7 @@ def _recipe_projection(artifact: dict) -> dict:
         "feature_cols": list(artifact.get("feature_cols") or []),
         "label_col": artifact.get("label_col"),
         "lookahead_days": int(artifact.get("lookahead_days") or 0),
-        "params": artifact.get("params") or {},
+        "params": _semantic_params(artifact.get("params") or {}),
     }
 
 
