@@ -210,3 +210,115 @@ class TestQPMuContract:
         idx_contract = names.index("ValidateQPMuContractTask")
         idx_weights = names.index("BuildWeightVectorTask")
         assert idx_gk < idx_contract < idx_weights
+
+
+class TestQPHorizonContract:
+    """QP μ/σ must describe the same single-period horizon.
+
+    Calibrator μ is a forward-return estimate over panel_ltr.lookahead_days
+    while realized-vol fallback is annualized. Markowitz optimization is
+    single-period: expected return and covariance must share the same period.
+    """
+
+    def test_annualized_sigma_is_scaled_to_mu_horizon(self):
+        from kernel.portfolio_qp.tasks import AlignQPHorizonUnitsTask
+        ctx = _make_ctx(
+            mu=[0.02, 0.01],
+            sigma=[0.20, 0.10],
+            panel_ltr={"lookahead_days": 63},
+            rotation={"joint_actions": {
+                "qp_sigma_horizon_mode": "match_mu",
+                "qp_sigma_unit": "annualized",
+                "qp_horizon_contract": "strict",
+            }},
+        )
+
+        assert AlignQPHorizonUnitsTask().run(ctx) is None
+        np.testing.assert_allclose(ctx._qp_sigma, [0.10, 0.05], atol=1e-12)
+        assert ctx._qp_horizon_contract["sigma_unit"] == "annualized"
+        assert ctx._qp_horizon_contract["mu_horizon_days"] == 63
+
+    def test_horizon_sigma_is_not_rescaled(self):
+        from kernel.portfolio_qp.tasks import AlignQPHorizonUnitsTask
+        ctx = _make_ctx(
+            mu=[0.02],
+            sigma=[0.08],
+            rotation={"joint_actions": {
+                "qp_sigma_horizon_mode": "match_mu",
+                "qp_sigma_unit": "horizon",
+                "qp_mu_horizon_days": 60,
+            }},
+        )
+
+        assert AlignQPHorizonUnitsTask().run(ctx) is None
+        assert ctx._qp_sigma[0] == pytest.approx(0.08, abs=1e-12)
+        assert ctx._qp_horizon_contract["scale"] == pytest.approx(1.0)
+
+    def test_missing_horizon_strict_contract_blocks_qp(self):
+        from kernel.portfolio_qp.tasks import AlignQPHorizonUnitsTask
+        ctx = _make_ctx(
+            mu=[0.02],
+            sigma=[0.08],
+            rotation={"joint_actions": {
+                "qp_sigma_horizon_mode": "match_mu",
+                "qp_sigma_unit": "annualized",
+                "qp_horizon_contract": "strict",
+            }},
+        )
+
+        assert AlignQPHorizonUnitsTask().run(ctx) is False
+        assert ctx._qp_horizon_contract["ok"] is False
+
+    def test_task_is_wired_between_mu_contract_and_covariance(self):
+        from kernel.portfolio_qp.job_qp import JointPortfolioQPJob
+        job = JointPortfolioQPJob()
+        names = [type(t).__name__ for t in job.tasks]
+        idx_contract = names.index("ValidateQPMuContractTask")
+        idx_horizon = names.index("AlignQPHorizonUnitsTask")
+        idx_sigma = names.index("ComputeFullSigmaTask")
+        assert idx_contract < idx_horizon < idx_sigma
+
+
+class TestQPCashDeploymentContract:
+    """The cash-drag target must not force deployment into negative edge."""
+
+    def _solver_kwargs(self, mu):
+        from kernel.portfolio_qp.tasks import SolveMarkowitzQPTask
+        ctx = _make_ctx(
+            mu=mu,
+            sigma=[0.10] * len(mu),
+            rotation={"joint_actions": {
+                "qp_min_invested_pct": 0.70,
+                "qp_min_invested_requires_positive_edge": True,
+                "qp_min_invested_edge_floor": 0.002,
+            }},
+        )
+        n = len(mu)
+        ctx._qp_w_current = np.zeros(n)
+        ctx._qp_Sigma_full = None
+        ctx._qp_cash_reserve = 0.0
+        ctx._qp_w_upper = np.ones(n)
+        ctx._qp_w_lower = np.zeros(n)
+        ctx._qp_dw_max = np.ones(n)
+        ctx._qp_wash_mask = np.zeros(n, dtype=bool)
+        ctx._qp_tax_cost = np.zeros(n)
+        ctx._qp_turnover_max = None
+        ctx._qp_v_daily_dollar = None
+        ctx._qp_sector_indicator = None
+        ctx._qp_sector_cap_vec = None
+        ctx._qp_corr_group_pairs = None
+        ctx._qp_gross_max = None
+        ctx.portfolio_value = 100_000.0
+        return SolveMarkowitzQPTask._build_solver_kwargs(  # noqa: SLF001
+            ctx, ctx.config["rotation"]["joint_actions"]
+        ), ctx
+
+    def test_min_invested_drops_to_zero_when_no_positive_edge(self):
+        kwargs, ctx = self._solver_kwargs(mu=[-0.01, 0.001])
+        assert kwargs["min_invested_pct"] == pytest.approx(0.0)
+        assert ctx._qp_min_invested_contract["blocked"] is True
+
+    def test_min_invested_survives_when_best_mu_clears_hurdle(self):
+        kwargs, ctx = self._solver_kwargs(mu=[-0.01, 0.01])
+        assert kwargs["min_invested_pct"] == pytest.approx(0.70)
+        assert ctx._qp_min_invested_contract["blocked"] is False

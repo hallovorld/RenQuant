@@ -39,6 +39,7 @@ from .tasks import (
     ApplyConvictionCapTask,
     ApplyExposureScalingTask,
     ApplyGrinoldKahnTransformTask,
+    AlignQPHorizonUnitsTask,
     ForceMuSourceTask,
     BuildADVVectorTask,
     BuildCorrelationGroupConstraintTask,
@@ -175,6 +176,10 @@ class JointPortfolioQPJob(Job):
             # QP expects μ to be expected-return-like. Strict by default:
             # raw rank/panel scores cannot silently reach the optimizer.
             ValidateQPMuContractTask(),
+            # QP expects μ and σ/Σ to share one rebalance horizon. Calibrator
+            # μ is 60d in prod; realized-vol fallback is annualized, so align
+            # σ before covariance construction.
+            AlignQPHorizonUnitsTask(),
             BuildWeightVectorTask(),
             ComputeFullSigmaTask(),
             ShrinkSigmaLedoitWolfTask(),           # G5: LW shrinkage (off by default)

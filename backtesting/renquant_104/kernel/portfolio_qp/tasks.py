@@ -144,6 +144,45 @@ class ComputeFullSigmaTask(Task):
             return None
 
 
+class AlignQPHorizonUnitsTask(Task):
+    """Align QP σ to the same single-period horizon as μ.
+
+    Markowitz 1952 and Boyd-Vandenberghe 2004 portfolio objectives assume
+    μ and Σ describe the same rebalance period. In 104, calibrator μ is a
+    forward-return estimate over `panel_ltr.lookahead_days`, while the
+    realized-vol fallback is explicitly annualized. This task converts σ
+    before Σ is built so risk and expected-return units match.
+    """
+    name = "AlignQPHorizonUnitsTask"
+    TRADING_DAYS_PER_YEAR = 252.0
+
+    def run(self, ctx) -> bool | None:
+        cfg = _qp_cfg(ctx)
+        mode = str(cfg.get("qp_sigma_horizon_mode", "none")).lower()
+        sigma = _get_path(ctx, "_qp_sigma")
+        if sigma is None or mode in {"none", "off", "disabled"}:
+            return
+        horizon = _resolve_qp_mu_horizon_days(ctx, cfg)
+        unit = str(cfg.get("qp_sigma_unit", "horizon")).lower()
+        if horizon is None:
+            return _record_qp_horizon_issue(ctx, cfg, "missing_mu_horizon")
+        if getattr(ctx, "_qp_sigma_horizon_scaled", False):
+            return
+        scale = _qp_sigma_horizon_scale(unit, horizon)
+        if scale is None:
+            return _record_qp_horizon_issue(ctx, cfg, f"unknown_sigma_unit:{unit}")
+        sig = np.asarray(sigma, dtype=float)
+        if not np.isfinite(sig).all() or (sig <= 0).any():
+            return _record_qp_horizon_issue(ctx, cfg, "non_positive_sigma")
+        ctx._qp_sigma_raw = sig.copy()  # noqa: SLF001
+        ctx._qp_sigma = sig * scale     # noqa: SLF001
+        ctx._qp_sigma_horizon_scaled = True  # noqa: SLF001
+        ctx._qp_horizon_contract = {  # noqa: SLF001
+            "ok": True, "sigma_unit": unit, "mu_horizon_days": int(horizon),
+            "scale": float(scale),
+        }
+
+
 # ── 2b. Ledoit-Wolf 2004 Σ shrinkage (post-step on full Σ) ──────────────────
 
 class ShrinkSigmaLedoitWolfTask(Task):
@@ -1116,7 +1155,7 @@ class SolveMarkowitzQPTask(Task):
             fixed_cost_per_trade=float(cfg.get("qp_fixed_cost_per_trade", 0.0)),
             fixed_cost_beta=float(cfg.get("qp_fixed_cost_beta", 200.0)),
             budget_mode=str(cfg.get("qp_budget_mode", "inequality")),
-            min_invested_pct=float(cfg.get("qp_min_invested_pct", 0.0)),
+            min_invested_pct=_effective_min_invested_pct(ctx, cfg),
             cash_drag_lambda=float(cfg.get("qp_cash_drag_lambda", 0.05)),
             sector_indicator=_get_path(ctx, "_qp_sector_indicator"),
             sector_cap_vec=_get_path(ctx, "_qp_sector_cap_vec"),
@@ -1654,6 +1693,14 @@ _QP_PER_REGIME_KEYS = (
     "qp_cvar_alpha",
     "qp_turnover_max",
     "qp_risk_aversion",
+    "qp_min_invested_pct",
+    "qp_cash_drag_lambda",
+    "qp_min_invested_requires_positive_edge",
+    "qp_min_invested_edge_floor",
+    "qp_mu_horizon_days",
+    "qp_sigma_unit",
+    "qp_sigma_horizon_mode",
+    "qp_horizon_contract",
 )
 
 
@@ -1666,6 +1713,63 @@ def _qp_cfg(ctx) -> dict:
             if key in regime_p:
                 base[key] = regime_p[key]
     return base
+
+
+def _resolve_qp_mu_horizon_days(ctx, cfg: dict) -> int | None:
+    raw = cfg.get("qp_mu_horizon_days")
+    if raw is None:
+        raw = (ctx.config.get("panel_ltr", {}) or {}).get("lookahead_days")
+    if raw is None:
+        raw = ctx.config.get("lookahead_days")
+    try:
+        horizon = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return horizon if horizon > 0 else None
+
+
+def _qp_sigma_horizon_scale(unit: str, horizon_days: int) -> float | None:
+    if unit in {"horizon", "period", "matched"}:
+        return 1.0
+    if unit in {"annual", "annualized", "ann"}:
+        return math.sqrt(float(horizon_days) / 252.0)
+    if unit == "daily":
+        return math.sqrt(float(horizon_days))
+    return None
+
+
+def _record_qp_horizon_issue(ctx, cfg: dict, reason: str) -> bool | None:
+    contract = str(cfg.get("qp_horizon_contract", cfg.get("qp_mu_contract", "warn"))).lower()
+    report = {"ok": False, "reason": reason}
+    ctx._qp_horizon_contract = report  # noqa: SLF001
+    counters = getattr(ctx, "counters", None)
+    if counters is not None:
+        key = "qp_horizon_contract_block" if contract == "strict" else "qp_horizon_contract_warn"
+        counters[key] = counters.get(key, 0) + 1
+    log.warning("AlignQPHorizonUnitsTask: %s", reason)
+    return False if contract == "strict" else None
+
+
+def _effective_min_invested_pct(ctx, cfg: dict) -> float:
+    base = float(cfg.get("qp_min_invested_pct", 0.0) or 0.0)
+    if base <= 0.0 or not bool(cfg.get("qp_min_invested_requires_positive_edge", False)):
+        return base
+    mu = np.asarray(_get_path(ctx, "_qp_mu"), dtype=float)
+    finite = mu[np.isfinite(mu)]
+    best_mu = float(np.max(finite)) if finite.size else float("-inf")
+    floor = float(cfg.get("qp_min_invested_edge_floor", _round_trip_cost(cfg)))
+    blocked = best_mu <= floor
+    ctx._qp_min_invested_contract = {  # noqa: SLF001
+        "base": base, "effective": 0.0 if blocked else base,
+        "best_mu": best_mu, "edge_floor": floor, "blocked": blocked,
+    }
+    return 0.0 if blocked else base
+
+
+def _round_trip_cost(cfg: dict) -> float:
+    fee = float(cfg.get("fee_pct", cfg.get("qp_cost_kappa", 0.0)) or 0.0)
+    slip = float(cfg.get("slippage_pct", 0.0) or 0.0)
+    return 2.0 * (fee + slip)
 
 
 def _compute_qp_wash_mask(
