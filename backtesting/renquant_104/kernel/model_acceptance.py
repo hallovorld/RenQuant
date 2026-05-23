@@ -101,7 +101,9 @@ def _safe_get_metadata(artifact: dict) -> dict:
     """Extract `metadata` block; some artifacts have it nested, some flat."""
     md = artifact.get("metadata")
     if isinstance(md, dict):
-        return md
+        merged = {k: v for k, v in artifact.items() if k != "metadata"}
+        merged.update(md)
+        return merged
     return artifact   # flat
 
 

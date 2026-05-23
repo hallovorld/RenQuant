@@ -238,6 +238,21 @@ def main() -> None:
     # for one run.
     acceptance_cfg = config.get("acceptance", {})
     acceptance_enabled = bool(acceptance_cfg.get("enabled", True)) and not args.skip_acceptance
+    if acceptance_enabled and args.skip_panel:
+        log.info(
+            "Acceptance disabled for --skip-panel: no candidate panel artifact "
+            "is produced for ModelAcceptanceGate."
+        )
+        acceptance_enabled = False
+    if acceptance_enabled and not args.skip_baseline:
+        log.error(
+            "Refusing acceptance-enabled training with BaselineTournamentJob: "
+            "panel/calibrator/NGBoost are staged, but per-ticker baseline "
+            "model exports are still production writes. Re-run with "
+            "--skip-baseline, or explicitly use --skip-acceptance for an "
+            "operator-controlled baseline refresh."
+        )
+        sys.exit(2)
 
     # Snapshot the active panel-ltr artifact BEFORE training runs.
     # BUG-G7 fix (2026-04-28): respect `panel_ltr.artifact_path` from
@@ -253,6 +268,22 @@ def main() -> None:
         or panel_cfg.get("artifact_path", "artifacts/panel-ltr.json")
     )
     active_path = _resolve_strategy_path(strategy_dir, artifact_rel)
+    if (
+        acceptance_enabled
+        and not args.skip_panel
+        and "alpha158_fund" in active_path.name
+        and _os.environ.get("RQ_ALLOW_LEGACY_PANEL_TRAINER") != "1"
+    ):
+        log.error(
+            "Refusing to train %s through FullTrainingPipeline: that path "
+            "uses the legacy 22-feature panel builder, while the active "
+            "alpha158_fund production artifact uses the alpha158+fund schema. "
+            "Use `.venv/bin/python -m training_panel.daily_retrain_alpha158_fund "
+            "--staged` to produce a schema-compatible candidate, then run "
+            "acceptance/WF on the staged artifact.",
+            active_path,
+        )
+        sys.exit(2)
     candidate_panel_path: Path | None = None
     candidate_calibrator_path: Path | None = None
     if acceptance_enabled:
@@ -273,13 +304,21 @@ def main() -> None:
         shutil.copy2(str(active_path), str(pre_train_snapshot))
         log.info("Acceptance: snapshotted active artifact to %s", pre_train_snapshot.name)
 
+    pipeline_skip_recalibrate = args.skip_recalibrate or acceptance_enabled
+    if acceptance_enabled and not args.skip_recalibrate:
+        log.info(
+            "Acceptance: deferring RecalibrationJob production writes until "
+            "after promotion; panel-specific calibrator refresh still writes "
+            "to the staged candidate path."
+        )
+
     ctx = FullTrainingContext(
         config=config,
         strategy=args.strategy,
         strategy_dir=strategy_dir,
         skip_baseline=args.skip_baseline,
         skip_panel=args.skip_panel,
-        skip_recalibrate=args.skip_recalibrate,
+        skip_recalibrate=pipeline_skip_recalibrate,
         force_retrain=args.force,
     )
     FullTrainingPipeline().run(ctx)
@@ -328,7 +367,6 @@ def main() -> None:
                 # Emergency override: set RQ_ALLOW_NO_WF=1 in the calling
                 # shell environment (NOT here — must be explicit per cron
                 # invocation, not script-default).
-                import os as _os                                   # noqa: PLC0415
                 if _os.environ.get("RQ_ALLOW_NO_WF") == "1":
                     log.warning(
                         "DAILY RETRAIN: RQ_ALLOW_NO_WF=1 set externally — "

@@ -119,6 +119,32 @@ class TestStagingActiveFlow:
         assert 'ranking["artifact_path"] = candidate_panel_rel' in SCRIPT_SRC
         assert 'panel_cfg["artifact_path"] = candidate_panel_rel' in SCRIPT_SRC
 
+    def test_acceptance_defers_recalibration_side_effects(self):
+        """Acceptance-enabled retrains must not mutate production
+        per-ticker policy metadata before the panel candidate is accepted.
+        The panel-specific calibrator is already refreshed inside
+        PanelTrainingPipeline to the staged path."""
+        assert "pipeline_skip_recalibrate = args.skip_recalibrate or acceptance_enabled" in SCRIPT_SRC
+        assert "deferring RecalibrationJob production writes" in SCRIPT_SRC
+
+    def test_acceptance_refuses_unstaged_baseline_exports(self):
+        """BaselineTournamentJob still writes per-ticker production models.
+        Until that bundle is staged too, acceptance-enabled panel retrains
+        must require --skip-baseline instead of leaving side effects after a
+        rejected panel artifact."""
+        assert "Refusing acceptance-enabled training with BaselineTournamentJob" in SCRIPT_SRC
+        assert "Re-run with " in SCRIPT_SRC
+        assert "--skip-baseline" in SCRIPT_SRC
+        assert "sys.exit(2)" in SCRIPT_SRC
+
+    def test_alpha158_prod_path_refuses_legacy_panel_trainer(self):
+        """The active alpha158_fund artifact must not be refreshed by the
+        legacy 22-feature FullTrainingPipeline panel builder."""
+        assert "RQ_ALLOW_LEGACY_PANEL_TRAINER" in SCRIPT_SRC
+        assert "legacy 22-feature panel builder" in SCRIPT_SRC
+        assert "daily_retrain_alpha158_fund" in SCRIPT_SRC
+        assert "--staged" in SCRIPT_SRC
+
     def test_active_path_resolved_from_config(self):
         """BUG-G7 fix (2026-04-28): active_path comes from
         config.panel_ltr.artifact_path (default `artifacts/panel-ltr.json`),

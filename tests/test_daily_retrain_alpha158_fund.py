@@ -29,6 +29,7 @@ from training_panel.daily_retrain_alpha158_fund import (  # noqa: E402
     TrainPanelLTRTask,
     RefitCalibratorTask,
     _newest_mtime,
+    _staging_path,
 )
 
 
@@ -80,6 +81,12 @@ class TestNewestMtime:
         assert _newest_mtime(d) == 500.0
 
 
+def test_staging_path_convention(tmp_path):
+    assert _staging_path(tmp_path / "panel-ltr.alpha158_fund.json").name == (
+        "panel-ltr.alpha158_fund.staging.json"
+    )
+
+
 # ── BuildAlpha158PanelTask.should_skip ───────────────────────────────────────
 
 class TestBuildAlpha158PanelTaskSkip:
@@ -120,8 +127,14 @@ class TestMergeFundFeaturesTaskSkip:
         _touch(ctx.sec_fund_panel, mtime=100)
         assert MergeFundFeaturesTask().should_skip(ctx) is None
 
+    def test_run_truncates_to_sec_coverage_by_default(self, ctx):
+        with patch("training_panel.daily_retrain_alpha158_fund._run_script") as m:
+            MergeFundFeaturesTask().run(ctx)
+            m.assert_called_once()
+        assert "--truncate-to-sec-max" in m.call_args.args[1]
 
-# ── TrainPanelLTRTask + copy semantics ───────────────────────────────────────
+
+# ── TrainPanelLTRTask output routing ─────────────────────────────────────────
 
 class TestTrainPanelLTRTask:
     def test_skips_when_artifact_newer_than_panel(self, ctx):
@@ -134,11 +147,17 @@ class TestTrainPanelLTRTask:
         _touch(ctx.fund_merged_panel, mtime=200)
         assert TrainPanelLTRTask().should_skip(ctx) is None
 
-    def test_run_invokes_script_and_copies(self, ctx):
-        _touch(ctx.xgb_artifact_src)  # script "produces" this file
-        with patch("training_panel.daily_retrain_alpha158_fund._run_script") as m:
+    def test_run_invokes_script_with_output_path(self, ctx):
+        def fake_run(script, args=None, cwd=None):
+            _touch(ctx.xgb_artifact_dst)
+
+        with patch("training_panel.daily_retrain_alpha158_fund._run_script",
+                   side_effect=fake_run) as m:
             TrainPanelLTRTask().run(ctx)
             m.assert_called_once()
+        called_args = m.call_args.args[1]
+        assert "--output-path" in called_args
+        assert str(ctx.xgb_artifact_dst) in called_args
         assert ctx.xgb_artifact_dst.exists()
 
     def test_run_raises_when_script_did_not_produce_artifact(self, ctx):
@@ -160,6 +179,16 @@ class TestRefitCalibratorTaskSkip:
         _touch(ctx.calibrator_artifact, mtime=100)
         _touch(ctx.xgb_artifact_dst, mtime=200)
         assert RefitCalibratorTask().should_skip(ctx) is None
+
+    def test_run_pairs_calibrator_with_candidate_scorer(self, ctx):
+        with patch("training_panel.daily_retrain_alpha158_fund._run_script") as m:
+            RefitCalibratorTask().run(ctx)
+            m.assert_called_once()
+        called_args = m.call_args.args[1]
+        assert "--scorer-artifact" in called_args
+        assert str(ctx.xgb_artifact_dst) in called_args
+        assert "--out" in called_args
+        assert str(ctx.calibrator_artifact) in called_args
 
 
 # ── Pipeline orchestration ───────────────────────────────────────────────────

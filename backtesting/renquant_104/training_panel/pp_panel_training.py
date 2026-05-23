@@ -3201,8 +3201,21 @@ class NGBoostSaveTask(PanelTask):
             shutil.copy2(str(out_path), str(prior_snapshot))
 
         # Stage the new artifact at .staging.json — never touch out_path
-        # until acceptance passes.
-        staging_path = out_path.with_suffix(".staging.json")
+        # until acceptance passes. When the outer train_104 acceptance wrapper
+        # has already rewritten artifact_path to a candidate *.staging.json,
+        # treat that path itself as the candidate output. Pre-fix, the inner
+        # NGBoost saver appended another suffix and produced
+        # ``*.staging.staging.json`` while logs misleadingly claimed the prior
+        # head lived at the candidate path.
+        acceptance_candidate = (
+            bool(ctx.config.get("_acceptance_staging"))
+            and out_path.name.endswith(".staging.json")
+        )
+        staging_path = (
+            out_path.with_suffix(".tmp.json")
+            if acceptance_candidate
+            else out_path.with_suffix(".staging.json")
+        )
         ctx.ngboost_head.save(staging_path, metadata=meta)
 
         if ngb_min_val_ic is not None:
@@ -3215,6 +3228,19 @@ class NGBoostSaveTask(PanelTask):
                     "for diagnostic; prior head preserved at %s.",
                     val_mu_ic, ngb_min_val_ic, staging_path, out_path,
                 )
+                # Don't promote. If this is an outer acceptance candidate,
+                # preserve the rejected head as a diagnostic file and leave the
+                # candidate path absent so no later promote path can mistake it
+                # for an accepted staged head.
+                if acceptance_candidate and staging_path.exists():
+                    rejected_path = out_path.with_name(
+                        f"{out_path.stem}.rejected.json"
+                    )
+                    try:
+                        import os as _os  # noqa: PLC0415
+                        _os.replace(str(staging_path), str(rejected_path))
+                    except OSError:
+                        pass
                 # Don't promote. If we had a prior snapshot, the prior
                 # production artifact is still in place at out_path.
                 if prior_snapshot and prior_snapshot.exists():

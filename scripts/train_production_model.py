@@ -416,6 +416,30 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
     return artifact
 
 
+def attach_inference_smoke(artifact: dict, booster: xgb.Booster,
+                           feat_cols: list[str]) -> None:
+    """Stamp deterministic scorer smoke evidence used by acceptance gates.
+
+    The sample is synthetic by design: it tests serialization/load-time score
+    mechanics and output diversity without depending on the current market
+    data cache. Walk-forward/sim gates remain responsible for economic value.
+    """
+    rng = np.random.default_rng(104)
+    X = rng.standard_normal((32, len(feat_cols))).astype(np.float64)
+    scores = booster.predict(xgb.DMatrix(X))
+    finite = np.isfinite(scores)
+    md = artifact.setdefault("metadata", {})
+    md["score_sample_range"] = [
+        float(np.nanmin(scores)) if len(scores) else float("nan"),
+        float(np.nanmax(scores)) if len(scores) else float("nan"),
+    ]
+    md["inference_smoke_test"] = {
+        "n": int(len(scores)),
+        "all_finite": bool(finite.all()) if len(scores) else False,
+        "n_unique": int(len(set(np.round(scores[finite], 12)))) if finite.any() else 0,
+    }
+
+
 def main():
     args = parse_args()
     cutoff_date, out_path, is_walkforward = resolve_paths(args)
@@ -457,6 +481,15 @@ def main():
         log.info("Fingerprint: %s", fp)
     else:
         log.info("Walk-forward artifact — skipping fingerprint stamp (§5.13.13).")
+    attach_inference_smoke(artifact, booster, feat_cols)
+    smoke = artifact.get("metadata", {}).get("inference_smoke_test", {})
+    log.info(
+        "Inference smoke: n=%s all_finite=%s n_unique=%s range=%s",
+        smoke.get("n"),
+        smoke.get("all_finite"),
+        smoke.get("n_unique"),
+        artifact.get("metadata", {}).get("score_sample_range"),
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(artifact))

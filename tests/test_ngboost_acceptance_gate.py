@@ -57,3 +57,70 @@ def test_negative_val_mu_ic_rejects_by_default(tmp_path):
     staging = strategy_dir / "artifacts" / "ngboost-head.staging.json"
     assert staging.exists()
     assert json.loads(staging.read_text())["val_mu_ic"] == -0.01
+
+
+def test_outer_acceptance_candidate_does_not_double_stage(tmp_path):
+    from training_panel.pp_panel_training import NGBoostSaveTask
+
+    strategy_dir = tmp_path / "backtesting" / "renquant_104"
+    strategy_dir.mkdir(parents=True)
+    candidate = strategy_dir / "artifacts" / "ngboost-head.staging.json"
+
+    ctx = SimpleNamespace(
+        ngboost_head=_StubNGBoostHead(),
+        ngboost_fit={
+            "val_mu_ic": -0.01,
+            "train_mu_mean": 0.0,
+            "train_sigma_mean": 1.0,
+            "train_mu_ic": 0.1,
+            "n_rows": 100,
+        },
+        config={
+            "_acceptance_staging": {"candidate_panel_artifact_path": "panel.staging.json"},
+            "panel_ltr": {"ngboost": {"artifact_path": "artifacts/ngboost-head.staging.json"}},
+            "ranking": {"panel_scoring": {"ngboost": {"artifact_path": "artifacts/ngboost-head.staging.json"}}},
+        },
+        strategy_dir=strategy_dir,
+        ngboost_artifact_path=None,
+    )
+
+    NGBoostSaveTask().run(ctx)
+
+    assert not (strategy_dir / "artifacts" / "ngboost-head.staging.staging.json").exists()
+    assert not candidate.exists()
+    rejected = strategy_dir / "artifacts" / "ngboost-head.staging.rejected.json"
+    assert rejected.exists()
+    assert json.loads(rejected.read_text())["val_mu_ic"] == -0.01
+
+
+def test_outer_acceptance_positive_head_writes_candidate_path(tmp_path):
+    from training_panel.pp_panel_training import NGBoostSaveTask
+
+    strategy_dir = tmp_path / "backtesting" / "renquant_104"
+    strategy_dir.mkdir(parents=True)
+    candidate = strategy_dir / "artifacts" / "ngboost-head.staging.json"
+
+    ctx = SimpleNamespace(
+        ngboost_head=_StubNGBoostHead(),
+        ngboost_fit={
+            "val_mu_ic": 0.02,
+            "train_mu_mean": 0.0,
+            "train_sigma_mean": 1.0,
+            "train_mu_ic": 0.1,
+            "n_rows": 100,
+        },
+        config={
+            "_acceptance_staging": {"candidate_panel_artifact_path": "panel.staging.json"},
+            "panel_ltr": {"ngboost": {"artifact_path": "artifacts/ngboost-head.staging.json"}},
+            "ranking": {"panel_scoring": {"ngboost": {"artifact_path": "artifacts/ngboost-head.staging.json"}}},
+        },
+        strategy_dir=strategy_dir,
+        ngboost_artifact_path=None,
+    )
+
+    NGBoostSaveTask().run(ctx)
+
+    assert candidate.exists()
+    assert not (strategy_dir / "artifacts" / "ngboost-head.staging.staging.json").exists()
+    assert json.loads(candidate.read_text())["val_mu_ic"] == 0.02
+    assert ctx.ngboost_artifact_path == candidate

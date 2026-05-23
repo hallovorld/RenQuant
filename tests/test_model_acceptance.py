@@ -29,6 +29,7 @@ from kernel.model_acceptance import (   # noqa: E402
     promote,
     reject,
     rollback,
+    _safe_get_metadata,
 )
 
 
@@ -51,6 +52,18 @@ def _write_artifact(path: Path, **kwargs) -> Path:
 
 
 # ── G1 Schema compatibility ───────────────────────────────────────────────────
+
+class TestMetadataExtraction:
+    def test_nested_metadata_does_not_hide_top_level_contract_fields(self):
+        artifact = {
+            "oos_mean_ic": 0.04,
+            "feature_cols": ["a", "b"],
+            "metadata": {"score_sample_range": [-0.1, 0.2]},
+        }
+        md = _safe_get_metadata(artifact)
+        assert md["oos_mean_ic"] == 0.04
+        assert md["score_sample_range"] == [-0.1, 0.2]
+
 
 class TestG1Schema:
     def test_same_length_passes(self, tmp_path):

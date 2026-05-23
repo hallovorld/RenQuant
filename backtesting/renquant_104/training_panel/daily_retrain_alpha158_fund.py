@@ -34,8 +34,8 @@ Usage (interactive):
 """
 from __future__ import annotations
 
+import argparse
 import logging
-import shutil
 import subprocess
 import sys
 import time
@@ -72,6 +72,7 @@ class DailyRetrainContext:
     skipped: list[str] = field(default_factory=list)
     elapsed: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    truncate_to_sec_max: bool = True
 
 
 class RetrainTask(ABC):
@@ -135,15 +136,16 @@ class MergeFundFeaturesTask(RetrainTask):
         return None
 
     def run(self, ctx: DailyRetrainContext) -> None:
-        _run_script(ctx.repo_dir / "scripts" / "build_alpha158_fund_panel.py")
+        args = ["--truncate-to-sec-max"] if ctx.truncate_to_sec_max else []
+        _run_script(ctx.repo_dir / "scripts" / "build_alpha158_fund_panel.py", args)
 
 
 class TrainPanelLTRTask(RetrainTask):
-    """Phase 3 — fit XGBoost rank:pairwise on 163-feature panel + promote.
+    """Phase 3 — fit XGBoost rank:pairwise on 163-feature panel.
 
-    Trains via scripts/train_production_model.py (writes to data/) then
-    copies the artifact to artifacts/panel-ltr.alpha158_fund.json which
-    is the path the live config reads.
+    Trains via scripts/train_production_model.py and writes directly to
+    ``ctx.xgb_artifact_dst``. Production runs may point that at the active
+    artifact; acceptance/WF runs point it at a staged candidate path.
     """
 
     def should_skip(self, ctx: DailyRetrainContext) -> str | None:
@@ -154,13 +156,15 @@ class TrainPanelLTRTask(RetrainTask):
         return None
 
     def run(self, ctx: DailyRetrainContext) -> None:
-        _run_script(ctx.repo_dir / "scripts" / "train_production_model.py")
-        if not ctx.xgb_artifact_src.exists():
+        _run_script(
+            ctx.repo_dir / "scripts" / "train_production_model.py",
+            ["--output-path", str(ctx.xgb_artifact_dst)],
+        )
+        if not ctx.xgb_artifact_dst.exists():
             raise FileNotFoundError(
-                f"train_production_model.py did not produce {ctx.xgb_artifact_src}"
+                f"train_production_model.py did not produce {ctx.xgb_artifact_dst}"
             )
-        shutil.copy2(ctx.xgb_artifact_src, ctx.xgb_artifact_dst)
-        log.info("  copied → %s", ctx.xgb_artifact_dst.relative_to(ctx.repo_dir))
+        log.info("  artifact → %s", ctx.xgb_artifact_dst.relative_to(ctx.repo_dir))
 
 
 class RefitCalibratorTask(RetrainTask):
@@ -178,10 +182,17 @@ class RefitCalibratorTask(RetrainTask):
         return None
 
     def run(self, ctx: DailyRetrainContext) -> None:
-        _run_script(ctx.repo_dir / "scripts" / "fit_calibrator_alpha158_fund.py")
+        _run_script(
+            ctx.repo_dir / "scripts" / "fit_calibrator_alpha158_fund.py",
+            [
+                "--scorer-artifact", str(ctx.xgb_artifact_dst),
+                "--out", str(ctx.calibrator_artifact),
+            ],
+        )
 
 
-def _run_script(script: Path, cwd: Path | None = None) -> None:
+def _run_script(script: Path, args: list[str] | None = None,
+                cwd: Path | None = None) -> None:
     """Run a Python script in a subprocess; raise on non-zero exit.
 
     cwd defaults to the repo root (script.parents[1]) so scripts that
@@ -192,7 +203,7 @@ def _run_script(script: Path, cwd: Path | None = None) -> None:
     """
     if cwd is None:
         cwd = script.resolve().parents[1]   # scripts/foo.py → repo root
-    cmd = [sys.executable, str(script)]
+    cmd = [sys.executable, str(script), *(args or [])]
     log.info("  $ %s  (cwd=%s)", " ".join(cmd), cwd)
     rc = subprocess.call(cmd, cwd=str(cwd))
     if rc != 0:
@@ -237,12 +248,56 @@ class DailyRetrainAlpha158FundPipeline:
         return ctx
 
 
+def _staging_path(path: Path) -> Path:
+    return path.with_suffix(".staging.json")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Write alpha158 panel scorer + calibrator to *.staging.json "
+             "candidate paths instead of production paths.",
+    )
+    parser.add_argument(
+        "--xgb-artifact-out",
+        default=None,
+        help="Override panel scorer output path.",
+    )
+    parser.add_argument(
+        "--calibrator-out",
+        default=None,
+        help="Override calibrator output path.",
+    )
+    parser.add_argument(
+        "--no-truncate-to-sec-max",
+        action="store_true",
+        help="Do not truncate alpha158 rows beyond SEC fundamentals coverage. "
+             "Mostly useful for validating the guard itself.",
+    )
+    args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    DailyRetrainAlpha158FundPipeline().run(DailyRetrainContext())
+    ctx = DailyRetrainContext()
+    if args.xgb_artifact_out:
+        ctx.xgb_artifact_dst = Path(args.xgb_artifact_out)
+    if args.calibrator_out:
+        ctx.calibrator_artifact = Path(args.calibrator_out)
+    if args.staged:
+        if not args.xgb_artifact_out:
+            ctx.xgb_artifact_dst = _staging_path(ctx.xgb_artifact_dst)
+        if not args.calibrator_out:
+            ctx.calibrator_artifact = _staging_path(ctx.calibrator_artifact)
+        log.info(
+            "staged mode: scorer=%s calibrator=%s",
+            ctx.xgb_artifact_dst,
+            ctx.calibrator_artifact,
+        )
+    ctx.truncate_to_sec_max = not args.no_truncate_to_sec_max
+    DailyRetrainAlpha158FundPipeline().run(ctx)
 
 
 if __name__ == "__main__":
