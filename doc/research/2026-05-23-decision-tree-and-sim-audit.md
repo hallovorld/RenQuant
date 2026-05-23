@@ -13,6 +13,8 @@ Artifacts:
 - Trade report: `backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.report.md`
 - Round trips: `backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.round_trips.csv`
 - Raw trade log: `backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.trades.json`
+- Score diagnostic JSON: `backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.score_diagnostics.json`
+- Score diagnostic report: `backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.score_diagnostics.md`
 
 Relevant fixes pushed before this rerun:
 
@@ -97,6 +99,31 @@ converting risk-adjusted quality into entry selection. The decision tree is
 filtering many candidates, but among admitted names the score is not
 discriminative enough.
 
+The one-off observation is now a repeatable diagnostic:
+
+```bash
+python scripts/analyze_trade_score_diagnostics.py \
+  --round-trips-csv backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.round_trips.csv \
+  --output-json backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.score_diagnostics.json \
+  --output-md backtesting/renquant_104/artifacts/diagnostics/resim_20260523_contractfix_full/xgb_full.score_diagnostics.md
+```
+
+Closed-trade diagnostics:
+
+| score | n | Spearman vs P&L | top-bottom P&L spread | winner mean | loser mean |
+|---|---:|---:|---:|---:|---:|
+| entry_rank_score | 56 | +0.0152 | -0.30% | +0.6130 | +0.6131 |
+| entry_mu | 56 | +0.0152 | -0.30% | +0.0297 | +0.0297 |
+| entry_sigma | 56 | -0.4043 | -13.43% | +0.1950 | +0.2542 |
+| entry_mu_over_sigma | 56 | +0.2646 | +9.56% | +0.1597 | +0.1241 |
+| entry_panel_score | 56 | +0.0152 | -0.30% | +0.6130 | +0.6131 |
+| entry_kelly_target_pct | 36 | -0.0651 | +2.01% | +0.1165 | +0.1065 |
+
+This is a decision-tree problem, not only a model problem: the model score
+slice that actually reaches executed buys is almost flat, while the risk
+dimension remains informative. The next controlled fix must therefore act
+before QP solve, not only in post-hoc reporting or end-of-sim tax accounting.
+
 ## Bugs Fixed During This Pass
 
 1. Sim feature cache duplicated SPY indicator/regime work per ticker.
@@ -167,4 +194,3 @@ discriminative enough.
 4. For PatchTST, do not run static APY/Sharpe. Train or assemble true
    walk-forward PatchTST folds, then evaluate IC and trade simulation using the
    same leakage guards as XGB.
-
