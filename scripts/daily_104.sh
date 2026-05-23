@@ -427,12 +427,13 @@ print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today=
 # completed + committed by this point). Logs to a separate file for
 # clean diff between prod and shadow outcomes.
 #
-# ntfy uses "[SHADOW]RENQUANT-104" prefix so the operator's phone shows
-# two distinct ntfy entries per day: prod + shadow side-by-side.
+# ntfy uses "[SHADOW]RENQUANT-104" prefix on success. If shadow preflight
+# fails, daily_104 owns the single non-fatal wrapper alert; suppress the
+# inner runner preflight ntfy to avoid duplicate phone errors.
 echo "--- Step 4: Shadow e2e run (HF PatchTST primary, no real orders) ---"
 SHADOW_LOG="$LOG_DIR/${DATE}_shadow.log"
 SHADOW_TIMEOUT_SEC="${RENQUANT_SHADOW_TIMEOUT_SEC:-420}"
-if "$PYTHON" - <<PY > "$SHADOW_LOG" 2>&1
+if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 "$PYTHON" - <<PY > "$SHADOW_LOG" 2>&1
 import subprocess
 import sys
 

@@ -99,6 +99,19 @@ class TestCheckModelArtifact:
         r = _check_model_artifact(cfg, tmp_path)
         assert not r.ok
 
+    def test_sequence_artifact_does_not_parse_checkpoint_as_json(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"PK\x03\x04checkpoint")
+
+        r = _check_model_artifact(cfg, tmp_path)
+
+        assert r.ok and r.severity == "hard"
+        assert "hf_patchtst checkpoint" in r.message
+
 
 # ── P-PANEL-CONTRACT ──────────────────────────────────────────────────────
 
@@ -261,6 +274,19 @@ class TestCheckBestIter:
         r = _check_best_iter(cfg, tmp_path)
         assert r.ok and r.severity == "soft"
 
+    def test_sequence_artifact_skips_best_iter(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "hf_patchtst",
+            "artifact_path": "artifacts/patch_model.pt",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+
+        r = _check_best_iter(cfg, tmp_path)
+
+        assert r.ok and r.severity == "soft"
+        assert "not applicable" in r.message
+
 
 # ── P-CONFIG-FP (catches the 24h watchlist-mismatch incident class) ────────
 
@@ -313,6 +339,27 @@ class TestCheckConfigFingerprint:
         r = _check_config_fingerprint(cfg, tmp_path)
         assert r.ok and r.severity == "soft"
 
+    def test_sequence_sidecar_without_fingerprint_soft_passes(self, tmp_path):
+        cfg = {
+            "watchlist": ["AAPL", "MSFT"],
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/patch_model.pt",
+            }},
+        }
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "best_val_ic": 0.03,
+            "n_features": 172,
+        }))
+
+        r = _check_config_fingerprint(cfg, tmp_path, run_mode="full")
+
+        assert r.ok and r.severity == "soft"
+        assert "sequence sidecar lacks fingerprint" in r.message
+
 
 # ── P-WATCHLIST ────────────────────────────────────────────────────────────
 
@@ -328,6 +375,22 @@ class TestCheckWatchlist:
         r = _check_watchlist_size(cfg, sd)
         assert not r.ok
         assert "in_trained_not_live" in r.message
+
+    def test_sequence_artifact_soft_passes_unstamped_watchlist(self, tmp_path):
+        cfg = {
+            "watchlist": ["AAPL", "MSFT"],
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/patch_model.pt",
+            }},
+        }
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+
+        r = _check_watchlist_size(cfg, tmp_path)
+
+        assert r.ok and r.severity == "soft"
+        assert "sequence artifact" in r.message
 
 
 # ── P-SECTOR-MAP ───────────────────────────────────────────────────────────

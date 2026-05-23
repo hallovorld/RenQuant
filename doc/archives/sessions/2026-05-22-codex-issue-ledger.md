@@ -13,6 +13,7 @@ session's repeated issues cannot be lost in chat history.
 | Shadow e2e could hang daily indefinitely | Shadow is read-only and non-fatal; it must have a wall-clock budget | `tests/test_smoke_test_model.py::TestNoRetrainInDailyShell::test_shadow_e2e_has_wall_clock_timeout`; daily verification with `RENQUANT_SHADOW_TIMEOUT_SEC=30` exited 0 |
 | Daily log double-wrote audit/dashboard lines | After `exec >> "$LOG"`, do not pipe to `tee -a "$LOG"` | `tests/test_smoke_test_model.py::TestNoRetrainInDailyShell::test_daily_does_not_double_append_log_after_exec_redirect` |
 | Live QP optimized names with missing sector metadata | Every buyable watchlist ticker must have `sector_map`; every sector must have `sector_etf_map`; sector metadata is part of the model/config fingerprint | `tests/test_candidate_sector_map_gate.py`; `tests/test_strategy_config_sector_map.py`; targeted suite `92 passed`; real preflight now reports `P-SECTOR-MAP` OK and `P-CONFIG-FP` blocks old artifacts until retrained/stamped |
+| Shadow preflight spammed ntfy with false hard errors | Preflight checks must use the active scorer artifact, not stale `panel_ltr` JSON, and the daily wrapper owns non-fatal shadow failure notifications | `tests/test_preflight.py` sequence-artifact cases; `tests/test_runner_trade_ntfy.py::TestSourceLevel::test_daily_shadow_wrapper_suppresses_inner_preflight_ntfy`; targeted suite `136 passed`; shadow config preflight full pass |
 
 Commit: `d315b65 Fix daily WF fallback and schema migration` pushed to `origin/main`.
 

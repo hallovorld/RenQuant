@@ -56,6 +56,17 @@ class TestSourceLevel:
         assert "preflight ntfy suppressed" in src
         assert "log_fn = log.warning if suppress_preflight_ntfy else log.error" in src
 
+    def test_daily_shadow_wrapper_suppresses_inner_preflight_ntfy(self):
+        """Shadow failures are non-fatal; daily wrapper sends one alert."""
+        src = (REPO_ROOT / "scripts" / "daily_104.sh").read_text()
+        idx_shadow = src.find("Step 4: Shadow e2e")
+        idx_suppress = src.find("RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1", idx_shadow)
+        idx_python = src.find('"$PYTHON" - <<PY', idx_shadow)
+        assert idx_shadow > 0
+        assert idx_suppress > idx_shadow
+        assert idx_python > idx_suppress
+        assert idx_python - idx_suppress < 80
+
 
 def _stub_ctx(**kwargs) -> SimpleNamespace:
     """Baseline ctx with sensible defaults; override fields via kwargs."""

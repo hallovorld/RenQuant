@@ -65,6 +65,29 @@ def _patchtst_summary_path(path: Path) -> Path:
     return path.with_suffix(".summary.json")
 
 
+def _active_panel_config(config: dict) -> dict:
+    """Return the artifact config used by the active scoring path."""
+    return (
+        config.get("ranking", {})
+        .get("panel_scoring", {})
+        or config.get("panel_ltr", {})
+        or {}
+    )
+
+
+def _active_panel_kind(config: dict, panel_cfg: dict | None = None) -> str:
+    panel_cfg = panel_cfg or _active_panel_config(config)
+    return str(
+        panel_cfg.get("kind")
+        or config.get("panel_ltr", {}).get("backend")
+        or "xgb"
+    )
+
+
+def _is_sequence_artifact(kind: str, path: Path) -> bool:
+    return kind in {"hf_patchtst", "patchtst"} or path.suffix == ".pt"
+
+
 def _check_sequence_artifact_contract(
     *,
     kind: str,
@@ -181,14 +204,26 @@ class PreflightFailed(RuntimeError):
 # ── Individual checks ──────────────────────────────────────────────────────
 
 def _check_model_artifact(config: dict, strategy_dir: Path) -> PreflightCheck:
-    """P-MODEL-ARTIFACT: panel-ltr.json exists + parses."""
-    panel_cfg = config.get("panel_ltr", {})
+    """P-MODEL-ARTIFACT: active scorer artifact exists + parses."""
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
-    p = strategy_dir / rel
+    p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
         return PreflightCheck(
             "P-MODEL-ARTIFACT", "hard", False,
             f"artifact missing: {p}",
+        )
+    if _is_sequence_artifact(kind, p):
+        if p.stat().st_size <= 0:
+            return PreflightCheck(
+                "P-MODEL-ARTIFACT", "hard", False,
+                f"{kind} checkpoint is empty: {p}",
+            )
+        return PreflightCheck(
+            "P-MODEL-ARTIFACT", "hard", True,
+            f"loaded {kind} checkpoint {p.name}",
+            details={"path": str(p), "kind": kind, "bytes": p.stat().st_size},
         )
     try:
         meta = json.loads(p.read_text())
@@ -213,12 +248,8 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
     ``preflight.artifact_contract.strict=true`` to hard-fail missing OOS
     evidence during promotion/dry-run gates.
     """
-    panel_cfg = (
-        config.get("ranking", {})
-        .get("panel_scoring", {})
-        or config.get("panel_ltr", {})
-    )
-    kind = str(panel_cfg.get("kind") or config.get("panel_ltr", {}).get("backend") or "xgb")
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
@@ -228,7 +259,7 @@ def _check_panel_artifact_contract(config: dict, strategy_dir: Path) -> Prefligh
         .get("artifact_contract", {})
         .get("strict", False)
     )
-    if kind in {"hf_patchtst", "patchtst"} or p.suffix == ".pt":
+    if _is_sequence_artifact(kind, p):
         return _check_sequence_artifact_contract(
             kind=kind,
             artifact_path=p,
@@ -271,15 +302,11 @@ def _check_wf_gate_metadata(
     buy-side evidence fails, otherwise the same guard that blocks bad entries
     can also block exits.
     """
-    panel_cfg = (
-        config.get("ranking", {})
-        .get("panel_scoring", {})
-        or config.get("panel_ltr", {})
-    )
-    kind = str(panel_cfg.get("kind") or config.get("panel_ltr", {}).get("backend") or "xgb")
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
     p = _resolve_artifact_path(strategy_dir, rel)
-    if kind in {"hf_patchtst", "patchtst"} or p.suffix == ".pt":
+    if _is_sequence_artifact(kind, p):
         return PreflightCheck(
             "P-WF-GATE", "soft", True,
             f"WF gate not applicable to sequence shadow artifact ({kind})",
@@ -356,12 +383,18 @@ def _check_best_iter(config: dict, strategy_dir: Path) -> PreflightCheck:
     0.08 total shrinkage = essentially untrained). This check refuses
     to trade on an undertrained model.
     """
-    panel_cfg = config.get("panel_ltr", {})
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
-    p = strategy_dir / rel
+    p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
         return PreflightCheck(
             "P-BEST-ITER", "hard", False, f"artifact missing: {p}",
+        )
+    if _is_sequence_artifact(kind, p):
+        return PreflightCheck(
+            "P-BEST-ITER", "soft", True,
+            f"best_iter not applicable to sequence artifact ({kind})",
         )
     try:
         meta = json.loads(p.read_text())
@@ -431,19 +464,31 @@ def _check_config_fingerprint(
     Catches: watchlist drift, lookahead change, objective change,
     asset_embeddings flip — the four-incidents class from 2026-04-27/28.
     """
-    panel_cfg = config.get("panel_ltr", {})
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
-    p = strategy_dir / rel
+    p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
         return PreflightCheck(
             "P-CONFIG-FP", "hard", False, f"artifact missing: {p}",
         )
-    try:
-        meta = json.loads(p.read_text())
-    except Exception as exc:
-        return PreflightCheck(
-            "P-CONFIG-FP", "hard", False, f"unreadable: {exc}",
-        )
+    if _is_sequence_artifact(kind, p):
+        summary_path = _patchtst_summary_path(p)
+        try:
+            meta = json.loads(summary_path.read_text())
+        except Exception as exc:
+            return PreflightCheck(
+                "P-CONFIG-FP", "soft", True,
+                f"{kind} summary unavailable for fingerprint check: {exc}; "
+                "P-PANEL-CONTRACT handles checkpoint validity",
+            )
+    else:
+        try:
+            meta = json.loads(p.read_text())
+        except Exception as exc:
+            return PreflightCheck(
+                "P-CONFIG-FP", "hard", False, f"unreadable: {exc}",
+            )
     try:
         from kernel.config_consistency import (  # noqa: PLC0415
             fingerprint_config, _model_relevant_fields,
@@ -456,10 +501,10 @@ def _check_config_fingerprint(
     live_fp = fingerprint_config(config)
     stored = meta.get("config_fingerprint")
     if stored is None:
+        target = "sequence sidecar" if _is_sequence_artifact(kind, p) else "artifact"
         return PreflightCheck(
             "P-CONFIG-FP", "soft", True,
-            "artifact lacks fingerprint (pre-2026-04-28 retrain) — "
-            "stamped at next retrain",
+            f"{target} lacks fingerprint — stamped at next retrain",
             details={"live": live_fp},
         )
     if stored == live_fp:
@@ -509,12 +554,18 @@ def _check_config_fingerprint(
 def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
     """P-WATCHLIST: config watchlist length consistent with training."""
     wl = config.get("watchlist") or []
-    panel_cfg = config.get("panel_ltr", {})
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
     rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
-    p = strategy_dir / rel
+    p = _resolve_artifact_path(strategy_dir, rel)
     if not p.exists():
         return PreflightCheck(
             "P-WATCHLIST", "hard", False, f"artifact missing: {p}",
+        )
+    if _is_sequence_artifact(kind, p):
+        return PreflightCheck(
+            "P-WATCHLIST", "soft", True,
+            f"trained watchlist not stamped for sequence artifact; live={len(wl)} ticker(s)",
         )
     try:
         meta = json.loads(p.read_text())
