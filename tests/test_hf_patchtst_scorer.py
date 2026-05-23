@@ -103,7 +103,11 @@ class TestSourceContracts:
         for required in (
             "training_contract",
             "effective_train_cutoff_date",
+            "effective_selection_cutoff_date",
+            "split_date_ranges",
             "lookahead_days",
+            "_load_contract_sidecar",
+            "contract_sidecar_path",
         ):
             assert required in src
 

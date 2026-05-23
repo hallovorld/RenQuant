@@ -1,0 +1,109 @@
+"""On-disk strategy/artifact contracts for renquant_104."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
+if str(STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_DIR))
+
+from kernel.walk_forward import (  # noqa: E402
+    assert_correlation_no_leakage,
+    assert_gmm_no_leakage,
+    assert_no_leakage,
+    parse_correlation_artifact,
+)
+
+
+def _load_config(name: str) -> dict:
+    return json.loads((STRATEGY_DIR / name).read_text())
+
+
+def _artifact_path(rel: str) -> Path:
+    path = Path(rel)
+    return path if path.is_absolute() else STRATEGY_DIR / "artifacts" / path
+
+
+def test_active_prod_correlation_artifact_covers_watchlist() -> None:
+    cfg = _load_config("strategy_config.json")
+    corr_rel = cfg["regime"]["correlation_artifact"]
+    raw = json.loads(_artifact_path(corr_rel).read_text())
+    matrix, as_of = parse_correlation_artifact(raw)
+
+    missing = sorted(set(cfg["watchlist"]) - set(matrix))
+    extra = sorted(set(matrix) - set(cfg["watchlist"]))
+    assert as_of is not None
+    assert not missing, f"{corr_rel} missing watchlist tickers: {missing}"
+    assert not extra, f"{corr_rel} has stale non-watchlist tickers: {extra}"
+
+
+def test_active_prod_gmm_artifact_is_stamped_for_live_mode() -> None:
+    cfg = _load_config("strategy_config.json")
+    gmm_rel = cfg["regime"]["gmm_artifact"]
+    raw = json.loads(_artifact_path(gmm_rel).read_text())
+    assert raw.get("as_of_date") or raw.get("trained_date")
+    assert_gmm_no_leakage(
+        raw,
+        cfg["backtest_start"],
+        is_live_mode=True,
+        context="live-prod-contract",
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "strategy_config.sim_patchtst_clean_20260522.json",
+        "strategy_config.sim_xgb_truly_oos_20260522.json",
+    ],
+)
+def test_2024_sim_configs_use_leakage_free_static_artifacts(name: str) -> None:
+    cfg = _load_config(name)
+    start = cfg["backtest_start"]
+    assert pd.Timestamp(start) <= pd.Timestamp("2024-01-01")
+
+    corr_rel = cfg["regime"]["correlation_artifact"]
+    gmm_rel = cfg["regime"]["gmm_artifact"]
+    assert corr_rel.startswith("sim/")
+    assert gmm_rel.startswith("sim/")
+
+    corr_raw = json.loads(_artifact_path(corr_rel).read_text())
+    _matrix, corr_as_of = parse_correlation_artifact(corr_raw)
+    assert_correlation_no_leakage(
+        corr_as_of,
+        start,
+        context=f"{name} corr",
+    )
+
+    gmm_raw = json.loads(_artifact_path(gmm_rel).read_text())
+    assert_gmm_no_leakage(
+        gmm_raw,
+        start,
+        context=f"{name} gmm",
+    )
+
+
+def test_patchtst_shadow_artifact_has_selection_contract_sidecar() -> None:
+    cfg = _load_config("strategy_config.sim_patchtst_clean_20260522.json")
+    artifact = (STRATEGY_DIR / cfg["ranking"]["panel_scoring"]["artifact_path"]).resolve()
+    sidecar = artifact.with_name(artifact.name + ".metadata.json")
+    raw = json.loads(sidecar.read_text())
+
+    assert raw["trained_date"] == "2026-05-22"
+    assert raw["effective_train_cutoff_date"] == "2024-11-13"
+    assert raw["effective_selection_cutoff_date"] == "2026-02-10"
+    assert raw["lookahead_days"] == 60
+    with pytest.raises(ValueError, match="Look-ahead leakage"):
+        assert_no_leakage(
+            raw["effective_selection_cutoff_date"],
+            "2025-03-01",
+            context="patchtst sidecar contract",
+            lookahead_days=int(raw["lookahead_days"]),
+        )

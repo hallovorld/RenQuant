@@ -17,6 +17,10 @@ from kernel.walk_forward.correlation_guard import (
     assert_correlation_no_leakage,
     parse_correlation_artifact,
 )
+from kernel.walk_forward.gmm_guard import (
+    assert_gmm_no_leakage,
+    gmm_artifact_as_of,
+)
 from kernel.walk_forward.leakage_guard import assert_no_leakage
 from kernel.walk_forward.lean_guard import assert_lean_panel_no_leakage
 from kernel.walk_forward.loader import (
@@ -34,6 +38,8 @@ __all__ = [
     "assert_lean_panel_no_leakage",
     "assert_correlation_no_leakage",
     "parse_correlation_artifact",
+    "assert_gmm_no_leakage",
+    "gmm_artifact_as_of",
     "RetrainEntry",
     "WalkForwardModelLoader",
     "WalkForwardManifest",

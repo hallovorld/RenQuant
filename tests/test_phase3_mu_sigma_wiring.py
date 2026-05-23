@@ -40,9 +40,13 @@ def _make_calibrator(prob_y, er_y):
 def _make_ohlcv_for(ticker, sigma_target):
     """Synthesize a 100-day OHLCV df whose pct_change std produces
     a target annualized vol."""
-    np.random.seed(hash(ticker) & 0xFFFF)
     daily_sigma = sigma_target / math.sqrt(252.0)
-    rets = np.random.randn(100) * daily_sigma
+    # Deterministic pattern with sample std exactly equal to daily_sigma.
+    # Do not use Python hash/random here: xdist workers randomize hash seeds,
+    # making "identical sigma" tests flaky and scientifically false.
+    pattern = np.tile([-1.0, 1.0], 50)
+    pattern = (pattern - pattern.mean()) / pattern.std(ddof=1)
+    rets = pattern * daily_sigma
     closes = 100.0 * np.exp(np.cumsum(rets))
     return pd.DataFrame({"close": closes})
 

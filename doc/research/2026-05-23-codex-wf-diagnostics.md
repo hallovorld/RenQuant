@@ -287,3 +287,53 @@ Expected after this code fix: trade contract should no longer fail on QP
 top-up buys missing finite mu/sigma. This does not imply Sharpe/APY promotion.
 Sharpe/APY requires a separate model/decision-tree improvement that passes the
 same WF and sanity gates.
+
+## 2026-05-23 Follow-up: artifact contracts tightened
+
+After the cash/exit fixes, a second audit found that several historical sim
+inputs were still not point-in-time safe:
+
+- `artifacts/prod/watchlist-correlation.json` was legacy v1, had no
+  `as_of_date`, covered only 103 tickers, missed 51 active watchlist tickers,
+  and contained 12 stale non-watchlist tickers.
+- The sim correlation artifact had the same stale 103-ticker universe.
+- The SPY GMM regime artifact had no as-of leakage guard at all.
+- `strategy_config.sim_xgb_truly_oos_20260522.json` was missing sector
+  metadata for 47 buyable tickers.
+- The XGB static sim config was correctly blocked for 2024Q1 because its
+  effective cutoff plus 60-day label lookahead reaches 2024-07-01.
+- The HF PatchTST shadow checkpoint had no `trained_date` in the checkpoint.
+  Its sidecar metadata was recovered from the canonical training dataset and
+  matching split counts, then the sim guard was tightened. Because this model
+  used a validation tail ending 2026-02-10 for model selection, historical sim
+  before 2026-05-05 is selection-leaky and now hard-fails.
+
+Fixes implemented:
+
+- Regenerated prod and sim correlation artifacts as v2 schema with 142-ticker
+  coverage and explicit `as_of_date`.
+- Regenerated prod and sim SPY GMM artifacts with explicit `as_of_date`.
+- Added `assert_gmm_no_leakage` and wired it into SimAdapter and LEAN main.
+- Made static panel scorers without `trained_date` hard-fail in historical sim.
+- Made static scorer leakage use validation/selection end when present, not
+  just train cutoff.
+- Added HF PatchTST metadata sidecar loading so legacy Torch checkpoints can
+  be restamped without mutating the binary artifact.
+- Fixed the XGB sim config's sector map and pointed XGB/PatchTST historical
+  sim configs at sim-specific GMM/correlation artifacts.
+
+Regression tests:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_gmm_artifact_guard.py \
+  tests/test_strategy_artifact_contracts.py \
+  tests/test_strategy_config_sector_map.py \
+  tests/test_sim_walkforward.py \
+  tests/test_hf_patchtst_scorer.py -q
+```
+
+Current implication: PatchTST seed44 remains viable for live/shadow after its
+selection window, but it is not a valid static historical backtest artifact for
+2024/2025. To evaluate PatchTST APY/Sharpe honestly, train a walk-forward
+PatchTST manifest whose `cutoff_date + lookahead_days` precedes every sim bar.

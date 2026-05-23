@@ -109,6 +109,17 @@ def main() -> None:
         sys.exit(2)
 
     feat = _build_features(spy)
+    if feat.empty:
+        log.error("No finite SPY regime feature rows available ≤ %s", as_of.date())
+        sys.exit(2)
+    values = feat.to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        bad_cols = [
+            col for i, col in enumerate(feat.columns)
+            if not np.isfinite(values[:, i]).all()
+        ]
+        log.error("Non-finite SPY regime features in columns: %s", bad_cols)
+        sys.exit(2)
     log.info("Built %d feature rows (cols=%s)", len(feat), list(feat.columns))
 
     scaler = StandardScaler()

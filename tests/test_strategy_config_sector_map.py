@@ -21,6 +21,7 @@ SECTOR_CONFIGS = [
     "strategy_config.golden.json",
     "strategy_config.shadow.json",
     "strategy_config.sim_patchtst_clean_20260522.json",
+    "strategy_config.sim_xgb_truly_oos_20260522.json",
 ]
 
 

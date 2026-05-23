@@ -38,7 +38,7 @@ def _write_artifact(strategy_dir: Path, rel_path: str, meta: dict) -> Path:
 
 class TestLeanGuardLeakageDetected:
 
-    def test_raises_when_artifact_trained_after_backtest_end(self, tmp_path):
+    def test_raises_when_artifact_trained_after_backtest_start(self, tmp_path):
         _write_artifact(
             tmp_path,
             "artifacts/panel-ltr.json",
@@ -49,14 +49,15 @@ class TestLeanGuardLeakageDetected:
                 "enabled": True,
                 "artifact_path": "artifacts/panel-ltr.json",
             }},
-            "backtest_end": "2026-03-26",
+            "backtest_start": "2026-03-26",
+            "backtest_end": "2026-12-31",
         }
         with pytest.raises(ValueError, match="Look-ahead leakage"):
             assert_lean_panel_no_leakage(
                 config=config, strategy_dir=tmp_path, is_live_mode=False,
             )
 
-    def test_raises_when_trained_date_equals_backtest_end(self, tmp_path):
+    def test_raises_when_trained_date_equals_backtest_start(self, tmp_path):
         # Equality is leakage — model has seen the last bar's label.
         _write_artifact(
             tmp_path,
@@ -68,7 +69,8 @@ class TestLeanGuardLeakageDetected:
                 "enabled": True,
                 "artifact_path": "artifacts/panel-ltr.json",
             }},
-            "backtest_end": "2026-03-26",
+            "backtest_start": "2026-03-26",
+            "backtest_end": "2026-12-31",
         }
         with pytest.raises(ValueError, match="Look-ahead leakage"):
             assert_lean_panel_no_leakage(
@@ -86,7 +88,8 @@ class TestLeanGuardLeakageDetected:
                 "enabled": True,
                 "artifact_path": "artifacts/panel-ltr.json",
             }},
-            "backtest_end": "2026-03-26",
+            "backtest_start": "2026-03-26",
+            "backtest_end": "2026-12-31",
         }
         with pytest.raises(ValueError) as excinfo:
             assert_lean_panel_no_leakage(
@@ -102,7 +105,7 @@ class TestLeanGuardLeakageDetected:
 
 class TestLeanGuardWalkForward:
 
-    def test_passes_when_trained_strictly_before_backtest_end(self, tmp_path):
+    def test_passes_when_trained_strictly_before_backtest_start(self, tmp_path):
         _write_artifact(
             tmp_path,
             "artifacts/panel-ltr.json",
@@ -113,6 +116,7 @@ class TestLeanGuardWalkForward:
                 "enabled": True,
                 "artifact_path": "artifacts/panel-ltr.json",
             }},
+            "backtest_start": "2024-01-02",
             "backtest_end": "2026-03-26",
         }
         # No raise expected.
@@ -170,7 +174,7 @@ class TestLeanGuardSilentSkip:
             config=config, strategy_dir=tmp_path, is_live_mode=False,
         )
 
-    def test_skips_when_artifact_has_no_trained_date(self, tmp_path):
+    def test_raises_when_artifact_has_no_trained_date(self, tmp_path):
         _write_artifact(
             tmp_path,
             "artifacts/panel-ltr.json",
@@ -183,9 +187,10 @@ class TestLeanGuardSilentSkip:
             }},
             "backtest_end": "2026-03-26",
         }
-        assert_lean_panel_no_leakage(
-            config=config, strategy_dir=tmp_path, is_live_mode=False,
-        )
+        with pytest.raises(ValueError, match="missing trained_date"):
+            assert_lean_panel_no_leakage(
+                config=config, strategy_dir=tmp_path, is_live_mode=False,
+            )
 
     def test_skips_when_artifact_malformed(self, tmp_path):
         full = tmp_path / "artifacts" / "panel-ltr.json"
@@ -219,6 +224,33 @@ class TestLeanGuardSilentSkip:
         assert_lean_panel_no_leakage(
             config=config, strategy_dir=tmp_path, is_live_mode=False,
         )
+
+    def test_blocks_validation_selection_window(self, tmp_path):
+        _write_artifact(
+            tmp_path,
+            "artifacts/panel-ltr.json",
+            {
+                "trained_date": "2026-05-22",
+                "effective_train_cutoff_date": "2024-04-08",
+                "lookahead_days": 60,
+                "split_date_ranges": {
+                    "train": {"start": "2020-01-01", "end": "2024-04-08"},
+                    "val": {"start": "2024-07-02", "end": "2024-09-30"},
+                },
+            },
+        )
+        config = {
+            "ranking": {"panel_scoring": {
+                "enabled": True,
+                "artifact_path": "artifacts/panel-ltr.json",
+            }},
+            "backtest_start": "2024-10-01",
+            "backtest_end": "2024-12-31",
+        }
+        with pytest.raises(ValueError, match="Look-ahead leakage"):
+            assert_lean_panel_no_leakage(
+                config=config, strategy_dir=tmp_path, is_live_mode=False,
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -278,7 +310,7 @@ class TestLeanGuardRegression:
                 "enabled": True,
                 "artifact_path": "artifacts/walkforward/panel-ltr-2024-01-01.json",
             }},
-            "backtest_start": "2024-01-01",
+            "backtest_start": "2024-01-02",
             "backtest_end": "2026-03-26",
         }
         # Walk-forward pattern — must pass.

@@ -21,6 +21,7 @@ from kernel.regime       import RegimeState, load_gmm_artifact
 from kernel.pipeline     import InferencePipeline, SellOnlyPipeline
 from kernel.walk_forward import (
     assert_correlation_no_leakage,
+    assert_gmm_no_leakage,
     assert_lean_panel_no_leakage,
     parse_correlation_artifact,
 )
@@ -170,6 +171,12 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         # Sim configs override these keys to sim/<file>.
         self._gmm   = load_gmm_artifact(artifact_path(
             regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json")))
+        assert_gmm_no_leakage(
+            self._gmm,
+            CONFIG.get("backtest_start"),
+            is_live_mode=getattr(self, "LiveMode", False),
+            context="LEAN main.py gmm",
+        )
         # AUDIT 2026-05-10 §5.13.5 — correlation as-of-date leakage guard.
         # Loads raw artifact, parses v1/v2 schema, asserts as_of_date <=
         # backtest_start in backtest mode (LiveMode skips). Routes through

@@ -83,6 +83,18 @@ class RegimeGMM:
         self._fitted       = False
 
     def fit(self, features: pd.DataFrame, cluster_labels: list[str] | None = None) -> "RegimeGMM":
+        if features.empty:
+            raise ValueError("RegimeGMM.fit received an empty feature frame")
+        arr = features.values
+        if not np.isfinite(arr).all():
+            bad_cols = [
+                col for i, col in enumerate(features.columns)
+                if not np.isfinite(arr[:, i]).all()
+            ]
+            raise ValueError(
+                "RegimeGMM.fit received non-finite feature values "
+                f"in columns {bad_cols}"
+            )
         self._feature_cols = list(features.columns)
         X = self._scaler.fit_transform(features.values)
         self._gmm.fit(X)
@@ -118,7 +130,15 @@ class RegimeGMM:
         proba_df  = pd.DataFrame(proba, index=features.index, columns=self.cluster_labels)
         return pd.Series(label_names, index=features.index), proba_df
 
-    def save(self, path: str | Path) -> None:
+    def save(
+        self,
+        path: str | Path,
+        *,
+        as_of_date: str | None = None,
+        data_window_start: str | None = None,
+        data_window_end: str | None = None,
+        n_train_rows: int | None = None,
+    ) -> None:
         artifact = {
             "means":          self._gmm.means_.tolist(),
             "covariances":    self._gmm.covariances_.tolist(),
@@ -128,6 +148,15 @@ class RegimeGMM:
             "scaler_mean":    self._scaler.mean_.tolist(),
             "scaler_scale":   self._scaler.scale_.tolist(),
         }
+        if as_of_date is not None:
+            artifact["as_of_date"] = as_of_date
+            artifact["trained_date"] = as_of_date
+        if data_window_start is not None:
+            artifact["data_window_start"] = data_window_start
+        if data_window_end is not None:
+            artifact["data_window_end"] = data_window_end
+        if n_train_rows is not None:
+            artifact["n_train_rows"] = int(n_train_rows)
         Path(path).write_text(json.dumps(artifact, indent=2))
 
     @classmethod

@@ -19,15 +19,38 @@ from typing import Any
 from .leakage_guard import assert_no_leakage
 
 
-def _read_trained_date(artifact_full: Path) -> str | None:
-    """Open artifact JSON and extract `trained_date` field, or None."""
+def _read_artifact_metadata(artifact_full: Path) -> dict[str, Any] | None:
+    """Open artifact JSON and return metadata, or None if load must defer."""
     if not artifact_full.exists():
         return None
     try:
-        meta = json.loads(artifact_full.read_text())
+        return json.loads(artifact_full.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    return meta.get("trained_date")
+
+
+def _selection_anchor(meta: dict[str, Any]) -> Any:
+    contract = meta.get("training_contract") or {}
+    split_ranges = (
+        meta.get("split_date_ranges")
+        or contract.get("split_date_ranges")
+        or {}
+    )
+    validation_end = (
+        (split_ranges.get("val") or {}).get("end")
+        if isinstance(split_ranges, dict) else None
+    )
+    return (
+        meta.get("effective_selection_cutoff_date")
+        or contract.get("effective_selection_cutoff_date")
+        or validation_end
+        or meta.get("effective_train_cutoff_date")
+        or contract.get("effective_train_cutoff_date")
+        or meta.get("train_cutoff_date")
+        or meta.get("cutoff_date")
+        or meta.get("trained_date")
+        or contract.get("trained_date")
+    )
 
 
 def assert_lean_panel_no_leakage(
@@ -36,16 +59,15 @@ def assert_lean_panel_no_leakage(
     strategy_dir: Path,
     is_live_mode: bool,
 ) -> None:
-    """Raise ValueError if the panel artifact's trained_date >= backtest_end.
+    """Raise if the panel artifact could have seen a backtest bar's label.
 
     Skips silently (no raise) when:
       - LEAN is in LiveMode (no backtest window applies)
       - panel_scoring is disabled in config
       - artifact file does not exist (LoadScorerTask will fail later with
         a clearer message)
-      - artifact JSON is malformed or has no `trained_date` metadata
-        (legacy artifact)
-      - config has no `backtest_end`
+      - artifact JSON is malformed
+      - config has no `backtest_start` and no `backtest_end`
 
     Mirrors the SimAdapter `_assert_legacy_no_leakage` check (P2,
     `adapters/sim.py`). Wired into `main.py:Initialize` after
@@ -73,16 +95,27 @@ def assert_lean_panel_no_leakage(
         return
     artifact_full = Path(strategy_dir) / artifact_rel
 
-    trained_date = _read_trained_date(artifact_full)
-    if trained_date is None:
+    meta = _read_artifact_metadata(artifact_full)
+    if meta is None:
         return
+    trained_date = (
+        meta.get("trained_date")
+        or (meta.get("training_contract") or {}).get("trained_date")
+    )
+    if trained_date is None:
+        raise ValueError(
+            "LEAN backtest panel scorer artifact is missing trained_date "
+            f"metadata: {artifact_full}. Historical validation cannot prove "
+            "this static scorer is point-in-time."
+        )
 
-    backtest_end = config.get("backtest_end")
-    if backtest_end is None:
+    sim_first_bar = config.get("backtest_start") or config.get("backtest_end")
+    if sim_first_bar is None:
         return
 
     assert_no_leakage(
-        trained_date,
-        backtest_end,
+        _selection_anchor(meta),
+        sim_first_bar,
         context="LEAN backtest panel scorer",
+        lookahead_days=int(meta.get("lookahead_days", 0) or 0),
     )

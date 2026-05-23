@@ -279,6 +279,61 @@ class TestLegacyPathLeakageGuard:
                 backtest_end="2026-03-31",
             )
 
+    def test_static_artifact_missing_trained_date_hard_fails(self, tmp_path: Path):
+        from adapters.sim import SimAdapter
+        art = tmp_path / "panel-ltr.json"
+        _write_synthetic_panel_artifact(art, trained_date=None)
+        ohlcv = {"SPY": _tiny_ohlcv()}
+        cfg = {
+            "watchlist": [], "sector_etf_map": {}, "tax": {}, "regime": {},
+            "ranking": {
+                "panel_scoring": {
+                    "enabled": True,
+                    "artifact_path": str(art),
+                },
+            },
+        }
+        with pytest.raises(ValueError, match="missing trained_date"):
+            SimAdapter(
+                config=cfg, strategy_dir=tmp_path,
+                ohlcv=ohlcv, spy_df=ohlcv["SPY"], sector_etf_map={},
+                initial_cash=100_000,
+                backtest_start="2024-01-02",
+                backtest_end="2024-03-31",
+            )
+
+    def test_static_artifact_blocks_validation_selection_leakage(self, tmp_path: Path):
+        from adapters.sim import SimAdapter
+        art = tmp_path / "panel-ltr.json"
+        _write_synthetic_panel_artifact(
+            art,
+            trained_date="2026-05-22",
+            effective_train_cutoff_date="2024-04-08",
+            lookahead_days=60,
+            split_date_ranges={
+                "train": {"start": "2020-01-01", "end": "2024-04-08"},
+                "val": {"start": "2024-07-02", "end": "2024-09-30"},
+            },
+        )
+        ohlcv = {"SPY": _tiny_ohlcv()}
+        cfg = {
+            "watchlist": [], "sector_etf_map": {}, "tax": {}, "regime": {},
+            "ranking": {
+                "panel_scoring": {
+                    "enabled": True,
+                    "artifact_path": str(art),
+                },
+            },
+        }
+        with pytest.raises(ValueError, match="leakage"):
+            SimAdapter(
+                config=cfg, strategy_dir=tmp_path,
+                ohlcv=ohlcv, spy_df=ohlcv["SPY"], sector_etf_map={},
+                initial_cash=100_000,
+                backtest_start="2024-10-01",
+                backtest_end="2024-12-31",
+            )
+
 
 class TestWalkforwardLoading:
     def test_walkforward_loader_instantiated(

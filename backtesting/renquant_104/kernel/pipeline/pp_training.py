@@ -383,6 +383,15 @@ class GMMFitTask(TrainingTask):
         gmm_features = build_gmm_features(
             spy_df, vol_window=20, hurst_window=rcfg["hurst_window"]
         )
+        ctx._gmm_data_window_start = (  # noqa: SLF001
+            gmm_features.index.min().date().isoformat()
+            if not gmm_features.empty else None
+        )
+        ctx._gmm_data_window_end = (  # noqa: SLF001
+            gmm_features.index.max().date().isoformat()
+            if not gmm_features.empty else None
+        )
+        ctx._gmm_n_train_rows = int(len(gmm_features))  # noqa: SLF001
         gmm = RegimeGMM(n_components=3, random_state=42, n_init=10)
         gmm.fit(gmm_features)
         ctx.gmm = gmm
@@ -458,7 +467,13 @@ class RegimeSaveTask(TrainingTask):
         artifacts_dir = ctx.strategy_dir / "artifacts"
         artifacts_dir.mkdir(exist_ok=True)
         gmm_path = artifacts_dir / "spy-gmm-regime.json"
-        ctx.gmm.save(gmm_path)
+        ctx.gmm.save(
+            gmm_path,
+            as_of_date=getattr(ctx, "_gmm_data_window_end", None),
+            data_window_start=getattr(ctx, "_gmm_data_window_start", None),
+            data_window_end=getattr(ctx, "_gmm_data_window_end", None),
+            n_train_rows=getattr(ctx, "_gmm_n_train_rows", None),
+        )
         print(f"RegimeSaveTask: GMM artifact saved → {gmm_path}")
 
 

@@ -39,6 +39,42 @@ def _csrank_norm_per_day(df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame
     return df
 
 
+def _load_contract_sidecar(path: Path) -> dict:
+    """Load optional metadata sidecar for legacy HF checkpoints.
+
+    Early shadow checkpoints predated the full training contract fields in
+    ``scripts/patchtst_hf.py``. A sidecar lets us restamp the provenance
+    without mutating the binary Torch checkpoint.
+    """
+    candidates = [
+        path.with_name(path.name + ".metadata.json"),
+        path.with_name(path.stem + "_metadata.json"),
+        path.with_name(path.stem + "_summary.json"),
+    ]
+    import json  # noqa: PLC0415
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("HF PatchTST metadata sidecar %s failed: %s",
+                        candidate, exc)
+            continue
+        if isinstance(payload, dict):
+            payload = dict(payload)
+            payload["_contract_sidecar_path"] = str(candidate)
+            return payload
+    return {}
+
+
+def _coalesce(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 class HFPatchTSTPanelScorer:
     """Mirror of PatchTSTPanelScorer interface using HF transformers backbone.
 
@@ -72,7 +108,9 @@ class HFPatchTSTPanelScorer:
         hf_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(hf_mod)
 
+        path = Path(path)
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        sidecar = _load_contract_sidecar(path)
         cfg = PatchTSTConfig(**ckpt["config_dict"])
         uses_dist = ckpt.get("uses_distributional_head", False)
         model = hf_mod.HFPatchTSTRanker(cfg, use_distributional_head=uses_dist)
@@ -92,44 +130,69 @@ class HFPatchTSTPanelScorer:
                  "val_ic=%.4f dist_head=%s",
                  len(ckpt["feature_cols"]), ckpt["seq_len"],
                  float(ckpt.get("best_val_ic", float("nan"))), uses_dist)
-        contract = ckpt.get("training_contract", {}) or {}
+        ckpt_contract = ckpt.get("training_contract", {}) or {}
+        sidecar_contract = sidecar.get("training_contract", {}) or {}
+        contract = dict(sidecar_contract)
+        contract.update({k: v for k, v in ckpt_contract.items()
+                         if v is not None})
+        split_ranges = _coalesce(
+            ckpt.get("split_date_ranges"),
+            contract.get("split_date_ranges"),
+            sidecar.get("split_date_ranges"),
+        )
+        validation_end = (
+            (split_ranges.get("val") or {}).get("end")
+            if isinstance(split_ranges, dict) else None
+        )
         metadata = stamp_artifact_metadata({
                        "val_ic": float(ckpt.get("best_val_ic", float("nan"))),
                        "uses_distributional_head": uses_dist,
                        "uses_csranknorm": ckpt.get(
                            "uses_csranknorm_preprocessing", False),
                        "label_col": ckpt.get("label_col"),
-                       "trained_date": (
-                           ckpt.get("trained_date")
-                           or contract.get("trained_date")
+                       "trained_date": _coalesce(
+                           ckpt.get("trained_date"),
+                           contract.get("trained_date"),
+                           sidecar.get("trained_date"),
                        ),
-                       "effective_train_cutoff_date": (
-                           ckpt.get("effective_train_cutoff_date")
-                           or contract.get("effective_train_cutoff_date")
+                       "effective_train_cutoff_date": _coalesce(
+                           ckpt.get("effective_train_cutoff_date"),
+                           contract.get("effective_train_cutoff_date"),
+                           sidecar.get("effective_train_cutoff_date"),
                        ),
-                       "lookahead_days": (
-                           ckpt.get("lookahead_days")
-                           or contract.get("lookahead_days")
+                       "effective_selection_cutoff_date": _coalesce(
+                           ckpt.get("effective_selection_cutoff_date"),
+                           contract.get("effective_selection_cutoff_date"),
+                           sidecar.get("effective_selection_cutoff_date"),
+                           validation_end,
                        ),
-                       "config_fingerprint": (
-                           ckpt.get("config_fingerprint")
-                           or (contract.get("config_contract", {}) or {}).get(
+                       "lookahead_days": _coalesce(
+                           ckpt.get("lookahead_days"),
+                           contract.get("lookahead_days"),
+                           sidecar.get("lookahead_days"),
+                       ),
+                       "split_date_ranges": split_ranges,
+                       "config_fingerprint": _coalesce(
+                           ckpt.get("config_fingerprint"),
+                           (contract.get("config_contract", {}) or {}).get(
                                "config_fingerprint"
                            )
                        ),
-                       "config_fingerprint_fields": (
-                           ckpt.get("config_fingerprint_fields")
-                           or (contract.get("config_contract", {}) or {}).get(
+                       "config_fingerprint_fields": _coalesce(
+                           ckpt.get("config_fingerprint_fields"),
+                           (contract.get("config_contract", {}) or {}).get(
                                "config_fingerprint_fields"
                            )
                        ),
-                       "trained_watchlist_n": (
-                           ckpt.get("trained_watchlist_n")
-                           or (contract.get("config_contract", {}) or {}).get(
+                       "trained_watchlist_n": _coalesce(
+                           ckpt.get("trained_watchlist_n"),
+                           (contract.get("config_contract", {}) or {}).get(
                                "trained_watchlist_n"
                            )
                        ),
                        "training_contract": contract,
+                       "contract_sidecar_path": sidecar.get(
+                           "_contract_sidecar_path"),
                        "per_regime_ic": ckpt.get("per_regime_ic", {}),
                    }, path)
         return cls(model=model, feature_cols=ckpt["feature_cols"],

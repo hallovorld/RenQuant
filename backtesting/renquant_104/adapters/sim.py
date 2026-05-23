@@ -395,6 +395,7 @@ class SimAdapter:
         from kernel.regime import load_gmm_artifact  # noqa: PLC0415
         from kernel.walk_forward import (  # noqa: PLC0415
             assert_correlation_no_leakage,
+            assert_gmm_no_leakage,
             parse_correlation_artifact,
         )
         artifacts_dir = self._strategy_dir / "artifacts"
@@ -416,6 +417,12 @@ class SimAdapter:
 
         gmm = load_gmm_artifact(
             artifacts_dir / regime_cfg.get("gmm_artifact", "prod/spy-gmm-regime.json"),
+        )
+        assert_gmm_no_leakage(
+            gmm,
+            self._config.get("backtest_start"),
+            is_live_mode=False,
+            context="SimAdapter gmm",
         )
 
         corr_path = artifacts_dir / regime_cfg.get(
@@ -522,10 +529,9 @@ class SimAdapter:
         model and produced inflated metrics. Now we hard-fail at adapter
         construction time, before a single bar runs.
 
-        Skipped when:
+        Skipped only when:
           - panel scorer isn't loaded (legacy adapter without panel scoring)
-          - caller didn't pass backtest_end (older API surface)
-          - artifact metadata lacks trained_date (very old artifacts)
+          - caller didn't pass a sim anchor (older API surface)
 
         See `kernel.walk_forward.leakage_guard` for the canonical helper.
         """
@@ -535,19 +541,33 @@ class SimAdapter:
         meta = getattr(self._panel_scorer, "metadata", {}) or {}
         trained_date = meta.get("trained_date")
         if not trained_date:
-            log.warning(
-                "SimAdapter: panel scorer has no trained_date in metadata — "
-                "leakage guard skipped (suspicious; consider re-training "
-                "with current artifact writer to populate trained_date)."
+            raise ValueError(
+                "Panel scorer artifact is missing trained_date metadata; "
+                "historical sim cannot prove the static scorer is "
+                "point-in-time. Retrain/restamp the artifact or use a "
+                "walk-forward manifest with cutoff_date + lookahead_days "
+                "before every simulated bar."
             )
-            return
         from kernel.walk_forward.leakage_guard import assert_no_leakage  # noqa: PLC0415
         # 2026-05-11 Round 3 audit (G4): thread lookahead_days from the
         # scorer's metadata so the legacy guard catches forward-label
         # bleed too (e.g. fwd_60d_excess-trained model would silently
         # pass `trained_date < backtest_end` even when bar-by-bar leak).
+        contract = meta.get("training_contract") or {}
+        split_ranges = (
+            meta.get("split_date_ranges")
+            or contract.get("split_date_ranges")
+            or {}
+        )
+        validation_end = (
+            (split_ranges.get("val") or {}).get("end")
+            if isinstance(split_ranges, dict) else None
+        )
         leakage_anchor = (
-            meta.get("effective_train_cutoff_date")
+            meta.get("effective_selection_cutoff_date")
+            or contract.get("effective_selection_cutoff_date")
+            or validation_end
+            or meta.get("effective_train_cutoff_date")
             or meta.get("train_cutoff_date")
             or meta.get("cutoff_date")
             or trained_date

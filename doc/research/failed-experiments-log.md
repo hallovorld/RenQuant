@@ -3665,6 +3665,14 @@ failed.
 with regime-conditional decision-tree fixes, not a global model promotion.
 Full handoff: `doc/research/2026-05-23-codex-wf-diagnostics.md`.
 
+**Follow-up artifact-contract finding:** the static PatchTST seed44 shadow
+artifact is not a valid 2024/2025 historical sim artifact. Its checkpoint
+initially lacked `trained_date`; after recovering a sidecar from the canonical
+dataset split, the validation-selection window was found to end 2026-02-10.
+With a 60-business-day forward label, the honest static-sim anchor is
+2026-05-05. Any earlier PatchTST APY/Sharpe sim is selection-leaky and should
+be discarded unless rebuilt as a true walk-forward manifest.
+
 **Reproduction:**
 
 ```bash
