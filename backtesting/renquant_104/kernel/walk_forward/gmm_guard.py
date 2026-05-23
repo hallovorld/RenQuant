@@ -9,17 +9,40 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
+import pandas as pd
+
 from .leakage_guard import _to_timestamp
 
 log = logging.getLogger("kernel.walk_forward.gmm_guard")
 
 
 def gmm_artifact_as_of(raw: Mapping[str, Any] | None) -> str | None:
-    """Return the latest date used by a GMM artifact, if stamped."""
+    """Return the latest data date used by a regime artifact, if stamped.
+
+    ``trained_date`` is a wall-clock build timestamp for HMM artifacts. Leakage
+    is about the data window available to the detector, so prefer explicit
+    as-of / window-end metadata before falling back to wall-clock time.
+    """
     if not isinstance(raw, Mapping):
         return None
-    as_of = raw.get("as_of_date") or raw.get("trained_date")
+    training_window = raw.get("training_window")
+    window_end = None
+    if isinstance(training_window, (list, tuple)) and len(training_window) >= 2:
+        window_end = training_window[-1]
+    as_of = (
+        raw.get("as_of_date")
+        or raw.get("data_window_end")
+        or window_end
+        or raw.get("trained_date")
+    )
     return str(as_of) if as_of is not None else None
+
+
+def _to_comparable_timestamp(value: Any, *, label: str) -> pd.Timestamp:
+    ts = _to_timestamp(value, label=label)
+    if ts.tz is not None:
+        return ts.tz_convert("UTC").tz_localize(None)
+    return ts
 
 
 def assert_gmm_no_leakage(
@@ -43,8 +66,8 @@ def assert_gmm_no_leakage(
         )
         return
 
-    as_of_ts = _to_timestamp(as_of, label="gmm_as_of_date")
-    start_ts = _to_timestamp(backtest_start, label="backtest_start")
+    as_of_ts = _to_comparable_timestamp(as_of, label="gmm_as_of_date")
+    start_ts = _to_comparable_timestamp(backtest_start, label="backtest_start")
     if as_of_ts > start_ts:
         ctx = f" [{context}]" if context else ""
         raise ValueError(

@@ -22,6 +22,13 @@ def test_gmm_artifact_as_of_prefers_explicit_as_of_date() -> None:
     assert gmm_artifact_as_of({"as_of_date": "2023-12-29", "trained_date": "2026-05-22"}) == "2023-12-29"
 
 
+def test_gmm_artifact_as_of_uses_training_window_end_before_wall_clock_train_date() -> None:
+    assert gmm_artifact_as_of({
+        "training_window": ["2012-01-01", "2022-01-01"],
+        "trained_date": "2026-05-15T04:42:20.574973+00:00",
+    }) == "2022-01-01"
+
+
 def test_gmm_guard_raises_when_artifact_after_backtest_start() -> None:
     with pytest.raises(ValueError, match="GMM regime artifact"):
         assert_gmm_no_leakage(
@@ -36,6 +43,25 @@ def test_gmm_guard_passes_when_artifact_before_backtest_start() -> None:
         {"as_of_date": "2023-12-29"},
         "2024-01-01",
         context="unit-test",
+    )
+
+
+def test_gmm_guard_accepts_tz_aware_hmm_training_window_before_start() -> None:
+    assert_gmm_no_leakage(
+        {
+            "training_window": ["2012-01-01", "2022-01-01"],
+            "trained_date": "2026-05-15T04:42:20.574973+00:00",
+        },
+        pd.Timestamp("2024-01-02"),
+        context="hmm-unit-test",
+    )
+
+
+def test_gmm_guard_normalizes_tz_aware_as_of_dates() -> None:
+    assert_gmm_no_leakage(
+        {"as_of_date": "2023-12-29T00:00:00+00:00"},
+        "2024-01-01",
+        context="tz-unit-test",
     )
 
 
