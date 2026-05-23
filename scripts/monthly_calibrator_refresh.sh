@@ -20,8 +20,8 @@
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
-CONDA_PREFIX="/Users/renhao/miniconda3/envs/renquant"
-PYTHON="$CONDA_PREFIX/bin/python"
+VENV_DIR="$REPO_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/monthly_calibrator"
 NTFY_TOPIC="renquant"
 mkdir -p "$LOG_DIR"
@@ -59,9 +59,16 @@ if ! ( set -C; echo $$ > "$LOCK_FILE" ) 2>/dev/null; then
 fi
 trap "rm -f '$LOCK_FILE'" EXIT
 
-export OMP_NUM_THREADS=10
-export MKL_NUM_THREADS=10
-export OPENBLAS_NUM_THREADS=10
+THREADS=$("$PYTHON" - <<'PY'
+import os
+print(os.cpu_count() or 1)
+PY
+)
+export OMP_NUM_THREADS="$THREADS"
+export MKL_NUM_THREADS="$THREADS"
+export OPENBLAS_NUM_THREADS="$THREADS"
+export VECLIB_MAXIMUM_THREADS="$THREADS"
+export NUMEXPR_NUM_THREADS="$THREADS"
 
 cd "$REPO_DIR"
 

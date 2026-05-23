@@ -69,3 +69,23 @@ class TestFixTag:
         assert "2026-05-17 ACCEPTANCE GATE" in SRC
         assert "Sunday-sweep corruption" in SRC, \
             "must reference the incident that motivated the fix"
+
+
+class TestMonthlyEnvironment:
+    def test_uses_project_venv_and_detected_threads(self):
+        non_comment = "\n".join(
+            line for line in SRC.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "CONDA_PREFIX" not in non_comment
+        assert "miniconda" not in non_comment
+        assert 'VENV_DIR="$REPO_DIR/.venv"' in SRC
+        assert "os.cpu_count()" in SRC
+        for var in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            assert f'export {var}="$THREADS"' in SRC

@@ -276,3 +276,24 @@ class TestConditionalRetrainInvariants:
         assert 'VENV_DIR="$REPO_DIR/.venv"' in src
         assert "scripts/train_104.py" not in non_comment
         assert "scripts/weekly_wf_promote.sh" in non_comment
+
+
+class TestAlpha158LinearRetrainInvariants:
+    def test_alpha158_linear_retrain_uses_venv_and_detected_threads(self):
+        src = (REPO / "scripts" / "retrain_alpha158_linear.sh").read_text()
+        non_comment = "\n".join(
+            line for line in src.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "CONDA_PREFIX" not in non_comment
+        assert "miniconda" not in non_comment
+        assert 'VENV_DIR="$REPO_DIR/.venv"' in src
+        assert "os.cpu_count()" in src
+        for var in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            assert f'export {var}="$THREADS"' in src
