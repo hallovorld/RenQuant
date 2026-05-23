@@ -378,6 +378,10 @@ class SimAdapter:
         for ticker, df in self._ohlcv.items():
             if ticker == "SPY" or df is None or df.empty:
                 continue
+            if self._backtest_end is not None:
+                df = df.loc[:self._backtest_end]
+                if df.empty:
+                    continue
             frame = build_feature_frame(df, spy_df, spec, vol_win)
             if frame is not None and not frame.empty:
                 self._feature_cache[ticker] = frame
@@ -409,6 +413,10 @@ class SimAdapter:
         for ticker, df in self._ohlcv.items():
             if ticker == "SPY" or df is None or df.empty:
                 continue
+            if self._backtest_end is not None:
+                df = df.loc[:self._backtest_end]
+                if df.empty:
+                    continue
             frame = compute_alpha158_frame(df)
             if frame is not None and not frame.empty:
                 self._alpha158_feature_cache[ticker] = frame

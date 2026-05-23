@@ -183,6 +183,67 @@ class TestBuildFeaturesTaskUsesCache:
         assert result is False
 
 
+class TestSimAdapterCacheBounds:
+    def test_feature_caches_clip_source_ohlcv_to_backtest_end(self, monkeypatch):
+        """Historical sim caches should not compute rows beyond the sim end."""
+        from adapters.sim import SimAdapter
+        import pandas as pd
+
+        end = pd.Timestamp("2025-04-30")
+        stock = _synthetic_ohlcv(140)
+        spy = _synthetic_ohlcv(140)
+        assert stock.index.max() > end
+
+        seen: list[pd.Timestamp] = []
+
+        def fake_build_feature_frame(df, *_args, **_kwargs):
+            seen.append(df.index.max())
+            return pd.DataFrame({"rsi": [50.0]}, index=[df.index.max()])
+
+        monkeypatch.setattr("kernel.indicators.build_feature_frame", fake_build_feature_frame)
+        adapter = SimAdapter.__new__(SimAdapter)
+        adapter._ohlcv = {"SPY": spy, "NVDA": stock}
+        adapter._config = {}
+        adapter._backtest_end = end
+        adapter._feature_cache = {}
+
+        adapter._build_feature_cache()
+
+        assert seen == [end]
+        assert adapter._feature_cache["NVDA"].index.max() == end
+
+    def test_alpha158_cache_clips_source_ohlcv_to_backtest_end(self, monkeypatch):
+        """The alpha158 cache should obey the same sim-window bound."""
+        from adapters.sim import SimAdapter
+        import pandas as pd
+
+        end = pd.Timestamp("2025-04-30")
+        stock = _synthetic_ohlcv(140)
+        assert stock.index.max() > end
+
+        seen: list[pd.Timestamp] = []
+
+        def fake_alpha158_frame(df):
+            seen.append(df.index.max())
+            return pd.DataFrame({"KMID": [0.0]}, index=[df.index.max()])
+
+        monkeypatch.setattr(
+            "kernel.panel_pipeline.alpha158_features.compute_alpha158_frame",
+            fake_alpha158_frame,
+        )
+        adapter = SimAdapter.__new__(SimAdapter)
+        adapter._ohlcv = {"SPY": stock, "NVDA": stock}
+        adapter._backtest_end = end
+        adapter._alpha158_feature_cache = {}
+        adapter._panel_scorer = SimpleNamespace(metadata={"kind": "panel_ltr_xgboost"})
+        adapter._walkforward_loader = None
+
+        adapter._build_alpha158_feature_cache()
+
+        assert seen == [end]
+        assert adapter._alpha158_feature_cache["NVDA"].index.max() == end
+
+
 class TestAlpha158ScoringTaskUsesCache:
     def test_apply_scores_uses_alpha158_cache_before_single_bar_fallback(self, monkeypatch):
         """The alpha158 scorer hot path should read the sim cache when available."""
