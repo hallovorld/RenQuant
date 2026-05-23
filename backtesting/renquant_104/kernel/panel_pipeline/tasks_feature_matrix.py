@@ -47,6 +47,26 @@ class ResolveInferenceFramesTask(Task):
             return None
         ff = getattr(ctx, "_panel_feature_frames", None)
         if ff is None:
+            scorer = getattr(ctx, "_panel_scorer", None)
+            scorer_kind = (
+                scorer.metadata.get("kind") if getattr(scorer, "metadata", None)
+                else None
+            )
+            if scorer_kind in ("panel_linear", "panel_ltr_xgboost"):
+                # Alpha158 scorers rebuild their real feature matrix from raw
+                # OHLCV inside ApplyScoresTask. They only need the target
+                # ticker index here; forcing legacy panel frames costs minutes
+                # in sims and does not affect alpha158 values.
+                target = sorted({c.ticker for c in ctx.candidates} | set(ctx.holdings.keys()))
+                ctx._panel_matrix = pd.DataFrame(  # noqa: SLF001
+                    {"__alpha158_target__": 1.0}, index=target,
+                )
+                log.info(
+                    "ResolveInferenceFramesTask: alpha158 scorer %s using "
+                    "target-only matrix for %d tickers",
+                    scorer_kind, len(target),
+                )
+                return False
             log.warning("ResolveInferenceFramesTask: ctx._panel_feature_frames "
                         "missing — adapter must populate; matrix unset")
             ctx._panel_matrix = None  # noqa: SLF001

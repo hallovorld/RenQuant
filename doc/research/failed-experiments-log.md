@@ -3646,6 +3646,20 @@ failed.
 - Forensic reports now show event-level tax and annual-net tax side by side.
 - WF metadata now separates market-context HMM counts from production trade
   regime counts.
+- Exit counterfactual replay originally mixed entry-age barriers with
+  post-exit continuation language; fixed by adding explicit
+  `post_exit_hold_{N}d` columns.
+- BULL_CALM entries were forced out by CHOPPY `max_hold_days=40` after regime
+  transition; fixed by anchoring max-hold tenure to entry regime.
+- The simulator decision tree could still log current-regime `max_hold_days`
+  instead of the applied sell-context value; fixed by carrying applied
+  exit-parameter snapshots into trade logs.
+- QP and TopUp could spend the same same-bar cash budget independently; fixed
+  on the active QP -> TopUp path and guarded again at live-runner commit.
+- PaperBroker rejected NaN/negative orders but still allowed over-cash buys to
+  go negative; fixed to reject insufficient-cash paper buys.
+- Alpha158 scorers were paying for legacy panel frame prep they do not consume;
+  fixed with a target-only matrix path plus SimAdapter frame-prep skip.
 
 **Conclusion:** no promotion. Treat this as a diagnostic failure and continue
 with regime-conditional decision-tree fixes, not a global model promotion.

@@ -274,3 +274,28 @@ Not done yet:
 
 - Tax/cost hurdle integration.
 - Any production behavior change.
+
+## 2026-05-23 Correction
+
+The first replay result above used entry-age barriers (`hold_20d` =
+entry-date + 20 trading bars). That is useful for fixed-horizon policy
+comparison, but it was too loosely described as "what if we held longer after
+the exit fired." The tool now emits explicit post-exit continuation columns:
+`post_exit_hold_20d`, `post_exit_hold_60d`, and `post_exit_hold_120d`.
+
+The same audit also found that BULL_CALM entries were being forced out by
+CHOPPY `max_hold_days=40` after a regime transition. BULL_CALM entries are
+configured for `max_hold_days=500`, so `max_hold_days` now anchors to the
+entry regime while current-regime risk exits still adapt each bar. Re-run WF
+before using the old counterfactual numbers as performance evidence.
+
+The first post-fix short sim exposed a separate execution invariant break:
+JointPortfolioQPJob could reserve cash for QP buys, then TopUpHeldTask could
+spend the original `ctx.cash` again. The active path now subtracts already
+queued buy notional before TopUp, live runner commit has a final cash ledger,
+and PaperBroker rejects over-cash buys. A full WF should wait for the panel
+input cache/performance fix; otherwise acceptance time is dominated by repeated
+per-bar feature work rather than strategy logic. The first cache slice is
+implemented for fundamentals / earnings-surprise / sentiment parquet reads, and
+alpha158 scorers now skip legacy panel frame prep entirely. The remaining
+expensive piece is alpha158 rolling-feature recomputation.

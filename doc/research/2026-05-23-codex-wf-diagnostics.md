@@ -86,6 +86,80 @@ Aggregate:
 
    Regression: `tests/test_wf_gate_cli_contract.py::test_wf_gate_trade_trace_summary_uses_production_decision_regimes`.
 
+6. Exit counterfactual anchor bug.
+
+   Root cause: the counterfactual replay was documented and interpreted as
+   "what if we held longer after this exit fired", but its `hold_20d` /
+   `hold_60d` columns were anchored to entry date, not exit date. That is a
+   different policy and can even point to a date before the actual exit. Fix:
+   the tool now keeps the old entry-age barrier columns and adds explicit
+   `post_exit_hold_{N}d_*` columns anchored to the actual exit date.
+
+   Regression: `tests/test_exit_counterfactuals.py::test_counterfactual_rows_has_post_exit_continuation_lens`.
+
+7. `max_hold_days` regime-anchor bug.
+
+   Root cause: sell tasks built all exit params from the current regime. In the
+   trace, BULL_CALM entries were later evaluated under CHOPPY, so CHOPPY's
+   `max_hold_days=40` forced 132 `max_hold` exits even though BULL_CALM entries
+   are configured for `max_hold_days=500`. Fix: fresh buys now stamp
+   `entry_regime`; sell contexts keep current-regime risk exits, but anchor
+   `max_hold_days` to the entry regime.
+
+   Regressions:
+   `tests/test_exit_param_wiring.py::test_make_sell_tctx_anchors_max_hold_to_entry_regime`
+   and `tests/test_execution_pipeline.py::TestExecutionPipelineBuysOnly::test_new_buy_creates_holding_state`.
+
+8. Exit-parameter telemetry bug.
+
+   Root cause: the simulator trade log recorded exit parameters from the
+   current regime only. After the max-hold anchor fix, this could still make
+   decision-tree rows show `exit_max_hold_days=40` for BULL_CALM entries even
+   when the sell task had applied the entry-regime value. Fix: `ExitSignal`
+   now carries the applied exit-parameter snapshot, and the simulator falls
+   back to entry-regime max-hold attribution when a portfolio-level exit does
+   not carry a sell-context signal.
+
+   Regressions:
+   `tests/test_exit_param_wiring.py::test_evaluate_exits_stamps_applied_exit_params_on_signal`
+   and `tests/test_sim_sell_attribution.py::test_apply_sell_logs_entry_regime_max_hold_when_signal_lacks_params`.
+
+9. Same-bar QP + TopUp cash double-spend bug.
+
+   Root cause: QP used a local `buy_cash_left`, then `TopUpHeldTask` reread
+   original `ctx.cash` and could emit additional top-ups against cash already
+   reserved by QP buys. The simulator rejected later orders with insufficient
+   cash warnings; live Alpaca could receive an over-budget basket and rely on
+   broker-side rejection. Fix: TopUp now subtracts pending buy notional and
+   decrements its own remaining budget across multiple top-ups. Runner commit
+   also has a final live-cash ledger that resizes or rejects over-budget buy
+   intents before broker submission.
+
+   Regressions:
+   `tests/test_kelly_sizing.py::TestTopUpHeldTask::test_topup_uses_cash_after_pending_buy_orders`
+   and `tests/test_runner_state_fixes.py::TestRunnerCashBudgetGuard`.
+
+10. PaperBroker negative-cash bug.
+
+    Root cause: paper broker logged insufficient cash but executed the buy
+    anyway, allowing negative cash. Fix: over-cash paper buys are rejected.
+
+    Regression:
+    `tests/test_audit_round2_fixes.py::TestPaperBrokerCashTracking::test_overcash_buy_rejected`.
+
+11. Alpha158 sim cold-start performance bug.
+
+    Root cause: alpha158 scorers rebuild their real features from OHLCV inside
+    ApplyScoresTask, but SimAdapter still paid the cost of building legacy
+    panel feature/factor frames just to give the scoring task a ticker index.
+    Fix: alpha158 scorers can now use a target-only matrix when legacy frames
+    are absent, and SimAdapter skips legacy frame prep when static/WF artifacts
+    are all alpha158 scorers.
+
+    Regressions:
+    `tests/test_panel_scoring_job.py::TestAlpha158TargetOnlyMatrix` and
+    `tests/test_sim_walkforward.py::TestStaticModelBehaviorPreserved::test_alpha158_static_scorer_skips_legacy_panel_frame_prep`.
+
 ## Forensic Trade Evidence
 
 Closed round trips: 228.
@@ -143,6 +217,28 @@ three cuts. The bigger strategy problem is not only tax. The decision tree buys
 almost exclusively in BULL_CALM, then many exits happen after the regime has
 degraded to CHOPPY/BEAR/BULL_VOLATILE. BULL_CALM score monotonicity failing
 means QP/exits/thresholds are not preserving the model's rank signal reliably.
+
+Additional structural finding after the first patch: every `max_hold` row in
+the trace used `exit_max_hold_days=40`, and all 132 such exits were positions
+entered under BULL_CALM but evaluated under CHOPPY at exit. That is a
+regime-flow bug, not a model signal result. It must be re-simulated after the
+entry-regime max-hold fix before drawing another APY/Sharpe conclusion.
+
+Post-fix short smoke (not acceptance): a 2024-01-02 to 2024-06-30 sim with the
+entry-regime max-hold fix produced APY +13.4%, Sharpe +1.40, max drawdown
+5.0%, and event tax only $54. This is encouraging but not promotable: it is
+one half-year slice, it did not complete the strict WF/SPY gate, and it exposed
+the QP + TopUp same-bar cash-budget bug fixed above.
+
+Performance issue still open: full strict WF is too slow because the alpha158
+panel scoring path repeatedly rebuilds per-bar feature inputs. Two safe
+performance fixes are now implemented: alpha158 scorers skip legacy panel frame
+prep, and sim adapters share a per-run panel runtime cache so ApplyScoresTask
+reuses loaded fundamentals, earnings surprise, and sentiment frames instead of
+rereading the same parquet files on every bar. These do not change feature
+definitions or scorer normalization. The remaining hotspot is alpha158 rolling
+feature recomputation itself; that needs a cached-vs-uncached parity test before
+broader vectorization.
 
 ## References Used For This Fix
 

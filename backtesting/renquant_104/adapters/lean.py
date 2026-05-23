@@ -458,6 +458,7 @@ class LeanAdapter:
                     entry_rank_score       = order.get("rank_score"),
                     entry_panel_score      = order.get("panel_score"),
                     entry_kelly_target_pct = order.get("kelly_target_pct"),
+                    entry_regime           = order.get("regime"),
                 )
             algo._executed_buys += 1
             algo.SetHoldings(sym, target_pct)

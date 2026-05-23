@@ -226,6 +226,7 @@ class TestExecutionPipelineBuysOnly:
         assert math.isclose(hs.high_watermark, 300.0)
         # Thesis-baseline scores propagate from order dict
         assert math.isclose(hs.entry_rank_score, 1.23)
+        assert hs.entry_regime == "BULL_CALM"
 
     def test_topup_uses_volume_weighted_avg_cost(self):
         backend = FakeBackend(starting_cash=100_000.0)

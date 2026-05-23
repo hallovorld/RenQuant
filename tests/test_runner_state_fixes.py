@@ -34,6 +34,8 @@ RUNNER_SOURCE = RUNNER_PATH.read_text()
 LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
 
+from adapters.runner import cap_buy_order_to_cash  # noqa: E402
+
 
 # ── STATE-GC ──────────────────────────────────────────────────────────────────
 
@@ -196,6 +198,43 @@ class TestRotCounter:
         assert 'ctx.counters.get("rotations", 0)' in RUNNER_SOURCE
 
 
+class TestRunnerCashBudgetGuard:
+    """Live runner must not rely on broker rejects for over-budget buy baskets."""
+
+    def test_cash_guard_allows_fully_funded_order(self):
+        order, reason = cap_buy_order_to_cash(
+            {"ticker": "AAPL", "shares": 3, "price": 100.0},
+            500.0,
+        )
+        assert reason is None
+        assert order["shares"] == 3
+        assert order["invest"] == 300.0
+
+    def test_cash_guard_resizes_to_remaining_cash(self):
+        order, reason = cap_buy_order_to_cash(
+            {"ticker": "AAPL", "shares": 10, "price": 100.0},
+            350.0,
+        )
+        assert reason == "cash_budget_resized"
+        assert order["shares"] == 3
+        assert order["invest"] == 300.0
+        assert order["budget_adjustment"] == "cash_budget_resized"
+        assert order["original_shares"] == 10
+
+    def test_cash_guard_rejects_when_no_share_affordable(self):
+        order, reason = cap_buy_order_to_cash(
+            {"ticker": "AAPL", "shares": 10, "price": 100.0},
+            99.0,
+        )
+        assert order is None
+        assert reason == "cash_budget_exhausted"
+
+    def test_runner_commit_contains_live_cash_ledger(self):
+        assert "buy_cash_remaining" in RUNNER_SOURCE
+        assert "cash_budget_exhausted" in RUNNER_SOURCE
+        assert "cash_budget_resized" in RUNNER_SOURCE
+
+
 # ── ticker_daily_state writer (round-5) ───────────────────────────────────────
 
 class TestTickerDailyStateWiring:
@@ -313,6 +352,10 @@ class TestStateExtSellPendingOrderFix:
     def test_gc_preserves_pending_state(self):
         assert "held_or_pending = currently_held | pending_broker" in RUNNER_SOURCE, \
             "GC sweep must also consider pending broker orders"
+
+    def test_entry_signals_persist_entry_regime(self):
+        assert '"regime":           order.get("regime")' in RUNNER_SOURCE
+        assert "entry_regime           = es.get(\"regime\")" in RUNNER_SOURCE
 
     def test_fix_tag_present(self):
         assert "2026-05-17 Bug fix" in RUNNER_SOURCE

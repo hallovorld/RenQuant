@@ -125,6 +125,36 @@ class TestStaticModelBehaviorPreserved:
         )
         assert adapter._walkforward_loader is None  # noqa: SLF001
 
+    def test_alpha158_static_scorer_skips_legacy_panel_frame_prep(self, tmp_path):
+        from adapters.sim import SimAdapter
+        art = tmp_path / "panel-ltr.json"
+        _write_synthetic_panel_artifact(art, trained_date="2024-03-15")
+        ohlcv = {"SPY": _tiny_ohlcv()}
+        cfg = {
+            "watchlist": [],
+            "sector_etf_map": {},
+            "tax": {},
+            "regime": {},
+            "ranking": {
+                "panel_scoring": {
+                    "enabled": True,
+                    "artifact_path": str(art),
+                },
+            },
+        }
+
+        adapter = SimAdapter(
+            config=cfg,
+            strategy_dir=_STRATEGY_DIR,
+            ohlcv=ohlcv,
+            spy_df=ohlcv["SPY"],
+            sector_etf_map={},
+            initial_cash=100_000,
+        )
+
+        assert adapter._panel_frames_required() is False  # noqa: SLF001
+        assert adapter._panel_feature_frames is None  # noqa: SLF001
+
     def test_walkforward_disabled_explicit(self):
         from adapters.sim import SimAdapter
         ohlcv = {"SPY": _tiny_ohlcv()}

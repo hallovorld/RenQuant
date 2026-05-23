@@ -89,6 +89,16 @@ class TestPaperBrokerCashTracking:
         assert abs(p["market_value"]   - 11_000) < 1e-6
         assert abs(p["unrealized_pl"]  - 1_000)  < 1e-6
 
+    def test_overcash_buy_rejected(self):
+        from live.paper_broker import PaperBroker
+        b = PaperBroker(initial_cash=1_000)
+        b.connect()
+        result = b.place_order("AAPL", "BUY", 20, price=100.0)
+        assert result["status"] == "rejected"
+        assert result["reject_reason"] == "insufficient cash"
+        assert b.get_cash() == 1_000
+        assert b.get_position("AAPL") == 0.0
+
 
 # ── R2-30: PurgedKFold purge spans the FULL lookahead window ────────────────
 

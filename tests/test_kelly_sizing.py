@@ -170,6 +170,75 @@ class TestTopUpHeldTask:
         TopUpHeldTask().run(ctx)
         assert ctx.orders == []
 
+    def test_topup_uses_cash_after_pending_buy_orders(self):
+        """QP/selection buys already queued this bar reserve cash before TopUp.
+
+        cash=$10k, pending QP buy=$9.5k, desired top-up=$2k
+        → TopUp may buy only 5 shares ($500), not the full Kelly delta.
+        """
+        ctx = _ctx(
+            holdings={"AAA": _held(shares=10, kelly_target_pct=0.30,
+                                   panel_score=0.50)},
+            prices={"AAA": 100.0},
+            portfolio=10000.0,
+            cash=10000.0,
+            orders=[{"ticker": "BBB", "shares": 95, "price": 100.0,
+                     "invest": 9500.0, "order_type": "QP_BUY"}],
+        )
+        TopUpHeldTask().run(ctx)
+        assert len(ctx.orders) == 2
+        assert ctx.orders[-1]["ticker"] == "AAA"
+        assert ctx.orders[-1]["shares"] == 5
+        assert ctx.orders[-1]["invest"] == 500.0
+        assert ctx.orders[-1]["decision_inputs"]["pending_buy_cash"] == 9500.0
+        assert ctx.orders[-1]["decision_inputs"]["available_cash_before"] == 500.0
+
+    def test_topup_skips_when_pending_buys_exhaust_cash(self):
+        ctx = _ctx(
+            holdings={"AAA": _held(shares=10, kelly_target_pct=0.30,
+                                   panel_score=0.50)},
+            prices={"AAA": 100.0},
+            portfolio=10000.0,
+            cash=10000.0,
+            orders=[{"ticker": "BBB", "shares": 100, "price": 100.0,
+                     "invest": 10000.0, "order_type": "QP_BUY"}],
+        )
+        TopUpHeldTask().run(ctx)
+        assert len(ctx.orders) == 1
+        assert ctx.orders[0]["ticker"] == "BBB"
+
+    def test_topup_decrements_cash_budget_across_multiple_holdings(self):
+        ctx = _ctx(
+            holdings={
+                "AAA": _held(shares=0, kelly_target_pct=0.10,
+                             panel_score=0.50),
+                "BBB": _held(shares=0, kelly_target_pct=0.10,
+                             panel_score=0.50),
+            },
+            prices={"AAA": 100.0, "BBB": 100.0},
+            portfolio=10000.0,
+            cash=1000.0,
+        )
+        TopUpHeldTask().run(ctx)
+        assert len(ctx.orders) == 1
+        assert ctx.orders[0]["ticker"] == "AAA"
+        assert ctx.orders[0]["invest"] == 1000.0
+
+    def test_topup_respects_regime_cash_reserve(self):
+        ctx = _ctx(
+            holdings={"AAA": _held(shares=0, kelly_target_pct=0.60,
+                                   panel_score=0.50)},
+            prices={"AAA": 100.0},
+            portfolio=10000.0,
+            cash=10000.0,
+        )
+        ctx.config["regime_params"]["BULL_CALM"]["cash_reserve_pct"] = 0.50
+        TopUpHeldTask().run(ctx)
+        assert len(ctx.orders) == 1
+        assert ctx.orders[0]["shares"] == 50
+        assert ctx.orders[0]["invest"] == 5000.0
+        assert ctx.orders[0]["decision_inputs"]["reserve_cash"] == 5000.0
+
 
 # ── SizeAndEmit Kelly scaling — source-level check ──────────────────────────
 

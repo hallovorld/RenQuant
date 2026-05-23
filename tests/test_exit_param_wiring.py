@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import datetime as dt
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -14,7 +15,10 @@ STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
-from kernel.pipeline.pp_inference import _build_exit_params  # noqa: E402
+from kernel.exits import HoldingState  # noqa: E402
+from kernel.pipeline.context import InferenceContext  # noqa: E402
+from kernel.pipeline.task_sell import EvaluateExitsTask  # noqa: E402
+from kernel.pipeline.pp_inference import _build_exit_params, _make_sell_tctx  # noqa: E402
 
 
 def test_build_exit_params_threads_all_regime_exit_knobs():
@@ -52,3 +56,63 @@ def test_build_exit_params_threads_all_regime_exit_knobs():
     assert params["lt_hold_gate_days"] == 330
     assert params["lt_hold_min_gain"] == 0.12
     assert params["lt_hold_threshold_days"] == 366
+
+
+def test_make_sell_tctx_anchors_max_hold_to_entry_regime():
+    """Time exits follow the entry thesis; current-regime risk exits still adapt."""
+    ctx = InferenceContext(
+        config={
+            "regime_params": {
+                "BULL_CALM": {"max_hold_days": 500, "stop_loss_pct": 0.15},
+                "CHOPPY": {"max_hold_days": 40, "stop_loss_pct": 0.08},
+            },
+        },
+        today=dt.date(2026, 5, 1),
+        regime="CHOPPY",
+        holdings={
+            "AAPL": HoldingState(
+                entry_price=100.0,
+                entry_date=dt.date(2026, 1, 1),
+                high_watermark=120.0,
+                entry_regime="BULL_CALM",
+            ),
+        },
+        prices={"AAPL": 115.0},
+    )
+
+    tctx = _make_sell_tctx(ctx, "AAPL")
+
+    assert tctx.exit_params["max_hold_days"] == 500
+    assert tctx.exit_params["max_hold_anchor_regime"] == "BULL_CALM"
+    assert tctx.exit_params["stop_loss_pct"] == 0.08
+
+
+def test_evaluate_exits_stamps_applied_exit_params_on_signal():
+    ctx = InferenceContext(
+        config={
+            "regime_params": {
+                "BULL_CALM": {"max_hold_days": 1, "stop_loss_pct": 0.15},
+                "CHOPPY": {"max_hold_days": 40, "stop_loss_pct": 0.08},
+            },
+        },
+        today=dt.date(2026, 1, 5),
+        regime="CHOPPY",
+        holdings={
+            "AAPL": HoldingState(
+                entry_price=100.0,
+                entry_date=dt.date(2026, 1, 1),
+                high_watermark=100.0,
+                entry_regime="BULL_CALM",
+            ),
+        },
+        prices={"AAPL": 100.0},
+    )
+    tctx = _make_sell_tctx(ctx, "AAPL")
+
+    EvaluateExitsTask().run(tctx)
+
+    assert tctx.exit_signal is not None
+    assert tctx.exit_signal.exit_type == "max_hold"
+    assert tctx.exit_signal.exit_params["max_hold_days"] == 1
+    assert tctx.exit_signal.exit_params["max_hold_anchor_regime"] == "BULL_CALM"
+    assert tctx.exit_signal.exit_params["stop_loss_pct"] == 0.08

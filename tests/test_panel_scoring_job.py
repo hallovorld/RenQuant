@@ -10,6 +10,7 @@ import datetime
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,91 @@ if str(_STRATEGY_DIR) not in sys.path:
 # ── Shared fixtures ──────────────────────────────────────────────────────────
 
 FEATURE_COLS = ["f1", "f2", "size_z"]
+
+
+class TestPanelRuntimeCache:
+    def test_earnings_surprise_parquet_loaded_once_per_sim_cache(self, tmp_path, monkeypatch):
+        from kernel.panel_pipeline.job_panel_scoring import _cached_earnings_surprise
+
+        calls = []
+        raw = pd.DataFrame(
+            {"surprise_pct": [0.05]},
+            index=pd.DatetimeIndex(["2026-03-06"], name="Earnings Date"),
+        )
+
+        def fake_read_parquet(path):
+            calls.append(str(path))
+            return raw.copy()
+
+        monkeypatch.setattr(pd, "read_parquet", fake_read_parquet)
+        ctx = SimpleNamespace(_panel_runtime_cache={})
+        path = tmp_path / "AAA.parquet"
+
+        first = _cached_earnings_surprise(ctx, path)
+        second = _cached_earnings_surprise(ctx, path)
+
+        assert len(calls) == 1
+        assert first is second
+        assert list(first.columns) == ["earnings_date", "surprise_pct"]
+
+    def test_sentiment_parquet_loaded_once_per_sim_cache(self, tmp_path, monkeypatch):
+        from kernel.panel_pipeline.job_panel_scoring import _cached_sentiment
+
+        calls = []
+        raw = pd.DataFrame({
+            "date": ["2026-03-06"],
+            "sentiment_pos_share": [0.6],
+        })
+
+        def fake_read_parquet(path):
+            calls.append(str(path))
+            return raw.copy()
+
+        monkeypatch.setattr(pd, "read_parquet", fake_read_parquet)
+        ctx = SimpleNamespace(_panel_runtime_cache={})
+        path = tmp_path / "AAA.parquet"
+
+        first = _cached_sentiment(ctx, path)
+        second = _cached_sentiment(ctx, path)
+
+        assert len(calls) == 1
+        assert first is second
+        assert pd.api.types.is_datetime64_any_dtype(first["date"])
+
+
+class TestAlpha158TargetOnlyMatrix:
+    def test_missing_legacy_frames_ok_for_alpha158_scorer(self):
+        from kernel.panel_pipeline.tasks_feature_matrix import ResolveInferenceFramesTask
+
+        ctx = SimpleNamespace(
+            candidates=[SimpleNamespace(ticker="BBB"), SimpleNamespace(ticker="AAA")],
+            holdings={"CCC": SimpleNamespace()},
+            _panel_scorer=SimpleNamespace(metadata={"kind": "panel_ltr_xgboost"}),
+            _panel_feature_frames=None,
+            config={},
+        )
+
+        out = ResolveInferenceFramesTask().run(ctx)
+
+        assert out is False
+        assert list(ctx._panel_matrix.index) == ["AAA", "BBB", "CCC"]
+        assert list(ctx._panel_matrix.columns) == ["__alpha158_target__"]
+
+    def test_missing_legacy_frames_still_blocks_non_alpha158_scorer(self):
+        from kernel.panel_pipeline.tasks_feature_matrix import ResolveInferenceFramesTask
+
+        ctx = SimpleNamespace(
+            candidates=[SimpleNamespace(ticker="AAA")],
+            holdings={},
+            _panel_scorer=SimpleNamespace(metadata={"kind": "legacy_panel"}),
+            _panel_feature_frames=None,
+            config={},
+        )
+
+        out = ResolveInferenceFramesTask().run(ctx)
+
+        assert out is None
+        assert ctx._panel_matrix is None
 
 
 def _train_mini_booster():

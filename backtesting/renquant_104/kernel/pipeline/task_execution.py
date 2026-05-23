@@ -296,6 +296,7 @@ class UpsertHoldingsTask(Task):
                     entry_rank_score=order.get("rank_score"),
                     entry_panel_score=order.get("panel_score"),
                     entry_kelly_target_pct=order.get("kelly_target_pct"),
+                    entry_regime=order.get("regime"),
                 )
             else:
                 # Top-up: vol-weighted avg cost over prior basis.

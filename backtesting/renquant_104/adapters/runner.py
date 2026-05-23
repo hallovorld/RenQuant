@@ -77,6 +77,34 @@ def resolve_hwm(stored_hwm: float, account_value: float,
     return float(max(stored_hwm, account_value)), False
 
 
+def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | None, str | None]:
+    """Resize or reject one buy intent against the runner's live cash ledger."""
+    import math
+    try:
+        cash = float(remaining_cash)
+        shares = float(order.get("shares", 0.0))
+        price = float(order.get("price", 0.0))
+    except (TypeError, ValueError, AttributeError):
+        return None, "bad_order"
+    if not (math.isfinite(cash) and math.isfinite(shares)
+            and math.isfinite(price) and price > 0 and shares > 0):
+        return None, "bad_order"
+    invest = shares * price
+    if invest <= cash + 1e-6:
+        capped = dict(order)
+        capped["invest"] = invest
+        return capped, None
+    affordable = int(cash // price)
+    if affordable < 1:
+        return None, "cash_budget_exhausted"
+    capped = dict(order)
+    capped["shares"] = affordable
+    capped["invest"] = affordable * price
+    capped["budget_adjustment"] = "cash_budget_resized"
+    capped["original_shares"] = order.get("shares")
+    return capped, "cash_budget_resized"
+
+
 def build_sell_trade_event_for_db(
     *,
     ticker: str,
@@ -551,6 +579,7 @@ class RunnerAdapter:
                 entry_rank_score       = es.get("rank_score"),
                 entry_panel_score      = es.get("panel_score"),
                 entry_kelly_target_pct = es.get("kelly_target_pct"),
+                entry_regime           = es.get("regime"),
             )
 
         # ── Current prices from broker positions ────────────────────────────
@@ -1210,8 +1239,35 @@ class RunnerAdapter:
             ctx.orders_placed = []
         if not hasattr(ctx, "orders_skipped"):
             ctx.orders_skipped = []
+        import math
+        try:
+            buy_cash_remaining = float(ctx.cash)
+        except (TypeError, ValueError):
+            buy_cash_remaining = 0.0
+        if not math.isfinite(buy_cash_remaining):
+            buy_cash_remaining = 0.0
         if not self._sell_only:
-            for order in ctx.orders:
+            for order_intent in ctx.orders:
+                order, budget_reason = cap_buy_order_to_cash(
+                    order_intent, buy_cash_remaining,
+                )
+                if order is None:
+                    log.info(
+                        "BUY skipped: live cash budget rejected %s (%s)",
+                        order_intent.get("ticker") if isinstance(order_intent, dict) else "?",
+                        budget_reason,
+                    )
+                    if isinstance(order_intent, dict):
+                        ctx.orders_skipped.append({
+                            **order_intent,
+                            "skip_reason": budget_reason or "cash_budget_rejected",
+                        })
+                    continue
+                if budget_reason == "cash_budget_resized":
+                    log.info(
+                        "BUY resized by live cash budget: %s shares %s → %s",
+                        order["ticker"], order.get("original_shares"), order["shares"],
+                    )
                 ticker = order["ticker"]
                 shares = order["shares"]
                 price  = order["price"]
@@ -1239,6 +1295,7 @@ class RunnerAdapter:
                 ctx.orders_placed.append(order)
 
                 invest = shares * price
+                buy_cash_remaining = max(buy_cash_remaining - invest, 0.0)
                 # Top-up detection: a buy on a ticker we already track is
                 # an add-to-existing, not a fresh entry. Preserve entry_date,
                 # entry_signals, sell_streaks, and last_sell_dates so the
@@ -1262,6 +1319,7 @@ class RunnerAdapter:
                         "rank_score":       order.get("rank_score"),
                         "panel_score":      order.get("panel_score"),
                         "kelly_target_pct": order.get("kelly_target_pct"),
+                        "regime":           order.get("regime"),
                     }
                 else:
                     # Top-up: only HWM may need to ratchet up.

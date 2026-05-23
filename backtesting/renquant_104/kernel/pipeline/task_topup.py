@@ -28,12 +28,41 @@ session.
 from __future__ import annotations
 
 import logging
+import math
 
 from .context import InferenceContext
 from .order_attribution import stamp_order_attribution
 from .pipeline import Task
 
 log = logging.getLogger("kernel.pipeline.topup")
+
+
+def _pending_buy_invest(orders: list | None) -> float:
+    """Cash already reserved by buy orders emitted earlier this bar."""
+    total = 0.0
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        side = str(order.get("side") or order.get("action") or "BUY").upper()
+        if side == "SELL":
+            continue
+        invest = order.get("invest")
+        try:
+            invest_f = float(invest) if invest is not None else float("nan")
+        except (TypeError, ValueError):
+            invest_f = float("nan")
+        if math.isfinite(invest_f) and invest_f > 0:
+            total += invest_f
+            continue
+        try:
+            shares = float(order.get("shares", 0.0))
+            price = float(order.get("price", 0.0))
+        except (TypeError, ValueError):
+            continue
+        notional = shares * price
+        if shares > 0 and math.isfinite(notional) and notional > 0:
+            total += notional
+    return total
 
 
 class TopUpHeldTask(Task):
@@ -78,13 +107,27 @@ class TopUpHeldTask(Task):
         rotation_sells = {p.sell_ticker for p in (getattr(ctx, "rotations", []) or [])}
 
         added = 0
-        # Audit fix TU-1..TU-4 (Round 2 deep audit, 2026-04-25): pre-fix,
-        # NaN kelly_target / price / portfolio slipped past guards
-        # (`<= 0` is False on NaN), then propagated through delta calc,
-        # producing `delta < threshold = False` → silent skip with NO
-        # log signal. Operator couldn't see WHY a holding wasn't being
-        # topped up.
-        import math
+        # Shared buy budget: Selection/QP/rotation may already have queued
+        # buy orders this bar. TopUp must consume only the unreserved cash,
+        # then decrement it after each emitted top-up so live never relies
+        # on broker rejects as the budget check.
+        cash = float(getattr(ctx, "cash", 0.0))
+        if not math.isfinite(cash):
+            return
+        try:
+            from kernel.regime import confidence_to_size_multiplier  # noqa: PLC0415
+            conf_mult = confidence_to_size_multiplier(ctx.confidence)
+        except Exception:  # pragma: no cover - defensive for legacy test doubles
+            conf_mult = 1.0
+        regime_p = (
+            ctx.config.get("regime_params", {}).get(ctx.regime, {})
+            if isinstance(getattr(ctx, "config", None), dict) else {}
+        )
+        reserve_pct = float(regime_p.get("cash_reserve_pct", 0.0)) * conf_mult
+        reserve_cash = max(portfolio * reserve_pct, 0.0)
+        pending_buy_cash = _pending_buy_invest(getattr(ctx, "orders", []))
+        available_cash = max(cash - pending_buy_cash - reserve_cash, 0.0)
+
         # 2026-05-01 trade-audit fix: TopUp must respect the same earnings
         # blackout the buy-side EarningsFilterTask enforces. Pre-fix, FTNT
         # was topped up on 2026-04-29 — one day before its 2026-04-30
@@ -168,20 +211,10 @@ class TopUpHeldTask(Task):
             if extra_shares < 1:
                 continue
 
-            # Bug 26 fix (2026-04-24): cap by available cash. Without this
-            # check, TopUp emits orders that the adapter's _apply_buy then
-            # rejects with "insufficient cash" warnings — wastes ctx.orders
-            # space and pollutes audit logs. The panel value is a notional
-            # weight target; actual buy must come from real cash.
-            cash = float(getattr(ctx, "cash", 0.0))
-            # TU-4 guard: NaN cash → treat as 0 to be safe (would cause
-            # the down-sizing branch to fail otherwise).
-            if not math.isfinite(cash):
-                continue
             invest     = extra_shares * price
-            if invest > cash:
+            if invest > available_cash:
                 # Re-size down to available cash (whole shares only)
-                affordable_shares = int(cash // price)
+                affordable_shares = int(available_cash // price)
                 if affordable_shares < 1:
                     continue
                 extra_shares = affordable_shares
@@ -220,12 +253,17 @@ class TopUpHeldTask(Task):
                     "top_up_threshold": top_up_thresh,
                     "topup_conviction_floor": topup_floor,
                     "cash_before": cash,
+                    "pending_buy_cash": pending_buy_cash,
+                    "reserve_cash": reserve_cash,
+                    "available_cash_before": available_cash,
                 }))
+            available_cash -= invest
             added += 1
             log.info(
-                "TopUpHeldTask: %s +%d shares (current=%.1f%% target=%.1f%% delta=%.1f%%)",
+                "TopUpHeldTask: %s +%d shares (current=%.1f%% target=%.1f%% "
+                "delta=%.1f%% remaining_cash=$%.0f)",
                 ticker, extra_shares, current_pct * 100,
-                kelly_target * 100, delta * 100,
+                kelly_target * 100, delta * 100, available_cash,
             )
 
         if added:

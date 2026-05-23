@@ -43,6 +43,46 @@ from .feature_matrix import build_inference_matrix
 log = logging.getLogger("kernel.panel_pipeline.scoring")
 
 
+def _runtime_cache(ctx: Any) -> dict | None:
+    cache = getattr(ctx, "_panel_runtime_cache", None)
+    return cache if isinstance(cache, dict) else None
+
+
+def _cached_parquet(ctx: Any, key: tuple, path: Path) -> pd.DataFrame | None:
+    cache = _runtime_cache(ctx)
+    if cache is None:
+        return pd.read_parquet(path)
+    if key not in cache:
+        cache[key] = pd.read_parquet(path)
+    return cache[key]
+
+
+def _cached_earnings_surprise(ctx: Any, path: Path) -> pd.DataFrame | None:
+    cache_key = ("earnings_surprise", str(path))
+    cache = _runtime_cache(ctx)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    earn = pd.read_parquet(path).reset_index()
+    earn = earn.rename(columns={earn.columns[0]: "earnings_date"})
+    earn["earnings_date"] = pd.to_datetime(earn["earnings_date"])
+    earn = earn.sort_values("earnings_date").reset_index(drop=True)
+    if cache is not None:
+        cache[cache_key] = earn
+    return earn
+
+
+def _cached_sentiment(ctx: Any, path: Path) -> pd.DataFrame | None:
+    cache_key = ("news_sentiment", str(path))
+    cache = _runtime_cache(ctx)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    sdf = pd.read_parquet(path)
+    sdf["date"] = pd.to_datetime(sdf["date"])
+    if cache is not None:
+        cache[cache_key] = sdf
+    return sdf
+
+
 # ── Task chain ────────────────────────────────────────────────────────────────
 
 class LoadScorerTask(Task):
@@ -285,7 +325,9 @@ class ApplyScoresTask(Task):
                     repo = Path(__file__).resolve().parents[4]
                     fp = repo / "data" / "sec_fundamentals_daily.parquet"
                     if fp.exists():
-                        fund_panel = pd.read_parquet(fp)
+                        fund_panel = _cached_parquet(ctx, ("sec_fundamentals_daily", str(fp)), fp)
+                        if fund_panel is None:
+                            fund_panel = pd.DataFrame()
                         fund_panel["date"] = pd.to_datetime(fund_panel["date"])
                         snap = fund_panel[fund_panel["date"] <= pd.Timestamp(today)] \
                             .sort_values("date").groupby("ticker").tail(1)
@@ -364,13 +406,11 @@ class ApplyScoresTask(Task):
                             n_no_data += 1
                             for pc in pead_cols: rows[t].setdefault(pc, 0.0)
                             continue
-                        earn = pd.read_parquet(ep).reset_index()
-                        earn = earn.rename(columns={earn.columns[0]: "earnings_date"})
-                        earn["earnings_date"] = pd.to_datetime(earn["earnings_date"])
-                        # Defensive: sort by earnings_date ASC. Parquet doesn't
-                        # guarantee row-order preservation across re-reads, and
-                        # we rely on iloc[-1] being most-recent below.
-                        earn = earn.sort_values("earnings_date").reset_index(drop=True)
+                        earn = _cached_earnings_surprise(ctx, ep)
+                        if earn is None:
+                            n_no_data += 1
+                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
+                            continue
                         prior = earn[earn["earnings_date"] <= today_ts]
                         if len(prior) == 0:
                             n_no_prior += 1
@@ -419,10 +459,11 @@ class ApplyScoresTask(Task):
                             n_sue_no_data += 1
                             for sc in sue_cols: rows[t].setdefault(sc, 0.0)
                             continue
-                        earn = pd.read_parquet(ep).reset_index()
-                        earn = earn.rename(columns={earn.columns[0]: "earnings_date"})
-                        earn["earnings_date"] = pd.to_datetime(earn["earnings_date"])
-                        earn = earn.sort_values("earnings_date").reset_index(drop=True)
+                        earn = _cached_earnings_surprise(ctx, ep)
+                        if earn is None:
+                            n_sue_no_data += 1
+                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
+                            continue
                         prior = earn[earn["earnings_date"] <= today_ts]
                         if len(prior) == 0:
                             for sc in sue_cols: rows[t].setdefault(sc, 0.0)
@@ -488,12 +529,11 @@ class ApplyScoresTask(Task):
                             for sc in sent_cols: rows[t].setdefault(sc, 0.0)
                             continue
                         try:
-                            sdf = pd.read_parquet(sp)
+                            sdf = _cached_sentiment(ctx, sp)
                         except Exception:
                             n_sent_miss += 1
                             for sc in sent_cols: rows[t].setdefault(sc, 0.0)
                             continue
-                        sdf["date"] = pd.to_datetime(sdf["date"])
                         # Most-recent sentiment date ≤ today (sentiment is daily;
                         # weekend/holiday tickers fall back to last available)
                         prior_sent = sdf[sdf["date"] <= today_ts_sent]

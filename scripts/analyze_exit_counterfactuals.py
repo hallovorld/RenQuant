@@ -6,9 +6,14 @@ This script answers a narrow APY / Sharpe question:
     "When an exit fired, did it improve net P&L versus simply holding longer?"
 
 It pairs trades using `analyze_trade_decision_attribution.py`, loads the
-ticker OHLCV path, and compares the actual exit with fixed vertical-barrier
-counterfactuals such as hold-to-20d / hold-to-60d. It also applies the existing
-AFML triple-barrier exit meta-label helper when possible:
+ticker OHLCV path, and compares the actual exit with two counterfactual
+lenses:
+
+    1. fixed entry-age barriers such as exit-at-entry+20d / entry+60d
+    2. post-exit continuation such as hold 20d / 60d after the actual exit
+
+The second lens is the direct answer for exit-policy false positives. It also
+applies the existing AFML triple-barrier exit meta-label helper when possible:
 
     meta_label = 1 -> exit was correct; price kept falling
     meta_label = 0 -> exit was likely a false positive; price recovered
@@ -218,6 +223,26 @@ def counterfactual_rows(
             row[f"hold_{h}d_return"] = cf_return
             row[f"hold_{h}d_net_pnl"] = cf_net_pnl
             row[f"hold_{h}d_delta_vs_actual"] = cf_net_pnl - actual_net_pnl
+
+            post_cf = close_after_bars(close, exit_date, h)
+            if post_cf is None:
+                row[f"post_exit_hold_{h}d_date"] = None
+                row[f"post_exit_hold_{h}d_return"] = None
+                row[f"post_exit_hold_{h}d_net_pnl"] = None
+                row[f"post_exit_hold_{h}d_delta_vs_actual"] = None
+                continue
+            post_cf_date, post_cf_price = post_cf
+            post_cf_hold_days = max(int((post_cf_date - entry_date).days), actual_hold)
+            post_cf_return = post_cf_price / entry_price - 1.0
+            post_cf_gross_pnl = entry_notional * post_cf_return
+            post_cf_tax = tax_on_gain(post_cf_gross_pnl, post_cf_hold_days, tax)
+            post_cf_net_pnl = post_cf_gross_pnl - post_cf_tax
+            row[f"post_exit_hold_{h}d_date"] = post_cf_date.date().isoformat()
+            row[f"post_exit_hold_{h}d_return"] = post_cf_return
+            row[f"post_exit_hold_{h}d_net_pnl"] = post_cf_net_pnl
+            row[f"post_exit_hold_{h}d_delta_vs_actual"] = (
+                post_cf_net_pnl - actual_net_pnl
+            )
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -266,6 +291,21 @@ def summarize_counterfactuals(cf: pd.DataFrame, horizons: list[int],
                 if net_col in g:
                     vals = g[net_col].dropna()
                     record[f"hold_{h}d_net_pnl"] = float(vals.sum()) if len(vals) else None
+                post_delta_col = f"post_exit_hold_{h}d_delta_vs_actual"
+                post_net_col = f"post_exit_hold_{h}d_net_pnl"
+                if post_delta_col in g:
+                    post_delta = g[post_delta_col].dropna()
+                    record[f"post_exit_hold_{h}d_delta_sum"] = (
+                        float(post_delta.sum()) if len(post_delta) else None
+                    )
+                    record[f"post_exit_hold_{h}d_better_rate"] = (
+                        float((post_delta > 0).mean()) if len(post_delta) else None
+                    )
+                if post_net_col in g:
+                    post_vals = g[post_net_col].dropna()
+                    record[f"post_exit_hold_{h}d_net_pnl"] = (
+                        float(post_vals.sum()) if len(post_vals) else None
+                    )
             rows.append(record)
         rows = sorted(rows, key=lambda r: r.get("actual_net_pnl", 0.0))
         tables[group_col] = rows
@@ -316,6 +356,10 @@ def print_report(summary: dict[str, list[dict[str, Any]]], horizons: list[int]) 
                 "exit_correct_rate", "avg_post_exit_return"]
         for h in horizons:
             keep.extend([f"hold_{h}d_delta_sum", f"hold_{h}d_better_rate"])
+            keep.extend([
+                f"post_exit_hold_{h}d_delta_sum",
+                f"post_exit_hold_{h}d_better_rate",
+            ])
         keep = [c for c in keep if c in df.columns]
         print(df[keep].to_string(index=False))
 

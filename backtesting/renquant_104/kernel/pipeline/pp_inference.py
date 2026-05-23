@@ -70,6 +70,12 @@ def _build_exit_params(regime_p: dict, config: dict) -> dict:
 def _make_sell_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContext:
     regime_p    = ctx.config.get("regime_params", {}).get(ctx.regime, {})
     exit_params = _build_exit_params(regime_p, ctx.config)
+    holding = ctx.holdings[ticker]
+    entry_regime = getattr(holding, "entry_regime", None)
+    entry_regime_p = ctx.config.get("regime_params", {}).get(entry_regime, {})
+    if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
+        exit_params["max_hold_days"] = entry_regime_p["max_hold_days"]
+        exit_params["max_hold_anchor_regime"] = entry_regime
     return TickerInferenceContext(
         ticker=ticker,
         ohlcv=ctx.ohlcv,
@@ -79,7 +85,7 @@ def _make_sell_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
         regime=ctx.regime,
         regime_params=regime_p,
         exit_params=exit_params,
-        holding=ctx.holdings[ticker],
+        holding=holding,
         price=ctx.prices.get(ticker, 0.0),
         # earnings_calendar plumbed to sell tctx (2026-05-01) so
         # EarningsBlackoutSellTask can veto model-driven exits inside the

@@ -169,6 +169,7 @@ class EvaluateExitsTask(Task):
         tc.holding = updated_hs
 
         if sig.should_exit:
+            sig.exit_params = dict(tc.exit_params or {})
             tc.exit_signal = sig
         elif tc.model_action == "sell" and updated_hs.sell_streak > 0:
             # Use the typed field on ExitSignal (was a dynamic attribute write
@@ -419,6 +420,7 @@ class PanelConvictionExitTask(Task):
                                 f"μ={mu:+.4f} (floor={panel_floor}, "
                                 f"ceiling={mu_ceiling}, mode={trigger_mode})"),
                 exit_type   = "panel_conviction",
+                exit_params = dict(getattr(tc, "exit_params", {}) or {}),
             )
             log.info("PanelConvictionExitTask [%s]: EXIT rank=%.3f μ=%+.4f (%s)",
                      tc.ticker, prob_score, mu, trigger_mode)

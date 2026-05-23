@@ -49,6 +49,27 @@ from kernel.execution import (
 log = logging.getLogger("adapters.sim")
 
 
+_ALPHA158_SCORER_KINDS = {"panel_linear", "panel_ltr_xgboost"}
+
+
+def _artifact_kind(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    meta = payload.get("metadata") if isinstance(payload, dict) else None
+    if isinstance(meta, dict) and meta.get("kind"):
+        return str(meta.get("kind"))
+    if isinstance(payload, dict) and payload.get("kind"):
+        return str(payload.get("kind"))
+    return None
+
+
+def _resolve_manifest_uri(manifest_path: Path, uri: str) -> Path:
+    p = Path(uri)
+    return p if p.is_absolute() else manifest_path.parent / p
+
+
 class SimAdapter:
     """Translate between a simulated portfolio and InferenceContext."""
 
@@ -114,6 +135,11 @@ class SimAdapter:
             # scorer's metadata lacks trained_date (older artifacts).
             self._assert_legacy_no_leakage()
         self._ngboost_head  = self._try_load_ngboost_head()
+        # Inference-side panel runtime cache. Keeps side-data parquet loads
+        # (fundamentals, earnings surprise, sentiment) out of the per-bar hot
+        # path. Values are raw point-in-time inputs; scorer-specific
+        # normalization still happens inside PanelScoringJob each bar.
+        self._panel_runtime_cache: dict = {}
 
         # ── Panel feature/factor frames (audit P-1, 2026-04-24) ─────────────
         # Architecture symmetry with LeanAdapter / RunnerAdapter: if the
@@ -122,9 +148,19 @@ class SimAdapter:
         # function the other adapters use. Pre-fix the caller had to know
         # to construct them manually (notebook cell 15 used to fail this);
         # now SimAdapter is self-sufficient.
+        frames_required = self._panel_frames_required()
         if panel_feature_frames is not None and panel_factor_frames is not None:
             self._panel_feature_frames = panel_feature_frames
             self._panel_factor_frames  = panel_factor_frames
+        elif not frames_required:
+            self._panel_feature_frames = None
+            self._panel_factor_frames = None
+            self._panel_macro_frame = None
+            self._panel_asset_embeddings = None
+            log.info(
+                "SimAdapter: skipped legacy panel frame prep for alpha158 scorer; "
+                "ApplyScoresTask will build features from OHLCV"
+            )
         elif self._panel_scorer is not None or self._walkforward_loader is not None:
             try:
                 from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
@@ -462,6 +498,22 @@ class SimAdapter:
         log.info("SimAdapter: walkforward enabled (manifest=%s)", manifest)
         return loader
 
+    def _panel_frames_required(self) -> bool:
+        """Whether legacy panel feature/factor frames are required for scoring."""
+        if self._panel_scorer is not None:
+            kind = (getattr(self._panel_scorer, "metadata", {}) or {}).get("kind")
+            return kind not in _ALPHA158_SCORER_KINDS
+        if self._walkforward_loader is not None:
+            for entry in self._walkforward_loader.entries:
+                p = _resolve_manifest_uri(
+                    self._walkforward_loader.manifest_path,
+                    entry.artifact_uri,
+                )
+                if _artifact_kind(p) not in _ALPHA158_SCORER_KINDS:
+                    return True
+            return False
+        return False
+
     def _assert_legacy_no_leakage(self) -> None:
         """Defense-in-depth: legacy static model trained_date < backtest_end.
 
@@ -695,6 +747,7 @@ class SimAdapter:
             ctx._global_calibrator = calibrator_for_bar  # noqa: SLF001
         if self._ngboost_head is not None:
             ctx._ngboost_head = self._ngboost_head  # noqa: SLF001
+        ctx._panel_runtime_cache = self._panel_runtime_cache  # noqa: SLF001
         if self._panel_feature_frames is not None:
             # Slice feature/factor frames to today_ts too (no future leak)
             ctx._panel_feature_frames = {                              # noqa: SLF001
@@ -1230,6 +1283,19 @@ class SimAdapter:
         regime_p = (ctx.config.get("regime_params", {}) or {}).get(
             getattr(ctx, "regime", None), {},
         ) if ctx is not None else {}
+        applied_exit_p = getattr(sig, "exit_params", None)
+        if isinstance(applied_exit_p, dict) and applied_exit_p:
+            exit_p = dict(applied_exit_p)
+        else:
+            exit_p = dict(regime_p or {})
+            entry_regime = getattr(hs, "entry_regime", None)
+            entry_regime_p = (
+                (ctx.config.get("regime_params", {}) or {}).get(entry_regime, {})
+                if ctx is not None and entry_regime is not None else {}
+            )
+            if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
+                exit_p["max_hold_days"] = entry_regime_p["max_hold_days"]
+                exit_p["max_hold_anchor_regime"] = entry_regime
         sig_reason = getattr(sig, "reason", None)
         source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
         source_task = str(getattr(sig, "source_task", None) or sig.exit_type or "sell")
@@ -1253,20 +1319,21 @@ class SimAdapter:
             "regime":      getattr(ctx, "regime", None),
             "confidence":  getattr(ctx, "confidence", None),
             "exit_signal_reason": getattr(sig, "reason", None),
-            "exit_stop_loss_pct": regime_p.get("stop_loss_pct"),
-            "exit_stop_n_sigma": regime_p.get("stop_n_sigma"),
-            "exit_take_profit_pct": regime_p.get("take_profit_pct"),
-            "exit_stop_decay_days": regime_p.get("stop_decay_days"),
-            "exit_stop_decay_floor": regime_p.get("stop_decay_floor"),
-            "exit_max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
-            "exit_sdl_n_sigma": regime_p.get("sdl_n_sigma"),
-            "exit_sdl_skip_if_unrealized_above": regime_p.get(
+            "exit_stop_loss_pct": exit_p.get("stop_loss_pct"),
+            "exit_stop_n_sigma": exit_p.get("stop_n_sigma"),
+            "exit_take_profit_pct": exit_p.get("take_profit_pct"),
+            "exit_stop_decay_days": exit_p.get("stop_decay_days"),
+            "exit_stop_decay_floor": exit_p.get("stop_decay_floor"),
+            "exit_max_single_day_loss_pct": exit_p.get("max_single_day_loss_pct"),
+            "exit_sdl_n_sigma": exit_p.get("sdl_n_sigma"),
+            "exit_sdl_skip_if_unrealized_above": exit_p.get(
                 "sdl_skip_if_unrealized_above"
             ),
-            "exit_trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
-            "exit_trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
-            "exit_atr_n_multiplier": regime_p.get("atr_n_multiplier"),
-            "exit_max_hold_days": regime_p.get("max_hold_days"),
+            "exit_trailing_stop_trigger_pct": exit_p.get("trailing_stop_trigger_pct"),
+            "exit_trailing_stop_trail_pct": exit_p.get("trailing_stop_trail_pct"),
+            "exit_atr_n_multiplier": exit_p.get("atr_n_multiplier"),
+            "exit_max_hold_days": exit_p.get("max_hold_days"),
+            "exit_max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
             "order_type":  f"SELL_{sig.exit_type}" if sig.exit_type else "SELL",
             "source":      str(getattr(sig, "source", None) or "ExitPipeline"),
             "source_job":  source_job,
@@ -1290,20 +1357,21 @@ class SimAdapter:
                 "quantity": getattr(sig, "quantity", None),
                 "hold_days": hold_days,
                 "pnl_pct": _pnl_pct,
-                "stop_loss_pct": regime_p.get("stop_loss_pct"),
-                "stop_n_sigma": regime_p.get("stop_n_sigma"),
-                "take_profit_pct": regime_p.get("take_profit_pct"),
-                "stop_decay_days": regime_p.get("stop_decay_days"),
-                "stop_decay_floor": regime_p.get("stop_decay_floor"),
-                "max_single_day_loss_pct": regime_p.get("max_single_day_loss_pct"),
-                "sdl_n_sigma": regime_p.get("sdl_n_sigma"),
-                "sdl_skip_if_unrealized_above": regime_p.get(
+                "stop_loss_pct": exit_p.get("stop_loss_pct"),
+                "stop_n_sigma": exit_p.get("stop_n_sigma"),
+                "take_profit_pct": exit_p.get("take_profit_pct"),
+                "stop_decay_days": exit_p.get("stop_decay_days"),
+                "stop_decay_floor": exit_p.get("stop_decay_floor"),
+                "max_single_day_loss_pct": exit_p.get("max_single_day_loss_pct"),
+                "sdl_n_sigma": exit_p.get("sdl_n_sigma"),
+                "sdl_skip_if_unrealized_above": exit_p.get(
                     "sdl_skip_if_unrealized_above"
                 ),
-                "trailing_stop_trigger_pct": regime_p.get("trailing_stop_trigger_pct"),
-                "trailing_stop_trail_pct": regime_p.get("trailing_stop_trail_pct"),
-                "atr_n_multiplier": regime_p.get("atr_n_multiplier"),
-                "max_hold_days": regime_p.get("max_hold_days"),
+                "trailing_stop_trigger_pct": exit_p.get("trailing_stop_trigger_pct"),
+                "trailing_stop_trail_pct": exit_p.get("trailing_stop_trail_pct"),
+                "atr_n_multiplier": exit_p.get("atr_n_multiplier"),
+                "max_hold_days": exit_p.get("max_hold_days"),
+                "max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
             },
         })
 
@@ -1456,6 +1524,7 @@ class SimAdapter:
                 entry_rank_score       = order.get("rank_score"),
                 entry_panel_score      = order.get("panel_score"),
                 entry_kelly_target_pct = order.get("kelly_target_pct"),
+                entry_regime           = order.get("regime"),
             )
             # G7: seed the lot list with this fresh acquisition.
             hs_new.lots.append(TaxLot(

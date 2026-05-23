@@ -114,6 +114,10 @@ class HoldingState:
     entry_rank_score:    float | None = None
     entry_panel_score:   float | None = None
     entry_kelly_target_pct: float | None = None
+    # Regime thesis at fresh entry. Tenure rules such as max_hold_days should
+    # remain anchored to the entry thesis; current-regime risk rules can still
+    # adapt each bar.
+    entry_regime:        str | None = None
 
     # G7 (2026-05-04): explicit tax-lot list. Each buy appends a TaxLot;
     # sells consume lots per FIFO/HIFO. Default empty for back-compat;
@@ -264,6 +268,10 @@ class ExitSignal:
     # can increment the blocked_streak counter without resorting to
     # untyped attribute writes (audit #17).
     blocked_streak: bool = False
+    # Diagnostic contract: the exact exit-parameter snapshot used by the
+    # sell decision. Adapters persist this into trade logs so decision trees
+    # show applied rules, not merely the current regime defaults.
+    exit_params: dict | None = None
 
 
 _NO_EXIT = ExitSignal(should_exit=False, reason="", exit_type="")

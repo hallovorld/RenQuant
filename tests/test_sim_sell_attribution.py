@@ -82,3 +82,54 @@ def test_apply_sell_preserves_exit_signal_source_metadata():
     assert row["decision_inputs"]["stop_decay_days"] == 60
     assert row["decision_inputs"]["stop_decay_floor"] == 0.08
     assert row["decision_inputs"]["sdl_skip_if_unrealized_above"] == 0.02
+
+
+def test_apply_sell_logs_entry_regime_max_hold_when_signal_lacks_params():
+    adapter = SimAdapter.__new__(SimAdapter)
+    today = datetime.date(2026, 5, 20)
+    adapter._holdings = {
+        "AAPL": HoldingState(
+            entry_price=100.0,
+            entry_date=today - datetime.timedelta(days=60),
+            high_watermark=125.0,
+            shares=10.0,
+            entry_regime="BULL_CALM",
+        )
+    }
+    adapter._pos_shares = {"AAPL": 10.0}
+    adapter._cash = 0.0
+    adapter._last_sell_date = {}
+    adapter._last_sell_pls = {}
+    adapter._trade_log = []
+    adapter._ohlcv = {}
+
+    ctx = SimpleNamespace(
+        prices={"AAPL": 110.0},
+        config={
+            "tax": {
+                "short_term_rate": 0.37,
+                "long_term_rate": 0.20,
+                "long_term_threshold_days": 365,
+            },
+            "regime_params": {
+                "BULL_CALM": {"max_hold_days": 500, "stop_loss_pct": 0.15},
+                "CHOPPY": {"max_hold_days": 40, "stop_loss_pct": 0.08},
+            },
+        },
+        regime="CHOPPY",
+        confidence=0.8,
+    )
+    sig = ExitSignal(
+        should_exit=True,
+        reason="panel conviction",
+        exit_type="panel_conviction",
+    )
+
+    adapter._apply_sell("AAPL", sig, pd.Timestamp(today), ctx)
+
+    row = adapter._trade_log[0]
+    assert row["exit_stop_loss_pct"] == 0.08
+    assert row["exit_max_hold_days"] == 500
+    assert row["exit_max_hold_anchor_regime"] == "BULL_CALM"
+    assert row["decision_inputs"]["max_hold_days"] == 500
+    assert row["decision_inputs"]["max_hold_anchor_regime"] == "BULL_CALM"

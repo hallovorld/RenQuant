@@ -102,8 +102,48 @@ def test_counterfactual_rows_marks_hold_20_better_after_false_stop(tmp_path: Pat
     # Actual = -$100, so counterfactual improves by $125.
     assert out.iloc[0]["hold_20d_net_pnl"] == pytest.approx(25.0)
     assert out.iloc[0]["hold_20d_delta_vs_actual"] == pytest.approx(125.0)
+    assert out.iloc[0]["post_exit_hold_20d_delta_vs_actual"] == pytest.approx(125.0)
     assert out.iloc[0]["post_exit_return_to_barrier_window"] == pytest.approx(105.0 / 90.0 - 1.0)
     assert out.iloc[0]["exit_meta_label_correct"] == 0
+
+
+def test_counterfactual_rows_has_post_exit_continuation_lens(tmp_path: Path) -> None:
+    """Post-exit hold uses the actual exit date, not entry+h bars."""
+    root = tmp_path / "ohlcv"
+    closes = [100.0] + [80.0] * 5 + [90.0] + [120.0] * 10
+    _write_ohlcv(root, "AAA", closes)
+    idx = pd.bdate_range("2026-01-01", periods=len(closes))
+    trips = pd.DataFrame([{
+        "ticker": "AAA",
+        "entry_date": idx[0],
+        "exit_date": idx[6],
+        "entry_price": 100.0,
+        "exit_price": 90.0,
+        "entry_notional": 1000.0,
+        "gross_pnl": -100.0,
+        "net_pnl": -100.0,
+        "exit_reason": "stop_loss",
+        "hold_days": 6,
+        "entry_regime": "BULL_CALM",
+        "entry_order_type": "QP_BUY",
+    }])
+
+    out = counterfactual_rows(
+        trips,
+        data_root=root,
+        horizons=[5],
+        tax=TaxConfig(short_rate=0.50, long_rate=0.32),
+        barrier_window=5,
+        pt_mult=10.0,
+        sl_mult=10.0,
+    )
+    row = out.iloc[0]
+
+    # Entry+5 bars was before the actual stop and stayed at 80: worse than the
+    # actual -$100. Exit+5 bars recovered to 120: +$100 net after short tax.
+    assert row["hold_5d_delta_vs_actual"] == pytest.approx(-100.0)
+    assert row["post_exit_hold_5d_delta_vs_actual"] == pytest.approx(200.0)
+    assert row["post_exit_hold_5d_date"] == idx[11].date().isoformat()
 
 
 def test_summarize_counterfactuals_reports_better_rate() -> None:
@@ -120,6 +160,8 @@ def test_summarize_counterfactuals_reports_better_rate() -> None:
         "mfe_to_max_horizon": [0.05, 0.02, 0.04],
         "hold_20d_delta_vs_actual": [120.0, -20.0, 5.0],
         "hold_20d_net_pnl": [20.0, -70.0, 25.0],
+        "post_exit_hold_20d_delta_vs_actual": [130.0, 10.0, -5.0],
+        "post_exit_hold_20d_net_pnl": [30.0, -40.0, 15.0],
     })
 
     summary = summarize_counterfactuals(cf, horizons=[20], min_n=2)
@@ -130,3 +172,5 @@ def test_summarize_counterfactuals_reports_better_rate() -> None:
     assert stop["actual_net_pnl"] == pytest.approx(-150.0)
     assert stop["hold_20d_delta_sum"] == pytest.approx(100.0)
     assert stop["hold_20d_better_rate"] == pytest.approx(0.5)
+    assert stop["post_exit_hold_20d_delta_sum"] == pytest.approx(140.0)
+    assert stop["post_exit_hold_20d_better_rate"] == pytest.approx(1.0)

@@ -143,9 +143,13 @@ class PaperBroker(BaseBroker):
             if invest > self._cash + 1e-6 and price is not None:
                 log.warning(
                     "PaperBroker: insufficient cash for %s (need $%.2f, have $%.2f) — "
-                    "executing anyway, going to negative cash",
+                    "order rejected",
                     symbol, invest, self._cash,
                 )
+                return {"order_id": oid, "status": "rejected",
+                        "action": action_u, "symbol": symbol,
+                        "quantity": 0, "price": price,
+                        "reject_reason": "insufficient cash"}
             old_qty   = self._positions.get(symbol, 0.0)
             old_cost  = self._avg_cost.get(symbol, 0.0)
             new_qty   = old_qty + quantity
