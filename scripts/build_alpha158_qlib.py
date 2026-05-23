@@ -81,10 +81,15 @@ import os
 import sys
 from pathlib import Path
 
-for _k, _v in (("OMP_NUM_THREADS", "10"),
-               ("MKL_NUM_THREADS", "10"),
-               ("OPENBLAS_NUM_THREADS", "10")):
-    os.environ.setdefault(_k, _v)
+_THREAD_COUNT = str(os.cpu_count() or 14)
+for _k in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(_k, _THREAD_COUNT)
 
 import numpy as np
 import pandas as pd

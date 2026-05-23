@@ -19,10 +19,22 @@ booster without any unpickling.
 from __future__ import annotations
 
 import json
+import os as _os
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+_THREAD_COUNT = str(_os.cpu_count() or 14)
+for _k in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    _os.environ.setdefault(_k, _THREAD_COUNT)
+_XGB_NTHREAD = int(_os.environ.get("OMP_NUM_THREADS", _THREAD_COUNT))
 
 import numpy as np
 import pandas as pd
@@ -74,15 +86,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "lambda": 1.0,
     "alpha": 0.5,
     "tree_method": "hist",
-    # 2026-05-03 raise: nthread 4 → 10 per CLAUDE.md §5.10 (saturate hardware).
-    # Original X6 cap (4) was defensive against macOS fork/OMP deadlock with
-    # prior multiprocessing context; in current code the dispatch path goes
-    # through subprocess.run() (clean process launch from train_104.py /
-    # FullTrainingPipeline), not from a forked worker, so fork-OMP deadlock
-    # is not the active risk. M2 Pro has 10 cores and we're paying for them.
-    # Override via xgb_params.nthread if a workflow invokes training from a
-    # multiprocessing.Pool worker (rare).
-    "nthread": 10,
+    # Use current hardware by default per CLAUDE.md §5.10.  Override via
+    # xgb_params.nthread or OMP_NUM_THREADS for rare constrained runs.
+    "nthread": _XGB_NTHREAD,
     "verbosity": 0,
     # Audit fix X12 (2026-04-26 batch-3): explicit RNG seed for
     # reproducibility. Pre-fix, subsample=0.8 and colsample_bytree=0.7

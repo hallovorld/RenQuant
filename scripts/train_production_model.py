@@ -24,9 +24,22 @@ CLI:
 """
 from __future__ import annotations
 import argparse, json, logging, sys
+import os as _os
 from pathlib import Path
 from typing import Optional
 import re
+
+_THREAD_COUNT = str(_os.cpu_count() or 14)
+for _k in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    _os.environ.setdefault(_k, _THREAD_COUNT)
+_XGB_NTHREAD = int(_os.environ.get("OMP_NUM_THREADS", _THREAD_COUNT))
+
 import numpy as np, pandas as pd, xgboost as xgb
 from datetime import datetime
 import uuid
@@ -36,7 +49,7 @@ log = logging.getLogger("train-prod")
 
 REPO = Path(__file__).resolve().parent.parent
 PARAMS = {"objective":"rank:pairwise","eta":0.05,"max_depth":5,"min_child_weight":50,
-          "subsample":0.7,"colsample_bytree":0.7,"nthread":8,"verbosity":0,"seed":42}
+          "subsample":0.7,"colsample_bytree":0.7,"nthread":_XGB_NTHREAD,"verbosity":0,"seed":42}
 N_ROUNDS = 100
 LABEL = "fwd_60d_excess"
 DEFAULT_OUTPUT = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"

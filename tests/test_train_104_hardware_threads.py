@@ -60,3 +60,64 @@ def test_train_104_does_not_carry_stale_m2_thread_hardcode():
     assert "M2 Pro has 10 cores" not in src
     assert '("OMP_NUM_THREADS", "10")' not in src
     assert "_os.cpu_count()" in src
+
+
+def _thread_snapshot(path: Path, params_name: str | None = None) -> dict:
+    code = f"""
+import json
+import os
+import runpy
+
+keys = {THREAD_ENV_KEYS!r}
+for key in keys:
+    os.environ.pop(key, None)
+
+globals_dict = runpy.run_path({str(path)!r}, run_name="__thread_test__")
+params = globals_dict.get({params_name!r}, {{}}) if {params_name is not None!r} else {{}}
+print(json.dumps({{
+    "expected": str(os.cpu_count() or 14),
+    "actual": {{key: os.environ.get(key) for key in keys}},
+    "nthread": params.get("nthread"),
+}}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr[:500]
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_alpha158_feature_builder_uses_detected_core_count():
+    payload = _thread_snapshot(REPO_ROOT / "scripts" / "build_alpha158_qlib.py")
+
+    assert payload["actual"] == {
+        key: payload["expected"] for key in THREAD_ENV_KEYS
+    }
+
+
+def test_production_xgb_training_uses_detected_core_count():
+    payload = _thread_snapshot(
+        REPO_ROOT / "scripts" / "train_production_model.py",
+        params_name="PARAMS",
+    )
+
+    assert payload["actual"] == {
+        key: payload["expected"] for key in THREAD_ENV_KEYS
+    }
+    assert payload["nthread"] == int(payload["expected"])
+
+
+def test_panel_ltr_default_params_use_detected_core_count():
+    payload = _thread_snapshot(
+        REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "ltr_model.py",
+        params_name="DEFAULT_PARAMS",
+    )
+
+    assert payload["actual"] == {
+        key: payload["expected"] for key in THREAD_ENV_KEYS
+    }
+    assert payload["nthread"] == int(payload["expected"])
