@@ -463,9 +463,17 @@ else
     SHADOW_RC=$?
     if [ "$SHADOW_RC" -eq 124 ]; then
         echo "Shadow run TIMED OUT after ${SHADOW_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_LOG"
-        notify "RenQuant 104 SHADOW-TIMEOUT" "Shadow e2e exceeded ${SHADOW_TIMEOUT_SEC}s; primary already completed. See $SHADOW_LOG."
+        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-0}" = "1" ]; then
+            notify "RenQuant 104 SHADOW-TIMEOUT" "Shadow e2e exceeded ${SHADOW_TIMEOUT_SEC}s; primary already completed. See $SHADOW_LOG."
+        else
+            echo "Shadow timeout ntfy suppressed (set RENQUANT_SHADOW_ALERT_NTFY=1 to alert)."
+        fi
     else
         echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
-        notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e failed today (rc=$SHADOW_RC) — primary already completed. See $SHADOW_LOG."
+        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-0}" = "1" ]; then
+            notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e failed today (rc=$SHADOW_RC) — primary already completed. See $SHADOW_LOG."
+        else
+            echo "Shadow failure ntfy suppressed (set RENQUANT_SHADOW_ALERT_NTFY=1 to alert)."
+        fi
     fi
 fi

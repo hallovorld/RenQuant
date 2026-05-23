@@ -177,7 +177,7 @@ class TestNoRetrainInDailyShell:
         """
         daily = (REPO / "scripts" / "daily_104.sh").read_text()
         assert "RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1" in daily
-        assert "Full live trader blocked by P-WF-GATE" in daily
+        assert "Full live trader blocked by buy-side preflight gate" in daily
 
     def test_shadow_e2e_has_wall_clock_timeout(self):
         """AUDIT REGRESSION GUARD: shadow must not hang the daily script."""
@@ -185,6 +185,8 @@ class TestNoRetrainInDailyShell:
         assert "SHADOW_TIMEOUT_SEC" in daily
         assert "subprocess.TimeoutExpired" in daily
         assert "SHADOW-TIMEOUT" in daily
+        assert "RENQUANT_SHADOW_ALERT_NTFY" in daily
+        assert "Shadow timeout ntfy suppressed" in daily
 
     def test_daily_does_not_double_append_log_after_exec_redirect(self):
         """AUDIT REGRESSION GUARD: exec already redirects stdout to LOG."""
