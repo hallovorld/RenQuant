@@ -85,9 +85,9 @@ def build_wf_config_from_prod(
       - ``ranking.panel_scoring.global_calibration.*`` artifact paths. These
         are evaluation artifacts and must remain point-in-time / sim-scoped,
         not production full-sample paths.
-      - ``regime.gmm_artifact`` because historical simulations must use a
-        point-in-time regime model whose ``as_of_date`` is no later than the
-        backtest start.
+      - ``regime.gmm_artifact`` and ``regime.correlation_artifact`` because
+        historical simulations must use point-in-time regime/risk artifacts
+        whose ``as_of_date`` is no later than the backtest start.
       - Shadow-model tracking is disabled because it has no trade-decision
         effect and can make WF gates spend hours in auxiliary PyTorch inference.
       - Label/metadata fields starting with ``_`` or ``__``.
@@ -115,6 +115,7 @@ def build_wf_config_from_prod(
         "ranking.panel_scoring.global_calibration.artifact_path",
         "ranking.panel_scoring.global_calibration.regime_conditional.artifact_pattern",
         "regime.gmm_artifact",
+        "regime.correlation_artifact",
     ):
         value = _get_path(base, dotted)
         if value is not None:

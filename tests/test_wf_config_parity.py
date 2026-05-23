@@ -151,6 +151,7 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     }
     prod_cfg["regime"] = {
         "gmm_artifact": "prod/spy-gmm-regime.json",
+        "correlation_artifact": "prod/watchlist-correlation.json",
     }
     prod_cfg["ranking"]["panel_scoring"]["shadow_models"] = [
         {"name": "diagnostic_shadow", "kind": "hf_patchtst"},
@@ -171,6 +172,7 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     }
     base_wf["regime"] = {
         "gmm_artifact": "sim/spy-hmm-regime.json",
+        "correlation_artifact": "sim/watchlist-correlation.json",
     }
 
     built = build_wf_config_from_prod(
@@ -199,4 +201,5 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
         == "artifacts/sim/panel-rank-calibration.json"
     )
     assert built["regime"]["gmm_artifact"] == "sim/spy-hmm-regime.json"
+    assert built["regime"]["correlation_artifact"] == "sim/watchlist-correlation.json"
     assert built["ranking"]["panel_scoring"]["shadow_models"] == []
