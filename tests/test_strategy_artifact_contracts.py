@@ -126,3 +126,34 @@ def test_shadow_patchtst_calibration_matches_shadow_scorer() -> None:
     assert Path(calib_meta["scorer_artifact"]).resolve() == scorer
     assert "patchtst_shadow" in panel_cfg["artifact_path"]
     assert "patchtst_shadow" in calib_meta["scorer_artifact"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "strategy_config.sim_patchtst_clean_20260522.json",
+        "strategy_config.sim_xgb_truly_oos_20260522.json",
+    ],
+)
+def test_2024_sim_ngboost_overlays_do_not_reference_missing_artifact(name: str) -> None:
+    """If a sim can activate NGBoost by regime, its configured head must exist."""
+    cfg = _load_config(name)
+    panel_cfg = cfg["ranking"]["panel_scoring"]
+    ngb_cfg = panel_cfg.get("ngboost") or {}
+    globally_enabled = ngb_cfg.get("enabled") is True
+    active_regimes = [
+        regime
+        for regime, params in (cfg.get("regime_params") or {}).items()
+        if isinstance(params, dict)
+        and isinstance(params.get("ngboost"), dict)
+        and params["ngboost"].get("enabled") is True
+    ]
+    if not globally_enabled and not active_regimes:
+        return
+
+    artifact = ngb_cfg.get("artifact_path")
+    assert artifact, f"{name}: NGBoost active but artifact_path missing"
+    assert _resolve_config_path(artifact).exists(), (
+        f"{name}: NGBoost active for {active_regimes or ['GLOBAL']} but "
+        f"artifact does not exist: {artifact}"
+    )
