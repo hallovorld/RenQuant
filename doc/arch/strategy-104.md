@@ -85,7 +85,7 @@ Universal model contracts (post-predict diversity, pre-predict input variance �
 |---|---|---|
 | NGBoost σ-wire to Kelly | DORMANT (head IS in prod) | 3-condition A/B 2026-05-17 all NULL/negative; head μ available, σ wire stays OFF in golden. Per-regime overlay infrastructure added but no-op (today's regime BULL_CALM) |
 | DDV (deep_drawdown_veto) | DISABLED 2026-05-17 | HXZ 2020 "Replicating Anomalies" — distress/loser anomaly fails to replicate; vetoed META rank #1 μ=+0.146; author's own docstring warned +25pp cost in BULL_CALM |
-| edge_sharpe_floor (Conformal Gate B) | DISABLED | Pure-alpha ceiling makes target FDR=0.30 unachievable |
+| edge_sharpe_floor (Conformal Gate B) | DISABLED in golden | Static τ now resolves through `regime_params` before global fallback. 2026-05-23 true-OOS ablation improved BULL_CALM APY/Sharpe, but closed-trade score monotonicity is still weak and evidence is not Tier-3 live-promotable. |
 | Macro factor frame v1-v4 | DISABLED | All variants net-negative IC at panel size 103 |
 | Asset embeddings (T2-2) | DISABLED | +0.0001 IC delta = no lift |
 | LightGBM panel (E48) | RE-OPEN | UNBLOCKED 2026-05-20: `data/ticker_sectors.json` exists (304 tickers). Roadmap #4 active. |

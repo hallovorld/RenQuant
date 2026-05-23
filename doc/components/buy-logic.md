@@ -1,20 +1,26 @@
 # Buy Logic — Quality Gates + Portfolio QP
 
-**Status (2026-05-20)** — recent changes:
+**Status (2026-05-23)** — recent changes:
 - ✅ Anti-churn `min_reentry_days=5` business days (2026-05-18 MCD incident) — compounds on top of §1091 wash-sale
 - ❌ DDV (`deep_drawdown_veto`) **DISABLED globally 2026-05-17** per HXZ 2020 "Replicating Anomalies" — distress/loser anomaly fails to replicate post Fama-French 2008
 - ✅ `min_share_floor` for high-price stocks (2026-05-17): allow 1-share buy when target_w × NAV < share_price IF 1-share-weight ∈ [5%, 15%] — unblocks EQIX-class ($1059/share)
 - ✅ HIFO lot-selection default (2026-05-17, was FIFO) via `qp_tax_lot_method=hifo` — pure accounting change
 - ✅ Regime-conditional sentiment gate (2026-05-18): 14 regime entries enabled for `sentiment_pos_share`, `mean_sentiment`, `n_articles`
 - ✅ `regime_momentum` gate ON
+- ✅ `quality_floor.edge_sharpe_floor.threshold` has a regime-conditional static override via `regime_params.<REGIME>.edge_sharpe_floor_threshold` or nested `regime_params.<REGIME>.quality_floor.edge_sharpe_floor.threshold`
 
-Active gates live under `ranking.panel_scoring.buy_quality_gates.*` in `strategy_config.golden.json` (NOT under `ranking.panel_scoring.quality_floor.*` as earlier draft sections suggest — that schema didn't ship).
+Active buy admission gates live under `ranking.panel_scoring.buy_floor`,
+`ranking.panel_scoring.quality_floor.*`, and the downstream QP block under
+`rotation.joint_actions.*` in `strategy_config.golden.json`. Code is the
+source of truth: `kernel/panel_pipeline/job_panel_scoring.py` runs calibrated
+weak-buy veto, realized-vol fallback, Kelly sizing, then `QualityFloorTask`
+before QP selection.
 
 **Historical** (2026-04-26 round-7):
-- ✅ Gate B (Edge-Sharpe floor τ=0.10) — was enabled but is shelved per Conformal Gate B being DISABLED (pure-alpha ceiling)
+- ✅ Gate B (Edge-Sharpe floor τ=0.10) — implemented but disabled in golden; 2026-05-23 BULL_CALM full-OOS ablation is positive but not live-promotable until WF/regime-stratified gates pass
 - ✅ Sell-side Gate B (symmetric μ/σ guard for model_sell)
 - ✅ Portfolio QP solver
-- ⏳ Gate A (distribution floor), Gate C (no-trade band) — implemented but quality_floor schema unshipped
+- ⏳ Gate A (distribution floor), Gate C (no-trade band) — implemented and dormant behind `quality_floor.*`
 
 > **2026-05-07 update**: portfolio QP migrated from
 > `scipy.optimize.SLSQP + cvxpy fallback` (700-line hand-rolled solver)
@@ -153,7 +159,7 @@ All in `strategy_config.json` (paired with `strategy_config.golden.json`).
 "ranking": {"panel_scoring": {
     "quality_floor": {
         "enabled": true,
-        "edge_sharpe_floor": {"enabled": true,  "threshold": 0.10},   // Gate A — current production
+        "edge_sharpe_floor": {"enabled": true,  "threshold": 0.10},   // Gate B — static fallback
         "distribution_floor": {"enabled": false, "percentile": 85},   // Gate ?
         "no_trade_band": {"enabled": false, "risk_aversion": 3.0}     // Gate ?
     },
@@ -162,6 +168,12 @@ All in `strategy_config.json` (paired with `strategy_config.golden.json`).
         "threshold": 0.10
     }
 }}
+
+"regime_params": {
+    "BULL_CALM": {
+        "edge_sharpe_floor_threshold": 0.12
+    }
+}
 
 "rotation": {"joint_actions": {
     "enabled": true,

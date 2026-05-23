@@ -39,6 +39,7 @@ class _Ctx:
     config: dict = field(default_factory=dict)
     candidates: list = field(default_factory=list)
     holdings:   dict = field(default_factory=dict)
+    regime: str | None = None
 
 
 def _on_b(threshold: float = 0.20) -> dict:
@@ -178,3 +179,25 @@ class TestQualityFloorTaskIntegration:
         ctx.candidates = [_Cand("NOMU", mu=None, sigma=None)]
         QualityFloorTask().run(ctx)
         assert len(ctx.candidates) == 1
+
+
+class TestGateBRegimeConditionalRegressionGuard:
+    """AUDIT REGRESSION GUARD: Gate B threshold is a regime knob.
+
+    CLAUDE.md's prime directive requires numeric decision knobs to resolve
+    through ``regime_params.<REGIME>`` first. Pre-fix, QualityFloorTask only
+    read the global ``quality_floor.edge_sharpe_floor.threshold`` so a
+    BULL_CALM-specific admission threshold had no effect.
+    """
+
+    def test_regime_threshold_overrides_global_threshold(self):
+        config = _on_b(0.20)
+        config["regime_params"] = {
+            "BULL_CALM": {"edge_sharpe_floor_threshold": 0.10},
+        }
+        ctx = _Ctx(config=config, regime="BULL_CALM")
+        ctx.candidates = [_Cand("BORDERLINE", mu=0.012, sigma=0.08)]  # edge=0.15
+
+        QualityFloorTask().run(ctx)
+
+        assert [c.ticker for c in ctx.candidates] == ["BORDERLINE"]

@@ -18,6 +18,7 @@ Reference: ``doc/components/buy-logic-design.md``.
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -197,7 +198,7 @@ class QualityFloorTask(Task):
         # the static config value when an artifact is present. Falls back
         # to config threshold for unfit regimes (e.g. BEAR with no live
         # history yet). Disable via gate_b.use_conformal=false.
-        gate_b_threshold = float(gate_b_cfg.get("threshold", 0.20))
+        gate_b_threshold = self._gate_b_static_threshold(ctx, gate_b_cfg)
         if gate_b_enabled and gate_b_cfg.get("use_conformal", True):
             tau = self._gate_b_conformal_tau(ctx, getattr(ctx, "regime", None))
             if tau is not None:
@@ -264,16 +265,65 @@ class QualityFloorTask(Task):
             ctx._blocked_by_ticker = blocked  # noqa: SLF001
             log.info(
                 "QualityFloorTask: rejected %d/%d cand(s) "
-                "(gate_a=%s, gate_b_τ=%.3f): %s",
+                "(gate_a=%s, gate_b_τ=%.3f, regime=%s): %s",
                 len(rejected), len(ctx.candidates),
                 f"{gate_a_threshold:+.4f}" if gate_a_threshold is not None
                 else "off",
                 gate_b_threshold if gate_b_enabled else float("nan"),
+                getattr(ctx, "regime", None),
                 ", ".join(f"{t}({r})" for t, r in rejected[:5])
                 + ("…" if len(rejected) > 5 else ""),
             )
         ctx.candidates = kept
         return True
+
+    @staticmethod
+    def _gate_b_static_threshold(
+        ctx: InferenceContext,
+        gate_b_cfg: dict,
+    ) -> float:
+        """Resolve static Gate-B τ with regime config before global fallback."""
+        default = float(gate_b_cfg.get("threshold", 0.20))
+        regime = getattr(ctx, "regime", None)
+        if regime is None:
+            return default
+        regime_params = ctx.config.get("regime_params", {})
+        if not isinstance(regime_params, dict):
+            return default
+        regime_cfg = regime_params.get(regime, {})
+        if not isinstance(regime_cfg, dict):
+            return default
+
+        nested = (
+            regime_cfg.get("quality_floor", {})
+            if isinstance(regime_cfg.get("quality_floor", {}), dict)
+            else {}
+        )
+        nested_gate_b = (
+            nested.get("edge_sharpe_floor", {})
+            if isinstance(nested.get("edge_sharpe_floor", {}), dict)
+            else {}
+        )
+        raw = nested_gate_b.get(
+            "threshold",
+            regime_cfg.get("edge_sharpe_floor_threshold", default),
+        )
+        try:
+            threshold = float(raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "Gate B regime threshold invalid for regime=%s: %r; using global %.3f",
+                regime, raw, default,
+            )
+            return default
+        if not math.isfinite(threshold) or threshold < 0.0 or threshold > 1.0:
+            log.warning(
+                "Gate B regime threshold outside [0,1] for regime=%s: %r; "
+                "using global %.3f",
+                regime, raw, default,
+            )
+            return default
+        return threshold
 
     @staticmethod
     def _gate_b_conformal_tau(

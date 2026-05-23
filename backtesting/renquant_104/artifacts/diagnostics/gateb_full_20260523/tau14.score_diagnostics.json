@@ -1,0 +1,85 @@
+{
+  "closed_only": true,
+  "metrics": [
+    {
+      "bottom_mean": 0.03914915110406035,
+      "higher_is_better": true,
+      "loser_mean": 0.6274715102979236,
+      "n": 58,
+      "score_col": "entry_rank_score",
+      "spearman": -0.1705328595121059,
+      "top_bottom_spread": -0.04563787258869247,
+      "top_mean": -0.006488721484632119,
+      "winner_loser_spread": -0.015379454445739627,
+      "winner_mean": 0.612092055852184
+    },
+    {
+      "bottom_mean": 0.03914915110406035,
+      "higher_is_better": true,
+      "loser_mean": 0.03495234903171057,
+      "n": 58,
+      "score_col": "entry_mu",
+      "spearman": -0.1705328595121059,
+      "top_bottom_spread": -0.04563787258869247,
+      "top_mean": -0.006488721484632119,
+      "winner_loser_spread": -0.0055271226145681175,
+      "winner_mean": 0.029425226417142455
+    },
+    {
+      "bottom_mean": 0.06964886665645705,
+      "higher_is_better": false,
+      "loser_mean": 0.226864340380564,
+      "n": 58,
+      "score_col": "entry_sigma",
+      "spearman": -0.11095894517673921,
+      "top_bottom_spread": -0.0029241138360232427,
+      "top_mean": 0.0667247528204338,
+      "winner_loser_spread": -0.01850794229969449,
+      "winner_mean": 0.2083563980808695
+    },
+    {
+      "bottom_mean": 0.03673441463447553,
+      "higher_is_better": true,
+      "loser_mean": 0.15535793573830758,
+      "n": 58,
+      "score_col": "entry_mu_over_sigma",
+      "spearman": 0.0036610879094246076,
+      "top_bottom_spread": 0.018381733332709177,
+      "top_mean": 0.055116147967184705,
+      "winner_loser_spread": -0.01065794665485656,
+      "winner_mean": 0.14469998908345102
+    },
+    {
+      "bottom_mean": 0.03914915110406035,
+      "higher_is_better": true,
+      "loser_mean": 0.1628603344673619,
+      "n": 58,
+      "score_col": "entry_panel_score",
+      "spearman": -0.1705328595121059,
+      "top_bottom_spread": -0.04563787258869247,
+      "top_mean": -0.006488721484632119,
+      "winner_loser_spread": -0.05472562734183725,
+      "winner_mean": 0.10813470712552464
+    },
+    {
+      "bottom_mean": -0.0024185219363860645,
+      "higher_is_better": true,
+      "loser_mean": 0.0944951654750107,
+      "n": 41,
+      "score_col": "entry_kelly_target_pct",
+      "spearman": -0.17032998821483272,
+      "top_bottom_spread": -0.010338058492914927,
+      "top_mean": -0.01275658042930099,
+      "winner_loser_spread": -0.0034923773474496295,
+      "winner_mean": 0.09100278812756107
+    }
+  ],
+  "n_losers": 34,
+  "n_trades": 58,
+  "n_winners": 24,
+  "outcome_col": "pnl_pct",
+  "outcome_mean": 0.01675317372372557,
+  "outcome_median": -0.01976598151174825,
+  "source": "backtesting/renquant_104/artifacts/diagnostics/gateb_full_20260523/tau14.round_trips.csv",
+  "win_rate": 0.41379310344827586
+}

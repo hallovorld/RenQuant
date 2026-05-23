@@ -124,6 +124,79 @@ slice that actually reaches executed buys is almost flat, while the risk
 dimension remains informative. The next controlled fix must therefore act
 before QP solve, not only in post-hoc reporting or end-of-sim tax accounting.
 
+## Gate B Full-OOS Ablation
+
+Thesis: the production entry path should not admit a candidate on calibrated
+rank alone when calibrated μ/σ says the edge is too weak. This is not an
+NGBoost claim in this sim. NGBoost is off/missing; μ is from the global
+calibrator and σ is the realized-vol fallback. The tested mechanism is
+risk-adjusted admission before QP.
+
+Commands used the same true-OOS window as baseline (`2024-07-02` to
+`2026-02-10`) and wrote artifacts under:
+
+- `backtesting/renquant_104/artifacts/diagnostics/gateb_full_20260523/`
+- configs:
+  `backtesting/renquant_104/strategy_config.sim_xgb_gateb_tau12_20260523.json`,
+  `backtesting/renquant_104/strategy_config.sim_xgb_gateb_tau14_20260523.json`,
+  `backtesting/renquant_104/strategy_config.sim_xgb_gateb_tau16_20260523.json`
+
+| config | APY | Sharpe | MaxDD | event tax | annual-net APY est | buys/sells | win rate | avg hold | longest no-trade |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | +2.88% | +0.39 | 10.26% | $7,228 | +6.3% | 60/40 | 32% | 84d | n/a |
+| Gate B τ=0.12 | +7.71% | +0.83 | 13.85% | $9,895 | +10.7% | 59/41 | 39% | 91d | 37d |
+| Gate B τ=0.14 | +4.69% | +0.53 | 13.24% | $9,567 | +7.7% | 61/44 | 36% | 90d | 22d |
+| Gate B τ=0.16 | +7.02% | +0.84 | 10.24% | $7,260 | +9.5% | 52/38 | 45% | 79d | 58d |
+
+Per CLAUDE.md, the regime view matters more than the pooled number. Every
+closed entry in the Gate B sims was `BULL_CALM`, so this is a BULL_CALM result,
+not a proof for BEAR/CHOPPY/BULL_VOLATILE deployment.
+
+Closed-trade mechanics:
+
+| config | closed gross | closed event tax | closed net | stop-loss net | trailing-stop net |
+|---|---:|---:|---:|---:|---:|
+| baseline | +$757 | $7,228 | -$6,471 | -$11,098 | +$5,587 |
+| Gate B τ=0.12 | +$6,944 | $9,895 | -$2,951 | -$10,147 | +$7,800 |
+| Gate B τ=0.14 | +$6,552 | $9,567 | -$3,015 | -$9,567 | +$7,847 |
+| Gate B τ=0.16 | +$4,886 | $7,260 | -$2,374 | -$8,370 | +$6,681 |
+
+Interpretation:
+
+- Gate B materially improves APY/Sharpe versus the clean XGB baseline.
+- The gain comes from reducing the worst stop-loss drag and preserving more
+  trailing-stop winners.
+- τ=0.12 has the best APY, but τ=0.16 has similar Sharpe with lower MaxDD and
+  lower tax. τ=0.16 also creates a 58-day no-trade streak, which is a candidate
+  starvation warning.
+- No threshold is live-promotable from this single true-OOS run. It is Tier-2
+  evidence for a BULL_CALM-only risk-adjusted admission gate and requires
+  walk-forward/regime-stratified acceptance before touching golden.
+
+Score diagnostics after Gate B are sobering:
+
+| config | n closed | entry rank Spearman | entry μ/σ Spearman | top-bottom μ/σ P&L spread |
+|---|---:|---:|---:|---:|
+| baseline | 56 | +0.015 | +0.265 | +9.56% |
+| Gate B τ=0.12 | 57 | -0.183 | -0.096 | -2.89% |
+| Gate B τ=0.14 | 58 | -0.171 | +0.004 | +1.84% |
+| Gate B τ=0.16 | 50 | -0.468 | -0.148 | -2.38% |
+
+This means the ablation improves portfolio behavior, but it does not prove the
+executed alpha score is discriminative inside the admitted slice. Gate B is a
+damage-control admission filter, not a solved model-quality proof.
+
+Code fix from this finding:
+
+- `QualityFloorTask` now resolves static Gate B τ from
+  `regime_params.<REGIME>.edge_sharpe_floor_threshold` or nested
+  `regime_params.<REGIME>.quality_floor.edge_sharpe_floor.threshold` before
+  falling back to the global threshold. This makes the knob regime-conditional
+  as required by CLAUDE.md.
+- Regression guard:
+  `tests/test_quality_floor_gate_b.py::TestGateBRegimeConditionalRegressionGuard::test_regime_threshold_overrides_global_threshold`.
+- Guard test failed before the code change and passes after it.
+
 ## Bugs Fixed During This Pass
 
 1. Sim feature cache duplicated SPY indicator/regime work per ticker.
@@ -139,6 +212,11 @@ before QP solve, not only in post-hoc reporting or end-of-sim tax accounting.
    NGBoost artifact path did not exist. Fixed by disabling those overlays in
    the sim config and adding a contract test: if any sim can activate NGBoost,
    its artifact must exist.
+
+4. Gate B admission threshold was implemented as a global static scalar when
+   the architecture requires regime-conditional decision knobs. Fixed by
+   resolving static Gate B τ through `regime_params` first, with global fallback
+   only for unset regimes.
 
 ## Not Yet Scientifically Solved
 
@@ -176,17 +254,17 @@ before QP solve, not only in post-hoc reporting or end-of-sim tax accounting.
 
 ## Next Scientific Fix Plan
 
-1. Add a trade-level score diagnostic test/report that computes realized IC and
-   winner/loser separation for `rank_score`, μ, σ, and μ/σ on the executed
-   trade set. Promotion should require positive separation, not just pooled IC.
+1. Add acceptance gating around the trade-level score diagnostic: promotion
+   should require positive separation for the executed slice, not just pooled
+   panel IC. The diagnostic exists now; the promotion gate is still pending.
 
-2. Add a risk-adjusted entry option behind a flag: rank by calibrated μ/σ or
-   penalize high realized σ. The current evidence supports this because losers
-   have materially higher entry σ while μ/rank are indistinguishable.
+2. Convert the Gate B evidence into a regime-conditional WF test: enable only
+   for BULL_CALM, run strict walk-forward acceptance, and reject if the
+   no-trade streak / candidate starvation rises materially.
 
 3. Run a controlled ablation panel:
    - baseline clean XGB
-   - volatility/risk-adjusted entry
+   - BULL_CALM Gate B τ ∈ {0.12, 0.14, 0.16}
    - QP tax soft-sell guard off
    - annual-net tax reporting only
    - combinations only after single-factor evidence is positive
