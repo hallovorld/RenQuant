@@ -32,6 +32,7 @@ References:
 """
 from __future__ import annotations
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import hashlib
@@ -304,6 +305,65 @@ def _merge_counts(rows: list[dict], key: str) -> dict:
     return dict(sorted(merged.items(), key=lambda kv: kv[1], reverse=True))
 
 
+def _merge_trade_counts(rows: list[dict], key: str) -> dict:
+    merged: dict[str, int] = {}
+    for row in rows:
+        counts = ((row.get("trade_trace_summary") or {}).get(key) or {})
+        for label, n in counts.items():
+            merged[str(label)] = merged.get(str(label), 0) + int(n)
+    return dict(sorted(merged.items(), key=lambda kv: kv[1], reverse=True))
+
+
+def _sum_trade_summary(rows: list[dict], key: str) -> int:
+    return int(sum(int((row.get("trade_trace_summary") or {}).get(key) or 0) for row in rows))
+
+
+def _trade_trace_summary(traces: dict[str, str]) -> dict:
+    """Summarize production decision regimes from the persisted trade trace.
+
+    `cut_market_context()` is an independent SPY/HMM lens. The trade trace is
+    the production decision path: it records what regime the pipeline attached
+    to each actual buy/sell. Keeping both prevents us from explaining trades
+    with the wrong regime taxonomy.
+    """
+    trade_json = traces.get("trade_json")
+    if not trade_json:
+        return {}
+    p = Path(trade_json)
+    if not p.exists():
+        return {"error": f"missing trade trace: {p}"}
+    try:
+        rows = json.loads(p.read_text())
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to parse trade trace {p}: {exc}"}
+    if not isinstance(rows, list):
+        return {"error": f"trade trace is not a list: {p}"}
+
+    def counts(action: str, field: str) -> dict:
+        c = Counter(
+            str(row.get(field))
+            for row in rows
+            if row.get("action") == action and row.get(field) not in (None, "")
+        )
+        return dict(sorted(c.items(), key=lambda kv: kv[1], reverse=True))
+
+    buys = [row for row in rows if row.get("action") == "buy"]
+    sells = [row for row in rows if row.get("action") == "sell"]
+    missing_mu = sum(1 for row in buys if _finite_number(row.get("mu")) is None)
+    missing_sigma = sum(1 for row in buys if _finite_number(row.get("sigma")) is None)
+    return {
+        "n_buys": int(len(buys)),
+        "n_sells": int(len(sells)),
+        "buy_regime_counts": counts("buy", "regime"),
+        "sell_regime_counts": counts("sell", "regime"),
+        "buy_source_counts": counts("buy", "source_job"),
+        "sell_source_counts": counts("sell", "source_job"),
+        "sell_exit_reason_counts": counts("sell", "exit_reason"),
+        "buy_missing_mu": int(missing_mu),
+        "buy_missing_sigma": int(missing_sigma),
+    }
+
+
 def _trace_paths(trace_dir: Path | None, start: str, end: str) -> dict[str, str]:
     if trace_dir is None:
         return {}
@@ -369,6 +429,7 @@ def run_sim_cut(
     spy_apy = _finite_number(market_context.get("spy_apy"))
     sharpe_vs_spy = sharpe - spy_sharpe if spy_sharpe is not None else float("nan")
     apy_vs_spy = apy - spy_apy if spy_apy is not None else float("nan")
+    trade_summary = _trade_trace_summary(traces)
     log.info(
         "  → Sharpe=%+.3f  APY=%+.2f%%  SPY Sharpe=%s  ΔSharpe=%s",
         sharpe,
@@ -386,6 +447,7 @@ def run_sim_cut(
         "dominant_hmm_regime": _top_regime(market_context.get("hmm_regime_counts")),
         "dominant_spy_grid_regime": _top_regime(market_context.get("spy_grid_regime_counts")),
         "market_context": market_context,
+        "trade_trace_summary": trade_summary,
         "trace_paths": traces,
         "returncode": 0,
     }
@@ -494,6 +556,12 @@ def run_walk_forward(
         "n_cuts_beat_spy_apy": int(n_beat_spy_apy),
         "hmm_regime_counts_total": _merge_counts(results, "hmm_regime_counts"),
         "spy_grid_regime_counts_total": _merge_counts(results, "spy_grid_regime_counts"),
+        "trade_buy_regime_counts_total": _merge_trade_counts(results, "buy_regime_counts"),
+        "trade_sell_regime_counts_total": _merge_trade_counts(results, "sell_regime_counts"),
+        "trade_buy_source_counts_total": _merge_trade_counts(results, "buy_source_counts"),
+        "trade_sell_exit_reason_counts_total": _merge_trade_counts(results, "sell_exit_reason_counts"),
+        "trade_buy_missing_mu_total": _sum_trade_summary(results, "buy_missing_mu"),
+        "trade_buy_missing_sigma_total": _sum_trade_summary(results, "buy_missing_sigma"),
         "n_positive_cuts": n_pos,
         "wf_jobs": jobs,
         "cuts": results,
@@ -924,6 +992,12 @@ def main():
         "n_cuts_beat_spy_apy": wf_result.get("n_cuts_beat_spy_apy"),
         "hmm_regime_counts_total": wf_result.get("hmm_regime_counts_total"),
         "spy_grid_regime_counts_total": wf_result.get("spy_grid_regime_counts_total"),
+        "trade_buy_regime_counts_total": wf_result.get("trade_buy_regime_counts_total"),
+        "trade_sell_regime_counts_total": wf_result.get("trade_sell_regime_counts_total"),
+        "trade_buy_source_counts_total": wf_result.get("trade_buy_source_counts_total"),
+        "trade_sell_exit_reason_counts_total": wf_result.get("trade_sell_exit_reason_counts_total"),
+        "trade_buy_missing_mu_total": wf_result.get("trade_buy_missing_mu_total"),
+        "trade_buy_missing_sigma_total": wf_result.get("trade_buy_missing_sigma_total"),
         "n_positive_cuts":     wf_result.get("n_positive_cuts"),
         "wf_jobs":             wf_result.get("wf_jobs"),
         "cuts":                wf_result.get("cuts"),

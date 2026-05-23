@@ -1,7 +1,7 @@
 knob_a,knob_b,beta
-weight_decay,warmup_epochs,0.004766422045847208
-lr,seq_len,0.004766422045847206
-lr,warmup_epochs,0.0030334938079259214
-weight_decay,seq_len,0.0030334938079259214
-warmup_epochs,seq_len,0.0026845072180433594
-lr,weight_decay,0.0026845072180433447
+weight_decay,warmup_epochs,0.0017991714305500125
+lr,seq_len,0.0017991714305500108
+lr,weight_decay,-0.0002827433972538532
+warmup_epochs,seq_len,-0.0002827433972538367
+lr,warmup_epochs,6.624319262872612e-05
+weight_decay,seq_len,6.624319262872438e-05

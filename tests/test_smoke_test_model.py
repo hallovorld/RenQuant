@@ -188,6 +188,15 @@ class TestNoRetrainInDailyShell:
         assert "RENQUANT_SHADOW_ALERT_NTFY" in daily
         assert "Shadow timeout ntfy suppressed" in daily
 
+    def test_shadow_e2e_default_timeout_covers_full_patchtst_cold_start(self):
+        """HF PatchTST shadow full-e2e needs more than the old 420s cap."""
+        import re
+
+        daily = (REPO / "scripts" / "daily_104.sh").read_text()
+        match = re.search(r'RENQUANT_SHADOW_TIMEOUT_SEC:-(\d+)', daily)
+        assert match, "daily_104.sh must keep an explicit shadow timeout default"
+        assert int(match.group(1)) >= 1200
+
     def test_daily_does_not_double_append_log_after_exec_redirect(self):
         """AUDIT REGRESSION GUARD: exec already redirects stdout to LOG."""
         daily = (REPO / "scripts" / "daily_104.sh").read_text()

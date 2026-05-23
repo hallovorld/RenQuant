@@ -1400,6 +1400,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             band_cap=float(cfg.get("qp_no_trade_band_cap", 0.05)),
             sigma_vec=_get_path(ctx, "_qp_sigma"),
             cands={c.ticker: c for c in (ctx.candidates or [])},
+            score_sources=_get_path(ctx, "_qp_mu_source_map") or {},
             buy_blocked=buy_blocked,
             buys_gated=buy_blocked or skip_buys,
             earnings_cal=getattr(ctx, "earnings_calendar", None) or {},
@@ -1545,7 +1546,10 @@ class EmitOrdersFromQPSolutionTask(Task):
                     stamp(t, "qp_cash_capped")
                     shares = capped_shares
                 buy_cash_left = max(0.0, buy_cash_left - used_cash)
-                _emit_qp_buy(ctx, t, shares, env["prices"].get(t, 0.0), sol, i, env["cands"])
+                _emit_qp_buy(
+                    ctx, t, shares, env["prices"].get(t, 0.0),
+                    sol, i, env["score_sources"],
+                )
                 emitted_candidates.add(t)
                 nb += 1
             else:
@@ -1809,8 +1813,8 @@ def _per_asset_tax_lots(hs, price, w_i, nav, today, st_rate, lt_rate,
     return cost_per_unit_w, offset_left
 
 
-def _emit_qp_buy(ctx, ticker, shares, px, sol, i, cands):
-    cand = cands.get(ticker)
+def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
+    cand = score_sources.get(ticker)
     ctx.orders.append(stamp_order_attribution({
         "ticker": ticker, "shares": shares, "price": px,
         "invest": shares * px,

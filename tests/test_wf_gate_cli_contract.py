@@ -1,6 +1,9 @@
 """Regression guards for the weekly WF gate CLI contract."""
 from __future__ import annotations
 
+import importlib
+import json
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -79,6 +82,50 @@ def test_wf_gate_stamps_benchmark_and_regime_context() -> None:
     assert "n_cuts_beat_spy_sharpe" in src
     assert "hmm_regime_counts" in src
     assert "spy_grid_regime_counts" in src
+    assert "trade_buy_regime_counts_total" in src
+    assert "trade_sell_exit_reason_counts_total" in src
+
+
+def test_wf_gate_trade_trace_summary_uses_production_decision_regimes(tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    trade_path = tmp_path / "trades.json"
+    trade_path.write_text(json.dumps([
+        {
+            "action": "buy",
+            "ticker": "AAPL",
+            "regime": "BULL_CALM",
+            "source_job": "JointPortfolioQPJob",
+            "mu": 0.03,
+            "sigma": 0.12,
+        },
+        {
+            "action": "buy",
+            "ticker": "MSFT",
+            "regime": "CHOPPY",
+            "source_job": "TopUpJob",
+            "mu": None,
+            "sigma": None,
+        },
+        {
+            "action": "sell",
+            "ticker": "AAPL",
+            "regime": "BEAR",
+            "source_job": "TickerSellJob",
+            "exit_reason": "stop_loss",
+        },
+    ]))
+
+    summary = mod._trade_trace_summary({"trade_json": str(trade_path)})
+
+    assert summary["n_buys"] == 2
+    assert summary["n_sells"] == 1
+    assert summary["buy_regime_counts"] == {"BULL_CALM": 1, "CHOPPY": 1}
+    assert summary["sell_regime_counts"] == {"BEAR": 1}
+    assert summary["buy_source_counts"] == {"JointPortfolioQPJob": 1, "TopUpJob": 1}
+    assert summary["sell_exit_reason_counts"] == {"stop_loss": 1}
+    assert summary["buy_missing_mu"] == 1
+    assert summary["buy_missing_sigma"] == 1
 
 
 def test_wf_gate_refuses_to_stamp_manifest_as_candidate_artifact() -> None:

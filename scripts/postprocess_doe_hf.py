@@ -224,7 +224,12 @@ def main():
         on="point_id", how="left")
 
     # ── §5.14.4 DSR per point ──────────────────────────────────────────────
-    n_design_points = len(design)
+    n_planned_design_points = len(design)
+    evaluated_points = sorted(valid["point_id"].dropna().astype(int).unique())
+    n_design_points = len(evaluated_points)
+    missing_points = sorted(
+        set(design["point_id"].astype(int)) - set(evaluated_points)
+    )
     dsr_rows = []
     for pid, group in valid.groupby("point_id"):
         ic_samples = group["bull_regime_ic"].dropna().values
@@ -236,8 +241,14 @@ def main():
 
     # ── §5.14.4 PBO via CSCV ───────────────────────────────────────────────
     pbo = compute_pbo(valid)
-    pd.DataFrame([{"pbo": pbo, "n_design_points": n_design_points}]).to_csv(
-        doe_dir / "pbo_summary.csv", index=False)
+    pd.DataFrame([{
+        "pbo": pbo,
+        "n_design_points": n_design_points,
+        "n_planned_design_points": n_planned_design_points,
+        "n_evaluated_design_points": n_design_points,
+        "n_missing_design_points": len(missing_points),
+        "missing_point_ids": " ".join(str(x) for x in missing_points),
+    }]).to_csv(doe_dir / "pbo_summary.csv", index=False)
 
     # ── §5.14.6 Main effects + 2-way interactions ──────────────────────────
     main_df, inter_df = fit_effects(point_agg)
@@ -247,7 +258,9 @@ def main():
     # ── §5.14.6 Augmented summary.md ───────────────────────────────────────
     md = ["# HF PatchTST DOE — §5.14 FULL Verdict (post-hoc)\n"]
     md.append("**Source**: scripts/patchtst_doe_hf.py + scripts/postprocess_doe_hf.py\n")
-    md.append(f"**N design points**: {n_design_points}\n")
+    md.append(f"**Evaluated design points**: {n_design_points} / {n_planned_design_points}\n")
+    if missing_points:
+        md.append(f"**Missing point ids**: {', '.join(str(x) for x in missing_points)}\n")
     md.append(f"**Objective**: bull_regime_IC (HMM {{BULL_CALM, BULL_VOLATILE}})\n")
     md.append(f"\n## PBO (Bailey-Borwein-LdP-Zhu 2015): **{pbo:.2f}**\n")
     md.append("PBO > 0.5 → overfit; PBO < 0.5 → robust.\n")

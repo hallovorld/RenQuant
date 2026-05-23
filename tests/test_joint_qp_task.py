@@ -579,6 +579,35 @@ class TestActionDirections:
         assert ctx.orders[0]["ticker"] == "A"
         assert ctx.orders[0]["shares"] > 0
 
+    def test_positive_mu_on_held_topup_preserves_holding_scores(self):
+        """QP top-ups use holdings as the score source when no candidate exists."""
+        ctx = _Ctx(config=_qp_on())
+        ctx.holdings = {
+            "H": _Hold(
+                shares=1,
+                rank_score=0.61,
+                panel_score=0.59,
+                mu=0.05,
+                sigma=0.10,
+            ),
+        }
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9900.0
+        ctx.portfolio_value = 10000.0
+
+        ret = JointPortfolioQPTask().run(ctx)
+
+        assert ret is True
+        assert len(ctx.orders) == 1
+        order = ctx.orders[0]
+        assert order["ticker"] == "H"
+        assert order["mu"] == pytest.approx(0.05)
+        assert order["sigma"] == pytest.approx(0.10)
+        assert order["rank_score"] == pytest.approx(0.61)
+        assert order["panel_score"] == pytest.approx(0.59)
+        assert order["score_snapshot"]["mu"] == pytest.approx(0.05)
+        assert order["score_snapshot"]["sigma"] == pytest.approx(0.10)
+
     def test_negative_mu_on_held_emits_sell(self):
         ctx = _Ctx(config=_qp_on())
         ctx.holdings = {"H": _Hold(shares=20, mu=-0.05, sigma=0.10)}

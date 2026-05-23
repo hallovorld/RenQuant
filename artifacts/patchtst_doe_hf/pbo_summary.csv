@@ -1,2 +1,2 @@
-pbo,n_design_points
-1.0,9
+pbo,n_design_points,n_planned_design_points,n_evaluated_design_points,n_missing_design_points,missing_point_ids
+0.3333333333333333,8,9,8,1,8

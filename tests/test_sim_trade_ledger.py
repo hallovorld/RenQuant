@@ -326,3 +326,53 @@ def test_annual_net_tax_summary_nets_same_year_wins_and_losses() -> None:
 
     assert summary["total_estimated_tax"] == 10.0
     assert summary["years"][0]["short_term_net"] == 20.0
+
+
+def test_forensic_report_shows_annual_net_tax_overstatement() -> None:
+    trips = pd.DataFrame([
+        {
+            "status": "closed",
+            "ticker": "A",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-02-01",
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "BULL_CALM",
+            "exit_reason": "unit",
+            "gross_pnl": 100.0,
+            "tax": 50.0,
+            "net_pnl_after_tax": 50.0,
+            "pnl_pct": 0.10,
+            "hold_days": 30,
+        },
+        {
+            "status": "closed",
+            "ticker": "B",
+            "entry_date": "2024-01-03",
+            "exit_date": "2024-03-01",
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "BULL_CALM",
+            "exit_reason": "unit",
+            "gross_pnl": -80.0,
+            "tax": 0.0,
+            "net_pnl_after_tax": -80.0,
+            "pnl_pct": -0.08,
+            "hold_days": 20,
+        },
+    ])
+
+    report = build_forensic_report(
+        raw_trades=pd.DataFrame([{"action": "sell"}]),
+        round_trips=trips,
+        metrics={},
+        config={
+            "tax": {
+                "short_term_rate": 0.50,
+                "long_term_rate": 0.32,
+                "long_term_threshold_days": 365,
+            }
+        },
+    )
+
+    assert "annual_net_tax_estimate: +10.00" in report
+    assert "tax_overstatement_vs_annual_net: +40.00" in report
+    assert "annual_net_pnl_estimate: +10.00" in report

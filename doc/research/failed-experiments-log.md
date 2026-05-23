@@ -3606,3 +3606,60 @@ but it is not eligible for primary or shadow-primary without a future 5-cut x
   --out-json artifacts/diagnostics/raw_signal_baseline_patchtst_seed44_20260522.json \
   --out-md doc/research/2026-05-22-raw-signal-baseline-patchtst-seed44.md
 ```
+
+---
+
+## 2026-05-23 — Production-semantic WF candidate failed promotion
+
+**Hypothesis:** The alpha158 + fundamental + sentiment production-semantic
+panel candidate, evaluated through the walk-forward manifest and current
+decision tree, is ready for promotion after the recent contract fixes.
+
+**Protocol:** `scripts/run_wf_gate.py` with `--derive-config-from-prod`,
+`--strict`, `--jobs 3`, persisted trade traces, three 12-month cuts, SPY
+benchmark reporting, QP contract gate, trade monotonicity gate, and shuffled /
+time-shift sanity checks.
+
+**Result:** failed promotion.
+
+| Cut | Sharpe | APY | SPY Sharpe | Delta Sharpe |
+|---|---:|---:|---:|---:|
+| 2024-01-02 to 2024-12-31 | -0.140 | -1.60% | +1.778 | -1.918 |
+| 2024-07-01 to 2025-06-30 | +0.690 | +7.00% | +0.715 | -0.025 |
+| 2025-04-01 to 2026-03-28 | -0.060 | -1.00% | +0.749 | -0.809 |
+
+Aggregate: mean Sharpe +0.163, positive cuts 1/3, beat-SPY-Sharpe cuts 0/3,
+mean Delta Sharpe -0.918. Sanity failed because placebo IC +0.0462 exceeded
+the 0.5 x real-IC threshold (+0.0375). Trade monotonicity failed in BULL_CALM.
+
+**Mechanism:** The strategy generated positive gross closed-trade PnL in all
+three cuts, but not enough to beat SPY. The event-level tax stress turned two
+cuts negative, while annual-net tax estimates remained positive. This is not
+only a tax issue: buys were overwhelmingly BULL_CALM, many exits occurred after
+regime deterioration, and the BULL_CALM score-to-outcome monotonicity gate
+failed.
+
+**Implementation bugs found during this failed experiment:**
+
+- QP top-up buys could miss finite entry mu/sigma because attribution searched
+  candidates only; fixed by sourcing from the shared QP mu source map.
+- Forensic reports now show event-level tax and annual-net tax side by side.
+- WF metadata now separates market-context HMM counts from production trade
+  regime counts.
+
+**Conclusion:** no promotion. Treat this as a diagnostic failure and continue
+with regime-conditional decision-tree fixes, not a global model promotion.
+Full handoff: `doc/research/2026-05-23-codex-wf-diagnostics.md`.
+
+**Reproduction:**
+
+```bash
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+TRACE_DIR="artifacts/diagnostics/wf_trade_traces/prod_semantic_172_causalcal_softguard_${TS}"
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 VECLIB_MAXIMUM_THREADS=4 NUMEXPR_NUM_THREADS=4 \
+.venv/bin/python scripts/run_wf_gate.py \
+  --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.staging.json \
+  --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json \
+  --derive-config-from-prod --strict --jobs 3 \
+  --trace-dir "$TRACE_DIR"
+```

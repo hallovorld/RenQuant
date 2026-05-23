@@ -525,6 +525,15 @@ def build_forensic_report(
             f"- annual_net_tax_estimate: "
             f"{tax_summary['total_estimated_tax']:+.2f}"
         )
+        annual_net_tax = float(tax_summary["total_estimated_tax"])
+        lines.append(
+            f"- tax_overstatement_vs_annual_net: "
+            f"{total_tax - annual_net_tax:+.2f}"
+        )
+        lines.append(
+            f"- annual_net_pnl_estimate: "
+            f"{total_gross - annual_net_tax:+.2f}"
+        )
         if tax_summary["years"]:
             lines.append(pd.DataFrame(tax_summary["years"]).to_markdown(index=False, floatfmt=".2f"))
         lines.append("")
