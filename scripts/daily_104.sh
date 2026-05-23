@@ -236,7 +236,7 @@ except Exception:
     print(0)
 " 2>/dev/null || echo "0")
 
-BUY_BLOCKED_BY_WF=0
+BUY_BLOCKED_BY_PREFLIGHT=0
 FULL_RUN_LOG=$(mktemp "/tmp/renquant_104_daily_full.XXXXXX")
 if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
         "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once \
@@ -247,9 +247,9 @@ if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
 else
     FULL_RC=$?
     cat "$FULL_RUN_LOG"
-    if grep -q "P-WF-GATE" "$FULL_RUN_LOG"; then
-        BUY_BLOCKED_BY_WF=1
-        echo "Full live trader blocked by P-WF-GATE — rerunning sell-only so exits/risk controls still execute."
+    if grep -Eq "P-WF-GATE|P-CONFIG-FP|P-SECTOR-MAP" "$FULL_RUN_LOG"; then
+        BUY_BLOCKED_BY_PREFLIGHT=1
+        echo "Full live trader blocked by buy-side preflight gate — rerunning sell-only so exits/risk controls still execute."
         SELL_ONLY_LOG=$(mktemp "/tmp/renquant_104_daily_sell_only.XXXXXX")
         if "$PYTHON" -m live.runner --strategy renquant_104 --broker alpaca --once --sell-only > "$SELL_ONLY_LOG" 2>&1; then
             cat "$SELL_ONLY_LOG"
@@ -319,8 +319,8 @@ except Exception:
     print('')
 " 2>/dev/null || echo "")
 FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
-if [ "$BUY_BLOCKED_BY_WF" -eq 1 ]; then
-    notify "RenQuant 104 BUY-BLOCKED" "${FULL_MSG} | New buys blocked by failed WF gate"
+if [ "$BUY_BLOCKED_BY_PREFLIGHT" -eq 1 ]; then
+    notify "RenQuant 104 BUY-BLOCKED" "${FULL_MSG} | New buys blocked by buy-side preflight gate"
 else
     notify "RenQuant 104" "$FULL_MSG"
 fi

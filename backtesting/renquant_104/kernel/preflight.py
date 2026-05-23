@@ -421,7 +421,11 @@ def _check_best_iter(config: dict, strategy_dir: Path) -> PreflightCheck:
     )
 
 
-def _check_config_fingerprint(config: dict, strategy_dir: Path) -> PreflightCheck:
+def _check_config_fingerprint(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
     """P-CONFIG-FP: live config's fingerprint matches artifact's stored fp.
 
     Catches: watchlist drift, lookahead change, objective change,
@@ -481,12 +485,25 @@ def _check_config_fingerprint(config: dict, strategy_dir: Path) -> PreflightChec
     for k in sorted(set(live_sub) | set(stored_sub)):
         if live_sub.get(k) != stored_sub.get(k):
             diff_keys.append(k)
-    return PreflightCheck(
-        "P-CONFIG-FP", "hard", False,
+    msg = (
         f"fingerprint mismatch: live={live_fp} stored={stored} "
-        f"diff_fields={diff_keys}",
-        details={"live": live_fp, "stored": stored, "diff_fields": diff_keys},
+        f"diff_fields={diff_keys}"
     )
+    details = {
+        "live": live_fp,
+        "stored": stored,
+        "diff_fields": diff_keys,
+        "run_mode": run_mode,
+    }
+    normalized_mode = str(run_mode or "").lower().replace("_", "-")
+    if normalized_mode.startswith("sell-only"):
+        return PreflightCheck(
+            "P-CONFIG-FP", "soft", True,
+            msg + " Sell-only risk exits are allowed; new buys remain blocked "
+            "until the artifact is retrained/stamped against the live config.",
+            details=details,
+        )
+    return PreflightCheck("P-CONFIG-FP", "hard", False, msg, details=details)
 
 
 def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
@@ -527,6 +544,81 @@ def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
     return PreflightCheck(
         "P-WATCHLIST", "hard", True,
         f"watchlist match (n={len(wl)})",
+    )
+
+
+def _check_sector_map_coverage(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
+    """P-SECTOR-MAP: every buyable ticker must have sector metadata.
+
+    Panel-LTR inference uses sector data in three places: sector-neutralized
+    features, relative strength vs sector ETF, and QP sector caps. Missing
+    entries are not benign; they silently turn a stock into "no sector" and
+    let it avoid sector-aware controls. Sell-only runs are allowed because
+    this check protects new entries, not risk exits.
+    """
+    panel_enabled = bool(
+        config.get("ranking", {})
+        .get("panel_scoring", {})
+        .get("enabled", False)
+    )
+    required = bool(
+        config.get("risk", {}).get(
+            "require_sector_map_for_buys",
+            panel_enabled,
+        )
+    )
+    if not required:
+        return PreflightCheck(
+            "P-SECTOR-MAP", "soft", True,
+            "sector-map coverage not required for this strategy/config",
+        )
+
+    normalized_mode = str(run_mode or "").lower().replace("_", "-")
+    watchlist = list(config.get("watchlist") or [])
+    sector_map = config.get("sector_map", {}) or {}
+    benchmark = config.get("benchmark", "SPY")
+    buyable = [t for t in watchlist if t != benchmark]
+    missing = sorted(
+        t for t in buyable
+        if not isinstance(sector_map.get(t), str) or not sector_map.get(t)
+    )
+    sectors = sorted({v for v in sector_map.values() if isinstance(v, str) and v})
+    sector_etfs = config.get("sector_etf_map", {}) or {}
+    unmapped_sectors = sorted(s for s in sectors if s not in sector_etfs)
+    details = {
+        "watchlist_size": len(watchlist),
+        "buyable_size": len(buyable),
+        "missing_count": len(missing),
+        "missing_sample": missing[:20],
+        "unmapped_sectors": unmapped_sectors[:20],
+        "run_mode": run_mode,
+    }
+    if missing or unmapped_sectors:
+        msg = (
+            f"sector metadata incomplete: {len(missing)}/{len(buyable)} "
+            f"buyable watchlist tickers missing sector_map entries "
+            f"(sample={missing[:10]}), {len(unmapped_sectors)} sector(s) "
+            f"missing sector_etf_map entries (sample={unmapped_sectors[:10]}). "
+            "Missing sector metadata disables relative-strength context and "
+            "QP sector caps for those names."
+        )
+        if normalized_mode.startswith("sell-only"):
+            return PreflightCheck(
+                "P-SECTOR-MAP", "soft", True,
+                msg + " Sell-only risk exits are allowed; new buys remain blocked.",
+                details=details,
+            )
+        return PreflightCheck("P-SECTOR-MAP", "hard", False, msg, details=details)
+
+    return PreflightCheck(
+        "P-SECTOR-MAP", "hard", True,
+        f"sector coverage OK ({len(buyable)} buyable tickers, "
+        f"{len(sectors)} sectors mapped)",
+        details=details,
     )
 
 
@@ -719,12 +811,13 @@ def _check_artifact_run_id_alignment(
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 ALL_CHECKS = (
-	_check_model_artifact,
-	_check_panel_artifact_contract,
-	_check_wf_gate_metadata,
-	_check_best_iter,
+    _check_model_artifact,
+    _check_panel_artifact_contract,
+    _check_wf_gate_metadata,
+    _check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,
+    _check_sector_map_coverage,
     _check_feature_coverage,
     _check_state_file,
     _check_broker_connect,

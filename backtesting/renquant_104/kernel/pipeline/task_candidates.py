@@ -69,6 +69,40 @@ class WashSaleFilterTask(Task):
                       tc.ticker, reason, cost_npv)
 
 
+class SectorMapGateTask(Task):
+    """Require sector metadata before a ticker can enter buy selection.
+
+    Panel-LTR neutralization, relative strength, and QP sector caps all rely
+    on ``sector_map``. A missing sector must not silently degrade to
+    ``rs_score=0`` and no sector cap, because that creates unmanaged sector
+    bets in live trading.
+    """
+
+    def run(self, tc: TickerInferenceContext) -> bool | None:
+        require = bool(
+            tc.config.get("risk", {}).get(
+                "require_sector_map_for_buys",
+                tc.config.get("ranking", {})
+                         .get("panel_scoring", {})
+                         .get("enabled", False),
+            )
+        )
+        if not require:
+            return None
+        benchmark = tc.config.get("benchmark", "SPY")
+        if tc.ticker == benchmark:
+            return None
+        sector_map = tc.config.get("sector_map", {}) or {}
+        sector = sector_map.get(tc.ticker)
+        if not isinstance(sector, str) or not sector:
+            log.info(
+                "DROP_SectorMapGate [%s]: missing sector_map entry "
+                "(required for RS + QP sector caps)",
+                tc.ticker,
+            )
+            return False
+
+
 class BuildFeaturesTask(Task):
     def run(self, tc: TickerInferenceContext) -> bool | None:
         # Feature cache optimization (2026-04-24): if SimAdapter pre-built

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .pipeline import TickerJob, Task
 from .task_candidates import (
-    EarningsFilterTask, WashSaleFilterTask, BuildFeaturesTask,
+    EarningsFilterTask, WashSaleFilterTask, SectorMapGateTask, BuildFeaturesTask,
     ScoreBuyTask, ScoreThresholdTask, RelativeStrengthTask,
     AssembleCandidateTask,
 )
@@ -30,6 +30,7 @@ class TickerCandidateJob(TickerJob):
         return [
             EarningsFilterTask(),
             WashSaleFilterTask(),
+            SectorMapGateTask(),
             BuildFeaturesTask(),
             ScoreBuyTask(),
             ScoreThresholdTask(),

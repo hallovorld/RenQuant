@@ -86,6 +86,27 @@ class TestRelevantFields:
         out = _model_relevant_fields(cfg)
         assert out["minute_enabled"] is True
 
+    def test_extracts_watchlist_sector_map(self):
+        cfg = _cfg(watchlist=["MSFT", "AAPL"])
+        cfg["sector_map"] = {"AAPL": "giant_tech", "MSFT": "software", "TSLA": "auto"}
+        cfg["sector_etf_map"] = {"giant_tech": "XLK", "software": "XLK", "auto": "XLY"}
+        out = _model_relevant_fields(cfg)
+        assert out["sector_map"] == {
+            "AAPL": "giant_tech",
+            "MSFT": "software",
+        }
+        assert out["sector_etf_map"] == {
+            "giant_tech": "XLK",
+            "software": "XLK",
+        }
+
+    def test_missing_watchlist_sector_is_visible_in_projection(self):
+        cfg = _cfg(watchlist=["AAPL", "BAC"])
+        cfg["sector_map"] = {"AAPL": "giant_tech"}
+        cfg["sector_etf_map"] = {"giant_tech": "XLK"}
+        out = _model_relevant_fields(cfg)
+        assert out["sector_map"]["BAC"] is None
+
 
 class TestFingerprintResolutionInvariant:
     """Daily-mode vs hourly-mode produce DISTINCT fingerprints — the
@@ -109,6 +130,25 @@ class TestFingerprintResolutionInvariant:
         cfg_hourly_res = _cfg()
         cfg_hourly_res["panel_ltr"]["training_resolution"] = "hourly"
         assert fingerprint_config(cfg_daily) != fingerprint_config(cfg_hourly_res)
+
+    def test_sector_map_change_changes_fingerprint(self):
+        cfg_a = _cfg()
+        cfg_b = _cfg()
+        cfg_a["sector_map"] = {"AAPL": "giant_tech", "MSFT": "giant_tech"}
+        cfg_b["sector_map"] = {"AAPL": "giant_tech", "MSFT": "software"}
+        cfg_a["sector_etf_map"] = {"giant_tech": "XLK", "software": "XLK"}
+        cfg_b["sector_etf_map"] = {"giant_tech": "XLK", "software": "XLK"}
+        assert fingerprint_config(cfg_a) != fingerprint_config(cfg_b)
+
+    def test_sector_etf_map_change_changes_fingerprint(self):
+        cfg_a = _cfg()
+        cfg_b = _cfg()
+        sector_map = {"AAPL": "giant_tech", "MSFT": "software"}
+        cfg_a["sector_map"] = sector_map
+        cfg_b["sector_map"] = sector_map
+        cfg_a["sector_etf_map"] = {"giant_tech": "XLK", "software": "XLK"}
+        cfg_b["sector_etf_map"] = {"giant_tech": "XLK", "software": "IGV"}
+        assert fingerprint_config(cfg_a) != fingerprint_config(cfg_b)
 
 
 class TestNGBoostSaveTaskStampsFingerprint:

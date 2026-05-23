@@ -18,7 +18,7 @@ that train_104.py embeds into the artifact at training time, and that
 RunnerAdapter verifies at inference startup. Mismatch = HARD FAIL with a
 clear remediation message.
 
-The four model-relevant fields:
+The model-relevant fields:
 
   1. watchlist            — set of tickers the panel was built over.
                             Cross-section z-scoring is universe-relative;
@@ -28,6 +28,10 @@ The four model-relevant fields:
   3. panel_ltr.xgb_params.objective — rank:pairwise vs rank:ndcg trains
                                        different weight surfaces.
   4. panel_ltr.asset_embeddings.enabled — adds 16 emb_* columns.
+  5. sector_map / sector_etf_map — sector-neutralized features,
+                                    relative-strength context, and QP sector
+                                    caps are undefined without consistent
+                                    sector metadata.
 
 These are NECESSARY but not sufficient — feature engineering drift (e.g.
 macro v3 → macro disabled) is caught separately by the M3 drift detector
@@ -63,15 +67,37 @@ def _model_relevant_fields(config: dict[str, Any]) -> dict[str, Any]:
     emb_cfg = panel.get("asset_embeddings", {}) or {}
     hourly_cfg = panel.get("hourly", {}) or {}
     minute_cfg = panel.get("minute", {}) or {}
+    watchlist = sorted(config.get("watchlist", []) or [])
+    benchmark = config.get("benchmark", "SPY")
+    raw_sector_map = config.get("sector_map", {}) or {}
+    sector_map = {
+        ticker: raw_sector_map.get(ticker)
+        for ticker in watchlist
+        if ticker != benchmark
+    }
+    used_sectors = sorted(
+        {
+            sector
+            for sector in sector_map.values()
+            if isinstance(sector, str) and sector
+        }
+    )
+    raw_sector_etf_map = config.get("sector_etf_map", {}) or {}
+    sector_etf_map = {
+        sector: raw_sector_etf_map.get(sector)
+        for sector in used_sectors
+    }
     return {
         # Sorted set of tickers — order doesn't matter for the panel.
-        "watchlist": sorted(config.get("watchlist", []) or []),
+        "watchlist": watchlist,
         "lookahead_days":      int(panel.get("lookahead_days", 10)),
         "objective":           str(xgb_params.get("objective", "rank:pairwise")),
         "asset_embeddings":    bool(emb_cfg.get("enabled", False)),
         "training_resolution": str(panel.get("training_resolution", "daily")),
         "hourly_enabled":      bool(hourly_cfg.get("enabled", False)),
         "minute_enabled":      bool(minute_cfg.get("enabled", False)),
+        "sector_map":          sector_map,
+        "sector_etf_map":      sector_etf_map,
     }
 
 

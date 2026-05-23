@@ -12,6 +12,7 @@ session's repeated issues cannot be lost in chat history.
 | Legacy live DB crashed on `trade_date` index before migration | Column migrations run before indexes that depend on new columns | `tests/test_persistence.py::TestConnectionLifecycle::test_legacy_trades_table_migrates_before_trade_date_index`; `data/runs.alpaca.db` has `trades.trade_date` and `idx_trades_date` |
 | Shadow e2e could hang daily indefinitely | Shadow is read-only and non-fatal; it must have a wall-clock budget | `tests/test_smoke_test_model.py::TestNoRetrainInDailyShell::test_shadow_e2e_has_wall_clock_timeout`; daily verification with `RENQUANT_SHADOW_TIMEOUT_SEC=30` exited 0 |
 | Daily log double-wrote audit/dashboard lines | After `exec >> "$LOG"`, do not pipe to `tee -a "$LOG"` | `tests/test_smoke_test_model.py::TestNoRetrainInDailyShell::test_daily_does_not_double_append_log_after_exec_redirect` |
+| Live QP optimized names with missing sector metadata | Every buyable watchlist ticker must have `sector_map`; every sector must have `sector_etf_map`; sector metadata is part of the model/config fingerprint | `tests/test_candidate_sector_map_gate.py`; `tests/test_strategy_config_sector_map.py`; targeted suite `92 passed`; real preflight now reports `P-SECTOR-MAP` OK and `P-CONFIG-FP` blocks old artifacts until retrained/stamped |
 
 Commit: `d315b65 Fix daily WF fallback and schema migration` pushed to `origin/main`.
 
@@ -33,6 +34,7 @@ Production default should remain WF-gated until a passing artifact is promoted.
 | Priority | Issue | Required close condition |
 |---|---|---|
 | P0 | Active prod panel artifact carries failed WF evidence | Promote only a WF-passing artifact, or keep production in sell-only/no-new-buy mode. Close with strict WF report, per-regime metrics, SPY benchmark, and stamped `wf_gate_metadata.passed=true`. |
+| P0 | Active prod panel artifact was trained/stamped before sector metadata coverage was fixed | Retrain and promote only if acceptance + WF pass under the complete sector schema; until then `P-CONFIG-FP` blocks full-buy and sell-only remains available. |
 | P0 | XGB and PatchTST positive IC but weak/negative APY/Sharpe | Produce trade-level attribution by pipeline stage: signal rank, gate, selection, sizing, exit, tax/friction. Close only when the losing stage is identified with per-trade evidence and a regression/acceptance test. |
 | P0 | PatchTST shadow is too slow for daily e2e | Keep timeout now; close by profiling and moving heavy feature/scorer setup out of the live critical path, or by running shadow as detached research with its own monitor. |
 | P0 | Strict calibrator/scorer contract work is partly dirty | Finish/commit scorer artifact fingerprints, calibrator source fingerprints, and no-cross-model calibrator reuse guards. Close with tests in `tests/test_hf_patchtst_scorer.py`, `tests/test_regime_calibrator.py`, and `tests/test_shadow_scoring.py`. |

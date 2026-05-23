@@ -26,6 +26,7 @@ from kernel.preflight import (  # noqa: E402
     _check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,
+    _check_sector_map_coverage,
     _check_feature_coverage,
     _check_state_file,
     _check_broker_connect,
@@ -48,6 +49,20 @@ def healthy_setup(tmp_path):
             "asset_embeddings": {"enabled": False},
             "min_best_iter": 20,
             "artifact_path": "artifacts/panel-ltr.json",
+        },
+        "ranking": {"panel_scoring": {
+            "enabled": True,
+            "artifact_path": "artifacts/panel-ltr.json",
+        }},
+        "benchmark": "SPY",
+        "sector_map": {
+            "AAPL": "giant_tech",
+            "MSFT": "giant_tech",
+            "NVDA": "ai_chip",
+        },
+        "sector_etf_map": {
+            "giant_tech": "XLK",
+            "ai_chip": "XLK",
         },
     }
     art_dir = tmp_path / "artifacts"
@@ -263,6 +278,21 @@ class TestCheckConfigFingerprint:
         assert not r.ok and r.severity == "hard"
         assert "watchlist" in r.message
 
+    def test_sell_only_soft_passes_fingerprint_drift_for_risk_exits(self, healthy_setup):
+        cfg, sd = healthy_setup
+        cfg["watchlist"] = ["AAPL", "MSFT", "NVDA", "TSLA"]
+        r = _check_config_fingerprint(cfg, sd, run_mode="sell-only")
+        assert r.ok and r.severity == "soft"
+        assert "Sell-only risk exits are allowed" in r.message
+        assert "watchlist" in r.message
+
+    def test_fail_when_sector_map_drifted(self, healthy_setup):
+        cfg, sd = healthy_setup
+        cfg["sector_map"]["NVDA"] = "giant_tech"
+        r = _check_config_fingerprint(cfg, sd, run_mode="full")
+        assert not r.ok and r.severity == "hard"
+        assert "sector_map" in r.message
+
     def test_fail_when_objective_changed(self, healthy_setup):
         cfg, sd = healthy_setup
         cfg["panel_ltr"]["xgb_params"]["objective"] = "rank:ndcg"
@@ -298,6 +328,38 @@ class TestCheckWatchlist:
         r = _check_watchlist_size(cfg, sd)
         assert not r.ok
         assert "in_trained_not_live" in r.message
+
+
+# ── P-SECTOR-MAP ───────────────────────────────────────────────────────────
+
+class TestCheckSectorMapCoverage:
+    def test_pass_when_buyable_watchlist_has_sectors(self, healthy_setup):
+        cfg, sd = healthy_setup
+        r = _check_sector_map_coverage(cfg, sd, run_mode="full")
+        assert r.ok and r.severity == "hard"
+        assert "sector coverage OK" in r.message
+
+    def test_fail_full_when_buyable_ticker_missing_sector(self, healthy_setup):
+        cfg, sd = healthy_setup
+        cfg["watchlist"].append("BAC")
+        r = _check_sector_map_coverage(cfg, sd, run_mode="full")
+        assert not r.ok and r.severity == "hard"
+        assert "BAC" in r.message
+        assert r.details["missing_count"] == 1
+
+    def test_sell_only_soft_passes_missing_sector_for_risk_exits(self, healthy_setup):
+        cfg, sd = healthy_setup
+        cfg["watchlist"].append("BAC")
+        r = _check_sector_map_coverage(cfg, sd, run_mode="sell-only")
+        assert r.ok and r.severity == "soft"
+        assert "Sell-only risk exits are allowed" in r.message
+
+    def test_fail_when_sector_lacks_etf_mapping(self, healthy_setup):
+        cfg, sd = healthy_setup
+        cfg["sector_map"]["MSFT"] = "software"
+        r = _check_sector_map_coverage(cfg, sd, run_mode="full")
+        assert not r.ok and r.severity == "hard"
+        assert "software" in r.message
 
 
 # ── P-FEATURE-COVER ────────────────────────────────────────────────────────
