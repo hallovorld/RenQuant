@@ -59,6 +59,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 # Default MLflow tracking URI: file-based local store at repo/mlruns
 _DEFAULT_TRACKING_URI = "file:" + str(Path(__file__).resolve().parents[4] / "mlruns")
 _DEFAULT_EXPERIMENT = "renquant_104_shadow"
+_SCORER_CACHE: dict[tuple[str, str], object] = {}
 
 
 def _ensure_mlflow_setup(tracking_uri: Optional[str] = None,
@@ -159,6 +160,8 @@ class ApplyShadowScoringTask(Task):
 
     def run(self, ctx: InferenceContext) -> bool | None:
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
+        if panel_cfg.get("shadow_enabled", True) is False:
+            return None
         shadow_models = panel_cfg.get("shadow_models", []) or []
         if not shadow_models:
             return None
@@ -176,15 +179,17 @@ class ApplyShadowScoringTask(Task):
         primary_ranks = {t: i + 1 for i, (t, _) in enumerate(sorted_primary)}
         primary_kind = panel_cfg.get("kind", "xgb")
 
-        # MLflow setup (once per inference bar)
-        try:
-            exp_id = _ensure_mlflow_setup(
-                panel_cfg.get("shadow_tracking_uri"),
-                panel_cfg.get("shadow_experiment"))
-        except Exception as exc:
-            log.warning("ApplyShadowScoringTask: MLflow setup failed: %s — skip",
-                         exc)
-            return None
+        shadow_log_mlflow = bool(panel_cfg.get("shadow_log_mlflow", True))
+        exp_id = None
+        if shadow_log_mlflow:
+            try:
+                exp_id = _ensure_mlflow_setup(
+                    panel_cfg.get("shadow_tracking_uri"),
+                    panel_cfg.get("shadow_experiment"))
+            except Exception as exc:
+                log.warning("ApplyShadowScoringTask: MLflow setup failed: %s — skip",
+                             exc)
+                return None
 
         from kernel.panel_pipeline.model_registry import registry  # noqa: PLC0415
         repo = Path(__file__).resolve().parents[4]
@@ -217,12 +222,16 @@ class ApplyShadowScoringTask(Task):
             shadow_cfg = dict(ctx.config)
             shadow_cfg.setdefault("ranking", {})["panel_scoring"] = shadow_panel_cfg
 
-            try:
-                scorer = handler.scorer_loader(p, shadow_cfg)
-            except Exception as exc:
-                log.warning("ApplyShadowScoringTask: shadow %s (%s) load failed: %s",
-                             name, kind, exc)
-                continue
+            cache_key = (kind, str(p))
+            scorer = _SCORER_CACHE.get(cache_key)
+            if scorer is None:
+                try:
+                    scorer = handler.scorer_loader(p, shadow_cfg)
+                except Exception as exc:
+                    log.warning("ApplyShadowScoringTask: shadow %s (%s) load failed: %s",
+                                 name, kind, exc)
+                    continue
+                _SCORER_CACHE[cache_key] = scorer
 
             target_tickers = list(primary_scores.keys())
             try:
@@ -304,6 +313,12 @@ class ApplyShadowScoringTask(Task):
             except Exception as exc:
                 log.warning("ApplyShadowScoringTask: ctx summary failed for %s: %s",
                              name, exc)
+
+            if not shadow_log_mlflow or exp_id is None:
+                log.info("ApplyShadowScoringTask: shadow %s (%s) scored %d "
+                         "candidates (MLflow disabled)",
+                         name, kind, len(shadow_dict))
+                continue
 
             try:
                 _log_shadow_run(

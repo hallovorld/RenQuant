@@ -34,9 +34,11 @@ Usage::
 """
 from __future__ import annotations
 import argparse
+import datetime as dt
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +57,8 @@ from transformers import (EarlyStoppingCallback, PatchTSTConfig, PatchTSTModel,
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
+sys.path.insert(0, str(STRATEGY_DIR))
 
 # NOTE: kernel.* imports deferred to point-of-use so HFPatchTSTPanelScorer
 # can `importlib` this script without triggering kernel namespace conflicts.
@@ -341,6 +345,29 @@ def git_head() -> str | None:
     return r.stdout.strip() or None
 
 
+def build_config_contract(args: argparse.Namespace) -> dict:
+    """Stamp the model-relevant strategy config used by runtime preflight."""
+    raw = getattr(args, "strategy_config", None) or os.getenv("RENQUANT_STRATEGY_CONFIG")
+    if raw:
+        path = Path(raw)
+        path = path if path.is_absolute() else REPO / path
+    else:
+        path = STRATEGY_DIR / "strategy_config.shadow.json"
+        if not path.exists():
+            path = STRATEGY_DIR / "strategy_config.json"
+    cfg = json.loads(path.read_text())
+    from kernel.config_consistency import (  # noqa: PLC0415
+        fingerprint_config, _model_relevant_fields,
+    )
+    fields = _model_relevant_fields(cfg)
+    return {
+        "config_path": str(path.relative_to(REPO) if path.is_relative_to(REPO) else path),
+        "config_fingerprint": fingerprint_config(cfg),
+        "config_fingerprint_fields": fields,
+        "trained_watchlist_n": len(fields.get("watchlist") or []),
+    }
+
+
 def build_training_contract(args: argparse.Namespace, feat_cols: list[str],
                             panel: pd.DataFrame, n_params: int,
                             total_steps: int, warmup_steps: int,
@@ -350,17 +377,32 @@ def build_training_contract(args: argparse.Namespace, feat_cols: list[str],
     split_counts = panel["split_label"].value_counts().to_dict()
     split_days = (panel.groupby("split_label")["date"].nunique()
                   .astype(int).to_dict())
+    split_ranges = {}
+    for split, g in panel.groupby("split_label"):
+        dates = pd.to_datetime(g["date"])
+        split_ranges[split] = {
+            "start": str(dates.min().date()),
+            "end": str(dates.max().date()),
+        }
+    lookahead_match = re.search(r"fwd_(\d+)d", args.label)
+    lookahead_days = int(lookahead_match.group(1)) if lookahead_match else None
     return {
         "contract_version": 1,
+        "trained_date": str(dt.date.today()),
         "git_head": git_head(),
         "dataset": str(args.dataset),
         "cut": args.cut,
         "label_col": args.label,
+        "lookahead_days": lookahead_days,
         "seed": args.seed,
         "n_features": len(feat_cols),
         "n_params": n_params,
         "split_counts": {k: int(v) for k, v in split_counts.items()},
         "split_days": {k: int(v) for k, v in split_days.items()},
+        "split_date_ranges": split_ranges,
+        "effective_train_cutoff_date": (
+            split_ranges.get("train", {}).get("end")
+        ),
         "preprocessing": {
             "csrank_norm_per_day": True,
             "label_winsor": panel.attrs.get("label_winsor", {}),
@@ -657,6 +699,8 @@ def train_one(args: argparse.Namespace) -> dict:
     training_contract = build_training_contract(
         args, feat_cols, panel, n_params, total_steps, warmup_steps,
         metric_for_best, final_metrics)
+    config_contract = build_config_contract(args)
+    training_contract["config_contract"] = config_contract
 
     # Dump val predictions for downstream regime-stratified IC
     device = next(model.parameters()).device
@@ -686,6 +730,10 @@ def train_one(args: argparse.Namespace) -> dict:
         "arch": "hf_patchtst", "cut": args.cut, "seed": args.seed,
         "best_val_ic": best_val_ic, "n_params": n_params,
         "n_features": len(feat_cols), "uses_distributional_head": args.distributional_head,
+        "config_fingerprint": config_contract["config_fingerprint"],
+        "config_fingerprint_fields": config_contract["config_fingerprint_fields"],
+        "config_path": config_contract["config_path"],
+        "trained_watchlist_n": config_contract["trained_watchlist_n"],
         "training_contract": training_contract,
         "per_regime_ic": {k.removeprefix("eval_ic_"): v
                           for k, v in final_metrics.items()
@@ -702,7 +750,16 @@ def train_one(args: argparse.Namespace) -> dict:
             "feature_cols": feat_cols,
             "seq_len": args.seq_len,
             "label_col": args.label,
+            "trained_date": training_contract.get("trained_date"),
+            "effective_train_cutoff_date": (
+                training_contract.get("effective_train_cutoff_date")
+            ),
+            "lookahead_days": training_contract.get("lookahead_days"),
             "best_val_ic": best_val_ic,
+            "config_fingerprint": config_contract["config_fingerprint"],
+            "config_fingerprint_fields": config_contract["config_fingerprint_fields"],
+            "config_path": config_contract["config_path"],
+            "trained_watchlist_n": config_contract["trained_watchlist_n"],
             "uses_distributional_head": args.distributional_head,
             "uses_film_regime": args.film_regime_cond,
             "uses_cross_stock_attn": args.cross_stock_attn,
@@ -771,6 +828,10 @@ def main():
     p.add_argument("--device", default="cpu", choices=["cpu", "mps", "cuda"])
     p.add_argument("--save-model", action="store_true")
     p.add_argument("--output-dir", default="artifacts/hf_patchtst")
+    p.add_argument("--strategy-config", default=None,
+                   help="Strategy config JSON whose model-relevant fingerprint "
+                        "is stamped into the summary/checkpoint. Defaults to "
+                        "renquant_104 strategy_config.shadow.json.")
     args = p.parse_args()
     print(json.dumps(train_one(args), indent=2, default=str))
 

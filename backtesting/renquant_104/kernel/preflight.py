@@ -151,6 +151,8 @@ def _check_sequence_artifact_contract(
         errors.append("seed missing")
     if strict_contract and summary.get("cut") is None:
         errors.append("cut missing")
+    if strict_contract and summary.get("config_fingerprint") is None:
+        errors.append("config_fingerprint missing")
     if errors:
         return PreflightCheck(
             "P-PANEL-CONTRACT", "hard", False,
@@ -169,6 +171,8 @@ def _check_sequence_artifact_contract(
             "n_features": n_features_i,
             "seed": summary.get("seed"),
             "cut": summary.get("cut"),
+            "config_fingerprint": summary.get("config_fingerprint"),
+            "trained_watchlist_n": summary.get("trained_watchlist_n"),
         },
     )
 
@@ -563,6 +567,33 @@ def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
             "P-WATCHLIST", "hard", False, f"artifact missing: {p}",
         )
     if _is_sequence_artifact(kind, p):
+        summary_path = _patchtst_summary_path(p)
+        try:
+            meta = json.loads(summary_path.read_text())
+        except Exception as exc:
+            return PreflightCheck(
+                "P-WATCHLIST", "soft", True,
+                f"{kind} summary unavailable for watchlist check: {exc}; "
+                f"live={len(wl)} ticker(s)",
+            )
+        fields = meta.get("config_fingerprint_fields") or {}
+        if not isinstance(fields, dict):
+            fields = {}
+        trained_wl = fields.get("watchlist") or []
+        if trained_wl:
+            if set(wl) != set(trained_wl):
+                only_live = sorted(set(wl) - set(trained_wl))[:5]
+                only_trained = sorted(set(trained_wl) - set(wl))[:5]
+                return PreflightCheck(
+                    "P-WATCHLIST", "hard", False,
+                    f"watchlist mismatch live={len(wl)} trained={len(trained_wl)} "
+                    f"in_live_not_trained={only_live} "
+                    f"in_trained_not_live={only_trained}",
+                )
+            return PreflightCheck(
+                "P-WATCHLIST", "hard", True,
+                f"watchlist match (n={len(wl)})",
+            )
         return PreflightCheck(
             "P-WATCHLIST", "soft", True,
             f"trained watchlist not stamped for sequence artifact; live={len(wl)} ticker(s)",

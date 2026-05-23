@@ -82,7 +82,7 @@ class TestQPOrderShape:
     QP_SOURCE = QP_PATH.read_text()
 
     def test_qp_order_dict_sets_trade_audit_fields(self):
-        anchor = "ctx.orders.append({"
+        anchor = "ctx.orders.append(stamp_order_attribution({"
         assert anchor in self.QP_SOURCE
         idx = self.QP_SOURCE.find(anchor)
         block = self.QP_SOURCE[idx:idx + 900]

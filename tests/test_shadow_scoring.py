@@ -59,6 +59,13 @@ class TestSourceContracts:
                / "shadow_scoring.py").read_text()
         assert "2026-05-18" in src
 
+    def test_shadow_runtime_has_disable_and_cache_guards(self, shadow_mod):
+        src = (REPO / "backtesting/renquant_104/kernel/panel_pipeline"
+               / "shadow_scoring.py").read_text()
+        assert "shadow_enabled" in src
+        assert "shadow_log_mlflow" in src
+        assert "_SCORER_CACHE" in src
+
 
 class TestMLflowSetup:
     """Verify MLflow integration works on a temp tracking dir."""

@@ -246,7 +246,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.05,
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
       },
@@ -271,7 +271,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.04,
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
       },
@@ -295,7 +295,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.025,
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
       },
@@ -667,7 +667,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/walkforward_truly_oos_2024-07-01_embargo60_20260522/panel-ltr.json",
+      "artifact_path": "artifacts/side/sim_exit_meta_t050/panel-ltr.alpha158_fund.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,
@@ -683,7 +683,7 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/side/sim_exit_meta_t050/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
         "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
@@ -695,7 +695,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/panel-rank-calibration.json",
+        "artifact_path": "artifacts/side/sim_exit_meta_t050/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -748,7 +748,14 @@
         },
         "_2026-05-18_provenance": "Tier 2 SCREEN per regime-stratified IC eval; see doc/research/2026-05-18-news-sentiment-ic-verdict.md"
       },
-      "shadow_models": [],
+      "shadow_models": [
+        {
+          "name": "hf_patchtst_canonical_seed44",
+          "kind": "hf_patchtst",
+          "artifact_path": "artifacts/patchtst_shadow/canonical_5seed_mps/seed_44/hf_patchtst_all_seed44_model.pt",
+          "_2026-05-19_provenance": "Synced from strategy_config.golden.json. HF PatchTST seed_44 from canonical 5-seed run 2026-05-19. last-epoch val_ic=+0.0644 on 142-ticker last-10%-dates val window. vs XGB primary +0.0909 on same window: PatchTST loses by ~0.027. SHADOW only \u2014 observation + infra validation, primary stays XGB."
+        }
+      ],
       "shadow_tracking_uri": "file:./mlruns",
       "shadow_experiment": "renquant_104_shadow"
     },
@@ -798,10 +805,11 @@
       "enabled": false
     },
     "meta_label": {
-      "enabled": false,
+      "enabled": true,
       "threshold": 0.5,
       "artifact_path": "backtesting/renquant_104/artifacts/meta-label-exit.json",
-      "_deployment_reason": "2026-05-11: meta-label exit veto. L\u00f3pez de Prado AFML ch.20. Trained 2026-05-11 on 2024-04\u21922025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: \u00a75.13.10 \u2014 missing artifact \u2192 no-op."
+      "_deployment_reason": "2026-05-11: meta-label exit veto. L\u00f3pez de Prado AFML ch.20. Trained 2026-05-11 on 2024-04\u21922025-04 (146 events, class balance 55.5%, AUC 0.554). Threshold 0.5 used in OOS validation; do NOT switch to artifact's F1-optimum 0.30 without re-validation. Fallback: \u00a75.13.10 \u2014 missing artifact \u2192 no-op.",
+      "_codex_ab_reason": "Enable existing AFML meta-label exit veto in shadow sim; veto only path-rule exits when P(exit_is_profitable)<0.5."
     }
   },
   "panel_ltr": {
@@ -834,11 +842,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/panel-ltr.alpha158_fund.json",
+    "artifact_path": "artifacts/side/sim_exit_meta_t050/panel-ltr.alpha158_fund.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
-      "enabled": false,
-      "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/ngboost-head.json",
+      "enabled": true,
+      "artifact_path": "artifacts/side/sim_exit_meta_t050/ngboost-head.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -1044,6 +1052,7 @@
   },
   "min_reentry_days": 5,
   "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
-  "_sim_note": "Codex 2026-05-22: pure XGB strict-cutoff APY/Sharpe sim; shadow and NGBoost overlays disabled for model-isolation speed.",
-  "_audit_label": "sim_xgb_truly_oos_pure_20260522"
+  "_side_config_label": "exit_meta_t050",
+  "_codex_exit_ab": "2026-05-22 APY/Sharpe direct A/B from exit counterfactual replay; side config only, prod unchanged.",
+  "_audit_label": "sim_exit_meta_t050"
 }

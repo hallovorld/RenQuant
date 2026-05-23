@@ -21,12 +21,28 @@ Two gate helpers are provided for selection use:
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+
+
+def artifact_sha256(path: str | Path) -> str:
+    """Stable artifact identity used to bind scorers to calibrators."""
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def stamp_artifact_metadata(metadata: dict | None, path: str | Path) -> dict:
+    """Return metadata with path + fingerprint fields for runtime contracts."""
+    meta = dict(metadata or {})
+    sha = artifact_sha256(path)
+    meta.setdefault("artifact_path", str(Path(path)))
+    meta.setdefault("artifact_sha256", sha)
+    meta.setdefault("artifact_fingerprint", sha)
+    return meta
 
 
 class PanelScorer:
@@ -113,7 +129,10 @@ class PanelScorer:
         # Default: XGBoost rank:pairwise artifact
         booster = xgb.Booster()
         booster.load_model(bytearray(payload["booster_raw_json"].encode("utf-8")))
-        meta = {k: v for k, v in payload.items() if k != "booster_raw_json"}
+        meta = stamp_artifact_metadata(
+            {k: v for k, v in payload.items() if k != "booster_raw_json"},
+            path,
+        )
         return cls(
             booster=booster,
             feature_cols=list(payload["feature_cols"]),

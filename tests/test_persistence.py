@@ -22,6 +22,7 @@ from kernel.persistence import (  # noqa: E402
     record_trades,
     record_training_run,
     record_ticker_daily_state,
+    decision_trace_integrity_report,
 )
 
 
@@ -321,6 +322,62 @@ class TestTrades:
         assert decision_inputs["delta_w"] == pytest.approx(0.08)
         conn.close()
 
+    def test_record_trades_fills_minimal_decision_payload(self, tmp_path):
+        """Executed-trade rows must stay replayable even if a caller omits
+        rich attribution. The fallback is explicit, not silently NULL."""
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 100.0,
+        }])
+        row = conn.execute(
+            """SELECT score_snapshot_json, decision_inputs_json
+                 FROM trades WHERE run_id = ? AND ticker = 'AAA'""",
+            (rid,),
+        ).fetchone()
+        score_snapshot = json.loads(row[0])
+        decision_inputs = json.loads(row[1])
+        assert score_snapshot["attribution_missing"] is True
+        assert decision_inputs["acceptance_reason"] == "recorded_trade"
+        assert decision_inputs["ticker"] == "AAA"
+        conn.close()
+
+    def test_decision_trace_integrity_report_pins_run_contract(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[
+                {"ticker": "AAA", "selected": 1, "blocked_by": "tier"},
+                {"ticker": "BBB", "selected": 0, "blocked_by": "tier"},
+            ],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 100.0,
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA", "BBB", "CCC"],
+        )
+
+        assert report["ok"] is False
+        assert report["missing_watchlist_tickers"] == ["CCC"]
+        assert report["selected_blocked_rows"] == 0
+        assert report["trade_payload_gaps"] == 0
+        conn.close()
+
 
 class TestTrainingRun:
     def test_insert(self, tmp_path):
@@ -362,10 +419,16 @@ class TestSimAdapterIntegration:
         }, index=idx)
 
         cfg = _cfg(tmp_path, enabled=True)
-        cfg.update({"watchlist": [], "sector_etf_map": {}, "tax": {}, "regime": {}})
+        cfg.update({
+            "watchlist": ["AAPL"],
+            "sector_map": {"AAPL": "giant_tech"},
+            "sector_etf_map": {"giant_tech": "XLK"},
+            "tax": {},
+            "regime": {},
+        })
         adapter = SimAdapter(
             config=cfg, strategy_dir=_STRATEGY_DIR,
-            ohlcv={"SPY": spy_df}, spy_df=spy_df, sector_etf_map={},
+            ohlcv={"SPY": spy_df, "AAPL": spy_df}, spy_df=spy_df, sector_etf_map={},
             initial_cash=100_000,
         )
         today = idx[30]
@@ -389,6 +452,10 @@ class TestSimAdapterIntegration:
             "SELECT run_type, regime FROM pipeline_runs"
         ).fetchone()
         assert row == ("sim", "BULL_CALM")
+        tds = conn.execute(
+            "SELECT ticker, in_watchlist FROM ticker_daily_state"
+        ).fetchone()
+        assert tds == ("AAPL", 1)
         conn.close()
         # Live DB should NOT have been touched.
         assert not (tmp_path / "runs.db").exists(), \

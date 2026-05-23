@@ -5,6 +5,7 @@ model_registry so shadow + future primary swap can rely on it.
 """
 from __future__ import annotations
 import sys
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +66,46 @@ class TestSourceContracts:
         src = (REPO / "backtesting/renquant_104/kernel/panel_pipeline"
                / "hf_patchtst_scorer.py").read_text()
         assert 'os.environ.setdefault("OMP_NUM_THREADS"' in src
+
+    def test_calibrator_script_replays_sequences_and_stamps_fingerprint(self):
+        """PatchTST calibrator must be model-specific, not copied from XGB."""
+        script = REPO / "scripts" / "fit_hf_patchtst_calibrator.py"
+        src = script.read_text()
+        assert "_csrank_norm_per_day" in src
+        assert "score_sequences" in src
+        assert "scorer_artifact_fingerprint" in src
+        assert "raw_return_units_required" in src
+
+    def test_calibrator_script_infers_raw_er_label(self):
+        script = REPO / "scripts" / "fit_hf_patchtst_calibrator.py"
+        spec = importlib.util.spec_from_file_location("fit_hf_patchtst_calibrator", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert mod._infer_raw_er_label("fwd_60d_excess") == "fwd_60d_excess_raw"
+        assert mod._infer_raw_er_label("fwd_60d_excess_raw") == "fwd_60d_excess_raw"
+
+    def test_training_checkpoint_stamps_provenance_for_leakage_guard(self):
+        src = (REPO / "scripts" / "patchtst_hf.py").read_text()
+        for required in (
+            "trained_date",
+            "effective_train_cutoff_date",
+            "lookahead_days",
+            "split_date_ranges",
+            "config_fingerprint",
+            "config_fingerprint_fields",
+            "trained_watchlist_n",
+        ):
+            assert required in src
+
+    def test_loader_exposes_training_contract_metadata(self, scorer_mod):
+        src = (REPO / "backtesting/renquant_104/kernel/panel_pipeline"
+               / "hf_patchtst_scorer.py").read_text()
+        for required in (
+            "training_contract",
+            "effective_train_cutoff_date",
+            "lookahead_days",
+        ):
+            assert required in src
 
 
 class TestModelRegistryIntegration:

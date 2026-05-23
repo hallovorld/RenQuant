@@ -246,7 +246,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.05,
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
       },
@@ -271,7 +271,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.04,
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
       },
@@ -295,7 +295,7 @@
       "take_profit_pct": 0,
       "drawdown_resume_pct": 0.025,
       "ngboost": {
-        "enabled": false,
+        "enabled": true,
         "score_mode": "mu_minus_lambda_sigma",
         "lambda_sigma": 1.0
       },
@@ -667,7 +667,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/walkforward_truly_oos_2024-07-01_embargo60_20260522/panel-ltr.json",
+      "artifact_path": "artifacts/side/whatif_no_wf_buy/panel-ltr.alpha158_fund.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,
@@ -683,7 +683,7 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/side/whatif_no_wf_buy/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
         "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
@@ -695,7 +695,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/panel-rank-calibration.json",
+        "artifact_path": "artifacts/side/whatif_no_wf_buy/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -748,7 +748,14 @@
         },
         "_2026-05-18_provenance": "Tier 2 SCREEN per regime-stratified IC eval; see doc/research/2026-05-18-news-sentiment-ic-verdict.md"
       },
-      "shadow_models": [],
+      "shadow_models": [
+        {
+          "name": "hf_patchtst_pt07_strict_seed44",
+          "kind": "hf_patchtst",
+          "artifact_path": "artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt",
+          "_2026-05-22_provenance": "Strict-contract PatchTST shadow: tail-val 10%, 60BD embargo, train-only label winsor, seq_len=24, lr=1e-4, wd=0.3, warmup=0.1, seed=44. Final min-regime IC=+0.0307 (BULL_VOLATILE +0.0524, BEAR +0.1916, CHOPPY +0.0307). Cleaner than the old canonical seed44 path, but weaker than old non-embargo IC; SHADOW only, no promotion."
+        }
+      ],
       "shadow_tracking_uri": "file:./mlruns",
       "shadow_experiment": "renquant_104_shadow"
     },
@@ -834,11 +841,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/panel-ltr.alpha158_fund.json",
+    "artifact_path": "artifacts/side/whatif_no_wf_buy/panel-ltr.alpha158_fund.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
-      "enabled": false,
-      "artifact_path": "artifacts/side/sim_xgb_truly_oos_pure_20260522/ngboost-head.json",
+      "enabled": true,
+      "artifact_path": "artifacts/side/whatif_no_wf_buy/ngboost-head.json",
       "params": {
         "n_estimators": 400,
         "learning_rate": 0.01
@@ -1016,7 +1023,7 @@
     }
   },
   "persistence": {
-    "enabled": true,
+    "enabled": false,
     "db_path": "data/runs.db"
   },
   "monitoring": {
@@ -1044,6 +1051,10 @@
   },
   "min_reentry_days": 5,
   "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
-  "_sim_note": "Codex 2026-05-22: pure XGB strict-cutoff APY/Sharpe sim; shadow and NGBoost overlays disabled for model-isolation speed.",
-  "_audit_label": "sim_xgb_truly_oos_pure_20260522"
+  "live": {
+    "preflight": {
+      "enabled": false
+    }
+  },
+  "_audit_label": "whatif_no_wf_buy"
 }

@@ -842,6 +842,7 @@ class SimAdapter:
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
+                record_ticker_daily_state,
             )
             from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
             run_bundle = build_run_bundle(
@@ -873,6 +874,18 @@ class SimAdapter:
             )
             selected_tickers = {o["ticker"] for o in ctx.orders}
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            sector_map = self._config.get("sector_map", {}) or {}
+            model_types = {}
+            for tk, m in (self._models or {}).items():
+                model_types[tk] = (
+                    getattr(m, "model_type", None)
+                    or (m.metadata.get("model_type") if hasattr(m, "metadata") else None)
+                )
+            panel_artifact = (
+                self._config.get("ranking", {})
+                            .get("panel_scoring", {})
+                            .get("artifact_path")
+            )
             # 2026-05-04 user mandate ("rank_score need to be collected
             # properly for future fine tune"): persist the FULL pre-
             # veto candidate list so the candidate_scores table captures
@@ -887,8 +900,63 @@ class SimAdapter:
                 self._db, run_id, cand_pool, ctx.holdings,
                 selected_tickers=selected_tickers,
                 blocked_map=blocked_map,
+                sector_map=sector_map,
+                model_types=model_types,
+                panel_artifact=panel_artifact,
             )
             record_trades(self._db, run_id, trade_events_this_bar)
+            wl = list(self._config.get("watchlist", []) or [])
+            cand_by_t = {c.ticker: c for c in cand_pool}
+            tds_rows: list[dict] = []
+            for tk in wl:
+                hs = ctx.holdings.get(tk)
+                cand = cand_by_t.get(tk)
+                src = cand if cand is not None else hs
+                has_pos = 1 if hs is not None else 0
+                pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
+                px = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
+                pos_pct = None
+                if hs and pv > 0 and px:
+                    pos_pct = (pos_qty * px) / pv
+                blocked_str = (blocked_map or {}).get(tk)
+                if blocked_str is None and tk not in (self._models or {}):
+                    blocked_str = "universe_floor"
+                if cand is not None:
+                    model_action = "buy"
+                elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
+                    model_action = "sell"
+                else:
+                    model_action = "hold"
+                tds_rows.append({
+                    "ticker": tk,
+                    "regime": ctx.regime,
+                    "confidence": ctx.confidence,
+                    "in_watchlist": 1,
+                    "in_universe": 1 if tk in (self._models or {}) else 0,
+                    "pending_at_broker": 0,
+                    "has_position": has_pos,
+                    "position_qty": pos_qty,
+                    "position_pct": pos_pct,
+                    "model_type": model_types.get(tk),
+                    "model_action": model_action,
+                    "sell_streak": int(getattr(hs, "sell_streak", 0)) if hs else None,
+                    "panel_score": getattr(src, "panel_score", None) if src else None,
+                    "rank_score": getattr(src, "rank_score", None) if src else None,
+                    "expected_return": getattr(src, "expected_return", None) if src else None,
+                    "kelly_target_pct": getattr(src, "kelly_target_pct", None) if src else None,
+                    "mu": getattr(src, "mu", None) if src else None,
+                    "sigma": getattr(src, "sigma", None) if src else None,
+                    "in_candidates": 1 if cand is not None else 0,
+                    "selected": 1 if tk in selected_tickers else 0,
+                    "blocked_by": blocked_str,
+                    "sector": sector_map.get(tk),
+                })
+            record_ticker_daily_state(
+                self._db,
+                run_date=today_ts.date(),
+                rows=tds_rows,
+                run_id=run_id,
+            )
 
     # ── Sim-side execution primitives ───────────────────────────────────────
 

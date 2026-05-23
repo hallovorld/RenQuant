@@ -867,6 +867,91 @@ class VetoWeakBuysTask(Task):
 
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
 
+def _fingerprint_value(metadata: dict | None) -> str | None:
+    """Return the best available artifact fingerprint from a metadata dict."""
+    if not metadata:
+        return None
+    for key in (
+        "artifact_fingerprint",
+        "scorer_artifact_fingerprint",
+        "config_fingerprint",
+        "model_fingerprint",
+        "artifact_sha256",
+        "fingerprint",
+    ):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _normalize_fingerprint(value: str | None) -> str:
+    return str(value or "").strip().lower().removeprefix("sha256:")
+
+
+def _fingerprints_match(expected: str | None, actual: str | None) -> bool:
+    """Accept exact matches and historical short-sha prefixes."""
+    exp = _normalize_fingerprint(expected)
+    act = _normalize_fingerprint(actual)
+    if not exp or not act:
+        return False
+    if exp == act:
+        return True
+    min_prefix = 12
+    return (
+        len(exp) >= min_prefix
+        and len(act) >= min_prefix
+        and (exp.startswith(act) or act.startswith(exp))
+    )
+
+
+def _active_scorer_metadata(ctx: InferenceContext) -> dict:
+    scorer = getattr(ctx, "_panel_scorer", None)
+    return dict(getattr(scorer, "metadata", {}) or {})
+
+
+def _assert_calibrator_matches_scorer(
+    ctx: InferenceContext,
+    calibrator: Any,
+    artifact_path: Path,
+    *,
+    strict: bool,
+) -> None:
+    """Fail fast when a calibrator was fit to a different panel scorer.
+
+    Invariant: calibrated rank_score / expected_return may only be produced by
+    the scorer distribution the calibrator was fitted on. Otherwise Kelly/QP
+    sees a shifted μ surface and a sim can report plausible but invalid APY.
+    """
+    if not strict:
+        return
+    scorer_meta = _active_scorer_metadata(ctx)
+    if not scorer_meta:
+        log.info(
+            "LoadGlobalCalibrationTask: no active scorer metadata present; "
+            "skipping scorer/calibrator contract for %s",
+            artifact_path,
+        )
+        return
+
+    active_fp = _fingerprint_value(scorer_meta)
+    cal_fp = _fingerprint_value(getattr(calibrator, "metadata", {}) or {})
+    if not active_fp or not cal_fp:
+        raise ValueError(
+            "LoadGlobalCalibrationTask contract fail: missing scorer/calibrator "
+            f"fingerprint for {artifact_path}. active={active_fp!r} "
+            f"calibrator={cal_fp!r}. Refit the calibrator with "
+            "scorer_artifact_fingerprint stamped."
+        )
+    if not _fingerprints_match(cal_fp, active_fp):
+        raise ValueError(
+            "LoadGlobalCalibrationTask contract fail: calibrator/scorer "
+            f"fingerprint mismatch for {artifact_path}. calibrator={cal_fp} "
+            f"active_scorer={active_fp}. Refusing to map panel_score to "
+            "rank_score/mu with a foreign calibration surface."
+        )
+
+
 class LoadGlobalCalibrationTask(Task):
     """Load the global panel calibrator artifact(s) if enabled.
 
@@ -886,6 +971,7 @@ class LoadGlobalCalibrationTask(Task):
                            .get("global_calibration", {}))
         if not gc_cfg.get("enabled", False):
             return
+        strict_match = bool(gc_cfg.get("strict_scorer_match", True))
 
         strategy_dir = ctx.config.get("_strategy_dir")
 
@@ -912,9 +998,15 @@ class LoadGlobalCalibrationTask(Task):
             else:
                 pooled_path = _resolve(Path(pooled_rel))
                 try:
-                    ctx._global_calibrator = GlobalPanelCalibration.load(pooled_path)  # noqa: SLF001
+                    loaded = GlobalPanelCalibration.load(pooled_path)
+                    _assert_calibrator_matches_scorer(
+                        ctx, loaded, pooled_path, strict=strict_match,
+                    )
+                    ctx._global_calibrator = loaded  # noqa: SLF001
                     log.info("LoadGlobalCalibrationTask: loaded pooled (pool_IC=%s)",
                              ctx._global_calibrator.metadata.get("pool_ic"))
+                except ValueError:
+                    raise
                 except Exception as exc:
                     log.warning("LoadGlobalCalibrationTask: pooled load %s failed — %s",
                                 pooled_path, exc)
@@ -937,7 +1029,13 @@ class LoadGlobalCalibrationTask(Task):
         for regime in regimes:
             p = _resolve(Path(pattern.format(regime=regime)))
             try:
-                loaded[regime] = GlobalPanelCalibration.load(p)
+                cal = GlobalPanelCalibration.load(p)
+                _assert_calibrator_matches_scorer(
+                    ctx, cal, p, strict=strict_match,
+                )
+                loaded[regime] = cal
+            except ValueError:
+                raise
             except Exception as exc:
                 log.info("LoadGlobalCalibrationTask: regime=%s artifact %s "
                          "unavailable — pooled fallback (%s)",

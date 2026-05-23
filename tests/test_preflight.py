@@ -159,6 +159,30 @@ class TestCheckPanelArtifactContract:
         assert not r.ok and r.severity == "hard"
         assert "summary sidecar missing" in r.message
 
+    def test_strict_hf_patchtst_requires_config_fingerprint(self, tmp_path):
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        (art_dir / "hf_patchtst_all_seed44_model.pt").write_bytes(b"\x80PT")
+        (art_dir / "hf_patchtst_all_seed44_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "cut": "all",
+            "seed": 44,
+            "best_val_ic": 0.0657,
+            "n_features": 172,
+        }))
+        cfg = {
+            "preflight": {"artifact_contract": {"strict": True}},
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/hf_patchtst_all_seed44_model.pt",
+            }},
+        }
+
+        r = _check_panel_artifact_contract(cfg, tmp_path)
+
+        assert not r.ok and r.severity == "hard"
+        assert "config_fingerprint missing" in r.message
+
 
 # ── P-WF-GATE ────────────────────────────────────────────────────────────────
 
@@ -386,11 +410,60 @@ class TestCheckWatchlist:
         }
         (tmp_path / "artifacts").mkdir()
         (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "best_val_ic": 0.03,
+            "n_features": 172,
+        }))
 
         r = _check_watchlist_size(cfg, tmp_path)
 
         assert r.ok and r.severity == "soft"
         assert "sequence artifact" in r.message
+
+    def test_sequence_artifact_checks_stamped_watchlist(self, tmp_path):
+        cfg = {
+            "watchlist": ["AAPL", "MSFT"],
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/patch_model.pt",
+            }},
+        }
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint_fields": {"watchlist": ["AAPL", "MSFT"]},
+        }))
+
+        r = _check_watchlist_size(cfg, tmp_path)
+
+        assert r.ok and r.severity == "hard"
+        assert "watchlist match" in r.message
+
+    def test_sequence_artifact_fails_stamped_watchlist_mismatch(self, tmp_path):
+        cfg = {
+            "watchlist": ["AAPL", "MSFT", "NVDA"],
+            "ranking": {"panel_scoring": {
+                "kind": "hf_patchtst",
+                "artifact_path": "artifacts/patch_model.pt",
+            }},
+        }
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/patch_model.pt").write_bytes(b"checkpoint")
+        (tmp_path / "artifacts/patch_summary.json").write_text(json.dumps({
+            "arch": "hf_patchtst",
+            "best_val_ic": 0.03,
+            "n_features": 172,
+            "config_fingerprint_fields": {"watchlist": ["AAPL", "MSFT"]},
+        }))
+
+        r = _check_watchlist_size(cfg, tmp_path)
+
+        assert not r.ok and r.severity == "hard"
+        assert "NVDA" in r.message
 
 
 # ── P-SECTOR-MAP ───────────────────────────────────────────────────────────

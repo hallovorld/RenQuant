@@ -103,16 +103,17 @@ class TestSourceContracts:
         assert "val_preds.parquet" in src
 
     def test_loc_budget(self):
-        """HF Trainer wrapper + dual head + FiLM + artifact contract: 660 LOC.
+        """HF Trainer wrapper + dual head + FiLM + artifact contract: 720 LOC.
 
         Trajectory: 350 (pre-refactor) → 450 (HF Trainer + dual head + per-
-        regime callback) → 550 (+ FiLM Pillar B) → 660 (train-fit
-        preprocessing + model contract stamp). All additions are config flags /
-        canonical-lib glue / audit metadata, not custom training infrastructure."""
+        regime callback) → 550 (+ FiLM Pillar B) → 720 (train-fit
+        preprocessing + config/model contract stamps). All additions are config
+        flags / canonical-lib glue / audit metadata, not custom training
+        infrastructure."""
         src = SCRIPT.read_text()
         loc = sum(1 for line in src.splitlines()
                   if line.strip() and not line.strip().startswith("#"))
-        assert loc <= 660, f"wrapper grew to {loc} LOC — too thick"
+        assert loc <= 720, f"wrapper grew to {loc} LOC — too thick"
 
     def test_film_layer_class_exported(self):
         """FiLM (Perez 2017) regime conditioning module — Pillar B foundation."""
@@ -353,6 +354,38 @@ class TestPreprocessing:
         assert contract["hyperparameters"]["weight_decay"] == 0.3
         assert contract["preprocessing"]["label_winsor"]["fit_split"] == "train"
         assert contract["selection"]["metric_for_best_model"] == "eval_min_regime_ic"
+
+    def test_config_contract_stamps_fingerprint_and_watchlist(self, tmp_path):
+        import argparse
+        import json
+        mod = _load_mod()
+        cfg_path = tmp_path / "strategy_config.shadow.json"
+        cfg = {
+            "watchlist": ["AAPL", "MSFT", "NVDA"],
+            "benchmark": "SPY",
+            "panel_ltr": {
+                "lookahead_days": 60,
+                "xgb_params": {"objective": "rank:pairwise"},
+                "asset_embeddings": {"enabled": False},
+            },
+            "sector_map": {
+                "AAPL": "giant_tech",
+                "MSFT": "giant_tech",
+                "NVDA": "ai_chip",
+            },
+            "sector_etf_map": {"giant_tech": "XLK", "ai_chip": "XLK"},
+        }
+        cfg_path.write_text(json.dumps(cfg))
+
+        contract = mod.build_config_contract(
+            argparse.Namespace(strategy_config=str(cfg_path))
+        )
+
+        assert contract["config_fingerprint"].startswith("sha256:")
+        assert contract["trained_watchlist_n"] == 3
+        assert contract["config_fingerprint_fields"]["watchlist"] == [
+            "AAPL", "MSFT", "NVDA",
+        ]
 
 
 # ─── FiLM regime conditioning ───────────────────────────────────────────────

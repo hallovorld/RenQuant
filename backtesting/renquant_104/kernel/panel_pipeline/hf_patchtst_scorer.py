@@ -25,6 +25,8 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 import numpy as np
 import pandas as pd
 
+from kernel.panel_pipeline.panel_scorer import stamp_artifact_metadata
+
 log = logging.getLogger("kernel.panel_pipeline.hf_patchtst_scorer")
 
 
@@ -90,16 +92,48 @@ class HFPatchTSTPanelScorer:
                  "val_ic=%.4f dist_head=%s",
                  len(ckpt["feature_cols"]), ckpt["seq_len"],
                  float(ckpt.get("best_val_ic", float("nan"))), uses_dist)
-        return cls(model=model, feature_cols=ckpt["feature_cols"],
-                   seq_len=ckpt["seq_len"],
-                   metadata={
+        contract = ckpt.get("training_contract", {}) or {}
+        metadata = stamp_artifact_metadata({
                        "val_ic": float(ckpt.get("best_val_ic", float("nan"))),
                        "uses_distributional_head": uses_dist,
                        "uses_csranknorm": ckpt.get(
                            "uses_csranknorm_preprocessing", False),
                        "label_col": ckpt.get("label_col"),
+                       "trained_date": (
+                           ckpt.get("trained_date")
+                           or contract.get("trained_date")
+                       ),
+                       "effective_train_cutoff_date": (
+                           ckpt.get("effective_train_cutoff_date")
+                           or contract.get("effective_train_cutoff_date")
+                       ),
+                       "lookahead_days": (
+                           ckpt.get("lookahead_days")
+                           or contract.get("lookahead_days")
+                       ),
+                       "config_fingerprint": (
+                           ckpt.get("config_fingerprint")
+                           or (contract.get("config_contract", {}) or {}).get(
+                               "config_fingerprint"
+                           )
+                       ),
+                       "config_fingerprint_fields": (
+                           ckpt.get("config_fingerprint_fields")
+                           or (contract.get("config_contract", {}) or {}).get(
+                               "config_fingerprint_fields"
+                           )
+                       ),
+                       "trained_watchlist_n": (
+                           ckpt.get("trained_watchlist_n")
+                           or (contract.get("config_contract", {}) or {}).get(
+                               "trained_watchlist_n"
+                           )
+                       ),
+                       "training_contract": contract,
                        "per_regime_ic": ckpt.get("per_regime_ic", {}),
-                   })
+                   }, path)
+        return cls(model=model, feature_cols=ckpt["feature_cols"],
+                   seq_len=ckpt["seq_len"], metadata=metadata)
 
     def score_with_history(self, panel_history: pd.DataFrame,
                             target_tickers: list[str]) -> pd.Series:

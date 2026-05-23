@@ -165,12 +165,20 @@ class TestLoadRegimeCalibrators:
             holdings={},
         )
 
-    def _write_calibrator(self, path: Path, regime: str | None):
+    def _write_calibrator(
+        self,
+        path: Path,
+        regime: str | None,
+        scorer_fp: str | None = None,
+    ):
         # Minimal valid artifact — 2 knots
+        metadata = {"n_rows": 500, "regime": regime} if regime else {"n_rows": 500}
+        if scorer_fp:
+            metadata["scorer_artifact_fingerprint"] = scorer_fp
         cal = GlobalPanelCalibration(
             prob_x=np.array([-1.0, 1.0]), prob_y=np.array([0.1, 0.9]),
             er_x=np.array([-1.0, 1.0]), er_y=np.array([-0.01, 0.01]),
-            metadata={"n_rows": 500, "regime": regime} if regime else {"n_rows": 500},
+            metadata=metadata,
         )
         cal.save(path)
 
@@ -211,6 +219,74 @@ class TestLoadRegimeCalibrators:
         LoadGlobalCalibrationTask().run(ctx)
         assert ctx._global_calibrator is not None
         assert getattr(ctx, "_regime_calibrators", None) in (None, {})
+
+    def test_strict_contract_rejects_foreign_calibrator(self, tmp_path):
+        """A scorer must not silently consume another model's calibrator."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        self._write_calibrator(
+            art_dir / "panel-rank-calibration.json",
+            None,
+            scorer_fp="sha256:foreign000000",
+        )
+
+        ctx = self._make_ctx(tmp_path, regime_enabled=False)
+        ctx._panel_scorer = SimpleNamespace(
+            metadata={"artifact_fingerprint": "sha256:active111111"}
+        )
+        with pytest.raises(ValueError, match="fingerprint mismatch"):
+            LoadGlobalCalibrationTask().run(ctx)
+
+    def test_strict_contract_accepts_short_config_fingerprint(self, tmp_path):
+        """Historical production artifacts stamp short config sha prefixes."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        full_fp = "sha256:abcdef1234567890deadbeef"
+        short_fp = "sha256:abcdef1234567890"
+        self._write_calibrator(
+            art_dir / "panel-rank-calibration.json",
+            None,
+            scorer_fp=short_fp,
+        )
+
+        ctx = self._make_ctx(tmp_path, regime_enabled=False)
+        ctx._panel_scorer = SimpleNamespace(
+            metadata={"artifact_fingerprint": full_fp}
+        )
+        LoadGlobalCalibrationTask().run(ctx)
+        assert ctx._global_calibrator is not None
+
+    def test_strict_contract_rejects_missing_calibrator_fingerprint(self, tmp_path):
+        """A newly fitted calibrator must carry scorer_artifact_fingerprint."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        self._write_calibrator(art_dir / "panel-rank-calibration.json", None)
+
+        ctx = self._make_ctx(tmp_path, regime_enabled=False)
+        ctx._panel_scorer = SimpleNamespace(
+            metadata={"artifact_fingerprint": "sha256:active111111"}
+        )
+        with pytest.raises(ValueError, match="missing scorer/calibrator fingerprint"):
+            LoadGlobalCalibrationTask().run(ctx)
+
+    def test_artifact_fingerprint_is_file_identity_not_config_identity(self, tmp_path):
+        """A calibrator must bind to the exact scorer file, not merely any
+        model trained under the same strategy_config fingerprint."""
+        from kernel.panel_pipeline.panel_scorer import stamp_artifact_metadata
+        p = tmp_path / "scorer.json"
+        p.write_text("scorer-v1")
+
+        meta = stamp_artifact_metadata(
+            {"config_fingerprint": "sha256:config000000000000"},
+            p,
+        )
+
+        assert meta["config_fingerprint"] == "sha256:config000000000000"
+        assert meta["artifact_fingerprint"] == meta["artifact_sha256"]
+        assert meta["artifact_fingerprint"] != meta["config_fingerprint"]
 
 
 # ── ApplyGlobalCalibrationTask dispatch ──────────────────────────────────────

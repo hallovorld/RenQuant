@@ -905,7 +905,41 @@ def record_trades(
             "kelly_target_pct", "expected_return", "confidence", "regime",
         )
         fallback = {k: t.get(k) for k in keys if k in t and t.get(k) is not None}
-        return fallback or None
+        if fallback:
+            return fallback
+        if t.get("ticker") or t.get("action"):
+            return {
+                "attribution_missing": True,
+                "ticker": t.get("ticker"),
+                "action": t.get("action"),
+            }
+        return None
+
+    def _decision_inputs_or_none(t: dict) -> dict[str, Any] | None:
+        raw = t.get("decision_inputs")
+        if isinstance(raw, dict) and raw:
+            return raw
+        fallback = {
+            k: t.get(k)
+            for k in (
+                "ticker", "action", "order_type", "order_source",
+                "source_job", "source_task", "exit_reason", "target_pct",
+                "shares", "price", "invest",
+            )
+            if t.get(k) is not None
+        }
+        if fallback:
+            fallback.setdefault(
+                "acceptance_reason",
+                t.get("exit_reason")
+                or t.get("order_source")
+                or t.get("order_type")
+                or "recorded_trade",
+            )
+            if raw == {}:
+                fallback["attribution_missing"] = True
+            return fallback
+        return None
 
     rows = []
     for t in trade_events:
@@ -934,7 +968,7 @@ def record_trades(
             t.get("order_source"),
             t.get("attribution_version"),
             _json_or_none(_score_snapshot_or_none(t)),
-            _json_or_none(t.get("decision_inputs")),
+            _json_or_none(_decision_inputs_or_none(t)),
         ))
     if rows:
         conn.executemany(
@@ -1271,6 +1305,53 @@ def record_ticker_daily_state(
     return len(payload)
 
 
+def decision_trace_integrity_report(
+    conn: sqlite3.Connection | None,
+    run_id: str,
+    *,
+    expected_watchlist: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Return per-run decision-trace invariant counts for audit gates."""
+    if conn is None:
+        return {}
+    expected = {str(t) for t in (expected_watchlist or [])}
+    rows = conn.execute(
+        "SELECT ticker FROM ticker_daily_state WHERE run_id = ?",
+        (run_id,),
+    ).fetchall()
+    recorded = {str(r[0]) for r in rows}
+    selected_blockers = conn.execute(
+        """SELECT COUNT(*) FROM ticker_daily_state
+           WHERE run_id = ? AND selected = 1 AND blocked_by IS NOT NULL""",
+        (run_id,),
+    ).fetchone()[0]
+    trade_payload_gaps = conn.execute(
+        """SELECT COUNT(*) FROM trades
+           WHERE run_id = ?
+             AND (
+               score_snapshot_json IS NULL
+               OR decision_inputs_json IS NULL
+               OR score_snapshot_json IN ('{}', 'null')
+               OR decision_inputs_json IN ('{}', 'null')
+             )""",
+        (run_id,),
+    ).fetchone()[0]
+    return {
+        "run_id": run_id,
+        "ticker_daily_state_rows": len(recorded),
+        "expected_watchlist_rows": len(expected) if expected else None,
+        "missing_watchlist_tickers": sorted(expected - recorded),
+        "extra_tickers": sorted(recorded - expected) if expected else [],
+        "selected_blocked_rows": int(selected_blockers or 0),
+        "trade_payload_gaps": int(trade_payload_gaps or 0),
+        "ok": (
+            (not expected or recorded == expected)
+            and int(selected_blockers or 0) == 0
+            and int(trade_payload_gaps or 0) == 0
+        ),
+    }
+
+
 def record_forward_returns(
     conn: sqlite3.Connection | None,
     rows: Iterable[dict],
@@ -1475,5 +1556,6 @@ __all__ = [
     "load_latest_live_state",
     "record_portfolio_metrics",
     "record_ticker_daily_state",
+    "decision_trace_integrity_report",
     "lookup_candidate_scores_on_date",
 ]
