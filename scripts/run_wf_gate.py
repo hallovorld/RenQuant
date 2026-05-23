@@ -735,6 +735,10 @@ def main():
     ap.add_argument("--skip-config-parity", action="store_true",
                     help="Skip prod/WF decision-semantics parity guard. "
                          "Use only for explicitly exploratory runs.")
+    ap.add_argument("--derive-config-from-prod", action="store_true",
+                    help="Before running, derive a production-semantic WF "
+                         "config from --strategy-config. The base config only "
+                         "contributes walkforward/calibration artifact paths.")
     args = ap.parse_args()
 
     artifact_path = Path(args.artifact)
@@ -748,6 +752,38 @@ def main():
     log.info("Walk-forward + Sanity gate runner — gate v%d", GATE_VERSION)
     log.info("Artifact: %s  (kind=%s)", artifact_path, artifact.get("kind"))
     log.info("=" * 60)
+
+    if args.derive_config_from_prod:
+        from wf_config_builder import build_wf_config_from_prod  # noqa: PLC0415
+
+        base_cfg_path = STRATEGY_DIR / args.strategy_config
+        if not base_cfg_path.exists():
+            log.error("base strategy config not found: %s", base_cfg_path)
+            sys.exit(2)
+        prod_cfg_path = STRATEGY_DIR / "strategy_config.json"
+        prod_cfg = json.loads(prod_cfg_path.read_text())
+        base_cfg = json.loads(base_cfg_path.read_text())
+        manifest_path = ((base_cfg.get("walkforward") or {}).get("manifest_path"))
+        if not manifest_path:
+            log.error(
+                "--derive-config-from-prod requires base config with "
+                "walkforward.manifest_path: %s",
+                base_cfg_path,
+            )
+            sys.exit(2)
+        derived_dir = STRATEGY_DIR / "artifacts" / "diagnostics" / "wf_eval_configs"
+        derived_dir.mkdir(parents=True, exist_ok=True)
+        derived_name = f"{Path(args.strategy_config).stem}.prod_semantic.json"
+        derived_path = derived_dir / derived_name
+        derived_cfg = build_wf_config_from_prod(
+            prod_cfg,
+            manifest_path=str(manifest_path),
+            base_wf_config=base_cfg,
+            strategy_dir=STRATEGY_DIR,
+        )
+        derived_path.write_text(json.dumps(derived_cfg, indent=2, sort_keys=False) + "\n")
+        args.strategy_config = str(derived_path.relative_to(STRATEGY_DIR))
+        log.info("Derived production-semantic WF config: %s", derived_path)
 
     artifact_usage = inspect_artifact_usage(args.strategy_config, artifact_path)
     log.info("Artifact usage: %s", artifact_usage)

@@ -106,6 +106,13 @@ def test_wf_gate_has_recipe_fingerprint_contract() -> None:
     assert "missing_features_vs_candidate" in src
 
 
+def test_wf_gate_can_derive_prod_semantic_config() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert '"--derive-config-from-prod"' in src
+    assert "build_wf_config_from_prod" in src
+    assert "wf_eval_configs" in src
+
+
 def test_run_sim_disables_live_freshness_by_default_for_historical_sims() -> None:
     src = (REPO / "scripts/run_sim_104.py").read_text()
     assert 'data_freshness["enabled"] = False' in src
