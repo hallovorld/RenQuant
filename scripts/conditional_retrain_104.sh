@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # conditional_retrain_104.sh — if SPY or VIX shows a daily anomaly,
-# trigger an immediate retrain of renquant_104 BEFORE the regular
-# 13:55 PT daily_104.sh pass. Otherwise exit quietly.
+# trigger the weekly WF trust-boundary chain immediately. Otherwise exit
+# quietly. The anomaly path must not call legacy train_104.py directly.
 #
 # Schedule via launchd at 13:10 PT (45 min ahead of daily_104.sh).
 #
@@ -12,7 +12,8 @@
 set -uo pipefail
 
 REPO_DIR="/Users/renhao/git/github/RenQuant"
-PYTHON="/Users/renhao/miniconda3/envs/renquant/bin/python"
+VENV_DIR="$REPO_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
 LOG_DIR="$REPO_DIR/logs/conditional_retrain_104"
 NTFY_TOPIC="renquant"
 mkdir -p "$LOG_DIR"
@@ -61,14 +62,14 @@ if [ -z "$TRIGGER" ]; then
     TRIGGER="anomaly_unknown"
 fi
 
-echo "=== Firing retrain: trigger=$TRIGGER ==="
-notify "RenQuant 104 retrain fired" "Trigger: $TRIGGER"
+echo "=== Firing gated weekly promote chain: trigger=$TRIGGER ==="
+notify "RenQuant 104 WF promote fired" "Trigger: $TRIGGER"
 
-if "$PYTHON" scripts/train_104.py --strategy renquant_104 --force --trigger "$TRIGGER"; then
-    echo "=== Retrain complete ($TRIGGER) at $(date) ==="
-    notify "RenQuant 104 retrain OK" "Anomaly retrain done: $TRIGGER"
+if RENQUANT_WEEKLY_TRIGGER="$TRIGGER" bash scripts/weekly_wf_promote.sh; then
+    echo "=== Gated WF promote chain complete ($TRIGGER) at $(date) ==="
+    notify "RenQuant 104 WF promote OK" "Anomaly-gated chain done: $TRIGGER"
 else
-    echo "=== Retrain FAILED ($TRIGGER) at $(date) ==="
-    notify "RenQuant 104 retrain ERROR" "Anomaly retrain failed: $TRIGGER"
+    echo "=== Gated WF promote chain FAILED ($TRIGGER) at $(date) ==="
+    notify "RenQuant 104 WF promote ERROR" "Anomaly-gated chain failed: $TRIGGER"
     exit 1
 fi

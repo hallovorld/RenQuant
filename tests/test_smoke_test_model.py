@@ -262,3 +262,17 @@ class TestWeeklyShellInvariants:
         assert '--artifact "$STAGING_ART"' in weekly
         assert "bash scripts/daily_retrain_alpha158_fund.sh;" not in weekly
         assert "bash scripts/daily_retrain_alpha158_fund.sh; then" not in weekly
+
+
+class TestConditionalRetrainInvariants:
+    def test_conditional_retrain_delegates_to_weekly_trust_boundary(self):
+        src = (REPO / "scripts" / "conditional_retrain_104.sh").read_text()
+        non_comment = "\n".join(
+            line for line in src.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "CONDA_PREFIX" not in non_comment
+        assert "miniconda" not in non_comment
+        assert 'VENV_DIR="$REPO_DIR/.venv"' in src
+        assert "scripts/train_104.py" not in non_comment
+        assert "scripts/weekly_wf_promote.sh" in non_comment
