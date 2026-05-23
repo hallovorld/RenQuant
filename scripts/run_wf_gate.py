@@ -18,8 +18,8 @@ re-running).
 Walk-forward criteria (default):
   - 3-cut walk-forward over 27 months
   - Cuts: 2024-01→12, 2024-07→2025-06, 2025-04→2026-03
-  - Pass: mean Sharpe ≥ 0.40 AND ≥ 2/3 cuts have Sharpe > 0
-  - Fail: mean Sharpe < 0 OR all cuts negative
+  - Pass: absolute Sharpe floor AND SPY-relative benchmark floor
+  - Fail: positive absolute Sharpe that still lags SPY is benchmark-blind
 
 §5.2 sanity criteria (default):
   - shuffled-label IC: |IC| < 0.005 (model on shuffled labels should be ~0)
@@ -318,6 +318,80 @@ def _sum_trade_summary(rows: list[dict], key: str) -> int:
     return int(sum(int((row.get("trade_trace_summary") or {}).get(key) or 0) for row in rows))
 
 
+def _benchmark_by_dominant_regime(rows: list[dict]) -> dict[str, dict]:
+    """Summarize WF cuts by dominant benchmark regime before pooled metrics.
+
+    CLAUDE.md's prime directive is regime-conditional evaluation. With only
+    three WF cuts this is a coarse cut-level lens, not a promotion statistic,
+    but it prevents a pooled Sharpe from hiding "positive but benchmark-losing"
+    behavior in the regime where the trades actually occurred.
+    """
+    import statistics as _s
+
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        regime = (
+            row.get("dominant_spy_grid_regime")
+            or row.get("dominant_hmm_regime")
+            or "UNKNOWN"
+        )
+        grouped.setdefault(str(regime), []).append(row)
+
+    out: dict[str, dict] = {}
+    for regime, group in grouped.items():
+        sharpes = [_finite_number(r.get("sharpe")) for r in group]
+        apys = [_finite_number(r.get("apy")) for r in group]
+        spy_sharpes = [
+            _finite_number((r.get("market_context") or {}).get("spy_sharpe"))
+            for r in group
+        ]
+        spy_apys = [
+            _finite_number((r.get("market_context") or {}).get("spy_apy"))
+            for r in group
+        ]
+        sharpe_deltas = [
+            _finite_number(r.get("sharpe_vs_spy"))
+            if _finite_number(r.get("sharpe_vs_spy")) is not None
+            else (
+                s - spy_s
+                if s is not None and spy_s is not None
+                else None
+            )
+            for r, s, spy_s in zip(group, sharpes, spy_sharpes)
+        ]
+        apy_deltas = [
+            _finite_number(r.get("apy_vs_spy"))
+            if _finite_number(r.get("apy_vs_spy")) is not None
+            else (
+                a - spy_a
+                if a is not None and spy_a is not None
+                else None
+            )
+            for r, a, spy_a in zip(group, apys, spy_apys)
+        ]
+
+        def mean(vals: list[float | None]) -> float:
+            finite = [float(v) for v in vals if v is not None]
+            return float(_s.mean(finite)) if finite else float("nan")
+
+        out[regime] = {
+            "n_cuts": int(len(group)),
+            "mean_sharpe": mean(sharpes),
+            "mean_spy_sharpe": mean(spy_sharpes),
+            "mean_sharpe_vs_spy": mean(sharpe_deltas),
+            "mean_apy": mean(apys),
+            "mean_spy_apy": mean(spy_apys),
+            "mean_apy_vs_spy": mean(apy_deltas),
+            "n_beat_spy_sharpe": int(sum(
+                1 for d in sharpe_deltas if d is not None and d > 0
+            )),
+            "n_beat_spy_apy": int(sum(
+                1 for d in apy_deltas if d is not None and d > 0
+            )),
+        }
+    return out
+
+
 def _trade_trace_summary(traces: dict[str, str]) -> dict:
     """Summarize production decision regimes from the persisted trade trace.
 
@@ -536,12 +610,38 @@ def run_walk_forward(
         and _finite_number((r.get("market_context") or {}).get("spy_apy")) is not None
         and float(r["apy"]) > float((r.get("market_context") or {})["spy_apy"])
     )
-    pass_sharpe = mean_sharpe >= 0.40 and n_pos >= 2
+    benchmark_by_regime = _benchmark_by_dominant_regime(results)
+    regime_benchmark_failures = [
+        regime
+        for regime, stats in benchmark_by_regime.items()
+        if (
+            math.isfinite(float(stats.get("mean_sharpe_vs_spy", float("nan"))))
+            and float(stats["mean_sharpe_vs_spy"]) < 0
+        )
+        or (
+            math.isfinite(float(stats.get("mean_apy_vs_spy", float("nan"))))
+            and float(stats["mean_apy_vs_spy"]) < 0
+        )
+    ]
+    has_spy_sharpe = len(spy_sharpes) == len(results)
+    has_spy_apy = len(spy_apys) == len(results)
+    absolute_ok = mean_sharpe >= 0.40 and n_pos >= 2
+    benchmark_ok = (
+        (not has_spy_sharpe or (mean_sharpe_vs_spy >= 0 and n_beat_spy_sharpe >= 2))
+        and (not has_spy_apy or (mean_apy_vs_spy >= 0 and n_beat_spy_apy >= 2))
+    )
+    regime_ok = not regime_benchmark_failures
+    pass_sharpe = bool(absolute_ok and benchmark_ok and regime_ok)
     benchmark_suffix = (
         f"; SPY mean Sharpe {mean_spy_sharpe:+.3f}, "
         f"ΔSharpe {mean_sharpe_vs_spy:+.3f}, "
-        f"beat SPY Sharpe {n_beat_spy_sharpe}/3"
+        f"beat SPY Sharpe {n_beat_spy_sharpe}/3, "
+        f"beat SPY APY {n_beat_spy_apy}/3"
         if math.isfinite(mean_spy_sharpe) else ""
+    )
+    regime_suffix = (
+        f"; benchmark-lag regimes={regime_benchmark_failures}"
+        if regime_benchmark_failures else ""
     )
     return {
         "passed": pass_sharpe,
@@ -554,6 +654,8 @@ def run_walk_forward(
         "strategy_minus_spy_apy_mean": float(mean_apy_vs_spy),
         "n_cuts_beat_spy_sharpe": int(n_beat_spy_sharpe),
         "n_cuts_beat_spy_apy": int(n_beat_spy_apy),
+        "benchmark_by_dominant_regime": benchmark_by_regime,
+        "regime_benchmark_failures": regime_benchmark_failures,
         "hmm_regime_counts_total": _merge_counts(results, "hmm_regime_counts"),
         "spy_grid_regime_counts_total": _merge_counts(results, "spy_grid_regime_counts"),
         "trade_buy_regime_counts_total": _merge_trade_counts(results, "buy_regime_counts"),
@@ -566,11 +668,12 @@ def run_walk_forward(
         "wf_jobs": jobs,
         "cuts": results,
         "reason": (
-            f"PASS: mean Sharpe {mean_sharpe:+.3f} ≥ 0.40 and {n_pos}/3 cuts > 0"
-            f"{benchmark_suffix}"
+            f"PASS: absolute Sharpe floor met and SPY benchmark met"
+            f"{benchmark_suffix}{regime_suffix}"
             if pass_sharpe else
-            f"FAIL: mean Sharpe {mean_sharpe:+.3f} or only {n_pos}/3 cuts > 0"
-            f"{benchmark_suffix}"
+            f"FAIL: absolute_ok={absolute_ok}, benchmark_ok={benchmark_ok}, "
+            f"regime_ok={regime_ok}; mean Sharpe {mean_sharpe:+.3f}, "
+            f"{n_pos}/3 cuts > 0{benchmark_suffix}{regime_suffix}"
         ),
     }
 

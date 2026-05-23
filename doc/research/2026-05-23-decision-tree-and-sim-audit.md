@@ -218,6 +218,12 @@ Code fix from this finding:
    resolving static Gate B τ through `regime_params` first, with global fallback
    only for unset regimes.
 
+5. Walk-forward acceptance still used pooled absolute Sharpe as the final pass
+   criterion, even though the report already computed SPY context. Fixed by
+   requiring SPY-relative Sharpe/APY evidence and emitting
+   `benchmark_by_dominant_regime` plus `regime_benchmark_failures`, so a
+   positive-Sharpe model that loses to SPY in every cut cannot be stamped pass.
+
 ## Not Yet Scientifically Solved
 
 1. Trade-level score quality is not adequate. Entry `rank_score` and μ do not

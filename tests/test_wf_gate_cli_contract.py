@@ -128,6 +128,50 @@ def test_wf_gate_trade_trace_summary_uses_production_decision_regimes(tmp_path) 
     assert summary["buy_missing_sigma"] == 1
 
 
+def test_wf_gate_rejects_positive_sharpe_when_all_cuts_lag_spy(monkeypatch) -> None:
+    """Absolute Sharpe is not enough; WF acceptance must compare to SPY.
+
+    Pre-fix, three cuts with Sharpe=+0.60 passed because mean Sharpe >= 0.40
+    and all cuts were positive, even though each cut lost to SPY. That is the
+    exact benchmark-blind failure mode the 2026-05-23 audit surfaced.
+    """
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    fake_rows = [
+        {
+            "start": start,
+            "end": end,
+            "sharpe": 0.60,
+            "apy": 0.08,
+            "returncode": 0,
+            "dominant_spy_grid_regime": "BULL_CALM",
+            "market_context": {"spy_sharpe": 0.90, "spy_apy": 0.18},
+            "trade_trace_summary": {"buy_regime_counts": {"BULL_CALM": 1}},
+        }
+        for start, end in mod.CUTS
+    ]
+
+    def fake_run_sim_cut(strategy_config, start, end, trace_dir=None):
+        del strategy_config, trace_dir
+        for row in fake_rows:
+            if row["start"] == start and row["end"] == end:
+                return dict(row)
+        raise AssertionError((start, end))
+
+    monkeypatch.setattr(mod, "run_sim_cut", fake_run_sim_cut)
+
+    result = mod.run_walk_forward("unit_config.json", jobs=1)
+
+    assert result["wf_3cut_sharpe_mean"] == 0.60
+    assert result["n_positive_cuts"] == 3
+    assert result["n_cuts_beat_spy_sharpe"] == 0
+    assert result["passed"] is False
+    assert result["benchmark_by_dominant_regime"]["BULL_CALM"]["n_cuts"] == 3
+    assert result["regime_benchmark_failures"] == ["BULL_CALM"]
+    assert "SPY" in result["reason"]
+
+
 def test_wf_gate_refuses_to_stamp_manifest_as_candidate_artifact() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "inspect_artifact_usage" in src
