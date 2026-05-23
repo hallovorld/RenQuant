@@ -1,10 +1,10 @@
 # RenQuant Cadence — Single Source of Truth
 
-**Last updated:** 2026-05-20 (HF Trainer refactor + isotonic→Platt + walk-forward gate enforcement landed). Authoritative table of every scheduled or event-triggered job in the system.
+**Last updated:** 2026-05-23 (weekly staging hardening + point-in-time WF eval paths). Authoritative table of every scheduled or event-triggered job in the system.
 
-> **Broker mode** (2026-05-11 safety mandate + 2026-05-17 e2e override):
-> - All cron schedules use `--broker alpaca-paper` (paper API, real Alpaca endpoints, no real money)
-> - Explicit operator `--broker alpaca` = LIVE Alpaca account (real money)
+> **Broker mode** (2026-05-11 safety mandate + live-account operator override):
+> - `scripts/daily_104.sh` currently runs `--broker alpaca` by operator mandate, so it can submit LIVE orders when buy-side preflight passes.
+> - `--broker alpaca-paper` remains the paper API mode (real Alpaca endpoints, no real money) for manual safety testing.
 > - `.env` holds LIVE credentials; paper-API calls 401
 
 ## Why this doc exists
@@ -41,7 +41,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 5. Backfill forward returns + recompute portfolio metrics (broker-tagged DB)
 6. Run `live.runner --strategy renquant_104 --broker alpaca --once`; if P-WF-GATE blocks full mode, rerun `--sell-only` so exits/risk controls still execute while new buys remain blocked
 7. Refresh `doc/dashboard.md`
-8. Run PatchTST shadow read-only e2e with a wall-clock timeout (`RENQUANT_SHADOW_TIMEOUT_SEC`, default 420s); timeout/failure is non-fatal after the primary path has completed
+8. Run PatchTST shadow read-only e2e with a wall-clock timeout (`RENQUANT_SHADOW_TIMEOUT_SEC`, default 1800s); timeout/failure is non-fatal after the primary path has completed
 
 ---
 
@@ -53,17 +53,17 @@ Every job below documents: **what it does, what files it touches, what alerts on
 | **Plist** | `scripts/launchd/com.renquant.weekly-wf-promote.plist` |
 | **Trigger** | Saturday 04:00 PT (07:00 ET, NYSE closed weekend) |
 | **Wallclock** | ~60-70 min on M4 Pro 14c (75-90 min on prior M2 Pro 10c) |
-| **Touches (mutates)** | `panel-ltr.alpha158_fund.json` (only on WF pass), `panel-rank-calibration.json` (refit), `data/sec_fundamentals_daily.parquet` (if `daily_retrain_alpha158_fund.sh` regenerates) |
+| **Touches (mutates)** | unique `*.weekly_<RUN_ID>.staging.json` scorer/calibrator first; active `panel-ltr.alpha158_fund.json` and `panel-rank-calibration.json` only after WF pass; `data/sec_fundamentals_daily.parquet` if the retrain wrapper regenerates inputs |
 | **Touches (read-only)** | training panel, OHLCV cache |
 | **Alert (success)** | "RenQuant 104 WEEKLY-PROMOTE ✓" with WF Sharpe + APY + sanity IC |
 | **Alert (failure)** | "RenQuant 104 WEEKLY-FAIL" — prior model preserved |
 
 **Steps:**
 1. Pre-flight smoke test (abort if model broken before 60-min commit)
-2. Daily retrain has STAGED panel-LTR + NGB head (per 2026-05-17 commit `96af42b` — removed `RQ_ALLOW_NO_WF=1` setdefault); weekly picks up the staging artifact
-3. `scripts/run_wf_gate.py --strict` — WF + §5.2 sanity (shuffled-label + time-shift placebo) + trade-ledger gates (`trade_contract`, `trade_monotonicity`)
-4. **`promote()` WITHOUT `RQ_ALLOW_NO_WF` override** — `_check_wf_gate` refuses if metadata missing or `passed=False`. Emergency shell-env `RQ_ALLOW_NO_WF=1` still works for manual one-off.
-5. Acceptance gates including per-backend best-by-OOS-IC + Sunday-sweep H1-H4 gates (commit `477b94c`)
+2. Retrain `daily_retrain_alpha158_fund.sh` into unique staging paths via `--xgb-artifact-out` + `--calibrator-out`; active production remains untouched.
+3. `scripts/run_wf_gate.py --derive-config-from-prod --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json --strict --jobs 3` — WF + §5.2 sanity + trade-ledger gates. The derived WF config keeps production decision semantics but inherits sim-scoped regime/correlation/calibration artifacts.
+4. Active swap only if staged scorer has `wf_gate_metadata.passed=True`; scorer and paired calibrator are copied through `.incoming.json` then `os.replace`.
+5. Emergency shell-env `RQ_ALLOW_NO_WF=1` remains confined to `scripts/manual_promote.sh`.
 6. Refresh dashboard
 7. ntfy with verdict
 

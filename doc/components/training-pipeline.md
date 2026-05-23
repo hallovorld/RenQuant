@@ -1,12 +1,12 @@
 # Model Training — Design + References
 
-**Last updated**: 2026-05-20 (HF Trainer refactor + FiLM + DLinear baseline + 172 features + Platt calibrator + NGB head promote + walk-forward gate enforcement)
+**Last updated**: 2026-05-23 (weekly unique staging + production-semantic WF config derivation)
 
 > **2026-05-20 update — training paths**:
 >
 > **1. Production XGBoost panel-LTR** (PRIMARY):
-> - `scripts/daily_retrain_alpha158_fund.sh` + `scripts/retrain_panel.sh` → STAGES `artifacts/prod/panel-ltr.alpha158_fund.json` (172 features = alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment)
-> - Daily retrain STAGES only (2026-05-17 commit `96af42b` removed `RQ_ALLOW_NO_WF=1` setdefault); weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) does actual promote with full 5-cut WF + sanity battery
+> - `scripts/daily_retrain_alpha158_fund.sh` is the wrapper for the alpha158+fund+sentiment retrain pipeline (172 features = alpha158 + 5 fund + 3 PEAD + 3 SUE + 3 sentiment).
+> - Weekly `weekly_wf_promote.sh` writes unique scorer/calibrator staging artifacts, runs the strict 3-cut WF + sanity + trade-ledger gate, and swaps active production only after `wf_gate_metadata.passed=True`.
 > - Label: `fwd_60d_excess` (60-day forward excess return), `lookahead_days=60`
 >
 > **2. NGBoost head** (PROMOTED 2026-05-17, σ-wire dormant):

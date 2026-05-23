@@ -23,7 +23,7 @@
 | Calibrator | Platt scaling (switched from isotonic 2026-05-18); pool_IC +0.094; `expected_return.y` clipped to [-0.20, +0.20] at train-site |
 | Regime detector | 5-day BEAR + vol-cluster CHOPPY (2026-05-17, commit `0a192c4`); HMM hysteresis sticky N=10 bars |
 | DDV | DISABLED globally 2026-05-17 per HXZ 2020 "Replicating Anomalies" (was vetoing META rank #1) |
-| Promote gate | Daily retrain STAGES only; weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) does promote with full WF + sanity (commit `96af42b` removed `RQ_ALLOW_NO_WF=1` setdefault) |
+| Promote gate | Weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) retrains into unique staging paths, runs strict WF + sanity + trade-ledger gates, then swaps scorer+calibrator only on `wf_gate_metadata.passed=True` |
 | Shadow model | HF PatchTST shadow registered 2026-05-19 (commits `cf6311c`, `4e156e2`); HF Trainer refactor + FiLM regime conditioning shipped same day |
 
 ---
@@ -34,7 +34,7 @@ Post Bug-C fix (commit `29e34b0` 2026-05-11) NAV invariant: `NAV ≡ free_cash +
 
 3-window post-fix baseline: **APY +11.6%, Sharpe 0.77, MaxDD 8.2%**. See `doc/research/2026-05-12-findings-and-next.md` for industry-grade 8-window paired evaluation; `doc/research/2026-05-14-longshort-clean-FINAL.md`, `2026-05-15-conditional-shorts-verdict.md`, `2026-05-16-regime-reeval-clean-verdicts.md` for subsequent regime-stratified verdicts.
 
-Walk-forward gate enforced via `weekly_wf_promote.sh` (commit `96af42b` removed daily `RQ_ALLOW_NO_WF=1` setdefault).
+Walk-forward gate enforced via `weekly_wf_promote.sh` (commit `96af42b` removed daily `RQ_ALLOW_NO_WF=1` setdefault; 2026-05-23 hardening keeps active production untouched until the staged artifact passes).
 
 ---
 
@@ -118,7 +118,7 @@ G10 sim Sharpe drop < 0.10                HARD
 G11 turnover ratio < 1.5x prior
 ```
 
-Plus walk-forward gate (ENFORCED 2026-05-17 commit `96af42b`): daily retrain STAGES only; weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) does the actual promote with full WF + sanity battery. Emergency shell-env `RQ_ALLOW_NO_WF=1` override still works.
+Plus walk-forward gate (ENFORCED 2026-05-17 commit `96af42b`): weekly `weekly_wf_promote.sh` (Saturday 04:00 PT) creates unique staging artifacts, derives a production-semantic WF config from current prod, and only swaps active scorer+calibrator after strict WF + sanity + trade-ledger gates pass. Emergency shell-env `RQ_ALLOW_NO_WF=1` override still works only through the manual promote path.
 
 ---
 

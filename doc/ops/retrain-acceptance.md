@@ -50,8 +50,8 @@ FullTrainingPipeline
 Walltime: ~60-70 min on M4 Pro 14c (was ~90-120 min on M2 Pro 10c). BaselineTournamentJob remains the bottleneck.
 
 **Daily vs Weekly distinction (2026-05-17 walk-forward gate enforcement, commit `96af42b`)**:
-- Daily retrain (Mon-Fri 14:00 PT via `daily_104.sh`): runs FullTrainingPipeline → STAGES the new artifact (DOES NOT promote)
-- Weekly walk-forward (Sat 04:00 PT via `weekly_wf_promote.sh`): picks up staged artifact → runs full WF gate (5 cuts) + §5.2 sanity battery → ACTUAL promote
+- Daily ops (Mon-Fri 14:00 PT via `daily_104.sh`): smoke/export/live/shadow only; no model promote path.
+- Weekly walk-forward (Sat 04:00 PT via `weekly_wf_promote.sh`): retrains into unique scorer/calibrator staging paths, runs the strict 3-cut WF gate + §5.2 sanity battery, then swaps active scorer+calibrator only when `wf_gate_metadata.passed=True`.
 - Removed `RQ_ALLOW_NO_WF=1` setdefault from `train_104.py`. Emergency shell-env override still works.
 
 ### Not retrained by this path (separate crons)
