@@ -1404,6 +1404,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         self._log_summary(
             n_blocked_buys=counters["blocked_buys"], buy_blocked=env["buy_blocked"],
             n_blocked_earnings=counters["blocked_earnings"], earn_buf=env["earn_buf"],
+            n_defensive_non_bear=counters["defensive_non_bear"],
             n_skipped_nonfinite=counters["skipped_nonfinite"],
             n_skipped_band=counters["skipped_band"], min_dw=env["min_dw"],
             no_trade_factor=env["no_trade_factor"],
@@ -1453,6 +1454,8 @@ class EmitOrdersFromQPSolutionTask(Task):
             # ceiling 15%. Disable by setting floor=0.0.
             min_share_floor_pct=float(cfg.get("qp_min_share_floor_pct", 0.05)),
             min_share_ceiling_pct=float(cfg.get("qp_min_share_ceiling_pct", 0.15)),
+            defensive_set=set((ctx.config or {}).get("defensive_tickers", []) or []),
+            bear_only=bool(getattr(ctx, "bear_only", False)),
         )
 
     @staticmethod
@@ -1496,7 +1499,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             if ticker in candidate_tickers:
                 blocked_map.setdefault(ticker, reason)
 
-        c = dict(blocked_buys=0, blocked_earnings=0,
+        c = dict(blocked_buys=0, blocked_earnings=0, defensive_non_bear=0,
                  skipped_nonfinite=0, skipped_band=0,
                  delta_below_min_dw=0, zero_shares=0,
                  no_buy_delta=0, not_selected=0,
@@ -1562,6 +1565,15 @@ class EmitOrdersFromQPSolutionTask(Task):
                         stamp(t, "qp_no_buy_delta")
                 continue
             if dw > 0:
+                if t in env["defensive_set"] and not env["bear_only"]:
+                    c["defensive_non_bear"] += 1
+                    stamp(t, "defensive_non_bear")
+                    log.info(
+                        "QP_BUY_SUPPRESSED %-6s defensive_non_bear "
+                        "(regime=%s)",
+                        t, getattr(ctx, "regime", None),
+                    )
+                    continue
                 blocked = _gate_buy_or_block(
                     t, dw, env["today"], env["earnings_cal"], env["earn_buf"],
                     env["buys_gated"],
@@ -1613,6 +1625,7 @@ class EmitOrdersFromQPSolutionTask(Task):
     @staticmethod
     def _log_summary(
         *, n_blocked_buys, buy_blocked, n_blocked_earnings, earn_buf,
+        n_defensive_non_bear,
         n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
         n_delta_below_min_dw, n_zero_shares, n_no_buy_delta, n_not_selected,
         n_cash_capped, n_cash_exhausted, n_soft_sell_blocked,
@@ -1628,6 +1641,12 @@ class EmitOrdersFromQPSolutionTask(Task):
             log.info(
                 "EmitOrdersFromQPSolutionTask: suppressed %d top-ups within "
                 "±%d earnings days", n_blocked_earnings, earn_buf,
+            )
+        if n_defensive_non_bear:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: suppressed %d defensive "
+                "QP buy/top-up(s) outside BEAR regime",
+                n_defensive_non_bear,
             )
         if n_skipped_nonfinite:
             log.warning(

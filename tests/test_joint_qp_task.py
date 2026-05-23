@@ -464,6 +464,71 @@ class TestQPCashBudget:
         assert ctx.counters["qp_cash_exhausted"] == 1
 
 
+class TestQPDefensiveNonBearGate:
+    """QP must mirror selection Plan O: defensive tickers are BEAR-only buys.
+
+    The optimizer runs before the greedy fallback. Without this guard, QP can
+    buy GLD/TLT/XLV/XLU in BULL_CALM even though selection.py would reject the
+    same candidate as defensive_non_bear.
+    """
+
+    def test_non_bear_qp_suppresses_defensive_buy(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        cfg = _qp_on()
+        cfg["defensive_tickers"] = ["GLD", "TLT", "XLV", "XLU"]
+        ctx = _Ctx(config=cfg, regime="BULL_CALM", bear_only=False)
+        ctx._qp_tickers = ["GLD"]
+        ctx._qp_sigma = np.array([0.10])
+        ctx.candidates = [_Cand("GLD", mu=0.05, sigma=0.10)]
+        ctx.prices = {"GLD": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.08]),
+            target_w=np.array([0.08]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx.counters["qp_defensive_non_bear"] == 1
+        assert ctx._blocked_by_ticker["GLD"] == "defensive_non_bear"
+
+    def test_non_bear_qp_still_allows_defensive_sell(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        cfg = _qp_on()
+        cfg["defensive_tickers"] = ["GLD", "TLT", "XLV", "XLU"]
+        ctx = _Ctx(config=cfg, regime="BULL_CALM", bear_only=False)
+        ctx._qp_tickers = ["GLD"]
+        ctx._qp_sigma = np.array([0.10])
+        ctx.holdings = {"GLD": _Hold(shares=10, mu=-0.05, sigma=0.10)}
+        ctx.prices = {"GLD": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([-0.08]),
+            target_w=np.array([0.02]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.orders == []
+        assert len(ctx.exits) == 1
+
+
 class TestNoTradeBandDavisNorman:
     """Bug-bounty round 4 (2026-05-05): cash-drag mitigation via
     Davis-Norman (1990) / Constantinides (1979) per-asset no-trade
