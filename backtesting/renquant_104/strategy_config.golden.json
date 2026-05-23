@@ -212,6 +212,8 @@
   "regime_params": {
     "BULL_CALM": {
       "max_position_pct": 0.15,
+      "qp_turnover_max": 0.15,
+      "_qp_turnover_max_reason": "2026-05-23 Codex churn fix: BULL_CALM is the accumulation regime, so buys remain enabled, but daily QP L1 turnover is capped at 15% NAV to avoid small-edge churn after hidden tax gates were removed. This follows no-trade-region logic for proportional costs (Garleanu-Pedersen 2013 / cvxportfolio).",
       "max_sector_weight_pct": 0.35,
       "cash_reserve_pct": 0.0,
       "stop_loss_pct": 0.15,
@@ -569,6 +571,8 @@
   },
   "max_positions_per_sector": 6,
   "tax": {
+    "_cash_debit_mode_reason": "Sim/live parity: broker cash is not reduced by estimated capital-gains tax at each sell. Keep per-trade tax estimates for audit and annual-net performance reporting, but do not let estimated tax cash drag drive portfolio decisions.",
+    "cash_debit_mode": "reporting_only",
     "short_term_rate": 0.5,
     "long_term_rate": 0.32,
     "long_term_threshold_days": 365
@@ -626,7 +630,11 @@
       "slot_budget_mode": "shared",
       "solver": "qp",
       "qp_risk_aversion": 3.0,
-      "qp_cost_kappa": 0.0001,
+      "qp_cost_kappa": 0.002,
+      "qp_cost_kappa_floor_round_trip": true,
+      "_qp_cost_kappa_reason": "2026-05-23 Codex churn fix: QP turnover penalty must be at least round-trip fee+slippage = 2*(0.0005+0.0005)=0.002. The prior 0.0001 underpriced trading by 20x and let small-edge rebalances dominate.",
+      "qp_turnover_max": 0.2,
+      "_qp_turnover_max_reason": "2026-05-23 Codex churn fix: explicit global daily L1 turnover cap. Regime-specific overrides may be tighter; BULL_CALM uses 0.15 so the system can still accumulate but cannot churn the book aggressively on marginal signals.",
       "qp_dw_max": 0.5,
       "qp_min_dw_pct": 0.02,
       "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",

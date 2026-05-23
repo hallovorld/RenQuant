@@ -285,6 +285,7 @@ def round_trips_from_trade_log(
         remaining = sell_shares
         exit_price = _as_float(event.get("price"))
         event_tax = _as_float(event.get("tax"))
+        event_tax_cash = _as_float(event.get("tax_cash_debited"), default=event_tax)
         matched_rows: list[dict[str, Any]] = []
         while remaining > 1e-9 and lots[ticker]:
             lot = lots[ticker][0]
@@ -310,6 +311,8 @@ def round_trips_from_trade_log(
                 "exit_price": exit_price,
                 "gross_pnl": gross_pnl,
                 "tax": 0.0,
+                "tax_cash_debited": 0.0,
+                "tax_cash_debit_mode": event.get("tax_cash_debit_mode", "event_level"),
                 "net_pnl_after_tax": gross_pnl,
                 "tax_allocation_method": "pending",
                 "pnl_pct": pnl_pct,
@@ -359,6 +362,8 @@ def round_trips_from_trade_log(
                     r["tax"] = tax_alloc
                     r["net_pnl_after_tax"] = gross - tax_alloc
                     r["tax_allocation_method"] = "positive_gross_prorata"
+                    if event_tax_cash > 0:
+                        r["tax_cash_debited"] = event_tax_cash * (gross / positive_gross)
             else:
                 for r in matched_rows:
                     gross = _as_float(r.get("gross_pnl"))
@@ -381,6 +386,8 @@ def round_trips_from_trade_log(
                 "exit_price": exit_price,
                 "gross_pnl": None,
                 "tax": 0.0,
+                "tax_cash_debited": 0.0,
+                "tax_cash_debit_mode": event.get("tax_cash_debit_mode", "event_level"),
                 "net_pnl_after_tax": None,
                 "tax_allocation_method": "unmatched_sell_unallocated",
                 "pnl_pct": event.get("pnl_pct"),
@@ -424,6 +431,8 @@ def round_trips_from_trade_log(
                 "exit_price": mark if math.isfinite(mark) else None,
                 "gross_pnl": gross_pnl,
                 "tax": 0.0,
+                "tax_cash_debited": 0.0,
+                "tax_cash_debit_mode": None,
                 "net_pnl_after_tax": gross_pnl,
                 "pnl_pct": (
                     gross_pnl / (entry_price * shares)
@@ -514,10 +523,15 @@ def build_forensic_report(
     else:
         total_gross = float(closed["gross_pnl"].fillna(0).sum())
         total_tax = float(closed["tax"].fillna(0).sum())
+        total_tax_cash = (
+            float(closed["tax_cash_debited"].fillna(0).sum())
+            if "tax_cash_debited" in closed.columns else total_tax
+        )
         total_net = float(closed["net_pnl_after_tax"].fillna(0).sum())
         lines.append(f"- closed_round_trips: {len(closed)}")
         lines.append(f"- gross_pnl: {total_gross:+.2f}")
-        lines.append(f"- tax: {total_tax:+.2f}")
+        lines.append(f"- tax_estimate: {total_tax:+.2f}")
+        lines.append(f"- tax_cash_debited: {total_tax_cash:+.2f}")
         lines.append(f"- net_pnl_after_tax: {total_net:+.2f}")
         lines.append(
             f"- win_rate_closed: {closed['gross_pnl'].gt(0).mean():.2%}"
@@ -529,7 +543,10 @@ def build_forensic_report(
         )
         lines.append("### Tax Stress")
         lines.append(
-            f"- event_level_tax_debited: {total_tax:+.2f}"
+            f"- event_level_tax_estimate: {total_tax:+.2f}"
+        )
+        lines.append(
+            f"- event_level_tax_debited: {total_tax_cash:+.2f}"
         )
         lines.append(
             f"- annual_net_tax_estimate: "

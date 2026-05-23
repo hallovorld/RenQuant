@@ -51,9 +51,15 @@ class SimResult:
     rotations:    list[dict]                    # paired sell/buy summary
 
     # Tax reporting is intentionally dual-track. ``total_tax`` is the
-    # event-level cash stress already debited by the simulator. The annual-net
+    # event-level capital-gains tax estimate for realized sells.
+    # ``tax_cash_debited`` is the amount actually removed from simulated cash:
+    # legacy stress sims set it equal to total_tax, while live-like sims can
+    # leave it at zero and keep tax as a reporting overlay. The annual-net
     # fields estimate Schedule-D-style same-year short/long netting for
     # performance reporting without changing the historical decision path.
+    event_level_tax_estimate:      float = 0.0
+    tax_cash_debited:              float = 0.0
+    tax_cash_debit_mode:           str = "event_level"
     event_level_tax_debited:       float = 0.0
     annual_net_tax_estimate:       float = 0.0
     tax_overstatement_vs_annual_net: float = 0.0
@@ -143,7 +149,7 @@ class SimResult:
         if self.sells:
             print(f"Avg hold: {self.avg_hold:.0f}d  |  "
                   f"Avg P&L/trade: {self.avg_pnl:.1%}  |  "
-                  f"Total tax: ${self.total_tax:,.0f}")
+                  f"Tax estimate: ${self.total_tax:,.0f}")
             if _m.isfinite(self.annual_net_tax_estimate):
                 apy_s = (
                     f"{self.annual_net_apy_estimate:.1%}"
@@ -157,7 +163,9 @@ class SimResult:
                 )
                 print(
                     "Tax reporting: "
-                    f"event=${self.event_level_tax_debited:,.0f}  "
+                    f"event-est=${self.event_level_tax_estimate:,.0f}  "
+                    f"cash-debited=${self.tax_cash_debited:,.0f}  "
+                    f"mode={self.tax_cash_debit_mode}  "
                     f"annual-net est=${self.annual_net_tax_estimate:,.0f}  "
                     f"annual-net APY est={apy_s}  "
                     f"annual-net Sharpe est={sharpe_s}"

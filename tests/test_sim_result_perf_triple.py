@@ -60,6 +60,9 @@ class TestSimResultFieldsAdded:
                 f"{field} default should be NaN, got {getattr(r, field)}"
         # n_trials defaults to 1 (single-config-search → no DSR deflation).
         assert r.n_trials == 1
+        assert r.event_level_tax_estimate == 0.0
+        assert r.tax_cash_debited == 0.0
+        assert r.tax_cash_debit_mode == "event_level"
         assert r.event_level_tax_debited == 0.0
         assert r.annual_net_tax_estimate == 0.0
         assert math.isnan(r.annual_net_apy_estimate)
@@ -182,6 +185,75 @@ class TestBuildResultPopulatesPerfTriple:
         assert result.annual_net_total_return_estimate == pytest.approx(0.01)
         assert result.annual_net_equity_df_estimate["portfolio"].iloc[-1] == pytest.approx(1_010.0)
         assert result.annual_net_sharpe_estimate != result.sharpe
+
+    def test_reporting_only_tax_path_does_not_add_back_undebited_tax(self):
+        """Regression: reporting-only tax must not inflate annual-net equity.
+
+        The event-level tax estimate is still recorded for stress diagnostics,
+        but if the simulator did not debit it from cash there is nothing to
+        add back before applying annual net capital-gains tax.
+        """
+        adapter = _make_synthetic_adapter(n_days=252, sharpe_target=0.0,
+                                          seed=8, n_trials=1)
+        adapter._initial_cash = 1_000.0
+        idx = pd.date_range("2024-01-02", periods=4, freq="B")
+        adapter._equity_curve = [
+            {"date": idx[0], "portfolio": 1_000.0, "regime": "BULL_CALM"},
+            {"date": idx[1], "portfolio": 1_100.0, "regime": "BULL_CALM"},
+            {"date": idx[2], "portfolio": 1_020.0, "regime": "BULL_CALM"},
+            {"date": idx[3], "portfolio": 1_020.0, "regime": "BULL_CALM"},
+        ]
+        adapter._trade_log = [
+            {
+                "action": "sell",
+                "ticker": "A",
+                "date": idx[1],
+                "gross_pnl": 100.0,
+                "pnl_pct": 0.10,
+                "hold_days": 20,
+                "tax": 50.0,
+                "tax_cash_debited": 0.0,
+                "tax_cash_debit_mode": "reporting_only",
+                "exit_reason": "test",
+            },
+            {
+                "action": "sell",
+                "ticker": "B",
+                "date": idx[2],
+                "gross_pnl": -80.0,
+                "pnl_pct": -0.08,
+                "hold_days": 10,
+                "tax": 0.0,
+                "tax_cash_debited": 0.0,
+                "tax_cash_debit_mode": "reporting_only",
+                "exit_reason": "test",
+            },
+        ]
+        adapter._spy_df = pd.DataFrame({"close": [100, 101, 100, 102]}, index=idx)
+        adapter._config = {
+            "performance": {"n_trials": 1},
+            "tax": {
+                "short_term_rate": 0.50,
+                "long_term_rate": 0.20,
+                "long_term_threshold_days": 365,
+                "cash_debit_mode": "reporting_only",
+            },
+        }
+
+        result = adapter.build_result()
+
+        assert result.event_level_tax_estimate == pytest.approx(50.0)
+        assert result.event_level_tax_debited == pytest.approx(0.0)
+        assert result.tax_cash_debited == pytest.approx(0.0)
+        assert result.tax_overstatement_vs_annual_net == pytest.approx(40.0)
+        assert result.annual_net_tax_estimate == pytest.approx(10.0)
+        assert result.annual_net_final_value_estimate == pytest.approx(1_010.0)
+        assert result.annual_net_equity_df_estimate["portfolio"].tolist() == pytest.approx([
+            1_000.0,
+            1_100.0,
+            1_020.0,
+            1_010.0,
+        ])
 
     def test_annual_net_tax_path_is_first_class_perf_metric(self):
         """AUDIT REGRESSION GUARD: annual-net tax reporting must carry its

@@ -77,11 +77,13 @@ def _annual_net_equity_curve(
 ) -> pd.DataFrame:
     """Return an annual-net tax reporting equity curve.
 
-    The simulator debits event-level tax from cash on each sell to stress-test
-    liquidity. Performance reporting needs the complementary Schedule-D-style
-    annual netting estimate: add event taxes back to the path, then subtract
-    the year's estimated net capital-gains tax on the final sim date for that
-    calendar year. This does not alter the historical decision path.
+    The simulator can either debit estimated event-level tax from cash on each
+    sell (stress mode) or keep that estimate reporting-only (live-like mode).
+    Performance reporting needs the complementary Schedule-D-style annual
+    netting estimate: add back only tax dollars that were actually debited
+    from the simulated cash path, then subtract the year's estimated net
+    capital-gains tax on the final sim date for that calendar year. This does
+    not alter the historical decision path.
     """
     if equity_df.empty or "portfolio" not in equity_df.columns:
         return pd.DataFrame(columns=list(equity_df.columns))
@@ -94,7 +96,12 @@ def _annual_net_equity_curve(
     dates = pd.DatetimeIndex(pd.to_datetime(out.index)).normalize()
 
     for sell in sells:
-        tax = _finite_float(sell.get("tax"), default=0.0)
+        # Legacy trade logs did not store tax_cash_debited, so fall back to
+        # tax for backward-compatible event-level stress reports.
+        tax = _finite_float(
+            sell.get("tax_cash_debited"),
+            default=_finite_float(sell.get("tax"), default=0.0),
+        )
         if tax <= 0.0:
             continue
         raw_date = sell.get("date") or sell.get("exit_date")
@@ -132,6 +139,46 @@ def _finite_float(value: Any, *, default: float = float("nan")) -> float:
     except (TypeError, ValueError):
         return default
     return out if math.isfinite(out) else default
+
+
+def _tax_cash_debit_mode(config: dict | None) -> str:
+    """Return how estimated capital-gains tax should affect sim cash.
+
+    ``event_level`` preserves the legacy stress-test path by debiting every
+    profitable sell immediately. ``reporting_only`` records the estimate on
+    the trade row but leaves broker-like cash unchanged; annual-net reporting
+    then applies the tax overlay separately.
+    """
+    tax_cfg = ((config or {}).get("tax") or {}) if isinstance(config, dict) else {}
+    raw = str(tax_cfg.get("cash_debit_mode", "event_level") or "event_level").lower()
+    aliases = {
+        "event": "event_level",
+        "immediate": "event_level",
+        "stress": "event_level",
+        "none": "reporting_only",
+        "off": "reporting_only",
+        "reporting": "reporting_only",
+        "reporting-only": "reporting_only",
+        "reporting_only": "reporting_only",
+        "annual_net": "reporting_only",
+        "event_level": "event_level",
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in {"event_level", "reporting_only"}:
+        log.warning(
+            "Unknown tax.cash_debit_mode=%s; falling back to event_level", raw,
+        )
+        return "event_level"
+    return mode
+
+
+def _tax_cash_debit_amount(config: dict | None, tax: float) -> float:
+    tax_f = _finite_float(tax, default=0.0)
+    if tax_f <= 0.0:
+        return 0.0
+    if _tax_cash_debit_mode(config) == "reporting_only":
+        return 0.0
+    return tax_f
 
 
 class SimAdapter:
@@ -340,6 +387,7 @@ class SimAdapter:
         self._equity_curve: list[dict]  = []
         self._trade_log:    list[dict]  = []
         self._rotation_log: list[dict]  = []
+        self._tax_cash_debited: float = 0.0
 
         # ── Meta-label snapshot logger (P4.1, 2026-05-11) ──────────────────
         # Owned by adapter so it persists across bars. Attached to ctx in
@@ -1293,12 +1341,17 @@ class SimAdapter:
             float(tax_cfg.get("long_term_rate", 0.32)),
             int(tax_cfg.get("long_term_threshold_days", 365)),
         )
+        tax_cash_debit_mode = _tax_cash_debit_mode(ctx.config if ctx is not None else {})
+        tax_cash_debited = _tax_cash_debit_amount(
+            ctx.config if ctx is not None else {}, tax,
+        )
         # ── Execution model: sell fees + T+2 settlement (Track Batch A) ────
         # Per §5.13.5 every fee dollar flows through compute_sell_fees;
         # per the spec, proceeds (notional - fees) are queued for T+2
-        # settlement via the T2CashQueue, NOT credited immediately. Tax
-        # stays IMMEDIATE (matches how the IRS/withholding treats it —
-        # owed on trade date, not settle date).
+        # settlement via the T2CashQueue, NOT credited immediately.
+        # Estimated capital-gains tax is config-driven: event_level debits it
+        # immediately as a liquidity stress test, reporting_only leaves broker
+        # cash unchanged and records the estimate for annual-net reporting.
         # Defensive: __new__-constructed test fixtures bypass __init__,
         # so getattr() with explicit defaults keeps legacy semantics.
         _exec_on = getattr(self, "_exec_enabled", False)
@@ -1320,17 +1373,22 @@ class SimAdapter:
         # poisoned equity curve.
         if not (_math_q.isfinite(net_proceeds)
                 and _math_q.isfinite(tax)
+                and _math_q.isfinite(tax_cash_debited)
                 and _math_q.isfinite(self._cash)):
             raise ValueError(
                 f"SimAdapter._apply_sell cash NaN guard tripped: "
                 f"ticker={ticker} today={today_ts} sell_shares={sell_shares} "
                 f"price={price} proceeds_basis={proceeds_basis} "
                 f"entry_price={getattr(hs, 'entry_price', None)} "
-                f"gross_pnl={gross_pnl} tax={tax} net_proceeds={net_proceeds} "
+                f"gross_pnl={gross_pnl} tax={tax} "
+                f"tax_cash_debited={tax_cash_debited} "
+                f"net_proceeds={net_proceeds} "
                 f"cash_before={self._cash}"
             )
-        # Tax is debited immediately on trade date.
-        self._cash -= tax
+        self._cash -= tax_cash_debited
+        if not hasattr(self, "_tax_cash_debited"):
+            self._tax_cash_debited = 0.0
+        self._tax_cash_debited += float(tax_cash_debited)
         # T+0 legacy path: proceeds credited immediately. T+2 path: queue
         # net proceeds for settlement; drain happens at top of next bar.
         # Defensive: hasattr guard so __new__ test fixtures stay byte-
@@ -1465,6 +1523,8 @@ class SimAdapter:
             "pnl_pct":     _pnl_pct,
             "hold_days":   hold_days,
             "tax":         tax,
+            "tax_cash_debited": tax_cash_debited,
+            "tax_cash_debit_mode": tax_cash_debit_mode,
             "exit_reason": sig.exit_type,
             "partial":     is_partial,
             "regime":      getattr(ctx, "regime", None),
@@ -1614,12 +1674,20 @@ class SimAdapter:
                             long_term_rate=float(tax_cfg.get("long_term_rate", 0.32)),
                             long_term_threshold_days=int(tax_cfg.get("long_term_threshold_days", 365)),
                         )
-                        if math.isfinite(short_tax) and short_tax > 0 \
+                        short_tax_cash_debited = _tax_cash_debit_amount(
+                            ctx.config if ctx is not None else {}, short_tax,
+                        )
+                        if math.isfinite(short_tax_cash_debited) and short_tax_cash_debited > 0 \
                                 and math.isfinite(self._cash):
-                            self._cash -= short_tax
+                            self._cash -= short_tax_cash_debited
+                            if not hasattr(self, "_tax_cash_debited"):
+                                self._tax_cash_debited = 0.0
+                            self._tax_cash_debited += float(short_tax_cash_debited)
                             log.info(
-                                "SHORT_COVER_TAX %s short_pnl=$%.2f tax=$%.2f cover_shares=%d",
-                                ticker, short_pnl, short_tax, int(covered_shares),
+                                "SHORT_COVER_TAX %s short_pnl=$%.2f tax=$%.2f "
+                                "tax_cash_debited=$%.2f cover_shares=%d",
+                                ticker, short_pnl, short_tax,
+                                short_tax_cash_debited, int(covered_shares),
                             )
                     # §1233(e) → §1091: short-cover loss creates a wash-sale
                     # window for subsequent LONG buys of substantially identical
@@ -1965,7 +2033,22 @@ class SimAdapter:
         win_rate  = len(wins) / max(1, len(sells))
         avg_hold  = sum(t.get("hold_days", 0) for t in sells) / len(sells) if sells else 0.0
         avg_pnl   = sum(t.get("pnl_pct",   0) for t in sells) / len(sells) if sells else 0.0
-        total_tax = sum(t.get("tax",       0) for t in sells)
+        total_tax = sum(_finite_float(t.get("tax"), default=0.0) for t in sells)
+        tax_cash_debited = sum(
+            _finite_float(
+                t.get("tax_cash_debited"),
+                default=_finite_float(t.get("tax"), default=0.0),
+            )
+            for t in sells
+        )
+        # Short-cover tax is recorded as a cash debit during _apply_buy because
+        # the action that realizes short P&L is a buy-to-cover, not a sell.
+        # Keep build_result compatible with __new__ fixtures and legacy logs by
+        # taking the larger of explicit sell-row debits and the adapter counter.
+        tax_cash_debited = max(
+            float(tax_cash_debited),
+            _finite_float(getattr(self, "_tax_cash_debited", 0.0), default=0.0),
+        )
         exit_reasons = dict(Counter(t.get("exit_reason", "?") for t in sells))
         tax_cfg = (getattr(self, "_config", {}) or {}).get("tax", {}) or {}
         from kernel.portfolio import compute_annual_net_capital_gains_tax  # noqa: PLC0415
@@ -1976,7 +2059,7 @@ class SimAdapter:
             long_term_threshold_days=int(tax_cfg.get("long_term_threshold_days", 365)),
         )
         annual_net_tax = float(annual_tax_summary["total_estimated_tax"])
-        annual_net_final_val = final_val + float(total_tax) - annual_net_tax
+        annual_net_final_val = final_val + float(tax_cash_debited) - annual_net_tax
         annual_net_total_ret = annual_net_final_val / self._initial_cash - 1.0
         annual_net_apy = (
             (1 + annual_net_total_ret) ** (1 / n_years) - 1
@@ -2135,7 +2218,12 @@ class SimAdapter:
             total_tax     = total_tax,
             exit_reasons  = exit_reasons,
             rotations     = rotations,
-            event_level_tax_debited       = float(total_tax),
+            event_level_tax_estimate      = float(total_tax),
+            tax_cash_debited              = float(tax_cash_debited),
+            tax_cash_debit_mode           = _tax_cash_debit_mode(
+                getattr(self, "_config", {}),
+            ),
+            event_level_tax_debited       = float(tax_cash_debited),
             annual_net_tax_estimate       = annual_net_tax,
             tax_overstatement_vs_annual_net = float(total_tax) - annual_net_tax,
             annual_net_final_value_estimate = annual_net_final_val,

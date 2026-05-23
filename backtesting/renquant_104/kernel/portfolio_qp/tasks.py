@@ -1134,8 +1134,7 @@ class SolveMarkowitzQPTask(Task):
             sigma=_get_path(ctx, "_qp_sigma"),
             Sigma=_get_path(ctx, "_qp_Sigma_full"),
             risk_aversion=float(cfg.get("qp_risk_aversion", 3.0)),
-            cost_kappa=float(cfg.get("qp_cost_kappa",
-                                       cfg.get("fee_pct", 0.0005))),
+            cost_kappa=_effective_qp_cost_kappa(cfg),
             cash_reserve=_get_path(ctx, "_qp_cash_reserve"),
             w_upper=_get_path(ctx, "_qp_w_upper"),
             w_lower=_get_path(ctx, "_qp_w_lower"),
@@ -1695,6 +1694,12 @@ _QP_PER_REGIME_KEYS = (
     "qp_cvar_alpha",
     "qp_turnover_max",
     "qp_risk_aversion",
+    "qp_cost_kappa",
+    "qp_cost_kappa_floor_round_trip",
+    "qp_dw_max",
+    "qp_min_dw_pct",
+    "qp_no_trade_band_factor",
+    "qp_no_trade_band_cap",
     "qp_min_invested_pct",
     "qp_cash_drag_lambda",
     "qp_min_invested_requires_positive_edge",
@@ -1772,6 +1777,20 @@ def _round_trip_cost(cfg: dict) -> float:
     fee = float(cfg.get("fee_pct", cfg.get("qp_cost_kappa", 0.0)) or 0.0)
     slip = float(cfg.get("slippage_pct", 0.0) or 0.0)
     return 2.0 * (fee + slip)
+
+
+def _effective_qp_cost_kappa(cfg: dict) -> float:
+    """L1 turnover penalty used by the QP objective.
+
+    Gârleanu-Pedersen 2013 shows proportional transaction costs create a
+    no-trade region around the current portfolio. In this single-period QP,
+    the convex proxy is the L1 turnover penalty. When the floor flag is on,
+    stale configs cannot underprice trading below explicit fee+slippage.
+    """
+    raw = float(cfg.get("qp_cost_kappa", cfg.get("fee_pct", 0.0005)) or 0.0)
+    if bool(cfg.get("qp_cost_kappa_floor_round_trip", False)):
+        return max(raw, _round_trip_cost(cfg))
+    return raw
 
 
 def _qp_soft_sell_tax_gates_enabled(cfg: dict, guard_cfg: object) -> bool:

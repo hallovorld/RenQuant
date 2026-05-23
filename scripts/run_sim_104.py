@@ -185,6 +185,9 @@ def main() -> None:
                 float(result.sharpe) if result.sharpe == result.sharpe else None
             ),
             "event_level_tax_debited": float(result.event_level_tax_debited),
+            "event_level_tax_estimate": float(result.event_level_tax_estimate),
+            "tax_cash_debited": float(result.tax_cash_debited),
+            "tax_cash_debit_mode": str(result.tax_cash_debit_mode),
             "annual_net_tax_estimate": float(result.annual_net_tax_estimate),
             "tax_overstatement_vs_annual_net": (
                 float(result.tax_overstatement_vs_annual_net)

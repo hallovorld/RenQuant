@@ -49,6 +49,8 @@ def _sim_long_cash(
     init_cash: float, shares: int, buy_px: float, sell_px: float,
     hold_days: int, st_tax: float = 0.50, lt_tax: float = 0.20,
     sell_shares: int | None = None,
+    tax_cash_debit_mode: str = "event_level",
+    return_adapter: bool = False,
 ) -> float:
     """Run buy → (partial) sell through SimAdapter; return final cash."""
     from adapters.sim import SimAdapter
@@ -79,6 +81,7 @@ def _sim_long_cash(
             "short_term_rate": st_tax,
             "long_term_rate": lt_tax,
             "long_term_threshold_days": 365,
+            "cash_debit_mode": tax_cash_debit_mode,
         },
         "rotation": {"joint_actions": {"qp_tax_lot_method": "fifo"}},
     })
@@ -95,6 +98,8 @@ def _sim_long_cash(
     )
     ctx.prices = {"AAPL": sell_px}
     adapter._apply_sell("AAPL", sig, sell_ts, ctx)
+    if return_adapter:
+        return adapter
     return float(adapter._cash)
 
 
@@ -157,3 +162,22 @@ class TestSimAdapterLongMatchesVectorbt:
         expected_sim_cash = vbt_realized - expected_tax
         assert abs(sim_cash - expected_sim_cash) < 1.0, \
             f"Partial sell: SimAdapter realized ${sim_cash} != expected ${expected_sim_cash}"
+
+    def test_reporting_only_tax_keeps_trade_cash_pre_tax(self):
+        """Live-like tax mode: estimate tax for reporting, but do not debit cash."""
+        init, shares, buy, sell, hold = 100_000.0, 100, 100.0, 120.0, 30
+        st, lt = 0.50, 0.20
+        vbt_nav = _vbt_long_nav(init, shares, buy, sell, n_days=hold)
+        adapter = _sim_long_cash(
+            init, shares, buy, sell, hold, st, lt,
+            tax_cash_debit_mode="reporting_only",
+            return_adapter=True,
+        )
+        gross_pnl = (sell - buy) * shares
+        expected_tax = gross_pnl * st
+        assert abs(adapter._cash - vbt_nav) < 1.0
+        sell_rows = [t for t in adapter._trade_log if t.get("action") == "sell"]
+        assert len(sell_rows) == 1
+        assert sell_rows[0]["tax"] == pytest.approx(expected_tax)
+        assert sell_rows[0]["tax_cash_debited"] == pytest.approx(0.0)
+        assert sell_rows[0]["tax_cash_debit_mode"] == "reporting_only"

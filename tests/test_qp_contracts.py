@@ -65,3 +65,24 @@ def test_renquant104_qp_configs_have_strict_mu_sigma_contract() -> None:
         report = validate_qp_contract_config(cfg)
         assert report.passed is True, f"{name}: {report.summary()}"
         assert report.evidence["qp_mu_contract"] == "strict"
+
+
+def test_renquant104_qp_configs_price_turnover_and_round_trip_cost() -> None:
+    """QP churn guard: transaction-cost penalty must not underprice costs.
+
+    Gârleanu-Pedersen dynamic trading with proportional costs implies a
+    no-trade region; in our QP that region is approximated by (a) an L1
+    turnover penalty at least as large as round-trip fee+slippage and (b) a
+    hard per-regime turnover cap. This pins the non-tax churn fix.
+    """
+    for name in ("strategy_config.json", "strategy_config.golden.json"):
+        cfg = json.loads((REPO / "backtesting/renquant_104" / name).read_text())
+        joint = cfg["rotation"]["joint_actions"]
+        round_trip = 2.0 * (
+            float(joint.get("fee_pct", 0.0)) + float(joint.get("slippage_pct", 0.0))
+        )
+        assert joint.get("qp_cost_kappa_floor_round_trip") is True, name
+        assert float(joint["qp_cost_kappa"]) >= round_trip, name
+        assert 0.0 < float(joint["qp_turnover_max"]) <= 0.30, name
+        bull = cfg["regime_params"]["BULL_CALM"]
+        assert 0.0 < float(bull["qp_turnover_max"]) <= float(joint["qp_turnover_max"])
