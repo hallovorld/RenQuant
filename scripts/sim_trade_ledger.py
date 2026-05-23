@@ -35,6 +35,43 @@ REGIME_THESES = {
     ),
 }
 
+EXIT_PARAM_FIELDS = (
+    "exit_stop_loss_pct",
+    "exit_stop_n_sigma",
+    "exit_take_profit_pct",
+    "exit_stop_decay_days",
+    "exit_stop_decay_floor",
+    "exit_max_single_day_loss_pct",
+    "exit_sdl_n_sigma",
+    "exit_sdl_skip_if_unrealized_above",
+    "exit_trailing_stop_trigger_pct",
+    "exit_trailing_stop_trail_pct",
+    "exit_atr_n_multiplier",
+    "exit_max_hold_days",
+)
+
+ENTRY_ATTRIBUTION_FIELDS = (
+    "entry_source",
+    "entry_source_job",
+    "entry_source_task",
+    "entry_order_source",
+    "entry_order_type",
+    "entry_attribution_version",
+    "entry_score_snapshot",
+    "entry_decision_inputs",
+)
+
+EXIT_ATTRIBUTION_FIELDS = (
+    "exit_source",
+    "exit_source_job",
+    "exit_source_task",
+    "exit_order_source",
+    "exit_order_type",
+    "exit_attribution_version",
+    "exit_score_snapshot",
+    "exit_decision_inputs",
+)
+
 
 def annual_net_tax_summary(
     round_trips: pd.DataFrame,
@@ -139,6 +176,14 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _copy_fields(event: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: event.get(field) for field in fields}
+
+
+def _empty_fields(fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: None for field in fields}
+
+
 def trade_log_frame(trade_log: list[dict]) -> pd.DataFrame:
     """Return a stable raw-event DataFrame sorted by event date."""
     rows = []
@@ -215,9 +260,20 @@ def round_trips_from_trade_log(
                 "entry_regime": event.get("regime"),
                 "entry_rank_score": event.get("rank_score"),
                 "entry_rs_score": event.get("rs_score"),
+                "entry_panel_score": event.get("panel_score"),
                 "entry_mu": event.get("mu"),
                 "entry_sigma": event.get("sigma"),
                 "entry_sigma_mult": event.get("sigma_mult"),
+                "entry_kelly_target_pct": event.get("kelly_target_pct"),
+                "entry_expected_return": event.get("expected_return"),
+                "entry_source": event.get("source"),
+                "entry_source_job": event.get("source_job"),
+                "entry_source_task": event.get("source_task"),
+                "entry_order_source": event.get("order_source"),
+                "entry_order_type": event.get("order_type"),
+                "entry_attribution_version": event.get("attribution_version"),
+                "entry_score_snapshot": _json_safe(event.get("score_snapshot")),
+                "entry_decision_inputs": _json_safe(event.get("decision_inputs")),
             })
             continue
 
@@ -263,20 +319,25 @@ def round_trips_from_trade_log(
                 "exit_regime": event.get("regime"),
                 "exit_confidence": event.get("confidence"),
                 "exit_signal_reason": event.get("exit_signal_reason"),
-                "exit_stop_loss_pct": event.get("exit_stop_loss_pct"),
-                "exit_stop_n_sigma": event.get("exit_stop_n_sigma"),
-                "exit_max_single_day_loss_pct": event.get("exit_max_single_day_loss_pct"),
-                "exit_sdl_n_sigma": event.get("exit_sdl_n_sigma"),
-                "exit_trailing_stop_trigger_pct": event.get("exit_trailing_stop_trigger_pct"),
-                "exit_trailing_stop_trail_pct": event.get("exit_trailing_stop_trail_pct"),
-                "exit_atr_n_multiplier": event.get("exit_atr_n_multiplier"),
-                "exit_max_hold_days": event.get("exit_max_hold_days"),
+                **_copy_fields(event, EXIT_PARAM_FIELDS),
+                "exit_source": event.get("source"),
+                "exit_source_job": event.get("source_job"),
+                "exit_source_task": event.get("source_task"),
+                "exit_order_source": event.get("order_source"),
+                "exit_order_type": event.get("order_type"),
+                "exit_attribution_version": event.get("attribution_version"),
+                "exit_score_snapshot": _json_safe(event.get("score_snapshot")),
+                "exit_decision_inputs": _json_safe(event.get("decision_inputs")),
                 "entry_regime": lot.get("entry_regime"),
                 "entry_rank_score": lot.get("entry_rank_score"),
                 "entry_rs_score": lot.get("entry_rs_score"),
+                "entry_panel_score": lot.get("entry_panel_score"),
                 "entry_mu": lot.get("entry_mu"),
                 "entry_sigma": lot.get("entry_sigma"),
                 "entry_sigma_mult": lot.get("entry_sigma_mult"),
+                "entry_kelly_target_pct": lot.get("entry_kelly_target_pct"),
+                "entry_expected_return": lot.get("entry_expected_return"),
+                **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })
             lot["remaining_shares"] -= take
             remaining -= take
@@ -319,14 +380,15 @@ def round_trips_from_trade_log(
                 "exit_regime": event.get("regime"),
                 "exit_confidence": event.get("confidence"),
                 "exit_signal_reason": event.get("exit_signal_reason"),
-                "exit_stop_loss_pct": event.get("exit_stop_loss_pct"),
-                "exit_stop_n_sigma": event.get("exit_stop_n_sigma"),
-                "exit_max_single_day_loss_pct": event.get("exit_max_single_day_loss_pct"),
-                "exit_sdl_n_sigma": event.get("exit_sdl_n_sigma"),
-                "exit_trailing_stop_trigger_pct": event.get("exit_trailing_stop_trigger_pct"),
-                "exit_trailing_stop_trail_pct": event.get("exit_trailing_stop_trail_pct"),
-                "exit_atr_n_multiplier": event.get("exit_atr_n_multiplier"),
-                "exit_max_hold_days": event.get("exit_max_hold_days"),
+                **_copy_fields(event, EXIT_PARAM_FIELDS),
+                "exit_source": event.get("source"),
+                "exit_source_job": event.get("source_job"),
+                "exit_source_task": event.get("source_task"),
+                "exit_order_source": event.get("order_source"),
+                "exit_order_type": event.get("order_type"),
+                "exit_attribution_version": event.get("attribution_version"),
+                "exit_score_snapshot": _json_safe(event.get("score_snapshot")),
+                "exit_decision_inputs": _json_safe(event.get("decision_inputs")),
             })
 
     end_prices = end_prices or {}
@@ -364,20 +426,18 @@ def round_trips_from_trade_log(
                 "exit_regime": None,
                 "exit_confidence": None,
                 "exit_signal_reason": None,
-                "exit_stop_loss_pct": None,
-                "exit_stop_n_sigma": None,
-                "exit_max_single_day_loss_pct": None,
-                "exit_sdl_n_sigma": None,
-                "exit_trailing_stop_trigger_pct": None,
-                "exit_trailing_stop_trail_pct": None,
-                "exit_atr_n_multiplier": None,
-                "exit_max_hold_days": None,
+                **_empty_fields(EXIT_PARAM_FIELDS),
+                **_empty_fields(EXIT_ATTRIBUTION_FIELDS),
                 "entry_regime": lot.get("entry_regime"),
                 "entry_rank_score": lot.get("entry_rank_score"),
                 "entry_rs_score": lot.get("entry_rs_score"),
+                "entry_panel_score": lot.get("entry_panel_score"),
                 "entry_mu": lot.get("entry_mu"),
                 "entry_sigma": lot.get("entry_sigma"),
                 "entry_sigma_mult": lot.get("entry_sigma_mult"),
+                "entry_kelly_target_pct": lot.get("entry_kelly_target_pct"),
+                "entry_expected_return": lot.get("entry_expected_return"),
+                **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })
 
     df = pd.DataFrame(rows)
@@ -493,7 +553,11 @@ def build_forensic_report(
             "shares", "entry_price", "exit_price", "gross_pnl",
             "net_pnl_after_tax", "pnl_pct", "hold_days", "entry_rank_score",
             "entry_mu", "entry_sigma", "exit_stop_loss_pct",
-            "exit_sdl_n_sigma", "exit_trailing_stop_trigger_pct",
+            "exit_take_profit_pct", "exit_stop_decay_days",
+            "exit_stop_decay_floor", "exit_sdl_n_sigma",
+            "exit_sdl_skip_if_unrealized_above",
+            "exit_trailing_stop_trigger_pct", "exit_source_job",
+            "exit_source_task",
         ]
         worst_cols = [c for c in worst_cols if c in closed.columns]
         lines.append("### Worst 25 Closed Round Trips")

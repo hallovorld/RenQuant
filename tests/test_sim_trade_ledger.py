@@ -29,8 +29,14 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
             "invest": 1000.0,
             "regime": "BULL_CALM",
             "rank_score": 0.72,
+            "panel_score": 0.69,
             "mu": 0.03,
             "sigma": 0.12,
+            "source_job": "SelectionJob",
+            "source_task": "SizeAndEmitTask",
+            "order_source": "SelectionJob.SizeAndEmitTask",
+            "order_type": "BUY",
+            "decision_inputs": {"acceptance_reason": "unit buy"},
         },
         {
             "action": "buy",
@@ -58,10 +64,19 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
             "confidence": 0.8,
             "exit_stop_loss_pct": 0.15,
             "exit_max_single_day_loss_pct": 0.0,
+            "exit_take_profit_pct": 0.30,
+            "exit_stop_decay_days": 60,
+            "exit_stop_decay_floor": 0.08,
             "exit_sdl_n_sigma": 3.0,
+            "exit_sdl_skip_if_unrealized_above": 0.02,
             "exit_trailing_stop_trigger_pct": 0.12,
             "exit_trailing_stop_trail_pct": 0.25,
             "exit_max_hold_days": 500,
+            "source_job": "JointPortfolioQPJob",
+            "source_task": "EmitOrdersFromQPSolutionTask",
+            "order_source": "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask",
+            "order_type": "SELL_qp_sell",
+            "decision_inputs": {"acceptance_reason": "qp sell"},
         },
     ]
 
@@ -77,6 +92,17 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
     assert closed.iloc[1]["entry_regime"] == "BULL_VOLATILE"
     assert closed.iloc[0]["exit_regime"] == "BULL_CALM"
     assert closed.iloc[0]["exit_stop_loss_pct"] == 0.15
+    assert closed.iloc[0]["exit_take_profit_pct"] == 0.30
+    assert closed.iloc[0]["exit_stop_decay_days"] == 60
+    assert closed.iloc[0]["exit_stop_decay_floor"] == 0.08
+    assert closed.iloc[0]["exit_sdl_skip_if_unrealized_above"] == 0.02
+    assert closed.iloc[0]["entry_panel_score"] == 0.69
+    assert closed.iloc[0]["entry_order_source"] == "SelectionJob.SizeAndEmitTask"
+    assert closed.iloc[0]["entry_decision_inputs"] == {"acceptance_reason": "unit buy"}
+    assert closed.iloc[0]["exit_order_source"] == (
+        "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
+    )
+    assert closed.iloc[0]["exit_decision_inputs"] == {"acceptance_reason": "qp sell"}
     assert open_lots.iloc[0]["shares"] == 3
     assert open_lots.iloc[0]["gross_pnl"] == 60.0
 
