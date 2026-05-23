@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from scripts.fit_calibrator_alpha158_fund import (  # noqa: E402
+    _artifact_fingerprint,
     _infer_raw_er_label,
     _label_scale_diagnostics,
     _load_expected_return_labels,
@@ -34,6 +35,18 @@ def test_infers_raw_er_label_from_rank_label():
     assert _infer_raw_er_label("fwd_60d_excess") == "fwd_60d_excess_raw"
     assert _infer_raw_er_label("fwd_20d_excess") == "fwd_20d_excess_raw"
     assert _infer_raw_er_label("fwd_60d_excess_raw") == "fwd_60d_excess_raw"
+
+
+def test_artifact_fingerprint_prefers_scorer_identity_over_config(tmp_path):
+    """Strict calibrator contracts bind to the scorer file, not its config."""
+    scorer_path = tmp_path / "panel-ltr.json"
+    scorer_path.write_text("scorer payload")
+    payload = {
+        "config_fingerprint": "sha256:shared-config",
+        "artifact_fingerprint": "sha256:scorer-artifact",
+    }
+
+    assert _artifact_fingerprint(scorer_path, payload) == "sha256:scorer-artifact"
 
 
 def test_label_diagnostics_identify_cross_sectional_zscore():

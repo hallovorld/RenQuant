@@ -224,6 +224,12 @@ Code fix from this finding:
    `benchmark_by_dominant_regime` plus `regime_benchmark_failures`, so a
    positive-Sharpe model that loses to SPY in every cut cannot be stamped pass.
 
+6. Walk-forward scorer/calibrator matching could still be bypassed by a static
+   or config-fingerprint-only calibrator. Fixed by validating per-fold
+   `calibrator_uri` against the selected scorer artifact fingerprint, including
+   cached/preloaded calibrators, and by making the calibrator fitting script
+   stamp scorer file identity instead of shared strategy config identity.
+
 ## Not Yet Scientifically Solved
 
 1. Trade-level score quality is not adequate. Entry `rank_score` and μ do not

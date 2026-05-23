@@ -14,7 +14,7 @@ fit_global_calibrator with the predictions + actual returns.
 Output: backtesting/renquant_104/artifacts/panel-rank-calibration.json
 """
 from __future__ import annotations
-import argparse, json, logging, re, sys
+import argparse, hashlib, json, logging, re, sys
 from pathlib import Path
 import numpy as np, pandas as pd, xgboost as xgb
 
@@ -30,6 +30,17 @@ def _resolve_repo_path(raw_path: str | None, default: Path) -> Path:
         return default
     p = Path(raw_path)
     return p if p.is_absolute() else REPO / p
+
+
+def _artifact_fingerprint(path: Path, payload: dict) -> str:
+    """Return scorer-file identity, never a shared strategy config identity."""
+    return (
+        payload.get("artifact_fingerprint")
+        or payload.get("artifact_sha256")
+        or payload.get("model_fingerprint")
+        or payload.get("fingerprint")
+        or "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    )
 
 
 def _infer_raw_er_label(label_col: str) -> str:
@@ -238,9 +249,10 @@ def main():
     log.info("Loading panel + panel-LTR artifact...")
     art = json.loads(art_path.read_text())
     feat_cols = art["feature_cols"]
-    # 2026-05-11: walkforward-fold artifacts skip config_fingerprint stamping
-    # (§5.13.13). Production artifacts have it. Both should work here.
-    fingerprint = art.get("config_fingerprint", "<walkforward — no fingerprint>")
+    # 2026-05-23 contract: every calibrator must bind to the exact scorer
+    # distribution it was fitted against. A config fingerprint can be shared
+    # by many WF folds; use scorer artifact/file identity instead.
+    fingerprint = _artifact_fingerprint(art_path, art)
     # Round 3 audit (G10): label column from the artifact, not hardcoded.
     # A short-horizon scorer (fwd_5d / fwd_20d) used with the previous
     # hardcoded `fwd_60d_excess` produced a silent label/horizon mismatch.
@@ -398,6 +410,7 @@ def main():
     metadata["expected_return_label_source"] = er_label_source
     metadata["expected_return_label_contract"] = "raw_return_units_required"
     metadata["expected_return_label_diagnostics"] = er_label_diag
+    metadata["method"] = method
     # 2026-05-11: record OOS window for future audits.
     if args.data_start:
         metadata["data_window_start"] = args.data_start

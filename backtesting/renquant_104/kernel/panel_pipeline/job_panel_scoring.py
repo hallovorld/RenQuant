@@ -937,13 +937,12 @@ class VetoWeakBuysTask(Task):
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
 
 def _fingerprint_value(metadata: dict | None) -> str | None:
-    """Return the best available artifact fingerprint from a metadata dict."""
+    """Return scorer-file identity, never a shared config fingerprint."""
     if not metadata:
         return None
     for key in (
         "artifact_fingerprint",
         "scorer_artifact_fingerprint",
-        "config_fingerprint",
         "model_fingerprint",
         "artifact_sha256",
         "fingerprint",

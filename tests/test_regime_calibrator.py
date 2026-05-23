@@ -238,8 +238,8 @@ class TestLoadRegimeCalibrators:
         with pytest.raises(ValueError, match="fingerprint mismatch"):
             LoadGlobalCalibrationTask().run(ctx)
 
-    def test_strict_contract_accepts_short_config_fingerprint(self, tmp_path):
-        """Historical production artifacts stamp short config sha prefixes."""
+    def test_strict_contract_accepts_short_artifact_fingerprint(self, tmp_path):
+        """Historical artifacts may stamp short scorer sha prefixes."""
         from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
         art_dir = tmp_path / "artifacts"
         art_dir.mkdir()
@@ -286,6 +286,30 @@ class TestLoadRegimeCalibrators:
         ctx._panel_scorer = SimpleNamespace(
             metadata={"artifact_fingerprint": "sha256:active111111"}
         )
+        with pytest.raises(ValueError, match="missing scorer/calibrator fingerprint"):
+            LoadGlobalCalibrationTask().run(ctx)
+
+    def test_strict_contract_rejects_config_only_preloaded_calibrator(self, tmp_path):
+        """Config identity is not enough to bind a WF scorer to a calibrator."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        cal_path = art_dir / "panel-rank-calibration.json"
+        cal = GlobalPanelCalibration(
+            prob_x=np.array([-1.0, 1.0]),
+            prob_y=np.array([0.25, 0.75]),
+            er_x=np.array([-1.0, 1.0]),
+            er_y=np.array([-0.01, 0.01]),
+            metadata={"config_fingerprint": "sha256:sharedconfig"},
+        )
+        cal.save(cal_path)
+
+        ctx = self._make_ctx(tmp_path, regime_enabled=False)
+        ctx._global_calibrator = GlobalPanelCalibration.load(cal_path)
+        ctx._panel_scorer = SimpleNamespace(
+            metadata={"config_fingerprint": "sha256:sharedconfig"}
+        )
+
         with pytest.raises(ValueError, match="missing scorer/calibrator fingerprint"):
             LoadGlobalCalibrationTask().run(ctx)
 
