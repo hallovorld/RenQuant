@@ -14,8 +14,12 @@ session's repeated issues cannot be lost in chat history.
 | Daily log double-wrote audit/dashboard lines | After `exec >> "$LOG"`, do not pipe to `tee -a "$LOG"` | `tests/test_smoke_test_model.py::TestNoRetrainInDailyShell::test_daily_does_not_double_append_log_after_exec_redirect` |
 | Live QP optimized names with missing sector metadata | Every buyable watchlist ticker must have `sector_map`; every sector must have `sector_etf_map`; sector metadata is part of the model/config fingerprint | `tests/test_candidate_sector_map_gate.py`; `tests/test_strategy_config_sector_map.py`; targeted suite `92 passed`; real preflight now reports `P-SECTOR-MAP` OK and `P-CONFIG-FP` blocks old artifacts until retrained/stamped |
 | Shadow preflight/timeout spammed ntfy with non-fatal errors | Preflight checks must use the active scorer artifact, not stale `panel_ltr` JSON; daily wrapper suppresses inner preflight ntfy; shadow timeout/fail logs by default and alerts only with `RENQUANT_SHADOW_ALERT_NTFY=1` | `tests/test_preflight.py` sequence-artifact cases; `tests/test_runner_trade_ntfy.py::TestSourceLevel::test_daily_shadow_wrapper_suppresses_inner_preflight_ntfy`; `tests/test_smoke_test_model.py::TestDailyShellInvariants::test_shadow_e2e_has_wall_clock_timeout`; shadow config preflight full pass |
+| Sim round-trip trace dropped active exit params and source attribution | FIFO round-trip rows must preserve the buy and sell decision payloads needed to explain each P&L outcome | `tests/test_sim_trade_ledger.py`; `tests/test_sim_sell_attribution.py`; `tests/test_runner_sell_attribution.py`; full pytest `12411 passed, 8570 skipped, 1 xfailed` before commit `47b7824` |
+| SQLite trade attribution could tax losing lots and discarded gross/net P&L fields | Trade diagnostics must satisfy lot-level accounting: losing lots carry zero tax, winning-lot tax never exceeds positive gross, and DB rows retain gross/proceeds/net when emitted | `tests/test_trade_decision_attribution.py::test_build_round_trips_allocates_tax_only_to_winning_lots`; `tests/test_persistence.py::TestTrades::test_records_trade_decision_tree_payloads`; full pytest `12412 passed, 8570 skipped, 1 xfailed` |
 
-Commit: `d315b65 Fix daily WF fallback and schema migration` pushed to `origin/main`.
+Recent fix commits pushed to `origin/main` include `d315b65` (daily WF
+fallback/schema migration), `47b7824` (sim round-trip trace attribution), and
+the follow-up DB attribution/accounting commit in this session.
 
 ## Operator Override Run
 

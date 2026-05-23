@@ -64,6 +64,19 @@ def test_build_round_trips_preserves_entry_decision_payload() -> None:
             "pnl_pct": 0.10,
             "hold_days": 10,
             "tax": 12.0,
+            "order_type": "SELL_model_sell",
+            "source": "ExitPipeline",
+            "source_job": "TickerSellJob",
+            "source_task": "ModelExitTask",
+            "order_source": "TickerSellJob.ModelExitTask",
+            "attribution_version": "exit_decision_v1",
+            "score_snapshot_json": json.dumps({
+                "rank_score": 0.52,
+                "regime": "BULL_CALM",
+            }),
+            "decision_inputs_json": json.dumps({
+                "acceptance_reason": "model_sell_streak",
+            }),
             "run_regime": "BULL_CALM",
         },
     ])
@@ -77,10 +90,61 @@ def test_build_round_trips_preserves_entry_decision_payload() -> None:
     assert row["entry_regime"] == "BULL_CALM"
     assert row["entry_rank_score"] == pytest.approx(0.61)
     assert row["entry_acceptance_reason"] == "qp_target_weight_increase"
+    assert row["exit_order_type"] == "SELL_model_sell"
+    assert row["exit_source_job"] == "TickerSellJob"
+    assert row["exit_acceptance_reason"] == "model_sell_streak"
     assert row["gross_pnl"] == pytest.approx(100.0)
     assert row["tax"] == pytest.approx(12.0)
     assert row["net_pnl"] == pytest.approx(88.0)
     assert row["net_return"] == pytest.approx(0.088)
+
+
+def test_build_round_trips_allocates_tax_only_to_winning_lots() -> None:
+    trades = pd.DataFrame([
+        {
+            "run_id": "r1",
+            "trade_rowid": 1,
+            "date": pd.Timestamp("2026-05-01"),
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 100.0,
+            "invest": 100.0,
+            "run_regime": "BULL_CALM",
+        },
+        {
+            "run_id": "r2",
+            "trade_rowid": 2,
+            "date": pd.Timestamp("2026-05-02"),
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 130.0,
+            "invest": 130.0,
+            "run_regime": "BULL_CALM",
+        },
+        {
+            "run_id": "r3",
+            "trade_rowid": 3,
+            "date": pd.Timestamp("2026-05-20"),
+            "ticker": "AAA",
+            "action": "sell",
+            "shares": 2,
+            "price": 120.0,
+            "exit_reason": "qp_sell",
+            "tax": 5.0,
+            "run_regime": "BULL_CALM",
+        },
+    ])
+
+    out = build_round_trips(trades).sort_values("entry_price").reset_index(drop=True)
+
+    assert out.loc[0, "gross_pnl"] == pytest.approx(20.0)
+    assert out.loc[0, "tax"] == pytest.approx(5.0)
+    assert out.loc[1, "gross_pnl"] == pytest.approx(-10.0)
+    assert out.loc[1, "tax"] == pytest.approx(0.0)
+    assert not ((out["gross_pnl"] <= 0) & (out["tax"] > 0)).any()
+    assert not ((out["gross_pnl"] > 0) & (out["tax"] > out["gross_pnl"])).any()
 
 
 def test_build_round_trips_handles_legacy_sell_without_share_quantity() -> None:

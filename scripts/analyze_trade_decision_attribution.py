@@ -44,6 +44,9 @@ TRADE_COLUMNS = [
     "pnl_pct",
     "hold_days",
     "tax",
+    "gross_pnl",
+    "proceeds_basis",
+    "net_pnl_after_tax",
     "rank_score",
     "conviction",
     "sigma_mult",
@@ -187,6 +190,22 @@ def _entry_field(row: pd.Series, snapshot: dict[str, Any], key: str) -> Any:
     return row.get(key)
 
 
+def _exit_payload(row: pd.Series) -> dict[str, Any]:
+    snapshot = _json_cell(row.get("score_snapshot_json"))
+    decision = _json_cell(row.get("decision_inputs_json"))
+    return {
+        "exit_order_type": row.get("order_type"),
+        "exit_source": row.get("source"),
+        "exit_source_job": row.get("source_job"),
+        "exit_source_task": row.get("source_task"),
+        "exit_order_source": row.get("order_source"),
+        "exit_attribution_version": row.get("attribution_version"),
+        "exit_acceptance_reason": decision.get("acceptance_reason"),
+        "exit_decision_inputs": decision,
+        "exit_score_snapshot": snapshot,
+    }
+
+
 def _hold_bucket(hold_days: float | None) -> str:
     if hold_days is None or not math.isfinite(hold_days):
         return "unknown"
@@ -277,19 +296,23 @@ def build_round_trips(trades: pd.DataFrame) -> pd.DataFrame:
         tax_total = _finite_float(row.get("tax")) or 0.0
         remaining = min(sell_shares, total_open)
         matched_total = remaining
+        matched_rows: list[dict[str, Any]] = []
+        exit_payload = _exit_payload(row)
 
         while remaining > 1e-9 and open_lots[ticker]:
             lot = open_lots[ticker][0]
             take = min(remaining, float(lot["shares_left"]))
             entry_price = float(lot["entry_price"])
             entry_notional = take * float(lot["entry_notional_per_share"])
-            if pnl_pct is None:
+            if entry_price > 0:
                 gross_return = (sell_price - entry_price) / entry_price
+                gross_pnl = entry_notional * gross_return
+            elif pnl_pct is None:
+                gross_return = np.nan
+                gross_pnl = np.nan
             else:
                 gross_return = pnl_pct
-            gross_pnl = entry_notional * gross_return
-            tax = tax_total * (take / matched_total) if matched_total else 0.0
-            net_pnl = gross_pnl - tax
+                gross_pnl = entry_notional * gross_return
             entry_date = pd.Timestamp(lot["entry_date"]) if lot["entry_date"] is not None else None
             exit_date = pd.Timestamp(row.get("date")) if row.get("date") is not None else None
             if hold_days_from_sell is not None:
@@ -299,7 +322,7 @@ def build_round_trips(trades: pd.DataFrame) -> pd.DataFrame:
             else:
                 hold_days = None
 
-            rows.append({
+            matched_rows.append({
                 "ticker": ticker,
                 "entry_date": entry_date,
                 "exit_date": exit_date,
@@ -309,14 +332,15 @@ def build_round_trips(trades: pd.DataFrame) -> pd.DataFrame:
                 "entry_notional": entry_notional,
                 "gross_return": gross_return,
                 "gross_pnl": gross_pnl,
-                "tax": tax,
-                "net_pnl": net_pnl,
-                "net_return": net_pnl / entry_notional if entry_notional else np.nan,
+                "tax": 0.0,
+                "net_pnl": gross_pnl,
+                "net_return": gross_pnl / entry_notional if entry_notional else np.nan,
                 "hold_days": hold_days,
                 "hold_bucket": _hold_bucket(hold_days),
                 "exit_reason": row.get("exit_reason"),
                 "exit_run_id": row.get("run_id"),
                 "exit_run_regime": row.get("run_regime"),
+                **exit_payload,
                 **{k: lot.get(k) for k in (
                     "entry_order_type",
                     "entry_source",
@@ -344,6 +368,22 @@ def build_round_trips(trades: pd.DataFrame) -> pd.DataFrame:
             remaining -= take
             if lot["shares_left"] <= 1e-9:
                 open_lots[ticker].popleft()
+
+        if matched_rows:
+            positive_gross = sum(
+                max(0.0, _finite_float(r.get("gross_pnl")) or 0.0)
+                for r in matched_rows
+            )
+            if tax_total > 0 and positive_gross > 0:
+                for r in matched_rows:
+                    gp = max(0.0, _finite_float(r.get("gross_pnl")) or 0.0)
+                    tax = tax_total * (gp / positive_gross)
+                    r["tax"] = tax
+                    gross = _finite_float(r.get("gross_pnl")) or 0.0
+                    notional = _finite_float(r.get("entry_notional")) or 0.0
+                    r["net_pnl"] = gross - tax
+                    r["net_return"] = r["net_pnl"] / notional if notional else np.nan
+            rows.extend(matched_rows)
 
     out = pd.DataFrame(rows)
     if not out.empty:
@@ -444,6 +484,7 @@ def analyze(db_path: Path, *, since: str | None = None, until: str | None = None
     for group_col in [
         "entry_order_type",
         "entry_source_job",
+        "exit_source_job",
         "entry_regime",
         "exit_reason",
         "hold_bucket",

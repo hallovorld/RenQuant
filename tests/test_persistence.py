@@ -279,6 +279,9 @@ class TestTrades:
             "shares": 4,
             "price": 125.0,
             "invest": 500.0,
+            "gross_pnl": 40.0,
+            "proceeds_basis": 500.0,
+            "net_pnl_after_tax": 32.0,
             "order_type": "QP_BUY",
             "source": "JointPortfolioQPJob.JointPortfolioQPTask",
             "source_job": "JointPortfolioQPJob",
@@ -304,7 +307,8 @@ class TestTrades:
         row = conn.execute(
             """SELECT trade_date, order_type, source_job, source_task,
                       order_source, attribution_version,
-                      score_snapshot_json, decision_inputs_json
+                      score_snapshot_json, decision_inputs_json,
+                      gross_pnl, proceeds_basis, net_pnl_after_tax
                  FROM trades WHERE run_id = ? AND ticker = 'AAA'""",
             (rid,),
         ).fetchone()
@@ -320,6 +324,9 @@ class TestTrades:
         assert score_snapshot["regime"] == "BULL_CALM"
         assert decision_inputs["acceptance_reason"] == "qp_target_weight_increase"
         assert decision_inputs["delta_w"] == pytest.approx(0.08)
+        assert row[8] == pytest.approx(40.0)
+        assert row[9] == pytest.approx(500.0)
+        assert row[10] == pytest.approx(32.0)
         conn.close()
 
     def test_record_trades_fills_minimal_decision_payload(self, tmp_path):

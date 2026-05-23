@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_pct        REAL,
     hold_days      INTEGER,
     tax            REAL,
+    gross_pnl      REAL,
+    proceeds_basis REAL,
+    net_pnl_after_tax REAL,
     rank_score     REAL,
     conviction     REAL,
     sigma_mult     REAL,
@@ -418,6 +421,9 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("attribution_version",   "TEXT"),
         ("score_snapshot_json",   "TEXT"),
         ("decision_inputs_json",  "TEXT"),
+        ("gross_pnl",             "REAL"),
+        ("proceeds_basis",        "REAL"),
+        ("net_pnl_after_tax",     "REAL"),
     ],
 }
 
@@ -884,8 +890,9 @@ def record_trades(
 
     Expected keys (all optional except ticker + action):
       ticker, action ('buy'|'sell'), shares, price, invest, target_pct,
-      exit_reason, pnl_pct, hold_days, tax, rank_score, conviction,
-      sigma_mult, mu, sigma, order_type/source/source_job/source_task/
+      exit_reason, pnl_pct, hold_days, tax, gross_pnl, proceeds_basis,
+      net_pnl_after_tax, rank_score, conviction, sigma_mult, mu, sigma,
+      order_type/source/source_job/source_task/
       order_source/attribution_version, score_snapshot, decision_inputs.
     """
     if conn is None or run_id is None:
@@ -956,6 +963,9 @@ def record_trades(
             _none_or_float(t.get("pnl_pct")),
             _none_or_int(t.get("hold_days")),
             _none_or_float(t.get("tax")),
+            _none_or_float(t.get("gross_pnl")),
+            _none_or_float(t.get("proceeds_basis")),
+            _none_or_float(t.get("net_pnl_after_tax")),
             _none_or_float(t.get("rank_score")),
             _none_or_float(t.get("conviction")),
             _none_or_float(t.get("sigma_mult")),
@@ -975,10 +985,11 @@ def record_trades(
             """INSERT INTO trades
                   (run_id, trade_date, ticker, action, shares, price, invest, target_pct,
                    exit_reason, pnl_pct, hold_days, tax,
+                   gross_pnl, proceeds_basis, net_pnl_after_tax,
                    rank_score, conviction, sigma_mult, mu, sigma,
                    order_type, source, source_job, source_task, order_source,
                    attribution_version, score_snapshot_json, decision_inputs_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 
