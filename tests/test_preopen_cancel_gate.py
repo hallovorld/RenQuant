@@ -6,6 +6,8 @@ Pins:
   * dry-run skips actual cancel API calls
   * Only market orders considered (not limit / stop)
   * Cancellation failure on one order doesn't abort the batch
+  * Missing/stale price data fails open: no broker cancel, no ntfy
+  * Current move uses ES 5m price vs prior NYSE cash close, not daily Open
 """
 from __future__ import annotations
 
@@ -47,6 +49,19 @@ class TestBelowThresholdPasses:
                     threshold_sigma=2.0, dry_run=False,
                 )
                 assert result["action"] == "pass"
+                assert result["cancelled"] == []
+                MockClient.assert_not_called()
+
+    def test_data_unavailable_no_cancel(self):
+        from scripts import preopen_cancel_gate as gate
+
+        with patch.object(gate, "compute_overnight_severity",
+                          side_effect=ValueError("stale ES=F data")):
+            with patch("alpaca.trading.client.TradingClient") as MockClient:
+                result = gate.cancel_stale_market_orders(
+                    threshold_sigma=2.0, dry_run=False,
+                )
+                assert result["action"] == "data-unavailable"
                 assert result["cancelled"] == []
                 MockClient.assert_not_called()
 
@@ -133,24 +148,63 @@ class TestAboveThresholdCancels:
 
 class TestSeverityCompute:
 
-    def test_severity_from_synthetic_history(self):
-        """Validates the math of compute_overnight_severity with mocked
-        yfinance output."""
+    def test_severity_uses_intraday_current_price_not_daily_open(self):
+        """Daily ES opens can describe the futures session, not the current
+        pre-open print. The gate must use 5m ES current-vs-cash-close move."""
         import pandas as pd
         from scripts import preopen_cancel_gate as gate
 
-        # Build 100 days of synthetic OHLC with known overnight σ
-        idx = pd.date_range("2026-01-01", periods=100, freq="D")
-        opens = pd.Series([100.0] * 100, index=idx)
-        closes = pd.Series([99.5] * 100, index=idx)  # overnight returns = (100-99.5)/99.5 ≈ +0.5%
-        df = pd.DataFrame({"Open": opens, "Close": closes})
+        now = pd.Timestamp("2026-05-22 13:15:00Z")  # Fri 09:15 ET
+        intraday_idx = pd.DatetimeIndex([
+            pd.Timestamp("2026-05-21 20:00:00Z"),  # prior NYSE close
+            pd.Timestamp("2026-05-22 13:10:00Z"),
+            now,
+        ])
+        intraday = pd.DataFrame(
+            {"Close": [5000.0, 4955.0, 4950.0]},
+            index=intraday_idx,
+        )
 
-        with patch("yfinance.download", return_value=df):
-            m = gate.compute_overnight_severity(symbol="ES=F",
-                                                  lookback_days=120,
-                                                  sigma_window=60)
-            # All overnight returns identical → sigma ≈ 0 (within float-eps)
-            assert abs(m["sigma_60d"]) < 1e-12
-            assert abs(m["severity"])  < 1e-9
+        daily_idx = pd.date_range("2026-01-01", periods=100, freq="B")
+        closes = pd.Series([100.0] * 100, index=daily_idx)
+        rets = pd.Series(
+            [0.01 if i % 2 == 0 else -0.01 for i in range(100)],
+            index=daily_idx,
+        )
+        opens = closes.shift(1).fillna(100.0) * (1.0 + rets)
+        # Would have been a false +50% trigger in the old daily-Open code.
+        opens.iloc[-1] = 150.0
+        daily = pd.DataFrame({"Open": opens, "Close": closes}, index=daily_idx)
+        expected_sigma = float(
+            ((daily["Open"] - daily["Close"].shift(1)) / daily["Close"].shift(1))
+            .dropna()
+            .tail(60)
+            .std()
+        )
+
+        def fake_download(_sym, *args, **kwargs):
+            return intraday if kwargs.get("interval") == "5m" else daily
+
+        with patch("yfinance.download", side_effect=fake_download):
+            m = gate.compute_overnight_severity(
+                symbol="ES=F",
+                lookback_days=120,
+                sigma_window=60,
+                now=now,
+            )
+            expected_move = (4950.0 - 5000.0) / 5000.0
             assert m["source"] == "ES=F"
+            assert m["sigma_source"] == "SPY"
+            assert abs(m["current_pct"] - expected_move) < 1e-12
+            assert abs(m["sigma_60d"] - expected_sigma) < 1e-12
+            assert abs(m["severity"] - expected_move / expected_sigma) < 1e-12
             assert m["n_obs"] == 99  # 100 bars - 1 shift
+
+    def test_main_skips_closed_market_day_before_fetching_or_cancelling(self):
+        from scripts import preopen_cancel_gate as gate
+
+        with patch.object(gate, "_is_nyse_session_date", return_value=False), \
+             patch.object(gate, "cancel_stale_market_orders") as cancel, \
+             patch.object(sys, "argv", ["preopen_cancel_gate.py"]):
+            gate.main()
+            cancel.assert_not_called()

@@ -19,17 +19,20 @@ Scientific basis:
   variation from special-cause; corresponds to ~2.3% one-sided
   exceedance probability under normal-ish distributions.
 
-Threshold: σ-normalized severity. The bar is "absolute overnight
-move ≥ 2 × σ_60d_overnight". Default 2.0σ chosen per Shewhart; tunable
-via --severity-threshold-sigma.
+Threshold: sigma-normalized severity. The bar is "absolute overnight
+move >= 2 x sigma_60d_overnight". Default 2.0 sigma chosen per Shewhart;
+tunable via --severity-threshold-sigma.
 
-Data source: yfinance ES=F (E-mini S&P 500 futures) — free, no API
-keys required. Falls back to ^GSPC daily bars if ES=F is unavailable.
+Data source: yfinance ES=F 5-minute bars for the current pre-open move,
+normalized by SPY cash-session close->open overnight sigma. This avoids
+the old daily-bar bug where ES=F's futures-session open could be mistaken
+for the current pre-open price.
 
 Behavior:
-1. Compute overnight ES move + 60d σ of historical overnight returns
-2. If |severity| < threshold: PASS, no action
-3. If |severity| ≥ threshold: cancel ALL pending market orders on the
+1. Compute ES current move since the previous NYSE cash close
+2. Normalize by 60d SPY cash overnight gap sigma
+3. If |severity| < threshold: PASS, no action
+4. If |severity| ≥ threshold: cancel ALL pending market orders on the
    LIVE Alpaca account; ntfy alert; exit 0
 
 Usage::
@@ -44,7 +47,6 @@ import argparse
 import logging
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -67,89 +69,224 @@ def _load_env() -> None:
         os.environ.setdefault(k.strip(), v.strip())
 
 
-def compute_overnight_severity(
-    *,
-    symbol: str = "ES=F",
-    fallback_symbol: str = "^GSPC",
-    lookback_days: int = 90,
-    sigma_window: int = 60,
-) -> dict:
-    """Return {prior_close, current, current_pct, sigma_60d, severity}.
-
-    severity = current_pct / sigma_60d where σ is the empirical stdev of
-    historical overnight returns (close→open) over `sigma_window` bars.
-
-    Raises ValueError if data is unavailable.
-    """
-    import numpy as np
-    import yfinance as yf
+def _to_utc_timestamp(ts):
     import pandas as pd
 
-    end = pd.Timestamp.now(tz="UTC")
+    out = pd.Timestamp(ts)
+    if out.tzinfo is None:
+        return out.tz_localize("UTC")
+    return out.tz_convert("UTC")
+
+
+def _series(df, name: str):
+    s = df[name]
+    if hasattr(s, "squeeze"):
+        s = s.squeeze()
+    if getattr(s, "ndim", 1) > 1:
+        s = s.iloc[:, 0]
+    return s.astype(float).dropna()
+
+
+def _previous_nyse_close(now_utc):
+    import pandas as pd
+    import pandas_market_calendars as mcal
+
+    now_utc = _to_utc_timestamp(now_utc)
+    cal = mcal.get_calendar("NYSE")
+    start = (now_utc - pd.Timedelta(days=14)).date()
+    end = now_utc.date()
+    sched = cal.schedule(start, end)
+    if sched.empty:
+        raise ValueError("NYSE calendar returned no recent sessions")
+    closes = sched["market_close"].map(_to_utc_timestamp)
+    prior = closes[closes < now_utc]
+    if prior.empty:
+        raise ValueError("no prior NYSE cash close before current time")
+    return prior.iloc[-1]
+
+
+def _is_nyse_session_date(day=None) -> bool:
+    import pandas as pd
+    import pandas_market_calendars as mcal
+
+    if day is None:
+        target = pd.Timestamp.now(tz="America/New_York").date()
+    else:
+        target = day
+    cal = mcal.get_calendar("NYSE")
+    return not cal.schedule(target, target).empty
+
+
+def _cash_overnight_sigma(
+    yf,
+    *,
+    sigma_symbol: str,
+    fallback_symbol: str,
+    lookback_days: int,
+    sigma_window: int,
+    now_utc,
+) -> tuple[float, int, str]:
+    import pandas as pd
+
+    end = _to_utc_timestamp(now_utc)
     start = end - pd.Timedelta(days=int(lookback_days * 1.7))
 
     def _fetch(sym: str):
         try:
             return yf.download(
-                sym, start=start.date(), end=(end + pd.Timedelta(days=1)).date(),
-                progress=False, auto_adjust=False,
+                sym,
+                start=start.date(),
+                end=(end + pd.Timedelta(days=1)).date(),
+                progress=False,
+                auto_adjust=False,
             )
         except Exception as exc:
-            log.warning("yf.download(%s) failed: %s", sym, exc)
+            log.warning("yf.download(%s daily) failed: %s", sym, exc)
             return None
 
-    df = _fetch(symbol)
-    used = symbol
+    used = sigma_symbol
+    df = _fetch(sigma_symbol)
     if df is None or df.empty:
-        log.warning("Primary symbol %s unavailable; falling back to %s",
-                    symbol, fallback_symbol)
-        df = _fetch(fallback_symbol)
+        log.warning(
+            "Sigma symbol %s unavailable; falling back to %s",
+            sigma_symbol,
+            fallback_symbol,
+        )
         used = fallback_symbol
+        df = _fetch(fallback_symbol)
     if df is None or df.empty:
         raise ValueError(
-            f"both {symbol} and {fallback_symbol} unavailable from yfinance"
+            f"both {sigma_symbol} and {fallback_symbol} unavailable from yfinance"
         )
 
     df = df.sort_index()
-    # Yahoo daily bars include Open / Close. Overnight return =
-    # (today's Open - prior day's Close) / prior day's Close
-    open_series  = df["Open"].astype(float)
-    close_series = df["Close"].astype(float)
-    if hasattr(open_series, "squeeze"):
-        open_series  = open_series.squeeze()
-        close_series = close_series.squeeze()
-    prior_close = close_series.shift(1)
-    overnight = (open_series - prior_close) / prior_close
+    opens = _series(df, "Open")
+    closes = _series(df, "Close")
+    prior_close = closes.shift(1)
+    overnight = ((opens - prior_close) / prior_close).replace(
+        [float("inf"), -float("inf")], pd.NA,
+    )
     overnight = overnight.dropna()
     if len(overnight) < 10:
-        raise ValueError(
-            f"insufficient overnight history ({len(overnight)} obs)"
+        raise ValueError(f"insufficient overnight sigma history ({len(overnight)} obs)")
+    return float(overnight.tail(sigma_window).std()), int(len(overnight)), used
+
+
+def _current_futures_move(
+    yf,
+    *,
+    symbol: str,
+    now_utc,
+    max_stale_minutes: float,
+) -> dict:
+    import pandas as pd
+
+    now_utc = _to_utc_timestamp(now_utc)
+    prior_cash_close = _previous_nyse_close(now_utc)
+    try:
+        df = yf.download(
+            symbol,
+            period="10d",
+            interval="5m",
+            prepost=True,
+            progress=False,
+            auto_adjust=False,
         )
-    sigma_60d = float(overnight.tail(sigma_window).std())
-    latest_close = float(close_series.iloc[-1])
-    # "Current" — latest available print. For ES=F this is recent (futures
-    # trade 23h/day); for ^GSPC this lags. Use the latest close as the
-    # best-available "where we are now" proxy.
+    except Exception as exc:
+        raise ValueError(f"yf.download({symbol} 5m) failed: {exc}") from exc
+    if df is None or df.empty:
+        raise ValueError(f"{symbol} 5m history unavailable from yfinance")
+
+    close = _series(df.sort_index(), "Close")
+    if close.empty:
+        raise ValueError(f"{symbol} 5m close series unavailable")
+    close.index = pd.DatetimeIndex([_to_utc_timestamp(ts) for ts in close.index])
+    close = close[close.index <= now_utc]
+    if close.empty:
+        raise ValueError(f"{symbol} 5m history has no bars before now")
+
+    latest_ts = close.index[-1]
+    stale_minutes = (now_utc - latest_ts).total_seconds() / 60.0
+    if stale_minutes > max_stale_minutes:
+        raise ValueError(
+            f"{symbol} latest 5m bar is stale ({stale_minutes:.1f} min old)"
+        )
+
+    ref = close[close.index <= prior_cash_close]
+    if ref.empty:
+        raise ValueError(f"{symbol} has no 5m bar before prior NYSE close")
+    ref_ts = ref.index[-1]
+    prior_price = float(ref.iloc[-1])
+    latest = float(close.iloc[-1])
+    if prior_price <= 0:
+        raise ValueError(f"{symbol} invalid prior close proxy {prior_price}")
+    return {
+        "prior_close": prior_price,
+        "latest": latest,
+        "current_pct": (latest - prior_price) / prior_price,
+        "prior_close_time": ref_ts.isoformat(),
+        "latest_time": latest_ts.isoformat(),
+        "stale_minutes": float(stale_minutes),
+    }
+
+
+def compute_overnight_severity(
+    *,
+    symbol: str = "ES=F",
+    sigma_symbol: str = "SPY",
+    fallback_sigma_symbol: str = "^GSPC",
+    lookback_days: int = 90,
+    sigma_window: int = 60,
+    max_stale_minutes: float = 120.0,
+    now=None,
+) -> dict:
+    """Return {prior_close, latest, current_pct, sigma_60d, severity}.
+
+    The live move uses ES=F 5-minute futures from the prior NYSE cash close
+    to the latest current print. The denominator is SPY cash close->open
+    overnight sigma, so the alert threshold is tied to the gap distribution
+    of the equities the orders actually trade.
+
+    Raises ValueError if data is unavailable.
+    """
+    import yfinance as yf
+    import pandas as pd
+
+    now_utc = _to_utc_timestamp(now or pd.Timestamp.now(tz="UTC"))
+    move = _current_futures_move(
+        yf,
+        symbol=symbol,
+        now_utc=now_utc,
+        max_stale_minutes=max_stale_minutes,
+    )
+    sigma_60d, n_obs, sigma_used = _cash_overnight_sigma(
+        yf,
+        sigma_symbol=sigma_symbol,
+        fallback_symbol=fallback_sigma_symbol,
+        lookback_days=lookback_days,
+        sigma_window=sigma_window,
+        now_utc=now_utc,
+    )
     severity = 0.0
-    # Guard against degenerate σ (synthetic test data, or genuinely
+    # Guard against degenerate sigma (synthetic test data, or genuinely
     # zero-vol windows on holidays). Threshold 1e-8 is below any
     # realistic equity-vol scale (50 bps/day = 0.005 ≫ 1e-8) so
-    # legitimate signal is never lost; eps-σ becomes treated as
+    # legitimate signal is never lost; eps-sigma becomes treated as
     # "no information" rather than producing 1e18-scale severity.
     if sigma_60d > 1e-8:
-        latest_overnight = float(overnight.iloc[-1])
-        severity = latest_overnight / sigma_60d
-        current_pct = latest_overnight
-    else:
-        current_pct = 0.0
+        severity = float(move["current_pct"]) / sigma_60d
     return {
-        "source":      used,
-        "prior_close": float(prior_close.iloc[-1]) if len(prior_close) else None,
-        "latest":      latest_close,
-        "current_pct": float(current_pct),
+        "source":      symbol,
+        "sigma_source": sigma_used,
+        "prior_close": float(move["prior_close"]),
+        "latest":      float(move["latest"]),
+        "current_pct": float(move["current_pct"] if sigma_60d > 1e-8 else 0.0),
         "sigma_60d":   sigma_60d,
         "severity":    float(severity),
-        "n_obs":       int(len(overnight)),
+        "n_obs":       int(n_obs),
+        "prior_close_time": move["prior_close_time"],
+        "latest_time": move["latest_time"],
+        "stale_minutes": move["stale_minutes"],
     }
 
 
@@ -160,21 +297,32 @@ def cancel_stale_market_orders(*, threshold_sigma: float, dry_run: bool) -> dict
     """
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import GetOrdersRequest
-    from alpaca.trading.enums import QueryOrderStatus, OrderType
+    from alpaca.trading.enums import QueryOrderStatus
 
-    metrics = compute_overnight_severity()
+    try:
+        metrics = compute_overnight_severity()
+    except ValueError as exc:
+        log.warning("PREOPEN-GATE: DATA-UNAVAILABLE — %s. No cancel.", exc)
+        return {
+            "metrics": {"error": str(exc)},
+            "cancelled": [],
+            "considered": 0,
+            "action": "data-unavailable",
+        }
     sev = metrics["severity"]
     pct = metrics["current_pct"]
     sigma = metrics["sigma_60d"]
     log.info(
-        "PREOPEN-GATE: %s overnight %+.3f%% (σ_60d=%.3f%%, "
-        "severity=%+.2fσ, threshold=±%.1fσ, n_obs=%d)",
-        metrics["source"], pct * 100, sigma * 100, sev,
-        threshold_sigma, metrics["n_obs"],
+        "PREOPEN-GATE: %s current-vs-cash-close %+.3f%% "
+        "(%s sigma_60d=%.3f%%, severity=%+.2f sigma, "
+        "threshold=+/-%.1f sigma, n_obs=%d, stale=%.1f min)",
+        metrics["source"], pct * 100, metrics.get("sigma_source", "?"),
+        sigma * 100, sev, threshold_sigma, metrics["n_obs"],
+        metrics.get("stale_minutes", -1.0),
     )
 
     if abs(sev) < threshold_sigma:
-        log.info("PREOPEN-GATE: PASS — severity within ±%.1fσ. No action.",
+        log.info("PREOPEN-GATE: PASS — severity within +/-%.1f sigma. No action.",
                  threshold_sigma)
         return {"metrics": metrics, "cancelled": [],
                 "considered": 0, "action": "pass"}
@@ -195,7 +343,7 @@ def cancel_stale_market_orders(*, threshold_sigma: float, dry_run: bool) -> dict
         if str(getattr(o, "order_type", "")) in ("OrderType.MARKET", "market")
     ]
     log.warning(
-        "PREOPEN-GATE: TRIGGERED — severity=%+.2fσ ≥ ±%.1fσ; "
+        "PREOPEN-GATE: TRIGGERED — severity=%+.2f sigma >= +/-%.1f sigma; "
         "evaluating %d pending market order(s) for cancel.",
         sev, threshold_sigma, len(pending_market),
     )
@@ -215,8 +363,8 @@ def cancel_stale_market_orders(*, threshold_sigma: float, dry_run: bool) -> dict
     if cancelled:
         try:
             msg = (
-                f"PREOPEN-CANCEL: {metrics['source']} overnight "
-                f"{pct*100:+.2f}% ({sev:+.1f}σ ≥ ±{threshold_sigma:.1f}σ) "
+                f"PREOPEN-CANCEL: {metrics['source']} current-vs-cash-close "
+                f"{pct*100:+.2f}% ({sev:+.1f}σ >= +/-{threshold_sigma:.1f}σ) "
                 f"→ cancelled {len(cancelled)} pending order(s): "
                 f"{','.join(cancelled)}"
             )
@@ -250,7 +398,14 @@ def main() -> None:
         "--dry-run", action="store_true",
         help="Compute severity + list cancelables, but do NOT submit cancels.",
     )
+    p.add_argument(
+        "--ignore-calendar", action="store_true",
+        help="Run even when today is not an NYSE trading session.",
+    )
     args = p.parse_args()
+    if not args.ignore_calendar and not _is_nyse_session_date():
+        log.info("NYSE closed today — skipping pre-open cancel gate.")
+        return
     result = cancel_stale_market_orders(
         threshold_sigma=args.severity_threshold_sigma,
         dry_run=args.dry_run,
