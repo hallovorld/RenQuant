@@ -258,6 +258,23 @@ class TestLoadRegimeCalibrators:
         LoadGlobalCalibrationTask().run(ctx)
         assert ctx._global_calibrator is not None
 
+    def test_strict_contract_rejects_preloaded_foreign_calibrator(self, tmp_path):
+        """WF-preloaded calibrators must obey the same scorer binding."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        cal_path = art_dir / "panel-rank-calibration.json"
+        self._write_calibrator(cal_path, None, scorer_fp="sha256:foreign000000")
+
+        ctx = self._make_ctx(tmp_path, regime_enabled=False)
+        ctx._global_calibrator = GlobalPanelCalibration.load(cal_path)
+        ctx._panel_scorer = SimpleNamespace(
+            metadata={"artifact_fingerprint": "sha256:active111111"}
+        )
+
+        with pytest.raises(ValueError, match="fingerprint mismatch"):
+            LoadGlobalCalibrationTask().run(ctx)
+
     def test_strict_contract_rejects_missing_calibrator_fingerprint(self, tmp_path):
         """A newly fitted calibrator must carry scorer_artifact_fingerprint."""
         from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask

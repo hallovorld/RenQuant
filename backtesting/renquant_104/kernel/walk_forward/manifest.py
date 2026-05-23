@@ -6,7 +6,8 @@ A manifest pins the entire walk-forward training run that fed a sim:
       "cadence_days": 21,
       "training_window_years": 3.0,
       "retrains": [
-        {"cutoff_date": "...", "trained_date": "...", "artifact_uri": "..."},
+        {"cutoff_date": "...", "trained_date": "...", "artifact_uri": "...",
+         "calibrator_uri": "..."},
         ...
       ]
     }
@@ -44,6 +45,7 @@ class WalkForwardManifest:
                     "cutoff_date": e.cutoff_date.isoformat(),
                     "trained_date": e.trained_date.isoformat(),
                     "artifact_uri": e.artifact_uri,
+                    "calibrator_uri": e.calibrator_uri,
                     # 2026-05-11 Round 3 audit: persist lookahead_days so
                     # the leakage guard's `cutoff + lookahead < today` check
                     # survives a manifest round-trip. Default 0 = no
@@ -86,6 +88,11 @@ def _validate_entry(raw: dict, idx: int) -> RetrainEntry:
         trained_date=trained,
         artifact_uri=uri,
         lookahead_days=lookahead,
+        calibrator_uri=(
+            str(raw.get("calibrator_uri") or raw.get("calibration_uri"))
+            if (raw.get("calibrator_uri") or raw.get("calibration_uri"))
+            else None
+        ),
     )
 
 

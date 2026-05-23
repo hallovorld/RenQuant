@@ -1266,6 +1266,65 @@ def _cap_buy_shares_to_cash(
     return capped, capped * unit_cost
 
 
+def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
+    """Apply model-soft-exit guards to QP long trims/closes.
+
+    QP sells are optimizer-driven, not hard risk exits, so they must respect
+    the same horizon/LT/tax gates as panel-conviction exits. This prevents
+    short-term profitable trims from realizing tax drag unless μ is negative
+    enough to pay for the exit.
+    """
+    cfg = _qp_cfg(ctx)
+    guard_cfg = cfg.get("qp_soft_sell_guard", {})
+    if isinstance(guard_cfg, dict) and guard_cfg.get("enabled") is False:
+        return None
+    target_w = float(sol.target_w[i])
+    if target_w < -1e-9:
+        return None
+    hs = (getattr(ctx, "holdings", None) or {}).get(ticker)
+    if hs is None:
+        return None
+    panel_cfg = ((getattr(ctx, "config", {}) or {}).get("risk", {}) or {}).get("panel_exit", {}) or {}
+    from kernel.pipeline.soft_exit_guards import (  # noqa: PLC0415
+        lt_gate_suppression,
+        resolve_current_price,
+        soft_exit_horizon_suppression,
+        tax_adjusted_soft_exit_suppression,
+    )
+    suppress, why = soft_exit_horizon_suppression(
+        panel_cfg=panel_cfg,
+        regime=getattr(ctx, "regime", None),
+        today=getattr(ctx, "today", None),
+        holding=hs,
+    )
+    if suppress:
+        return "qp_soft_sell_horizon:" + why
+    current_price = resolve_current_price(ctx, hs, ticker)
+    suppress, why = lt_gate_suppression(
+        config=getattr(ctx, "config", {}) or {},
+        today=getattr(ctx, "today", None),
+        holding=hs,
+        current_price=current_price,
+    )
+    if suppress:
+        return "qp_soft_sell_lt_gate:" + why
+    mu_vec = _get_path(ctx, "_qp_mu")
+    mu_i = None
+    if mu_vec is not None and i < len(mu_vec):
+        mu_i = float(mu_vec[i])
+    suppress, why = tax_adjusted_soft_exit_suppression(
+        panel_cfg=panel_cfg,
+        tax_cfg=(getattr(ctx, "config", {}) or {}).get("tax") or {},
+        today=getattr(ctx, "today", None),
+        holding=hs,
+        current_price=current_price,
+        mu=mu_i,
+    )
+    if suppress:
+        return "qp_soft_sell_tax:" + why
+    return None
+
+
 class EmitOrdersFromQPSolutionTask(Task):
     """Translate Δw → ctx.orders (buys/top-ups) + ctx.exits (closes/trims).
 
@@ -1314,6 +1373,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             n_not_selected=counters["not_selected"],
             n_cash_capped=counters["cash_capped"],
             n_cash_exhausted=counters["cash_exhausted"],
+            n_soft_sell_blocked=counters["soft_sell_blocked"],
         )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
@@ -1399,7 +1459,7 @@ class EmitOrdersFromQPSolutionTask(Task):
                  skipped_nonfinite=0, skipped_band=0,
                  delta_below_min_dw=0, zero_shares=0,
                  no_buy_delta=0, not_selected=0,
-                 cash_capped=0, cash_exhausted=0)
+                 cash_capped=0, cash_exhausted=0, soft_sell_blocked=0)
         buy_cash_left = max(0.0, env["cash"] - env["nav"] * env["cash_reserve"])
         for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
@@ -1488,10 +1548,18 @@ class EmitOrdersFromQPSolutionTask(Task):
                 _emit_qp_buy(ctx, t, shares, env["prices"].get(t, 0.0), sol, i, env["cands"])
                 emitted_candidates.add(t)
                 nb += 1
-            elif _emit_qp_sell(ctx, t, shares, dw, sol, i):
-                ns += 1
             else:
-                stamp(t, "qp_no_sell_position")
+                soft_block = _qp_soft_sell_block_reason(ctx, t, sol, i)
+                if soft_block:
+                    c["soft_sell_blocked"] += 1
+                    stamp(t, soft_block)
+                    log.info("QP_SELL_SUPPRESSED %-6s  Δw=%+.4f  %s",
+                             t, dw, soft_block)
+                    continue
+                if _emit_qp_sell(ctx, t, shares, dw, sol, i):
+                    ns += 1
+                else:
+                    stamp(t, "qp_no_sell_position")
         for ticker in candidate_tickers - emitted_candidates:
             if ticker not in blocked_map:
                 c["not_selected"] += 1
@@ -1503,7 +1571,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         *, n_blocked_buys, buy_blocked, n_blocked_earnings, earn_buf,
         n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
         n_delta_below_min_dw, n_zero_shares, n_no_buy_delta, n_not_selected,
-        n_cash_capped, n_cash_exhausted,
+        n_cash_capped, n_cash_exhausted, n_soft_sell_blocked,
     ) -> None:
         if n_blocked_buys:
             reason = ("buy_blocked=True" if buy_blocked
@@ -1561,6 +1629,12 @@ class EmitOrdersFromQPSolutionTask(Task):
             log.info(
                 "EmitOrdersFromQPSolutionTask: skipped %d QP buy(s) because cash was exhausted",
                 n_cash_exhausted,
+            )
+        if n_soft_sell_blocked:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: suppressed %d QP soft sell(s) "
+                "by horizon/LT/tax guards",
+                n_soft_sell_blocked,
             )
 
 
@@ -1801,6 +1875,9 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
             should_exit=True, exit_type=exit_type,
             quantity=float(qty), reason=f"qp_dw={dw:+.4f}",
         )))
+        sig = ctx.exits[-1][1]
+        sig.source_job = "JointPortfolioQPJob"
+        sig.source_task = "EmitOrdersFromQPSolutionTask"
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
                  ticker, dw, qty, exit_type)
         return True
@@ -1818,6 +1895,9 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
             should_exit=True, exit_type="qp_close",
             quantity=float(long_close), reason=f"qp_dw={dw:+.4f}",
         )))
+        sig = ctx.exits[-1][1]
+        sig.source_job = "JointPortfolioQPJob"
+        sig.source_task = "EmitOrdersFromQPSolutionTask"
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=qp_close",
                  ticker, dw, long_close)
         emitted = True
@@ -1830,6 +1910,9 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
             should_exit=True, exit_type="qp_short_open",
             quantity=float(short_open), reason=f"qp_dw={dw:+.4f} target_w={target_w:+.4f}",
         )))
+        sig = ctx.exits[-1][1]
+        sig.source_job = "JointPortfolioQPJob"
+        sig.source_task = "EmitOrdersFromQPSolutionTask"
         log.info("QP_SHORT_OPEN %-6s  Δw=%+.4f  shares=%d  target_w=%+.4f",
                  ticker, dw, short_open, target_w)
         emitted = True

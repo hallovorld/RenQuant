@@ -61,6 +61,7 @@ import pandas as pd  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
 TRAIN_PROD_SCRIPT = REPO_ROOT / "scripts" / "train_production_model.py"
+CALIBRATOR_SCRIPT = REPO_ROOT / "scripts" / "fit_calibrator_alpha158_fund.py"
 WF_V2_SUBDIR = "walkforward_v2"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(STRATEGY_DIR))
@@ -88,6 +89,17 @@ def make_artifact_path(strategy_dir: Path, cutoff: pd.Timestamp) -> Path:
     sub = strategy_dir / "artifacts" / WF_V2_SUBDIR / cutoff.date().isoformat()
     sub.mkdir(parents=True, exist_ok=True)
     return sub / "panel-ltr.json"
+
+
+def make_calibrator_path(artifact_path: Path) -> Path:
+    """The per-fold calibrator lives beside its scorer artifact."""
+    return artifact_path.with_name("panel-rank-calibration.json")
+
+
+def infer_label_lookahead_days(label: str | None) -> int:
+    import re
+    m = re.search(r"fwd_(\d+)d", str(label or "fwd_60d_excess"))
+    return int(m.group(1)) if m else 60
 
 
 def configure_panel_cutoff(cfg: dict, cutoff: pd.Timestamp,
@@ -119,7 +131,8 @@ def configure_panel_cutoff(cfg: dict, cutoff: pd.Timestamp,
 
 
 def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
-                         artifact_uri: str, lookahead_days: int = 60):
+                         artifact_uri: str, lookahead_days: int = 60,
+                         calibrator_uri: str | None = None):
     """Build a RetrainEntry — wrapper so callers don't have to import it.
 
     2026-05-11 Round 3 audit (G3): lookahead_days propagated so the
@@ -134,6 +147,7 @@ def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
         trained_date=pd.Timestamp(trained_dt),
         artifact_uri=artifact_uri,
         lookahead_days=int(lookahead_days),
+        calibrator_uri=calibrator_uri,
     )
 
 
@@ -142,7 +156,9 @@ def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
 def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
                      label: str | None = None,
                      watchlist_file: str | None = None,
-                     artifact_root: str | None = None) -> tuple[bool, Path, str]:
+                     artifact_root: str | None = None,
+                     fit_calibrator: bool = True,
+                     calibrator_method: str = "platt") -> tuple[bool, Path, Path | None, str]:
     """Subprocess train_production_model.py for one cutoff.
 
     Optional args (2026-05-13 Track 6 / Track 1):
@@ -150,7 +166,7 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
         watchlist_file: --watchlist-file passthrough (wl174 retrained variant)
         artifact_root: override WF_V2_SUBDIR (e.g. 'walkforward_horizon_5d')
 
-    Returns (success, artifact_path, error_msg). On non-zero exit, success=False
+    Returns (success, artifact_path, calibrator_path, error_msg). On non-zero exit, success=False
     and the caller logs + continues (does not abort the whole batch).
     """
     cutoff_iso = cutoff.date().isoformat()
@@ -182,16 +198,66 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
             capture_output=True, text=True,
         )
     except Exception as exc:  # noqa: BLE001
-        return False, artifact_path, f"subprocess.run raised: {exc}"
+        return False, artifact_path, None, f"subprocess.run raised: {exc}"
     elapsed = time.monotonic() - t0
     if proc.returncode != 0:
         msg = f"exit={proc.returncode}; stderr_tail={proc.stderr[-500:]!r}"
         log.error("train_one_cutoff: cutoff=%s FAILED  %.1fs  %s",
                   cutoff_iso, elapsed, msg)
-        return False, artifact_path, msg
+        return False, artifact_path, None, msg
     log.info("train_one_cutoff: cutoff=%s DONE  %.1fs  artifact=%s",
              cutoff_iso, elapsed, artifact_path)
-    return True, artifact_path, ""
+    if not fit_calibrator:
+        return True, artifact_path, None, ""
+    ok, cal_path, err = fit_calibrator_for_cutoff(
+        cutoff,
+        artifact_path,
+        lookahead_days=infer_label_lookahead_days(label),
+        method=calibrator_method,
+    )
+    if not ok:
+        return False, artifact_path, cal_path, err
+    return True, artifact_path, cal_path, ""
+
+
+def fit_calibrator_for_cutoff(
+    cutoff: pd.Timestamp,
+    artifact_path: Path,
+    *,
+    lookahead_days: int,
+    method: str,
+) -> tuple[bool, Path, str]:
+    """Fit the matching causal calibrator for one WF scorer artifact."""
+    cal_path = make_calibrator_path(artifact_path)
+    data_end = (cutoff - pd.offsets.BDay(max(0, int(lookahead_days)))).date().isoformat()
+    cmd = [
+        sys.executable,
+        str(CALIBRATOR_SCRIPT),
+        "--scorer-artifact",
+        str(artifact_path),
+        "--out",
+        str(cal_path),
+        "--data-end",
+        data_end,
+        "--method",
+        method,
+    ]
+    log.info("fit_calibrator_for_cutoff: cutoff=%s data_end<%s",
+             cutoff.date().isoformat(), data_end)
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(REPO_ROOT), check=False,
+            capture_output=True, text=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, cal_path, f"calibrator subprocess raised: {exc}"
+    if proc.returncode != 0:
+        return (
+            False,
+            cal_path,
+            f"calibrator exit={proc.returncode}; stderr_tail={proc.stderr[-500:]!r}",
+        )
+    return True, cal_path, ""
 
 
 def read_trained_date(artifact_path: Path) -> datetime:
@@ -222,6 +288,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--jobs", type=int, default=1,
                    help="Number of cutoff retrains to run concurrently. "
                         "Default 1 preserves historical behavior.")
+    p.add_argument("--skip-calibrators", action="store_true",
+                   help="Research-only escape hatch. By default each WF scorer "
+                        "gets a matching causal calibrator and manifest "
+                        "calibrator_uri so strict scoring can run.")
+    p.add_argument("--calibrator-method", default="platt",
+                   choices=["platt", "isotonic"],
+                   help="Method passed to fit_calibrator_alpha158_fund.py.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print retrain dates and exit (no training).")
     return p.parse_args()
@@ -235,11 +308,13 @@ def train_cutoffs(retrain_dates: list[pd.Timestamp],
     failed: list[tuple[str, str]] = []
 
     def _run(cutoff: pd.Timestamp):
-        ok, artifact_path, err = train_one_cutoff(
+        ok, artifact_path, calibrator_path, err = train_one_cutoff(
             cutoff, STRATEGY_DIR,
             label=args.label,
             watchlist_file=args.watchlist_file,
             artifact_root=args.artifact_root,
+            fit_calibrator=not args.skip_calibrators,
+            calibrator_method=args.calibrator_method,
         )
         if not ok:
             return cutoff, None, err
@@ -251,6 +326,8 @@ def train_cutoffs(retrain_dates: list[pd.Timestamp],
             cutoff=cutoff,
             trained_dt=trained_dt,
             artifact_uri=str(artifact_path),
+            lookahead_days=infer_label_lookahead_days(args.label),
+            calibrator_uri=str(calibrator_path) if calibrator_path else None,
         ), ""
 
     if jobs == 1:

@@ -523,6 +523,19 @@ class SimAdapter:
             return self._walkforward_loader.model_as_of(pd.Timestamp(today))
         return self._panel_scorer
 
+    def _get_global_calibrator_for_bar(self, today: pd.Timestamp):
+        """Return the point-in-time calibrator paired with today's WF scorer."""
+        if self._walkforward_loader is None:
+            return None
+        gc_cfg = (
+            self._config.get("ranking", {})
+                        .get("panel_scoring", {})
+                        .get("global_calibration", {})
+        )
+        if not gc_cfg.get("enabled", False):
+            return None
+        return self._walkforward_loader.calibrator_as_of(pd.Timestamp(today))
+
     def _try_load_ngboost_head(self):
         ngb_cfg = (self._config.get("ranking", {})
                               .get("panel_scoring", {})
@@ -677,6 +690,9 @@ class SimAdapter:
         scorer_for_bar = self._get_panel_scorer_for_bar(today_ts)
         if scorer_for_bar is not None:
             ctx._panel_scorer = scorer_for_bar  # noqa: SLF001
+        calibrator_for_bar = self._get_global_calibrator_for_bar(today_ts)
+        if calibrator_for_bar is not None:
+            ctx._global_calibrator = calibrator_for_bar  # noqa: SLF001
         if self._ngboost_head is not None:
             ctx._ngboost_head = self._ngboost_head  # noqa: SLF001
         if self._panel_feature_frames is not None:

@@ -14,6 +14,7 @@ Contract (DO NOT CHANGE without P1 / P2 sync):
         cutoff_date: pd.Timestamp
         trained_date: pd.Timestamp
         artifact_uri: str
+        calibrator_uri: str | None
 
     class WalkForwardModelLoader:
         def __init__(self, manifest_path: Path) -> None: ...
@@ -48,6 +49,8 @@ class RetrainEntry:
                  leakage guard's defense-in-depth assertion).
     artifact_uri: filesystem path (or future cloud URI) to the
                  PanelScorer-loadable artifact.
+    calibrator_uri: optional filesystem path to the matching
+                 GlobalPanelCalibration artifact fitted for this scorer.
     """
     cutoff_date: pd.Timestamp
     trained_date: pd.Timestamp
@@ -58,6 +61,7 @@ class RetrainEntry:
     # ``today > cutoff_date + lookahead_days`` to avoid leak. Default 0
     # = no forward labels (classification target / point-in-time only).
     lookahead_days: int = 0
+    calibrator_uri: str | None = None
 
 
 def _resolve_manifest_path(raw: "str | Path") -> Path:
@@ -95,6 +99,11 @@ def _parse_entry(r: dict) -> RetrainEntry:
         trained_date=trained,
         artifact_uri=str(r["artifact_uri"]),
         lookahead_days=int(r.get("lookahead_days", 0)),
+        calibrator_uri=(
+            str(r.get("calibrator_uri") or r.get("calibration_uri"))
+            if (r.get("calibrator_uri") or r.get("calibration_uri"))
+            else None
+        ),
     )
 
 
@@ -109,6 +118,7 @@ class WalkForwardModelLoader:
         self._manifest_path = _resolve_manifest_path(manifest_path)
         self._entries: list[RetrainEntry] = []
         self._cache: dict[str, "PanelScorer"] = {}
+        self._calibrator_cache: dict[str, object] = {}
         if self._manifest_path.exists():
             self._entries = self._parse_manifest(self._manifest_path)
 
@@ -132,8 +142,14 @@ class WalkForwardModelLoader:
         """True iff the manifest exists and contains ≥ 1 retrain entry."""
         return len(self._entries) > 0
 
-    def model_as_of(self, today: "pd.Timestamp | str") -> "PanelScorer":
-        """Return the latest retrain with cutoff_date < today.
+    @staticmethod
+    def _safe_last_label_date(e: RetrainEntry) -> pd.Timestamp:
+        if e.lookahead_days > 0:
+            return e.cutoff_date + pd.tseries.offsets.BDay(e.lookahead_days)
+        return e.cutoff_date
+
+    def entry_as_of(self, today: "pd.Timestamp | str") -> RetrainEntry:
+        """Return the latest leakage-safe manifest row for ``today``.
 
         Per the P1 contract this MUST raise ValueError (not silent skip)
         when no eligible retrain exists — sims must abort loudly rather
@@ -153,11 +169,10 @@ class WalkForwardModelLoader:
         # (NOT just cutoff_date < today). For fwd_60d_excess labels this
         # pushes the choice ~60 trading days back relative to today so the
         # fold's forward labels can never reach into the current bar.
-        def _safe_last_label_date(e: RetrainEntry) -> pd.Timestamp:
-            if e.lookahead_days > 0:
-                return e.cutoff_date + pd.tseries.offsets.BDay(e.lookahead_days)
-            return e.cutoff_date
-        eligible = [e for e in self._entries if _safe_last_label_date(e) < today_ts]
+        eligible = [
+            e for e in self._entries
+            if self._safe_last_label_date(e) < today_ts
+        ]
         if not eligible:
             raise ValueError(
                 f"WalkForwardModelLoader: no retrain with cutoff_date + "
@@ -169,9 +184,9 @@ class WalkForwardModelLoader:
             )
         chosen = eligible[-1]
         # Built-in invariants per the contract.
-        assert _safe_last_label_date(chosen) < today_ts, (
+        assert self._safe_last_label_date(chosen) < today_ts, (
             f"WalkForwardModelLoader internal invariant violated: chosen "
-            f"safe_last_label_date {_safe_last_label_date(chosen).isoformat()} "
+            f"safe_last_label_date {self._safe_last_label_date(chosen).isoformat()} "
             f">= today {today_ts.isoformat()}"
         )
         assert chosen.trained_date >= chosen.cutoff_date, (
@@ -195,16 +210,53 @@ class WalkForwardModelLoader:
         assert_no_leakage(
             chosen.cutoff_date,
             today_ts,
-            context=f"WalkForwardModelLoader.model_as_of("
+            context=f"WalkForwardModelLoader.entry_as_of("
                     f"today={today_ts.date().isoformat()})",
             lookahead_days=chosen.lookahead_days,
         )
+        return chosen
+
+    def model_as_of(self, today: "pd.Timestamp | str") -> "PanelScorer":
+        """Return the latest retrain scorer for ``today``."""
+        chosen = self.entry_as_of(today)
         if chosen.artifact_uri in self._cache:
             return self._cache[chosen.artifact_uri]
         from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
         scorer = PanelScorer.load(chosen.artifact_uri)
         self._cache[chosen.artifact_uri] = scorer
         return scorer
+
+    def calibrator_as_of(self, today: "pd.Timestamp | str"):
+        """Return the calibrator matched to ``model_as_of(today)``.
+
+        Walk-forward scorer distributions drift fold by fold. A static
+        calibrator is therefore a foreign calibration surface; the manifest
+        must bind each scorer artifact to its own point-in-time calibrator.
+        """
+        chosen = self.entry_as_of(today)
+        uri = chosen.calibrator_uri
+        if not uri:
+            raise ValueError(
+                "WalkForwardModelLoader: selected retrain entry has no "
+                f"calibrator_uri (cutoff={chosen.cutoff_date.date()}, "
+                f"artifact={chosen.artifact_uri}). Rebuild/stamp the "
+                "walk-forward manifest with per-fold calibrator artifacts; "
+                "do not reuse a static production or sim calibrator."
+            )
+        if uri in self._calibrator_cache:
+            return self._calibrator_cache[uri]
+        resolved = self._resolve_uri(uri)
+        from training_panel.global_calibrator import GlobalPanelCalibration  # noqa: PLC0415
+        cal = GlobalPanelCalibration.load(resolved)
+        self._calibrator_cache[uri] = cal
+        return cal
+
+    def _resolve_uri(self, uri: str):
+        """Resolve local relative manifest URIs against the manifest folder."""
+        if "://" in uri:
+            return uri
+        p = Path(uri)
+        return p if p.is_absolute() else self._manifest_path.parent / p
 
     @property
     def manifest_path(self) -> Path:

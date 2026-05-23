@@ -34,12 +34,15 @@ def _make_manifest(tmp_path, rows):
     return p
 
 
-def _row(cutoff, trained, uri):
-    return {
+def _row(cutoff, trained, uri, calibrator_uri=None):
+    row = {
         "cutoff_date": cutoff,
         "trained_date": trained,
         "artifact_uri": uri,
     }
+    if calibrator_uri is not None:
+        row["calibrator_uri"] = calibrator_uri
+    return row
 
 
 class TestAuditP32Regression:
@@ -140,6 +143,45 @@ class TestModelAsOf:
         assert seen_uri[-1] == "fake://run-B/m"
         assert scorer.uri == "fake://run-B/m"
 
+    def test_calibrator_as_of_returns_matching_manifest_calibrator(self, tmp_path):
+        from kernel.walk_forward import WalkForwardModelLoader
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        import numpy as np
+
+        cal_path = tmp_path / "cal-A.json"
+        GlobalPanelCalibration(
+            prob_x=np.array([-1.0, 1.0]),
+            prob_y=np.array([0.25, 0.75]),
+            er_x=np.array([-1.0, 1.0]),
+            er_y=np.array([-0.01, 0.01]),
+            metadata={"scorer_artifact_fingerprint": "sha256:abc123abc123"},
+        ).save(cal_path)
+        rows = [
+            _row(
+                "2024-01-01T00:00:00",
+                "2024-01-02T03:00:00",
+                "fake://run-A/m",
+                calibrator_uri=str(cal_path),
+            ),
+        ]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+
+        cal = loader.calibrator_as_of("2024-01-15")
+        assert cal.metadata["scorer_artifact_fingerprint"] == "sha256:abc123abc123"
+
+    def test_calibrator_as_of_requires_manifest_uri(self, tmp_path):
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        rows = [
+            _row("2024-01-01T00:00:00", "2024-01-02T03:00:00", "fake://run-A/m"),
+        ]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+
+        with pytest.raises(ValueError, match="no calibrator_uri"):
+            loader.calibrator_as_of("2024-01-15")
+
     def test_raises_when_no_eligible_entry(self, tmp_path):
         from kernel.walk_forward import WalkForwardModelLoader
         rows = [_row("2024-06-01T00:00:00", "2024-06-02T03:00:00", "fake://m")]
@@ -226,6 +268,7 @@ class TestManifestRoundTrip:
                 cutoff_date=pd.Timestamp("2024-04-01"),
                 trained_date=pd.Timestamp("2024-04-02T03:44:12"),
                 artifact_uri="fake://X/panel-ltr.json",
+                calibrator_uri="fake://X/panel-rank-calibration.json",
             ),
             RetrainEntry(
                 cutoff_date=pd.Timestamp("2024-05-01"),
@@ -245,6 +288,7 @@ class TestManifestRoundTrip:
         entries_loaded = loader.entries
         assert len(entries_loaded) == 2
         assert entries_loaded[0].cutoff_date == pd.Timestamp("2024-04-01")
+        assert entries_loaded[0].calibrator_uri == "fake://X/panel-rank-calibration.json"
         assert entries_loaded[1].artifact_uri == "fake://Y/panel-ltr.json"
 
 

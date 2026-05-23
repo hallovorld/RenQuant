@@ -985,6 +985,14 @@ class LoadGlobalCalibrationTask(Task):
         # to artifacts/prod/panel-rank-calibration.json, so a sim that
         # forgot to override would silently load the prod calibrator and
         # report misleading sim results (no corruption, just confusion).
+        preloaded = getattr(ctx, "_global_calibrator", None)
+        if preloaded is not None:
+            _assert_calibrator_matches_scorer(
+                ctx,
+                preloaded,
+                Path("<preloaded_global_calibrator>"),
+                strict=strict_match,
+            )
         if getattr(ctx, "_global_calibrator", None) is None:
             pooled_rel = gc_cfg.get("artifact_path")
             if not pooled_rel:

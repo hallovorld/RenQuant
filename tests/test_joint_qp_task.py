@@ -34,6 +34,8 @@ class _Hold:
     panel_score: float | None = None
     mu: float | None = None
     sigma: float | None = None
+    entry_price: float = 100.0
+    entry_date: datetime.date = datetime.date(2026, 4, 1)
 
 
 @dataclass
@@ -262,6 +264,95 @@ class TestNonFiniteDeltaWGuard:
         # Should NOT crash:
         EmitOrdersFromQPSolutionTask().run(ctx)
         assert ctx.orders == [], "inf Δw must be skipped, not produce an order"
+
+
+class TestQPSoftSellGuard:
+    """AUDIT REGRESSION GUARD: QP sells are model-driven soft exits.
+
+    They must not bypass the same horizon/LT/tax guardrails used by panel
+    conviction exits, otherwise the optimizer can churn short-term winners
+    and realize tax drag even when expected avoided loss is too small.
+    """
+
+    def _ctx_for_qp_sell(self, *, mu=-0.02, entry_price=80.0, entry_days=40):
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        cfg = _qp_on()
+        cfg["risk"] = {"panel_exit": {
+            "tax_adjusted_soft_exit": {
+                "enabled": True,
+                "short_term_only": True,
+                "min_unrealized_gain": 0.0,
+                "tax_drag_fraction": 1.0,
+            },
+        }}
+        cfg["tax"] = {
+            "short_term_rate": 0.50,
+            "long_term_rate": 0.20,
+            "long_term_threshold_days": 365,
+        }
+        cfg["lt_hold_gate_days"] = 0
+        today = datetime.date(2026, 4, 26)
+        ctx = _Ctx(config=cfg, today=today)
+        ctx._qp_tickers = ["H"]
+        ctx._qp_sigma = np.array([0.05])
+        ctx._qp_mu = np.array([mu])
+        ctx.holdings = {
+            "H": _Hold(
+                shares=10,
+                entry_price=entry_price,
+                entry_date=today - datetime.timedelta(days=entry_days),
+            )
+        }
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([-0.05]),
+            target_w=np.array([0.05]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+        return ctx
+
+    def test_tax_drag_blocks_weak_qp_trim_of_short_term_winner(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.02, entry_price=80.0)
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters["qp_soft_sell_blocked"] == 1
+
+    def test_strong_negative_mu_can_pay_tax_drag_and_sell(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=80.0)
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert len(ctx.exits) == 1
+        sig = ctx.exits[0][1]
+        assert sig.exit_type == "qp_sell"
+        assert sig.source_job == "JointPortfolioQPJob"
+        assert sig.source_task == "EmitOrdersFromQPSolutionTask"
+
+    def test_horizon_gate_blocks_young_qp_trim(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=120.0, entry_days=5)
+        ctx.config["risk"]["panel_exit"]["min_holding_days_by_regime"] = {
+            "BULL_CALM": 10,
+        }
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters["qp_soft_sell_blocked"] == 1
 
 
 class TestQPCashBudget:

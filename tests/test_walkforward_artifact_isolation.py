@@ -28,7 +28,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.train_walkforward_panel import configure_panel_cutoff  # noqa: E402
+from scripts.train_walkforward_panel import (  # noqa: E402
+    build_retrain_entry,
+    configure_panel_cutoff,
+    infer_label_lookahead_days,
+    make_calibrator_path,
+)
 
 
 PROD_PATH = "artifacts/panel-ltr.alpha158_fund.json"
@@ -86,6 +91,29 @@ def test_train_walkforward_panel_supports_cutoff_parallelism():
     assert "ThreadPoolExecutor" in src
     assert "as_completed" in src
     assert "entries_by_cutoff" in src
+
+
+def test_train_walkforward_panel_stamps_per_fold_calibrator_uri():
+    entry = build_retrain_entry(
+        pd.Timestamp("2024-01-01"),
+        pd.Timestamp("2024-01-02"),
+        "artifacts/walkforward_v2/2024-01-01/panel-ltr.json",
+        lookahead_days=60,
+        calibrator_uri="artifacts/walkforward_v2/2024-01-01/panel-rank-calibration.json",
+    )
+    assert entry.calibrator_uri.endswith("panel-rank-calibration.json")
+
+
+def test_make_calibrator_path_sits_next_to_scorer():
+    path = make_calibrator_path(
+        Path("artifacts/walkforward_v2/2024-01-01/panel-ltr.json")
+    )
+    assert path == Path("artifacts/walkforward_v2/2024-01-01/panel-rank-calibration.json")
+
+
+def test_infer_label_lookahead_days_from_label_name():
+    assert infer_label_lookahead_days("fwd_5d_excess") == 5
+    assert infer_label_lookahead_days("fwd_60d_excess") == 60
 
 
 class TestNonWalkforwardPathRejected:
