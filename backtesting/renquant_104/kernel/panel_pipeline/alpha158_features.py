@@ -262,6 +262,137 @@ def compute_alpha158_at(
     return feats
 
 
+def _rolling_apply(s: pd.Series, window: int, fn) -> pd.Series:
+    return s.rolling(window, min_periods=window).apply(fn, raw=True)
+
+
+def compute_alpha158_frame(
+    ohlcv: pd.DataFrame,
+    min_bars: int = 70,
+) -> pd.DataFrame:
+    """Compute the full causal alpha158 panel for one ticker.
+
+    This is the vectorized/cache companion to :func:`compute_alpha158_at`.
+    For any date ``t`` with enough warmup:
+
+    ``compute_alpha158_frame(df).loc[:t].iloc[-1] == compute_alpha158_at(df.loc[:t])``
+
+    The invariant is pinned by ``tests/test_feature_cache.py`` because sim
+    performance must not buy speed with a live/sim feature drift.
+    """
+    if ohlcv is None or ohlcv.empty:
+        return pd.DataFrame(columns=alpha158_feature_names())
+    df = ohlcv.sort_index().copy()
+    c = df["close"].astype(float)
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+    o = df["open"].astype(float)
+    v = df["volume"].astype(float)
+
+    out = pd.DataFrame(index=df.index)
+    span = (h - l) + EPS
+    g_oc = pd.Series(np.maximum(o.to_numpy(), c.to_numpy()), index=df.index)
+    l_oc = pd.Series(np.minimum(o.to_numpy(), c.to_numpy()), index=df.index)
+    open_safe = o.where(o != 0)
+
+    out["KMID"] = ((c - o) / open_safe).fillna(0.0)
+    out["KLEN"] = ((h - l) / open_safe).fillna(0.0)
+    out["KMID2"] = (c - o) / span
+    out["KUP"] = ((h - g_oc) / open_safe).fillna(0.0)
+    out["KUP2"] = (h - g_oc) / span
+    out["KLOW"] = ((l_oc - l) / open_safe).fillna(0.0)
+    out["KLOW2"] = (l_oc - l) / span
+    out["KSFT"] = ((2 * c - h - l) / open_safe).fillna(0.0)
+    out["KSFT2"] = (2 * c - h - l) / span
+
+    close_safe = c.where(c != 0)
+    vwap = (o + h + l + c) / 4.0
+    out["OPEN0"] = (o / close_safe).fillna(0.0)
+    out["HIGH0"] = (h / close_safe).fillna(0.0)
+    out["LOW0"] = (l / close_safe).fillna(0.0)
+    out["VWAP0"] = (vwap / close_safe).fillna(0.0)
+
+    ret = c / c.shift(1) - 1.0
+    delta = c - c.shift(1)
+    vol_delta = v - v.shift(1)
+    vol_pos = v.where(np.isfinite(v) & (v > 0))
+    vol_fallback = vol_pos.rolling(20, min_periods=1).mean().fillna(1.0)
+    v_today = v.where(np.isfinite(v) & (v > 0), vol_fallback).fillna(1.0)
+    log_v = np.log(v.clip(lower=0.0) + 1.0)
+    v_ret = v / v.shift(1)
+    log_v_ret = np.log(v_ret + 1.0).replace([np.inf, -np.inf], np.nan)
+
+    for n in WINDOWS:
+        roll_c = c.rolling(n, min_periods=n)
+        roll_h = h.rolling(n, min_periods=n)
+        roll_l = l.rolling(n, min_periods=n)
+        roll_v = v.rolling(n, min_periods=n)
+
+        out[f"ROC{n}"] = c.shift(n) / close_safe
+        out[f"MA{n}"] = roll_c.mean() / close_safe
+        out[f"STD{n}"] = roll_c.std(ddof=0) / close_safe
+        out[f"BETA{n}"] = _rolling_apply(c, n, _slope_at) / close_safe
+        out[f"RSQR{n}"] = _rolling_apply(c, n, _rsquare_at)
+        out[f"RESI{n}"] = _rolling_apply(c, n, _resi_at) / close_safe
+        out[f"MAX{n}"] = roll_h.max() / close_safe
+        out[f"MIN{n}"] = roll_l.min() / close_safe
+        out[f"QTLU{n}"] = roll_c.quantile(0.8) / close_safe
+        out[f"QTLD{n}"] = roll_c.quantile(0.2) / close_safe
+        out[f"RANK{n}"] = _rolling_apply(
+            c, n, lambda arr: float((arr <= arr[-1]).sum()) / len(arr)
+        )
+        out[f"RSV{n}"] = (c - roll_l.min()) / ((roll_h.max() - roll_l.min()) + EPS)
+        imax = _rolling_apply(h, n, lambda arr: float(np.argmax(arr)))
+        imin = _rolling_apply(l, n, lambda arr: float(np.argmin(arr)))
+        out[f"IMAX{n}"] = imax / n
+        out[f"IMIN{n}"] = imin / n
+        out[f"IMXD{n}"] = (imax - imin) / n
+        out[f"CORR{n}"] = (
+            c.rolling(n, min_periods=n).corr(log_v)
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        out[f"CORD{n}"] = (
+            ret.rolling(n, min_periods=n).corr(log_v_ret)
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+
+        up = (c > c.shift(1)).astype(float)
+        dn = (c < c.shift(1)).astype(float)
+        out[f"CNTP{n}"] = up.rolling(n, min_periods=n).sum() / n
+        out[f"CNTN{n}"] = dn.rolling(n, min_periods=n).sum() / n
+        out[f"CNTD{n}"] = out[f"CNTP{n}"] - out[f"CNTN{n}"]
+
+        pos_delta = delta.clip(lower=0.0)
+        neg_delta = (-delta).clip(lower=0.0)
+        abs_delta = delta.abs()
+        sum_abs = abs_delta.rolling(n, min_periods=n).sum() + EPS
+        out[f"SUMP{n}"] = pos_delta.rolling(n, min_periods=n).sum() / sum_abs
+        out[f"SUMN{n}"] = neg_delta.rolling(n, min_periods=n).sum() / sum_abs
+        out[f"SUMD{n}"] = out[f"SUMP{n}"] - out[f"SUMN{n}"]
+
+        out[f"VMA{n}"] = roll_v.mean() / v_today
+        out[f"VSTD{n}"] = roll_v.std(ddof=0) / v_today
+        wv = ret.abs() * v
+        out[f"WVMA{n}"] = (
+            wv.rolling(n, min_periods=n).std(ddof=0)
+            / (wv.rolling(n, min_periods=n).mean() + EPS)
+        )
+        pos_vd = vol_delta.clip(lower=0.0)
+        neg_vd = (-vol_delta).clip(lower=0.0)
+        abs_vd = vol_delta.abs()
+        sum_abs_v = abs_vd.rolling(n, min_periods=n).sum() + EPS
+        out[f"VSUMP{n}"] = pos_vd.rolling(n, min_periods=n).sum() / sum_abs_v
+        out[f"VSUMN{n}"] = neg_vd.rolling(n, min_periods=n).sum() / sum_abs_v
+        out[f"VSUMD{n}"] = out[f"VSUMP{n}"] - out[f"VSUMN{n}"]
+
+    out = out.reindex(columns=alpha158_feature_names())
+    if len(out) < min_bars:
+        return out.iloc[0:0]
+    return out.iloc[min_bars - 1:]
+
+
 def alpha158_feature_names() -> list[str]:
     """Return the canonical list of 158 alpha158 feature names."""
     names = list(_kbar(1.0, 1.0, 1.0, 1.0).keys())   # 9 KBAR

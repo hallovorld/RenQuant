@@ -96,6 +96,34 @@ class TestEquivalence:
                 assert abs(cached[col] - uncached[col]) < 1e-9, \
                     f"{col} diverges: cached={cached[col]} uncached={uncached[col]}"
 
+    def test_alpha158_full_frame_matches_single_bar_path(self):
+        """Alpha158 sim cache must be byte-equivalent to live single-bar inference."""
+        from kernel.panel_pipeline.alpha158_features import (
+            alpha158_feature_names,
+            compute_alpha158_at,
+            compute_alpha158_frame,
+        )
+        import pandas as pd
+
+        stock = _synthetic_ohlcv(180)
+        cache = compute_alpha158_frame(stock)
+        assert not cache.empty
+
+        for idx in (80, 120, 160):
+            day = stock.index[idx]
+            cached = cache.loc[:day].iloc[-1].reindex(alpha158_feature_names())
+            uncached = pd.Series(compute_alpha158_at(stock.loc[:day])).reindex(
+                alpha158_feature_names()
+            )
+            pd.testing.assert_series_equal(
+                cached,
+                uncached,
+                rtol=1e-9,
+                atol=1e-12,
+                check_names=False,
+                check_dtype=False,
+            )
+
 
 class TestContextPlumbing:
     def test_context_has_feature_cache_field(self):
@@ -153,3 +181,51 @@ class TestBuildFeaturesTaskUsesCache:
         )
         result = BuildFeaturesTask().run(tc)
         assert result is False
+
+
+class TestAlpha158ScoringTaskUsesCache:
+    def test_apply_scores_uses_alpha158_cache_before_single_bar_fallback(self, monkeypatch):
+        """The alpha158 scorer hot path should read the sim cache when available."""
+        from kernel.panel_pipeline.alpha158_features import (
+            alpha158_feature_names,
+            compute_alpha158_frame,
+        )
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+        import pandas as pd
+
+        names = alpha158_feature_names()
+        stock = _synthetic_ohlcv(120)
+        day = stock.index[100]
+        cache = {"NVDA": compute_alpha158_frame(stock)}
+
+        def fail_uncached(*_args, **_kwargs):
+            raise AssertionError("uncached alpha158 path should not run on cache hit")
+
+        monkeypatch.setattr(
+            "kernel.panel_pipeline.alpha158_features.compute_alpha158_at",
+            fail_uncached,
+        )
+
+        class Scorer:
+            metadata = {"kind": "panel_ltr_xgboost"}
+            feature_cols = names
+
+            def score(self, X):
+                assert list(X.columns) == names
+                return pd.Series({"NVDA": 0.73})
+
+        cand = SimpleNamespace(ticker="NVDA", rank_score=0.0, panel_score=None)
+        ctx = SimpleNamespace(
+            _panel_scorer=Scorer(),
+            _panel_matrix=pd.DataFrame({"__alpha158_target__": [1.0]}, index=["NVDA"]),
+            _alpha158_feature_cache=cache,
+            ohlcv={"NVDA": stock.loc[:day]},
+            today=day.date(),
+            candidates=[cand],
+            holdings={},
+        )
+
+        ApplyScoresTask().run(ctx)
+
+        assert cand.rank_score == pytest.approx(0.73)
+        assert cand.panel_score == pytest.approx(0.73)

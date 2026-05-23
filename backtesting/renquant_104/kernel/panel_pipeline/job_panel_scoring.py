@@ -83,6 +83,27 @@ def _cached_sentiment(ctx: Any, path: Path) -> pd.DataFrame | None:
     return sdf
 
 
+def _alpha158_cached_rows(
+    ctx: Any,
+    tickers: list[str],
+    today: Any,
+) -> dict[str, dict[str, float]]:
+    cache = getattr(ctx, "_alpha158_feature_cache", None)
+    if not isinstance(cache, dict) or not cache:
+        return {}
+    today_ts = pd.Timestamp(today)
+    rows: dict[str, dict[str, float]] = {}
+    for ticker in tickers:
+        frame = cache.get(ticker)
+        if frame is None or frame.empty:
+            continue
+        sub = frame.loc[:today_ts]
+        if sub.empty:
+            continue
+        rows[ticker] = sub.iloc[-1].to_dict()
+    return rows
+
+
 # ── Task chain ────────────────────────────────────────────────────────────────
 
 class LoadScorerTask(Task):
@@ -294,8 +315,11 @@ class ApplyScoresTask(Task):
                 log.warning("ApplyScoresTask[alpha158]: ctx.ohlcv unavailable")
                 return None
             tickers = list(X.index)   # candidates + holdings already de-duped
-            rows = {}
+            rows = _alpha158_cached_rows(ctx, tickers, today)
+            cache_hits = len(rows)
             for t in tickers:
+                if t in rows:
+                    continue
                 ohlcv_t = ohlcv_dict.get(t)
                 if ohlcv_t is None or len(ohlcv_t) < 70:
                     continue
@@ -306,6 +330,11 @@ class ApplyScoresTask(Task):
                 log.warning("ApplyScoresTask[alpha158]: 0/%d tickers had "
                              "sufficient history for alpha158", len(tickers))
                 return None
+            if cache_hits:
+                log.info(
+                    "ApplyScoresTask[alpha158]: cache hits %d/%d tickers",
+                    cache_hits, len(tickers),
+                )
             X = pd.DataFrame.from_dict(rows, orient="index")
             if scorer_kind == "panel_linear":
                 # PanelLinearScorer.score_raw applies stored ZScoreNorm + Fillna + Clip

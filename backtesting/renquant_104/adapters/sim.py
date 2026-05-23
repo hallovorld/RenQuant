@@ -140,6 +140,7 @@ class SimAdapter:
         # path. Values are raw point-in-time inputs; scorer-specific
         # normalization still happens inside PanelScoringJob each bar.
         self._panel_runtime_cache: dict = {}
+        self._alpha158_feature_cache: dict[str, pd.DataFrame] = {}
 
         # ── Panel feature/factor frames (audit P-1, 2026-04-24) ─────────────
         # Architecture symmetry with LeanAdapter / RunnerAdapter: if the
@@ -342,15 +343,18 @@ class SimAdapter:
         self._feature_cache: dict = {}
         if config.get("sim", {}).get("feature_cache_enabled", True):
             self._build_feature_cache()
+        if config.get("sim", {}).get("alpha158_feature_cache_enabled", True):
+            self._build_alpha158_feature_cache()
 
         log.info(
             "SimAdapter init: models=%d  gmm=%s  corr=%s  earnings=%s  "
             "panel_scorer=%s  walkforward=%s  ngboost_head=%s  "
-            "feature_cache=%d tickers",
+            "feature_cache=%d tickers  alpha158_cache=%d tickers",
             len(self._models), self._gmm is not None, bool(self._corr),
             bool(self._earnings), self._panel_scorer is not None,
             self._walkforward_loader is not None,
             self._ngboost_head is not None, len(self._feature_cache),
+            len(self._alpha158_feature_cache),
         )
 
     def _build_feature_cache(self) -> None:
@@ -379,6 +383,37 @@ class SimAdapter:
                 self._feature_cache[ticker] = frame
                 built += 1
         log.info("Feature cache built: %d/%d tickers", built, len(self._ohlcv))
+
+    def _alpha158_cache_required(self) -> bool:
+        """Whether this sim can use cached alpha158 scorer features."""
+        if self._panel_scorer is not None:
+            kind = (getattr(self._panel_scorer, "metadata", {}) or {}).get("kind")
+            return kind in _ALPHA158_SCORER_KINDS
+        if self._walkforward_loader is not None:
+            for entry in self._walkforward_loader.entries:
+                p = _resolve_manifest_uri(
+                    self._walkforward_loader.manifest_path,
+                    entry.artifact_uri,
+                )
+                if _artifact_kind(p) in _ALPHA158_SCORER_KINDS:
+                    return True
+        return False
+
+    def _build_alpha158_feature_cache(self) -> None:
+        """One-shot causal alpha158 feature cache for historical sims."""
+        if not self._alpha158_cache_required():
+            return
+        from kernel.panel_pipeline.alpha158_features import compute_alpha158_frame  # noqa: PLC0415
+
+        built = 0
+        for ticker, df in self._ohlcv.items():
+            if ticker == "SPY" or df is None or df.empty:
+                continue
+            frame = compute_alpha158_frame(df)
+            if frame is not None and not frame.empty:
+                self._alpha158_feature_cache[ticker] = frame
+                built += 1
+        log.info("Alpha158 feature cache built: %d/%d tickers", built, len(self._ohlcv))
 
     # ── Artifact loaders ────────────────────────────────────────────────────
 
@@ -768,6 +803,7 @@ class SimAdapter:
         if self._ngboost_head is not None:
             ctx._ngboost_head = self._ngboost_head  # noqa: SLF001
         ctx._panel_runtime_cache = self._panel_runtime_cache  # noqa: SLF001
+        ctx._alpha158_feature_cache = self._alpha158_feature_cache  # noqa: SLF001
         if self._panel_feature_frames is not None:
             # Slice feature/factor frames to today_ts too (no future leak)
             ctx._panel_feature_frames = {                              # noqa: SLF001
