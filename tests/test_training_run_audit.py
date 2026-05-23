@@ -208,3 +208,29 @@ class TestRecordTrainingRun:
         assert len(files) == 1, "all 3 runs land in one daily file"
         lines = files[0].read_text().strip().split("\n")
         assert len(lines) == 3
+
+    def test_default_jsonl_dir_follows_sqlite_db_path(self, tmp_path):
+        """AUDIT REGRESSION GUARD: pytest/tmp training writes must not leak
+        into the repo's real logs/training audit stream.
+
+        Pre-fix, record_training_run(..., jsonl_dir=None) always used the
+        process cwd. Full pipeline integration tests therefore polluted
+        logs/training/{today}.jsonl with tmp pytest artifacts and fake
+        strategies, making the operator audit trail untrustworthy.
+        """
+        from kernel.persistence import record_training_run
+        conn = _make_conn(tmp_path)
+
+        record_training_run(
+            conn,
+            strategy="test_strategy",
+            artifact_type="panel-ltr",
+            elapsed_sec=1.0,
+            trigger="pytest",
+            also_log_jsonl=True,
+        )
+
+        files = list((tmp_path / "logs" / "training").glob("*.jsonl"))
+        assert len(files) == 1
+        rows = [json.loads(line) for line in files[0].read_text().splitlines()]
+        assert rows[0]["strategy"] == "test_strategy"

@@ -746,6 +746,27 @@ def _commit_sha() -> str | None:
     return _COMMIT_SHA_VALUE
 
 
+def _default_training_jsonl_dir(conn: sqlite3.Connection | None) -> Path:
+    """Resolve the plain-text training audit path from the SQLite DB path.
+
+    Production writes to ``data/runs.db`` and should mirror to the repo-level
+    ``logs/training`` directory. Temporary/test DBs should keep JSONL output
+    beside the temp DB, so test runs cannot pollute the operator audit stream.
+    """
+    if conn is None:
+        return Path("logs/training")
+    try:
+        db_rows = conn.execute("PRAGMA database_list").fetchall()
+        main_path = next((r[2] for r in db_rows if r[1] == "main"), "")
+    except Exception:
+        main_path = ""
+    if not main_path:
+        return Path("logs/training")
+    db_path = Path(main_path)
+    root = db_path.parent.parent if db_path.parent.name == "data" else db_path.parent
+    return root / "logs" / "training"
+
+
 # ── Recording helpers ─────────────────────────────────────────────────────────
 
 def record_pipeline_run(
@@ -1075,7 +1096,7 @@ def record_training_run(
 
     # JSONL log (operator-friendly audit trail)
     if also_log_jsonl:
-        log_dir = jsonl_dir or Path("logs/training")
+        log_dir = jsonl_dir or _default_training_jsonl_dir(conn)
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{rd.strftime('%Y-%m-%d')}.jsonl"
         with log_path.open("a") as f:
