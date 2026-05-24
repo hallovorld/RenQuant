@@ -144,6 +144,7 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     prod_cfg = _base_config(str(prod_art), kind="xgb")
     prod_cfg["ranking"]["kelly_sizing"]["realized_vol_floor"] = 0.05
     prod_cfg["rotation"]["joint_actions"]["qp_tax_lot_method"] = "hifo"
+    prod_cfg["tax"]["cash_debit_mode"] = "reporting_only"
     prod_cfg["sector_map"]["BAC"] = "Finance"
     prod_cfg["ranking"]["panel_scoring"]["global_calibration"] = {
         "enabled": True,
@@ -165,6 +166,7 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     }
     base_wf["ranking"]["panel_scoring"]["buy_floor"] = "adaptive_mean_std_cap"
     base_wf["rotation"]["joint_actions"]["qp_tax_lot_method"] = "fifo"
+    base_wf["tax"]["cash_debit_mode"] = "event_cash_debit"
     base_wf["sector_map"] = {"AAPL": "Tech"}
     base_wf["ranking"]["panel_scoring"]["global_calibration"] = {
         "enabled": True,
@@ -194,6 +196,7 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     assert result["passed"] is True
     assert built["ranking"]["panel_scoring"]["buy_floor"] == "adaptive_mean_std"
     assert built["rotation"]["joint_actions"]["qp_tax_lot_method"] == "hifo"
+    assert built["tax"]["cash_debit_mode"] == "reporting_only"
     assert built["sector_map"]["BAC"] == "Finance"
     assert built["walkforward"]["manifest_path"] == str(manifest)
     assert (
