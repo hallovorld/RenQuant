@@ -1539,6 +1539,7 @@ def run_sanity_battery(
         )
         min_dates = 30
         min_mean_ic = 0.02
+        max_placebo_ratio = 0.5
         regimes_out = {}
         failed = []
         eligible_any = False
@@ -1571,7 +1572,10 @@ def run_sanity_battery(
                             placebo_ref = aligned_real60_f
                     except (TypeError, ValueError):
                         placebo_ref = mean_ic_f
-                    placebo_ok = abs(float(placebo60)) <= max(0.005, abs(placebo_ref))
+                    placebo_ok = abs(float(placebo60)) <= max(
+                        0.005,
+                        max_placebo_ratio * abs(placebo_ref),
+                    )
                 passed = (
                     mean_ic_f == mean_ic_f
                     and mean_ic_f >= min_mean_ic
@@ -1598,6 +1602,7 @@ def run_sanity_battery(
             ),
             "min_n_dates": min_dates,
             "min_mean_ic": min_mean_ic,
+            "max_placebo_ratio": max_placebo_ratio,
             "regimes": regimes_out,
         }
     except Exception as exc:  # noqa: BLE001

@@ -55,6 +55,33 @@ class TestPanelScorerLoad:
         assert scorer.metadata["training_notes"] == "unit test"
         assert "version" in scorer.metadata
 
+    def test_nested_artifact_metadata_promoted_for_runtime_contracts(self, tmp_path):
+        from kernel.panel_pipeline import PanelScorer
+        path, _, _ = _trained_artifact(tmp_path)
+        payload = json.loads(path.read_text())
+        payload["metadata"] = {
+            "wf_gate_metadata": {
+                "passed": False,
+                "sanity_regime_ic": {
+                    "regimes": {
+                        "BULL_CALM": {
+                            "eligible": True,
+                            "passed": False,
+                            "mean_ic": 0.01,
+                        },
+                    },
+                },
+            },
+            "score_sample_range": [-0.1, 0.2],
+        }
+        path.write_text(json.dumps(payload))
+
+        scorer = PanelScorer.load(path)
+
+        assert scorer.metadata["wf_gate_metadata"]["passed"] is False
+        assert scorer.metadata["score_sample_range"] == [-0.1, 0.2]
+        assert scorer.metadata["metadata"]["wf_gate_metadata"]["passed"] is False
+
 
 class TestPanelScorerScore:
     def test_matches_training_predictions(self, tmp_path):

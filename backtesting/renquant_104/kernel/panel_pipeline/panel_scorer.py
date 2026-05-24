@@ -38,6 +38,10 @@ def artifact_sha256(path: str | Path) -> str:
 def stamp_artifact_metadata(metadata: dict | None, path: str | Path) -> dict:
     """Return metadata with path + fingerprint fields for runtime contracts."""
     meta = dict(metadata or {})
+    nested = meta.get("metadata")
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            meta.setdefault(key, value)
     sha = artifact_sha256(path)
     meta.setdefault("artifact_path", str(Path(path)))
     meta.setdefault("artifact_sha256", sha)

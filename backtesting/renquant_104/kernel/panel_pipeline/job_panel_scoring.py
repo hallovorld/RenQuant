@@ -965,6 +965,7 @@ def _sanity_regime_admission(
     regime: str,
     *,
     min_ic: float,
+    max_placebo_ratio: float,
 ) -> tuple[bool, str, dict]:
     wf = metadata.get("wf_gate_metadata") if isinstance(metadata, dict) else {}
     sanity = wf.get("sanity_regime_ic") if isinstance(wf, dict) else {}
@@ -999,7 +1000,7 @@ def _sanity_regime_admission(
                 return False, f"regime_admission:bad_aligned_placebo_sanity:{regime}", {"stats": stats}
         if math.isfinite(placebo_60_ic_f) and abs(placebo_60_ic_f) > max(
             0.005,
-            abs(placebo_ref),
+            float(max_placebo_ratio) * abs(placebo_ref),
         ):
             return False, f"regime_admission:placebo_sanity:{regime}", {"stats": stats}
     if stats.get("passed") is False:
@@ -1032,6 +1033,7 @@ class RegimeModelAdmissionTask(Task):
                 metadata,
                 regime,
                 min_ic=float(cfg.get("min_sanity_regime_ic", 0.02)),
+                max_placebo_ratio=float(cfg.get("max_placebo_ratio", 0.5)),
             )
         ctx._regime_model_admission = {  # noqa: SLF001
             "ok": bool(ok), "reason": reason, "regime": regime, **details,

@@ -1698,6 +1698,14 @@ Operational conclusion:
   `+0.0460` (ratio `0.84`), so the original `placebo > real` headline was a
   sample-mismatch bug but the model still fails sanity. BULL_CALM remains
   placebo-dominated: aligned real `+0.0323` vs placebo `+0.0312`.
+- Runtime metadata must be read from the same layer where artifact promotion
+  stamps it. A 2026-05-24 follow-up found `PanelScorer.load()` left
+  `metadata.wf_gate_metadata` nested under `scorer.metadata["metadata"]`, while
+  `RegimeModelAdmissionTask` read `scorer.metadata["wf_gate_metadata"]`.
+  Flattening is now enforced by loader tests.
+- Per-regime placebo admission must use the same `0.5 x aligned_real` ratio as
+  the top-level WF gate. The earlier runtime rule only blocked placebo above
+  `1.0 x aligned_real`, which would have let BULL_CALM's `0.97` ratio through.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

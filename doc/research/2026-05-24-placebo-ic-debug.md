@@ -27,6 +27,7 @@ Patched files:
 - `scripts/run_wf_gate.py`
 - `scripts/analyze_manifest_sanity_placebo.py`
 - `backtesting/renquant_104/kernel/panel_pipeline/job_panel_scoring.py`
+- `backtesting/renquant_104/kernel/panel_pipeline/panel_scorer.py`
 
 New metadata:
 
@@ -35,12 +36,24 @@ New metadata:
   `abs_ratio_to_aligned_real`, `abs_ratio_to_full_real`
 - Per-regime: `placebo_60_aligned_real_ic`
 
+Follow-up hardening in the same repair path:
+
+- Per-regime sanity now uses the same `0.5 × aligned_real` placebo ratio as
+  the top-level WF gate. The previous runtime admission only rejected placebo
+  above `1.0 × aligned_real`, which would have let BULL_CALM pass despite
+  placebo explaining 97% of same-row real IC.
+- `PanelScorer.load()` now promotes nested artifact metadata such as
+  `metadata.wf_gate_metadata` to `scorer.metadata["wf_gate_metadata"]`. Before
+  this, the artifact could contain stamped WF/monotonicity/sanity evidence but
+  runtime admission read the wrong layer.
+
 Regression coverage:
 
 - `tests/test_manifest_sanity_placebo_analysis.py`
 - `tests/test_wf_gate_regime_sanity_metadata.py`
 - `tests/test_wf_gate_cli_contract.py`
 - `tests/test_regime_model_admission.py`
+- `tests/test_panel_inference.py`
 
 Verification command:
 
@@ -53,7 +66,20 @@ Verification command:
   tests/test_promote_wf_gate.py -q
 ```
 
-Result: `62 passed`.
+Result after first alignment patch: `62 passed`.
+
+Result after regime-ratio + metadata-flattening hardening:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_panel_inference.py \
+  tests/test_regime_model_admission.py \
+  tests/test_panel_scoring_job.py::TestPanelScoringJob::test_tasks_are_thirteen_in_order \
+  tests/test_wf_gate_regime_sanity_metadata.py \
+  tests/test_wf_gate_cli_contract.py -q
+```
+
+Result: `56 passed`.
 
 ## Corrected Numbers
 
@@ -119,9 +145,10 @@ Do not promote or trust this XGB artifact for unrestricted BULL_CALM buys.
 The fixed gate will no longer misreport different samples, but it still fails
 closed because placebo remains too large relative to same-sample real IC.
 
-`RegimeModelAdmissionTask` now uses `placebo_60_aligned_real_ic` when present,
-so runtime regime admission cannot pass BULL_CALM merely because full-sample
-real IC looks weaker/stronger than the placebo-evaluable sample.
+`RegimeModelAdmissionTask` now uses `placebo_60_aligned_real_ic` when present
+and applies the same `0.5 × aligned_real` ratio as the top-level WF gate, so
+runtime regime admission cannot pass BULL_CALM merely because full-sample real
+IC looks weaker/stronger than the placebo-evaluable sample.
 
 ## Next Repair Path
 
@@ -134,4 +161,3 @@ real IC looks weaker/stronger than the placebo-evaluable sample.
    by the configured margin and trade-domain monotonicity remains positive.
 4. Compare with PatchTST under the same aligned placebo diagnostic before any
    shadow promotion decision.
-
