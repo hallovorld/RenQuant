@@ -79,16 +79,40 @@ class FilterStalenessTask(UniverseTask):
             return True
         today = date.today()
         stale: list[tuple[str, str]] = []
+        held = _load_held_tickers(uctx.strategy_dir, uctx.broker_name)
         for ticker, art in uctx.loaded_models.items():
             meta = art.get("_metadata", {})
             trained = meta.get("trained_date")
             if not trained:
+                if ticker in held:
+                    log.warning(
+                        "%s HELD — admitting despite missing trained_date "
+                        "(so sell path stays armed)",
+                        ticker,
+                    )
+                    continue
+                stale.append((ticker, "trained_date_missing"))
                 continue
             try:
                 age = (today - datetime.strptime(trained, "%Y-%m-%d").date()).days
             except ValueError:
+                if ticker in held:
+                    log.warning(
+                        "%s HELD — admitting despite invalid trained_date=%r "
+                        "(so sell path stays armed)",
+                        ticker, trained,
+                    )
+                    continue
+                stale.append((ticker, "trained_date_invalid"))
                 continue
             if age > staleness_days:
+                if ticker in held:
+                    log.warning(
+                        "%s HELD — admitting despite stale trained_date=%s "
+                        "(age=%dd > limit=%dd, so sell path stays armed)",
+                        ticker, trained, age, staleness_days,
+                    )
+                    continue
                 stale.append((ticker, f"stale_{age}d_limit_{staleness_days}"))
         for ticker, reason in stale:
             uctx.loaded_models.pop(ticker, None)
@@ -168,9 +192,8 @@ def _load_held_tickers(
 class FilterUniverseFloorTask(UniverseTask):
     """Drop tickers whose quality metric (per universe_floor.type) < threshold.
 
-    Missing metric values (`None`) are admitted with a warning — "code-ready"
-    for floor types whose metric isn't populated yet. Override this policy by
-    changing admit_on_missing to False.
+    Missing metric values (`None`) fail closed for offensive new-buy names.
+    A missing quality metric is missing model evidence, not a weaker fallback.
 
     **Always exempt (admitted regardless of floor):**
 
@@ -185,7 +208,7 @@ class FilterUniverseFloorTask(UniverseTask):
          forever). 2026-04-23 incident: AMZN sharpe=0.668 got filtered,
          turning AMZN into a structurally un-sellable position.
     """
-    admit_on_missing: bool = True
+    admit_on_missing: bool = False
 
     def should_skip(self, uctx: UniverseContext) -> bool:
         floor_type, _ = universe_floor_spec(uctx.config)
@@ -195,9 +218,9 @@ class FilterUniverseFloorTask(UniverseTask):
         floor_type, threshold = universe_floor_spec(uctx.config)
         evaluator = FLOOR_EVALUATORS.get(floor_type)
         if evaluator is None:
-            log.warning(
-                "unknown universe_floor.type=%r (known: %s) — admitting all",
-                floor_type, sorted(FLOOR_EVALUATORS.keys()),
+            raise ValueError(
+                f"unknown universe_floor.type={floor_type!r} "
+                f"(known: {sorted(FLOOR_EVALUATORS.keys())})"
             )
             return True
         if threshold <= 0:

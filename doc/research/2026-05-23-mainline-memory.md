@@ -484,6 +484,25 @@ Interpretation: the feature-space fix produced a better-looking training
 diagnostic, but there is no valid WF Sharpe/APY yet. The next acceptance-grade
 step is regenerating a walk-forward manifest under this exact feature contract.
 
+## 2026-05-23 Universe Fail-Closed Fix
+
+Universe admission now fails closed for missing or invalid model evidence on
+offensive new-buy names.
+
+- Missing `trained_date` under `model_staleness_days > 0` rejects the ticker as
+  `trained_date_missing`.
+- Invalid `trained_date` rejects the ticker as `trained_date_invalid`.
+- Missing universe-floor metrics reject as `{floor_type}_missing`.
+- Unknown `ranking.universe_floor.type` raises `ValueError` instead of
+  admitting all.
+- Held tickers remain exempt from staleness/floor rejection so the sell path
+  stays armed and existing positions cannot become structurally unsellable.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_universe_alignment.py tests/test_universe_held_exemption.py tests/test_daily_104_e2e.py -q`
+  -> `38 passed`.
+
 ## Mainline Queue
 
 1. Regenerate the 172-feature walk-forward manifest under the current
@@ -511,9 +530,10 @@ step is regenerating a walk-forward manifest under this exact feature contract.
    literature-backed hypotheses and paired A/B sims.
 8. Fix remaining audit findings before promotion: calibrator metric scope
    labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
-   fail-closed metadata and correlation semantics, and per-ticker trace
-   stamping for global panel/QP failures. The WF `effective_train_cutoff_date`
-   double-embargo bug and LEAN/QP cash-capped target parity bug are fixed.
+   fail-closed correlation semantics, and per-ticker trace stamping for global
+   panel/QP failures. The WF `effective_train_cutoff_date` double-embargo bug,
+   LEAN/QP cash-capped target parity bug, and universe metadata fail-closed bug
+   are fixed.
 
 ## Known Failure Modes To Keep Front And Center
 

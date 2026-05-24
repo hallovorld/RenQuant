@@ -123,18 +123,20 @@ class TestLoadUniverseJob:
         reasons = dict(uctx.rejections)
         assert "sharpe_0.300_below_1.0" in reasons["BBB"]
 
-    def test_ic_drops_below_threshold_and_admits_missing(self, fake_models_dir):
+    def test_ic_drops_below_threshold_and_rejects_missing(self, fake_models_dir):
         strategy_dir, tickers = fake_models_dir
         uctx = _run_job(strategy_dir, tickers, floor_type="ic", threshold=0.04)
-        # AAA=0.05 passes; BBB=0.02 fails; CCC missing → admitted with warning.
+        # AAA=0.05 passes; BBB=0.02 fails; CCC missing → rejected fail-closed.
         assert "AAA" in uctx.loaded_models
-        assert "CCC" in uctx.loaded_models  # admit-on-missing
         assert "BBB" not in uctx.loaded_models
+        assert "CCC" not in uctx.loaded_models
+        reasons = dict(uctx.rejections)
+        assert reasons["CCC"] == "ic_missing"
 
-    def test_unknown_floor_type_admits_all_with_warning(self, fake_models_dir, caplog):
+    def test_unknown_floor_type_raises(self, fake_models_dir):
         strategy_dir, tickers = fake_models_dir
-        uctx = _run_job(strategy_dir, tickers, floor_type="nonsense", threshold=1.0)
-        assert set(uctx.loaded_models.keys()) == set(tickers)
+        with pytest.raises(ValueError, match="unknown universe_floor.type"):
+            _run_job(strategy_dir, tickers, floor_type="nonsense", threshold=1.0)
 
 
 # ── Filter task short-circuits ───────────────────────────────────────────────
@@ -322,6 +324,42 @@ class TestStaleness:
         assert "BBB" not in uctx.loaded_models
         reasons = dict(uctx.rejections)
         assert "stale" in reasons["BBB"]
+
+    def test_missing_trained_date_rejected_when_staleness_enabled(self, fake_models_dir):
+        strategy_dir, tickers = fake_models_dir
+        p = strategy_dir / "models" / "BBB" / "BBB-policy-metadata.json"
+        m = json.loads(p.read_text())
+        m.pop("trained_date", None)
+        p.write_text(json.dumps(m))
+
+        cfg = {
+            "watchlist": tickers,
+            "model_staleness_days": 30,
+            "ranking": {"universe_floor": {"type": "none"}},
+        }
+        uctx = UniverseContext(config=cfg, strategy_dir=strategy_dir)
+        LoadUniverseJob().run(uctx)
+
+        assert "BBB" not in uctx.loaded_models
+        assert dict(uctx.rejections)["BBB"] == "trained_date_missing"
+
+    def test_invalid_trained_date_rejected_when_staleness_enabled(self, fake_models_dir):
+        strategy_dir, tickers = fake_models_dir
+        p = strategy_dir / "models" / "BBB" / "BBB-policy-metadata.json"
+        m = json.loads(p.read_text())
+        m["trained_date"] = "not-a-date"
+        p.write_text(json.dumps(m))
+
+        cfg = {
+            "watchlist": tickers,
+            "model_staleness_days": 30,
+            "ranking": {"universe_floor": {"type": "none"}},
+        }
+        uctx = UniverseContext(config=cfg, strategy_dir=strategy_dir)
+        LoadUniverseJob().run(uctx)
+
+        assert "BBB" not in uctx.loaded_models
+        assert dict(uctx.rejections)["BBB"] == "trained_date_invalid"
 
 
 # ── Adapter surface parity ───────────────────────────────────────────────────
