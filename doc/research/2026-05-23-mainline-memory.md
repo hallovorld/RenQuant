@@ -1299,9 +1299,15 @@ Next implication:
 - The HF calibrator now refuses to treat `config_fingerprint` as scorer
   identity. It binds to artifact/file identity, matching the WF loader
   contract.
-- Remaining required work: HF PatchTST WF manifest driver, causal per-fold
-  calibrator orchestration, and the same decision-tree / benchmark-sleeve /
-  active P&L acceptance lenses used for XGB and SPY.
+- `scripts/train_walkforward_patchtst.py` now provides the HF PatchTST WF
+  manifest driver. It invokes `patchtst_hf.py` per cutoff, fits the matching
+  `fit_hf_patchtst_calibrator.py` per-fold calibrator with causal
+  `data_end=cutoff-label_lookahead`, and writes the standard
+  `kernel.walk_forward` manifest. It supports cutoff-level concurrency via
+  `--jobs` and refuses partial manifests unless explicitly allowed.
+- Remaining required work: run the driver for acceptance-grade folds and score
+  PatchTST through the same decision-tree / benchmark-sleeve / active P&L
+  acceptance lenses used for XGB and SPY.
 
 ## Mainline Queue
 
@@ -1329,9 +1335,10 @@ Next implication:
    style diagnostics only. Completed infrastructure: `.pt` scorer fingerprint
    support, sidecar metadata instead of checkpoint mutation, rolling
    `patchtst_hf.py --train-cutoff/--data-end`, and file-identity HF calibrator
-   fingerprinting. Remaining: HF PatchTST WF manifest driver, causal per-fold
-   calibrators, and the same decision-tree / benchmark sleeve / active P&L lens
-   used for XGB and SPY.
+   fingerprinting, HF PatchTST WF manifest driver, and causal per-fold
+   calibrator orchestration. Remaining: run acceptance folds and compare with
+   the same decision-tree / benchmark sleeve / active P&L lens used for XGB and
+   SPY.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
 7. Fix remaining audit findings before promotion: run an actual LEAN trace
