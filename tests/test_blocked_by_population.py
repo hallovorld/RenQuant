@@ -46,13 +46,22 @@ def _ranked(items: list[tuple[str, float]]) -> list[CandidateResult]:
 
 
 def _sel_ctx(**overrides) -> SelectionContext:
+    default_sector_map = {
+        "AAA": "Industrials",
+        "BBB": "Healthcare",
+        "AMD": "Technology",
+        "NVDA": "Technology",
+        "XLU": "Utilities",
+        "GLD": "Defensive",
+        "CAT": "Industrials",
+    }
     defaults = dict(
         today             = datetime.date(2026, 4, 24),
         held_tickers      = [],
         last_sell_dates   = {},
         earnings_calendar = {},
         corr_matrix       = None,
-        sector_map        = {},
+        sector_map        = default_sector_map,
         defensive_set     = set(),
         wash_sale_days    = 0,
         earnings_buffer   = 0,
@@ -137,6 +146,9 @@ class TestOutParamPopulation:
             held_tickers      = ["AAPL", "GOOG", "AMZN"],
             sector_map        = {"MSFT": "Tech", "AAPL": "Tech", "GOOG": "Tech",
                                  "AMZN": "Tech", "CAT": "Industrials"},
+            corr_matrix       = {
+                "CAT": {"AAPL": 0.10, "GOOG": 0.10, "AMZN": 0.10},
+            },
             max_per_sector    = 3,
             tiered_thresholds = [{"min_model_score": 0.10}],
             defensive_set     = {"XLU"},
