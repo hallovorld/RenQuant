@@ -23,6 +23,7 @@ Composition:
 from __future__ import annotations
 
 import logging
+import math
 
 from kernel.pipeline.atoms import (
     BuildVectorFromMappingTask,
@@ -128,6 +129,7 @@ class _BuildSourceMapTask(Task):
             getattr(c, "ticker", None)
             for c in (getattr(ctx, "short_candidates", None) or [])
         }
+        eligible_new_candidates: list = []
         for c in (ctx.candidates or []):
             t = getattr(c, "ticker", None)
             if not t:
@@ -135,25 +137,50 @@ class _BuildSourceMapTask(Task):
             if t == sleeve_ticker:
                 blocked_map.setdefault(t, "benchmark_sleeve_excluded_from_alpha_qp")
                 continue
-            if t not in holdings:
-                reason = self._new_candidate_block_reason(
-                    ctx,
-                    src,
-                    t,
-                    c,
-                    admitted_new_tickers=admitted_new_tickers,
+            if t in holdings:
+                src[t] = c   # candidate wins (newer scores)
+                continue
+            if t in short_tickers:
+                # The short-candidate phase below owns this ticker. Do not let
+                # a broad long-side candidate consume a scarce long slot first.
+                continue
+            reason = self._new_candidate_block_reason(
+                ctx,
+                src,
+                t,
+                c,
+                admitted_new_tickers=admitted_new_tickers,
+                ignore_slots=True,
+            )
+            if reason:
+                blocked_map.setdefault(t, reason)
+                log.info(
+                    "QP_SOLVER_UNIVERSE_EXCLUDED %-6s %s "
+                    "(QP only optimizes admitted buy alpha)",
+                    t, reason,
                 )
-                if reason:
-                    if t not in short_tickers:
-                        blocked_map.setdefault(t, reason)
-                        log.info(
-                            "QP_SOLVER_UNIVERSE_EXCLUDED %-6s %s "
-                            "(QP only optimizes admitted buy alpha)",
-                            t, reason,
-                        )
-                    continue
-                admitted_new_tickers.add(t)
-            src[t] = c   # candidate wins (newer scores)
+                continue
+            eligible_new_candidates.append(c)
+
+        selected_new, slot_rejected = self._select_new_candidates_for_slots(
+            ctx, src, eligible_new_candidates,
+        )
+        for c in selected_new:
+            t = getattr(c, "ticker", None)
+            if not t:
+                continue
+            admitted_new_tickers.add(t)
+            src[t] = c
+        for c in slot_rejected:
+            t = getattr(c, "ticker", None)
+            if not t:
+                continue
+            blocked_map.setdefault(t, "qp_admission_no_slot")
+            log.info(
+                "QP_SOLVER_UNIVERSE_EXCLUDED %-6s %s "
+                "(QP only optimizes admitted buy alpha)",
+                t, "qp_admission_no_slot",
+            )
         # Phase 2B fix (2026-05-14): short candidates OVERRIDE long candidates
         # for the same ticker. ctx.candidates is the BROAD admission pool
         # (60-70 names that passed earnings/wash-sale gates) while
@@ -179,6 +206,7 @@ class _BuildSourceMapTask(Task):
         cand,
         *,
         admitted_new_tickers: set[str] | None = None,
+        ignore_slots: bool = False,
     ) -> str | None:
         if bool(getattr(ctx, "buy_blocked", False)):
             return "buy_blocked"
@@ -197,8 +225,75 @@ class _BuildSourceMapTask(Task):
             "score_sources": {**src, ticker: cand},
             "cands": {ticker: cand},
             "admitted_new_tickers": set(admitted_new_tickers or set()),
+            "ignore_slots": bool(ignore_slots),
         }
         return _qp_buy_admission_block_reason(ctx, env, ticker)
+
+    @staticmethod
+    def _select_new_candidates_for_slots(ctx, src: dict, candidates: list) -> tuple[list, list]:
+        if not candidates:
+            return [], []
+        joint = ((ctx.config.get("rotation", {}) or {})
+                 .get("joint_actions", {}) or {})
+        gate = (joint.get("qp_admission_gate") or {})
+        if not bool(gate.get("enabled", False)):
+            return candidates, []
+        if not bool(gate.get("respect_open_slots", True)):
+            return candidates, []
+
+        held_after_exits = set((ctx.holdings or {}).keys()) - {
+            t for t, _ in (getattr(ctx, "exits", None) or [])
+        }
+        open_slots = max(0, _qp_max_positions(ctx) - len(held_after_exits))
+        if open_slots >= len(candidates):
+            return candidates, []
+        if open_slots <= 0:
+            return [], list(candidates)
+
+        ordered = sorted(
+            candidates,
+            key=lambda c: _BuildSourceMapTask._candidate_slot_priority(c, gate),
+            reverse=True,
+        )
+        selected = ordered[:open_slots]
+        selected_tickers = {getattr(c, "ticker", None) for c in selected}
+        rejected = [
+            c for c in candidates
+            if getattr(c, "ticker", None) not in selected_tickers
+        ]
+        return selected, rejected
+
+    @staticmethod
+    def _candidate_slot_priority(cand, gate: dict) -> tuple[float, float, float, float, float]:
+        mode = str(gate.get("slot_priority", "rank_score")).strip().lower()
+        if mode in {"kelly", "kelly_target", "kelly_target_pct"}:
+            primary = _finite_attr(cand, "kelly_target_pct")
+        elif mode in {"mu_over_sigma", "edge_over_sigma"}:
+            mu = _finite_attr(cand, "mu")
+            sigma = _finite_attr(cand, "sigma")
+            primary = (
+                mu / max(sigma, 1e-12)
+                if math.isfinite(mu) and math.isfinite(sigma) and sigma > 0
+                else float("-inf")
+            )
+        elif mode in {"panel", "panel_score"}:
+            primary = _finite_attr(cand, "panel_score")
+        else:
+            primary = _finite_attr(cand, "rank_score")
+
+        rank = _finite_attr(cand, "rank_score")
+        panel = _finite_attr(cand, "panel_score")
+        mu = _finite_attr(cand, "mu")
+        sigma = _finite_attr(cand, "sigma")
+        if not math.isfinite(primary):
+            primary = rank
+        return (
+            primary if math.isfinite(primary) else float("-inf"),
+            rank if math.isfinite(rank) else float("-inf"),
+            panel if math.isfinite(panel) else float("-inf"),
+            mu if math.isfinite(mu) else float("-inf"),
+            -sigma if math.isfinite(sigma) else float("-inf"),
+        )
 
     @staticmethod
     def _sync_ticker_order(ctx, src: dict) -> None:
@@ -208,6 +303,15 @@ class _BuildSourceMapTask(Task):
             if t not in ordered:
                 ordered.append(t)
         ctx._qp_tickers = ordered  # noqa: SLF001
+
+
+def _finite_attr(obj, name: str) -> float:
+    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return out if math.isfinite(out) else float("nan")
 
 
 class JointPortfolioQPJob(Job):

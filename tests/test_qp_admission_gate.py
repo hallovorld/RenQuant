@@ -129,6 +129,7 @@ def _ctx_for_source_map(**overrides):
                     "topup_min_rank_score": 0.55,
                     "topup_min_panel_score": 0.0,
                     "respect_open_slots": True,
+                    "slot_priority": "rank_score",
                 }
             }
         },
@@ -208,6 +209,47 @@ def test_qp_solver_universe_budgets_multiple_new_candidates_against_open_slots()
     assert ctx._qp_tickers == [*list(holdings), "FIRST"]
     assert set(ctx._qp_mu_source_map) == {*holdings, "FIRST"}
     assert ctx._blocked_by_ticker["SECOND"] == "qp_admission_no_slot"
+
+
+def test_qp_solver_universe_allocates_slots_by_kelly_priority() -> None:
+    high_rank_high_risk = SimpleNamespace(
+        ticker="HIGH_RANK_HIGH_SIGMA",
+        rank_score=0.70,
+        panel_score=0.20,
+        mu=0.046,
+        sigma=0.58,
+        kelly_target_pct=0.06,
+    )
+    lower_rank_better_edge = SimpleNamespace(
+        ticker="LOWER_RANK_BETTER_KELLY",
+        rank_score=0.58,
+        panel_score=0.08,
+        mu=0.033,
+        sigma=0.28,
+        kelly_target_pct=0.12,
+    )
+    holdings = {f"H{i}": SimpleNamespace(ticker=f"H{i}") for i in range(7)}
+    ctx = _ctx_for_source_map(
+        holdings=holdings,
+        candidates=[high_rank_high_risk, lower_rank_better_edge],
+        _qp_tickers=[
+            *holdings,
+            "HIGH_RANK_HIGH_SIGMA",
+            "LOWER_RANK_BETTER_KELLY",
+        ],
+    )
+    ctx.config["rotation"]["joint_actions"]["qp_admission_gate"][
+        "slot_priority"
+    ] = "kelly_target_pct"
+
+    _BuildSourceMapTask().run(ctx)
+
+    assert ctx._qp_tickers == [*list(holdings), "LOWER_RANK_BETTER_KELLY"]
+    assert set(ctx._qp_mu_source_map) == {*holdings, "LOWER_RANK_BETTER_KELLY"}
+    assert (
+        ctx._blocked_by_ticker["HIGH_RANK_HIGH_SIGMA"]
+        == "qp_admission_no_slot"
+    )
 
 
 def test_qp_solver_universe_excludes_new_candidates_when_buys_are_gated() -> None:

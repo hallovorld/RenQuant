@@ -1181,6 +1181,80 @@ Interpretation:
   deterioration exits before hard stop-loss. Tax is not the current main
   blocker.
 
+## 2026-05-24 QP Slot-Budgeting And Rejected Kelly-Priority Probe
+
+Problem found:
+
+- QP source-map admission was still using candidate iteration order while open
+  slots were scarce. That made the admission stage partly order-dependent:
+  high-rank/high-sigma candidates could consume scarce open slots before lower
+  rank but better risk-adjusted candidates were even considered.
+- This violates the main contract: model/gates decide whether a ticker is
+  allowed to buy; QP may only size/rebalance the admitted alpha universe.
+
+Implemented locally:
+
+- `_BuildSourceMapTask` now prefilters new long candidates while ignoring slot
+  capacity, then allocates scarce open slots in one deterministic pass.
+- Held names remain in the QP universe for trim/sell; short candidates still
+  bypass buy admission and override same-ticker long candidates.
+- The code supports optional `qp_admission_gate.slot_priority` modes such as
+  `rank_score`, `kelly_target_pct`, `mu_over_sigma`, and `panel_score`.
+- Production/golden configs do **not** enable Kelly slot priority. The default
+  remains `rank_score` because the diagnostic below failed acceptance.
+
+Evidence:
+
+- Base T+1/non-marginable buying-power short probe:
+  `alpha_exposure_probe_20260524_t1_nmbp_costcap`.
+  Final `$100,069`; APY `+0.4%`; Sharpe `+0.10`; closed gross P/L `-$1,044`.
+  APP/COIN/DELL were the main alpha loss bucket.
+- Kelly-priority probe:
+  `alpha_exposure_probe_20260524_t1_nmbp_costcap_qpkelly`.
+  Final `$98,859`; APY `-6.8%`; Sharpe `-0.50`; closed gross P/L `-$2,272`.
+  It correctly blocked APP/COIN by `qp_admission_no_slot`, but admitted earlier
+  ORCL/RBLX/NEM/SNOW losses. This means Kelly slot priority is **rejected** as
+  a production parameter, even though the slot-budgeting contract fix is still
+  valid.
+- Sigma-cap diagnostic:
+  `alpha_exposure_probe_20260524_t1_nmbp_costcap_qpsigma039`.
+  Final `$101,659`; APY `+10.6%`; Sharpe `+1.16`; only 2 buys / 1 sell.
+  This proves high realized-vol candidates were dangerous in the probe window,
+  but it over-suppresses alpha and is not a promotion-ready rule.
+- Candidate-level forensic slice:
+  on 2026-01-21/22, APP and COIN had higher rank but much worse forward excess
+  returns than alternatives such as MPWR/EOG. Over the 4,353 candidate rows in
+  the probe, rank/mu were locally anti-monotonic to 10d/20d future excess
+  returns, while sigma was especially harmful. Treat this as a red flag for
+  BULL_CALM admission quality, not as a tuned rule.
+
+Theory:
+
+- Markowitz/Kelly sizing assumes expected returns and covariance/volatility are
+  trustworthy enough that edge divided by variance is meaningful. Here the
+  capped Kelly target tied across many candidates and noisy mu/sigma did not
+  improve realized active P/L.
+- The correct architectural lesson is narrower: slot capacity must be handled
+  before vector construction so QP cannot optimize an order-dependent universe.
+  The alpha-quality lesson still needs acceptance-grade WF evidence.
+
+Verification:
+
+- `tests/test_qp_admission_gate.py` adds a scarce-slot regression proving that
+  optional Kelly priority selects the better Kelly candidate when configured.
+- Targeted suite after the fix:
+  `tests/test_qp_admission_gate.py tests/test_joint_qp_task.py
+  tests/test_qp_integration.py tests/test_wf_config_parity.py
+  tests/test_persistence.py::TestTrades tests/test_ticker_daily_state.py`
+  -> `97 passed`.
+
+Next implication:
+
+- Do not chase a single volatility cap or Kelly priority knob. The remaining
+  APY/Sharpe blocker is the upstream alpha admission layer: regime-specific
+  trade-domain monotonicity, model-vs-benchmark active P/L, sigma/RS/recent-vol
+  evidence, and fail-closed metadata must decide buy eligibility before QP.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the
@@ -1202,8 +1276,13 @@ Interpretation:
    Other candidates remain non-BULL volatility-aware stops and earlier
    panel/mu soft exits for positions whose model thesis deteriorates before
    hard stop.
-5. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
-   as OOS. Static PatchTST full-window sims are style diagnostics only.
+5. Fold PatchTST into the same mainline acceptance path before quoting
+   PatchTST portfolio APY/Sharpe as OOS. Static PatchTST full-window sims are
+   style diagnostics only. Required infrastructure: `.pt` scorer fingerprint
+   support, sidecar WF metadata instead of writing into the checkpoint, rolling
+   `patchtst_hf.py --train-cutoff/--data-end`, an HF PatchTST WF manifest
+   driver, causal per-fold calibrators, and the same decision-tree / benchmark
+   sleeve / active P&L lens used for XGB and SPY.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
 7. Fix remaining audit findings before promotion: run an actual LEAN trace

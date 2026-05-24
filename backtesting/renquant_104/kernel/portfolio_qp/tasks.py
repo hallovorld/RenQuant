@@ -1471,7 +1471,11 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         return None
 
     is_held = ticker in env.get("holdings_set", set())
-    if not is_held and bool(gate.get("respect_open_slots", True)):
+    if (
+        not is_held
+        and bool(gate.get("respect_open_slots", True))
+        and not bool(env.get("ignore_slots", False))
+    ):
         held_after_exits = set(env.get("holdings_set", set())) - set(
             env.get("preexisting_exit_tickers", set())
         )
