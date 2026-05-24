@@ -1752,6 +1752,10 @@ Operational conclusion:
   P/L on full exits, matching sim/live cost-aware wash-sale semantics. Without
   this, LEAN treated recent-sale P/L as unknown and binary-blocked gain-sale
   re-entries that sim/live would allow.
+- LEAN now attaches `ctx._db` before the pipeline runs, matching sim/live.
+  Pipeline tasks that need DB context, such as score-distribution gates and
+  thesis-symmetric rotation lookup, no longer silently no-op in LEAN while
+  working in sim/live.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

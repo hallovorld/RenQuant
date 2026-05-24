@@ -161,6 +161,24 @@ def test_lean_make_context_propagates_last_sell_pls(tmp_path):
     assert ctx.last_sell_pls == {"AAA": 42.0}
 
 
+def test_lean_make_context_attaches_db_for_pipeline_tasks(tmp_path):
+    """LEAN should expose the DB during pipeline execution, like sim/live."""
+    from kernel.persistence import get_connection
+
+    adapter, data = _minimal_lean_adapter_for_context(tmp_path)
+    adapter._db = get_connection(
+        adapter._algo._config,
+        strategy_dir=_STRATEGY_DIR,
+        role="live",
+    )
+
+    try:
+        ctx = adapter.make_context(data)
+        assert ctx._db is adapter._db  # noqa: SLF001
+    finally:
+        adapter._db.close()
+
+
 def test_lean_commit_stamps_full_exit_pl_for_wash_sale_parity(tmp_path):
     """LEAN must preserve realized P/L for the cost-aware wash-sale gate.
 

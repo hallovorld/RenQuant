@@ -102,7 +102,9 @@ Fix:
    can drift: `skip_buys`, `last_sell_pls`, `last_stop_exit_dates`,
    `pending_broker_tickers`, `_db`, panel frames, calibrators, and state
    carryover. Fixed concrete drift: LEAN now passes `last_sell_pls` and stamps
-   it on full exits, so cost-aware wash-sale handling matches sim/live.
+   it on full exits, so cost-aware wash-sale handling matches sim/live. LEAN
+   also now attaches `ctx._db` before the pipeline runs, so DB-aware pipeline
+   tasks have the same context surface as sim/live.
 
 2. Decision trace writing is mostly shared now.
    `kernel.decision_trace` builds candidate pools, QP maps, selected-buy

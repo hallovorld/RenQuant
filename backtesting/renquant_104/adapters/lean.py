@@ -245,6 +245,8 @@ class LeanAdapter:
             regime_counts    = algo._regime_counts,
         )
         ctx.run_id = f"{today.isoformat()}-lean-{uuid.uuid4().hex[:8]}"
+        if self._db is not None:
+            ctx._db = self._db  # noqa: SLF001
 
         # ── Panel scoring prep ───────────────────────────────────────────────
         # Audit P-3: cache panel frames between bars when the underlying
