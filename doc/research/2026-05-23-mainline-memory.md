@@ -52,6 +52,13 @@ Make RenQuant 104 scientifically trustworthy end to end:
   - Adds a WF-config regression test proving prod `tax.cash_debit_mode` wins
     over stale side-config event-cash debit.
   - Targeted test passed: `tests/test_wf_config_parity.py`.
+- `00fdf70 fix(renquant104): fail closed on unavailable sanity gates`
+  - `run_wf_gate.py` no longer skip-passes when the rawlabel panel is missing,
+    the scorer kind is unsupported, or sanity prediction fails.
+  - Existing-model sanity now stamps `sanity_method` and a multi-shift placebo
+    profile into `wf_gate_metadata`.
+  - Targeted tests passed:
+    `tests/test_wf_gate_cli_contract.py tests/test_promote_wf_gate.py`.
 
 ## Active Validation
 
@@ -90,6 +97,11 @@ Verdict: `FAIL`.
   still weak.
 - Sanity battery: failed. Real IC `+0.0750`, shuffled IC `-0.0020`, placebo IC
   `+0.0462`; placebo must be `< +0.0375`.
+- Follow-up diagnostic: shuffled labels are clean across 10 seeds (max |IC|
+  about `0.0047`), but future-shift labels remain correlated at many horizons:
+  shift 5d `+0.0734`, 20d `+0.0670`, 60d `+0.0462`, 120d `+0.0835`,
+  252d `+0.0741`. Treat this as unresolved slow-factor/placebo methodology
+  risk, not proof of clean alpha.
 
 Do not promote this candidate. Do not run production buy/full from this
 evidence. The immediate research question is why the time-shift placebo keeps
