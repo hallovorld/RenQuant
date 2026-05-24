@@ -44,6 +44,11 @@ Same week: regime detector was found to label 2022 Q2 bear market as BULL_CALM 1
 
 ## 🗂 Current state
 
+**Start every RenQuant 104 continuation with**
+[`doc/research/2026-05-23-mainline-memory.md`](doc/research/2026-05-23-mainline-memory.md).
+It is the live mainline memory for the current repair campaign: what is fixed,
+what is still broken, which numbers are authoritative, and what to do next.
+
 For day-to-day status, read `git log --oneline -30` and the docs below. Recent session snapshots are archived in `doc/archives/sessions/` — most recent:
 - [`2026-05-17-night.md`](doc/archives/sessions/2026-05-17-night.md) — detector + per-regime σ-wire + 3 prod-corruption gates + HIFO
 - [`2026-05-15-evening.md`](doc/archives/sessions/2026-05-15-evening.md) — calibrator P0 + NGBoost confirmed + regime-aware re-eval
