@@ -1433,6 +1433,87 @@ def run_sanity_battery(
     if placebo_ic != placebo_ic:
         log.warning("  placebo skipped — too few aligned val rows; fail closed")
 
+    sanity_regime_ic = {"passed": False, "reason": "not_computed"}
+    try:
+        from scripts.analyze_manifest_sanity_placebo import (  # noqa: PLC0415
+            build_regime_series,
+            regime_diagnostics,
+            regime_shift_diagnostics,
+        )
+
+        mu_series = _pd.Series(mu, index=val.index)
+        regimes_df = build_regime_series(val["date"].unique(), strategy_dir=STRATEGY_DIR)
+        by_regime = regime_diagnostics(val, mu_series, LABEL, regimes_df)
+        by_regime_shift = regime_shift_diagnostics(
+            panel,
+            val,
+            mu_series,
+            LABEL,
+            regimes_df,
+            shifts=(60,),
+            min_names=5,
+        )
+        min_dates = 30
+        min_mean_ic = 0.02
+        regimes_out = {}
+        failed = []
+        eligible_any = False
+        for regime, stats in by_regime.items():
+            row60 = next(
+                (
+                    r for r in by_regime_shift.get(regime, [])
+                    if r.get("shift_days") == 60
+                ),
+                {},
+            )
+            mean_ic = stats.get("mean_ic")
+            placebo60 = row60.get("model_placebo_ic")
+            n_dates = int(stats.get("n_dates") or 0)
+            eligible = n_dates >= min_dates
+            passed = False
+            if eligible:
+                eligible_any = True
+                try:
+                    mean_ic_f = float(mean_ic)
+                except (TypeError, ValueError):
+                    mean_ic_f = float("nan")
+                placebo_ok = True
+                if placebo60 is not None and mean_ic_f == mean_ic_f:
+                    placebo_ok = abs(float(placebo60)) <= max(0.005, abs(mean_ic_f))
+                passed = (
+                    mean_ic_f == mean_ic_f
+                    and mean_ic_f >= min_mean_ic
+                    and placebo_ok
+                )
+                if not passed:
+                    failed.append(regime)
+            regimes_out[regime] = {
+                **stats,
+                "eligible": bool(eligible),
+                "passed": bool(passed) if eligible else True,
+                "placebo_60_ic": placebo60,
+                "label_autocorr_60_ic": row60.get("label_autocorr_ic"),
+            }
+        sanity_regime_ic = {
+            "passed": bool(eligible_any and not failed),
+            "reason": (
+                "regime sanity IC passed"
+                if eligible_any and not failed else
+                "regime sanity IC failed: " + ",".join(sorted(failed))
+                if failed else
+                "no regime has enough OOS dates for sanity IC validation"
+            ),
+            "min_n_dates": min_dates,
+            "min_mean_ic": min_mean_ic,
+            "regimes": regimes_out,
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("  regime sanity IC unavailable: %s", exc)
+        sanity_regime_ic = {
+            "passed": False,
+            "reason": f"regime sanity IC unavailable: {exc}",
+        }
+
     # Pass criteria
     pass_shuf = abs(shuf_ic) < 0.005
     pass_placebo = (
@@ -1455,6 +1536,7 @@ def run_sanity_battery(
         "sanity_placebo_ic": placebo_ic if placebo_ic == placebo_ic else None,
         "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
+        "sanity_regime_ic": sanity_regime_ic,
         "reason": (
             f"PASS: shuf_ic={shuf_ic:+.4f} placebo_ic={placebo_ic:+.4f}"
             if (pass_shuf and pass_placebo) else

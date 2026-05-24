@@ -1494,6 +1494,22 @@ Next implication:
   That will make weak BULL_CALM IC a runtime blocker instead of a diagnostic
   note.
 
+Update:
+
+- `scripts/run_wf_gate.py::run_sanity_battery()` now stamps
+  `sanity_regime_ic` into the returned WF gate metadata. It uses the same
+  production regime task chain as the diagnostic script, reports per-regime
+  mean IC and 60d placebo/label-autocorr evidence, and marks regimes eligible
+  when they have at least 30 OOS dates.
+- Default regime sanity pass threshold is `mean_ic >= 0.02` and 60d placebo
+  not larger than the regime's real IC. This is intentionally a metadata
+  contract first; production can hard-require it via
+  `ranking.panel_scoring.regime_admission.require_sanity_regime_ic=true` once
+  the next strict WF artifact is stamped.
+- Regression:
+  `tests/test_wf_gate_regime_sanity_metadata.py` proves
+  `run_sanity_battery()` emits `sanity_regime_ic`.
+
 ## Mainline Queue
 
 1. Convert the sanity decomposition into an alpha-admission fix: regime-specific
