@@ -836,6 +836,30 @@ Verification:
 - `.venv/bin/python -m py_compile backtesting/renquant_104/kernel/selection.py backtesting/renquant_104/kernel/pipeline/task_joint_actions.py backtesting/renquant_104/kernel/portfolio_qp/tasks.py`
   -> passed.
 
+Post-fix WF diagnostic:
+
+- Command:
+  `.venv/bin/python scripts/run_wf_gate.py --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json --strategy-config artifacts/diagnostics/wf_eval_configs/base_featspace_scopefixed_covered_20260523.prod_semantic.json --strict --jobs 3 --skip-sanity --trace-dir artifacts/diagnostics/wf_trade_traces/post_metadata_failclosed_20260523`
+- Verdict: FAIL because benchmark/regime gates still fail. This was
+  diagnostic-only because sanity was skipped.
+- Annual-net cuts:
+  - 2024-01-02 to 2024-12-31: APY `+3.04%`, Sharpe `+0.671`,
+    SPY Sharpe `+1.778`, ΔSharpe `-1.107`.
+  - 2024-07-01 to 2025-06-30: APY `+3.34%`, Sharpe `+0.694`,
+    SPY Sharpe `+0.715`, ΔSharpe `-0.021`.
+  - 2025-04-01 to 2026-03-28: APY `+0.33%`, Sharpe `+0.154`,
+    SPY Sharpe `+0.749`, ΔSharpe `-0.595`.
+- Mean annual-net Sharpe `+0.506`; `3/3` positive, `0/3` beat SPY Sharpe/APY.
+  Benchmark-lag regimes: `HIGH_CALM`, `LOW_SPIKED`.
+- Forensics: `artifacts/wf_trade_forensics_post_metadata_failclosed_20260523.md`.
+  Closed round trips `37`; gross `+$13.30k`; annual/event tax integrity clean
+  (`tax_cash_debited=0`, reporting-only); net after event-level tax `+$4.09k`;
+  win rate `62.2%`; median hold `30d`.
+- Remaining structural issue: entries are now score-monotone enough to pass the
+  trade gate, but APY still lags SPY because the book is low-exposure /
+  under-participating in bull/calm market regimes. Stop-loss/single-day-loss
+  exits are still pure loss buckets: `9` risk exits, `-$4.15k` gross.
+
 ## 2026-05-23 PatchTST / XGB Experiment Audit
 
 PatchTST experiments did complete, but they are not promotion evidence.
