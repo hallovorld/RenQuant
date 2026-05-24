@@ -191,6 +191,9 @@ def test_wf_gate_stamps_benchmark_and_regime_context() -> None:
     assert "spy_sharpe" in src
     assert "strategy_minus_spy_sharpe_mean" in src
     assert "n_cuts_beat_spy_sharpe" in src
+    assert '"benchmark_by_dominant_regime": wf_result.get("benchmark_by_dominant_regime")' in src
+    assert '"regime_benchmark_failures": wf_result.get("regime_benchmark_failures")' in src
+    assert '"performance_tax_basis_counts": wf_result.get("performance_tax_basis_counts")' in src
     assert "hmm_regime_counts" in src
     assert "spy_grid_regime_counts" in src
     assert "trade_buy_regime_counts_total" in src
@@ -281,6 +284,23 @@ def test_wf_gate_rejects_positive_sharpe_when_all_cuts_lag_spy(monkeypatch) -> N
     assert result["benchmark_by_dominant_regime"]["BULL_CALM"]["n_cuts"] == 3
     assert result["regime_benchmark_failures"] == ["BULL_CALM"]
     assert "SPY" in result["reason"]
+
+
+def test_wf_gate_counts_performance_tax_basis() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    rows = [
+        {"performance_tax_basis": "annual_net"},
+        {"performance_tax_basis": "annual_net"},
+        {"performance_tax_basis": "event_level"},
+        {"performance_tax_basis": None},
+    ]
+
+    assert mod._value_counts(rows, "performance_tax_basis") == {
+        "annual_net": 2,
+        "event_level": 1,
+    }
 
 
 def test_wf_gate_prefers_exact_annual_net_metrics_from_trace(monkeypatch, tmp_path) -> None:

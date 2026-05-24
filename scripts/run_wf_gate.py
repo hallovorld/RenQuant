@@ -466,6 +466,15 @@ def _sum_trade_summary(rows: list[dict], key: str) -> int:
     return int(sum(int((row.get("trade_trace_summary") or {}).get(key) or 0) for row in rows))
 
 
+def _value_counts(rows: list[dict], key: str) -> dict[str, int]:
+    counts = Counter(
+        str(row.get(key))
+        for row in rows
+        if row.get(key) not in (None, "")
+    )
+    return dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+
+
 def _benchmark_by_dominant_regime(rows: list[dict]) -> dict[str, dict]:
     """Summarize WF cuts by dominant benchmark regime before pooled metrics.
 
@@ -827,6 +836,9 @@ def run_walk_forward(
                 "n_cuts_beat_spy_apy": 0,
                 "benchmark_by_dominant_regime": _benchmark_by_dominant_regime(results),
                 "regime_benchmark_failures": [],
+                "performance_tax_basis_counts": _value_counts(
+                    results, "performance_tax_basis",
+                ),
                 "hmm_regime_counts_total": _merge_counts(results, "hmm_regime_counts"),
                 "spy_grid_regime_counts_total": _merge_counts(results, "spy_grid_regime_counts"),
                 "trade_buy_regime_counts_total": {},
@@ -928,6 +940,7 @@ def run_walk_forward(
         "n_cuts_beat_spy_apy": int(n_beat_spy_apy),
         "benchmark_by_dominant_regime": benchmark_by_regime,
         "regime_benchmark_failures": regime_benchmark_failures,
+        "performance_tax_basis_counts": _value_counts(results, "performance_tax_basis"),
         "hmm_regime_counts_total": _merge_counts(results, "hmm_regime_counts"),
         "spy_grid_regime_counts_total": _merge_counts(results, "spy_grid_regime_counts"),
         "trade_buy_regime_counts_total": _merge_trade_counts(results, "buy_regime_counts"),
@@ -1829,6 +1842,9 @@ def main():
         "strategy_minus_spy_apy_mean": wf_result.get("strategy_minus_spy_apy_mean"),
         "n_cuts_beat_spy_sharpe": wf_result.get("n_cuts_beat_spy_sharpe"),
         "n_cuts_beat_spy_apy": wf_result.get("n_cuts_beat_spy_apy"),
+        "benchmark_by_dominant_regime": wf_result.get("benchmark_by_dominant_regime"),
+        "regime_benchmark_failures": wf_result.get("regime_benchmark_failures"),
+        "performance_tax_basis_counts": wf_result.get("performance_tax_basis_counts"),
         "hmm_regime_counts_total": wf_result.get("hmm_regime_counts_total"),
         "spy_grid_regime_counts_total": wf_result.get("spy_grid_regime_counts_total"),
         "trade_buy_regime_counts_total": wf_result.get("trade_buy_regime_counts_total"),

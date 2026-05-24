@@ -1525,6 +1525,80 @@ Strict production requirement:
   `tests/test_preflight_regime_sanity.py` covers missing/failed/passed sanity
   metadata and sell-only behavior.
 
+## 2026-05-24 Strict WF Rerun After Admission-Cycle Fix
+
+Root-cause fix before rerun:
+
+- Strict WF was self-blocking to zero trades because
+  `RegimeModelAdmissionTask` required WF/sanity metadata that the WF gate itself
+  was supposed to produce. The production-semantic WF config builder now
+  disables runtime `ranking.panel_scoring.regime_admission` only inside WF
+  evaluation. Live/preflight still fail closed on missing or failed evidence.
+- Regression:
+  `tests/test_wf_config_parity.py tests/test_wf_gate_cli_contract.py
+  tests/test_regime_model_admission.py tests/test_preflight_regime_sanity.py`
+  passed after the fix.
+
+Strict WF rerun:
+
+- Command trace:
+  `artifacts/diagnostics/wf_trade_traces/strict_prod_semantic_20260524_admissionfix`.
+- Validation scope: walk-forward manifest recipe matched candidate recipe;
+  config parity PASS; QP contract OK; trade ledger contract OK; trade score
+  monotonicity passed in active regime.
+- Verdict: FAIL.
+- Annual-net acceptance metrics:
+  mean Sharpe `+0.133`, mean APY `+1.42%`; SPY mean Sharpe `+1.081`,
+  SPY APY `+16.94%`; delta Sharpe `-0.948`, delta APY `-15.52%`.
+  Beat SPY Sharpe `0/3`; beat SPY APY `0/3`.
+- Per-cut annual-net:
+  2024-01-02..2024-12-31 Sharpe `+0.695`, APY `+3.42%`, SPY Sharpe `+1.778`;
+  2024-07-01..2025-06-30 Sharpe `+0.669`, APY `+3.62%`, SPY Sharpe `+0.715`;
+  2025-04-01..2026-03-28 Sharpe `-0.966`, APY `-2.78%`, SPY Sharpe `+0.749`.
+- Regime benchmark lag:
+  `HIGH_CALM` two cuts, mean Sharpe `-0.135` vs SPY `+1.264`;
+  `LOW_SPIKED` one cut, Sharpe `+0.669` vs SPY `+0.715`.
+- Sanity battery: FAIL. Real IC `+0.0385`, shuffled IC `+0.0024`, placebo IC
+  `+0.0460`. The placebo being stronger than real IC means the reported IC is
+  not acceptable alpha evidence; it is likely dominated by time/regime
+  persistence or label autocorrelation.
+- Tax/metric interpretation:
+  event-level sim numbers look much better (`+6.8%/+7.2%` APY in two cuts),
+  but acceptance correctly uses annual-net tax. Tax is a major drag on the
+  positive cuts, while the 2025-04..2026-03 cut is negative before tax because
+  stop-loss exits dominate.
+- Trade anatomy:
+  all closed entries were `QP_BUY` in `BULL_CALM`; stop-loss bucket in the
+  failing 2025-04..2026-03 cut was `8` trades, gross `-$5,069`, win rate `0%`.
+  Winners still exist (`trailing_stop` and QP sells positive), so this is not
+  a pure tax bug; it is an entry/exit/regime conversion problem.
+
+Code hardening after rerun:
+
+- `scripts/run_wf_gate.py` now stamps `benchmark_by_dominant_regime`,
+  `regime_benchmark_failures`, and `performance_tax_basis_counts` into artifact
+  metadata. Previous code calculated these but omitted them from the metadata
+  payload, violating regime-first auditability.
+- `scripts/daily_104.sh` no longer sends phone `SHADOW-FAIL` alerts for
+  expected shadow buy-side preflight blocks. True shadow crashes/timeouts still
+  alert.
+- Regression suites:
+  `tests/test_daily_104_shadow_notify.py tests/test_smoke_test_model.py
+  tests/test_runner_trade_ntfy.py tests/test_alerts.py`,
+  `tests/test_qp_admission_gate.py tests/test_joint_qp_task.py
+  tests/test_qp_contracts.py tests/test_benchmark_sleeve.py
+  tests/test_qp_cvxpy_fallback.py`, and
+  `tests/test_wf_gate_cli_contract.py tests/test_wf_trade_forensics.py
+  tests/test_trade_monotonicity_gate.py`.
+
+Operational conclusion:
+
+- Do not promote this artifact.
+- Do not call the model trustworthy for live buys until the placebo IC and
+  benchmark-relative WF failures are fixed.
+- Next work should target label/split/sanity causality and BULL_CALM
+  entry/stop-loss behavior, not just QP sizing.
+
 ## Mainline Queue
 
 1. Convert the sanity decomposition into an alpha-admission fix: regime-specific
