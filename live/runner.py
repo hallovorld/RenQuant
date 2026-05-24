@@ -223,6 +223,7 @@ def _load_strategy_multi(
         )
         LoadUniverseJob().run(uctx)
         models = uctx.loaded_models
+        config["_universe_rejections"] = dict(uctx.rejections)
         for ticker, reason in uctx.rejections:
             log.warning("%s %s, skipping", ticker, reason)
     else:
@@ -280,6 +281,7 @@ def _load_strategy_multi(
 
     config["_use_kernel"] = True
     config["_strategy_dir"] = str(strategy_dir)
+    config.setdefault("_universe_rejections", {})
     return config, models, strategy_dir
 
 

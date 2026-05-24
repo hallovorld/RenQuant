@@ -238,6 +238,7 @@ class SimAdapter:
         self._backtest_end: "pd.Timestamp | None" = (
             pd.Timestamp(backtest_end) if backtest_end is not None else None
         )
+        self._universe_rejections: dict[str, str] = {}
 
         # ── Load per-ticker policy artifacts (same path as live/runner) ─────
         self._models = self._load_models()
@@ -586,6 +587,7 @@ class SimAdapter:
         from kernel.pipeline.job_universe import UniverseContext, LoadUniverseJob  # noqa: PLC0415
         uctx = UniverseContext(config=self._config, strategy_dir=self._strategy_dir)
         LoadUniverseJob().run(uctx)
+        self._universe_rejections = dict(uctx.rejections)
         for ticker, reason in uctx.rejections:
             log.debug("SimAdapter: %s rejected — %s", ticker, reason)
         return uctx.loaded_models
@@ -1303,7 +1305,8 @@ class SimAdapter:
                     pos_pct = (pos_qty * px) / pv
                 blocked_str = (blocked_map or {}).get(tk)
                 if blocked_str is None and tk not in (self._models or {}):
-                    blocked_str = "universe_floor"
+                    reason = self._universe_rejections.get(tk, "not_loaded")
+                    blocked_str = f"universe:{reason}"
                 if blocked_str is None and cand is None and hs is not None:
                     blocked_str = "held_no_new_buy"
                 if blocked_str is None and cand is None:

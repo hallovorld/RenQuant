@@ -256,10 +256,14 @@ class TestTickerDailyStateWiring:
         # Loop var `tk` over `wl` for the ticker_daily_state build
         assert "for tk in wl:" in RUNNER_SOURCE
 
-    def test_blocked_by_falls_back_to_universe_floor(self):
-        # When ticker has no model loaded (failed universe floor) and
-        # blocked_map has no entry, default to "universe_floor".
-        assert '"universe_floor"' in RUNNER_SOURCE
+    def test_blocked_by_preserves_exact_universe_rejection_reason(self):
+        # When ticker has no model loaded, keep LoadUniverseJob's exact
+        # rejection reason instead of collapsing every failure to
+        # "universe_floor".
+        assert "_universe_rejections" in LIVE_RUNNER_SOURCE
+        for source in (RUNNER_SOURCE, SIM_ADAPTER_SOURCE):
+            assert "_universe_rejections" in source
+            assert "universe:{reason}" in source
 
     def test_pending_at_broker_is_recorded(self):
         # broker_pending must surface as both pending_at_broker=1 AND

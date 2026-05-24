@@ -326,6 +326,9 @@ class RunnerAdapter:
         self._strategy_dir        = strategy_dir
         self._sell_only           = sell_only
         self._use_intraday_prices = use_intraday_prices
+        self._universe_rejections = dict(
+            config.get("_universe_rejections") or {}
+        )
 
         # 2026-04-27: broker-isolated state. paper / alpaca-paper / alpaca
         # each get their own live_state.{broker}.json + runs.{broker}.db so
@@ -1934,7 +1937,8 @@ class RunnerAdapter:
                         pos_pct = (pos_qty * px) / pf_value
                     blocked_str = (blocked_map or {}).get(tk)
                     if blocked_str is None and tk not in (self._models or {}):
-                        blocked_str = "universe_floor"
+                        reason = self._universe_rejections.get(tk, "not_loaded")
+                        blocked_str = f"universe:{reason}"
                     if blocked_str is None and tk in pending_broker_tickers:
                         blocked_str = "broker_pending"
                     if blocked_str is None and cand is None and hs is not None:

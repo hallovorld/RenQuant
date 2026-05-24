@@ -382,6 +382,10 @@ class TestAdapterParity:
         src = self._read("live/runner.py")
         assert "LoadUniverseJob" in src
 
+    def test_live_runner_preserves_rejection_reasons_for_db_trace(self):
+        src = self._read("live/runner.py")
+        assert 'config["_universe_rejections"] = dict(uctx.rejections)' in src
+
     def test_no_hand_written_filter_loops_remain(self):
         """Enforce 'every logical unit is a Task/Job/Pipeline' for admission.
 

@@ -668,11 +668,17 @@ Decision-trace opacity found during sidecar audits is partially fixed:
 - Walk-forward forensic reports now label WF scoring as
   `walkforward_manifest_per_bar`; the config artifact path is reported only as
   a seed, not as the per-bar model actually used.
+- Sim/live `ticker_daily_state.blocked_by` now preserves exact universe
+  rejection reasons as `universe:<reason>` instead of collapsing
+  `ic_missing`, `trained_date_missing`, stale models, and auto-drop into a
+  generic `universe_floor` label.
 
 Verification:
 
 - `.venv/bin/python -m pytest tests/test_qp_integration.py tests/test_joint_qp_task.py tests/test_candidate_blocked_by.py tests/test_persistence.py tests/test_sim_trade_ledger.py tests/test_wf_gate_recipe_scope.py tests/test_wf_gate_cli_contract.py tests/test_promote_wf_gate.py -q`
   -> `145 passed`.
+- `.venv/bin/python -m pytest tests/test_runner_state_fixes.py tests/test_universe_alignment.py tests/test_ticker_daily_state.py tests/test_persistence.py::TestTrades -q`
+  -> `92 passed`.
 
 Still pending: LEAN has no SQLite sidecar persistence equivalent to sim/live,
 so LEAN APY/Sharpe is not replayable under the same decision-trace contract.
@@ -737,15 +743,15 @@ APY/Sharpe/tax/turnover versus XGB and SPY.
    as OOS. Static PatchTST full-window sims are style diagnostics only.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
-7. Fix remaining audit findings before promotion: LEAN DB trace parity and
-   exact universe-rejection reason preservation in sim/live. The WF
+7. Fix remaining audit findings before promotion: LEAN DB trace parity. The WF
    `effective_train_cutoff_date`
    double-embargo bug, SEC fundamentals point-in-time filed-date bug, LEAN/QP
    cash-capped target parity bug, universe metadata fail-closed bug,
    calibrator metric-scope bug, correlation metadata fail-closed semantics,
-   QP global status reason stamping, and candidate reason-gap contract are
-   fixed. Correlation artifacts without `as_of_date` now require an explicit
-   legacy override, while sell-only risk exits remain soft-passed.
+   QP global status reason stamping, candidate reason-gap contract, and exact
+   sim/live universe-rejection reason preservation are fixed. Correlation
+   artifacts without `as_of_date` now require an explicit legacy override,
+   while sell-only risk exits remain soft-passed.
 
 ## Known Failure Modes To Keep Front And Center
 
