@@ -54,6 +54,26 @@ _ALPHA158_SCORER_KINDS = {"panel_linear", "panel_ltr_xgboost"}
 _HISTORY_SCORER_KINDS = {"hf_patchtst", "patchtst", "regime_router"}
 _FORBIDDEN_HISTORY_COL_PREFIXES = ("fwd_",)
 _FORBIDDEN_HISTORY_COLS = {"label", "split_label"}
+_BUYING_POWER_SETTLED = "settled_cash"
+_BUYING_POWER_NMBP = "non_marginable_buying_power"
+_BUYING_POWER_ALIASES = {
+    _BUYING_POWER_SETTLED: _BUYING_POWER_SETTLED,
+    "settled": _BUYING_POWER_SETTLED,
+    "cash": _BUYING_POWER_SETTLED,
+    _BUYING_POWER_NMBP: _BUYING_POWER_NMBP,
+    "cash_plus_unsettled": _BUYING_POWER_NMBP,
+    "unsettled": _BUYING_POWER_NMBP,
+}
+
+
+def _normalize_buying_power_mode(raw: Any) -> str:
+    mode = str(raw or _BUYING_POWER_NMBP).strip().lower()
+    if mode not in _BUYING_POWER_ALIASES:
+        raise ValueError(
+            "execution.buying_power_mode must be one of "
+            f"{sorted(_BUYING_POWER_ALIASES)}; got {raw!r}"
+        )
+    return _BUYING_POWER_ALIASES[mode]
 
 
 def _artifact_kind(path: Path) -> str | None:
@@ -390,7 +410,7 @@ class SimAdapter:
         self._rotation_proposals: list = []
 
         # ── Execution model (Track Batch A, 2026-05-10) ─────────────────────
-        # Industry-grade fill model: commission schedule + slippage + T+2
+        # Industry-grade fill model: commission schedule + slippage + T+N
         # settlement. Three independent components, all single-source-of-
         # truth per CLAUDE.md §5.13.5. Each is config-driven; defaults
         # match Alpaca/IBKR retail equity (Q4 2025 schedules).
@@ -402,7 +422,13 @@ class SimAdapter:
         #   execution.commission_bps:      float, default 0.0  (Alpaca = 0)
         #   execution.half_spread_bps:     float, default 2.0  (liquid S&P)
         #   execution.impact_bps_per_adv:  float, default 0.0  (off)
-        #   execution.t2_settlement_days:  int,   default 2
+        #   execution.t2_settlement_days:  int,   default 1 (SEC T+1)
+        #   execution.buying_power_mode:   str,   default
+        #     "non_marginable_buying_power". This mirrors live Alpaca's
+        #     cash policy: settled cash plus executed-but-unsettled sell
+        #     proceeds, without 2x/4x margin. Set "settled_cash" for a
+        #     conservative cash-account sim where sale proceeds cannot fund
+        #     buys until settlement.
         #   execution.legacy_no_fees:      bool,  default False — parity
         #     flag for tests that need byte-identical pre-execution-model
         #     behavior (skips slippage AND fees AND uses T+0). When True,
@@ -420,8 +446,12 @@ class SimAdapter:
             impact_bps_per_pct_adv=float(exec_cfg.get("impact_bps_per_adv", 0.0)),
         )
         self._t2_queue = T2CashQueue(
-            settlement_days=int(exec_cfg.get("t2_settlement_days", 2)),
+            settlement_days=int(exec_cfg.get("t2_settlement_days", 1)),
         )
+        self._buying_power_mode = _normalize_buying_power_mode(
+            exec_cfg.get("buying_power_mode", _BUYING_POWER_NMBP)
+        )
+        self._buying_power_remaining: float | None = None
         # Cumulative fee tracking for diagnostic / build_result consumers.
         self._total_fees: float = 0.0
 
@@ -920,6 +950,32 @@ class SimAdapter:
             log.warning("SimAdapter: ngboost head load failed — %s", exc)
             return None
 
+    def _pending_settle_cash(self) -> float:
+        queue = getattr(self, "_t2_queue", None)
+        if queue is None:
+            return 0.0
+        pending = queue.pending_total()
+        return pending if math.isfinite(pending) else 0.0
+
+    def _available_buying_power(self) -> float:
+        """Cash budget exposed to the decision tree for new long buys.
+
+        ``settled_cash`` is conservative cash-account behavior. The default
+        ``non_marginable_buying_power`` mirrors the live Alpaca broker path:
+        executed sell proceeds replenish non-margin buying power before they
+        have fully settled, while still avoiding 2x/4x margin buying power.
+        """
+        cash = float(getattr(self, "_cash", 0.0) or 0.0)
+        if not math.isfinite(cash):
+            return 0.0
+        if (
+            getattr(self, "_exec_enabled", False)
+            and getattr(self, "_buying_power_mode", _BUYING_POWER_SETTLED)
+            == _BUYING_POWER_NMBP
+        ):
+            cash += self._pending_settle_cash()
+        return cash if math.isfinite(cash) else 0.0
+
     # ── Public entry points ─────────────────────────────────────────────────
 
     def make_context(self, today: pd.Timestamp):
@@ -929,7 +985,7 @@ class SimAdapter:
         today_ts = pd.Timestamp(today)
         today_date = today_ts.date() if hasattr(today_ts, "date") else today_ts
 
-        # ── Execution model: drain T+2 queue at top of every bar ────────────
+        # ── Execution model: drain T+N queue at top of every bar ────────────
         # Per spec §4: first thing each bar, settle any pending sell
         # proceeds whose settle_date <= today. This is the SINGLE callsite
         # for drain() in the bar loop — keeps cash availability aligned
@@ -976,6 +1032,8 @@ class SimAdapter:
                 prices[t] = float(df.loc[today_ts, "close"])
 
         pv = self._portfolio_value(prices, today_ts=today_ts)
+        pending_settle_cash = self._pending_settle_cash()
+        buying_power_cash = self._available_buying_power()
 
         # last_sell_dates as date objects (pipeline expects datetime.date)
         last_sells_d: dict[str, datetime.date | None] = {}
@@ -1011,13 +1069,18 @@ class SimAdapter:
             last_sell_pls    = dict(self._last_sell_pls),
             last_stop_exit_dates = last_stops_d,
             portfolio_value  = pv,
-            cash             = self._cash,
+            cash             = buying_power_cash,
             prices           = prices,
             hwm              = self._hwm,
             skip_buys        = self._skip_buys,
             regime_state     = self._regime_state,
             regime_counts    = self._regime_counts,
             feature_cache    = self._feature_cache,
+        )
+        ctx.settled_cash = self._cash
+        ctx.pending_settle_cash = pending_settle_cash
+        ctx.buying_power_mode = getattr(
+            self, "_buying_power_mode", _BUYING_POWER_SETTLED,
         )
         ctx.run_id = f"{today_date.isoformat()}-sim-{uuid.uuid4().hex[:8]}"
 
@@ -1184,14 +1247,18 @@ class SimAdapter:
         # pipeline order makes this hard to trigger, dedupe matches the
         # exit-side pattern (first-write-wins) and is cheap.
         seen_buy_tickers: set[str] = set()
-        for order in ctx.orders:
-            t = order.get("ticker") if isinstance(order, dict) else getattr(order, "ticker", None)
-            if t is not None and t in seen_buy_tickers:
-                # Same ticker already booked this bar — skip the dup.
-                continue
-            if t is not None:
-                seen_buy_tickers.add(t)
-            self._apply_buy(order, today_ts, ctx)
+        self._buying_power_remaining = self._available_buying_power()
+        try:
+            for order in ctx.orders:
+                t = order.get("ticker") if isinstance(order, dict) else getattr(order, "ticker", None)
+                if t is not None and t in seen_buy_tickers:
+                    # Same ticker already booked this bar — skip the dup.
+                    continue
+                if t is not None:
+                    seen_buy_tickers.add(t)
+                self._apply_buy(order, today_ts, ctx)
+        finally:
+            self._buying_power_remaining = None
 
         # Collect trade events emitted this bar for the persistence trace
         trade_events_this_bar = self._trade_log[len_trade_log_before:]
@@ -1507,9 +1574,9 @@ class SimAdapter:
         tax_cash_debited = _tax_cash_debit_amount(
             ctx.config if ctx is not None else {}, tax,
         )
-        # ── Execution model: sell fees + T+2 settlement (Track Batch A) ────
+        # ── Execution model: sell fees + T+N settlement (Track Batch A) ────
         # Per §5.13.5 every fee dollar flows through compute_sell_fees;
-        # per the spec, proceeds (notional - fees) are queued for T+2
+        # per the spec, proceeds (notional - fees) are queued for T+N
         # settlement via the T2CashQueue, NOT credited immediately.
         # Estimated capital-gains tax is config-driven: event_level debits it
         # immediately as a liquidity stress test, reporting_only leaves broker
@@ -1551,7 +1618,7 @@ class SimAdapter:
         if not hasattr(self, "_tax_cash_debited"):
             self._tax_cash_debited = 0.0
         self._tax_cash_debited += float(tax_cash_debited)
-        # T+0 legacy path: proceeds credited immediately. T+2 path: queue
+        # T+0 legacy path: proceeds credited immediately. T+N path: queue
         # net proceeds for settlement; drain happens at top of next bar.
         # Defensive: hasattr guard so __new__ test fixtures stay byte-
         # identical to pre-execution-model legacy semantics.
@@ -1814,11 +1881,21 @@ class SimAdapter:
         if not math.isfinite(invest):
             log.warning("SimAdapter: %s buy invest non-finite — rejecting", ticker)
             return
-        if invest > self._cash + 1e-6:
-            log.warning("SimAdapter: insufficient cash for %s (need %.2f, have %.2f)",
-                        ticker, invest, self._cash)
+        budget = getattr(self, "_buying_power_remaining", None)
+        if budget is None or not math.isfinite(float(budget)):
+            budget = self._available_buying_power()
+        if invest > float(budget) + 1e-6:
+            log.warning(
+                "SimAdapter: insufficient buying power for %s "
+                "(need %.2f, have %.2f; settled_cash=%.2f pending_settle=%.2f mode=%s)",
+                ticker, invest, float(budget), self._cash,
+                self._pending_settle_cash(),
+                getattr(self, "_buying_power_mode", _BUYING_POWER_SETTLED),
+            )
             return
         self._cash -= invest
+        if getattr(self, "_buying_power_remaining", None) is not None:
+            self._buying_power_remaining = float(budget) - invest
         if hasattr(self, "_total_fees"):
             self._total_fees += buy_fees["total"]
         # Lot cost basis records the post-slippage fill price; the buy
@@ -2005,7 +2082,7 @@ class SimAdapter:
             return
 
         # Credit cash with short proceeds (held as margin; daily borrow
-        # cost handled by _charge_daily_borrow). T+2 is ignored for
+        # cost handled by _charge_daily_borrow). T+N is ignored for
         # shorts in this MVP — Alpaca settles short proceeds T+1 anyway.
         self._cash += proceeds
         if hasattr(self, "_total_fees"):
@@ -2130,7 +2207,7 @@ class SimAdapter:
         the rest of the simulation.
         """
         import math
-        # 2026-05-11 BUG #C fix: include T+2 pending settlement balance.
+        # 2026-05-11 BUG #C fix: include T+N pending settlement balance.
         # Pre-fix, `_portfolio_value` returned cash + position MTM but
         # ignored sell proceeds sitting in `_t2_queue`. Result: on sell
         # day, shares drop but cash unchanged (proceeds queued) ⇒ NAV

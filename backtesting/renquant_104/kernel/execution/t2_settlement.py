@@ -1,11 +1,11 @@
-"""T+2 cash-settlement queue for sell proceeds.
+"""T+N cash-settlement queue for sell proceeds.
 
-US equity settlement is T+2 (two business days after trade date) per
-SEC Rule 15c6-1 (since May 28, 2024 the rule was tightened to T+1, but
-LEAN's brokerage models still operate on the legacy T+2 convention and
-Alpaca's customer-facing "settled cash" balance follows the broker's
-internal carry; we model T+2 as the conservative case so live and sim
-agree on intra-week cash availability).
+US equity settlement is T+1 for most broker-dealer transactions since
+May 28, 2024 under SEC Rule 15c6-1 amendments. The queue remains named
+``T2CashQueue`` for compatibility with older imports, but the default
+settlement lag is now one NYSE session. Tests may still pass
+``settlement_days=2`` when they intentionally exercise the legacy
+conservative convention.
 
 Per CLAUDE.md §5.13.5: this is the only T+N settlement implementation;
 SimAdapter (and any future runner reconciliation) must route through
@@ -89,7 +89,7 @@ class T2CashQueue:
       (useful for sanity-checking `live - settled = pending`).
     """
 
-    settlement_days: int = 2
+    settlement_days: int = 1
     _pending: List[PendingCashEntry] = field(default_factory=list)
 
     def add_pending(self, sale_date: pd.Timestamp, amount: float) -> None:

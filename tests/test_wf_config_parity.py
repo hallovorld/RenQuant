@@ -68,6 +68,11 @@ def _base_config(artifact_path: str, *, kind: str = "xgb") -> dict:
         "max_concurrent_positions": 8,
         "max_positions_per_sector": 3,
         "wash_sale_days": 30,
+        "execution": {
+            "enabled": True,
+            "t2_settlement_days": 1,
+            "buying_power_mode": "non_marginable_buying_power",
+        },
         "tax": {"enabled": True, "short_term_rate": 0.50},
         "defensive_tickers": ["GLD"],
         "sector_map": {"AAPL": "Tech"},
@@ -138,6 +143,24 @@ def test_panel_exit_drift_fails(tmp_path: Path) -> None:
 
     assert result["passed"] is False
     assert any(i["path"] == "risk.panel_exit" for i in result["issues"])
+
+
+def test_execution_semantic_drift_fails(tmp_path: Path) -> None:
+    prod_art = _artifact(tmp_path / "prod_art.json", ["f1", "f2"])
+    wf_art = _artifact(tmp_path / "wf_art.json", ["f1", "f2"])
+    prod_cfg = _base_config(str(prod_art))
+    wf_cfg = _base_config(str(wf_art))
+    wf_cfg["execution"]["buying_power_mode"] = "settled_cash"
+
+    result = evaluate_wf_config_parity(
+        _write_config(tmp_path / "prod.json", prod_cfg),
+        _write_config(tmp_path / "wf.json", wf_cfg),
+        candidate_artifact=prod_art,
+        strategy_dir=tmp_path,
+    )
+
+    assert result["passed"] is False
+    assert any(i["path"] == "execution" for i in result["issues"])
 
 
 def test_feature_recipe_drift_fails(tmp_path: Path) -> None:

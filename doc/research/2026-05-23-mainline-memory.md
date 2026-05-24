@@ -1101,6 +1101,86 @@ Interpretation:
   long-window APY/Sharpe are not enough; promotion needs strict WF traces with
   alpha-vs-SPY active P/L, exposure, score monotonicity, and regime buckets.
 
+## 2026-05-24 Settlement / Buying-Power Parity Fix
+
+The benchmark-sleeve alpha-funding probe exposed two execution/parity bugs
+after the `core100_fund15` A/B:
+
+- Sim still defaulted sell-proceeds settlement to legacy T+2, while US equity
+  settlement has been T+1 for most broker-dealer transactions since
+  2024-05-28 under SEC Rule 15c6-1 amendments.
+- Sim decision contexts exposed only settled cash to the decision tree. Live
+  Alpaca uses `account.non_marginable_buying_power`, so executed-but-unsettled
+  sell proceeds can fund new equity buys without using 2x/4x margin buying
+  power. Result: sim/live cash semantics diverged exactly where the benchmark
+  sleeve sold SPY to fund alpha.
+- `BenchmarkSleeveTask` sized initial SPY buys and alpha-funding sells from
+  mid price only, so a "valid" order could still be rejected once sim applied
+  buy slippage, sell slippage, SEC/TAF fees, and cash buffer.
+
+Fixes now in the working tree:
+
+- `T2CashQueue` keeps its historical class name for import compatibility, but
+  its default lag is now T+1. Tests can still request `settlement_days=2` for
+  explicit legacy stress cases.
+- `SimAdapter` now separates `settled_cash`, `pending_settle_cash`, and
+  decision-tree `cash`. Default `execution.buying_power_mode` is
+  `non_marginable_buying_power`, mirroring the live Alpaca path. A
+  `settled_cash` mode exists for conservative cash-account stress tests and
+  intentionally blocks same-bar unsettled reinvestment.
+- `BenchmarkSleeveTask` only treats sleeve sale proceeds as alpha funding when
+  the execution mode allows unsettled buying power. In `settled_cash` mode the
+  alpha-funding capacity is zero.
+- Benchmark sleeve buy/sell share counts now reserve slippage, fees, and the
+  configured cash buffer before emitting executable orders.
+- `strategy_config.json` and `strategy_config.golden.json` explicitly stamp
+  the execution contract; `scripts/wf_config_parity.py` compares it as a
+  semantic path so side configs cannot drift silently.
+
+Verification:
+
+- Targeted regression suite:
+  `tests/test_t2_settlement.py tests/test_sim_execution_integration.py
+  tests/test_benchmark_sleeve.py tests/test_wf_config_parity.py
+  tests/test_runner_state_fixes.py::TestRunnerCashBudgetGuard
+  tests/test_p0_fixes_regression_guards.py::TestP0_9_BugDSettledCash`
+  -> `52 passed`.
+- Focused rerun:
+  `tests/test_benchmark_sleeve.py tests/test_sim_execution_integration.py
+  tests/test_t2_settlement.py tests/test_wf_config_parity.py`
+  -> `44 passed`.
+- Py-compile passed for the changed sim, benchmark sleeve, execution backend,
+  Alpaca broker, and WF parity modules.
+- Probe:
+  `backtesting/renquant_104/artifacts/diagnostics/alpha_exposure_probe_20260524_t1_nmbp_costcap`.
+  Log scan found no `insufficient cash`, `insufficient buying power`,
+  `Traceback`, or `ERROR` matches.
+
+Probe result:
+
+- Window: 2025-12-01 to 2026-01-31.
+- Final value: `$100,069`; return `+0.1%`; APY `+0.4%`; Sharpe `+0.10`;
+  max drawdown `2.9%`.
+- Tax reporting remains clean: event-estimated tax `$439`, cash-debited `$0`,
+  `mode=reporting_only`.
+- Trades: 7 buys, 10 sells; win rate `60%`; average hold `34d`.
+- Closed gross P/L: `-$1,044`; tax-estimated net P/L `-$1,483`.
+- SPY sleeve round trips were positive overall: gross `+$335`, net `+$151`.
+- The loss bucket is alpha, not tax: APP, COIN, and DELL entered in
+  `BULL_CALM` and were sold on 2026-01-30 after the regime flipped to BEAR.
+  The three stop-loss exits lost `-$1,889` gross/net. ANET was the one strong
+  alpha winner (`+10.2%`, trailing stop).
+
+Interpretation:
+
+- This is an execution/parity fix, not alpha proof.
+- The previous rejected-buy symptom is gone, so bad trade economics are now
+  visible instead of hidden by cash rejection.
+- The next alpha-conversion work should focus on BULL_CALM admission quality
+  near regime transitions, volatility/uncertainty caps, and earlier thesis
+  deterioration exits before hard stop-loss. Tax is not the current main
+  blocker.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the

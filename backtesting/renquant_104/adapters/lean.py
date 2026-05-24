@@ -90,7 +90,7 @@ class LeanAdapter:
         self._panel_cache_fac: "dict | None" = None
 
         # Execution-model parity bookkeeping (Track Batch A, 2026-05-10):
-        # LEAN's brokerage model handles fee + slippage + T+2 settlement
+        # LEAN's brokerage model handles fee + slippage + broker settlement
         # natively when `SetBrokerageModel` is wired (main.py:Initialize).
         # We keep a cumulative-fees mirror here so the runtime statistics
         # report matches sim's `_total_fees` summary. Read from

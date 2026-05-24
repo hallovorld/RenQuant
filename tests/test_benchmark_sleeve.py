@@ -131,7 +131,7 @@ def test_emits_buy_for_unallocated_core_exposure():
     assert len(ctx.orders) == 1
     order = ctx.orders[0]
     assert order["ticker"] == "SPY"
-    assert order["shares"] == 200
+    assert order["shares"] == 199
     assert order["order_type"] == "BENCHMARK_SLEEVE_BUY"
     assert order["source_job"] == "BenchmarkSleeveJob"
     assert order["decision_inputs"]["optimizer"]["solver"] == "scipy_linprog_highs"
@@ -145,8 +145,8 @@ def test_pending_alpha_buy_reduces_sleeve_target():
     )
     BenchmarkSleeveTask().run(ctx)
     spy_order = [o for o in ctx.orders if o.get("ticker") == "SPY"][0]
-    assert spy_order["invest"] == pytest.approx(80_000.0)
-    assert spy_order["shares"] == 200
+    assert spy_order["invest"] == pytest.approx(79_600.0)
+    assert spy_order["shares"] == 199
 
 
 def test_buy_gate_blocks_new_sleeve_buy():
@@ -220,6 +220,20 @@ def test_alpha_funding_capacity_uses_explicit_sleeve_budget():
 
     assert benchmark_sleeve_alpha_funding_capacity(ctx) == pytest.approx(15_000.0)
     assert benchmark_sleeve_cash_reserve_credit(ctx) == pytest.approx(0.50)
+
+
+def test_alpha_funding_capacity_is_zero_in_settled_cash_mode():
+    cfg = _cfg(fund_alpha=True)
+    cfg["execution"] = {"buying_power_mode": "settled_cash"}
+    ctx = _ctx(
+        cfg=cfg,
+        holdings={"SPY": _holding(100, 500.0)},
+        prices={"SPY": 500.0},
+        portfolio_value=100_000.0,
+        cash=0.0,
+    )
+
+    assert benchmark_sleeve_alpha_funding_capacity(ctx) == pytest.approx(0.0)
 
 
 def test_qp_alpha_can_displace_benchmark_sleeve_when_enabled():
@@ -305,7 +319,7 @@ def test_alpha_funding_sell_bypasses_rebalance_band():
     ticker, sig = ctx.exits[0]
     assert ticker == "SPY"
     assert sig.exit_type == "benchmark_sleeve_rebalance"
-    assert sig.quantity == pytest.approx(3.0)
+    assert sig.quantity == pytest.approx(4.0)
     assert ctx._benchmark_sleeve_state["alpha_funding_gap_value"] == pytest.approx(1_500.0)
 
 
@@ -329,7 +343,7 @@ def test_alpha_funding_sell_happens_even_when_optimizer_cash_caps_target():
     ticker, sig = ctx.exits[0]
     assert ticker == "SPY"
     assert sig.exit_type == "benchmark_sleeve_rebalance"
-    assert sig.quantity == pytest.approx(10.0)
+    assert sig.quantity == pytest.approx(11.0)
     assert ctx._benchmark_sleeve_state["target_sleeve_value"] == pytest.approx(80_000.0)
     assert ctx._benchmark_sleeve_state["alpha_funding_gap_value"] == pytest.approx(5_000.0)
 

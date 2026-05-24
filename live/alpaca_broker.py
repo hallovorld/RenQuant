@@ -138,15 +138,15 @@ class AlpacaBroker(BaseBroker):
         """Return available cash for new orders.
 
         P0-9 (BUG D, audit 2026-05-20) — fixed 2026-05-20.
-        Pre-fix: returned `account.cash` (SETTLED ONLY) — excludes T+2
+        Pre-fix: returned `account.cash` (SETTLED ONLY) — excludes T+N
         pending sell proceeds that Alpaca's margin account treats as
         immediately spendable buying power. Result: live under-stated
-        cash for 2 bars post-sell vs sim path (which includes T+2 pending
+        cash post-sell vs sim path (which includes pending settlement
         via `sim.py:_t2_queue.pending_total()`).
 
         Post-fix: returns `account.non_marginable_buying_power` which is
-        Alpaca's "cash + T+2 unsettled, no margin" field. Matches sim's
-        T+2-aware accounting. For non-margin (cash) accounts this equals
+        Alpaca's "cash + unsettled sell proceeds, no 2x/4x margin" field.
+        Matches sim's T+N-aware accounting. For non-margin (cash) accounts this equals
         `cash`. For margin accounts it's `cash + pending`.
 
         We deliberately do NOT use `account.buying_power` (the 2× / 4× margin
@@ -163,7 +163,7 @@ class AlpacaBroker(BaseBroker):
                 pass
         # Fallback to settled cash (legacy behavior; logged as warning)
         log.warning("alpaca account.non_marginable_buying_power unavailable; "
-                    "falling back to settled cash (T+2 pending NOT counted)")
+                    "falling back to settled cash (pending settlement NOT counted)")
         return float(account.cash)
 
     def place_order(self, symbol: str, action: str, quantity: float) -> dict:

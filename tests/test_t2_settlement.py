@@ -1,8 +1,8 @@
-"""Regression tests for T+2 cash-settlement queue.
+"""Regression tests for T+N cash-settlement queue.
 
 Pins:
-- sell on T → drain on T+2 returns proceeds
-- T+1 drain returns 0 (proceeds not yet available)
+- default sell on T → drain on T+1 returns proceeds
+- explicit legacy T+2 remains supported
 - multi-pending entries drain in date order
 - NYSE holidays correctly skip (Christmas 2024 case)
 
@@ -24,28 +24,34 @@ if str(_STRATEGY_DIR) not in sys.path:
 from kernel.execution.t2_settlement import T2CashQueue, PendingCashEntry  # noqa: E402
 
 
-class TestT2BasicSettlement:
-    """AUDIT REGRESSION GUARD — sell proceeds materialize at T+2, not T+0.
+class TestTnBasicSettlement:
+    """AUDIT REGRESSION GUARD — sell proceeds materialize at T+N, not T+0.
 
     Pre-fix sim ran with T+0 settlement, inflating intraweek buying
     power → APY inflated 0.5-1.5%/yr through compounding. This is the
     settlement-day invariant.
     """
 
-    def test_sell_on_monday_settles_wednesday(self):
-        q = T2CashQueue(settlement_days=2)
-        # 2025-04-07 is Monday; T+2 trading days = Wednesday 2025-04-09
+    def test_default_sell_on_monday_settles_tuesday(self):
+        q = T2CashQueue()
+        # 2025-04-07 is Monday; current default T+1 = Tuesday 2025-04-08
         sale = pd.Timestamp("2025-04-07")
         q.add_pending(sale, 1_000.0)
         # T+0: no cash
         assert q.drain(sale) == 0.0
-        # T+1 (Tue): still 0
-        assert q.drain(pd.Timestamp("2025-04-08")) == 0.0
-        # T+2 (Wed): drained
-        settled = q.drain(pd.Timestamp("2025-04-09"))
+        # T+1 (Tue): drained
+        settled = q.drain(pd.Timestamp("2025-04-08"))
         assert settled == pytest.approx(1_000.0)
         # No double-settle
-        assert q.drain(pd.Timestamp("2025-04-10")) == 0.0
+        assert q.drain(pd.Timestamp("2025-04-09")) == 0.0
+
+    def test_explicit_legacy_t2_sell_on_monday_settles_wednesday(self):
+        q = T2CashQueue(settlement_days=2)
+        sale = pd.Timestamp("2025-04-07")
+        q.add_pending(sale, 1_000.0)
+        assert q.drain(sale) == 0.0
+        assert q.drain(pd.Timestamp("2025-04-08")) == 0.0
+        assert q.drain(pd.Timestamp("2025-04-09")) == pytest.approx(1_000.0)
 
     def test_drain_idempotent_on_quiet_day(self):
         q = T2CashQueue()
@@ -58,7 +64,7 @@ class TestT2BasicSettlement:
         q.add_pending(pd.Timestamp("2025-04-07"), 500.0)
         q.add_pending(pd.Timestamp("2025-04-08"), 300.0)
         assert q.pending_total() == pytest.approx(800.0)
-        q.drain(pd.Timestamp("2025-04-09"))  # settles the first
+        q.drain(pd.Timestamp("2025-04-08"))  # settles the first
         assert q.pending_total() == pytest.approx(300.0)
 
 
@@ -66,7 +72,7 @@ class TestT2MultiEntryOrdering:
     """Multi-pending entries drain in settle-date order."""
 
     def test_multiple_sales_drain_in_date_order(self):
-        q = T2CashQueue()
+        q = T2CashQueue(settlement_days=2)
         # Three sales on consecutive days
         q.add_pending(pd.Timestamp("2025-04-07"), 100.0)  # settles 4/9
         q.add_pending(pd.Timestamp("2025-04-08"), 200.0)  # settles 4/10
@@ -82,7 +88,7 @@ class TestT2MultiEntryOrdering:
         assert len(q) == 0
 
     def test_drain_at_far_future_clears_all(self):
-        q = T2CashQueue()
+        q = T2CashQueue(settlement_days=2)
         for i, amt in enumerate([100.0, 200.0, 300.0]):
             q.add_pending(pd.Timestamp("2025-04-01") + pd.Timedelta(days=i), amt)
         total = q.drain(pd.Timestamp("2026-01-01"))

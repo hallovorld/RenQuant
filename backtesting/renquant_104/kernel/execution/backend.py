@@ -54,7 +54,7 @@ class ExecutionBackend(ABC):
 
     @abstractmethod
     def get_cash(self) -> float:
-        """Available cash (excludes T+2 pending settlement)."""
+        """Available cash/buying power as defined by the backend."""
 
     @abstractmethod
     def get_portfolio_value(self) -> float:

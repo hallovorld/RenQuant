@@ -7,7 +7,7 @@ The sim backend owns:
 * per-bar price cache (mark-to-market + fill price)
 * fee schedule via :mod:`kernel.execution.fees`
 * slippage via :mod:`kernel.execution.slippage` (mid-price adjustment)
-* T+2 settlement queue (sell proceeds become available T+2 bars later)
+* T+N settlement queue (sell proceeds become available after configured lag)
 
 It does NOT own: tax accounting, lot disposal (FIFO/HIFO), trade log,
 equity curve, wash-sale stamping. Those stay in :class:`SimAdapter`'s
@@ -145,8 +145,8 @@ class TestSimBackendBuyParity:
 
 
 class TestSimBackendSellParity:
-    def test_sell_proceeds_credited_T0_when_t2_disabled(self):
-        """Default exec_enabled=False ⇒ T+2 OFF ⇒ proceeds immediate."""
+    def test_sell_proceeds_credited_T0_when_tn_disabled(self):
+        """Default exec_enabled=False ⇒ T+N OFF ⇒ proceeds immediate."""
         b = _make_backend(cash=100_000.0)
         b.update_bar_prices({"AAPL": 100.0}, today=pd.Timestamp("2025-01-02"))
         b.place_market_order(OrderIntent(
@@ -166,7 +166,7 @@ class TestSimBackendSellParity:
         assert b.get_position_quantity("AAPL") == 0
 
     def test_sell_with_t2_settlement_queues_proceeds(self):
-        """exec_enabled=True ⇒ T+2 ⇒ proceeds NOT in cash until 2 bars later."""
+        """exec_enabled=True + t2_days=2 ⇒ proceeds wait two sessions."""
         b = _make_backend(cash=100_000.0, exec_enabled=True, t2_days=2)
         b.update_bar_prices({"AAPL": 100.0}, today=pd.Timestamp("2025-01-02"))
         b.place_market_order(OrderIntent(
@@ -181,7 +181,7 @@ class TestSimBackendSellParity:
             target_pct=0.0, today=pd.Timestamp("2025-02-01"),
             reason="exit", exit_type="model_sell",
         ))
-        # Cash NOT yet credited (T+2 queue holds proceeds).
+        # Cash NOT yet credited (T+N queue holds proceeds).
         assert math.isclose(b.get_cash(), cash_after_buy)
         # Drain after settlement date.
         b.drain_settled(pd.Timestamp("2025-02-04"))

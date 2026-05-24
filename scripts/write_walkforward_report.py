@@ -226,7 +226,7 @@ Backtest window: {metrics.get('backtest_start', '2024-01-02')} → {metrics.get(
 Walkforward retrains used: 38/39 (1 skipped per §5.13.10 undertrain guard)
 Seed: {seed_s}
 Risk-free rate: {(metrics.get('risk_free_rate_annual') or 0.05)*100:.1f}% annual (2026 SOFR proxy)
-Execution model: industrial (commission + slippage + T+2)
+Execution model: industrial (commission + slippage + configured T+N settlement)
 N bars: {n_bars}
 Source: {sim_log_path or "metrics JSON dump"}
 

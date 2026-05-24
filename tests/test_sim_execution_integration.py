@@ -10,9 +10,9 @@ What we pin:
    for the legacy regression suite.
 2. ``execution.enabled=True`` (default) → equity curve diverges from
    legacy by the expected fee + slippage delta on a 1-trade sim.
-3. T+2 cash availability — sell proceeds NOT visible until 2 trading
-   days later, so a buy attempt on T+1 against the just-sold cash
-   gets the "insufficient cash" rejection (lifelike broker behavior).
+3. T+1 settlement by default, matching current SEC Rule 15c6-1 timing.
+4. Buying-power modes are explicit: default non-marginable buying power can
+   reuse executed sell proceeds before settlement; settled-cash mode cannot.
 """
 from __future__ import annotations
 
@@ -43,7 +43,8 @@ def _ramp_ohlcv(start: str = "2024-01-02", days: int = 30,
 
 
 def _build_min_adapter(*, execution_enabled: bool, legacy_no_fees: bool = False,
-                       initial_cash: float = 100_000.0):
+                       initial_cash: float = 100_000.0,
+                       execution_overrides: dict | None = None):
     """Construct a minimal SimAdapter wired with controlled execution config."""
     from adapters.sim import SimAdapter
     spy = _ramp_ohlcv(days=30)
@@ -57,6 +58,7 @@ def _build_min_adapter(*, execution_enabled: bool, legacy_no_fees: bool = False,
         "execution": {
             "enabled": execution_enabled,
             "legacy_no_fees": legacy_no_fees,
+            **(execution_overrides or {}),
         },
     }
     adapter = SimAdapter(
@@ -79,7 +81,8 @@ class TestExecutionFlagWiring:
         # Defaults baked in
         assert adapter._fee_cfg.sec_fee_rate == pytest.approx(27.0e-6)  # noqa: SLF001
         assert adapter._slip_cfg.half_spread_bps == pytest.approx(2.0)  # noqa: SLF001
-        assert adapter._t2_queue.settlement_days == 2  # noqa: SLF001
+        assert adapter._t2_queue.settlement_days == 1  # noqa: SLF001
+        assert adapter._buying_power_mode == "non_marginable_buying_power"  # noqa: SLF001
 
     def test_legacy_no_fees_flag_disables_model(self):
         adapter, _ = _build_min_adapter(execution_enabled=True, legacy_no_fees=True)
@@ -142,11 +145,11 @@ class TestBuyAppliesSlippageAndFees:
         assert invest == pytest.approx(10_000.0, rel=1e-9)
 
 
-class TestSellWithT2Settlement:
-    """Sell with execution model: fees deducted, proceeds queued to T+2.
+class TestSellWithT1Settlement:
+    """Sell with execution model: fees deducted, proceeds queued to T+1.
 
     The key behavior: ``self._cash`` is NOT credited on sell-date when
-    T+2 is active. Cash arrives via ``make_context`` drain on T+2.
+    T+N is active. Cash arrives via ``make_context`` drain on settlement day.
     """
 
     def _put_a_lot(self, adapter, ticker, shares, price, today):
@@ -172,7 +175,7 @@ class TestSellWithT2Settlement:
             regime_counts=adapter._regime_counts,                                # noqa: SLF001
         )
 
-    def test_sell_with_t2_queues_proceeds_not_cash(self):
+    def test_sell_with_tn_queues_proceeds_not_cash(self):
         from kernel.exits import ExitSignal
         adapter, spy = _build_min_adapter(execution_enabled=True)
         sell_date = spy.index[10]
@@ -184,7 +187,7 @@ class TestSellWithT2Settlement:
         sig = ExitSignal(should_exit=True, reason="test_exit", exit_type="rotation", quantity=None)
         adapter._apply_sell("AAA", sig, sell_date, ctx)  # noqa: SLF001
         cash_after = adapter._cash  # noqa: SLF001
-        # T+2 active: cash should NOT have grown by proceeds. Tax is
+        # T+N active: cash should NOT have grown by proceeds. Tax is
         # zero, so cash should be cash_before EXACTLY (no immediate credit).
         # Slippage discounts the fill price by 2 bps; SEC + TAF + custom
         # fees deducted are immediate? No — they net out of proceeds.
@@ -193,10 +196,10 @@ class TestSellWithT2Settlement:
         # Pending queue should hold (notional - fees)
         assert adapter._t2_queue.pending_total() > 0   # noqa: SLF001
 
-    def test_t2_proceeds_settle_two_trading_days_later(self):
+    def test_default_proceeds_settle_next_trading_day(self):
         from kernel.exits import ExitSignal
         adapter, spy = _build_min_adapter(execution_enabled=True)
-        # Pick a sell date with no nearby holidays to keep T+2 = simple +2.
+        # Pick a sell date with no nearby holidays to keep T+1 = simple +1.
         sell_date = spy.index[10]
         self._put_a_lot(adapter, "AAA", 100.0, 100.0, spy.index[5])
         cash_before = adapter._cash  # noqa: SLF001
@@ -204,12 +207,11 @@ class TestSellWithT2Settlement:
         sig = ExitSignal(should_exit=True, reason="test", exit_type="rotation", quantity=None)
         adapter._apply_sell("AAA", sig, sell_date, ctx)  # noqa: SLF001
 
-        # Look up the actual queued settle date (NYSE-aware T+2).
+        # Look up the actual queued settle date (NYSE-aware T+1).
         settle = adapter._t2_queue._pending[0].settle_date  # noqa: SLF001
 
-        # On settle_date - 1 (T+1 conceptually): drain returns 0.
-        day_before = settle - pd.Timedelta(days=1)
-        adapter.make_context(day_before)
+        # On sale date: still no cash credit.
+        adapter.make_context(sell_date)
         assert adapter._cash == pytest.approx(cash_before)  # noqa: SLF001
 
         # On settle_date: drain settles proceeds.
@@ -219,6 +221,99 @@ class TestSellWithT2Settlement:
         # Net proceeds ≈ 9998 - 0.282 ≈ $9997.72
         gained = adapter._cash - cash_before  # noqa: SLF001
         assert gained == pytest.approx(9997.72, abs=1.0)
+
+    def test_explicit_legacy_t2_proceeds_settle_two_trading_days_later(self):
+        from kernel.exits import ExitSignal
+        adapter, spy = _build_min_adapter(
+            execution_enabled=True,
+            execution_overrides={"t2_settlement_days": 2},
+        )
+        sell_date = spy.index[10]
+        self._put_a_lot(adapter, "AAA", 100.0, 100.0, spy.index[5])
+        cash_before = adapter._cash  # noqa: SLF001
+        ctx = self._ctx_for(adapter, sell_date, {"AAA": 100.0})
+        sig = ExitSignal(should_exit=True, reason="test", exit_type="rotation", quantity=None)
+        adapter._apply_sell("AAA", sig, sell_date, ctx)  # noqa: SLF001
+
+        settle = adapter._t2_queue._pending[0].settle_date  # noqa: SLF001
+        assert settle == spy.index[12]
+        adapter.make_context(spy.index[11])
+        assert adapter._cash == pytest.approx(cash_before)  # noqa: SLF001
+        adapter.make_context(settle)
+        assert adapter._cash > cash_before  # noqa: SLF001
+
+    def test_same_bar_sell_proceeds_can_fund_buy_in_non_marginable_mode(self):
+        from kernel.exits import ExitSignal
+        from kernel.pipeline.context import InferenceContext
+
+        adapter, spy = _build_min_adapter(
+            execution_enabled=True,
+            initial_cash=0.0,
+        )
+        today = spy.index[10]
+        self._put_a_lot(adapter, "SPY", 10.0, 100.0, spy.index[5])
+        ctx = InferenceContext(
+            config=adapter._config, today=today.date(),  # noqa: SLF001
+            ohlcv={}, spy_returns=[], models={}, gmm=None, corr_matrix={},
+            earnings_calendar={}, holdings=dict(adapter._holdings),  # noqa: SLF001
+            last_sell_dates={}, portfolio_value=1_000.0, cash=0.0,
+            prices={"SPY": 100.0, "BBB": 100.0},
+            hwm=1_000.0, skip_buys=False,
+            regime_state=adapter._regime_state,  # noqa: SLF001
+            regime_counts=adapter._regime_counts,  # noqa: SLF001
+        )
+        ctx.exits = [("SPY", ExitSignal(should_exit=True, reason="fund", exit_type="rotation"))]
+        ctx.orders = [{
+            "ticker": "BBB", "shares": 5.0, "price": 100.0,
+            "target_pct": 0.5, "regime": "BULL_CALM",
+            "confidence": 1.0, "rank_score": 0.7, "rs_score": 0.0,
+            "detail": "test", "panel_score": 1.0, "kelly_target_pct": 0.5,
+            "sigma": 0.1, "mu": 0.05, "sigma_mult": 1.0,
+        }]
+
+        adapter.commit(ctx)
+
+        assert "SPY" not in adapter._holdings  # noqa: SLF001
+        assert "BBB" in adapter._holdings  # noqa: SLF001
+        assert adapter._cash < 0  # noqa: SLF001
+        assert adapter._t2_queue.pending_total() > abs(adapter._cash)  # noqa: SLF001
+
+    def test_settled_cash_mode_blocks_same_bar_unsettled_reinvestment(self):
+        from kernel.exits import ExitSignal
+        from kernel.pipeline.context import InferenceContext
+
+        adapter, spy = _build_min_adapter(
+            execution_enabled=True,
+            initial_cash=0.0,
+            execution_overrides={"buying_power_mode": "settled_cash"},
+        )
+        today = spy.index[10]
+        self._put_a_lot(adapter, "SPY", 10.0, 100.0, spy.index[5])
+        ctx = InferenceContext(
+            config=adapter._config, today=today.date(),  # noqa: SLF001
+            ohlcv={}, spy_returns=[], models={}, gmm=None, corr_matrix={},
+            earnings_calendar={}, holdings=dict(adapter._holdings),  # noqa: SLF001
+            last_sell_dates={}, portfolio_value=1_000.0, cash=0.0,
+            prices={"SPY": 100.0, "BBB": 100.0},
+            hwm=1_000.0, skip_buys=False,
+            regime_state=adapter._regime_state,  # noqa: SLF001
+            regime_counts=adapter._regime_counts,  # noqa: SLF001
+        )
+        ctx.exits = [("SPY", ExitSignal(should_exit=True, reason="fund", exit_type="rotation"))]
+        ctx.orders = [{
+            "ticker": "BBB", "shares": 5.0, "price": 100.0,
+            "target_pct": 0.5, "regime": "BULL_CALM",
+            "confidence": 1.0, "rank_score": 0.7, "rs_score": 0.0,
+            "detail": "test", "panel_score": 1.0, "kelly_target_pct": 0.5,
+            "sigma": 0.1, "mu": 0.05, "sigma_mult": 1.0,
+        }]
+
+        adapter.commit(ctx)
+
+        assert "SPY" not in adapter._holdings  # noqa: SLF001
+        assert "BBB" not in adapter._holdings  # noqa: SLF001
+        assert adapter._cash == pytest.approx(0.0)  # noqa: SLF001
+        assert adapter._t2_queue.pending_total() > 0  # noqa: SLF001
 
 
 class TestExecutionModelDeltaVsLegacy:
@@ -237,7 +332,7 @@ class TestExecutionModelDeltaVsLegacy:
 
         buy_date = spy.index[5]
         sell_date = spy.index[10]
-        sell_date_plus_5 = spy.index[15]  # comfortably > T+2 of sell_date
+        sell_date_plus_5 = spy.index[15]  # comfortably > settlement date
 
         from kernel.pipeline.context import InferenceContext
 
@@ -304,7 +399,7 @@ class TestExecutionAuditRegressionGuard:
     """
 
     def test_make_context_drains_t2_queue_first(self):
-        """The T+2 drain MUST happen at top of make_context, not somewhere later."""
+        """The T+N drain MUST happen at top of make_context, not somewhere later."""
         adapter, spy = _build_min_adapter(execution_enabled=True)
         # Inject a pending entry that settles today: settle_date == today.
         # We compute the actual settle date from a sale at spy.index[8],

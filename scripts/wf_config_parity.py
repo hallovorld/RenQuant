@@ -37,6 +37,7 @@ SEMANTIC_PATHS = [
     "max_concurrent_positions",
     "max_positions_per_sector",
     "wash_sale_days",
+    "execution",
     "tax",
     "defensive_tickers",
     "sector_map",

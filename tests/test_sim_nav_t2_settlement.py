@@ -1,8 +1,8 @@
 """AUDIT REGRESSION GUARD — Bug #C (2026-05-11)
 
-`SimAdapter._portfolio_value` previously omitted the T+2 settlement
+`SimAdapter._portfolio_value` previously omitted the pending-settlement
 queue pending balance. On a sell day, shares drop but `_cash` doesn't
-move (proceeds queued); on settle-day +2 the queue drains and cash
+move (proceeds queued); on settlement day the queue drains and cash
 jumps. Each sell event creates phantom ±sale_amount returns in the
 equity curve, inflating measured ann_vol.
 
@@ -13,7 +13,8 @@ The invariant pinned here (CLAUDE.md §5.3):
     NAV(t) ≡ free_cash(t) + pending_settle(t) + Σ(shares(t) × price(t))
 
 All three are real claim against portfolio economic value. Skipping
-pending_settle treats T+2 proceeds as "lost" for 2 days then "found".
+pending_settle treats unsettled proceeds as "lost" until settlement then
+"found".
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 
 class TestSimNavT2SettlementGuard:
-    """Invariant: SimAdapter._portfolio_value must include pending T+2 queue."""
+    """Invariant: SimAdapter._portfolio_value must include pending T+N queue."""
 
     def test_pending_t2_proceeds_included_in_nav(self):
         """Construct a minimal SimAdapter, manually populate _cash + _t2_queue
@@ -55,7 +56,7 @@ class TestSimNavT2SettlementGuard:
         nav = sim._portfolio_value(prices, today_ts=today)
         # Expected: 50_000 cash + 5_000 pending + 15_000 stock = 70_000
         assert nav == pytest.approx(70_000.0), (
-            f"NAV must include T+2 pending balance. "
+            f"NAV must include pending settlement balance. "
             f"Got {nav}, expected 70_000."
         )
 
@@ -129,7 +130,7 @@ class TestSimNavT2SettlementGuard:
         nav_day1 = sim._portfolio_value(prices_day1, today_ts=pd.Timestamp("2025-01-13"))
         assert nav_day1 == pytest.approx(100_000.0)
 
-        # Sell 50 shares @ $200 = $10_000. Proceeds queued (T+2).
+        # Sell 50 shares @ $200 = $10_000. Proceeds queued until settlement.
         sim._pos_shares["AAPL"] = 50          # shares drop
         sim._t2_queue.add_pending(pd.Timestamp("2025-01-13"), 10_000.0)
         # Cash unchanged (proceeds queued, not credited)

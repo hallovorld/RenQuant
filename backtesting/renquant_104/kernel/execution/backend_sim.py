@@ -20,7 +20,7 @@ Two execution modes:
   proceeds credited T+0. Byte-identical to the pre-2026-05-10 sim
   cash math used by every legacy fixture.
 * ``exec_enabled=True`` — slippage on (half-spread + impact), full
-  fee schedule, sell proceeds queued T+N (default N=2).
+  fee schedule, sell proceeds queued T+N.
 
 The flag matches ``SimAdapter._exec_enabled`` (set by
 :func:`SimAdapter.__init__`); slice 3b just propagates it.
@@ -72,7 +72,7 @@ class SimBackend(ExecutionBackend):
         self._fee_cfg = fee_config or FeeConfig()
         self._slip_cfg = slip_config or SlippageConfig()
         self._exec_enabled = bool(exec_enabled)
-        # T+2 only when execution model on AND t2_days > 0.
+        # T+N only when execution model on AND t2_days > 0.
         effective_t2 = t2_days if exec_enabled and t2_days > 0 else 0
         self._t2_queue: T2CashQueue | None = (
             T2CashQueue(settlement_days=effective_t2) if effective_t2 > 0 else None
@@ -107,7 +107,7 @@ class SimBackend(ExecutionBackend):
     def drain_settled(self, today: pd.Timestamp) -> float:
         """Credit any T+N proceeds that have settled by ``today``.
 
-        Returns the amount credited (0 if T+2 disabled or nothing due).
+        Returns the amount credited (0 if T+N disabled or nothing due).
         Caller MUST invoke once per bar at the top of the loop; otherwise
         T+N proceeds linger in the queue forever.
         """

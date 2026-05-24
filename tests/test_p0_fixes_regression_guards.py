@@ -100,7 +100,7 @@ class TestP0_6_CalibratorMethodDefault:
 
 
 class TestP0_9_BugDSettledCash:
-    """Live broker.get_cash() must use non_marginable_buying_power (cash + T+2),
+    """Live broker.get_cash() must use non_marginable_buying_power (cash + T+N),
     not account.cash (settled only). Pre-fix: live under-trades vs sim post-sell."""
 
     def test_get_cash_uses_non_marginable_buying_power(self):

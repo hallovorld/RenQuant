@@ -580,6 +580,12 @@
     "telecom": "XLC"
   },
   "max_positions_per_sector": 6,
+  "execution": {
+    "_settlement_reason_2026_05_24": "US equities moved to T+1 settlement on 2024-05-28 under SEC Rule 15c6-1 amendments. Sim uses Alpaca-like non-marginable buying power so executed sell proceeds can fund buys without using 2x/4x margin buying power; set buying_power_mode=settled_cash for cash-account stress tests.",
+    "enabled": true,
+    "t2_settlement_days": 1,
+    "buying_power_mode": "non_marginable_buying_power"
+  },
   "tax": {
     "_cash_debit_mode_reason": "Sim/live parity: broker cash is not reduced by estimated capital-gains tax at each sell. Keep per-trade tax estimates for audit and annual-net performance reporting, but do not let estimated tax cash drag drive portfolio decisions.",
     "cash_debit_mode": "reporting_only",

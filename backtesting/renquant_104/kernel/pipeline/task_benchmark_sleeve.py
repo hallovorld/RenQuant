@@ -49,6 +49,28 @@ def benchmark_sleeve_config(obj: Any) -> dict:
     return sleeve if isinstance(sleeve, dict) else {}
 
 
+def execution_allows_unsettled_buying_power(obj: Any) -> bool:
+    """Whether executed sell proceeds may fund same-bar/new buys.
+
+    Live Alpaca uses ``non_marginable_buying_power`` for RenQuant buys:
+    executed sell proceeds can replenish buy budget without using 2x/4x
+    margin buying power. Cash-account simulations can set
+    ``execution.buying_power_mode="settled_cash"``; in that mode the
+    benchmark sleeve must not present future sell proceeds as alpha funding.
+    """
+    cfg = _config(obj)
+    mode = str(
+        ((cfg.get("execution") or {}).get(
+            "buying_power_mode", "non_marginable_buying_power",
+        ))
+    ).strip().lower()
+    return mode in {
+        "non_marginable_buying_power",
+        "cash_plus_unsettled",
+        "unsettled",
+    }
+
+
 def is_benchmark_sleeve_enabled(obj: Any) -> bool:
     return bool(benchmark_sleeve_config(obj).get("enabled", False))
 
@@ -89,6 +111,8 @@ def benchmark_sleeve_alpha_funding_capacity(ctx: InferenceContext) -> float:
     sleeve = benchmark_sleeve_config(ctx)
     if not (sleeve.get("enabled", False) and sleeve.get("fund_alpha_from_sleeve", False)):
         return 0.0
+    if not execution_allows_unsettled_buying_power(ctx):
+        return 0.0
     ticker = benchmark_sleeve_ticker(ctx)
     if not ticker:
         return 0.0
@@ -124,6 +148,35 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return out if math.isfinite(out) else default
+
+
+def _buy_cost_multiplier(config: dict) -> float:
+    exec_cfg = (config or {}).get("execution", {}) or {}
+    if bool(exec_cfg.get("legacy_no_fees", False)):
+        return 1.0
+    if not bool(exec_cfg.get("enabled", True)):
+        return 1.0
+    bps = (
+        _finite_float(exec_cfg.get("half_spread_bps"), 2.0)
+        + _finite_float(exec_cfg.get("commission_bps"), 0.0)
+        + _finite_float(exec_cfg.get("qp_buy_cash_buffer_bps"), 1.0)
+    )
+    return 1.0 + max(0.0, bps) / 10000.0
+
+
+def _sell_proceeds_multiplier(config: dict) -> float:
+    exec_cfg = (config or {}).get("execution", {}) or {}
+    if bool(exec_cfg.get("legacy_no_fees", False)):
+        return 1.0
+    if not bool(exec_cfg.get("enabled", True)):
+        return 1.0
+    bps = (
+        _finite_float(exec_cfg.get("half_spread_bps"), 2.0)
+        + _finite_float(exec_cfg.get("commission_bps"), 0.0)
+        + _finite_float(exec_cfg.get("sec_fee_rate"), 27.0e-6) * 10000.0
+        + _finite_float(exec_cfg.get("qp_buy_cash_buffer_bps"), 1.0)
+    )
+    return max(0.0, 1.0 - max(0.0, bps) / 10000.0)
 
 
 def _position_value(ctx: InferenceContext, ticker: str) -> float:
@@ -335,7 +388,10 @@ class BenchmarkSleeveTask(Task):
         )
         pending = _pending_buy_invest(ctx, exclude_ticker=ticker)
         alpha_funding_gap = 0.0
-        if bool(sleeve.get("fund_alpha_from_sleeve", False)):
+        if (
+            bool(sleeve.get("fund_alpha_from_sleeve", False))
+            and execution_allows_unsettled_buying_power(ctx)
+        ):
             alpha_funding_gap = max(pending - cash, 0.0)
         available_cash = max(cash - pending, 0.0)
         solve = solve_benchmark_sleeve_target(
@@ -410,7 +466,7 @@ class BenchmarkSleeveTask(Task):
         pending = _pending_buy_invest(ctx, exclude_ticker=ticker)
         available = max(cash - pending, 0.0)
         buy_value = min(desired_delta, available)
-        shares = int(buy_value // price)
+        shares = int(buy_value // (price * _buy_cost_multiplier(ctx.config or {})))
         if shares < 1:
             _stamp_block(ctx, ticker, "benchmark_sleeve_insufficient_cash")
             ctx.counters["benchmark_sleeve_insufficient_cash"] = (
@@ -474,7 +530,10 @@ class BenchmarkSleeveTask(Task):
         if current_shares <= 0:
             return None
         if _finite_float(state.get("alpha_funding_gap_value"), 0.0) > 0.0:
-            shares = min(int(math.ceil(desired_reduction / price)), int(current_shares))
+            unit_proceeds = price * _sell_proceeds_multiplier(ctx.config or {})
+            if unit_proceeds <= 0:
+                return None
+            shares = min(int(math.ceil(desired_reduction / unit_proceeds)), int(current_shares))
         else:
             shares = min(int(desired_reduction // price), int(current_shares))
         if shares < 1:
