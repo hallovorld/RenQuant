@@ -584,6 +584,26 @@ Verification:
 - `.venv/bin/python -m pytest tests/test_correlation_guard.py tests/test_preflight.py tests/test_strategy_artifact_contracts.py tests/test_p0_fixes_regression_guards.py tests/test_sim_walkforward.py tests/test_sim_pipeline_smoke.py tests/test_persistence.py::TestSimAdapterIntegration -q`
   -> `142 passed`.
 
+## 2026-05-23 SEC Fundamentals Point-In-Time Fix
+
+SEC fundamentals now use actual filing availability instead of pretending
+every quarterly row becomes available exactly `end + 45 days`.
+
+- `scripts/fetch_sec_fundamentals.py` sets each quarterly row's
+  `available_date` to the max actual SEC `filed` date among contributing
+  concepts.
+- `scripts/build_extended_fundamentals.py` uses the same rule for extended
+  raw-concept features.
+- If old/raw fixtures lack `filed`, the scripts still fall back to the
+  conservative `end + 45 days` rule.
+- Daily forward-fill begins on `available_date`, so pre-filing dates remain
+  NaN rather than leaking future filings.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_sec_fundamentals_pit.py tests/test_panel_training_cutoff.py tests/test_panel_bugfixes.py tests/test_panel_factors.py -q`
+  -> `38 passed`.
+
 ## Mainline Queue
 
 1. Regenerate the 172-feature walk-forward manifest under the current
@@ -609,14 +629,13 @@ Verification:
    as OOS. Static PatchTST full-window sims are style diagnostics only.
 7. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
-8. Fix remaining audit findings before promotion: calibrator metric scope
-   labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
-   and per-ticker trace stamping for global panel/QP failures. The WF
-   `effective_train_cutoff_date` double-embargo bug, LEAN/QP cash-capped target
-   parity bug, universe metadata fail-closed bug, calibrator metric-scope bug,
-   and correlation metadata fail-closed semantics are fixed. Correlation
-   artifacts without `as_of_date` now require an explicit legacy override,
-   while sell-only risk exits remain soft-passed.
+8. Fix remaining audit findings before promotion: per-ticker trace stamping
+   for global panel/QP failures. The WF `effective_train_cutoff_date`
+   double-embargo bug, SEC fundamentals point-in-time filed-date bug, LEAN/QP
+   cash-capped target parity bug, universe metadata fail-closed bug,
+   calibrator metric-scope bug, and correlation metadata fail-closed semantics
+   are fixed. Correlation artifacts without `as_of_date` now require an
+   explicit legacy override, while sell-only risk exits remain soft-passed.
 
 ## Known Failure Modes To Keep Front And Center
 

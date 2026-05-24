@@ -178,6 +178,8 @@ def build_quarterly_panel(raw: pd.DataFrame, cik_to_ticker: dict[int, str]) -> p
 
     # Parse end date
     raw["end"] = pd.to_datetime(raw["end"])
+    if "filed" in raw.columns:
+        raw["filed"] = pd.to_datetime(raw["filed"], errors="coerce")
 
     # For duration concepts: use the reported quarter end
     # For instant: same
@@ -185,16 +187,22 @@ def build_quarterly_panel(raw: pd.DataFrame, cik_to_ticker: dict[int, str]) -> p
     rows = []
     for (ticker, end_date), grp in raw.groupby(["ticker", "end"]):
         row = {"ticker": ticker, "end": end_date}
+        filed_dates = (
+            pd.to_datetime(grp.get("filed"), errors="coerce").dropna()
+            if "filed" in grp.columns else pd.Series(dtype="datetime64[ns]")
+        )
         for _, r in grp.iterrows():
             row[r["concept"]] = r["val"]
-            # Use accn (accession number) filing date as availability date
-            # Accession number format: XXXXXXXXXX-YY-NNNNNN, file date encoded
-            # We use end + 45 days as conservative availability (SEC filing deadline)
+        if not filed_dates.empty:
+            # PIT contract: a derived row that combines multiple concepts is
+            # available only after the last contributing SEC filing arrived.
+            row["available_date"] = filed_dates.max()
+        else:
+            # Conservative fallback for old/raw fixtures without SEC `filed`.
+            row["available_date"] = end_date + pd.Timedelta(days=45)
         rows.append(row)
 
     panel = pd.DataFrame(rows)
-    # Conservative filing lag: 45 days after quarter end (10-Q deadline is 40-45 days)
-    panel["available_date"] = panel["end"] + pd.Timedelta(days=45)
     return panel.sort_values(["ticker", "end"]).reset_index(drop=True)
 
 

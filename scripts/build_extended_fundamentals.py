@@ -58,6 +58,31 @@ def fetch_frame(concept, taxonomy, unit, period, retries=3):
             return None
 
 
+def build_quarterly_panel(raw: pd.DataFrame) -> pd.DataFrame:
+    """Pivot SEC frames to quarterly rows with actual filing availability."""
+    raw = raw.copy()
+    raw["end"] = pd.to_datetime(raw["end"])
+    if "filed" in raw.columns:
+        raw["filed"] = pd.to_datetime(raw["filed"], errors="coerce")
+
+    pivot_rows = []
+    for (ticker, end_date), grp in raw.groupby(["ticker", "end"]):
+        row = {"ticker": ticker, "end": end_date}
+        filed_dates = (
+            pd.to_datetime(grp.get("filed"), errors="coerce").dropna()
+            if "filed" in grp.columns else pd.Series(dtype="datetime64[ns]")
+        )
+        for _, r in grp.iterrows():
+            row[r["concept"]] = r["val"]
+        row["available_date"] = (
+            filed_dates.max()
+            if not filed_dates.empty
+            else end_date + pd.Timedelta(days=45)
+        )
+        pivot_rows.append(row)
+    return pd.DataFrame(pivot_rows).sort_values(["ticker", "end"]).reset_index(drop=True)
+
+
 def main():
     # Need raw quarterly data, not the daily-aggregated derivatives.
     # Re-fetch the frames we already have to keep code self-contained:
@@ -121,18 +146,10 @@ def main():
                for v in r.json().values()}
     raw["ticker"] = raw["cik"].map(cik_map)
     raw = raw.dropna(subset=["ticker"])
-    raw["end"] = pd.to_datetime(raw["end"])
 
     # Pivot to quarterly per (ticker, end) panel
     log.info("Building quarterly panel...")
-    pivot_rows = []
-    for (ticker, end_date), grp in raw.groupby(["ticker", "end"]):
-        row = {"ticker": ticker, "end": end_date}
-        for _, r in grp.iterrows():
-            row[r["concept"]] = r["val"]
-        pivot_rows.append(row)
-    quarterly = pd.DataFrame(pivot_rows).sort_values(["ticker","end"]).reset_index(drop=True)
-    quarterly["available_date"] = quarterly["end"] + pd.Timedelta(days=45)
+    quarterly = build_quarterly_panel(raw)
 
     # Derived per-ticker time-series features
     log.info("Computing extended derived features per ticker...")
