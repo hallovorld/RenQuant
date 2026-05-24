@@ -1291,6 +1291,12 @@ class SimAdapter:
                 blocked_str = (blocked_map or {}).get(tk)
                 if blocked_str is None and tk not in (self._models or {}):
                     blocked_str = "universe_floor"
+                if blocked_str is None and cand is None and hs is not None:
+                    blocked_str = "held_no_new_buy"
+                if blocked_str is None and cand is None:
+                    blocked_str = "no_model_signal"
+                if blocked_str is None and tk not in selected_tickers:
+                    blocked_str = "not_selected"
                 if cand is not None:
                     model_action = "buy"
                 elif hs is not None and getattr(hs, "sell_streak", 0) > 0:

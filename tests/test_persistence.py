@@ -421,7 +421,32 @@ class TestTrades:
         assert report["ok"] is False
         assert report["missing_watchlist_tickers"] == ["CCC"]
         assert report["selected_blocked_rows"] == 0
+        assert report["decision_reason_gaps"] == 0
         assert report["trade_payload_gaps"] == 0
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_missing_block_reason(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[
+                {"ticker": "AAA", "selected": 0, "blocked_by": None},
+                {"ticker": "BBB", "selected": 1, "blocked_by": "stale"},
+            ],
+        )
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA", "BBB"],
+        )
+
+        assert report["ok"] is False
+        assert report["decision_reason_gaps"] == 1
+        assert report["selected_blocked_rows"] == 0
         conn.close()
 
 

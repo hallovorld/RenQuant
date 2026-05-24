@@ -27,10 +27,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 RUNNER_PATH = REPO_ROOT / "backtesting/renquant_104/adapters/runner.py"
+SIM_ADAPTER_PATH = REPO_ROOT / "backtesting/renquant_104/adapters/sim.py"
 LIVE_RUNNER_PATH = REPO_ROOT / "live/runner.py"
 ROTATION_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/pipeline/task_rotation.py"
 
 RUNNER_SOURCE = RUNNER_PATH.read_text()
+SIM_ADAPTER_SOURCE = SIM_ADAPTER_PATH.read_text()
 LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
 
@@ -264,6 +266,15 @@ class TestTickerDailyStateWiring:
         # blocked_by="broker_pending" when nothing else has blocked.
         assert "pending_at_broker" in RUNNER_SOURCE
         assert '"broker_pending"' in RUNNER_SOURCE
+
+    def test_non_selected_tickers_have_explicit_reason(self):
+        # Null blocked_by on non-selected rows makes the daily decision tree
+        # ambiguous. Live and sim adapters must stamp a terminal reason for
+        # no-position/no-candidate and held/no-new-buy cases.
+        for source in (RUNNER_SOURCE, SIM_ADAPTER_SOURCE):
+            assert '"held_no_new_buy"' in source
+            assert '"no_model_signal"' in source
+            assert '"not_selected"' in source
 
     def test_in_universe_uses_models_keys(self):
         # in_universe = 1 iff ticker passed universe floor (i.e. has a

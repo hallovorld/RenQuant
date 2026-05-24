@@ -1906,6 +1906,12 @@ class RunnerAdapter:
                         blocked_str = "universe_floor"
                     if blocked_str is None and tk in pending_broker_tickers:
                         blocked_str = "broker_pending"
+                    if blocked_str is None and cand is None and hs is not None:
+                        blocked_str = "held_no_new_buy"
+                    if blocked_str is None and cand is None:
+                        blocked_str = "no_model_signal"
+                    if blocked_str is None and tk not in selected_tickers:
+                        blocked_str = "not_selected"
                     # Source ranking factors from cand (preferred) else hs.
                     src = cand if cand is not None else hs
                     panel_score      = getattr(src, "panel_score", None) if src else None

@@ -182,6 +182,16 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
 - Also corrected stale exit docs: trailing stop, stop loss, and single-day loss
   are regime-configured, not BULL_CALM-only.
 
+## 2026-05-23 Decision-Trace Reason Completeness
+
+- Tightened the daily decision-tree DB contract. For every non-selected
+  watchlist ticker, sim/live adapters now write an explicit terminal reason:
+  `universe_floor`, `broker_pending`, `held_no_new_buy`, `no_model_signal`, or
+  `not_selected` when no earlier gate populated `blocked_by`.
+- `decision_trace_integrity_report()` now reports `decision_reason_gaps` and
+  fails `ok` when any non-selected row has NULL `blocked_by`.
+- Added tests so the live and sim adapters keep these reason labels wired.
+
 ## Mainline Queue
 
 1. Diagnose the sanity failure: time-shift placebo IC `+0.0462` is too high.

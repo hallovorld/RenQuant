@@ -1392,6 +1392,13 @@ def decision_trace_integrity_report(
            WHERE run_id = ? AND selected = 1 AND blocked_by IS NOT NULL""",
         (run_id,),
     ).fetchone()[0]
+    decision_reason_gaps = conn.execute(
+        """SELECT COUNT(*) FROM ticker_daily_state
+           WHERE run_id = ?
+             AND COALESCE(selected, 0) = 0
+             AND blocked_by IS NULL""",
+        (run_id,),
+    ).fetchone()[0]
     trade_payload_gaps = conn.execute(
         """SELECT COUNT(*) FROM trades
            WHERE run_id = ?
@@ -1410,10 +1417,12 @@ def decision_trace_integrity_report(
         "missing_watchlist_tickers": sorted(expected - recorded),
         "extra_tickers": sorted(recorded - expected) if expected else [],
         "selected_blocked_rows": int(selected_blockers or 0),
+        "decision_reason_gaps": int(decision_reason_gaps or 0),
         "trade_payload_gaps": int(trade_payload_gaps or 0),
         "ok": (
             (not expected or recorded == expected)
             and int(selected_blockers or 0) == 0
+            and int(decision_reason_gaps or 0) == 0
             and int(trade_payload_gaps or 0) == 0
         ),
     }
