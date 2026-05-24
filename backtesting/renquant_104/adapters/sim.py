@@ -37,6 +37,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from adapters.panel_runtime import (
+    describe_panel_frame_bundle,
+    prepare_panel_runtime_frames,
+)
 from kernel.execution import (
     FeeConfig,
     SlippageConfig,
@@ -344,7 +348,7 @@ class SimAdapter:
         # ── Panel feature/factor frames (audit P-1, 2026-04-24) ─────────────
         # Architecture symmetry with LeanAdapter / RunnerAdapter: if the
         # caller didn't pre-build panel frames AND panel scoring is enabled,
-        # build them here via the same `prepare_inference_panel_frames`
+        # build them here via the shared panel-runtime frame helper
         # function the other adapters use. Pre-fix the caller had to know
         # to construct them manually (notebook cell 15 used to fail this);
         # now SimAdapter is self-sufficient.
@@ -363,38 +367,26 @@ class SimAdapter:
             )
         elif self._panel_scorer is not None or self._walkforward_loader is not None:
             try:
-                from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                benchmark = config.get("benchmark", "SPY")
-                ticker_sectors = {
-                    t: config.get("sector_map", {}).get(t)
-                    for t in config.get("watchlist", [])
-                    if t in config.get("sector_map", {})
-                }
-                # Provide SPY in ohlcv if it's not already there.
-                ohlcv_panel = dict(ohlcv)
-                if benchmark not in ohlcv_panel:
-                    ohlcv_panel[benchmark] = spy_df
-                ff, fac, macro, emb = prepare_inference_panel_frames(
-                    watchlist=list(config.get("watchlist", [])),
-                    ohlcv=ohlcv_panel,
-                    ticker_sectors=ticker_sectors,
+                bundle = prepare_panel_runtime_frames(
                     config=self._config,
+                    ohlcv=ohlcv,
+                    spy_df=spy_df,
                 )
-                self._panel_feature_frames   = ff
-                self._panel_factor_frames    = fac
-                self._panel_macro_frame      = macro   # Bug #25
-                self._panel_asset_embeddings = emb     # T2-2
+                self._panel_feature_frames = bundle.feature_frames
+                self._panel_factor_frames = bundle.factor_frames
+                self._panel_macro_frame = bundle.macro_frame   # Bug #25
+                self._panel_asset_embeddings = bundle.asset_embeddings  # T2-2
+                n_ff, n_fac, macro_desc, n_emb = describe_panel_frame_bundle(bundle)
                 log.info("SimAdapter: built panel frames internally "
                          "(feat=%d  factor=%d  macro=%s  emb=%d)",
-                         len(ff), len(fac),
-                         "None" if macro is None else f"{len(macro.columns)}cols",
-                         len(emb) if emb else 0)
+                         n_ff, n_fac, macro_desc, n_emb)
             except Exception as exc:
-                log.warning("SimAdapter: panel frame prep failed — %s", exc)
-                self._panel_feature_frames   = None
-                self._panel_factor_frames    = None
-                self._panel_macro_frame      = None
-                self._panel_asset_embeddings = None  # T2-2
+                msg = (
+                    "SimAdapter: panel frame prep failed while panel scoring "
+                    f"is active; refusing to run a silent fallback sim: {exc}"
+                )
+                log.error(msg)
+                raise RuntimeError(msg) from exc
         else:
             self._panel_feature_frames = panel_feature_frames
             self._panel_factor_frames  = panel_factor_frames

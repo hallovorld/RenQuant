@@ -16,8 +16,11 @@ Task chain::
 
 The Job is a no-op when:
   • the config flag is off, OR
-  • no candidates survived Phase 2 (ctx.candidates empty), OR
-  • the artifact can't be loaded (logged, Job short-circuits).
+  • no candidates or holdings require panel scores.
+
+When panel scoring is enabled, scorer/feature/score failures are fail-closed
+for buys: candidates are cleared and tagged in `_blocked_by_ticker`. This keeps
+the decision tree from silently falling back to weaker per-ticker scores.
 
 Kept isolated from the Stage-1 training pipeline so revert is purely
 additive: remove this file + the one-line import wiring.
@@ -104,10 +107,155 @@ def _alpha158_cached_rows(
     return rows
 
 
+def _candidate_ticker(candidate: Any) -> str | None:
+    ticker = getattr(candidate, "ticker", None)
+    return str(ticker) if ticker else None
+
+
+def _ensure_blocked_map(ctx: Any) -> dict[str, str]:
+    blocked = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked is None:
+        blocked = {}
+        ctx._blocked_by_ticker = blocked  # noqa: SLF001
+    return blocked
+
+
+def _snapshot_buy_candidates(ctx: Any) -> list[Any]:
+    """Preserve the candidate pool so decision-trace persistence can explain drops."""
+    existing = list(getattr(ctx, "_full_candidate_snapshot", None) or [])
+    seen = {_candidate_ticker(c) for c in existing}
+    for cand in list(getattr(ctx, "candidates", None) or []):
+        ticker = _candidate_ticker(cand)
+        if ticker and ticker not in seen:
+            existing.append(cand)
+            seen.add(ticker)
+    ctx._full_candidate_snapshot = existing  # noqa: SLF001
+    return existing
+
+
+def _fail_closed_panel_scoring(ctx: Any, reason: str) -> None:
+    """Block buy/QP when enabled panel scoring cannot provide the alpha surface."""
+    candidates = list(getattr(ctx, "candidates", None) or [])
+    _snapshot_buy_candidates(ctx)
+    blocked = _ensure_blocked_map(ctx)
+    for cand in candidates:
+        ticker = _candidate_ticker(cand)
+        if ticker:
+            blocked[ticker] = reason
+    ctx.candidates = []
+    ctx.buy_blocked = True
+    ctx.skip_buys = True
+    ctx._panel_scoring_contract_failed = True  # noqa: SLF001
+    ctx._panel_scoring_fail_reason = reason  # noqa: SLF001
+    counters = getattr(ctx, "counters", None)
+    if isinstance(counters, dict):
+        counters["panel_scoring_fail_closed"] = (
+            counters.get("panel_scoring_fail_closed", 0) + len(candidates)
+        )
+    log.error(
+        "Panel scoring contract failed (%s). Cleared %d buy candidate(s); "
+        "buy/QP path is fail-closed for this run.",
+        reason,
+        len(candidates),
+    )
+
+
+def _drop_unscored_panel_candidates(
+    ctx: Any,
+    scored_tickers: set[str],
+    reason: str,
+) -> int:
+    """Drop candidates that did not receive a finite panel score."""
+    candidates = list(getattr(ctx, "candidates", None) or [])
+    if not candidates:
+        return 0
+    _snapshot_buy_candidates(ctx)
+    blocked = _ensure_blocked_map(ctx)
+    kept = []
+    dropped = 0
+    for cand in candidates:
+        ticker = _candidate_ticker(cand)
+        if ticker and ticker in scored_tickers:
+            kept.append(cand)
+            continue
+        if ticker:
+            blocked[ticker] = reason
+        dropped += 1
+    if dropped:
+        ctx.candidates = kept
+        counters = getattr(ctx, "counters", None)
+        if isinstance(counters, dict):
+            counters["panel_score_missing"] = (
+                counters.get("panel_score_missing", 0) + dropped
+            )
+        log.error(
+            "ApplyScoresTask: dropped %d/%d candidate(s) without finite panel score "
+            "(%s). Refusing per-ticker-score fallback.",
+            dropped,
+            len(candidates),
+            reason,
+        )
+    return dropped
+
+
 # ── Task chain ────────────────────────────────────────────────────────────────
 
 class LoadScorerTask(Task):
     """Load the PanelScorer artifact from config. Cache on ctx for reuse."""
+
+    @staticmethod
+    def _resolve_artifact_path(
+        ctx: InferenceContext,
+        panel_cfg: dict,
+        scorer: Any | None = None,
+    ) -> Path | None:
+        metadata = getattr(scorer, "metadata", {}) or {}
+        artifact_path = metadata.get("artifact_path") or panel_cfg.get("artifact_path")
+        if not artifact_path:
+            return None
+        p = Path(artifact_path)
+        if not p.is_absolute():
+            strategy_dir = ctx.config.get("_strategy_dir")
+            if strategy_dir:
+                p = Path(strategy_dir) / p
+        return p
+
+    @staticmethod
+    def _assert_config_consistency(
+        ctx: InferenceContext,
+        panel_cfg: dict,
+        scorer: Any,
+        path: Path | None,
+    ) -> bool:
+        strict = bool(panel_cfg.get("strict_config_consistency", True))
+        try:
+            from kernel.config_consistency import (  # noqa: PLC0415
+                assert_consistent, ConfigModelMismatch,
+            )
+            import json as _j  # noqa: PLC0415
+
+            metadata = getattr(scorer, "metadata", {}) or {}
+            artifact_meta = dict(metadata)
+            if path is not None and path.suffix.lower() == ".json":
+                artifact_meta = _j.loads(path.read_text())
+            try:
+                assert_consistent(
+                    ctx.config,
+                    artifact_meta,
+                    artifact_label=str(path.name if path is not None else "<preloaded>"),
+                    strict=strict,
+                )
+            except ConfigModelMismatch as e:
+                log.error("LoadScorerTask: %s", e)
+                _fail_closed_panel_scoring(ctx, "panel_scorer_config_mismatch")
+                return False
+        except Exception as exc:  # noqa: BLE001
+            if strict:
+                log.error("LoadScorerTask: consistency check failed: %s", exc)
+                _fail_closed_panel_scoring(ctx, "panel_scorer_consistency_check_failed")
+                return False
+            log.warning("LoadScorerTask: consistency check failed: %s", exc)
+        return True
 
     def run(self, ctx: InferenceContext) -> bool | None:
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
@@ -118,17 +266,16 @@ class LoadScorerTask(Task):
         # Scorer may have been pre-loaded by the adapter (live runner / LEAN)
         scorer = getattr(ctx, "_panel_scorer", None)
         if scorer is not None:
+            p = self._resolve_artifact_path(ctx, panel_cfg, scorer)
+            if not self._assert_config_consistency(ctx, panel_cfg, scorer, p):
+                return False
             return
 
-        artifact_path = panel_cfg.get("artifact_path")
-        if not artifact_path:
-            log.warning("LoadScorerTask: panel_scoring.enabled but no artifact_path — skipping")
+        p = self._resolve_artifact_path(ctx, panel_cfg)
+        if p is None:
+            log.error("LoadScorerTask: panel_scoring.enabled but no artifact_path")
+            _fail_closed_panel_scoring(ctx, "panel_scorer_missing_artifact_path")
             return False
-        p = Path(artifact_path)
-        if not p.is_absolute():
-            strategy_dir = ctx.config.get("_strategy_dir")
-            if strategy_dir:
-                p = Path(strategy_dir) / p
         # 2026-05-18 Model registry dispatch — supports XGB/PatchTST/future kinds
         # via single config knob `ranking.panel_scoring.kind`. Default xgb
         # for back-compat. Each kind's handler in kernel/panel_pipeline/
@@ -139,12 +286,14 @@ class LoadScorerTask(Task):
             handler = registry.get(kind)
         except ValueError as exc:
             log.error("LoadScorerTask: %s", exc)
+            _fail_closed_panel_scoring(ctx, "panel_scorer_invalid_kind")
             return False
         try:
             ctx._panel_scorer = handler.scorer_loader(p, ctx.config)  # noqa: SLF001
         except Exception as exc:
             log.error("LoadScorerTask: failed to load %s artifact %s — %s",
                       kind, p, exc)
+            _fail_closed_panel_scoring(ctx, "panel_scorer_load_failed")
             return False
         log.info("LoadScorerTask: loaded %s artifact (features=%d, "
                  "requires_history=%s)", kind,
@@ -160,28 +309,8 @@ class LoadScorerTask(Task):
         # downgrade to log-only (only for staged migrations).
         # Backwards-compat: artifacts without a stored fingerprint pass
         # with WARNING (stamped on next retrain).
-        strict = bool(panel_cfg.get("strict_config_consistency", True))
-        try:
-            from kernel.config_consistency import (  # noqa: PLC0415
-                assert_consistent, ConfigModelMismatch,
-            )
-            import json as _j  # noqa: PLC0415
-            artifact_meta = _j.loads(p.read_text())
-            try:
-                assert_consistent(
-                    ctx.config, artifact_meta,
-                    artifact_label=str(p.name),
-                    strict=strict,
-                )
-            except ConfigModelMismatch as e:
-                log.error("LoadScorerTask: %s", e)
-                # strict=True ⇒ skip panel scoring this bar. Selection
-                # loop will fall back to per-ticker scores or no-op.
-                return False
-        except ConfigModelMismatch:
-            raise   # bubble unhandled (defensive — shouldn't reach here)
-        except Exception as exc:
-            log.warning("LoadScorerTask: consistency check failed: %s", exc)
+        if not self._assert_config_consistency(ctx, panel_cfg, ctx._panel_scorer, p):
+            return False
 
 
 class BuildFeatureMatrixTask(Task):
@@ -224,6 +353,12 @@ class ApplyScoresTask(Task):
         scorer: PanelScorer = getattr(ctx, "_panel_scorer", None)
         X = getattr(ctx, "_panel_matrix", None)
         if scorer is None or X is None or X.empty:
+            if getattr(ctx, "candidates", None):
+                reason = (
+                    "panel_scorer_missing"
+                    if scorer is None else "panel_score_matrix_missing"
+                )
+                _fail_closed_panel_scoring(ctx, reason)
             # Audit P-21: previously `return False` short-circuited the
             # rest of the chain (VetoWeak, LoadNGBoost, ApplyNGBoost,
             # LoadGlobalCal, ApplyGlobalCal, ApplyKellySizing). That
@@ -277,6 +412,7 @@ class ApplyScoresTask(Task):
                      "(seq_len=%d)", scorer_kind_early, len(scores), scorer.seq_len)
             ctx._panel_scores_all = scores  # noqa: SLF001
             n_cand_scored = 0
+            scored_tickers: set[str] = set()
             for cand in ctx.candidates:
                 v = scores.get(cand.ticker)
                 if v is None or pd.isna(v):
@@ -284,6 +420,12 @@ class ApplyScoresTask(Task):
                 cand.rank_score = float(v)
                 cand.panel_score = float(v)
                 n_cand_scored += 1
+                scored_tickers.add(str(cand.ticker))
+            _drop_unscored_panel_candidates(
+                ctx,
+                scored_tickers,
+                "panel_score_missing",
+            )
             n_held_scored = 0
             for ticker, hs in ctx.holdings.items():
                 v = scores.get(ticker)
@@ -679,6 +821,8 @@ class ApplyScoresTask(Task):
                 from kernel.panel_pipeline.feature_transform import (  # noqa: PLC0415
                     transform_feature_frame,
                 )
+                # Apply artifact-stored normalization. transform_feature_frame
+                # reads feature_means / feature_stds from scorer.metadata.
                 X_aligned = transform_feature_frame(
                     X_aligned,
                     scorer.feature_cols,
@@ -743,6 +887,7 @@ class ApplyScoresTask(Task):
         ctx._panel_scores_all = scores  # noqa: SLF001
 
         n_cand_scored = 0
+        scored_tickers: set[str] = set()
         for cand in ctx.candidates:
             v = scores.get(cand.ticker)
             if v is None or pd.isna(v):
@@ -750,6 +895,7 @@ class ApplyScoresTask(Task):
             cand.rank_score  = float(v)
             cand.panel_score = float(v)
             n_cand_scored += 1
+            scored_tickers.add(str(cand.ticker))
 
         # 2026-05-05 wl183 0-trade diagnostic. Only fires on the failure
         # path where every candidate lookup missed. Surfaces the dtype +
@@ -767,6 +913,11 @@ class ApplyScoresTask(Task):
                 scores.get(cand_sample[0]) if cand_sample else None,
                 X.shape, X.index.dtype,
             )
+        _drop_unscored_panel_candidates(
+            ctx,
+            scored_tickers,
+            "panel_score_missing",
+        )
 
         n_held_scored = 0
         for ticker, hs in ctx.holdings.items():

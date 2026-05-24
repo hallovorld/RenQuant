@@ -62,12 +62,19 @@ PanelScoringJob:
   AssembleInferenceMatrix → ApplyScores (XGB rank or hf_patchtst shadow)
   → ApplyNGBoost (μ promoted to prod; σ-wire dormant)
   → ApplyGlobalCalibration (Platt)
+  → RegimeModelAdmission (trade monotonicity + aligned placebo IC)
   → ApplyKellySizing (μ from calibrator + σ from realized_vol_60d fallback)
   → SortCandidates
   → JointPortfolioQPJob (cvxpy CLARABEL, HIFO lot selection, min_share_floor) → EmitOrders
 ↓
 Universal model contracts (post-predict diversity, pre-predict input variance — guards BUG #1/#2/#6 class)
 ```
+
+Panel scoring is fail-closed for buys. If the scorer artifact, config
+consistency check, feature matrix, or a candidate's finite panel score is
+missing, the candidate is tagged in `blocked_by` and cannot fall back to the
+weaker per-ticker tournament score. Sim, live runner, and LEAN prepare panel
+runtime frames through `adapters.panel_runtime.prepare_panel_runtime_frames`.
 
 ### FullTrainingPipeline
 

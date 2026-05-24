@@ -68,6 +68,13 @@ def _sel_ctx(*, bear_only: bool, defensive_set: set[str],
     )
 
 
+def _low_corr_matrix(tickers: list[str]) -> dict[str, dict[str, float]]:
+    return {
+        a: {b: (1.0 if a == b else 0.1) for b in tickers}
+        for a in tickers
+    }
+
+
 # ── Core guarantee ───────────────────────────────────────────────────────────
 
 class TestDefensiveOnlyInBear:
@@ -94,6 +101,7 @@ class TestDefensiveOnlyInBear:
         """Non-defensives pass through normally in BULL_CALM."""
         ranked = _ranked([("CAT", 0.45), ("GOOG", 0.42), ("NVDA", 0.40)])
         ctx = _sel_ctx(bear_only=False, defensive_set={"XLU", "GLD"})
+        ctx.corr_matrix = _low_corr_matrix(["CAT", "GOOG", "NVDA"])
         selected, _ = run_selection_loop(ranked, ctx)
         assert selected == ["CAT", "GOOG", "NVDA"]
 
@@ -203,6 +211,7 @@ class TestXLUIncident20260420:
         ])
         ctx = _sel_ctx(bear_only=False,
                         defensive_set={"GLD", "TLT", "XLV", "XLU"})
+        ctx.corr_matrix = _low_corr_matrix(["XLU", "CAT", "GOOG"])
         selected, blocks = run_selection_loop(ranked, ctx)
         assert "XLU" not in selected, "XLU 2026-04-20 bug must stay fixed"
         assert "CAT" in selected and "GOOG" in selected

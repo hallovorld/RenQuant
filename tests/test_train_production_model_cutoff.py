@@ -289,7 +289,7 @@ class TestStrictContractStamp:
             def predict(self, _dmatrix):
                 return np.arange(len(_dmatrix.get_label() if hasattr(_dmatrix, "get_label") else []))
 
-        def fake_train_xgb(train, feat_cols, label=TPM.LABEL):
+        def fake_train_xgb(train, feat_cols, label=TPM.LABEL, **_kwargs):
             calls.append(train["date"].max())
             booster = mock.MagicMock()
             booster.predict.side_effect = lambda dmat: np.arange(dmat.num_row())

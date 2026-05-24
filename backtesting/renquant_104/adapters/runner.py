@@ -11,6 +11,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from adapters.panel_runtime import (
+    attach_panel_runtime_frames,
+    describe_panel_frame_bundle,
+    prepare_panel_runtime_frames,
+)
 from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
 
 log = logging.getLogger("adapters.runner")
@@ -1000,21 +1005,14 @@ class RunnerAdapter:
         panel_cfg = config.get("ranking", {}).get("panel_scoring", {})
         if panel_cfg.get("enabled", False) and not self._sell_only:
             try:
-                from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                ff, fac, macro, emb = prepare_inference_panel_frames(
-                    watchlist=config["watchlist"],
-                    ohlcv=ohlcv,
-                    ticker_sectors=config.get("sector_map", {}),
+                bundle = prepare_panel_runtime_frames(
                     config=config,
+                    ohlcv=ohlcv,
                 )
-                ctx._panel_feature_frames   = ff    # noqa: SLF001
-                ctx._panel_factor_frames    = fac   # noqa: SLF001
-                ctx._panel_macro_frame      = macro  # noqa: SLF001 (Bug #25)
-                ctx._panel_asset_embeddings = emb   # noqa: SLF001 (T2-2)
+                attach_panel_runtime_frames(ctx, bundle)
+                n_ff, n_fac, macro_desc, n_emb = describe_panel_frame_bundle(bundle)
                 log.info("Panel frames prepared: feat=%d  factor=%d  macro=%s  emb=%d",
-                         len(ff), len(fac),
-                         "None" if macro is None else f"{len(macro.columns)}cols",
-                         len(emb) if emb else 0)
+                         n_ff, n_fac, macro_desc, n_emb)
             except Exception as exc:
                 msg = (
                     "Panel frame prep failed while panel_scoring.enabled=true; "

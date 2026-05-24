@@ -100,7 +100,35 @@ class TestPanelJobFlag:
         assert PanelScoringJob().should_skip(ctx) is False
 
 
-# ── Adapter-level parity: LEAN vs Runner both call prepare_inference_panel_frames ──
+# ── Adapter-level parity: LEAN / Runner / Sim share panel frame prep ─────────
+
+class TestSharedPanelRuntimePrep:
+    def test_helper_injects_benchmark_and_filters_sector_map(self):
+        from adapters.panel_runtime import prepare_panel_runtime_frames
+
+        captured = {}
+
+        def fake_prepare(**kwargs):
+            captured.update(kwargs)
+            return ({"AAA": "ff"}, {"AAA": "fac"}, None, None)
+
+        config = _panel_enabled_config()
+        config["watchlist"] = ["AAA", "MISSING"]
+        config["benchmark"] = "SPY"
+        config["sector_map"] = {"AAA": "Tech", "": "Bad"}
+        spy = _tiny_ohlcv()
+
+        with patch("training_panel.pipeline.prepare_inference_panel_frames", fake_prepare):
+            bundle = prepare_panel_runtime_frames(
+                config=config,
+                ohlcv={"AAA": _tiny_ohlcv()},
+                spy_df=spy,
+            )
+
+        assert "SPY" in captured["ohlcv"]
+        assert captured["ohlcv"]["SPY"] is spy
+        assert captured["ticker_sectors"] == {"AAA": "Tech"}
+        assert bundle.feature_frames == {"AAA": "ff"}
 
 class TestAdapterPanelPrep:
     """When flag=True, both LeanAdapter and RunnerAdapter must populate frames."""

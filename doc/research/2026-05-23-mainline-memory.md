@@ -1706,6 +1706,17 @@ Operational conclusion:
 - Per-regime placebo admission must use the same `0.5 x aligned_real` ratio as
   the top-level WF gate. The earlier runtime rule only blocked placebo above
   `1.0 x aligned_real`, which would have let BULL_CALM's `0.97` ratio through.
+- Panel scoring is the alpha surface for 104. If the scorer artifact, config
+  consistency check, feature matrix, or per-ticker panel score is missing, the
+  buy/QP path must fail closed and write `blocked_by`; it must not continue on
+  Phase-2 per-ticker tournament scores. A 2026-05-24 repair added runtime
+  fail-closed guards and regression tests for scorer load failure, preloaded
+  scorer config mismatch, missing matrix, and missing per-ticker panel score.
+- Sim, live runner, and LEAN must share panel frame preparation through
+  `adapters.panel_runtime.prepare_panel_runtime_frames`. The direct adapter
+  calls were consolidated on 2026-05-24 so tuple arity, benchmark injection,
+  and sector-map filtering cannot drift independently across validation and
+  live trading.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to
@@ -1728,6 +1739,7 @@ Stop and fix before reporting performance if any of these happen:
 - A calibrator/scorer fingerprint mismatch is detected.
 - Sector metadata is missing for a buyable ticker.
 - A buy/full path silently falls back to raw score or a weaker score.
+- Sim/live/LEAN construct panel inference frames through different code paths.
 - Trade logs lack `blocked_by`, model type, sector, score snapshot, QP
   target/delta/status, or sell P/L/tax/net for emitted orders.
 - A metric is not labeled as event-level, annual-net, short-window style, or

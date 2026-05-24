@@ -248,18 +248,44 @@ class TestLoadScorerTask:
         assert ctx._panel_scorer is not None
 
     def test_preloaded_scorer_not_reloaded(self, tmp_path):
+        from kernel.panel_pipeline import PanelScorer
         from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
+        artifact = _write_artifact(tmp_path / "artifacts" / "panel-ltr.json")
         ctx = _make_ctx(tmp_path, enabled=True, artifact_path="missing.json")
-        sentinel = object()
+        sentinel = PanelScorer.load(artifact)
         ctx._panel_scorer = sentinel
         LoadScorerTask().run(ctx)
         assert ctx._panel_scorer is sentinel  # not overwritten
+
+    def test_preloaded_scorer_config_mismatch_fails_closed(self, tmp_path):
+        from kernel.panel_pipeline import PanelScorer
+        from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
+        artifact = _write_artifact(tmp_path / "artifacts" / "panel-ltr.json")
+        payload = json.loads(artifact.read_text())
+        payload["config_fingerprint"] = "sha256:notlive"
+        payload["config_fingerprint_fields"] = {"watchlist": ["OLD"]}
+        artifact.write_text(json.dumps(payload))
+        ctx = _make_ctx(tmp_path, enabled=True, artifact_path="")
+        ctx._panel_scorer = PanelScorer.load(artifact)
+
+        out = LoadScorerTask().run(ctx)
+
+        assert out is False
+        assert ctx.candidates == []
+        assert set(ctx._blocked_by_ticker.values()) == {
+            "panel_scorer_config_mismatch",
+        }
 
     def test_returns_false_when_no_artifact_path(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
         ctx = _make_ctx(tmp_path, enabled=True, artifact_path="")
         out = LoadScorerTask().run(ctx)
         assert out is False
+        assert ctx.candidates == []
+        assert ctx._panel_scoring_contract_failed is True
+        assert set(ctx._blocked_by_ticker.values()) == {
+            "panel_scorer_missing_artifact_path",
+        }
 
     def test_returns_false_when_load_fails(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
@@ -267,6 +293,22 @@ class TestLoadScorerTask:
                         artifact_path=str(tmp_path / "nonexistent.json"))
         out = LoadScorerTask().run(ctx)
         assert out is False
+        assert ctx.candidates == []
+        assert ctx.buy_blocked is True
+        assert set(ctx._blocked_by_ticker.values()) == {"panel_scorer_load_failed"}
+
+    def test_invalid_scorer_kind_fails_closed(self, tmp_path):
+        from kernel.panel_pipeline.job_panel_scoring import LoadScorerTask
+        artifact = _write_artifact(tmp_path / "artifacts" / "panel-ltr.json")
+        ctx = _make_ctx(tmp_path, enabled=True, artifact_path=str(artifact))
+        ctx.config["ranking"]["panel_scoring"]["kind"] = "not_a_real_kind"
+
+        out = LoadScorerTask().run(ctx)
+
+        assert out is False
+        assert ctx.candidates == []
+        assert ctx._full_candidate_snapshot
+        assert set(ctx._blocked_by_ticker.values()) == {"panel_scorer_invalid_kind"}
 
 
 # ── BuildFeatureMatrixTask ───────────────────────────────────────────────────
@@ -351,12 +393,17 @@ class TestApplyScoresTask:
         """Audit P-21 (2026-04-24): when scorer/X are missing, ApplyScoresTask
         previously returned False (which short-circuited the rest of the chain
         and left Kelly target stale). Now returns None so downstream tasks
-        (Veto/NGBoost/Calibrator/Kelly) get to run with their own None guards.
+        (Veto/NGBoost/Calibrator/Kelly) get to run with their own None guards,
+        but buy candidates are cleared so selection cannot silently use the
+        stale per-ticker rank_score.
         """
         from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
         ctx = _make_ctx(tmp_path, enabled=True)
         out = ApplyScoresTask().run(ctx)
         assert out is None
+        assert ctx.candidates == []
+        assert ctx.buy_blocked is True
+        assert set(ctx._blocked_by_ticker.values()) == {"panel_scorer_missing"}
 
     def test_overwrites_candidate_rank_scores(self, tmp_path):
         from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
@@ -369,17 +416,17 @@ class TestApplyScoresTask:
         # Scores should differ across tickers (non-trivial scorer)
         assert len(set(after.values())) > 1
 
-    def test_leaves_rank_score_untouched_when_nan(self, tmp_path):
-        """Tickers absent from the matrix or with NaN score keep their prior rank_score."""
+    def test_drops_candidate_when_panel_score_missing(self, tmp_path):
+        """Tickers absent from the matrix cannot fall back to prior rank_score."""
         from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
         ctx = self._ctx_ready(tmp_path)
         # Drop one ticker from the matrix — scorer won't produce a score for it
         dropped = ctx.candidates[0].ticker
-        prior = ctx.candidates[0].rank_score
         ctx._panel_matrix = ctx._panel_matrix.drop(index=dropped)
         ApplyScoresTask().run(ctx)
-        survived = next(c for c in ctx.candidates if c.ticker == dropped)
-        assert survived.rank_score == pytest.approx(prior)
+        assert dropped not in {c.ticker for c in ctx.candidates}
+        assert ctx._blocked_by_ticker[dropped] == "panel_score_missing"
+        assert ctx._full_candidate_snapshot
 
     def test_history_scorer_scores_holdings_too(self, tmp_path):
         """HF/PatchTST primary must populate holding.panel_score for QP μ wiring."""

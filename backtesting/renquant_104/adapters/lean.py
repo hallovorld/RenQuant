@@ -12,6 +12,12 @@ from typing import Any
 
 import pandas as pd
 
+from adapters.panel_runtime import (
+    PanelFrameBundle,
+    attach_panel_runtime_frames,
+    prepare_panel_runtime_frames,
+)
+
 try:
     from AlgorithmImports import Resolution  # type: ignore[import]  # noqa: F401
 except ImportError:
@@ -81,7 +87,7 @@ class LeanAdapter:
         self._algo = algo
         # Audit P-3 (2026-04-24): cache panel feature/factor frames so we
         # only rebuild on a real History-buffer roll-forward, not every
-        # bar. Pre-fix, `prepare_inference_panel_frames` was called per
+        # bar. Pre-fix, panel frame prep was called per
         # OnData → 99 tickers × N bars × full feature pipeline = hours of
         # wasted compute per backtest. Cache is invalidated when the SPY
         # buffer extends past the last cached date.
@@ -261,26 +267,28 @@ class LeanAdapter:
             )
             if need_rebuild:
                 try:
-                    from training_panel.pipeline import prepare_inference_panel_frames  # noqa: PLC0415
-                    ff, fac, macro, emb = prepare_inference_panel_frames(
-                        watchlist=config["watchlist"],
-                        ohlcv=ohlcv,
-                        ticker_sectors=config.get("sector_map", {}),
+                    bundle = prepare_panel_runtime_frames(
                         config=config,
+                        ohlcv=ohlcv,
                     )
-                    self._panel_cache_ff = ff
-                    self._panel_cache_fac = fac
-                    self._panel_cache_macro = macro   # Bug #25
-                    self._panel_cache_emb = emb       # T2-2
+                    self._panel_cache_ff = bundle.feature_frames
+                    self._panel_cache_fac = bundle.factor_frames
+                    self._panel_cache_macro = bundle.macro_frame   # Bug #25
+                    self._panel_cache_emb = bundle.asset_embeddings  # T2-2
                     self._panel_cache_last_date = pd.Timestamp(today)
                 except Exception as exc:
                     msg = f"Panel frame prep failed — panel scoring cannot run: {exc}"
                     log.error(msg)
                     raise RuntimeError(msg) from exc
-            ctx._panel_feature_frames   = self._panel_cache_ff                       # noqa: SLF001
-            ctx._panel_factor_frames    = self._panel_cache_fac                      # noqa: SLF001
-            ctx._panel_macro_frame      = getattr(self, "_panel_cache_macro", None)  # noqa: SLF001
-            ctx._panel_asset_embeddings = getattr(self, "_panel_cache_emb", None)    # noqa: SLF001  T2-2
+            attach_panel_runtime_frames(
+                ctx,
+                PanelFrameBundle(
+                    feature_frames=self._panel_cache_ff,
+                    factor_frames=self._panel_cache_fac,
+                    macro_frame=getattr(self, "_panel_cache_macro", None),
+                    asset_embeddings=getattr(self, "_panel_cache_emb", None),
+                ),
+            )
 
         # P-LEAN (2026-05-11) — attach meta-label hooks for parity with
         # SimAdapter / RunnerAdapter. snapshot_logger is None unless

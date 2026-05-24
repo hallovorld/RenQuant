@@ -265,7 +265,7 @@ Phase 3: Global sequential
   RankingJob → RotationJob → SelectionJob
 ```
 
-In renquant_104 (active strategy), a `PanelScoringJob` is slotted **between Phase 2b and Phase 3** — it re-scores both candidates and holdings with the cross-sectional panel-LTR model so rotation and selection compare everything on the same scale. It short-circuits via `should_skip()` when `ranking.panel_scoring.enabled=false`, in which case the pipeline behaves identically to 103. See `doc/arch/strategy-104.md` for the full spec.
+In renquant_104 (active strategy), a `PanelScoringJob` is slotted **between Phase 2b and Phase 3** — it re-scores both candidates and holdings with the cross-sectional panel-LTR model so rotation and selection compare everything on the same scale. It short-circuits via `should_skip()` when `ranking.panel_scoring.enabled=false`, in which case the pipeline behaves identically to 103. When the flag is on, scorer load/config/feature/score failures are fail-closed for buys, not silent fallback to weaker per-ticker scores. LEAN, live runner, and sim share `adapters.panel_runtime.prepare_panel_runtime_frames` for panel frame construction. See `doc/arch/strategy-104.md` for the full spec.
 
 **`SellOnlyPipeline`** — intraday sell-only variant (used on market-open and pre-close runs). Runs Phase 1 (RegimeJob → DrawdownJob) then parallel `TickerSellJob` — no buy phase.
 

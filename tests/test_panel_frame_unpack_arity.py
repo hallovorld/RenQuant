@@ -16,9 +16,8 @@ unpacking).
 
 Invariant pinned by these tests:
    arity(prepare_inference_panel_frames return) ==
-   arity(adapters/sim.py unpack) ==
-   arity(adapters/runner.py unpack) ==
-   arity(adapters/lean.py unpack)
+   arity(adapters/panel_runtime.py unpack)
+   and adapters/sim.py, runner.py, lean.py do NOT call it directly.
 
 If any one drifts, this test fires immediately — pre-merge, not at
 runtime.
@@ -61,11 +60,10 @@ def _pipeline_return_arity() -> int:
     return _count_top_level_commas(expr) + 1
 
 
-def _adapter_unpack_arity(adapter_module_name: str) -> int:
+def _module_unpack_arity(module_path: Path) -> int:
     """Find the line `<vars> = prepare_inference_panel_frames(...)` and
     count the variables on the LHS."""
-    src_path = RQ_ROOT / "adapters" / f"{adapter_module_name}.py"
-    src = src_path.read_text()
+    src = module_path.read_text()
     # Match e.g. `ff, fac, macro = prepare_inference_panel_frames(`
     # or `ff, fac, macro, emb = prepare_inference_panel_frames(`
     pattern = re.compile(
@@ -73,16 +71,21 @@ def _adapter_unpack_arity(adapter_module_name: str) -> int:
         re.MULTILINE,
     )
     matches = pattern.findall(src)
-    assert len(matches) >= 1, f"No `... = prepare_inference_panel_frames(...)` line in {src_path}"
+    assert len(matches) >= 1, f"No `... = prepare_inference_panel_frames(...)` line in {module_path}"
     # If multiple call sites, all must agree
     arities = []
     for _indent, lhs in matches:
         arity = _count_top_level_commas(lhs.strip()) + 1
         arities.append(arity)
     assert len(set(arities)) == 1, (
-        f"Multiple call sites in {adapter_module_name} have different unpack arities: {arities}"
+        f"Multiple call sites in {module_path.name} have different unpack arities: {arities}"
     )
     return arities[0]
+
+
+def _adapter_calls_prepare_directly(adapter_module_name: str) -> bool:
+    src_path = RQ_ROOT / "adapters" / f"{adapter_module_name}.py"
+    return "prepare_inference_panel_frames" in src_path.read_text()
 
 
 def test_pipeline_return_arity_pinned():
@@ -94,29 +97,21 @@ def test_pipeline_return_arity_pinned():
     )
 
 
-def test_sim_adapter_unpack_matches_pipeline():
+def test_shared_panel_runtime_unpack_matches_pipeline():
     pipe = _pipeline_return_arity()
-    sim = _adapter_unpack_arity("sim")
-    assert sim == pipe, (
-        f"adapters/sim.py unpacks {sim} values; pipeline returns {pipe}. "
-        f"This silent-mismatch produces 0-trade sims (caught 2026-05-02 on exp branch)."
+    helper = _module_unpack_arity(RQ_ROOT / "adapters" / "panel_runtime.py")
+    assert helper == pipe, (
+        f"adapters/panel_runtime.py unpacks {helper} values; pipeline returns {pipe}. "
+        "This mismatch would hit sim/live/LEAN together, so keep one shared callsite."
     )
 
 
-def test_runner_adapter_unpack_matches_pipeline():
-    pipe = _pipeline_return_arity()
-    runner = _adapter_unpack_arity("runner")
-    assert runner == pipe, (
-        f"adapters/runner.py unpacks {runner} values; pipeline returns {pipe}. "
-        f"Same silent-failure pattern as sim adapter."
-    )
-
-
-def test_lean_adapter_unpack_matches_pipeline():
-    pipe = _pipeline_return_arity()
-    lean = _adapter_unpack_arity("lean")
-    assert lean == pipe, (
-        f"adapters/lean.py unpacks {lean} values; pipeline returns {pipe}. "
-        f"LEAN backtests crash with no diagnostic — broad except swallows "
-        f"the ValueError and disables panel scoring silently."
+def test_adapters_do_not_call_panel_frame_prep_directly():
+    offenders = [
+        name for name in ("sim", "runner", "lean")
+        if _adapter_calls_prepare_directly(name)
+    ]
+    assert offenders == [], (
+        "Adapters must call adapters.panel_runtime.prepare_panel_runtime_frames, "
+        f"not prepare_inference_panel_frames directly. Offenders: {offenders}"
     )

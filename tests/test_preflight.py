@@ -38,6 +38,27 @@ from kernel.config_consistency import (  # noqa: E402
 )
 
 
+def _passing_sanity_regime_ic() -> dict:
+    return {
+        "passed": True,
+        "reason": "passed",
+        "regimes": {
+            "BULL_CALM": {
+                "eligible": True,
+                "passed": True,
+                "mean_ic": 0.035,
+                "placebo_60_aligned_real_ic": 0.06,
+                "placebo_60_ic": 0.01,
+            },
+            "BEAR": {
+                "eligible": False,
+                "passed": True,
+                "mean_ic": None,
+            },
+        },
+    }
+
+
 # ── Fixture: synthetic strategy dir + healthy artifact ─────────────────────
 
 @pytest.fixture
@@ -112,6 +133,7 @@ def healthy_setup(tmp_path):
                     },
                 },
             },
+            "sanity_regime_ic": _passing_sanity_regime_ic(),
         }},
     }))
     return cfg, tmp_path
@@ -334,7 +356,7 @@ class TestCheckWFGateMetadata:
 
 
 class TestCheckRegimeLayeredIC:
-    def _write_artifact(self, tmp_path, trade_monotonicity):
+    def _write_artifact(self, tmp_path, trade_monotonicity, sanity_regime_ic=None):
         cfg = {"ranking": {"panel_scoring": {
             "kind": "xgb",
             "artifact_path": "artifacts/panel-ltr.json",
@@ -343,6 +365,11 @@ class TestCheckRegimeLayeredIC:
         (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
             "metadata": {"wf_gate_metadata": {
                 "trade_monotonicity": trade_monotonicity,
+                "sanity_regime_ic": (
+                    _passing_sanity_regime_ic()
+                    if sanity_regime_ic is None and trade_monotonicity is not None
+                    else sanity_regime_ic
+                ),
             }},
         }))
         return cfg
@@ -369,6 +396,17 @@ class TestCheckRegimeLayeredIC:
             "regimes": {
                 "BULL_CALM": {"eligible": True, "passed": False, "n": 70},
             },
+        }, sanity_regime_ic={
+            "passed": True,
+            "regimes": {
+                "BULL_CALM": {
+                    "eligible": True,
+                    "passed": True,
+                    "mean_ic": 0.04,
+                    "placebo_60_aligned_real_ic": 0.08,
+                    "placebo_60_ic": 0.01,
+                },
+            },
         })
 
         r = _check_regime_layered_ic(cfg, tmp_path, run_mode="full")
@@ -377,7 +415,7 @@ class TestCheckRegimeLayeredIC:
         assert r.details["failed_regimes"] == ["BULL_CALM"]
 
     def test_missing_evidence_allows_sell_only_only(self, tmp_path):
-        cfg = self._write_artifact(tmp_path, None)
+        cfg = self._write_artifact(tmp_path, None, sanity_regime_ic=None)
 
         full = _check_regime_layered_ic(cfg, tmp_path, run_mode="full")
         sell = _check_regime_layered_ic(cfg, tmp_path, run_mode="sell-only")
