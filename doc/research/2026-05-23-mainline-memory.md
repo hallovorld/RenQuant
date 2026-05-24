@@ -696,6 +696,57 @@ Still pending: run an actual LEAN backtest smoke with persistence enabled and
 verify row counts/artifact paths in Docker output before treating LEAN traces
 as operationally proven.
 
+## 2026-05-23 Feature-Space WF Trade-Quality Diagnosis
+
+Latest strict feature-space WF trace was re-analyzed with the prod-semantic
+config and HIFO tax lots:
+
+- Report:
+  `artifacts/wf_trade_forensics_featspace_tracefix_prodsemantic_20260523.md`.
+- Closed round trips: `42`.
+- Gross P/L: `+$10.45k`; tax estimate `+$8.52k`; net after estimated tax
+  `+$1.93k`.
+- Tax integrity is clean: `tax_cash_debited=0`, no positive row has tax above
+  gross, and no losing row has positive tax.
+- All entries came from `JointPortfolioQPJob`; no greedy/top-up mix in this
+  trace.
+- Entry score monotonicity is effectively absent:
+  `rank_score` vs net Spearman `-0.007`, `mu` vs net `+0.016`,
+  raw `panel_score` vs net `-0.042`.
+- Stop-loss exits are the dominant gross loss bucket:
+  9 exits, gross/net `-$5.91k`, win rate `0%`.
+- High-score and high-uncertainty names are not safer in the traded subset:
+  entries with `rank_score >= 0.63` had net `-$1.01k`, while lower-rank
+  entries had net `+$2.95k`; the highest `entry_sigma` quartile had net
+  `-$0.49k`.
+
+Interpretation: the current failure is no longer a tax-cash bug. The model
+still has weak point-in-time IC, and after QP admission the traded subset is
+not score-monotone. QP is selecting high-μ/high-σ names that later become
+stop-loss losses. This supports testing an uncertainty-aware admission cap,
+but only as a regime-conditional A/B, not a silent production flip.
+
+Implementation hook added:
+
+- `rotation.joint_actions.qp_admission_gate.max_sigma` and
+  `max_sigma_by_regime` can now block new QP buys whose candidate sigma is
+  above the configured cap.
+- `topup_max_sigma` and `topup_max_sigma_by_regime` provide the same hook for
+  held top-ups.
+- Default remains off, preserving production behavior until a paired WF A/B
+  passes.
+
+Theory support: Markowitz mean-variance allocation requires expected return to
+pay for risk; Kelly sizing scales exposure by edge over variance; and
+transaction-cost/no-trade literature warns against trading marginal edges once
+cost and risk bands are considered. In this project, the empirical symptom is
+that high sigma is associated with stop-loss realizations after QP admission.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_qp_admission_gate.py tests/test_joint_qp_task.py tests/test_qp_integration.py -q`
+  -> `68 passed`.
+
 ## 2026-05-23 PatchTST / XGB Experiment Audit
 
 PatchTST experiments did complete, but they are not promotion evidence.

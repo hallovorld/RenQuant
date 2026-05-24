@@ -1454,7 +1454,25 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         if not math.isfinite(panel) or panel < floor:
             return "qp_admission_panel"
 
+    sigma_cap = _qp_admission_gate_value(
+        gate,
+        "topup_max_sigma" if is_held else "max_sigma",
+        getattr(ctx, "regime", None),
+    )
+    if sigma_cap is not None:
+        cap = float(sigma_cap)
+        sigma = _source_float(source, "sigma")
+        if not math.isfinite(sigma) or sigma > cap:
+            return "qp_admission_sigma"
+
     return None
+
+
+def _qp_admission_gate_value(gate: dict, key: str, regime: str | None):
+    by_regime = gate.get(f"{key}_by_regime")
+    if isinstance(by_regime, dict) and regime in by_regime:
+        return by_regime[regime]
+    return gate.get(key)
 
 
 def _source_float(source: object, name: str) -> float:

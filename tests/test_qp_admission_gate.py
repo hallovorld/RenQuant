@@ -49,6 +49,45 @@ def test_qp_blocks_new_candidate_with_negative_raw_panel_score() -> None:
     assert reason == "qp_admission_panel"
 
 
+def test_qp_blocks_high_sigma_candidate_when_configured() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        sigma=0.55,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["max_sigma"] = 0.40
+
+    reason = _qp_buy_admission_block_reason(
+        SimpleNamespace(config={}, regime="BULL_CALM"),
+        env,
+        "AAA",
+    )
+
+    assert reason == "qp_admission_sigma"
+
+
+def test_qp_sigma_cap_uses_regime_override() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        sigma=0.55,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["max_sigma"] = 0.40
+    env["cfg"]["qp_admission_gate"]["max_sigma_by_regime"] = {"CHOPPY": 0.60}
+
+    reason = _qp_buy_admission_block_reason(
+        SimpleNamespace(config={}, regime="CHOPPY"),
+        env,
+        "AAA",
+    )
+
+    assert reason is None
+
+
 def test_qp_blocks_new_candidate_when_slots_full() -> None:
     source = SimpleNamespace(ticker="AAA", rank_score=0.80, panel_score=0.20)
     holdings = {f"H{i}": object() for i in range(8)}
