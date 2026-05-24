@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -96,7 +97,10 @@ def _score_sequences(
     import torch  # noqa: PLC0415
     from kernel.panel_pipeline.hf_patchtst_scorer import _csrank_norm_per_day  # noqa: PLC0415
 
-    torch.set_num_threads(min(14, max(1, torch.get_num_threads())))
+    # Keep HF/PyTorch replay conservative by default. Raising torch intra-op
+    # threads in the same process that imports xgboost/HF has caused native
+    # crashes on Apple Silicon; callers may opt in via RENQUANT_TORCH_THREADS.
+    torch.set_num_threads(max(1, int(os.getenv("RENQUANT_TORCH_THREADS", "1"))))
     feature_cols = list(scorer.feature_cols)
     seq_len = int(scorer.seq_len)
     work = panel

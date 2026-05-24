@@ -1314,6 +1314,15 @@ Next implication:
   `score_with_history()` with strictly prior panel history for history-requiring
   scorers. This keeps PatchTST on the same fail-closed WF gate path as XGB
   instead of inventing a separate acceptance shortcut.
+- PatchTST WF smoke exposed and fixed a native calibrator crash: the HF
+  calibrator had raised torch intra-op threads up to 14, conflicting with the
+  repo's Apple-Silicon OMP=1 stability rule. It now defaults to
+  `RENQUANT_TORCH_THREADS=1`, and the WF driver passes an explicit calibrator
+  batch size. The smoke calibrator completed on 297,600 rows and the
+  `WalkForwardModelLoader.calibrator_as_of()` fingerprint check passed.
+- The WF PatchTST driver now has `--reuse-existing`, so if a long fold trains
+  successfully but a later calibrator/manifest step fails, reruns can reuse the
+  completed `.pt`/sidecar/calibrator instead of repeating training.
 - Remaining required work: run the driver for acceptance-grade folds and score
   PatchTST through the same decision-tree / benchmark-sleeve / active P&L
   acceptance lenses used for XGB and SPY.

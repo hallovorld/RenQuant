@@ -111,6 +111,7 @@ def calibrator_cmd(args: argparse.Namespace, cutoff: pd.Timestamp,
         "--scorer-artifact", str(model_path),
         "--out", str(cal_path),
         "--data-end", data_end_for_cutoff(cutoff, args.label),
+        "--batch-size", str(args.calibrator_batch_size),
         "--method", args.calibrator_method,
     ]
 
@@ -160,17 +161,25 @@ def train_one_cutoff(args: argparse.Namespace, cutoff: pd.Timestamp):
     out_dir = artifact_dir(args, cutoff)
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = model_path_for(out_dir, int(args.seed))
-    ok, err = run_subprocess(train_cmd(args, cutoff, out_dir),
-                             f"train cutoff={cutoff.date()}")
-    if not ok:
-        return cutoff, None, err
+    if args.reuse_existing and model_path.exists() and sidecar_path_for(model_path).exists():
+        log.info("train cutoff=%s reuse existing model: %s",
+                 cutoff.date(), model_path)
+    else:
+        ok, err = run_subprocess(train_cmd(args, cutoff, out_dir),
+                                 f"train cutoff={cutoff.date()}")
+        if not ok:
+            return cutoff, None, err
     cal_path = None
     if not args.skip_calibrators:
         cal_path = calibrator_path_for(model_path)
-        ok, err = run_subprocess(calibrator_cmd(args, cutoff, model_path, cal_path),
-                                 f"calibrate cutoff={cutoff.date()}")
-        if not ok:
-            return cutoff, None, err
+        if args.reuse_existing and cal_path.exists():
+            log.info("calibrate cutoff=%s reuse existing calibrator: %s",
+                     cutoff.date(), cal_path)
+        else:
+            ok, err = run_subprocess(calibrator_cmd(args, cutoff, model_path, cal_path),
+                                     f"calibrate cutoff={cutoff.date()}")
+            if not ok:
+                return cutoff, None, err
     return cutoff, build_entry(cutoff, model_path, cal_path, args.label), ""
 
 
@@ -243,8 +252,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cross-stock-attn", action="store_true")
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--skip-calibrators", action="store_true")
+    p.add_argument("--calibrator-batch-size", type=int, default=512)
     p.add_argument("--calibrator-method", default="platt",
                    choices=["platt", "isotonic"])
+    p.add_argument("--reuse-existing", action="store_true",
+                   help="Reuse existing model sidecar/calibrator artifacts for "
+                        "a cutoff instead of rerunning completed subprocesses.")
     p.add_argument("--allow-partial-manifest", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()

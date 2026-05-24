@@ -41,8 +41,10 @@ def _args(**overrides):
         cross_stock_attn=False,
         jobs=1,
         skip_calibrators=False,
+        calibrator_batch_size=512,
         calibrator_method="platt",
         allow_partial_manifest=False,
+        reuse_existing=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -79,6 +81,7 @@ def test_calibrator_cmd_is_causal_to_cutoff(tmp_path):
     assert "scripts/fit_hf_patchtst_calibrator.py" in joined
     assert "--scorer-artifact" in cmd
     assert "--data-end 2024-03-04" in joined
+    assert "--batch-size 512" in joined
     assert "--method isotonic" in joined
 
 
@@ -103,3 +106,31 @@ def test_build_entry_reads_sidecar_contract(tmp_path):
     assert entry.calibrator_uri == str(cal_path)
     assert entry.lookahead_days == 60
     assert entry.effective_train_cutoff_date == pd.Timestamp("2024-01-15")
+
+
+def test_reuse_existing_skips_completed_subprocesses(tmp_path, monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "STRATEGY_DIR", tmp_path)
+    args = _args(artifact_root="wf_pt", reuse_existing=True)
+    cutoff = pd.Timestamp("2025-01-02")
+    out_dir = mod.artifact_dir(args, cutoff)
+    out_dir.mkdir(parents=True)
+    model_path = mod.model_path_for(out_dir, args.seed)
+    model_path.write_bytes(b"fake")
+    model_path.with_name(model_path.name + ".metadata.json").write_text(json.dumps({
+        "training_contract": {
+            "trained_date": "2026-05-24",
+            "effective_train_cutoff_date": "2024-10-09",
+        },
+    }))
+    mod.calibrator_path_for(model_path).write_text("{}")
+
+    def fail_run_subprocess(cmd, label):
+        raise AssertionError(f"should reuse existing artifact, got {label}: {cmd}")
+
+    monkeypatch.setattr(mod, "run_subprocess", fail_run_subprocess)
+
+    _, entry, err = mod.train_one_cutoff(args, cutoff)
+
+    assert err == ""
+    assert entry.artifact_uri == str(model_path)

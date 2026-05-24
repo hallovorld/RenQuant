@@ -75,6 +75,7 @@ class TestSourceContracts:
         assert "score_sequences" in src
         assert "scorer_artifact_fingerprint" in src
         assert "raw_return_units_required" in src
+        assert 'RENQUANT_TORCH_THREADS", "1"' in src
 
     def test_calibrator_script_infers_raw_er_label(self):
         script = REPO / "scripts" / "fit_hf_patchtst_calibrator.py"
