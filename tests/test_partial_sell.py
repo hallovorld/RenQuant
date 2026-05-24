@@ -277,6 +277,78 @@ class TestSimAdapterPartialSell:
             "bug 11 requires _apply_sell and commit() to share the "
             "partial/full classification predicate"
         )
+        assert "dedupe_exit_signals(" in src, (
+            "commit() exit dedupe must also share the held-quantity-aware "
+            "partial/full predicate"
+        )
+
+    def test_commit_dedupe_quantity_equal_held_full_beats_partial(self):
+        """Regression: a partial trim emitted before an explicit full exit
+        must not swallow the full exit.
+
+        The old sim-only dedupe treated only quantity=None/<=0 as full, so a
+        full exit expressed as quantity == held stayed behind the earlier
+        partial trim. That left a position open when the decision tree wanted
+        it flat.
+        """
+        import pandas as pd
+        from kernel.exits import ExitSignal
+
+        adp = self._make_adapter("NVDA", shares=10, entry_price=100.0)
+        adp._config = {
+            "tax": {
+                "short_term_rate": 0.0,
+                "long_term_rate": 0.0,
+                "long_term_threshold_days": 365,
+            },
+            "rotation": {"joint_actions": {"qp_tax_lot_method": "fifo"}},
+            "watchlist": ["NVDA"],
+            "ranking": {"panel_scoring": {"enabled": False}},
+            "persistence": {"enabled": False},
+        }
+        adp._rotation_proposals = []
+        adp._equity_curve = []
+        adp._db = None
+        adp._models = {}
+        adp._universe_rejections = {}
+
+        ctx = self._make_ctx(datetime.date(2026, 4, 24), "NVDA", price=120.0)
+        ctx.exits = [
+            ("NVDA", ExitSignal(True, "qp trim", "qp_sell", quantity=3.0)),
+            ("NVDA", ExitSignal(True, "max hold", "max_hold", quantity=10.0)),
+        ]
+        ctx.orders = []
+        ctx.holdings = dict(adp._holdings)
+        ctx.regime_state = None
+        ctx.regime_counts = {}
+        ctx.hwm = 100_000.0
+        ctx.skip_buys = False
+        ctx.monitor_state = {}
+        ctx.rotations = []
+        ctx.regime = "BULL_CALM"
+        ctx.confidence = 1.0
+        ctx.counters = {}
+        ctx.candidates = []
+        ctx.buy_blocked = False
+        ctx.bear_only = False
+
+        adp.commit(ctx)
+
+        assert "NVDA" not in adp._holdings
+        assert "NVDA" not in adp._pos_shares
+        assert len(adp._trade_log) == 1
+        assert adp._trade_log[0]["shares"] == 10
+        assert adp._trade_log[0]["partial"] is False
+
+    def test_sim_live_lean_use_shared_exit_dedupe(self):
+        """Adapter parity guard: duplicate-exit resolution is a business
+        decision and must stay in the shared kernel helper."""
+        for rel in ("adapters/sim.py", "adapters/runner.py", "adapters/lean.py"):
+            src = (_STRATEGY_DIR / rel).read_text()
+            assert "dedupe_exit_signals(" in src, (
+                f"{rel} must route duplicate exits through the shared "
+                "held-quantity-aware helper"
+            )
 
     def test_pnl_pct_uses_disposed_basis_not_surviving_avg(self):
         """Bug 7 fix (2026-05-05 wl183 incident, follow-on to bug 6):

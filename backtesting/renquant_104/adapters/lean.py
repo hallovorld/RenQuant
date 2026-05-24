@@ -32,6 +32,10 @@ except ImportError:
     pass  # running outside LEAN Docker (static analysis / tests)
 
 from kernel.pipeline.context import InferenceContext
+from kernel.pipeline.task_execution import (
+    dedupe_exit_signals,
+    is_full_liquidate_signal,
+)
 from kernel.exits import HoldingState
 from kernel.portfolio import compute_trade_tax
 
@@ -311,7 +315,16 @@ class LeanAdapter:
         # → cumulative tax permanently NaN, all post-trade reports broken.
         # Skip the tax addition on non-finite values; sell still proceeds.
         import math as _math_lex
-        for ticker, sig in ctx.exits:
+        def _held_qty(t: str) -> float:
+            sym_local = _symbol_for_ticker(algo, t)
+            if sym_local is None:
+                return 0.0
+            try:
+                return float(algo.Portfolio[sym_local].Quantity)
+            except Exception:
+                return 0.0
+
+        for ticker, sig in dedupe_exit_signals(ctx.exits, held_qty_for=_held_qty):
             hs        = ctx.holdings.get(ticker)
             sym       = _symbol_for_ticker(algo, ticker)
             if sym is None:
@@ -322,7 +335,7 @@ class LeanAdapter:
 
             req_qty = getattr(sig, "quantity", None)
             holding_qty = float(algo.Portfolio[sym].Quantity)
-            is_partial = (req_qty is not None and 0 < req_qty < holding_qty)
+            is_partial = not is_full_liquidate_signal(sig, holding_qty)
 
             if is_partial:
                 # Partial sell: pro-rate tax to fraction sold, keep position.

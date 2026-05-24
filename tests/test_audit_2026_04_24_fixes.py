@@ -256,8 +256,8 @@ class TestRunnerAdapterTopupAndPartial:
 class TestSimAdapterDuplicateExits:
     def test_dedupe_dict_in_commit(self):
         src = (_STRATEGY_DIR / "adapters" / "sim.py").read_text()
-        assert "exits_by_ticker" in src, \
-            "SimAdapter must dedupe ctx.exits per ticker (#56)"
+        assert "dedupe_exit_signals(" in src, \
+            "SimAdapter must dedupe ctx.exits through the shared helper (#56)"
 
 
 # ── #54 mirror — SimAdapter doesn't stamp wash-sale on partial sells ─────

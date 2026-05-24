@@ -101,17 +101,24 @@ Fix:
    `pending_broker_tickers`, `_db`, panel frames, calibrators, and state
    carryover.
 
-2. Decision trace writing is duplicated.
-   Sim/live/LEAN separately build `candidate_scores`, `ticker_daily_state`,
-   QP delta/target/status maps, and blocked reasons. This should become a
-   shared helper so one adapter cannot silently miss a field.
+2. Decision trace writing is mostly shared now.
+   `kernel.decision_trace` builds candidate pools, QP maps, selected-buy
+   tickers, model types, and `ticker_daily_state` rows for sim/live/LEAN. Keep
+   adapter-specific DB calls thin; new decision fields should be added to the
+   shared helper first.
 
-3. Execution semantics intentionally differ.
+3. Exit duplicate resolution is shared now.
+   `kernel.pipeline.task_execution.dedupe_exit_signals` resolves duplicate
+   same-ticker exits with held-quantity-aware full-liquidation priority. This
+   prevents an earlier partial trim from swallowing a later full exit expressed
+   as `quantity >= held`.
+
+4. Execution semantics intentionally differ.
    This is not a bug, but every performance report must label whether it is
    simulated close fill, live market fill, LEAN backtest fill, annual-net tax,
    or event-level tax.
 
-4. Reconciliation exists but should become a routine gate.
+5. Reconciliation exists but should become a routine gate.
    `scripts/reconcile_live_sim.py` can compare live fills to sim decisions, but
    it should be promoted from optional report to scheduled/acceptance evidence
    after any live run.
@@ -120,8 +127,9 @@ Fix:
 
 1. Add an adapter context contract test that checks sim/live/LEAN all populate
    required `InferenceContext` fields for buy/full mode.
-2. Extract shared decision-trace row building from the three adapters into a
-   kernel helper.
+2. Keep migrating execution post-processing into shared kernel helpers:
+   trade-event construction, tax-lot attribution, and broker-state mutation are
+   still adapter-heavy.
 3. Make live-vs-sim reconciliation run after daily/live cycles and write a
    small divergence report.
 4. Continue model-side repair separately: current alpha is still

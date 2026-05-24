@@ -217,6 +217,39 @@ class TestExecutionPipelineExitsOnly:
         assert ctx.fills[0].shares == 100
         assert "AAPL" not in ctx.holdings
 
+    def test_duplicate_exits_quantity_equal_held_full_wins(self):
+        """Full priority must recognize quantity >= held, not only None.
+
+        This catches the adapter-drift bug where a same-bar partial trim could
+        swallow a later full exit expressed as an explicit share quantity.
+        """
+        backend = FakeBackend(starting_cash=100_000.0)
+        backend.seed_price("AAPL", 100.0, pd.Timestamp("2025-01-02"))
+        from kernel.execution import OrderIntent
+        backend.place_market_order(OrderIntent(
+            ticker="AAPL", side=OrderSide.BUY, shares=100,
+            target_pct=0.10, today=pd.Timestamp("2025-01-02"),
+            reason="setup", exit_type=None,
+        ))
+        backend.seed_price("AAPL", 110.0, pd.Timestamp("2025-01-15"))
+
+        ctx = _empty_ctx("2025-01-15")
+        ctx.execution_backend = backend
+        ctx.holdings = {"AAPL": _hs(100.0, "2025-01-02")}
+        ctx.exits = [
+            ("AAPL", ExitSignal(should_exit=True, reason="qp trim",
+                                exit_type="qp_sell", quantity=20.0)),
+            ("AAPL", ExitSignal(should_exit=True, reason="max hold full",
+                                exit_type="max_hold", quantity=100.0)),
+        ]
+        ctx.orders = []
+
+        ExecutionPipeline().run(ctx)
+
+        assert len(ctx.fills) == 1
+        assert ctx.fills[0].shares == 100
+        assert "AAPL" not in ctx.holdings
+
 
 class TestExecutionPipelineBuysOnly:
     def test_new_buy_creates_holding_state(self):

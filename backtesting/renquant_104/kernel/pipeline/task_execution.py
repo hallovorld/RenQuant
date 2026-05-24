@@ -64,6 +64,32 @@ def is_full_liquidate_signal(sig, held_qty: float | None = None) -> bool:
     return False
 
 
+def dedupe_exit_signals(exits, held_qty_for=None) -> list[tuple]:
+    """Return one exit per ticker, preferring full liquidations.
+
+    ``held_qty_for`` is intentionally a callable so sim/live/LEAN can feed the
+    same decision from their native state surfaces. Without held quantity,
+    ``quantity == held`` cannot be recognized as full liquidation.
+    """
+    seen: dict[str, tuple] = {}
+    for ticker, sig in (exits or []):
+        existing = seen.get(ticker)
+        if existing is None:
+            seen[ticker] = (ticker, sig)
+            continue
+        held_qty = None
+        if held_qty_for is not None:
+            try:
+                held_qty = held_qty_for(ticker)
+            except Exception:
+                held_qty = None
+        existing_full = is_full_liquidate_signal(existing[1], held_qty)
+        new_full = is_full_liquidate_signal(sig, held_qty)
+        if new_full and not existing_full:
+            seen[ticker] = (ticker, sig)
+    return list(seen.values())
+
+
 def _is_full_liquidate(sig) -> bool:
     """Back-compat wrapper for older tests/imports."""
     return is_full_liquidate_signal(sig)
@@ -108,18 +134,11 @@ class DedupeExitsTask(Task):
     """
 
     def run(self, ctx) -> "bool | None":
-        seen: dict[str, tuple] = {}
-        for ticker, sig in (ctx.exits or []):
-            existing = seen.get(ticker)
-            if existing is None:
-                seen[ticker] = (ticker, sig)
-                continue
-            ex_full = _is_full_liquidate(existing[1])
-            new_full = _is_full_liquidate(sig)
-            if new_full and not ex_full:
-                seen[ticker] = (ticker, sig)
-            # otherwise first-write-wins
-        ctx.exits = list(seen.values())
+        backend = _require_backend(ctx)
+        ctx.exits = dedupe_exit_signals(
+            ctx.exits,
+            held_qty_for=backend.get_position_quantity,
+        )
         return True
 
 
@@ -334,5 +353,6 @@ __all__ = [
     "DedupeBuysTask",
     "ExecuteBuysTask",
     "UpsertHoldingsTask",
+    "dedupe_exit_signals",
     "is_full_liquidate_signal",
 ]

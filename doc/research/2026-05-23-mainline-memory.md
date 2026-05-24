@@ -1734,8 +1734,10 @@ Operational conclusion:
   but adapters still run legacy execution monoliths for tax lots, trade-log
   attribution, and live broker state. First safe convergence step completed:
   `kernel.pipeline.task_execution.is_full_liquidate_signal` is now the shared
-  partial/full sell predicate used by SimAdapter and ExecutionPipeline, with
-  `quantity >= held` pinned as full liquidation.
+  partial/full sell predicate, and `dedupe_exit_signals` is now the shared
+  duplicate-exit resolver used by SimAdapter, RunnerAdapter, LeanAdapter, and
+  ExecutionPipeline. This fixes the same-bar bug where an earlier partial trim
+  could swallow a later full exit expressed as `quantity >= held`.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

@@ -25,6 +25,10 @@ from kernel.decision_trace import (
     selected_buy_tickers,
 )
 from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
+from kernel.pipeline.task_execution import (
+    dedupe_exit_signals,
+    is_full_liquidate_signal,
+)
 
 log = logging.getLogger("adapters.runner")
 
@@ -1233,7 +1237,16 @@ class RunnerAdapter:
         # which crashed inside Alpaca's int(quantity). Now: skip with
         # a clear log on non-finite qty.
         import math as _math
-        for ticker, sig in ctx.exits:
+
+        def _held_qty(t: str) -> float:
+            pos = pos_cache.get(t, {})
+            try:
+                qty_f = float(pos.get("qty", 0))
+            except (TypeError, ValueError):
+                return 0.0
+            return qty_f if _math.isfinite(qty_f) and qty_f > 0 else 0.0
+
+        for ticker, sig in dedupe_exit_signals(ctx.exits, held_qty_for=_held_qty):
             pos = pos_cache.get(ticker, {})
             qty = float(pos.get("qty", 0))
             if not _math.isfinite(qty) or qty <= 0:
@@ -1274,7 +1287,12 @@ class RunnerAdapter:
                 continue
 
             req_qty = getattr(sig, "quantity", None)
-            if req_qty is not None and _math.isfinite(req_qty) and 0 < req_qty < qty_avail:
+            if (
+                not is_full_liquidate_signal(sig, qty)
+                and req_qty is not None
+                and _math.isfinite(req_qty)
+                and 0 < req_qty < qty_avail
+            ):
                 sell_qty   = float(req_qty)
                 is_partial = True
             else:

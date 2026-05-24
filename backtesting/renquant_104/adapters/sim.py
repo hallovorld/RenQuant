@@ -58,7 +58,10 @@ from kernel.decision_trace import (
     selected_buy_tickers,
 )
 from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
-from kernel.pipeline.task_execution import is_full_liquidate_signal
+from kernel.pipeline.task_execution import (
+    dedupe_exit_signals,
+    is_full_liquidate_signal,
+)
 
 log = logging.getLogger("adapters.sim")
 
@@ -1185,27 +1188,14 @@ class SimAdapter:
             else:
                 regular_exits.append((ticker, sig))
 
-        # Dedupe ctx.exits per ticker: when TopUp/Trim's "already exiting"
-        # guard misfired (pre-2026-04-24 tuple-attr bug) two exits could
-        # be queued for the same ticker. Even after the guard fix, an
-        # adversarial config could emit a stop_loss + a kelly_trim
-        # simultaneously. Priority: full liquidation over partial trim,
-        # earliest exit signal otherwise.
-        exits_by_ticker: dict[str, tuple] = {}
-        for ticker, sig in regular_exits:
-            existing = exits_by_ticker.get(ticker)
-            if existing is None:
-                exits_by_ticker[ticker] = (ticker, sig)
-                continue
-            # Prefer the one that's a full exit
-            ex_q = getattr(existing[1], "quantity", None)
-            new_q = getattr(sig, "quantity", None)
-            ex_full = ex_q is None or ex_q <= 0
-            new_full = new_q is None or new_q <= 0
-            if new_full and not ex_full:
-                exits_by_ticker[ticker] = (ticker, sig)
-            # Otherwise keep existing (first-write-wins)
-        deduped_exits = list(exits_by_ticker.values())
+        # Dedupe ctx.exits per ticker. Full-liquidation priority must use
+        # the same held-quantity-aware predicate as _apply_sell; otherwise a
+        # full exit expressed as quantity >= shares can be swallowed by an
+        # earlier partial trim.
+        deduped_exits = dedupe_exit_signals(
+            regular_exits,
+            held_qty_for=lambda t: self._pos_shares.get(t, 0.0),
+        )
 
         # Track which tickers need FULL liquidation vs partial trim. Only
         # full exits pop from holdings/pos_shares; partial trims update
