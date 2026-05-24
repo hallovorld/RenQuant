@@ -113,12 +113,16 @@ Fix:
    prevents an earlier partial trim from swallowing a later full exit expressed
    as `quantity >= held`.
 
-4. Execution semantics intentionally differ.
+4. BUY trade-event construction is shared now.
+   `kernel.trade_events.build_buy_trade_event` normalizes sim/live/LEAN buy
+   rows so score snapshots and decision inputs do not drift across adapters.
+
+5. Execution semantics intentionally differ.
    This is not a bug, but every performance report must label whether it is
    simulated close fill, live market fill, LEAN backtest fill, annual-net tax,
    or event-level tax.
 
-5. Reconciliation exists but should become a routine gate.
+6. Reconciliation exists but should become a routine gate.
    `scripts/reconcile_live_sim.py` can compare live fills to sim decisions, but
    it should be promoted from optional report to scheduled/acceptance evidence
    after any live run.
@@ -128,8 +132,8 @@ Fix:
 1. Add an adapter context contract test that checks sim/live/LEAN all populate
    required `InferenceContext` fields for buy/full mode.
 2. Keep migrating execution post-processing into shared kernel helpers:
-   trade-event construction, tax-lot attribution, and broker-state mutation are
-   still adapter-heavy.
+   SELL trade-event construction, tax-lot attribution, and broker-state
+   mutation are still adapter-heavy.
 3. Make live-vs-sim reconciliation run after daily/live cycles and write a
    small divergence report.
 4. Continue model-side repair separately: current alpha is still

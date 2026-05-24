@@ -29,6 +29,7 @@ from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
     is_full_liquidate_signal,
 )
+from kernel.trade_events import build_buy_trade_event
 
 log = logging.getLogger("adapters.runner")
 
@@ -1852,34 +1853,13 @@ class RunnerAdapter:
                     config=self._config,
                 ))
             for o in orders_for_db:
-                trade_events.append({
-                    "ticker":      o.get("ticker"),
-                    "action":      "buy",
-                    "date":        ctx.today,
-                    "shares":      o.get("shares"),
-                    "price":       o.get("price"),
-                    "invest":      o.get("invest"),
-                    "target_pct":  o.get("target_pct"),
-                    "rank_score":  o.get("rank_score"),
-                    "conviction":  o.get("conviction"),
-                    "sigma_mult":  o.get("sigma_mult"),
-                    "mu":          o.get("mu"),
-                    "sigma":       o.get("sigma"),
-                    "order_type":  o.get("order_type"),
-                    "source":      o.get("source"),
-                    "source_job":  o.get("source_job"),
-                    "source_task": o.get("source_task"),
-                    "order_source": o.get("order_source"),
-                    "attribution_version": o.get("attribution_version"),
-                    "score_snapshot": o.get("score_snapshot"),
-                    "decision_inputs": o.get("decision_inputs"),
-                    "panel_score": o.get("panel_score"),
-                    "rs_score": o.get("rs_score"),
-                    "kelly_target_pct": o.get("kelly_target_pct"),
-                    "expected_return": o.get("expected_return"),
-                    "confidence": o.get("confidence", ctx.confidence),
-                    "regime": o.get("regime", ctx.regime),
-                })
+                trade_events.append(build_buy_trade_event(
+                    o,
+                    date=ctx.today,
+                    default_regime=ctx.regime,
+                    default_confidence=ctx.confidence,
+                    default_acceptance_reason="live_buy",
+                ))
             run_bundle = build_run_bundle(
                 self._config,
                 self._strategy_dir,

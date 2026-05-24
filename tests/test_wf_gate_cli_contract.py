@@ -447,4 +447,9 @@ def test_run_sim_enforces_qp_contract_before_simulation() -> None:
 
 def test_sim_buy_trade_log_falls_back_to_context_regime() -> None:
     src = (REPO / "backtesting/renquant_104/adapters/sim.py").read_text()
-    assert 'order.get("regime") or getattr(ctx, "regime", None)' in src
+    helper = (
+        REPO / "backtesting/renquant_104/kernel/trade_events.py"
+    ).read_text()
+    assert "build_buy_trade_event(" in src
+    assert 'default_regime=getattr(ctx, "regime", None)' in src
+    assert 'order.get("regime", default_regime)' in helper

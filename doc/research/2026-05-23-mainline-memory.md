@@ -1738,6 +1738,10 @@ Operational conclusion:
   duplicate-exit resolver used by SimAdapter, RunnerAdapter, LeanAdapter, and
   ExecutionPipeline. This fixes the same-bar bug where an earlier partial trim
   could swallow a later full exit expressed as `quantity >= held`.
+- BUY trade-event rows are now built through `kernel.trade_events` across
+  SimAdapter, RunnerAdapter, and LeanAdapter. This keeps shares/price/invest,
+  score snapshots, decision inputs, attribution version, regime, and
+  confidence aligned for post-run audit.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

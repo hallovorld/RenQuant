@@ -62,6 +62,7 @@ from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
     is_full_liquidate_signal,
 )
+from kernel.trade_events import build_buy_trade_event
 
 log = logging.getLogger("adapters.sim")
 
@@ -1926,32 +1927,14 @@ class SimAdapter:
             ))
             self._holdings[ticker] = hs_new
             self._pos_shares[ticker] = shares
-        self._trade_log.append({
-            "action":    "buy",
-            "ticker":    ticker,
-            "date":      today_ts,
-            "price":     price,
-            "shares":    shares,
-            "invest":    invest,
-            "regime":    order.get("regime") or getattr(ctx, "regime", None),
-            "rank_score": order.get("rank_score"),
-            "rs_score":  order.get("rs_score"),
-            "sigma":     order.get("sigma"),
-            "mu":        order.get("mu"),
-            "sigma_mult": order.get("sigma_mult"),
-            "source":     order.get("source"),
-            "order_type": order.get("order_type"),
-            "confidence": order.get("confidence"),
-            "kelly_target_pct": order.get("kelly_target_pct"),
-            "attribution_version": order.get("attribution_version"),
-            "source_job": order.get("source_job"),
-            "source_task": order.get("source_task"),
-            "order_source": order.get("order_source"),
-            "panel_score": order.get("panel_score"),
-            "expected_return": order.get("expected_return"),
-            "score_snapshot": order.get("score_snapshot"),
-            "decision_inputs": order.get("decision_inputs"),
-        })
+        buy_event = build_buy_trade_event(
+            {**order, "price": price, "shares": shares, "invest": invest},
+            date=today_ts,
+            default_regime=getattr(ctx, "regime", None),
+            default_confidence=getattr(ctx, "confidence", None),
+            default_acceptance_reason="sim_buy",
+        )
+        self._trade_log.append(buy_event)
 
     def _apply_short_open(self, ticker: str, sig, today_ts, ctx) -> None:
         """Phase 2B: open a new short position (negative shares).

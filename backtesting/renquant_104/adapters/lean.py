@@ -38,6 +38,7 @@ from kernel.pipeline.task_execution import (
 )
 from kernel.exits import HoldingState
 from kernel.portfolio import compute_trade_tax
+from kernel.trade_events import build_buy_trade_event
 
 log = logging.getLogger("adapters.lean")
 
@@ -592,46 +593,21 @@ class LeanAdapter:
                 )
             algo._executed_buys += 1
             algo.SetHoldings(sym, target_pct)
-            trade_events.append({
-                "ticker": ticker,
-                "action": "buy",
-                "date": ctx.today,
-                "shares": shares_f,
-                "price": price_f,
-                "invest": shares_f * price_f,
-                "target_pct": target_pct_f,
-                "rank_score": order.get("rank_score"),
-                "conviction": order.get("conviction"),
-                "sigma_mult": order.get("sigma_mult"),
-                "mu": order.get("mu"),
-                "sigma": order.get("sigma"),
-                "order_type": order.get("order_type", "BUY"),
-                "source": order.get("source"),
-                "source_job": order.get("source_job"),
-                "source_task": order.get("source_task"),
-                "order_source": order.get("order_source"),
-                "attribution_version": "lean_buy_decision_v1",
-                "score_snapshot": {
-                    "rank_score": order.get("rank_score"),
-                    "panel_score": order.get("panel_score"),
-                    "rs_score": order.get("rs_score"),
-                    "mu": order.get("mu"),
-                    "sigma": order.get("sigma"),
-                    "kelly_target_pct": order.get("kelly_target_pct"),
-                    "confidence": order.get("confidence"),
-                    "regime": order.get("regime"),
-                },
-                "decision_inputs": {
-                    "acceptance_reason": order.get("detail") or "lean_buy",
-                    "target_pct": target_pct_f,
-                    "shares": shares_f,
+            trade_events.append(build_buy_trade_event(
+                {
+                    **order,
                     "price": price_f,
+                    "shares": shares_f,
+                    "target_pct": target_pct_f,
                     "invest": shares_f * price_f,
-                    "order_source": order.get("order_source"),
-                    "source_job": order.get("source_job"),
-                    "source_task": order.get("source_task"),
+                    "order_type": order.get("order_type", "BUY"),
                 },
-            })
+                date=ctx.today,
+                default_regime=ctx.regime,
+                default_confidence=ctx.confidence,
+                attribution_version="lean_buy_decision_v1",
+                default_acceptance_reason="lean_buy",
+            ))
 
         # ── Telemetry counters from pipeline ─────────────────────────────────
         # Audit #88: also wire blocked_min_hold so OnEndOfAlgorithm displays
