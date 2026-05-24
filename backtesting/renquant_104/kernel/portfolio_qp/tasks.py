@@ -1453,6 +1453,21 @@ def _cap_buy_shares_to_cash(
     return capped, capped * unit_cost
 
 
+def _actual_qp_buy_target_pct(ctx, ticker: str, shares: int, px: float) -> float:
+    """Return post-fill target weight implied by emitted shares.
+
+    QP's solver target_w is the desired total weight before integer share and
+    cash caps. LEAN executes BUY orders through SetHoldings(target_pct), so the
+    order target must match the shares actually emitted after those caps.
+    """
+    nav = float(getattr(ctx, "portfolio_value", 0.0) or 0.0)
+    if nav <= 0 or px <= 0 or shares <= 0:
+        return 0.0
+    hs = (getattr(ctx, "holdings", None) or {}).get(ticker)
+    held_shares = float(getattr(hs, "shares", 0.0) or 0.0) if hs is not None else 0.0
+    return max(0.0, (held_shares + float(shares)) * float(px) / nav)
+
+
 def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     """Apply model-soft-exit guards to QP long trims/closes.
 
@@ -2235,10 +2250,11 @@ def _per_asset_tax_lots(hs, price, w_i, nav, today, st_rate, lt_rate,
 
 def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
     cand = score_sources.get(ticker)
+    actual_target_pct = _actual_qp_buy_target_pct(ctx, ticker, shares, px)
     ctx.orders.append(stamp_order_attribution({
         "ticker": ticker, "shares": shares, "price": px,
         "invest": shares * px,
-        "target_pct": float(sol.target_w[i]),
+        "target_pct": actual_target_pct,
         "regime": getattr(ctx, "regime", None),
         "confidence": getattr(ctx, "confidence", None),
         "rank_score": getattr(cand, "rank_score", None),
@@ -2257,6 +2273,7 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
         decision_inputs={
             "delta_w": float(sol.delta_w[i]),
             "target_w": float(sol.target_w[i]),
+            "actual_target_w": float(actual_target_pct),
             "solver_status": getattr(sol, "status", None),
         }))
     log.info("QP_BUY  %-6s  Δw=%+.4f  shares=%d  px=%.2f  invest=$%.0f",

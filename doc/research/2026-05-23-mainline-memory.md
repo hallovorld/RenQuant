@@ -211,6 +211,17 @@ Make RenQuant 104 scientifically trustworthy end to end:
     `tests/test_walkforward_loader.py tests/test_walkforward_manifest.py
     tests/test_walkforward_artifact_isolation.py tests/test_sim_walkforward.py
     tests/test_walkforward_eval_config.py` (`65 passed`).
+- Latest LEAN/QP target parity fix:
+  - QP buy orders now set executable `target_pct` from the actual emitted
+    share count after integer rounding and cash caps.
+  - The optimizer's desired `target_w` remains in decision inputs as
+    `target_w`; `actual_target_w` records the post-cap execution target.
+  - This prevents LEAN `SetHoldings` from re-expanding a cash-capped QP buy
+    back to the unconstrained optimizer weight.
+  - Targeted tests passed:
+    `tests/test_joint_qp_task.py tests/test_qp_admission_gate.py
+    tests/test_lean_backend.py tests/test_bug22_rs_score_keyerror.py
+    tests/test_emit_orders_helpers.py` (`86 passed`).
 
 ## Active Validation
 
@@ -500,10 +511,9 @@ step is regenerating a walk-forward manifest under this exact feature contract.
    literature-backed hypotheses and paired A/B sims.
 8. Fix remaining audit findings before promotion: calibrator metric scope
    labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
-   LEAN share/target parity for cash-capped QP orders, fail-closed metadata
-   and correlation semantics, and per-ticker trace stamping for global
-   panel/QP failures. The WF `effective_train_cutoff_date` double-embargo
-   bug is fixed.
+   fail-closed metadata and correlation semantics, and per-ticker trace
+   stamping for global panel/QP failures. The WF `effective_train_cutoff_date`
+   double-embargo bug and LEAN/QP cash-capped target parity bug are fixed.
 
 ## Known Failure Modes To Keep Front And Center
 

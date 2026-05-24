@@ -267,6 +267,67 @@ class TestNonFiniteDeltaWGuard:
         assert ctx.orders == [], "inf Δw must be skipped, not produce an order"
 
 
+class TestQPBuyTargetPctParity:
+    """QP buy orders may be cash-capped after the optimizer emits target_w.
+
+    The order's target_pct is what LEAN SetHoldings executes, so it must match
+    the actual emitted share count, not the unconstrained QP target.
+    """
+
+    def test_cash_capped_new_buy_target_pct_matches_emitted_shares(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        ctx = _Ctx(config=_qp_on())
+        ctx._qp_tickers = ["A"]
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = 500.0
+        ctx.portfolio_value = 10_000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.20]),
+            target_w=np.array([0.20]),
+            objective=0.0,
+            n_iter=1,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        emitted = ctx.orders[0]["shares"]
+        assert emitted < 20
+        assert ctx.orders[0]["target_pct"] == pytest.approx(emitted * 100.0 / 10_000.0)
+
+    def test_cash_capped_topup_target_pct_includes_existing_position(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        ctx = _Ctx(config=_qp_on())
+        ctx._qp_tickers = ["A"]
+        ctx.holdings = {"A": _Hold(shares=10, mu=0.05, sigma=0.10)}
+        ctx.candidates = [_Cand("A", mu=0.05, sigma=0.10)]
+        ctx.prices = {"A": 100.0}
+        ctx.cash = 500.0
+        ctx.portfolio_value = 10_000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.20]),
+            target_w=np.array([0.30]),
+            objective=0.0,
+            n_iter=1,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        emitted = ctx.orders[0]["shares"]
+        assert emitted < 20
+        assert ctx.orders[0]["target_pct"] == pytest.approx((10 + emitted) * 100.0 / 10_000.0)
+
+
 class TestQPSoftSellGuard:
     """AUDIT REGRESSION GUARD: QP sells are model-driven soft exits.
 
