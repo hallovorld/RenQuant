@@ -36,24 +36,30 @@ class WalkForwardManifest:
     training_window_years: float
     retrains: list[RetrainEntry] = field(default_factory=list)
 
+    @staticmethod
+    def _entry_to_dict(e: RetrainEntry) -> dict[str, Any]:
+        row = {
+            "cutoff_date": e.cutoff_date.isoformat(),
+            "trained_date": e.trained_date.isoformat(),
+            "artifact_uri": e.artifact_uri,
+            "calibrator_uri": e.calibrator_uri,
+            # 2026-05-11 Round 3 audit: persist lookahead_days so
+            # the leakage guard's `cutoff + lookahead < today` check
+            # survives a manifest round-trip. Default 0 = no
+            # forward-label horizon (classification target).
+            "lookahead_days": int(e.lookahead_days),
+        }
+        if e.effective_train_cutoff_date is not None:
+            row["effective_train_cutoff_date"] = (
+                e.effective_train_cutoff_date.isoformat()
+            )
+        return row
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "cadence_days": int(self.cadence_days),
             "training_window_years": float(self.training_window_years),
-            "retrains": [
-                {
-                    "cutoff_date": e.cutoff_date.isoformat(),
-                    "trained_date": e.trained_date.isoformat(),
-                    "artifact_uri": e.artifact_uri,
-                    "calibrator_uri": e.calibrator_uri,
-                    # 2026-05-11 Round 3 audit: persist lookahead_days so
-                    # the leakage guard's `cutoff + lookahead < today` check
-                    # survives a manifest round-trip. Default 0 = no
-                    # forward-label horizon (classification target).
-                    "lookahead_days": int(e.lookahead_days),
-                }
-                for e in self.retrains
-            ],
+            "retrains": [self._entry_to_dict(e) for e in self.retrains],
         }
 
 
@@ -65,8 +71,15 @@ def _validate_entry(raw: dict, idx: int) -> RetrainEntry:
     cutoff = pd.Timestamp(raw["cutoff_date"])
     trained = pd.Timestamp(raw["trained_date"])
     uri = str(raw["artifact_uri"])
+    effective_raw = raw.get("effective_train_cutoff_date")
+    effective = pd.Timestamp(effective_raw) if effective_raw else None
     if not uri:
         raise ValueError(f"manifest entry [{idx}] has empty artifact_uri")
+    if effective is not None and effective > cutoff:
+        raise ValueError(
+            f"manifest entry [{idx}] effective_train_cutoff_date "
+            f"{effective.isoformat()} > cutoff_date {cutoff.isoformat()}"
+        )
     if trained < cutoff:
         # cutoff is the LAST in-sample label; you can't have trained before
         # the cutoff — that means data was used the model wasn't supposed
@@ -93,6 +106,7 @@ def _validate_entry(raw: dict, idx: int) -> RetrainEntry:
             if (raw.get("calibrator_uri") or raw.get("calibration_uri"))
             else None
         ),
+        effective_train_cutoff_date=effective,
     )
 
 

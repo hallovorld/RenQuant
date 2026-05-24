@@ -105,6 +105,19 @@ def test_train_walkforward_panel_stamps_per_fold_calibrator_uri():
     assert entry.calibrator_uri.endswith("panel-rank-calibration.json")
 
 
+def test_train_walkforward_panel_stamps_effective_train_cutoff():
+    entry = build_retrain_entry(
+        pd.Timestamp("2024-04-01"),
+        pd.Timestamp("2026-05-23"),
+        "artifacts/walkforward_v2/2024-04-01/panel-ltr.json",
+        lookahead_days=60,
+        effective_train_cutoff_date=pd.Timestamp("2024-01-05"),
+    )
+
+    assert entry.cutoff_date == pd.Timestamp("2024-04-01")
+    assert entry.effective_train_cutoff_date == pd.Timestamp("2024-01-05")
+
+
 def test_make_calibrator_path_sits_next_to_scorer():
     path = make_calibrator_path(
         Path("artifacts/walkforward_v2/2024-01-01/panel-ltr.json")

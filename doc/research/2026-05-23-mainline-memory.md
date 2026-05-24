@@ -199,6 +199,18 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_buy_quality_gates.py tests/test_qp_admission_gate.py
     tests/test_joint_qp_task.py tests/test_lookahead_propagation.py`
     (`183 passed`).
+- Latest WF manifest cutoff fix:
+  - Walk-forward manifests now preserve `effective_train_cutoff_date` from
+    each scorer artifact.
+  - `WalkForwardModelLoader` uses `effective_train_cutoff_date +
+    lookahead_days` for label-safety when available, instead of applying
+    lookahead to the selection cutoff a second time.
+  - Invariant: the model may become eligible after the last label it could
+    have seen, not after an extra redundant 60-business-day delay.
+  - Targeted tests passed:
+    `tests/test_walkforward_loader.py tests/test_walkforward_manifest.py
+    tests/test_walkforward_artifact_isolation.py tests/test_sim_walkforward.py
+    tests/test_walkforward_eval_config.py` (`65 passed`).
 
 ## Active Validation
 
@@ -486,12 +498,12 @@ step is regenerating a walk-forward manifest under this exact feature contract.
    as OOS. Static PatchTST full-window sims are style diagnostics only.
 7. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
-8. Fix remaining audit findings before promotion: explicit
-   `effective_train_cutoff_date` in WF artifacts, calibrator metric scope
+8. Fix remaining audit findings before promotion: calibrator metric scope
    labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
    LEAN share/target parity for cash-capped QP orders, fail-closed metadata
    and correlation semantics, and per-ticker trace stamping for global
-   panel/QP failures.
+   panel/QP failures. The WF `effective_train_cutoff_date` double-embargo
+   bug is fixed.
 
 ## Known Failure Modes To Keep Front And Center
 

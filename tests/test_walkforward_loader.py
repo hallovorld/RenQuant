@@ -34,7 +34,7 @@ def _make_manifest(tmp_path, rows):
     return p
 
 
-def _row(cutoff, trained, uri, calibrator_uri=None):
+def _row(cutoff, trained, uri, calibrator_uri=None, **extra):
     row = {
         "cutoff_date": cutoff,
         "trained_date": trained,
@@ -42,6 +42,7 @@ def _row(cutoff, trained, uri, calibrator_uri=None):
     }
     if calibrator_uri is not None:
         row["calibrator_uri"] = calibrator_uri
+    row.update(extra)
     return row
 
 
@@ -142,6 +143,40 @@ class TestModelAsOf:
         scorer = loader.model_as_of("2024-02-15")
         assert seen_uri[-1] == "fake://run-B/m"
         assert scorer.uri == "fake://run-B/m"
+
+    def test_effective_train_cutoff_avoids_double_embargo(self, tmp_path, monkeypatch):
+        """WF scripts pass selection cutoff to --train-cutoff, then train on
+        feature rows before selection_cutoff - lookahead. The loader must use
+        the effective feature cutoff for label-safety, not apply lookahead a
+        second time to the selection cutoff.
+        """
+        from kernel.walk_forward import WalkForwardModelLoader
+
+        rows = [
+            _row(
+                "2024-04-01T00:00:00",
+                "2026-05-23T12:00:00",
+                "fake://run-A/m",
+                lookahead_days=60,
+                effective_train_cutoff_date="2024-01-05T00:00:00",
+            ),
+        ]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+
+        class _FakeScorer:
+            def __init__(self, uri):
+                self.uri = uri
+
+        from kernel.panel_pipeline import panel_scorer as _ps
+        monkeypatch.setattr(
+            _ps.PanelScorer,
+            "load",
+            staticmethod(lambda uri: _FakeScorer(str(uri))),
+        )
+
+        scorer = loader.model_as_of("2024-04-02")
+        assert scorer.uri == "fake://run-A/m"
 
     def test_calibrator_as_of_returns_matching_manifest_calibrator(self, tmp_path):
         from kernel.walk_forward import WalkForwardModelLoader

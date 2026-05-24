@@ -77,6 +77,7 @@ class TestRoundTrip:
             cutoff_date=pd.Timestamp("2024-04-01T00:00:00"),
             trained_date=pd.Timestamp("2024-04-02T03:44:12"),
             artifact_uri="fake://X/panel-ltr.json",
+            effective_train_cutoff_date=pd.Timestamp("2024-01-05T00:00:00"),
         )
         manifest = WalkForwardManifest(
             cadence_days=21, training_window_years=3.0, retrains=[entry],
@@ -89,6 +90,7 @@ class TestRoundTrip:
         assert loaded.retrains[0].cutoff_date == entry.cutoff_date
         assert loaded.retrains[0].trained_date == entry.trained_date
         assert loaded.retrains[0].artifact_uri == entry.artifact_uri
+        assert loaded.retrains[0].effective_train_cutoff_date == entry.effective_train_cutoff_date
 
     def test_write_creates_parent_dir(self, tmp_path):
         from kernel.walk_forward import (

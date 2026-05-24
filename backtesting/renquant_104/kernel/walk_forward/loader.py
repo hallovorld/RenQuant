@@ -52,6 +52,10 @@ class RetrainEntry:
                  PanelScorer-loadable artifact.
     calibrator_uri: optional filesystem path to the matching
                  GlobalPanelCalibration artifact fitted for this scorer.
+    effective_train_cutoff_date: upper exclusive feature-row cutoff when the
+                 artifact pre-embargoed labels before selection cutoff. When
+                 present, leakage checks use effective_train_cutoff_date +
+                 lookahead_days instead of cutoff_date + lookahead_days.
     """
     cutoff_date: pd.Timestamp
     trained_date: pd.Timestamp
@@ -63,6 +67,16 @@ class RetrainEntry:
     # = no forward labels (classification target / point-in-time only).
     lookahead_days: int = 0
     calibrator_uri: str | None = None
+    effective_train_cutoff_date: pd.Timestamp | None = None
+
+
+def _optional_timestamp(raw: object) -> pd.Timestamp | None:
+    if raw is None or raw == "":
+        return None
+    ts = pd.Timestamp(raw)
+    if pd.isna(ts):
+        return None
+    return ts
 
 
 def _resolve_manifest_path(raw: "str | Path") -> Path:
@@ -90,6 +104,12 @@ def _parse_entry(r: dict) -> RetrainEntry:
     """Build one RetrainEntry from a manifest row, enforcing leakage invariant."""
     cutoff = pd.Timestamp(r["cutoff_date"])
     trained = pd.Timestamp(r["trained_date"])
+    effective = _optional_timestamp(r.get("effective_train_cutoff_date"))
+    if effective is not None and effective > cutoff:
+        raise ValueError(
+            f"manifest entry leakage: effective_train_cutoff_date "
+            f"{effective.isoformat()} > cutoff_date {cutoff.isoformat()}."
+        )
     if trained < cutoff:
         raise ValueError(
             f"manifest entry leakage: trained_date {trained.isoformat()} "
@@ -105,6 +125,7 @@ def _parse_entry(r: dict) -> RetrainEntry:
             if (r.get("calibrator_uri") or r.get("calibration_uri"))
             else None
         ),
+        effective_train_cutoff_date=effective,
     )
 
 
@@ -185,10 +206,17 @@ class WalkForwardModelLoader:
         return len(self._entries) > 0
 
     @staticmethod
+    def _feature_cutoff_date(e: RetrainEntry) -> pd.Timestamp:
+        return e.effective_train_cutoff_date or e.cutoff_date
+
+    @staticmethod
     def _safe_last_label_date(e: RetrainEntry) -> pd.Timestamp:
         if e.lookahead_days > 0:
-            return e.cutoff_date + pd.tseries.offsets.BDay(e.lookahead_days)
-        return e.cutoff_date
+            return (
+                WalkForwardModelLoader._feature_cutoff_date(e)
+                + pd.tseries.offsets.BDay(e.lookahead_days)
+            )
+        return WalkForwardModelLoader._feature_cutoff_date(e)
 
     def entry_as_of(self, today: "pd.Timestamp | str") -> RetrainEntry:
         """Return the latest leakage-safe manifest row for ``today``.
@@ -206,23 +234,22 @@ class WalkForwardModelLoader:
               the moment the retrain script ran and is always ~"now").
         """
         today_ts = pd.Timestamp(today)
-        # 2026-05-11 G1: a fold is eligible only when
-        #   cutoff_date + lookahead_days < today
-        # (NOT just cutoff_date < today). For fwd_60d_excess labels this
-        # pushes the choice ~60 trading days back relative to today so the
-        # fold's forward labels can never reach into the current bar.
+        # A fold is eligible only when its feature cutoff plus the forward
+        # label horizon is strictly before today. Newer manifests stamp
+        # effective_train_cutoff_date when training already pre-embargoed
+        # rows before the selection cutoff, avoiding a second lookahead delay.
         eligible = [
             e for e in self._entries
             if self._safe_last_label_date(e) < today_ts
         ]
         if not eligible:
             raise ValueError(
-                f"WalkForwardModelLoader: no retrain with cutoff_date + "
-                f"lookahead_days < {today_ts.date().isoformat()} in manifest "
+                f"WalkForwardModelLoader: no retrain with cutoff_date / "
+                f"feature_cutoff + lookahead_days < "
+                f"{today_ts.date().isoformat()} in manifest "
                 f"{self._manifest_path} (entries={len(self._entries)}). "
                 f"Either the sim window starts before any fold's safe-label "
-                f"date or the manifest is empty. For fwd_60d labels the sim "
-                f"start must be ≥ first_cutoff + 60 trading days."
+                f"date or the manifest is empty."
             )
         chosen = eligible[-1]
         # Built-in invariants per the contract.
@@ -244,13 +271,12 @@ class WalkForwardModelLoader:
         # AUDIT 2026-05-10 P3.2 sim crash: prior bug passed trained_date
         # which always fired the guard because trained_date=2026-05-10
         # is never < any pre-2026-05-10 sim bar.
-        # 2026-05-11 G1: pass the manifest's lookahead_days so the guard
-        # enforces `cutoff_date + lookahead_days < today` (not just
-        # `cutoff_date < today`). Required for fwd_60d_excess-trained
-        # folds — otherwise sim bars in (cutoff, cutoff+60d] silently
-        # leak forward labels into the inference window.
+        feature_cutoff = self._feature_cutoff_date(chosen)
+        # Pass the feature-row cutoff, not the wall-clock trained_date and not
+        # the selection cutoff when the artifact declares a pre-embargoed
+        # effective_train_cutoff_date.
         assert_no_leakage(
-            chosen.cutoff_date,
+            feature_cutoff,
             today_ts,
             context=f"WalkForwardModelLoader.entry_as_of("
                     f"today={today_ts.date().isoformat()})",

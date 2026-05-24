@@ -132,7 +132,8 @@ def configure_panel_cutoff(cfg: dict, cutoff: pd.Timestamp,
 
 def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
                          artifact_uri: str, lookahead_days: int = 60,
-                         calibrator_uri: str | None = None):
+                         calibrator_uri: str | None = None,
+                         effective_train_cutoff_date: pd.Timestamp | None = None):
     """Build a RetrainEntry — wrapper so callers don't have to import it.
 
     2026-05-11 Round 3 audit (G3): lookahead_days propagated so the
@@ -148,6 +149,7 @@ def build_retrain_entry(cutoff: pd.Timestamp, trained_dt: datetime,
         artifact_uri=artifact_uri,
         lookahead_days=int(lookahead_days),
         calibrator_uri=calibrator_uri,
+        effective_train_cutoff_date=effective_train_cutoff_date,
     )
 
 
@@ -266,6 +268,20 @@ def read_trained_date(artifact_path: Path) -> datetime:
     return datetime.fromisoformat(art["trained_date"])
 
 
+def read_effective_train_cutoff_date(artifact_path: Path) -> pd.Timestamp | None:
+    """Return the artifact's feature-row cutoff, if stamped.
+
+    Walk-forward production training receives a selection cutoff, then trains
+    only on rows before selection_cutoff - label_lookahead. Stamping this
+    effective cutoff into the manifest lets the loader enforce label safety
+    without applying the lookahead embargo twice.
+    """
+    if not artifact_path.exists():
+        return None
+    raw = json.loads(artifact_path.read_text()).get("effective_train_cutoff_date")
+    return pd.Timestamp(raw) if raw else None
+
+
 # ── CLI driver ──────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
@@ -328,12 +344,14 @@ def train_cutoffs(retrain_dates: list[pd.Timestamp],
             trained_dt = read_trained_date(artifact_path)
         except Exception as exc:  # noqa: BLE001
             return cutoff, None, f"read_trained_date: {exc}"
+        effective_cutoff = read_effective_train_cutoff_date(artifact_path)
         return cutoff, build_retrain_entry(
             cutoff=cutoff,
             trained_dt=trained_dt,
             artifact_uri=str(artifact_path),
             lookahead_days=infer_label_lookahead_days(args.label),
             calibrator_uri=str(calibrator_path) if calibrator_path else None,
+            effective_train_cutoff_date=effective_cutoff,
         ), ""
 
     if jobs == 1:
