@@ -672,6 +672,9 @@ Decision-trace opacity found during sidecar audits is partially fixed:
   rejection reasons as `universe:<reason>` instead of collapsing
   `ic_missing`, `trained_date_missing`, stale models, and auto-drop into a
   generic `universe_floor` label.
+- Decision-trace integrity now fails when a sell row lacks realized economic
+  attribution (`gross_pnl`, `tax`, `net_pnl_after_tax`). Shares alone are not
+  enough to explain a loss bucket.
 
 Verification:
 
@@ -679,6 +682,8 @@ Verification:
   -> `145 passed`.
 - `.venv/bin/python -m pytest tests/test_runner_state_fixes.py tests/test_universe_alignment.py tests/test_ticker_daily_state.py tests/test_persistence.py::TestTrades -q`
   -> `92 passed`.
+- `.venv/bin/python -m pytest tests/test_persistence.py tests/test_sim_sell_attribution.py tests/test_runner_sell_attribution.py tests/test_sim_trade_ledger.py -q`
+  -> `40 passed`.
 
 Still pending: LEAN has no SQLite sidecar persistence equivalent to sim/live,
 so LEAN APY/Sharpe is not replayable under the same decision-trace contract.

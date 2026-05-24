@@ -531,6 +531,40 @@ class TestTrades:
         assert report["sell_share_gaps"] == 1
         conn.close()
 
+    def test_decision_trace_integrity_report_flags_sell_economic_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "held_no_new_buy",
+                "in_universe": 1,
+                "model_type": "xgb",
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "sell",
+            "shares": 1,
+            "price": 100.0,
+            "score_snapshot": {"rank_score": 0.40},
+            "decision_inputs": {"exit_reason": "stop_loss"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["sell_economic_gaps"] == 1
+        conn.close()
+
     def test_decision_trace_integrity_report_flags_qp_attribution_gap(self, tmp_path):
         conn = get_connection(_cfg(tmp_path))
         rid = record_pipeline_run(

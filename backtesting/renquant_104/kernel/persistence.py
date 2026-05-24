@@ -1432,18 +1432,23 @@ def decision_trace_integrity_report(
     ).fetchone()[0]
 
     trade_rows = conn.execute(
-        """SELECT action, shares, source_job, source_task, order_source,
+        """SELECT action, shares, gross_pnl, tax, net_pnl_after_tax,
+                  source_job, source_task, order_source,
                   score_snapshot_json, decision_inputs_json
              FROM trades
             WHERE run_id = ?""",
         (run_id,),
     ).fetchall()
     sell_share_gaps = 0
+    sell_economic_gaps = 0
     fallback_trade_attribution_gaps = 0
     qp_trade_attribution_gaps = 0
     for (
         action,
         shares,
+        gross_pnl,
+        tax,
+        net_pnl_after_tax,
         source_job,
         source_task,
         order_source,
@@ -1457,6 +1462,8 @@ def decision_trace_integrity_report(
                 sh = 0.0
             if sh <= 0:
                 sell_share_gaps += 1
+            if gross_pnl is None or tax is None or net_pnl_after_tax is None:
+                sell_economic_gaps += 1
         try:
             score_snapshot = json.loads(score_json) if score_json else {}
         except Exception:  # noqa: BLE001
@@ -1501,6 +1508,7 @@ def decision_trace_integrity_report(
         "trade_payload_gaps": int(trade_payload_gaps or 0),
         "fallback_trade_attribution_gaps": int(fallback_trade_attribution_gaps),
         "sell_share_gaps": int(sell_share_gaps),
+        "sell_economic_gaps": int(sell_economic_gaps),
         "qp_trade_attribution_gaps": int(qp_trade_attribution_gaps),
         "model_type_gaps": int(model_type_gaps or 0),
         "ok": (
@@ -1512,6 +1520,7 @@ def decision_trace_integrity_report(
             and int(trade_payload_gaps or 0) == 0
             and int(fallback_trade_attribution_gaps) == 0
             and int(sell_share_gaps) == 0
+            and int(sell_economic_gaps) == 0
             and int(qp_trade_attribution_gaps) == 0
             and int(model_type_gaps or 0) == 0
         ),
