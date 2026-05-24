@@ -160,6 +160,54 @@ def _semantic_params(params: dict) -> dict:
     }
 
 
+def _artifact_sidecar_path(path: Path) -> Path | None:
+    """Return optional metadata sidecar for non-JSON sequence artifacts."""
+    for candidate in (
+        path.with_name(path.name + ".metadata.json"),
+        path.with_name(path.stem + "_metadata.json"),
+        path.with_name(path.stem + "_summary.json"),
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _patchtst_params_from_contract(payload: dict) -> dict:
+    contract = payload.get("training_contract") or {}
+    hparams = contract.get("hyperparameters") or {}
+    keep = (
+        "seq_len", "patch_length", "d_model", "n_heads", "n_layers",
+        "lr", "weight_decay", "lr_scheduler", "warmup_ratio",
+        "nll_loss_weight", "ranking_margin", "distributional_head",
+        "film_regime_cond", "cross_stock_attn", "embargo_days",
+    )
+    return {k: hparams.get(k) for k in keep if k in hparams}
+
+
+def _load_artifact_payload(path: Path) -> dict:
+    """Load JSON artifact or metadata sidecar for a sequence checkpoint."""
+    if path.suffix == ".json":
+        return json.loads(path.read_text())
+    sidecar = _artifact_sidecar_path(path)
+    payload = json.loads(sidecar.read_text()) if sidecar else {}
+    if path.suffix == ".pt" and (
+        "feature_cols" not in payload or "lookahead_days" not in payload
+    ):
+        try:
+            import torch  # noqa: PLC0415
+            ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        except Exception:
+            ckpt = {}
+        if isinstance(ckpt, dict):
+            payload.setdefault("feature_cols", ckpt.get("feature_cols"))
+            payload.setdefault("label_col", ckpt.get("label_col"))
+            payload.setdefault("lookahead_days", ckpt.get("lookahead_days"))
+            payload.setdefault("training_contract", ckpt.get("training_contract"))
+    payload.setdefault("kind", payload.get("arch") or "hf_patchtst")
+    payload.setdefault("params", _patchtst_params_from_contract(payload))
+    return payload
+
+
 def _recipe_projection(artifact: dict) -> dict:
     """Return the model-recipe fields a WF manifest must match.
 
@@ -202,7 +250,7 @@ def _manifest_recipe_usage(manifest_path: Path | None, artifact_path: Path) -> d
     if not isinstance(rows, list) or not rows:
         return {"recipe_validated": False, "reason": "manifest has no retrain rows"}
 
-    candidate = json.loads(artifact_path.read_text())
+    candidate = _load_artifact_payload(artifact_path)
     candidate_fp = _recipe_fingerprint(candidate)
     candidate_recipe = _recipe_projection(candidate)
     samples = rows
@@ -224,7 +272,7 @@ def _manifest_recipe_usage(manifest_path: Path | None, artifact_path: Path) -> d
             })
             continue
         try:
-            sample = json.loads(p.read_text())
+            sample = _load_artifact_payload(p)
             sample_fp = _recipe_fingerprint(sample)
             sample_recipe = _recipe_projection(sample)
         except Exception as exc:  # noqa: BLE001
@@ -1009,6 +1057,7 @@ def _score_manifest_sanity(
     manifest_path: Path,
     candidate_artifact_path: Path,
     candidate_artifact: dict,
+    panel_history: pd.DataFrame | None = None,
 ) -> tuple["pd.Series", dict]:
     """Score validation rows with the same point-in-time manifest contract as WF."""
     import numpy as _np  # noqa: PLC0415
@@ -1056,16 +1105,37 @@ def _score_manifest_sanity(
         date_to_artifact[pd.Timestamp(d)] for d in pd.to_datetime(scored["date"])
     ]
     mu = pd.Series(_np.nan, index=scored.index, dtype=float)
+    n_history_artifacts = 0
     for uri, sub in scored.groupby("__sanity_artifact_uri", sort=False):
         scorer = PanelScorer.load(Path(uri))
-        X = transform_feature_frame(
-            sub,
-            feat_cols,
-            getattr(scorer, "metadata", {}) or {},
-            source_space="panel",
-        )
-        pred = scorer.score(X)
-        mu.loc[sub.index] = _np.asarray(getattr(pred, "values", pred), dtype=float)
+        if getattr(scorer, "requires_history", False) is True:
+            if panel_history is None:
+                raise ValueError(
+                    f"manifest sanity history scorer has no panel_history: {uri}"
+                )
+            n_history_artifacts += 1
+            seq_len = int(getattr(scorer, "seq_len", 64))
+            hist_source = panel_history.copy()
+            hist_source["date"] = pd.to_datetime(hist_source["date"])
+            for raw_d, day_sub in sub.groupby("date", sort=True):
+                d = pd.Timestamp(raw_d)
+                past = hist_source[hist_source["date"] < d]
+                recent_dates = sorted(past["date"].unique())[-seq_len:]
+                history = past[past["date"].isin(recent_dates)]
+                tickers = [str(t) for t in day_sub["ticker"]]
+                pred = scorer.score_with_history(history, tickers)
+                mu.loc[day_sub.index] = [
+                    float(pred.get(t, _np.nan)) for t in tickers
+                ]
+        else:
+            X = transform_feature_frame(
+                sub,
+                feat_cols,
+                getattr(scorer, "metadata", {}) or {},
+                source_space="panel",
+            )
+            pred = scorer.score(X)
+            mu.loc[sub.index] = _np.asarray(getattr(pred, "values", pred), dtype=float)
     if mu.isna().any():
         raise ValueError(
             f"manifest sanity produced {int(mu.isna().sum())} missing predictions"
@@ -1077,6 +1147,7 @@ def _score_manifest_sanity(
         "sanity_eval_end": max(safe_dates).date().isoformat() if safe_dates else None,
         "n_oos_dates": int(len(safe_dates)),
         "n_manifest_artifacts_used": int(scored["__sanity_artifact_uri"].nunique()),
+        "n_history_scorer_artifacts": int(n_history_artifacts),
         "cutoff_contract": (
             "manifest entry effective_train_cutoff_date/cutoff_date "
             "+ lookahead_days < eval date"
@@ -1110,7 +1181,7 @@ def run_sanity_battery(
     from scipy.stats import spearmanr  # noqa: PLC0415
 
     # Load panel + artifact's feature_cols
-    artifact = json.loads(artifact_path.read_text())
+    artifact = _load_artifact_payload(artifact_path)
     feat_cols = artifact.get("feature_cols", [])
     if not feat_cols:
         return {"passed": False, "reason": "artifact missing feature_cols"}
@@ -1162,6 +1233,7 @@ def run_sanity_battery(
                 Path(manifest_raw),
                 artifact_path,
                 artifact,
+                panel_history=panel,
             )
             mu = mu_s.loc[val.index].values
         elif artifact.get("kind") == "panel_ltr_xgboost":
@@ -1360,7 +1432,7 @@ def main():
         log.error("artifact not found: %s", artifact_path)
         sys.exit(2)
 
-    artifact = json.loads(artifact_path.read_text())
+    artifact = _load_artifact_payload(artifact_path)
 
     log.info("=" * 60)
     log.info("Walk-forward + Sanity gate runner — gate v%d", GATE_VERSION)

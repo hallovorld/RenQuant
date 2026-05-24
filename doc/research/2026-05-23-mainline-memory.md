@@ -1309,6 +1309,11 @@ Next implication:
   history-requiring scorers and probes the PatchTST sidecar for `seq_len`.
   This avoids falling back to per-bar lazy parquet loads and prevents a config
   default sequence length from undersupplying the active PatchTST fold.
+- `scripts/run_wf_gate.py` now supports PatchTST acceptance inputs: it can load
+  `.pt.metadata.json` sidecars for recipe validation, and manifest sanity uses
+  `score_with_history()` with strictly prior panel history for history-requiring
+  scorers. This keeps PatchTST on the same fail-closed WF gate path as XGB
+  instead of inventing a separate acceptance shortcut.
 - Remaining required work: run the driver for acceptance-grade folds and score
   PatchTST through the same decision-tree / benchmark-sleeve / active P&L
   acceptance lenses used for XGB and SPY.

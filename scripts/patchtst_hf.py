@@ -758,8 +758,13 @@ def train_one(args: argparse.Namespace) -> dict:
     log.info("preds dumped: %s (%d rows)", dump.name, len(preds_df))
 
     summary = {
-        "arch": "hf_patchtst", "cut": args.cut, "seed": args.seed,
+        "arch": "hf_patchtst", "kind": "hf_patchtst",
+        "cut": args.cut, "seed": args.seed,
         "best_val_ic": best_val_ic, "n_params": n_params,
+        "feature_cols": feat_cols,
+        "label_col": args.label,
+        "lookahead_days": training_contract.get("lookahead_days"),
+        "params": training_contract.get("hyperparameters", {}),
         "n_features": len(feat_cols), "uses_distributional_head": args.distributional_head,
         "config_fingerprint": config_contract["config_fingerprint"],
         "config_fingerprint_fields": config_contract["config_fingerprint_fields"],
