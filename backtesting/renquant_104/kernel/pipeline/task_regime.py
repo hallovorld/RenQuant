@@ -298,15 +298,19 @@ class RegimeFinalizeTask(Task):
         # preserves true-BEAR detection while eliminating bull noise.
         spy_below_ma50 = False
         spy_below_ma200 = False
+        spy_close = spy_ma50 = spy_ma200 = None
         spy_df = (ctx.ohlcv or {}).get("SPY") if hasattr(ctx, "ohlcv") else None
         if spy_df is not None and len(spy_df) >= 200:
             try:
                 import math as _math
-                spy_close = float(spy_df["close"].iloc[-1])
-                spy_ma50 = float(spy_df["close"].rolling(50).mean().iloc[-1])
-                spy_ma200 = float(spy_df["close"].rolling(200).mean().iloc[-1])
-                if _math.isfinite(spy_close) and _math.isfinite(spy_ma50) \
-                   and _math.isfinite(spy_ma200):
+                _spy_close = float(spy_df["close"].iloc[-1])
+                _spy_ma50 = float(spy_df["close"].rolling(50).mean().iloc[-1])
+                _spy_ma200 = float(spy_df["close"].rolling(200).mean().iloc[-1])
+                if _math.isfinite(_spy_close) and _math.isfinite(_spy_ma50) \
+                   and _math.isfinite(_spy_ma200):
+                    spy_close = _spy_close
+                    spy_ma50 = _spy_ma50
+                    spy_ma200 = _spy_ma200
                     spy_below_ma50 = spy_close < spy_ma50
                     spy_below_ma200 = spy_close < spy_ma200
             except Exception:
@@ -321,20 +325,30 @@ class RegimeFinalizeTask(Task):
 
         if state.hard_bear or gmm_probs.get(BEAR, 0) > 0.5:
             new_regime = BEAR
+            decision_source = "hard_bear" if state.hard_bear else "gmm_bear"
         elif state.hurst_regime == "MOMENTUM":
             # Direction-aware (both MA50 AND MA200 must be below):
             #   trending up OR mixed (MA50/MA200 disagree)  → BULL_CALM
             #   trending down (both MAs below)              → BEAR
             if spy_bearish_trend:
                 new_regime = BEAR
+                decision_source = "hurst_momentum_spy_bearish"
             elif vol_cluster_choppy:
                 new_regime = "CHOPPY"
+                decision_source = "hurst_momentum_vol_cluster_choppy"
             else:
                 new_regime = "BULL_CALM"
+                decision_source = "hurst_momentum_bull"
         elif state.hurst_regime == "REVERSION" or vol_cluster_choppy:
             new_regime = "CHOPPY"
+            decision_source = (
+                "hurst_reversion"
+                if state.hurst_regime == "REVERSION"
+                else "vol_cluster_choppy"
+            )
         else:
             new_regime = dominant_gmm if dominant_gmm != BEAR else BULL_VOLATILE
+            decision_source = "dominant_gmm"
 
         # Plan B: cooldown only on actual regime switch.
         # CUSUM-v2 Design C (user-locked 2026-04-24): also stamp wall-clock
@@ -384,6 +398,29 @@ class RegimeFinalizeTask(Task):
         ctx.regime       = new_regime
         ctx.confidence   = confidence
         ctx.regime_counts[new_regime] = ctx.regime_counts.get(new_regime, 0) + 1
+        ctx._regime_evidence = {  # noqa: SLF001
+            "source": decision_source,
+            "final_regime": new_regime,
+            "prev_regime": prev_regime,
+            "confidence": confidence,
+            "hurst": state.hurst,
+            "hurst_regime": state.hurst_regime,
+            "gmm_probs": dict(gmm_probs or {}),
+            "dominant_gmm": dominant_gmm,
+            "hard_bear": bool(state.hard_bear),
+            "vol_5d": getattr(state, "vol_5d", None),
+            "ret_5d": getattr(state, "ret_5d", None),
+            "vol_cluster_choppy": vol_cluster_choppy,
+            "in_transition": bool(state.in_transition),
+            "countdown": getattr(state, "countdown", None),
+            "cooldown_start": getattr(state, "cooldown_start", None),
+            "spy_close": spy_close,
+            "spy_ma50": spy_ma50,
+            "spy_ma200": spy_ma200,
+            "spy_below_ma50": spy_below_ma50,
+            "spy_below_ma200": spy_below_ma200,
+            "spy_bearish_trend": spy_bearish_trend,
+        }
 
         # 2026-05-17 σ-wire hysteresis update.
         # If the newly-resolved regime has a per-regime ngboost overlay

@@ -792,11 +792,18 @@ Sidecar audits found additional silent-fallback holes. Fixed and tested:
   rank/expected-return evidence.
 - Live `ticker_daily_state` write failures default to strict re-raise via
   `persistence.strict_ticker_daily_state=true` unless explicitly disabled.
+- `RegimeFinalizeTask` now stamps `_regime_evidence` and `build_run_bundle()`
+  persists it in `pipeline_runs.run_bundle_json`. The evidence includes the
+  branch source, Hurst state, GMM/HMM probabilities, hard-bear flag, 5d
+  vol/return, transition state, and SPY MA50/MA200 proof fields. This closes
+  the audit gap where a BEAR flip had to be reconstructed from logs.
 
 Verification:
 
 - `.venv/bin/python -m pytest tests/test_qp_admission_gate.py tests/test_joint_qp_task.py tests/test_qp_integration.py tests/test_thesis_primary_rotation.py tests/test_session_silent_bugs.py::TestThesisSymmetricReachable tests/test_rotation_atomic.py tests/test_persistence.py tests/test_lean_trace_persistence.py tests/test_runner_state_fixes.py tests/test_ticker_daily_state.py -q`
   -> `173 passed`.
+- `.venv/bin/python -m pytest tests/test_artifact_contract.py tests/test_regime_detector_5day_and_chop.py tests/test_trend_overlay.py tests/test_regime_confidence_fix.py tests/test_wf_config_parity.py -q`
+  -> `62 passed`.
 - `.venv/bin/python -m py_compile backtesting/renquant_104/kernel/portfolio_qp/job_qp.py backtesting/renquant_104/kernel/portfolio_qp/tasks.py backtesting/renquant_104/kernel/pipeline/task_rotation.py backtesting/renquant_104/kernel/pipeline/pp_inference.py backtesting/renquant_104/kernel/persistence.py backtesting/renquant_104/adapters/lean.py backtesting/renquant_104/adapters/sim.py backtesting/renquant_104/adapters/runner.py`
   -> passed.
 

@@ -122,3 +122,37 @@ class TestRunBundle:
         assert bundle["data_max_dates"]["AAA"] == "2026-05-05"
         assert bundle["pipeline_flags"]["buy_blocked"] is True
         assert bundle["panel_contract"]["ok"] is True
+
+    def test_run_bundle_records_regime_evidence(self, tmp_path):
+        from kernel.artifact_contract import build_run_bundle
+
+        ctx = SimpleNamespace(
+            ohlcv={},
+            buy_blocked=False,
+            skip_buys=False,
+            bear_only=False,
+            regime="BEAR",
+            confidence=0.50,
+            _regime_evidence={
+                "source": "hard_bear",
+                "final_regime": "BEAR",
+                "hard_bear": True,
+                "gmm_probs": {"BEAR": 0.2, "BULL_CALM": 0.8},
+                "spy_close": 690.0,
+                "spy_ma50": 680.0,
+                "spy_ma200": 640.0,
+            },
+        )
+        bundle = build_run_bundle(
+            {"watchlist": ["SPY"]},
+            STRATEGY_DIR,
+            run_id="r-regime",
+            run_type="sim",
+            ctx=ctx,
+        )
+
+        evidence = bundle["regime_evidence"]
+        assert evidence["source"] == "hard_bear"
+        assert evidence["final_regime"] == "BEAR"
+        assert evidence["hard_bear"] is True
+        assert evidence["spy_close"] == 690.0

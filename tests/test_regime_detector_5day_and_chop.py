@@ -210,6 +210,8 @@ class TestRegimeRouting:
                    regime_state=state, config={})
         RegimeFinalizeTask().run(ctx)
         assert state.regime == "CHOPPY"
+        assert ctx._regime_evidence["source"] == "hurst_momentum_vol_cluster_choppy"
+        assert ctx._regime_evidence["spy_bearish_trend"] is False
 
     def test_vol_cluster_choppy_routes_to_choppy_via_ambiguous(self):
         """Hurst=AMBIGUOUS, vol_cluster=True → CHOPPY (not GMM fallback)."""
@@ -218,6 +220,7 @@ class TestRegimeRouting:
         ctx = _ctx(np.array([0.001] * 30), regime_state=state, config={})
         RegimeFinalizeTask().run(ctx)
         assert state.regime == "CHOPPY"
+        assert ctx._regime_evidence["source"] == "vol_cluster_choppy"
 
     def test_no_vol_cluster_no_hurst_reversion_keeps_bull(self):
         """REGRESSION GUARD: without vol_cluster AND without Hurst<0.52,
@@ -230,6 +233,7 @@ class TestRegimeRouting:
                    regime_state=state, config={})
         RegimeFinalizeTask().run(ctx)
         assert state.regime == "BULL_CALM"
+        assert ctx._regime_evidence["source"] == "hurst_momentum_bull"
 
 
 # ── Standalone path agreement ────────────────────────────────────────────────

@@ -267,6 +267,10 @@ def build_run_bundle(
             "confidence": getattr(ctx, "confidence", None),
         }
         bundle["data_max_dates"] = _data_max_dates(getattr(ctx, "ohlcv", {}) or {})
+        bundle["regime_evidence"] = _json_safe(
+            getattr(ctx, "_regime_evidence", None)
+            or _regime_evidence_from_ctx(ctx)
+        )
 
     return bundle
 
@@ -341,3 +345,54 @@ def _data_max_dates(ohlcv: dict[str, Any]) -> dict[str, str | None]:
         except Exception:
             out[str(ticker)] = None
     return out
+
+
+def _regime_evidence_from_ctx(ctx: Any) -> dict[str, Any]:
+    """Best-effort regime proof bundle for DB audit.
+
+    ``RegimeFinalizeTask`` stamps the authoritative evidence after it resolves
+    the branch. This fallback is for tests and older call sites that build a
+    run bundle from a partially-populated context.
+    """
+    state = getattr(ctx, "regime_state", None)
+    gmm_probs = getattr(state, "gmm_probs", {}) if state is not None else {}
+    if not isinstance(gmm_probs, dict):
+        gmm_probs = {}
+    return {
+        "source": getattr(ctx, "regime", None),
+        "final_regime": getattr(ctx, "regime", None),
+        "confidence": getattr(ctx, "confidence", None),
+        "hurst": getattr(state, "hurst", None) if state is not None else None,
+        "hurst_regime": (
+            getattr(state, "hurst_regime", None) if state is not None else None
+        ),
+        "gmm_probs": dict(gmm_probs),
+        "dominant_gmm": (
+            max(gmm_probs, key=gmm_probs.get) if gmm_probs else None
+        ),
+        "hard_bear": bool(getattr(state, "hard_bear", False)) if state is not None else None,
+        "vol_5d": getattr(state, "vol_5d", None) if state is not None else None,
+        "ret_5d": getattr(state, "ret_5d", None) if state is not None else None,
+        "vol_cluster_choppy": (
+            bool(getattr(state, "vol_cluster_choppy", False))
+            if state is not None else None
+        ),
+        "in_transition": (
+            bool(getattr(state, "in_transition", False)) if state is not None else None
+        ),
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively coerce provenance values to JSON-safe primitives."""
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f if math.isfinite(f) else None
