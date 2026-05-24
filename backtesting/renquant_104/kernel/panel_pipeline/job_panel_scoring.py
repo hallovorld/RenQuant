@@ -933,6 +933,104 @@ class VetoWeakBuysTask(Task):
                      "rank_score floor=%s", dropped, floor_label)
 
 
+def _regime_stats_map(raw: object) -> dict[str, dict]:
+    if isinstance(raw, dict):
+        return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    if isinstance(raw, list):
+        return {
+            str(v.get("regime")): v
+            for v in raw
+            if isinstance(v, dict) and v.get("regime")
+        }
+    return {}
+
+
+def _trade_monotonicity_admission(metadata: dict, regime: str) -> tuple[bool, str, dict]:
+    wf = metadata.get("wf_gate_metadata") if isinstance(metadata, dict) else {}
+    tm = wf.get("trade_monotonicity") if isinstance(wf, dict) else {}
+    if not isinstance(tm, dict) or not tm:
+        return False, "regime_admission:no_trade_monotonicity", {}
+    stats = _regime_stats_map(tm.get("regimes")).get(str(regime))
+    if not stats:
+        return False, f"regime_admission:no_trade_stats:{regime}", {"trade_monotonicity": tm}
+    if not bool(stats.get("eligible", False)):
+        return False, f"regime_admission:ineligible:{regime}", {"stats": stats}
+    if not bool(stats.get("passed", False)):
+        return False, f"regime_admission:failed:{regime}", {"stats": stats}
+    return True, "ok", {"stats": stats}
+
+
+def _sanity_regime_admission(
+    metadata: dict,
+    regime: str,
+    *,
+    min_ic: float,
+) -> tuple[bool, str, dict]:
+    wf = metadata.get("wf_gate_metadata") if isinstance(metadata, dict) else {}
+    sanity = wf.get("sanity_regime_ic") if isinstance(wf, dict) else {}
+    if not isinstance(sanity, dict) or not sanity:
+        return False, "regime_admission:no_sanity_regime_ic", {}
+    stats = _regime_stats_map(sanity.get("regimes")).get(str(regime))
+    if not stats:
+        return False, f"regime_admission:no_sanity_stats:{regime}", {"sanity": sanity}
+    mean_ic = stats.get("mean_ic")
+    try:
+        mean_ic_f = float(mean_ic)
+    except (TypeError, ValueError):
+        return False, f"regime_admission:bad_sanity_ic:{regime}", {"stats": stats}
+    if not math.isfinite(mean_ic_f) or mean_ic_f < float(min_ic):
+        return False, f"regime_admission:weak_sanity_ic:{regime}", {"stats": stats}
+    if stats.get("passed") is False:
+        return False, f"regime_admission:failed_sanity:{regime}", {"stats": stats}
+    return True, "ok", {"stats": stats}
+
+
+class RegimeModelAdmissionTask(Task):
+    """Block buy candidates when the current regime lacks model evidence.
+
+    This is the model/QP separation guard: model evidence decides whether
+    names are eligible to buy in the current regime; QP may only size the
+    surviving candidates.
+    """
+
+    def run(self, ctx: InferenceContext) -> bool | None:
+        if not ctx.candidates:
+            return None
+        panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
+        cfg = panel_cfg.get("regime_admission", {}) or {}
+        if cfg.get("enabled", True) is False:
+            return None
+        scorer = getattr(ctx, "_panel_scorer", None)
+        metadata = getattr(scorer, "metadata", {}) or {}
+        regime = str(getattr(ctx, "regime", "") or "UNKNOWN")
+
+        ok, reason, details = _trade_monotonicity_admission(metadata, regime)
+        if ok and bool(cfg.get("require_sanity_regime_ic", False)):
+            ok, reason, details = _sanity_regime_admission(
+                metadata,
+                regime,
+                min_ic=float(cfg.get("min_sanity_regime_ic", 0.02)),
+            )
+        ctx._regime_model_admission = {  # noqa: SLF001
+            "ok": bool(ok), "reason": reason, "regime": regime, **details,
+        }
+        if ok:
+            return None
+
+        ctx._full_candidate_snapshot = list(getattr(ctx, "_full_candidate_snapshot", None)
+                                            or ctx.candidates)  # noqa: SLF001
+        blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
+        for cand in ctx.candidates:
+            blocked[cand.ticker] = reason
+        ctx._blocked_by_ticker = blocked  # noqa: SLF001
+        n = len(ctx.candidates)
+        ctx.candidates = []
+        ctx.counters["regime_admission_blocked"] = (
+            ctx.counters.get("regime_admission_blocked", 0) + n
+        )
+        log.warning("RegimeModelAdmissionTask: blocked %d candidates: %s", n, reason)
+
+
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
 
 def _fingerprint_value(metadata: dict | None) -> str | None:
@@ -2122,6 +2220,7 @@ class PanelScoringJob(Job):
             ApplyNGBoostTask(),
             LoadGlobalCalibrationTask(),
             ApplyGlobalCalibrationTask(),
+            RegimeModelAdmissionTask(),
             # 2026-05-03 P0 fix: VetoWeakBuysTask MOVED to here (was right
             # after ApplyScoresTask). Veto must compare against calibrated
             # rank_score, not raw XGB margin. See VetoWeakBuysTask

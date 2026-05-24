@@ -1451,6 +1451,49 @@ Next implication:
   offensive signal is allowed, and BULL_VOLATILE should be blocked or routed
   away for this scorer until it has positive regime evidence.
 
+## 2026-05-24 Regime Model Admission Runtime Gate
+
+Problem:
+
+- QP/selection must not be able to transform weak or unsupported model output
+  into trades. The model must first prove that the current regime is an
+  admissible buy regime. This is especially important after the sanity
+  decomposition showed XGB's strongest IC in BEAR while BULL_CALM was weak.
+
+Fix:
+
+- Added `RegimeModelAdmissionTask` to `PanelScoringJob` after global
+  calibration and before `VetoWeakBuysTask`, realized-vol fallback, Kelly, and
+  QP-facing quality floors.
+- The task reads scorer metadata
+  `metadata.wf_gate_metadata.trade_monotonicity.regimes` for the current
+  `ctx.regime`.
+- If the current regime is missing, ineligible, or failed, all buy candidates
+  are cleared before QP can see them. Each ticker is stamped in
+  `ctx._blocked_by_ticker` with reasons such as
+  `regime_admission:no_trade_stats:BULL_CALM` or
+  `regime_admission:ineligible:BULL_VOLATILE`.
+- The task can also require future
+  `metadata.wf_gate_metadata.sanity_regime_ic` evidence via
+  `ranking.panel_scoring.regime_admission.require_sanity_regime_ic=true`; this
+  is wired but not yet stamped by `run_wf_gate.py`.
+
+Verification:
+
+- `tests/test_regime_model_admission.py` covers pass, missing-regime block,
+  ineligible-regime block, optional sanity-IC requirement, and experiment
+  disable.
+- Targeted panel scoring suite:
+  `tests/test_panel_scoring_job.py tests/test_veto_weak_buys_p0_fix.py tests/test_regime_model_admission.py`
+  -> `62 passed`.
+
+Next implication:
+
+- The next gate hardening should stamp `sanity_regime_ic` directly from
+  `run_wf_gate.py`, then enable `require_sanity_regime_ic` for production.
+  That will make weak BULL_CALM IC a runtime blocker instead of a diagnostic
+  note.
+
 ## Mainline Queue
 
 1. Convert the sanity decomposition into an alpha-admission fix: regime-specific
