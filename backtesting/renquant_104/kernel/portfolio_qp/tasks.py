@@ -1352,6 +1352,78 @@ def _shares_from_dw(dw: float, nav: float, px: float) -> int:
     return int(abs(dw) * nav / px)
 
 
+def _qp_max_positions(ctx) -> int:
+    regime_params = (
+        (ctx.config.get("regime_params", {}) or {})
+        .get(getattr(ctx, "regime", None), {})
+        or {}
+    )
+    return int(regime_params.get(
+        "max_concurrent_positions",
+        ctx.config.get("max_concurrent_positions", 8),
+    ))
+
+
+def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
+    """Fail closed when QP tries to add risk without alpha admission.
+
+    QP solves portfolio weights; it must not become the model-selection layer.
+    The gate is intentionally applied at order emission so the solver can still
+    trim or close holdings, while new risk additions require finite calibrated
+    score evidence and optional raw-panel support.
+    """
+    gate = (env.get("cfg", {}) or {}).get("qp_admission_gate", {}) or {}
+    if not bool(gate.get("enabled", False)):
+        return None
+
+    is_held = ticker in env.get("holdings_set", set())
+    if not is_held and bool(gate.get("respect_open_slots", True)):
+        held_after_exits = set(env.get("holdings_set", set())) - set(
+            env.get("preexisting_exit_tickers", set())
+        )
+        if len(held_after_exits) >= int(env.get("max_positions", 0) or 0):
+            return "qp_admission_no_slot"
+
+    source = (
+        (env.get("score_sources") or {}).get(ticker)
+        or (env.get("cands") or {}).get(ticker)
+        or (env.get("holdings") or {}).get(ticker)
+    )
+    if source is None:
+        return "qp_admission_missing_score"
+
+    rank_floor = gate.get(
+        "topup_min_rank_score" if is_held else "min_rank_score",
+        gate.get("min_rank_score"),
+    )
+    rank = _source_float(source, "rank_score")
+    if rank_floor is not None:
+        floor = float(rank_floor)
+        if not math.isfinite(rank) or rank < floor:
+            return "qp_admission_rank"
+
+    panel_floor = gate.get(
+        "topup_min_panel_score" if is_held else "min_panel_score",
+        gate.get("min_panel_score"),
+    )
+    panel = _source_float(source, "panel_score")
+    if panel_floor is not None:
+        floor = float(panel_floor)
+        if not math.isfinite(panel) or panel < floor:
+            return "qp_admission_panel"
+
+    return None
+
+
+def _source_float(source: object, name: str) -> float:
+    value = source.get(name) if isinstance(source, dict) else getattr(source, name, None)
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return out if math.isfinite(out) else float("nan")
+
+
 def _buy_cost_multiplier(config: dict) -> float:
     """Return conservative cash multiplier for a buy order."""
     exec_cfg = (config or {}).get("execution", {}) or {}
@@ -1493,6 +1565,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             n_cash_exhausted=counters["cash_exhausted"],
             n_soft_sell_blocked=counters["soft_sell_blocked"],
             n_preexisting_exit=counters["preexisting_exit"],
+            n_admission_blocked=counters["admission_blocked"],
         )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
@@ -1505,6 +1578,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
         skip_buys = bool(getattr(ctx, "skip_buys", False))
         return dict(
+            cfg=cfg,
             sol=sol,
             tickers=_get_path(ctx, "_qp_tickers") or [],
             prices=_get_path(ctx, "prices") or {},
@@ -1527,6 +1601,8 @@ class EmitOrdersFromQPSolutionTask(Task):
                           .get("earnings_buffer_days", 3)),
             today=getattr(ctx, "today", None),
             holdings_set=set((ctx.holdings or {}).keys()),
+            holdings=(ctx.holdings or {}),
+            max_positions=_qp_max_positions(ctx),
             # 2026-05-17 min_share_floor for high-price stocks. See
             # _emit_orders_loop comment for rationale. Defaults: floor 5%,
             # ceiling 15%. Disable by setting floor=0.0.
@@ -1585,7 +1661,7 @@ class EmitOrdersFromQPSolutionTask(Task):
                  delta_below_min_dw=0, zero_shares=0,
                  no_buy_delta=0, not_selected=0,
                  cash_capped=0, cash_exhausted=0, soft_sell_blocked=0,
-                 preexisting_exit=0)
+                 preexisting_exit=0, admission_blocked=0)
         buy_cash_left = max(0.0, env["cash"] - env["nav"] * env["cash_reserve"])
         for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
@@ -1656,6 +1732,16 @@ class EmitOrdersFromQPSolutionTask(Task):
                         stamp(t, "qp_no_buy_delta")
                 continue
             if dw > 0:
+                admission_block = _qp_buy_admission_block_reason(ctx, env, t)
+                if admission_block:
+                    c["admission_blocked"] += 1
+                    stamp(t, admission_block)
+                    log.info(
+                        "QP_BUY_SUPPRESSED %-6s %s "
+                        "(QP only sizes pre-qualified alpha)",
+                        t, admission_block,
+                    )
+                    continue
                 if t in env["defensive_set"] and not env["bear_only"]:
                     c["defensive_non_bear"] += 1
                     stamp(t, "defensive_non_bear")
@@ -1720,7 +1806,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
         n_delta_below_min_dw, n_zero_shares, n_no_buy_delta, n_not_selected,
         n_cash_capped, n_cash_exhausted, n_soft_sell_blocked,
-        n_preexisting_exit,
+        n_preexisting_exit, n_admission_blocked,
     ) -> None:
         if n_blocked_buys:
             reason = ("buy_blocked=True" if buy_blocked
@@ -1797,6 +1883,12 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "for ticker(s) already carrying an exit intent",
                 n_preexisting_exit,
             )
+        if n_admission_blocked:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: suppressed %d QP buy/top-up(s) "
+                "by alpha-admission gate",
+                n_admission_blocked,
+            )
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -1825,6 +1917,7 @@ _QP_PER_REGIME_KEYS = (
     "qp_sigma_unit",
     "qp_sigma_horizon_mode",
     "qp_horizon_contract",
+    "qp_admission_gate",
 )
 
 

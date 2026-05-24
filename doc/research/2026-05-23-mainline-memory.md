@@ -67,6 +67,19 @@ Make RenQuant 104 scientifically trustworthy end to end:
     report for exit/source/regime/score/tax attribution.
   - Targeted tests passed:
     `tests/test_sim_trade_ledger.py tests/test_wf_trade_forensics.py`.
+- Latest decision-tree repair:
+  - QP buy/top-up emission now has a strict alpha-admission gate:
+    finite `rank_score >= 0.55`, finite raw `panel_score >= 0`, and available
+    slot capacity for new tickers.
+  - Production/golden configs disable forced QP cash deployment
+    (`qp_min_invested_pct=0`, `qp_cash_drag_lambda=0`) and enable conviction
+    caps.
+  - Standalone TopUp floor raised from `0.20` to `0.55`.
+  - Targeted tests passed:
+    `tests/test_qp_admission_gate.py tests/test_qp_conviction_cap.py
+    tests/test_buy_quality_gates.py tests/acceptance/jobs/test_split_jobs_e2e.py
+    tests/test_qp_grinold_kahn_transform.py tests/test_p0_fixes_regression_guards.py
+    tests/test_wf_config_parity.py`.
 
 ## Active Validation
 
@@ -159,10 +172,12 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
 2. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
    annual-net and SPY-relative metrics fail. Split by regime, exposure, tax,
    stop-loss bucket, and QP/top-up source.
-3. Write a decision-tree contract doc with expected input/output ranges for
-   data freshness, regime, gates, candidates, scoring, calibration, QP,
-   rotation, persistence, and ntfy.
-4. Implement fixes only with per-regime hypotheses and paired A/B acceptance.
+3. Re-run strict WF after the QP/TopUp admission repair and compare:
+   event-level, annual-net, SPY-relative, regime cuts, score monotonicity,
+   stop-loss bucket, and QP/TopUp source buckets.
+4. Implement stop-loss changes only after paired A/B acceptance; leading
+   candidates are non-BULL volatility-aware stops and earlier panel/mu soft
+   exits for positions whose model thesis deteriorates before hard stop.
 5. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
    as OOS. Static PatchTST full-window sims are style diagnostics only.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using

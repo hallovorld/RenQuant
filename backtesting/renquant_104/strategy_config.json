@@ -643,6 +643,15 @@
       "qp_dw_max": 0.5,
       "qp_min_dw_pct": 0.02,
       "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
+      "qp_admission_gate": {
+        "enabled": true,
+        "min_rank_score": 0.55,
+        "min_panel_score": 0.0,
+        "topup_min_rank_score": 0.55,
+        "topup_min_panel_score": 0.0,
+        "respect_open_slots": true,
+        "_reason": "2026-05-23 Codex alpha-conversion fix: QP may size/rebalance only pre-qualified alpha. WF trace forensics showed negative raw-panel and low-rank QP/TopUp adds were net negative after tax/friction, and QP opened risk when the book was already at the legacy slot cap. Require calibrated rank >=0.55, raw panel >=0, and available slot for new names before emitting QP buys/top-ups."
+      },
       "qp_tax_aware": false,
       "_qp_tax_aware_reason": "2026-05-04: explicitly DISABLED. tax_cost_vec made QP avoid selling big-gain positions, mechanizing the disposition effect \u2014 strategy crystallized small wins repeatedly while big winners reversed and erased gains. Violates the 'tax = reporting only, no decision logic' mandate (feedback_no_tax_driven_logic.md).",
       "qp_soft_sell_guard": {
@@ -660,10 +669,11 @@
       "qp_no_trade_band_factor": 1.0,
       "qp_no_trade_band_cap": 0.05,
       "_qp_no_trade_band_cap_reason": "2026-05-09 BUG #7: \u03c3-derived no-trade band uncapped \u2192 high-\u03c3 holdings (e.g. BA \u03c3\u0302=0.24) had 24% band, structurally uncoverable. Cap at 5% so any single-position rebalance >5% always fires.",
-      "qp_min_invested_pct": 0.7,
+      "qp_min_invested_pct": 0.0,
+      "qp_cash_drag_lambda": 0.0,
       "qp_min_invested_requires_positive_edge": true,
       "qp_min_invested_edge_floor": 0.002,
-      "_qp_min_invested_edge_reason": "2026-05-23 Codex audit: cash-drag may encourage deployment, but it must not force buys when the best 60d expected return fails to clear round-trip fee+slippage (~20bp). This is a positive-edge guard, not a buy-disable switch.",
+      "_qp_min_invested_edge_reason": "2026-05-23 Codex alpha-conversion fix: disable forced cash deployment while QP/TopUp admission is being repaired. Cash drag previously let marginal candidates become trades; re-enable only after WF shows benchmark-relative alpha survives the strict admission gate.",
       "qp_mu_horizon_days": 60,
       "qp_sigma_unit": "annualized",
       "qp_sigma_horizon_mode": "match_mu",
@@ -675,6 +685,7 @@
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
       "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
+      "qp_conviction_cap_enabled": true,
       "qp_mu_contract": "strict",
       "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu."
     },
@@ -758,10 +769,10 @@
       "_buy_floor_reason": "2026-05-21 Codex audit: use uncapped cross-sectional mean+1*std on calibrated rank_score. The prior adaptive_mean_std_cap mode capped the floor at 0.30; once calibrated scores clustered around 0.55-0.65, the floor became a no-op and admitted nearly every candidate. This follows cross-sectional normalization/ranking practice (Qlib CSRankNorm/CSZFillna) while preserving the no-signal behavior when mean+std exceeds all compressed scores. adaptive_mean_std_cap remains for old experiments only.",
       "rotation_advantage": 0.0,
       "sizing": {
-        "enabled": false,
+        "enabled": true,
         "floor": 0.0,
-        "ceiling": 1.0,
-        "min_mult": 0.5
+        "ceiling": 0.3,
+        "min_mult": 0.0
       },
       "ngboost": {
         "enabled": false,
@@ -851,7 +862,7 @@
       "max_concentration": 0.35,
       "min_edge": 0.0,
       "top_up_threshold": 0.05,
-      "topup_conviction_floor": 0.2,
+      "topup_conviction_floor": 0.55,
       "base_rate": 0.273,
       "use_calibrator_mu": true,
       "use_realized_vol_fallback": true,

@@ -70,3 +70,24 @@ profitable exits, mostly `trailing_stop` and `qp_sell`.
 Do not promote a model or decision-tree change from this report alone. It is a
 root-cause map; acceptance still requires strict WF with SPY comparison, regime
 cuts, calibration/sanity gates, and full trade-ledger contract.
+
+## Implemented Repair
+
+Commit pending at time of writing:
+
+- Added `rotation.joint_actions.qp_admission_gate` to production and golden
+  configs.
+- QP buy/top-up emission now fails closed unless the ticker has finite,
+  pre-qualified alpha evidence:
+  - calibrated `rank_score >= 0.55`;
+  - raw cross-sectional `panel_score >= 0`;
+  - for new names, available position capacity under `max_concurrent_positions`.
+- Disabled forced QP cash deployment:
+  - `qp_min_invested_pct = 0`;
+  - `qp_cash_drag_lambda = 0`.
+- Enabled QP conviction caps with the existing panel-score sizing primitive.
+- Raised standalone TopUp admission from `0.20` to `0.55`.
+
+This does not assert performance improvement by itself. It closes the
+identified contract hole so the next WF run can test whether the model signal
+survives without QP/TopUp turning marginal scores into trades.
