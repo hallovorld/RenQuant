@@ -67,6 +67,50 @@ def test_wf_gate_runs_qp_contract_and_trade_monotonicity_gates() -> None:
     assert '"--skip-trade-gates"' in src
 
 
+def test_wf_gate_zero_trade_cuts_fail_without_traceback(monkeypatch, tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    def fake_run_sim_cut(_cfg, start, end, trace_dir):
+        return {
+            "start": start,
+            "end": end,
+            "sharpe": float("nan"),
+            "apy": 0.0,
+            "market_context": {"spy_sharpe": 1.0, "spy_apy": 0.10},
+            "trade_trace_summary": {"n_buys": 0, "n_sells": 0},
+            "trace_paths": {
+                "round_trips_csv": str(tmp_path / f"{start}_{end}.csv"),
+            },
+            "returncode": 0,
+        }
+
+    monkeypatch.setattr(mod, "run_sim_cut", fake_run_sim_cut)
+
+    result = mod.run_walk_forward("dummy_config.json", jobs=1, trace_dir=tmp_path)
+
+    assert result["passed"] is False
+    assert "zero trades across all WF cuts" in result["reason"]
+    assert result["wf_3cut_apy_mean"] == 0.0
+    assert result["n_cuts_beat_spy_sharpe"] == 0
+
+
+def test_wf_trade_gates_handle_empty_round_trip_csv(tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    empty = tmp_path / "empty.round_trips.csv"
+    empty.write_text("\n")
+    wf_result = {"cuts": [{"trace_paths": {"round_trips_csv": str(empty)}}]}
+
+    contract = mod.run_trade_contract_gate(wf_result, {})
+    monotonicity = mod.run_trade_monotonicity_gate(wf_result)
+
+    assert contract["passed"] is False
+    assert "no round-trip" in contract["reason"]
+    assert monotonicity["passed"] is False
+    assert "no round-trip" in monotonicity["reason"]
+
+
 def test_wf_gate_skip_flags_are_not_acceptance_passes() -> None:
     """Skipped required gates can be diagnostic-only, never promotable PASS."""
     sys.path.insert(0, str(REPO / "scripts"))

@@ -70,7 +70,7 @@ def _install_fake_pipeline(monkeypatch, *, preflight_exc: Exception, seen: dict)
     monkeypatch.setattr(runner, "_notify_decision", lambda *_args, **_kwargs: None)
 
 
-def test_unexpected_preflight_exception_aborts_full_run(monkeypatch):
+def test_unexpected_preflight_exception_aborts_full_run(monkeypatch, caplog):
     seen: dict = {}
     _install_fake_pipeline(
         monkeypatch,
@@ -78,7 +78,7 @@ def test_unexpected_preflight_exception_aborts_full_run(monkeypatch):
         seen=seen,
     )
 
-    with pytest.raises(SystemExit) as exc:
+    with caplog.at_level("ERROR", logger="live.runner"), pytest.raises(SystemExit) as exc:
         runner._run_once_multi_pipeline(
             {"live": {"preflight": {"enabled": True}}},
             models={},
@@ -89,6 +89,7 @@ def test_unexpected_preflight_exception_aborts_full_run(monkeypatch):
 
     assert exc.value.code == 2
     assert seen == {}
+    assert "P-PREFLIGHT-EXCEPTION" in caplog.text
 
 
 def test_unexpected_preflight_exception_allows_sell_only_risk_exit(monkeypatch):

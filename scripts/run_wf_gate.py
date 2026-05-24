@@ -793,6 +793,57 @@ def run_walk_forward(
             "reason": f"{len(failed_cuts)}/3 sim cuts failed execution",
         }
     if not sharpes:
+        total_buys = _sum_trade_summary(results, "n_buys")
+        total_sells = _sum_trade_summary(results, "n_sells")
+        if total_buys == 0 and total_sells == 0:
+            import statistics as _s
+            spy_sharpes = [
+                _finite_number((r.get("market_context") or {}).get("spy_sharpe"))
+                for r in results
+            ]
+            spy_sharpes = [s for s in spy_sharpes if s is not None]
+            spy_apys = [
+                _finite_number((r.get("market_context") or {}).get("spy_apy"))
+                for r in results
+            ]
+            spy_apys = [a for a in spy_apys if a is not None]
+            mean_apy = _s.mean(apys) if apys else 0.0
+            mean_spy_apy = _s.mean(spy_apys) if spy_apys else float("nan")
+            return {
+                "passed": False,
+                "wf_3cut_sharpe_mean": float("nan"),
+                "wf_3cut_sharpe_std": float("nan"),
+                "wf_3cut_apy_mean": float(mean_apy),
+                "spy_sharpe_mean": (
+                    float(_s.mean(spy_sharpes)) if spy_sharpes else float("nan")
+                ),
+                "strategy_minus_spy_sharpe_mean": float("nan"),
+                "spy_apy_mean": float(mean_spy_apy),
+                "strategy_minus_spy_apy_mean": (
+                    float(mean_apy - mean_spy_apy)
+                    if math.isfinite(mean_spy_apy) else float("nan")
+                ),
+                "n_cuts_beat_spy_sharpe": 0,
+                "n_cuts_beat_spy_apy": 0,
+                "benchmark_by_dominant_regime": _benchmark_by_dominant_regime(results),
+                "regime_benchmark_failures": [],
+                "hmm_regime_counts_total": _merge_counts(results, "hmm_regime_counts"),
+                "spy_grid_regime_counts_total": _merge_counts(results, "spy_grid_regime_counts"),
+                "trade_buy_regime_counts_total": {},
+                "trade_sell_regime_counts_total": {},
+                "trade_buy_source_counts_total": {},
+                "trade_sell_exit_reason_counts_total": {},
+                "trade_buy_missing_mu_total": 0,
+                "trade_buy_missing_sigma_total": 0,
+                "n_positive_cuts": 0,
+                "wf_jobs": jobs,
+                "cuts": results,
+                "reason": (
+                    "FAIL: zero trades across all WF cuts; decision tree "
+                    "admitted no buys, so Sharpe is undefined and SPY "
+                    "benchmark cannot be met"
+                ),
+            }
         return {"passed": False, "cuts": results, "reason": "all sim cuts failed parse"}
     import statistics as _s
     mean_sharpe = _s.mean(sharpes)
@@ -982,7 +1033,12 @@ def _load_round_trip_frames(wf_result: dict) -> tuple[list[pd.DataFrame], list[s
         if not p.exists():
             missing.append(str(p))
             continue
-        frames.append(pd.read_csv(p))
+        try:
+            frame = pd.read_csv(p)
+        except pd.errors.EmptyDataError:
+            continue
+        if not frame.empty:
+            frames.append(frame)
     return frames, missing
 
 

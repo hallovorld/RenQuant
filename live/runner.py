@@ -364,7 +364,7 @@ def _run_once_multi_pipeline(
                 )
             else:
                 log.error(
-                    "preflight module not importable — aborting full/buy "
+                    "P-PREFLIGHT-IMPORT preflight module not importable — aborting full/buy "
                     "run fail-closed: %s",
                     exc,
                 )
@@ -380,7 +380,7 @@ def _run_once_multi_pipeline(
                 )
             else:
                 log.error(
-                    "preflight raised unexpectedly — aborting full/buy "
+                    "P-PREFLIGHT-EXCEPTION preflight raised unexpectedly — aborting full/buy "
                     "run fail-closed: %s",
                     exc,
                 )

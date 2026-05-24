@@ -17,3 +17,12 @@ def test_shadow_failure_alerts_by_default():
     assert '${RENQUANT_SHADOW_ALERT_NTFY:-0}' not in script
     assert 'RenQuant 104 SHADOW-FAIL' in script
     assert 'RenQuant 104 SHADOW-TIMEOUT' in script
+
+
+def test_full_preflight_exception_falls_back_to_sell_only():
+    """Broken buy-side preflight code must not suppress risk exits."""
+    script = DAILY_104.read_text()
+
+    assert "P-PREFLIGHT-IMPORT" in script
+    assert "P-PREFLIGHT-EXCEPTION" in script
+    assert "rerunning sell-only" in script
