@@ -35,6 +35,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+DECISION_TRACE_SOURCE = (
+    REPO / "backtesting" / "renquant_104" / "kernel" / "decision_trace.py"
+).read_text()
 
 
 def _make_cand(ticker: str, panel_score, rank_score):
@@ -424,13 +427,15 @@ class TestAdapterParityForFullSnapshot(unittest.TestCase):
         # binding is captured.
         start = max(0, idx - 800)
         block = src[start:idx + 200]
-        self.assertIn("_full_candidate_snapshot", block,
-                      f"{label} must read ctx._full_candidate_snapshot")
-        # And the snapshot lookup must come BEFORE the call.
-        snap_idx = block.find("_full_candidate_snapshot")
+        self.assertIn("candidate_trace_pool(ctx)", block,
+                      f"{label} must read the shared full candidate pool")
+        self.assertIn("_full_candidate_snapshot", DECISION_TRACE_SOURCE,
+                      "candidate_trace_pool must read ctx._full_candidate_snapshot")
+        # And the shared snapshot helper must be called BEFORE the DB write.
+        snap_idx = block.find("candidate_trace_pool(ctx)")
         call_idx = block.find("record_candidate_scores(")
         self.assertLess(snap_idx, call_idx,
-                         f"{label}: _full_candidate_snapshot must be "
+                         f"{label}: candidate_trace_pool(ctx) must be "
                          f"resolved BEFORE the record_candidate_scores call")
 
     def test_sim_adapter_reads_full_snapshot(self):

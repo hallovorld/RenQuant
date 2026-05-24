@@ -24,7 +24,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNNER_PATH = REPO_ROOT / "backtesting/renquant_104/adapters/runner.py"
+DECISION_TRACE_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/decision_trace.py"
 RUNNER_SOURCE = RUNNER_PATH.read_text()
+DECISION_TRACE_SOURCE = DECISION_TRACE_PATH.read_text()
 
 
 class TestPendingBrokerScopeFix:
@@ -84,9 +86,15 @@ class TestPendingBrokerScopeFix:
         commit_body = RUNNER_SOURCE[commit_idx:]
         # Within commit(), there must be a local rebind BEFORE any usage.
         rebind_idx = commit_body.find("pending_broker_tickers: set = set(")
-        first_use_idx = commit_body.find("tk in pending_broker_tickers")
+        first_use_idx = commit_body.find(
+            "pending_broker_tickers=pending_broker_tickers"
+        )
         assert rebind_idx > 0, "commit() must rebind pending_broker_tickers locally"
         assert first_use_idx > rebind_idx, (
-            f"rebind (idx={rebind_idx}) must come BEFORE first use "
+            f"rebind (idx={rebind_idx}) must come BEFORE helper handoff "
             f"(idx={first_use_idx}) — otherwise the NameError returns."
+        )
+        assert "tk in pending_broker_tickers" in DECISION_TRACE_SOURCE, (
+            "shared decision-trace helper must consume the locally rebound "
+            "pending_broker_tickers set"
         )
