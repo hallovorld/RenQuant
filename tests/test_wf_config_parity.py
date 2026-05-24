@@ -257,3 +257,5 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     assert built["regime"]["gmm_artifact"] == "sim/spy-hmm-regime.json"
     assert built["regime"]["correlation_artifact"] == "sim/watchlist-correlation.json"
     assert built["ranking"]["panel_scoring"]["shadow_models"] == []
+    assert built["ranking"]["panel_scoring"]["regime_admission"]["enabled"] is False
+    assert "generates" in built["ranking"]["panel_scoring"]["regime_admission"]["_wf_disabled_reason"]

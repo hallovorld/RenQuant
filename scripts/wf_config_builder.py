@@ -88,6 +88,10 @@ def build_wf_config_from_prod(
       - ``regime.gmm_artifact`` and ``regime.correlation_artifact`` because
         historical simulations must use point-in-time regime/risk artifacts
         whose ``as_of_date`` is no later than the backtest start.
+      - ``ranking.panel_scoring.regime_admission.enabled`` is disabled only
+        for WF acceptance runs because that gate consumes the
+        ``wf_gate_metadata`` which this run is generating. Live/preflight still
+        require the stamped evidence before buy/QP admission.
       - Shadow-model tracking is disabled because it has no trade-decision
         effect and can make WF gates spend hours in auxiliary PyTorch inference.
       - Label/metadata fields starting with ``_`` or ``__``.
@@ -122,6 +126,14 @@ def build_wf_config_from_prod(
             _set_path(cfg, dotted, value)
 
     panel_cfg = cfg.setdefault("ranking", {}).setdefault("panel_scoring", {})
+    regime_admission = panel_cfg.setdefault("regime_admission", {})
+    regime_admission["enabled"] = False
+    regime_admission["_wf_disabled_reason"] = (
+        "WF acceptance generates trade_monotonicity/sanity_regime_ic metadata; "
+        "requiring pre-existing wf_gate_metadata here creates a circular "
+        "zero-trade evaluation. Live/preflight keep the production fail-closed "
+        "admission contract."
+    )
     if "shadow_models" in panel_cfg:
         panel_cfg["shadow_models"] = []
         panel_cfg["_wf_shadow_disabled_reason"] = (
