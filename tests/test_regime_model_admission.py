@@ -98,6 +98,51 @@ def test_regime_admission_can_require_sanity_regime_ic() -> None:
     assert ctx._blocked_by_ticker["MSFT"] == "regime_admission:weak_sanity_ic:BULL_CALM"
 
 
+def test_regime_admission_blocks_ineligible_sanity_regime() -> None:
+    meta = _metadata("BULL_CALM")
+    meta["wf_gate_metadata"]["sanity_regime_ic"] = {
+        "regimes": {
+            "BULL_CALM": {
+                "eligible": False,
+                "passed": True,
+                "mean_ic": 0.05,
+            },
+        },
+    }
+    ctx = _ctx(meta)
+
+    RegimeModelAdmissionTask().run(ctx)
+
+    assert ctx.candidates == []
+    assert (
+        ctx._blocked_by_ticker["AAPL"]
+        == "regime_admission:ineligible_sanity:BULL_CALM"
+    )
+
+
+def test_regime_admission_blocks_placebo_dominated_sanity_regime() -> None:
+    meta = _metadata("BULL_CALM")
+    meta["wf_gate_metadata"]["sanity_regime_ic"] = {
+        "regimes": {
+            "BULL_CALM": {
+                "eligible": True,
+                "passed": True,
+                "mean_ic": 0.03,
+                "placebo_60_ic": 0.05,
+            },
+        },
+    }
+    ctx = _ctx(meta)
+
+    RegimeModelAdmissionTask().run(ctx)
+
+    assert ctx.candidates == []
+    assert (
+        ctx._blocked_by_ticker["MSFT"]
+        == "regime_admission:placebo_sanity:BULL_CALM"
+    )
+
+
 def test_regime_admission_requires_sanity_regime_ic_by_default() -> None:
     meta = _metadata("BULL_CALM")
     del meta["wf_gate_metadata"]["sanity_regime_ic"]

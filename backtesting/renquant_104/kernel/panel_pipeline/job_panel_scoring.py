@@ -973,6 +973,8 @@ def _sanity_regime_admission(
     stats = _regime_stats_map(sanity.get("regimes")).get(str(regime))
     if not stats:
         return False, f"regime_admission:no_sanity_stats:{regime}", {"sanity": sanity}
+    if stats.get("eligible") is False:
+        return False, f"regime_admission:ineligible_sanity:{regime}", {"stats": stats}
     mean_ic = stats.get("mean_ic")
     try:
         mean_ic_f = float(mean_ic)
@@ -980,6 +982,17 @@ def _sanity_regime_admission(
         return False, f"regime_admission:bad_sanity_ic:{regime}", {"stats": stats}
     if not math.isfinite(mean_ic_f) or mean_ic_f < float(min_ic):
         return False, f"regime_admission:weak_sanity_ic:{regime}", {"stats": stats}
+    placebo_60_ic = stats.get("placebo_60_ic")
+    if placebo_60_ic is not None:
+        try:
+            placebo_60_ic_f = float(placebo_60_ic)
+        except (TypeError, ValueError):
+            return False, f"regime_admission:bad_placebo_sanity:{regime}", {"stats": stats}
+        if math.isfinite(placebo_60_ic_f) and abs(placebo_60_ic_f) > max(
+            0.005,
+            abs(mean_ic_f),
+        ):
+            return False, f"regime_admission:placebo_sanity:{regime}", {"stats": stats}
     if stats.get("passed") is False:
         return False, f"regime_admission:failed_sanity:{regime}", {"stats": stats}
     return True, "ok", {"stats": stats}
