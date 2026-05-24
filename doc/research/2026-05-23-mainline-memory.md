@@ -1051,6 +1051,56 @@ PatchTST-specific walk-forward manifest exists with causal per-cut artifacts,
 calibrators, per-regime IC, PBO/DSR, shuffle/time-shift controls, and full
 portfolio WF against XGB and SPY.
 
+## 2026-05-24 Mainline Forensics Upgrade: Alpha vs Benchmark
+
+`scripts/analyze_wf_trade_forensics.py` now reports two missing diagnostics:
+
+- reconstructed exposure by cut: average alpha weight, benchmark weight,
+  gross weight, cash weight, alpha position count, and max alpha weight;
+- same-capital alpha vs benchmark P/L: for every non-benchmark closed alpha
+  trade, compare after-tax alpha P/L to buying `portfolio.benchmark_sleeve.ticker`
+  over the same entry/exit dates with the same entry notional.
+
+Regression tests:
+
+- `tests/test_wf_trade_forensics.py::test_alpha_vs_benchmark_measures_same_capital_active_pnl`
+- `tests/test_wf_trade_forensics.py::test_cut_exposure_summary_separates_alpha_and_benchmark`
+
+Targeted test result: `3 passed`.
+
+Applied to the latest `benchmark_sleeve_core100_fund15_fundingceil_20260524`
+trace:
+
+- average alpha weight by cut: `3.25%`, `2.08%`, `1.17%`;
+- average benchmark weight by cut: `94.10%`, `92.72%`, `87.08%`;
+- average cash weight by cut: `2.65%`, `5.20%`, `11.75%`;
+- alpha closed trades: `16`;
+- alpha gross P/L: `+$6.93k`;
+- alpha after-tax net P/L: `+$2.12k`;
+- same-capital SPY P/L: `+$1.55k`;
+- alpha active after-tax net versus SPY: `+$0.57k`;
+- gross win rate: `68.8%`;
+- active win rate: `37.5%`.
+
+Exit bucket active net versus SPY:
+
+- `qp_close`: `+$2.68k`;
+- `trailing_stop`: `+$0.41k`;
+- `qp_sell`: `-$0.04k`;
+- `single_day_loss`: `-$1.06k`;
+- `stop_loss`: `-$1.42k`.
+
+Interpretation:
+
+- Tax is not the current main explanation; `tax_cash_debited=0` and no losing
+  rows have positive tax.
+- The main APY/Sharpe ceiling is tiny active exposure plus stop/single-day-loss
+  drag. The benchmark sleeve restored market participation, but the alpha
+  sleeve is still too small and too inconsistent to move headline metrics.
+- PatchTST must be evaluated through this same lens. IC-only and static
+  long-window APY/Sharpe are not enough; promotion needs strict WF traces with
+  alpha-vs-SPY active P/L, exposure, score monotonicity, and regime buckets.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the

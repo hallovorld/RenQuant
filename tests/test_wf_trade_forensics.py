@@ -5,11 +5,13 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "scripts") not in sys.path:
     sys.path.insert(0, str(REPO / "scripts"))
 
+import analyze_wf_trade_forensics as wf_forensics  # noqa: E402
 from analyze_wf_trade_forensics import analyze_trace  # noqa: E402
 
 
@@ -83,3 +85,93 @@ def test_analyze_trace_uses_configured_hifo_lot_method(tmp_path: Path) -> None:
     assert payload["tax_integrity"]["positive_rows_with_tax_gt_gross"] == 0
     assert payload["tax_integrity"]["losing_rows_with_positive_tax"] == 0
     assert payload["n_rows"]["open"] == 1
+
+
+def test_alpha_vs_benchmark_measures_same_capital_active_pnl(monkeypatch) -> None:
+    prices = pd.Series(
+        [100.0, 110.0],
+        index=pd.to_datetime(["2024-01-02", "2024-01-03"]),
+    )
+    monkeypatch.setattr(wf_forensics, "_load_close_series", lambda ticker: prices)
+    closed = pd.DataFrame([
+        {
+            "status": "closed",
+            "ticker": "AAA",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-01-03",
+            "shares": 10,
+            "entry_price": 20.0,
+            "gross_pnl": 30.0,
+            "tax": 5.0,
+            "net_pnl_after_tax": 25.0,
+            "hold_days": 1,
+            "entry_source_job": "JointPortfolioQPJob",
+            "exit_reason": "qp_close",
+            "cut": "cut1",
+        },
+        {
+            "status": "closed",
+            "ticker": "SPY",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-01-03",
+            "shares": 1,
+            "entry_price": 100.0,
+            "gross_pnl": 10.0,
+            "tax": 1.0,
+            "net_pnl_after_tax": 9.0,
+            "hold_days": 1,
+            "entry_source_job": "BenchmarkSleeveJob",
+            "exit_reason": "benchmark_sleeve_rebalance",
+            "cut": "cut1",
+        },
+    ])
+
+    payload = wf_forensics._alpha_vs_benchmark(
+        closed,
+        benchmark_ticker="SPY",
+        min_group_n=1,
+    )
+
+    overall = payload["overall"]
+    assert overall["n"] == 1
+    assert overall["net_pnl_after_tax"] == 25.0
+    assert overall["benchmark_pnl_same_capital"] == pytest.approx(20.0)
+    assert overall["active_net_after_tax"] == pytest.approx(5.0)
+    assert overall["active_win_rate"] == 1.0
+
+
+def test_cut_exposure_summary_separates_alpha_and_benchmark(monkeypatch) -> None:
+    prices = {
+        "SPY": pd.Series(
+            [100.0, 100.0],
+            index=pd.to_datetime(["2024-01-02", "2024-01-03"]),
+        ),
+        "AAA": pd.Series(
+            [20.0, 30.0],
+            index=pd.to_datetime(["2024-01-02", "2024-01-03"]),
+        ),
+    }
+    monkeypatch.setattr(
+        wf_forensics,
+        "_load_close_series",
+        lambda ticker: prices[ticker.upper()],
+    )
+    equity = {"2024-01-02": 1000.0, "2024-01-03": 1000.0}
+    trades = [
+        {"action": "buy", "ticker": "SPY", "date": "2024-01-02", "shares": 5},
+        {"action": "buy", "ticker": "AAA", "date": "2024-01-02", "shares": 10},
+    ]
+
+    row = wf_forensics._cut_exposure_summary(
+        cut="cut1",
+        equity=equity,
+        trades=trades,
+        benchmark_ticker="SPY",
+    )
+
+    assert row["avg_benchmark_weight"] == 0.5
+    assert row["avg_alpha_weight"] == 0.25
+    assert row["avg_gross_weight"] == 0.75
+    assert row["avg_cash_weight"] == 0.25
+    assert row["avg_alpha_positions"] == 1.0
+    assert row["max_alpha_weight"] == 0.3

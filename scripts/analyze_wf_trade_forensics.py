@@ -74,6 +74,12 @@ def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def _numeric_series(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(default, index=df.index, dtype=float)
+    return pd.to_numeric(df[col], errors="coerce").fillna(default)
+
+
 def _closed(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "status" not in df.columns:
         return pd.DataFrame()
@@ -200,6 +206,241 @@ def _tax_integrity(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _benchmark_ticker(config: dict[str, Any] | None) -> str:
+    sleeve = (((config or {}).get("portfolio") or {}).get("benchmark_sleeve") or {})
+    ticker = str(sleeve.get("ticker", "SPY") or "SPY").upper()
+    return ticker
+
+
+def _load_close_series(ticker: str) -> pd.Series:
+    path = REPO_ROOT / "data" / "ohlcv" / ticker.upper() / "1d.parquet"
+    if not path.exists():
+        return pd.Series(dtype=float)
+    df = pd.read_parquet(path)
+    if "close" not in df.columns:
+        return pd.Series(dtype=float)
+    out = pd.to_numeric(df["close"], errors="coerce").dropna()
+    out.index = pd.to_datetime(out.index).normalize()
+    return out.sort_index()
+
+
+def _price_on_or_before(prices: pd.Series, date: Any) -> float:
+    if prices.empty:
+        return float("nan")
+    ts = pd.Timestamp(date).normalize()
+    idx = prices.index.searchsorted(ts, side="right") - 1
+    if idx < 0:
+        return float("nan")
+    return float(prices.iloc[idx])
+
+
+def _alpha_trade_mask(df: pd.DataFrame, benchmark_ticker: str) -> pd.Series:
+    ticker = df.get("ticker", pd.Series("", index=df.index)).fillna("").astype(str).str.upper()
+    source = df.get("entry_source_job", pd.Series("", index=df.index)).fillna("").astype(str)
+    is_benchmark_job = source.eq("BenchmarkSleeveJob")
+    return ticker.ne(benchmark_ticker.upper()) & ~is_benchmark_job
+
+
+def _with_same_capital_benchmark(
+    df: pd.DataFrame,
+    *,
+    benchmark_prices: pd.Series,
+) -> pd.DataFrame:
+    out = df.copy()
+    if out.empty:
+        for col in ("benchmark_pnl_same_capital", "active_net_after_tax", "active_return"):
+            out[col] = pd.Series(dtype=float)
+        return out
+    entry_px = out["entry_date"].map(lambda d: _price_on_or_before(benchmark_prices, d))
+    exit_px = out["exit_date"].map(lambda d: _price_on_or_before(benchmark_prices, d))
+    shares = _numeric_series(out, "shares")
+    entry_trade_px = _numeric_series(out, "entry_price")
+    entry_capital = (shares * entry_trade_px).abs()
+    bench_ret = (exit_px / entry_px.replace(0.0, np.nan)) - 1.0
+    out["benchmark_pnl_same_capital"] = entry_capital * bench_ret
+    out["active_net_after_tax"] = (
+        pd.to_numeric(out.get("net_pnl_after_tax", 0.0), errors="coerce").fillna(0.0)
+        - out["benchmark_pnl_same_capital"].fillna(0.0)
+    )
+    out["active_return"] = out["active_net_after_tax"] / entry_capital.replace(0.0, np.nan)
+    return out
+
+
+def _active_summary(df: pd.DataFrame) -> dict[str, Any]:
+    if df.empty:
+        return {
+            "n": 0,
+            "gross_pnl": 0.0,
+            "tax": 0.0,
+            "net_pnl_after_tax": 0.0,
+            "benchmark_pnl_same_capital": 0.0,
+            "active_net_after_tax": 0.0,
+            "gross_win_rate": None,
+            "active_win_rate": None,
+            "median_hold_days": None,
+        }
+    gross = pd.to_numeric(df["gross_pnl"], errors="coerce").fillna(0.0)
+    net = pd.to_numeric(df["net_pnl_after_tax"], errors="coerce").fillna(0.0)
+    bench = pd.to_numeric(df["benchmark_pnl_same_capital"], errors="coerce").fillna(0.0)
+    active = pd.to_numeric(df["active_net_after_tax"], errors="coerce").fillna(0.0)
+    return {
+        "n": int(len(df)),
+        "gross_pnl": float(gross.sum()),
+        "tax": float(_numeric_series(df, "tax").sum()),
+        "net_pnl_after_tax": float(net.sum()),
+        "benchmark_pnl_same_capital": float(bench.sum()),
+        "active_net_after_tax": float(active.sum()),
+        "gross_win_rate": float((gross > 0.0).mean()),
+        "active_win_rate": float((active > 0.0).mean()),
+        "median_hold_days": (
+            float(pd.to_numeric(df["hold_days"], errors="coerce").dropna().median())
+            if "hold_days" in df.columns and pd.to_numeric(df["hold_days"], errors="coerce").notna().any()
+            else None
+        ),
+    }
+
+
+def _active_group_table(df: pd.DataFrame, group_col: str, *, min_n: int = 1) -> list[dict[str, Any]]:
+    if df.empty or group_col not in df.columns:
+        return []
+    rows: list[dict[str, Any]] = []
+    for key, group in df.groupby(group_col, dropna=False, observed=False):
+        if len(group) < min_n:
+            continue
+        row = _active_summary(group)
+        row[group_col] = "NULL" if pd.isna(key) else str(key)
+        rows.append(row)
+    return sorted(rows, key=lambda r: float(r.get("active_net_after_tax") or 0.0))
+
+
+def _alpha_vs_benchmark(
+    closed: pd.DataFrame,
+    *,
+    benchmark_ticker: str,
+    min_group_n: int,
+) -> dict[str, Any]:
+    alpha = closed[_alpha_trade_mask(closed, benchmark_ticker)].copy()
+    prices = _load_close_series(benchmark_ticker)
+    alpha = _with_same_capital_benchmark(alpha, benchmark_prices=prices)
+    return {
+        "benchmark_ticker": benchmark_ticker,
+        "price_source": (
+            f"data/ohlcv/{benchmark_ticker}/1d.parquet"
+            if not prices.empty else "missing"
+        ),
+        "overall": _active_summary(alpha),
+        "by_cut": _active_group_table(alpha, "cut", min_n=min_group_n),
+        "by_exit_reason": _active_group_table(alpha, "exit_reason", min_n=min_group_n),
+        "by_entry_regime": _active_group_table(alpha, "entry_regime", min_n=min_group_n),
+        "by_ticker": _active_group_table(alpha, "ticker", min_n=min_group_n),
+    }
+
+
+def _trace_positions_exposure(
+    trace_dir: Path,
+    *,
+    benchmark_ticker: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for equity_path in sorted(trace_dir.glob("*.equity.json")):
+        cut = equity_path.name.replace(".equity.json", "")
+        trade_path = trace_dir / f"{cut}.trades.json"
+        if not trade_path.exists():
+            continue
+        equity_payload = _load_json(equity_path)
+        equity = equity_payload.get("annual_net_equity") or equity_payload.get("equity")
+        if not isinstance(equity, dict) or not equity:
+            continue
+        trades = _load_json(trade_path)
+        if not isinstance(trades, list):
+            continue
+        rows.append(_cut_exposure_summary(
+            cut=cut,
+            equity=equity,
+            trades=trades,
+            benchmark_ticker=benchmark_ticker,
+        ))
+    return rows
+
+
+def _cut_exposure_summary(
+    *,
+    cut: str,
+    equity: dict[str, Any],
+    trades: list[dict[str, Any]],
+    benchmark_ticker: str,
+) -> dict[str, Any]:
+    dates = [pd.Timestamp(d).normalize() for d in equity.keys()]
+    tickers = sorted({
+        str(t.get("ticker", "")).upper()
+        for t in trades
+        if t.get("ticker")
+    })
+    closes = {ticker: _load_close_series(ticker) for ticker in tickers}
+    by_date: dict[pd.Timestamp, list[dict[str, Any]]] = {}
+    for trade in trades:
+        try:
+            day = pd.Timestamp(trade.get("date")).normalize()
+        except (TypeError, ValueError):
+            continue
+        by_date.setdefault(day, []).append(trade)
+
+    positions = {ticker: 0.0 for ticker in tickers}
+    alpha_weights: list[float] = []
+    benchmark_weights: list[float] = []
+    gross_weights: list[float] = []
+    alpha_counts: list[int] = []
+    for day in sorted(dates):
+        for trade in by_date.get(day, []):
+            ticker = str(trade.get("ticker", "")).upper()
+            shares = _as_float(trade.get("shares"), 0.0)
+            if shares <= 0.0 or not ticker:
+                continue
+            action = str(trade.get("action", "")).lower()
+            if action == "buy":
+                positions[ticker] = positions.get(ticker, 0.0) + shares
+            elif action == "sell":
+                positions[ticker] = max(0.0, positions.get(ticker, 0.0) - shares)
+        nav = _as_float(equity.get(day.strftime("%Y-%m-%d")), float("nan"))
+        if not math.isfinite(nav) or nav <= 0.0:
+            continue
+        benchmark_value = 0.0
+        alpha_value = 0.0
+        alpha_n = 0
+        for ticker, shares in positions.items():
+            if shares <= 0.0:
+                continue
+            price = _price_on_or_before(closes.get(ticker, pd.Series(dtype=float)), day)
+            if not math.isfinite(price):
+                continue
+            value = shares * price
+            if ticker == benchmark_ticker.upper():
+                benchmark_value += value
+            else:
+                alpha_value += value
+                alpha_n += 1
+        alpha_w = alpha_value / nav
+        bench_w = benchmark_value / nav
+        alpha_weights.append(alpha_w)
+        benchmark_weights.append(bench_w)
+        gross_weights.append(alpha_w + bench_w)
+        alpha_counts.append(alpha_n)
+
+    def mean_or_none(values: list[float]) -> float | None:
+        return float(np.mean(values)) if values else None
+
+    avg_gross = mean_or_none(gross_weights)
+    return {
+        "cut": cut,
+        "avg_alpha_weight": mean_or_none(alpha_weights),
+        "avg_benchmark_weight": mean_or_none(benchmark_weights),
+        "avg_gross_weight": avg_gross,
+        "avg_cash_weight": (1.0 - avg_gross) if avg_gross is not None else None,
+        "avg_alpha_positions": mean_or_none(alpha_counts),
+        "max_alpha_weight": float(np.max(alpha_weights)) if alpha_weights else None,
+    }
+
+
 def _cut_metrics(trace_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted(trace_dir.glob("*.equity.json")):
@@ -267,13 +508,24 @@ def analyze_trace(
 ) -> dict[str, Any]:
     trace_dir = trace_dir.resolve()
     lot_method = _tax_lot_method(config, lot_method_override)
+    benchmark_ticker = _benchmark_ticker(config)
     trips = _load_round_trips(trace_dir, lot_method=lot_method)
     closed = _closed(trips)
     payload = {
         "trace_dir": str(trace_dir),
         "tax_lot_method": lot_method,
+        "benchmark_ticker": benchmark_ticker,
         "cut_metrics": _cut_metrics(trace_dir),
+        "exposure": _trace_positions_exposure(
+            trace_dir,
+            benchmark_ticker=benchmark_ticker,
+        ),
         "overall": _summary(closed),
+        "alpha_vs_benchmark": _alpha_vs_benchmark(
+            closed,
+            benchmark_ticker=benchmark_ticker,
+            min_group_n=min_group_n,
+        ),
         "tax_integrity": _tax_integrity(closed),
         "score_spearman": _score_spearman(closed),
         "groups": {
@@ -321,6 +573,7 @@ def markdown_report(payload: dict[str, Any]) -> str:
         "",
         f"- trace_dir: `{payload['trace_dir']}`",
         f"- tax_lot_method: `{payload['tax_lot_method']}`",
+        f"- benchmark_ticker: `{payload['benchmark_ticker']}`",
         f"- rows: {payload['n_rows']}",
         "",
         "## Overall",
@@ -340,6 +593,25 @@ def markdown_report(payload: dict[str, Any]) -> str:
         lines.append(pd.DataFrame(payload["cut_metrics"]).to_markdown(index=False, floatfmt=".4f"))
     else:
         lines.append("No equity sidecars found.")
+    lines.extend(["", "## Exposure"])
+    if payload["exposure"]:
+        lines.append(pd.DataFrame(payload["exposure"]).to_markdown(index=False, floatfmt=".4f"))
+    else:
+        lines.append("No exposure rows.")
+    lines.extend(["", "## Alpha vs Benchmark"])
+    avb = payload["alpha_vs_benchmark"]
+    lines.extend([
+        f"- benchmark: `{avb['benchmark_ticker']}`",
+        f"- price_source: `{avb['price_source']}`",
+    ])
+    lines.append(pd.DataFrame([avb["overall"]]).to_markdown(index=False, floatfmt=".4f"))
+    for key in ("by_cut", "by_exit_reason", "by_entry_regime", "by_ticker"):
+        lines.extend(["", f"### alpha_vs_benchmark.{key}"])
+        rows = avb.get(key, [])
+        if rows:
+            lines.append(pd.DataFrame(rows).to_markdown(index=False, floatfmt=".4f"))
+        else:
+            lines.append("No rows.")
     lines.extend(["", "## Tax Integrity"])
     lines.append(pd.DataFrame([payload["tax_integrity"]]).to_markdown(index=False, floatfmt=".4f"))
     lines.extend(["", "## Score Monotonicity"])
