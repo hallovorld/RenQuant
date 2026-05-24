@@ -1262,6 +1262,39 @@ Next implication:
   trade-domain monotonicity, model-vs-benchmark active P/L, sigma/RS/recent-vol
   evidence, and fail-closed metadata must decide buy eligibility before QP.
 
+## PatchTST WF Contract Progress 2026-05-24
+
+Problem:
+
+- PatchTST/HF sequence artifacts are `.pt` files, but
+  `WalkForwardModelLoader._scorer_fingerprint_for_entry()` only derived scorer
+  identity from local `.json` artifacts. A walk-forward manifest pointing at a
+  PatchTST `.pt` scorer therefore could not enforce the per-fold
+  scorer/calibrator fingerprint contract.
+
+Fix:
+
+- Local non-JSON scorer artifacts now use the exact file-byte SHA256 as
+  `sha256:<hex>` scorer identity. JSON artifacts still prefer a stamped
+  artifact fingerprint and fall back to file hash. Missing or non-local scorer
+  URIs still return no fingerprint and fail closed in `calibrator_as_of()`.
+
+Verification:
+
+- `tests/test_walkforward_loader.py` now includes a PatchTST-style `.pt`
+  regression: a calibrator stamped with the exact `.pt` file hash is accepted.
+- Targeted WF loader/manifest suite:
+  `tests/test_walkforward_loader.py tests/test_walkforward_manifest.py`
+  -> `25 passed`.
+
+Next implication:
+
+- PatchTST is still not production-ready. This only makes the strict WF
+  contract capable of covering `.pt` scorer artifacts. Remaining required work:
+  sidecar metadata, rolling `patchtst_hf.py --train-cutoff/--data-end`, HF
+  PatchTST WF manifest driver, causal per-fold calibrators, and the same
+  decision-tree / benchmark-sleeve / active P&L acceptance lenses used for XGB.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the

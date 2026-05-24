@@ -10,6 +10,7 @@ Pins the contract that SimAdapter / live runner / cron all bind to:
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -210,6 +211,38 @@ class TestModelAsOf:
 
         cal = loader.calibrator_as_of("2024-01-15")
         assert cal.metadata["scorer_artifact_fingerprint"] == "sha256:abc123abc123"
+
+    def test_calibrator_as_of_accepts_local_pt_scorer_fingerprint(self, tmp_path):
+        """HF PatchTST .pt folds must bind calibrators to exact scorer bytes."""
+        from kernel.walk_forward import WalkForwardModelLoader
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        import numpy as np
+
+        scorer_path = tmp_path / "hf_patchtst_fold_A_model.pt"
+        scorer_path.write_bytes(b"fake torch checkpoint bytes for wf contract")
+        scorer_fp = "sha256:" + hashlib.sha256(scorer_path.read_bytes()).hexdigest()
+
+        cal_path = tmp_path / "cal-A.json"
+        GlobalPanelCalibration(
+            prob_x=np.array([-1.0, 1.0]),
+            prob_y=np.array([0.25, 0.75]),
+            er_x=np.array([-1.0, 1.0]),
+            er_y=np.array([-0.01, 0.01]),
+            metadata={"scorer_artifact_fingerprint": scorer_fp},
+        ).save(cal_path)
+        rows = [
+            _row(
+                "2024-01-01T00:00:00",
+                "2024-01-02T03:00:00",
+                str(scorer_path),
+                calibrator_uri=str(cal_path),
+            ),
+        ]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+
+        cal = loader.calibrator_as_of("2024-01-15")
+        assert cal.metadata["scorer_artifact_fingerprint"] == scorer_fp
 
     def test_calibrator_as_of_rejects_foreign_calibrator(self, tmp_path):
         """The loader must not expose a calibrator fitted to another scorer."""

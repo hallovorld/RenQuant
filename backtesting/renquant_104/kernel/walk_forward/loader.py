@@ -330,16 +330,17 @@ class WalkForwardModelLoader:
         return p if p.is_absolute() else self._manifest_path.parent / p
 
     def _scorer_fingerprint_for_entry(self, entry: RetrainEntry) -> str | None:
-        """Read the selected fold's local scorer identity without loading XGB."""
+        """Read the selected fold's local scorer identity without loading it."""
         resolved = self._resolve_uri(entry.artifact_uri)
-        if isinstance(resolved, Path) and resolved.exists() and resolved.suffix == ".json":
+        if not isinstance(resolved, Path) or not resolved.exists():
+            return None
+        if resolved.suffix == ".json":
             payload = json.loads(resolved.read_text())
             if isinstance(payload, dict):
                 stamped = _scorer_fingerprint_from_payload(payload)
                 if stamped:
                     return stamped
-                return "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
-        return None
+        return "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
 
     def _assert_calibrator_matches_entry(
         self,
