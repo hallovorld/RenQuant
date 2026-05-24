@@ -442,10 +442,15 @@ else
             echo "Shadow timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
         fi
     else
-        echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
-        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+        SHADOW_BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT|P-PREFLIGHT-IMPORT|P-PREFLIGHT-EXCEPTION"
+        if grep -Eq "$SHADOW_BUY_SIDE_PREFLIGHT_PATTERN" "$SHADOW_LOG"; then
+            echo "Shadow run blocked by expected buy-side preflight gate (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
+            echo "Shadow preflight-block ntfy suppressed; prod path already reported the actionable gate."
+        elif [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
+            echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
             notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e failed today (rc=$SHADOW_RC) — primary already completed. See $SHADOW_LOG."
         else
+            echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
             echo "Shadow failure ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
         fi
     fi

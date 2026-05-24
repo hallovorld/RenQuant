@@ -19,6 +19,16 @@ def test_shadow_failure_alerts_by_default():
     assert 'RenQuant 104 SHADOW-TIMEOUT' in script
 
 
+def test_shadow_buy_side_preflight_blocks_do_not_page_phone():
+    """Expected buy-side gate blocks are logged, not repeated as shadow errors."""
+    script = DAILY_104.read_text()
+
+    assert "SHADOW_BUY_SIDE_PREFLIGHT_PATTERN" in script
+    assert "Shadow preflight-block ntfy suppressed" in script
+    assert "P-WF-GATE" in script
+    assert "P-PREFLIGHT-EXCEPTION" in script
+
+
 def test_full_preflight_exception_falls_back_to_sell_only():
     """Broken buy-side preflight code must not suppress risk exits."""
     script = DAILY_104.read_text()
