@@ -22,6 +22,13 @@ from wf_config_parity import evaluate_wf_config_parity
 REPO = Path(__file__).resolve().parent.parent
 STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
 
+EXPERIMENT_OVERRIDE_PATHS = (
+    "rotation.joint_actions.qp_admission_gate.max_sigma",
+    "rotation.joint_actions.qp_admission_gate.max_sigma_by_regime",
+    "rotation.joint_actions.qp_admission_gate.topup_max_sigma",
+    "rotation.joint_actions.qp_admission_gate.topup_max_sigma_by_regime",
+)
+
 
 def _get_path(obj: dict[str, Any], dotted: str) -> Any:
     cur: Any = obj
@@ -69,12 +76,35 @@ def _resolve_strategy_path(raw: str | None, strategy_dir: Path) -> Path | None:
     return path if path.is_absolute() else strategy_dir / path
 
 
+def _semantic_overrides_in_base(
+    prod_config: dict[str, Any],
+    base_wf_config: dict[str, Any],
+) -> list[str]:
+    """Return explicit experiment overrides that differ from production.
+
+    ``build_wf_config_from_prod`` intentionally starts from production
+    semantics. If an operator hands it a side config with an explicit
+    experiment knob, silently dropping that knob creates a false A/B result.
+    Require a separate opt-in before preserving those semantic differences.
+    """
+    out: list[str] = []
+    for dotted in EXPERIMENT_OVERRIDE_PATHS:
+        base_value = _get_path(base_wf_config, dotted)
+        if base_value is None:
+            continue
+        prod_value = _get_path(prod_config, dotted)
+        if base_value != prod_value:
+            out.append(dotted)
+    return out
+
+
 def build_wf_config_from_prod(
     prod_config: dict[str, Any],
     *,
     manifest_path: str,
     base_wf_config: dict[str, Any] | None = None,
     strategy_dir: Path = STRATEGY_DIR,
+    preserve_experiment_overrides: bool = False,
 ) -> dict[str, Any]:
     """Return a WF eval config with production decision semantics.
 
@@ -98,6 +128,16 @@ def build_wf_config_from_prod(
     """
     cfg = copy.deepcopy(prod_config)
     base = base_wf_config or {}
+    overrides = _semantic_overrides_in_base(prod_config, base)
+    if overrides and not preserve_experiment_overrides:
+        joined = ", ".join(overrides)
+        raise ValueError(
+            "base WF config contains semantic experiment override(s) that "
+            "would be dropped by production-semantic derivation: "
+            f"{joined}. Re-run with preserve_experiment_overrides=True "
+            "or the CLI flag --preserve-experiment-overrides for an "
+            "explicit diagnostic/non-promotable A/B run."
+        )
 
     wf_base = copy.deepcopy(base.get("walkforward") or {})
     wf_base.update({
@@ -124,6 +164,22 @@ def build_wf_config_from_prod(
         value = _get_path(base, dotted)
         if value is not None:
             _set_path(cfg, dotted, value)
+
+    if preserve_experiment_overrides:
+        preserved: list[str] = []
+        for dotted in overrides:
+            value = _get_path(base, dotted)
+            if value is not None:
+                _set_path(cfg, dotted, copy.deepcopy(value))
+                preserved.append(dotted)
+        if preserved:
+            cfg["_experiment_overrides_preserved"] = preserved
+            cfg["_experiment_overrides_note"] = (
+                "Diagnostic WF A/B only. These semantic differences mean the "
+                "generated config is not production-equivalent and cannot be "
+                "promotion evidence until production config carries the same "
+                "knobs and parity passes."
+            )
 
     panel_cfg = cfg.setdefault("ranking", {}).setdefault("panel_scoring", {})
     regime_admission = panel_cfg.setdefault("regime_admission", {})
@@ -162,6 +218,11 @@ def main() -> int:
                         help="Output config path. Relative paths resolve under strategy dir.")
     parser.add_argument("--candidate-artifact", default=None,
                         help="Optional candidate artifact for feature-contract parity.")
+    parser.add_argument("--preserve-experiment-overrides", action="store_true",
+                        help="Explicitly carry whitelisted diagnostic semantic "
+                             "overrides from the base WF config. This is for "
+                             "A/B exploration and will normally fail prod/WF "
+                             "parity until production config matches.")
     args = parser.parse_args()
 
     prod_path = Path(args.prod_config)
@@ -185,6 +246,7 @@ def main() -> int:
         manifest_path=str(manifest),
         base_wf_config=base,
         strategy_dir=STRATEGY_DIR,
+        preserve_experiment_overrides=args.preserve_experiment_overrides,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(cfg, indent=2, sort_keys=False) + "\n")

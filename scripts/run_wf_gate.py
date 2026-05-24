@@ -1649,6 +1649,11 @@ def main():
                     help="Before running, derive a production-semantic WF "
                          "config from --strategy-config. The base config only "
                          "contributes walkforward/calibration artifact paths.")
+    ap.add_argument("--preserve-experiment-overrides", action="store_true",
+                    help="With --derive-config-from-prod, explicitly preserve "
+                         "whitelisted semantic experiment knobs from the base "
+                         "config. Diagnostic/non-promotable unless production "
+                         "config parity also passes.")
     args = ap.parse_args()
 
     artifact_path = Path(args.artifact)
@@ -1690,6 +1695,7 @@ def main():
             manifest_path=str(manifest_path),
             base_wf_config=base_cfg,
             strategy_dir=STRATEGY_DIR,
+            preserve_experiment_overrides=args.preserve_experiment_overrides,
         )
         derived_path.write_text(json.dumps(derived_cfg, indent=2, sort_keys=False) + "\n")
         args.strategy_config = str(derived_path.relative_to(STRATEGY_DIR))

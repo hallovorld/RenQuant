@@ -259,3 +259,66 @@ def test_builder_keeps_prod_semantics_but_wf_eval_paths(tmp_path: Path) -> None:
     assert built["ranking"]["panel_scoring"]["shadow_models"] == []
     assert built["ranking"]["panel_scoring"]["regime_admission"]["enabled"] is False
     assert "generates" in built["ranking"]["panel_scoring"]["regime_admission"]["_wf_disabled_reason"]
+
+
+def test_builder_fails_closed_on_silent_experiment_override(tmp_path: Path) -> None:
+    prod_art = _artifact(tmp_path / "artifacts/prod/panel.json", ["f1"])
+    wf_art = _artifact(tmp_path / "artifacts/wf/cut/panel.json", ["f1"])
+    manifest = tmp_path / "artifacts/sim/manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({
+        "retrains": [{"artifact_uri": str(wf_art), "cutoff_date": "2024-01-01"}]
+    }))
+
+    prod_cfg = _base_config(str(prod_art), kind="xgb")
+    base_wf = _base_config("artifacts/old/panel.json", kind="panel_ltr_xgboost")
+    base_wf["walkforward"] = {"enabled": True, "manifest_path": str(manifest)}
+    base_wf["rotation"]["joint_actions"]["qp_admission_gate"] = {
+        "enabled": True,
+        "max_sigma_by_regime": {"BULL_CALM": 0.38},
+    }
+
+    try:
+        build_wf_config_from_prod(
+            prod_cfg,
+            manifest_path=str(manifest),
+            base_wf_config=base_wf,
+            strategy_dir=tmp_path,
+        )
+    except ValueError as exc:
+        assert "max_sigma_by_regime" in str(exc)
+        assert "would be dropped" in str(exc)
+    else:
+        raise AssertionError("builder silently dropped an experiment override")
+
+
+def test_builder_preserves_explicit_experiment_override_when_requested(tmp_path: Path) -> None:
+    prod_art = _artifact(tmp_path / "artifacts/prod/panel.json", ["f1"])
+    wf_art = _artifact(tmp_path / "artifacts/wf/cut/panel.json", ["f1"])
+    manifest = tmp_path / "artifacts/sim/manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({
+        "retrains": [{"artifact_uri": str(wf_art), "cutoff_date": "2024-01-01"}]
+    }))
+
+    prod_cfg = _base_config(str(prod_art), kind="xgb")
+    base_wf = _base_config("artifacts/old/panel.json", kind="panel_ltr_xgboost")
+    base_wf["walkforward"] = {"enabled": True, "manifest_path": str(manifest)}
+    base_wf["rotation"]["joint_actions"]["qp_admission_gate"] = {
+        "enabled": True,
+        "max_sigma_by_regime": {"BULL_CALM": 0.38},
+    }
+
+    built = build_wf_config_from_prod(
+        prod_cfg,
+        manifest_path=str(manifest),
+        base_wf_config=base_wf,
+        strategy_dir=tmp_path,
+        preserve_experiment_overrides=True,
+    )
+
+    gate = built["rotation"]["joint_actions"]["qp_admission_gate"]
+    assert gate["max_sigma_by_regime"] == {"BULL_CALM": 0.38}
+    assert "rotation.joint_actions.qp_admission_gate.max_sigma_by_regime" in (
+        built["_experiment_overrides_preserved"]
+    )
