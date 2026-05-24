@@ -883,9 +883,12 @@ def _load_round_trip_frames(wf_result: dict) -> tuple[list[pd.DataFrame], list[s
 def run_sanity_battery(artifact_path: Path) -> dict:
     """§5.2 shuffled-label + time-shift placebo on the artifact's training pipeline.
 
-    Implementation: re-train the model on (a) shuffled labels and
-    (b) +60d-shifted labels; measure val_ic on each. Lower-cost
-    proxy for full sanity battery (which would re-run sim too).
+    Current implementation is the lower-cost existing-model diagnostic:
+    score the validation partition once, then measure IC against the real
+    label, shuffled labels, and future-shifted labels. It is a production
+    acceptance gate, so unavailable sanity evidence fails closed. The shift
+    diagnostic can also reflect slow regime/momentum persistence, so we record
+    a multi-shift profile instead of treating one shifted IC as self-explaining.
     """
     log.info("§5.2 sanity battery (shuffled-label + time-shift placebo)...")
     # For panel-LTR XGB, run via existing scripts that support these flags.
@@ -907,8 +910,12 @@ def run_sanity_battery(artifact_path: Path) -> dict:
     # Use the rawlabel panel (has fwd_60d_excess_raw and supports placebo construction)
     panel_path = REPO / "data/alpha158_291_fundamental_dataset_rawlabel.parquet"
     if not panel_path.exists():
-        log.warning("rawlabel panel missing — skipping sanity (cheap mode unavailable)")
-        return {"passed": True, "reason": "panel missing — sanity skipped"}
+        log.error("rawlabel panel missing — sanity unavailable; fail closed")
+        return {
+            "passed": False,
+            "reason": "panel missing — sanity unavailable",
+            "sanity_method": "existing_model_label_diagnostics",
+        }
     panel = _pd.read_parquet(panel_path)
     panel["date"] = _pd.to_datetime(panel["date"])
     LABEL = "fwd_60d_excess_raw"
@@ -931,10 +938,18 @@ def run_sanity_battery(artifact_path: Path) -> dict:
         else:
             log.warning("kind=%s — sanity not implemented for this head type",
                         artifact.get("kind"))
-            return {"passed": True, "reason": "sanity not implemented for this kind"}
+            return {
+                "passed": False,
+                "reason": "sanity not implemented for this kind",
+                "sanity_method": "existing_model_label_diagnostics",
+            }
     except Exception as exc:
-        log.warning("sanity prediction failed: %s — skipping", exc)
-        return {"passed": True, "reason": f"prediction failed: {exc}"}
+        log.exception("sanity prediction failed; fail closed")
+        return {
+            "passed": False,
+            "reason": f"prediction failed: {exc}",
+            "sanity_method": "existing_model_label_diagnostics",
+        }
 
     yva_real = val[LABEL].clip(-0.5, 0.5).values
     val_dates = val["date"].values
@@ -955,23 +970,58 @@ def run_sanity_battery(artifact_path: Path) -> dict:
     shuf_ic = cs_ic(mu, yva_shuf, val_dates)
     log.info("  shuffled_ic = %+.4f (expect ≈ 0)", shuf_ic)
 
-    # Time-shift placebo: shift each ticker's labels by +60 trading days
+    # Time-shift placebo: shift each ticker's labels forward. Keep the
+    # original +60d gate threshold for compatibility, but record a broader
+    # shift profile because long-horizon equity labels can remain correlated
+    # under slow regime/momentum persistence.
     panel_s = panel.sort_values(["ticker", "date"]).copy()
-    panel_s["__shift__"] = panel_s.groupby("ticker")[LABEL].shift(-60)
-    val_s = panel_s[panel_s.date > val_cut].dropna(subset=["__shift__"])
-    if len(val_s) > 100:
-        # Need to align mu predictions to val_s rows (subset of val)
-        val_idx = val.set_index(["ticker", "date"])
+    val_idx = val.set_index(["ticker", "date"])
+    mu_by_idx = _pd.Series(mu, index=val_idx.index)
+    placebo_shift_diagnostics = []
+    placebo_ic = float("nan")
+    for shift_days in (5, 10, 20, 40, 60, 80, 120, 180, 252):
+        col = f"__shift_{shift_days}__"
+        panel_s[col] = panel_s.groupby("ticker")[LABEL].shift(-shift_days)
+        val_s = panel_s[panel_s.date > val_cut].dropna(subset=[col])
+        if len(val_s) <= 100:
+            placebo_shift_diagnostics.append({
+                "shift_days": shift_days,
+                "ic": None,
+                "n_rows": int(len(val_s)),
+                "n_dates": 0,
+                "skipped": "too_few_rows",
+            })
+            continue
         val_s_idx = val_s.set_index(["ticker", "date"])
         common = val_s_idx.index.intersection(val_idx.index)
-        mu_aligned = _pd.Series(mu, index=val_idx.index).loc[common].values
-        yva_placebo = val_s_idx.loc[common, "__shift__"].clip(-0.5, 0.5).values
+        if len(common) <= 100:
+            placebo_shift_diagnostics.append({
+                "shift_days": shift_days,
+                "ic": None,
+                "n_rows": int(len(common)),
+                "n_dates": 0,
+                "skipped": "too_few_aligned_rows",
+            })
+            continue
+        mu_aligned = mu_by_idx.loc[common].values
+        yva_placebo = val_s_idx.loc[common, col].clip(-0.5, 0.5).values
         dates_aligned = [d for _, d in common]
-        placebo_ic = cs_ic(mu_aligned, yva_placebo, dates_aligned)
-        log.info("  placebo_ic = %+.4f (expect < 0.5 × real_ic = %+.4f)",
-                 placebo_ic, 0.5 * real_ic)
-    else:
-        placebo_ic = float("nan")
+        ic = cs_ic(mu_aligned, yva_placebo, dates_aligned)
+        n_dates = len(set(dates_aligned))
+        placebo_shift_diagnostics.append({
+            "shift_days": shift_days,
+            "ic": ic,
+            "n_rows": int(len(common)),
+            "n_dates": int(n_dates),
+            "abs_ratio_to_real": (
+                abs(ic) / abs(real_ic) if real_ic else None
+            ),
+        })
+        if shift_days == 60:
+            placebo_ic = ic
+            log.info("  placebo_ic = %+.4f (expect < 0.5 × real_ic = %+.4f)",
+                     placebo_ic, 0.5 * real_ic)
+    if placebo_ic != placebo_ic:
         log.warning("  placebo skipped — too few aligned val rows")
 
     # Pass criteria
@@ -984,6 +1034,8 @@ def run_sanity_battery(artifact_path: Path) -> dict:
         "real_ic": real_ic,
         "sanity_shuffled_ic": shuf_ic,
         "sanity_placebo_ic": placebo_ic if placebo_ic == placebo_ic else None,
+        "sanity_method": "existing_model_label_diagnostics",
+        "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "reason": (
             f"PASS: shuf_ic={shuf_ic:+.4f} placebo_ic={placebo_ic:+.4f}"
             if (pass_shuf and pass_placebo) else
@@ -1237,6 +1289,8 @@ def main():
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),
         "sanity_placebo_ic":   sanity_result.get("sanity_placebo_ic"),
+        "sanity_method":       sanity_result.get("sanity_method"),
+        "placebo_shift_diagnostics": sanity_result.get("placebo_shift_diagnostics"),
         "wf_reason":           wf_result.get("reason"),
         "sanity_reason":       sanity_result.get("reason"),
         "run_at":              datetime.datetime.utcnow().isoformat(),

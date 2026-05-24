@@ -55,6 +55,22 @@ def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     assert "val.reindex(columns=feat_cols, fill_value=0).fillna(0)" in src
 
 
+def test_wf_gate_sanity_unavailable_fails_closed() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert '"passed": False' in src
+    assert "panel missing — sanity unavailable" in src
+    assert "sanity not implemented for this kind" in src
+    assert "prediction failed: {exc}" in src
+
+
+def test_wf_gate_sanity_records_method_and_shift_diagnostics() -> None:
+    src = (REPO / "scripts/run_wf_gate.py").read_text()
+    assert '"sanity_method": "existing_model_label_diagnostics"' in src
+    assert '"sanity_method":       sanity_result.get("sanity_method")' in src
+    assert "placebo_shift_diagnostics" in src
+    assert "abs_ratio_to_real" in src
+
+
 def test_wf_gate_supports_bounded_cut_parallelism() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert '"--jobs"' in src
