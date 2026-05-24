@@ -105,6 +105,61 @@ class TestSimAdapterPartialSell:
         assert tl["shares"]  == 3.0
         assert tl["partial"] is True
 
+    def test_sim_sell_trade_event_uses_shared_audit_shape(self):
+        import pandas as pd
+        from kernel.exits import ExitSignal
+
+        adp = self._make_adapter("NVDA", shares=10, entry_price=100.0)
+        holding = adp._holdings["NVDA"]
+        holding.rank_score = 0.61
+        holding.panel_score = 0.58
+        holding.mu = 0.012
+        holding.sigma = 0.034
+
+        ctx = self._make_ctx(datetime.date(2026, 4, 24), "NVDA", price=125.0)
+        ctx.regime = "BULL_CALM"
+        ctx.confidence = 0.72
+        ctx.config["regime_params"] = {
+            "BULL_CALM": {
+                "stop_loss_pct": 0.15,
+                "take_profit_pct": 0.35,
+                "max_hold_days": 500,
+            },
+        }
+        ctx.config["tax"]["cash_debit_mode"] = "reporting_only"
+
+        sig = ExitSignal(
+            should_exit=True,
+            reason="QP trim",
+            exit_type="qp_sell",
+            quantity=3.0,
+        )
+        sig.source_job = "JointPortfolioQPJob"
+        sig.source_task = "EmitOrdersFromQPSolutionTask"
+
+        adp._apply_sell("NVDA", sig, pd.Timestamp("2026-04-24"), ctx)
+
+        row = adp._trade_log[0]
+        assert row["action"] == "sell"
+        assert row["source_job"] == "JointPortfolioQPJob"
+        assert row["source_task"] == "EmitOrdersFromQPSolutionTask"
+        assert row["order_source"] == (
+            "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
+        )
+        assert row["score_snapshot"]["rank_score"] == pytest.approx(0.61)
+        assert row["score_snapshot"]["panel_score"] == pytest.approx(0.58)
+        assert row["score_snapshot"]["regime"] == "BULL_CALM"
+        assert row["score_snapshot"]["confidence"] == pytest.approx(0.72)
+        assert row["decision_inputs"]["signal_reason"] == "QP trim"
+        assert row["decision_inputs"]["gross_pnl"] == pytest.approx(row["gross_pnl"])
+        assert row["decision_inputs"]["tax"] == pytest.approx(row["tax"])
+        assert row["decision_inputs"]["partial"] is True
+        assert row["tax_cash_debit_mode"] == "reporting_only"
+        assert row["decision_inputs"]["tax_cash_debited"] == pytest.approx(0.0)
+        assert row["exit_stop_loss_pct"] == pytest.approx(0.15)
+        assert row["exit_take_profit_pct"] == pytest.approx(0.35)
+        assert row["exit_max_hold_days"] == 500
+
     def test_full_sell_when_quantity_ge_current_shares(self):
         import pandas as pd
         from kernel.exits import ExitSignal

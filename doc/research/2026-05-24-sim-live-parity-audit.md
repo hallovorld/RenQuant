@@ -29,10 +29,12 @@ The adapters are different by design:
 - Execution: sim fills at simulated prices and models settlement; live sends
   broker orders and handles pending-order/cash/fill failures; LEAN uses QC
   execution primitives.
-- Persistence: all three write the same DB contract. BUY row construction is
-  shared across sim/live/LEAN, and SELL row construction is shared for
-  live/LEAN. Sim sell rows still carry adapter-local tax-lot disposal details
-  and should be migrated after lot attribution is centralized.
+- Persistence: all three write the same DB contract. BUY and SELL row
+  construction now both go through `kernel.trade_events` across
+  sim/live/LEAN. Sim still owns adapter-local tax-lot disposal, fees, cash
+  debit mode, and settlement mutation before calling the shared SELL builder,
+  so execution accounting remains adapter-specific while audit row shape is
+  shared.
 
 Therefore the honest status is: **core decision code is shared, adapter
 plumbing is not fully unified, and adapter parity needs active tests.**
@@ -125,12 +127,12 @@ Fix:
    `kernel.trade_events.build_buy_trade_event` normalizes sim/live/LEAN buy
    rows so score snapshots and decision inputs do not drift across adapters.
 
-5. SELL trade-event construction is partly shared now.
-   `kernel.trade_events.build_sell_trade_event` normalizes live/LEAN sell
+5. SELL trade-event construction is shared now.
+   `kernel.trade_events.build_sell_trade_event` normalizes sim/live/LEAN sell
    rows, including source attribution, shares, tax/net P&L, score snapshots,
-   and applied exit params. Sim still has extra lot-disposal/accounting logic
-   in its adapter, so the next shared helper should own tax-lot attribution
-   before sim sells are fully migrated.
+   and applied exit params. Sim still computes lot disposal, fees, settlement,
+   and tax-cash debit before calling the builder, then adds those adapter
+   accounting fields to the shared audit row.
 
 6. Execution semantics intentionally differ.
    This is not a bug, but every performance report must label whether it is
@@ -158,9 +160,9 @@ Fix:
    drifted (`last_sell_pls`, `last_stop_exit_dates`, DB handle, run id,
    prices, cash/NAV, holdings, and model/data payloads).
 2. Keep migrating execution post-processing into shared kernel helpers:
-   broker-state mutation is still adapter-heavy, and sim sell events should
-   move to the shared sell builder after the remaining settlement/fee fields
-   are represented in the shared event contract.
+   broker-state mutation is still adapter-heavy. The next useful extraction is
+   a lot-disposal/accounting helper that returns disposed basis, gross P&L, tax,
+   net proceeds, and settlement/cash-debit fields before adapter mutation.
 3. Make live-vs-sim reconciliation run after daily/live cycles and write a
    small divergence report.
 4. Continue model-side repair separately: current alpha is still

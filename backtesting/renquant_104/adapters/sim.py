@@ -62,7 +62,7 @@ from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
     is_full_liquidate_signal,
 )
-from kernel.trade_events import build_buy_trade_event
+from kernel.trade_events import build_buy_trade_event, build_sell_trade_event
 
 log = logging.getLogger("adapters.sim")
 
@@ -1659,27 +1659,27 @@ class SimAdapter:
                 entry_regime=entry_regime,
                 entry_regime_params=entry_regime_p,
             )
-        sig_reason = getattr(sig, "reason", None)
-        source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
-        source_task = str(getattr(sig, "source_task", None) or sig.exit_type or "sell")
-        order_source = str(
-            getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
+        trade_event = build_sell_trade_event(
+            ticker=ticker,
+            sig=sig,
+            holding=hs,
+            price=price,
+            today=today_ts,
+            regime=getattr(ctx, "regime", None),
+            confidence=getattr(ctx, "confidence", None),
+            regime_params=regime_p,
+            config=(ctx.config if ctx is not None else {}),
+            shares=sell_shares,
+            gross_pnl=gross_pnl,
+            proceeds_basis=proceeds_basis,
+            tax=tax,
+            net_pnl_after_tax=gross_pnl - tax,
+            pnl_pct=_pnl_pct,
+            attribution_version="exit_decision_v1",
         )
-        self._trade_log.append({
-            "action":      "sell",
-            "ticker":      ticker,
-            "date":        today_ts,
-            "price":       price,
-            "shares":      sell_shares,
-            "gross_pnl":   gross_pnl,
-            "proceeds_basis": proceeds_basis,
-            "net_pnl_after_tax": gross_pnl - tax,
-            "pnl_pct":     _pnl_pct,
-            "hold_days":   hold_days,
-            "tax":         tax,
+        trade_event.update({
             "tax_cash_debited": tax_cash_debited,
             "tax_cash_debit_mode": tax_cash_debit_mode,
-            "exit_reason": sig.exit_type,
             "partial":     is_partial,
             "regime":      getattr(ctx, "regime", None),
             "confidence":  getattr(ctx, "confidence", None),
@@ -1705,52 +1705,11 @@ class SimAdapter:
             "exit_atr_n_multiplier": exit_p.get("atr_n_multiplier"),
             "exit_max_hold_days": exit_p.get("max_hold_days"),
             "exit_max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
-            "order_type":  f"SELL_{sig.exit_type}" if sig.exit_type else "SELL",
-            "source":      str(getattr(sig, "source", None) or "ExitPipeline"),
-            "source_job":  source_job,
-            "source_task": source_task,
-            "order_source": order_source,
-            "attribution_version": "exit_decision_v1",
-            "score_snapshot": {
-                "rank_score": getattr(hs, "rank_score", None),
-                "panel_score": getattr(hs, "panel_score", None),
-                "mu": getattr(hs, "mu", None),
-                "sigma": getattr(hs, "sigma", None),
-                "kelly_target_pct": getattr(hs, "kelly_target_pct", None),
-                "confidence": getattr(ctx, "confidence", None),
-                "regime": getattr(ctx, "regime", None),
-            },
-            "decision_inputs": {
-                "acceptance_reason": sig.exit_type or sig_reason,
-                "exit_reason": sig.exit_type,
-                "signal_reason": sig_reason,
-                "partial": is_partial,
-                "quantity": getattr(sig, "quantity", None),
-                "hold_days": hold_days,
-                "pnl_pct": _pnl_pct,
-                "stop_loss_pct": exit_p.get("stop_loss_pct"),
-                "stop_loss_anchor_policy": exit_p.get("stop_loss_anchor_policy"),
-                "stop_loss_anchor_regime": exit_p.get("stop_loss_anchor_regime"),
-                "stop_loss_current_regime": exit_p.get("stop_loss_current_regime"),
-                "stop_loss_current_pct": exit_p.get("stop_loss_current_pct"),
-                "stop_loss_entry_regime": exit_p.get("stop_loss_entry_regime"),
-                "stop_loss_entry_pct": exit_p.get("stop_loss_entry_pct"),
-                "stop_n_sigma": exit_p.get("stop_n_sigma"),
-                "take_profit_pct": exit_p.get("take_profit_pct"),
-                "stop_decay_days": exit_p.get("stop_decay_days"),
-                "stop_decay_floor": exit_p.get("stop_decay_floor"),
-                "max_single_day_loss_pct": exit_p.get("max_single_day_loss_pct"),
-                "sdl_n_sigma": exit_p.get("sdl_n_sigma"),
-                "sdl_skip_if_unrealized_above": exit_p.get(
-                    "sdl_skip_if_unrealized_above"
-                ),
-                "trailing_stop_trigger_pct": exit_p.get("trailing_stop_trigger_pct"),
-                "trailing_stop_trail_pct": exit_p.get("trailing_stop_trail_pct"),
-                "atr_n_multiplier": exit_p.get("atr_n_multiplier"),
-                "max_hold_days": exit_p.get("max_hold_days"),
-                "max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
-            },
         })
+        trade_event["decision_inputs"]["partial"] = is_partial
+        trade_event["decision_inputs"]["tax_cash_debited"] = tax_cash_debited
+        trade_event["decision_inputs"]["tax_cash_debit_mode"] = tax_cash_debit_mode
+        self._trade_log.append(trade_event)
 
     def _apply_buy(self, order: dict, today_ts: pd.Timestamp, ctx) -> None:
         # Audit fix SAB-1..SAB-4 (Round 2 deep audit, 2026-04-25): pre-fix,
