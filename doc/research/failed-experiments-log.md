@@ -3685,3 +3685,127 @@ OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 VECLIB_MAXIMUM_THREAD
   --derive-config-from-prod --strict --jobs 3 \
   --trace-dir "$TRACE_DIR"
 ```
+
+---
+
+## 2026-05-23 — Robust QP mean penalty + lot-age guard failed promotion
+
+**Hypothesis:** Light robust-mean shrinkage plus the QP lot-age guard should
+reduce QP churn and tax drag while preserving enough participation to improve
+annual-net Sharpe.
+
+**Protocol:** `scripts/run_wf_gate.py` against the foreground staging artifact
+and the side config
+`artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_lotage_20260523.json`,
+three WF cuts, persisted trade traces, HIFO-aligned forensic replay. This was
+a diagnostic run with strict promotion sanity/config gates skipped, so it is
+not live-promotable even before considering the result.
+
+**Result:** failed promotion.
+
+| Metric | Value |
+|---|---:|
+| Mean annual-net Sharpe | +0.719 |
+| SPY mean Sharpe | +1.081 |
+| Delta Sharpe | -0.362 |
+| Positive Sharpe cuts | 3/3 |
+| Beat SPY Sharpe | 1/3 |
+| Beat SPY APY | 0/3 |
+| Closed gross P/L | +$6.09k |
+| Tax estimate | +$8.21k |
+| Tax-estimated net P/L | -$2.12k |
+| Win rate | 53.0% |
+| Median hold | 33.5d |
+
+Sanity/contract notes: tax integrity was clean (`tax_cash_debited=0`; no tax
+cash debit regression), but score monotonicity remained wrong: rank-score vs
+net Spearman `-0.1396`, `mu` vs net `-0.0644`, raw panel score vs net
+`-0.1233`.
+
+**Conclusion:** do not promote. The lot-age guard is a protective bug fix, but
+it does not solve alpha conversion.
+
+**Reproduction:**
+
+```bash
+.venv/bin/python scripts/run_wf_gate.py \
+  --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.foreground_20260523-094050.staging.json \
+  --strategy-config artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_lotage_20260523.json \
+  --jobs 3 --skip-config-parity --skip-sanity \
+  --trace-dir artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_lotage_20260523
+```
+
+---
+
+## 2026-05-23 — BULL_CALM stop-anchor A/B failed promotion
+
+**Hypothesis:** If stop-loss damage mainly comes from BULL_CALM entries being
+relabelled into tighter current-regime stops, anchoring cumulative stops to the
+less aggressive entry/current max should reduce bad stop-outs.
+
+**Protocol:** Same WF setup as the robust QP lot-age diagnostic, with
+`artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_stop_anchor_lotage_20260523.json`.
+Promotion sanity/config gates were skipped, making this diagnostic-only.
+
+**Result:** failed promotion.
+
+| Metric | Value |
+|---|---:|
+| Mean annual-net Sharpe | +0.396 |
+| SPY mean Sharpe | +1.081 |
+| Delta Sharpe | -0.685 |
+| Positive Sharpe cuts | 3/3 |
+| Beat SPY Sharpe | 0/3 |
+| Beat SPY APY | 0/3 |
+| Closed gross P/L | +$8.01k |
+| Tax estimate | +$9.05k |
+| Tax-estimated net P/L | -$1.04k |
+| Win rate | 63.6% |
+| Median hold | 48.5d |
+
+Mechanism: stop-loss count dropped to 5 exits, but those exits were much
+larger: stop-loss gross/net `-$6.67k`, average P/L `-22.4%`. Score
+monotonicity remained near zero: rank-score vs net `-0.0339`, `mu` vs net
+`-0.0333`, raw panel score vs net `+0.0039`.
+
+**Conclusion:** reject the BULL_CALM stop-anchor A/B. It reduces stop frequency
+but allows larger concentrated losses, worsening Sharpe/APY and SPY-relative
+performance.
+
+**Reproduction:**
+
+```bash
+.venv/bin/python scripts/run_wf_gate.py \
+  --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.foreground_20260523-094050.staging.json \
+  --strategy-config artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_stop_anchor_lotage_20260523.json \
+  --jobs 3 --skip-config-parity --skip-sanity \
+  --trace-dir artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_stop_anchor_lotage_20260523
+```
+
+---
+
+## 2026-05-23 — Static-artifact sanity IC failed OOS-safety audit
+
+**Hypothesis:** The current WF candidate's sanity battery result using real IC
+`+0.0750`, shuffled IC `-0.0020`, and placebo IC `+0.0462` was a valid
+diagnostic of model signal quality.
+
+**Protocol:** Code audit plus regression tests for `scripts/run_wf_gate.py`.
+The audit checked whether sanity diagnostics used the same point-in-time
+walk-forward artifacts as the WF portfolio simulation.
+
+**Result:** failed audit. The old sanity path scored through a full-trained
+staging artifact, not the manifest artifacts, and manifest recipe validation
+sampled only first/middle/last rows. After the fix, manifest-scoped
+point-in-time sanity reports real IC `+0.0269`, shuffled IC `-0.0019`, and
+time-shift placebo IC `+0.0282` over 508 OOS dates using 37 manifest
+artifacts. It still fails because placebo is not below half the real IC
+threshold (`+0.0135`).
+
+**Conclusion:** discard the older `+0.0750` real-IC number as static-artifact
+diagnostic noise. The current model evidence is weaker, and the main research
+problem is separating true cross-sectional alpha from slow persistence/placebo
+structure.
+
+**Regression coverage:** `tests/test_wf_gate_recipe_scope.py`,
+`tests/test_wf_gate_cli_contract.py`, and `tests/test_promote_wf_gate.py`.

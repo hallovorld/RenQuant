@@ -32,6 +32,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
 - QP/strict-contract safety improved, but alpha conversion is not solved. The
   remaining main problem is whether signal survives the final decision tree
   into realized APY/Sharpe after turnover, exits, and annual-net tax.
+- Manifest-OOS sanity now supersedes the earlier static-artifact sanity number:
+  the manifest-scoped point-in-time diagnostic gives real IC `+0.0269`,
+  shuffled IC `-0.0019`, and time-shift placebo IC `+0.0282`. This fails
+  because placebo is not below half of real IC. Treat the older real IC
+  `+0.0750` as an invalid static/full-artifact diagnostic, not acceptance
+  evidence.
 - The best current short-window style evidence says PatchTST and XGB differ:
   PatchTST bought more names and outperformed over 2026-05-06 to 2026-05-22,
   but that 13-trading-day, zero-sell window is not promotion evidence.
@@ -100,6 +106,30 @@ Make RenQuant 104 scientifically trustworthy end to end:
     the configured lot method, not just the aggregate position `entry_date`.
   - This fixes the HIFO churn bug where a position looked old while QP sold a
     recently-added high-cost lot.
+- `cd1be00 fix(renquant104): harden training ticker concurrency`
+  - Per-ticker training parallelism now waits with a real wall-clock timeout,
+    logs completed work, and raises `ParallelTimeoutError` instead of silently
+    returning partial results.
+  - Targeted tests passed:
+    `tests/test_training_parallel_timeout.py tests/test_pipeline_parallel_timeout.py`.
+- `e2f233b fix(renquant104): make wf sanity manifest-oos safe`
+  - WF sanity now validates every walk-forward manifest row, rejects static
+    artifacts without an explicit safe cutoff, and runs sanity diagnostics
+    through the manifest's point-in-time artifacts rather than a full-trained
+    staging artifact.
+  - Skipped/unavailable placebo diagnostics fail closed.
+  - Targeted tests passed:
+    `tests/test_wf_gate_recipe_scope.py tests/test_wf_gate_cli_contract.py
+    tests/test_promote_wf_gate.py`.
+- `9a5ea1f fix(renquant104): harden decision trace integrity`
+  - Decision trace integrity now fails on fallback trade attribution,
+    missing sell shares, missing QP `delta_w`/`target_w`/`solver_status`, and
+    in-universe rows without `model_type`.
+  - Realized-vol and concentration risk gates now stamp terminal
+    `blocked_by` reasons.
+  - Targeted tests passed:
+    `tests/test_persistence.py::TestTrades tests/test_risk_gates.py` plus
+    the broader sell/QP/state repair neighborhood.
 
 ## Active Validation
 
@@ -251,57 +281,110 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
   `tests/test_portfolio_qp_solver.py tests/test_qp_refactor_2026_04_29.py
   tests/test_qp_integration.py tests/test_qp_admission_gate.py`.
 
-## 2026-05-23 Active WF Validation After Lot-Age Fix
+## 2026-05-23 Manifest-OOS Sanity Fix
 
-Two exploratory WF runs are active as of 20:15 PT. They use the same
-walk-forward manifest artifacts, skip strict sanity/config promotion gates, and
-exist only to measure whether the lot-age guard and stop-anchor A/B improve the
-trade-level failure modes.
+The prior WF sanity battery used a full-trained staging artifact for the
+diagnostic score path. That was not point-in-time OOS-safe. The repaired sanity
+path now scores through the walk-forward manifest artifacts with
+`WalkForwardModelLoader`, validates every manifest row, requires an explicit
+cutoff/lookahead contract for static artifacts, and fail-closes skipped placebo
+diagnostics.
 
-1. Robust QP mean penalty + lot-age guard:
-   - Config:
-     `artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_lotage_20260523.json`.
-   - Trace:
-     `artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_lotage_20260523`.
-   - Log:
-     `logs/wf_gate_104/robust_mu_k015_lotage_20260523.log`.
-   - Hypothesis: light robust-mu shrinkage plus lot-level soft-sell guard
-     should reduce QP churn/tax drag without sacrificing all participation.
-2. Robust QP mean penalty + lot-age guard + BULL_CALM stop-anchor A/B:
-   - Config:
-     `artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_stop_anchor_lotage_20260523.json`.
-   - Trace:
-     `artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_stop_anchor_lotage_20260523`.
-   - Log:
-     `logs/wf_gate_104/robust_mu_k015_stop_anchor_lotage_20260523.log`.
-   - Hypothesis: if stop losses are mostly BULL_CALM entries being relabeled
-     into tighter current regimes, entry/current max anchoring should reduce
-     bad stop-outs; if losses simply become larger or benchmark-relative
-     performance worsens, do not promote it.
+Direct manifest-scoped sanity result:
 
-Decision rule after completion:
+- Real IC: `+0.0269`.
+- Shuffled-label IC: `-0.0019`.
+- Time-shift placebo IC: `+0.0282`.
+- Eval range: 2024-02-02 to 2026-02-11.
+- OOS dates: `508`.
+- Manifest artifacts used: `37`.
+- Verdict: `FAIL`, because placebo must be available and below half of real IC
+  (`+0.0135`).
 
-- Run `scripts/analyze_wf_trade_forensics.py` on both traces.
-- Compare against the prior robust-kappa `0.15` baseline: mean Sharpe
-  `+0.914`, net closed P/L `-$3.33k`, `stop_loss` net `-$7.49k`, `qp_sell`
-  net `-$0.74k`, `qp_close` net `+$0.81k`, weak score monotonicity.
-- Promote nothing unless a strict rerun without `--skip-sanity` and without
-  side-config drift passes WF, SPY-relative, regime, calibration, config, and
-  decision-trace gates.
+Interpretation: current model evidence is much weaker than the old static
+sanity suggested. The main scientific issue is now explicit: the signal is not
+cleanly separated from slow persistence/placebo structure in the true manifest
+OOS path.
+
+## 2026-05-23 WF Validation After Lot-Age Fix
+
+Two exploratory WF runs completed. Both skipped strict promotion sanity/config
+gates by design and both failed. They are diagnostics only; promote nothing.
+
+### Robust QP Mean Penalty + Lot-Age Guard
+
+- Config:
+  `artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_lotage_20260523.json`.
+- Trace:
+  `artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_lotage_20260523`.
+- Log:
+  `logs/wf_gate_104/robust_mu_k015_lotage_20260523.log`.
+- WF result: `FAIL`.
+- Mean annual-net Sharpe: `+0.719`.
+- Positive Sharpe cuts: `3/3`.
+- SPY mean Sharpe: `+1.081`.
+- Strategy minus SPY Sharpe: `-0.362`.
+- Beat SPY Sharpe: `1/3`.
+- Beat SPY APY: `0/3`.
+- Lag regimes: `HIGH_CALM`, `LOW_SPIKED`.
+- Closed round trips: `66`.
+- Closed gross P/L: `+$6.09k`.
+- Tax estimate: `+$8.21k`.
+- Tax-estimated net P/L: `-$2.12k`.
+- Win rate: `53.0%`; median hold `33.5d`.
+- Tax integrity: clean. `tax_cash_debited=0`; tax is reporting-only.
+- Score monotonicity still bad: rank-score vs net Spearman `-0.1396`;
+  `mu` vs net `-0.0644`; raw panel score vs net `-0.1233`.
+
+Interpretation: the lot-age guard is still a valid protective fix, but it does
+not create tradable alpha or benchmark-relative acceptance by itself.
+
+### Robust QP Mean Penalty + Lot-Age Guard + BULL_CALM Stop Anchor A/B
+
+- Config:
+  `artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_stop_anchor_lotage_20260523.json`.
+- Trace:
+  `artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_stop_anchor_lotage_20260523`.
+- Log:
+  `logs/wf_gate_104/robust_mu_k015_stop_anchor_lotage_20260523.log`.
+- WF result: `FAIL`.
+- Mean annual-net Sharpe: `+0.396`.
+- Positive Sharpe cuts: `3/3`.
+- SPY mean Sharpe: `+1.081`.
+- Strategy minus SPY Sharpe: `-0.685`.
+- Beat SPY Sharpe: `0/3`.
+- Beat SPY APY: `0/3`.
+- Closed round trips: `66`.
+- Closed gross P/L: `+$8.01k`.
+- Tax estimate: `+$9.05k`.
+- Tax-estimated net P/L: `-$1.04k`.
+- Win rate: `63.6%`; median hold `48.5d`.
+- Stop losses dropped to 5 exits, but those were much larger: stop-loss
+  gross/net `-$6.67k`, average P/L `-22.4%`.
+- Score monotonicity remained near zero: rank-score vs net `-0.0339`,
+  `mu` vs net `-0.0333`, raw panel score vs net `+0.0039`.
+
+Interpretation: reject this stop-anchor A/B. It reduces stop count but lets
+concentrated losses grow, weakening Sharpe/APY and SPY-relative performance.
+
+Decision rule remains unchanged: promote nothing unless a strict rerun without
+`--skip-sanity` and without side-config drift passes WF, SPY-relative, regime,
+calibration, config, and decision-trace gates.
 
 ## Mainline Queue
 
-1. Diagnose the sanity failure: time-shift placebo IC `+0.0462` is too high.
-   Check splitter/label horizon, feature timestamping, regime persistence, and
-   market beta/momentum leakage before trusting the reported real IC.
+1. Diagnose the manifest-OOS sanity failure: real IC `+0.0269` is weak and the
+   time-shift placebo IC `+0.0282` is slightly higher. Check splitter/label
+   horizon, feature timestamping, regime persistence, slow beta/momentum
+   persistence, and calibrator scope before trusting any reported IC.
 2. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
    annual-net and SPY-relative metrics fail. Split by regime, exposure, tax,
    stop-loss bucket, and QP/top-up source.
-3. Re-run strict WF after the QP/TopUp admission repair and compare:
-   event-level, annual-net, SPY-relative, regime cuts, score monotonicity,
-   stop-loss bucket, and QP/TopUp source buckets.
-4. Evaluate stop-loss changes only through paired A/B acceptance. Current
-   prepared A/B: BULL_CALM entry-regime stop anchoring (`max_entry_current`).
+3. Re-run strict WF only after the model/sanity issue has a theory-backed fix.
+   Compare event-level, annual-net, SPY-relative, regime cuts, score
+   monotonicity, stop-loss bucket, and QP/TopUp source buckets.
+4. Evaluate stop-loss changes only through paired A/B acceptance. The current
+   BULL_CALM entry-regime stop-anchor A/B (`max_entry_current`) is rejected.
    Other candidates remain non-BULL volatility-aware stops and earlier
    panel/mu soft exits for positions whose model thesis deteriorates before
    hard stop.
