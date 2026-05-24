@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO))
 
 from scripts.fit_calibrator_alpha158_fund import (  # noqa: E402
     _artifact_fingerprint,
+    _calibrator_score_metric_metadata,
     _infer_raw_er_label,
     _label_scale_diagnostics,
     _load_expected_return_labels,
@@ -47,6 +48,24 @@ def test_artifact_fingerprint_prefers_scorer_identity_over_config(tmp_path):
     }
 
     assert _artifact_fingerprint(scorer_path, payload) == "sha256:scorer-artifact"
+
+
+def test_calibrator_fit_ic_is_not_mislabeled_as_oos():
+    metadata = _calibrator_score_metric_metadata(
+        label_ics=[0.10, 0.20, 0.00],
+        er_ics=[0.05, 0.15],
+        data_start="2024-01-01",
+        data_end="2024-03-01",
+    )
+
+    assert metadata["scorer_ic_scope"] == "calibrator_fit_window"
+    assert metadata["scorer_ic_window"] == "cli_bounded_panel"
+    assert metadata["scorer_fit_window_mean_ic"] == pytest.approx(0.10)
+    assert metadata["scorer_fit_window_n_dates"] == 3
+    assert metadata["scorer_fit_window_mean_ic_vs_er_label"] == pytest.approx(0.10)
+    assert metadata["scorer_oos_mean_ic"] is None
+    assert metadata["scorer_oos_mean_ic_vs_er_label"] is None
+    assert metadata["scorer_oos_metric_status"] == "not_measured_by_calibrator_fit"
 
 
 def test_label_diagnostics_identify_cross_sectional_zscore():

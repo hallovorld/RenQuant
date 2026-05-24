@@ -107,6 +107,47 @@ def _label_scale_diagnostics(frame: pd.DataFrame, label_col: str) -> dict[str, f
     }
 
 
+def _mean_or_none(values: list[float]) -> float | None:
+    return float(np.mean(values)) if values else None
+
+
+def _calibrator_score_metric_metadata(
+    *,
+    label_ics: list[float],
+    er_ics: list[float],
+    data_start: str | None,
+    data_end: str | None,
+) -> dict[str, float | int | str | None]:
+    """Stamp IC metrics without pretending calibrator-fit IC is OOS.
+
+    This script scores the panel rows used to fit the calibrator. Even when a
+    walk-forward caller passes ``--data-end`` to keep that window prior to a
+    model cutoff, the metric is still a calibrator-fit-window diagnostic, not
+    a post-cutoff portfolio/walk-forward OOS result. True OOS evidence must
+    come from the WF manifest/evaluator.
+    """
+    window = "cli_bounded_panel" if (data_start or data_end) else "full_available_panel"
+    return {
+        "scorer_ic_scope": "calibrator_fit_window",
+        "scorer_ic_window": window,
+        "scorer_fit_window_mean_ic": _mean_or_none(label_ics),
+        "scorer_fit_window_median_ic": (
+            float(np.median(label_ics)) if label_ics else None
+        ),
+        "scorer_fit_window_n_dates": int(len(label_ics)),
+        "scorer_fit_window_mean_ic_vs_er_label": _mean_or_none(er_ics),
+        "scorer_fit_window_median_ic_vs_er_label": (
+            float(np.median(er_ics)) if er_ics else None
+        ),
+        "scorer_fit_window_n_dates_vs_er_label": int(len(er_ics)),
+        # Backward-compatible key, deliberately non-numeric. Consumers that
+        # require real OOS IC must fail/skip instead of accepting fit-window IC.
+        "scorer_oos_mean_ic": None,
+        "scorer_oos_mean_ic_vs_er_label": None,
+        "scorer_oos_metric_status": "not_measured_by_calibrator_fit",
+    }
+
+
 def _load_expected_return_labels(
     *,
     scoring_panel: pd.DataFrame,
@@ -314,7 +355,8 @@ def main():
         if len(g) < 5: continue
         ic, _ = spearmanr(g["panel_score"], g[label_col])
         if not np.isnan(ic): ics.append(ic)
-    log.info("In-sample fwd_60d cross-sectional IC: mean=%+.4f median=%+.4f n_dates=%d",
+    log.info("Calibrator-window %s cross-sectional IC: mean=%+.4f median=%+.4f n_dates=%d",
+             label_col,
              np.mean(ics), np.median(ics), len(ics))
 
     valid_er = panel.dropna(subset=[er_label_col])
@@ -326,7 +368,7 @@ def main():
         if not np.isnan(ic):
             er_ics.append(ic)
     log.info(
-        "In-sample raw-ER cross-sectional IC: mean=%+.4f median=%+.4f n_dates=%d",
+        "Calibrator-window raw-ER cross-sectional IC: mean=%+.4f median=%+.4f n_dates=%d",
         float(np.mean(er_ics)) if er_ics else float("nan"),
         float(np.median(er_ics)) if er_ics else float("nan"),
         len(er_ics),
@@ -417,8 +459,12 @@ def main():
     # Stamp the source artifact path so we can detect drift later
     metadata["scorer_artifact"] = str(art_path)
     metadata["scorer_artifact_fingerprint"] = fingerprint
-    metadata["scorer_oos_mean_ic"] = float(np.mean(ics))
-    metadata["scorer_oos_mean_ic_vs_er_label"] = float(np.mean(er_ics)) if er_ics else None
+    metadata.update(_calibrator_score_metric_metadata(
+        label_ics=ics,
+        er_ics=er_ics,
+        data_start=args.data_start,
+        data_end=args.data_end,
+    ))
     metadata["model_label_col"] = label_col
     metadata["expected_return_label_col"] = er_label_col
     metadata["expected_return_label_source"] = er_label_source

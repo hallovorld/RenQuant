@@ -503,6 +503,32 @@ Verification:
 - `.venv/bin/python -m pytest tests/test_universe_alignment.py tests/test_universe_held_exemption.py tests/test_daily_104_e2e.py -q`
   -> `38 passed`.
 
+## 2026-05-23 Calibrator Metric-Scope Fix
+
+`scripts/fit_calibrator_alpha158_fund.py` no longer writes calibrator-fit IC
+into the numeric `scorer_oos_mean_ic` field. That field was misleading: the
+script scores the same panel window used to fit the calibrator, so the metric
+is a fit-window diagnostic even when the caller bounds the window with
+`--data-start/--data-end`.
+
+New metadata:
+
+- `scorer_ic_scope="calibrator_fit_window"`.
+- `scorer_ic_window` is `cli_bounded_panel` or `full_available_panel`.
+- `scorer_fit_window_mean_ic`, median, and `n_dates` carry the diagnostic.
+- `scorer_oos_mean_ic` and `scorer_oos_mean_ic_vs_er_label` are deliberately
+  `null`; true OOS IC must come from WF manifests/evaluators.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_fit_calibrator_raw_label_contract.py tests/test_calibrator_no_flat_region.py tests/test_calibrator_saturation_guards.py -q`
+  -> `38 passed`.
+
+Operational note: the currently running 172-feature WF job was started before
+this fix. It may finish as a useful diagnostic, but its per-fold calibrators
+must be re-stamped/refit with the fixed script before being used as
+acceptance-grade evidence.
+
 ## Mainline Queue
 
 1. Regenerate the 172-feature walk-forward manifest under the current
@@ -532,8 +558,8 @@ Verification:
    labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
    fail-closed correlation semantics, and per-ticker trace stamping for global
    panel/QP failures. The WF `effective_train_cutoff_date` double-embargo bug,
-   LEAN/QP cash-capped target parity bug, and universe metadata fail-closed bug
-   are fixed.
+   LEAN/QP cash-capped target parity bug, universe metadata fail-closed bug,
+   and calibrator metric-scope bug are fixed.
 
 ## Known Failure Modes To Keep Front And Center
 
