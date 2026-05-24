@@ -1786,6 +1786,30 @@ Operational conclusion:
 - Noisy ntfy/reopen-cancel alerts are partly fixed. Wrapper success duplicate
   alerts are fixed; remaining watch item is shadow/reopen-cancel alert policy.
 
+## 2026-05-24 WF Gate And Repo Hygiene Update
+
+- Weekly WF promotion exposed an evidence-path bug: `--derive-config-from-prod`
+  could inherit a stale base manifest whose recipe fingerprint did not match
+  the staged scorer, even when a same-recipe manifest with broader coverage
+  already existed. `scripts/run_wf_gate.py` now scans the strategy sim
+  manifest directory, picks the recipe-compatible manifest with the widest
+  retrain coverage, and fails closed on the preferred manifest only when no
+  compatible manifest exists.
+- Current concrete case: the stale `172_sentiment` base manifest mismatched the
+  weekly staged scorer, while
+  `artifacts/sim/walkforward_manifest_172_featspace_20260523.scopefixed.covered.json`
+  matches the staged feature contract and checks 40 manifest rows.
+- Repo hygiene is now a mainline workstream. `scripts/audit_repo_hygiene.py`
+  provides a read-only dirty-tree classifier with an inventory-only policy:
+  no delete, no move, archive requires review. Current snapshot: 368 dirty
+  entries, dominated by experiment/diagnostic artifacts, per-ticker model
+  metadata, production/sim artifacts, strategy configs, and scratch training
+  scripts.
+- `.gitignore` now blocks obvious local runtime scratch stores, local DBs, and
+  backup snapshots from adding future noise. It intentionally does not hide
+  production artifacts or strategy configs; those must remain visible until
+  reviewed.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:
@@ -1816,3 +1840,5 @@ Stop and fix before reporting performance if any of these happen:
   `doc/research/2026-05-23-wf-trade-forensics.md`.
 - Placebo IC alignment/root-cause debug:
   `doc/research/2026-05-24-placebo-ic-debug.md`.
+- Repo hygiene ledger:
+  `doc/research/2026-05-24-repo-hygiene-ledger.md`.

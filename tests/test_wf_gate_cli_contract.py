@@ -420,6 +420,8 @@ def test_wf_gate_can_derive_prod_semantic_config() -> None:
     assert '"--derive-config-from-prod"' in src
     assert "build_wf_config_from_prod" in src
     assert "wf_eval_configs" in src
+    assert "_matching_manifest_for_recipe" in src
+    assert "using same-recipe manifest" in src
 
 
 def test_run_sim_disables_live_freshness_by_default_for_historical_sims() -> None:

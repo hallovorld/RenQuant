@@ -142,6 +142,66 @@ def test_manifest_recipe_usage_accepts_patchtst_pt_sidecars(tmp_path: Path):
     assert usage["candidate_n_features"] == 2
 
 
+def test_matching_manifest_prefers_same_recipe_highest_coverage(tmp_path: Path):
+    mod = _load_module()
+    candidate = tmp_path / "candidate.json"
+    stale_sample = tmp_path / "stale_sample.json"
+    match_sample = tmp_path / "match_sample.json"
+    stale_manifest = tmp_path / "walkforward_manifest_stale.json"
+    short_match_manifest = tmp_path / "walkforward_manifest_match_short.json"
+    long_match_manifest = tmp_path / "walkforward_manifest_match_long.json"
+
+    candidate.write_text(json.dumps(_artifact(["a", "b"])))
+    stale_sample.write_text(json.dumps(_artifact(["a", "b", "legacy"])))
+    match_sample.write_text(json.dumps(_artifact(["a", "b"])))
+    stale_manifest.write_text(json.dumps({
+        "retrains": [{"artifact_uri": str(stale_sample), "cutoff_date": "2024-01-01"}],
+    }))
+    short_match_manifest.write_text(json.dumps({
+        "retrains": [{"artifact_uri": str(match_sample), "cutoff_date": "2024-01-01"}],
+    }))
+    long_match_manifest.write_text(json.dumps({
+        "retrains": [
+            {"artifact_uri": str(match_sample), "cutoff_date": "2024-01-01"},
+            {"artifact_uri": str(match_sample), "cutoff_date": "2024-01-22"},
+            {"artifact_uri": str(match_sample), "cutoff_date": "2024-02-12"},
+        ],
+    }))
+
+    selected, usage = mod._matching_manifest_for_recipe(
+        artifact_path=candidate,
+        preferred_manifest=stale_manifest,
+        search_dir=tmp_path,
+    )
+
+    assert selected == long_match_manifest
+    assert usage["recipe_validated"] is True
+    assert usage["manifest_rows_checked"] == 3
+
+
+def test_matching_manifest_keeps_preferred_when_no_recipe_match(tmp_path: Path):
+    mod = _load_module()
+    candidate = tmp_path / "candidate.json"
+    stale_sample = tmp_path / "stale_sample.json"
+    stale_manifest = tmp_path / "walkforward_manifest_stale.json"
+
+    candidate.write_text(json.dumps(_artifact(["a", "b"])))
+    stale_sample.write_text(json.dumps(_artifact(["a", "b", "legacy"])))
+    stale_manifest.write_text(json.dumps({
+        "retrains": [{"artifact_uri": str(stale_sample), "cutoff_date": "2024-01-01"}],
+    }))
+
+    selected, usage = mod._matching_manifest_for_recipe(
+        artifact_path=candidate,
+        preferred_manifest=stale_manifest,
+        search_dir=tmp_path,
+    )
+
+    assert selected == stale_manifest
+    assert usage["recipe_validated"] is False
+    assert usage["checked_manifest_count"] == 1
+
+
 def test_wf_gate_writes_pt_metadata_to_sidecar(tmp_path: Path):
     mod = _load_module()
     artifact = tmp_path / "candidate.pt"

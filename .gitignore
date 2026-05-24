@@ -10,6 +10,11 @@ __pycache__/
 # Pytest cache
 .pytest_cache/
 
+# Local runtime scratch / experiment stores
+.tmp_*/
+mlruns/
+catboost_info/
+
 # Claude Code local state (keep .claude/skills/ for shared skill defs)
 .claude/scheduled_tasks.lock
 .claude/worktrees/
@@ -20,6 +25,14 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Local DBs and backup snapshots. Evidence artifacts should be summarized in
+# docs, not accidentally staged as raw runtime stores.
+*.db
+*.db-journal
+*.bak
+*.bak_*
+*.disabled-*
 
 # Local data cache
 /data/

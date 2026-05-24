@@ -1,6 +1,6 @@
 # RenQuant Cadence — Single Source of Truth
 
-**Last updated:** 2026-05-23 (weekly staging hardening + point-in-time WF eval paths). Authoritative table of every scheduled or event-triggered job in the system.
+**Last updated:** 2026-05-24 (weekly same-recipe manifest selection + repo hygiene mainline). Authoritative table of every scheduled or event-triggered job in the system.
 
 > **Broker mode** (2026-05-11 safety mandate + live-account operator override):
 > - `scripts/daily_104.sh` currently runs `--broker alpaca` by operator mandate, so it can submit LIVE orders when buy-side preflight passes.
@@ -61,7 +61,7 @@ Every job below documents: **what it does, what files it touches, what alerts on
 **Steps:**
 1. Pre-flight smoke test (abort if model broken before 60-min commit)
 2. Retrain `daily_retrain_alpha158_fund.sh` into unique staging paths via `--xgb-artifact-out` + `--calibrator-out`; active production remains untouched.
-3. `scripts/run_wf_gate.py --derive-config-from-prod --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json --strict --jobs 3` — WF + §5.2 sanity + trade-ledger gates. The derived WF config keeps production decision semantics but inherits sim-scoped regime/correlation/calibration artifacts.
+3. `scripts/run_wf_gate.py --derive-config-from-prod --strategy-config strategy_config.sim_wl200_172_sentiment.calibrated_causal.json --strict --jobs 3` — WF + §5.2 sanity + trade-ledger gates. The derived WF config keeps production decision semantics but inherits sim-scoped regime/correlation/calibration artifacts. If the base config points at a stale manifest, the gate auto-selects the same-recipe manifest with the widest retrain coverage; if none exists, it keeps the base manifest so recipe validation fails closed.
 4. Active swap only if staged scorer has `wf_gate_metadata.passed=True`; scorer and paired calibrator are copied through `.incoming.json` then `os.replace`.
 5. Emergency shell-env `RQ_ALLOW_NO_WF=1` remains confined to `scripts/manual_promote.sh`.
 6. Refresh dashboard

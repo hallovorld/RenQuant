@@ -327,6 +327,69 @@ def _manifest_recipe_usage(manifest_path: Path | None, artifact_path: Path) -> d
     }
 
 
+def _matching_manifest_for_recipe(
+    *,
+    artifact_path: Path,
+    preferred_manifest: Path | None,
+    search_dir: Path | None = None,
+) -> tuple[Path | None, dict]:
+    """Return a WF manifest whose artifacts match the candidate recipe.
+
+    Weekly promotion is only valid when historical point-in-time artifacts use
+    the same statistical recipe as the candidate. When the operator-supplied
+    base WF config points at a stale manifest, prefer a same-recipe manifest
+    with the broadest retrain coverage instead of spending compute on known
+    incomparable evidence. If no matching manifest exists, return the preferred
+    manifest plus its failure evidence so the caller can fail closed.
+    """
+    checked: list[tuple[Path, dict]] = []
+    seen: set[Path] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        p = path if path.is_absolute() else STRATEGY_DIR / path
+        try:
+            key = p.resolve()
+        except Exception:  # noqa: BLE001
+            key = p
+        if key in seen:
+            return
+        seen.add(key)
+        checked.append((p, _manifest_recipe_usage(p, artifact_path)))
+
+    add(preferred_manifest)
+    root = search_dir or (STRATEGY_DIR / "artifacts" / "sim")
+    if root.exists():
+        for candidate in sorted(root.glob("walkforward_manifest*.json")):
+            add(candidate)
+
+    matches = [
+        (p, usage) for p, usage in checked
+        if bool(usage.get("recipe_validated"))
+    ]
+    if matches:
+        matches.sort(
+            key=lambda item: (
+                int(item[1].get("manifest_rows_checked") or 0),
+                str(item[0]),
+            ),
+            reverse=True,
+        )
+        return matches[0]
+
+    if checked:
+        p, usage = checked[0]
+        usage = dict(usage)
+        usage["checked_manifest_count"] = len(checked)
+        return p, usage
+    return None, {
+        "recipe_validated": False,
+        "reason": "no walkforward manifests found",
+        "checked_manifest_count": 0,
+    }
+
+
 def inspect_artifact_usage(strategy_config: str, artifact_path: Path) -> dict:
     """Return whether this WF sim config actually evaluates `artifact_path`.
 
@@ -1722,6 +1785,27 @@ def main():
                 base_cfg_path,
             )
             sys.exit(2)
+        preferred_manifest = _resolve_strategy_path(str(manifest_path))
+        selected_manifest, selected_usage = _matching_manifest_for_recipe(
+            artifact_path=artifact_path,
+            preferred_manifest=preferred_manifest,
+        )
+        if selected_manifest is not None and selected_manifest != preferred_manifest:
+            log.warning(
+                "Base WF manifest %s is not recipe-compatible with candidate; "
+                "using same-recipe manifest %s (%s)",
+                preferred_manifest,
+                selected_manifest,
+                selected_usage.get("reason"),
+            )
+            manifest_path = str(selected_manifest)
+        elif not bool(selected_usage.get("recipe_validated")):
+            log.warning(
+                "No same-recipe WF manifest found for candidate yet; keeping "
+                "base manifest %s so the gate can fail closed (%s)",
+                preferred_manifest,
+                selected_usage.get("reason"),
+            )
         derived_dir = STRATEGY_DIR / "artifacts" / "diagnostics" / "wf_eval_configs"
         derived_dir.mkdir(parents=True, exist_ok=True)
         derived_name = f"{Path(args.strategy_config).stem}.prod_semantic.json"
