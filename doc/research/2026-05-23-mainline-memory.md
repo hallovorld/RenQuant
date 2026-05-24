@@ -192,6 +192,26 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
   fails `ok` when any non-selected row has NULL `blocked_by`.
 - Added tests so the live and sim adapters keep these reason labels wired.
 
+## 2026-05-23 Stop-Loss Regime Contract Hardening
+
+- Made cumulative stop-loss regime ownership explicit. Production/golden
+  configs now declare `risk.stop_loss_anchor_policy.mode=current_regime`, which
+  preserves current behavior: cumulative stops use the current regime's
+  `stop_loss_pct`.
+- Added an explicit A/B-only mode, `max_entry_current`, for the BULL_CALM thesis:
+  when a position entered under BULL_CALM and the market later relabels to a
+  tighter-stop regime, the cumulative stop may be kept no tighter than the
+  entry-regime stop. This is not promoted; it is only a paired experiment hook.
+- Live and sim sell logs now persist applied stop-anchor fields in
+  `decision_inputs`, so future trade forensics can tell whether a stop came
+  from the current regime or entry-regime anchoring.
+- WF config parity now checks `risk.stop_loss_anchor_policy`, preventing a
+  side config from silently changing risk semantics.
+- Targeted tests passed:
+  `tests/test_exit_param_wiring.py tests/test_sim_sell_attribution.py
+  tests/test_runner_sell_attribution.py tests/test_wf_config_parity.py` and
+  the broader exit neighborhood through panel-exit/sell-gate tests.
+
 ## Mainline Queue
 
 1. Diagnose the sanity failure: time-shift placebo IC `+0.0462` is too high.
@@ -203,9 +223,11 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
 3. Re-run strict WF after the QP/TopUp admission repair and compare:
    event-level, annual-net, SPY-relative, regime cuts, score monotonicity,
    stop-loss bucket, and QP/TopUp source buckets.
-4. Implement stop-loss changes only after paired A/B acceptance; leading
-   candidates are non-BULL volatility-aware stops and earlier panel/mu soft
-   exits for positions whose model thesis deteriorates before hard stop.
+4. Evaluate stop-loss changes only through paired A/B acceptance. Current
+   prepared A/B: BULL_CALM entry-regime stop anchoring (`max_entry_current`).
+   Other candidates remain non-BULL volatility-aware stops and earlier
+   panel/mu soft exits for positions whose model thesis deteriorates before
+   hard stop.
 5. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
    as OOS. Static PatchTST full-window sims are style diagnostics only.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using

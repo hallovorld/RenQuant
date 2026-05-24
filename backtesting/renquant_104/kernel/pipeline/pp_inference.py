@@ -24,6 +24,7 @@ from .job_selection      import SelectionJob
 from .job_joint_actions  import JointActionJob
 from .job_panel_veto     import PanelRankVetoJob
 from .job_score_distribution import ScoreDistributionJob
+from .exit_params import apply_stop_loss_anchor_policy
 
 # PanelScoringJob is imported lazily inside run() to avoid a circular import:
 # kernel.panel_pipeline.__init__ pulls in this module via
@@ -76,6 +77,13 @@ def _make_sell_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
     if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
         exit_params["max_hold_days"] = entry_regime_p["max_hold_days"]
         exit_params["max_hold_anchor_regime"] = entry_regime
+    apply_stop_loss_anchor_policy(
+        exit_params,
+        config=ctx.config,
+        current_regime=ctx.regime,
+        entry_regime=entry_regime,
+        entry_regime_params=entry_regime_p,
+    )
     return TickerInferenceContext(
         ticker=ticker,
         ohlcv=ctx.ohlcv,

@@ -45,6 +45,7 @@ from kernel.execution import (
     compute_sell_fees,
     slip_fill_price,
 )
+from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
 
 log = logging.getLogger("adapters.sim")
 
@@ -1616,6 +1617,13 @@ class SimAdapter:
             if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
                 exit_p["max_hold_days"] = entry_regime_p["max_hold_days"]
                 exit_p["max_hold_anchor_regime"] = entry_regime
+            apply_stop_loss_anchor_policy(
+                exit_p,
+                config=(ctx.config if ctx is not None else {}),
+                current_regime=getattr(ctx, "regime", None) if ctx is not None else None,
+                entry_regime=entry_regime,
+                entry_regime_params=entry_regime_p,
+            )
         sig_reason = getattr(sig, "reason", None)
         source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
         source_task = str(getattr(sig, "source_task", None) or sig.exit_type or "sell")
@@ -1642,6 +1650,12 @@ class SimAdapter:
             "confidence":  getattr(ctx, "confidence", None),
             "exit_signal_reason": getattr(sig, "reason", None),
             "exit_stop_loss_pct": exit_p.get("stop_loss_pct"),
+            "exit_stop_loss_anchor_policy": exit_p.get("stop_loss_anchor_policy"),
+            "exit_stop_loss_anchor_regime": exit_p.get("stop_loss_anchor_regime"),
+            "exit_stop_loss_current_regime": exit_p.get("stop_loss_current_regime"),
+            "exit_stop_loss_current_pct": exit_p.get("stop_loss_current_pct"),
+            "exit_stop_loss_entry_regime": exit_p.get("stop_loss_entry_regime"),
+            "exit_stop_loss_entry_pct": exit_p.get("stop_loss_entry_pct"),
             "exit_stop_n_sigma": exit_p.get("stop_n_sigma"),
             "exit_take_profit_pct": exit_p.get("take_profit_pct"),
             "exit_stop_decay_days": exit_p.get("stop_decay_days"),
@@ -1680,6 +1694,12 @@ class SimAdapter:
                 "hold_days": hold_days,
                 "pnl_pct": _pnl_pct,
                 "stop_loss_pct": exit_p.get("stop_loss_pct"),
+                "stop_loss_anchor_policy": exit_p.get("stop_loss_anchor_policy"),
+                "stop_loss_anchor_regime": exit_p.get("stop_loss_anchor_regime"),
+                "stop_loss_current_regime": exit_p.get("stop_loss_current_regime"),
+                "stop_loss_current_pct": exit_p.get("stop_loss_current_pct"),
+                "stop_loss_entry_regime": exit_p.get("stop_loss_entry_regime"),
+                "stop_loss_entry_pct": exit_p.get("stop_loss_entry_pct"),
                 "stop_n_sigma": exit_p.get("stop_n_sigma"),
                 "take_profit_pct": exit_p.get("take_profit_pct"),
                 "stop_decay_days": exit_p.get("stop_decay_days"),

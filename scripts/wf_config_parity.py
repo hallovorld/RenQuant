@@ -32,6 +32,7 @@ SEMANTIC_PATHS = [
     "ranking.kelly_sizing",
     "rotation.joint_actions",
     "risk.panel_exit",
+    "risk.stop_loss_anchor_policy",
     "regime_params",
     "max_concurrent_positions",
     "max_positions_per_sector",

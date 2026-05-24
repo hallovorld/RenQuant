@@ -373,6 +373,10 @@
   "risk": {
     "require_sector_map_for_buys": true,
     "max_sells_per_bar": 2,
+    "stop_loss_anchor_policy": {
+      "mode": "current_regime",
+      "_reason": "Explicit default: cumulative stop-loss follows the current regime unless an A/B config enables max_entry_current for entry-thesis anchoring."
+    },
     "panel_exit": {
       "enabled": true,
       "legacy_enabled": false,

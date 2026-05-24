@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
+
 log = logging.getLogger("adapters.runner")
 
 
@@ -137,6 +139,7 @@ def build_sell_trade_event_for_db(
     regime: str | None,
     confidence: float | None,
     regime_params: dict,
+    config: dict | None = None,
 ) -> dict:
     """Build the executed-sell row persisted by the live runner.
 
@@ -180,6 +183,26 @@ def build_sell_trade_event_for_db(
         getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
     )
     source = str(getattr(sig, "source", None) or "ExitPipeline")
+    applied_exit_p = getattr(sig, "exit_params", None)
+    if isinstance(applied_exit_p, dict) and applied_exit_p:
+        exit_p = dict(applied_exit_p)
+    else:
+        exit_p = dict(regime_params or {})
+        entry_regime = getattr(holding, "entry_regime", None)
+        entry_regime_p = (
+            ((config or {}).get("regime_params", {}) or {}).get(entry_regime, {})
+            if entry_regime is not None else {}
+        )
+        if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
+            exit_p["max_hold_days"] = entry_regime_p["max_hold_days"]
+            exit_p["max_hold_anchor_regime"] = entry_regime
+        apply_stop_loss_anchor_policy(
+            exit_p,
+            config=config or {},
+            current_regime=regime,
+            entry_regime=entry_regime,
+            entry_regime_params=entry_regime_p,
+        )
 
     return {
         "ticker": ticker,
@@ -223,24 +246,31 @@ def build_sell_trade_event_for_db(
             "net_pnl_after_tax": net_pnl,
             "hold_days": hold_days,
             "pnl_pct": pnl_pct,
-            "stop_loss_pct": regime_params.get("stop_loss_pct"),
-            "stop_n_sigma": regime_params.get("stop_n_sigma"),
-            "take_profit_pct": regime_params.get("take_profit_pct"),
-            "stop_decay_days": regime_params.get("stop_decay_days"),
-            "stop_decay_floor": regime_params.get("stop_decay_floor"),
-            "max_single_day_loss_pct": regime_params.get("max_single_day_loss_pct"),
-            "sdl_n_sigma": regime_params.get("sdl_n_sigma"),
-            "sdl_skip_if_unrealized_above": regime_params.get(
+            "stop_loss_pct": exit_p.get("stop_loss_pct"),
+            "stop_loss_anchor_policy": exit_p.get("stop_loss_anchor_policy"),
+            "stop_loss_anchor_regime": exit_p.get("stop_loss_anchor_regime"),
+            "stop_loss_current_regime": exit_p.get("stop_loss_current_regime"),
+            "stop_loss_current_pct": exit_p.get("stop_loss_current_pct"),
+            "stop_loss_entry_regime": exit_p.get("stop_loss_entry_regime"),
+            "stop_loss_entry_pct": exit_p.get("stop_loss_entry_pct"),
+            "stop_n_sigma": exit_p.get("stop_n_sigma"),
+            "take_profit_pct": exit_p.get("take_profit_pct"),
+            "stop_decay_days": exit_p.get("stop_decay_days"),
+            "stop_decay_floor": exit_p.get("stop_decay_floor"),
+            "max_single_day_loss_pct": exit_p.get("max_single_day_loss_pct"),
+            "sdl_n_sigma": exit_p.get("sdl_n_sigma"),
+            "sdl_skip_if_unrealized_above": exit_p.get(
                 "sdl_skip_if_unrealized_above"
             ),
-            "trailing_stop_trigger_pct": regime_params.get(
+            "trailing_stop_trigger_pct": exit_p.get(
                 "trailing_stop_trigger_pct"
             ),
-            "trailing_stop_trail_pct": regime_params.get(
+            "trailing_stop_trail_pct": exit_p.get(
                 "trailing_stop_trail_pct"
             ),
-            "atr_n_multiplier": regime_params.get("atr_n_multiplier"),
-            "max_hold_days": regime_params.get("max_hold_days"),
+            "atr_n_multiplier": exit_p.get("atr_n_multiplier"),
+            "max_hold_days": exit_p.get("max_hold_days"),
+            "max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
             **(getattr(sig, "decision_inputs", None) or {}),
         },
     }
@@ -1746,6 +1776,7 @@ class RunnerAdapter:
                     regime=getattr(ctx, "regime", None),
                     confidence=getattr(ctx, "confidence", None),
                     regime_params={**regime_p, "tax": self._config.get("tax", {}) or {}},
+                    config=self._config,
                 ))
             for o in orders_for_db:
                 trade_events.append({

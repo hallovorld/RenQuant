@@ -87,6 +87,73 @@ def test_make_sell_tctx_anchors_max_hold_to_entry_regime():
     assert tctx.exit_params["stop_loss_pct"] == 0.08
 
 
+def test_make_sell_tctx_can_anchor_stop_loss_to_entry_regime_when_enabled():
+    """Explicit A/B mode keeps BULL_CALM cumulative stop no tighter than entry."""
+    ctx = InferenceContext(
+        config={
+            "risk": {
+                "stop_loss_anchor_policy": {
+                    "mode": "max_entry_current",
+                    "entry_regimes": ["BULL_CALM"],
+                },
+            },
+            "regime_params": {
+                "BULL_CALM": {"max_hold_days": 500, "stop_loss_pct": 0.15},
+                "CHOPPY": {"max_hold_days": 40, "stop_loss_pct": 0.08},
+            },
+        },
+        today=dt.date(2026, 5, 1),
+        regime="CHOPPY",
+        holdings={
+            "AAPL": HoldingState(
+                entry_price=100.0,
+                entry_date=dt.date(2026, 1, 1),
+                high_watermark=120.0,
+                entry_regime="BULL_CALM",
+            ),
+        },
+        prices={"AAPL": 115.0},
+    )
+
+    tctx = _make_sell_tctx(ctx, "AAPL")
+
+    assert tctx.exit_params["stop_loss_pct"] == 0.15
+    assert tctx.exit_params["stop_loss_anchor_policy"] == "max_entry_current"
+    assert tctx.exit_params["stop_loss_anchor_regime"] == "BULL_CALM"
+    assert tctx.exit_params["stop_loss_current_regime"] == "CHOPPY"
+    assert tctx.exit_params["stop_loss_current_pct"] == 0.08
+    assert tctx.exit_params["stop_loss_entry_regime"] == "BULL_CALM"
+    assert tctx.exit_params["stop_loss_entry_pct"] == 0.15
+
+
+def test_make_sell_tctx_rejects_unknown_stop_anchor_policy():
+    ctx = InferenceContext(
+        config={
+            "risk": {"stop_loss_anchor_policy": {"mode": "mystery"}},
+            "regime_params": {
+                "BULL_CALM": {"stop_loss_pct": 0.15},
+                "CHOPPY": {"stop_loss_pct": 0.08},
+            },
+        },
+        today=dt.date(2026, 5, 1),
+        regime="CHOPPY",
+        holdings={
+            "AAPL": HoldingState(
+                entry_price=100.0,
+                entry_date=dt.date(2026, 1, 1),
+                high_watermark=120.0,
+                entry_regime="BULL_CALM",
+            ),
+        },
+        prices={"AAPL": 115.0},
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="stop_loss_anchor_policy"):
+        _make_sell_tctx(ctx, "AAPL")
+
+
 def test_evaluate_exits_stamps_applied_exit_params_on_signal():
     ctx = InferenceContext(
         config={
@@ -116,3 +183,38 @@ def test_evaluate_exits_stamps_applied_exit_params_on_signal():
     assert tctx.exit_signal.exit_params["max_hold_days"] == 1
     assert tctx.exit_signal.exit_params["max_hold_anchor_regime"] == "BULL_CALM"
     assert tctx.exit_signal.exit_params["stop_loss_pct"] == 0.08
+
+
+def test_evaluate_exits_stamps_stop_anchor_params_on_signal():
+    ctx = InferenceContext(
+        config={
+            "risk": {
+                "stop_loss_anchor_policy": {
+                    "mode": "max_entry_current",
+                    "entry_regimes": ["BULL_CALM"],
+                },
+            },
+            "regime_params": {
+                "BULL_CALM": {"max_hold_days": 1, "stop_loss_pct": 0.15},
+                "CHOPPY": {"max_hold_days": 40, "stop_loss_pct": 0.08},
+            },
+        },
+        today=dt.date(2026, 1, 5),
+        regime="CHOPPY",
+        holdings={
+            "AAPL": HoldingState(
+                entry_price=100.0,
+                entry_date=dt.date(2026, 1, 1),
+                high_watermark=100.0,
+                entry_regime="BULL_CALM",
+            ),
+        },
+        prices={"AAPL": 100.0},
+    )
+    tctx = _make_sell_tctx(ctx, "AAPL")
+
+    EvaluateExitsTask().run(tctx)
+
+    assert tctx.exit_signal is not None
+    assert tctx.exit_signal.exit_params["stop_loss_pct"] == 0.15
+    assert tctx.exit_signal.exit_params["stop_loss_anchor_policy"] == "max_entry_current"

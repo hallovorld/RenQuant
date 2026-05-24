@@ -73,6 +73,53 @@ def test_live_sell_trade_preserves_exit_signal_source_metadata():
     assert row["decision_inputs"]["sdl_skip_if_unrealized_above"] == 0.02
 
 
+def test_live_sell_trade_persists_applied_exit_params_from_signal():
+    today = datetime.date(2026, 5, 22)
+    holding = HoldingState(
+        entry_price=100.0,
+        entry_date=today - datetime.timedelta(days=60),
+        high_watermark=125.0,
+        shares=10.0,
+        entry_regime="BULL_CALM",
+    )
+    sig = ExitSignal(
+        should_exit=True,
+        reason="stop",
+        exit_type="stop_loss",
+        exit_params={
+            "stop_loss_pct": 0.15,
+            "stop_loss_anchor_policy": "max_entry_current",
+            "stop_loss_anchor_regime": "BULL_CALM",
+            "stop_loss_current_pct": 0.08,
+            "stop_loss_entry_pct": 0.15,
+        },
+    )
+
+    row = build_sell_trade_event_for_db(
+        ticker="AAPL",
+        sig=sig,
+        holding=holding,
+        price=84.0,
+        today=today,
+        regime="CHOPPY",
+        confidence=0.8,
+        regime_params={"stop_loss_pct": 0.08},
+        config={
+            "risk": {"stop_loss_anchor_policy": {"mode": "current_regime"}},
+            "regime_params": {
+                "BULL_CALM": {"stop_loss_pct": 0.15},
+                "CHOPPY": {"stop_loss_pct": 0.08},
+            },
+        },
+    )
+
+    assert row["decision_inputs"]["stop_loss_pct"] == 0.15
+    assert row["decision_inputs"]["stop_loss_anchor_policy"] == "max_entry_current"
+    assert row["decision_inputs"]["stop_loss_anchor_regime"] == "BULL_CALM"
+    assert row["decision_inputs"]["stop_loss_current_pct"] == 0.08
+    assert row["decision_inputs"]["stop_loss_entry_pct"] == 0.15
+
+
 def test_model_type_from_dict_artifact_metadata():
     assert model_type_from_artifact({"_metadata": {"best_approach": "XGBoost"}}) == "XGBoost"
     assert model_type_from_artifact({"_metadata": {"model_type": "Manual"}}) == "Manual"
