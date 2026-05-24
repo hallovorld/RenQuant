@@ -69,6 +69,10 @@ class RealizedVolGateTask(Task):
             return True
 
         kept, dropped = [], []
+        blocked = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked is None:
+            blocked = {}
+            ctx._blocked_by_ticker = blocked
         for cand in candidates:
             tkr = getattr(cand, "ticker", None)
             df = (getattr(ctx, "ohlcv", None) or {}).get(tkr)
@@ -79,6 +83,8 @@ class RealizedVolGateTask(Task):
                 continue
             if vol > cap:
                 dropped.append((tkr, vol))
+                if tkr:
+                    blocked.setdefault(tkr, "risk_gate_vol")
             else:
                 kept.append(cand)
 
@@ -163,6 +169,10 @@ class PositionConcentrationGateTask(Task):
         prices = getattr(ctx, "prices", None) or {}
 
         kept, dropped = [], []
+        blocked = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked is None:
+            blocked = {}
+            ctx._blocked_by_ticker = blocked
         for cand in candidates:
             tkr = getattr(cand, "ticker", None)
             held = holdings.get(tkr) if tkr else None
@@ -175,6 +185,8 @@ class PositionConcentrationGateTask(Task):
             pct = value / equity if equity > 0 else 0.0
             if pct >= cap_pct:
                 dropped.append((tkr, pct))
+                if tkr:
+                    blocked.setdefault(tkr, "risk_gate_concentration")
             else:
                 kept.append(cand)
 

@@ -62,6 +62,7 @@ def _make_ctx(**kw):
         portfolio_value=kw.get("portfolio_value", 0.0),
         cash=kw.get("cash", 0.0),
         counters=kw.get("counters", {}),
+        _blocked_by_ticker=kw.get("blocked_by_ticker", {}),
     )
 
 
@@ -84,6 +85,8 @@ class TestRealizedVolGate(unittest.TestCase):
         self.assertNotIn("HIGH", kept)
         self.assertNotIn("EXTREME", kept)
         self.assertEqual(ctx.counters.get("risk_gate_vol_dropped"), 2)
+        self.assertEqual(ctx._blocked_by_ticker["HIGH"], "risk_gate_vol")
+        self.assertEqual(ctx._blocked_by_ticker["EXTREME"], "risk_gate_vol")
 
     def test_custom_cap_via_config(self) -> None:
         ohlcv = {"AAA": _ohlcv_with_vol(0.40)}
@@ -95,6 +98,7 @@ class TestRealizedVolGate(unittest.TestCase):
         RealizedVolGateTask().run(ctx)
         # 40% > 30% cap → dropped
         self.assertEqual(len(ctx.candidates), 0)
+        self.assertEqual(ctx._blocked_by_ticker["AAA"], "risk_gate_vol")
 
     def test_disabled_via_config_keeps_all(self) -> None:
         ohlcv = {"VOLATILE": _ohlcv_with_vol(2.0, seed=3)}
@@ -155,6 +159,7 @@ class TestPositionConcentrationGate(unittest.TestCase):
         kept = [c.ticker for c in ctx.candidates]
         self.assertNotIn("LITE", kept)  # 20% ≥ 15% default cap
         self.assertIn("WMT", kept)       # 5% < 15%
+        self.assertEqual(ctx._blocked_by_ticker["LITE"], "risk_gate_concentration")
 
     def test_no_existing_position_passes(self) -> None:
         ctx = _make_ctx(
@@ -176,6 +181,7 @@ class TestPositionConcentrationGate(unittest.TestCase):
         )
         PositionConcentrationGateTask().run(ctx_drop)
         self.assertEqual(len(ctx_drop.candidates), 0)
+        self.assertEqual(ctx_drop._blocked_by_ticker["X"], "risk_gate_concentration")
 
         ctx_keep = _make_ctx(
             config={"risk_gates": {"position_concentration": {"max_pct": 0.10}}},

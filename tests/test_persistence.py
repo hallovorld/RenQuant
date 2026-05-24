@@ -423,6 +423,7 @@ class TestTrades:
         assert report["selected_blocked_rows"] == 0
         assert report["decision_reason_gaps"] == 0
         assert report["trade_payload_gaps"] == 0
+        assert report["fallback_trade_attribution_gaps"] == 1
         conn.close()
 
     def test_decision_trace_integrity_report_flags_missing_block_reason(self, tmp_path):
@@ -447,6 +448,100 @@ class TestTrades:
         assert report["ok"] is False
         assert report["decision_reason_gaps"] == 1
         assert report["selected_blocked_rows"] == 0
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_sell_share_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "held_no_new_buy",
+                "in_universe": 1,
+                "model_type": "xgb",
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "sell",
+            "price": 100.0,
+            "score_snapshot": {"rank_score": 0.40},
+            "decision_inputs": {"exit_reason": "qp_sell"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["sell_share_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_qp_attribution_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "held_no_new_buy",
+                "in_universe": 1,
+                "model_type": "xgb",
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "sell",
+            "shares": 1,
+            "price": 100.0,
+            "source_job": "JointPortfolioQPJob",
+            "score_snapshot": {"rank_score": 0.40},
+            "decision_inputs": {"source_job": "JointPortfolioQPJob"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["qp_trade_attribution_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_model_type_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "not_selected",
+                "in_universe": 1,
+                "model_type": None,
+            }],
+        )
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["model_type_gaps"] == 1
         conn.close()
 
 

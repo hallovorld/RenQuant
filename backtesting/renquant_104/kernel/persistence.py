@@ -1410,6 +1410,71 @@ def decision_trace_integrity_report(
              )""",
         (run_id,),
     ).fetchone()[0]
+    model_type_gaps = conn.execute(
+        """SELECT COUNT(*) FROM ticker_daily_state
+           WHERE run_id = ?
+             AND COALESCE(in_universe, 0) = 1
+             AND model_type IS NULL""",
+        (run_id,),
+    ).fetchone()[0]
+
+    trade_rows = conn.execute(
+        """SELECT action, shares, source_job, source_task, order_source,
+                  score_snapshot_json, decision_inputs_json
+             FROM trades
+            WHERE run_id = ?""",
+        (run_id,),
+    ).fetchall()
+    sell_share_gaps = 0
+    fallback_trade_attribution_gaps = 0
+    qp_trade_attribution_gaps = 0
+    for (
+        action,
+        shares,
+        source_job,
+        source_task,
+        order_source,
+        score_json,
+        inputs_json,
+    ) in trade_rows:
+        if str(action or "").lower() == "sell":
+            try:
+                sh = float(shares)
+            except (TypeError, ValueError):
+                sh = 0.0
+            if sh <= 0:
+                sell_share_gaps += 1
+        try:
+            score_snapshot = json.loads(score_json) if score_json else {}
+        except Exception:  # noqa: BLE001
+            score_snapshot = {}
+        try:
+            decision_inputs = json.loads(inputs_json) if inputs_json else {}
+        except Exception:  # noqa: BLE001
+            decision_inputs = {}
+        if isinstance(score_snapshot, dict) and score_snapshot.get("attribution_missing"):
+            fallback_trade_attribution_gaps += 1
+        if isinstance(decision_inputs, dict) and decision_inputs.get("attribution_missing"):
+            fallback_trade_attribution_gaps += 1
+
+        merged_source = " ".join(
+            str(v or "")
+            for v in (
+                source_job,
+                source_task,
+                order_source,
+                decision_inputs.get("source_job") if isinstance(decision_inputs, dict) else "",
+                decision_inputs.get("source_task") if isinstance(decision_inputs, dict) else "",
+                decision_inputs.get("order_source") if isinstance(decision_inputs, dict) else "",
+                decision_inputs.get("acceptance_reason") if isinstance(decision_inputs, dict) else "",
+            )
+        ).lower()
+        if "qp" in merged_source or "jointportfolioqpjob" in merged_source:
+            required = ("delta_w", "target_w", "solver_status")
+            if not isinstance(decision_inputs, dict) or any(
+                decision_inputs.get(k) is None for k in required
+            ):
+                qp_trade_attribution_gaps += 1
     return {
         "run_id": run_id,
         "ticker_daily_state_rows": len(recorded),
@@ -1419,11 +1484,19 @@ def decision_trace_integrity_report(
         "selected_blocked_rows": int(selected_blockers or 0),
         "decision_reason_gaps": int(decision_reason_gaps or 0),
         "trade_payload_gaps": int(trade_payload_gaps or 0),
+        "fallback_trade_attribution_gaps": int(fallback_trade_attribution_gaps),
+        "sell_share_gaps": int(sell_share_gaps),
+        "qp_trade_attribution_gaps": int(qp_trade_attribution_gaps),
+        "model_type_gaps": int(model_type_gaps or 0),
         "ok": (
             (not expected or recorded == expected)
             and int(selected_blockers or 0) == 0
             and int(decision_reason_gaps or 0) == 0
             and int(trade_payload_gaps or 0) == 0
+            and int(fallback_trade_attribution_gaps) == 0
+            and int(sell_share_gaps) == 0
+            and int(qp_trade_attribution_gaps) == 0
+            and int(model_type_gaps or 0) == 0
         ),
     }
 
