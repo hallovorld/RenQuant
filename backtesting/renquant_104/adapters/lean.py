@@ -28,6 +28,30 @@ _INDICATOR_LOOKBACK = 60
 _PANEL_LOOKBACK     = 520
 
 
+def _model_type_from_artifact(model: Any) -> str | None:
+    """Extract a readable model type for decision-trace rows."""
+    if model is None:
+        return None
+    if isinstance(model, dict):
+        meta = model.get("_metadata") or model.get("metadata") or {}
+        for src in (meta, model):
+            if not isinstance(src, dict):
+                continue
+            for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
+                val = src.get(key)
+                if isinstance(val, str) and val:
+                    return val
+        return None
+    meta = getattr(model, "metadata", None)
+    if isinstance(meta, dict):
+        for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
+            val = meta.get(key)
+            if isinstance(val, str) and val:
+                return val
+    val = getattr(model, "model_type", None)
+    return val if isinstance(val, str) and val else None
+
+
 class LeanAdapter:
     """Translate between LEAN API and InferenceContext.
 
@@ -70,6 +94,16 @@ class LeanAdapter:
         # under-state prod behavior, defeating the point of LEAN
         # backtest validation.
         config = getattr(algo, "_config", None) or {}
+        self._universe_rejections = dict(
+            getattr(algo, "_universe_rejections", {}) or {}
+        )
+        from kernel.persistence import get_connection  # noqa: PLC0415
+        self._db = get_connection(
+            config,
+            strategy_dir=getattr(algo, "_strategy_dir", None),
+            role="live",
+        )
+
         ml_train_cfg = config.get("meta_label_training", {}) or {}
         if ml_train_cfg.get("enabled", False):
             from kernel.meta_label import SnapshotLogger  # noqa: PLC0415
@@ -249,6 +283,7 @@ class LeanAdapter:
         tax_short      = algo._tax_short
         tax_long       = algo._tax_long
         tax_thresh     = algo._tax_thresh_days
+        trade_events: list[dict[str, Any]] = []
 
         # ── Apply exits ──────────────────────────────────────────────────────
         # 2026-04-24 partial-sell support: when sig.quantity is set and
@@ -314,6 +349,72 @@ class LeanAdapter:
                 f"held={days_held}d tax=${tax:.2f} "
                 f"({'LT' if is_lt else 'ST'}) {sig.reason}"
             )
+            try:
+                price = float(algo.Securities[sym].Price)
+            except Exception:
+                price = 0.0
+            event_shares = float(req_qty) if is_partial else float(holding_qty)
+            event_gross = gross_pnl * frac if is_partial else gross_pnl
+            proceeds_basis = (
+                price * event_shares - event_gross
+                if _math_lex.isfinite(price)
+                and _math_lex.isfinite(event_shares)
+                and _math_lex.isfinite(event_gross)
+                else None
+            )
+            exit_type = getattr(sig, "exit_type", "") or ""
+            reason = getattr(sig, "reason", None)
+            source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
+            source_task = str(getattr(sig, "source_task", None) or exit_type or "sell")
+            order_source = str(
+                getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
+            )
+            trade_events.append({
+                "ticker": ticker,
+                "action": "sell",
+                "date": ctx.today,
+                "shares": event_shares,
+                "price": price,
+                "gross_pnl": event_gross,
+                "proceeds_basis": proceeds_basis,
+                "tax": tax,
+                "net_pnl_after_tax": event_gross - tax
+                if _math_lex.isfinite(event_gross) else None,
+                "exit_reason": exit_type,
+                "pnl_pct": event_gross / proceeds_basis
+                if proceeds_basis and proceeds_basis > 0 else None,
+                "hold_days": days_held,
+                "rank_score": getattr(hs, "rank_score", None) if hs else None,
+                "mu": getattr(hs, "mu", None) if hs else None,
+                "sigma": getattr(hs, "sigma", None) if hs else None,
+                "order_type": f"SELL_{exit_type}" if exit_type else "SELL",
+                "source": str(getattr(sig, "source", None) or "ExitPipeline"),
+                "source_job": source_job,
+                "source_task": source_task,
+                "order_source": order_source,
+                "attribution_version": "lean_exit_decision_v1",
+                "score_snapshot": {
+                    "rank_score": getattr(hs, "rank_score", None) if hs else None,
+                    "panel_score": getattr(hs, "panel_score", None) if hs else None,
+                    "mu": getattr(hs, "mu", None) if hs else None,
+                    "sigma": getattr(hs, "sigma", None) if hs else None,
+                    "confidence": ctx.confidence,
+                    "regime": ctx.regime,
+                },
+                "decision_inputs": {
+                    "acceptance_reason": exit_type or reason,
+                    "exit_reason": exit_type,
+                    "signal_reason": reason,
+                    "partial": is_partial,
+                    "quantity": getattr(sig, "quantity", None),
+                    "shares": event_shares,
+                    "gross_pnl": event_gross,
+                    "tax": tax,
+                    "net_pnl_after_tax": event_gross - tax
+                    if _math_lex.isfinite(event_gross) else None,
+                    "hold_days": days_held,
+                },
+            })
 
             if is_partial:
                 # Place a market order for -quantity (negative = sell).
@@ -462,6 +563,46 @@ class LeanAdapter:
                 )
             algo._executed_buys += 1
             algo.SetHoldings(sym, target_pct)
+            trade_events.append({
+                "ticker": ticker,
+                "action": "buy",
+                "date": ctx.today,
+                "shares": shares_f,
+                "price": price_f,
+                "invest": shares_f * price_f,
+                "target_pct": target_pct_f,
+                "rank_score": order.get("rank_score"),
+                "conviction": order.get("conviction"),
+                "sigma_mult": order.get("sigma_mult"),
+                "mu": order.get("mu"),
+                "sigma": order.get("sigma"),
+                "order_type": order.get("order_type", "BUY"),
+                "source": order.get("source"),
+                "source_job": order.get("source_job"),
+                "source_task": order.get("source_task"),
+                "order_source": order.get("order_source"),
+                "attribution_version": "lean_buy_decision_v1",
+                "score_snapshot": {
+                    "rank_score": order.get("rank_score"),
+                    "panel_score": order.get("panel_score"),
+                    "rs_score": order.get("rs_score"),
+                    "mu": order.get("mu"),
+                    "sigma": order.get("sigma"),
+                    "kelly_target_pct": order.get("kelly_target_pct"),
+                    "confidence": order.get("confidence"),
+                    "regime": order.get("regime"),
+                },
+                "decision_inputs": {
+                    "acceptance_reason": order.get("detail") or "lean_buy",
+                    "target_pct": target_pct_f,
+                    "shares": shares_f,
+                    "price": price_f,
+                    "invest": shares_f * price_f,
+                    "order_source": order.get("order_source"),
+                    "source_job": order.get("source_job"),
+                    "source_task": order.get("source_task"),
+                },
+            })
 
         # ── Telemetry counters from pipeline ─────────────────────────────────
         # Audit #88: also wire blocked_min_hold so OnEndOfAlgorithm displays
@@ -476,6 +617,160 @@ class LeanAdapter:
         algo._sector_blocks     += c.get("sector_blocks",     0)
         algo._corr_blocks       += c.get("corr_blocks",       0)
         algo._blocked_min_hold  += c.get("blocked_min_hold",  0)
+        self._record_decision_trace(ctx, trade_events)
+
+    def _record_decision_trace(
+        self,
+        ctx: InferenceContext,
+        trade_events: list[dict[str, Any]],
+    ) -> None:
+        """Persist LEAN bar decisions with the same DB contract as sim/live."""
+        if self._db is None:
+            return
+        from kernel.persistence import (  # noqa: PLC0415
+            record_candidate_scores,
+            record_pipeline_run,
+            record_ticker_daily_state,
+            record_trades,
+        )
+
+        algo = self._algo
+        config = algo._config
+        selected_tickers = {
+            str(t.get("ticker"))
+            for t in trade_events
+            if str(t.get("action") or "").lower() == "buy" and t.get("ticker")
+        }
+        blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
+        sector_map = config.get("sector_map", {}) or {}
+        model_types = {
+            tk: _model_type_from_artifact(m)
+            for tk, m in (algo._models or {}).items()
+        }
+        panel_artifact = (
+            config.get("ranking", {})
+                  .get("panel_scoring", {})
+                  .get("artifact_path")
+        )
+        qp_delta_by_ticker: dict[str, float] = {}
+        qp_target_by_ticker: dict[str, float] = {}
+        qp_status = None
+        qp_sol = getattr(ctx, "_qp_solution", None)
+        qp_tickers = list(getattr(ctx, "_qp_tickers", None) or [])
+        if qp_sol is not None and qp_tickers:
+            qp_status = getattr(qp_sol, "status", None)
+            for idx, tk in enumerate(qp_tickers):
+                try:
+                    qp_delta_by_ticker[tk] = float(qp_sol.delta_w[idx])
+                except Exception:
+                    pass
+                try:
+                    qp_target_by_ticker[tk] = float(qp_sol.target_w[idx])
+                except Exception:
+                    pass
+
+        run_id = record_pipeline_run(
+            self._db,
+            run_type="lean",
+            run_date=ctx.today,
+            strategy=str(config.get("model_name", "")),
+            regime=ctx.regime,
+            confidence=float(ctx.confidence) if ctx.confidence is not None else None,
+            portfolio_value=float(ctx.portfolio_value)
+            if ctx.portfolio_value is not None else None,
+            cash=float(ctx.cash) if ctx.cash is not None else None,
+            n_candidates=len(ctx.candidates),
+            n_exits=len(ctx.exits),
+            n_rotations=int(ctx.counters.get("rotations", 0)),
+            n_buys=len(selected_tickers),
+            buy_blocked=bool(getattr(ctx, "buy_blocked", False)),
+            skip_buys=bool(getattr(ctx, "skip_buys", False)),
+            bear_only=bool(getattr(ctx, "bear_only", False)),
+            counters=getattr(ctx, "counters", {}) or {},
+            run_bundle={"adapter": "lean"},
+            run_id=getattr(ctx, "run_id", None),
+        )
+
+        cand_pool = (
+            getattr(ctx, "_full_candidate_snapshot", None)
+            or ctx.candidates
+        )
+        record_candidate_scores(
+            self._db,
+            run_id,
+            cand_pool,
+            ctx.holdings,
+            selected_tickers=selected_tickers,
+            blocked_map=blocked_map,
+            sector_map=sector_map,
+            model_types=model_types,
+            panel_artifact=panel_artifact,
+            qp_delta_by_ticker=qp_delta_by_ticker,
+            qp_target_by_ticker=qp_target_by_ticker,
+            qp_status=qp_status,
+        )
+        record_trades(self._db, run_id, trade_events)
+
+        cand_by_t = {c.ticker: c for c in cand_pool}
+        rows: list[dict[str, Any]] = []
+        for tk in list(config.get("watchlist", []) or []):
+            hs = ctx.holdings.get(tk)
+            cand = cand_by_t.get(tk)
+            src = cand if cand is not None else hs
+            pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
+            price = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
+            pos_pct = None
+            if hs and ctx.portfolio_value and price:
+                pos_pct = (pos_qty * price) / float(ctx.portfolio_value)
+            blocked_str = blocked_map.get(tk)
+            if blocked_str is None and tk not in (algo._models or {}):
+                reason = self._universe_rejections.get(tk, "not_loaded")
+                blocked_str = f"universe:{reason}"
+            if blocked_str is None and cand is None and hs is not None:
+                blocked_str = "held_no_new_buy"
+            if blocked_str is None and cand is None:
+                blocked_str = "no_model_signal"
+            if blocked_str is None and tk not in selected_tickers:
+                blocked_str = "not_selected"
+            if cand is not None:
+                model_action = "buy"
+            elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
+                model_action = "sell"
+            else:
+                model_action = "hold"
+            rows.append({
+                "ticker": tk,
+                "regime": ctx.regime,
+                "confidence": ctx.confidence,
+                "in_watchlist": 1,
+                "in_universe": 1 if tk in (algo._models or {}) else 0,
+                "pending_at_broker": 0,
+                "has_position": 1 if hs is not None else 0,
+                "position_qty": pos_qty,
+                "position_pct": pos_pct,
+                "model_type": model_types.get(tk),
+                "model_action": model_action,
+                "sell_streak": int(getattr(hs, "sell_streak", 0)) if hs else None,
+                "panel_score": getattr(src, "panel_score", None) if src else None,
+                "rank_score": getattr(src, "rank_score", None) if src else None,
+                "expected_return": getattr(src, "expected_return", None) if src else None,
+                "kelly_target_pct": getattr(src, "kelly_target_pct", None) if src else None,
+                "mu": getattr(src, "mu", None) if src else None,
+                "sigma": getattr(src, "sigma", None) if src else None,
+                "in_candidates": 1 if cand is not None else 0,
+                "selected": 1 if tk in selected_tickers else 0,
+                "blocked_by": blocked_str,
+                "sector": sector_map.get(tk),
+                "qp_delta_w": qp_delta_by_ticker.get(tk),
+                "qp_target_w": qp_target_by_ticker.get(tk),
+                "qp_status": qp_status,
+            })
+        record_ticker_daily_state(
+            self._db,
+            run_date=ctx.today,
+            rows=rows,
+            run_id=run_id,
+        )
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

@@ -675,6 +675,11 @@ Decision-trace opacity found during sidecar audits is partially fixed:
 - Decision-trace integrity now fails when a sell row lacks realized economic
   attribution (`gross_pnl`, `tax`, `net_pnl_after_tax`). Shares alone are not
   enough to explain a loss bucket.
+- LEAN now writes the same sidecar SQLite decision trace as sim/live:
+  `pipeline_runs`, `candidate_scores`, `trades`, and full-watchlist
+  `ticker_daily_state`. Universe rejection reasons are preserved as
+  `universe:<reason>` in LEAN too, so LEAN Sharpe/APY can be tied back to
+  the per-ticker decision tree rather than only runtime logs.
 
 Verification:
 
@@ -684,11 +689,12 @@ Verification:
   -> `92 passed`.
 - `.venv/bin/python -m pytest tests/test_persistence.py tests/test_sim_sell_attribution.py tests/test_runner_sell_attribution.py tests/test_sim_trade_ledger.py -q`
   -> `40 passed`.
+- `.venv/bin/python -m pytest tests/test_lean_trace_persistence.py tests/test_persistence.py tests/test_universe_alignment.py tests/test_audit_2026_04_24_fixes.py::TestLeanAdapterPartialAndTopup tests/test_audit_2026_05_04_fixes.py::TestLeanAdapterPrevClosesNaNGuard tests/test_audit_2026_05_04_fixes.py::TestLeanAdapterTaxNaNGuard -q`
+  -> `60 passed`.
 
-Still pending: LEAN has no SQLite sidecar persistence equivalent to sim/live,
-so LEAN APY/Sharpe is not replayable under the same decision-trace contract.
-This is a larger adapter refactor and remains a P0 trace-parity item before
-using LEAN results as acceptance evidence.
+Still pending: run an actual LEAN backtest smoke with persistence enabled and
+verify row counts/artifact paths in Docker output before treating LEAN traces
+as operationally proven.
 
 ## 2026-05-23 PatchTST / XGB Experiment Audit
 
@@ -748,15 +754,16 @@ APY/Sharpe/tax/turnover versus XGB and SPY.
    as OOS. Static PatchTST full-window sims are style diagnostics only.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
-7. Fix remaining audit findings before promotion: LEAN DB trace parity. The WF
-   `effective_train_cutoff_date`
+7. Fix remaining audit findings before promotion: run an actual LEAN trace
+   smoke after the new DB wiring. The WF `effective_train_cutoff_date`
    double-embargo bug, SEC fundamentals point-in-time filed-date bug, LEAN/QP
    cash-capped target parity bug, universe metadata fail-closed bug,
    calibrator metric-scope bug, correlation metadata fail-closed semantics,
    QP global status reason stamping, candidate reason-gap contract, and exact
-   sim/live universe-rejection reason preservation are fixed. Correlation
-   artifacts without `as_of_date` now require an explicit legacy override,
-   while sell-only risk exits remain soft-passed.
+   sim/live/LEAN universe-rejection reason preservation plus LEAN sidecar
+   trace wiring are fixed. Correlation artifacts without `as_of_date` now
+   require an explicit legacy override, while sell-only risk exits remain
+   soft-passed.
 
 ## Known Failure Modes To Keep Front And Center
 

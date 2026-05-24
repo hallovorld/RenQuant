@@ -227,6 +227,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         uctx = UniverseContext(config=CONFIG, strategy_dir=self._strategy_dir)
         LoadUniverseJob().run(uctx)
         self._models = uctx.loaded_models
+        self._universe_rejections = dict(uctx.rejections)
         for ticker, reason in uctx.rejections:
             self.Log(f"WARNING: {ticker} {reason}, skipping")
         self.Log(f"Loaded {len(self._models)}/{len(self._watchlist)} models: {sorted(self._models)}")
