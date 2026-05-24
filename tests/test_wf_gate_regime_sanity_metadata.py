@@ -16,7 +16,7 @@ import scripts.run_wf_gate as wf_gate  # noqa: E402
 
 
 def _panel() -> pd.DataFrame:
-    dates = pd.bdate_range("2024-01-02", periods=260)
+    dates = pd.bdate_range("2024-01-02", periods=420)
     rows = []
     for rank, ticker in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]):
         for d in dates:
@@ -66,6 +66,11 @@ def test_run_sanity_battery_stamps_regime_ic_metadata(monkeypatch, tmp_path):
     )
 
     assert "sanity_regime_ic" in result
+    assert result["sanity_placebo_aligned_real_ic"] is not None
+    assert any(
+        row.get("aligned_real_ic") is not None
+        for row in result.get("placebo_shift_diagnostics", [])
+    )
     regime_ic = result["sanity_regime_ic"]
     assert regime_ic["min_n_dates"] == 30
     assert regime_ic["min_mean_ic"] == 0.02

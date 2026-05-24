@@ -163,7 +163,8 @@ def test_wf_gate_sanity_records_method_and_shift_diagnostics() -> None:
     assert '"sanity_method": "existing_model_label_diagnostics"' in src
     assert '"sanity_method":       sanity_result.get("sanity_method")' in src
     assert "placebo_shift_diagnostics" in src
-    assert "abs_ratio_to_real" in src
+    assert "abs_ratio_to_aligned_real" in src
+    assert "sanity_placebo_aligned_real_ic" in src
 
 
 def test_wf_gate_supports_bounded_cut_parallelism() -> None:

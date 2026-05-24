@@ -1691,6 +1691,13 @@ Operational conclusion:
 
 - Signal IC does not automatically become alpha. Trade-domain monotonicity must
   be measured after the full decision tree.
+- Placebo IC must be compared against same-row aligned real IC. The
+  2026-05-24 audit found a WF gate reporting bug where full real IC used 508
+  dates while 60d placebo used only 448 shift-evaluable dates. Corrected
+  numbers for the active XGB manifest are aligned real `+0.0548` vs placebo
+  `+0.0460` (ratio `0.84`), so the original `placebo > real` headline was a
+  sample-mismatch bug but the model still fails sanity. BULL_CALM remains
+  placebo-dominated: aligned real `+0.0323` vs placebo `+0.0312`.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to
@@ -1732,3 +1739,5 @@ Stop and fix before reporting performance if any of these happen:
   `doc/research/2026-05-23-decision-tree-contract.md`.
 - HIFO-aligned WF trade forensics:
   `doc/research/2026-05-23-wf-trade-forensics.md`.
+- Placebo IC alignment/root-cause debug:
+  `doc/research/2026-05-24-placebo-ic-debug.md`.

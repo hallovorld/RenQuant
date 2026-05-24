@@ -23,7 +23,8 @@ Walk-forward criteria (default):
 
 §5.2 sanity criteria (default):
   - shuffled-label IC: |IC| < 0.005 (model on shuffled labels should be ~0)
-  - time-shift placebo IC: ratio < 0.5 × real IC (placebo shouldn't capture real signal)
+  - time-shift placebo IC: ratio < 0.5 × aligned real IC (placebo should not
+    capture the same signal on the same evaluable rows)
 
 References:
 - Lopez de Prado AFML §7 + §11 (walk-forward + cross-validation in finance)
@@ -1457,6 +1458,7 @@ def run_sanity_battery(
     mu_by_idx = _pd.Series(mu, index=val_idx.index)
     placebo_shift_diagnostics = []
     placebo_ic = float("nan")
+    placebo_aligned_real_ic = float("nan")
     for shift_days in (5, 10, 20, 40, 60, 80, 120, 180, 252):
         col = f"__shift_{shift_days}__"
         panel_s[col] = panel_s.groupby("ticker")[LABEL].shift(-shift_days)
@@ -1482,23 +1484,36 @@ def run_sanity_battery(
             })
             continue
         mu_aligned = mu_by_idx.loc[common].values
+        yva_real_aligned = val_s_idx.loc[common, LABEL].clip(-0.5, 0.5).values
         yva_placebo = val_s_idx.loc[common, col].clip(-0.5, 0.5).values
         dates_aligned = [d for _, d in common]
+        aligned_real_ic = cs_ic(mu_aligned, yva_real_aligned, dates_aligned)
         ic = cs_ic(mu_aligned, yva_placebo, dates_aligned)
         n_dates = len(set(dates_aligned))
         placebo_shift_diagnostics.append({
             "shift_days": shift_days,
             "ic": ic,
+            "aligned_real_ic": aligned_real_ic,
+            "full_real_ic": real_ic,
             "n_rows": int(len(common)),
             "n_dates": int(n_dates),
-            "abs_ratio_to_real": (
+            "abs_ratio_to_aligned_real": (
+                abs(ic) / abs(aligned_real_ic) if aligned_real_ic else None
+            ),
+            "abs_ratio_to_full_real": (
                 abs(ic) / abs(real_ic) if real_ic else None
             ),
         })
         if shift_days == 60:
             placebo_ic = ic
-            log.info("  placebo_ic = %+.4f (expect < 0.5 × real_ic = %+.4f)",
-                     placebo_ic, 0.5 * real_ic)
+            placebo_aligned_real_ic = aligned_real_ic
+            log.info(
+                "  placebo_ic = %+.4f (expect < 0.5 × aligned_real_ic = %+.4f; "
+                "full_real_ic=%+.4f)",
+                placebo_ic,
+                0.5 * placebo_aligned_real_ic,
+                real_ic,
+            )
     if placebo_ic != placebo_ic:
         log.warning("  placebo skipped — too few aligned val rows; fail closed")
 
@@ -1537,6 +1552,7 @@ def run_sanity_battery(
             )
             mean_ic = stats.get("mean_ic")
             placebo60 = row60.get("model_placebo_ic")
+            aligned_real60 = row60.get("aligned_real_ic")
             n_dates = int(stats.get("n_dates") or 0)
             eligible = n_dates >= min_dates
             passed = False
@@ -1548,7 +1564,14 @@ def run_sanity_battery(
                     mean_ic_f = float("nan")
                 placebo_ok = True
                 if placebo60 is not None and mean_ic_f == mean_ic_f:
-                    placebo_ok = abs(float(placebo60)) <= max(0.005, abs(mean_ic_f))
+                    placebo_ref = mean_ic_f
+                    try:
+                        aligned_real60_f = float(aligned_real60)
+                        if aligned_real60_f == aligned_real60_f:
+                            placebo_ref = aligned_real60_f
+                    except (TypeError, ValueError):
+                        placebo_ref = mean_ic_f
+                    placebo_ok = abs(float(placebo60)) <= max(0.005, abs(placebo_ref))
                 passed = (
                     mean_ic_f == mean_ic_f
                     and mean_ic_f >= min_mean_ic
@@ -1561,6 +1584,7 @@ def run_sanity_battery(
                 "eligible": bool(eligible),
                 "passed": bool(passed) if eligible else True,
                 "placebo_60_ic": placebo60,
+                "placebo_60_aligned_real_ic": aligned_real60,
                 "label_autocorr_60_ic": row60.get("label_autocorr_ic"),
             }
         sanity_regime_ic = {
@@ -1587,9 +1611,10 @@ def run_sanity_battery(
     pass_shuf = abs(shuf_ic) < 0.005
     pass_placebo = (
         (placebo_ic == placebo_ic)
+        and (placebo_aligned_real_ic == placebo_aligned_real_ic)
         and (
-            abs(placebo_ic) < max(0.005, 0.5 * abs(real_ic))
-            if real_ic != 0 else
+            abs(placebo_ic) < max(0.005, 0.5 * abs(placebo_aligned_real_ic))
+            if placebo_aligned_real_ic != 0 else
             True
         )
     )
@@ -1603,6 +1628,11 @@ def run_sanity_battery(
         "real_ic": real_ic,
         "sanity_shuffled_ic": shuf_ic,
         "sanity_placebo_ic": placebo_ic if placebo_ic == placebo_ic else None,
+        "sanity_placebo_aligned_real_ic": (
+            placebo_aligned_real_ic
+            if placebo_aligned_real_ic == placebo_aligned_real_ic
+            else None
+        ),
         "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "sanity_regime_ic": sanity_regime_ic,
@@ -1611,7 +1641,8 @@ def run_sanity_battery(
             if (pass_shuf and pass_placebo) else
             f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
             f"placebo_ic={placebo_ic:+.4f} "
-            f"(must be available and < 0.5×real_ic)"
+            f"(must be available and < 0.5×aligned_real_ic="
+            f"{placebo_aligned_real_ic:+.4f})"
         ),
         **sanity_meta,
     }
@@ -1882,6 +1913,9 @@ def main():
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),
         "sanity_placebo_ic":   sanity_result.get("sanity_placebo_ic"),
+        "sanity_placebo_aligned_real_ic": (
+            sanity_result.get("sanity_placebo_aligned_real_ic")
+        ),
         "sanity_method":       sanity_result.get("sanity_method"),
         "sanity_eval_scope":   sanity_result.get("sanity_eval_scope"),
         "sanity_manifest_path": sanity_result.get("sanity_manifest_path"),

@@ -136,19 +136,30 @@ def shift_diagnostics(
             })
             continue
         dates = [d for _, d in common]
+        y_real_aligned = label_by_idx.loc[common].astype(float)
         y_future = shifted.loc[common, col].clip(-0.5, 0.5).astype(float)
+        aligned_real_ic = summarize_ic(mu_by_idx.loc[common], y_real_aligned, dates,
+                                       min_names=min_names)
         model_ic = summarize_ic(mu_by_idx.loc[common], y_future, dates,
                                 min_names=min_names)
         autocorr_ic = summarize_ic(label_by_idx.loc[common], y_future, dates,
                                    min_names=min_names)
         model_mean = model_ic.get("mean_ic")
+        aligned_real_mean = aligned_real_ic.get("mean_ic")
         out.append({
             "shift_days": int(shift_days),
             "n_rows": int(len(common)),
             "n_dates": int(model_ic.get("n_dates") or 0),
+            "aligned_real_ic": aligned_real_mean,
+            "full_real_ic": real_ic,
             "model_placebo_ic": model_mean,
             "label_autocorr_ic": autocorr_ic.get("mean_ic"),
-            "model_placebo_abs_ratio_to_real": (
+            "model_placebo_abs_ratio_to_aligned_real": (
+                abs(float(model_mean)) / abs(float(aligned_real_mean))
+                if model_mean is not None and aligned_real_mean not in (None, 0.0)
+                else None
+            ),
+            "model_placebo_abs_ratio_to_full_real": (
                 abs(float(model_mean)) / abs(float(real_ic))
                 if model_mean is not None and real_ic not in (None, 0.0)
                 else None
@@ -369,12 +380,13 @@ def analyze_manifest(
     placebo_60 = next((r for r in shifts_out if r["shift_days"] == 60), {})
     real_ic = real.get("mean_ic")
     p60 = placebo_60.get("model_placebo_ic")
+    aligned_real_60 = placebo_60.get("aligned_real_ic")
     label_auto60 = placebo_60.get("label_autocorr_ic")
     promotion_evidence = (
-        real_ic is not None
-        and abs(float(real_ic)) >= 0.005
+        aligned_real_60 is not None
+        and abs(float(aligned_real_60)) >= 0.005
         and p60 is not None
-        and abs(float(p60)) < max(0.005, 0.5 * abs(float(real_ic)))
+        and abs(float(p60)) < max(0.005, 0.5 * abs(float(aligned_real_60)))
     )
     return {
         "artifact": str(artifact_path),
@@ -401,12 +413,13 @@ def analyze_manifest(
         ),
         "interpretation": {
             "promotion_evidence": bool(promotion_evidence),
+            "aligned_real_60_ic": aligned_real_60,
             "placebo_60_ic": p60,
             "label_autocorr_60_ic": label_auto60,
             "primary_warning": (
-                "60-day placebo is too large relative to real IC"
-                if p60 is not None and real_ic is not None
-                and abs(float(p60)) >= max(0.005, 0.5 * abs(float(real_ic)))
+                "60-day placebo is too large relative to aligned real IC"
+                if p60 is not None and aligned_real_60 is not None
+                and abs(float(p60)) >= max(0.005, 0.5 * abs(float(aligned_real_60)))
                 else None
             ),
         },
@@ -441,18 +454,20 @@ def render_markdown(result: dict[str, Any]) -> str:
         "| Metric | Value |",
         "|---|---:|",
         f"| Real mean IC | {_fmt(result['real_ic'].get('mean_ic'))} |",
+        f"| 60d aligned real IC | {_fmt(result['interpretation'].get('aligned_real_60_ic'))} |",
         f"| 60d model-placebo IC | {_fmt(result['interpretation'].get('placebo_60_ic'))} |",
         f"| 60d label autocorr IC | {_fmt(result['interpretation'].get('label_autocorr_60_ic'))} |",
         f"| Warning | {result['interpretation'].get('primary_warning') or 'none'} |",
         "",
         "## Shift Profile",
         "",
-        "| Shift | Model-placebo IC | Label autocorr IC | Rows | Dates |",
-        "|---:|---:|---:|---:|---:|",
+        "| Shift | Aligned real IC | Model-placebo IC | Label autocorr IC | Rows | Dates |",
+        "|---:|---:|---:|---:|---:|---:|",
     ]
     for row in result["shift_diagnostics"]:
         lines.append(
-            f"| {row['shift_days']} | {_fmt(row.get('model_placebo_ic'))} | "
+            f"| {row['shift_days']} | {_fmt(row.get('aligned_real_ic'))} | "
+            f"{_fmt(row.get('model_placebo_ic'))} | "
             f"{_fmt(row.get('label_autocorr_ic'))} | {row.get('n_rows', 0)} | "
             f"{row.get('n_dates', 0)} |"
         )
@@ -533,6 +548,7 @@ def main() -> None:
         "json": str(json_path),
         "markdown": str(md_path),
         "real_ic": result["real_ic"].get("mean_ic"),
+        "aligned_real_60_ic": result["interpretation"].get("aligned_real_60_ic"),
         "placebo_60_ic": result["interpretation"].get("placebo_60_ic"),
         "label_autocorr_60_ic": result["interpretation"].get("label_autocorr_60_ic"),
         "promotion_evidence": result["interpretation"]["promotion_evidence"],

@@ -600,7 +600,8 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
         wf_3cut_sharpe_std:   float
         wf_3cut_apy_mean:     float
         sanity_shuffled_ic:   float       # must be ≈ 0
-        sanity_placebo_ic:    float       # must be < 0.5 × real_ic
+        sanity_placebo_ic:    float       # must be < 0.5 × same-row aligned real IC
+        sanity_placebo_aligned_real_ic: float
         candidate_artifact_used: bool     # True for leakage-safe static eval
         recipe_validated:      bool       # True for matching manifest eval
         run_at:               str (ISO-8601)
@@ -645,7 +646,8 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
             f"{staging_path.name}. Detail: "
             f"sharpe_mean={wf.get('wf_3cut_sharpe_mean')} "
             f"shuffled_ic={wf.get('sanity_shuffled_ic')} "
-            f"placebo_ic={wf.get('sanity_placebo_ic')}. "
+            f"placebo_ic={wf.get('sanity_placebo_ic')} "
+            f"aligned_real_ic={wf.get('sanity_placebo_aligned_real_ic')}. "
             f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
         )
     if wf.get("candidate_artifact_used") is False and wf.get("recipe_validated") is not True:

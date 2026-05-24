@@ -128,6 +128,7 @@ def test_regime_admission_blocks_placebo_dominated_sanity_regime() -> None:
                 "eligible": True,
                 "passed": True,
                 "mean_ic": 0.03,
+                "placebo_60_aligned_real_ic": 0.03,
                 "placebo_60_ic": 0.05,
             },
         },
@@ -141,6 +142,26 @@ def test_regime_admission_blocks_placebo_dominated_sanity_regime() -> None:
         ctx._blocked_by_ticker["MSFT"]
         == "regime_admission:placebo_sanity:BULL_CALM"
     )
+
+
+def test_regime_admission_uses_aligned_real_for_placebo_sanity() -> None:
+    meta = _metadata("BULL_CALM")
+    meta["wf_gate_metadata"]["sanity_regime_ic"] = {
+        "regimes": {
+            "BULL_CALM": {
+                "eligible": True,
+                "passed": True,
+                "mean_ic": 0.01,
+                "placebo_60_aligned_real_ic": 0.04,
+                "placebo_60_ic": 0.03,
+            },
+        },
+    }
+    ctx = _ctx(meta, cfg={"min_sanity_regime_ic": 0.0})
+
+    RegimeModelAdmissionTask().run(ctx)
+
+    assert [c.ticker for c in ctx.candidates] == ["AAPL", "MSFT"]
 
 
 def test_regime_admission_requires_sanity_regime_ic_by_default() -> None:

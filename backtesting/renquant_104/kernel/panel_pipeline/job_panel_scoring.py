@@ -988,9 +988,18 @@ def _sanity_regime_admission(
             placebo_60_ic_f = float(placebo_60_ic)
         except (TypeError, ValueError):
             return False, f"regime_admission:bad_placebo_sanity:{regime}", {"stats": stats}
+        placebo_ref = mean_ic_f
+        aligned_real_ic = stats.get("placebo_60_aligned_real_ic")
+        if aligned_real_ic is not None:
+            try:
+                aligned_real_ic_f = float(aligned_real_ic)
+                if math.isfinite(aligned_real_ic_f):
+                    placebo_ref = aligned_real_ic_f
+            except (TypeError, ValueError):
+                return False, f"regime_admission:bad_aligned_placebo_sanity:{regime}", {"stats": stats}
         if math.isfinite(placebo_60_ic_f) and abs(placebo_60_ic_f) > max(
             0.005,
-            abs(mean_ic_f),
+            abs(placebo_ref),
         ):
             return False, f"regime_admission:placebo_sanity:{regime}", {"stats": stats}
     if stats.get("passed") is False:

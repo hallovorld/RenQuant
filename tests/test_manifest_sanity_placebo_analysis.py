@@ -55,8 +55,51 @@ def test_shift_diagnostics_separates_model_placebo_from_label_persistence() -> N
     )
 
     assert len(rows) == 1
+    assert rows[0]["aligned_real_ic"] > 0.99
     assert rows[0]["model_placebo_ic"] > 0.99
     assert rows[0]["label_autocorr_ic"] > 0.99
+    assert rows[0]["model_placebo_abs_ratio_to_aligned_real"] > 0.99
+
+
+def test_shift_diagnostics_compares_placebo_to_aligned_real_sample() -> None:
+    dates = pd.bdate_range("2024-01-01", periods=12)
+    rows = []
+    for rank, ticker in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]):
+        for i, d in enumerate(dates):
+            rows.append({
+                "ticker": ticker,
+                "date": d,
+                # First 9 dates match ticker rank; final 3 dates invert it.
+                # A 3-day placebo can only use the first 9 dates. The
+                # diagnostic must therefore compare placebo to real IC on
+                # those same 9 dates, not the full 12-date validation sample.
+                "fwd_60d_excess_raw": float(rank if i < 9 else -rank),
+            })
+    panel = pd.DataFrame(rows)
+    val = panel.copy()
+    mu = pd.Series(val["ticker"].map({
+        "AAA": 0.0,
+        "BBB": 1.0,
+        "CCC": 2.0,
+        "DDD": 3.0,
+        "EEE": 4.0,
+        "FFF": 5.0,
+    }).to_numpy(), index=val.index)
+
+    row = shift_diagnostics(
+        panel,
+        val,
+        mu,
+        "fwd_60d_excess_raw",
+        shifts=[3],
+        min_names=5,
+    )[0]
+
+    assert row["full_real_ic"] < row["aligned_real_ic"]
+    assert row["aligned_real_ic"] == 1.0
+    assert row["model_placebo_abs_ratio_to_aligned_real"] == (
+        abs(row["model_placebo_ic"]) / abs(row["aligned_real_ic"])
+    )
 
 
 def test_markdown_marks_failed_promotion_evidence() -> None:
@@ -73,12 +116,14 @@ def test_markdown_marks_failed_promotion_evidence() -> None:
         "real_ic": {"mean_ic": 0.01},
         "interpretation": {
             "promotion_evidence": False,
+            "aligned_real_60_ic": 0.01,
             "placebo_60_ic": 0.02,
             "label_autocorr_60_ic": 0.04,
-            "primary_warning": "60-day placebo is too large relative to real IC",
+            "primary_warning": "60-day placebo is too large relative to aligned real IC",
         },
         "shift_diagnostics": [{
             "shift_days": 60,
+            "aligned_real_ic": 0.01,
             "model_placebo_ic": 0.02,
             "label_autocorr_ic": 0.04,
             "n_rows": 60,
@@ -99,3 +144,4 @@ def test_markdown_marks_failed_promotion_evidence() -> None:
 
     assert "Promotion evidence: `False`" in md
     assert "60-day placebo is too large" in md
+    assert "60d aligned real IC" in md
