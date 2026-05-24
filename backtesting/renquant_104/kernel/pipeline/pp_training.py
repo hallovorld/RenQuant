@@ -38,7 +38,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -269,37 +269,93 @@ def run_ticker_parallel(
     ticker_ctxs: list[TickerTrainingContext],
     max_workers: "int | None" = None,
     timeout_seconds: "float | None" = None,
+    progress_log_seconds: "float | None" = None,
 ) -> None:
     """Run _run_ticker_chain for each ticker in parallel via ThreadPoolExecutor.
 
     max_workers=None → auto (cpu_count-2, min 1).
-    timeout_seconds=None → no per-ticker timeout. Hung tickers logged and skipped.
+    timeout_seconds=None → no wall-clock phase timeout.
+
+    ThreadPoolExecutor cannot safely interrupt a running worker. If the
+    per-ticker training phase exceeds timeout_seconds, fail hard before the
+    caller can collect a partial model set and treat it as a valid retrain.
     """
     if not ticker_ctxs:
         return
-    from concurrent.futures import TimeoutError as _FutTimeout
-    from .pipeline import resolve_workers
+    from .pipeline import ParallelTimeoutError, resolve_workers
     if max_workers is None or timeout_seconds is None:
         cfg = getattr(ticker_ctxs[0], "config", None) or {}
         if max_workers is None:
             max_workers = cfg.get("parallel_workers")
         if timeout_seconds is None:
             timeout_seconds = cfg.get("parallel_ticker_timeout_seconds")
+        if progress_log_seconds is None:
+            progress_log_seconds = cfg.get("parallel_progress_log_seconds")
+    if progress_log_seconds is None:
+        progress_log_seconds = 30.0
     n = resolve_workers(max_workers, len(ticker_ctxs))
+    job_name = "TickerTrainingChain"
     log.info("run_ticker_parallel: %d tickers, %d workers, timeout=%s",
              len(ticker_ctxs), n, timeout_seconds)
     t0 = time.monotonic()
-    with ThreadPoolExecutor(max_workers=n, thread_name_prefix="ticker") as ex:
-        futures = {ex.submit(_run_ticker_chain, tc): tc.ticker for tc in ticker_ctxs}
-        for fut in as_completed(futures, timeout=None):
-            ticker = futures[fut]
-            try:
-                fut.result(timeout=timeout_seconds)
-            except _FutTimeout:
-                log.error("[%s] chain TIMEOUT after %ss — skipped", ticker, timeout_seconds)
-                fut.cancel()
-            except Exception as e:
-                log.error("[%s] chain ERROR — %s: %s", ticker, type(e).__name__, e)
+    ex = ThreadPoolExecutor(max_workers=n, thread_name_prefix="ticker")
+    futures = {ex.submit(_run_ticker_chain, tc): tc.ticker for tc in ticker_ctxs}
+    pending = set(futures)
+    completed = 0
+    progress_interval = max(0.01, float(progress_log_seconds or 0.0))
+    next_progress = t0 + progress_interval
+    abandon_executor = False
+    try:
+        while pending:
+            now = time.monotonic()
+            elapsed = now - t0
+            if timeout_seconds is not None and elapsed >= float(timeout_seconds):
+                pending_tickers = sorted(futures[f] for f in pending)
+                for fut in pending:
+                    fut.cancel()
+                log.error(
+                    "run_ticker_parallel: %s TIMEOUT after %.2fs — done=%d/%d "
+                    "pending=%d tickers=%s; worker may still be running",
+                    job_name, elapsed, completed, len(futures), len(pending_tickers),
+                    pending_tickers[:20],
+                )
+                ex.shutdown(wait=False, cancel_futures=True)
+                abandon_executor = True
+                raise ParallelTimeoutError(job_name, elapsed, pending_tickers)
+
+            wait_timeout = max(0.0, next_progress - now)
+            if timeout_seconds is not None:
+                wait_timeout = min(
+                    wait_timeout,
+                    max(0.0, float(timeout_seconds) - elapsed),
+                )
+            done, pending = wait(
+                pending,
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+
+            for fut in done:
+                ticker = futures[fut]
+                completed += 1
+                try:
+                    fut.result()
+                except Exception as e:
+                    log.error("[%s] chain ERROR — %s: %s", ticker, type(e).__name__, e)
+
+            now = time.monotonic()
+            if pending and now >= next_progress:
+                pending_tickers = sorted(futures[f] for f in pending)
+                log.info(
+                    "run_ticker_parallel: %s progress done=%d/%d pending=%d "
+                    "elapsed=%.2fs pending_tickers=%s",
+                    job_name, completed, len(futures), len(pending_tickers),
+                    now - t0, pending_tickers[:10],
+                )
+                next_progress = now + progress_interval
+    finally:
+        if not abandon_executor:
+            ex.shutdown(wait=True)
     elapsed = time.monotonic() - t0
     log.info("run_ticker_parallel: DONE  %.1fs total  (%d tickers)", elapsed, len(ticker_ctxs))
     print(f"  parallel phase done in {elapsed:.1f}s  ({len(ticker_ctxs)} tickers, {n} workers)")
