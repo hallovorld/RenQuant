@@ -92,12 +92,15 @@ class TestAboveThresholdCancels:
                     threshold_sigma=2.0, dry_run=False,
                 )
                 # Both market orders cancelled; limit untouched
+                assert result["action"] == "cancelled"
                 assert sorted(result["cancelled"]) == ["META", "TXN"]
                 # Cancel was called for each market order
                 cancel_calls = client_inst.cancel_order_by_id.call_args_list
                 cancelled_ids = sorted(c.args[0] for c in cancel_calls)
                 assert cancelled_ids == ["o-1", "o-2"]
                 ntfy.assert_called_once()
+                event = ntfy.call_args.args[1]
+                assert event.taxonomy == "PREOPEN_CANCEL"
 
     def test_dry_run_does_not_actually_cancel(self, tmp_path):
         from scripts import preopen_cancel_gate as gate
@@ -151,9 +154,46 @@ class TestAboveThresholdCancels:
                     threshold_sigma=2.0, dry_run=False,
                 )
                 # TXN succeeded; META failure logged but not raised
+                assert result["action"] == "partial_cancelled"
                 assert result["cancelled"] == ["TXN"]
                 assert result["failed"][0]["symbol"] == "META"
                 ntfy.assert_called_once()
+                event = ntfy.call_args.args[1]
+                assert event.taxonomy == "PREOPEN_CANCEL_PARTIAL"
+                assert "FAILED 1" in event.body
+
+    def test_all_cancel_failures_send_failure_alert(self, tmp_path):
+        from scripts import preopen_cancel_gate as gate
+        metrics = {
+            "source": "ES=F", "prior_close": 5000.0, "latest": 4700.0,
+            "current_pct": -0.06, "sigma_60d": 0.005,
+            "severity": -12.0, "n_obs": 100,
+        }
+        m1 = _mock_order(symbol="META", id="o-1")
+        m2 = _mock_order(symbol="TXN", id="o-2")
+
+        with patch.object(gate, "compute_overnight_severity",
+                          return_value=metrics), \
+             patch.dict("os.environ", {"ALPACA_API_KEY": "k", "ALPACA_SECRET_KEY": "s"}):
+            with patch("alpaca.trading.client.TradingClient") as MockClient, \
+                 patch.object(gate, "PREOPEN_CANCEL_LEDGER", tmp_path / "ledger.jsonl"), \
+                 patch.object(gate, "post_ntfy_alert") as ntfy:
+                client_inst = MockClient.return_value
+                client_inst.get_orders.return_value = [m1, m2]
+                client_inst.cancel_order_by_id.side_effect = Exception("alpaca timeout")
+
+                result = gate.cancel_stale_market_orders(
+                    threshold_sigma=2.0, dry_run=False,
+                )
+
+                assert result["action"] == "cancel_failed"
+                assert result["cancelled"] == []
+                assert [f["symbol"] for f in result["failed"]] == ["META", "TXN"]
+                assert not (tmp_path / "ledger.jsonl").exists()
+                ntfy.assert_called_once()
+                event = ntfy.call_args.args[1]
+                assert event.taxonomy == "PREOPEN_CANCEL_FAILED"
+                assert "FAILED to cancel 2" in event.body
 
 
 class TestSeverityCompute:

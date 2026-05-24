@@ -547,6 +547,23 @@ Verification:
 - `.venv/bin/python -m pytest tests/test_smoke_test_model.py tests/test_runner_trade_ntfy.py tests/test_alerts.py -q`
   -> `66 passed`.
 
+## 2026-05-23 Preopen Cancel Alert Fix
+
+The preopen severe-gap cancel gate no longer reports a misleading
+`cancelled` action when every Alpaca cancel request fails.
+
+- Full success -> `action="cancelled"` and taxonomy `PREOPEN_CANCEL`.
+- Mixed success/failure -> `action="partial_cancelled"` and taxonomy
+  `PREOPEN_CANCEL_PARTIAL`.
+- All failures -> `action="cancel_failed"` and taxonomy
+  `PREOPEN_CANCEL_FAILED`.
+- Only successful cancels are written to the preopen cancel ledger.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_preopen_cancel_gate.py tests/test_alerts.py -q`
+  -> `12 passed`.
+
 ## Mainline Queue
 
 1. Regenerate the 172-feature walk-forward manifest under the current

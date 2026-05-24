@@ -381,34 +381,96 @@ def cancel_stale_market_orders(*, threshold_sigma: float, dry_run: bool) -> dict
 
     if cancelled:
         _append_preopen_cancel_ledger(cancelled_rows)
-        msg = (
-            f"PREOPEN-CANCEL: {metrics['source']} current-vs-cash-close "
-            f"{pct*100:+.2f}% ({sev:+.1f}σ >= +/-{threshold_sigma:.1f}σ) "
-            f"cancelled {len(cancelled)} pending order(s): "
-            f"{','.join(cancelled)}"
-        )
-        topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
-        post_ntfy_alert(
-            f"https://ntfy.sh/{topic}",
-            AlertEvent(
-                taxonomy="PREOPEN_CANCEL",
-                title="RenQuant 104 PREOPEN CANCEL",
-                body=msg,
-                key=stable_alert_key(
-                    "preopen_cancel",
-                    time.strftime("%Y-%m-%d"),
-                    sorted(str(o["order_id"]) for o in cancelled_rows),
-                    sorted(cancelled),
-                ),
-                priority="high",
-                cooldown_seconds=24 * 60 * 60,
+        _post_cancel_alert(
+            metrics=metrics,
+            pct=pct,
+            severity=sev,
+            threshold_sigma=threshold_sigma,
+            taxonomy="PREOPEN_CANCEL_PARTIAL" if failed else "PREOPEN_CANCEL",
+            title=(
+                "RenQuant 104 PREOPEN CANCEL PARTIAL"
+                if failed else "RenQuant 104 PREOPEN CANCEL"
             ),
-            logger=log,
+            body_suffix=(
+                f"cancelled {len(cancelled)} pending order(s): "
+                f"{','.join(cancelled)}"
+                + (
+                    f"; FAILED {len(failed)}: "
+                    f"{','.join(f['symbol'] for f in failed)}"
+                    if failed else ""
+                )
+            ),
+            key_parts=[
+                sorted(str(o["order_id"]) for o in cancelled_rows),
+                sorted(cancelled),
+                sorted(str(f["order_id"]) for f in failed),
+            ],
+        )
+    elif failed:
+        _post_cancel_alert(
+            metrics=metrics,
+            pct=pct,
+            severity=sev,
+            threshold_sigma=threshold_sigma,
+            taxonomy="PREOPEN_CANCEL_FAILED",
+            title="RenQuant 104 PREOPEN CANCEL FAILED",
+            body_suffix=(
+                f"FAILED to cancel {len(failed)} pending order(s): "
+                f"{','.join(f['symbol'] for f in failed)}"
+            ),
+            key_parts=[
+                sorted(str(f["order_id"]) for f in failed),
+                sorted(str(f["symbol"]) for f in failed),
+            ],
         )
 
-    action = "dry-run" if dry_run else "cancelled"
+    if dry_run:
+        action = "dry-run"
+    elif failed and not cancelled:
+        action = "cancel_failed"
+    elif failed:
+        action = "partial_cancelled"
+    elif cancelled:
+        action = "cancelled"
+    else:
+        action = "triggered_no_market_orders"
     return {"metrics": metrics, "cancelled": cancelled,
             "failed": failed, "considered": len(pending_market), "action": action}
+
+
+def _post_cancel_alert(
+    *,
+    metrics: dict,
+    pct: float,
+    severity: float,
+    threshold_sigma: float,
+    taxonomy: str,
+    title: str,
+    body_suffix: str,
+    key_parts: list[object],
+) -> None:
+    msg = (
+        f"{taxonomy}: {metrics['source']} current-vs-cash-close "
+        f"{pct*100:+.2f}% ({severity:+.1f}σ >= +/-{threshold_sigma:.1f}σ) "
+        f"{body_suffix}"
+    )
+    topic = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+    post_ntfy_alert(
+        f"https://ntfy.sh/{topic}",
+        AlertEvent(
+            taxonomy=taxonomy,
+            title=title,
+            body=msg,
+            key=stable_alert_key(
+                taxonomy.lower(),
+                time.strftime("%Y-%m-%d"),
+                *key_parts,
+            ),
+            priority="high",
+            cooldown_seconds=24 * 60 * 60,
+        ),
+        logger=log,
+    )
 
 
 def _append_preopen_cancel_ledger(rows: list[dict]) -> None:
