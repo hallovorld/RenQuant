@@ -36,3 +36,12 @@ def test_full_preflight_exception_falls_back_to_sell_only():
     assert "P-PREFLIGHT-IMPORT" in script
     assert "P-PREFLIGHT-EXCEPTION" in script
     assert "rerunning sell-only" in script
+
+
+def test_buy_blocked_wrapper_alert_has_cooldown():
+    """Repeated expected buy-side gate blocks should not page every rerun."""
+    script = DAILY_104.read_text()
+
+    assert "BUY_BLOCKED_ALERT_STAMP" in script
+    assert "RENQUANT_BUY_BLOCKED_ALERT_COOLDOWN_SEC" in script
+    assert "BUY-BLOCKED ntfy suppressed by cooldown" in script

@@ -287,7 +287,19 @@ try:
 except Exception:
     print('')
 " 2>/dev/null || echo "")
-    notify "RenQuant 104 BUY-BLOCKED" "Full run blocked new buys; sell-only fallback completed.${HOLDINGS:+ | $HOLDINGS}"
+    BUY_BLOCKED_ALERT_STAMP="$LOG_DIR/.buy_blocked_alert_stamp"
+    BUY_BLOCKED_COOLDOWN_SEC="${RENQUANT_BUY_BLOCKED_ALERT_COOLDOWN_SEC:-21600}"
+    NOW_SEC=$(date +%s)
+    LAST_SEC=0
+    if [ -f "$BUY_BLOCKED_ALERT_STAMP" ]; then
+        LAST_SEC=$(cat "$BUY_BLOCKED_ALERT_STAMP" 2>/dev/null || echo 0)
+    fi
+    if [ $((NOW_SEC - LAST_SEC)) -ge "$BUY_BLOCKED_COOLDOWN_SEC" ]; then
+        notify "RenQuant 104 BUY-BLOCKED" "Full run blocked new buys; sell-only fallback completed.${HOLDINGS:+ | $HOLDINGS}"
+        echo "$NOW_SEC" > "$BUY_BLOCKED_ALERT_STAMP"
+    else
+        echo "BUY-BLOCKED ntfy suppressed by cooldown (${BUY_BLOCKED_COOLDOWN_SEC}s)."
+    fi
 else
     echo "Wrapper success ntfy suppressed; live.runner already posted the cycle decision."
 fi
