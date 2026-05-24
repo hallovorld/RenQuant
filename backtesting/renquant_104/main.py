@@ -188,6 +188,9 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
             _corr_as_of,
             CONFIG.get("backtest_start"),
             is_live_mode=getattr(self, "LiveMode", False),
+            allow_legacy_without_as_of=bool(
+                regime_cfg.get("allow_legacy_correlation_without_as_of", False)
+            ),
             context="LEAN main.py corr",
         )
         self._earnings = self._load_json_artifact(

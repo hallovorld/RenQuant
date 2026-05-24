@@ -22,11 +22,13 @@ Checks (each returns ok / soft-warn / hard-fail):
   4. P-WATCHLIST        — config watchlist size matches training watchlist
 	  5. P-WF-GATE          — active artifact must not carry failed WF gate
 	                          evidence
-	  6. P-FEATURE-COVER    — NGBoost head's feature_cols all present in
+	  6. P-CORR-METADATA    — correlation artifact must be stamped with
+	                          as_of_date before buy/full runs
+	  7. P-FEATURE-COVER    — NGBoost head's feature_cols all present in
 	                          current panel pipeline output (≥ 95%)
-	  7. P-STATE-FILE       — live_state.{broker}.json parses (or absent
+	  8. P-STATE-FILE       — live_state.{broker}.json parses (or absent
 	                          which is fine — first run)
-	  8. P-BROKER-CONNECT   — broker.connect() / get_account_value() works
+	  9. P-BROKER-CONNECT   — broker.connect() / get_account_value() works
 	                          (only if broker is provided; skipped in dry-run)
 
 Usage in live/runner.py:
@@ -898,6 +900,85 @@ def _check_sector_map_coverage(
     )
 
 
+def _correlation_artifact_path(config: dict, strategy_dir: Path) -> Path:
+    regime_cfg = config.get("regime", {}) or {}
+    rel = regime_cfg.get("correlation_artifact", "prod/watchlist-correlation.json")
+    p = Path(str(rel))
+    if p.is_absolute():
+        return p
+    return strategy_dir / "artifacts" / p
+
+
+def _check_correlation_artifact_metadata(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
+    """P-CORR-METADATA: buy/full runs require stamped correlation metadata.
+
+    Live may use the freshest correlation matrix, so this preflight check
+    does not compare `as_of_date` with `backtest_start`. It ensures the same
+    artifact can prove its data window when strict sims or LEAN acceptance
+    consume it.
+    """
+    p = _correlation_artifact_path(config, strategy_dir)
+    details = {"path": str(p)}
+    if not p.exists():
+        return _soft_for_sell_only(
+            "P-CORR-METADATA",
+            f"correlation artifact missing at {p}",
+            run_mode=run_mode,
+            details=details,
+        )
+    try:
+        raw = json.loads(p.read_text())
+        from kernel.walk_forward import parse_correlation_artifact  # noqa: PLC0415
+        matrix, as_of = parse_correlation_artifact(raw)
+    except Exception as exc:
+        return _soft_for_sell_only(
+            "P-CORR-METADATA",
+            f"correlation artifact unreadable at {p}: {exc}",
+            run_mode=run_mode,
+            details=details,
+        )
+
+    details.update({"as_of_date": as_of, "n_tickers": len(matrix)})
+    if as_of is None:
+        legacy_allowed = bool(
+            (config.get("regime", {}) or {})
+            .get("allow_legacy_correlation_without_as_of", False)
+        )
+        if legacy_allowed:
+            return PreflightCheck(
+                "P-CORR-METADATA", "soft", True,
+                "correlation artifact missing as_of_date; explicit legacy override enabled",
+                details=details,
+            )
+        return _soft_for_sell_only(
+            "P-CORR-METADATA",
+            f"correlation artifact missing as_of_date at {p}; strict full/buy "
+            "preflight fails closed because leakage cannot be verified",
+            run_mode=run_mode,
+            details=details,
+        )
+
+    try:
+        from kernel.walk_forward.leakage_guard import _to_timestamp  # noqa: PLC0415
+        _to_timestamp(as_of, label="correlation as_of_date")
+    except Exception as exc:
+        return _soft_for_sell_only(
+            "P-CORR-METADATA",
+            f"correlation artifact has invalid as_of_date={as_of!r}: {exc}",
+            run_mode=run_mode,
+            details=details,
+        )
+    return PreflightCheck(
+        "P-CORR-METADATA", "hard", True,
+        f"correlation artifact stamped as_of_date={as_of} ({len(matrix)} tickers)",
+        details=details,
+    )
+
+
 def _check_feature_coverage(
     config: dict, strategy_dir: Path,
     feature_drift_pct: float = 0.05,
@@ -1095,6 +1176,7 @@ ALL_CHECKS = (
     _check_config_fingerprint,
     _check_watchlist_size,
     _check_sector_map_coverage,
+    _check_correlation_artifact_metadata,
     _check_feature_coverage,
     _check_state_file,
     _check_broker_connect,

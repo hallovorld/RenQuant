@@ -136,10 +136,24 @@ class ComputeFullSigmaTask(Task):
             return None
         try:
             raw = json.loads(path.read_text())
-            from kernel.walk_forward import parse_correlation_artifact  # noqa: PLC0415
-            corr, _ = parse_correlation_artifact(raw)
+            from kernel.walk_forward import (  # noqa: PLC0415
+                assert_correlation_no_leakage,
+                parse_correlation_artifact,
+            )
+            corr, as_of = parse_correlation_artifact(raw)
+            config = ctx.config or {}
+            assert_correlation_no_leakage(
+                as_of,
+                config.get("backtest_start"),
+                is_live_mode=bool(config.get("_is_live_mode", False)),
+                allow_legacy_without_as_of=bool(
+                    (config.get("regime", {}) or {})
+                    .get("allow_legacy_correlation_without_as_of", False)
+                ),
+                context="ComputeFullSigmaTask corr",
+            )
             return corr
-        except Exception as exc:
+        except (json.JSONDecodeError, OSError) as exc:
             log.warning("ComputeFullSigmaTask: corr load failed from %s (%s)", path, exc)
             return None
 

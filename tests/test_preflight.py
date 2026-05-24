@@ -28,6 +28,7 @@ from kernel.preflight import (  # noqa: E402
     _check_config_fingerprint,
     _check_watchlist_size,
     _check_sector_map_coverage,
+    _check_correlation_artifact_metadata,
     _check_feature_coverage,
     _check_state_file,
     _check_broker_connect,
@@ -65,9 +66,25 @@ def healthy_setup(tmp_path):
             "giant_tech": "XLK",
             "ai_chip": "XLK",
         },
+        "regime": {
+            "correlation_artifact": "prod/watchlist-correlation.json",
+        },
     }
     art_dir = tmp_path / "artifacts"
     art_dir.mkdir()
+    prod_dir = art_dir / "prod"
+    prod_dir.mkdir()
+    (prod_dir / "watchlist-correlation.json").write_text(json.dumps({
+        "schema_version": 2,
+        "as_of_date": "2026-05-22",
+        "data_window_start": "2025-11-22",
+        "data_window_end": "2026-05-22",
+        "matrix": {
+            "AAPL": {"AAPL": 1.0, "MSFT": 0.3, "NVDA": 0.4},
+            "MSFT": {"AAPL": 0.3, "MSFT": 1.0, "NVDA": 0.5},
+            "NVDA": {"AAPL": 0.4, "MSFT": 0.5, "NVDA": 1.0},
+        },
+    }))
     panel = art_dir / "panel-ltr.json"
     panel.write_text(json.dumps({
         "best_iter": 50,
@@ -662,6 +679,59 @@ class TestCheckSectorMapCoverage:
         r = _check_sector_map_coverage(cfg, sd, run_mode="full")
         assert not r.ok and r.severity == "hard"
         assert "software" in r.message
+
+
+# ── P-CORR-METADATA ────────────────────────────────────────────────────────
+
+class TestCheckCorrelationArtifactMetadata:
+    def test_pass_when_correlation_artifact_has_as_of_date(self, healthy_setup):
+        cfg, sd = healthy_setup
+        r = _check_correlation_artifact_metadata(cfg, sd, run_mode="full")
+        assert r.ok and r.severity == "hard"
+        assert "as_of_date" in r.message
+
+    def test_fail_full_when_correlation_artifact_missing_as_of_date(self, healthy_setup):
+        cfg, sd = healthy_setup
+        corr = sd / "artifacts" / "prod" / "watchlist-correlation.json"
+        corr.write_text(json.dumps({"AAPL": {"MSFT": 0.95}}))
+
+        r = _check_correlation_artifact_metadata(cfg, sd, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "missing as_of_date" in r.message
+
+    def test_sell_only_soft_passes_missing_as_of_for_risk_exits(self, healthy_setup):
+        cfg, sd = healthy_setup
+        corr = sd / "artifacts" / "prod" / "watchlist-correlation.json"
+        corr.write_text(json.dumps({"AAPL": {"MSFT": 0.95}}))
+
+        r = _check_correlation_artifact_metadata(cfg, sd, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
+
+    def test_run_preflight_blocks_full_but_not_sell_only(self, healthy_setup):
+        cfg, sd = healthy_setup
+        corr = sd / "artifacts" / "prod" / "watchlist-correlation.json"
+        corr.write_text(json.dumps({"AAPL": {"MSFT": 0.95}}))
+
+        with pytest.raises(PreflightFailed, match="correlation artifact missing as_of_date"):
+            run_preflight(cfg, broker=None, strategy_dir=sd, run_mode="full")
+
+        results = run_preflight(cfg, broker=None, strategy_dir=sd, run_mode="sell-only")
+        corr_check = next(r for r in results if r.name == "P-CORR-METADATA")
+        assert corr_check.ok and corr_check.severity == "soft"
+
+    def test_explicit_legacy_override_is_noisy(self, healthy_setup):
+        cfg, sd = healthy_setup
+        cfg["regime"]["allow_legacy_correlation_without_as_of"] = True
+        corr = sd / "artifacts" / "prod" / "watchlist-correlation.json"
+        corr.write_text(json.dumps({"AAPL": {"MSFT": 0.95}}))
+
+        r = _check_correlation_artifact_metadata(cfg, sd, run_mode="full")
+
+        assert r.ok and r.severity == "soft"
+        assert "explicit legacy override" in r.message
 
 
 # ── P-FEATURE-COVER ────────────────────────────────────────────────────────

@@ -637,10 +637,22 @@ class SimAdapter:
                 as_of_date,
                 self._config.get("backtest_start"),
                 is_live_mode=False,
+                allow_legacy_without_as_of=bool(
+                    regime_cfg.get("allow_legacy_correlation_without_as_of", False)
+                ),
                 context=f"SimAdapter corr={corr_path.name}",
             )
         elif fallback_corr is not None:
-            corr_dict, _ = parse_correlation_artifact(fallback_corr)
+            corr_dict, as_of_date = parse_correlation_artifact(fallback_corr)
+            assert_correlation_no_leakage(
+                as_of_date,
+                self._config.get("backtest_start"),
+                is_live_mode=False,
+                allow_legacy_without_as_of=bool(
+                    regime_cfg.get("allow_legacy_correlation_without_as_of", False)
+                ),
+                context="SimAdapter fallback corr",
+            )
         else:
             corr_dict = {}
         return gmm, earnings_cal, corr_dict

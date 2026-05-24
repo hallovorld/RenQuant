@@ -564,6 +564,26 @@ Verification:
 - `.venv/bin/python -m pytest tests/test_preopen_cancel_gate.py tests/test_alerts.py -q`
   -> `12 passed`.
 
+## 2026-05-23 Correlation Metadata Fail-Closed Fix
+
+Correlation artifacts without `as_of_date` are no longer accepted silently by
+strict sim/LEAN/QP paths.
+
+- `assert_correlation_no_leakage()` raises on missing `as_of_date` by default.
+- Explicit migration override:
+  `regime.allow_legacy_correlation_without_as_of=true`.
+- SimAdapter, LEAN `main.py`, and QP full-sigma fallback pass that override
+  explicitly and otherwise fail closed.
+- New preflight check `P-CORR-METADATA` hard-fails full/buy runs on missing,
+  unreadable, or unstamped correlation artifacts; sell-only soft-passes so
+  held-position risk exits stay armed.
+- Current prod correlation artifact is stamped with `as_of_date=2026-05-22`.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_correlation_guard.py tests/test_preflight.py tests/test_strategy_artifact_contracts.py tests/test_p0_fixes_regression_guards.py tests/test_sim_walkforward.py tests/test_sim_pipeline_smoke.py tests/test_persistence.py::TestSimAdapterIntegration -q`
+  -> `142 passed`.
+
 ## Mainline Queue
 
 1. Regenerate the 172-feature walk-forward manifest under the current
@@ -613,8 +633,8 @@ Verification:
   volatility, and drawdown path first.
 - PatchTST evidence is positive but weaker and not yet strict-WF accepted.
   Treat it as shadow/router candidate, not replacement primary.
-- Noisy ntfy/reopen-cancel alerts are partly fixed but wrapper success alerts
-  may still duplicate runner alerts.
+- Noisy ntfy/reopen-cancel alerts are partly fixed. Wrapper success duplicate
+  alerts are fixed; remaining watch item is shadow/reopen-cancel alert policy.
 
 ## Stop Conditions
 

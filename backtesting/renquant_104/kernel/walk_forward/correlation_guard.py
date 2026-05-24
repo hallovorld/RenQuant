@@ -14,10 +14,10 @@ Adding a parallel implementation requires deleting this one first.
 Per CLAUDE.md §5.13.3, the regression invariant lives in
 `tests/test_correlation_guard.py::TestCorrelationGuardRegression`.
 
-Per CLAUDE.md §5.13.10: legacy artifacts without `as_of_date` parse
-to None, the guard warns once, and the sim continues (so the migration
-is gradual). New artifacts written via `CorrelationJob` MUST include
-`as_of_date` (the generation site is updated to always stamp it).
+Legacy artifacts without `as_of_date` parse to None. Strict consumers now
+fail closed by default; an explicit per-call migration override is required
+to accept legacy metadata. New artifacts written via `CorrelationJob` MUST
+include `as_of_date` (the generation site is updated to always stamp it).
 """
 from __future__ import annotations
 
@@ -59,25 +59,31 @@ def assert_correlation_no_leakage(
     backtest_start: Any,
     *,
     is_live_mode: bool = False,
+    allow_legacy_without_as_of: bool = False,
     context: str = "",
 ) -> None:
     """Raise ValueError if as_of_date > backtest_start (in backtest mode).
 
     Args:
         as_of_date: ISO-string / date / Timestamp — the LATEST date used
-            in the correlation computation. None ⇒ legacy artifact;
-            warn once and skip (backward compat per §5.13.10).
+            in the correlation computation. None ⇒ legacy artifact; fails
+            unless `allow_legacy_without_as_of` is explicitly true.
         backtest_start: ISO-string / date / Timestamp — the first bar of
             the sim window. None ⇒ unknown; skip silently (caller didn't
             pass it through, older API surface).
         is_live_mode: when True, the guard skips silently. Live runs use
             the freshest correlation, which by construction reflects
             data up to "now".
+        allow_legacy_without_as_of: explicit migration override for legacy
+            flat artifacts. False by default because missing metadata means
+            leakage cannot be verified.
         context: optional string included in the error message
             (e.g. "SimAdapter", "LEAN main.py", "ComputeFullSigmaTask").
 
     Raises:
         ValueError: when as_of_date > backtest_start in backtest mode.
+        ValueError: when as_of_date is missing and no explicit legacy
+            override was passed.
         TypeError: when either argument cannot be coerced to a Timestamp.
     """
     if is_live_mode:
@@ -86,11 +92,20 @@ def assert_correlation_no_leakage(
         return
     if as_of_date is None:
         ctx = f" [{context}]" if context else ""
+        if not allow_legacy_without_as_of:
+            raise ValueError(
+                f"Correlation artifact missing as_of_date{ctx}: strict "
+                f"correlation guard cannot verify whether the matrix was "
+                f"computed before backtest start {backtest_start}. "
+                f"Regenerate watchlist-correlation.json with schema_version=2 "
+                f"and as_of_date, or pass an explicit legacy override only for "
+                f"a local migration run."
+            )
         log.warning(
             "Correlation artifact has no as_of_date%s — legacy v1 schema. "
-            "Accepting (backward compat) but the next regeneration will "
-            "stamp as_of_date. Forward leakage cannot be verified for "
-            "this artifact; treat backtest results with caution.",
+            "Accepting because an explicit override was provided, but the "
+            "next regeneration must stamp as_of_date. Forward leakage cannot "
+            "be verified for this artifact; treat backtest results with caution.",
             ctx,
         )
         return

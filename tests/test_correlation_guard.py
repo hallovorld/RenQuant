@@ -128,16 +128,26 @@ class TestCorrelationGuardPasses:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestCorrelationGuardSilentSkip:
+class TestCorrelationGuardMissingMetadata:
 
-    def test_legacy_artifact_without_as_of_warns_but_passes(self, caplog):
-        # backward compat per §5.13.10: legacy v1 → warn loudly, accept.
-        import logging
-        with caplog.at_level(logging.WARNING, logger="kernel.walk_forward.correlation_guard"):
+    def test_legacy_artifact_without_as_of_fails_closed_by_default(self):
+        with pytest.raises(ValueError, match="missing as_of_date"):
             assert_correlation_no_leakage(
                 None, "2024-01-01", context="legacy-test",
             )
+
+    def test_legacy_artifact_requires_explicit_override(self, caplog):
+        # Migration override: legacy v1 must be explicit, noisy, and local.
+        import logging
+        with caplog.at_level(logging.WARNING, logger="kernel.walk_forward.correlation_guard"):
+            assert_correlation_no_leakage(
+                None,
+                "2024-01-01",
+                context="legacy-test",
+                allow_legacy_without_as_of=True,
+            )
         assert any("no as_of_date" in r.message for r in caplog.records)
+        assert any("explicit override" in r.message for r in caplog.records)
 
     def test_skips_in_live_mode_even_with_leakage(self):
         # Live runs use the freshest correlation by construction; the
@@ -217,21 +227,18 @@ class TestCorrelationGuardReadsRealArtifact:
             pd.Timestamp(as_of)  # must coerce
 
     def test_real_artifact_against_2024_backtest_start_behaves_correctly(self):
-        # The real prod artifact today (2026-05-10) is legacy v1: no
-        # as_of_date stamp. Guard must WARN and accept — not raise —
-        # per the backward-compat rule in §5.13.10. After regen this
-        # test will still pass (legacy or fresh-with-as_of_date <
-        # 2024-01-01 both accepted).
+        # Legacy v1 artifacts are now rejected by default. A stamped v2
+        # artifact still follows the normal as_of_date <= backtest_start rule.
         path = _STRATEGY_DIR / "artifacts" / "watchlist-correlation.json"
         if not path.exists():
             pytest.skip(f"production artifact missing at {path}")
         raw = json.loads(path.read_text())
         _, as_of = parse_correlation_artifact(raw)
         if as_of is None:
-            # Legacy on disk: must NOT raise.
-            assert_correlation_no_leakage(
-                as_of, "2024-01-01", context="real-artifact-legacy",
-            )
+            with pytest.raises(ValueError, match="missing as_of_date"):
+                assert_correlation_no_leakage(
+                    as_of, "2024-01-01", context="real-artifact-legacy",
+                )
         else:
             # Fresh stamped v2: outcome depends on the as_of_date.
             # We just exercise the path; assertions below cover both.
