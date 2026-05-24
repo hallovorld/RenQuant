@@ -80,6 +80,26 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_buy_quality_gates.py tests/acceptance/jobs/test_split_jobs_e2e.py
     tests/test_qp_grinold_kahn_transform.py tests/test_p0_fixes_regression_guards.py
     tests/test_wf_config_parity.py`.
+- `2bb1f8f fix(renquant104): enforce single panel exit owner`
+  - Production/golden config now disables legacy per-ticker
+    `PanelConvictionExitTask`; raw panel/NGBoost exit ownership belongs to the
+    cross-sectional panel-exit job.
+  - `wf_config_parity.py` now compares `risk.panel_exit`.
+- `f410ed8 fix(renquant104): require explicit decision trace reasons`
+  - Sim/live adapters now stamp terminal blocked reasons for every non-selected
+    watchlist ticker.
+  - `decision_trace_integrity_report()` fails on missing non-selected
+    `blocked_by`.
+- `807e97e fix(renquant104): make stop-loss regime anchoring explicit`
+  - Production/golden config declares
+    `risk.stop_loss_anchor_policy.mode=current_regime`.
+  - A/B-only `max_entry_current` mode exists to test BULL_CALM entry-stop
+    anchoring without changing production semantics.
+- `fb3c69a fix(renquant104): gate qp soft sells by disposed lot age`
+  - QP soft-sell horizon checks the actual tax lot that would be disposed under
+    the configured lot method, not just the aggregate position `entry_date`.
+  - This fixes the HIFO churn bug where a position looked old while QP sold a
+    recently-added high-cost lot.
 
 ## Active Validation
 
@@ -230,6 +250,44 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
   tests/test_sim_trade_ledger.py`, plus the broader QP suite through
   `tests/test_portfolio_qp_solver.py tests/test_qp_refactor_2026_04_29.py
   tests/test_qp_integration.py tests/test_qp_admission_gate.py`.
+
+## 2026-05-23 Active WF Validation After Lot-Age Fix
+
+Two exploratory WF runs are active as of 20:15 PT. They use the same
+walk-forward manifest artifacts, skip strict sanity/config promotion gates, and
+exist only to measure whether the lot-age guard and stop-anchor A/B improve the
+trade-level failure modes.
+
+1. Robust QP mean penalty + lot-age guard:
+   - Config:
+     `artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_lotage_20260523.json`.
+   - Trace:
+     `artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_lotage_20260523`.
+   - Log:
+     `logs/wf_gate_104/robust_mu_k015_lotage_20260523.log`.
+   - Hypothesis: light robust-mu shrinkage plus lot-level soft-sell guard
+     should reduce QP churn/tax drag without sacrificing all participation.
+2. Robust QP mean penalty + lot-age guard + BULL_CALM stop-anchor A/B:
+   - Config:
+     `artifacts/diagnostics/wf_eval_configs/codex_robust_mu_k015_stop_anchor_lotage_20260523.json`.
+   - Trace:
+     `artifacts/diagnostics/wf_trade_traces/codex_robust_mu_k015_stop_anchor_lotage_20260523`.
+   - Log:
+     `logs/wf_gate_104/robust_mu_k015_stop_anchor_lotage_20260523.log`.
+   - Hypothesis: if stop losses are mostly BULL_CALM entries being relabeled
+     into tighter current regimes, entry/current max anchoring should reduce
+     bad stop-outs; if losses simply become larger or benchmark-relative
+     performance worsens, do not promote it.
+
+Decision rule after completion:
+
+- Run `scripts/analyze_wf_trade_forensics.py` on both traces.
+- Compare against the prior robust-kappa `0.15` baseline: mean Sharpe
+  `+0.914`, net closed P/L `-$3.33k`, `stop_loss` net `-$7.49k`, `qp_sell`
+  net `-$0.74k`, `qp_close` net `+$0.81k`, weak score monotonicity.
+- Promote nothing unless a strict rerun without `--skip-sanity` and without
+  side-config drift passes WF, SPY-relative, regime, calibration, config, and
+  decision-trace gates.
 
 ## Mainline Queue
 
