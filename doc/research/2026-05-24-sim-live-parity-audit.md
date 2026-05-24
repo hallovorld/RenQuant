@@ -101,7 +101,8 @@ Fix:
    Live, sim, and LEAN each build `InferenceContext` by hand. Critical fields
    can drift: `skip_buys`, `last_sell_pls`, `last_stop_exit_dates`,
    `pending_broker_tickers`, `_db`, panel frames, calibrators, and state
-   carryover.
+   carryover. Fixed concrete drift: LEAN now passes `last_sell_pls` and stamps
+   it on full exits, so cost-aware wash-sale handling matches sim/live.
 
 2. Decision trace writing is mostly shared now.
    `kernel.decision_trace` builds candidate pools, QP maps, selected-buy

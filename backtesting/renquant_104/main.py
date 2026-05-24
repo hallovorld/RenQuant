@@ -117,6 +117,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
         from kernel.exits import HoldingState  # local import keeps global scope clean
         self._holdings: dict[str, HoldingState] = {}
         self._last_sell_dates: dict = {}
+        self._last_sell_pls: dict = {}
         self._regime_state  = RegimeState()
         self._spy_returns: list[float] = []
         self._prev_closes: dict[str, float] = {}

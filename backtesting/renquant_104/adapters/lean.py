@@ -234,6 +234,7 @@ class LeanAdapter:
             earnings_calendar = algo._earnings,
             holdings         = dict(algo._holdings),  # shallow copy; jobs mutate in place
             last_sell_dates  = algo._last_sell_dates,
+            last_sell_pls    = getattr(algo, "_last_sell_pls", {}) or {},
             last_stop_exit_dates = getattr(algo, "_last_stop_exit_dates", {}) or {},
             portfolio_value  = pv,
             cash             = cash,
@@ -429,6 +430,12 @@ class LeanAdapter:
                 # SimAdapter behaviour after the 2026-04-24 fix).
             else:
                 algo._last_sell_dates[ticker] = ctx.today
+                if not hasattr(algo, "_last_sell_pls"):
+                    algo._last_sell_pls = {}
+                algo._last_sell_pls[ticker] = (
+                    float(event_gross) if _math_lex.isfinite(event_gross)
+                    else None
+                )
                 algo.Liquidate(sym)
                 full_exits.add(ticker)
             # G8 (2026-05-04): stamp post-stop blackout date on path-rule

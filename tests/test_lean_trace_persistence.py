@@ -117,6 +117,7 @@ def _minimal_lean_adapter_for_context(tmp_path, *, panel_on=False):
         symbols={},
         _holdings={},
         _last_sell_dates={},
+        _last_sell_pls={},
         _last_stop_exit_dates={},
         Portfolio=_Portfolio(),
         _skip_buys=False,
@@ -148,6 +149,126 @@ def test_lean_make_context_stamps_run_id_for_score_distribution(tmp_path):
     ctx = adapter.make_context(data)
 
     assert ctx.run_id.startswith("2026-05-22-lean-")
+
+
+def test_lean_make_context_propagates_last_sell_pls(tmp_path):
+    adapter, data = _minimal_lean_adapter_for_context(tmp_path)
+    adapter._algo._last_sell_dates = {"AAA": datetime.date(2026, 5, 21)}
+    adapter._algo._last_sell_pls = {"AAA": 42.0}
+
+    ctx = adapter.make_context(data)
+
+    assert ctx.last_sell_pls == {"AAA": 42.0}
+
+
+def test_lean_commit_stamps_full_exit_pl_for_wash_sale_parity(tmp_path):
+    """LEAN must preserve realized P/L for the cost-aware wash-sale gate.
+
+    Sim and live already distinguish gain sales from loss sales; without this
+    LEAN binary-blocked every recent seller because P/L was unknown.
+    """
+    from adapters.lean import LeanAdapter
+    from kernel.exits import ExitSignal, HoldingState
+    from kernel.pipeline.context import InferenceContext
+
+    today = datetime.date(2026, 5, 22)
+    hs = HoldingState(
+        entry_price=100.0,
+        entry_date=today - datetime.timedelta(days=10),
+        high_watermark=110.0,
+        shares=10.0,
+    )
+
+    class _Position:
+        Quantity = 10.0
+        UnrealizedProfit = 50.0
+
+    class _Portfolio(dict):
+        TotalPortfolioValue = 100_000.0
+        Cash = 50_000.0
+
+        def __getitem__(self, _sym):
+            return _Position()
+
+    class _Security:
+        Price = 105.0
+
+    algo = SimpleNamespace(
+        _config={
+            "model_name": "renquant_104",
+            "tax": {
+                "short_term_rate": 0.40,
+                "long_term_rate": 0.20,
+                "long_term_threshold_days": 365,
+            },
+            "ranking": {"panel_scoring": {"enabled": False}},
+        },
+        _models={"AAA": {}},
+        symbols={"AAA": "AAA"},
+        _sector_etf_symbols={},
+        _benchmark="SPY",
+        _spy_sym="SPY",
+        Portfolio=_Portfolio(),
+        Securities={"AAA": _Security()},
+        _holdings={"AAA": hs},
+        _last_sell_dates={},
+        _last_sell_pls={},
+        _last_stop_exit_dates={},
+        _spy_returns=[],
+        _regime_state=None,
+        _regime_counts={},
+        _hwm=100_000.0,
+        _skip_buys=False,
+        _prev_closes={},
+        _tax_short=0.40,
+        _tax_long=0.20,
+        _tax_thresh_days=365,
+        _total_tax=0.0,
+        _executed_sells=0,
+        _lt_trades=0,
+        _st_trades=0,
+        _trail_exits=0,
+        _stop_exits=0,
+        _sdl_exits=0,
+        _rotation_exits=0,
+        _executed_buys=0,
+        _blocked_streak=0,
+        _transition_blocks=0,
+        _velocity_blocks=0,
+        _earnings_blocks=0,
+        _blocked_wash=0,
+        _sector_blocks=0,
+        _corr_blocks=0,
+        _blocked_min_hold=0,
+        Debug=lambda *_args, **_kwargs: None,
+        Liquidate=lambda _sym: None,
+        MarketOrder=lambda _sym, _qty: None,
+        SetHoldings=lambda _sym, _target: None,
+    )
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = algo
+    adapter._db = None
+    adapter._universe_rejections = {}
+    ctx = InferenceContext(
+        config=algo._config,
+        today=today,
+        holdings={"AAA": hs},
+        exits=[("AAA", ExitSignal(True, "model exit", "model_sell"))],
+        orders=[],
+        ohlcv={},
+        spy_returns=[],
+        regime="BULL_CALM",
+        confidence=0.8,
+        portfolio_value=100_000.0,
+        cash=50_000.0,
+        prices={"AAA": 105.0},
+        counters={},
+    )
+
+    adapter.commit(ctx)
+
+    assert algo._last_sell_dates["AAA"] == today
+    assert algo._last_sell_pls["AAA"] == 50.0
 
 
 def test_lean_panel_frame_prep_failure_is_hard_fail(tmp_path, monkeypatch):

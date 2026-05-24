@@ -45,9 +45,9 @@ class InferenceContext:
     holdings: dict = field(default_factory=dict)       # ticker → HoldingState
     last_sell_dates: dict = field(default_factory=dict) # ticker → date | None
     # 2026-05-09 cost-aware wash-sale: realized $ P/L of the most recent
-    # full liquidation per ticker (FIFO). None = unknown (treated as gain
-    # by is_wash_sale_blocked_with_cost — fail-open). Negative = LOSS
-    # → §1091 applies → NPV deferred-tax cost computed.
+    # full liquidation per ticker (FIFO). None = unknown (treated as binary
+    # block by is_wash_sale_blocked_with_cost). Negative = LOSS → §1091
+    # applies → NPV deferred-tax cost computed.
     last_sell_pls: dict = field(default_factory=dict)   # ticker → float | None
     # 2026-05-04 G8 (post-stop re-entry blackout, refactor doc):
     # ticker → date when a path-rule exit (trailing_stop / stop_loss /

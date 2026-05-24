@@ -1748,6 +1748,10 @@ Operational conclusion:
   inputs with one helper instead of two adapter-specific implementations.
   Sim sell rows still contain extra tax-lot disposal semantics and should be
   migrated only after the lot-attribution helper is shared too.
+- LEAN now carries `last_sell_pls` into `InferenceContext` and stamps realized
+  P/L on full exits, matching sim/live cost-aware wash-sale semantics. Without
+  this, LEAN treated recent-sale P/L as unknown and binary-blocked gain-sale
+  re-entries that sim/live would allow.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to
