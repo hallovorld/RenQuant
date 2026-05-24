@@ -1766,6 +1766,12 @@ Operational conclusion:
   only, datetime index coercion, sort, duplicate-date removal with latest row
   kept. Parallel feature builds also get per-ticker frame copies so shared SPY
   data cannot create reindex failures or ambiguous labels under concurrency.
+- Added an executable adapter-context contract covering actual
+  `SimAdapter.make_context`, `RunnerAdapter.make_context`, and
+  `LeanAdapter.make_context`. All three must now expose the critical shared
+  pipeline surface: run id, OHLCV, SPY returns, models, holdings, prices,
+  cash/NAV, `last_sell_dates`, `last_sell_pls`, `last_stop_exit_dates`, DB
+  handle when configured, and regime state counters.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

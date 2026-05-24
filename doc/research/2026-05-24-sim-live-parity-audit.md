@@ -152,7 +152,11 @@ Fix:
 ## Next Engineering Moves
 
 1. Add an adapter context contract test that checks sim/live/LEAN all populate
-   required `InferenceContext` fields for buy/full mode.
+   required `InferenceContext` fields for buy/full mode. Completed with
+   `tests/test_adapter_context_contract.py`: actual sim, runner, and LEAN
+   `make_context()` paths must now expose the shared fields that historically
+   drifted (`last_sell_pls`, `last_stop_exit_dates`, DB handle, run id,
+   prices, cash/NAV, holdings, and model/data payloads).
 2. Keep migrating execution post-processing into shared kernel helpers:
    broker-state mutation is still adapter-heavy, and sim sell events should
    move to the shared sell builder after the remaining settlement/fee fields
