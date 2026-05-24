@@ -1,0 +1,506 @@
+{
+  "artifact": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524/2025-01-23/hf_patchtst_all_seed44_model.pt",
+  "manifest": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json",
+  "label": "fwd_60d_excess_raw",
+  "feature_count": 172,
+  "panel_meta": {
+    "sanity_feature_panel": "/Users/renhao/git/github/RenQuant/data/transformer_v4_wl200_clean.parquet",
+    "sanity_label_panel": "/Users/renhao/git/github/RenQuant/data/alpha158_291_fundamental_dataset_rawlabel.parquet",
+    "feature_panel_merge": true,
+    "feature_cols_supplied_by_feature_panel": [
+      "sentiment_pos_share",
+      "mean_sentiment",
+      "n_articles_log"
+    ]
+  },
+  "score_meta": {
+    "sanity_eval_scope": "walkforward_manifest",
+    "sanity_manifest_path": "/Users/renhao/git/github/RenQuant/backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json",
+    "sanity_eval_start": "2025-01-02",
+    "sanity_eval_end": "2026-02-10",
+    "n_oos_dates": 277,
+    "n_skipped_pre_manifest_dates": 231,
+    "n_manifest_artifacts_used": 2,
+    "n_history_scorer_artifacts": 2,
+    "cutoff_contract": "manifest entry effective_train_cutoff_date/cutoff_date + lookahead_days < eval date"
+  },
+  "validation": {
+    "val_cut": "2024-01-31",
+    "start": "2025-01-02",
+    "end": "2026-02-10",
+    "n_rows": 39038,
+    "n_dates": 277,
+    "n_tickers": 142
+  },
+  "real_ic": {
+    "mean_ic": 0.00489236982008104,
+    "median_ic": 0.007508964454848304,
+    "std_ic": 0.11383917262255618,
+    "hit_rate": 0.5342960288808665,
+    "n_dates": 277,
+    "n_rows": 39038
+  },
+  "shift_diagnostics": [
+    {
+      "shift_days": 5,
+      "n_rows": 38328,
+      "n_dates": 272,
+      "model_placebo_ic": 0.012571099638032091,
+      "label_autocorr_ic": 0.9122723955572947,
+      "model_placebo_abs_ratio_to_real": 2.5508660067115754,
+      "label_autocorr_hit_rate": 1.0
+    },
+    {
+      "shift_days": 10,
+      "n_rows": 37618,
+      "n_dates": 267,
+      "model_placebo_ic": 0.010165034213440042,
+      "label_autocorr_ic": 0.8335069132583374,
+      "model_placebo_abs_ratio_to_real": 2.062638987736432,
+      "label_autocorr_hit_rate": 1.0
+    },
+    {
+      "shift_days": 20,
+      "n_rows": 36198,
+      "n_dates": 257,
+      "model_placebo_ic": 0.02011057827165984,
+      "label_autocorr_ic": 0.679135527233853,
+      "model_placebo_abs_ratio_to_real": 4.080740107515371,
+      "label_autocorr_hit_rate": 1.0
+    },
+    {
+      "shift_days": 40,
+      "n_rows": 33358,
+      "n_dates": 237,
+      "model_placebo_ic": 0.027204053609340778,
+      "label_autocorr_ic": 0.36843661985908005,
+      "model_placebo_abs_ratio_to_real": 5.5201134025606855,
+      "label_autocorr_hit_rate": 0.8818565400843882
+    },
+    {
+      "shift_days": 60,
+      "n_rows": 30518,
+      "n_dates": 217,
+      "model_placebo_ic": 0.024006297200665584,
+      "label_autocorr_ic": 0.11101721311204334,
+      "model_placebo_abs_ratio_to_real": 4.871240324190068,
+      "label_autocorr_hit_rate": 0.8433179723502304
+    },
+    {
+      "shift_days": 80,
+      "n_rows": 27678,
+      "n_dates": 197,
+      "model_placebo_ic": 0.03607922525957977,
+      "label_autocorr_ic": 0.09358922610094157,
+      "model_placebo_abs_ratio_to_real": 7.321019792470498,
+      "label_autocorr_hit_rate": 0.7766497461928934
+    },
+    {
+      "shift_days": 120,
+      "n_rows": 21998,
+      "n_dates": 157,
+      "model_placebo_ic": 0.024647426062950065,
+      "label_autocorr_ic": 0.02494735976816658,
+      "model_placebo_abs_ratio_to_real": 5.001335054787491,
+      "label_autocorr_hit_rate": 0.6114649681528662
+    },
+    {
+      "shift_days": 180,
+      "n_rows": 13478,
+      "n_dates": 97,
+      "model_placebo_ic": -0.02422513018041096,
+      "label_autocorr_ic": -0.014776814194156654,
+      "model_placebo_abs_ratio_to_real": 4.915644841316882,
+      "label_autocorr_hit_rate": 0.29896907216494845
+    },
+    {
+      "shift_days": 252,
+      "n_rows": 3254,
+      "n_dates": 25,
+      "model_placebo_ic": -0.021594254348943544,
+      "label_autocorr_ic": -0.17289063060363716,
+      "model_placebo_abs_ratio_to_real": 4.381800394959456,
+      "label_autocorr_hit_rate": 0.12
+    }
+  ],
+  "by_regime": {
+    "BEAR": {
+      "mean_ic": 0.03667412775200875,
+      "median_ic": 0.02206067413095373,
+      "std_ic": 0.13046975084163048,
+      "hit_rate": 0.627906976744186,
+      "n_dates": 43,
+      "n_rows": 6106,
+      "n_raw_rows": 6106,
+      "mean_confidence": 0.8597102882920439
+    },
+    "BULL_CALM": {
+      "mean_ic": 0.003030287493574974,
+      "median_ic": 0.005637315230132189,
+      "std_ic": 0.10891001696902725,
+      "hit_rate": 0.5285714285714286,
+      "n_dates": 210,
+      "n_rows": 29655,
+      "n_raw_rows": 29655,
+      "mean_confidence": 0.6028613960293511
+    },
+    "BULL_VOLATILE": {
+      "mean_ic": -0.11635933322813077,
+      "median_ic": -0.10705959160421823,
+      "std_ic": 0.09491624009385456,
+      "hit_rate": 0.2222222222222222,
+      "n_dates": 9,
+      "n_rows": 1278,
+      "n_raw_rows": 1278,
+      "mean_confidence": 0.6023223887514735
+    },
+    "CHOPPY": {
+      "mean_ic": 0.012604838148566956,
+      "median_ic": 0.025073928786078642,
+      "std_ic": 0.09760284632692158,
+      "hit_rate": 0.5333333333333333,
+      "n_dates": 15,
+      "n_rows": 1999,
+      "n_raw_rows": 1999,
+      "mean_confidence": 0.39344672336168085
+    }
+  },
+  "by_regime_shift_diagnostics": {
+    "BEAR": [
+      {
+        "shift_days": 5,
+        "n_rows": 6106,
+        "n_dates": 43,
+        "model_placebo_ic": 0.0521187555377396,
+        "label_autocorr_ic": 0.9269967709919263,
+        "model_placebo_abs_ratio_to_real": 1.4243970039568625,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 10,
+        "n_rows": 6106,
+        "n_dates": 43,
+        "model_placebo_ic": 0.050986392126951545,
+        "label_autocorr_ic": 0.859712696137999,
+        "model_placebo_abs_ratio_to_real": 1.3934496984604958,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 20,
+        "n_rows": 6106,
+        "n_dates": 43,
+        "model_placebo_ic": 0.07800692172091056,
+        "label_autocorr_ic": 0.7149070391144924,
+        "model_placebo_abs_ratio_to_real": 2.1319163214997494,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 40,
+        "n_rows": 6106,
+        "n_dates": 43,
+        "model_placebo_ic": 0.08011637473300715,
+        "label_autocorr_ic": 0.4356760203554852,
+        "model_placebo_abs_ratio_to_real": 2.1895673248557763,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 60,
+        "n_rows": 6106,
+        "n_dates": 43,
+        "model_placebo_ic": 0.06331009510837672,
+        "label_autocorr_ic": 0.2261154909467226,
+        "model_placebo_abs_ratio_to_real": 1.7302544710089387,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 80,
+        "n_rows": 6063,
+        "n_dates": 43,
+        "model_placebo_ic": 0.030508035924034838,
+        "label_autocorr_ic": 0.21661538196664773,
+        "model_placebo_abs_ratio_to_real": 0.8337795965856677,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 120,
+        "n_rows": 5964,
+        "n_dates": 42,
+        "model_placebo_ic": 0.026615961933011252,
+        "label_autocorr_ic": 0.023536558710763097,
+        "model_placebo_abs_ratio_to_real": 0.7274098555050681,
+        "label_autocorr_hit_rate": 0.7380952380952381
+      },
+      {
+        "shift_days": 180,
+        "n_rows": 5964,
+        "n_dates": 42,
+        "model_placebo_ic": -0.024406699895908164,
+        "label_autocorr_ic": -0.047363704014522556,
+        "model_placebo_abs_ratio_to_real": 0.6670310879359422,
+        "label_autocorr_hit_rate": 0.21428571428571427
+      },
+      {
+        "shift_days": 252,
+        "n_rows": 0,
+        "n_dates": 0,
+        "model_placebo_ic": null,
+        "label_autocorr_ic": null
+      }
+    ],
+    "BULL_CALM": [
+      {
+        "shift_days": 5,
+        "n_rows": 29306,
+        "n_dates": 208,
+        "model_placebo_ic": 0.01035427946321232,
+        "label_autocorr_ic": 0.9083373954685913,
+        "model_placebo_abs_ratio_to_real": 3.2983369508573857,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 10,
+        "n_rows": 28683,
+        "n_dates": 203,
+        "model_placebo_ic": 0.009438852459703072,
+        "label_autocorr_ic": 0.8268265974706639,
+        "model_placebo_abs_ratio_to_real": 3.006729338544547,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 20,
+        "n_rows": 27678,
+        "n_dates": 197,
+        "model_placebo_ic": 0.013796723697738163,
+        "label_autocorr_ic": 0.6670361831690842,
+        "model_placebo_abs_ratio_to_real": 4.394921320667313,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 40,
+        "n_rows": 24838,
+        "n_dates": 177,
+        "model_placebo_ic": 0.019907687256217266,
+        "label_autocorr_ic": 0.3381382340452804,
+        "model_placebo_abs_ratio_to_real": 6.341557683138193,
+        "label_autocorr_hit_rate": 0.8418079096045198
+      },
+      {
+        "shift_days": 60,
+        "n_rows": 22741,
+        "n_dates": 162,
+        "model_placebo_ic": 0.017451921958854394,
+        "label_autocorr_ic": 0.07421505125968439,
+        "model_placebo_abs_ratio_to_real": 5.559278099927841,
+        "label_autocorr_hit_rate": 0.7901234567901234
+      },
+      {
+        "shift_days": 80,
+        "n_rows": 20884,
+        "n_dates": 148,
+        "model_placebo_ic": 0.037144092224805185,
+        "label_autocorr_ic": 0.057495556917544495,
+        "model_placebo_abs_ratio_to_real": 11.832183236545626,
+        "label_autocorr_hit_rate": 0.7094594594594594
+      },
+      {
+        "shift_days": 120,
+        "n_rows": 15608,
+        "n_dates": 112,
+        "model_placebo_ic": 0.02606932299530968,
+        "label_autocorr_ic": 0.023565832221433484,
+        "model_placebo_abs_ratio_to_real": 8.304335576875562,
+        "label_autocorr_hit_rate": 0.5625
+      },
+      {
+        "shift_days": 180,
+        "n_rows": 7372,
+        "n_dates": 54,
+        "model_placebo_ic": -0.0225669127147082,
+        "label_autocorr_ic": 0.010919986058554746,
+        "model_placebo_abs_ratio_to_real": 7.188649131805756,
+        "label_autocorr_hit_rate": 0.37037037037037035
+      },
+      {
+        "shift_days": 252,
+        "n_rows": 3254,
+        "n_dates": 25,
+        "model_placebo_ic": -0.021594254348943544,
+        "label_autocorr_ic": -0.17289063060363716,
+        "model_placebo_abs_ratio_to_real": 6.878810572806033,
+        "label_autocorr_hit_rate": 0.12
+      }
+    ],
+    "BULL_VOLATILE": [
+      {
+        "shift_days": 5,
+        "n_rows": 1278,
+        "n_dates": 9,
+        "model_placebo_ic": -0.11488337325021118,
+        "label_autocorr_ic": 0.9276044541644158,
+        "model_placebo_abs_ratio_to_real": 0.9889811278295847,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 10,
+        "n_rows": 1278,
+        "n_dates": 9,
+        "model_placebo_ic": -0.11899970165097257,
+        "label_autocorr_ic": 0.8676220517748606,
+        "model_placebo_abs_ratio_to_real": 1.0244168135091438,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 20,
+        "n_rows": 1278,
+        "n_dates": 9,
+        "model_placebo_ic": -0.0606505374973099,
+        "label_autocorr_ic": 0.7596856081385481,
+        "model_placebo_abs_ratio_to_real": 0.5221141691837448,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 40,
+        "n_rows": 1278,
+        "n_dates": 9,
+        "model_placebo_ic": -0.019029106931364084,
+        "label_autocorr_ic": 0.5775706736199856,
+        "model_placebo_abs_ratio_to_real": 0.1638133273957955,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 60,
+        "n_rows": 819,
+        "n_dates": 6,
+        "model_placebo_ic": -0.030402018855633418,
+        "label_autocorr_ic": 0.24564777116509348,
+        "model_placebo_abs_ratio_to_real": 0.26171779297127634,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 80,
+        "n_rows": 142,
+        "n_dates": 1,
+        "model_placebo_ic": -0.02638174632258926,
+        "label_autocorr_ic": 0.24240442931341205,
+        "model_placebo_abs_ratio_to_real": 0.22710901059114194,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 120,
+        "n_rows": 142,
+        "n_dates": 1,
+        "model_placebo_ic": -0.12272914924802203,
+        "label_autocorr_ic": -0.05445012353643569,
+        "model_placebo_abs_ratio_to_real": 1.0565220101652189,
+        "label_autocorr_hit_rate": 0.0
+      },
+      {
+        "shift_days": 180,
+        "n_rows": 142,
+        "n_dates": 1,
+        "model_placebo_ic": -0.10614294527747734,
+        "label_autocorr_ic": -0.03375465538520416,
+        "model_placebo_abs_ratio_to_real": 0.9137385747112928,
+        "label_autocorr_hit_rate": 0.0
+      },
+      {
+        "shift_days": 252,
+        "n_rows": 0,
+        "n_dates": 0,
+        "model_placebo_ic": null,
+        "label_autocorr_ic": null
+      }
+    ],
+    "CHOPPY": [
+      {
+        "shift_days": 5,
+        "n_rows": 1638,
+        "n_dates": 12,
+        "model_placebo_ic": 0.004874403693805331,
+        "label_autocorr_ic": 0.9162176744987165,
+        "model_placebo_abs_ratio_to_real": 0.4108563128372608,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 10,
+        "n_rows": 1551,
+        "n_dates": 12,
+        "model_placebo_ic": -0.026953371744282997,
+        "label_autocorr_ic": 0.8270251794602967,
+        "model_placebo_abs_ratio_to_real": 2.271860032327963,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 20,
+        "n_rows": 1136,
+        "n_dates": 8,
+        "model_placebo_ic": -0.04474734364515058,
+        "label_autocorr_ic": 0.6941911574525613,
+        "model_placebo_abs_ratio_to_real": 3.7716877333473136,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 40,
+        "n_rows": 1136,
+        "n_dates": 8,
+        "model_placebo_ic": -0.043755261259215264,
+        "label_autocorr_ic": 0.44210081784020316,
+        "model_placebo_abs_ratio_to_real": 3.6880665692582206,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 60,
+        "n_rows": 852,
+        "n_dates": 6,
+        "model_placebo_ic": -0.026294473552729805,
+        "label_autocorr_ic": 0.1451740339241511,
+        "model_placebo_abs_ratio_to_real": 2.2163224735778084,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 80,
+        "n_rows": 589,
+        "n_dates": 5,
+        "model_placebo_ic": 0.06496358569102748,
+        "label_autocorr_ic": 0.07417385284192775,
+        "model_placebo_abs_ratio_to_real": 5.475685019610305,
+        "label_autocorr_hit_rate": 0.8
+      },
+      {
+        "shift_days": 120,
+        "n_rows": 284,
+        "n_dates": 2,
+        "model_placebo_ic": -0.022629767764987485,
+        "label_autocorr_ic": 0.17163846624299472,
+        "model_placebo_abs_ratio_to_real": 1.9074298167183312,
+        "label_autocorr_hit_rate": 1.0
+      },
+      {
+        "shift_days": 180,
+        "n_rows": 0,
+        "n_dates": 0,
+        "model_placebo_ic": null,
+        "label_autocorr_ic": null
+      },
+      {
+        "shift_days": 252,
+        "n_rows": 0,
+        "n_dates": 0,
+        "model_placebo_ic": null,
+        "label_autocorr_ic": null
+      }
+    ]
+  },
+  "regime_counts": {
+    "BULL_CALM": 210,
+    "BEAR": 43,
+    "CHOPPY": 15,
+    "BULL_VOLATILE": 9
+  },
+  "interpretation": {
+    "promotion_evidence": false,
+    "placebo_60_ic": 0.024006297200665584,
+    "label_autocorr_60_ic": 0.11101721311204334,
+    "primary_warning": "60-day placebo is too large relative to real IC"
+  }
+}

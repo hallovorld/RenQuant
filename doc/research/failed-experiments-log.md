@@ -3839,3 +3839,35 @@ gate.
 
 **Regression coverage:** `tests/test_wf_gate_cli_contract.py` now proves the
 WF recipe fingerprint changes when `feature_norm_kind` changes.
+
+---
+
+## 2026-05-24 — PatchTST two-cut WF pilot failed promotion evidence
+
+**Hypothesis:** A causally trained HF PatchTST WF manifest could provide a
+usable shadow alpha signal once the `.pt` fingerprint/sidecar/calibrator
+contract was fixed.
+
+**Protocol:** Two-cut pilot manifest
+`backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json`
+with per-fold `.pt` scorers, causal calibrators, and manifest-scoped sanity.
+Then decomposed real/placebo/regime IC with
+`scripts/analyze_manifest_sanity_placebo.py`.
+
+**Result:** failed. Validation window 2025-01-02 to 2026-02-10, 277 OOS dates,
+39,038 rows. Real IC `+0.0049`; 60d model-placebo IC `+0.0240`; 60d label
+autocorr IC `+0.1110`. Regime IC: BEAR `+0.0367`, BULL_CALM `+0.0030`,
+BULL_VOLATILE `-0.1164`, CHOPPY `+0.0126`.
+
+**Conclusion:** keep PatchTST shadow-only. The WF scoring path is now
+structurally valid, but this pilot mostly tracks persistent label structure and
+does not have enough tradeable BULL_CALM edge for promotion.
+
+**Reproduction:**
+
+```bash
+.venv/bin/python scripts/analyze_manifest_sanity_placebo.py \
+  --artifact backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524/2025-01-23/hf_patchtst_all_seed44_model.pt \
+  --manifest backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json \
+  --output-dir backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_20260524_patchtst_pilot
+```

@@ -1385,13 +1385,80 @@ Verification:
 - Manual `bash scripts/retrain_panel.sh` on 2026-05-24 exited 0 as a no-op
   because the weekly WF log already existed, and emitted no ntfy.
 
+## 2026-05-24 WF Sanity / Placebo Decomposition
+
+Added `scripts/analyze_manifest_sanity_placebo.py` to make the sanity failure
+reproducible instead of arguing from one scalar IC. It scores a WF manifest
+through the same `run_wf_gate.py` manifest contract, then reports:
+
+- real per-date cross-sectional IC;
+- time-shift placebo IC across 5/10/20/40/60/80/120/180/252 trading days;
+- raw label autocorrelation at the same shifts, so overlapping labels and
+  regime persistence are not confused with model alpha;
+- production regime-task labels and regime-sliced IC / placebo diagnostics.
+
+Regression tests:
+
+- `tests/test_manifest_sanity_placebo_analysis.py` verifies cross-sectional
+  IC aggregation, the label-persistence confounder, and the markdown failure
+  marker.
+
+Verification:
+
+- `tests/test_manifest_sanity_placebo_analysis.py` -> `3 passed`.
+- `py_compile` passed for the diagnostic script and tests.
+
+XGB 172-feature WF manifest diagnostic:
+
+- Command:
+  `.venv/bin/python scripts/analyze_manifest_sanity_placebo.py --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json --manifest backtesting/renquant_104/artifacts/sim/walkforward_manifest_172_featspace_20260523.scopefixed.covered.json --output-dir backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_20260524_xgb`
+- Report:
+  `backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_20260524_xgb/panel-ltr_alpha158_fund_codex_featspace_20260523-211211_staging.md`.
+- Validation window: 2024-02-01 to 2026-02-10, 508 OOS dates, 71,840 rows,
+  36 WF artifacts.
+- Real IC `+0.0385`; 60d model-placebo IC `+0.0460`;
+  60d label autocorr IC `-0.0008`; promotion evidence remains `False`.
+- Regime split: BEAR `+0.2565` IC over 50 dates; BULL_CALM `+0.0152` over
+  400 dates; BULL_VOLATILE `-0.0296`; CHOPPY `+0.0315`.
+- Interpretation: the model has real cross-sectional signal, but most of the
+  strong signal lives in BEAR, where the current decision tree usually blocks
+  offensive buys. The tradeable BULL_CALM sleeve has only weak IC. This is a
+  direct mechanism for "IC does not convert to APY/Sharpe": alpha is strongest
+  in a branch with little/no buy capacity, while the branch that buys has weak
+  rank evidence.
+
+PatchTST pilot WF diagnostic:
+
+- Command:
+  `.venv/bin/python scripts/analyze_manifest_sanity_placebo.py --artifact backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524/2025-01-23/hf_patchtst_all_seed44_model.pt --manifest backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json --output-dir backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_20260524_patchtst_pilot`
+- Report:
+  `backtesting/renquant_104/artifacts/diagnostics/sanity_placebo_20260524_patchtst_pilot/hf_patchtst_all_seed44_model.md`.
+- Validation window: 2025-01-02 to 2026-02-10, 277 OOS dates, 39,038 rows.
+- Real IC `+0.0049`; 60d model-placebo IC `+0.0240`;
+  60d label autocorr IC `+0.1110`; promotion evidence remains `False`.
+- Regime split: BEAR `+0.0367`, BULL_CALM `+0.0030`,
+  BULL_VOLATILE `-0.1164`, CHOPPY `+0.0126`.
+- Interpretation: this two-cut PatchTST pilot is structurally valid as a WF
+  scoring path, but not an alpha candidate. It mostly tracks persistent label
+  structure and is too weak in BULL_CALM. PatchTST should remain shadow-only
+  until acceptance-grade folds show regime-specific trade-domain edge.
+
+Next implication:
+
+- Fixing APY/Sharpe should not start with QP. The immediate target is alpha
+  admission by regime: BULL_CALM needs a stronger threshold / monotonicity
+  contract, BEAR needs a separate defensive/short/hedged thesis before any
+  offensive signal is allowed, and BULL_VOLATILE should be blocked or routed
+  away for this scorer until it has positive regime evidence.
+
 ## Mainline Queue
 
-1. Diagnose the manifest-OOS sanity failure: real IC is weak and the
-   time-shift placebo IC is higher than real IC on the covered feature-space
-   manifest. Check splitter/label
-   horizon, feature timestamping, regime persistence, slow beta/momentum
-   persistence, and calibrator scope before trusting any reported IC.
+1. Convert the sanity decomposition into an alpha-admission fix: regime-specific
+   monotonicity/IC gates must decide whether a model can buy in the current
+   regime before QP sees candidates. XGB currently has strong BEAR IC but weak
+   BULL_CALM IC; PatchTST pilot is too weak for promotion. Check whether BEAR
+   alpha belongs in a defensive/short/hedged sleeve, not an offensive long-only
+   buy path.
 2. Continue benchmark/annual-net work from the benchmark-sleeve A/B:
    cash drag is confirmed, CHOPPY/BEAR sleeve de-risking is rejected as a
    default benchmark-core design, and `core100` restores risk-adjusted
