@@ -1158,6 +1158,7 @@ Verification:
   -> `44 passed`.
 - Py-compile passed for the changed sim, benchmark sleeve, execution backend,
   Alpaca broker, and WF parity modules.
+
 - Probe:
   `backtesting/renquant_104/artifacts/diagnostics/alpha_exposure_probe_20260524_t1_nmbp_costcap`.
   Log scan found no `insufficient cash`, `insufficient buying power`,
@@ -1325,6 +1326,34 @@ Next implication:
 - The WF PatchTST driver now has `--reuse-existing`, so if a long fold trains
   successfully but a later calibrator/manifest step fails, reruns can reuse the
   completed `.pt`/sidecar/calibrator instead of repeating training.
+- Additional gate hardening after the first pilot:
+  - recipe fingerprints ignore execution/window-size counters such as
+    `total_steps` and `warmup_steps`; these vary by cut but do not change the
+    model architecture or feature contract;
+  - manifest sanity skips validation dates before the first covered manifest
+    entry and records `n_skipped_pre_manifest_dates`;
+  - sanity panel loading keeps labels from
+    `data/alpha158_291_fundamental_dataset_rawlabel.parquet` and merges missing
+    PatchTST features from `data/transformer_v4_wl200_clean.parquet`, fixing
+    the real data-flow bug where sentiment/transformer columns were requested
+    from the rawlabel panel.
+- Two-cut pilot command:
+  `.venv/bin/python scripts/train_walkforward_patchtst.py --start-date 2025-01-02 --end-date 2025-01-23 --cadence-days 21 --artifact-root walkforward_patchtst_pilot_20260524 --manifest-output backtesting/renquant_104/artifacts/walkforward_patchtst_pilot_20260524.json --epochs 2 --seq-len 16 --patch-length 4 --d-model 32 --n-heads 4 --n-layers 1 --device cpu --seed 44 --jobs 2 --calibrator-batch-size 512`.
+- Pilot result: both cuts trained and calibrated, but this is not promotion
+  evidence. Sidecar `best_val_ic` was `-0.01599` for cut `2025-01-02` and
+  `-0.03424` for cut `2025-01-23`. The matching calibrator fit-window pooled
+  ICs were positive (`+0.02428`, `+0.01959`), but those are fit diagnostics,
+  not OOS acceptance evidence.
+- WF gate sanity on the pilot used the manifest path, covered 277 OOS dates
+  from `2025-01-02` to `2026-02-10`, skipped 231 pre-manifest dates, used 2
+  manifest artifacts, and merged the three PatchTST sentiment features from
+  the transformer panel. Verdict: `FAIL`; real IC `+0.0049`, shuffled-label IC
+  `+0.0036`, and 60d time-shift placebo IC `+0.0240`. The placebo is larger
+  than real IC, so the gate correctly blocks promotion.
+- Latest verification:
+  `tests/test_wf_gate_recipe_scope.py tests/test_wf_gate_cli_contract.py::test_wf_gate_sanity_reindexes_missing_optional_features`
+  -> `15 passed`; `py_compile` and `git diff --check` passed for
+  `scripts/run_wf_gate.py` and `tests/test_wf_gate_recipe_scope.py`.
 - Remaining required work: run the driver for acceptance-grade folds and score
   PatchTST through the same decision-tree / benchmark-sleeve / active P&L
   acceptance lenses used for XGB and SPY.

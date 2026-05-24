@@ -138,6 +138,8 @@ _EXECUTION_ONLY_PARAM_KEYS = {
     "nthread",
     "n_jobs",
     "num_threads",
+    "total_steps",
+    "warmup_steps",
     "verbosity",
     "verbose",
     "silent",
@@ -1039,6 +1041,49 @@ def _validate_static_sanity_oos_contract(
     }
 
 
+def _load_sanity_panel(feat_cols: list[str], label: str) -> tuple[pd.DataFrame, dict]:
+    """Load label-safe sanity panel, using training feature panel when needed."""
+    raw_path = REPO / "data/alpha158_291_fundamental_dataset_rawlabel.parquet"
+    if not raw_path.exists():
+        raise FileNotFoundError("panel missing — sanity unavailable")
+    raw = pd.read_parquet(raw_path)
+    raw["date"] = pd.to_datetime(raw["date"])
+    if label not in raw.columns:
+        raise KeyError(f"sanity label missing: {label}")
+    missing = [c for c in feat_cols if c not in raw.columns]
+    if not missing:
+        return raw, {
+            "sanity_feature_panel": str(raw_path),
+            "sanity_label_panel": str(raw_path),
+            "feature_panel_merge": False,
+        }
+    feature_path = REPO / "data/transformer_v4_wl200_clean.parquet"
+    if not feature_path.exists():
+        raise FileNotFoundError(
+            f"sanity feature panel missing: {feature_path}; "
+            f"needed columns absent from rawlabel panel: {missing[:10]}"
+        )
+    feature = pd.read_parquet(feature_path)
+    feature["date"] = pd.to_datetime(feature["date"])
+    still_missing = [c for c in feat_cols if c not in feature.columns]
+    if still_missing:
+        raise KeyError(
+            "sanity feature columns missing from both rawlabel and "
+            f"transformer panels: {still_missing[:20]}"
+        )
+    merged = feature[["ticker", "date", *feat_cols]].merge(
+        raw[["ticker", "date", label]],
+        on=["ticker", "date"],
+        how="left",
+    )
+    return merged, {
+        "sanity_feature_panel": str(feature_path),
+        "sanity_label_panel": str(raw_path),
+        "feature_panel_merge": True,
+        "feature_cols_supplied_by_feature_panel": missing,
+    }
+
+
 def _manifest_uri_to_path(manifest_path: Path, uri: str) -> Path:
     p = Path(str(uri))
     return p if p.is_absolute() else manifest_path.parent / p
@@ -1089,9 +1134,14 @@ def _score_manifest_sanity(
 
     date_to_artifact: dict[pd.Timestamp, str] = {}
     safe_dates: list[pd.Timestamp] = []
+    skipped_pre_manifest_dates: list[pd.Timestamp] = []
     for raw_d in sorted(pd.to_datetime(val["date"].unique())):
         d = pd.Timestamp(raw_d)
-        entry = loader.entry_as_of(d)
+        try:
+            entry = loader.entry_as_of(d)
+        except ValueError:
+            skipped_pre_manifest_dates.append(d)
+            continue
         if int(entry.lookahead_days) != candidate_lookahead:
             raise ValueError(
                 "manifest sanity lookahead mismatch: "
@@ -1109,8 +1159,17 @@ def _score_manifest_sanity(
             )
         date_to_artifact[d] = str(_manifest_uri_to_path(manifest_path, entry.artifact_uri))
         safe_dates.append(d)
+    if not safe_dates:
+        raise ValueError(
+            "manifest sanity has no validation dates covered by manifest "
+            f"{manifest_path}; skipped_pre_manifest_dates="
+            f"{len(skipped_pre_manifest_dates)}"
+        )
 
     scored = val.copy()
+    scored = scored[
+        pd.to_datetime(scored["date"]).map(lambda d: pd.Timestamp(d) in date_to_artifact)
+    ].copy()
     scored["__sanity_artifact_uri"] = [
         date_to_artifact[pd.Timestamp(d)] for d in pd.to_datetime(scored["date"])
     ]
@@ -1156,6 +1215,7 @@ def _score_manifest_sanity(
         "sanity_eval_start": min(safe_dates).date().isoformat() if safe_dates else None,
         "sanity_eval_end": max(safe_dates).date().isoformat() if safe_dates else None,
         "n_oos_dates": int(len(safe_dates)),
+        "n_skipped_pre_manifest_dates": int(len(skipped_pre_manifest_dates)),
         "n_manifest_artifacts_used": int(scored["__sanity_artifact_uri"].nunique()),
         "n_history_scorer_artifacts": int(n_history_artifacts),
         "cutoff_contract": (
@@ -1195,17 +1255,18 @@ def run_sanity_battery(
     feat_cols = artifact.get("feature_cols", [])
     if not feat_cols:
         return {"passed": False, "reason": "artifact missing feature_cols"}
-    # Use the rawlabel panel (has fwd_60d_excess_raw and supports placebo construction)
-    panel_path = REPO / "data/alpha158_291_fundamental_dataset_rawlabel.parquet"
-    if not panel_path.exists():
-        log.error("rawlabel panel missing — sanity unavailable; fail closed")
+    # Use raw expected-return labels; when the scorer needs newer feature
+    # columns (for example PatchTST sentiment features), merge those features
+    # from the training feature panel while keeping raw labels point-in-time.
+    try:
+        panel, panel_meta = _load_sanity_panel(feat_cols, "fwd_60d_excess_raw")
+    except (FileNotFoundError, KeyError) as exc:
+        log.error("sanity panel unavailable — fail closed: %s", exc)
         return {
             "passed": False,
-            "reason": "panel missing — sanity unavailable",
+            "reason": str(exc),
             "sanity_method": "existing_model_label_diagnostics",
         }
-    panel = _pd.read_parquet(panel_path)
-    panel["date"] = _pd.to_datetime(panel["date"])
     LABEL = "fwd_60d_excess_raw"
     panel = panel.dropna(subset=[LABEL])
     distinct = sorted(panel.date.unique())
@@ -1245,6 +1306,8 @@ def run_sanity_battery(
                 artifact,
                 panel_history=panel,
             )
+            sanity_meta.update(panel_meta)
+            val = val.loc[mu_s.index].copy()
             mu = mu_s.loc[val.index].values
         elif artifact.get("kind") == "panel_ltr_xgboost":
             contract = _validate_static_sanity_oos_contract(artifact, eval_start)

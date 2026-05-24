@@ -337,6 +337,60 @@ def test_manifest_sanity_scores_history_scorer_with_past_only_history(
     assert meta["n_history_scorer_artifacts"] == 1
 
 
+def test_manifest_sanity_skips_dates_before_manifest_coverage(
+    monkeypatch, tmp_path: Path,
+):
+    mod = _load_module()
+    strategy_path = str(REPO / "backtesting" / "renquant_104")
+    if strategy_path not in sys.path:
+        sys.path.insert(0, strategy_path)
+
+    from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
+
+    candidate = tmp_path / "candidate.json"
+    sample = tmp_path / "sample.json"
+    manifest = tmp_path / "manifest.json"
+    payload = _artifact(["feature_a"])
+    payload["lookahead_days"] = 0
+    candidate.write_text(json.dumps(payload))
+    sample.write_text(json.dumps(payload))
+    manifest.write_text(json.dumps({
+        "retrains": [{
+            "cutoff_date": "2024-01-10T00:00:00",
+            "effective_train_cutoff_date": "2024-01-10T00:00:00",
+            "trained_date": "2024-01-11T00:00:00",
+            "lookahead_days": 0,
+            "artifact_uri": str(sample),
+        }]
+    }))
+
+    class FakeScorer:
+        metadata = {
+            "feature_means": [0.0],
+            "feature_stds": [1.0],
+            "feature_norm_kind": ["identity"],
+        }
+
+        def score(self, frame):
+            return pd.Series([0.7] * len(frame), index=frame.index)
+
+    monkeypatch.setattr(PanelScorer, "load", staticmethod(lambda path: FakeScorer()))
+
+    val = pd.DataFrame({
+        "date": pd.to_datetime(["2024-01-05", "2024-01-12"]),
+        "ticker": ["AAA", "AAA"],
+        "feature_a": [1.0, 2.0],
+    })
+
+    mu, meta = mod._score_manifest_sanity(
+        val, ["feature_a"], manifest, candidate, payload,
+    )
+
+    assert list(mu) == [0.7]
+    assert list(mu.index) == [1]
+    assert meta["n_skipped_pre_manifest_dates"] == 1
+
+
 def test_manifest_safe_last_label_prefers_effective_train_cutoff() -> None:
     mod = _load_module()
     entry = SimpleNamespace(
@@ -384,3 +438,65 @@ def test_recipe_fingerprint_ignores_execution_only_xgb_params() -> None:
         mod._recipe_fingerprint(old_hw)
         != mod._recipe_fingerprint(changed_learning_param)
     )
+
+
+def test_recipe_fingerprint_ignores_patchtst_window_size_steps() -> None:
+    mod = _load_module()
+    base = {
+        "kind": "hf_patchtst",
+        "feature_cols": ["a", "b"],
+        "label_col": "fwd_60d_excess",
+        "lookahead_days": 60,
+        "params": {
+            "seq_len": 16,
+            "patch_length": 4,
+            "d_model": 32,
+            "n_heads": 4,
+            "n_layers": 1,
+            "total_steps": 3826,
+            "warmup_steps": 382,
+        },
+    }
+    shifted_window = json.loads(json.dumps(base))
+    shifted_window["params"]["total_steps"] = 3850
+    shifted_window["params"]["warmup_steps"] = 385
+
+    assert mod._recipe_fingerprint(base) == mod._recipe_fingerprint(shifted_window)
+
+
+def test_sanity_panel_loader_merges_transformer_features(monkeypatch):
+    mod = _load_module()
+    raw = pd.DataFrame({
+        "ticker": ["AAA"],
+        "date": pd.to_datetime(["2024-01-02"]),
+        "fwd_60d_excess_raw": [0.01],
+        "alpha": [1.0],
+    })
+    transformer = pd.DataFrame({
+        "ticker": ["AAA"],
+        "date": pd.to_datetime(["2024-01-02"]),
+        "alpha": [1.0],
+        "mean_sentiment": [0.2],
+    })
+
+    def fake_exists(self):
+        return True
+
+    def fake_read_parquet(path, *args, **kwargs):
+        p = str(path)
+        if p.endswith("alpha158_291_fundamental_dataset_rawlabel.parquet"):
+            return raw.copy()
+        if p.endswith("transformer_v4_wl200_clean.parquet"):
+            return transformer.copy()
+        raise AssertionError(path)
+
+    monkeypatch.setattr(mod.Path, "exists", fake_exists)
+    monkeypatch.setattr(mod.pd, "read_parquet", fake_read_parquet)
+
+    panel, meta = mod._load_sanity_panel(
+        ["alpha", "mean_sentiment"], "fwd_60d_excess_raw",
+    )
+
+    assert panel["mean_sentiment"].iloc[0] == 0.2
+    assert panel["fwd_60d_excess_raw"].iloc[0] == 0.01
+    assert meta["feature_panel_merge"] is True
