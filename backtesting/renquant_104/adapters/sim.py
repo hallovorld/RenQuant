@@ -1237,6 +1237,22 @@ class SimAdapter:
                             .get("panel_scoring", {})
                             .get("artifact_path")
             )
+            qp_delta_by_ticker: dict[str, float] = {}
+            qp_target_by_ticker: dict[str, float] = {}
+            qp_status = None
+            qp_sol = getattr(ctx, "_qp_solution", None)
+            qp_tickers = list(getattr(ctx, "_qp_tickers", None) or [])
+            if qp_sol is not None and qp_tickers:
+                qp_status = getattr(qp_sol, "status", None)
+                for idx, tk in enumerate(qp_tickers):
+                    try:
+                        qp_delta_by_ticker[tk] = float(qp_sol.delta_w[idx])
+                    except Exception:
+                        pass
+                    try:
+                        qp_target_by_ticker[tk] = float(qp_sol.target_w[idx])
+                    except Exception:
+                        pass
             # 2026-05-04 user mandate ("rank_score need to be collected
             # properly for future fine tune"): persist the FULL pre-
             # veto candidate list so the candidate_scores table captures
@@ -1254,6 +1270,9 @@ class SimAdapter:
                 sector_map=sector_map,
                 model_types=model_types,
                 panel_artifact=panel_artifact,
+                qp_delta_by_ticker=qp_delta_by_ticker,
+                qp_target_by_ticker=qp_target_by_ticker,
+                qp_status=qp_status,
             )
             record_trades(self._db, run_id, trade_events_this_bar)
             wl = list(self._config.get("watchlist", []) or [])
@@ -1301,6 +1320,9 @@ class SimAdapter:
                     "selected": 1 if tk in selected_tickers else 0,
                     "blocked_by": blocked_str,
                     "sector": sector_map.get(tk),
+                    "qp_delta_w": qp_delta_by_ticker.get(tk),
+                    "qp_target_w": qp_target_by_ticker.get(tk),
+                    "qp_status": qp_status,
                 })
             record_ticker_daily_state(
                 self._db,

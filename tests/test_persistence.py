@@ -191,6 +191,45 @@ class TestCandidateScores:
         assert row[0] == "sector_cap"
         conn.close()
 
+    def test_qp_delta_recorded_for_candidates_and_holdings(self, tmp_path):
+        from kernel.selection import CandidateResult
+        from kernel.exits import HoldingState
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        cand = CandidateResult(ticker="AAA", raw_score=0, rank_score=0.8,
+                               rs_score=0, detail="", expected_return=0.01)
+        holding = HoldingState(
+            entry_price=100.0,
+            entry_date=datetime.date(2026, 3, 1),
+            high_watermark=105.0,
+        )
+
+        record_candidate_scores(
+            conn, rid, [cand], {"BBB": holding},
+            selected_tickers={"AAA"},
+            qp_delta_by_ticker={"AAA": 0.035, "BBB": -0.020},
+            qp_target_by_ticker={"AAA": 0.085, "BBB": 0.050},
+            qp_status="optimal",
+        )
+
+        rows = {
+            (r[0], r[1]): r[2:]
+            for r in conn.execute(
+                "SELECT ticker, role, qp_delta_w, qp_target_w, qp_status "
+                "FROM candidate_scores WHERE run_id = ?",
+                (rid,),
+            )
+        }
+        assert rows[("AAA", "candidate")][0] == pytest.approx(0.035)
+        assert rows[("AAA", "candidate")][1] == pytest.approx(0.085)
+        assert rows[("AAA", "candidate")][2] == "optimal"
+        assert rows[("BBB", "holding")][0] == pytest.approx(-0.020)
+        assert rows[("BBB", "holding")][1] == pytest.approx(0.050)
+        assert rows[("BBB", "holding")][2] == "optimal"
+        conn.close()
+
     def test_selected_candidate_clears_stale_block_reason(self, tmp_path):
         """AUDIT REGRESSION GUARD: selected rows are outcomes, not blocks.
 

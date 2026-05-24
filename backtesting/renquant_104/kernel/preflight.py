@@ -88,6 +88,44 @@ def _is_sequence_artifact(kind: str, path: Path) -> bool:
     return kind in {"hf_patchtst", "patchtst"} or path.suffix == ".pt"
 
 
+def _normalized_run_mode(run_mode: str | None) -> str:
+    return str(run_mode or "").strip().lower().replace("_", "-")
+
+
+def _is_sell_only_run(run_mode: str | None) -> bool:
+    return _normalized_run_mode(run_mode).startswith("sell-only")
+
+
+def _is_global_calibration_enabled(config: dict) -> bool:
+    return bool(
+        (config.get("ranking", {})
+               .get("panel_scoring", {})
+               .get("global_calibration", {}) or {})
+        .get("enabled", False)
+    )
+
+
+def _soft_for_sell_only(
+    name: str,
+    message: str,
+    *,
+    run_mode: str | None,
+    details: dict | None = None,
+) -> PreflightCheck:
+    if _is_sell_only_run(run_mode):
+        msg = f"{message}; sell-only risk exits are allowed, new buys remain blocked"
+        return PreflightCheck(name, "soft", True, msg, details=details or {})
+    return PreflightCheck(name, "hard", False, message, details=details or {})
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 def _check_sequence_artifact_contract(
     *,
     kind: str,
@@ -330,9 +368,11 @@ def _check_wf_gate_metadata(
     meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else {}
     if not wf:
-        return PreflightCheck(
-            "P-WF-GATE", "soft", True,
-            "WF gate metadata absent; next promotion must stamp pass/fail evidence",
+        return _soft_for_sell_only(
+            "P-WF-GATE",
+            "WF gate metadata absent; full/buy runs require stamped WF Sharpe "
+            "and SPY comparison evidence",
+            run_mode=run_mode,
         )
     passed = wf.get("passed")
     details = {
@@ -346,8 +386,7 @@ def _check_wf_gate_metadata(
         "run_at": wf.get("run_at"),
     }
     if passed is False:
-        normalized_mode = str(run_mode or "").lower().replace("_", "-")
-        if normalized_mode.startswith("sell-only"):
+        if _is_sell_only_run(run_mode):
             return PreflightCheck(
                 "P-WF-GATE", "soft", True,
                 "active panel artifact carries failed WF gate evidence; "
@@ -366,16 +405,139 @@ def _check_wf_gate_metadata(
             details=details,
         )
     if passed is True:
+        required = {
+            "wf_3cut_sharpe_mean": wf.get("wf_3cut_sharpe_mean"),
+            "spy_sharpe_mean": wf.get("spy_sharpe_mean"),
+            "strategy_minus_spy_sharpe_mean": wf.get("strategy_minus_spy_sharpe_mean"),
+        }
+        missing = [k for k, v in required.items() if _finite_float(v) is None]
+        if missing:
+            details["missing_required_numeric"] = missing
+            return _soft_for_sell_only(
+                "P-WF-GATE",
+                "WF gate passed=true but missing/non-finite required evidence: "
+                + ", ".join(missing),
+                run_mode=run_mode,
+                details=details,
+            )
+        if "n_cuts_beat_spy_sharpe" not in wf:
+            details["missing_required"] = ["n_cuts_beat_spy_sharpe"]
+            return _soft_for_sell_only(
+                "P-WF-GATE",
+                "WF gate passed=true but missing SPY cut-count evidence "
+                "(n_cuts_beat_spy_sharpe)",
+                run_mode=run_mode,
+                details=details,
+            )
         return PreflightCheck(
             "P-WF-GATE", "hard", True,
             f"WF gate passed: wf_sharpe_mean={wf.get('wf_3cut_sharpe_mean')} "
             f"spy_sharpe_mean={wf.get('spy_sharpe_mean')}",
             details=details,
         )
-    return PreflightCheck(
-        "P-WF-GATE", "soft", True,
+    return _soft_for_sell_only(
+        "P-WF-GATE",
         "WF gate metadata present but no boolean passed field; next promotion "
         "must stamp pass/fail evidence",
+        run_mode=run_mode,
+        details=details,
+    )
+
+
+def _check_regime_layered_ic(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
+    """P-REGIME-IC: WF artifact must carry regime-layered signal evidence.
+
+    The contract is deliberately separate from the portfolio/QP contract:
+    the model must first prove rank monotonicity / rank-IC style signal inside
+    regimes with enough samples. QP can size eligible alpha; it cannot create
+    alpha from missing or failed regime evidence.
+    """
+    panel_cfg = _active_panel_config(config)
+    kind = _active_panel_kind(config, panel_cfg)
+    rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
+    p = _resolve_artifact_path(strategy_dir, rel)
+    if _is_sequence_artifact(kind, p):
+        return PreflightCheck(
+            "P-REGIME-IC", "soft", True,
+            f"regime IC gate not applicable to sequence shadow artifact ({kind})",
+        )
+    if not p.exists():
+        return PreflightCheck(
+            "P-REGIME-IC", "soft", True,
+            f"artifact missing at {p}; P-MODEL-ARTIFACT/P-PANEL-CONTRACT will handle",
+        )
+    try:
+        payload = json.loads(p.read_text())
+    except Exception as exc:
+        return PreflightCheck(
+            "P-REGIME-IC", "soft", True,
+            f"artifact unreadable: {exc}; P-PANEL-CONTRACT will handle",
+        )
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else {}
+    tm = wf.get("trade_monotonicity") if isinstance(wf.get("trade_monotonicity"), dict) else {}
+    details = {
+        "run_mode": run_mode,
+        "artifact": str(p),
+        "passed": tm.get("passed") if tm else None,
+        "pooled": tm.get("pooled") if tm else None,
+        "min_n_per_regime": tm.get("min_n_per_regime") if tm else None,
+        "min_spearman": tm.get("min_spearman") if tm else None,
+    }
+    if not tm:
+        return _soft_for_sell_only(
+            "P-REGIME-IC",
+            "regime-layered IC/monotonicity evidence absent from WF metadata",
+            run_mode=run_mode,
+            details=details,
+        )
+    regimes_raw = tm.get("regimes")
+    if isinstance(regimes_raw, dict):
+        regimes = regimes_raw
+    elif isinstance(regimes_raw, list):
+        regimes = {
+            str(stats.get("regime", f"regime_{idx}")): stats
+            for idx, stats in enumerate(regimes_raw)
+            if isinstance(stats, dict)
+        }
+    else:
+        regimes = {}
+    eligible = {
+        regime: stats for regime, stats in regimes.items()
+        if isinstance(stats, dict) and bool(stats.get("eligible", False))
+    }
+    failed = {
+        regime: stats for regime, stats in eligible.items()
+        if not bool(stats.get("passed", False))
+    }
+    details["eligible_regimes"] = sorted(eligible)
+    details["failed_regimes"] = sorted(failed)
+    details["regimes"] = regimes
+    if not eligible:
+        return _soft_for_sell_only(
+            "P-REGIME-IC",
+            "no regime has enough OOS trades for regime-layered IC validation",
+            run_mode=run_mode,
+            details=details,
+        )
+    if tm.get("passed") is False or failed:
+        return _soft_for_sell_only(
+            "P-REGIME-IC",
+            "regime-layered IC/monotonicity failed for eligible regimes: "
+            + ", ".join(sorted(failed) or sorted(eligible)),
+            run_mode=run_mode,
+            details=details,
+        )
+    pooled = tm.get("pooled") if isinstance(tm.get("pooled"), dict) else {}
+    pooled_spearman = _finite_float(pooled.get("spearman")) if pooled else None
+    return PreflightCheck(
+        "P-REGIME-IC", "hard", True,
+        "regime-layered IC/monotonicity passed for eligible regimes "
+        f"{sorted(eligible)}; pooled_spearman={pooled_spearman}",
         details=details,
     )
 
@@ -506,9 +668,11 @@ def _check_config_fingerprint(
     stored = meta.get("config_fingerprint")
     if stored is None:
         target = "sequence sidecar" if _is_sequence_artifact(kind, p) else "artifact"
-        return PreflightCheck(
-            "P-CONFIG-FP", "soft", True,
-            f"{target} lacks fingerprint — stamped at next retrain",
+        return _soft_for_sell_only(
+            "P-CONFIG-FP",
+            f"{target} lacks config fingerprint; full/buy runs require stamped "
+            "sector/config metadata",
+            run_mode=run_mode,
             details={"live": live_fp},
         )
     if stored == live_fp:
@@ -520,14 +684,14 @@ def _check_config_fingerprint(
     # Defensive: 2026-05-08 alpha158_fund artifact stores
     # config_fingerprint_fields as a LIST of field names (not a value
     # dict like the legacy 21-feat format). When that's the case we
-    # cannot compute a per-field diff, so soft-pass the check —
-    # fingerprint mismatch is real but not actionable without stored
-    # field VALUES to point at the diverging key.
+    # cannot compute a per-field diff. In full/buy mode this is missing
+    # contract evidence; sell-only is allowed for risk exits.
     if not isinstance(stored_sub, dict):
-        return PreflightCheck(
-            "P-CONFIG-FP", "soft", True,
+        return _soft_for_sell_only(
+            "P-CONFIG-FP",
             f"fingerprint_fields stored as {type(stored_sub).__name__}, "
             f"not dict — can't diff. live={live_fp} stored={stored}",
+            run_mode=run_mode,
         )
     diff_keys = []
     live_sub = _model_relevant_fields(config)
@@ -567,12 +731,12 @@ def _check_config_fingerprint(
             "sector_coverage_details": sector_check.details,
         }
         if sector_check.ok:
-            return PreflightCheck(
-                "P-CONFIG-FP", "soft", True,
+            return _soft_for_sell_only(
+                "P-CONFIG-FP",
                 msg + " Legacy artifact lacks sector fingerprint fields added "
-                "after training; P-SECTOR-MAP passed, so this is a stamp "
-                "migration warning rather than config drift. Next retrain must "
-                "stamp sector_map and sector_etf_map.",
+                "after training. Full/buy runs require retrain/stamp even when "
+                "P-SECTOR-MAP coverage is currently OK.",
+                run_mode=run_mode,
                 details=details,
             )
         return PreflightCheck(
@@ -635,8 +799,8 @@ def _check_watchlist_size(config: dict, strategy_dir: Path) -> PreflightCheck:
             "P-WATCHLIST", "hard", False, f"unreadable: {exc}",
         )
     fields = meta.get("config_fingerprint_fields") or {}
-    # Defensive: alpha158_fund artifact stores fingerprint_fields as a
-    # LIST of field names (no values). Treat as not-stamped → soft-pass.
+    # Defensive: alpha158_fund artifact may store fingerprint_fields as a
+    # LIST of field names (no values). Treat as not-stamped.
     if not isinstance(fields, dict):
         fields = {}
     trained_wl = fields.get("watchlist") or []
@@ -926,6 +1090,7 @@ ALL_CHECKS = (
     _check_model_artifact,
     _check_panel_artifact_contract,
     _check_wf_gate_metadata,
+    _check_regime_layered_ic,
     _check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,
@@ -938,7 +1103,11 @@ ALL_CHECKS = (
 )
 
 
-def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightCheck":
+def _check_calibrator_health(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> "PreflightCheck":
     """P-CALIBRATOR-HEALTH (2026-05-05 parity fix): runtime equivalent of the
     training-side `fit_global_calibrator` "probability head collapsed to N
     unique values" guard.
@@ -967,10 +1136,17 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
                        .get("global_calibration", {})) or {})
     rel = cal_cfg.get("artifact_path", "artifacts/prod/panel-rank-calibration.json")
     p = strategy_dir / rel
-    if not p.exists():
+    calibration_enabled = _is_global_calibration_enabled(config)
+    if not calibration_enabled:
         return PreflightCheck(
             "P-CALIBRATOR-HEALTH", "soft", True,
-            f"calibrator artifact absent at {p} — global_calibration may be disabled",
+            "global_calibration disabled; health gate not applicable",
+        )
+    if not p.exists():
+        return _soft_for_sell_only(
+            "P-CALIBRATOR-HEALTH",
+            f"global_calibration.enabled=true but calibrator artifact absent at {p}",
+            run_mode=run_mode,
         )
     try:
         payload = json.loads(p.read_text())
@@ -1033,37 +1209,26 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
     health_cfg = panel_cfg.get("calibrator_health", {}) or {}
     min_unique = int(health_cfg.get("min_unique_prob_y", 10))
     if n_unique is None:
-        return PreflightCheck(
-            "P-CALIBRATOR-HEALTH", "soft", True,
-            "n_unique_prob_y not stamped (legacy artifact); skip — will be "
-            "stamped on next retrain. Cannot verify probability-head granularity.",
+        return _soft_for_sell_only(
+            "P-CALIBRATOR-HEALTH",
+            "n_unique_prob_y not stamped; cannot verify probability-head granularity",
+            run_mode=run_mode,
+            details={"pool_ic": pool_ic, "global_calibration_enabled": calibration_enabled},
         )
     if int(n_unique) < min_unique:
-        # 2026-05-05 incident: this was originally `hard`, which blocked ALL
-        # preflight — including sell-only intraday crons that don't use the
-        # calibrator at all (sells run via SellGateB + path rules). 14 sell
-        # crons aborted between 07:00–09:36 PT before the severity was
-        # downgraded. Calibrator collapse is a *quality* issue (top candidates
-        # tie, ranking is ineffective) not a *safety* issue — the adaptive
-        # buy_floor at `min(max(0.20, mean+std), 0.30)` already absorbs tied
-        # scores at the cap, and downstream sizing/risk gates are unaffected.
-        # SOFT keeps the loud warning visible without halting live ops.
-        return PreflightCheck(
-            "P-CALIBRATOR-HEALTH", "soft", True,
-            f"WARN: n_unique_prob_y={n_unique} < min_unique_prob_y={min_unique}. "
-            f"Calibrator probability head collapsed — top candidates will tie, "
-            f"buy ranking is ineffective. Retrain or investigate isotonic-input "
-            f"distribution. Sells unaffected; buys will fall through to "
-            f"buy_floor cap. (See doc/components/calibration.md and the "
-            f"2026-05-04 e2e post-mortem.)",
+        return _soft_for_sell_only(
+            "P-CALIBRATOR-HEALTH",
+            f"n_unique_prob_y={n_unique} < min_unique_prob_y={min_unique}; "
+            "calibrator probability head collapsed and buy ranking is ineffective",
+            run_mode=run_mode,
             details={"n_unique_prob_y": n_unique, "min_unique_prob_y": min_unique,
                      "pool_ic": pool_ic},
         )
     if pool_ic is not None and float(pool_ic) <= 0:
-        return PreflightCheck(
-            "P-CALIBRATOR-HEALTH", "soft", True,
-            f"pool_ic={pool_ic} ≤ 0 — calibrator anti-correlated with labels; "
-            f"investigate before live trade. n_unique={n_unique}.",
+        return _soft_for_sell_only(
+            "P-CALIBRATOR-HEALTH",
+            f"pool_ic={pool_ic} <= 0; calibrator anti-correlated with labels",
+            run_mode=run_mode,
             details={"n_unique_prob_y": n_unique, "pool_ic": pool_ic},
         )
     return PreflightCheck(
@@ -1073,7 +1238,11 @@ def _check_calibrator_health(config: dict, strategy_dir: Path) -> "PreflightChec
     )
 
 
-def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "PreflightCheck":
+def _check_calibrator_flat_region(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> "PreflightCheck":
     """P-CALIBRATOR-FLAT-REGION (2026-05-18, MCD-rebuy incident):
     structural check that calibrator's probability curve has no
     flat region wider than `max_flat_fraction` of the x-domain.
@@ -1100,10 +1269,17 @@ def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "Prefligh
         or "artifacts/prod/panel-rank-calibration.json"
     )
     p = _resolve_artifact_path(strategy_dir, rel)
-    if not p.exists():
+    calibration_enabled = _is_global_calibration_enabled(config)
+    if not calibration_enabled:
         return PreflightCheck(
             "P-CALIBRATOR-FLAT-REGION", "soft", True,
-            f"calibrator artifact missing at {p} — skip (other checks will fail)",
+            "global_calibration disabled; flat-region gate not applicable",
+        )
+    if not p.exists():
+        return _soft_for_sell_only(
+            "P-CALIBRATOR-FLAT-REGION",
+            f"global_calibration.enabled=true but calibrator artifact missing at {p}",
+            run_mode=run_mode,
         )
     try:
         cal = json.loads(p.read_text())
@@ -1111,14 +1287,16 @@ def _check_calibrator_flat_region(config: dict, strategy_dir: Path) -> "Prefligh
         x = pr.get("x", [])
         y = pr.get("y", [])
         if not x or not y or len(x) != len(y):
-            return PreflightCheck(
-                "P-CALIBRATOR-FLAT-REGION", "soft", True,
-                "probability.x/y missing or mismatched — skip",
+            return _soft_for_sell_only(
+                "P-CALIBRATOR-FLAT-REGION",
+                "probability.x/y missing or mismatched",
+                run_mode=run_mode,
             )
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        return PreflightCheck(
-            "P-CALIBRATOR-FLAT-REGION", "soft", True,
-            f"could not parse calibrator: {exc} — skip",
+        return _soft_for_sell_only(
+            "P-CALIBRATOR-FLAT-REGION",
+            f"could not parse calibrator: {exc}",
+            run_mode=run_mode,
         )
 
     health_cfg = panel_cfg.get("calibrator_health", {}) or {}
@@ -1190,9 +1368,17 @@ def run_preflight(
                 kwargs = {"broker": broker}    # broker check has different sig
             res = fn(**kwargs) if "broker" in sig else fn(**kwargs)
         except Exception as exc:
+            sell_only = _is_sell_only_run(effective_run_mode)
             res = PreflightCheck(
-                fn.__name__, "soft", True,
-                f"check raised unexpectedly: {exc} — degrading to soft-pass",
+                fn.__name__,
+                "soft" if sell_only else "hard",
+                True if sell_only else False,
+                f"check raised unexpectedly: {exc}; "
+                + (
+                    "sell-only risk exits are allowed"
+                    if sell_only else
+                    "full/buy preflight fails closed"
+                ),
             )
         results.append(res)
         marker = "✓" if res.ok else "✗"

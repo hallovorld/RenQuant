@@ -150,6 +150,8 @@ class JointPortfolioQPJob(Job):
             return True
         if getattr(ctx, "bear_only", False):
             return True
+        if getattr(ctx, "_calibrator_contract_failed", False):
+            return True
         return False
 
     @property

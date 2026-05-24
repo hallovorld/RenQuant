@@ -141,6 +141,7 @@ class TestPreflightCheck:
         cfg = {
             "panel_ltr": {"calibrator_health": {"max_flat_fraction": 0.30}},
             "ranking": {"panel_scoring": {"global_calibration": {
+                "enabled": True,
                 "artifact_path": "artifacts/shadow/panel-rank-calibration.shadow.json",
             }}},
         }

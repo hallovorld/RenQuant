@@ -1016,6 +1016,35 @@ def _assert_calibrator_matches_scorer(
         )
 
 
+def _fail_closed_missing_calibrator(ctx: InferenceContext, reason: str) -> None:
+    """Block buy/QP when an enabled calibrator cannot be used.
+
+    Preflight should catch this before a daily/full run, but runtime must still
+    fail closed so a missing calibrator never silently reverts to raw panel
+    scores. Exits already emitted earlier in the pipeline are left intact.
+    """
+    ctx._calibrator_contract_failed = True  # noqa: SLF001
+    ctx.buy_blocked = True
+    ctx.skip_buys = True
+    blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked_map is None:
+        blocked_map = {}
+        ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+    pool = list(getattr(ctx, "_full_candidate_snapshot", None) or ctx.candidates or [])
+    if pool and not getattr(ctx, "_full_candidate_snapshot", None):
+        ctx._full_candidate_snapshot = list(pool)  # noqa: SLF001
+    for c in pool:
+        ticker = getattr(c, "ticker", None)
+        if ticker:
+            blocked_map.setdefault(ticker, reason)
+    ctx.candidates = []
+    log.error(
+        "Global calibration contract failed (%s). Buy candidates cleared; "
+        "buy/QP path is fail-closed for this run.",
+        reason,
+    )
+
+
 class LoadGlobalCalibrationTask(Task):
     """Load the global panel calibrator artifact(s) if enabled.
 
@@ -1064,9 +1093,10 @@ class LoadGlobalCalibrationTask(Task):
                     "LoadGlobalCalibrationTask: global_calibration.enabled=true "
                     "but artifact_path is not set in cfg.ranking.panel_scoring."
                     "global_calibration. Refusing to default to any prod path — "
-                    "calibrator disabled for this run."
+                    "buy path will fail closed."
                 )
                 ctx._global_calibrator = None  # noqa: SLF001
+                ctx._global_calibrator_missing_reason = "calibrator_missing_path"  # noqa: SLF001
             else:
                 pooled_path = _resolve(Path(pooled_rel))
                 try:
@@ -1083,6 +1113,7 @@ class LoadGlobalCalibrationTask(Task):
                     log.warning("LoadGlobalCalibrationTask: pooled load %s failed — %s",
                                 pooled_path, exc)
                     ctx._global_calibrator = None  # noqa: SLF001
+                    ctx._global_calibrator_missing_reason = "calibrator_load_failed"  # noqa: SLF001
 
         # Regime-conditional (Plan F) — opt-in.
         rc_cfg = gc_cfg.get("regime_conditional", {})
@@ -1163,7 +1194,12 @@ class ApplyGlobalCalibrationTask(Task):
         pooled     = getattr(ctx, "_global_calibrator", None)
         cal = regime_map.get(getattr(ctx, "regime", None)) or pooled
         if cal is None:
-            return
+            reason = getattr(
+                ctx, "_global_calibrator_missing_reason",
+                "calibrator_missing",
+            )
+            _fail_closed_missing_calibrator(ctx, str(reason))
+            return False
 
         # 2026-05-15 Phase 3: opt-in c.mu wiring. When
         # ranking.kelly_sizing.use_calibrator_mu=true, the calibrator's

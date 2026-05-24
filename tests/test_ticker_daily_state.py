@@ -56,12 +56,14 @@ class TestWriteAndRead:
             "expected_return": 0.012, "kelly_target_pct": 0.08,
             "mu": 0.01, "sigma": 0.05, "in_candidates": 0,
             "selected": 0, "blocked_by": None, "sector": "Tech",
+            "qp_delta_w": -0.015, "qp_target_w": 0.055, "qp_status": "optimal",
         }
         record_ticker_daily_state(db, run_date=rd, rows=[row])
         cur = db.execute(
             """SELECT date, ticker, regime, confidence, in_watchlist, in_universe,
                       has_position, position_qty, model_type, model_action,
-                      sell_streak, rank_score, kelly_target_pct, blocked_by, sector
+                      sell_streak, rank_score, kelly_target_pct, blocked_by, sector,
+                      qp_delta_w, qp_target_w, qp_status
                FROM ticker_daily_state WHERE ticker = ?""",
             ("AAPL",),
         )
@@ -80,6 +82,9 @@ class TestWriteAndRead:
         assert out[12] == pytest.approx(0.08)
         assert out[13] is None
         assert out[14] == "Tech"
+        assert out[15] == pytest.approx(-0.015)
+        assert out[16] == pytest.approx(0.055)
+        assert out[17] == "optimal"
 
     def test_universe_filtered_ticker_minimal_row(self):
         db = _db()

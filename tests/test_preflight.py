@@ -23,6 +23,7 @@ from kernel.preflight import (  # noqa: E402
     _check_model_artifact,
     _check_panel_artifact_contract,
     _check_wf_gate_metadata,
+    _check_regime_layered_ic,
     _check_best_iter,
     _check_config_fingerprint,
     _check_watchlist_size,
@@ -74,6 +75,27 @@ def healthy_setup(tmp_path):
         "feature_cols": ["rsi", "macd", "bbp"],
         "config_fingerprint": fingerprint_config(cfg),
         "config_fingerprint_fields": _model_relevant_fields(cfg),
+        "metadata": {"wf_gate_metadata": {
+            "passed": True,
+            "wf_3cut_sharpe_mean": 1.21,
+            "spy_sharpe_mean": 0.77,
+            "strategy_minus_spy_sharpe_mean": 0.44,
+            "n_cuts_beat_spy_sharpe": 2,
+            "trade_monotonicity": {
+                "passed": True,
+                "pooled": {"spearman": 0.08},
+                "min_n_per_regime": 30,
+                "min_spearman": 0.02,
+                "regimes": {
+                    "BULL_CALM": {
+                        "eligible": True,
+                        "passed": True,
+                        "n": 80,
+                        "spearman": 0.09,
+                    },
+                },
+            },
+        }},
     }))
     return cfg, tmp_path
 
@@ -241,6 +263,8 @@ class TestCheckWFGateMetadata:
                 "passed": True,
                 "wf_3cut_sharpe_mean": 0.91,
                 "spy_sharpe_mean": 0.65,
+                "strategy_minus_spy_sharpe_mean": 0.26,
+                "n_cuts_beat_spy_sharpe": 2,
             }},
         }))
 
@@ -248,6 +272,37 @@ class TestCheckWFGateMetadata:
 
         assert r.ok and r.severity == "hard"
         assert r.details["passed"] is True
+
+    def test_passed_wf_without_spy_comparison_fails_full(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": {
+                "passed": True,
+                "wf_3cut_sharpe_mean": 0.91,
+            }},
+        }))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "missing/non-finite required evidence" in r.message
+
+    def test_missing_wf_metadata_fails_full(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({}))
+
+        r = _check_wf_gate_metadata(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "WF gate metadata absent" in r.message
 
     def test_sequence_shadow_skips_wf_gate(self, tmp_path):
         cfg = {"ranking": {"panel_scoring": {
@@ -259,6 +314,59 @@ class TestCheckWFGateMetadata:
 
         assert r.ok and r.severity == "soft"
         assert "not applicable" in r.message
+
+
+class TestCheckRegimeLayeredIC:
+    def _write_artifact(self, tmp_path, trade_monotonicity):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps({
+            "metadata": {"wf_gate_metadata": {
+                "trade_monotonicity": trade_monotonicity,
+            }},
+        }))
+        return cfg
+
+    def test_passes_when_eligible_regimes_pass(self, tmp_path):
+        cfg = self._write_artifact(tmp_path, {
+            "passed": True,
+            "pooled": {"spearman": 0.07},
+            "regimes": {
+                "BULL_CALM": {"eligible": True, "passed": True, "n": 70},
+                "BEAR": {"eligible": False, "passed": True, "n": 5},
+            },
+        })
+
+        r = _check_regime_layered_ic(cfg, tmp_path, run_mode="full")
+
+        assert r.ok and r.severity == "hard"
+        assert r.details["eligible_regimes"] == ["BULL_CALM"]
+
+    def test_fails_when_eligible_regime_fails(self, tmp_path):
+        cfg = self._write_artifact(tmp_path, {
+            "passed": False,
+            "pooled": {"spearman": -0.01},
+            "regimes": {
+                "BULL_CALM": {"eligible": True, "passed": False, "n": 70},
+            },
+        })
+
+        r = _check_regime_layered_ic(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert r.details["failed_regimes"] == ["BULL_CALM"]
+
+    def test_missing_evidence_allows_sell_only_only(self, tmp_path):
+        cfg = self._write_artifact(tmp_path, None)
+
+        full = _check_regime_layered_ic(cfg, tmp_path, run_mode="full")
+        sell = _check_regime_layered_ic(cfg, tmp_path, run_mode="sell-only")
+
+        assert not full.ok and full.severity == "hard"
+        assert sell.ok and sell.severity == "soft"
 
 
 # ── P-BEST-ITER (BUG-CV-2 invariant) ───────────────────────────────────────
@@ -351,7 +459,7 @@ class TestCheckConfigFingerprint:
         assert not r.ok and r.severity == "hard"
         assert "sector_map" in r.message
 
-    def test_legacy_missing_sector_fingerprint_fields_soft_passes_when_coverage_ok(
+    def test_legacy_missing_sector_fingerprint_fields_fails_full_even_when_coverage_ok(
         self,
         healthy_setup,
     ):
@@ -363,7 +471,7 @@ class TestCheckConfigFingerprint:
 
         r = _check_config_fingerprint(cfg, sd, run_mode="full")
 
-        assert r.ok and r.severity == "soft"
+        assert not r.ok and r.severity == "hard"
         assert "Legacy artifact lacks sector fingerprint fields" in r.message
         assert r.details["diff_fields"] == ["sector_etf_map", "sector_map"]
         assert r.details["legacy_missing_sector_fields"] is True
@@ -407,8 +515,8 @@ class TestCheckConfigFingerprint:
         assert not r.ok
         assert "objective" in r.message
 
-    def test_soft_pass_when_no_fingerprint_in_artifact(self, tmp_path):
-        """Pre-2026-04-28 artifacts lack fingerprint — soft pass."""
+    def test_hard_fail_when_no_fingerprint_in_artifact_for_full(self, tmp_path):
+        """Full/buy runs require stamped config fingerprint metadata."""
         cfg = {
             "watchlist": ["A"],
             "panel_ltr": {"artifact_path": "artifacts/panel-ltr.json"},
@@ -418,9 +526,10 @@ class TestCheckConfigFingerprint:
             "best_iter": 50,
         }))
         r = _check_config_fingerprint(cfg, tmp_path)
-        assert r.ok and r.severity == "soft"
+        assert not r.ok and r.severity == "hard"
+        assert "lacks config fingerprint" in r.message
 
-    def test_sequence_sidecar_without_fingerprint_soft_passes(self, tmp_path):
+    def test_sequence_sidecar_without_fingerprint_fails_full(self, tmp_path):
         cfg = {
             "watchlist": ["AAPL", "MSFT"],
             "ranking": {"panel_scoring": {
@@ -438,8 +547,8 @@ class TestCheckConfigFingerprint:
 
         r = _check_config_fingerprint(cfg, tmp_path, run_mode="full")
 
-        assert r.ok and r.severity == "soft"
-        assert "sequence sidecar lacks fingerprint" in r.message
+        assert not r.ok and r.severity == "hard"
+        assert "sequence sidecar lacks config fingerprint" in r.message
 
 
 # ── P-WATCHLIST ────────────────────────────────────────────────────────────
@@ -689,6 +798,7 @@ class TestCheckCalibratorHealth:
         cfg = {
             "panel_ltr": {},
             "ranking": {"panel_scoring": {"global_calibration": {
+                "enabled": True,
                 "artifact_path": "artifacts/panel-rank-calibration.json",
             }}},
         }
@@ -718,6 +828,7 @@ class TestCheckCalibratorHealth:
                 "max_expected_return_flat_fraction": 0.30,
             }},
             "ranking": {"panel_scoring": {"global_calibration": {
+                "enabled": True,
                 "artifact_path": "artifacts/panel-rank-calibration.json",
             }}},
         }
@@ -735,7 +846,7 @@ class TestCheckCalibratorHealth:
         assert not r.ok and r.severity == "hard"
         assert "expected_return.y has flat region" in r.message
 
-    def test_warn_when_n_unique_below_floor(self, tmp_path):
+    def test_hard_fails_when_n_unique_below_floor_for_full(self, tmp_path):
         # Reproduce the 2026-05-04 incident exactly: n_unique=7
         # 2026-05-05 incident fix: severity downgraded from hard→soft.
         # Calibrator collapse blocks buy quality (top candidates tie) but
@@ -745,55 +856,57 @@ class TestCheckCalibratorHealth:
         # before the downgrade. Now: ok=True (soft warn), message stays
         # loud, the operator still sees the WARN, but live ops continue.
         check, cfg, sd = self._setup(tmp_path, n_unique=7, pool_ic=0.02)
-        r = check(cfg, sd)
-        assert r.ok, "must NOT block — sell-only crons need to keep running"
-        assert r.severity == "soft"
-        assert "WARN" in r.message
+        r = check(cfg, sd, run_mode="full")
+        assert not r.ok
+        assert r.severity == "hard"
         assert "n_unique_prob_y=7" in r.message
         assert "min_unique_prob_y=10" in r.message
-        assert "Sells unaffected" in r.message
+
+    def test_n_unique_below_floor_allows_sell_only(self, tmp_path):
+        check, cfg, sd = self._setup(tmp_path, n_unique=7, pool_ic=0.02)
+        r = check(cfg, sd, run_mode="sell-only")
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
 
     def test_min_unique_configurable(self, tmp_path):
         # n_unique=15 passes the default 10 but should warn at 20.
-        # Soft severity (per 2026-05-05 fix), still ok=True.
         check, cfg, sd = self._setup(tmp_path, n_unique=15,
                                       min_unique_cfg=20)
-        r = check(cfg, sd)
-        assert r.ok and r.severity == "soft"
-        assert "WARN" in r.message
+        r = check(cfg, sd, run_mode="full")
+        assert not r.ok and r.severity == "hard"
+        assert "n_unique_prob_y=15" in r.message
 
-    def test_soft_warn_on_negative_pool_ic(self, tmp_path):
+    def test_hard_fails_on_negative_pool_ic_for_full(self, tmp_path):
         check, cfg, sd = self._setup(tmp_path, n_unique=50, pool_ic=-0.001)
-        r = check(cfg, sd)
-        # ok=True (soft warn) but flagged
-        assert r.ok and r.severity == "soft"
+        r = check(cfg, sd, run_mode="full")
+        assert not r.ok and r.severity == "hard"
         assert "pool_ic" in r.message and "anti-correlated" in r.message
 
-    def test_legacy_artifact_without_n_unique_soft_skip(self, tmp_path):
-        # Pre-2026-05 artifacts didn't stamp n_unique_prob_y. Don't
-        # block legacy retrains — soft warn instead.
+    def test_legacy_artifact_without_n_unique_fails_full(self, tmp_path):
         from kernel.preflight import _check_calibrator_health
         cfg = {"panel_ltr": {}, "ranking": {"panel_scoring":
-                {"global_calibration": {"artifact_path":
+                {"global_calibration": {"enabled": True, "artifact_path":
                     "artifacts/panel-rank-calibration.json"}}}}
         cal_dir = tmp_path / "artifacts"
         cal_dir.mkdir(exist_ok=True)
         (cal_dir / "panel-rank-calibration.json").write_text(json.dumps({
             "metadata": {"pool_ic": 0.02}  # no n_unique_prob_y
         }))
-        r = _check_calibrator_health(cfg, tmp_path)
-        assert r.ok and r.severity == "soft"
-        assert "legacy artifact" in r.message
+        r = _check_calibrator_health(cfg, tmp_path, run_mode="full")
+        assert not r.ok and r.severity == "hard"
+        assert "n_unique_prob_y not stamped" in r.message
 
-    def test_missing_artifact_soft_skip(self, tmp_path):
+    def test_missing_artifact_fails_full_but_not_sell_only(self, tmp_path):
         from kernel.preflight import _check_calibrator_health
         cfg = {"panel_ltr": {}, "ranking": {"panel_scoring":
-                {"global_calibration": {"artifact_path":
+                {"global_calibration": {"enabled": True, "artifact_path":
                     "artifacts/panel-rank-calibration.json"}}}}
         # No artifact file exists
-        r = _check_calibrator_health(cfg, tmp_path)
-        assert r.ok and r.severity == "soft"
-        assert "absent" in r.message
+        full = _check_calibrator_health(cfg, tmp_path, run_mode="full")
+        sell = _check_calibrator_health(cfg, tmp_path, run_mode="sell-only")
+        assert not full.ok and full.severity == "hard"
+        assert sell.ok and sell.severity == "soft"
+        assert "absent" in full.message
 
     def test_check_in_all_checks(self):
         from kernel.preflight import ALL_CHECKS, _check_calibrator_health

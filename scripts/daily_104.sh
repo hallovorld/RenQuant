@@ -247,7 +247,8 @@ if RENQUANT_SUPPRESS_PREFLIGHT_NTFY=1 \
 else
     FULL_RC=$?
     cat "$FULL_RUN_LOG"
-    if grep -Eq "P-WF-GATE|P-CONFIG-FP|P-SECTOR-MAP" "$FULL_RUN_LOG"; then
+    BUY_SIDE_PREFLIGHT_PATTERN="P-WF-GATE|P-REGIME-IC|P-CONFIG-FP|P-SECTOR-MAP|P-PANEL-CONTRACT|P-CALIBRATOR-HEALTH|P-CALIBRATOR-FLAT-REGION|P-FEATURE-COVER|P-WATCHLIST|P-MODEL-ARTIFACT"
+    if grep -Eq "$BUY_SIDE_PREFLIGHT_PATTERN" "$FULL_RUN_LOG"; then
         BUY_BLOCKED_BY_PREFLIGHT=1
         echo "Full live trader blocked by buy-side preflight gate — rerunning sell-only so exits/risk controls still execute."
         SELL_ONLY_LOG=$(mktemp "/tmp/renquant_104_daily_sell_only.XXXXXX")

@@ -44,6 +44,7 @@ class TestCalibratorNoDefaultPath:
         ctx = _ctx_for_calibrator({"enabled": True})
         task.run(ctx)
         assert ctx._global_calibrator is None
+        assert ctx._global_calibrator_missing_reason == "calibrator_missing_path"
 
     def test_enabled_with_empty_artifact_path_disables(self):
         from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
@@ -51,6 +52,31 @@ class TestCalibratorNoDefaultPath:
         ctx = _ctx_for_calibrator({"enabled": True, "artifact_path": ""})
         task.run(ctx)
         assert ctx._global_calibrator is None
+        assert ctx._global_calibrator_missing_reason == "calibrator_missing_path"
+
+    def test_apply_missing_calibrator_fails_closed(self):
+        """Enabled calibrator with no loaded artifact must not leave raw scores tradable."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyGlobalCalibrationTask
+        from kernel.selection import CandidateResult
+
+        ctx = _ctx_for_calibrator({"enabled": True, "artifact_path": "missing.json"})
+        ctx.candidates = [
+            CandidateResult(ticker="AAA", raw_score=0.2, rank_score=0.2,
+                            rs_score=0.0, detail="", panel_score=0.2),
+        ]
+        ctx.holdings = {}
+        ctx.buy_blocked = False
+        ctx.skip_buys = False
+        ctx._global_calibrator_missing_reason = "calibrator_missing_path"
+
+        result = ApplyGlobalCalibrationTask().run(ctx)
+
+        assert result is False
+        assert ctx.candidates == []
+        assert ctx.buy_blocked is True
+        assert ctx.skip_buys is True
+        assert ctx._calibrator_contract_failed is True
+        assert ctx._blocked_by_ticker["AAA"] == "calibrator_missing_path"
 
     def test_disabled_short_circuits(self):
         from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask

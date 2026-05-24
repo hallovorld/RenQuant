@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS candidate_scores (
     model_type         TEXT,        -- per-ticker model: 'Manual' | 'XGBoost' | 'QLearning' | 'Classification'
     sector             TEXT,        -- from sector_map, easier than join
     panel_ltr_artifact TEXT,        -- 'panel-ltr.json' filename or full path
+    qp_delta_w         REAL,        -- QP optimized delta weight for this ticker
+    qp_target_w        REAL,        -- QP optimized target weight for this ticker
+    qp_status          TEXT,        -- optimizer status attached to this row
     PRIMARY KEY (run_id, ticker, role),
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
 );
@@ -268,6 +271,9 @@ CREATE TABLE IF NOT EXISTS ticker_daily_state (
     selected          INTEGER,        -- 1 if BUY order placed this bar
     blocked_by        TEXT,           -- reason if blocked: 'sector_cap'|'corr'|'wash_sale'|'tier'|'universe_floor'|'broker_pending'|'no_model_signal'
     sector            TEXT,
+    qp_delta_w        REAL,           -- QP optimized delta weight for this ticker
+    qp_target_w       REAL,           -- QP optimized target weight for this ticker
+    qp_status         TEXT,           -- optimizer status attached to this row
     PRIMARY KEY (run_id, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_tds_date ON ticker_daily_state(date);
@@ -406,6 +412,14 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("model_type",         "TEXT"),
         ("sector",             "TEXT"),
         ("panel_ltr_artifact", "TEXT"),
+        ("qp_delta_w",         "REAL"),
+        ("qp_target_w",        "REAL"),
+        ("qp_status",          "TEXT"),
+    ],
+    "ticker_daily_state": [
+        ("qp_delta_w",         "REAL"),
+        ("qp_target_w",        "REAL"),
+        ("qp_status",          "TEXT"),
     ],
     # 2026-05-22: persist the per-trade decision tree, not just scalar P&L.
     # Buy orders already carry order-attribution fields at emission time;
@@ -497,6 +511,9 @@ def _rebuild_ticker_daily_state_if_needed(conn: sqlite3.Connection) -> None:
             selected          INTEGER,
             blocked_by        TEXT,
             sector            TEXT,
+            qp_delta_w        REAL,
+            qp_target_w       REAL,
+            qp_status         TEXT,
             PRIMARY KEY (run_id, ticker)
         )"""
     )
@@ -507,13 +524,15 @@ def _rebuild_ticker_daily_state_if_needed(conn: sqlite3.Connection) -> None:
                has_position, position_qty, position_pct,
                model_type, model_action, sell_streak,
                panel_score, rank_score, expected_return, kelly_target_pct,
-               mu, sigma, in_candidates, selected, blocked_by, sector)
+               mu, sigma, in_candidates, selected, blocked_by, sector,
+               qp_delta_w, qp_target_w, qp_status)
             SELECT {run_expr}, date, ticker, regime, confidence,
                    in_watchlist, in_universe, pending_at_broker,
                    has_position, position_qty, position_pct,
                    model_type, model_action, sell_streak,
                    panel_score, rank_score, expected_return, kelly_target_pct,
-                   mu, sigma, in_candidates, selected, blocked_by, sector
+                   mu, sigma, in_candidates, selected, blocked_by, sector,
+                   qp_delta_w, qp_target_w, qp_status
               FROM {tmp}"""
     )
     conn.execute(f"DROP TABLE {tmp}")
@@ -824,6 +843,9 @@ def record_candidate_scores(
     sector_map:    dict[str, str] | None = None,
     model_types:   dict[str, str] | None = None,
     panel_artifact: str | None = None,
+    qp_delta_by_ticker: dict[str, float] | None = None,
+    qp_target_by_ticker: dict[str, float] | None = None,
+    qp_status: str | None = None,
 ) -> None:
     """Insert one row per candidate + one per holding.
 
@@ -854,6 +876,8 @@ def record_candidate_scores(
         return default if f is None else f
     sector_map = sector_map or {}
     model_types = model_types or {}
+    qp_delta_by_ticker = qp_delta_by_ticker or {}
+    qp_target_by_ticker = qp_target_by_ticker or {}
     for c in candidates:
         selected = c.ticker in selected_tickers
         rows.append((
@@ -872,6 +896,9 @@ def record_candidate_scores(
             model_types.get(c.ticker),
             sector_map.get(c.ticker),
             panel_artifact,
+            _none_or_float(qp_delta_by_ticker.get(c.ticker)),
+            _none_or_float(qp_target_by_ticker.get(c.ticker)),
+            qp_status,
         ))
     for ticker, hs in holdings.items():
         rows.append((
@@ -889,6 +916,9 @@ def record_candidate_scores(
             model_types.get(ticker),
             sector_map.get(ticker),
             panel_artifact,
+            _none_or_float(qp_delta_by_ticker.get(ticker)),
+            _none_or_float(qp_target_by_ticker.get(ticker)),
+            qp_status,
         ))
     if rows:
         conn.executemany(
@@ -896,8 +926,8 @@ def record_candidate_scores(
                   (run_id, ticker, role, raw_score, rank_score, panel_score, rs_score,
                    mu, sigma, selected, blocked_by,
                    expected_return, kelly_target_pct, model_type, sector,
-                   panel_ltr_artifact)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   panel_ltr_artifact, qp_delta_w, qp_target_w, qp_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 
@@ -1284,7 +1314,8 @@ def record_ticker_daily_state(
     pending_at_broker, has_position, position_qty, position_pct,
     model_type, model_action, sell_streak, panel_score, rank_score,
     expected_return, kelly_target_pct, mu, sigma, in_candidates,
-    selected, blocked_by, sector. `ticker` required.
+    selected, blocked_by, sector, qp_delta_w, qp_target_w, qp_status.
+    `ticker` required.
     """
     if conn is None:
         return 0
@@ -1320,6 +1351,9 @@ def record_ticker_daily_state(
             _none_or_int(r.get("selected")),
             None if selected else r.get("blocked_by"),
             r.get("sector"),
+            _none_or_float(r.get("qp_delta_w")),
+            _none_or_float(r.get("qp_target_w")),
+            r.get("qp_status"),
         ))
     if not payload:
         return 0
@@ -1330,8 +1364,9 @@ def record_ticker_daily_state(
                has_position, position_qty, position_pct,
                model_type, model_action, sell_streak,
                panel_score, rank_score, expected_return, kelly_target_pct,
-               mu, sigma, in_candidates, selected, blocked_by, sector)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               mu, sigma, in_candidates, selected, blocked_by, sector,
+               qp_delta_w, qp_target_w, qp_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         payload,
     )
     return len(payload)
