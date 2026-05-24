@@ -35,10 +35,8 @@ Make RenQuant 104 scientifically trustworthy end to end:
 - The best current short-window style evidence says PatchTST and XGB differ:
   PatchTST bought more names and outperformed over 2026-05-06 to 2026-05-22,
   but that 13-trading-day, zero-sell window is not promotion evidence.
-- A 2026-05-23 strict WF rerun doc claims XGB event APY around `+15%` and
-  Sharpe around `+1.7`, but the exact raw artifact path still needs
-  reconciliation. Treat that claim as promising but not authoritative until the
-  equity/trade artifacts are verified.
+- Current-contract WF has now completed and failed acceptance. This replaces
+  the earlier "running" state below.
 
 ## Pushed Progress
 
@@ -57,7 +55,7 @@ Make RenQuant 104 scientifically trustworthy end to end:
 
 ## Active Validation
 
-Current-contract WF gate is running with three cuts in parallel:
+Current-contract WF gate completed:
 
 ```bash
 .venv/bin/python scripts/run_wf_gate.py \
@@ -71,33 +69,75 @@ Current-contract WF gate is running with three cuts in parallel:
 Log:
 `logs/wf_gate_104/current_contract_20260523-190033.log`.
 
-Generated WF config already checked:
+Generated WF config checked:
 `tax.cash_debit_mode=reporting_only`.
 
-This WF run is the next authoritative acceptance stream. Do not promote,
-declare fixed, or run live buy/full based only on old docs while this is
-unresolved.
+Verdict: `FAIL`.
+
+- Annual-net WF Sharpe mean: `+0.816`.
+- Annual-net WF APY mean: `+7.55%`.
+- SPY Sharpe mean: `+1.081`.
+- Strategy minus SPY Sharpe: `-0.265`.
+- SPY APY mean: `+16.94%`.
+- Strategy minus SPY APY: `-9.39pt`.
+- Positive Sharpe cuts: `3/3`.
+- Beat SPY Sharpe: `1/3`.
+- Beat SPY APY: `0/3`.
+- Benchmark-lag regimes: `HIGH_CALM`, `LOW_SPIKED`.
+- Trade ledger contract: passed.
+- Trade monotonicity gate: passed only because BULL_CALM was eligible and
+  passed; pooled Spearman was `-0.002`, so single-trade score monotonicity is
+  still weak.
+- Sanity battery: failed. Real IC `+0.0750`, shuffled IC `-0.0020`, placebo IC
+  `+0.0462`; placebo must be `< +0.0375`.
+
+Do not promote this candidate. Do not run production buy/full from this
+evidence. The immediate research question is why the time-shift placebo keeps
+too much signal, and why positive event-level returns still fail benchmark and
+annual-net acceptance.
+
+Current-contract cut-level metrics:
+
+| cut | event APY | event Sharpe | annual-net APY | annual-net Sharpe | SPY Sharpe | Δ Sharpe |
+|---|---:|---:|---:|---:|---:|---:|
+| 2024-01-02 to 2024-12-31 | `+15.71%` | `+1.497` | `+9.54%` | `+0.848` | `+1.778` | `-0.931` |
+| 2024-07-01 to 2025-06-30 | `+11.51%` | `+1.152` | `+4.67%` | `+0.462` | `+0.715` | `-0.253` |
+| 2025-04-01 to 2026-03-28 | `+13.36%` | `+2.140` | `+8.44%` | `+1.139` | `+0.749` | `+0.390` |
+
+Current-contract trade forensics:
+
+- Round trips: `192` total, `159` closed, `33` open.
+- Closed gross P/L: `+$33.1k`.
+- Closed tax-estimated net P/L: `+$6.15k`.
+- Closed win rate: `62.3%`.
+- Median hold: `54d`; average hold: `84.6d`.
+- Exit buckets:
+  - `stop_loss`: 36 exits, gross/net `-$17.6k`, win rate `0%`.
+  - `trailing_stop`: 59 exits, gross `+$37.1k`, net `+$17.2k`.
+  - `qp_sell`: 40 exits, gross `+$12.7k`, net `+$7.55k`.
+  - `panel_conviction`: 9 exits, gross `-$0.29k`.
+- Entry source:
+  - QP buys: 86 closed, gross `+$20.6k`, net `+$2.70k`, win `55.8%`.
+  - Top-ups: 73 closed, gross `+$12.5k`, net `+$3.45k`, win `69.9%`.
+- Entry rank-score versus realized `pnl_pct` Spearman: `-0.002`.
+- Score deciles are not cleanly monotonic; the 8th decile lost money and the
+  6th/9th deciles carried much of the gross P/L.
 
 ## Mainline Queue
 
-1. Poll the running current-contract WF to completion.
-2. Parse each cut:
-   - APY, Sharpe, MaxDD, turnover, buys/sells;
-   - SPY APY/Sharpe on the same dates;
-   - annual-net APY/Sharpe and tax estimate;
-   - trade monotonicity by regime and score decile;
-   - stop-loss, QP sell/close, trailing-stop P/L buckets.
-3. If WF fails, diagnose the first failing contract or conversion point:
-   model evidence, calibration, universe/sector metadata, QP, exits, turnover,
-   or exposure.
-4. If WF passes, verify raw artifacts and only then consider promotion or daily
-   full. Production buy/full must remain preflight-gated.
-5. Write a decision-tree contract doc with expected input/output ranges for
+1. Diagnose the sanity failure: time-shift placebo IC `+0.0462` is too high.
+   Check splitter/label horizon, feature timestamping, regime persistence, and
+   market beta/momentum leakage before trusting the reported real IC.
+2. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
+   annual-net and SPY-relative metrics fail. Split by regime, exposure, tax,
+   stop-loss bucket, and QP/top-up source.
+3. Write a decision-tree contract doc with expected input/output ranges for
    data freshness, regime, gates, candidates, scoring, calibration, QP,
    rotation, persistence, and ntfy.
-6. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
+4. Implement fixes only with per-regime hypotheses and paired A/B acceptance.
+5. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
    as OOS. Static PatchTST full-window sims are style diagnostics only.
-7. Continue after-tax/no-trade-region and stop-loss research per regime, using
+6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
 
 ## Known Failure Modes To Keep Front And Center
@@ -141,3 +181,5 @@ Stop and fix before reporting performance if any of these happen:
   `doc/research/2026-05-23-strict-wf-xgb-patchtst-rerun.md`.
 - Decision-tree and sim audit:
   `doc/research/2026-05-23-decision-tree-and-sim-audit.md`.
+- Decision-tree contract:
+  `doc/research/2026-05-23-decision-tree-contract.md`.
