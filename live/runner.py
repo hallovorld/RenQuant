@@ -353,14 +353,38 @@ def _run_once_multi_pipeline(
                     cooldown_seconds=6 * 60 * 60,
                 )
             raise SystemExit(2) from exc
-        except ImportError:
-            # preflight module not yet on PYTHONPATH (during a transitional
-            # commit). Log and proceed — the legacy guards still apply.
-            log.warning("preflight module not importable; proceeding without")
+        except ImportError as exc:
+            # Full/buy runs must never silently trade when the preflight
+            # contract itself is unavailable. Sell-only risk exits may proceed.
+            if sell_only:
+                log.warning(
+                    "preflight module not importable during sell-only; "
+                    "proceeding so risk exits can run: %s",
+                    exc,
+                )
+            else:
+                log.error(
+                    "preflight module not importable — aborting full/buy "
+                    "run fail-closed: %s",
+                    exc,
+                )
+                raise SystemExit(2) from exc
         except Exception as exc:
-            # An unexpected check exception should not block cron; degrade
-            # to soft warn and continue.
-            log.warning("preflight raised unexpectedly: %s — proceeding", exc)
+            # Full/buy runs must fail closed on broken preflight code. Sell-only
+            # risk exits are still allowed because they reduce exposure.
+            if sell_only:
+                log.warning(
+                    "preflight raised unexpectedly during sell-only; "
+                    "proceeding so risk exits can run: %s",
+                    exc,
+                )
+            else:
+                log.error(
+                    "preflight raised unexpectedly — aborting full/buy "
+                    "run fail-closed: %s",
+                    exc,
+                )
+                raise SystemExit(2) from exc
 
     adapter  = RunnerAdapter(
         config, models, broker, strategy_dir,
