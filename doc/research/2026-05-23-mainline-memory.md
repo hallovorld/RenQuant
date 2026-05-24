@@ -222,6 +222,46 @@ Make RenQuant 104 scientifically trustworthy end to end:
     `tests/test_joint_qp_task.py tests/test_qp_admission_gate.py
     tests/test_lean_backend.py tests/test_bug22_rs_score_keyerror.py
     tests/test_emit_orders_helpers.py` (`86 passed`).
+- `d45c38b fix(wf): fail closed on dropped experiment overrides`
+  - `scripts/wf_config_builder.py` now refuses to silently drop semantic
+    experiment overrides such as
+    `rotation.joint_actions.qp_admission_gate.max_sigma_by_regime` while
+    deriving production-semantic WF configs.
+  - `--preserve-experiment-overrides` exists for diagnostic A/B runs only;
+    these are non-promotable unless production parity also passes.
+  - Targeted tests passed:
+    `tests/test_wf_gate_cli_contract.py tests/test_wf_config_parity.py
+    tests/test_qp_contracts.py tests/test_audit_2026_05_04_fixes.py::TestQPTaxAwareDisabledByDefault`
+    (`44 passed`).
+- `e262783 fix(live): persist drawdown buy halt state`
+  - Sim carried drawdown `skip_buys` hysteresis across bars; live always
+    rebuilt `InferenceContext(skip_buys=False)`. With
+    `drawdown_resume_pct`, live could re-enable buys earlier than sim while
+    still in the recovery band.
+  - RunnerAdapter now reads `skip_buys` from `live_state.<broker>.json` and
+    writes it back on commit.
+  - Targeted tests passed:
+    `tests/test_runner_hwm_guard.py tests/test_runner_state_fixes.py
+    tests/test_no_trade_monitor.py tests/test_live_state_db_canonical.py
+    tests/test_pipeline.py::TestDrawdownCircuitTaskResets
+    tests/test_joint_qp_task.py` (`139 passed`).
+- Sim/live parity audit:
+  - Sim/live/LEAN share `InferencePipeline` / `SellOnlyPipeline` and the core
+    decision kernel, but adapters are not byte-identical. Context construction,
+    execution, and DB row construction remain separate code paths.
+  - New handoff doc:
+    `doc/research/2026-05-24-sim-live-parity-audit.md`.
+  - Key remaining risk: duplicated adapter decision-trace writers and
+    manually built `InferenceContext` fields can drift again.
+- Sigma-cap diagnostic after preserving the actual override:
+  - Baseline strict trace: 56 closed trades, gross `+11238.72`, tax
+    `+10370.53`, net `+868.19`, mean Sharpe `+0.133`, SPY mean `+1.081`.
+  - True `BULL_CALM max_sigma=0.38` diagnostic: 31 closed trades, gross
+    `+5181.30`, tax `+4477.16`, net `+704.14`, mean Sharpe `+0.255`, SPY mean
+    `+1.081`.
+  - It still fails benchmark-relative WF and sanity (`real_ic=+0.0385`,
+    `shuffled_ic=+0.0024`, `placebo_ic=+0.0460`). Simple sigma cap is not a
+    production fix.
 
 ## Active Validation
 

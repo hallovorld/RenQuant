@@ -1,0 +1,129 @@
+# Sim/Live Parity Audit — 2026-05-24
+
+## Answer
+
+Sim and live do **not** run byte-for-byte identical code.
+
+They are intended to share the same decision kernel:
+
+- Sim: `backtesting/renquant_104/sim/runner.py` builds `SimAdapter`, then runs
+  `InferencePipeline().run(ctx)`, then `SimAdapter.commit(ctx)`.
+- Live: `live/runner.py` builds `RunnerAdapter`, then runs
+  `InferencePipeline()` or `SellOnlyPipeline()`, then
+  `RunnerAdapter.commit(ctx)`.
+- LEAN: `backtesting/renquant_104/main.py` builds `LeanAdapter`, then runs the
+  same `InferencePipeline`, then `LeanAdapter.commit(ctx)`.
+
+The shared kernel includes regime, drawdown gates, sell tasks, candidate
+scoring, panel scoring, ranking, joint QP, selection, top-up/trim, benchmark
+sleeve, and monitor tasks. That is the part that should define the decision
+tree.
+
+The adapters are different by design:
+
+- Data: sim slices historical OHLCV to each bar; live reads current parquet
+  cache and optional intraday overlay; LEAN uses `History`.
+- State: sim keeps state in-process; live round-trips through
+  `live_state.<broker>.json` and DB snapshots; LEAN keeps state in the
+  algorithm object.
+- Execution: sim fills at simulated prices and models settlement; live sends
+  broker orders and handles pending-order/cash/fill failures; LEAN uses QC
+  execution primitives.
+- Persistence: all three write the same DB contract, but the row-building code
+  is still duplicated across adapters, which is a real bug surface.
+
+Therefore the honest status is: **core decision code is shared, adapter
+plumbing is not fully unified, and adapter parity needs active tests.**
+
+## Bug Fixed Here
+
+Found a concrete sim/live divergence while auditing:
+
+- `SimAdapter` carried `skip_buys` across bars with `self._skip_buys`.
+- `RunnerAdapter` always constructed `InferenceContext(skip_buys=False)`.
+- Production config uses drawdown hysteresis via `drawdown_resume_pct`; if live
+  was previously halted and current drawdown was between resume and halt,
+  live could re-enable buys earlier than sim.
+
+Fix:
+
+- `RunnerAdapter` now reads `skip_buys` from live state via
+  `persisted_skip_buys(state)`.
+- `RunnerAdapter.commit()` writes `skip_buys` back into live state.
+- Regression coverage:
+  `tests/test_runner_hwm_guard.py`, `tests/test_pipeline.py::TestDrawdownCircuitTaskResets`,
+  `tests/test_joint_qp_task.py`, `tests/test_runner_state_fixes.py`,
+  `tests/test_no_trade_monitor.py`, `tests/test_live_state_db_canonical.py`.
+- Result: `139 passed`.
+- Commit: `e262783 fix(live): persist drawdown buy halt state`.
+
+## Related WF Diagnostic
+
+The sigma-cap WF diagnostic was rerun after fixing the config-builder issue
+that silently dropped experiment overrides.
+
+Baseline strict WF trace:
+
+- 56 closed trades.
+- Gross `+11238.72`, estimated tax `+10370.53`, net `+868.19`.
+- Mean Sharpe `+0.133`, SPY mean Sharpe `+1.081`, delta `-0.948`.
+
+True `BULL_CALM max_sigma=0.38` diagnostic:
+
+- 31 closed trades.
+- Gross `+5181.30`, estimated tax `+4477.16`, net `+704.14`.
+- Mean Sharpe `+0.255`, SPY mean Sharpe `+1.081`, delta `-0.825`.
+- Still fails sanity: real IC `+0.0385`, shuffled `+0.0024`, placebo `+0.0460`.
+
+Conclusion: simple high-sigma admission cap reduces stop-loss count but also
+cuts participation and does not solve benchmark-relative alpha or placebo
+sanity. It is diagnostic evidence, not production design.
+
+## Prior Bug Fixed In Same Thread
+
+`scripts/wf_config_builder.py` previously derived a production-semantic WF
+config from prod and silently dropped side-config experiment overrides such as
+`rotation.joint_actions.qp_admission_gate.max_sigma_by_regime`.
+
+Fix:
+
+- Builder now fails closed when a semantic experiment override would be
+  dropped.
+- `--preserve-experiment-overrides` explicitly carries whitelisted diagnostic
+  overrides and marks the generated config as non-production-equivalent.
+- Commit: `d45c38b fix(wf): fail closed on dropped experiment overrides`.
+
+## Remaining Parity Risks
+
+1. Context construction is duplicated.
+   Live, sim, and LEAN each build `InferenceContext` by hand. Critical fields
+   can drift: `skip_buys`, `last_sell_pls`, `last_stop_exit_dates`,
+   `pending_broker_tickers`, `_db`, panel frames, calibrators, and state
+   carryover.
+
+2. Decision trace writing is duplicated.
+   Sim/live/LEAN separately build `candidate_scores`, `ticker_daily_state`,
+   QP delta/target/status maps, and blocked reasons. This should become a
+   shared helper so one adapter cannot silently miss a field.
+
+3. Execution semantics intentionally differ.
+   This is not a bug, but every performance report must label whether it is
+   simulated close fill, live market fill, LEAN backtest fill, annual-net tax,
+   or event-level tax.
+
+4. Reconciliation exists but should become a routine gate.
+   `scripts/reconcile_live_sim.py` can compare live fills to sim decisions, but
+   it should be promoted from optional report to scheduled/acceptance evidence
+   after any live run.
+
+## Next Engineering Moves
+
+1. Add an adapter context contract test that checks sim/live/LEAN all populate
+   required `InferenceContext` fields for buy/full mode.
+2. Extract shared decision-trace row building from the three adapters into a
+   kernel helper.
+3. Make live-vs-sim reconciliation run after daily/live cycles and write a
+   small divergence report.
+4. Continue model-side repair separately: current alpha is still
+   placebo-dominated in BULL_CALM and does not beat SPY after the decision
+   tree.
