@@ -17,6 +17,14 @@ from adapters.panel_runtime import (
     attach_panel_runtime_frames,
     prepare_panel_runtime_frames,
 )
+from kernel.decision_trace import (
+    build_ticker_daily_state_rows,
+    candidate_trace_pool,
+    model_type_from_artifact as _shared_model_type_from_artifact,
+    model_types_from_models,
+    qp_trace_maps,
+    selected_buy_tickers,
+)
 
 try:
     from AlgorithmImports import Resolution  # type: ignore[import]  # noqa: F401
@@ -50,26 +58,7 @@ def _symbol_for_ticker(algo: Any, ticker: str):
 
 def _model_type_from_artifact(model: Any) -> str | None:
     """Extract a readable model type for decision-trace rows."""
-    if model is None:
-        return None
-    if isinstance(model, dict):
-        meta = model.get("_metadata") or model.get("metadata") or {}
-        for src in (meta, model):
-            if not isinstance(src, dict):
-                continue
-            for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
-                val = src.get(key)
-                if isinstance(val, str) and val:
-                    return val
-        return None
-    meta = getattr(model, "metadata", None)
-    if isinstance(meta, dict):
-        for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
-            val = meta.get(key)
-            if isinstance(val, str) and val:
-                return val
-    val = getattr(model, "model_type", None)
-    return val if isinstance(val, str) and val else None
+    return _shared_model_type_from_artifact(model)
 
 
 class LeanAdapter:
@@ -663,38 +652,16 @@ class LeanAdapter:
 
         algo = self._algo
         config = algo._config
-        selected_tickers = {
-            str(t.get("ticker"))
-            for t in trade_events
-            if str(t.get("action") or "").lower() == "buy" and t.get("ticker")
-        }
+        selected_tickers = selected_buy_tickers(trade_events)
         blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
         sector_map = config.get("sector_map", {}) or {}
-        model_types = {
-            tk: _model_type_from_artifact(m)
-            for tk, m in (algo._models or {}).items()
-        }
+        model_types = model_types_from_models(algo._models)
         panel_artifact = (
             config.get("ranking", {})
                   .get("panel_scoring", {})
                   .get("artifact_path")
         )
-        qp_delta_by_ticker: dict[str, float] = {}
-        qp_target_by_ticker: dict[str, float] = {}
-        qp_status = None
-        qp_sol = getattr(ctx, "_qp_solution", None)
-        qp_tickers = list(getattr(ctx, "_qp_tickers", None) or [])
-        if qp_sol is not None and qp_tickers:
-            qp_status = getattr(qp_sol, "status", None)
-            for idx, tk in enumerate(qp_tickers):
-                try:
-                    qp_delta_by_ticker[tk] = float(qp_sol.delta_w[idx])
-                except Exception:
-                    pass
-                try:
-                    qp_target_by_ticker[tk] = float(qp_sol.target_w[idx])
-                except Exception:
-                    pass
+        qp_delta_by_ticker, qp_target_by_ticker, qp_status = qp_trace_maps(ctx)
 
         run_id = record_pipeline_run(
             self._db,
@@ -718,10 +685,7 @@ class LeanAdapter:
             run_id=getattr(ctx, "run_id", None),
         )
 
-        cand_pool = (
-            getattr(ctx, "_full_candidate_snapshot", None)
-            or ctx.candidates
-        )
+        cand_pool = candidate_trace_pool(ctx)
         record_candidate_scores(
             self._db,
             run_id,
@@ -738,70 +702,23 @@ class LeanAdapter:
         )
         record_trades(self._db, run_id, trade_events)
 
-        cand_by_t = {c.ticker: c for c in cand_pool}
-        score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
-
-        def _score_value(src, snap: dict[str, Any], name: str):
-            value = getattr(src, name, None) if src is not None else None
-            return value if value is not None else snap.get(name)
-
-        rows: list[dict[str, Any]] = []
-        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
-            decision_trace_tickers,
+        rows = build_ticker_daily_state_rows(
+            config=config,
+            ctx=ctx,
+            selected_tickers=selected_tickers,
+            blocked_map=blocked_map,
+            model_types=model_types,
+            universe_rejections=self._universe_rejections,
+            model_keys=set(algo._models or {}),
+            portfolio_value=(
+                float(ctx.portfolio_value)
+                if ctx.portfolio_value is not None else None
+            ),
+            sector_map=sector_map,
+            qp_delta_by_ticker=qp_delta_by_ticker,
+            qp_target_by_ticker=qp_target_by_ticker,
+            qp_status=qp_status,
         )
-        for tk in decision_trace_tickers(config):
-            hs = ctx.holdings.get(tk)
-            cand = cand_by_t.get(tk)
-            src = cand if cand is not None else hs
-            snap = score_snapshots.get(tk, {}) or {}
-            pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
-            price = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
-            pos_pct = None
-            if hs and ctx.portfolio_value and price:
-                pos_pct = (pos_qty * price) / float(ctx.portfolio_value)
-            blocked_str = blocked_map.get(tk)
-            if blocked_str is None and tk not in (algo._models or {}):
-                reason = self._universe_rejections.get(tk, "not_loaded")
-                blocked_str = f"universe:{reason}"
-            if blocked_str is None and cand is None and hs is not None:
-                blocked_str = "held_no_new_buy"
-            if blocked_str is None and cand is None:
-                blocked_str = "no_model_signal"
-            if blocked_str is None and tk not in selected_tickers:
-                blocked_str = "not_selected"
-            if cand is not None:
-                model_action = "buy"
-            elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
-                model_action = "sell"
-            else:
-                model_action = snap.get("model_action", "hold")
-            rows.append({
-                "ticker": tk,
-                "regime": ctx.regime,
-                "confidence": ctx.confidence,
-                "in_watchlist": 1,
-                "in_universe": 1 if tk in (algo._models or {}) else 0,
-                "pending_at_broker": 0,
-                "has_position": 1 if hs is not None else 0,
-                "position_qty": pos_qty,
-                "position_pct": pos_pct,
-                "model_type": model_types.get(tk),
-                "model_action": model_action,
-                "sell_streak": int(getattr(hs, "sell_streak", 0)) if hs else None,
-                "panel_score": _score_value(src, snap, "panel_score"),
-                "rank_score": _score_value(src, snap, "rank_score"),
-                "expected_return": _score_value(src, snap, "expected_return"),
-                "kelly_target_pct": _score_value(src, snap, "kelly_target_pct"),
-                "mu": _score_value(src, snap, "mu"),
-                "sigma": _score_value(src, snap, "sigma"),
-                "in_candidates": 1 if cand is not None else 0,
-                "selected": 1 if tk in selected_tickers else 0,
-                "blocked_by": blocked_str,
-                "sector": sector_map.get(tk),
-                "qp_delta_w": qp_delta_by_ticker.get(tk),
-                "qp_target_w": qp_target_by_ticker.get(tk),
-                "qp_status": qp_status,
-            })
         record_ticker_daily_state(
             self._db,
             run_date=ctx.today,

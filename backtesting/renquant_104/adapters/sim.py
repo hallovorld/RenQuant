@@ -49,6 +49,14 @@ from kernel.execution import (
     compute_sell_fees,
     slip_fill_price,
 )
+from kernel.decision_trace import (
+    build_ticker_daily_state_rows,
+    candidate_trace_pool,
+    model_type_from_artifact,
+    model_types_from_models,
+    qp_trace_maps,
+    selected_buy_tickers,
+)
 from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
 
 log = logging.getLogger("adapters.sim")
@@ -117,26 +125,7 @@ def _history_seq_len_from_artifact(path: Path) -> int | None:
 
 def _model_type_from_artifact(model: Any) -> str | None:
     """Extract readable model type from dict/object artifacts for audit rows."""
-    if model is None:
-        return None
-    if isinstance(model, dict):
-        meta = model.get("_metadata") or model.get("metadata") or {}
-        for src in (meta, model):
-            if not isinstance(src, dict):
-                continue
-            for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
-                val = src.get(key)
-                if isinstance(val, str) and val:
-                    return val
-        return None
-    meta = getattr(model, "metadata", None)
-    if isinstance(meta, dict):
-        for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
-            val = meta.get(key)
-            if isinstance(val, str) and val:
-                return val
-    val = getattr(model, "model_type", None)
-    return val if isinstance(val, str) and val else None
+    return model_type_from_artifact(model)
 
 
 def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -1336,11 +1325,7 @@ class SimAdapter:
                 run_type="sim",
                 ctx=ctx,
             )
-            selected_tickers = {
-                t.get("ticker")
-                for t in trade_events_this_bar
-                if t.get("action") == "buy" and t.get("ticker")
-            }
+            selected_tickers = selected_buy_tickers(trade_events_this_bar)
             run_id = record_pipeline_run(
                 self._db,
                 run_type        = "sim",
@@ -1363,30 +1348,13 @@ class SimAdapter:
             )
             blocked_map = getattr(ctx, "_blocked_by_ticker", None)
             sector_map = self._config.get("sector_map", {}) or {}
-            model_types = {}
-            for tk, m in (self._models or {}).items():
-                model_types[tk] = _model_type_from_artifact(m)
+            model_types = model_types_from_models(self._models)
             panel_artifact = (
                 self._config.get("ranking", {})
                             .get("panel_scoring", {})
                             .get("artifact_path")
             )
-            qp_delta_by_ticker: dict[str, float] = {}
-            qp_target_by_ticker: dict[str, float] = {}
-            qp_status = None
-            qp_sol = getattr(ctx, "_qp_solution", None)
-            qp_tickers = list(getattr(ctx, "_qp_tickers", None) or [])
-            if qp_sol is not None and qp_tickers:
-                qp_status = getattr(qp_sol, "status", None)
-                for idx, tk in enumerate(qp_tickers):
-                    try:
-                        qp_delta_by_ticker[tk] = float(qp_sol.delta_w[idx])
-                    except Exception:
-                        pass
-                    try:
-                        qp_target_by_ticker[tk] = float(qp_sol.target_w[idx])
-                    except Exception:
-                        pass
+            qp_delta_by_ticker, qp_target_by_ticker, qp_status = qp_trace_maps(ctx)
             # 2026-05-04 user mandate ("rank_score need to be collected
             # properly for future fine tune"): persist the FULL pre-
             # veto candidate list so the candidate_scores table captures
@@ -1395,8 +1363,7 @@ class SimAdapter:
             # blocked_map (veto:rank_score_below_floor / kelly_zero:*
             # / ngb_skipped:*), so SQL queries on blocked_by reveal
             # exactly where each ticker was filtered out.
-            cand_pool = getattr(ctx, "_full_candidate_snapshot",
-                                  ctx.candidates) or ctx.candidates
+            cand_pool = candidate_trace_pool(ctx)
             record_candidate_scores(
                 self._db, run_id, cand_pool, ctx.holdings,
                 selected_tickers=selected_tickers,
@@ -1409,76 +1376,20 @@ class SimAdapter:
                 qp_status=qp_status,
             )
             record_trades(self._db, run_id, trade_events_this_bar)
-            from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
-                decision_trace_tickers,
+            tds_rows = build_ticker_daily_state_rows(
+                config=self._config,
+                ctx=ctx,
+                selected_tickers=selected_tickers,
+                blocked_map=blocked_map,
+                model_types=model_types,
+                universe_rejections=self._universe_rejections,
+                model_keys=set(self._models or {}),
+                portfolio_value=pv,
+                sector_map=sector_map,
+                qp_delta_by_ticker=qp_delta_by_ticker,
+                qp_target_by_ticker=qp_target_by_ticker,
+                qp_status=qp_status,
             )
-            wl = decision_trace_tickers(self._config)
-            cand_by_t = {c.ticker: c for c in cand_pool}
-            score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
-
-            def _score_value(src, snap: dict, name: str):
-                value = getattr(src, name, None) if src is not None else None
-                return value if value is not None else snap.get(name)
-
-            tds_rows: list[dict] = []
-            for tk in wl:
-                hs = ctx.holdings.get(tk)
-                cand = cand_by_t.get(tk)
-                src = cand if cand is not None else hs
-                snap = score_snapshots.get(tk, {}) or {}
-                has_pos = 1 if hs is not None else 0
-                pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
-                px = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
-                pos_pct = None
-                if hs and pv > 0 and px:
-                    pos_pct = (pos_qty * px) / pv
-                blocked_str = (blocked_map or {}).get(tk)
-                if blocked_str is None and tk not in (self._models or {}):
-                    reason = self._universe_rejections.get(tk, "not_loaded")
-                    blocked_str = f"universe:{reason}"
-                if blocked_str is None and cand is None and hs is not None:
-                    blocked_str = "held_no_new_buy"
-                if blocked_str is None and cand is None:
-                    blocked_str = "no_model_signal"
-                if blocked_str is None and tk not in selected_tickers:
-                    blocked_str = "not_selected"
-                if cand is not None:
-                    model_action = "buy"
-                elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
-                    model_action = "sell"
-                else:
-                    model_action = "hold"
-                tds_rows.append({
-                    "ticker": tk,
-                    "regime": ctx.regime,
-                    "confidence": ctx.confidence,
-                    "in_watchlist": 1,
-                    "in_universe": 1 if tk in (self._models or {}) else 0,
-                    "pending_at_broker": 0,
-                    "has_position": has_pos,
-                    "position_qty": pos_qty,
-                    "position_pct": pos_pct,
-                    "model_type": model_types.get(tk),
-                    "model_action": (
-                        model_action
-                        if model_action != "hold"
-                        else snap.get("model_action", model_action)
-                    ),
-                    "sell_streak": int(getattr(hs, "sell_streak", 0)) if hs else None,
-                    "panel_score": _score_value(src, snap, "panel_score"),
-                    "rank_score": _score_value(src, snap, "rank_score"),
-                    "expected_return": _score_value(src, snap, "expected_return"),
-                    "kelly_target_pct": _score_value(src, snap, "kelly_target_pct"),
-                    "mu": _score_value(src, snap, "mu"),
-                    "sigma": _score_value(src, snap, "sigma"),
-                    "in_candidates": 1 if cand is not None else 0,
-                    "selected": 1 if tk in selected_tickers else 0,
-                    "blocked_by": blocked_str,
-                    "sector": sector_map.get(tk),
-                    "qp_delta_w": qp_delta_by_ticker.get(tk),
-                    "qp_target_w": qp_target_by_ticker.get(tk),
-                    "qp_status": qp_status,
-                })
             record_ticker_daily_state(
                 self._db,
                 run_date=today_ts.date(),

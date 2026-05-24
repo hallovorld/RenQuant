@@ -76,7 +76,8 @@ panel score is missing, the candidate is tagged in `blocked_by` and cannot
 fall back to the weaker per-ticker tournament score. Regime-router routes are
 strict: a configured scorer must exist and its required feature columns must be
 present. Sim, live runner, and LEAN prepare panel runtime frames through
-`adapters.panel_runtime.prepare_panel_runtime_frames`.
+`adapters.panel_runtime.prepare_panel_runtime_frames` and build decision-trace
+rows through `kernel.decision_trace`.
 
 ### FullTrainingPipeline
 

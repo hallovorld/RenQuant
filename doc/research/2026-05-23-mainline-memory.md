@@ -1724,6 +1724,12 @@ Operational conclusion:
   calls were consolidated on 2026-05-24 so tuple arity, benchmark injection,
   and sector-map filtering cannot drift independently across validation and
   live trading.
+- Sim, live runner, and LEAN must also share decision-trace row construction
+  through `kernel.decision_trace`. The 2026-05-24 refactor centralized model
+  type extraction, full candidate snapshots, QP delta/target/status maps, and
+  `ticker_daily_state` blocked-by precedence (`universe:*`, `broker_pending`,
+  `held_no_new_buy`, `no_model_signal`, `not_selected`) so execution surfaces
+  explain decisions with the same schema and semantics.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

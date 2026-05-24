@@ -30,11 +30,13 @@ RUNNER_PATH = REPO_ROOT / "backtesting/renquant_104/adapters/runner.py"
 SIM_ADAPTER_PATH = REPO_ROOT / "backtesting/renquant_104/adapters/sim.py"
 LIVE_RUNNER_PATH = REPO_ROOT / "live/runner.py"
 ROTATION_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/pipeline/task_rotation.py"
+DECISION_TRACE_PATH = REPO_ROOT / "backtesting/renquant_104/kernel/decision_trace.py"
 
 RUNNER_SOURCE = RUNNER_PATH.read_text()
 SIM_ADAPTER_SOURCE = SIM_ADAPTER_PATH.read_text()
 LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
+DECISION_TRACE_SOURCE = DECISION_TRACE_PATH.read_text()
 
 from adapters.runner import cap_buy_order_to_cash, same_bar_sell_credit  # noqa: E402
 from adapters.sim import _model_type_from_artifact as sim_model_type_from_artifact  # noqa: E402
@@ -277,10 +279,10 @@ class TestTickerDailyStateWiring:
         # not just ctx.candidates — that is the entire point of round-5.
         # decision_trace_tickers(config) includes the watchlist and any
         # benchmark sleeve ticker that is part of the decision surface.
-        assert "decision_trace_tickers" in RUNNER_SOURCE
-        assert "wl = decision_trace_tickers(self._config)" in RUNNER_SOURCE
-        # Loop var `tk` over `wl` for the ticker_daily_state build
-        assert "for tk in wl:" in RUNNER_SOURCE
+        assert "build_ticker_daily_state_rows" in RUNNER_SOURCE
+        assert "build_ticker_daily_state_rows" in SIM_ADAPTER_SOURCE
+        assert "decision_trace_tickers" in DECISION_TRACE_SOURCE
+        assert "for tk in decision_trace_tickers(config):" in DECISION_TRACE_SOURCE
 
     def test_blocked_by_preserves_exact_universe_rejection_reason(self):
         # When ticker has no model loaded, keep LoadUniverseJob's exact
@@ -289,29 +291,32 @@ class TestTickerDailyStateWiring:
         assert "_universe_rejections" in LIVE_RUNNER_SOURCE
         for source in (RUNNER_SOURCE, SIM_ADAPTER_SOURCE):
             assert "_universe_rejections" in source
-            assert "universe:{reason}" in source
+        assert "universe:{reason}" in DECISION_TRACE_SOURCE
 
     def test_pending_at_broker_is_recorded(self):
         # broker_pending must surface as both pending_at_broker=1 AND
         # blocked_by="broker_pending" when nothing else has blocked.
-        assert "pending_at_broker" in RUNNER_SOURCE
-        assert '"broker_pending"' in RUNNER_SOURCE
+        assert "pending_broker_tickers" in RUNNER_SOURCE
+        assert "pending_at_broker" in DECISION_TRACE_SOURCE
+        assert '"broker_pending"' in DECISION_TRACE_SOURCE
 
     def test_non_selected_tickers_have_explicit_reason(self):
         # Null blocked_by on non-selected rows makes the daily decision tree
         # ambiguous. Live and sim adapters must stamp a terminal reason for
         # no-position/no-candidate and held/no-new-buy cases.
         for source in (RUNNER_SOURCE, SIM_ADAPTER_SOURCE):
-            assert '"held_no_new_buy"' in source
-            assert '"no_model_signal"' in source
-            assert '"not_selected"' in source
+            assert "build_ticker_daily_state_rows" in source
+        assert '"held_no_new_buy"' in DECISION_TRACE_SOURCE
+        assert '"no_model_signal"' in DECISION_TRACE_SOURCE
+        assert '"not_selected"' in DECISION_TRACE_SOURCE
 
     def test_in_universe_uses_models_keys(self):
         # in_universe = 1 iff ticker passed universe floor (i.e. has a
         # loaded per-ticker model). Source must reference self._models.
-        assert "in_universe" in RUNNER_SOURCE
-        # The exact membership check used by the writer
-        assert "tk in (self._models or {})" in RUNNER_SOURCE
+        assert "model_keys=set(self._models or {})" in RUNNER_SOURCE
+        assert "model_keys=set(self._models or {})" in SIM_ADAPTER_SOURCE
+        assert "in_universe" in DECISION_TRACE_SOURCE
+        assert "tk in model_keys" in DECISION_TRACE_SOURCE
 
 
 # ── STATE-EXT-SELL: external/manual disposition stamps wash-sale clock ────
@@ -428,5 +433,6 @@ class TestSelectedMeansActuallyPlaced:
     """Decision telemetry selected=1 means accepted/applied order, not intent."""
 
     def test_live_selected_uses_broker_confirmed_orders(self):
-        assert 'selected_tickers = {o["ticker"] for o in orders_for_db' in RUNNER_SOURCE
+        assert "selected_tickers = selected_buy_tickers(orders_for_db)" in RUNNER_SOURCE
+        assert "def selected_buy_tickers" in DECISION_TRACE_SOURCE
         assert "broker_skip:" in RUNNER_SOURCE
