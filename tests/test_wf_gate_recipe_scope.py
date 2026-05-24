@@ -142,6 +142,24 @@ def test_manifest_recipe_usage_accepts_patchtst_pt_sidecars(tmp_path: Path):
     assert usage["candidate_n_features"] == 2
 
 
+def test_wf_gate_writes_pt_metadata_to_sidecar(tmp_path: Path):
+    mod = _load_module()
+    artifact = tmp_path / "candidate.pt"
+    artifact.write_bytes(b"checkpoint bytes")
+    sidecar = artifact.with_name(artifact.name + ".metadata.json")
+    sidecar.write_text(json.dumps({"kind": "hf_patchtst"}))
+
+    written = mod._write_artifact_payload(
+        artifact,
+        {"kind": "hf_patchtst", "metadata": {"wf_gate_metadata": {"passed": False}}},
+    )
+
+    assert written == sidecar
+    assert artifact.read_bytes() == b"checkpoint bytes"
+    payload = json.loads(sidecar.read_text())
+    assert payload["metadata"]["wf_gate_metadata"]["passed"] is False
+
+
 def test_static_sanity_contract_rejects_artifact_without_cutoff() -> None:
     mod = _load_module()
     artifact = {

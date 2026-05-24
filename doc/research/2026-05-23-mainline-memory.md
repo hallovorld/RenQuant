@@ -1314,6 +1314,8 @@ Next implication:
   `score_with_history()` with strictly prior panel history for history-requiring
   scorers. This keeps PatchTST on the same fail-closed WF gate path as XGB
   instead of inventing a separate acceptance shortcut.
+- Critical protection: WF gate metadata for non-JSON sequence checkpoints is
+  now written to the JSON sidecar, never over the `.pt` artifact itself.
 - PatchTST WF smoke exposed and fixed a native calibrator crash: the HF
   calibrator had raised torch intra-op threads up to 14, conflicting with the
   repo's Apple-Silicon OMP=1 stability rule. It now defaults to

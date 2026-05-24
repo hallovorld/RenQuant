@@ -208,6 +208,16 @@ def _load_artifact_payload(path: Path) -> dict:
     return payload
 
 
+def _write_artifact_payload(path: Path, payload: dict) -> Path:
+    """Persist gate metadata without corrupting binary sequence checkpoints."""
+    out_path = path
+    if path.suffix != ".json":
+        sidecar = _artifact_sidecar_path(path)
+        out_path = sidecar or path.with_name(path.name + ".metadata.json")
+    out_path.write_text(json.dumps(payload))
+    return out_path
+
+
 def _recipe_projection(artifact: dict) -> dict:
     """Return the model-recipe fields a WF manifest must match.
 
@@ -1663,12 +1673,13 @@ def main():
         "gate_version":        GATE_VERSION,
     }
 
-    # Stamp into artifact
+    # Stamp into artifact metadata. Non-JSON sequence checkpoints must never
+    # be overwritten; gate metadata lands in their JSON sidecar instead.
     md = artifact.get("metadata") or {}
     md["wf_gate_metadata"] = wf_meta
     artifact["metadata"] = md
-    artifact_path.write_text(json.dumps(artifact))
-    log.info("Wrote wf_gate_metadata to %s", artifact_path)
+    written = _write_artifact_payload(artifact_path, artifact)
+    log.info("Wrote wf_gate_metadata to %s", written)
     log.info("=" * 60)
     log.info("VERDICT: %s", "PASS" if overall_pass else "FAIL")
     log.info("=" * 60)
