@@ -212,6 +212,25 @@ matcher. It was an attribution bug, not a broker-cash debit regression.
   tests/test_runner_sell_attribution.py tests/test_wf_config_parity.py` and
   the broader exit neighborhood through panel-exit/sell-gate tests.
 
+## 2026-05-23 QP Soft-Sell Lot-Age Guard
+
+- WF forensics separated order-level holds from HIFO lot-level round trips:
+  QP sells looked old at the aggregate position level, but HIFO could dispose
+  recently-added high-cost lots with very short lot ages.
+- Fixed QP soft-sell horizon gating to check the minimum age of the actual lot
+  that would be disposed under the configured lot method (`hifo`/`fifo`), not
+  only the position's aggregate `entry_date`.
+- QP now stamps held-ticker suppression reasons into `_blocked_by_ticker`, so
+  daily decision traces can explain a held ticker's blocked QP trim.
+- Regression tests cover HIFO blocking a 4-day top-up lot while allowing FIFO
+  when the disposed lot is old enough.
+- Targeted tests passed:
+  `tests/test_joint_qp_task.py tests/test_hifo_lot_selection.py
+  tests/test_tax_lots_g7.py tests/test_qp_contracts.py
+  tests/test_sim_trade_ledger.py`, plus the broader QP suite through
+  `tests/test_portfolio_qp_solver.py tests/test_qp_refactor_2026_04_29.py
+  tests/test_qp_integration.py tests/test_qp_admission_gate.py`.
+
 ## Mainline Queue
 
 1. Diagnose the sanity failure: time-shift placebo IC `+0.0462` is too high.

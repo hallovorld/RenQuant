@@ -1473,6 +1473,7 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
         return None
     panel_cfg = ((getattr(ctx, "config", {}) or {}).get("risk", {}) or {}).get("panel_exit", {}) or {}
     from kernel.pipeline.soft_exit_guards import (  # noqa: PLC0415
+        configured_soft_exit_min_days,
         lt_gate_suppression,
         resolve_current_price,
         soft_exit_horizon_suppression,
@@ -1486,6 +1487,22 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     )
     if suppress:
         return "qp_soft_sell_horizon:" + why
+    min_days = configured_soft_exit_min_days(panel_cfg, getattr(ctx, "regime", None))
+    if min_days > 0:
+        pending_shares = (_get_path(ctx, "_qp_pending_sell_shares") or {}).get(ticker)
+        lot_days = _disposed_lot_min_holding_days(
+            holding=hs,
+            shares=pending_shares,
+            today=getattr(ctx, "today", None),
+            lot_method=str(cfg.get("qp_tax_lot_method", "fifo")).lower(),
+        )
+        if lot_days is not None and lot_days < min_days:
+            return (
+                "qp_soft_sell_lot_horizon:"
+                f"lot_days={lot_days} < {min_days} "
+                f"regime={getattr(ctx, 'regime', None)} "
+                f"method={str(cfg.get('qp_tax_lot_method', 'fifo')).lower()}"
+            )
     current_price = resolve_current_price(ctx, hs, ticker)
     if not _qp_soft_sell_tax_gates_enabled(cfg, guard_cfg):
         return None
@@ -1512,6 +1529,63 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     if suppress:
         return "qp_soft_sell_tax:" + why
     return None
+
+
+def _disposed_lot_min_holding_days(
+    *,
+    holding: Any,
+    shares: Any,
+    today: Any,
+    lot_method: str,
+) -> int | None:
+    """Minimum age among lots a QP soft sell would actually dispose."""
+    if not isinstance(today, _dt.date):
+        return None
+    try:
+        target = float(shares)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(target) or target <= 0:
+        return None
+    lots = list(getattr(holding, "lots", None) or [])
+    if not lots:
+        entry_date = getattr(holding, "entry_date", None)
+        if isinstance(entry_date, _dt.date):
+            return max(0, (today - entry_date).days)
+        return None
+
+    method = str(lot_method or "fifo").lower()
+    if method == "hifo":
+        ordered = sorted(lots, key=lambda lot: -float(getattr(lot, "price", 0.0) or 0.0))
+    elif method == "avg":
+        entry_date = getattr(holding, "entry_date", None)
+        if isinstance(entry_date, _dt.date):
+            return max(0, (today - entry_date).days)
+        ordered = lots
+    else:
+        ordered = lots
+
+    consumed = 0.0
+    min_days: int | None = None
+    for lot in ordered:
+        if consumed >= target - 1e-12:
+            break
+        try:
+            lot_shares = float(getattr(lot, "shares", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(lot_shares) or lot_shares <= 0:
+            continue
+        lot_date = getattr(lot, "date", None)
+        if not isinstance(lot_date, _dt.date):
+            continue
+        take = min(lot_shares, target - consumed)
+        if take <= 0:
+            continue
+        age = max(0, (today - lot_date).days)
+        min_days = age if min_days is None else min(min_days, age)
+        consumed += take
+    return min_days
 
 
 class EmitOrdersFromQPSolutionTask(Task):
@@ -1653,7 +1727,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
 
         def stamp(ticker: str, reason: str) -> None:
-            if ticker in candidate_tickers:
+            if ticker in candidate_tickers or ticker in env["holdings_set"]:
                 blocked_map.setdefault(ticker, reason)
 
         c = dict(blocked_buys=0, blocked_earnings=0, defensive_non_bear=0,
@@ -1663,6 +1737,8 @@ class EmitOrdersFromQPSolutionTask(Task):
                  cash_capped=0, cash_exhausted=0, soft_sell_blocked=0,
                  preexisting_exit=0, admission_blocked=0)
         buy_cash_left = max(0.0, env["cash"] - env["nav"] * env["cash_reserve"])
+        pending_sell_shares: dict[str, float] = {}
+        _set_path(ctx, "_qp_pending_sell_shares", pending_sell_shares)
         for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
             if not _m.isfinite(dw):
@@ -1782,7 +1858,9 @@ class EmitOrdersFromQPSolutionTask(Task):
                 emitted_candidates.add(t)
                 nb += 1
             else:
+                pending_sell_shares[t] = float(shares)
                 soft_block = _qp_soft_sell_block_reason(ctx, t, sol, i)
+                pending_sell_shares.pop(t, None)
                 if soft_block:
                     c["soft_sell_blocked"] += 1
                     stamp(t, soft_block)

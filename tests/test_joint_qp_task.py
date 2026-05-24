@@ -36,6 +36,7 @@ class _Hold:
     sigma: float | None = None
     entry_price: float = 100.0
     entry_date: datetime.date = datetime.date(2026, 4, 1)
+    lots: list = field(default_factory=list)
 
 
 @dataclass
@@ -406,6 +407,49 @@ class TestQPSoftSellGuard:
 
         assert ctx.exits == []
         assert ctx.counters["qp_soft_sell_blocked"] == 1
+
+    def test_horizon_gate_uses_disposed_hifo_lot_age_not_position_age(self):
+        from kernel.exits import TaxLot
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=100.0, entry_days=60)
+        ctx.config["risk"]["panel_exit"]["min_holding_days_by_regime"] = {
+            "BULL_CALM": 10,
+        }
+        ctx.config["rotation"]["joint_actions"]["qp_tax_lot_method"] = "hifo"
+        today = ctx.today
+        ctx.holdings["H"].shares = 20
+        ctx.holdings["H"].lots = [
+            TaxLot(shares=10, price=80.0, date=today - datetime.timedelta(days=60)),
+            TaxLot(shares=10, price=120.0, date=today - datetime.timedelta(days=4)),
+        ]
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters["qp_soft_sell_blocked"] == 1
+        assert ctx._blocked_by_ticker["H"].startswith("qp_soft_sell_lot_horizon:")
+
+    def test_horizon_gate_allows_fifo_when_disposed_lot_is_old_enough(self):
+        from kernel.exits import TaxLot
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=100.0, entry_days=60)
+        ctx.config["risk"]["panel_exit"]["min_holding_days_by_regime"] = {
+            "BULL_CALM": 10,
+        }
+        ctx.config["rotation"]["joint_actions"]["qp_tax_lot_method"] = "fifo"
+        today = ctx.today
+        ctx.holdings["H"].shares = 20
+        ctx.holdings["H"].lots = [
+            TaxLot(shares=10, price=80.0, date=today - datetime.timedelta(days=60)),
+            TaxLot(shares=10, price=120.0, date=today - datetime.timedelta(days=4)),
+        ]
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert len(ctx.exits) == 1
+        assert ctx.counters.get("qp_soft_sell_blocked", 0) == 0
 
 
 class TestQPCashBudget:

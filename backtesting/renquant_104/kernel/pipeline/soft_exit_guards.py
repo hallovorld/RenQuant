@@ -32,6 +32,11 @@ def _configured_min_days(panel_cfg: dict[str, Any], regime: str | None) -> int:
         return 0
 
 
+def configured_soft_exit_min_days(panel_cfg: dict[str, Any], regime: str | None) -> int:
+    """Public wrapper for model-driven soft-exit thesis-age guards."""
+    return _configured_min_days(panel_cfg, regime)
+
+
 def soft_exit_horizon_suppression(
     *,
     panel_cfg: dict[str, Any],
