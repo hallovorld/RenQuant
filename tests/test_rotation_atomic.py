@@ -107,3 +107,18 @@ class TestAtomicRotation:
         assert ctx.exits == [], (
             "Insufficient-cash buy must skip the entire pair, including "
             "the sell side.")
+
+    def test_existing_exit_suppresses_rotation_duplicate_sell(self):
+        from kernel.pipeline.task_rotation import EmitRotationsTask
+
+        prior = SimpleNamespace(reason="panel_conviction")
+        ctx = _ctx_with_pair(prices={"B": 50.0})
+        ctx.exits = [("A", prior)]
+
+        EmitRotationsTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx.exits == [("A", prior)]
+        assert ctx.rotations_blocked == [
+            {"sell": "A", "buy": "B", "reason": "preexisting_exit"},
+        ]

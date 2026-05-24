@@ -37,6 +37,7 @@ LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
 
 from adapters.runner import cap_buy_order_to_cash  # noqa: E402
+from adapters.sim import _model_type_from_artifact as sim_model_type_from_artifact  # noqa: E402
 
 
 # ── STATE-GC ──────────────────────────────────────────────────────────────────
@@ -63,6 +64,13 @@ class TestStateGC:
         # last_sell_dates entries within wash_sale_days window must stay
         assert "wash_sale_window_days" in RUNNER_SOURCE
         assert "last_sell_dates_str" in RUNNER_SOURCE
+
+
+class TestSimModelTypeTrace:
+    def test_sim_model_type_helper_reads_dict_metadata(self):
+        artifact = {"_metadata": {"model_type": "xgb"}}
+
+        assert sim_model_type_from_artifact(artifact) == "xgb"
 
 
 class TestStateGCNewBuys:

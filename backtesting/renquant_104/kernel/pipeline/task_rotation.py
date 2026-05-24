@@ -137,6 +137,10 @@ class BuildPairsTask(Task):
 
         # Holdings already exiting today are not eligible to rotate.
         exit_tickers = {t for t, _ in ctx.exits}
+        eligible_holdings = {
+            t: hs for t, hs in ctx.holdings.items()
+            if t not in exit_tickers
+        }
 
         # V2 (2026-04-24) — when `rotation.scoring_mode == "mu_minus_lambda_sigma"`
         # replace the isotonic-calibrated ER with direct NGBoost μ − λσ as the
@@ -253,13 +257,13 @@ class BuildPairsTask(Task):
         if rotation_mode == "thesis_primary":
             from kernel.rotation import find_thesis_primary_pairs  # noqa: PLC0415
             held_entry_rs = {t: getattr(hs, "entry_rank_score", None)
-                             for t, hs in ctx.holdings.items()}
+                             for t, hs in eligible_holdings.items()}
             held_today_rs = {t: getattr(hs, "rank_score", None)
-                             for t, hs in ctx.holdings.items()}
+                             for t, hs in eligible_holdings.items()}
             # Build held_meta for anyone past min_hold (thesis_primary
             # decides eligibility internally — pass everyone through).
             held_meta_all: dict = {}
-            for t, hs in ctx.holdings.items():
+            for t, hs in eligible_holdings.items():
                 entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
                 cur_p   = ctx.prices.get(t, entry_p)
                 held_meta_all[t] = {
@@ -301,11 +305,11 @@ class BuildPairsTask(Task):
             from kernel.persistence import lookup_candidate_scores_on_date  # noqa: PLC0415
 
             held_entry_rs = {t: getattr(hs, "entry_rank_score", None)
-                             for t, hs in ctx.holdings.items()}
+                             for t, hs in eligible_holdings.items()}
             held_today_rs = {t: getattr(hs, "rank_score", None)
-                             for t, hs in ctx.holdings.items()}
+                             for t, hs in eligible_holdings.items()}
             held_meta_all: dict = {}
-            for t, hs in ctx.holdings.items():
+            for t, hs in eligible_holdings.items():
                 entry_p = float(getattr(hs, "entry_price", 0.0) or 0.0)
                 cur_p   = ctx.prices.get(t, entry_p)
                 held_meta_all[t] = {
@@ -765,8 +769,20 @@ class EmitRotationsTask(Task):
         # that decrements after each accepted rotation buy AND credits
         # the sell-leg's mark-to-market proceeds (RegT same-bar settle).
         cash_remaining = float(ctx.cash)
+        preexisting_exit_tickers = {t for t, _ in (ctx.exits or [])}
 
         for pair in ctx.rotations:
+            if pair.sell_ticker in preexisting_exit_tickers:
+                log.info(
+                    "EmitRotationsTask: %s already has an exit — skip rotation %s→%s",
+                    pair.sell_ticker, pair.sell_ticker, pair.buy_ticker,
+                )
+                ctx.rotations_blocked.append({
+                    "sell": pair.sell_ticker,
+                    "buy": pair.buy_ticker,
+                    "reason": "preexisting_exit",
+                })
+                continue
             # 2026-04-24 bug fix: previously the SELL exit was appended
             # FIRST and the BUY constructed second. If the buy failed
             # (no price / shares<1), the position closed without a

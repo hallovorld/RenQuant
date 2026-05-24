@@ -109,6 +109,7 @@ class _BuildSourceMapTask(Task):
         holdings = ctx.holdings or {}
         for t, hs in holdings.items():
             src[t] = hs
+        admitted_new_tickers: set[str] = set()
         blocked_map = getattr(ctx, "_blocked_by_ticker", None)
         if blocked_map is None:
             blocked_map = {}
@@ -122,7 +123,13 @@ class _BuildSourceMapTask(Task):
             if not t:
                 continue
             if t not in holdings:
-                reason = self._new_candidate_block_reason(ctx, src, t, c)
+                reason = self._new_candidate_block_reason(
+                    ctx,
+                    src,
+                    t,
+                    c,
+                    admitted_new_tickers=admitted_new_tickers,
+                )
                 if reason:
                     if t not in short_tickers:
                         blocked_map.setdefault(t, reason)
@@ -132,6 +139,7 @@ class _BuildSourceMapTask(Task):
                             t, reason,
                         )
                     continue
+                admitted_new_tickers.add(t)
             src[t] = c   # candidate wins (newer scores)
         # Phase 2B fix (2026-05-14): short candidates OVERRIDE long candidates
         # for the same ticker. ctx.candidates is the BROAD admission pool
@@ -151,7 +159,14 @@ class _BuildSourceMapTask(Task):
         self._sync_ticker_order(ctx, src)
 
     @staticmethod
-    def _new_candidate_block_reason(ctx, src: dict, ticker: str, cand) -> str | None:
+    def _new_candidate_block_reason(
+        ctx,
+        src: dict,
+        ticker: str,
+        cand,
+        *,
+        admitted_new_tickers: set[str] | None = None,
+    ) -> str | None:
         if bool(getattr(ctx, "buy_blocked", False)):
             return "buy_blocked"
         if bool(getattr(ctx, "skip_buys", False)):
@@ -168,6 +183,7 @@ class _BuildSourceMapTask(Task):
             "max_positions": _qp_max_positions(ctx),
             "score_sources": {**src, ticker: cand},
             "cands": {ticker: cand},
+            "admitted_new_tickers": set(admitted_new_tickers or set()),
         }
         return _qp_buy_admission_block_reason(ctx, env, ticker)
 

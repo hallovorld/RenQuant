@@ -193,6 +193,23 @@ def test_qp_solver_universe_excludes_new_candidates_when_slots_are_full() -> Non
     assert ctx._blocked_by_ticker["GOOD"] == "qp_admission_no_slot"
 
 
+def test_qp_solver_universe_budgets_multiple_new_candidates_against_open_slots() -> None:
+    first = SimpleNamespace(ticker="FIRST", rank_score=0.70, panel_score=0.10)
+    second = SimpleNamespace(ticker="SECOND", rank_score=0.69, panel_score=0.09)
+    holdings = {f"H{i}": SimpleNamespace(ticker=f"H{i}") for i in range(7)}
+    ctx = _ctx_for_source_map(
+        holdings=holdings,
+        candidates=[first, second],
+        _qp_tickers=[*holdings, "FIRST", "SECOND"],
+    )
+
+    _BuildSourceMapTask().run(ctx)
+
+    assert ctx._qp_tickers == [*list(holdings), "FIRST"]
+    assert set(ctx._qp_mu_source_map) == {*holdings, "FIRST"}
+    assert ctx._blocked_by_ticker["SECOND"] == "qp_admission_no_slot"
+
+
 def test_qp_solver_universe_excludes_new_candidates_when_buys_are_gated() -> None:
     good = SimpleNamespace(ticker="GOOD", rank_score=0.70, panel_score=0.10)
     ctx = _ctx_for_source_map(

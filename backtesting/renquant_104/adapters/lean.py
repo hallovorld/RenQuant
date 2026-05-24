@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import uuid
 from typing import Any
 
 import pandas as pd
@@ -229,6 +230,7 @@ class LeanAdapter:
             regime_state     = algo._regime_state,
             regime_counts    = algo._regime_counts,
         )
+        ctx.run_id = f"{today.isoformat()}-lean-{uuid.uuid4().hex[:8]}"
 
         # ── Panel scoring prep ───────────────────────────────────────────────
         # Audit P-3: cache panel frames between bars when the underlying
@@ -259,7 +261,9 @@ class LeanAdapter:
                     self._panel_cache_emb = emb       # T2-2
                     self._panel_cache_last_date = pd.Timestamp(today)
                 except Exception as exc:
-                    log.warning("Panel frame prep failed — panel scoring disabled: %s", exc)
+                    msg = f"Panel frame prep failed — panel scoring cannot run: {exc}"
+                    log.error(msg)
+                    raise RuntimeError(msg) from exc
             ctx._panel_feature_frames   = self._panel_cache_ff                       # noqa: SLF001
             ctx._panel_factor_frames    = self._panel_cache_fac                      # noqa: SLF001
             ctx._panel_macro_frame      = getattr(self, "_panel_cache_macro", None)  # noqa: SLF001
@@ -712,11 +716,18 @@ class LeanAdapter:
         record_trades(self._db, run_id, trade_events)
 
         cand_by_t = {c.ticker: c for c in cand_pool}
+        score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
+
+        def _score_value(src, snap: dict[str, Any], name: str):
+            value = getattr(src, name, None) if src is not None else None
+            return value if value is not None else snap.get(name)
+
         rows: list[dict[str, Any]] = []
         for tk in list(config.get("watchlist", []) or []):
             hs = ctx.holdings.get(tk)
             cand = cand_by_t.get(tk)
             src = cand if cand is not None else hs
+            snap = score_snapshots.get(tk, {}) or {}
             pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
             price = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
             pos_pct = None
@@ -737,7 +748,7 @@ class LeanAdapter:
             elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
                 model_action = "sell"
             else:
-                model_action = "hold"
+                model_action = snap.get("model_action", "hold")
             rows.append({
                 "ticker": tk,
                 "regime": ctx.regime,
@@ -751,12 +762,12 @@ class LeanAdapter:
                 "model_type": model_types.get(tk),
                 "model_action": model_action,
                 "sell_streak": int(getattr(hs, "sell_streak", 0)) if hs else None,
-                "panel_score": getattr(src, "panel_score", None) if src else None,
-                "rank_score": getattr(src, "rank_score", None) if src else None,
-                "expected_return": getattr(src, "expected_return", None) if src else None,
-                "kelly_target_pct": getattr(src, "kelly_target_pct", None) if src else None,
-                "mu": getattr(src, "mu", None) if src else None,
-                "sigma": getattr(src, "sigma", None) if src else None,
+                "panel_score": _score_value(src, snap, "panel_score"),
+                "rank_score": _score_value(src, snap, "rank_score"),
+                "expected_return": _score_value(src, snap, "expected_return"),
+                "kelly_target_pct": _score_value(src, snap, "kelly_target_pct"),
+                "mu": _score_value(src, snap, "mu"),
+                "sigma": _score_value(src, snap, "sigma"),
                 "in_candidates": 1 if cand is not None else 0,
                 "selected": 1 if tk in selected_tickers else 0,
                 "blocked_by": blocked_str,

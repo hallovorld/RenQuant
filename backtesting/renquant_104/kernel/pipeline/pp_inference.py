@@ -244,7 +244,19 @@ class InferencePipeline:
             if blocked_map is None:
                 blocked_map = {}
                 ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+            score_snapshots = getattr(ctx, "_ticker_score_snapshot", None)
+            if score_snapshots is None:
+                score_snapshots = {}
+                ctx._ticker_score_snapshot = score_snapshots  # noqa: SLF001
             for tc in cand_tctxs:
+                snap = {
+                    "raw_score": getattr(tc, "_raw_score", None),
+                    "rank_score": getattr(tc, "_rank_score", None),
+                    "expected_return": getattr(tc, "_expected_return", None),
+                    "model_action": getattr(tc, "model_action", None),
+                }
+                if any(v is not None for v in snap.values()):
+                    score_snapshots[tc.ticker] = snap
                 if tc.candidate is not None:
                     ctx.candidates.append(tc.candidate)
                 elif getattr(tc, "blocked_by", None):

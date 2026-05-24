@@ -870,10 +870,9 @@ def record_candidate_scores(
     # μ/σ was stored as NULL — inconsistent, and analytics queries
     # (median, percentile) silently broke on the rows with NaN raw_score.
     # Now: every numeric score uses `_none_or_float` which returns None
-    # on NaN/inf, persisting as SQL NULL.
-    def _safe_float_or_default(v: Any, default: float = 0.0) -> float:
-        f = _none_or_float(v)
-        return default if f is None else f
+    # on missing/NaN/inf, persisting as SQL NULL. Analytics that want a
+    # display default must COALESCE explicitly so missing evidence is never
+    # confused with a real zero score.
     sector_map = sector_map or {}
     model_types = model_types or {}
     qp_delta_by_ticker = qp_delta_by_ticker or {}
@@ -882,10 +881,10 @@ def record_candidate_scores(
         selected = c.ticker in selected_tickers
         rows.append((
             run_id, c.ticker, "candidate",
-            _safe_float_or_default(getattr(c, "raw_score",  None)),
-            _safe_float_or_default(getattr(c, "rank_score", None)),
+            _none_or_float(getattr(c, "raw_score",  None)),
+            _none_or_float(getattr(c, "rank_score", None)),
             _none_or_float(getattr(c, "panel_score", None)),
-            _safe_float_or_default(getattr(c, "rs_score",   None)),
+            _none_or_float(getattr(c, "rs_score",   None)),
             _none_or_float(getattr(c, "mu",    None)),
             _none_or_float(getattr(c, "sigma", None)),
             1 if selected else 0,

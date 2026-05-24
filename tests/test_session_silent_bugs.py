@@ -91,6 +91,61 @@ class TestThesisSymmetricReachable:
         assert called["er"] is False, (
             "thesis_symmetric mode unexpectedly fell through to ER mode.")
 
+    def test_thesis_symmetric_excludes_holdings_with_existing_exit(self, monkeypatch):
+        from kernel.pipeline.task_rotation import BuildPairsTask
+
+        captured = {}
+
+        def _stub_thesis_sym(**kwargs):
+            captured["held_entry_scores"] = dict(kwargs["held_entry_scores"])
+            captured["held_meta"] = dict(kwargs["held_meta"])
+            return []
+
+        import kernel.rotation as rotmod
+        monkeypatch.setattr(rotmod, "find_thesis_symmetric_pairs", _stub_thesis_sym)
+
+        hs = SimpleNamespace(
+            rank_score=0.30, expected_return=0.0,
+            entry_date=datetime.date(2024, 1, 1), entry_price=100.0,
+            entry_rank_score=0.40, panel_score=None,
+            mu=None, sigma=None, kelly_target_pct=0.1,
+        )
+        cand = SimpleNamespace(
+            ticker="AMD", rank_score=0.50, expected_return=0.05,
+            mu=None, sigma=None, panel_score=0.5,
+            kelly_target_pct=0.1,
+        )
+        ctx = SimpleNamespace(
+            config = {
+                "rotation": {
+                    "enabled": True,
+                    "mode": "thesis_symmetric",
+                    "min_expected_advantage_pct": 0.01,
+                    "min_rotation_hold_days": 0,
+                    "lt_protection_days": 0,
+                    "max_rotations_per_bar": 2,
+                },
+                "tax": {},
+                "ranking": {"kelly_sizing": {}},
+            },
+            today = datetime.date(2025, 6, 1),
+            regime = "BULL_CALM",
+            ranked = [cand],
+            holdings = {"NVDA": hs},
+            bear_only = False,
+            exits = [("NVDA", SimpleNamespace(reason="panel_conviction"))],
+            prices = {"NVDA": 100.0},
+            counters = {}, rotations = [],
+            prior_rotation_proposals = [],
+            ohlcv = {},
+            _db = None,
+        )
+
+        BuildPairsTask().run(ctx)
+
+        assert captured["held_entry_scores"] == {}
+        assert captured["held_meta"] == {}
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Bug 2: minute features actually reach panel feature_cols

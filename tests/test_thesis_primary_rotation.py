@@ -229,6 +229,15 @@ class TestBuildPairsTaskDispatch:
         assert ctx.rotations[0].sell_ticker == "NVDA"
         assert ctx.rotations[0].buy_ticker  == "TSLA"
 
+    def test_thesis_primary_excludes_holdings_with_existing_exit(self):
+        """A same-bar hard/soft exit owns the sell leg; rotation must not add one."""
+        ctx = self._setup_ctx(mode="thesis_primary")
+        ctx.exits = [("NVDA", SimpleNamespace(reason="panel_conviction"))]
+
+        BuildPairsTask().run(ctx)
+
+        assert ctx.rotations == []
+
     def test_default_mode_is_er(self):
         """No mode specified → ER mode (backward compat)."""
         ctx = self._setup_ctx(mode="er")

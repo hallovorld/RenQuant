@@ -747,6 +747,59 @@ Verification:
 - `.venv/bin/python -m pytest tests/test_qp_admission_gate.py tests/test_joint_qp_task.py tests/test_qp_integration.py -q`
   -> `68 passed`.
 
+Follow-up A/B result:
+
+- Diagnostic config:
+  `backtesting/renquant_104/artifacts/diagnostics/wf_eval_configs/qpsigma_bullcalm039_20260523.json`.
+- Trace:
+  `backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/qpsigma_bullcalm039_20260523`.
+- Forensics:
+  `artifacts/wf_trade_forensics_qpsigma_bullcalm039_20260523.md`.
+- Result: diagnostic-only FAIL because it still loses to SPY in all 3 cuts.
+  Mean annual-net Sharpe improved from the prior strict feature-space run
+  (`+0.400`) to `+0.523`, all 3 cuts became positive, and trade
+  monotonicity passed, but mean SPY Sharpe was `+1.081` and
+  strategy-minus-SPY Sharpe remained `-0.558`.
+- Annual-net APY by cut: `+2.49%`, `+0.80%`, `+1.07%`; mean `+1.45%`
+  versus SPY mean APY `+16.94%`.
+- Trade forensics: closed round trips fell from `42` to `34`; win rate rose
+  to `73.5%`; net after estimated tax improved to `+$3.15k`; stop-loss exits
+  fell from `9` to `3` but remain pure losses.
+
+Interpretation: sigma admission is directionally useful as a risk-control
+filter, not sufficient alpha conversion. Do not promote it directly. The next
+work item is to combine this with an explicit benchmark/exposure objective or
+model-side improvement so BULL_CALM does not under-participate versus SPY.
+
+## 2026-05-23 Trace / Rotation Hardening
+
+Sidecar audits found additional silent-fallback holes. Fixed and tested:
+
+- QP slot accounting now budgets already-admitted/emitted new candidates, so
+  one open slot cannot admit multiple new names.
+- `thesis_primary` and `thesis_symmetric` rotation modes now exclude holdings
+  that already have same-bar exits; `EmitRotationsTask` also suppresses any
+  duplicate sell if a prior exit exists.
+- `candidate_scores` now persists missing raw/rank/RS scores as SQL `NULL`,
+  not `0.0`.
+- LEAN contexts now stamp a run id before score-distribution tasks execute, so
+  score distribution rows are not orphaned from `pipeline_runs`.
+- LEAN panel-frame preparation is fail-closed when panel scoring is enabled.
+- Sim decision trace now extracts `model_type` from dict artifacts with
+  `_metadata`, matching live/LEAN helpers.
+- `TickerInferenceContext` score snapshots for model-signal hold/sell rows are
+  propagated into `ticker_daily_state`, so non-buy model decisions retain
+  rank/expected-return evidence.
+- Live `ticker_daily_state` write failures default to strict re-raise via
+  `persistence.strict_ticker_daily_state=true` unless explicitly disabled.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_qp_admission_gate.py tests/test_joint_qp_task.py tests/test_qp_integration.py tests/test_thesis_primary_rotation.py tests/test_session_silent_bugs.py::TestThesisSymmetricReachable tests/test_rotation_atomic.py tests/test_persistence.py tests/test_lean_trace_persistence.py tests/test_runner_state_fixes.py tests/test_ticker_daily_state.py -q`
+  -> `173 passed`.
+- `.venv/bin/python -m py_compile backtesting/renquant_104/kernel/portfolio_qp/job_qp.py backtesting/renquant_104/kernel/portfolio_qp/tasks.py backtesting/renquant_104/kernel/pipeline/task_rotation.py backtesting/renquant_104/kernel/pipeline/pp_inference.py backtesting/renquant_104/kernel/persistence.py backtesting/renquant_104/adapters/lean.py backtesting/renquant_104/adapters/sim.py backtesting/renquant_104/adapters/runner.py`
+  -> passed.
+
 ## 2026-05-23 PatchTST / XGB Experiment Audit
 
 PatchTST experiments did complete, but they are not promotion evidence.

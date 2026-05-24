@@ -250,6 +250,34 @@ class TestCandidateScores:
         assert row[0] == "candidate_not_selected"
         conn.close()
 
+    def test_missing_candidate_scores_persist_as_null_not_zero(self, tmp_path):
+        from kernel.selection import CandidateResult
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        cand = CandidateResult(
+            ticker="AAA",
+            raw_score=None,
+            rank_score=None,
+            rs_score=None,
+            detail="",
+            expected_return=None,
+        )
+
+        record_candidate_scores(
+            conn, rid, [cand], {}, selected_tickers=set(),
+        )
+
+        row = conn.execute(
+            """SELECT raw_score, rank_score, rs_score
+                 FROM candidate_scores
+                WHERE run_id = ? AND ticker = ?""",
+            (rid, "AAA"),
+        ).fetchone()
+        assert row == (None, None, None)
+        conn.close()
+
     def test_selected_candidate_clears_stale_block_reason(self, tmp_path):
         """AUDIT REGRESSION GUARD: selected rows are outcomes, not blocks.
 

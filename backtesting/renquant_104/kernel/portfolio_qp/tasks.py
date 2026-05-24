@@ -1423,7 +1423,10 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         held_after_exits = set(env.get("holdings_set", set())) - set(
             env.get("preexisting_exit_tickers", set())
         )
-        if len(held_after_exits) >= int(env.get("max_positions", 0) or 0):
+        admitted_new = set(env.get("admitted_new_tickers", set()) or set())
+        emitted_new = set(env.get("emitted_new_tickers", set()) or set())
+        used_slots = len(held_after_exits | admitted_new | emitted_new)
+        if used_slots >= int(env.get("max_positions", 0) or 0):
             return "qp_admission_no_slot"
 
     source = (
@@ -1772,6 +1775,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             preexisting_exit_tickers={
                 t for t, _ in (getattr(ctx, "exits", None) or [])
             },
+            emitted_new_tickers=set(),
         )
 
     @staticmethod
@@ -1941,6 +1945,8 @@ class EmitOrdersFromQPSolutionTask(Task):
                     sol, i, env["score_sources"],
                 )
                 emitted_candidates.add(t)
+                if t not in env["holdings_set"]:
+                    env["emitted_new_tickers"].add(t)
                 nb += 1
             else:
                 pending_sell_shares[t] = float(shares)

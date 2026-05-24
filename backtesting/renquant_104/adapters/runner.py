@@ -1913,6 +1913,12 @@ class RunnerAdapter:
                     or ctx.candidates
                 )
                 cand_by_t  = {c.ticker: c for c in tds_cand_pool}
+                score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
+
+                def _score_value(src, snap: dict, name: str):
+                    value = getattr(src, name, None) if src is not None else None
+                    return value if value is not None else snap.get(name)
+
                 pf_value = float(ctx.portfolio_value) if ctx.portfolio_value else 0.0
                 # Bug #20 fix (2026-04-26): pending_broker_tickers is a local
                 # of make_context() (line 170), not visible in commit()'s
@@ -1949,12 +1955,13 @@ class RunnerAdapter:
                         blocked_str = "not_selected"
                     # Source ranking factors from cand (preferred) else hs.
                     src = cand if cand is not None else hs
-                    panel_score      = getattr(src, "panel_score", None) if src else None
-                    rank_score       = getattr(src, "rank_score",  None) if src else None
-                    expected_return  = getattr(src, "expected_return",  None) if src else None
-                    kelly_target_pct = getattr(src, "kelly_target_pct", None) if src else None
-                    mu               = getattr(src, "mu",    None) if src else None
-                    sigma            = getattr(src, "sigma", None) if src else None
+                    snap = score_snapshots.get(tk, {}) or {}
+                    panel_score      = _score_value(src, snap, "panel_score")
+                    rank_score       = _score_value(src, snap, "rank_score")
+                    expected_return  = _score_value(src, snap, "expected_return")
+                    kelly_target_pct = _score_value(src, snap, "kelly_target_pct")
+                    mu               = _score_value(src, snap, "mu")
+                    sigma            = _score_value(src, snap, "sigma")
                     # Per-ticker model_action: cand → "buy"; held with sell
                     # streak active → "sell"; else "hold". The actual
                     # exit decision is in trades; this column is the raw
@@ -1964,7 +1971,7 @@ class RunnerAdapter:
                     elif hs is not None and getattr(hs, "sell_streak", 0) > 0:
                         model_action = "sell"
                     else:
-                        model_action = "hold"
+                        model_action = snap.get("model_action", "hold")
                     tds_rows.append({
                         "ticker":           tk,
                         "regime":           ctx.regime,
@@ -2001,6 +2008,9 @@ class RunnerAdapter:
             except Exception as exc:
                 # Diagnostic table — never block the bar on a write error.
                 log.warning("ticker_daily_state write failed: %s", exc)
+                if bool((self._config.get("persistence", {}) or {})
+                        .get("strict_ticker_daily_state", True)):
+                    raise
 
             # Plan S — append live_state snapshot. The JSON file is still
             # the source of truth (fast bootstrap + human edits); this row

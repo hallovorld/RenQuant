@@ -72,3 +72,28 @@ Run a strict paired WF with the same feature-space manifest:
 Promotion requirement remains unchanged: no production flip unless WF,
 SPY-relative Sharpe/APY, per-regime diagnostics, sanity, and decision-trace
 contracts pass.
+
+## A/B Result
+
+The BULL_CALM `max_sigma_by_regime.BULL_CALM = 0.39` diagnostic A/B completed.
+
+- Trace:
+  `backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/qpsigma_bullcalm039_20260523`
+- Forensics:
+  `artifacts/wf_trade_forensics_qpsigma_bullcalm039_20260523.md`
+- Mean annual-net Sharpe: `+0.523` versus prior strict feature-space
+  `+0.400`.
+- Annual-net Sharpe cuts: `+0.640`, `+0.523`, `+0.407`.
+- Mean annual-net APY: `+1.45%`.
+- SPY mean Sharpe: `+1.081`; strategy-minus-SPY Sharpe: `-0.558`.
+- SPY mean APY: `+16.94%`; strategy-minus-SPY APY: `-15.49%`.
+- Closed round trips: `34`; win rate: `73.5%`; stop-loss exits: `3`.
+- Trade monotonicity passed in BULL_CALM, but benchmark gate failed in all
+  three cuts.
+
+Conclusion: the sigma cap is a useful diagnostic and risk-control direction,
+but it is not a production promotion. It reduces bad high-uncertainty trades
+and improves annual-net Sharpe, yet the strategy still under-participates in
+SPY-dominated bull/calm periods. The next design change needs to target
+benchmark-relative exposure/alpha conversion, not only suppress high-risk
+names.

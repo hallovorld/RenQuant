@@ -69,6 +69,30 @@ def _artifact_kind(path: Path) -> str | None:
     return None
 
 
+def _model_type_from_artifact(model: Any) -> str | None:
+    """Extract readable model type from dict/object artifacts for audit rows."""
+    if model is None:
+        return None
+    if isinstance(model, dict):
+        meta = model.get("_metadata") or model.get("metadata") or {}
+        for src in (meta, model):
+            if not isinstance(src, dict):
+                continue
+            for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
+                val = src.get(key)
+                if isinstance(val, str) and val:
+                    return val
+        return None
+    meta = getattr(model, "metadata", None)
+    if isinstance(meta, dict):
+        for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
+            val = meta.get(key)
+            if isinstance(val, str) and val:
+                return val
+    val = getattr(model, "model_type", None)
+    return val if isinstance(val, str) and val else None
+
+
 def _drop_inference_forbidden_cols(df: pd.DataFrame) -> pd.DataFrame:
     forbidden = [
         c for c in df.columns
@@ -1243,10 +1267,7 @@ class SimAdapter:
             sector_map = self._config.get("sector_map", {}) or {}
             model_types = {}
             for tk, m in (self._models or {}).items():
-                model_types[tk] = (
-                    getattr(m, "model_type", None)
-                    or (m.metadata.get("model_type") if hasattr(m, "metadata") else None)
-                )
+                model_types[tk] = _model_type_from_artifact(m)
             panel_artifact = (
                 self._config.get("ranking", {})
                             .get("panel_scoring", {})
@@ -1292,11 +1313,18 @@ class SimAdapter:
             record_trades(self._db, run_id, trade_events_this_bar)
             wl = list(self._config.get("watchlist", []) or [])
             cand_by_t = {c.ticker: c for c in cand_pool}
+            score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
+
+            def _score_value(src, snap: dict, name: str):
+                value = getattr(src, name, None) if src is not None else None
+                return value if value is not None else snap.get(name)
+
             tds_rows: list[dict] = []
             for tk in wl:
                 hs = ctx.holdings.get(tk)
                 cand = cand_by_t.get(tk)
                 src = cand if cand is not None else hs
+                snap = score_snapshots.get(tk, {}) or {}
                 has_pos = 1 if hs is not None else 0
                 pos_qty = float(getattr(hs, "shares", 0.0)) if hs else None
                 px = ctx.prices.get(tk, 0.0) if hasattr(ctx, "prices") else 0.0
@@ -1330,14 +1358,18 @@ class SimAdapter:
                     "position_qty": pos_qty,
                     "position_pct": pos_pct,
                     "model_type": model_types.get(tk),
-                    "model_action": model_action,
+                    "model_action": (
+                        model_action
+                        if model_action != "hold"
+                        else snap.get("model_action", model_action)
+                    ),
                     "sell_streak": int(getattr(hs, "sell_streak", 0)) if hs else None,
-                    "panel_score": getattr(src, "panel_score", None) if src else None,
-                    "rank_score": getattr(src, "rank_score", None) if src else None,
-                    "expected_return": getattr(src, "expected_return", None) if src else None,
-                    "kelly_target_pct": getattr(src, "kelly_target_pct", None) if src else None,
-                    "mu": getattr(src, "mu", None) if src else None,
-                    "sigma": getattr(src, "sigma", None) if src else None,
+                    "panel_score": _score_value(src, snap, "panel_score"),
+                    "rank_score": _score_value(src, snap, "rank_score"),
+                    "expected_return": _score_value(src, snap, "expected_return"),
+                    "kelly_target_pct": _score_value(src, snap, "kelly_target_pct"),
+                    "mu": _score_value(src, snap, "mu"),
+                    "sigma": _score_value(src, snap, "sigma"),
                     "in_candidates": 1 if cand is not None else 0,
                     "selected": 1 if tk in selected_tickers else 0,
                     "blocked_by": blocked_str,
