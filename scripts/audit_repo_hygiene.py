@@ -52,6 +52,10 @@ def classify_path(path: str, status: str) -> str:
         return "generated_data_or_logs"
     if "live_state." in name:
         return "broker_state"
+    if p.startswith("scripts/_train_") and suffix == ".py":
+        return "scratch_code_artifact"
+    if p.startswith("scripts/") and suffix in {".json", ".csv", ".parquet"}:
+        return "experiment_or_diagnostic_artifact"
     if p.startswith("backtesting/renquant_104/models/"):
         return "per_ticker_model_artifact"
     if p.startswith("backtesting/renquant_104/artifacts/prod/"):

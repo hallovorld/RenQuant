@@ -67,6 +67,11 @@ def test_classify_code_docs_and_config() -> None:
     mod = _load_module()
 
     assert mod.classify_path("scripts/run_wf_gate.py", "M") == "code"
+    assert mod.classify_path("scripts/_train_BB_00.py", "??") == "scratch_code_artifact"
+    assert (
+        mod.classify_path("scripts/screen_stage1_results.json", "M")
+        == "experiment_or_diagnostic_artifact"
+    )
     assert mod.classify_path("tests/test_repo_hygiene_audit.py", "??") == "code"
     assert mod.classify_path("rust/Cargo.lock", "??") == "code"
     assert mod.classify_path("doc/dashboard.md", "M") == "documentation"

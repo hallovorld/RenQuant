@@ -3,7 +3,7 @@
 **Single source of truth for what's next.** All items ranked by **expected ROI (Sharpe-lift ÷ effort)** with status flag. Past dated plans archived to [`doc/archives/plans/`](archives/plans/) for provenance.
 
 **Last consolidated**: 2026-05-18 NIGHT (consolidated 7 plan/backlog files → 1)
-**Last incremental sync**: 2026-05-20 (HF Trainer refactor + FiLM + DLinear baseline + 5×5 eval infra + DOE Phase 2 verdict landed 2026-05-19; doc/research/2026-05-19-patchtst-improvement-plan.md is canonical for current PatchTST roadmap)
+**Last incremental sync**: 2026-05-24 (repo hygiene mainline + future multi-subrepo architecture backlog; HF Trainer refactor + FiLM + DLinear baseline + 5×5 eval infra + DOE Phase 2 verdict landed 2026-05-19; doc/research/2026-05-19-patchtst-improvement-plan.md is canonical for current PatchTST roadmap)
 
 ---
 
@@ -224,6 +224,7 @@ Independent strategy dir `backtesting/renquant_105/`. Easley-Lopez de Prado-O'Ha
 | Daily sentiment + IV refresh crons | After integration | 1 day (`task #60`) |
 | 12 pre-existing test failures | Kelly DD scale / vol-target / dashboard / calibrator clip | 1-2 days |
 | **架构肃清: 删所有 self-written + unused 代码** | **NEW 2026-05-18**: user mandate "所有代码". See dedicated section below | 1-2 days |
+| **Multi-subrepo split** | **BACKLOG 2026-05-24**: separate training, engineering, artifacts/DB, and integration/CI orchestration | design first, then phased migration |
 
 ### 🧹 Architectural cleanup — delete all self-written + unused code
 
@@ -253,6 +254,55 @@ Per §5.13.2 "any new module is dead until grep proves prod imports it" — swee
 3. Delete in commit of ≤10 files at a time (rollback-friendly)
 4. Verify full test suite green after each batch
 5. Update this section as items are cleared
+
+### 🧱 Multi-subrepo architecture split — backlog
+
+**User mandate 2026-05-24**: split the current dirty monorepo into multiple
+subrepos so code, training, artifacts, and orchestration stop contaminating one
+another.
+
+**Target repo boundaries:**
+
+| Repo | Owns | Must not own |
+|---|---|---|
+| `renquant-training` | model training pipelines, feature builders, WF manifest builders, trainer configs, research tests | live broker code, personal state, large raw artifacts |
+| `renquant-engine` | production inference pipeline, live/LEAN/sim adapters, QP, execution, risk gates, shared contracts | ad hoc experiment outputs, scratch training scripts |
+| `renquant-artifacts` | versioned model artifacts, calibrators, WF manifests, DB migration snapshots, provenance ledgers | source-code logic beyond artifact validation/registry tooling |
+| `renquant-integration` | CI/CD, release manifests, promotion orchestration, cross-repo contract tests, environment/bootstrap scripts | model-training internals or broker execution internals |
+
+**Migration principles:**
+
+1. Do not split first and debug later. First define contract packages:
+   artifact schema, feature schema, decision-trace schema, DB schema,
+   strategy config schema, and promotion metadata.
+2. Keep current monorepo as integration source until contract tests prove
+   parity across training → artifact → engine → live/sim/LEAN.
+3. Artifacts move only with provenance: git commit, data fingerprint, config
+   fingerprint, WF gate metadata, sanity battery, and promotion verdict.
+4. CI must run cross-repo acceptance, not only unit tests:
+   training builds a tiny fixture artifact; engine loads it; integration runs
+   smoke sim/live-dry paths; artifact repo verifies registry immutability.
+5. Databases are not source code. DB snapshots/migrations belong to the
+   artifact/data repo with explicit retention and privacy rules.
+6. The split is a risk-reduction project, not a refactor-for-aesthetics
+   project. Start with read-only mirrors/subtrees and promote only after
+   every existing daily/weekly command still works from integration.
+
+**First implementation backlog:**
+
+1. Write `doc/arch/repo-split-design.md` with exact package boundaries,
+   import graph, data flow, and rollback plan.
+2. Add a contract test suite in the current repo that would survive the split:
+   training artifact fixture, engine load/score, sim decision trace, WF gate
+   metadata, and DB migration smoke.
+3. Move raw experiment directories behind an artifact registry interface
+   before any repository split. This avoids copying the current mess into four
+   smaller messes.
+4. Decide Git mechanism after design: separate repos with release manifests is
+   preferred over submodules unless day-to-day local development proves too
+   painful.
+5. Cut over in order: artifact registry first, training repo second, engine
+   repo third, integration repo last.
 
 ---
 

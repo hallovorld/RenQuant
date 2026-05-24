@@ -27,7 +27,7 @@ dirty paths, and prints JSON or Markdown review queues. Its embedded policy is:
 
 Regression coverage: `tests/test_repo_hygiene_audit.py`.
 
-## Current Inventory Snapshot
+## Inventory Snapshot
 
 Command:
 
@@ -35,22 +35,23 @@ Command:
 .venv/bin/python scripts/audit_repo_hygiene.py --format md
 ```
 
-Current dirty entries: `368`.
+Observed dirty entries during the hygiene audit: `364`. This number is a
+snapshot, not a source of truth; rerun the command above after any commit.
 
 | Class | Count | Immediate handling |
 |---|---:|---|
 | `broker_state` | 3 | Do not stage with code. Review only for live-state fixes. |
-| `code` | 24 | Promote tested tools or mark scratch; no orphan train scripts. |
+| `code` | 5 | Promote tested tools or mark scratch. |
 | `documentation` | 2 | Stage only docs that belong to the current change. |
-| `experiment_or_diagnostic_artifact` | 135 | Summarize evidence in docs before any archive decision. |
+| `experiment_or_diagnostic_artifact` | 136 | Summarize evidence in docs before any archive decision. |
 | `generated_data_or_logs` | 9 | Ignore from code commits unless a test fixture is intentional. |
 | `local_agent_settings` | 2 | Local state; do not stage. |
 | `per_ticker_model_artifact` | 133 | Commit only with a training/provenance acceptance record. |
 | `production_model_artifact` | 20 | Production-risk queue; never bulk stage. |
+| `scratch_code_artifact` | 15 | DOE/scratch scripts; archive or promote after review. |
 | `shadow_model_artifact` | 2 | Shadow provenance required before staging. |
 | `sim_model_artifact` | 21 | Keep as evidence until linked to a ledger. |
 | `strategy_config` | 13 | Require paired config-parity tests before staging. |
-| `tracked_uncategorized` | 1 | Inspect manually. |
 | `untracked_uncategorized` | 3 | Inspect manually. |
 
 ## Mainline Queue
@@ -61,6 +62,7 @@ Current dirty entries: `368`.
 2. Promote useful scratch scripts into named, tested tools or archive them
    after review. Current obvious queue: `scripts/_train_BB_*.py`,
    `scripts/_train_fwd20d.py`, `scripts/_train_fwd5d.py`.
+   These are now classified as `scratch_code_artifact`, not production code.
 3. Create experiment ledgers for raw result directories before cleanup:
    PatchTST, transformer prototypes, exit A/B, WF trade forensics, and
    Qlib baselines.
