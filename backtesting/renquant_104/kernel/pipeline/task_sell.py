@@ -12,6 +12,10 @@ from .soft_exit_guards import (
     soft_exit_horizon_suppression,
     tax_adjusted_soft_exit_suppression,
 )
+from .task_benchmark_sleeve import (
+    benchmark_sleeve_ticker,
+    exclude_benchmark_sleeve_from_alpha,
+)
 
 log = logging.getLogger("kernel.pipeline.sell")
 
@@ -332,6 +336,18 @@ class PanelConvictionExitTask(Task):
         # Already exiting via higher-priority rule (stop/trailing/max_hold/
         # model-streak) → don't override with panel exit
         if getattr(tc, "exit_signal", None) is not None:
+            return
+
+        sleeve_ticker = benchmark_sleeve_ticker(tc)
+        if (
+            sleeve_ticker is not None
+            and tc.ticker == sleeve_ticker
+            and exclude_benchmark_sleeve_from_alpha(tc)
+        ):
+            log.info(
+                "PanelConvictionExitTask [%s]: benchmark sleeve exempt from alpha exit",
+                tc.ticker,
+            )
             return
 
         cfg = tc.config.get("risk", {}).get("panel_exit", {})

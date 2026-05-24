@@ -593,7 +593,16 @@ class RunnerAdapter:
         # ── Holdings from live state + broker positions ─────────────────────
         from kernel.exits import HoldingState  # noqa: PLC0415
 
-        held_set  = set(s for s in config["watchlist"]
+        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+            benchmark_sleeve_ticker,
+            decision_trace_tickers,
+            is_benchmark_sleeve_enabled,
+        )
+        managed_symbols = list(config["watchlist"])
+        sleeve_ticker = benchmark_sleeve_ticker(config)
+        if is_benchmark_sleeve_enabled(config) and sleeve_ticker not in managed_symbols:
+            managed_symbols.append(sleeve_ticker)
+        held_set  = set(s for s in managed_symbols
                         if float(positions_cache.get(s, {}).get("qty", 0)) > 0)
         # Audit #59: log positions held outside the watchlist so the operator
         # knows they exist (the runner won't manage them — exits/buys only
@@ -601,7 +610,7 @@ class RunnerAdapter:
         non_wl_holds = [
             s for s, pos in positions_cache.items()
             if s not in held_set
-            and s not in config["watchlist"]
+            and s not in managed_symbols
             and float(pos.get("qty", 0)) > 0
         ]
         if non_wl_holds:
@@ -1907,7 +1916,10 @@ class RunnerAdapter:
             # analysis answer "what did we KNOW about XYZ on this date
             # and WHY didn't we trade it?" — instead of just the cands.
             try:
-                wl = list(self._config.get("watchlist", []) or [])
+                from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+                    decision_trace_tickers,
+                )
+                wl = decision_trace_tickers(self._config)
                 tds_cand_pool = (
                     getattr(ctx, "_full_candidate_snapshot", None)
                     or ctx.candidates

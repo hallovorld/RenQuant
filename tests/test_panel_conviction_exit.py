@@ -85,6 +85,22 @@ class TestFlagGating:
 
         assert tc.exit_signal is None
 
+    def test_benchmark_sleeve_is_exempt_from_legacy_alpha_exit(self):
+        tc = _tc(panel_score=0.10, mu=-0.05)
+        tc.ticker = "SPY"
+        tc.config["benchmark"] = "SPY"
+        tc.config["portfolio"] = {
+            "benchmark_sleeve": {
+                "enabled": True,
+                "ticker": "SPY",
+                "exclude_from_alpha_pipeline": True,
+            },
+        }
+
+        PanelConvictionExitTask().run(tc)
+
+        assert tc.exit_signal is None
+
     def test_exit_signal_already_set_noop(self):
         """Higher-priority rule already fired — don't override."""
         tc = _tc(panel_score=0.10, mu=-0.05, already_exiting=True)

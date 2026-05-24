@@ -1311,7 +1311,10 @@ class SimAdapter:
                 qp_status=qp_status,
             )
             record_trades(self._db, run_id, trade_events_this_bar)
-            wl = list(self._config.get("watchlist", []) or [])
+            from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+                decision_trace_tickers,
+            )
+            wl = decision_trace_tickers(self._config)
             cand_by_t = {c.ticker: c for c in cand_pool}
             score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
 

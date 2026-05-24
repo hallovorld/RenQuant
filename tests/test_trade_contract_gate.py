@@ -62,3 +62,30 @@ class TestTradeContractRegressionGuard:
         )
 
         assert report.passed is True
+
+    def test_benchmark_sleeve_entry_does_not_require_alpha_mu_sigma(self) -> None:
+        df = pd.DataFrame([
+            {
+                "status": "closed",
+                "ticker": "SPY",
+                "entry_order_type": "BENCHMARK_SLEEVE_BUY",
+                "entry_source_job": "BenchmarkSleeveJob",
+                "entry_mu": None,
+                "entry_sigma": None,
+                "exit_regime": "BULL_CALM",
+                "exit_stop_loss_pct": 0.15,
+                "exit_max_single_day_loss_pct": 0.0,
+                "exit_sdl_n_sigma": 3.0,
+                "exit_trailing_stop_trigger_pct": 0.12,
+                "exit_trailing_stop_trail_pct": 0.25,
+                "exit_max_hold_days": 500,
+            }
+        ])
+
+        report = evaluate_trade_contract(
+            df, require_entry_mu=True, require_entry_sigma=True,
+        )
+
+        assert report.passed is True
+        assert report.evidence["n_alpha_entry_auditable"] == 0
+        assert report.evidence["n_benchmark_sleeve_auditable"] == 1

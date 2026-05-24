@@ -387,3 +387,27 @@ class TestPortfolioLevelGuards:
             "the portfolio-level same-bar sell cap must be applied again"
         )
         assert ctx.counters.get("model_sell_throttled") == 1
+
+    def test_benchmark_sleeve_is_exempt_from_alpha_xs_exit(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        cands.append(_cand("SPY", -1.0))
+        ctx = _ctx(
+            holdings={"SPY": _holding(panel=-1.0, mu=-0.50, days_back=60)},
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(),
+            prices={"SPY": 500.0},
+        )
+        ctx.config["benchmark"] = "SPY"
+        ctx.config["portfolio"] = {
+            "benchmark_sleeve": {
+                "enabled": True,
+                "ticker": "SPY",
+                "exclude_from_alpha_pipeline": True,
+            },
+        }
+
+        CrossSectionalPanelExitTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters.get("benchmark_sleeve_alpha_exit_exempt") == 1
+        assert ctx._blocked_by_ticker["SPY"] == "benchmark_sleeve_alpha_exit_exempt"

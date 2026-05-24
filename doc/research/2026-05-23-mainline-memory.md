@@ -896,6 +896,60 @@ per-cut artifacts, causal calibrators, 60BD embargo, train-only preprocessing,
 fingerprints, per-regime/per-seed IC, PBO/DSR, and full decision-tree
 APY/Sharpe/tax/turnover versus XGB and SPY.
 
+## 2026-05-24 Benchmark Sleeve Audit / A-B
+
+Implemented a default-off benchmark core sleeve to separate market beta from
+alpha selection.
+
+- Solver: `BenchmarkSleeveTask` uses third-party SciPy `scipy.optimize.linprog`
+  with HiGHS (`solver=scipy_linprog_highs`). It is not a hand-rolled optimizer.
+- The sleeve ticker is excluded from alpha buy scan, alpha QP source maps,
+  cross-sectional panel exits, legacy panel exits, and the per-ticker sell
+  chain. The sleeve can only be bought/sold by `BenchmarkSleeveTask` when the
+  feature is enabled.
+- Decision traces include the sleeve ticker when enabled. Trade contracts now
+  require entry `mu/sigma` only for alpha entries; properly attributed
+  `BENCHMARK_SLEEVE_BUY` rows are still audited through source/exit fields.
+- Targeted tests: benchmark sleeve, panel exit, trade contract, QP integration,
+  and joint-QP suites pass. The default xdist QP 200ms perf check was flaky at
+  201-211ms; single-process rerun passed at ~120ms.
+
+WF diagnostic with the same model artifact
+`panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json`:
+
+| Variant | Sleeve target | Mean APY | Mean Sharpe | SPY mean Sharpe delta | Beat SPY Sharpe | Beat SPY APY | Contract |
+|---|---:|---:|---:|---:|---:|---:|---|
+| regime sleeve | BULL_CALM 100%, BULL_VOL 50%, CHOPPY/BEAR 0% | +5.21% | +0.463 | -0.618 | 0/3 | 0/3 | pass |
+| core100 | 100% all regimes | +16.59% | +1.187 | +0.106 | 2/3 | 0/3 | pass |
+| core85 | 85% max sleeve, 15% alpha budget | +14.79% | +1.122 | +0.042 | 1/3 | 0/3 | pass |
+
+Interpretation:
+
+- The earlier low-exposure diagnosis is confirmed. Removing CHOPPY/BEAR
+  market-timing from the benchmark sleeve lifted mean Sharpe from `+0.463` to
+  `+1.187`.
+- The sleeve fix is not alpha proof. `core100` mostly behaves like SPY plus
+  tiny alpha and therefore improves Sharpe by restoring beta participation.
+- `core85` gives alpha budget, but current alpha/QP trades do not add enough:
+  alpha closed trades were gross `+$3.95k` but net `-$0.67k` after tax estimate
+  across the three WF cuts. The active sleeve is still not ready for promotion
+  as an SPY-beating strategy.
+- The old regime sleeve was effectively using the regime detector as a market
+  timer. That was the wrong default for a benchmark core. Core-satellite theory
+  supports separating benchmark exposure from active bets; tactical de-risking
+  needs a separate accepted overlay, not CHOPPY=0 by default.
+
+Pending design work:
+
+1. Decide whether the benchmark sleeve is a pure benchmark core (`core100`) or a
+   core-satellite allocator with an explicit alpha budget (`core85`-style).
+2. If alpha budget is kept, QP must be evaluated on marginal contribution after
+   tax and turnover versus the displaced benchmark sleeve, not just raw trade
+   gross P/L.
+3. Do not promote the benchmark-sleeve config until strict WF passes benchmark
+   APY/Sharpe gates or the acceptance policy explicitly changes to
+   benchmark-relative Sharpe with documented APY trade-off.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the
@@ -903,9 +957,12 @@ APY/Sharpe/tax/turnover versus XGB and SPY.
    manifest. Check splitter/label
    horizon, feature timestamping, regime persistence, slow beta/momentum
    persistence, and calibrator scope before trusting any reported IC.
-2. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
-   annual-net and SPY-relative metrics fail. Split by regime, exposure, tax,
-   stop-loss bucket, and QP/top-up source.
+2. Continue benchmark/annual-net work from the benchmark-sleeve A/B:
+   cash drag is confirmed, CHOPPY/BEAR sleeve de-risking is rejected as a
+   default benchmark-core design, and `core100` restores risk-adjusted
+   participation. Remaining blocker is alpha budget/marginal contribution:
+   QP alpha must beat the displaced benchmark sleeve after tax and turnover
+   before it deserves capital.
 3. Re-run strict WF only after the model/sanity issue has a theory-backed fix.
    Compare event-level, annual-net, SPY-relative, regime cuts, score
    monotonicity, stop-loss bucket, and QP/TopUp source buckets.

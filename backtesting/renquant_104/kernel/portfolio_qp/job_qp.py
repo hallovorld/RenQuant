@@ -34,6 +34,10 @@ from kernel.pipeline.atoms import (
 )
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Job, Task
+from kernel.pipeline.task_benchmark_sleeve import (
+    benchmark_sleeve_ticker,
+    exclude_benchmark_sleeve_from_alpha,
+)
 
 from .tasks import (
     ApplyConvictionCapTask,
@@ -106,8 +110,14 @@ class _BuildSourceMapTask(Task):
 
     def run(self, ctx) -> bool | None:
         src: dict = {}
+        sleeve_ticker = (
+            benchmark_sleeve_ticker(ctx)
+            if exclude_benchmark_sleeve_from_alpha(ctx) else None
+        )
         holdings = ctx.holdings or {}
         for t, hs in holdings.items():
+            if t == sleeve_ticker:
+                continue
             src[t] = hs
         admitted_new_tickers: set[str] = set()
         blocked_map = getattr(ctx, "_blocked_by_ticker", None)
@@ -121,6 +131,9 @@ class _BuildSourceMapTask(Task):
         for c in (ctx.candidates or []):
             t = getattr(c, "ticker", None)
             if not t:
+                continue
+            if t == sleeve_ticker:
+                blocked_map.setdefault(t, "benchmark_sleeve_excluded_from_alpha_qp")
                 continue
             if t not in holdings:
                 reason = self._new_candidate_block_reason(
@@ -153,7 +166,7 @@ class _BuildSourceMapTask(Task):
         # candidate's signed panel_score reaches the QP.
         for c in (getattr(ctx, "short_candidates", None) or []):
             t = getattr(c, "ticker", None)
-            if t:
+            if t and t != sleeve_ticker:
                 src[t] = c
         ctx._qp_mu_source_map = src   # noqa: SLF001
         self._sync_ticker_order(ctx, src)

@@ -127,6 +127,14 @@ def _make_cand_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
 
 def _buy_universe(ctx: InferenceContext) -> list[str]:
     held = set(ctx.holdings.keys())
+    from .task_benchmark_sleeve import (  # noqa: PLC0415
+        benchmark_sleeve_ticker,
+        exclude_benchmark_sleeve_from_alpha,
+    )
+    sleeve_ticker = (
+        benchmark_sleeve_ticker(ctx) if exclude_benchmark_sleeve_from_alpha(ctx)
+        else None
+    )
     # Audit fix BROKER-PRECHECK (2026-04-26): exclude tickers with pending
     # orders at the broker. Pre-fix, these were filtered AT SUBMIT TIME,
     # AFTER the pipeline already built features + scored + sized them →
@@ -141,9 +149,36 @@ def _buy_universe(ctx: InferenceContext) -> list[str]:
         defensives = set(ctx.config.get("defensive_tickers", []))
         return [t for t in defensives
                 if t in ctx.models and t not in held
+                and t != sleeve_ticker
                 and t not in pending_at_broker and t in ctx.ohlcv]
     return [t for t in ctx.models if t not in held
+            and t != sleeve_ticker
             and t not in pending_at_broker and t in ctx.ohlcv]
+
+
+def _sell_universe(ctx: InferenceContext) -> list[str]:
+    from .task_benchmark_sleeve import (  # noqa: PLC0415
+        benchmark_sleeve_ticker,
+        exclude_benchmark_sleeve_from_alpha,
+    )
+
+    sleeve_ticker = (
+        benchmark_sleeve_ticker(ctx) if exclude_benchmark_sleeve_from_alpha(ctx)
+        else None
+    )
+    held = list(ctx.holdings.keys())
+    if sleeve_ticker is None:
+        return held
+    blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked_map is None:
+        blocked_map = {}
+        ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+    if sleeve_ticker in ctx.holdings:
+        blocked_map[sleeve_ticker] = "benchmark_sleeve_alpha_sell_exempt"
+        ctx.counters["benchmark_sleeve_alpha_sell_exempt"] = (
+            ctx.counters.get("benchmark_sleeve_alpha_sell_exempt", 0) + 1
+        )
+    return [t for t in held if t != sleeve_ticker]
 
 
 # ── InferencePipeline ──────────────────────────────────────────────────────────
@@ -188,7 +223,7 @@ class InferencePipeline:
         DrawdownJob().run(ctx)
         BuyGatesJob().run(ctx)
 
-        sell_tctxs = [_make_sell_tctx(ctx, t) for t in list(ctx.holdings.keys())]
+        sell_tctxs = [_make_sell_tctx(ctx, t) for t in _sell_universe(ctx)]
         run_parallel(sell_tctxs, TickerSellJob())
         for tc in sell_tctxs:
             ctx.holdings[tc.ticker] = tc.holding
@@ -380,6 +415,12 @@ class InferencePipeline:
         from .task_trim import TrimHeldTask  # noqa: PLC0415
         TrimHeldTask().run(ctx)
 
+        # Benchmark-aware beta sleeve. Runs after alpha/QP/top-up/trim so
+        # residual cash can be assigned to the benchmark core without letting
+        # QP turn weak alpha candidates into trades. Disabled by default.
+        from .task_benchmark_sleeve import BenchmarkSleeveTask  # noqa: PLC0415
+        BenchmarkSleeveTask().run(ctx)
+
         # Monitor: persistent no-trade periods are treated as a hard signal,
         # not a silent state. See task_monitor.MonitorIdleStreakTask.
         from .task_monitor import MonitorIdleStreakTask  # noqa: PLC0415
@@ -425,7 +466,7 @@ class SellOnlyPipeline:
         RegimeJob().run(ctx)
         DrawdownJob().run(ctx)
 
-        sell_tctxs = [_make_sell_tctx(ctx, t) for t in list(ctx.holdings.keys())]
+        sell_tctxs = [_make_sell_tctx(ctx, t) for t in _sell_universe(ctx)]
         run_parallel(sell_tctxs, TickerSellJob())
         for tc in sell_tctxs:
             ctx.holdings[tc.ticker] = tc.holding

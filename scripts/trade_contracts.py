@@ -40,24 +40,27 @@ def evaluate_trade_contract(
         pd.Series(["closed"] * len(df), index=df.index)
     )
     auditable = df[status.isin({"closed", "open"})]
+    alpha_entry_auditable = _alpha_entry_rows(auditable)
     closed = df[status == "closed"]
     issues: list[str] = []
     evidence: dict[str, Any] = {
         "n_rows": int(len(df)),
         "n_auditable": int(len(auditable)),
+        "n_alpha_entry_auditable": int(len(alpha_entry_auditable)),
+        "n_benchmark_sleeve_auditable": int(len(auditable) - len(alpha_entry_auditable)),
         "n_closed": int(len(closed)),
     }
 
     if require_entry_mu:
-        n = _missing_finite(auditable, "entry_mu")
+        n = _missing_finite(alpha_entry_auditable, "entry_mu")
         evidence["missing_entry_mu"] = n
         if n:
-            issues.append(f"{n} auditable trade(s) missing finite entry_mu")
+            issues.append(f"{n} alpha trade(s) missing finite entry_mu")
     if require_entry_sigma:
-        n = _missing_finite(auditable, "entry_sigma")
+        n = _missing_finite(alpha_entry_auditable, "entry_sigma")
         evidence["missing_entry_sigma"] = n
         if n:
-            issues.append(f"{n} auditable trade(s) missing finite entry_sigma")
+            issues.append(f"{n} alpha trade(s) missing finite entry_sigma")
     if require_exit_regime:
         n = _missing_nonempty(closed, "exit_regime")
         evidence["missing_exit_regime"] = n
@@ -80,6 +83,41 @@ def evaluate_trade_contract(
     if issues:
         return TradeContractReport(False, "; ".join(issues), evidence)
     return TradeContractReport(True, "trade ledger contract OK", evidence)
+
+
+def _alpha_entry_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows whose entry must carry alpha-model μ/σ.
+
+    Benchmark-sleeve entries are beta-overlay trades, not alpha candidates.
+    They remain auditable through source attribution and exit-policy fields,
+    but requiring entry_mu/entry_sigma would incorrectly fail a properly
+    attributed benchmark allocation.
+    """
+    if df.empty:
+        return df
+    return df[~_benchmark_sleeve_entry_mask(df)]
+
+
+def _benchmark_sleeve_entry_mask(df: pd.DataFrame) -> pd.Series:
+    mask = pd.Series(False, index=df.index)
+    for col in (
+        "entry_order_type",
+        "order_type",
+        "entry_source_job",
+        "source_job",
+        "entry_source_task",
+        "source_task",
+        "entry_reason",
+        "reason",
+    ):
+        if col not in df.columns:
+            continue
+        s = df[col].astype(str).str.lower()
+        if col in {"entry_source_job", "source_job"}:
+            mask = mask | s.eq("benchmarksleevejob")
+        mask = mask | s.str.contains("benchmark_sleeve", regex=False, na=False)
+        mask = mask | s.str.contains("benchmarksleevetask", regex=False, na=False)
+    return mask
 
 
 def _missing_finite(df: pd.DataFrame, col: str) -> int:

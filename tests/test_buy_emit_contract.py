@@ -22,6 +22,7 @@ KERNEL = REPO / "backtesting" / "renquant_104" / "kernel"
 # Files that emit BUY orders (append to ctx.orders).
 EMIT_FILES = [
     KERNEL / "pipeline" / "task_topup.py",       # TopUpHeldTask
+    KERNEL / "pipeline" / "task_benchmark_sleeve.py",  # BenchmarkSleeveTask
     KERNEL / "pipeline" / "task_selection.py",   # SizeAndEmitTask (greedy)
     KERNEL / "pipeline" / "task_rotation.py",    # EmitRotationsTask (rotation buys)
     KERNEL / "pipeline" / "task_joint_actions.py",  # JointActionTask (greedy QP fallback)

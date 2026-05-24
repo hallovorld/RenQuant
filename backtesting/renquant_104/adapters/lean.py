@@ -29,6 +29,19 @@ _INDICATOR_LOOKBACK = 60
 _PANEL_LOOKBACK     = 520
 
 
+def _symbol_for_ticker(algo: Any, ticker: str):
+    """Resolve regular watchlist, sector ETF, or benchmark symbols."""
+    sym = algo.symbols.get(ticker)
+    if sym is not None:
+        return sym
+    sym = algo._sector_etf_symbols.get(ticker)
+    if sym is not None:
+        return sym
+    if ticker == getattr(algo, "_benchmark", None):
+        return getattr(algo, "_spy_sym", None)
+    return None
+
+
 def _model_type_from_artifact(model: Any) -> str | None:
     """Extract a readable model type for decision-trace rows."""
     if model is None:
@@ -196,7 +209,7 @@ class LeanAdapter:
         # ── Portfolio state ──────────────────────────────────────────────────
         prices: dict[str, float] = {}
         for ticker, hs in algo._holdings.items():
-            sym = algo.symbols.get(ticker)
+            sym = _symbol_for_ticker(algo, ticker)
             if sym and data.ContainsKey(sym):
                 prices[ticker] = float(data[sym].Close)
             elif sym:
@@ -303,7 +316,9 @@ class LeanAdapter:
         import math as _math_lex
         for ticker, sig in ctx.exits:
             hs        = ctx.holdings.get(ticker)
-            sym       = algo.symbols[ticker]
+            sym       = _symbol_for_ticker(algo, ticker)
+            if sym is None:
+                continue
             gross_pnl = float(algo.Portfolio[sym].UnrealizedProfit)
             days_held = (ctx.today - hs.entry_date).days if hs else 0
             is_lt     = days_held >= tax_thresh
@@ -505,7 +520,7 @@ class LeanAdapter:
             shares     = order["shares"]
             target_pct = order["target_pct"]
             price      = order["price"]
-            sym        = algo.symbols.get(ticker)
+            sym        = _symbol_for_ticker(algo, ticker)
             if sym is None:
                 continue
             try:
@@ -723,7 +738,10 @@ class LeanAdapter:
             return value if value is not None else snap.get(name)
 
         rows: list[dict[str, Any]] = []
-        for tk in list(config.get("watchlist", []) or []):
+        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+            decision_trace_tickers,
+        )
+        for tk in decision_trace_tickers(config):
             hs = ctx.holdings.get(tk)
             cand = cand_by_t.get(tk)
             src = cand if cand is not None else hs

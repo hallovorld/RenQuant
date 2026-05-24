@@ -54,6 +54,10 @@ import math
 from kernel.exits import ExitSignal
 from .context import InferenceContext, TickerInferenceContext
 from .pipeline import Task
+from .task_benchmark_sleeve import (
+    benchmark_sleeve_ticker,
+    exclude_benchmark_sleeve_from_alpha,
+)
 from .soft_exit_guards import (
     lt_gate_suppression,
     resolve_current_price,
@@ -62,6 +66,14 @@ from .soft_exit_guards import (
 )
 
 log = logging.getLogger("kernel.pipeline.panel_conviction_xs")
+
+
+def _stamp_blocked(ctx: InferenceContext, ticker: str, reason: str) -> None:
+    blocked = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked is None:
+        blocked = {}
+        setattr(ctx, "_blocked_by_ticker", blocked)
+    blocked[ticker] = reason
 
 
 def _apply_earnings_blackout(
@@ -134,9 +146,17 @@ class CrossSectionalPanelExitTask(Task):
         if not math.isfinite(mu_ceiling):
             return None
 
+        sleeve_ticker = (
+            benchmark_sleeve_ticker(ctx)
+            if exclude_benchmark_sleeve_from_alpha(ctx)
+            else None
+        )
+
         # ── Build cross-section of today's panel_score ───────────────
         all_scores: list[float] = []
         for c in (ctx.candidates or []):
+            if sleeve_ticker is not None and getattr(c, "ticker", None) == sleeve_ticker:
+                continue
             ps = getattr(c, "panel_score", None)
             if ps is not None:
                 try:
@@ -145,7 +165,9 @@ class CrossSectionalPanelExitTask(Task):
                         all_scores.append(f)
                 except (TypeError, ValueError):
                     pass
-        for h in ctx.holdings.values():
+        for ticker, h in ctx.holdings.items():
+            if sleeve_ticker is not None and ticker == sleeve_ticker:
+                continue
             ps = getattr(h, "panel_score", None)
             if ps is not None:
                 try:
@@ -172,6 +194,12 @@ class CrossSectionalPanelExitTask(Task):
 
         fired_tickers: set[str] = set()
         for ticker, hs in ctx.holdings.items():
+            if sleeve_ticker is not None and ticker == sleeve_ticker:
+                _stamp_blocked(ctx, ticker, "benchmark_sleeve_alpha_exit_exempt")
+                ctx.counters["benchmark_sleeve_alpha_exit_exempt"] = (
+                    ctx.counters.get("benchmark_sleeve_alpha_exit_exempt", 0) + 1
+                )
+                continue
             if ticker in already_exiting:
                 continue
             panel = getattr(hs, "panel_score", None)
