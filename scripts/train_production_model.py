@@ -374,6 +374,7 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    train_run_id: str | None = None) -> dict:
     """Build artifact dict, stamping cutoff_date + side_label when set."""
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
+    lookahead_days = infer_label_lookahead_days(label_used)
     base_notes = (
         "alpha158 + SEC fund (5) + PEAD (3, E47 promoted 2026-05-08) on R1K "
         "291 tickers, fwd_60d label. PEAD real_signal lift +0.022 over "
@@ -396,7 +397,7 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
             "dates":   int(train["date"].nunique()),
         },
         "label_col": label_used,
-        "lookahead_days": 60,
+        "lookahead_days": lookahead_days,
         "train_run_id": train_run_id,
         "training_train_ic": train_ic,
         "training_notes": notes,
@@ -418,8 +419,7 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
     if cutoff_date is not None:
         artifact["cutoff_date"] = cutoff_date.isoformat()
         artifact["cutoff_embargo_days"] = int(
-            infer_label_lookahead_days(label_used)
-            if cutoff_embargo_days is None else cutoff_embargo_days
+            lookahead_days if cutoff_embargo_days is None else cutoff_embargo_days
         )
         artifact["effective_train_cutoff_date"] = (
             cutoff_date - pd.offsets.BDay(artifact["cutoff_embargo_days"])

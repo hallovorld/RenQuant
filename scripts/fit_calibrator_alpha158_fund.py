@@ -59,6 +59,12 @@ def _infer_raw_er_label(label_col: str) -> str:
     return f"{label_col}_raw"
 
 
+def _infer_label_lookahead_days(label_col: str) -> int:
+    """Infer the trading-day forward horizon from a label column name."""
+    m = re.search(r"fwd_(\d+)d", str(label_col or ""))
+    return int(m.group(1)) if m else 60
+
+
 def _label_scale_diagnostics(frame: pd.DataFrame, label_col: str) -> dict[str, float | int | bool]:
     if label_col not in frame.columns:
         raise KeyError(f"label column not present: {label_col}")
@@ -257,6 +263,7 @@ def main():
     # A short-horizon scorer (fwd_5d / fwd_20d) used with the previous
     # hardcoded `fwd_60d_excess` produced a silent label/horizon mismatch.
     label_col = art.get("label_col", LABEL_60D)
+    lookahead_days = _infer_label_lookahead_days(label_col)
     log.info("Artifact fingerprint=%s  features=%d  label_col=%s",
              fingerprint, len(feat_cols), label_col)
 
@@ -354,10 +361,14 @@ def main():
     method = (cli_args.method if hasattr(cli_args, "method") and cli_args.method
               else "platt")
     from training_panel.global_calibrator import fit_global_calibrator
-    log.info("Fitting calibrator (method=%s, lookahead=60d, threshold_mode=crosssectional)", method)
+    log.info(
+        "Fitting calibrator (method=%s, lookahead=%dd, threshold_mode=crosssectional)",
+        method,
+        lookahead_days,
+    )
     calib = fit_global_calibrator(
         panel_scores, future_returns,
-        lookahead_days=60,
+        lookahead_days=lookahead_days,
         threshold=0.0,                # ignored when threshold_mode='crosssectional'
         threshold_mode="crosssectional",
         method=method,
@@ -416,7 +427,7 @@ def main():
         metadata["data_window_start"] = args.data_start
     if args.data_end:
         metadata["data_window_end"] = args.data_end
-    metadata["lookahead_days_used"] = 60
+    metadata["lookahead_days_used"] = lookahead_days
 
     calib.save(out_path, metadata=metadata)
     log.info("Saved: n_unique_prob_y=%d  pool_ic=%+.4f  per_date_ic=%+.4f  base_rate=%.4f",

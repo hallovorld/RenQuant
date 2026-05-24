@@ -96,6 +96,54 @@ class TestResolveLookaheadDays:
         )
 
 
+class TestProductionTrainingLookaheadStamp:
+    """Production/WF artifacts and calibrators must stamp the label horizon."""
+
+    def test_train_production_artifact_lookahead_follows_label_name(self):
+        from scripts.train_production_model import build_artifact
+        import numpy as np
+        import pandas as pd
+
+        class _FakeBooster:
+            def save_raw(self, raw_format="json"):
+                assert raw_format == "json"
+                return b"{}"
+
+        train = pd.DataFrame({
+            "ticker": ["AAA", "BBB"],
+            "date": pd.to_datetime(["2024-01-01", "2024-01-01"]),
+        })
+        artifact = build_artifact(
+            _FakeBooster(),
+            ["f1", "f2"],
+            np.array([0.0, 0.0]),
+            np.array([1.0, 1.0]),
+            train,
+            pd.Timestamp("2024-01-31"),
+            "test",
+            label_used="fwd_20d_excess",
+        )
+
+        assert artifact["lookahead_days"] == 20
+        assert artifact["cutoff_embargo_days"] == 20
+
+    def test_fit_calibrator_alpha158_fund_infers_lookahead_from_label(self):
+        from scripts.fit_calibrator_alpha158_fund import _infer_label_lookahead_days
+
+        assert _infer_label_lookahead_days("fwd_5d_excess") == 5
+        assert _infer_label_lookahead_days("fwd_20d_excess") == 20
+        assert _infer_label_lookahead_days("fwd_60d_excess_raw") == 60
+
+    def test_fit_calibrator_main_uses_inferred_lookahead(self):
+        import inspect
+        from scripts import fit_calibrator_alpha158_fund as mod
+
+        src = inspect.getsource(mod.main)
+        assert "lookahead_days = _infer_label_lookahead_days(label_col)" in src
+        assert "lookahead_days=lookahead_days" in src
+        assert 'metadata["lookahead_days_used"] = lookahead_days' in src
+
+
 # ── 2. BuildPanelTask propagation (legacy monolith path) ────────────────────
 
 class TestBuildPanelTaskLookaheadPropagation:
