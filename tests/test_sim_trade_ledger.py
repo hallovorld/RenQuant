@@ -247,6 +247,30 @@ def test_forensic_report_groups_by_regime_and_exit_reason() -> None:
     assert "Worst 25 Closed Round Trips" in report
 
 
+def test_forensic_report_labels_walkforward_artifact_as_config_seed() -> None:
+    report = build_forensic_report(
+        raw_trades=pd.DataFrame([{"action": "buy", "ticker": "AAPL"}]),
+        round_trips=pd.DataFrame(),
+        metrics={},
+        config={
+            "ranking": {
+                "panel_scoring": {
+                    "buy_floor": "adaptive_mean_std",
+                    "artifact_path": "artifacts/walkforward/foo/panel-ltr.json",
+                }
+            },
+            "walkforward": {
+                "enabled": True,
+                "manifest_path": "artifacts/sim/walkforward_manifest.json",
+            },
+        },
+    )
+
+    assert "- scoring_mode: walkforward_manifest_per_bar" in report
+    assert "- panel_artifact_path_config_seed:" in report
+    assert "- panel_artifact_path: artifacts/walkforward/foo/panel-ltr.json" not in report
+
+
 def test_write_trade_outputs_creates_raw_roundtrip_and_report_files(tmp_path) -> None:
     trade_log = [
         {

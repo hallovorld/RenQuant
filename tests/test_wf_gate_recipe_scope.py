@@ -5,6 +5,9 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "run_wf_gate.py"
@@ -137,6 +140,88 @@ def test_static_sanity_contract_requires_cutoff_plus_lookahead_before_eval() -> 
 
     assert result["passed"] is False
     assert "cutoff + lookahead" in result["reason"]
+
+
+def test_manifest_sanity_uses_effective_cutoff_without_double_embargo(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """WF sanity must mirror WalkForwardModelLoader's safe-date contract.
+
+    Regression target: the manifest entry below is safe on 2024-02-02 because
+    the artifact trained only through 2023-10-31 and uses a 60-business-day
+    forward label. A stale sanity check incorrectly used cutoff_date
+    2024-01-23 + 60BDay and failed closed.
+    """
+    mod = _load_module()
+    strategy_path = str(REPO / "backtesting" / "renquant_104")
+    if strategy_path not in sys.path:
+        sys.path.insert(0, strategy_path)
+
+    from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
+
+    candidate = tmp_path / "candidate.json"
+    sample = tmp_path / "sample.json"
+    manifest = tmp_path / "manifest.json"
+    payload = _artifact(["feature_a"])
+    candidate.write_text(json.dumps(payload))
+    sample.write_text(json.dumps(payload))
+    manifest.write_text(json.dumps({
+        "retrains": [{
+            "cutoff_date": "2024-01-23T00:00:00",
+            "effective_train_cutoff_date": "2023-10-31T00:00:00",
+            "trained_date": "2024-01-23T00:00:00",
+            "lookahead_days": 60,
+            "artifact_uri": str(sample),
+        }]
+    }))
+
+    class FakeScorer:
+        metadata = {
+            "feature_means": [0.0],
+            "feature_stds": [1.0],
+            "feature_norm_kind": ["identity"],
+        }
+
+        def score(self, frame):
+            return pd.Series([0.1] * len(frame), index=frame.index)
+
+    monkeypatch.setattr(
+        PanelScorer,
+        "load",
+        staticmethod(lambda path: FakeScorer()),
+    )
+
+    val = pd.DataFrame({
+        "date": pd.to_datetime(["2024-02-02", "2024-02-02"]),
+        "ticker": ["AAA", "BBB"],
+        "feature_a": [1.0, 2.0],
+    })
+
+    mu, meta = mod._score_manifest_sanity(
+        val,
+        ["feature_a"],
+        manifest,
+        candidate,
+        payload,
+    )
+
+    assert list(mu) == [0.1, 0.1]
+    assert meta["n_oos_dates"] == 1
+    assert "effective_train_cutoff_date" in meta["cutoff_contract"]
+
+
+def test_manifest_safe_last_label_prefers_effective_train_cutoff() -> None:
+    mod = _load_module()
+    entry = SimpleNamespace(
+        cutoff_date=mod.pd.Timestamp("2024-01-23"),
+        effective_train_cutoff_date=mod.pd.Timestamp("2023-10-31"),
+        lookahead_days=60,
+    )
+
+    safe = mod._manifest_entry_safe_last_label_date(entry)
+
+    assert safe == mod.pd.Timestamp("2024-01-23")
 
 
 def test_recipe_fingerprint_ignores_execution_only_xgb_params() -> None:

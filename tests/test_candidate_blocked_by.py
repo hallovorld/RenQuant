@@ -4,6 +4,8 @@ import datetime
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
@@ -43,3 +45,15 @@ def test_build_features_stamps_missing_input_reason():
 
     assert BuildFeaturesTask().run(tc) is False
     assert tc.blocked_by == "missing_input:stock_ohlcv,model,spy_ohlcv"
+
+
+def test_build_features_stamps_empty_cached_feature_reason():
+    tc = _tc("AAPL", config={"indicator_spec": {}})
+    tc.feature_cache_frame = pd.DataFrame(
+        {"close": [100.0]},
+        index=pd.to_datetime(["2026-05-24"]),
+    )
+    tc.today = datetime.date(2026, 5, 23)
+
+    assert BuildFeaturesTask().run(tc) is False
+    assert tc.blocked_by == "empty_cached_features"

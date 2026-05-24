@@ -986,6 +986,23 @@ def _manifest_uri_to_path(manifest_path: Path, uri: str) -> Path:
     return p if p.is_absolute() else manifest_path.parent / p
 
 
+def _manifest_entry_safe_last_label_date(entry) -> pd.Timestamp:
+    """Return the last label date a WF manifest entry could have seen.
+
+    Keep this in lockstep with WalkForwardModelLoader. Newer manifests stamp
+    effective_train_cutoff_date when the scorer already pre-embargoed rows
+    before the selection cutoff; using cutoff_date again double-counts the
+    lookahead and makes valid point-in-time folds fail sanity.
+    """
+    feature_cutoff = (
+        getattr(entry, "effective_train_cutoff_date", None)
+        or getattr(entry, "cutoff_date")
+    )
+    return pd.Timestamp(feature_cutoff) + pd.offsets.BDay(
+        max(0, int(getattr(entry, "lookahead_days", 0) or 0))
+    )
+
+
 def _score_manifest_sanity(
     val: pd.DataFrame,
     feat_cols: list[str],
@@ -1023,14 +1040,13 @@ def _score_manifest_sanity(
                 f"lookahead={entry.lookahead_days}, "
                 f"candidate={candidate_lookahead}"
             )
-        safe_last_label = entry.cutoff_date + pd.offsets.BDay(
-            max(0, int(entry.lookahead_days))
-        )
+        safe_last_label = _manifest_entry_safe_last_label_date(entry)
         if safe_last_label >= d:
             raise ValueError(
-                "manifest sanity cutoff + lookahead violates eval date: "
-                f"{entry.cutoff_date.date()} + {entry.lookahead_days}BDay = "
-                f"{safe_last_label.date()} >= {d.date()}"
+                "manifest sanity feature cutoff + lookahead violates eval date: "
+                f"{(entry.effective_train_cutoff_date or entry.cutoff_date).date()} "
+                f"+ {entry.lookahead_days}BDay = {safe_last_label.date()} "
+                f">= {d.date()}"
             )
         date_to_artifact[d] = str(_manifest_uri_to_path(manifest_path, entry.artifact_uri))
         safe_dates.append(d)
@@ -1061,7 +1077,10 @@ def _score_manifest_sanity(
         "sanity_eval_end": max(safe_dates).date().isoformat() if safe_dates else None,
         "n_oos_dates": int(len(safe_dates)),
         "n_manifest_artifacts_used": int(scored["__sanity_artifact_uri"].nunique()),
-        "cutoff_contract": "manifest entry cutoff_date + lookahead_days < eval date",
+        "cutoff_contract": (
+            "manifest entry effective_train_cutoff_date/cutoff_date "
+            "+ lookahead_days < eval date"
+        ),
     }
 
 

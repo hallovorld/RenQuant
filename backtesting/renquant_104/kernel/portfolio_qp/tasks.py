@@ -43,6 +43,25 @@ from kernel.pipeline.pipeline import Task
 log = logging.getLogger("kernel.portfolio_qp.tasks")
 
 
+def _ensure_blocked_map(ctx) -> dict:
+    blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked_map is None:
+        blocked_map = {}
+        ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+    return blocked_map
+
+
+def _stamp_qp_ticker_block(ctx, ticker: str, reason: str) -> None:
+    if not ticker:
+        return
+    _ensure_blocked_map(ctx).setdefault(str(ticker), reason)
+
+
+def _stamp_all_qp_blocks(ctx, reason: str) -> None:
+    for ticker in (_get_path(ctx, "_qp_tickers") or []):
+        _stamp_qp_ticker_block(ctx, str(ticker), reason)
+
+
 # ── 1. Build w_current from shares × prices / NAV ────────────────────────────
 
 class BuildWeightVectorTask(Task):
@@ -765,6 +784,9 @@ class ValidateQPMuContractTask(Task):
         )
         if mode in {"strict", "hard", "error", "enforce"}:
             _inc_counter(ctx, "qp_mu_contract_block", 1)
+            affected = missing_mu if missing_mu else list(tickers)
+            for ticker in affected:
+                _stamp_qp_ticker_block(ctx, str(ticker), "qp_mu_contract_block")
             log.error("%s — stopping QP job", msg)
             return False
         log.warning("%s — continuing in warn mode", msg)
@@ -1191,6 +1213,12 @@ class SolveMarkowitzQPTask(Task):
         sol = _solve(**kwargs)
         sol = _retry_with_relaxed_c2_caps(sol, kwargs, _solve)
         ctx._qp_solution = sol  # noqa: SLF001
+        ctx._qp_status = str(getattr(sol, "status", "missing_solution"))  # noqa: SLF001
+        ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
+        if sol.status != "optimal":
+            reason = "qp_no_signal" if sol.status == "optimal_no_signal" else f"qp_global:{sol.status}"
+            ctx._qp_failure_reason = reason  # noqa: SLF001
+            _stamp_all_qp_blocks(ctx, reason)
         ctx._qp_n_buys = 0  # noqa: SLF001
         ctx._qp_n_sells = 0  # noqa: SLF001
 
@@ -1643,6 +1671,16 @@ class EmitOrdersFromQPSolutionTask(Task):
     def run(self, ctx) -> bool | None:
         sol = _get_path(ctx, "_qp_solution")
         if sol is None or sol.status != "optimal":
+            reason = (
+                "qp_missing_solution" if sol is None
+                else ("qp_no_signal" if sol.status == "optimal_no_signal"
+                      else f"qp_global:{sol.status}")
+            )
+            ctx._qp_status = str(sol.status if sol else "missing_solution")  # noqa: SLF001
+            ctx._qp_failure_reason = reason  # noqa: SLF001
+            if sol is not None:
+                ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
+            _stamp_all_qp_blocks(ctx, reason)
             log.warning("EmitOrdersFromQPSolutionTask: status=%s — skip",
                          sol.status if sol else "none")
             return False

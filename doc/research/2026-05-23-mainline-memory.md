@@ -49,10 +49,10 @@ Make RenQuant 104 scientifically trustworthy end to end:
   and per-date IC `+0.1193`. These are training/calibration diagnostics only,
   not acceptance evidence.
 - The feature-space-aligned staged model correctly fails strict WF admission
-  against the old manifest because the feature-source contract changed. Old
-  walk-forward artifacts are no longer recipe-comparable; a new WF manifest
-  must be regenerated under the new feature contract before quoting WF
-  Sharpe/APY for this candidate.
+  against the old manifest because the feature-source contract changed. A
+  same-recipe 40-row manifest was then generated and evaluated; it also fails
+  acceptance on SPY-relative Sharpe/APY, BULL_CALM trade monotonicity, and
+  manifest-OOS placebo sanity. Do not promote it.
 
 ## Pushed Progress
 
@@ -604,38 +604,148 @@ Verification:
 - `.venv/bin/python -m pytest tests/test_sec_fundamentals_pit.py tests/test_panel_training_cutoff.py tests/test_panel_bugfixes.py tests/test_panel_factors.py -q`
   -> `38 passed`.
 
+## 2026-05-23 Feature-Space WF Gate Rerun
+
+A same-recipe 40-row walk-forward manifest now covers the feature-space staged
+candidate `codex_featspace_20260523-211211`.
+
+- Manifest:
+  `artifacts/sim/walkforward_manifest_172_featspace_20260523.scopefixed.covered.json`.
+- Validation trace:
+  `artifacts/diagnostics/wf_trade_traces/codex_featspace_20260523-211211_wf_featspace_scopefixed_covered`.
+- Recipe fingerprint: `sha256:f4596e333baf90a8`.
+- Verdict: `FAIL`.
+
+Annual-net gate metrics:
+
+| cut | annual-net APY | annual-net Sharpe | SPY Sharpe | Δ Sharpe |
+|---|---:|---:|---:|---:|
+| 2024-01-02 to 2024-12-31 | `+3.13%` | `+0.701` | `+1.778` | `-1.077` |
+| 2024-07-01 to 2025-06-30 | `+2.19%` | `+0.707` | `+0.715` | `-0.008` |
+| 2025-04-01 to 2026-03-28 | `-0.56%` | `-0.208` | `+0.749` | `-0.958` |
+
+Summary:
+
+- Mean annual-net Sharpe: `+0.400`.
+- Positive Sharpe cuts: `2/3`.
+- Beat SPY Sharpe/APY: `0/3` and `0/3`.
+- Benchmark-lag regimes: `HIGH_CALM`, `LOW_SPIKED`.
+- Trade ledger contract: passed.
+- Trade monotonicity: failed in active regime `BULL_CALM`.
+
+The first full run exposed a WF gate bug: manifest sanity used
+`cutoff_date + lookahead_days` even when a row stamped
+`effective_train_cutoff_date`, double-embargoing valid folds and failing as
+`prediction failed`. Fixed in `scripts/run_wf_gate.py` by using the same
+safe-label convention as `WalkForwardModelLoader`.
+
+After the gate fix, sanity computes real diagnostics instead of crashing:
+
+- Real IC: `+0.0218`.
+- Shuffled IC: `+0.0012` (clean).
+- Time-shift placebo IC: `+0.0263`, above the required `< +0.0109`.
+- Verdict remains `FAIL`.
+
+Interpretation: the feature-space retrain improved train/CV diagnostics but
+does not yet prove tradable, benchmark-beating alpha. The current failure is
+not tax-cash corruption: `event_level_tax_debited=0` in all three traces, and
+the gate uses annual-net tax economics.
+
+## 2026-05-23 Decision Trace / QP Reason Hardening
+
+Decision-trace opacity found during sidecar audits is partially fixed:
+
+- Strict QP μ contract failures now stamp affected tickers with
+  `qp_mu_contract_block`.
+- Non-optimal global QP status now stamps QP tickers with
+  `qp_global:<status>` or `qp_no_signal`, and stores
+  `ctx._qp_status`, `ctx._qp_failure_reason`, and `ctx._qp_diagnostics`.
+- Empty cached feature slices now stamp `empty_cached_features`.
+- Non-selected `candidate_scores` rows now default to
+  `candidate_not_selected` instead of NULL.
+- `decision_trace_integrity_report()` now fails on candidate reason gaps and
+  selected candidate rows carrying a blocker.
+- Walk-forward forensic reports now label WF scoring as
+  `walkforward_manifest_per_bar`; the config artifact path is reported only as
+  a seed, not as the per-bar model actually used.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_qp_integration.py tests/test_joint_qp_task.py tests/test_candidate_blocked_by.py tests/test_persistence.py tests/test_sim_trade_ledger.py tests/test_wf_gate_recipe_scope.py tests/test_wf_gate_cli_contract.py tests/test_promote_wf_gate.py -q`
+  -> `145 passed`.
+
+Still pending: LEAN has no SQLite sidecar persistence equivalent to sim/live,
+so LEAN APY/Sharpe is not replayable under the same decision-trace contract.
+This is a larger adapter refactor and remains a P0 trace-parity item before
+using LEAN results as acceptance evidence.
+
+## 2026-05-23 PatchTST / XGB Experiment Audit
+
+PatchTST experiments did complete, but they are not promotion evidence.
+
+- HF Trainer 5-cut x 5-seed: mean best-val IC `+0.0467`, std `0.0816`, min
+  `-0.0607`, max `+0.1878`.
+- HF FiLM 5-cut x 5-seed: mean best-val IC `+0.0477`, std `0.0767`, min
+  `-0.0502`, max `+0.1718`.
+- HF cross-stock 5-cut x 5-seed: mean best-val IC `+0.0507`, std `0.0878`,
+  min `-0.0594`, max `+0.2035`.
+- All three families have negative Fed/unwind cuts.
+
+Current shadow is the strict seed44 baseline:
+
+- Checkpoint:
+  `artifacts/patchtst_shadow/pt07_strict_trainfit_embargo60_20260522/seed_44/hf_patchtst_all_seed44_model.pt`.
+- Summary IC: `best_val_ic=+0.030657`.
+- Per-regime IC: `BULL_VOLATILE +0.0524`, `BEAR +0.1916`,
+  `CHOPPY +0.0307`.
+- It does not use the HF DOE point 1 `weight_decay=0.01` winner, and it does
+  not use FiLM/cross-stock variants.
+
+PatchTST vs XGB diagnostic sim is not acceptance-grade:
+
+- Window 2024-07-02 to 2026-02-10:
+  - XGB strict-cutoff: APY `+1.17%`, Sharpe `+0.20`.
+  - PatchTST clean diagnostic: APY `+1.49%`, Sharpe `+0.23`.
+  - SPY: APY `+15.59%`, Sharpe `+0.91`.
+- Short-window 2026-05-06 to 2026-05-22 remains style-only, zero-sell
+  evidence: PatchTST is more aggressive; it is not promotable.
+
+Promotion requirement: build a true PatchTST walk-forward manifest with
+per-cut artifacts, causal calibrators, 60BD embargo, train-only preprocessing,
+fingerprints, per-regime/per-seed IC, PBO/DSR, and full decision-tree
+APY/Sharpe/tax/turnover versus XGB and SPY.
+
 ## Mainline Queue
 
-1. Regenerate the 172-feature walk-forward manifest under the current
-   feature-space contract before running acceptance WF on
-   `codex_featspace_20260523-211211`. Old manifest evidence is invalid for
-   this candidate.
-2. Diagnose the manifest-OOS sanity failure: real IC `+0.0269` is weak and the
-   time-shift placebo IC `+0.0282` is slightly higher. Check splitter/label
+1. Diagnose the manifest-OOS sanity failure: real IC is weak and the
+   time-shift placebo IC is higher than real IC on the covered feature-space
+   manifest. Check splitter/label
    horizon, feature timestamping, regime persistence, slow beta/momentum
    persistence, and calibrator scope before trusting any reported IC.
-3. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
+2. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
    annual-net and SPY-relative metrics fail. Split by regime, exposure, tax,
    stop-loss bucket, and QP/top-up source.
-4. Re-run strict WF only after the model/sanity issue has a theory-backed fix.
+3. Re-run strict WF only after the model/sanity issue has a theory-backed fix.
    Compare event-level, annual-net, SPY-relative, regime cuts, score
    monotonicity, stop-loss bucket, and QP/TopUp source buckets.
-5. Evaluate stop-loss changes only through paired A/B acceptance. The current
+4. Evaluate stop-loss changes only through paired A/B acceptance. The current
    BULL_CALM entry-regime stop-anchor A/B (`max_entry_current`) is rejected.
    Other candidates remain non-BULL volatility-aware stops and earlier
    panel/mu soft exits for positions whose model thesis deteriorates before
    hard stop.
-6. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
+5. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
    as OOS. Static PatchTST full-window sims are style diagnostics only.
-7. Continue after-tax/no-trade-region and stop-loss research per regime, using
+6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
-8. Fix remaining audit findings before promotion: per-ticker trace stamping
-   for global panel/QP failures. The WF `effective_train_cutoff_date`
+7. Fix remaining audit findings before promotion: LEAN DB trace parity and
+   exact universe-rejection reason preservation in sim/live. The WF
+   `effective_train_cutoff_date`
    double-embargo bug, SEC fundamentals point-in-time filed-date bug, LEAN/QP
    cash-capped target parity bug, universe metadata fail-closed bug,
-   calibrator metric-scope bug, and correlation metadata fail-closed semantics
-   are fixed. Correlation artifacts without `as_of_date` now require an
-   explicit legacy override, while sell-only risk exits remain soft-passed.
+   calibrator metric-scope bug, correlation metadata fail-closed semantics,
+   QP global status reason stamping, and candidate reason-gap contract are
+   fixed. Correlation artifacts without `as_of_date` now require an explicit
+   legacy override, while sell-only risk exits remain soft-passed.
 
 ## Known Failure Modes To Keep Front And Center
 

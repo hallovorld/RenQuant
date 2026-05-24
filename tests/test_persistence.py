@@ -230,6 +230,26 @@ class TestCandidateScores:
         assert rows[("BBB", "holding")][2] == "optimal"
         conn.close()
 
+    def test_non_selected_candidate_gets_explicit_default_reason(self, tmp_path):
+        from kernel.selection import CandidateResult
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        cand = CandidateResult(ticker="AAA", raw_score=0, rank_score=0.8,
+                               rs_score=0, detail="", expected_return=0.01)
+
+        record_candidate_scores(
+            conn, rid, [cand], {}, selected_tickers=set(),
+        )
+
+        row = conn.execute(
+            "SELECT blocked_by FROM candidate_scores WHERE run_id = ? AND ticker = ?",
+            (rid, "AAA"),
+        ).fetchone()
+        assert row[0] == "candidate_not_selected"
+        conn.close()
+
     def test_selected_candidate_clears_stale_block_reason(self, tmp_path):
         """AUDIT REGRESSION GUARD: selected rows are outcomes, not blocks.
 
@@ -421,9 +441,37 @@ class TestTrades:
         assert report["ok"] is False
         assert report["missing_watchlist_tickers"] == ["CCC"]
         assert report["selected_blocked_rows"] == 0
+        assert report["candidate_selected_blocked_rows"] == 0
+        assert report["candidate_reason_gaps"] == 0
         assert report["decision_reason_gaps"] == 0
         assert report["trade_payload_gaps"] == 0
         assert report["fallback_trade_attribution_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_candidate_reason_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        conn.execute(
+            """INSERT INTO candidate_scores
+               (run_id, ticker, role, selected, blocked_by)
+               VALUES (?, 'AAA', 'candidate', 0, NULL)""",
+            (rid,),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{"ticker": "AAA", "selected": 0, "blocked_by": "not_selected"}],
+        )
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["candidate_reason_gaps"] == 1
         conn.close()
 
     def test_decision_trace_integrity_report_flags_missing_block_reason(self, tmp_path):

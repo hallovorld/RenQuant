@@ -204,6 +204,7 @@ class TestQPMuContractIntegration:
         assert ret is True
         assert ctx.counters["qp_mu_contract_block"] == 1
         assert ctx._qp_mu_contract["ok"] is False
+        assert ctx._blocked_by_ticker["RAW"] == "qp_mu_contract_block"
         assert ctx.orders == []
         assert ctx.exits == []
         assert not hasattr(ctx, "_qp_w_current")

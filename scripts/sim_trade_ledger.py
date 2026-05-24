@@ -555,10 +555,15 @@ def build_forensic_report(
     if config:
         ranking = (config.get("ranking") or {}).get("panel_scoring") or {}
         lines.append(f"- panel_buy_floor: {ranking.get('buy_floor')}")
-        lines.append(f"- panel_artifact_path: {ranking.get('artifact_path')}")
         wf = config.get("walkforward") or {}
         if wf.get("enabled"):
+            lines.append("- scoring_mode: walkforward_manifest_per_bar")
+            lines.append(
+                f"- panel_artifact_path_config_seed: {ranking.get('artifact_path')}"
+            )
             lines.append(f"- walkforward_manifest: {wf.get('manifest_path')}")
+        else:
+            lines.append(f"- panel_artifact_path: {ranking.get('artifact_path')}")
     lines.append("")
 
     lines.append("## Theoretical Frame")

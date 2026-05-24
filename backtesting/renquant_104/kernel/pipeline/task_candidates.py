@@ -115,6 +115,7 @@ class BuildFeaturesTask(Task):
         if cached is not None and not cached.empty:
             tc.features = cached.loc[:tc.today]
             if tc.features is None or tc.features.empty:
+                tc.blocked_by = "empty_cached_features"
                 log.info("DROP_BuildFeatures [%s]: cached frame slice is empty "
                          "for date %s (cache range: %s → %s)",
                          tc.ticker, tc.today,
