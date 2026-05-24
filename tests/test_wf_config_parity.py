@@ -52,6 +52,16 @@ def _base_config(artifact_path: str, *, kind: str = "xgb") -> dict:
                 "_comment": "ignored",
             }
         },
+        "risk": {
+            "panel_exit": {
+                "enabled": True,
+                "legacy_enabled": False,
+                "panel_sell_floor": 0.2,
+                "mu_sell_ceiling": 0.0,
+                "trigger_mode": "and",
+                "_comment": "ignored",
+            }
+        },
         "regime_params": {
             "BULL_CALM": {"max_position_pct": 0.15, "cash_reserve_pct": 0.0}
         },
@@ -110,6 +120,24 @@ def test_buy_floor_drift_fails(tmp_path: Path) -> None:
 
     assert result["passed"] is False
     assert any(i["path"] == "ranking.panel_scoring.buy_floor" for i in result["issues"])
+
+
+def test_panel_exit_drift_fails(tmp_path: Path) -> None:
+    prod_art = _artifact(tmp_path / "prod_art.json", ["f1", "f2"])
+    wf_art = _artifact(tmp_path / "wf_art.json", ["f1", "f2"])
+    prod_cfg = _base_config(str(prod_art))
+    wf_cfg = _base_config(str(wf_art))
+    wf_cfg["risk"]["panel_exit"]["legacy_enabled"] = True
+
+    result = evaluate_wf_config_parity(
+        _write_config(tmp_path / "prod.json", prod_cfg),
+        _write_config(tmp_path / "wf.json", wf_cfg),
+        candidate_artifact=prod_art,
+        strategy_dir=tmp_path,
+    )
+
+    assert result["passed"] is False
+    assert any(i["path"] == "risk.panel_exit" for i in result["issues"])
 
 
 def test_feature_recipe_drift_fails(tmp_path: Path) -> None:

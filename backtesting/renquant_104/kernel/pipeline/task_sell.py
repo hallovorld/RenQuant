@@ -322,7 +322,10 @@ class PanelConvictionExitTask(Task):
     pipeline; tournament-only (panel disabled) holdings already get
     probability-scale rank_score from ScoreModelTask.
 
-    Flag default OFF — user can A/B before flipping.
+    Legacy task default remains ON for backward compatibility when
+    `risk.panel_exit.enabled=true`. Production configs that use
+    CrossSectionalPanelExitTask should set `risk.panel_exit.legacy_enabled`
+    to false so one panel-exit policy owns the decision.
     """
 
     def run(self, tc: TickerInferenceContext) -> bool | None:
@@ -333,6 +336,8 @@ class PanelConvictionExitTask(Task):
 
         cfg = tc.config.get("risk", {}).get("panel_exit", {})
         if not bool(cfg.get("enabled", False)):
+            return
+        if not bool(cfg.get("legacy_enabled", True)):
             return
 
         hs = tc.holding

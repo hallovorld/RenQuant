@@ -164,6 +164,24 @@ Important correction: the earlier "tax greater than gross" forensic symptom
 was caused by replaying HIFO-configured sim trades with a FIFO round-trip
 matcher. It was an attribution bug, not a broker-cash debit regression.
 
+## 2026-05-23 Panel-Exit Ownership Fix
+
+- Found one more decision-tree ownership issue while the QP-gated WF rerun was
+  running: `TickerSellJob` still executed legacy `PanelConvictionExitTask`,
+  while `InferencePipeline` also runs `CrossSectionalPanelExitTask` immediately
+  after `PanelScoringJob`.
+- Fix: production/golden config now sets
+  `risk.panel_exit.legacy_enabled=false`. The legacy task still defaults on for
+  backward-compatible unit tests and explicit A/B configs, but prod 104 has one
+  owner for raw panel/NGBoost exits: `CrossSectionalPanelExitTask`.
+- Added a regression test that proves the legacy task is a no-op when
+  `legacy_enabled=false`.
+- Hardened `scripts/wf_config_parity.py` to compare `risk.panel_exit` as a
+  semantic path. A WF side config can no longer drift on panel-exit ownership
+  or sell thresholds without failing before simulation.
+- Also corrected stale exit docs: trailing stop, stop loss, and single-day loss
+  are regime-configured, not BULL_CALM-only.
+
 ## Mainline Queue
 
 1. Diagnose the sanity failure: time-shift placebo IC `+0.0462` is too high.

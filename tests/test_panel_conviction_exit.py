@@ -67,6 +67,24 @@ class TestFlagGating:
         PanelConvictionExitTask().run(tc)
         assert tc.exit_signal is None
 
+    def test_legacy_disabled_noop(self):
+        h = _hs(0.10, -0.05)
+        tc = SimpleNamespace(
+            ticker="NVDA",
+            holding=h,
+            exit_signal=None,
+            config={"risk": {"panel_exit": {
+                "enabled": True,
+                "legacy_enabled": False,
+                "panel_sell_floor": 0.20,
+                "mu_sell_ceiling": 0.0,
+            }}},
+        )
+
+        PanelConvictionExitTask().run(tc)
+
+        assert tc.exit_signal is None
+
     def test_exit_signal_already_set_noop(self):
         """Higher-priority rule already fired — don't override."""
         tc = _tc(panel_score=0.10, mu=-0.05, already_exiting=True)

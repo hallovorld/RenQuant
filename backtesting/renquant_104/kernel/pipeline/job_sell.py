@@ -15,11 +15,10 @@ class TickerSellJob(TickerJob):
     SellGateB (2026-04-26 round-7) sits between the priority chain and
     the panel-conviction tiebreaker. It can BLOCK a model_sell exit
     (and only a model_sell — path rules pass through) when the latest
-    NGBoost μ/σ doesn't agree with a bearish view. PanelConvictionExit
-    runs LAST among the exit-deciders so higher-priority rules (trailing,
-    stop-loss, single-day loss, max_hold) always win — it adds a panel/
-    NGBoost-based exit only when no other rule fired and both the
-    cross-sectional panel and μ/σ head turned bearish.
+    NGBoost μ/σ doesn't agree with a bearish view. PanelConvictionExit is
+    the legacy calibrated-rank tiebreaker; production 104 configs disable it
+    with risk.panel_exit.legacy_enabled=false because the post-PanelScoring
+    CrossSectionalPanelExitTask owns raw panel/NGBoost exits.
 
     EarningsBlackoutSell (2026-05-01 trade-audit response) runs LAST so it
     sees the FINAL exit_signal (whichever of model_sell / panel_conviction

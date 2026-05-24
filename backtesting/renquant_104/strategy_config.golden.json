@@ -381,6 +381,7 @@
     "max_sells_per_bar": 2,
     "panel_exit": {
       "enabled": true,
+      "legacy_enabled": false,
       "panel_sell_floor": 0.2,
       "mu_sell_ceiling": 0.0,
       "trigger_mode": "and",

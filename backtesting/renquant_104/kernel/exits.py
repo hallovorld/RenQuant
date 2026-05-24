@@ -2,9 +2,9 @@
 
 Self-contained: only datetime, dataclasses.  No common/ imports.
 Priority order (highest → lowest):
-  1. trailing_stop   (BULL_CALM only, peak-gain armed)
-  2. stop_loss       (cumulative from entry)
-  3. single_day_loss (drop from previous close — BULL_CALM only)
+  1. trailing_stop   (regime-configured, peak-gain armed)
+  2. stop_loss       (regime-configured cumulative loss from entry)
+  3. single_day_loss (regime-configured drop from previous close)
   4. max_hold        (forced time exit)
   5. [tax_hold_gate] (suppresses model-sell near 1-year mark with unrealized gain)
   6. model_sell      (consecutive sell-signal streak)

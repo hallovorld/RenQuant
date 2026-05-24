@@ -31,6 +31,7 @@ SEMANTIC_PATHS = [
     "ranking.panel_scoring.ngboost.lambda_sigma",
     "ranking.kelly_sizing",
     "rotation.joint_actions",
+    "risk.panel_exit",
     "regime_params",
     "max_concurrent_positions",
     "max_positions_per_sector",
