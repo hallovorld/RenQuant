@@ -482,10 +482,14 @@ def _check_regime_layered_ic(
     meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     wf = meta.get("wf_gate_metadata") if isinstance(meta.get("wf_gate_metadata"), dict) else {}
     tm = wf.get("trade_monotonicity") if isinstance(wf.get("trade_monotonicity"), dict) else {}
+    sanity = wf.get("sanity_regime_ic") if isinstance(wf.get("sanity_regime_ic"), dict) else {}
+    admission_cfg = panel_cfg.get("regime_admission", {}) or {}
+    require_sanity = bool(admission_cfg.get("require_sanity_regime_ic", True))
     details = {
         "run_mode": run_mode,
         "artifact": str(p),
         "passed": tm.get("passed") if tm else None,
+        "sanity_passed": sanity.get("passed") if sanity else None,
         "pooled": tm.get("pooled") if tm else None,
         "min_n_per_regime": tm.get("min_n_per_regime") if tm else None,
         "min_spearman": tm.get("min_spearman") if tm else None,
@@ -494,6 +498,21 @@ def _check_regime_layered_ic(
         return _soft_for_sell_only(
             "P-REGIME-IC",
             "regime-layered IC/monotonicity evidence absent from WF metadata",
+            run_mode=run_mode,
+            details=details,
+        )
+    if require_sanity and not sanity:
+        return _soft_for_sell_only(
+            "P-REGIME-IC",
+            "regime sanity IC evidence absent from WF metadata",
+            run_mode=run_mode,
+            details=details,
+        )
+    if sanity and sanity.get("passed") is False:
+        details["sanity_regime_ic"] = sanity
+        return _soft_for_sell_only(
+            "P-REGIME-IC",
+            f"regime sanity IC failed: {sanity.get('reason', 'unknown')}",
             run_mode=run_mode,
             details=details,
         )

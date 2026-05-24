@@ -1005,7 +1005,7 @@ class RegimeModelAdmissionTask(Task):
         regime = str(getattr(ctx, "regime", "") or "UNKNOWN")
 
         ok, reason, details = _trade_monotonicity_admission(metadata, regime)
-        if ok and bool(cfg.get("require_sanity_regime_ic", False)):
+        if ok and bool(cfg.get("require_sanity_regime_ic", True)):
             ok, reason, details = _sanity_regime_admission(
                 metadata,
                 regime,

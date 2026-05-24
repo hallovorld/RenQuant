@@ -1510,6 +1510,21 @@ Update:
   `tests/test_wf_gate_regime_sanity_metadata.py` proves
   `run_sanity_battery()` emits `sanity_regime_ic`.
 
+Strict production requirement:
+
+- `kernel.preflight._check_regime_layered_ic()` now hard-fails full/buy runs
+  when `sanity_regime_ic` is absent or failed; sell-only remains soft-pass so
+  risk exits are not blocked.
+- `RegimeModelAdmissionTask` now requires `sanity_regime_ic` by default as a
+  runtime backstop if preflight is skipped. Experiments can opt out with
+  `ranking.panel_scoring.regime_admission.enabled=false`.
+- Current active production artifact check:
+  `P-REGIME-IC hard False regime sanity IC evidence absent from WF metadata`.
+  That is expected until a new strict WF gate run stamps the artifact.
+- Regression:
+  `tests/test_preflight_regime_sanity.py` covers missing/failed/passed sanity
+  metadata and sell-only behavior.
+
 ## Mainline Queue
 
 1. Convert the sanity decomposition into an alpha-admission fix: regime-specific

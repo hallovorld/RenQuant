@@ -25,6 +25,16 @@ def _metadata(regime: str = "BULL_CALM", *, eligible=True, passed=True) -> dict:
                     "passed": passed,
                     "spearman": 0.10,
                 }]
+            },
+            "sanity_regime_ic": {
+                "passed": True,
+                "regimes": {
+                    regime: {
+                        "eligible": eligible,
+                        "passed": passed,
+                        "mean_ic": 0.04,
+                    }
+                },
             }
         }
     }
@@ -86,6 +96,17 @@ def test_regime_admission_can_require_sanity_regime_ic() -> None:
 
     assert ctx.candidates == []
     assert ctx._blocked_by_ticker["MSFT"] == "regime_admission:weak_sanity_ic:BULL_CALM"
+
+
+def test_regime_admission_requires_sanity_regime_ic_by_default() -> None:
+    meta = _metadata("BULL_CALM")
+    del meta["wf_gate_metadata"]["sanity_regime_ic"]
+    ctx = _ctx(meta)
+
+    RegimeModelAdmissionTask().run(ctx)
+
+    assert ctx.candidates == []
+    assert ctx._blocked_by_ticker["AAPL"] == "regime_admission:no_sanity_regime_ic"
 
 
 def test_regime_admission_can_be_disabled_for_experiments() -> None:
