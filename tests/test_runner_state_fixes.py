@@ -273,9 +273,12 @@ class TestTickerDailyStateWiring:
         assert "record_ticker_daily_state" in RUNNER_SOURCE
 
     def test_iterates_full_watchlist_not_just_cands(self):
-        # The wiring loop must iterate config["watchlist"], not just
-        # ctx.candidates — that is the entire point of round-5.
-        assert 'self._config.get("watchlist"' in RUNNER_SOURCE
+        # The wiring loop must iterate the full decision-trace universe,
+        # not just ctx.candidates — that is the entire point of round-5.
+        # decision_trace_tickers(config) includes the watchlist and any
+        # benchmark sleeve ticker that is part of the decision surface.
+        assert "decision_trace_tickers" in RUNNER_SOURCE
+        assert "wl = decision_trace_tickers(self._config)" in RUNNER_SOURCE
         # Loop var `tk` over `wl` for the ticker_daily_state build
         assert "for tk in wl:" in RUNNER_SOURCE
 

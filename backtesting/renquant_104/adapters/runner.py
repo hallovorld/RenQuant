@@ -79,6 +79,26 @@ def resolve_hwm(stored_hwm: float, account_value: float,
     return float(max(stored_hwm, account_value)), False
 
 
+def persisted_skip_buys(state: dict | None) -> bool:
+    """Read persisted drawdown-halt state with legacy-safe coercion.
+
+    SimAdapter carries ``_skip_buys`` across bars in-process. RunnerAdapter is
+    relaunched by scheduled jobs, so the same hysteresis state must round-trip
+    through live_state; otherwise live exits the drawdown recovery band earlier
+    than sim.
+    """
+    if not isinstance(state, dict):
+        return False
+    value = state.get("skip_buys", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | None, str | None]:
     """Resize or reject one buy intent against the runner's live cash ledger."""
     import math
@@ -933,7 +953,7 @@ class RunnerAdapter:
             cash              = cash,
             prices            = prices,
             hwm               = hwm,
-            skip_buys         = False,
+            skip_buys         = persisted_skip_buys(state),
             regime_state      = RegimeState(
                 regime        = regime_persist.get("regime",        "BULL_CALM"),
                 confidence    = float(regime_persist.get("confidence",     0.5)),
@@ -1731,6 +1751,7 @@ class RunnerAdapter:
             "regime":            ctx.regime,
             "regime_confidence": round(ctx.confidence, 4),
             "high_water_mark":   ctx.hwm,
+            "skip_buys":         bool(ctx.skip_buys),
             "entry_dates":       self._entry_dates,
             "entry_signals":     self._entry_signals,   # Approach A
             "sell_streaks":      self._sell_streaks,

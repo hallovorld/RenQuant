@@ -25,7 +25,7 @@ _STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renqua
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
-from adapters.runner import resolve_hwm  # noqa: E402
+from adapters.runner import persisted_skip_buys, resolve_hwm  # noqa: E402
 
 
 class TestResolveHwm:
@@ -101,6 +101,24 @@ class TestResolveHwm:
     def test_snap_preserves_float_type(self):
         hwm, _ = resolve_hwm(stored_hwm=1_000_000, account_value=1_000)
         assert isinstance(hwm, float)
+
+
+class TestPersistedSkipBuys:
+    def test_missing_legacy_state_defaults_false(self):
+        assert persisted_skip_buys({}) is False
+
+    def test_bool_round_trips(self):
+        assert persisted_skip_buys({"skip_buys": True}) is True
+        assert persisted_skip_buys({"skip_buys": False}) is False
+
+    def test_string_state_is_coerced_safely(self):
+        assert persisted_skip_buys({"skip_buys": "true"}) is True
+        assert persisted_skip_buys({"skip_buys": "false"}) is False
+
+    def test_runner_make_context_and_commit_wire_skip_buys(self):
+        src = (_STRATEGY_DIR / "adapters" / "runner.py").read_text()
+        assert "skip_buys         = persisted_skip_buys(state)" in src
+        assert '"skip_buys":         bool(ctx.skip_buys)' in src
 
 
 if __name__ == "__main__":
