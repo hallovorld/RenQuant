@@ -130,6 +130,23 @@ Make RenQuant 104 scientifically trustworthy end to end:
   - Targeted tests passed:
     `tests/test_persistence.py::TestTrades tests/test_risk_gates.py` plus
     the broader sell/QP/state repair neighborhood.
+- Latest QP solver-universe hardening:
+  - QP buy admission now happens before vector construction, not only at order
+    emission. New long candidates that fail `qp_admission_gate`, have no open
+    slot, or arrive while buys are globally gated are removed from
+    `_qp_tickers` and `_qp_mu_source_map` before the optimizer sees them.
+  - Held names remain in the QP universe so the optimizer can still trim/sell;
+    held top-ups remain blocked at order emission unless they pass the stricter
+    top-up floors. Short candidates bypass buy admission and still override a
+    same-ticker long candidate in the long-short path.
+  - Invariant: model/gates decide buy eligibility; QP may only size/rebalance
+    the admitted universe. This prevents weak new candidates from consuming QP
+    risk/cash budget even if the final order emitter would later suppress them.
+  - Targeted tests passed:
+    `tests/test_qp_admission_gate.py tests/test_joint_qp_task.py
+    tests/test_qp_long_short_phase2a.py tests/test_short_candidate_selection.py
+    tests/test_runner_sell_attribution.py
+    tests/test_repair_decision_trace_invariants.py` (`77 passed`).
 
 ## Active Validation
 

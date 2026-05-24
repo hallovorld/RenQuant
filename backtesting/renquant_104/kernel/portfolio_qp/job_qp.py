@@ -54,6 +54,8 @@ from .tasks import (
     ShrinkSigmaLedoitWolfTask,
     SolveMarkowitzQPTask,
     ValidateQPMuContractTask,
+    _qp_buy_admission_block_reason,
+    _qp_max_positions,
 )
 
 log = logging.getLogger("kernel.portfolio_qp.job")
@@ -104,12 +106,33 @@ class _BuildSourceMapTask(Task):
 
     def run(self, ctx) -> bool | None:
         src: dict = {}
-        for t, hs in (ctx.holdings or {}).items():
+        holdings = ctx.holdings or {}
+        for t, hs in holdings.items():
             src[t] = hs
+        blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked_map is None:
+            blocked_map = {}
+            ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+        short_tickers = {
+            getattr(c, "ticker", None)
+            for c in (getattr(ctx, "short_candidates", None) or [])
+        }
         for c in (ctx.candidates or []):
             t = getattr(c, "ticker", None)
-            if t:
-                src[t] = c   # candidate wins (newer scores)
+            if not t:
+                continue
+            if t not in holdings:
+                reason = self._new_candidate_block_reason(ctx, src, t, c)
+                if reason:
+                    if t not in short_tickers:
+                        blocked_map.setdefault(t, reason)
+                        log.info(
+                            "QP_SOLVER_UNIVERSE_EXCLUDED %-6s %s "
+                            "(QP only optimizes admitted buy alpha)",
+                            t, reason,
+                        )
+                    continue
+            src[t] = c   # candidate wins (newer scores)
         # Phase 2B fix (2026-05-14): short candidates OVERRIDE long candidates
         # for the same ticker. ctx.candidates is the BROAD admission pool
         # (60-70 names that passed earnings/wash-sale gates) while
@@ -125,6 +148,37 @@ class _BuildSourceMapTask(Task):
             if t:
                 src[t] = c
         ctx._qp_mu_source_map = src   # noqa: SLF001
+        self._sync_ticker_order(ctx, src)
+
+    @staticmethod
+    def _new_candidate_block_reason(ctx, src: dict, ticker: str, cand) -> str | None:
+        if bool(getattr(ctx, "buy_blocked", False)):
+            return "buy_blocked"
+        if bool(getattr(ctx, "skip_buys", False)):
+            return "skip_buys"
+        joint = ((ctx.config.get("rotation", {}) or {})
+                 .get("joint_actions", {}) or {})
+        env = {
+            "cfg": joint,
+            "holdings_set": set((ctx.holdings or {}).keys()),
+            "holdings": ctx.holdings or {},
+            "preexisting_exit_tickers": {
+                t for t, _ in (getattr(ctx, "exits", None) or [])
+            },
+            "max_positions": _qp_max_positions(ctx),
+            "score_sources": {**src, ticker: cand},
+            "cands": {ticker: cand},
+        }
+        return _qp_buy_admission_block_reason(ctx, env, ticker)
+
+    @staticmethod
+    def _sync_ticker_order(ctx, src: dict) -> None:
+        current = list(getattr(ctx, "_qp_tickers", None) or [])
+        ordered = [t for t in current if t in src]
+        for t in src:
+            if t not in ordered:
+                ordered.append(t)
+        ctx._qp_tickers = ordered  # noqa: SLF001
 
 
 class JointPortfolioQPJob(Job):
