@@ -127,6 +127,36 @@ class TestExecutionPipelineExitsOnly:
         # single_day_loss), so post-stop cooldown stamp does NOT fire.
         assert "AAPL" not in ctx.last_stop_exit_dates
 
+    def test_quantity_at_or_above_held_is_full_liquidate(self):
+        """ExecutionPipeline must match legacy sim semantics:
+        quantity >= current shares means full liquidation, not a rejected
+        oversized partial sell."""
+        backend = FakeBackend(starting_cash=100_000.0)
+        backend.seed_price("AAPL", 100.0, pd.Timestamp("2025-01-02"))
+        from kernel.execution import OrderIntent
+        backend.place_market_order(OrderIntent(
+            ticker="AAPL", side=OrderSide.BUY, shares=100,
+            target_pct=0.10, today=pd.Timestamp("2025-01-02"),
+            reason="setup", exit_type=None,
+        ))
+        backend.seed_price("AAPL", 110.0, pd.Timestamp("2025-01-15"))
+
+        ctx = _empty_ctx("2025-01-15")
+        ctx.execution_backend = backend
+        ctx.holdings = {"AAPL": _hs(100.0, "2025-01-02", hwm=110.0)}
+        ctx.exits = [("AAPL", ExitSignal(
+            should_exit=True, reason="full by quantity",
+            exit_type="max_hold", quantity=100.0,
+        ))]
+        ctx.orders = []
+
+        ExecutionPipeline().run(ctx)
+
+        assert len(ctx.fills) == 1
+        assert ctx.fills[0].shares == 100
+        assert "AAPL" not in ctx.holdings
+        assert ctx.last_sell_dates.get("AAPL") == ctx.today
+
     def test_path_rule_exit_stamps_stop_exit_dates_even_when_partial(self):
         """G8: stop_loss/trailing_stop/single_day_loss stamp post-stop
         cooldown date regardless of partial-vs-full."""

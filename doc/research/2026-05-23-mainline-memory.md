@@ -1730,6 +1730,12 @@ Operational conclusion:
   `ticker_daily_state` blocked-by precedence (`universe:*`, `broker_pending`,
   `held_no_new_buy`, `no_model_signal`, `not_selected`) so execution surfaces
   explain decisions with the same schema and semantics.
+- Execution-layer migration is not complete. The `ExecutionPipeline` exists
+  but adapters still run legacy execution monoliths for tax lots, trade-log
+  attribution, and live broker state. First safe convergence step completed:
+  `kernel.pipeline.task_execution.is_full_liquidate_signal` is now the shared
+  partial/full sell predicate used by SimAdapter and ExecutionPipeline, with
+  `quantity >= held` pinned as full liquidation.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

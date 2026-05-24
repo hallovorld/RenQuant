@@ -36,12 +36,13 @@ from kernel.pipeline.task_post_stop_cooldown import DEFAULT_STOP_EXIT_TYPES
 log = logging.getLogger("kernel.pipeline.execution")
 
 
-def _is_full_liquidate(sig) -> bool:
+def is_full_liquidate_signal(sig, held_qty: float | None = None) -> bool:
     """ExitSignal.quantity semantics:
 
     - None  → full
     - ≤ 0   → full (defensive: caller bug)
     - NaN   → full (§5.13.11)
+    - ≥ held quantity → full when held_qty is supplied
     - > 0   → partial (caller must guarantee qty < current shares)
     """
     q = getattr(sig, "quantity", None)
@@ -53,7 +54,19 @@ def _is_full_liquidate(sig) -> bool:
         return True
     if not math.isfinite(qf) or qf <= 0:
         return True
+    if held_qty is not None:
+        try:
+            held = float(held_qty)
+        except (TypeError, ValueError):
+            held = 0.0
+        if math.isfinite(held) and held > 0 and qf >= held:
+            return True
     return False
+
+
+def _is_full_liquidate(sig) -> bool:
+    """Back-compat wrapper for older tests/imports."""
+    return is_full_liquidate_signal(sig)
 
 
 def _require_backend(ctx):
@@ -123,14 +136,15 @@ class ExecuteExitsTask(Task):
         backend = _require_backend(ctx)
         today = pd.Timestamp(ctx.today)
         for ticker, sig in (ctx.exits or []):
-            if backend.get_position_quantity(ticker) <= 0:
+            held_qty = backend.get_position_quantity(ticker)
+            if held_qty <= 0:
                 log.warning(
                     "ExecuteExitsTask: SELL for %s but backend reports no "
                     "position; dropping intent (reason=%s)",
                     ticker, getattr(sig, "reason", "?"),
                 )
                 continue
-            full = _is_full_liquidate(sig)
+            full = is_full_liquidate_signal(sig, held_qty)
             shares = None if full else int(float(sig.quantity))
             intent = OrderIntent(
                 ticker=ticker, side=OrderSide.SELL,
@@ -320,4 +334,5 @@ __all__ = [
     "DedupeBuysTask",
     "ExecuteBuysTask",
     "UpsertHoldingsTask",
+    "is_full_liquidate_signal",
 ]

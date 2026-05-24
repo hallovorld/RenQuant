@@ -58,6 +58,7 @@ from kernel.decision_trace import (
     selected_buy_tickers,
 )
 from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
+from kernel.pipeline.task_execution import is_full_liquidate_signal
 
 log = logging.getLogger("adapters.sim")
 
@@ -1216,7 +1217,6 @@ class SimAdapter:
         # commit treated as PARTIAL → ticker fully liquidated in cash
         # but stayed in _holdings with shares=0 (ghost position). All
         # subsequent rebalances saw a phantom holding with no shares.
-        import math as _math_q  # noqa: PLC0415
         full_exit_tickers: set[str] = set()
         for ticker, sig in deduped_exits:
             # 2026-05-14 Phase 2B: route qp_short_open to dedicated path
@@ -1226,16 +1226,8 @@ class SimAdapter:
             if str(getattr(sig, "exit_type", "")) == "qp_short_open":
                 self._apply_short_open(ticker, sig, today_ts, ctx)
                 continue
-            q = getattr(sig, "quantity", None)
             cur = self._pos_shares.get(ticker, 0)
-            is_finite_partial = (
-                q is not None
-                and isinstance(q, (int, float))
-                and _math_q.isfinite(float(q))
-                and q > 0
-                and q < cur
-            )
-            if not is_finite_partial:
+            if is_full_liquidate_signal(sig, cur):
                 full_exit_tickers.add(ticker)
             self._apply_sell(ticker, sig, today_ts, ctx)
 
@@ -1425,19 +1417,12 @@ class SimAdapter:
         # spec).
         import math as _math_q  # noqa: PLC0415
         req_qty = getattr(sig, "quantity", None)
-        is_finite_partial = (
-            req_qty is not None
-            and isinstance(req_qty, (int, float))
-            and _math_q.isfinite(float(req_qty))
-            and req_qty > 0
-            and req_qty < total_shares
-        )
-        if is_finite_partial:
-            sell_shares = float(req_qty)
-            is_partial  = True
-        else:
+        if is_full_liquidate_signal(sig, total_shares):
             sell_shares = total_shares
             is_partial  = False
+        else:
+            sell_shares = float(req_qty)
+            is_partial  = True
 
         price = ctx.prices.get(ticker)
         if price is None:

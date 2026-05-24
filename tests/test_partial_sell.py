@@ -272,12 +272,10 @@ class TestSimAdapterPartialSell:
         import inspect
         from adapters.sim import SimAdapter
         src = inspect.getsource(SimAdapter)
-        # Both _apply_sell and commit must contain the isfinite-based
-        # is_finite_partial predicate (same wording).
-        assert src.count("is_finite_partial") >= 2, (
-            f"is_finite_partial appears {src.count('is_finite_partial')} "
-            f"times — bug 11 requires the predicate in BOTH _apply_sell "
-            f"AND commit() (currently mismatched)"
+        # Both _apply_sell and commit must use the same shared predicate.
+        assert src.count("is_full_liquidate_signal") >= 2, (
+            "bug 11 requires _apply_sell and commit() to share the "
+            "partial/full classification predicate"
         )
 
     def test_pnl_pct_uses_disposed_basis_not_surviving_avg(self):
@@ -349,14 +347,21 @@ class TestSimAdapterPartialSell:
         that doesn't depend on the rest of the adapter's state).
         """
         from kernel.exits import ExitSignal
+        from kernel.pipeline.task_execution import is_full_liquidate_signal
 
-        def _is_full(sig, current):
-            q = getattr(sig, "quantity", None)
-            return q is None or q <= 0 or q >= current
-
-        assert _is_full(ExitSignal(True, "r", "stop_loss"), current=10)
-        assert _is_full(ExitSignal(True, "r", "kelly_trim", quantity=0.0), current=10)
-        assert _is_full(ExitSignal(True, "r", "kelly_trim", quantity=10.0), current=10)
-        assert _is_full(ExitSignal(True, "r", "kelly_trim", quantity=15.0), current=10)
-        assert not _is_full(ExitSignal(True, "r", "kelly_trim", quantity=3.0), current=10)
-        assert not _is_full(ExitSignal(True, "r", "kelly_trim", quantity=9.99), current=10)
+        assert is_full_liquidate_signal(ExitSignal(True, "r", "stop_loss"), 10)
+        assert is_full_liquidate_signal(
+            ExitSignal(True, "r", "kelly_trim", quantity=0.0), 10,
+        )
+        assert is_full_liquidate_signal(
+            ExitSignal(True, "r", "kelly_trim", quantity=10.0), 10,
+        )
+        assert is_full_liquidate_signal(
+            ExitSignal(True, "r", "kelly_trim", quantity=15.0), 10,
+        )
+        assert not is_full_liquidate_signal(
+            ExitSignal(True, "r", "kelly_trim", quantity=3.0), 10,
+        )
+        assert not is_full_liquidate_signal(
+            ExitSignal(True, "r", "kelly_trim", quantity=9.99), 10,
+        )
