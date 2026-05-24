@@ -397,6 +397,7 @@ class ApplyScoresTask(Task):
                 except Exception as exc:
                     log.error("ApplyScoresTask[%s]: failed to load panel history: %s",
                               scorer_kind_early, exc)
+                    _fail_closed_panel_scoring(ctx, "panel_history_load_failed")
                     return None
                 today_ts = pd.Timestamp(today)
                 past = full_panel[full_panel["date"] < today_ts]
@@ -407,7 +408,15 @@ class ApplyScoresTask(Task):
                          scorer_kind_early, len(panel_history),
                          panel_history["ticker"].nunique(),
                          len(recent_dates), len(target_tickers))
-            scores = scorer.score_with_history(panel_history, target_tickers)
+            try:
+                scores = scorer.score_with_history(panel_history, target_tickers)
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "ApplyScoresTask[%s]: scorer.score_with_history failed: %s",
+                    scorer_kind_early, exc, exc_info=True,
+                )
+                _fail_closed_panel_scoring(ctx, "panel_score_runtime_error")
+                return None
             log.info("ApplyScoresTask[%s]: scored %d via score_with_history "
                      "(seq_len=%d)", scorer_kind_early, len(scores), scorer.seq_len)
             ctx._panel_scores_all = scores  # noqa: SLF001
@@ -453,6 +462,7 @@ class ApplyScoresTask(Task):
             ohlcv_dict = getattr(ctx, "ohlcv", None) or getattr(ctx, "ohlcv_all", None)
             if ohlcv_dict is None:
                 log.warning("ApplyScoresTask[alpha158]: ctx.ohlcv unavailable")
+                _fail_closed_panel_scoring(ctx, "panel_alpha158_ohlcv_missing")
                 return None
             tickers = list(X.index)   # candidates + holdings already de-duped
             rows = _alpha158_cached_rows(ctx, tickers, today)
@@ -469,6 +479,7 @@ class ApplyScoresTask(Task):
             if not rows:
                 log.warning("ApplyScoresTask[alpha158]: 0/%d tickers had "
                              "sufficient history for alpha158", len(tickers))
+                _fail_closed_panel_scoring(ctx, "panel_alpha158_rows_missing")
                 return None
             if cache_hits:
                 log.info(
@@ -478,7 +489,15 @@ class ApplyScoresTask(Task):
             X = pd.DataFrame.from_dict(rows, orient="index")
             if scorer_kind == "panel_linear":
                 # PanelLinearScorer.score_raw applies stored ZScoreNorm + Fillna + Clip
-                scores: pd.Series = scorer.score_raw(X)
+                try:
+                    scores: pd.Series = scorer.score_raw(X)
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "ApplyScoresTask[panel_linear]: scorer.score_raw failed: %s",
+                        exc, exc_info=True,
+                    )
+                    _fail_closed_panel_scoring(ctx, "panel_score_runtime_error")
+                    return None
                 log.info("ApplyScoresTask[panel_linear]: scored %d tickers via "
                          "alpha158 + score_raw", len(rows))
             else:
@@ -854,7 +873,8 @@ class ApplyScoresTask(Task):
                             full_panel["date"] = pd.to_datetime(full_panel["date"])
                         except Exception as exc:
                             log.error("PatchTST: failed to load panel parquet: %s", exc)
-                            scores = pd.Series([], dtype=float)
+                            _fail_closed_panel_scoring(ctx, "panel_history_load_failed")
+                            return None
                         else:
                             target_tickers = list(rows.keys())
                             today_ts = pd.Timestamp(today)
@@ -866,20 +886,54 @@ class ApplyScoresTask(Task):
                                      "(%d rows × %d tickers × %d dates) for %d candidates",
                                      len(history), history["ticker"].nunique(),
                                      len(recent_dates), len(target_tickers))
-                            scores = scorer.score_with_history(history, target_tickers)
+                            try:
+                                scores = scorer.score_with_history(history, target_tickers)
+                            except Exception as exc:  # noqa: BLE001
+                                log.error(
+                                    "ApplyScoresTask[patchtst]: "
+                                    "scorer.score_with_history failed: %s",
+                                    exc, exc_info=True,
+                                )
+                                _fail_closed_panel_scoring(ctx, "panel_score_runtime_error")
+                                return None
                     else:
                         target_tickers = list(rows.keys())
-                        scores = scorer.score_with_history(panel_history,
-                                                            target_tickers)
+                        try:
+                            scores = scorer.score_with_history(panel_history,
+                                                                target_tickers)
+                        except Exception as exc:  # noqa: BLE001
+                            log.error(
+                                "ApplyScoresTask[patchtst]: "
+                                "scorer.score_with_history failed: %s",
+                                exc, exc_info=True,
+                            )
+                            _fail_closed_panel_scoring(ctx, "panel_score_runtime_error")
+                            return None
                     log.info("ApplyScoresTask[patchtst]: scored %d via "
                              "PatchTST (seq_len=%d)",
                              len(scores), scorer.seq_len)
                 else:
-                    scores: pd.Series = scorer.score(X_aligned)
+                    try:
+                        scores: pd.Series = scorer.score(X_aligned)
+                    except Exception as exc:  # noqa: BLE001
+                        log.error(
+                            "ApplyScoresTask[panel_ltr_xgboost]: scorer.score failed: %s",
+                            exc, exc_info=True,
+                        )
+                        _fail_closed_panel_scoring(ctx, "panel_score_runtime_error")
+                        return None
                     log.info("ApplyScoresTask[panel_ltr_xgboost]: scored %d tickers via alpha158%s",
                              len(rows), "+fund" if needs_fund else "")
         else:
-            scores: pd.Series = scorer.score(X)
+            try:
+                scores: pd.Series = scorer.score(X)
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "ApplyScoresTask: scorer.score failed: %s",
+                    exc, exc_info=True,
+                )
+                _fail_closed_panel_scoring(ctx, "panel_score_runtime_error")
+                return None
 
         # 2026-05-14 Phase 2B: stash the full-universe score series for the
         # short-candidate selection task. Only kept; not consumed unless

@@ -162,6 +162,30 @@ class TestErrorPaths:
             RegimeRouterScorer(scorers=fake_scorers,
                                 default_scorer_key="missing_key")
 
+    def test_missing_routed_scorer_raises_at_construction(self, fake_scorers):
+        from kernel.panel_pipeline.regime_router_scorer import RegimeRouterScorer
+        routing = {"BEAR": "hf_patchtst", "BULL_CALM": "ghost_model"}
+
+        with pytest.raises(ValueError, match="routing references missing scorer"):
+            RegimeRouterScorer(
+                scorers=fake_scorers,
+                routing=routing,
+                default_scorer_key="xgb",
+            )
+
+    def test_missing_feature_columns_raise_not_zero_fill(self, fake_scorers):
+        from kernel.panel_pipeline.regime_router_scorer import RegimeRouterScorer
+        r = RegimeRouterScorer(scorers=fake_scorers, default_scorer_key="xgb")
+        panel = pd.DataFrame({
+            "ticker": ["A", "B"],
+            "date": pd.to_datetime(["2024-01-01", "2024-01-01"]),
+            "f1": [1.0, 2.0],
+            # f2 intentionally absent.
+        })
+
+        with pytest.raises(RuntimeError, match="missing feature columns"):
+            r.score_with_history(panel, ["A", "B"], current_regime="BEAR")
+
 
 class TestModelRegistryIntegration:
     def test_regime_router_kind_registered(self):

@@ -1711,7 +1711,14 @@ Operational conclusion:
   buy/QP path must fail closed and write `blocked_by`; it must not continue on
   Phase-2 per-ticker tournament scores. A 2026-05-24 repair added runtime
   fail-closed guards and regression tests for scorer load failure, preloaded
-  scorer config mismatch, missing matrix, and missing per-ticker panel score.
+  scorer config mismatch, missing matrix, missing per-ticker panel score, and
+  scorer runtime exceptions.
+- Regime-router scoring must be contract-strict. A configured route like
+  `BEAR -> hf_patchtst` must not fall back to the default scorer when the
+  routed scorer is missing, and missing routed-scorer feature columns must not
+  be zero-filled. Both cases are now hard errors covered by regression tests;
+  `ApplyScoresTask` converts runtime scorer errors into buy/QP fail-closed
+  state on the shared sim/live/LEAN path.
 - Sim, live runner, and LEAN must share panel frame preparation through
   `adapters.panel_runtime.prepare_panel_runtime_frames`. The direct adapter
   calls were consolidated on 2026-05-24 so tuple arity, benchmark injection,

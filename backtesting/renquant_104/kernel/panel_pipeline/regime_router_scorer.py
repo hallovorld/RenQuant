@@ -56,7 +56,7 @@ class RegimeRouterScorer:
     Attrs:
       scorers: dict[regime_label, scorer]
       routing: dict[regime_label, scorer_key]
-      default_scorer_key: fallback if regime not in routing or scorer missing
+      default_scorer_key: fallback only if regime is not in routing
       requires_history: True if ANY scorer requires history
     """
 
@@ -71,6 +71,16 @@ class RegimeRouterScorer:
         self.scorers = scorers
         self.routing = dict(routing or DEFAULT_ROUTING)
         self.default_scorer_key = default_scorer_key
+        missing_routes = {
+            regime: scorer_key
+            for regime, scorer_key in self.routing.items()
+            if scorer_key not in scorers
+        }
+        if missing_routes:
+            raise ValueError(
+                "RegimeRouterScorer routing references missing scorer(s): "
+                f"{missing_routes}; loaded={list(scorers)}"
+            )
         # Union of feature_cols (model-specific subsets filtered at score time)
         feat_set: set[str] = set()
         for s in scorers.values():
@@ -93,11 +103,10 @@ class RegimeRouterScorer:
         scorer_key = self.routing.get(regime, self.default_scorer_key)
         scorer = self.scorers.get(scorer_key)
         if scorer is None:
-            log.warning("RegimeRouter: scorer_key=%s missing for regime=%s — "
-                         "fallback to default=%s", scorer_key, regime,
-                         self.default_scorer_key)
-            scorer = self.scorers[self.default_scorer_key]
-            scorer_key = self.default_scorer_key
+            raise RuntimeError(
+                f"RegimeRouter: scorer_key={scorer_key} missing for "
+                f"regime={regime}; loaded={list(self.scorers)}"
+            )
         return scorer, scorer_key
 
     def score_with_history(self, panel_history: pd.DataFrame,
@@ -116,8 +125,11 @@ class RegimeRouterScorer:
                                             if c in panel_history.columns]
         ph = panel_history[cols_keep].copy()
         missing = [c for c in feat_cols if c not in ph.columns]
-        for c in missing:
-            ph[c] = 0.0
+        if missing:
+            raise RuntimeError(
+                f"RegimeRouter: scorer {scorer_key} missing feature columns "
+                f"{missing[:10]} (n={len(missing)})"
+            )
         # Dispatch
         if getattr(scorer, "requires_history", False):
             return scorer.score_with_history(ph, target_tickers)

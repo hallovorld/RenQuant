@@ -71,10 +71,12 @@ Universal model contracts (post-predict diversity, pre-predict input variance â€
 ```
 
 Panel scoring is fail-closed for buys. If the scorer artifact, config
-consistency check, feature matrix, or a candidate's finite panel score is
-missing, the candidate is tagged in `blocked_by` and cannot fall back to the
-weaker per-ticker tournament score. Sim, live runner, and LEAN prepare panel
-runtime frames through `adapters.panel_runtime.prepare_panel_runtime_frames`.
+consistency check, feature matrix, scorer runtime call, or a candidate's finite
+panel score is missing, the candidate is tagged in `blocked_by` and cannot
+fall back to the weaker per-ticker tournament score. Regime-router routes are
+strict: a configured scorer must exist and its required feature columns must be
+present. Sim, live runner, and LEAN prepare panel runtime frames through
+`adapters.panel_runtime.prepare_panel_runtime_frames`.
 
 ### FullTrainingPipeline
 

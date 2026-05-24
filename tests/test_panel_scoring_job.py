@@ -502,6 +502,66 @@ class TestApplyScoresTask:
 
         assert [c.panel_score for c in ctx.candidates] == pytest.approx([0.4, 0.4])
 
+    def test_history_scorer_runtime_error_fails_closed(self, tmp_path):
+        """A routed history scorer failure must not fall back to stale rank_score."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+
+        class _BrokenHistoryScorer:
+            requires_history = True
+            seq_len = 2
+            feature_cols = ["f1"]
+            metadata = {"kind": "hf_patchtst"}
+
+            def score_with_history(self, panel_history, target_tickers):
+                raise RuntimeError("broken history scorer")
+
+        ctx = _make_ctx(tmp_path, enabled=True, tickers=("AAA", "BBB"),
+                        with_frames=False)
+        ctx._panel_scorer = _BrokenHistoryScorer()
+        ctx._panel_matrix = pd.DataFrame({"__history_target__": [1.0, 1.0]},
+                                         index=["AAA", "BBB"])
+        ctx._panel_history = pd.DataFrame({
+            "date": pd.to_datetime(["2026-03-18", "2026-03-18"]),
+            "ticker": ["AAA", "BBB"],
+            "f1": [1.0, 2.0],
+        })
+
+        out = ApplyScoresTask().run(ctx)
+
+        assert out is None
+        assert ctx.candidates == []
+        assert ctx.buy_blocked is True
+        assert ctx.skip_buys is True
+        assert ctx._panel_scoring_fail_reason == "panel_score_runtime_error"
+        assert set(ctx._blocked_by_ticker.values()) == {"panel_score_runtime_error"}
+
+    def test_snapshot_scorer_runtime_error_fails_closed(self, tmp_path):
+        """Snapshot scorer exceptions also clear buy candidates instead of fallback."""
+        from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
+
+        class _BrokenSnapshotScorer:
+            requires_history = False
+            feature_cols = ["f1"]
+            metadata = {"kind": "custom_panel"}
+
+            def score(self, X):
+                raise RuntimeError("broken snapshot scorer")
+
+        ctx = _make_ctx(tmp_path, enabled=True, tickers=("AAA", "BBB"),
+                        with_frames=False)
+        ctx._panel_scorer = _BrokenSnapshotScorer()
+        ctx._panel_matrix = pd.DataFrame({"f1": [1.0, 2.0]},
+                                         index=["AAA", "BBB"])
+
+        out = ApplyScoresTask().run(ctx)
+
+        assert out is None
+        assert ctx.candidates == []
+        assert ctx.buy_blocked is True
+        assert ctx.skip_buys is True
+        assert ctx._panel_scoring_fail_reason == "panel_score_runtime_error"
+        assert set(ctx._blocked_by_ticker.values()) == {"panel_score_runtime_error"}
+
     def test_history_fallback_keeps_full_universe_for_rank_norm(self, tmp_path, monkeypatch):
         """Lazy fallback should not candidate-filter the history frame."""
         from kernel.panel_pipeline.job_panel_scoring import ApplyScoresTask
