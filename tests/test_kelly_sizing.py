@@ -44,10 +44,14 @@ def _held(*, shares=0.0, panel_score=None, kelly_target_pct=None):
 def _ctx(*, holdings, orders=None, exits=None, rotations=None,
          portfolio=10000.0, prices=None, kelly_on=True,
          top_up_threshold=0.05, bear_only=False, skip_buys=False,
-         cash=None):
+         cash=None, qp_mode=False):
     kelly_cfg: dict = {"enabled": kelly_on, "top_up_threshold": top_up_threshold}
+    rotation = {}
+    if qp_mode:
+        rotation = {"joint_actions": {"enabled": True, "solver": "qp"}}
     return SimpleNamespace(
         config          = {"ranking": {"kelly_sizing": kelly_cfg},
+                            "rotation": rotation,
                             "regime_params": {
                                 "BULL_CALM": {"max_position_pct": 0.15}
                             }},
@@ -62,6 +66,7 @@ def _ctx(*, holdings, orders=None, exits=None, rotations=None,
         orders          = list(orders or []),
         exits           = list(exits or []),
         rotations       = list(rotations or []),
+        _blocked_by_ticker = {},
         bear_only       = bear_only,
         skip_buys       = skip_buys,
     )
@@ -238,6 +243,21 @@ class TestTopUpHeldTask:
         assert ctx.orders[0]["shares"] == 50
         assert ctx.orders[0]["invest"] == 5000.0
         assert ctx.orders[0]["decision_inputs"]["reserve_cash"] == 5000.0
+
+    def test_qp_mode_disables_standalone_topup_owner(self):
+        """Joint QP owns held-position adds; TopUp must not be a second buyer."""
+        ctx = _ctx(
+            holdings={"AAA": _held(shares=10, kelly_target_pct=0.30,
+                                   panel_score=0.60)},
+            prices={"AAA": 100.0},
+            portfolio=10000.0,
+            qp_mode=True,
+        )
+
+        TopUpHeldTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx._blocked_by_ticker["AAA"] == "topup_owned_by_qp"
 
 
 # ── SizeAndEmit Kelly scaling — source-level check ──────────────────────────

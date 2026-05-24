@@ -65,6 +65,42 @@ def _pending_buy_invest(orders: list | None) -> float:
     return total
 
 
+def _joint_qp_owns_topups(ctx: InferenceContext) -> bool:
+    joint = (
+        ((ctx.config or {}).get("rotation", {}) or {})
+        .get("joint_actions", {})
+        or {}
+    )
+    return bool(joint.get("enabled", False)) and str(
+        joint.get("solver", "greedy")
+    ).lower() == "qp"
+
+
+def _stamp_qp_owned_topup_blocks(ctx: InferenceContext, top_up_thresh: float) -> None:
+    blocked = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked is None:
+        blocked = {}
+        ctx._blocked_by_ticker = blocked  # noqa: SLF001
+    portfolio = float(getattr(ctx, "portfolio_value", 0.0) or 0.0)
+    prices = getattr(ctx, "prices", {}) or {}
+    if portfolio <= 0:
+        return
+    for ticker, hs in (getattr(ctx, "holdings", {}) or {}).items():
+        if ticker in blocked:
+            continue
+        price = prices.get(ticker)
+        target = getattr(hs, "kelly_target_pct", None)
+        if target is None or price is None:
+            continue
+        try:
+            current_pct = float(getattr(hs, "shares", 0.0)) * float(price) / portfolio
+            delta = float(target) - current_pct
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if math.isfinite(delta) and delta >= top_up_thresh:
+            blocked[ticker] = "topup_owned_by_qp"
+
+
 class TopUpHeldTask(Task):
     """Emit additional BUY orders for held positions whose Kelly target
     exceeds their current weight by `top_up_threshold`."""
@@ -75,6 +111,13 @@ class TopUpHeldTask(Task):
             return
         top_up_thresh = float(kelly_cfg.get("top_up_threshold", 0.05))
         if top_up_thresh <= 0:
+            return
+        if _joint_qp_owns_topups(ctx):
+            _stamp_qp_owned_topup_blocks(ctx, top_up_thresh)
+            log.info(
+                "TopUpHeldTask: skipped — JointPortfolioQP owns top-ups "
+                "when rotation.joint_actions.solver=qp",
+            )
             return
         # 2026-05-04 audit Issue 39 fix: TopUp must also respect
         # ctx.buy_blocked — set by macro gates (EMA50Gate, VelocityCrash,

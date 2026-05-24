@@ -68,6 +68,49 @@ CUTS = [
 ]
 
 
+def _required_validation_skip_reasons(args) -> list[str]:
+    """Return skipped gates that make metadata diagnostic-only.
+
+    Emergency skip flags are useful for parser/debug runs, but a skipped WF,
+    sanity battery, trade gate, config parity check, or trace cannot be
+    promoted as acceptance evidence.
+    """
+    reasons: list[str] = []
+    if bool(getattr(args, "skip_wf", False)):
+        reasons.append("walk_forward_skipped")
+    if bool(getattr(args, "skip_sanity", False)):
+        reasons.append("sanity_skipped")
+    if bool(getattr(args, "skip_trade_gates", False)):
+        reasons.append("trade_gates_skipped")
+    if bool(getattr(args, "skip_config_parity", False)):
+        reasons.append("config_parity_skipped")
+    if bool(getattr(args, "no_trade_trace", False)):
+        reasons.append("trade_trace_disabled")
+    return reasons
+
+
+def _compute_overall_pass(
+    *,
+    wf_result: dict,
+    sanity_result: dict,
+    trade_contract_result: dict,
+    trade_gate_result: dict,
+    validation_scope_ok: bool,
+    parity_result: dict,
+    skipped_required_gates: list[str],
+) -> bool:
+    if skipped_required_gates:
+        return False
+    return (
+        bool(wf_result["passed"])
+        and bool(sanity_result["passed"])
+        and bool(trade_contract_result["passed"])
+        and bool(trade_gate_result["passed"])
+        and validation_scope_ok
+        and bool(parity_result.get("passed", True))
+    )
+
+
 def _resolve_strategy_path(raw: str | None) -> Path | None:
     if not raw:
         return None
@@ -951,6 +994,7 @@ def _score_manifest_sanity(
     """Score validation rows with the same point-in-time manifest contract as WF."""
     import numpy as _np  # noqa: PLC0415
     from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
+    from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: PLC0415
     from kernel.walk_forward.loader import WalkForwardModelLoader  # noqa: PLC0415
 
     recipe_usage = _manifest_recipe_usage(manifest_path, candidate_artifact_path)
@@ -996,7 +1040,12 @@ def _score_manifest_sanity(
     mu = pd.Series(_np.nan, index=scored.index, dtype=float)
     for uri, sub in scored.groupby("__sanity_artifact_uri", sort=False):
         scorer = PanelScorer.load(Path(uri))
-        X = sub.reindex(columns=feat_cols, fill_value=0).fillna(0)
+        X = transform_feature_frame(
+            sub,
+            feat_cols,
+            getattr(scorer, "metadata", {}) or {},
+            source_space="panel",
+        )
         pred = scorer.score(X)
         mu.loc[sub.index] = _np.asarray(getattr(pred, "values", pred), dtype=float)
     if mu.isna().any():
@@ -1108,8 +1157,14 @@ def run_sanity_battery(
             # Panel-LTR stores booster in artifact under booster_b64 or similar
             # For sanity we just need PREDICTIONS, so use the saved model
             from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
+            from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: PLC0415
             scorer = PanelScorer.load(artifact_path)
-            X = val.reindex(columns=feat_cols, fill_value=0).fillna(0)
+            X = transform_feature_frame(
+                val,
+                feat_cols,
+                getattr(scorer, "metadata", {}) or {},
+                source_space="panel",
+            )
             mu = scorer.score(X).values
             sanity_meta = {
                 "sanity_eval_scope": "static_artifact",
@@ -1442,16 +1497,25 @@ def main():
             f"(scope={artifact_usage.get('eval_scope')})"
         ).strip("; ")
 
-    overall_pass = (
-        bool(wf_result["passed"])
-        and bool(sanity_result["passed"])
-        and bool(trade_contract_result["passed"])
-        and bool(trade_gate_result["passed"])
-        and validation_scope_ok
-        and bool(parity_result.get("passed", True))
+    skipped_required_gates = _required_validation_skip_reasons(args)
+    if skipped_required_gates:
+        log.warning(
+            "Required gate(s) skipped: %s — metadata is diagnostic-only",
+            ", ".join(skipped_required_gates),
+        )
+    overall_pass = _compute_overall_pass(
+        wf_result=wf_result,
+        sanity_result=sanity_result,
+        trade_contract_result=trade_contract_result,
+        trade_gate_result=trade_gate_result,
+        validation_scope_ok=validation_scope_ok,
+        parity_result=parity_result,
+        skipped_required_gates=skipped_required_gates,
     )
     wf_meta = {
         "passed": overall_pass,
+        "diagnostic_only": bool(skipped_required_gates),
+        "skipped_required_gates": skipped_required_gates,
         "wf_3cut_sharpe_mean": wf_result.get("wf_3cut_sharpe_mean"),
         "wf_3cut_sharpe_std":  wf_result.get("wf_3cut_sharpe_std"),
         "wf_3cut_apy_mean":    wf_result.get("wf_3cut_apy_mean"),

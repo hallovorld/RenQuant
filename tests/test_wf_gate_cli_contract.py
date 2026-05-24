@@ -5,6 +5,7 @@ import importlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -50,9 +51,43 @@ def test_wf_gate_runs_qp_contract_and_trade_monotonicity_gates() -> None:
     assert '"--skip-trade-gates"' in src
 
 
+def test_wf_gate_skip_flags_are_not_acceptance_passes() -> None:
+    """Skipped required gates can be diagnostic-only, never promotable PASS."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    args = SimpleNamespace(
+        skip_wf=True,
+        skip_sanity=True,
+        skip_trade_gates=True,
+        skip_config_parity=True,
+        no_trade_trace=True,
+    )
+
+    reasons = mod._required_validation_skip_reasons(args)
+    overall = mod._compute_overall_pass(
+        wf_result={"passed": True},
+        sanity_result={"passed": True},
+        trade_contract_result={"passed": True},
+        trade_gate_result={"passed": True},
+        validation_scope_ok=True,
+        parity_result={"passed": True},
+        skipped_required_gates=reasons,
+    )
+
+    assert set(reasons) == {
+        "walk_forward_skipped",
+        "sanity_skipped",
+        "trade_gates_skipped",
+        "config_parity_skipped",
+        "trade_trace_disabled",
+    }
+    assert overall is False
+
+
 def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
-    assert "val.reindex(columns=feat_cols, fill_value=0).fillna(0)" in src
+    assert "transform_feature_frame(" in src
+    assert 'source_space="panel"' in src
 
 
 def test_wf_gate_sanity_unavailable_fails_closed() -> None:

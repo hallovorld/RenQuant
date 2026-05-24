@@ -20,6 +20,7 @@ import numpy as np, pandas as pd, xgboost as xgb
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
+from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("fit-calib-direct")
@@ -297,11 +298,13 @@ def main():
         allow_normalized_er_label=args.allow_normalized_er_label,
     )
 
-    # Score the entire panel — predictions are RAW XGB output (already
-    # operating on z-scored features since the panel was z-scored at build time)
+    # Score the entire panel in the same feature space the scorer used at
+    # training. The prebuilt panel already has normalized alpha columns but
+    # raw fundamental columns; transform_feature_frame(source_space="panel")
+    # applies only the columns declared raw-in-panel by the artifact.
     log.info("Scoring %d rows...", len(panel))
-    X = panel[feat_cols].fillna(0).values.astype(np.float64)
-    panel["panel_score"] = booster.predict(xgb.DMatrix(X))
+    X = transform_feature_frame(panel, feat_cols, art, source_space="panel")
+    panel["panel_score"] = booster.predict(xgb.DMatrix(X.values.astype(np.float64)))
 
     # Sanity check IC vs the model's ranking label.
     from scipy.stats import spearmanr

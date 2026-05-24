@@ -147,6 +147,33 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_qp_long_short_phase2a.py tests/test_short_candidate_selection.py
     tests/test_runner_sell_attribution.py
     tests/test_repair_decision_trace_invariants.py` (`77 passed`).
+- Post-prefilter WF validation completed and still failed:
+  - Annual-net Sharpe by cut: `+1.037`, `+0.191`, `-0.310`.
+  - Mean Sharpe `+0.306`; SPY mean Sharpe `+1.081`; delta `-0.775`.
+  - Beat SPY Sharpe/APY: `0/3` and `0/3`.
+  - Trade ledger contract passed, but BULL_CALM score monotonicity failed.
+  - Manifest sanity remained weak: real IC `+0.0269`, shuffled `-0.0019`,
+    placebo `+0.0282` versus required `< +0.0135`.
+  - Conclusion: QP solver prefilter is necessary architecture hardening, but
+    it is not the alpha-conversion fix.
+- Latest repair bundle after sidecar audits:
+  - `run_wf_gate.py` now marks any run with skipped WF/sanity/trade/parity
+    gates or disabled trade traces as `diagnostic_only`; skipped gates can no
+    longer stamp a promotable PASS.
+  - `TopUpHeldTask` is disabled when joint QP is active (`solver=qp`), because
+    held-position adds must be sized by QP and pass the same panel/rank/slot/
+    turnover/cash/correlation contracts. Potential standalone top-ups are
+    stamped `topup_owned_by_qp`.
+  - Feature-space transform is centralized in
+    `kernel.panel_pipeline.feature_transform`: runtime raw rows apply all
+    artifact mean/std stats; prebuilt panel rows apply only columns declared
+    raw in the panel, currently robust-z fundamental columns. Training,
+    calibrator fitting, WF sanity, and runtime scoring now use this contract.
+  - Targeted tests passed:
+    `tests/test_panel_feature_transform.py tests/test_wf_gate_cli_contract.py
+    tests/test_kelly_sizing.py tests/test_buy_quality_gates.py
+    tests/test_qp_admission_gate.py tests/test_joint_qp_task.py
+    tests/test_lookahead_propagation.py` (`159 passed`).
 
 ## Active Validation
 

@@ -674,19 +674,22 @@ class ApplyScoresTask(Task):
                 # propagate (X_aligned local variable below).
                 ctx._panel_matrix = X_aligned.copy()  # noqa: SLF001
 
-                # Apply artifact-stored normalization chain if available (new artifacts
-                # store per-feature mean/std for raw→normalized inference parity)
-                meta = getattr(scorer, "metadata", {}) or {}
-                fmeans = meta.get("feature_means")
-                fstds  = meta.get("feature_stds")
-                if fmeans is not None and fstds is not None and len(fmeans) == len(scorer.feature_cols):
-                    import numpy as np                                               # noqa: PLC0415
-                    mu = np.asarray(fmeans); sd = np.asarray(fstds) + 1e-9
-                    Xv = X_aligned.fillna(0).values.astype(float)
-                    Xn = ((Xv - mu) / sd).clip(-5, 5)
-                    X_aligned = pd.DataFrame(Xn, index=X_aligned.index, columns=X_aligned.columns)
-                    log.info("ApplyScoresTask[panel_ltr_xgboost]: applied artifact normalization "
-                             "(mean/std for %d features)", len(fmeans))
+                # Raw inference rows must be transformed through the artifact
+                # feature contract before XGB scoring.
+                from kernel.panel_pipeline.feature_transform import (  # noqa: PLC0415
+                    transform_feature_frame,
+                )
+                X_aligned = transform_feature_frame(
+                    X_aligned,
+                    scorer.feature_cols,
+                    getattr(scorer, "metadata", {}) or {},
+                    source_space="raw",
+                )
+                log.info(
+                    "ApplyScoresTask[panel_ltr_xgboost]: applied raw→model "
+                    "feature transform for %d features",
+                    len(scorer.feature_cols),
+                )
 
                 # 2026-05-18 PatchTST dispatch: if scorer requires history
                 # (PatchTST sequence model), call score_with_history instead

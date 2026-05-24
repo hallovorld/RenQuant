@@ -48,6 +48,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("train-prod")
 
 REPO = Path(__file__).resolve().parent.parent
+STRATEGY_DIR = REPO / "backtesting" / "renquant_104"
+if str(STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_DIR))
+from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: E402
+
 PARAMS = {"objective":"rank:pairwise","eta":0.05,"max_depth":5,"min_child_weight":50,
           "subsample":0.7,"colsample_bytree":0.7,"nthread":_XGB_NTHREAD,"verbosity":0,"seed":42}
 N_ROUNDS = 100
@@ -225,9 +230,44 @@ def build_normalization(train: pd.DataFrame, feat_cols: list[str]) -> tuple[np.n
     return np.array(feat_means), np.array(feat_stds), feat_norm_kind
 
 
-def train_xgb(train: pd.DataFrame, feat_cols: list[str], label: str = LABEL) -> tuple[xgb.Booster, float]:
+def _feature_meta(mu: np.ndarray, sd: np.ndarray, kind: list[str]) -> dict:
+    return {
+        "feature_means": np.asarray(mu, dtype=float).tolist(),
+        "feature_stds": np.asarray(sd, dtype=float).tolist(),
+        "feature_norm_kind": list(kind),
+    }
+
+
+def panel_training_matrix(
+    frame: pd.DataFrame,
+    feat_cols: list[str],
+    mu: np.ndarray,
+    sd: np.ndarray,
+    norm_kind: list[str],
+) -> pd.DataFrame:
+    return transform_feature_frame(
+        frame.reindex(columns=feat_cols, fill_value=float("nan")),
+        feat_cols,
+        _feature_meta(mu, sd, norm_kind),
+        source_space="panel",
+    )
+
+
+def train_xgb(
+    train: pd.DataFrame,
+    feat_cols: list[str],
+    label: str = LABEL,
+    *,
+    feature_means: np.ndarray | None = None,
+    feature_stds: np.ndarray | None = None,
+    feature_norm_kind: list[str] | None = None,
+) -> tuple[xgb.Booster, float]:
     """Train rank:pairwise XGB and return (booster, in-sample IC). Label param added 2026-05-13."""
-    Xtr = train[feat_cols].fillna(0).values.astype(np.float64)
+    if feature_means is not None and feature_stds is not None and feature_norm_kind is not None:
+        Xdf = panel_training_matrix(train, feat_cols, feature_means, feature_stds, feature_norm_kind)
+    else:
+        Xdf = train.reindex(columns=feat_cols, fill_value=0).fillna(0)
+    Xtr = Xdf.values.astype(np.float64)
     ytr = train[label].clip(-5,5).values.astype(np.float64)
 
     sort_idx = np.argsort(train["date"].values)
@@ -311,8 +351,17 @@ def evaluate_walk_forward_cv(
             )
             continue
 
-        booster, train_ic = train_xgb(tr, feat_cols, label=label)
-        pred = booster.predict(xgb.DMatrix(va[feat_cols].fillna(0).values.astype(np.float64)))
+        mu, sd, norm_kind = build_normalization(tr, feat_cols)
+        booster, train_ic = train_xgb(
+            tr,
+            feat_cols,
+            label=label,
+            feature_means=mu,
+            feature_stds=sd,
+            feature_norm_kind=norm_kind,
+        )
+        Xva = panel_training_matrix(va, feat_cols, mu, sd, norm_kind)
+        pred = booster.predict(xgb.DMatrix(Xva.values.astype(np.float64)))
         y = va[label].clip(-5, 5).values.astype(np.float64)
         ic_info = cross_sectional_ic(pred, y, va["date"].values)
         fold_ic = float(ic_info["mean_ic"])
@@ -367,6 +416,7 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    cutoff_date: Optional[pd.Timestamp],
                    side_label: Optional[str],
                    *,
+                   feature_norm_kind: list[str] | None = None,
                    label_used: str = LABEL,
                    train_ic: float | None = None,
                    cv_result: dict | None = None,
@@ -388,6 +438,11 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         "feature_cols": feat_cols,
         "feature_means": mu.tolist(),
         "feature_stds":  sd.tolist(),
+        "feature_norm_kind": list(feature_norm_kind or ["legacy_full_z"] * len(feat_cols)),
+        "feature_source_contract": {
+            "raw": "apply all feature_means/stds before scoring live/sim rows",
+            "panel": "apply only feature_norm_kind entries that are raw in the prebuilt panel",
+        },
         "params": PARAMS,
         "best_iter": N_ROUNDS,
         "booster_raw_json": raw_json,
@@ -461,7 +516,7 @@ def main():
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
         cutoff_embargo_days=args.cutoff_embargo_days,
     )
-    mu, sd, _ = build_normalization(train, feat_cols)
+    mu, sd, norm_kind = build_normalization(train, feat_cols)
     cv_result = None
     if not args.skip_cv:
         cv_result = evaluate_walk_forward_cv(
@@ -480,9 +535,17 @@ def main():
     else:
         log.warning("--skip-cv set: artifact will not satisfy strict contract")
 
-    booster, train_ic = train_xgb(train, feat_cols, label=label_used)
+    booster, train_ic = train_xgb(
+        train,
+        feat_cols,
+        label=label_used,
+        feature_means=mu,
+        feature_stds=sd,
+        feature_norm_kind=norm_kind,
+    )
     artifact = build_artifact(booster, feat_cols, mu, sd, train,
                               cutoff_date, args.side_label,
+                              feature_norm_kind=norm_kind,
                               label_used=label_used,
                               train_ic=train_ic,
                               cv_result=cv_result,
