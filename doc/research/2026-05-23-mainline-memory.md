@@ -59,6 +59,14 @@ Make RenQuant 104 scientifically trustworthy end to end:
     profile into `wf_gate_metadata`.
   - Targeted tests passed:
     `tests/test_wf_gate_cli_contract.py tests/test_promote_wf_gate.py`.
+- Latest forensic update:
+  - `scripts/sim_trade_ledger.py` now rebuilds forensic round trips using the
+    configured tax-lot method (`hifo` for current 104) instead of hard-coded
+    FIFO.
+  - New `scripts/analyze_wf_trade_forensics.py` gives a repeatable WF trace
+    report for exit/source/regime/score/tax attribution.
+  - Targeted tests passed:
+    `tests/test_sim_trade_ledger.py tests/test_wf_trade_forensics.py`.
 
 ## Active Validation
 
@@ -116,24 +124,32 @@ Current-contract cut-level metrics:
 | 2024-07-01 to 2025-06-30 | `+11.51%` | `+1.152` | `+4.67%` | `+0.462` | `+0.715` | `-0.253` |
 | 2025-04-01 to 2026-03-28 | `+13.36%` | `+2.140` | `+8.44%` | `+1.139` | `+0.749` | `+0.390` |
 
-Current-contract trade forensics:
+Current-contract trade forensics, after rebuilding from raw trade events with
+the current config's `hifo` tax-lot method:
 
-- Round trips: `192` total, `159` closed, `33` open.
-- Closed gross P/L: `+$33.1k`.
-- Closed tax-estimated net P/L: `+$6.15k`.
-- Closed win rate: `62.3%`.
-- Median hold: `54d`; average hold: `84.6d`.
+- Round trips: `191` total, `158` closed, `33` open.
+- Closed gross P/L: `+$32.78k`.
+- Closed tax estimate: `+$27.16k`.
+- Closed tax-estimated net P/L: `+$5.63k`.
+- Closed win rate: `62.0%`.
+- Median hold: `60d`; average hold: `86.2d`.
+- Tax integrity is clean under current semantics: `tax_cash_debited=$0`, no
+  positive closed row has `tax > gross_pnl`, and no losing row has positive tax.
 - Exit buckets:
-  - `stop_loss`: 36 exits, gross/net `-$17.6k`, win rate `0%`.
-  - `trailing_stop`: 59 exits, gross `+$37.1k`, net `+$17.2k`.
-  - `qp_sell`: 40 exits, gross `+$12.7k`, net `+$7.55k`.
-  - `panel_conviction`: 9 exits, gross `-$0.29k`.
+  - `stop_loss`: 36 exits, gross/net `-$17.59k`, win rate `0%`.
+  - `trailing_stop`: 59 exits, gross `+$39.23k`, net `+$19.08k`.
+  - `qp_sell`: 39 exits, gross `+$8.79k`, net `+$3.65k`.
+  - `panel_conviction`: 9 exits, gross `-$0.29k`, net `-$0.34k`.
 - Entry source:
-  - QP buys: 86 closed, gross `+$20.6k`, net `+$2.70k`, win `55.8%`.
-  - Top-ups: 73 closed, gross `+$12.5k`, net `+$3.45k`, win `69.9%`.
-- Entry rank-score versus realized `pnl_pct` Spearman: `-0.002`.
+  - QP buys: 89 closed, gross `+$21.53k`, net `+$2.46k`, win `57.3%`.
+  - Top-ups: 69 closed, gross `+$11.26k`, net `+$3.17k`, win `68.1%`.
+- Entry rank-score versus realized `pnl_pct` Spearman: `-0.0028`.
 - Score deciles are not cleanly monotonic; the 8th decile lost money and the
   6th/9th deciles carried much of the gross P/L.
+
+Important correction: the earlier "tax greater than gross" forensic symptom
+was caused by replaying HIFO-configured sim trades with a FIFO round-trip
+matcher. It was an attribution bug, not a broker-cash debit regression.
 
 ## Mainline Queue
 
@@ -195,3 +211,5 @@ Stop and fix before reporting performance if any of these happen:
   `doc/research/2026-05-23-decision-tree-and-sim-audit.md`.
 - Decision-tree contract:
   `doc/research/2026-05-23-decision-tree-contract.md`.
+- HIFO-aligned WF trade forensics:
+  `doc/research/2026-05-23-wf-trade-forensics.md`.

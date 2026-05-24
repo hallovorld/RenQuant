@@ -150,6 +150,56 @@ def test_round_trip_tax_allocation_does_not_tax_losing_lots() -> None:
     assert not ((closed["gross_pnl"] > 0) & (closed["tax"] > closed["gross_pnl"])).any()
 
 
+def test_round_trips_respect_hifo_lot_method_for_tax_alignment() -> None:
+    """Forensics must replay the same disposal rule as the sim.
+
+    Current 104 uses HIFO. A FIFO replay of a HIFO partial sell can attach a
+    HIFO-computed event tax to the wrong entry lot and make per-lot attribution
+    look impossible. The report is allowed to estimate tax, but it must not
+    fabricate ``tax > gross`` rows simply because it used the wrong lot order.
+    """
+    trade_log = [
+        {
+            "action": "buy",
+            "ticker": "KMI",
+            "date": pd.Timestamp("2024-01-02"),
+            "price": 100.0,
+            "shares": 1,
+            "invest": 100.0,
+        },
+        {
+            "action": "buy",
+            "ticker": "KMI",
+            "date": pd.Timestamp("2024-02-01"),
+            "price": 135.0,
+            "shares": 1,
+            "invest": 135.0,
+        },
+        {
+            "action": "sell",
+            "ticker": "KMI",
+            "date": pd.Timestamp("2024-03-01"),
+            "price": 145.0,
+            "shares": 1,
+            "tax": 5.0,  # HIFO gain is $10, tax is $5 at a 50% ST rate.
+            "pnl_pct": 10.0 / 135.0,
+            "exit_reason": "qp_close",
+        },
+    ]
+
+    trips = round_trips_from_trade_log(trade_log, lot_method="hifo")
+    closed = trips[trips["status"] == "closed"].reset_index(drop=True)
+    open_lots = trips[trips["status"] == "open"].reset_index(drop=True)
+
+    assert len(closed) == 1
+    assert closed.loc[0, "entry_price"] == 135.0
+    assert closed.loc[0, "gross_pnl"] == 10.0
+    assert closed.loc[0, "tax"] == 5.0
+    assert closed.loc[0, "tax"] <= closed.loc[0, "gross_pnl"]
+    assert len(open_lots) == 1
+    assert open_lots.loc[0, "entry_price"] == 100.0
+
+
 def test_forensic_report_groups_by_regime_and_exit_reason() -> None:
     trips = pd.DataFrame([
         {

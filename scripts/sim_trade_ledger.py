@@ -3,13 +3,13 @@
 
 The sim engine already returns ``SimResult.trade_log`` in memory. This module
 turns that volatile list into durable audit artifacts: raw trade events,
-FIFO-matched round trips, and a compact forensic report.
+lot-matched round trips, and a compact forensic report.
 """
 from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict, deque
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -225,20 +225,26 @@ def round_trips_from_trade_log(
     trade_log: list[dict],
     *,
     end_prices: dict[str, float] | None = None,
+    lot_method: str = "fifo",
 ) -> pd.DataFrame:
-    """FIFO-match long buys to long sells.
+    """Match long buys to long sells with the simulator's tax-lot method.
 
     The simulator can top up and partially trim positions. Per-trade sell rows
     contain event-level realized P&L, but root-cause analysis needs entry-side
-    fields (regime, rank_score, mu/sigma) joined to each realized exit. FIFO is
-    deliberately conservative and transparent for this diagnostic ledger.
-    Event-level tax is allocated only across profitable matched lots, in
+    fields (regime, rank_score, mu/sigma) joined to each realized exit.
+
+    The matching method must mirror the simulator's configured disposal rule.
+    Production 104 uses HIFO to minimize realized gain on partial trims; a
+    forensic FIFO replay can then disagree with the sell event's tax basis and
+    fabricate rows where allocated tax is larger than the row's gross profit.
+    Event-level tax is allocated only across profitable matched lots in
     proportion to their positive gross P&L. This preserves the simulator's
-    total tax debit while avoiding impossible forensic rows such as a losing
-    lot carrying positive tax or a small winning lot showing tax greater than
-    its own gross profit.
+    event-level tax estimate while avoiding losing lots carrying positive tax.
     """
-    lots: dict[str, deque[dict]] = defaultdict(deque)
+    method = (lot_method or "fifo").lower()
+    if method not in {"fifo", "hifo", "avg"}:
+        method = "fifo"
+    lots: dict[str, list[dict]] = defaultdict(list)
     rows: list[dict] = []
 
     for event_id, event in enumerate(trade_log or []):
@@ -282,14 +288,15 @@ def round_trips_from_trade_log(
         sell_shares = _as_float(event.get("shares"))
         if sell_shares <= 0:
             continue
-        remaining = sell_shares
         exit_price = _as_float(event.get("price"))
         event_tax = _as_float(event.get("tax"))
         event_tax_cash = _as_float(event.get("tax_cash_debited"), default=event_tax)
         matched_rows: list[dict[str, Any]] = []
-        while remaining > 1e-9 and lots[ticker]:
-            lot = lots[ticker][0]
-            take = min(remaining, lot["remaining_shares"])
+        lot_takes = _lot_takes(lots[ticker], sell_shares, method)
+        for lot_idx, take in lot_takes:
+            lot = lots[ticker][lot_idx]
+            if take <= 1e-9:
+                continue
             entry_price = _as_float(lot.get("entry_price"))
             gross_pnl = (exit_price - entry_price) * take
             entry_value = entry_price * take
@@ -342,10 +349,15 @@ def round_trips_from_trade_log(
                 "entry_expected_return": lot.get("entry_expected_return"),
                 **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })
-            lot["remaining_shares"] -= take
-            remaining -= take
-            if lot["remaining_shares"] <= 1e-9:
-                lots[ticker].popleft()
+
+        for lot_idx, take in sorted(lot_takes, key=lambda x: x[0], reverse=True):
+            if lot_idx >= len(lots[ticker]):
+                continue
+            lots[ticker][lot_idx]["remaining_shares"] -= take
+            if lots[ticker][lot_idx]["remaining_shares"] <= 1e-9:
+                lots[ticker].pop(lot_idx)
+
+        remaining = sell_shares - sum(take for _, take in lot_takes)
 
         if matched_rows:
             positive_gross = sum(
@@ -471,6 +483,59 @@ def round_trips_from_trade_log(
     return df.sort_values(["entry_date", "exit_date", "ticker"]).reset_index(drop=True)
 
 
+def _lot_takes(
+    open_lots: list[dict],
+    shares_to_sell: float,
+    method: str,
+) -> list[tuple[int, float]]:
+    """Return ``(lot_index, shares)`` disposals matching sim lot semantics."""
+    if not open_lots:
+        return []
+    remaining = float(shares_to_sell)
+    if remaining <= 0:
+        return []
+
+    if method == "avg":
+        total = sum(_as_float(l.get("remaining_shares")) for l in open_lots)
+        if total <= 0:
+            return []
+        take_frac = min(1.0, remaining / total)
+        return [
+            (i, _as_float(lot.get("remaining_shares")) * take_frac)
+            for i, lot in enumerate(open_lots)
+            if _as_float(lot.get("remaining_shares")) > 0
+        ]
+
+    if method == "hifo":
+        order = sorted(
+            range(len(open_lots)),
+            key=lambda i: -_as_float(open_lots[i].get("entry_price")),
+        )
+    else:
+        order = list(range(len(open_lots)))
+
+    out: list[tuple[int, float]] = []
+    for idx in order:
+        if remaining <= 1e-9:
+            break
+        take = min(remaining, _as_float(open_lots[idx].get("remaining_shares")))
+        if take <= 0:
+            continue
+        out.append((idx, take))
+        remaining -= take
+    return out
+
+
+def _tax_lot_method_from_config(config: dict[str, Any] | None) -> str:
+    ja_cfg = (
+        ((config or {}).get("rotation") or {})
+        .get("joint_actions", {})
+        or {}
+    )
+    method = str(ja_cfg.get("qp_tax_lot_method", "fifo")).lower()
+    return method if method in {"fifo", "hifo", "avg"} else "fifo"
+
+
 def build_forensic_report(
     *,
     raw_trades: pd.DataFrame,
@@ -483,7 +548,8 @@ def build_forensic_report(
     lines: list[str] = [f"# {title}", ""]
     lines.append("## Run Metrics")
     for key in ("config", "start", "end", "final_value", "total_return",
-                "apy", "sharpe", "max_dd", "win_rate", "n_buys", "n_sells"):
+                "apy", "sharpe", "max_dd", "win_rate", "n_buys", "n_sells",
+                "tax_lot_method"):
         if key in metrics:
             lines.append(f"- {key}: {metrics[key]}")
     if config:
@@ -636,7 +702,12 @@ def write_trade_outputs(
     """Write requested trade-ledger artifacts and return written paths."""
     trade_log = _enrich_trade_log_from_result(result)
     raw = trade_log_frame(trade_log)
-    trips = round_trips_from_trade_log(trade_log, end_prices=end_prices)
+    lot_method = _tax_lot_method_from_config(config)
+    trips = round_trips_from_trade_log(
+        trade_log,
+        end_prices=end_prices,
+        lot_method=lot_method,
+    )
     metrics = {
         "final_value": float(getattr(result, "final_value", 0.0)),
         "total_return": float(getattr(result, "total_return", 0.0)),
@@ -646,6 +717,7 @@ def write_trade_outputs(
         "win_rate": float(getattr(result, "win_rate", 0.0)),
         "n_buys": len(getattr(result, "buys", []) or []),
         "n_sells": len(getattr(result, "sells", []) or []),
+        "tax_lot_method": lot_method,
     }
     metrics.update(extra_metrics or {})
 
