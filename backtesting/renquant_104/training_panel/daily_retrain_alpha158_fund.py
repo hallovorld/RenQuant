@@ -252,6 +252,11 @@ def _staging_path(path: Path) -> Path:
     return path.with_suffix(".staging.json")
 
 
+def _resolve_output_override(repo_dir: Path, raw: str) -> Path:
+    path = Path(raw)
+    return path if path.is_absolute() else repo_dir / path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -283,9 +288,9 @@ def main() -> None:
     )
     ctx = DailyRetrainContext()
     if args.xgb_artifact_out:
-        ctx.xgb_artifact_dst = Path(args.xgb_artifact_out)
+        ctx.xgb_artifact_dst = _resolve_output_override(ctx.repo_dir, args.xgb_artifact_out)
     if args.calibrator_out:
-        ctx.calibrator_artifact = Path(args.calibrator_out)
+        ctx.calibrator_artifact = _resolve_output_override(ctx.repo_dir, args.calibrator_out)
     if args.staged:
         if not args.xgb_artifact_out:
             ctx.xgb_artifact_dst = _staging_path(ctx.xgb_artifact_dst)

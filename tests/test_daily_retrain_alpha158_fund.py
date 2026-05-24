@@ -29,6 +29,7 @@ from training_panel.daily_retrain_alpha158_fund import (  # noqa: E402
     TrainPanelLTRTask,
     RefitCalibratorTask,
     _newest_mtime,
+    _resolve_output_override,
     _staging_path,
 )
 
@@ -91,6 +92,13 @@ def test_shell_wrapper_forwards_pipeline_args():
     """Weekly promote passes unique staging paths through the bash wrapper."""
     wrapper = (REPO / "scripts" / "daily_retrain_alpha158_fund.sh").read_text()
     assert 'training_panel.daily_retrain_alpha158_fund "$@"' in wrapper
+
+
+def test_output_override_resolves_relative_to_repo(tmp_path):
+    out = _resolve_output_override(tmp_path, "backtesting/renquant_104/artifacts/prod/x.json")
+
+    assert out == tmp_path / "backtesting/renquant_104/artifacts/prod/x.json"
+    assert out.is_absolute()
 
 
 # ── BuildAlpha158PanelTask.should_skip ───────────────────────────────────────

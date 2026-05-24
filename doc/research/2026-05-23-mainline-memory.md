@@ -43,6 +43,16 @@ Make RenQuant 104 scientifically trustworthy end to end:
   but that 13-trading-day, zero-sell window is not promotion evidence.
 - Current-contract WF has now completed and failed acceptance. This replaces
   the earlier "running" state below.
+- A new feature-space-aligned staged model now exists from run
+  `codex_featspace_20260523-211211`: 172 features, CV OOS IC `+0.0473`,
+  train IC `+0.1190`. Its paired calibrator fit reports pool IC `+0.1152`
+  and per-date IC `+0.1193`. These are training/calibration diagnostics only,
+  not acceptance evidence.
+- The feature-space-aligned staged model correctly fails strict WF admission
+  against the old manifest because the feature-source contract changed. Old
+  walk-forward artifacts are no longer recipe-comparable; a new WF manifest
+  must be regenerated under the new feature contract before quoting WF
+  Sharpe/APY for this candidate.
 
 ## Pushed Progress
 
@@ -174,6 +184,21 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_kelly_sizing.py tests/test_buy_quality_gates.py
     tests/test_qp_admission_gate.py tests/test_joint_qp_task.py
     tests/test_lookahead_propagation.py` (`159 passed`).
+- Latest WF recipe-contract hardening:
+  - `run_wf_gate.py` now includes `feature_norm_kind` and
+    `feature_source_contract` in the recipe fingerprint. This prevents a
+    scorer trained with one feature-space contract from reusing a manifest
+    generated under another contract.
+  - `daily_retrain_alpha158_fund.py` resolves CLI output overrides relative
+    to the repo root, fixing the staged retrain crash where a relative output
+    path could not be reported with `relative_to(ctx.repo_dir)`.
+  - Targeted tests passed:
+    `tests/test_wf_gate_cli_contract.py
+    tests/test_daily_retrain_alpha158_fund.py
+    tests/test_panel_feature_transform.py tests/test_kelly_sizing.py
+    tests/test_buy_quality_gates.py tests/test_qp_admission_gate.py
+    tests/test_joint_qp_task.py tests/test_lookahead_propagation.py`
+    (`183 passed`).
 
 ## Active Validation
 
@@ -415,27 +440,58 @@ Decision rule remains unchanged: promote nothing unless a strict rerun without
 `--skip-sanity` and without side-config drift passes WF, SPY-relative, regime,
 calibration, config, and decision-trace gates.
 
+## 2026-05-23 Feature-Space Retrain Status
+
+Run `codex_featspace_20260523-211211` trained a new 172-feature
+feature-space-aligned panel scorer and staged calibrator.
+
+- Staged scorer:
+  `backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json`.
+- Staged calibrator:
+  `backtesting/renquant_104/artifacts/prod/panel-rank-calibration.codex_featspace_20260523-211211.staging.json`.
+- Feature contract: `global_z=158`, `robust_z=5`, `identity=9`.
+- Model diagnostics: CV OOS IC `+0.0473`; train IC `+0.1190`.
+- Calibrator diagnostics: pool IC `+0.1152`; per-date IC `+0.1193`;
+  base rate about `0.5005`; flat-gate passed.
+- Strict WF gate result: `FAIL`, intentionally fail-closed because the old
+  manifest recipe fingerprint (`sha256:ccc412d08c0f3463`) does not match the
+  candidate recipe fingerprint (`sha256:f4596e333baf90a8`).
+
+Interpretation: the feature-space fix produced a better-looking training
+diagnostic, but there is no valid WF Sharpe/APY yet. The next acceptance-grade
+step is regenerating a walk-forward manifest under this exact feature contract.
+
 ## Mainline Queue
 
-1. Diagnose the manifest-OOS sanity failure: real IC `+0.0269` is weak and the
+1. Regenerate the 172-feature walk-forward manifest under the current
+   feature-space contract before running acceptance WF on
+   `codex_featspace_20260523-211211`. Old manifest evidence is invalid for
+   this candidate.
+2. Diagnose the manifest-OOS sanity failure: real IC `+0.0269` is weak and the
    time-shift placebo IC `+0.0282` is slightly higher. Check splitter/label
    horizon, feature timestamping, regime persistence, slow beta/momentum
    persistence, and calibrator scope before trusting any reported IC.
-2. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
+3. Diagnose benchmark/annual-net failure: event Sharpe is positive, but
    annual-net and SPY-relative metrics fail. Split by regime, exposure, tax,
    stop-loss bucket, and QP/top-up source.
-3. Re-run strict WF only after the model/sanity issue has a theory-backed fix.
+4. Re-run strict WF only after the model/sanity issue has a theory-backed fix.
    Compare event-level, annual-net, SPY-relative, regime cuts, score
    monotonicity, stop-loss bucket, and QP/TopUp source buckets.
-4. Evaluate stop-loss changes only through paired A/B acceptance. The current
+5. Evaluate stop-loss changes only through paired A/B acceptance. The current
    BULL_CALM entry-regime stop-anchor A/B (`max_entry_current`) is rejected.
    Other candidates remain non-BULL volatility-aware stops and earlier
    panel/mu soft exits for positions whose model thesis deteriorates before
    hard stop.
-5. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
+6. Build PatchTST true WF manifest before quoting PatchTST portfolio APY/Sharpe
    as OOS. Static PatchTST full-window sims are style diagnostics only.
-6. Continue after-tax/no-trade-region and stop-loss research per regime, using
+7. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
+8. Fix remaining audit findings before promotion: explicit
+   `effective_train_cutoff_date` in WF artifacts, calibrator metric scope
+   labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
+   LEAN share/target parity for cash-capped QP orders, fail-closed metadata
+   and correlation semantics, and per-ticker trace stamping for global
+   panel/QP failures.
 
 ## Known Failure Modes To Keep Front And Center
 

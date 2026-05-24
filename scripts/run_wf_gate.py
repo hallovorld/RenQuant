@@ -171,6 +171,8 @@ def _recipe_projection(artifact: dict) -> dict:
     return {
         "kind": artifact.get("kind"),
         "feature_cols": list(artifact.get("feature_cols") or []),
+        "feature_norm_kind": list(artifact.get("feature_norm_kind") or []),
+        "feature_source_contract": artifact.get("feature_source_contract"),
         "label_col": artifact.get("label_col"),
         "lookahead_days": int(artifact.get("lookahead_days") or 0),
         "params": _semantic_params(artifact.get("params") or {}),

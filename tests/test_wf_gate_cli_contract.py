@@ -23,6 +23,22 @@ def test_wf_gate_defaults_to_manifest_recipe_config() -> None:
     assert "Manifest configs validate the candidate" in src
 
 
+def test_wf_gate_recipe_fingerprint_includes_feature_space_contract() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    base = {
+        "kind": "panel_ltr_xgboost",
+        "feature_cols": ["alpha", "fund"],
+        "label_col": "fwd_60d_excess",
+        "lookahead_days": 60,
+        "params": {"objective": "rank:pairwise", "nthread": 14},
+    }
+    old = dict(base, feature_norm_kind=["global_z", "legacy_full_z"])
+    new = dict(base, feature_norm_kind=["global_z", "robust_z"])
+
+    assert mod._recipe_fingerprint(old) != mod._recipe_fingerprint(new)
+
+
 def test_wf_gate_sim_cuts_do_not_use_live_static_path_or_persistence() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert '"--no-compare"' in src

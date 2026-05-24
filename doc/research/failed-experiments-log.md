@@ -3809,3 +3809,33 @@ structure.
 
 **Regression coverage:** `tests/test_wf_gate_recipe_scope.py`,
 `tests/test_wf_gate_cli_contract.py`, and `tests/test_promote_wf_gate.py`.
+
+---
+
+## 2026-05-23 — Feature-space retrain rejected old WF manifest
+
+**Hypothesis:** After aligning runtime/training/calibration feature-space
+semantics, the staged panel scorer could be evaluated against the existing
+172-feature walk-forward manifest.
+
+**Protocol:** Train staged artifact `codex_featspace_20260523-211211`, fit its
+staged calibrator, then run strict `scripts/run_wf_gate.py` with
+`strategy_config.sim_wl200_172_sentiment.calibrated_causal.json` and persisted
+trade traces.
+
+**Result:** failed closed before portfolio simulation. The candidate recipe
+fingerprint was `sha256:f4596e333baf90a8`; the old manifest artifact recipe
+fingerprint was `sha256:ccc412d08c0f3463`. `run_wf_gate.py` wrote a failed
+metadata stamp because the manifest artifacts were trained under a different
+feature-source contract.
+
+Training/calibration diagnostics from the new artifact are promising but not
+acceptance evidence: model CV OOS IC `+0.0473`, train IC `+0.1190`, calibrator
+pool IC `+0.1152`, and calibrator per-date IC `+0.1193`.
+
+**Conclusion:** do not quote WF APY/Sharpe for this candidate yet. Regenerate a
+walk-forward manifest under the same feature contract, then rerun the strict WF
+gate.
+
+**Regression coverage:** `tests/test_wf_gate_cli_contract.py` now proves the
+WF recipe fingerprint changes when `feature_norm_kind` changes.
