@@ -301,7 +301,7 @@ class ComputeBrownSmithTaxCostTask(Task):
         n = len(tickers)
         cost = np.zeros(n)
         cfg = _qp_cfg(ctx)
-        if not cfg.get("qp_tax_aware", True):
+        if not cfg.get("qp_tax_aware", False):
             ctx._qp_tax_cost = cost  # noqa: SLF001
             return
         st_rate = float(cfg.get("qp_tax_rate_st", 0.30))
@@ -2281,6 +2281,11 @@ def _compute_qp_wash_mask(
         if min_reentry > 0:
             last = last_sell_dates.get(t)
             if last is not None:
+                if isinstance(last, str):
+                    try:
+                        last = _dt.date.fromisoformat(last[:10])
+                    except (ValueError, TypeError):
+                        continue
                 days_since = (today - last).days
                 if 0 <= days_since < min_reentry:
                     mask[i] = True

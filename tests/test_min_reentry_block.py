@@ -118,6 +118,18 @@ class TestComputeWashSaleMaskAntiChurn:
         mask = self._run_task(ctx)
         assert mask[0] == False, "min_reentry=0 → gain sale passes (legacy behavior)"
 
+    def test_string_date_gain_sale_blocked_by_anti_churn(self):
+        """live_state persists last_sell_dates as ISO strings; anti-churn
+        must parse the same shape as the wash-sale helper."""
+        ctx = self._build_ctx(
+            config={"min_reentry_days": 5, "wash_sale_days": 0},
+            today=datetime.date(2026, 5, 18),
+            last_sell_dates={"MCD": "2026-05-17"},
+            last_sell_pls={"MCD": +14.02},
+        )
+        mask = self._run_task(ctx)
+        assert mask[0] == True, "ISO string sell date must still trigger min_reentry"
+
     def test_both_guards_compound(self):
         """If both wash-sale AND anti-churn fire (loss sale yesterday),
         block once (no double-counting)."""

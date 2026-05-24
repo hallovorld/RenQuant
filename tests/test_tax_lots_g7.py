@@ -232,6 +232,26 @@ class TestQPTaxCostUsesLots:
         apply_buy_lot(hs, 10, 110.0, datetime.date(2026, 4, 20))
         return hs, today
 
+    def test_qp_tax_aware_omitted_defaults_to_reporting_only(self):
+        """Tax must not enter QP decisions unless qp_tax_aware is explicit.
+
+        User mandate: tax can be reported, but should not silently suppress
+        sells or create loss-harvest trades. Missing config therefore means
+        OFF, not legacy-on.
+        """
+        hs, today = self._multi_lot_holding()
+        ctx = _Ctx(
+            config={"rotation": {"joint_actions": {"enabled": True}}},
+            holdings={"ABC": hs},
+            prices={"ABC": 130.0},
+            portfolio_value=13_000.0,
+            today=today,
+            _qp_tickers=["ABC"],
+            _qp_w_current=np.array([0.30]),
+        )
+        ComputeBrownSmithTaxCostTask().run(ctx)
+        assert ctx._qp_tax_cost.tolist() == [0.0]
+
     def test_qp_tax_cost_uses_hifo_when_lots_present(self):
         """Multi-lot holding under HIFO marginal vs legacy single-entry
         path should produce DIFFERENT costs.
