@@ -1883,6 +1883,7 @@ def main():
         "sanity_eval_end":     sanity_result.get("sanity_eval_end"),
         "sanity_n_oos_dates":  sanity_result.get("n_oos_dates"),
         "sanity_cutoff_contract": sanity_result.get("cutoff_contract"),
+        "sanity_regime_ic":    sanity_result.get("sanity_regime_ic"),
         "placebo_shift_diagnostics": sanity_result.get("placebo_shift_diagnostics"),
         "wf_reason":           wf_result.get("reason"),
         "sanity_reason":       sanity_result.get("reason"),

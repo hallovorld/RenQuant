@@ -1579,6 +1579,10 @@ Code hardening after rerun:
   `regime_benchmark_failures`, and `performance_tax_basis_counts` into artifact
   metadata. Previous code calculated these but omitted them from the metadata
   payload, violating regime-first auditability.
+- `scripts/run_wf_gate.py` also now stamps `sanity_regime_ic` into artifact
+  metadata. Previous code returned it from `run_sanity_battery()` but failed to
+  copy it into `wf_gate_metadata`, causing preflight to see absent regime
+  sanity evidence even after the diagnostic ran.
 - `scripts/daily_104.sh` no longer sends phone `SHADOW-FAIL` alerts for
   expected shadow buy-side preflight blocks. True shadow crashes/timeouts still
   alert.

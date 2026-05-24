@@ -194,6 +194,7 @@ def test_wf_gate_stamps_benchmark_and_regime_context() -> None:
     assert '"benchmark_by_dominant_regime": wf_result.get("benchmark_by_dominant_regime")' in src
     assert '"regime_benchmark_failures": wf_result.get("regime_benchmark_failures")' in src
     assert '"performance_tax_basis_counts": wf_result.get("performance_tax_basis_counts")' in src
+    assert '"sanity_regime_ic":    sanity_result.get("sanity_regime_ic")' in src
     assert "hmm_regime_counts" in src
     assert "spy_grid_regime_counts" in src
     assert "trade_buy_regime_counts_total" in src
