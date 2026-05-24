@@ -568,25 +568,25 @@ class TestTtlSkipNotExported:
         assert "tc.exported = True      # treat cached" not in body
 
 
-# ── R1 (round-2): LEAN top-up updates entry_price via volume-weighted avg ──
+# ── R1 (round-3): LEAN top-up maintains tax lots like sim ──────────────
 
 class TestLeanAdapterTopUpCostBasis:
-    """Round-2 regression: my round-1 fix preserved entry_price on top-up
-    (no longer reset to today's price), but didn't compute the volume-
-    weighted average. SimAdapter does — kernel.exits.check_stop_loss /
-    check_trailing_stop / check_single_day_loss all use HoldingState.entry_price
-    so the two adapters were diverging. Round-2 fix: LEAN top-up does
-    `(old_entry × old_qty + price × shares) / new_qty`, matching SimAdapter."""
+    """Regression: LEAN top-up cost basis must stay aligned with SimAdapter.
+
+    Round 2 used an inline volume-weighted average. Round 3 moved the contract
+    to the shared tax-lot primitive so FIFO/HIFO sell attribution and legacy
+    avg-cost fields both stay synchronized.
+    """
 
     def test_lean_topup_volume_weighted_avg(self):
         src = (_STRATEGY_DIR / "adapters" / "lean.py").read_text()
-        # Sentinel for the avg-cost computation in the top-up branch.
+        # Sentinel for the lot-aware top-up branch.
         idx = src.find("if already_held:")
         body = src[idx:idx + 1500]
         assert "old_qty" in body
-        assert "new_qty = old_qty + shares" in body or "new_qty" in body
-        assert "hs.entry_price" in body and "* old_qty" in body, \
-            "LEAN top-up must volume-weight entry_price (R1)"
+        assert "ensure_lots(hs)" in body
+        assert "apply_buy_lot(hs, shares_f, price_f, ctx.today)" in body
+        assert "hs.shares = old_qty + shares_f" in body
 
 
 # ── #58 — RunnerAdapter intraday overlay copies before mutating ─────────

@@ -104,7 +104,10 @@ Fix:
    carryover. Fixed concrete drift: LEAN now passes `last_sell_pls` and stamps
    it on full exits, so cost-aware wash-sale handling matches sim/live. LEAN
    also now attaches `ctx._db` before the pipeline runs, so DB-aware pipeline
-   tasks have the same context surface as sim/live.
+   tasks have the same context surface as sim/live. LEAN now also syncs
+   holding share counts and tax lots from `Portfolio`, and sell P&L/tax uses
+   the same FIFO/HIFO disposed-basis primitive as sim instead of pro-rating
+   aggregate `UnrealizedProfit`.
 
 2. Decision trace writing is mostly shared now.
    `kernel.decision_trace` builds candidate pools, QP maps, selected-buy
@@ -139,14 +142,21 @@ Fix:
    it should be promoted from optional report to scheduled/acceptance evidence
    after any live run.
 
+8. Training feature input is now canonicalized.
+   The full suite exposed a duplicate-date SPY axis during parallel feature
+   construction. `training.features` now coerces OHLCV to the required schema,
+   sorts by datetime, keeps the latest duplicate date, and gives each ticker
+   build an isolated SPY copy before concurrent execution. This protects
+   SPY-relative features and forward labels from ambiguous `reindex` behavior.
+
 ## Next Engineering Moves
 
 1. Add an adapter context contract test that checks sim/live/LEAN all populate
    required `InferenceContext` fields for buy/full mode.
 2. Keep migrating execution post-processing into shared kernel helpers:
-   tax-lot attribution and broker-state mutation are still adapter-heavy, and
-   sim sell events should move to the shared sell builder after lot attribution
-   is centralized.
+   broker-state mutation is still adapter-heavy, and sim sell events should
+   move to the shared sell builder after the remaining settlement/fee fields
+   are represented in the shared event contract.
 3. Make live-vs-sim reconciliation run after daily/live cycles and write a
    small divergence report.
 4. Continue model-side repair separately: current alpha is still

@@ -17,6 +17,34 @@ from kernel.indicators import compute_all as _compute_all
 
 _RATIO_FEATURES = {"rsi", "adx"}
 _DIFF_FEATURES  = {"macd_hist", "cci", "bbp", "williams_r", "obv_slope"}
+_REQUIRED_OHLCV = ("open", "high", "low", "close", "volume")
+
+
+def _canonical_ohlcv_frame(rows: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Return sorted, unique-date OHLCV input safe for pandas reindex.
+
+    Vendor/cache appends can leave duplicate trading dates. Pandas refuses to
+    ``reindex`` a duplicate axis, and keeping duplicate labels would also make
+    forward-return labels ambiguous, so training canonicalizes once at the
+    boundary and keeps the latest row for each date.
+    """
+    if rows is None or rows.empty:
+        return None
+    missing = [c for c in _REQUIRED_OHLCV if c not in rows.columns]
+    if missing:
+        return None
+
+    df = rows.loc[:, list(_REQUIRED_OHLCV)].copy()
+    idx = pd.to_datetime(df.index, errors="coerce")
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_convert(None)
+    df.index = idx
+    df = df[~df.index.isna()].sort_index()
+    if df.empty:
+        return None
+    if df.index.has_duplicates:
+        df = df[~df.index.duplicated(keep="last")]
+    return df if not df.empty else None
 
 
 def build_training_features(
@@ -37,8 +65,13 @@ def build_training_features(
     if ticker not in ohlcv or "SPY" not in ohlcv:
         return None
 
-    stock_ind = _compute_all(ohlcv[ticker], indicator_spec)
-    spy_ind   = _compute_all(ohlcv["SPY"],  indicator_spec)
+    stock_raw = _canonical_ohlcv_frame(ohlcv[ticker])
+    spy_raw = _canonical_ohlcv_frame(ohlcv["SPY"])
+    if stock_raw is None or spy_raw is None:
+        return None
+
+    stock_ind = _compute_all(stock_raw, indicator_spec)
+    spy_ind   = _compute_all(spy_raw,  indicator_spec)
     if stock_ind is None or spy_ind is None:
         return None
 
@@ -49,7 +82,7 @@ def build_training_features(
     result = pd.DataFrame(index=common_idx)
 
     # Relative close: stock / SPY * 100
-    spy_close_aligned = ohlcv["SPY"]["close"].reindex(common_idx)
+    spy_close_aligned = spy_raw["close"].reindex(common_idx)
     result["close"] = s["close"] / spy_close_aligned.replace(0, np.nan) * 100
 
     for col in _RATIO_FEATURES:
@@ -69,10 +102,10 @@ def build_training_features(
     result["rel_mom_60d"] = rel_price.pct_change(60)
 
     # Rolling per-bar regime context
-    spy_rets = ohlcv["SPY"]["close"].pct_change().reindex(common_idx)
+    spy_rets = spy_raw["close"].pct_change().reindex(common_idx)
     spy_adx  = p["adx"] if "adx" in p.columns else pd.Series(25.0, index=common_idx)
-    spy_ema50 = ohlcv["SPY"]["close"].ewm(span=50, adjust=False).mean().reindex(common_idx)
-    spy_close_full = ohlcv["SPY"]["close"].reindex(common_idx)
+    spy_ema50 = spy_raw["close"].ewm(span=50, adjust=False).mean().reindex(common_idx)
+    spy_close_full = spy_raw["close"].reindex(common_idx)
     result["spy_realized_vol"] = spy_rets.rolling(20).std() * np.sqrt(252)
     result["spy_adx"]          = spy_adx
     result["spy_trend"]        = spy_close_full / spy_ema50.replace(0, np.nan)
@@ -86,8 +119,8 @@ def build_training_features(
     result["hurst_proxy"] = _rolling_hurst(spy_rets, window=63).reindex(common_idx)
 
     # Supervised labels: stock outperformance vs SPY over lookahead days
-    stock_fwd = ohlcv[ticker]["close"].pct_change(lookahead).shift(-lookahead)
-    spy_fwd   = ohlcv["SPY"]["close"].pct_change(lookahead).shift(-lookahead)
+    stock_fwd = stock_raw["close"].pct_change(lookahead).shift(-lookahead)
+    spy_fwd   = spy_raw["close"].pct_change(lookahead).shift(-lookahead)
     rel_fwd   = stock_fwd - spy_fwd.reindex(stock_fwd.index)
     result["fwd_return"] = rel_fwd.reindex(common_idx)
     result["label"] = np.where(result["fwd_return"] >  threshold,  1,
@@ -115,8 +148,31 @@ def build_all_training_features(
 ) -> dict[str, pd.DataFrame]:
     """Build labelled feature frames for all watchlist tickers in parallel."""
 
+    canonical_ohlcv = {
+        symbol: frame
+        for symbol, frame in (
+            (symbol, _canonical_ohlcv_frame(rows))
+            for symbol, rows in ohlcv.items()
+        )
+        if frame is not None
+    }
+
+    per_ticker_ohlcv: dict[str, dict[str, pd.DataFrame]] = {}
+    for ticker in watchlist:
+        local: dict[str, pd.DataFrame] = {}
+        if "SPY" in canonical_ohlcv:
+            local["SPY"] = canonical_ohlcv["SPY"].copy(deep=True)
+        if ticker in canonical_ohlcv and ticker != "SPY":
+            local[ticker] = canonical_ohlcv[ticker].copy(deep=True)
+        elif ticker == "SPY" and "SPY" in canonical_ohlcv:
+            local[ticker] = canonical_ohlcv["SPY"].copy(deep=True)
+        per_ticker_ohlcv[ticker] = local
+
     def _build(ticker: str):
-        df = build_training_features(ticker, ohlcv, indicator_spec, lookahead, threshold)
+        df = build_training_features(
+            ticker, per_ticker_ohlcv.get(ticker, {}),
+            indicator_spec, lookahead, threshold,
+        )
         return ticker, df
 
     feature_frames: dict[str, pd.DataFrame] = {}

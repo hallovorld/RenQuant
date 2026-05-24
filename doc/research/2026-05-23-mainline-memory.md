@@ -1756,6 +1756,16 @@ Operational conclusion:
   Pipeline tasks that need DB context, such as score-distribution gates and
   thesis-symmetric rotation lookup, no longer silently no-op in LEAN while
   working in sim/live.
+- LEAN now synchronizes holding share counts from `Portfolio`, maintains
+  `HoldingState.lots` on buys/top-ups, and computes sell tax/P&L from the
+  same FIFO/HIFO disposed-basis primitive used by sim. This fixes the prior
+  avg-cost/pro-rated `UnrealizedProfit` path that could misstate partial-sell
+  tax, `gross_pnl`, `pnl_pct`, and wash-sale P/L.
+- Training feature construction now canonicalizes OHLCV inputs before
+  indicators, SPY-relative alignment, and forward labels: required columns
+  only, datetime index coercion, sort, duplicate-date removal with latest row
+  kept. Parallel feature builds also get per-ticker frame copies so shared SPY
+  data cannot create reindex failures or ambiguous labels under concurrency.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

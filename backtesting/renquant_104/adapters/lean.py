@@ -36,7 +36,7 @@ from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
     is_full_liquidate_signal,
 )
-from kernel.exits import HoldingState
+from kernel.exits import HoldingState, apply_buy_lot, apply_sell_lots, ensure_lots
 from kernel.portfolio import compute_trade_tax
 from kernel.trade_events import build_buy_trade_event, build_sell_trade_event
 
@@ -223,6 +223,18 @@ class LeanAdapter:
             if data.ContainsKey(sym):
                 prices[ticker] = float(data[sym].Close)
 
+        holdings = dict(algo._holdings)  # shallow copy; jobs mutate states in place
+        for ticker, hs in holdings.items():
+            sym = _symbol_for_ticker(algo, ticker)
+            if sym is None:
+                continue
+            try:
+                qty = float(algo.Portfolio[sym].Quantity)
+            except Exception:
+                continue
+            hs.shares = qty
+            ensure_lots(hs)
+
         ctx = InferenceContext(
             config           = config,
             today            = today,
@@ -232,7 +244,7 @@ class LeanAdapter:
             gmm              = algo._gmm,
             corr_matrix      = algo._corr,
             earnings_calendar = algo._earnings,
-            holdings         = dict(algo._holdings),  # shallow copy; jobs mutate in place
+            holdings         = holdings,
             last_sell_dates  = algo._last_sell_dates,
             last_sell_pls    = getattr(algo, "_last_sell_pls", {}) or {},
             last_stop_exit_dates = getattr(algo, "_last_stop_exit_dates", {}) or {},
@@ -333,30 +345,67 @@ class LeanAdapter:
             sym       = _symbol_for_ticker(algo, ticker)
             if sym is None:
                 continue
-            gross_pnl = float(algo.Portfolio[sym].UnrealizedProfit)
+            gross_pnl_broker = float(algo.Portfolio[sym].UnrealizedProfit)
             days_held = (ctx.today - hs.entry_date).days if hs else 0
             is_lt     = days_held >= tax_thresh
 
             req_qty = getattr(sig, "quantity", None)
             holding_qty = float(algo.Portfolio[sym].Quantity)
             is_partial = not is_full_liquidate_signal(sig, holding_qty)
+            event_shares = float(req_qty) if is_partial else float(holding_qty)
+            try:
+                price = float(algo.Securities[sym].Price)
+            except Exception:
+                price = 0.0
 
             if is_partial:
-                # Partial sell: pro-rate tax to fraction sold, keep position.
+                # Partial sell fallback when lot accounting is unavailable.
                 frac = float(req_qty) / max(holding_qty, 1.0)
-                tax  = compute_trade_tax(
-                    gross_pnl * frac, days_held, tax_short, tax_long, tax_thresh,
-                )
+                event_gross = gross_pnl_broker * frac
             else:
-                tax = compute_trade_tax(
-                    gross_pnl, days_held, tax_short, tax_long, tax_thresh,
-                )
+                event_gross = gross_pnl_broker
+
+            proceeds_basis = (
+                price * event_shares - event_gross
+                if _math_lex.isfinite(price)
+                and _math_lex.isfinite(event_shares)
+                and _math_lex.isfinite(event_gross)
+                else None
+            )
+            if (
+                hs is not None
+                and _math_lex.isfinite(price)
+                and price > 0
+                and _math_lex.isfinite(event_shares)
+                and event_shares > 0
+            ):
+                ensure_lots(hs)
+                had_lots = bool(getattr(hs, "lots", None))
+                lot_method = str(
+                    ((config.get("rotation", {}) or {}).get("joint_actions", {}) or {})
+                    .get("qp_tax_lot_method", "fifo")
+                ).lower()
+                lot_basis, _ = apply_sell_lots(hs, event_shares, lot_method)
+                if (
+                    had_lots
+                    and _math_lex.isfinite(lot_basis)
+                    and lot_basis > 0
+                ):
+                    proceeds_basis = lot_basis
+                    event_gross = event_shares * price - proceeds_basis
+                if is_partial:
+                    hs.shares = max(0.0, float(holding_qty) - event_shares)
+                    hs.entry_price = hs.weighted_avg_entry_price()
+
+            tax = compute_trade_tax(
+                event_gross, days_held, tax_short, tax_long, tax_thresh,
+            )
 
             if not _math_lex.isfinite(tax):
                 log.warning(
                     "lean.commit [%s]: NaN/inf tax (gross_pnl=%s) — "
                     "skipping cumulative add to preserve _total_tax.",
-                    ticker, gross_pnl,
+                    ticker, event_gross,
                 )
                 tax = 0.0
             algo._total_tax     += tax
@@ -378,22 +427,9 @@ class LeanAdapter:
 
             tag = "TRIM" if is_partial else "SELL"
             algo.Debug(
-                f"{ctx.today} {ticker} {tag} pnl=${gross_pnl:.2f} "
+                f"{ctx.today} {ticker} {tag} pnl=${event_gross:.2f} "
                 f"held={days_held}d tax=${tax:.2f} "
                 f"({'LT' if is_lt else 'ST'}) {sig.reason}"
-            )
-            try:
-                price = float(algo.Securities[sym].Price)
-            except Exception:
-                price = 0.0
-            event_shares = float(req_qty) if is_partial else float(holding_qty)
-            event_gross = gross_pnl * frac if is_partial else gross_pnl
-            proceeds_basis = (
-                price * event_shares - event_gross
-                if _math_lex.isfinite(price)
-                and _math_lex.isfinite(event_shares)
-                and _math_lex.isfinite(event_gross)
-                else None
             )
             event_net = (
                 event_gross - tax if _math_lex.isfinite(event_gross) else None
@@ -544,28 +580,24 @@ class LeanAdapter:
 
             if already_held:
                 hs = algo._holdings[ticker]
-                # Volume-weighted average cost basis on top-up — matches
-                # SimAdapter._apply_buy. Without this, kernel.exits' stop-loss
-                # / trailing-stop / single-day gates compute against the
-                # ORIGINAL entry while the broker's actual cost basis is
-                # the average → exits diverge between LEAN and sim.
-                # Round 2 audit (#R1).
+                # Tax-lot-aware top-up — matches SimAdapter._apply_buy.
+                # Keep the original entry date, append a new lot, and refresh
+                # legacy avg-cost fields from the lot ledger.
                 try:
                     old_qty = float(algo.Portfolio[sym].Quantity)
                 except Exception:
                     old_qty = 0.0
-                new_qty = old_qty + shares
-                if new_qty > 0 and old_qty > 0:
-                    hs.entry_price = (
-                        hs.entry_price * old_qty + price * shares
-                    ) / new_qty
-                # Refresh HWM with today's price; keep entry tenure intact.
-                hs.high_watermark = max(hs.high_watermark, price)
+                hs.shares = old_qty
+                ensure_lots(hs)
+                apply_buy_lot(hs, shares_f, price_f, ctx.today)
+                hs.shares = old_qty + shares_f
+                hs.high_watermark = max(hs.high_watermark, price_f)
             else:
-                algo._holdings[ticker] = HoldingState(
-                    entry_price    = price,
+                hs_new = HoldingState(
+                    entry_price    = price_f,
                     entry_date     = ctx.today,
-                    high_watermark = price,
+                    high_watermark = price_f,
+                    shares         = 0.0,
                     # Thesis-degradation baselines (Approach A) — stamp entry
                     # signals so future rotation checks can compare today's
                     # scores vs this fixed baseline. Not recomputed per bar.
@@ -574,6 +606,9 @@ class LeanAdapter:
                     entry_kelly_target_pct = order.get("kelly_target_pct"),
                     entry_regime           = order.get("regime"),
                 )
+                apply_buy_lot(hs_new, shares_f, price_f, ctx.today)
+                hs_new.shares = shares_f
+                algo._holdings[ticker] = hs_new
             algo._executed_buys += 1
             algo.SetHoldings(sym, target_pct)
             trade_events.append(build_buy_trade_event(

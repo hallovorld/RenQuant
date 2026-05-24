@@ -69,6 +69,17 @@ class TestBuildTrainingFeatures:
         # close = stock/SPY*100 → should typically be in ~50–200 range, not thousands
         assert df["close"].max() < 1000
 
+    def test_duplicate_dates_are_deduped_before_alignment(self):
+        from training.features import build_training_features
+        ohlcv = _make_ohlcv_dict()
+        ohlcv["AAPL"] = pd.concat([ohlcv["AAPL"], ohlcv["AAPL"].iloc[[120]]])
+        ohlcv["SPY"] = pd.concat([ohlcv["SPY"], ohlcv["SPY"].iloc[[90]]])
+
+        df = build_training_features("AAPL", ohlcv, _INDICATOR_SPEC, _LOOKAHEAD, _THRESHOLD)
+
+        assert df is not None
+        assert not df.index.has_duplicates
+
     def test_missing_ticker_returns_none(self):
         from training.features import build_training_features
         ohlcv = _make_ohlcv_dict()
@@ -93,6 +104,16 @@ class TestBuildTrainingFeatures:
         assert len(frames) == 2
         for df in frames.values():
             assert len(df) > 0
+
+    def test_build_all_dedupes_shared_spy_before_parallel_build(self):
+        from training.features import build_all_training_features
+        ohlcv = _make_ohlcv_dict(["AAPL", "GOOG", "SPY"])
+        ohlcv["SPY"] = pd.concat([ohlcv["SPY"], ohlcv["SPY"].iloc[[75]]])
+
+        frames = build_all_training_features(["AAPL", "GOOG"], ohlcv, _INDICATOR_SPEC, _LOOKAHEAD, _THRESHOLD)
+
+        assert set(frames) == {"AAPL", "GOOG"}
+        assert all(not df.index.has_duplicates for df in frames.values())
 
 
 # ── training/tournament ───────────────────────────────────────────────────────
