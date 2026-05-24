@@ -33,7 +33,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from threading import current_thread
 
@@ -162,7 +162,14 @@ def run_panel_ticker_parallel(
     ticker_ctxs: list[TickerPanelContext],
     max_workers: "int | None" = None,
     timeout_seconds: "float | None" = None,
+    progress_log_seconds: "float | None" = None,
 ) -> None:
+    """Run the per-ticker panel feature chain with a real phase timeout.
+
+    ThreadPoolExecutor cannot stop a Python worker already inside IO/compute.
+    On timeout, fail hard and abandon the executor so the caller cannot collect
+    partial feature frames and treat them as a valid panel retrain.
+    """
     if not ticker_ctxs:
         return
     cfg = ticker_ctxs[0].config or {}
@@ -170,23 +177,76 @@ def run_panel_ticker_parallel(
         max_workers = cfg.get("parallel_workers")
     if timeout_seconds is None:
         timeout_seconds = cfg.get("parallel_ticker_timeout_seconds")
+    if progress_log_seconds is None:
+        progress_log_seconds = cfg.get("parallel_progress_log_seconds")
+    if progress_log_seconds is None:
+        progress_log_seconds = 30.0
     n = _resolve_workers(max_workers, len(ticker_ctxs))
+    job_name = "PanelTickerChain"
     log.info("run_panel_ticker_parallel: %d tickers, %d workers, timeout=%s",
              len(ticker_ctxs), n, timeout_seconds)
     t0 = time.monotonic()
-    with ThreadPoolExecutor(max_workers=n, thread_name_prefix="panel") as ex:
-        futures = {ex.submit(_run_panel_ticker_chain, tc): tc.ticker for tc in ticker_ctxs}
-        for fut in as_completed(futures, timeout=None):
-            ticker = futures[fut]
-            try:
-                fut.result(timeout=timeout_seconds)
-            except _FutTimeout:
-                log.error("[%s] panel chain TIMEOUT after %ss — skipped",
-                          ticker, timeout_seconds)
-                fut.cancel()
-            except Exception as e:
-                log.error("[%s] panel chain ERROR — %s: %s",
-                          ticker, type(e).__name__, e)
+    from kernel.pipeline.pipeline import ParallelTimeoutError  # noqa: PLC0415
+
+    ex = ThreadPoolExecutor(max_workers=n, thread_name_prefix="panel")
+    futures = {ex.submit(_run_panel_ticker_chain, tc): tc.ticker for tc in ticker_ctxs}
+    pending = set(futures)
+    completed = 0
+    progress_interval = max(0.01, float(progress_log_seconds or 0.0))
+    next_progress = t0 + progress_interval
+    abandon_executor = False
+    try:
+        while pending:
+            now = time.monotonic()
+            elapsed = now - t0
+            if timeout_seconds is not None and elapsed >= float(timeout_seconds):
+                pending_tickers = sorted(futures[f] for f in pending)
+                for fut in pending:
+                    fut.cancel()
+                log.error(
+                    "run_panel_ticker_parallel: %s TIMEOUT after %.2fs — "
+                    "done=%d/%d pending=%d tickers=%s; worker may still be running",
+                    job_name, elapsed, completed, len(futures), len(pending_tickers),
+                    pending_tickers[:20],
+                )
+                ex.shutdown(wait=False, cancel_futures=True)
+                abandon_executor = True
+                raise ParallelTimeoutError(job_name, elapsed, pending_tickers)
+
+            wait_timeout = max(0.0, next_progress - now)
+            if timeout_seconds is not None:
+                wait_timeout = min(
+                    wait_timeout,
+                    max(0.0, float(timeout_seconds) - elapsed),
+                )
+            done, pending = wait(
+                pending,
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+
+            for fut in done:
+                ticker = futures[fut]
+                completed += 1
+                try:
+                    fut.result()
+                except Exception as e:
+                    log.error("[%s] panel chain ERROR — %s: %s",
+                              ticker, type(e).__name__, e)
+
+            now = time.monotonic()
+            if pending and now >= next_progress:
+                pending_tickers = sorted(futures[f] for f in pending)
+                log.info(
+                    "run_panel_ticker_parallel: %s progress done=%d/%d "
+                    "pending=%d elapsed=%.2fs pending_tickers=%s",
+                    job_name, completed, len(futures), len(pending_tickers),
+                    now - t0, pending_tickers[:10],
+                )
+                next_progress = now + progress_interval
+    finally:
+        if not abandon_executor:
+            ex.shutdown(wait=True)
     log.info("run_panel_ticker_parallel: DONE  %.1fs  (%d tickers)",
              time.monotonic() - t0, len(ticker_ctxs))
 
