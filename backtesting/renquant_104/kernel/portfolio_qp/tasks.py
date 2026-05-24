@@ -453,6 +453,65 @@ class ComputeQPConstraintsTask(Task):
         ctx._qp_gross_max = min(_cfg_gross, _LEVERAGE_HARDCAP)  # noqa: SLF001
 
 
+class ApplySectorMetadataGuardTask(Task):
+    """Prevent QP from adding risk to tickers without sector metadata.
+
+    The sector cap matrix can only constrain tickers that have a sector row.
+    A missing sector therefore used to be an implicit exemption from sector
+    diversification. Upstream candidate gates now block most missing-sector
+    entries, but the QP must defend its own contract because holdings can
+    enter through broker state and future paths may pass candidates directly.
+
+    Invariant: when sector caps are enabled, an unmapped ticker may be held
+    or reduced, but QP cannot increase its post-trade weight.
+    """
+    name = "ApplySectorMetadataGuardTask"
+
+    def run(self, ctx) -> bool | None:
+        cfg = _qp_cfg(ctx)
+        if not bool(cfg.get("qp_sector_cap_enabled", True)):
+            return None
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        sector_map = (ctx.config or {}).get("sector_map", {}) or {}
+        if not sector_map:
+            return None
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        w_current = _get_path(ctx, "_qp_w_current")
+        if not tickers or w_upper is None or w_current is None:
+            return None
+        missing = [
+            i for i, t in enumerate(tickers)
+            if not isinstance(sector_map.get(t), str) or not sector_map.get(t)
+        ]
+        if not missing:
+            ctx._qp_missing_sector_tickers = []  # noqa: SLF001
+            return None
+        w_upper_arr = np.asarray(w_upper, dtype=float).copy()
+        w_current_arr = np.asarray(w_current, dtype=float)
+        blocked: list[str] = []
+        blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked_map is None:
+            blocked_map = {}
+            ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+        candidate_tickers = {getattr(c, "ticker", None) for c in (ctx.candidates or [])}
+        for i in missing:
+            if i >= len(w_upper_arr) or i >= len(w_current_arr):
+                continue
+            ticker = tickers[i]
+            w_upper_arr[i] = min(float(w_upper_arr[i]), max(float(w_current_arr[i]), 0.0))
+            blocked.append(ticker)
+            if ticker in candidate_tickers:
+                blocked_map.setdefault(ticker, "missing_sector_map")
+        ctx._qp_w_upper = w_upper_arr  # noqa: SLF001
+        ctx._qp_missing_sector_tickers = blocked  # noqa: SLF001
+        _inc_counter(ctx, "qp_missing_sector_guard", len(blocked))
+        log.warning(
+            "ApplySectorMetadataGuardTask: capped %d missing-sector ticker(s) "
+            "at current weight: %s",
+            len(blocked), blocked[:10],
+        )
+
+
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
@@ -887,24 +946,22 @@ class BuildSectorConstraintMatrixTask(Task):
             ctx._qp_sector_cap_vec   = None  # noqa: SLF001
             ctx._qp_sector_names     = []    # noqa: SLF001
             return
-        # Per-name cap (post-confidence scaling) is in ctx._qp_w_upper.
-        # Use the max element as the per-position anchor, then optionally
-        # tighten with a regime-level direct sector weight cap. Mature
-        # optimizers expose sector caps as "sum of group weights <= upper"
-        # (PyPortfolioOpt add_sector_constraints, cvxportfolio factor/holding
-        # limits); converting only from a count cap can be too loose when
-        # max_positions_per_sector is high.
-        w_upper = _get_path(ctx, "_qp_w_upper")
-        per_name_cap = (
-            float(np.max(w_upper)) if (w_upper is not None and len(w_upper))
-            else float((ctx.config or {}).get("max_position_pct", 0.20))
-        )
         sector_to_idx = self._build_sector_index(tickers, sector_map)
         if not sector_to_idx:
             ctx._qp_sector_indicator = None  # noqa: SLF001
             ctx._qp_sector_cap_vec   = None  # noqa: SLF001
             ctx._qp_sector_names     = []    # noqa: SLF001
             return
+        # Per-name cap (post-confidence/scaling/conviction) is in
+        # ctx._qp_w_upper. Anchor only on names that actually belong to a
+        # mapped sector row; an unmapped broker holding capped at current
+        # weight must not inflate every mapped sector's group limit.
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        mapped_idx = [j for idxs in sector_to_idx.values() for j in idxs]
+        per_name_cap = _max_upper_for_indices(
+            w_upper, mapped_idx,
+            fallback=float((ctx.config or {}).get("max_position_pct", 0.20)),
+        )
         sector_names = sorted(sector_to_idx.keys())
         m = len(sector_names)
         S = np.zeros((m, n), dtype=float)
@@ -1005,20 +1062,12 @@ class BuildCorrelationGroupConstraintTask(Task):
             ctx._qp_corr_group_pairs = None  # noqa: SLF001
             return
         w_upper = _get_path(ctx, "_qp_w_upper")
-        per_name_cap = (
-            float(np.max(w_upper)) if (w_upper is not None and len(w_upper))
-            else float((ctx.config or {}).get("max_position_pct", 0.20))
-        )
-        # Group-cap = 2 × per-name (linear relaxation). Two co-linear holdings
-        # can each individually hit the cap; the constraint binds when both
-        # try to be near-cap simultaneously and the realized portfolio looks
-        # like a single concentrated bet.
-        group_cap = 2.0 * per_name_cap
-        pairs = self._collect_pairs(tickers, corr_matrix, thr, group_cap)
+        fallback_cap = float((ctx.config or {}).get("max_position_pct", 0.20))
+        pairs = self._collect_pairs(tickers, corr_matrix, thr, w_upper, fallback_cap)
         ctx._qp_corr_group_pairs = pairs if pairs else None  # noqa: SLF001
 
     @staticmethod
-    def _collect_pairs(tickers, corr_matrix, thr, group_cap):
+    def _collect_pairs(tickers, corr_matrix, thr, w_upper, fallback_cap):
         """Walk the upper-triangle of the corr matrix; return (i, j, cap)."""
         pairs: list[tuple[int, int, float]] = []
         for i in range(len(tickers)):
@@ -1043,8 +1092,36 @@ class BuildCorrelationGroupConstraintTask(Task):
                     # Fail-conservative: NaN correlation → treat as high.
                     rho_f = 1.0
                 if abs(rho_f) >= thr:
+                    group_cap = _pair_upper_cap(w_upper, i, j, fallback_cap)
                     pairs.append((i, j, group_cap))
         return pairs
+
+
+def _max_upper_for_indices(w_upper, indices: list[int], *, fallback: float) -> float:
+    """Max finite positive upper bound over a constrained group."""
+    if w_upper is None:
+        return float(fallback)
+    arr = np.asarray(w_upper, dtype=float)
+    vals = [
+        float(arr[i]) for i in indices
+        if 0 <= i < len(arr) and math.isfinite(float(arr[i])) and float(arr[i]) >= 0
+    ]
+    return max(vals) if vals else float(fallback)
+
+
+def _pair_upper_cap(w_upper, i: int, j: int, fallback: float) -> float:
+    """Linear high-correlation cap from the two assets' own upper bounds."""
+    if w_upper is None:
+        return 2.0 * float(fallback)
+    arr = np.asarray(w_upper, dtype=float)
+    vals: list[float] = []
+    for idx in (i, j):
+        if 0 <= idx < len(arr):
+            val = float(arr[idx])
+            vals.append(val if math.isfinite(val) and val >= 0 else float(fallback))
+        else:
+            vals.append(float(fallback))
+    return float(vals[0] + vals[1])
 
 
 # ── 5b. Per-asset 20-day ADV (Almgren-Chriss participation) ─────────────────
@@ -1415,6 +1492,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             n_cash_capped=counters["cash_capped"],
             n_cash_exhausted=counters["cash_exhausted"],
             n_soft_sell_blocked=counters["soft_sell_blocked"],
+            n_preexisting_exit=counters["preexisting_exit"],
         )
         ctx._qp_n_buys = nb  # noqa: SLF001
         ctx._qp_n_sells = ns  # noqa: SLF001
@@ -1456,6 +1534,9 @@ class EmitOrdersFromQPSolutionTask(Task):
             min_share_ceiling_pct=float(cfg.get("qp_min_share_ceiling_pct", 0.15)),
             defensive_set=set((ctx.config or {}).get("defensive_tickers", []) or []),
             bear_only=bool(getattr(ctx, "bear_only", False)),
+            preexisting_exit_tickers={
+                t for t, _ in (getattr(ctx, "exits", None) or [])
+            },
         )
 
     @staticmethod
@@ -1503,13 +1584,23 @@ class EmitOrdersFromQPSolutionTask(Task):
                  skipped_nonfinite=0, skipped_band=0,
                  delta_below_min_dw=0, zero_shares=0,
                  no_buy_delta=0, not_selected=0,
-                 cash_capped=0, cash_exhausted=0, soft_sell_blocked=0)
+                 cash_capped=0, cash_exhausted=0, soft_sell_blocked=0,
+                 preexisting_exit=0)
         buy_cash_left = max(0.0, env["cash"] - env["nav"] * env["cash_reserve"])
         for i, t in enumerate(env["tickers"]):
             dw = float(sol.delta_w[i])
             if not _m.isfinite(dw):
                 c["skipped_nonfinite"] += 1
                 stamp(t, "qp_nonfinite_delta")
+                continue
+            if t in env["preexisting_exit_tickers"]:
+                c["preexisting_exit"] += 1
+                stamp(t, "qp_preexisting_exit")
+                log.info(
+                    "QP_TRADE_SUPPRESSED %-6s preexisting_exit "
+                    "(QP must not double-act on an already exiting ticker)",
+                    t,
+                )
                 continue
             sig_i = 0.0
             if sigma_vec is not None and i < len(sigma_vec):
@@ -1629,6 +1720,7 @@ class EmitOrdersFromQPSolutionTask(Task):
         n_skipped_nonfinite, n_skipped_band, min_dw, no_trade_factor,
         n_delta_below_min_dw, n_zero_shares, n_no_buy_delta, n_not_selected,
         n_cash_capped, n_cash_exhausted, n_soft_sell_blocked,
+        n_preexisting_exit,
     ) -> None:
         if n_blocked_buys:
             reason = ("buy_blocked=True" if buy_blocked
@@ -1698,6 +1790,12 @@ class EmitOrdersFromQPSolutionTask(Task):
                 "EmitOrdersFromQPSolutionTask: suppressed %d QP soft sell(s) "
                 "by horizon/LT/tax guards",
                 n_soft_sell_blocked,
+            )
+        if n_preexisting_exit:
+            log.info(
+                "EmitOrdersFromQPSolutionTask: suppressed %d QP trade(s) "
+                "for ticker(s) already carrying an exit intent",
+                n_preexisting_exit,
             )
 
 
@@ -1982,7 +2080,7 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
         "order_type": "QP_BUY",
         "source": "qp",
     }, ctx=ctx, source_job="JointPortfolioQPJob",
-        source_task="JointPortfolioQPTask",
+        source_task="EmitOrdersFromQPSolutionTask",
         acceptance_reason="qp_target_weight_increase",
         source_obj=cand,
         decision_inputs={
@@ -2033,6 +2131,13 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig = ctx.exits[-1][1]
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
+        sig.decision_inputs = {
+            "delta_w": float(dw),
+            "target_w": float(target_w),
+            "solver_status": getattr(sol, "status", None),
+            "shares": float(qty),
+            "held_shares": float(held),
+        }
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
                  ticker, dw, qty, exit_type)
         return True
@@ -2053,6 +2158,13 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig = ctx.exits[-1][1]
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
+        sig.decision_inputs = {
+            "delta_w": float(dw),
+            "target_w": float(target_w),
+            "solver_status": getattr(sol, "status", None),
+            "shares": float(long_close),
+            "held_shares": float(held),
+        }
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=qp_close",
                  ticker, dw, long_close)
         emitted = True
@@ -2068,6 +2180,13 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig = ctx.exits[-1][1]
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
+        sig.decision_inputs = {
+            "delta_w": float(dw),
+            "target_w": float(target_w),
+            "solver_status": getattr(sol, "status", None),
+            "shares": float(short_open),
+            "held_shares": float(held),
+        }
         log.info("QP_SHORT_OPEN %-6s  Δw=%+.4f  shares=%d  target_w=%+.4f",
                  ticker, dw, short_open, target_w)
         emitted = True
@@ -2082,6 +2201,7 @@ __all__ = [
     "ComputeWashSaleMaskTask",
     "BuildADVVectorTask",
     "ComputeQPConstraintsTask",
+    "ApplySectorMetadataGuardTask",
     "ApplyConvictionCapTask",
     "BuildSectorConstraintMatrixTask",
     "BuildCorrelationGroupConstraintTask",

@@ -181,3 +181,4 @@ class TickerInferenceContext:
     # Final outputs (written by TickerSellJob or TickerCandidateJob)
     exit_signal: Any = None      # ExitSignal | None
     candidate: Any = None        # CandidateResult | None
+    blocked_by: str | None = None  # candidate-gate reason when chain stops before assembly

@@ -552,6 +552,36 @@ def _check_config_fingerprint(
             "until the artifact is retrained/stamped against the live config.",
             details=details,
         )
+    legacy_sector_fields = {"sector_map", "sector_etf_map"}
+    if (
+        diff_keys
+        and set(diff_keys).issubset(legacy_sector_fields)
+        and not any(k in stored_sub for k in legacy_sector_fields)
+    ):
+        sector_check = _check_sector_map_coverage(config, strategy_dir, run_mode)
+        details = details | {
+            "legacy_missing_sector_fields": True,
+            "sector_coverage_ok": sector_check.ok,
+            "sector_coverage_severity": sector_check.severity,
+            "sector_coverage_message": sector_check.message,
+            "sector_coverage_details": sector_check.details,
+        }
+        if sector_check.ok:
+            return PreflightCheck(
+                "P-CONFIG-FP", "soft", True,
+                msg + " Legacy artifact lacks sector fingerprint fields added "
+                "after training; P-SECTOR-MAP passed, so this is a stamp "
+                "migration warning rather than config drift. Next retrain must "
+                "stamp sector_map and sector_etf_map.",
+                details=details,
+            )
+        return PreflightCheck(
+            "P-CONFIG-FP", "hard", False,
+            msg + " Legacy artifact lacks sector fingerprint fields, and "
+            "P-SECTOR-MAP did not pass; fix sector metadata or retrain/stamp "
+            "before enabling buy mode.",
+            details=details,
+        )
     return PreflightCheck("P-CONFIG-FP", "hard", False, msg, details=details)
 
 

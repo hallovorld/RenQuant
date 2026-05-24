@@ -143,9 +143,12 @@ class TestPanelFrameInferenceErrorIsolation:
         `f.result()` and killed the whole bar's panel inference. Now per-ticker
         try/except logs + skips, mirroring training-side run_panel_ticker_parallel."""
         src = (_STRATEGY_DIR / "training_panel" / "pipeline.py").read_text()
-        # Sentinel: post-fix wraps f.result() in try/except
-        idx = src.find("with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix=\"panel-inf\"")
-        body = src[idx:idx + 1500]
+        # Sentinel: post-fix wraps f.result() in try/except. The current
+        # watchdog implementation avoids the executor context manager because
+        # __exit__ waits for stuck workers and would defeat hard timeout.
+        idx = src.find("ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix=\"panel-inf\"")
+        body = src[idx:idx + 2200]
+        assert "wait(" in body
         assert "try:" in body
         assert "f.result()" in body
         assert "except Exception" in body

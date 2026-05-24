@@ -389,6 +389,10 @@ class TestQPSoftSellGuard:
         assert sig.exit_type == "qp_sell"
         assert sig.source_job == "JointPortfolioQPJob"
         assert sig.source_task == "EmitOrdersFromQPSolutionTask"
+        assert sig.decision_inputs["delta_w"] == pytest.approx(-0.05)
+        assert sig.decision_inputs["target_w"] == pytest.approx(0.05)
+        assert sig.decision_inputs["solver_status"] == "optimal"
+        assert sig.decision_inputs["shares"] > 0
 
     def test_horizon_gate_blocks_young_qp_trim(self):
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
@@ -692,6 +696,12 @@ class TestActionDirections:
         assert len(ctx.orders) == 1
         assert ctx.orders[0]["ticker"] == "A"
         assert ctx.orders[0]["shares"] > 0
+        assert ctx.orders[0]["source_job"] == "JointPortfolioQPJob"
+        assert ctx.orders[0]["source_task"] == "EmitOrdersFromQPSolutionTask"
+        assert (
+            ctx.orders[0]["order_source"]
+            == "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
+        )
 
     def test_positive_mu_on_held_topup_preserves_holding_scores(self):
         """QP top-ups use holdings as the score source when no candidate exists."""
@@ -734,6 +744,30 @@ class TestActionDirections:
         ticker, sig = ctx.exits[0]
         assert ticker == "H"
         assert "qp" in sig.exit_type
+
+    def test_existing_exit_suppresses_qp_duplicate_sell(self):
+        """If an upstream exit already owns the ticker, QP must not add a
+        second partial sell. This pins the 2026-05-23 shadow GE duplicate:
+        panel_conviction full exit + QP trim for the same holding."""
+        from kernel.exits import ExitSignal
+
+        ctx = _Ctx(config=_qp_on())
+        ctx.holdings = {"H": _Hold(shares=20, mu=-0.05, sigma=0.10)}
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 8000.0
+        ctx.portfolio_value = 10000.0
+        prior = ExitSignal(
+            should_exit=True,
+            reason="panel_conviction",
+            exit_type="panel_conviction",
+        )
+        ctx.exits = [("H", prior)]
+
+        ret = JointPortfolioQPTask().run(ctx)
+
+        assert ret is True
+        assert ctx.exits == [("H", prior)]
+        assert ctx.counters["qp_preexisting_exit"] == 1
 
     def test_zero_signal_no_action(self):
         """μ=0 + flat → optimum is no trade."""

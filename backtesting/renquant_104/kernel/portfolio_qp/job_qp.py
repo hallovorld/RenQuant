@@ -39,6 +39,7 @@ from .tasks import (
     ApplyConvictionCapTask,
     ApplyExposureScalingTask,
     ApplyGrinoldKahnTransformTask,
+    ApplySectorMetadataGuardTask,
     AlignQPHorizonUnitsTask,
     ForceMuSourceTask,
     BuildADVVectorTask,
@@ -194,6 +195,10 @@ class JointPortfolioQPJob(Job):
             # multiplicatively with conviction & sector caps below. See
             # doc/AUDIT_2026-05-12_dead_paths.md.
             ApplyExposureScalingTask(),
+            # Missing sector metadata cannot be an implicit exemption from
+            # sector constraints. Cap unmapped names at current weight before
+            # building sector/correlation matrices.
+            ApplySectorMetadataGuardTask(),
             # 2026-05-11 A2: per-ticker conviction shrink of w_upper.
             # OFF by default; opt-in via
             #   rotation.joint_actions.qp_conviction_cap_enabled=true

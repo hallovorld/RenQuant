@@ -15,7 +15,7 @@ STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquan
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
-from adapters.runner import build_sell_trade_event_for_db  # noqa: E402
+from adapters.runner import build_sell_trade_event_for_db, model_type_from_artifact  # noqa: E402
 from kernel.exits import ExitSignal, HoldingState  # noqa: E402
 
 
@@ -61,6 +61,19 @@ def test_live_sell_trade_preserves_exit_signal_source_metadata():
     assert row["order_source"] == "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
     assert row["source"] == "ExitPipeline"
     assert row["order_type"] == "SELL_qp_sell"
+    assert row["shares"] == 3.0
+    assert row["gross_pnl"] == 30.0
+    assert row["tax"] == 15.0
+    assert row["net_pnl_after_tax"] == 15.0
+    assert row["rank_score"] == 0.71
     assert row["decision_inputs"]["quantity"] == 3.0
+    assert row["decision_inputs"]["shares"] == 3.0
+    assert row["decision_inputs"]["gross_pnl"] == 30.0
     assert row["decision_inputs"]["take_profit_pct"] == 0.30
     assert row["decision_inputs"]["sdl_skip_if_unrealized_above"] == 0.02
+
+
+def test_model_type_from_dict_artifact_metadata():
+    assert model_type_from_artifact({"_metadata": {"best_approach": "XGBoost"}}) == "XGBoost"
+    assert model_type_from_artifact({"_metadata": {"model_type": "Manual"}}) == "Manual"
+    assert model_type_from_artifact({"kind": "hf_patchtst"}) == "hf_patchtst"

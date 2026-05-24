@@ -176,12 +176,6 @@
   "max_concurrent_positions": 8,
   "parallel_workers": null,
   "parallel_ticker_timeout_seconds": 600,
-  "parallel_progress_log_seconds": 30,
-  "panel_inference_timeout_seconds": 1800,
-  "inference_frame_cache": {
-    "enabled": true,
-    "cache_dir": "artifacts/cache/inference_frames"
-  },
   "position_sizing": {
     "max_position_pct": 0.15,
     "cash_reserve_pct": 0.0
@@ -196,24 +190,18 @@
     "transition_uncertainty_bars": 3,
     "bear_vol_threshold": 0.35,
     "bear_return_threshold": -0.08,
-    "gmm_artifact": "prod/spy-gmm-regime.json",
+    "gmm_artifact": "sim/spy-gmm-regime.json",
     "vol_realized_window": 20,
     "correlation_guard_threshold": 0.7,
-    "correlation_artifact": "prod/watchlist-correlation.json",
-    "earnings_artifact": "prod/earnings-calendar.json",
+    "correlation_artifact": "sim/watchlist-correlation.json",
+    "earnings_artifact": "sim/earnings-calendar.json",
     "earnings_buffer_days": 3,
     "earnings_sell_buffer_pre_days": 2,
     "earnings_sell_buffer_post_days": 5,
     "choppy_hurst_floor": 0.2,
     "confidence_veto_threshold": 0.0,
     "cusum_cooldown_mode": "wall_time",
-    "cusum_cooldown_days": 3.0,
-    "bear_vol_threshold_5d": 0.25,
-    "bear_return_threshold_5d": -0.04,
-    "vol_realized_window_5d": 5,
-    "choppy_vol_baseline_window": 60,
-    "choppy_vol_ratio_threshold": 1.5,
-    "choppy_drift_threshold": 0.02
+    "cusum_cooldown_days": 3.0
   },
   "regime_params": {
     "BULL_CALM": {
@@ -504,10 +492,7 @@
     "XOM": "energy",
     "OXY": "energy",
     "CVX": "energy",
-    "SPY": "benchmark",
     "GLD": "commodity",
-    "TLT": "defensive_bonds",
-    "XLV": "healthcare",
     "XLU": "utility",
     "NEE": "utility",
     "XLK": "giant_tech",
@@ -572,10 +557,8 @@
     "energy": "XLE",
     "industrial": "XLI",
     "consumer": "XLY",
-    "benchmark": "SPY",
     "commodity": "GLD",
     "bond": "TLT",
-    "defensive_bonds": "TLT",
     "utility": "XLU",
     "real_estate": "XLRE",
     "telecom": "XLC"
@@ -755,7 +738,7 @@
     "panel_scoring": {
       "enabled": true,
       "bypass_ticker_gate": true,
-      "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
+      "artifact_path": "artifacts/walkforward_172_sentiment/2023-10-02/panel-ltr.json",
       "nan_prone_cols": [],
       "buy_floor": "adaptive_mean_std",
       "buy_floor_adaptive_cap": 0.3,
@@ -771,7 +754,7 @@
       },
       "ngboost": {
         "enabled": false,
-        "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund.json",
+        "artifact_path": "artifacts/side/codex_xgb_wf_calibrated_qpfix_20260523/ngboost-head.alpha158_fund.json",
         "score_mode": "additive",
         "lambda_sigma": 0.0,
         "_disable_reason": "2026-05-09 EVENING REVERT after SIM-A vs SIM-B 27-month A/B (E55): NGB-on APY=+2.99% Sharpe=+0.26 trades=455 LOSES to NGB-off APY=+6.77% Sharpe=+0.40 trades=303 by -3.78 APY pts / -0.14 Sharpe. The \u03c3-aware sizing degrades position selection AND increases churn vs. simple rank-only QP. Pure-alpha component too weak (~+0.018) to justify the friction it introduces. NGB head artifact retained for future use; flag stays off until either pure_alpha \u2265+0.04 or alternative sizing scheme proves itself."
@@ -783,7 +766,7 @@
       },
       "global_calibration": {
         "enabled": true,
-        "artifact_path": "artifacts/prod/panel-rank-calibration.json",
+        "artifact_path": "artifacts/side/codex_xgb_wf_calibrated_qpfix_20260523/panel-rank-calibration.json",
         "regime_conditional": {
           "enabled": false,
           "artifact_pattern": "artifacts/panel-calibration-{regime}.json",
@@ -815,7 +798,7 @@
         "threshold": 0.1
       },
       "kind": "xgb",
-      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask using registry.get(kind), but registry only registers 'xgb'. Config still used legacy name \u2192 LoadScorerTask fails silently every bar (logs ERROR, returns False) \u2192 ApplyScoresTask never runs \u2192 candidates fall back to per-ticker scores \u2192 conviction_floor=0.20 blocks all top-ups \u2192 QP returns optimal_no_signal \u2192 zero trades on 2026-05-19 daily run. Artifact JSON still has kind=panel_ltr_xgboost (legacy alpha158-feature-path dispatch), unchanged.",
+      "_2026-05-19_kind_fix": "renamed from 'panel_ltr_xgboost' to 'xgb' to match model_registry. commit 9a6cca1 (2026-05-18) introduced registry-dispatch in LoadScorerTask. Synced from strategy_config.golden.json (also fixed). Without this fix LoadScorerTask logs ERROR + returns False, panel scorer never runs, candidates get only per-ticker scores, QP returns optimal_no_signal, zero trades.",
       "sentiment": {
         "enabled": true,
         "regime_policy": {
@@ -929,11 +912,11 @@
       "alpha": 2.0,
       "objective": "rank:pairwise"
     },
-    "artifact_path": "artifacts/prod/panel-ltr.alpha158_fund.json",
+    "artifact_path": "artifacts/side/codex_xgb_wf_calibrated_qpfix_20260523/panel-ltr.alpha158_fund.json",
     "training_notes": "renquant_104 \u2014 panel-LTR primary scorer",
     "ngboost": {
       "enabled": true,
-      "artifact_path": "artifacts/prod/ngboost-head.alpha158_fund.json",
+      "artifact_path": "artifacts/side/codex_xgb_wf_calibrated_qpfix_20260523/ngboost-head.alpha158_fund.json",
       "min_val_mu_ic": 0.0,
       "params": {
         "n_estimators": 400,
@@ -1139,5 +1122,12 @@
     "user_approval": "Option A (2026-05-18, in-session)"
   },
   "min_reentry_days": 5,
-  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change."
+  "_min_reentry_days_provenance": "2026-05-18 13:55 PT: MCD sold +$14.02 yesterday, model picked again today $5 higher = $15 round-trip loss. min_reentry_days=5 (business days) blocks all re-buys within 5d regardless of P/L sign \u2014 compounds with wash_sale_days (\u00a71091, loss only). Default 5d = ~1 trading week, enough for sentiment + technical signals to materially change.",
+  "walkforward": {
+    "enabled": true,
+    "manifest_path": "artifacts/sim/walkforward_manifest_172_sentiment.calibrated_causal.json",
+    "fail_on_no_model": true
+  },
+  "_generated_note": "Generated by Codex 2026-05-23 from current production config for strict walk-forward XGB sim: production decision/tree QP/tax/sector semantics, sim-trained regime/correlation artifacts, causal calibrated WF manifest.",
+  "_codex_not_for_live": true
 }

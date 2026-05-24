@@ -315,6 +315,14 @@ class TestCheckBestIter:
 # ── P-CONFIG-FP (catches the 24h watchlist-mismatch incident class) ────────
 
 class TestCheckConfigFingerprint:
+    @staticmethod
+    def _rewrite_artifact_fields(sd: Path, fields: dict, fp: str = "sha256:legacysector") -> None:
+        panel = sd / "artifacts" / "panel-ltr.json"
+        payload = json.loads(panel.read_text())
+        payload["config_fingerprint"] = fp
+        payload["config_fingerprint_fields"] = fields
+        panel.write_text(json.dumps(payload))
+
     def test_pass_when_fingerprints_match(self, healthy_setup):
         cfg, sd = healthy_setup
         r = _check_config_fingerprint(cfg, sd)
@@ -342,6 +350,55 @@ class TestCheckConfigFingerprint:
         r = _check_config_fingerprint(cfg, sd, run_mode="full")
         assert not r.ok and r.severity == "hard"
         assert "sector_map" in r.message
+
+    def test_legacy_missing_sector_fingerprint_fields_soft_passes_when_coverage_ok(
+        self,
+        healthy_setup,
+    ):
+        cfg, sd = healthy_setup
+        fields = _model_relevant_fields(cfg)
+        fields.pop("sector_map")
+        fields.pop("sector_etf_map")
+        self._rewrite_artifact_fields(sd, fields)
+
+        r = _check_config_fingerprint(cfg, sd, run_mode="full")
+
+        assert r.ok and r.severity == "soft"
+        assert "Legacy artifact lacks sector fingerprint fields" in r.message
+        assert r.details["diff_fields"] == ["sector_etf_map", "sector_map"]
+        assert r.details["legacy_missing_sector_fields"] is True
+        assert r.details["sector_coverage_ok"] is True
+
+    def test_present_sector_fingerprint_mismatch_still_fails_hard(self, healthy_setup):
+        cfg, sd = healthy_setup
+        fields = _model_relevant_fields(cfg)
+        fields["sector_map"] = dict(fields["sector_map"])
+        fields["sector_map"]["NVDA"] = "stale_sector"
+        self._rewrite_artifact_fields(sd, fields)
+
+        r = _check_config_fingerprint(cfg, sd, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "sector_map" in r.message
+        assert not r.details.get("legacy_missing_sector_fields", False)
+
+    def test_legacy_missing_sector_fields_does_not_mask_bad_sector_coverage(
+        self,
+        healthy_setup,
+    ):
+        cfg, sd = healthy_setup
+        fields = _model_relevant_fields(cfg)
+        fields.pop("sector_map")
+        fields.pop("sector_etf_map")
+        self._rewrite_artifact_fields(sd, fields)
+        del cfg["sector_map"]["NVDA"]
+
+        r = _check_config_fingerprint(cfg, sd, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "P-SECTOR-MAP did not pass" in r.message
+        assert r.details["legacy_missing_sector_fields"] is True
+        assert r.details["sector_coverage_ok"] is False
 
     def test_fail_when_objective_changed(self, healthy_setup):
         cfg, sd = healthy_setup

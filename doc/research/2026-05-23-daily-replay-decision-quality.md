@@ -22,12 +22,23 @@ blocked it correctly:
 - `P-WF-GATE`: active production panel artifact carries failed WF evidence:
   `wf_sharpe_mean=-1.3233`, `spy_sharpe_mean=+1.0808`, `0/3` WF cuts beating
   the acceptance gate.
-- `P-CONFIG-FP`: stored artifact fingerprint does not match live config,
-  with drift in `sector_etf_map` and `sector_map`.
+- `P-CONFIG-FP`: initially hard-failed because the 2026-05-18 legacy artifact
+  was not stamped with the newly model-relevant `sector_map` /
+  `sector_etf_map` fields.
 
 Interpretation: a real daily full should not buy from this production artifact
 until either a WF-passing artifact is promoted or the live run is explicitly
 isolated as research/shadow.
+
+Follow-up fix: `P-CONFIG-FP` now treats legacy artifacts that lack only the
+new sector fingerprint fields as a soft migration warning *only if*
+`P-SECTOR-MAP` independently passes. A real stored sector mismatch remains a
+hard failure, and incomplete current sector coverage remains a hard failure.
+Readonly production preflight after the fix has one hard blocker:
+
+- `P-WF-GATE`: hard fail, still correct.
+- `P-CONFIG-FP`: soft migration warning.
+- `P-SECTOR-MAP`: pass, `141` buyable tickers and `13` sectors mapped.
 
 ## Leak-Safe Recent Sim
 
@@ -135,10 +146,13 @@ to turn weak/compressed scores into unnecessary trades.
 ## Remaining Concerns
 
 - Production artifact is still not live-trustable because `P-WF-GATE` fails.
-- Production config/artifact fingerprint drift must be resolved before buy-side
-  live full should be considered clean.
+- Production config/artifact fingerprint is now classified correctly: current
+  sector metadata is complete, but the active legacy artifact still needs a
+  retrain/promotion to stamp sector fields.
 - Calibrated score IQR remains compressed. This is not a hard failure, but it
   weakens economic discrimination and makes QP rely heavily on small differences
   in expected return.
 - Recent-window performance is below SPY on raw return, although lower drawdown
   makes risk-adjusted stats comparable over this short sample.
+- `daily_104.sh` now alerts by default if the shadow e2e leg fails or times
+  out. Set `RENQUANT_SHADOW_ALERT_NTFY=0` only for explicit quiet runs.

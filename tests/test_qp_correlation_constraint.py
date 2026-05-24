@@ -136,6 +136,19 @@ class TestBuildCorrelationGroupConstraintTask:
         # group cap = 2 × per_name_cap = 0.30
         assert abs(gcap - 0.30) < 1e-12
 
+    def test_pair_cap_uses_pair_local_bounds_not_global_outlier(self):
+        """A large unrelated holding cap must not loosen every high-corr pair."""
+        ctx = self._stub_ctx(
+            ["AAPL", "MSFT", "MYSTERY_HELD"],
+            {"AAPL": {"MSFT": 0.85}},
+            threshold=0.7, max_position_pct=0.15,
+        )
+        ctx._qp_w_upper = np.array([0.10, 0.12, 0.60])
+
+        BuildCorrelationGroupConstraintTask().run(ctx)
+
+        assert ctx._qp_corr_group_pairs == [(0, 1, 0.22)]
+
     def test_low_corr_pair_dropped(self):
         ctx = self._stub_ctx(
             ["AAPL", "JPM"],

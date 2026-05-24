@@ -10,7 +10,9 @@ contains the canonical "this bug must not return" tests.
 """
 from __future__ import annotations
 
+import datetime
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +22,80 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 from kernel.portfolio_qp.qp_solver import solve_portfolio_qp  # noqa: E402
-from kernel.portfolio_qp.tasks import BuildSectorConstraintMatrixTask  # noqa: E402
+from kernel.portfolio_qp.task_joint_qp import JointPortfolioQPTask  # noqa: E402
+from kernel.portfolio_qp.tasks import (  # noqa: E402
+    ApplySectorMetadataGuardTask,
+    BuildSectorConstraintMatrixTask,
+)
+
+
+@dataclass
+class _QPCand:
+    ticker: str
+    mu: float
+    sigma: float
+    rank_score: float = 0.60
+    panel_score: float = 0.60
+
+
+@dataclass
+class _QPHold:
+    shares: float
+    mu: float
+    sigma: float
+    entry_price: float = 100.0
+    entry_date: datetime.date = datetime.date(2026, 4, 1)
+
+
+@dataclass
+class _QPCtx:
+    config: dict = field(default_factory=dict)
+    candidates: list = field(default_factory=list)
+    holdings: dict = field(default_factory=dict)
+    prices: dict = field(default_factory=dict)
+    cash: float = 10000.0
+    portfolio_value: float = 10000.0
+    today: datetime.date = datetime.date(2026, 4, 26)
+    regime: str = "BULL_CALM"
+    confidence: float = 1.0
+    bear_only: bool = False
+    buy_blocked: bool = False
+    skip_buys: bool = False
+    earnings_calendar: dict = field(default_factory=dict)
+    last_sell_dates: dict = field(default_factory=dict)
+    last_sell_pls: dict = field(default_factory=dict)
+    orders: list = field(default_factory=list)
+    exits: list = field(default_factory=list)
+    counters: dict = field(default_factory=dict)
+
+
+def _complex_qp_ctx() -> _QPCtx:
+    return _QPCtx(config={
+        "rotation": {"joint_actions": {
+            "enabled": True,
+            "solver": "qp",
+            "qp_risk_aversion": 1.0,
+            "qp_cost_kappa": 0.0001,
+            "qp_dw_max": 0.50,
+            "qp_turnover_max": 0.80,
+            "qp_min_dw_pct": 0.005,
+            "qp_no_trade_band_factor": 0.0,
+            "default_sigma": 0.05,
+            "qp_sector_cap_enabled": True,
+        }},
+        "regime_params": {"BULL_CALM": {
+            "max_position_pct": 0.20,
+            "cash_reserve_pct": 0.0,
+        }},
+        "sector_map": {
+            "GOOD": "tech",
+            "BAD": "tech",
+            "GLD": "defensive",
+        },
+        "max_positions_per_sector": 3,
+        "defensive_tickers": ["GLD", "TLT", "XLV", "XLU"],
+        "wash_sale_days": 0,
+    })
 
 
 # ── Direct solver-level enforcement ───────────────────────────────────────────
@@ -162,10 +237,125 @@ class TestBuildSectorConstraintMatrixTask:
         assert S.shape == (1, 2)
         assert S[0, 0] == 1.0 and S[0, 1] == 0.0
 
+    def test_unmapped_high_cap_does_not_inflate_sector_cap(self):
+        """Missing-sector broker holdings may have large current weights.
+        They must not become the per-name anchor for mapped sector rows."""
+        ctx = self._stub_ctx(
+            ["AAPL", "MSFT", "MYSTERY_HELD"],
+            {"AAPL": "tech", "MSFT": "tech"},
+            max_per_sector=2, max_position_pct=0.15,
+        )
+        ctx._qp_w_upper = np.array([0.15, 0.10, 0.60])
+
+        BuildSectorConstraintMatrixTask().run(ctx)
+
+        np.testing.assert_allclose(ctx._qp_sector_cap_vec, [0.30])
+        assert ctx._qp_sector_names == ["tech"]
+
     def test_zero_max_per_sector_disables(self):
         ctx = self._stub_ctx(["AAPL"], {"AAPL": "tech"}, max_per_sector=0)
         BuildSectorConstraintMatrixTask().run(ctx)
         assert ctx._qp_sector_indicator is None
+
+
+class TestMissingSectorGuardRegression:
+    """AUDIT REGRESSION GUARD: missing sector metadata is not an alpha pass.
+
+    The sector cap matrix cannot constrain a ticker that has no sector row.
+    The QP must therefore cap unmapped tickers at current weight before solve:
+    new candidates get 0% max weight; existing holdings can be reduced or held
+    but not increased.
+    """
+
+    def test_task_caps_missing_sector_at_current_weight(self):
+        from types import SimpleNamespace
+
+        ctx = SimpleNamespace(
+            config={
+                "sector_map": {"AAPL": "tech"},
+                "rotation": {"joint_actions": {"qp_sector_cap_enabled": True}},
+            },
+            candidates=[],
+            counters={},
+        )
+        ctx._qp_tickers = ["AAPL", "MYSTERY_HELD", "MYSTERY_NEW"]
+        ctx._qp_w_current = np.array([0.00, 0.12, 0.00])
+        ctx._qp_w_upper = np.array([0.20, 0.20, 0.20])
+
+        ApplySectorMetadataGuardTask().run(ctx)
+
+        np.testing.assert_allclose(ctx._qp_w_upper, [0.20, 0.12, 0.00])
+        assert ctx._qp_missing_sector_tickers == ["MYSTERY_HELD", "MYSTERY_NEW"]
+        assert ctx.counters["qp_missing_sector_guard"] == 2
+
+    def test_full_qp_does_not_buy_missing_sector_candidate(self):
+        """A missing-sector candidate with the strongest μ must not receive
+        a QP buy; a mapped candidate in the same solve may still be bought."""
+        ctx = _complex_qp_ctx()
+        ctx.candidates = [
+            _QPCand("MISSING_NEW", mu=1.00, sigma=0.05),
+            _QPCand("GOOD", mu=0.60, sigma=0.05),
+        ]
+        ctx.prices.update({"MISSING_NEW": 100.0, "GOOD": 100.0})
+
+        JointPortfolioQPTask().run(ctx)
+
+        bought = {o["ticker"] for o in ctx.orders}
+        assert "MISSING_NEW" not in bought
+        assert "GOOD" in bought
+        assert ctx._blocked_by_ticker["MISSING_NEW"] == "missing_sector_map"
+
+    def test_full_qp_does_not_top_up_missing_sector_holding(self):
+        """A broker-imported holding without sector metadata may remain in
+        the book, but QP cannot increase it even with very high μ."""
+        ctx = _complex_qp_ctx()
+        ctx.holdings = {"MISSING_HELD": _QPHold(shares=10, mu=1.00, sigma=0.05)}
+        ctx.prices = {"MISSING_HELD": 100.0}
+        ctx.cash = 9000.0
+        ctx.portfolio_value = 10000.0
+
+        JointPortfolioQPTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx.exits == []
+        assert ctx._qp_missing_sector_tickers == ["MISSING_HELD"]
+        assert float(ctx._qp_solution.target_w[0]) <= 0.1001
+
+    def test_complex_book_only_allocates_to_metadata_complete_names(self):
+        """Complex mixed book: missing-sector names and non-BEAR defensive
+        buys are suppressed, while mapped positive-alpha names can still buy
+        and mapped negative-alpha holdings can still sell."""
+        ctx = _complex_qp_ctx()
+        ctx.holdings = {
+            "BAD": _QPHold(shares=10, mu=-0.80, sigma=0.05),
+            "MISSING_HELD": _QPHold(shares=10, mu=1.20, sigma=0.05),
+        }
+        ctx.candidates = [
+            _QPCand("GOOD", mu=0.80, sigma=0.05),
+            _QPCand("MISSING_NEW", mu=1.50, sigma=0.05),
+            _QPCand("GLD", mu=1.10, sigma=0.05),
+        ]
+        ctx.prices = {
+            "BAD": 100.0,
+            "MISSING_HELD": 100.0,
+            "GOOD": 100.0,
+            "MISSING_NEW": 100.0,
+            "GLD": 100.0,
+        }
+        ctx.cash = 8000.0
+        ctx.portfolio_value = 10000.0
+
+        JointPortfolioQPTask().run(ctx)
+
+        bought = {o["ticker"] for o in ctx.orders}
+        sold = {t for t, _ in ctx.exits}
+        assert bought == {"GOOD"}
+        assert "BAD" in sold
+        assert "MISSING_HELD" not in bought
+        assert "MISSING_NEW" not in bought
+        assert "GLD" not in bought
+        assert ctx._blocked_by_ticker["MISSING_NEW"] == "missing_sector_map"
+        assert ctx._blocked_by_ticker["GLD"] == "defensive_non_bear"
 
 
 # ── Audit regression guard (§5.13.3) ──────────────────────────────────────────

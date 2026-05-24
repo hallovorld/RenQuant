@@ -149,6 +149,29 @@ def build_sell_trade_event_for_db(
     entry_date = getattr(holding, "entry_date", None)
     hold_days = (today - entry_date).days if holding and entry_date else 0
     pnl_pct = (price - entry_p) / entry_p if entry_p > 0 else 0.0
+    raw_qty = getattr(sig, "shares_sold", None)
+    if raw_qty is None:
+        raw_qty = getattr(sig, "quantity", None)
+    if raw_qty is None:
+        raw_qty = getattr(holding, "shares", None)
+    try:
+        shares = float(raw_qty) if raw_qty is not None else None
+    except (TypeError, ValueError):
+        shares = None
+    gross_pnl = None
+    proceeds_basis = None
+    tax = None
+    net_pnl = None
+    if shares is not None and shares > 0 and entry_p > 0 and price > 0:
+        gross_pnl = (price - entry_p) * shares
+        proceeds_basis = entry_p * shares
+        tax_cfg = (regime_params or {}).get("tax", {})
+        st_rate = float(tax_cfg.get("short_term_rate", 0.50))
+        lt_rate = float(tax_cfg.get("long_term_rate", 0.32))
+        lt_days = int(tax_cfg.get("long_term_threshold_days", 365))
+        rate = lt_rate if hold_days >= lt_days else st_rate
+        tax = max(gross_pnl, 0.0) * rate
+        net_pnl = gross_pnl - tax
     exit_type = getattr(sig, "exit_type", "") or ""
     reason = getattr(sig, "reason", None)
     source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
@@ -162,10 +185,18 @@ def build_sell_trade_event_for_db(
         "ticker": ticker,
         "action": "sell",
         "date": today,
+        "shares": shares,
         "price": price,
+        "gross_pnl": gross_pnl,
+        "proceeds_basis": proceeds_basis,
+        "tax": tax,
+        "net_pnl_after_tax": net_pnl,
         "exit_reason": exit_type,
         "pnl_pct": pnl_pct,
         "hold_days": hold_days,
+        "rank_score": getattr(holding, "rank_score", None),
+        "mu": getattr(holding, "mu", None),
+        "sigma": getattr(holding, "sigma", None),
         "order_type": f"SELL_{exit_type}" if exit_type else "SELL",
         "source": source,
         "source_job": source_job,
@@ -186,6 +217,10 @@ def build_sell_trade_event_for_db(
             "exit_reason": exit_type,
             "signal_reason": reason,
             "quantity": getattr(sig, "quantity", None),
+            "shares": shares,
+            "gross_pnl": gross_pnl,
+            "tax": tax,
+            "net_pnl_after_tax": net_pnl,
             "hold_days": hold_days,
             "pnl_pct": pnl_pct,
             "stop_loss_pct": regime_params.get("stop_loss_pct"),
@@ -206,8 +241,33 @@ def build_sell_trade_event_for_db(
             ),
             "atr_n_multiplier": regime_params.get("atr_n_multiplier"),
             "max_hold_days": regime_params.get("max_hold_days"),
+            **(getattr(sig, "decision_inputs", None) or {}),
         },
     }
+
+
+def model_type_from_artifact(model: Any) -> str | None:
+    """Extract the human model type from dict/object artifacts for DB audit rows."""
+    if model is None:
+        return None
+    if isinstance(model, dict):
+        meta = model.get("_metadata") or model.get("metadata") or {}
+        for src in (meta, model):
+            if not isinstance(src, dict):
+                continue
+            for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
+                val = src.get(key)
+                if isinstance(val, str) and val:
+                    return val
+        return None
+    meta = getattr(model, "metadata", None)
+    if isinstance(meta, dict):
+        for key in ("best_approach", "model_type", "policy_type", "type", "kind"):
+            val = meta.get(key)
+            if isinstance(val, str) and val:
+                return val
+    val = getattr(model, "model_type", None)
+    return val if isinstance(val, str) and val else None
 
 
 class RunnerAdapter:
@@ -873,8 +933,13 @@ class RunnerAdapter:
                          "None" if macro is None else f"{len(macro.columns)}cols",
                          len(emb) if emb else 0)
             except Exception as exc:
-                log.warning("Panel frame prep failed — panel scoring will be skipped: %s",
-                            exc)
+                msg = (
+                    "Panel frame prep failed while panel_scoring.enabled=true; "
+                    "aborting live inference instead of silently trading without "
+                    f"panel scores: {exc}"
+                )
+                log.error(msg)
+                raise RuntimeError(msg) from exc
 
         # ── P5 (2026-05-11) attach meta-label hooks ──────────────────────
         # snapshot_logger: None unless meta_label_training.enabled
@@ -1680,7 +1745,7 @@ class RunnerAdapter:
                     today=ctx.today,
                     regime=getattr(ctx, "regime", None),
                     confidence=getattr(ctx, "confidence", None),
-                    regime_params=regime_p,
+                    regime_params={**regime_p, "tax": self._config.get("tax", {}) or {}},
                 ))
             for o in orders_for_db:
                 trade_events.append({
@@ -1757,11 +1822,7 @@ class RunnerAdapter:
             sector_map  = self._config.get("sector_map", {}) or {}
             model_types = {}
             for tk, m in (self._models or {}).items():
-                # PolicyMetadata stores 'model_type' under that key.
-                model_types[tk] = (
-                    getattr(m, "model_type", None)
-                    or (m.metadata.get("model_type") if hasattr(m, "metadata") else None)
-                )
+                model_types[tk] = model_type_from_artifact(m)
             panel_artifact = (
                 self._config.get("ranking", {})
                             .get("panel_scoring", {})

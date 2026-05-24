@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -266,7 +267,7 @@ def prepare_inference_panel_frames(
     `ohlcv` must already contain the benchmark (SPY) and every sector ETF
     referenced by `sector_etf_map` in config.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
     cache_key = _inference_frame_cache_key(watchlist, ohlcv, ticker_sectors, config)
     cached = _load_inference_frame_cache(config, cache_key)
@@ -350,18 +351,62 @@ def prepare_inference_panel_frames(
     import logging as _logging
     _log_inf = _logging.getLogger("training_panel.pipeline")
     n_workers = min(max(1, (os.cpu_count() or 4) - 2), max(1, len(ticker_ctxs)))
-    with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="panel-inf") as ex:
+    progress_seconds = float(config.get("panel_inference_progress_log_seconds",
+                                        config.get("parallel_progress_log_seconds", 30)))
+    timeout_raw = config.get("panel_inference_timeout_seconds")
+    if timeout_raw is None:
+        timeout_raw = (config.get("panel_ltr", {}) or {}).get("inference_frame_timeout_seconds")
+    timeout_seconds = float(timeout_raw) if timeout_raw is not None else None
+    t0 = time.monotonic()
+    next_progress = t0 + max(0.1, progress_seconds)
+    ex = ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="panel-inf")
+    abandon_executor = False
+    try:
         futs = {ex.submit(_chain, tc): tc.ticker for tc in ticker_ctxs}
-        for f in as_completed(futs):
-            ticker = futs[f]
-            try:
-                f.result()
-            except Exception as exc:
-                _log_inf.error(
-                    "prepare_inference_panel_frames[%s]: chain ERROR — %s: %s "
-                    "(ticker dropped from this bar's panel matrix)",
-                    ticker, type(exc).__name__, exc,
+        pending = set(futs)
+        done_count = 0
+        while pending:
+            now = time.monotonic()
+            elapsed = now - t0
+            if timeout_seconds is not None and elapsed >= timeout_seconds:
+                pending_tickers = sorted(futs[f] for f in pending)
+                for f in pending:
+                    f.cancel()
+                ex.shutdown(wait=False, cancel_futures=True)
+                abandon_executor = True
+                raise TimeoutError(
+                    "prepare_inference_panel_frames timed out after "
+                    f"{elapsed:.2f}s with {len(pending_tickers)} pending ticker(s): "
+                    f"{pending_tickers[:20]}"
                 )
+            wait_timeout = max(0.0, next_progress - now)
+            if timeout_seconds is not None:
+                wait_timeout = min(wait_timeout, max(0.0, timeout_seconds - elapsed))
+            done, pending = wait(pending, timeout=wait_timeout, return_when=FIRST_COMPLETED)
+            for f in done:
+                ticker = futs[f]
+                done_count += 1
+                try:
+                    f.result()
+                except Exception as exc:
+                    _log_inf.error(
+                        "prepare_inference_panel_frames[%s]: chain ERROR — %s: %s "
+                        "(ticker dropped from this bar's panel matrix)",
+                        ticker, type(exc).__name__, exc,
+                    )
+            now = time.monotonic()
+            if pending and now >= next_progress:
+                pending_tickers = sorted(futs[f] for f in pending)
+                _log_inf.info(
+                    "prepare_inference_panel_frames: progress done=%d/%d "
+                    "pending=%d elapsed=%.2fs pending_tickers=%s",
+                    done_count, len(futs), len(pending_tickers), now - t0,
+                    pending_tickers[:10],
+                )
+                next_progress = now + max(0.1, progress_seconds)
+    finally:
+        if not abandon_executor:
+            ex.shutdown(wait=True)
 
     ctx.neutralized_frames = {
         tc.ticker: tc.neutralized_frame for tc in ticker_ctxs

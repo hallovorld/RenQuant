@@ -425,7 +425,8 @@ print(f\"audit: equity={equity}  hwm={hwm}  drawdown={drawdown}  n_orders_today=
 #
 # Non-fatal: a shadow failure doesn't abort the prod cycle (prod already
 # completed + committed by this point). Logs to a separate file for
-# clean diff between prod and shadow outcomes.
+# clean diff between prod and shadow outcomes, and sends one wrapper ntfy by
+# default so a broken shadow path is not silent.
 #
 # ntfy uses "[SHADOW]RENQUANT-104" prefix on success. If shadow preflight
 # fails, daily_104 owns the single non-fatal wrapper alert; suppress the
@@ -468,17 +469,17 @@ else
     SHADOW_RC=$?
     if [ "$SHADOW_RC" -eq 124 ]; then
         echo "Shadow run TIMED OUT after ${SHADOW_TIMEOUT_SEC}s (non-fatal) — see $SHADOW_LOG"
-        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-0}" = "1" ]; then
+        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
             notify "RenQuant 104 SHADOW-TIMEOUT" "Shadow e2e exceeded ${SHADOW_TIMEOUT_SEC}s; primary already completed. See $SHADOW_LOG."
         else
-            echo "Shadow timeout ntfy suppressed (set RENQUANT_SHADOW_ALERT_NTFY=1 to alert)."
+            echo "Shadow timeout ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
         fi
     else
         echo "Shadow run FAILED (non-fatal, rc=$SHADOW_RC) — see $SHADOW_LOG"
-        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-0}" = "1" ]; then
+        if [ "${RENQUANT_SHADOW_ALERT_NTFY:-1}" != "0" ]; then
             notify "RenQuant 104 SHADOW-FAIL" "Shadow e2e failed today (rc=$SHADOW_RC) — primary already completed. See $SHADOW_LOG."
         else
-            echo "Shadow failure ntfy suppressed (set RENQUANT_SHADOW_ALERT_NTFY=1 to alert)."
+            echo "Shadow failure ntfy suppressed (RENQUANT_SHADOW_ALERT_NTFY=0)."
         fi
     fi
 fi

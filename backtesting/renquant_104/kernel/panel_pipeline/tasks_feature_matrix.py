@@ -25,6 +25,27 @@ from .panel_scorer import PanelScorer
 log = logging.getLogger("kernel.panel_pipeline.feature_matrix")
 
 
+def _target_tickers(ctx: InferenceContext) -> list[str]:
+    return sorted({c.ticker for c in ctx.candidates} | set(ctx.holdings.keys()))
+
+
+def _set_target_only_matrix(
+    ctx: InferenceContext,
+    *,
+    marker_col: str,
+    scorer_kind: str | None,
+    reason: str,
+) -> bool:
+    target = _target_tickers(ctx)
+    ctx._panel_matrix = pd.DataFrame({marker_col: 1.0}, index=target)  # noqa: SLF001
+    log.info(
+        "ResolveInferenceFramesTask: %s scorer %s using target-only "
+        "matrix for %d tickers",
+        reason, scorer_kind, len(target),
+    )
+    return False
+
+
 # ── 1. Resolve inference frames + macro v1/v2 silencing ─────────────────────
 
 class ResolveInferenceFramesTask(Task):
@@ -53,36 +74,19 @@ class ResolveInferenceFramesTask(Task):
                 else None
             )
             if scorer_kind in ("panel_linear", "panel_ltr_xgboost"):
-                # Alpha158 scorers rebuild their real feature matrix from raw
-                # OHLCV inside ApplyScoresTask. They only need the target
-                # ticker index here; forcing legacy panel frames costs minutes
-                # in sims and does not affect alpha158 values.
-                target = sorted({c.ticker for c in ctx.candidates} | set(ctx.holdings.keys()))
-                ctx._panel_matrix = pd.DataFrame(  # noqa: SLF001
-                    {"__alpha158_target__": 1.0}, index=target,
+                return _set_target_only_matrix(
+                    ctx,
+                    marker_col="__alpha158_target__",
+                    scorer_kind=scorer_kind,
+                    reason="alpha158",
                 )
-                log.info(
-                    "ResolveInferenceFramesTask: alpha158 scorer %s using "
-                    "target-only matrix for %d tickers",
-                    scorer_kind, len(target),
-                )
-                return False
             if getattr(scorer, "requires_history", False):
-                # Sequence-input scorers (PatchTST / regime routers that may
-                # dispatch to PatchTST) score from ctx._panel_history, not from
-                # the legacy ff/fac matrix. Keep only the target ticker index
-                # so ApplyScoresTask can assign scores back to candidates and
-                # holdings without forcing a costly frame build.
-                target = sorted({c.ticker for c in ctx.candidates} | set(ctx.holdings.keys()))
-                ctx._panel_matrix = pd.DataFrame(  # noqa: SLF001
-                    {"__history_target__": 1.0}, index=target,
+                return _set_target_only_matrix(
+                    ctx,
+                    marker_col="__history_target__",
+                    scorer_kind=scorer_kind,
+                    reason="history",
                 )
-                log.info(
-                    "ResolveInferenceFramesTask: history scorer %s using "
-                    "target-only matrix for %d tickers",
-                    scorer_kind, len(target),
-                )
-                return False
             log.warning("ResolveInferenceFramesTask: ctx._panel_feature_frames "
                         "missing — adapter must populate; matrix unset")
             ctx._panel_matrix = None  # noqa: SLF001
@@ -93,7 +97,7 @@ class ResolveInferenceFramesTask(Task):
                                   .get("version", "v1")).lower()
         macro_frame = (None if macro_v == "v2"
                        else getattr(ctx, "_panel_macro_frame", None))
-        target = ({c.ticker for c in ctx.candidates} | set(ctx.holdings.keys()))
+        target = set(_target_tickers(ctx))
         ff_sub = {t: ff[t] for t in target if t in ff}
         fac_sub = {t: fac[t] for t in target if t in fac} if fac else None
         today_ts = pd.Timestamp(ctx.today if isinstance(ctx.today, datetime.date)

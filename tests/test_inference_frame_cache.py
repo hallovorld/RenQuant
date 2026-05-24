@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -64,3 +65,18 @@ def test_inference_frame_cache_round_trip(tmp_path):
     pd.testing.assert_frame_equal(loaded_fac["AAA"], fac["AAA"])
     pd.testing.assert_frame_equal(loaded_macro, macro)
     assert loaded_emb == emb
+
+
+def test_live_configs_enable_inference_frame_cache():
+    strategy_dir = REPO_ROOT / "backtesting" / "renquant_104"
+    for name in (
+        "strategy_config.json",
+        "strategy_config.golden.json",
+        "strategy_config.shadow.json",
+    ):
+        cfg = json.loads((strategy_dir / name).read_text())
+        cache_cfg = cfg.get("inference_frame_cache") or {}
+        assert cache_cfg.get("enabled") is True, name
+        assert cache_cfg.get("cache_dir"), name
+        assert cfg.get("parallel_progress_log_seconds", 0) > 0, name
+        assert cfg.get("panel_inference_timeout_seconds", 0) > 0, name

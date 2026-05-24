@@ -232,9 +232,15 @@ class InferencePipeline:
             universe   = _buy_universe(ctx)
             cand_tctxs = [_make_cand_tctx(ctx, t) for t in universe]
             run_parallel(cand_tctxs, TickerCandidateJob())
+            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            if blocked_map is None:
+                blocked_map = {}
+                ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
             for tc in cand_tctxs:
                 if tc.candidate is not None:
                     ctx.candidates.append(tc.candidate)
+                elif getattr(tc, "blocked_by", None):
+                    blocked_map[tc.ticker] = tc.blocked_by
             log.info("Phase 2b (buy scan): %d candidates from %d tickers",
                      len(ctx.candidates), len(universe))
 

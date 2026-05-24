@@ -14,6 +14,7 @@ class EarningsFilterTask(Task):
         from kernel.selection import is_earnings_blocked  # noqa: PLC0415
         earnings_buf = int(tc.config.get("regime", {}).get("earnings_buffer_days", 3))
         if is_earnings_blocked(tc.ticker, tc.today, tc.earnings_calendar or {}, earnings_buf):
+            tc.blocked_by = "earnings_blackout"
             log.info("DROP_EarningsFilter [%s]: blocked (within ±%dd of earnings)",
                      tc.ticker, earnings_buf)
             return False
@@ -59,6 +60,7 @@ class WashSaleFilterTask(Task):
             expected_dollar_return=None,   # μ̂ not yet known at this stage
         )
         if blocked:
+            tc.blocked_by = f"wash_sale:{reason}"
             log.info("DROP_WashSaleFilter [%s]: %s", tc.ticker, reason)
             return False
         # Not blocked but log the reason so the audit trail shows
@@ -95,6 +97,7 @@ class SectorMapGateTask(Task):
         sector_map = tc.config.get("sector_map", {}) or {}
         sector = sector_map.get(tc.ticker)
         if not isinstance(sector, str) or not sector:
+            tc.blocked_by = "missing_sector_map"
             log.info(
                 "DROP_SectorMapGate [%s]: missing sector_map entry "
                 "(required for RS + QP sector caps)",
@@ -124,6 +127,14 @@ class BuildFeaturesTask(Task):
         stock_df = tc.ohlcv.get(tc.ticker)
         spy_df   = tc.ohlcv.get("SPY")
         if stock_df is None or tc.model is None or spy_df is None:
+            missing = []
+            if stock_df is None:
+                missing.append("stock_ohlcv")
+            if tc.model is None:
+                missing.append("model")
+            if spy_df is None:
+                missing.append("spy_ohlcv")
+            tc.blocked_by = "missing_input:" + ",".join(missing)
             log.info("DROP_BuildFeatures [%s]: missing input "
                      "(stock_df=%s, model=%s, spy=%s)",
                      tc.ticker, stock_df is not None,
@@ -133,6 +144,7 @@ class BuildFeaturesTask(Task):
         vol_win = int(tc.config.get("regime", {}).get("vol_realized_window", 20))
         tc.features = build_feature_frame(stock_df, spy_df, spec, vol_win)
         if tc.features is None or tc.features.empty:
+            tc.blocked_by = "empty_features"
             log.info("DROP_BuildFeatures [%s]: build_feature_frame returned empty",
                      tc.ticker)
             return False
@@ -177,6 +189,7 @@ class ScoreBuyTask(Task):
         if bypass:
             return
         if sr.signal != "buy":
+            tc.blocked_by = f"model_signal:{sr.signal}"
             log.info("DROP_ScoreBuy [%s]: signal=%s (not 'buy')",
                      tc.ticker, sr.signal)
             return False
@@ -208,6 +221,7 @@ class ScoreThresholdTask(Task):
         min_score = float(tc.regime_params.get("min_model_score", 0.10))
         rank      = getattr(tc, "_rank_score", 0.0)
         if rank is None or not math.isfinite(rank) or rank < min_score:
+            tc.blocked_by = "rank_below_min"
             log.info("DROP_ScoreThreshold [%s]: rank=%s < min=%.4f",
                      tc.ticker, rank, min_score)
             return False
