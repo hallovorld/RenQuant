@@ -285,6 +285,19 @@ class TestConditionalRetrainInvariants:
         assert "scripts/weekly_wf_promote.sh" in non_comment
 
 
+class TestRetrainPanelWrapperInvariants:
+    def test_retrain_panel_no_longer_runs_legacy_panel_sweep(self):
+        src = (REPO / "scripts" / "retrain_panel.sh").read_text()
+        non_comment = "\n".join(
+            line for line in src.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "scripts/sunday_panel_sweep.py" not in non_comment
+        assert "scripts/train_104.py" not in non_comment
+        assert "scripts/weekly_wf_promote.sh" in non_comment
+        assert "RenQuant 104 panel ERROR" not in non_comment
+
+
 class TestAlpha158LinearRetrainInvariants:
     def test_alpha158_linear_retrain_uses_venv_and_detected_threads(self):
         src = (REPO / "scripts" / "retrain_alpha158_linear.sh").read_text()

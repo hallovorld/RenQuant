@@ -51,12 +51,12 @@ def post_ntfy_alert(
     exits, and other actionable broker-state alerts.
     """
     logger = logger or logging.getLogger("live.alerts")
+    state_path = state_path or _state_path()
     if os.environ.get("RENQUANT_NO_NOTIFY") == "1":
         _append_alert_log(event, "suppressed_env", state_path=state_path)
         logger.info("ntfy suppressed by RENQUANT_NO_NOTIFY: %s", event.title)
         return False
 
-    state_path = state_path or _state_path()
     event_id = _event_id(event)
     now = time.time()
     state = _load_state(state_path)
@@ -93,13 +93,20 @@ def _state_path() -> Path:
     if pytest_name:
         digest = hashlib.sha256(pytest_name.encode("utf-8")).hexdigest()[:16]
         return REPO_ROOT / "logs" / "alerts" / f"pytest-{digest}-{os.getpid()}.json"
+    return _default_state_path()
+
+
+def _default_state_path() -> Path:
     return REPO_ROOT / "logs" / "alerts" / "alert_state.json"
 
 
 def _log_path(state_path: Path | None) -> Path:
+    default_log = REPO_ROOT / "logs" / "alerts" / "alert_log.jsonl"
     if state_path is not None:
-        return state_path.with_name("alert_log.jsonl")
-    return REPO_ROOT / "logs" / "alerts" / "alert_log.jsonl"
+        if state_path == _default_state_path():
+            return default_log
+        return state_path.with_suffix(".jsonl")
+    return default_log
 
 
 def _load_state(path: Path) -> dict:

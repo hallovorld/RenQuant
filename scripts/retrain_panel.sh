@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# retrain_panel.sh — Force a full renquant_104 retrain (tournament + panel-LTR
-# + recalibrate), ignoring the training.cadence gate in strategy_config.json.
+# retrain_panel.sh — Compatibility wrapper for the old Sunday retrain agent.
 #
-# Intended for explicit scheduling (e.g. a Sunday-only launchd agent) when
-# you want to decouple "full retrain" from the daily trading script:
-#   - daily_104.sh runs every trading day and is gated by training.cadence
-#   - retrain_panel.sh always forces a retrain
+# The active 104 promote trust boundary is now weekly_wf_promote.sh:
+# it retrains alpha158+fund into staging, runs the strict WF/sanity gates,
+# then swaps production only on pass. The old sunday_panel_sweep/train_104
+# path uses the legacy 22-feature builder and is intentionally refused by
+# train_104.py for the current 172-feature alpha158_fund production artifact.
+#
+# This wrapper remains so the existing launchd plist does not emit a stale
+# ERROR every Sunday. If weekly_wf_promote already ran today, this is a no-op.
+# If it did not run, delegate to weekly_wf_promote without adding a second
+# wrapper ntfy; weekly_wf_promote owns the operator alert.
 #
 # Usage:
 #   bash scripts/retrain_panel.sh
@@ -53,50 +58,21 @@ for arg in "$@"; do
     esac
 done
 
-echo "--- Sunday multi-backend sweep (strategy=$STRATEGY) ---"
-echo "    backends: xgboost (production) → lightgbm → transformer"
-echo "    expected wall time: ~75-90 min sequential"
+WEEKLY_LOG="$REPO_DIR/logs/weekly_wf_promote/$DATE.log"
+if [ -f "$WEEKLY_LOG" ]; then
+    echo "weekly_wf_promote already ran today ($WEEKLY_LOG)."
+    echo "retrain_panel104 is a compatibility no-op; no ntfy emitted."
+    echo "=== retrain_panel finished as no-op at $(date) ==="
+    exit 0
+fi
 
-# Launch the sweep in the background so we can attach a resource monitor
-# to its PID. monitor_training_resources.py samples cpu+rss every 5s
-# (parent + recursive children) into a CSV next to this log. The
-# plotter at the end turns it into a polished PNG.
-"$PYTHON" scripts/sunday_panel_sweep.py --strategy "$STRATEGY" &
-SWEEP_PID=$!
-echo "sweep PID=$SWEEP_PID"
-
-"$PYTHON" scripts/monitor_training_resources.py \
-    --pid "$SWEEP_PID" --interval 5 \
-    --out "logs/retrain_panel/$DATE.resources.csv" &
-MON_PID=$!
-echo "monitor PID=$MON_PID  → logs/retrain_panel/$DATE.resources.csv"
-
-# Wait for the sweep, capture exit code, then kill the monitor (it'd
-# otherwise spin until --max-duration; killing it cleanly here also
-# flushes the CSV via the SIGTERM handler).
-wait "$SWEEP_PID"
-SWEEP_RC=$?
-kill "$MON_PID" 2>/dev/null || true
-wait "$MON_PID" 2>/dev/null || true
-
-# Render the resource chart regardless of sweep success — partial data
-# is still useful for diagnosing where a failure happened.
-echo "--- rendering resource chart ---"
-"$PYTHON" scripts/plot_training_resources.py --date "$DATE" || \
-    echo "warn: plot_training_resources failed (non-fatal)"
-
-if [ "$SWEEP_RC" -eq 0 ]; then
-    echo "=== retrain_panel sweep finished at $(date) ==="
-    REPORT_PATH=$(ls -t "$REPO_DIR/doc/panel_sunday_sweep_"*.md 2>/dev/null | head -1)
-    PNG_PATH="$LOG_DIR/$DATE.resources.png"
-    if [ -n "$REPORT_PATH" ]; then
-        BODY="Sunday sweep done — see $(basename "$REPORT_PATH"); chart: $(basename "$PNG_PATH")"
-    else
-        BODY="Sunday sweep done — XGBoost active; chart: $(basename "$PNG_PATH")"
-    fi
-    notify "RenQuant 104 panel" "$BODY"
+echo "weekly_wf_promote has not run today; delegating to the strict trust boundary."
+echo "No retrain_panel wrapper ntfy will be emitted; weekly_wf_promote owns alerts."
+if bash scripts/weekly_wf_promote.sh; then
+    echo "=== retrain_panel delegated weekly_wf_promote PASS at $(date) ==="
+    exit 0
 else
-    echo "=== retrain_panel sweep FAILED at $(date) ==="
-    notify "RenQuant 104 panel ERROR" "Sunday sweep failed — check $LOG"
+    echo "=== retrain_panel delegated weekly_wf_promote FAIL at $(date) ==="
+    echo "Production preserved by weekly_wf_promote; check logs/weekly_wf_promote/$DATE.log."
     exit 1
 fi

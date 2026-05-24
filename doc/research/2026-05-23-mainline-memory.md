@@ -1358,6 +1358,33 @@ Next implication:
   PatchTST through the same decision-tree / benchmark-sleeve / active P&L
   acceptance lenses used for XGB and SPY.
 
+## 2026-05-24 ntfy Alert Noise Fix
+
+Two noisy alert paths were found and fixed:
+
+- `live/alerts.py` now resolves the alert state path before logging
+  `RENQUANT_NO_NOTIFY` suppressions, and pytest/mock alert logs write to
+  per-test `pytest-*.jsonl` files instead of the production
+  `logs/alerts/alert_log.jsonl`. This prevents local regression tests from
+  looking like real TRADE/DECISION alert spam in the operator ledger.
+- `scripts/retrain_panel.sh` no longer runs the obsolete
+  `sunday_panel_sweep.py -> train_104.py` path. That path is intentionally
+  refused for the current 172-feature alpha158_fund production artifact, so
+  the launchd agent was producing a stale Sunday "panel ERROR" alert. The
+  wrapper now no-ops when `weekly_wf_promote.sh` already ran today; otherwise
+  it delegates to `weekly_wf_promote.sh` and does not emit a second wrapper
+  ntfy.
+
+Verification:
+
+- `tests/test_alerts.py tests/test_runner_trade_ntfy.py
+  tests/test_smoke_test_model.py tests/test_daily_104_shadow_notify.py`
+  -> `70 passed`.
+- `py_compile` passed for `live/alerts.py`, `tests/test_alerts.py`, and
+  `tests/test_smoke_test_model.py`.
+- Manual `bash scripts/retrain_panel.sh` on 2026-05-24 exited 0 as a no-op
+  because the weekly WF log already existed, and emitted no ntfy.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the
