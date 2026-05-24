@@ -529,6 +529,24 @@ this fix. It may finish as a useful diagnostic, but its per-fold calibrators
 must be re-stamped/refit with the fixed script before being used as
 acceptance-grade evidence.
 
+## 2026-05-23 ntfy Duplicate-Success Fix
+
+`live.runner` remains the single source of success/trade decision ntfy. The
+shell wrappers no longer send a second raw success ntfy after a successful
+runner cycle.
+
+- `scripts/daily_104.sh` now keeps failure alerts and the explicit
+  `BUY-BLOCKED` fallback alert, but suppresses normal wrapper success ntfy.
+- `scripts/live_only_104.sh` now keeps failure alerts only on wrapper failure;
+  open/preclose success decisions come from `live.runner`.
+- Removed the stale wrapper trade-log parser that looked for legacy
+  `signal/order.qty` fields while current 104 logs use `action/shares/qty`.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_smoke_test_model.py tests/test_runner_trade_ntfy.py tests/test_alerts.py -q`
+  -> `66 passed`.
+
 ## Mainline Queue
 
 1. Regenerate the 172-feature walk-forward manifest under the current
@@ -556,10 +574,12 @@ acceptance-grade evidence.
    literature-backed hypotheses and paired A/B sims.
 8. Fix remaining audit findings before promotion: calibrator metric scope
    labels for in-sample versus OOF IC, point-in-time SEC filed-date handling,
-   fail-closed correlation semantics, and per-ticker trace stamping for global
-   panel/QP failures. The WF `effective_train_cutoff_date` double-embargo bug,
-   LEAN/QP cash-capped target parity bug, universe metadata fail-closed bug,
-   and calibrator metric-scope bug are fixed.
+   and per-ticker trace stamping for global panel/QP failures. The WF
+   `effective_train_cutoff_date` double-embargo bug, LEAN/QP cash-capped target
+   parity bug, universe metadata fail-closed bug, calibrator metric-scope bug,
+   and correlation metadata fail-closed semantics are fixed. Correlation
+   artifacts without `as_of_date` now require an explicit legacy override,
+   while sell-only risk exits remain soft-passed.
 
 ## Known Failure Modes To Keep Front And Center
 

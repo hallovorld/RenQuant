@@ -272,43 +272,11 @@ else
     fi
 fi
 
-# Build trade summary from THIS run's new entries only
-SUMMARY=$("$PYTHON" -c "
-import json, sys
-from pathlib import Path
-log_path = Path('$TRADE_LOG')
-pre_count = $PRE_COUNT
-if not log_path.exists():
-    print('No trades this run')
-    sys.exit(0)
-try:
-    all_trades = json.loads(log_path.read_text())
-except Exception:
-    print('No trades this run')
-    sys.exit(0)
-trades = all_trades[pre_count:]  # only entries from this run
-parts = []
-for t in trades:
-    sig = t.get('signal', '')
-    sym = t.get('symbol', '?')
-    order = t.get('order', {})
-    qty = order.get('qty', '?')
-    if sig == 'buy':
-        parts.append(f'BUY {sym} x{qty}')
-    elif sig in ('sell', 'max_hold'):
-        parts.append(f'SELL {sym} x{qty}')
-    elif sig == 'stop_loss':
-        loss = t.get('loss_pct', 0)
-        parts.append(f'STOP {sym} ({loss:.1%})')
-    elif sig == 'single_day_loss':
-        drop = t.get('daily_drop_pct', 0)
-        parts.append(f'GAP-STOP {sym} ({drop:.1%} drop)')
-    elif sig == 'trailing_stop':
-        parts.append(f'TRAIL-STOP {sym}')
-print('; '.join(parts) if parts else 'No trades this run')
-" 2>/dev/null || echo "No trades this run")
-# Append current holdings to notification
-HOLDINGS=$("$PYTHON" -c "
+# live.runner is the single source of success/trade ntfy. The wrapper only
+# sends failure alerts plus this buy-blocked fallback alert; otherwise raw
+# wrapper success ntfy duplicates runner alerts and can mis-summarize trades.
+if [ "$BUY_BLOCKED_BY_PREFLIGHT" -eq 1 ]; then
+    HOLDINGS=$("$PYTHON" -c "
 import os
 try:
     from alpaca.trading.client import TradingClient
@@ -319,11 +287,9 @@ try:
 except Exception:
     print('')
 " 2>/dev/null || echo "")
-FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
-if [ "$BUY_BLOCKED_BY_PREFLIGHT" -eq 1 ]; then
-    notify "RenQuant 104 BUY-BLOCKED" "${FULL_MSG} | New buys blocked by buy-side preflight gate"
+    notify "RenQuant 104 BUY-BLOCKED" "Full run blocked new buys; sell-only fallback completed.${HOLDINGS:+ | $HOLDINGS}"
 else
-    notify "RenQuant 104" "$FULL_MSG"
+    echo "Wrapper success ntfy suppressed; live.runner already posted the cycle decision."
 fi
 
 # Sustainability audit (Plan D, 2026-04-23): append one JSONL row

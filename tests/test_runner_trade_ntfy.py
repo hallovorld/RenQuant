@@ -73,6 +73,13 @@ class TestSourceLevel:
         assert idx_python > idx_suppress
         assert idx_python - idx_suppress < 80
 
+    def test_live_only_wrapper_does_not_duplicate_runner_success_ntfy(self):
+        """live.runner already posts the open/preclose cycle decision."""
+        src = (REPO_ROOT / "scripts" / "live_only_104.sh").read_text()
+        assert "Wrapper success ntfy suppressed" in src
+        assert 'notify "RenQuant 104 [$TAG]" "$FULL_MSG"' not in src
+        assert "t.get('signal'" not in src
+
 
 def _stub_ctx(**kwargs) -> SimpleNamespace:
     """Baseline ctx with sensible defaults; override fields via kwargs."""

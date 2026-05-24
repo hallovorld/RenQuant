@@ -203,6 +203,13 @@ class TestNoRetrainInDailyShell:
         redirected_body = daily.split('exec >> "$LOG" 2>&1', 1)[1]
         assert '| tee -a "$LOG"' not in redirected_body
 
+    def test_daily_does_not_send_duplicate_success_ntfy(self):
+        """live.runner owns cycle/trade ntfy; daily keeps errors/fallbacks."""
+        daily = (REPO / "scripts" / "daily_104.sh").read_text()
+        assert "Wrapper success ntfy suppressed" in daily
+        assert 'notify "RenQuant 104" "$FULL_MSG"' not in daily
+        assert "t.get('signal'" not in daily
+
 
 class TestWeeklyShellInvariants:
 

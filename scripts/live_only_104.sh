@@ -142,55 +142,7 @@ if "$PYTHON" -m live.runner \
 
     echo "=== live_104 [$TAG] finished at $(date) ==="
     touch "$DONE_FILE"
-
-    # Build trade summary (THIS run's new entries only)
-    SUMMARY=$("$PYTHON" -c "
-import json, sys
-from pathlib import Path
-log_path = Path('$TRADE_LOG')
-pre_count = $PRE_COUNT
-if not log_path.exists():
-    print('No exits this run')
-    sys.exit(0)
-try:
-    all_trades = json.loads(log_path.read_text())
-except Exception:
-    print('No exits this run')
-    sys.exit(0)
-trades = all_trades[pre_count:]  # only entries from this run
-parts = []
-for t in trades:
-    sig = t.get('signal', '')
-    sym = t.get('symbol', '?')
-    order = t.get('order', {})
-    qty = order.get('qty', '?')
-    if sig == 'stop_loss':
-        loss = t.get('loss_pct', 0)
-        parts.append(f'STOP {sym} ({loss:.1%})')
-    elif sig == 'single_day_loss':
-        drop = t.get('daily_drop_pct', 0)
-        parts.append(f'GAP-STOP {sym} ({drop:.1%} drop)')
-    elif sig == 'trailing_stop':
-        parts.append(f'TRAIL-STOP {sym}')
-    elif sig in ('sell', 'max_hold'):
-        parts.append(f'SELL {sym} x{qty}')
-print('; '.join(parts) if parts else 'No exits this run')
-" 2>/dev/null || echo "No exits this run")
-
-    # Append current holdings to notification
-    HOLDINGS=$("$PYTHON" -c "
-import os
-try:
-    from alpaca.trading.client import TradingClient
-    client = TradingClient(os.environ['ALPACA_API_KEY'], os.environ['ALPACA_SECRET_KEY'], paper=False)
-    positions = client.get_all_positions()
-    parts = [f\"{p.symbol}{float(p.unrealized_plpc)*100:+.0f}%\" for p in sorted(positions, key=lambda x: x.symbol)]
-    print('Held: ' + ' '.join(parts) if parts else 'No positions')
-except Exception:
-    print('')
-" 2>/dev/null || echo "")
-    FULL_MSG="${SUMMARY}${HOLDINGS:+ | $HOLDINGS}"
-    notify "RenQuant 104 [$TAG]" "$FULL_MSG"
+    echo "Wrapper success ntfy suppressed; live.runner already posted the cycle decision."
 else
     echo "=== live_104 [$TAG] FAILED at $(date) ==="
     notify "RenQuant 104 ERROR [$TAG]" "Live trader failed — check $LOG"
