@@ -800,6 +800,42 @@ Verification:
 - `.venv/bin/python -m py_compile backtesting/renquant_104/kernel/portfolio_qp/job_qp.py backtesting/renquant_104/kernel/portfolio_qp/tasks.py backtesting/renquant_104/kernel/pipeline/task_rotation.py backtesting/renquant_104/kernel/pipeline/pp_inference.py backtesting/renquant_104/kernel/persistence.py backtesting/renquant_104/adapters/lean.py backtesting/renquant_104/adapters/sim.py backtesting/renquant_104/adapters/runner.py`
   -> passed.
 
+## 2026-05-23 Metadata Fail-Closed Hardening
+
+Selection, rotation, joint-action, and QP now fail closed when required
+sector/correlation metadata is missing.
+
+- `passes_sector_guard()` no longer maps missing sectors to `"other"`.
+  Missing candidate sector, or missing non-defensive held sector, blocks the
+  new buy.
+- `passes_correlation_guard()` no longer treats `corr_matrix=None` or a
+  missing pair as diversification evidence. If there is an existing/selected
+  holding and correlation cannot be verified, the buy is blocked.
+- `JointActionTask` now calls the same correlation guard unconditionally
+  instead of bypassing it when `ctx.corr_matrix is None`.
+- `ApplySectorMetadataGuardTask` now caps every unmapped QP ticker at current
+  weight even when `sector_map` is entirely empty. New candidates get a zero
+  upper bound and `blocked_by=missing_sector_map`.
+- `BuildCorrelationGroupConstraintTask` now caps tickers with missing
+  correlation matrix/pairs at current weight. New candidates get a zero upper
+  bound and `blocked_by=missing_correlation_matrix` or
+  `missing_correlation_pair`.
+
+Scientific reason: sector and correlation controls are risk constraints, not
+optional features. If the risk model is incomplete, the system cannot infer
+diversification from missing data. This follows conservative robust portfolio
+construction practice: unverifiable covariance/metadata should reduce allowed
+risk, not increase it.
+
+Verification:
+
+- `.venv/bin/python -m pytest tests/test_kernel_units.py tests/test_joint_actions.py tests/test_qp_sector_constraint.py tests/test_qp_correlation_constraint.py tests/test_selection_wash_sale_cost_aware.py tests/test_rotation_atomic.py tests/test_thesis_primary_rotation.py tests/test_session_silent_bugs.py::TestThesisSymmetricReachable tests/test_qp_admission_gate.py tests/test_joint_qp_task.py tests/test_qp_integration.py -q`
+  -> `306 passed`.
+- `.venv/bin/python -m pytest tests/test_policy_alignment.py tests/test_candidate_sector_map_gate.py tests/test_lean_policies.py tests/test_runner_state_fixes.py tests/test_ticker_daily_state.py tests/test_lean_trace_persistence.py tests/test_persistence.py -q`
+  -> `515 passed`.
+- `.venv/bin/python -m py_compile backtesting/renquant_104/kernel/selection.py backtesting/renquant_104/kernel/pipeline/task_joint_actions.py backtesting/renquant_104/kernel/portfolio_qp/tasks.py`
+  -> passed.
+
 ## 2026-05-23 PatchTST / XGB Experiment Audit
 
 PatchTST experiments did complete, but they are not promotion evidence.
@@ -862,12 +898,12 @@ APY/Sharpe/tax/turnover versus XGB and SPY.
    smoke after the new DB wiring. The WF `effective_train_cutoff_date`
    double-embargo bug, SEC fundamentals point-in-time filed-date bug, LEAN/QP
    cash-capped target parity bug, universe metadata fail-closed bug,
-   calibrator metric-scope bug, correlation metadata fail-closed semantics,
-   QP global status reason stamping, candidate reason-gap contract, and exact
-   sim/live/LEAN universe-rejection reason preservation plus LEAN sidecar
-   trace wiring are fixed. Correlation artifacts without `as_of_date` now
-   require an explicit legacy override, while sell-only risk exits remain
-   soft-passed.
+   calibrator metric-scope bug, selection/rotation/QP sector-correlation
+   metadata fail-closed semantics, QP global status reason stamping, candidate
+   reason-gap contract, and exact sim/live/LEAN universe-rejection reason
+   preservation plus LEAN sidecar trace wiring are fixed. Correlation artifacts
+   without `as_of_date` now require an explicit legacy override, while
+   sell-only risk exits remain soft-passed.
 
 ## Known Failure Modes To Keep Front And Center
 

@@ -118,6 +118,9 @@ class TestBuildCorrelationGroupConstraintTask:
         ctx.corr_matrix = corr_matrix
         ctx._qp_tickers = tickers
         ctx._qp_w_upper = np.full(len(tickers), max_position_pct)
+        ctx._qp_w_current = np.zeros(len(tickers))
+        ctx.candidates = []
+        ctx.counters = {}
         return ctx
 
     def test_high_corr_pair_added(self):
@@ -168,6 +171,39 @@ class TestBuildCorrelationGroupConstraintTask:
         # NaN → fail-conservative → counted as high-corr
         assert ctx._qp_corr_group_pairs is not None
         assert len(ctx._qp_corr_group_pairs) == 1
+
+    def test_missing_matrix_caps_all_at_current_weight(self):
+        from types import SimpleNamespace
+
+        cand = SimpleNamespace(ticker="NEW")
+        ctx = self._stub_ctx(["HELD", "NEW"], None)
+        ctx._qp_w_current = np.array([0.11, 0.00])
+        ctx._qp_w_upper = np.array([0.20, 0.20])
+        ctx.candidates = [cand]
+
+        BuildCorrelationGroupConstraintTask().run(ctx)
+
+        np.testing.assert_allclose(ctx._qp_w_upper, [0.11, 0.00])
+        assert ctx._qp_missing_correlation_tickers == ["HELD", "NEW"]
+        assert ctx._blocked_by_ticker["NEW"] == "missing_correlation_matrix"
+
+    def test_missing_pair_caps_incomplete_tickers(self):
+        from types import SimpleNamespace
+
+        cand = SimpleNamespace(ticker="C")
+        ctx = self._stub_ctx(
+            ["A", "B", "C"],
+            {"A": {"B": 0.10}},  # A-C and B-C are missing
+        )
+        ctx._qp_w_current = np.array([0.05, 0.04, 0.00])
+        ctx._qp_w_upper = np.array([0.20, 0.20, 0.20])
+        ctx.candidates = [cand]
+
+        BuildCorrelationGroupConstraintTask().run(ctx)
+
+        np.testing.assert_allclose(ctx._qp_w_upper, [0.05, 0.04, 0.00])
+        assert set(ctx._qp_missing_correlation_tickers) == {"A", "B", "C"}
+        assert ctx._blocked_by_ticker["C"] == "missing_correlation_pair"
 
     def test_disabled_yields_none(self):
         ctx = self._stub_ctx(

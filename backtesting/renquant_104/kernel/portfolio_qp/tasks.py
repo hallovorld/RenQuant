@@ -506,8 +506,6 @@ class ApplySectorMetadataGuardTask(Task):
             return None
         tickers = _get_path(ctx, "_qp_tickers") or []
         sector_map = (ctx.config or {}).get("sector_map", {}) or {}
-        if not sector_map:
-            return None
         w_upper = _get_path(ctx, "_qp_w_upper")
         w_current = _get_path(ctx, "_qp_w_current")
         if not tickers or w_upper is None or w_current is None:
@@ -526,7 +524,10 @@ class ApplySectorMetadataGuardTask(Task):
         if blocked_map is None:
             blocked_map = {}
             ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
-        candidate_tickers = {getattr(c, "ticker", None) for c in (ctx.candidates or [])}
+        candidate_tickers = {
+            getattr(c, "ticker", None)
+            for c in (getattr(ctx, "candidates", None) or [])
+        }
         for i in missing:
             if i >= len(w_upper_arr) or i >= len(w_current_arr):
                 continue
@@ -1087,8 +1088,11 @@ class BuildCorrelationGroupConstraintTask(Task):
         if n < 2:
             ctx._qp_corr_group_pairs = None  # noqa: SLF001
             return
-        corr_matrix = getattr(ctx, "corr_matrix", None) or {}
+        corr_matrix = getattr(ctx, "corr_matrix", None)
         if not corr_matrix:
+            self._cap_missing_corr_tickers(
+                ctx, tickers, set(tickers), reason="missing_correlation_matrix",
+            )
             ctx._qp_corr_group_pairs = None  # noqa: SLF001
             return
         thr = float(((ctx.config or {}).get("regime", {}) or {}).get(
@@ -1099,13 +1103,20 @@ class BuildCorrelationGroupConstraintTask(Task):
             return
         w_upper = _get_path(ctx, "_qp_w_upper")
         fallback_cap = float((ctx.config or {}).get("max_position_pct", 0.20))
-        pairs = self._collect_pairs(tickers, corr_matrix, thr, w_upper, fallback_cap)
+        pairs, missing_tickers = self._collect_pairs(
+            tickers, corr_matrix, thr, w_upper, fallback_cap,
+        )
+        if missing_tickers:
+            self._cap_missing_corr_tickers(
+                ctx, tickers, missing_tickers, reason="missing_correlation_pair",
+            )
         ctx._qp_corr_group_pairs = pairs if pairs else None  # noqa: SLF001
 
     @staticmethod
     def _collect_pairs(tickers, corr_matrix, thr, w_upper, fallback_cap):
         """Walk the upper-triangle of the corr matrix; return (i, j, cap)."""
         pairs: list[tuple[int, int, float]] = []
+        missing_tickers: set[str] = set()
         for i in range(len(tickers)):
             ti = tickers[i]
             row = corr_matrix.get(ti)
@@ -1119,10 +1130,12 @@ class BuildCorrelationGroupConstraintTask(Task):
                     if isinstance(other, dict):
                         rho = other.get(ti)
                 if rho is None:
+                    missing_tickers.update({ti, tj})
                     continue
                 try:
                     rho_f = float(rho)
                 except (TypeError, ValueError):
+                    missing_tickers.update({ti, tj})
                     continue
                 if not math.isfinite(rho_f):
                     # Fail-conservative: NaN correlation → treat as high.
@@ -1130,7 +1143,46 @@ class BuildCorrelationGroupConstraintTask(Task):
                 if abs(rho_f) >= thr:
                     group_cap = _pair_upper_cap(w_upper, i, j, fallback_cap)
                     pairs.append((i, j, group_cap))
-        return pairs
+        return pairs, missing_tickers
+
+    @staticmethod
+    def _cap_missing_corr_tickers(ctx, tickers, missing_tickers: set[str], reason: str):
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        w_current = _get_path(ctx, "_qp_w_current")
+        if w_upper is None or w_current is None:
+            return
+        w_upper_arr = np.asarray(w_upper, dtype=float).copy()
+        w_current_arr = np.asarray(w_current, dtype=float)
+        blocked: list[str] = []
+        blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked_map is None:
+            blocked_map = {}
+            ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+        candidate_tickers = {
+            getattr(c, "ticker", None)
+            for c in (getattr(ctx, "candidates", None) or [])
+        }
+        for i, ticker in enumerate(tickers):
+            if ticker not in missing_tickers:
+                continue
+            if i >= len(w_upper_arr) or i >= len(w_current_arr):
+                continue
+            w_upper_arr[i] = min(
+                float(w_upper_arr[i]), max(float(w_current_arr[i]), 0.0),
+            )
+            blocked.append(ticker)
+            if ticker in candidate_tickers:
+                blocked_map.setdefault(ticker, reason)
+        if not blocked:
+            return
+        ctx._qp_w_upper = w_upper_arr  # noqa: SLF001
+        ctx._qp_missing_correlation_tickers = blocked  # noqa: SLF001
+        _inc_counter(ctx, "qp_missing_correlation_guard", len(blocked))
+        log.warning(
+            "BuildCorrelationGroupConstraintTask: capped %d ticker(s) "
+            "at current weight due to incomplete correlation metadata: %s",
+            len(blocked), blocked[:10],
+        )
 
 
 def _max_upper_for_indices(w_upper, indices: list[int], *, fallback: float) -> float:

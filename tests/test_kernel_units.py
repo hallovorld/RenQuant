@@ -643,6 +643,16 @@ class TestGuards:
         sector_map = {"AAPL": "tech", "MSFT": "tech"}
         assert passes_sector_guard("MSFT", held, sector_map, 2, set())
 
+    def test_sector_guard_blocks_missing_candidate_sector(self):
+        held = ["AAPL"]
+        sector_map = {"AAPL": "tech"}
+        assert not passes_sector_guard("MSFT", held, sector_map, 2, set())
+
+    def test_sector_guard_blocks_missing_held_sector(self):
+        held = ["AAPL"]
+        sector_map = {"MSFT": "tech"}
+        assert not passes_sector_guard("MSFT", held, sector_map, 2, set())
+
     def test_defensives_bypass_sector_guard(self):
         held = ["GLD", "TLT"]
         sector_map = {"GLD": "bond", "TLT": "bond", "XLV": "bond"}
@@ -655,6 +665,13 @@ class TestGuards:
     def test_correlation_guard_allows_low_corr(self):
         corr = {"AAPL": {"MSFT": 0.50}}
         assert passes_correlation_guard("AAPL", ["MSFT"], corr, 0.70)
+
+    def test_correlation_guard_blocks_missing_matrix_when_held(self):
+        assert not passes_correlation_guard("AAPL", ["MSFT"], None, 0.70)
+
+    def test_correlation_guard_blocks_missing_pair(self):
+        corr = {"AAPL": {"GOOG": 0.10}}
+        assert not passes_correlation_guard("AAPL", ["MSFT"], corr, 0.70)
 
 
 class TestScoreCandidates:
@@ -678,12 +695,16 @@ class TestScoreCandidates:
 
 class TestRunSelectionLoop:
     def _ctx(self, open_slots=3, tiered=None):
+        tickers = [f"T{i}" for i in range(10)]
         return SelectionContext(
             today=datetime.date(2024, 2, 1),
             held_tickers=[],
             last_sell_dates={},
             earnings_calendar={},
-            corr_matrix=None,
+            corr_matrix={
+                a: {b: 0.0 for b in tickers if b != a}
+                for a in tickers
+            },
             sector_map={},
             defensive_set=set(),
             wash_sale_days=0,

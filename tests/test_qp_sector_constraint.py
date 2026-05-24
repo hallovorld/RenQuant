@@ -70,7 +70,7 @@ class _QPCtx:
 
 
 def _complex_qp_ctx() -> _QPCtx:
-    return _QPCtx(config={
+    ctx = _QPCtx(config={
         "rotation": {"joint_actions": {
             "enabled": True,
             "solver": "qp",
@@ -96,6 +96,12 @@ def _complex_qp_ctx() -> _QPCtx:
         "defensive_tickers": ["GLD", "TLT", "XLV", "XLU"],
         "wash_sale_days": 0,
     })
+    tickers = ["BAD", "GOOD", "GLD", "MISSING_HELD", "MISSING_NEW"]
+    ctx.corr_matrix = {
+        a: {b: 0.0 for b in tickers if b != a}
+        for a in tickers
+    }
+    return ctx
 
 
 # ── Direct solver-level enforcement ───────────────────────────────────────────
@@ -287,6 +293,27 @@ class TestMissingSectorGuardRegression:
         np.testing.assert_allclose(ctx._qp_w_upper, [0.20, 0.12, 0.00])
         assert ctx._qp_missing_sector_tickers == ["MYSTERY_HELD", "MYSTERY_NEW"]
         assert ctx.counters["qp_missing_sector_guard"] == 2
+
+    def test_task_caps_all_when_sector_map_empty(self):
+        from types import SimpleNamespace
+
+        ctx = SimpleNamespace(
+            config={
+                "sector_map": {},
+                "rotation": {"joint_actions": {"qp_sector_cap_enabled": True}},
+            },
+            candidates=[_QPCand("MYSTERY_NEW", mu=1.0, sigma=0.05)],
+            counters={},
+        )
+        ctx._qp_tickers = ["MYSTERY_HELD", "MYSTERY_NEW"]
+        ctx._qp_w_current = np.array([0.12, 0.00])
+        ctx._qp_w_upper = np.array([0.20, 0.20])
+
+        ApplySectorMetadataGuardTask().run(ctx)
+
+        np.testing.assert_allclose(ctx._qp_w_upper, [0.12, 0.00])
+        assert ctx._qp_missing_sector_tickers == ["MYSTERY_HELD", "MYSTERY_NEW"]
+        assert ctx._blocked_by_ticker["MYSTERY_NEW"] == "missing_sector_map"
 
     def test_full_qp_does_not_buy_missing_sector_candidate(self):
         """A missing-sector candidate with the strongest μ must not receive

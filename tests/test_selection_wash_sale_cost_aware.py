@@ -52,7 +52,7 @@ def _make_ctx(*, today, last_sells, last_pls, wash_days=30, slots=5):
         wash_sale_days=wash_days,
         earnings_buffer=3,
         corr_threshold=0.99,
-        max_per_sector=10,
+        max_per_sector=0,
         tiered_thresholds=[{"min_model_score": 0.0}],
         open_slots=slots,
         bear_only=False,

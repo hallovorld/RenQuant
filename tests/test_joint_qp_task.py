@@ -39,6 +39,14 @@ class _Hold:
     lots: list = field(default_factory=list)
 
 
+def _low_corr_matrix():
+    names = ["A", "B", "GLD", "H", "TLT", "XLU", "XLV"]
+    return {
+        a: {b: 0.0 for b in names if b != a}
+        for a in names
+    }
+
+
 @dataclass
 class _Ctx:
     config: dict = field(default_factory=dict)
@@ -58,6 +66,7 @@ class _Ctx:
     orders: list = field(default_factory=list)
     exits: list = field(default_factory=list)
     counters: dict = field(default_factory=dict)
+    corr_matrix: dict | None = field(default_factory=_low_corr_matrix)
 
 
 def _qp_on() -> dict:
@@ -74,6 +83,15 @@ def _qp_on() -> dict:
             "max_position_pct": 0.20,
             "cash_reserve_pct": 0.0,
         }},
+        "sector_map": {
+            "A": "tech",
+            "B": "tech",
+            "GLD": "defensive",
+            "H": "tech",
+            "TLT": "defensive",
+            "XLU": "defensive",
+            "XLV": "defensive",
+        },
         "wash_sale_days": 0,
     }
 

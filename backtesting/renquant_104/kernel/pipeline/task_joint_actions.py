@@ -685,17 +685,13 @@ class JointActionTask(Task):
                     ctx.counters.get("joint_blocked_sector", 0) + 1
                 )
                 continue
-            # Audit fix JOINT-CORR-NONE (Bug D, 2026-04-25): no-op the
-            # correlation guard when ctx.corr_matrix is None — mirrors
-            # SelectionJob behaviour on missing watchlist-correlation.json.
-            if ctx.corr_matrix is not None:
-                if not passes_correlation_guard(
-                    a.cand_ticker, tmp_held, ctx.corr_matrix, corr_threshold,
-                ):
-                    ctx.counters["joint_blocked_corr"] = (
-                        ctx.counters.get("joint_blocked_corr", 0) + 1
-                    )
-                    continue
+            if not passes_correlation_guard(
+                a.cand_ticker, tmp_held, ctx.corr_matrix, corr_threshold,
+            ):
+                ctx.counters["joint_blocked_corr"] = (
+                    ctx.counters.get("joint_blocked_corr", 0) + 1
+                )
+                continue
 
             # Audit fix JOINT-TIER-ESC (Bug C) + JOINT-TIER-NEGATIVE
             # (Bug S, 2026-04-25): per-slot tier escalation indexed on

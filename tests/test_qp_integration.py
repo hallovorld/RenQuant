@@ -72,6 +72,17 @@ def _base_config() -> dict:
             },
         },
         "wash_sale_days": 30,
+        "sector_map": {
+            "A": "tech",
+            "AAPL": "tech",
+            "GOOG": "tech",
+            "MSFT": "tech",
+            "NEW": "tech",
+            "OLD": "tech",
+            "RAW": "tech",
+            "STRONG": "tech",
+            "WEAK": "tech",
+        },
         "ranking": {
             "panel_scoring": {
                 "quality_floor": {"enabled": False},
@@ -94,6 +105,11 @@ def _make_ctx(*, candidates, holdings, prices, regime="BULL_CALM",
     ctx.regime = regime
     ctx.confidence = confidence
     ctx.last_sell_dates = last_sells or {}
+    tickers = sorted(set(ctx.prices) | set(ctx.holdings) | {c.ticker for c in ctx.candidates})
+    ctx.corr_matrix = {
+        a: {b: 0.0 for b in tickers if b != a}
+        for a in tickers
+    }
     return ctx
 
 

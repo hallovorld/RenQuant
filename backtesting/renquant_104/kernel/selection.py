@@ -214,8 +214,16 @@ def passes_sector_guard(
         return True
     if ticker in defensive_set:
         return True   # defensives bypass sector guard
-    sector = sector_map.get(ticker, "other")
-    count  = sum(1 for t in held_tickers if sector_map.get(t, "other") == sector)
+    sector = sector_map.get(ticker)
+    if not isinstance(sector, str) or not sector:
+        return False
+    for held in held_tickers:
+        if held in defensive_set:
+            continue
+        held_sector = sector_map.get(held)
+        if not isinstance(held_sector, str) or not held_sector:
+            return False
+    count = sum(1 for t in held_tickers if sector_map.get(t) == sector)
     return count < max_per_sector
 
 
@@ -236,8 +244,10 @@ def passes_correlation_guard(
     # are False) → guard returned True → highly-correlated buy allowed
     # silently when correlation matrix has NaN cells.
     import math as _math
-    if corr_matrix is None or not held_tickers:
+    if not held_tickers:
         return True
+    if corr_matrix is None:
+        return False
     for held in held_tickers:
         # Audit fix SELF-CORR (2026-04-25): pre-fix, when a candidate
         # was being considered for slot N AFTER it was already added to
@@ -252,7 +262,7 @@ def passes_correlation_guard(
         if corr is None:
             corr = corr_matrix.get(held, {}).get(ticker)
         if corr is None:
-            continue
+            return False
         if not _math.isfinite(corr):
             # Treat NaN/inf correlation as MAX correlation — fail-SAFE
             # to block the buy when we can't verify independence.

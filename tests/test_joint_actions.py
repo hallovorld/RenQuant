@@ -58,6 +58,14 @@ class _Hold:
     sigma:           float | None = None
 
 
+def _default_low_corr_matrix():
+    names = ["AMZN", "KEEP", "LOSER", "NVDA", "STRONG", "WEAK"]
+    return {
+        a: {b: 0.0 for b in names if b != a}
+        for a in names
+    }
+
+
 @dataclass
 class _Ctx:
     """Minimal InferenceContext for testing JointActionTask."""
@@ -77,7 +85,7 @@ class _Ctx:
     cash:            float = 100_000.0
     portfolio_value: float = 100_000.0
     last_sell_dates: dict = field(default_factory=dict)
-    corr_matrix:     dict | None = None
+    corr_matrix:     dict | None = field(default_factory=_default_low_corr_matrix)
     regime_state:    object | None = None
 
 
@@ -108,7 +116,14 @@ def _base_config(joint_enabled=True, buy_floor=0.30, sell_floor=0.20,
         "max_concurrent_positions": max_concurrent,
         "max_positions_per_sector": max_per_sector,
         "wash_sale_days": 30,
-        "sector_map": {},
+        "sector_map": {
+            "AMZN": "tech",
+            "KEEP": "tech",
+            "LOSER": "tech",
+            "NVDA": "tech",
+            "STRONG": "tech",
+            "WEAK": "tech",
+        },
         "defensive_tickers": [],
         "tiered_thresholds": tiered,
     }
@@ -346,19 +361,20 @@ class TestJointDedup:
 
 
 class TestJointCorrMatrixNoneSafety:
-    """Bug D fix: corr_matrix=None must not crash."""
+    """Missing correlation metadata must fail closed, without crashing."""
 
-    def test_no_crash_when_corr_matrix_none(self):
+    def test_blocks_when_corr_matrix_none(self):
         cfg = _base_config(tiered=[{"min_model_score": 0.20}])
         ctx = _Ctx(config=cfg, corr_matrix=None)  # explicit None
         ctx.holdings["AMZN"] = _Hold(rank_score=0.40)
         ctx.prices["AMZN"] = 200.0
         ctx.ranked = [_Cand("NVDA", rank_score=0.50, expected_return=0.05)]
         ctx.prices["NVDA"] = 200.0
-        # Must not raise
-        result = JointActionTask().run(ctx)
-        # And NVDA should still be considered (no corr guard means no veto)
-        assert len(ctx.orders) >= 0  # just no crash
+
+        JointActionTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx.counters["joint_blocked_corr"] >= 1
 
 
 class TestJointCounters:
