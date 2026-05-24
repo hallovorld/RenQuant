@@ -1,7 +1,10 @@
 """Shared trade-event row builders for sim/live/LEAN persistence."""
 from __future__ import annotations
 
+import datetime
 from typing import Any
+
+from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
 
 
 def _none_or_float(value: Any) -> float | None:
@@ -115,4 +118,190 @@ def build_buy_trade_event(
     }
 
 
-__all__ = ["build_buy_trade_event"]
+def _date_obj(value: Any) -> datetime.date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if hasattr(value, "date"):
+        try:
+            return value.date()
+        except Exception:
+            return None
+    return None
+
+
+def build_sell_trade_event(
+    *,
+    ticker: str,
+    sig: Any,
+    holding: Any,
+    price: float,
+    today: Any,
+    regime: str | None,
+    confidence: float | None,
+    regime_params: dict,
+    config: dict | None = None,
+    shares: float | None = None,
+    gross_pnl: float | None = None,
+    proceeds_basis: float | None = None,
+    tax: float | None = None,
+    net_pnl_after_tax: float | None = None,
+    pnl_pct: float | None = None,
+    attribution_version: str = "exit_decision_v1",
+) -> dict[str, Any]:
+    """Normalize an executed SELL event for DB/audit writers."""
+    entry_p = float(getattr(holding, "entry_price", 0.0) or 0.0)
+    entry_date = _date_obj(getattr(holding, "entry_date", None))
+    today_date = _date_obj(today)
+    hold_days = (
+        (today_date - entry_date).days
+        if holding and today_date is not None and entry_date is not None else 0
+    )
+    if shares is None:
+        raw_qty = getattr(sig, "shares_sold", None)
+        if raw_qty is None:
+            raw_qty = getattr(sig, "quantity", None)
+        if raw_qty is None:
+            raw_qty = getattr(holding, "shares", None)
+        shares = _none_or_float(raw_qty)
+    if pnl_pct is None:
+        pnl_pct = (price - entry_p) / entry_p if entry_p > 0 else 0.0
+    if (
+        gross_pnl is None
+        and shares is not None and shares > 0 and entry_p > 0 and price > 0
+    ):
+        gross_pnl = (price - entry_p) * shares
+    if (
+        proceeds_basis is None
+        and shares is not None and shares > 0 and entry_p > 0
+    ):
+        proceeds_basis = entry_p * shares
+    if tax is None and gross_pnl is not None:
+        tax_cfg = (regime_params or {}).get("tax", {})
+        st_rate = float(tax_cfg.get("short_term_rate", 0.50))
+        lt_rate = float(tax_cfg.get("long_term_rate", 0.32))
+        lt_days = int(tax_cfg.get("long_term_threshold_days", 365))
+        rate = lt_rate if hold_days >= lt_days else st_rate
+        tax = max(gross_pnl, 0.0) * rate
+    if net_pnl_after_tax is None and gross_pnl is not None and tax is not None:
+        net_pnl_after_tax = gross_pnl - tax
+    exit_type = getattr(sig, "exit_type", "") or ""
+    reason = getattr(sig, "reason", None)
+    source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
+    source_task = str(getattr(sig, "source_task", None) or exit_type or "sell")
+    order_source = str(
+        getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
+    )
+    exit_p = _applied_exit_params(
+        sig=sig,
+        holding=holding,
+        regime=regime,
+        regime_params=regime_params,
+        config=config or {},
+    )
+    return {
+        "ticker": ticker,
+        "action": "sell",
+        "date": today,
+        "shares": shares,
+        "price": price,
+        "gross_pnl": gross_pnl,
+        "proceeds_basis": proceeds_basis,
+        "tax": tax,
+        "net_pnl_after_tax": net_pnl_after_tax,
+        "exit_reason": exit_type,
+        "pnl_pct": pnl_pct,
+        "hold_days": hold_days,
+        "rank_score": getattr(holding, "rank_score", None),
+        "mu": getattr(holding, "mu", None),
+        "sigma": getattr(holding, "sigma", None),
+        "order_type": f"SELL_{exit_type}" if exit_type else "SELL",
+        "source": str(getattr(sig, "source", None) or "ExitPipeline"),
+        "source_job": source_job,
+        "source_task": source_task,
+        "order_source": order_source,
+        "attribution_version": attribution_version,
+        "score_snapshot": {
+            "rank_score": getattr(holding, "rank_score", None),
+            "panel_score": getattr(holding, "panel_score", None),
+            "mu": getattr(holding, "mu", None),
+            "sigma": getattr(holding, "sigma", None),
+            "kelly_target_pct": getattr(holding, "kelly_target_pct", None),
+            "confidence": confidence,
+            "regime": regime,
+        },
+        "decision_inputs": {
+            "acceptance_reason": exit_type or reason,
+            "exit_reason": exit_type,
+            "signal_reason": reason,
+            "quantity": getattr(sig, "quantity", None),
+            "shares": shares,
+            "gross_pnl": gross_pnl,
+            "tax": tax,
+            "net_pnl_after_tax": net_pnl_after_tax,
+            "hold_days": hold_days,
+            "pnl_pct": pnl_pct,
+            "stop_loss_pct": exit_p.get("stop_loss_pct"),
+            "stop_loss_anchor_policy": exit_p.get("stop_loss_anchor_policy"),
+            "stop_loss_anchor_regime": exit_p.get("stop_loss_anchor_regime"),
+            "stop_loss_current_regime": exit_p.get("stop_loss_current_regime"),
+            "stop_loss_current_pct": exit_p.get("stop_loss_current_pct"),
+            "stop_loss_entry_regime": exit_p.get("stop_loss_entry_regime"),
+            "stop_loss_entry_pct": exit_p.get("stop_loss_entry_pct"),
+            "stop_n_sigma": exit_p.get("stop_n_sigma"),
+            "take_profit_pct": exit_p.get("take_profit_pct"),
+            "stop_decay_days": exit_p.get("stop_decay_days"),
+            "stop_decay_floor": exit_p.get("stop_decay_floor"),
+            "max_single_day_loss_pct": exit_p.get("max_single_day_loss_pct"),
+            "sdl_n_sigma": exit_p.get("sdl_n_sigma"),
+            "sdl_skip_if_unrealized_above": exit_p.get(
+                "sdl_skip_if_unrealized_above"
+            ),
+            "trailing_stop_trigger_pct": exit_p.get(
+                "trailing_stop_trigger_pct"
+            ),
+            "trailing_stop_trail_pct": exit_p.get(
+                "trailing_stop_trail_pct"
+            ),
+            "atr_n_multiplier": exit_p.get("atr_n_multiplier"),
+            "max_hold_days": exit_p.get("max_hold_days"),
+            "max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
+            **(getattr(sig, "decision_inputs", None) or {}),
+        },
+    }
+
+
+def _applied_exit_params(
+    *,
+    sig: Any,
+    holding: Any,
+    regime: str | None,
+    regime_params: dict,
+    config: dict,
+) -> dict[str, Any]:
+    applied = getattr(sig, "exit_params", None)
+    if isinstance(applied, dict) and applied:
+        return dict(applied)
+    exit_p = dict(regime_params or {})
+    entry_regime = getattr(holding, "entry_regime", None)
+    entry_regime_p = (
+        (config.get("regime_params", {}) or {}).get(entry_regime, {})
+        if entry_regime is not None else {}
+    )
+    if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
+        exit_p["max_hold_days"] = entry_regime_p["max_hold_days"]
+        exit_p["max_hold_anchor_regime"] = entry_regime
+    apply_stop_loss_anchor_policy(
+        exit_p,
+        config=config,
+        current_regime=regime,
+        entry_regime=entry_regime,
+        entry_regime_params=entry_regime_p,
+    )
+    return exit_p
+
+
+__all__ = ["build_buy_trade_event", "build_sell_trade_event"]

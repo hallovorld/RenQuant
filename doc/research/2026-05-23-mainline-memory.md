@@ -1742,6 +1742,12 @@ Operational conclusion:
   SimAdapter, RunnerAdapter, and LeanAdapter. This keeps shares/price/invest,
   score snapshots, decision inputs, attribution version, regime, and
   confidence aligned for post-run audit.
+- SELL trade-event rows are now built through `kernel.trade_events` for
+  RunnerAdapter and LeanAdapter. This preserves source_job/source_task,
+  tax/net P&L fields, applied exit params, score snapshots, and decision
+  inputs with one helper instead of two adapter-specific implementations.
+  Sim sell rows still contain extra tax-lot disposal semantics and should be
+  migrated only after the lot-attribution helper is shared too.
 - QP must size/rebalance qualified alpha; it must not turn weak candidates into
   trades.
 - Bull markets punish low exposure. Low beta can look safe while failing to

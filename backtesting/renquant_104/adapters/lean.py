@@ -38,7 +38,7 @@ from kernel.pipeline.task_execution import (
 )
 from kernel.exits import HoldingState
 from kernel.portfolio import compute_trade_tax
-from kernel.trade_events import build_buy_trade_event
+from kernel.trade_events import build_buy_trade_event, build_sell_trade_event
 
 log = logging.getLogger("adapters.lean")
 
@@ -392,59 +392,33 @@ class LeanAdapter:
                 and _math_lex.isfinite(event_gross)
                 else None
             )
-            exit_type = getattr(sig, "exit_type", "") or ""
-            reason = getattr(sig, "reason", None)
-            source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
-            source_task = str(getattr(sig, "source_task", None) or exit_type or "sell")
-            order_source = str(
-                getattr(sig, "order_source", None) or f"{source_job}.{source_task}"
+            event_net = (
+                event_gross - tax if _math_lex.isfinite(event_gross) else None
             )
-            trade_events.append({
-                "ticker": ticker,
-                "action": "sell",
-                "date": ctx.today,
-                "shares": event_shares,
-                "price": price,
-                "gross_pnl": event_gross,
-                "proceeds_basis": proceeds_basis,
-                "tax": tax,
-                "net_pnl_after_tax": event_gross - tax
-                if _math_lex.isfinite(event_gross) else None,
-                "exit_reason": exit_type,
-                "pnl_pct": event_gross / proceeds_basis
-                if proceeds_basis and proceeds_basis > 0 else None,
-                "hold_days": days_held,
-                "rank_score": getattr(hs, "rank_score", None) if hs else None,
-                "mu": getattr(hs, "mu", None) if hs else None,
-                "sigma": getattr(hs, "sigma", None) if hs else None,
-                "order_type": f"SELL_{exit_type}" if exit_type else "SELL",
-                "source": str(getattr(sig, "source", None) or "ExitPipeline"),
-                "source_job": source_job,
-                "source_task": source_task,
-                "order_source": order_source,
-                "attribution_version": "lean_exit_decision_v1",
-                "score_snapshot": {
-                    "rank_score": getattr(hs, "rank_score", None) if hs else None,
-                    "panel_score": getattr(hs, "panel_score", None) if hs else None,
-                    "mu": getattr(hs, "mu", None) if hs else None,
-                    "sigma": getattr(hs, "sigma", None) if hs else None,
-                    "confidence": ctx.confidence,
-                    "regime": ctx.regime,
-                },
-                "decision_inputs": {
-                    "acceptance_reason": exit_type or reason,
-                    "exit_reason": exit_type,
-                    "signal_reason": reason,
-                    "partial": is_partial,
-                    "quantity": getattr(sig, "quantity", None),
-                    "shares": event_shares,
-                    "gross_pnl": event_gross,
-                    "tax": tax,
-                    "net_pnl_after_tax": event_gross - tax
-                    if _math_lex.isfinite(event_gross) else None,
-                    "hold_days": days_held,
-                },
-            })
+            event_pnl_pct = (
+                event_gross / proceeds_basis
+                if proceeds_basis and proceeds_basis > 0 else None
+            )
+            trade_event = build_sell_trade_event(
+                ticker=ticker,
+                sig=sig,
+                holding=hs,
+                price=price,
+                today=ctx.today,
+                regime=ctx.regime,
+                confidence=ctx.confidence,
+                regime_params={"tax": config.get("tax", {}) or {}},
+                config=config,
+                shares=event_shares,
+                gross_pnl=event_gross,
+                proceeds_basis=proceeds_basis,
+                tax=tax,
+                net_pnl_after_tax=event_net,
+                pnl_pct=event_pnl_pct,
+                attribution_version="lean_exit_decision_v1",
+            )
+            trade_event["decision_inputs"]["partial"] = is_partial
+            trade_events.append(trade_event)
 
             if is_partial:
                 # Place a market order for -quantity (negative = sell).
