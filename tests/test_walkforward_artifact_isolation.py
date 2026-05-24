@@ -33,6 +33,7 @@ from scripts.train_walkforward_panel import (  # noqa: E402
     configure_panel_cutoff,
     infer_label_lookahead_days,
     make_calibrator_path,
+    train_cutoffs,
 )
 
 
@@ -114,6 +115,61 @@ def test_make_calibrator_path_sits_next_to_scorer():
 def test_infer_label_lookahead_days_from_label_name():
     assert infer_label_lookahead_days("fwd_5d_excess") == 5
     assert infer_label_lookahead_days("fwd_60d_excess") == 60
+
+
+def _wf_args(**overrides):
+    class Args:
+        label = None
+        watchlist_file = None
+        artifact_root = None
+        skip_calibrators = False
+        calibrator_method = "platt"
+        jobs = 1
+        allow_partial_manifest = False
+
+    args = Args()
+    for k, v in overrides.items():
+        setattr(args, k, v)
+    return args
+
+
+def test_train_walkforward_panel_fails_closed_on_partial_manifest(monkeypatch):
+    import scripts.train_walkforward_panel as twp
+
+    dates = [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-22")]
+
+    def fake_train_one_cutoff(cutoff, *args, **kwargs):
+        if cutoff == dates[1]:
+            return False, Path("artifacts/walkforward_v2/2024-01-22/panel-ltr.json"), None, "boom"
+        return True, Path("artifacts/walkforward_v2/2024-01-01/panel-ltr.json"), None, ""
+
+    monkeypatch.setattr(twp, "train_one_cutoff", fake_train_one_cutoff)
+    monkeypatch.setattr(twp, "read_trained_date", lambda path: pd.Timestamp("2024-01-02"))
+
+    with pytest.raises(RuntimeError, match="refusing to write partial manifest"):
+        train_cutoffs(dates, _wf_args())
+
+
+def test_train_walkforward_panel_allows_partial_only_when_explicit(monkeypatch):
+    import scripts.train_walkforward_panel as twp
+
+    dates = [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-22")]
+
+    def fake_train_one_cutoff(cutoff, *args, **kwargs):
+        if cutoff == dates[1]:
+            return False, Path("artifacts/walkforward_v2/2024-01-22/panel-ltr.json"), None, "boom"
+        return True, Path("artifacts/walkforward_v2/2024-01-01/panel-ltr.json"), None, ""
+
+    monkeypatch.setattr(twp, "train_one_cutoff", fake_train_one_cutoff)
+    monkeypatch.setattr(twp, "read_trained_date", lambda path: pd.Timestamp("2024-01-02"))
+
+    entries, failed = train_cutoffs(
+        dates,
+        _wf_args(allow_partial_manifest=True),
+    )
+
+    assert len(entries) == 1
+    assert failed == [("2024-01-22", "boom")]
 
 
 class TestNonWalkforwardPathRejected:

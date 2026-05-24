@@ -297,6 +297,12 @@ def parse_args() -> argparse.Namespace:
                    help="Method passed to fit_calibrator_alpha158_fund.py.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print retrain dates and exit (no training).")
+    p.add_argument(
+        "--allow-partial-manifest",
+        action="store_true",
+        help="Research-only escape hatch. By default any failed cutoff aborts "
+             "before writing a partial WF manifest.",
+    )
     return p.parse_args()
 
 
@@ -365,6 +371,15 @@ def train_cutoffs(retrain_dates: list[pd.Timestamp],
         for d in retrain_dates
         if d.date().isoformat() in entries_by_cutoff
     ]
+    if failed and not bool(getattr(args, "allow_partial_manifest", False)):
+        preview = ", ".join(f"{cutoff}: {err}" for cutoff, err in failed[:5])
+        raise RuntimeError(
+            "train_walkforward_panel: refusing to write partial manifest "
+            f"({len(entries)}/{len(retrain_dates)} retrains succeeded, "
+            f"{len(failed)} failed). First failures: {preview}. "
+            "Re-run failed cutoffs or pass --allow-partial-manifest for an "
+            "explicit research-only diagnostic."
+        )
     return entries, failed
 
 
