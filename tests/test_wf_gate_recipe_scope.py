@@ -72,6 +72,73 @@ def test_manifest_recipe_usage_rejects_feature_drift(tmp_path: Path):
     assert report["missing_features_vs_candidate"] == ["sentiment"]
 
 
+def test_manifest_recipe_usage_checks_all_rows_not_just_samples(tmp_path: Path):
+    """A drifted non-sampled manifest row must fail promotion scope.
+
+    Regression target: the old implementation inspected only first/middle/last
+    rows, so a bad row at position 1 of 5 was invisible.
+    """
+    mod = _load_module()
+    candidate = tmp_path / "candidate.json"
+    good = tmp_path / "good.json"
+    bad = tmp_path / "bad.json"
+    manifest = tmp_path / "manifest.json"
+    candidate.write_text(json.dumps(_artifact(["a", "b"])))
+    good.write_text(json.dumps(_artifact(["a", "b"])))
+    bad.write_text(json.dumps(_artifact(["a", "b", "leaky_extra"])))
+    manifest.write_text(json.dumps({
+        "retrains": [
+            {"artifact_uri": str(good), "cutoff_date": "2024-01-01"},
+            {"artifact_uri": str(bad), "cutoff_date": "2024-01-22"},
+            {"artifact_uri": str(good), "cutoff_date": "2024-02-12"},
+            {"artifact_uri": str(good), "cutoff_date": "2024-03-04"},
+            {"artifact_uri": str(good), "cutoff_date": "2024-03-25"},
+        ]
+    }))
+
+    usage = mod._manifest_recipe_usage(manifest, candidate)
+
+    assert usage["recipe_validated"] is False
+    assert any(
+        "leaky_extra" in r.get("extra_features_vs_candidate", [])
+        for r in usage["manifest_sample_reports"]
+    )
+
+
+def test_static_sanity_contract_rejects_artifact_without_cutoff() -> None:
+    mod = _load_module()
+    artifact = {
+        "kind": "panel_ltr_xgboost",
+        "trained_date": "2026-05-23",
+        "lookahead_days": 60,
+    }
+
+    result = mod._validate_static_sanity_oos_contract(
+        artifact,
+        mod.pd.Timestamp("2024-02-02"),
+    )
+
+    assert result["passed"] is False
+    assert "missing effective training cutoff" in result["reason"]
+
+
+def test_static_sanity_contract_requires_cutoff_plus_lookahead_before_eval() -> None:
+    mod = _load_module()
+    artifact = {
+        "kind": "panel_ltr_xgboost",
+        "train_cutoff": "2024-02-01",
+        "lookahead_days": 60,
+    }
+
+    result = mod._validate_static_sanity_oos_contract(
+        artifact,
+        mod.pd.Timestamp("2024-02-02"),
+    )
+
+    assert result["passed"] is False
+    assert "cutoff + lookahead" in result["reason"]
+
+
 def test_recipe_fingerprint_ignores_execution_only_xgb_params() -> None:
     """Hardware/threading changes must not invalidate historical WF recipes."""
     mod = _load_module()

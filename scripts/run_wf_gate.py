@@ -160,7 +160,7 @@ def _manifest_recipe_usage(manifest_path: Path | None, artifact_path: Path) -> d
     candidate = json.loads(artifact_path.read_text())
     candidate_fp = _recipe_fingerprint(candidate)
     candidate_recipe = _recipe_projection(candidate)
-    samples = [rows[0], rows[len(rows) // 2], rows[-1]]
+    samples = rows
     seen: set[str] = set()
     sample_reports: list[dict] = []
     for row in samples:
@@ -211,11 +211,12 @@ def _manifest_recipe_usage(manifest_path: Path | None, artifact_path: Path) -> d
         "recipe_validated": bool(all_match),
         "candidate_recipe_fingerprint": candidate_fp,
         "candidate_n_features": len(candidate_recipe["feature_cols"]),
+        "manifest_rows_checked": int(len(rows)),
         "manifest_sample_reports": sample_reports,
         "reason": (
-            "manifest sample artifacts match candidate recipe"
+            "manifest artifacts match candidate recipe"
             if all_match else
-            "manifest sample artifacts do not match candidate recipe"
+            "manifest artifacts do not match candidate recipe"
         ),
     }
 
@@ -880,7 +881,143 @@ def _load_round_trip_frames(wf_result: dict) -> tuple[list[pd.DataFrame], list[s
     return frames, missing
 
 
-def run_sanity_battery(artifact_path: Path) -> dict:
+def _effective_artifact_cutoff(artifact: dict) -> pd.Timestamp | None:
+    """Return the data cutoff that makes static-artifact sanity OOS-safe."""
+    for key in (
+        "effective_train_cutoff_date",
+        "train_cutoff_date",
+        "training_cutoff",
+        "train_cutoff",
+        "data_end",
+        "cutoff_date",
+    ):
+        value = artifact.get(key)
+        if value:
+            try:
+                return pd.Timestamp(value)
+            except Exception:  # noqa: BLE001
+                return None
+    return None
+
+
+def _validate_static_sanity_oos_contract(
+    artifact: dict,
+    eval_start: pd.Timestamp,
+) -> dict:
+    """Fail closed unless a static artifact's eval window is after its labels."""
+    cutoff = _effective_artifact_cutoff(artifact)
+    if cutoff is None:
+        return {
+            "passed": False,
+            "reason": (
+                "static sanity missing effective training cutoff; trained_date "
+                "is wall-clock metadata and cannot prove OOS label separation"
+            ),
+        }
+    lookahead = int(artifact.get("lookahead_days") or 0)
+    safe_last_label = cutoff + pd.offsets.BDay(max(0, lookahead))
+    if safe_last_label >= pd.Timestamp(eval_start):
+        return {
+            "passed": False,
+            "reason": (
+                f"static sanity cutoff + lookahead not before eval_start: "
+                f"{cutoff.date()} + {lookahead}BDay = "
+                f"{safe_last_label.date()} >= {pd.Timestamp(eval_start).date()}"
+            ),
+            "cutoff": cutoff.date().isoformat(),
+            "lookahead_days": lookahead,
+            "safe_last_label_date": safe_last_label.date().isoformat(),
+        }
+    return {
+        "passed": True,
+        "cutoff": cutoff.date().isoformat(),
+        "lookahead_days": lookahead,
+        "safe_last_label_date": safe_last_label.date().isoformat(),
+    }
+
+
+def _manifest_uri_to_path(manifest_path: Path, uri: str) -> Path:
+    p = Path(str(uri))
+    return p if p.is_absolute() else manifest_path.parent / p
+
+
+def _score_manifest_sanity(
+    val: pd.DataFrame,
+    feat_cols: list[str],
+    manifest_path: Path,
+    candidate_artifact_path: Path,
+    candidate_artifact: dict,
+) -> tuple["pd.Series", dict]:
+    """Score validation rows with the same point-in-time manifest contract as WF."""
+    import numpy as _np  # noqa: PLC0415
+    from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
+    from kernel.walk_forward.loader import WalkForwardModelLoader  # noqa: PLC0415
+
+    recipe_usage = _manifest_recipe_usage(manifest_path, candidate_artifact_path)
+    if not recipe_usage.get("recipe_validated"):
+        raise ValueError(
+            "manifest sanity recipe mismatch: "
+            f"{recipe_usage.get('reason')}"
+        )
+
+    candidate_lookahead = int(candidate_artifact.get("lookahead_days") or 0)
+    loader = WalkForwardModelLoader(manifest_path)
+    if not loader.has_walkforward_model():
+        raise ValueError(f"manifest sanity has no retrain entries: {manifest_path}")
+
+    date_to_artifact: dict[pd.Timestamp, str] = {}
+    safe_dates: list[pd.Timestamp] = []
+    for raw_d in sorted(pd.to_datetime(val["date"].unique())):
+        d = pd.Timestamp(raw_d)
+        entry = loader.entry_as_of(d)
+        if int(entry.lookahead_days) != candidate_lookahead:
+            raise ValueError(
+                "manifest sanity lookahead mismatch: "
+                f"entry cutoff={entry.cutoff_date.date()} "
+                f"lookahead={entry.lookahead_days}, "
+                f"candidate={candidate_lookahead}"
+            )
+        safe_last_label = entry.cutoff_date + pd.offsets.BDay(
+            max(0, int(entry.lookahead_days))
+        )
+        if safe_last_label >= d:
+            raise ValueError(
+                "manifest sanity cutoff + lookahead violates eval date: "
+                f"{entry.cutoff_date.date()} + {entry.lookahead_days}BDay = "
+                f"{safe_last_label.date()} >= {d.date()}"
+            )
+        date_to_artifact[d] = str(_manifest_uri_to_path(manifest_path, entry.artifact_uri))
+        safe_dates.append(d)
+
+    scored = val.copy()
+    scored["__sanity_artifact_uri"] = [
+        date_to_artifact[pd.Timestamp(d)] for d in pd.to_datetime(scored["date"])
+    ]
+    mu = pd.Series(_np.nan, index=scored.index, dtype=float)
+    for uri, sub in scored.groupby("__sanity_artifact_uri", sort=False):
+        scorer = PanelScorer.load(Path(uri))
+        X = sub.reindex(columns=feat_cols, fill_value=0).fillna(0)
+        pred = scorer.score(X)
+        mu.loc[sub.index] = _np.asarray(getattr(pred, "values", pred), dtype=float)
+    if mu.isna().any():
+        raise ValueError(
+            f"manifest sanity produced {int(mu.isna().sum())} missing predictions"
+        )
+    return mu, {
+        "sanity_eval_scope": "walkforward_manifest",
+        "sanity_manifest_path": str(manifest_path),
+        "sanity_eval_start": min(safe_dates).date().isoformat() if safe_dates else None,
+        "sanity_eval_end": max(safe_dates).date().isoformat() if safe_dates else None,
+        "n_oos_dates": int(len(safe_dates)),
+        "n_manifest_artifacts_used": int(scored["__sanity_artifact_uri"].nunique()),
+        "cutoff_contract": "manifest entry cutoff_date + lookahead_days < eval date",
+    }
+
+
+def run_sanity_battery(
+    artifact_path: Path,
+    artifact_usage: dict | None = None,
+) -> dict:
     """§5.2 shuffled-label + time-shift placebo on the artifact's training pipeline.
 
     Current implementation is the lower-cost existing-model diagnostic:
@@ -923,18 +1060,65 @@ def run_sanity_battery(artifact_path: Path) -> dict:
     distinct = sorted(panel.date.unique())
     val_cut = distinct[int(len(distinct) * 0.8)]
     val = panel[panel.date > val_cut].copy()
+    eval_start = pd.Timestamp(val["date"].min()) if not val.empty else None
+    if eval_start is None:
+        return {
+            "passed": False,
+            "reason": "empty validation partition — sanity unavailable",
+            "sanity_method": "existing_model_label_diagnostics",
+        }
 
     # Predict using the artifact's model on val
     # (For panel-LTR XGB rank, recover boosters; for QHead, predict_distribution)
+    sanity_meta: dict = {}
     try:
         import xgboost as xgb  # noqa: PLC0415
-        if artifact.get("kind") == "panel_ltr_xgboost":
+        manifest_scope = (
+            isinstance(artifact_usage, dict)
+            and artifact_usage.get("eval_scope") == "walkforward_manifest"
+        )
+        if manifest_scope:
+            manifest_raw = (artifact_usage or {}).get("manifest_path")
+            if not manifest_raw:
+                return {
+                    "passed": False,
+                    "reason": "manifest sanity missing manifest_path",
+                    "sanity_method": "manifest_point_in_time_label_diagnostics",
+                    "sanity_eval_scope": "walkforward_manifest",
+                }
+            mu_s, sanity_meta = _score_manifest_sanity(
+                val,
+                feat_cols,
+                Path(manifest_raw),
+                artifact_path,
+                artifact,
+            )
+            mu = mu_s.loc[val.index].values
+        elif artifact.get("kind") == "panel_ltr_xgboost":
+            contract = _validate_static_sanity_oos_contract(artifact, eval_start)
+            if not contract.get("passed"):
+                return {
+                    "passed": False,
+                    "reason": contract["reason"],
+                    "sanity_method": "existing_model_label_diagnostics",
+                    "sanity_eval_scope": "static_artifact",
+                    "cutoff_contract": "artifact cutoff + lookahead_days < eval_start",
+                    **contract,
+                }
             # Panel-LTR stores booster in artifact under booster_b64 or similar
             # For sanity we just need PREDICTIONS, so use the saved model
             from kernel.panel_pipeline.panel_scorer import PanelScorer  # noqa: PLC0415
             scorer = PanelScorer.load(artifact_path)
             X = val.reindex(columns=feat_cols, fill_value=0).fillna(0)
             mu = scorer.score(X).values
+            sanity_meta = {
+                "sanity_eval_scope": "static_artifact",
+                "sanity_eval_start": pd.Timestamp(eval_start).date().isoformat(),
+                "sanity_eval_end": pd.Timestamp(val["date"].max()).date().isoformat(),
+                "n_oos_dates": int(val["date"].nunique()),
+                "cutoff_contract": "artifact cutoff + lookahead_days < eval_start",
+                **contract,
+            }
         else:
             log.warning("kind=%s — sanity not implemented for this head type",
                         artifact.get("kind"))
@@ -948,7 +1132,11 @@ def run_sanity_battery(artifact_path: Path) -> dict:
         return {
             "passed": False,
             "reason": f"prediction failed: {exc}",
-            "sanity_method": "existing_model_label_diagnostics",
+            "sanity_method": (
+                "manifest_point_in_time_label_diagnostics"
+                if (artifact_usage or {}).get("eval_scope") == "walkforward_manifest"
+                else "existing_model_label_diagnostics"
+            ),
         }
 
     yva_real = val[LABEL].clip(-0.5, 0.5).values
@@ -1022,26 +1210,38 @@ def run_sanity_battery(artifact_path: Path) -> dict:
             log.info("  placebo_ic = %+.4f (expect < 0.5 × real_ic = %+.4f)",
                      placebo_ic, 0.5 * real_ic)
     if placebo_ic != placebo_ic:
-        log.warning("  placebo skipped — too few aligned val rows")
+        log.warning("  placebo skipped — too few aligned val rows; fail closed")
 
     # Pass criteria
     pass_shuf = abs(shuf_ic) < 0.005
-    pass_placebo = (placebo_ic != placebo_ic) or (
-        abs(placebo_ic) < max(0.005, 0.5 * abs(real_ic)) if real_ic != 0 else True
+    pass_placebo = (
+        (placebo_ic == placebo_ic)
+        and (
+            abs(placebo_ic) < max(0.005, 0.5 * abs(real_ic))
+            if real_ic != 0 else
+            True
+        )
+    )
+    sanity_method = (
+        "manifest_point_in_time_label_diagnostics"
+        if sanity_meta.get("sanity_eval_scope") == "walkforward_manifest"
+        else "existing_model_label_diagnostics"
     )
     return {
         "passed": pass_shuf and pass_placebo,
         "real_ic": real_ic,
         "sanity_shuffled_ic": shuf_ic,
         "sanity_placebo_ic": placebo_ic if placebo_ic == placebo_ic else None,
-        "sanity_method": "existing_model_label_diagnostics",
+        "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "reason": (
             f"PASS: shuf_ic={shuf_ic:+.4f} placebo_ic={placebo_ic:+.4f}"
             if (pass_shuf and pass_placebo) else
             f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
-            f"placebo_ic={placebo_ic:+.4f} (need < 0.5×real_ic)"
+            f"placebo_ic={placebo_ic:+.4f} "
+            f"(must be available and < 0.5×real_ic)"
         ),
+        **sanity_meta,
     }
 
 
@@ -1224,7 +1424,10 @@ def main():
 
     sanity_result = {"passed": True, "reason": "skipped"}
     if not args.skip_sanity:
-        sanity_result = run_sanity_battery(artifact_path)
+        sanity_result = run_sanity_battery(
+            artifact_path,
+            artifact_usage=artifact_usage,
+        )
         log.info("Sanity result: %s", sanity_result["reason"])
 
     validation_scope_ok = bool(artifact_usage.get("candidate_artifact_used")) or bool(
@@ -1290,6 +1493,12 @@ def main():
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),
         "sanity_placebo_ic":   sanity_result.get("sanity_placebo_ic"),
         "sanity_method":       sanity_result.get("sanity_method"),
+        "sanity_eval_scope":   sanity_result.get("sanity_eval_scope"),
+        "sanity_manifest_path": sanity_result.get("sanity_manifest_path"),
+        "sanity_eval_start":   sanity_result.get("sanity_eval_start"),
+        "sanity_eval_end":     sanity_result.get("sanity_eval_end"),
+        "sanity_n_oos_dates":  sanity_result.get("n_oos_dates"),
+        "sanity_cutoff_contract": sanity_result.get("cutoff_contract"),
         "placebo_shift_diagnostics": sanity_result.get("placebo_shift_diagnostics"),
         "wf_reason":           wf_result.get("reason"),
         "sanity_reason":       sanity_result.get("reason"),
