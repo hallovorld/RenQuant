@@ -1305,6 +1305,10 @@ Next implication:
   `data_end=cutoff-label_lookahead`, and writes the standard
   `kernel.walk_forward` manifest. It supports cutoff-level concurrency via
   `--jobs` and refuses partial manifests unless explicitly allowed.
+- SimAdapter now recognizes `.pt` artifacts inside a walk-forward manifest as
+  history-requiring scorers and probes the PatchTST sidecar for `seq_len`.
+  This avoids falling back to per-bar lazy parquet loads and prevents a config
+  default sequence length from undersupplying the active PatchTST fold.
 - Remaining required work: run the driver for acceptance-grade folds and score
   PatchTST through the same decision-tree / benchmark-sleeve / active P&L
   acceptance lenses used for XGB and SPY.

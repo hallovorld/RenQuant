@@ -89,6 +89,28 @@ def _artifact_kind(path: Path) -> str | None:
     return None
 
 
+def _history_seq_len_from_artifact(path: Path) -> int | None:
+    """Best-effort sequence length probe without loading a Torch checkpoint."""
+    candidates = [
+        path.with_name(path.name + ".metadata.json"),
+        path.with_name(path.stem + "_metadata.json"),
+        path.with_name(path.stem + "_summary.json"),
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text())
+        except Exception:
+            continue
+        contract = payload.get("training_contract") or {}
+        hparams = contract.get("hyperparameters") or {}
+        raw = payload.get("seq_len") or hparams.get("seq_len")
+        if raw:
+            return int(raw)
+    return None
+
+
 def _model_type_from_artifact(model: Any) -> str | None:
     """Extract readable model type from dict/object artifacts for audit rows."""
     if model is None:
@@ -811,6 +833,23 @@ class SimAdapter:
                     self._panel_history_seq_len,
                     int(shadow.get("seq_len", self._panel_history_seq_len)),
                 )
+                return True
+        if self._walkforward_loader is not None:
+            required = False
+            for entry in self._walkforward_loader.entries:
+                p = _resolve_manifest_uri(
+                    self._walkforward_loader.manifest_path,
+                    entry.artifact_uri,
+                )
+                kind = (_artifact_kind(p) or "").lower()
+                if kind in _HISTORY_SCORER_KINDS or p.suffix == ".pt":
+                    required = True
+                    seq_len = _history_seq_len_from_artifact(p)
+                    if seq_len:
+                        self._panel_history_seq_len = max(
+                            self._panel_history_seq_len, int(seq_len)
+                        )
+            if required:
                 return True
         return False
 
