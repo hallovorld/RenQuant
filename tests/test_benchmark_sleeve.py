@@ -21,8 +21,12 @@ if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
 from kernel.exits import HoldingState  # noqa: E402
+from kernel.pipeline.context import InferenceContext  # noqa: E402
+from kernel.portfolio_qp.task_joint_qp import JointPortfolioQPTask  # noqa: E402
 from kernel.pipeline.task_benchmark_sleeve import (  # noqa: E402
     BenchmarkSleeveTask,
+    benchmark_sleeve_alpha_funding_capacity,
+    benchmark_sleeve_cash_reserve_credit,
     decision_trace_tickers,
     solve_benchmark_sleeve_target,
 )
@@ -39,7 +43,12 @@ def _holding(shares: float, price: float = 100.0) -> HoldingState:
     )
 
 
-def _cfg(*, enabled: bool = True, target_by_regime: dict | None = None) -> dict:
+def _cfg(
+    *,
+    enabled: bool = True,
+    target_by_regime: dict | None = None,
+    fund_alpha: bool = False,
+) -> dict:
     return {
         "benchmark": "SPY",
         "watchlist": ["AAA", "BBB"],
@@ -59,6 +68,9 @@ def _cfg(*, enabled: bool = True, target_by_regime: dict | None = None) -> dict:
                 "turnover_penalty": 0.001,
                 "respect_buy_gates": True,
                 "exclude_from_alpha_pipeline": True,
+                "fund_alpha_from_sleeve": fund_alpha,
+                "alpha_funding_budget_pct": 0.15,
+                "sleeve_counts_as_cash_reserve": fund_alpha,
             }
         },
     }
@@ -195,3 +207,145 @@ def test_sell_universe_excludes_benchmark_sleeve_from_alpha_sell_chain():
     assert _sell_universe(ctx) == ["AAA"]
     assert ctx._blocked_by_ticker["SPY"] == "benchmark_sleeve_alpha_sell_exempt"
     assert ctx.counters["benchmark_sleeve_alpha_sell_exempt"] == 1
+
+
+def test_alpha_funding_capacity_uses_explicit_sleeve_budget():
+    ctx = _ctx(
+        cfg=_cfg(fund_alpha=True),
+        holdings={"SPY": _holding(100, 500.0)},
+        prices={"SPY": 500.0},
+        portfolio_value=100_000.0,
+        cash=0.0,
+    )
+
+    assert benchmark_sleeve_alpha_funding_capacity(ctx) == pytest.approx(15_000.0)
+    assert benchmark_sleeve_cash_reserve_credit(ctx) == pytest.approx(0.50)
+
+
+def test_qp_alpha_can_displace_benchmark_sleeve_when_enabled():
+    cfg = {
+        **_cfg(fund_alpha=True),
+        "sector_map": {"AAA": "tech"},
+        "max_positions_per_sector": 3,
+        "regime_params": {
+            "BULL_CALM": {
+                "max_position_pct": 0.20,
+                "cash_reserve_pct": 0.10,
+                "max_concurrent_positions": 8,
+            },
+        },
+        "rotation": {
+            "joint_actions": {
+                "enabled": True,
+                "solver": "qp",
+                "qp_risk_aversion": 3.0,
+                "qp_cost_kappa": 0.0001,
+                "qp_dw_max": 0.50,
+                "qp_min_dw_pct": 0.005,
+                "qp_signal_decay": 0.0,
+                "qp_drawdown_limit": 0.20,
+                "default_sigma": 0.05,
+                "qp_sector_cap_enabled": False,
+                "qp_correlation_cap_enabled": False,
+            },
+        },
+    }
+    ctx = InferenceContext(config=cfg, today=dt.date(2026, 5, 22))
+    ctx.regime = "BULL_CALM"
+    ctx.confidence = 1.0
+    ctx.portfolio_value = 100_000.0
+    ctx.cash = 0.0
+    ctx.prices = {"SPY": 500.0, "AAA": 100.0}
+    ctx.holdings = {"SPY": _holding(200, 500.0)}
+    ctx.candidates = [
+        SimpleNamespace(
+            ticker="AAA",
+            mu=0.06,
+            sigma=0.12,
+            panel_score=0.8,
+            rank_score=0.75,
+            rs_score=0.1,
+            kelly_target_pct=0.15,
+        ),
+    ]
+    ctx.corr_matrix = {"AAA": {}}
+
+    JointPortfolioQPTask().run(ctx)
+
+    assert ctx._qp_alpha_funding_cash == pytest.approx(15_000.0)
+    assert ctx._qp_cash_reserve_effective == pytest.approx(0.0)
+    assert ctx.orders, "QP should buy alpha by treating sleeve as funding liquidity"
+    assert ctx.orders[0]["ticker"] == "AAA"
+
+    BenchmarkSleeveTask().run(ctx)
+
+    assert ctx.exits, "Benchmark sleeve should sell SPY to fund the alpha buy"
+    ticker, sig = ctx.exits[0]
+    assert ticker == "SPY"
+    assert sig.exit_type == "benchmark_sleeve_rebalance"
+    assert sig.source_job == "BenchmarkSleeveJob"
+
+
+def test_alpha_funding_sell_bypasses_rebalance_band():
+    cfg = _cfg(fund_alpha=True)
+    cfg["portfolio"]["benchmark_sleeve"]["rebalance_band_pct"] = 0.05
+    cfg["portfolio"]["benchmark_sleeve"]["min_trade_pct"] = 0.01
+    ctx = _ctx(
+        cfg=cfg,
+        holdings={"SPY": _holding(200, 500.0)},
+        orders=[{"ticker": "AAA", "side": "BUY", "invest": 1_500.0}],
+        prices={"SPY": 500.0, "AAA": 100.0},
+        portfolio_value=100_000.0,
+        cash=0.0,
+    )
+
+    BenchmarkSleeveTask().run(ctx)
+
+    assert ctx.exits, "Funding sells must not be suppressed by rebalance bands"
+    ticker, sig = ctx.exits[0]
+    assert ticker == "SPY"
+    assert sig.exit_type == "benchmark_sleeve_rebalance"
+    assert sig.quantity == pytest.approx(3.0)
+    assert ctx._benchmark_sleeve_state["alpha_funding_gap_value"] == pytest.approx(1_500.0)
+
+
+def test_alpha_funding_sell_happens_even_when_optimizer_cash_caps_target():
+    cfg = _cfg(fund_alpha=True)
+    cfg["portfolio"]["benchmark_sleeve"]["rebalance_band_pct"] = 0.0
+    cfg["portfolio"]["benchmark_sleeve"]["min_trade_pct"] = 0.0
+    ctx = _ctx(
+        cfg=cfg,
+        holdings={"SPY": _holding(160, 500.0)},
+        orders=[{"ticker": "AAA", "side": "BUY", "invest": 5_000.0}],
+        prices={"SPY": 500.0, "AAA": 100.0},
+        portfolio_value=100_000.0,
+        cash=0.0,
+    )
+
+    BenchmarkSleeveTask().run(ctx)
+
+    assert ctx.orders == [{"ticker": "AAA", "side": "BUY", "invest": 5_000.0}]
+    assert ctx.exits, "Sleeve funding must be real even when total exposure is below target"
+    ticker, sig = ctx.exits[0]
+    assert ticker == "SPY"
+    assert sig.exit_type == "benchmark_sleeve_rebalance"
+    assert sig.quantity == pytest.approx(10.0)
+    assert ctx._benchmark_sleeve_state["target_sleeve_value"] == pytest.approx(80_000.0)
+    assert ctx._benchmark_sleeve_state["alpha_funding_gap_value"] == pytest.approx(5_000.0)
+
+
+def test_alpha_funding_sell_rounds_up_to_cover_buy_cash():
+    ctx = _ctx(
+        cfg=_cfg(fund_alpha=True),
+        holdings={"SPY": _holding(200, 500.0)},
+        orders=[{"ticker": "AAA", "side": "BUY", "invest": 1_499.0}],
+        prices={"SPY": 500.0, "AAA": 100.0},
+        portfolio_value=100_000.0,
+        cash=0.0,
+    )
+
+    BenchmarkSleeveTask().run(ctx)
+
+    assert ctx.exits
+    _, sig = ctx.exits[0]
+    assert sig.quantity == pytest.approx(3.0)

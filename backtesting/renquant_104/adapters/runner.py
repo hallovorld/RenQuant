@@ -107,6 +107,27 @@ def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | No
     return capped, "cash_budget_resized"
 
 
+def same_bar_sell_credit(ctx: Any) -> float:
+    """Estimated cash made available by broker-confirmed same-bar sells."""
+    import math
+    credit = 0.0
+    for ticker, sig in getattr(ctx, "exits_placed", []) or []:
+        try:
+            shares = float(getattr(sig, "shares_sold", 0.0) or 0.0)
+            price = float(getattr(sig, "sell_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(shares) and math.isfinite(price) and shares > 0 and price > 0:
+            credit += shares * price
+        else:
+            log.warning(
+                "LIVE-SAME-BAR-SELL-CREDIT: skip non-finite sell credit "
+                "%s shares=%s price=%s",
+                ticker, shares, price,
+            )
+    return credit
+
+
 def _preopen_cancel_symbols(strategy_dir: Path, broker_name: str | None, today_str: str) -> set[str]:
     """Symbols whose queued orders were cancelled by the pre-open gate today."""
     if broker_name != "alpaca":
@@ -1296,6 +1317,12 @@ class RunnerAdapter:
                     sig.shares_sold = float(sell_qty)
                 except Exception:
                     pass
+            else:
+                try:
+                    sig.sell_price = float(price)
+                    sig.shares_sold = float(sell_qty)
+                except Exception:
+                    pass
 
             ctx.exits_placed.append((ticker, sig))
 
@@ -1375,6 +1402,14 @@ class RunnerAdapter:
             buy_cash_remaining = 0.0
         if not math.isfinite(buy_cash_remaining):
             buy_cash_remaining = 0.0
+        sell_credit = same_bar_sell_credit(ctx)
+        if sell_credit > 0:
+            buy_cash_remaining += sell_credit
+            log.info(
+                "LIVE-SAME-BAR-SELL-CREDIT: buy budget credited by "
+                "$%.2f from broker-confirmed exits",
+                sell_credit,
+            )
         if not self._sell_only:
             for order_intent in ctx.orders:
                 order, budget_reason = cap_buy_order_to_cash(

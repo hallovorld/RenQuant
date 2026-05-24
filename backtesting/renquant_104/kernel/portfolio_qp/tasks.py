@@ -1791,16 +1791,31 @@ class EmitOrdersFromQPSolutionTask(Task):
         cfg = _qp_cfg(ctx)
         buy_blocked = bool(getattr(ctx, "buy_blocked", False))
         skip_buys = bool(getattr(ctx, "skip_buys", False))
+        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+            benchmark_sleeve_alpha_funding_capacity,
+            benchmark_sleeve_cash_reserve_credit,
+        )
+        cash = float(_get_path(
+            ctx, "cash", _get_path(ctx, "portfolio_value", 0.0),
+        ) or 0.0)
+        alpha_funding_cash = float(benchmark_sleeve_alpha_funding_capacity(ctx))
+        cash_reserve = float(_get_path(ctx, "_qp_cash_reserve", 0.0) or 0.0)
+        reserve_credit = float(benchmark_sleeve_cash_reserve_credit(ctx))
+        effective_cash_reserve = max(0.0, cash_reserve - reserve_credit)
+        ctx._qp_alpha_funding_cash = alpha_funding_cash  # noqa: SLF001
+        ctx._qp_cash_reserve_effective = effective_cash_reserve  # noqa: SLF001
         return dict(
             cfg=cfg,
             sol=sol,
             tickers=_get_path(ctx, "_qp_tickers") or [],
             prices=_get_path(ctx, "prices") or {},
             nav=float(_get_path(ctx, "portfolio_value", 0.0) or 0.0),
-            cash=float(_get_path(
-                ctx, "cash", _get_path(ctx, "portfolio_value", 0.0),
-            ) or 0.0),
-            cash_reserve=float(_get_path(ctx, "_qp_cash_reserve", 0.0) or 0.0),
+            cash=cash + alpha_funding_cash,
+            cash_actual=cash,
+            alpha_funding_cash=alpha_funding_cash,
+            cash_reserve=effective_cash_reserve,
+            cash_reserve_configured=cash_reserve,
+            cash_reserve_credit=reserve_credit,
             buy_cost_multiplier=_buy_cost_multiplier(ctx.config or {}),
             min_dw=float(cfg.get("qp_min_dw_pct", 0.005)),
             no_trade_factor=float(cfg.get("qp_no_trade_band_factor", 0.0)),

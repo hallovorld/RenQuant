@@ -950,6 +950,107 @@ Pending design work:
    APY/Sharpe gates or the acceptance policy explicitly changes to
    benchmark-relative Sharpe with documented APY trade-off.
 
+## 2026-05-24 Follow-Up: Sleeve Funding Bug Fixed, Alpha Still Small
+
+After the first benchmark-sleeve A/B, a structural funding bug was found in the
+core-satellite implementation:
+
+- `core85` nominally reserved 15% NAV for alpha, but QP still saw only actual
+  cash after the benchmark sleeve was filled.
+- Existing QP `cash_reserve_pct` could also double-count reserve against the
+  SPY sleeve, so nominal alpha budget translated into only ~4-5% realized
+  alpha exposure in earlier traces.
+- Live runner had a separate parity bug: even when a sell was submitted before
+  buys, its local buy-cash ledger used stale `ctx.cash`, so same-bar rotation
+  or benchmark-sleeve funding could be locally rejected in live while sim
+  accepted it.
+
+Code fixes now in the working tree:
+
+- `BenchmarkSleeveTask` exposes explicit alpha-funding capacity through
+  `fund_alpha_from_sleeve` + `alpha_funding_budget_pct`.
+- QP can treat that sleeve capacity as liquidity only when explicitly
+  configured, and can offset configured cash reserve via
+  `sleeve_counts_as_cash_reserve`.
+- `BenchmarkSleeveTask` emits a real SPY sell whenever pending alpha buys need
+  sleeve funding, even if the normal rebalance band or LP cash cap would
+  otherwise no-op.
+- Funding sells round share count up so buy cash is actually covered.
+- Live runner credits broker-confirmed same-bar sell proceeds into its local
+  buy budget (`LIVE-SAME-BAR-SELL-CREDIT`) so live/sim do not diverge.
+
+TDD:
+
+- `tests/test_benchmark_sleeve.py`: 14 benchmark-sleeve/funding tests.
+- `tests/test_runner_state_fixes.py::TestRunnerCashBudgetGuard`: same-bar
+  sell-credit contract.
+- Targeted suite: 118 passed
+  (benchmark sleeve + runner cash guard + QP/contract/panel-exit suites).
+
+WF A/B with explicit `core100_fund15` diagnostic config:
+
+| Cut | Annual-net APY | Annual-net Sharpe | Avg SPY exposure | Avg alpha exposure | Avg gross exposure |
+|---|---:|---:|---:|---:|---:|
+| 2024-01-02 to 2024-12-31 | +22.03% | +1.571 | 94.1% | 3.3% | 97.3% |
+| 2024-07-01 to 2025-06-30 | +14.70% | +0.843 | 92.1% | 2.1% | 94.1% |
+| 2025-04-01 to 2026-03-28 | +10.30% | +0.896 | 86.7% | 1.2% | 87.9% |
+
+WF gate result:
+
+- Absolute gate: pass (`3/3` cuts positive).
+- Benchmark gate: fail.
+- Mean annual-net Sharpe: `+1.103` versus SPY `+1.081`, delta `+0.023`.
+- Beat SPY Sharpe: `2/3`; beat SPY APY: `1/3`.
+- Remaining benchmark-lag regime: `HIGH_CALM`.
+
+Alpha trade read:
+
+- 16 closed alpha trades across the three cuts.
+- Gross P/L `+$6.93k`; after-tax net `+$2.12k`.
+- Same-capital same-period SPY P/L `+$1.55k`.
+- Active after-tax net versus SPY `+$0.57k`.
+- Gross win rate `68.8%`; active win rate `37.5%`; median hold `24.5d`.
+- Good bucket: `qp_close` active net `+$2.68k`.
+- Bad buckets: `stop_loss` active net `-$1.42k`,
+  `single_day_loss` active net `-$1.06k`.
+
+Interpretation:
+
+- The funding bug was real and is fixed under default-off flags.
+- The fix improves active contribution from negative to slightly positive, but
+  it does not make the strategy promotable.
+- The alpha sleeve is still too small to materially improve APY/Sharpe; the
+  next bottleneck is not just cash starvation. QP/admission emits very little
+  active risk, and hard loss exits still dominate the active drag.
+- Do not enable `fund_alpha_from_sleeve` in production until a stricter
+  marginal-alpha gate shows the alpha sleeve can beat displaced SPY after tax,
+  turnover, and stop-loss drag.
+
+## 2026-05-24 PatchTST/PatchTXT Status Rechecked
+
+PatchTST is runnable and scientifically interesting, but it remains shadow
+only:
+
+- 5-cut x 5-seed HF PatchTST families completed with positive pooled IC
+  (`+0.0467` to `+0.0507`), but `cut2_fed` and `cut5_unwind` are negative
+  across all checked families.
+- Current shadow artifact is the stricter
+  `pt07_strict_trainfit_embargo60_20260522/seed_44` model, not the older
+  higher-IC canonical seed. Its validation evidence is
+  `best_val_ic=+0.030657`, with positive BULL_VOLATILE/BEAR/CHOPPY IC.
+- DOE best point has bull IC `+0.0580` and PBO `0.33`, but DSR is `-0.702`;
+  not promotion-grade after multiple-testing correction.
+- Static PatchTST long-window sim (`2024-07-02` to `2026-02-10`) reports APY
+  `+1.49%` and Sharpe `+0.23`; it is not true OOS because the artifact was
+  selected with validation labels reaching into the later period.
+- Raw signal control is weak: the 5-date diagnostic has pooled IC `-0.016`,
+  after-tax Sharpe `+0.08`, and shuffle control Sharpe `+1.17`.
+
+Conclusion: keep PatchTST as shadow/router research. Do not promote until a
+PatchTST-specific walk-forward manifest exists with causal per-cut artifacts,
+calibrators, per-regime IC, PBO/DSR, shuffle/time-shift controls, and full
+portfolio WF against XGB and SPY.
+
 ## Mainline Queue
 
 1. Diagnose the manifest-OOS sanity failure: real IC is weak and the

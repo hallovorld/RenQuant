@@ -36,7 +36,7 @@ SIM_ADAPTER_SOURCE = SIM_ADAPTER_PATH.read_text()
 LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
 
-from adapters.runner import cap_buy_order_to_cash  # noqa: E402
+from adapters.runner import cap_buy_order_to_cash, same_bar_sell_credit  # noqa: E402
 from adapters.sim import _model_type_from_artifact as sim_model_type_from_artifact  # noqa: E402
 
 
@@ -243,6 +243,21 @@ class TestRunnerCashBudgetGuard:
         assert "buy_cash_remaining" in RUNNER_SOURCE
         assert "cash_budget_exhausted" in RUNNER_SOURCE
         assert "cash_budget_resized" in RUNNER_SOURCE
+
+    def test_same_bar_sell_credit_sums_confirmed_exit_proceeds(self):
+        class Sig:
+            shares_sold = 3
+            sell_price = 101.25
+
+        class Ctx:
+            exits_placed = [("SPY", Sig())]
+
+        assert same_bar_sell_credit(Ctx()) == 303.75
+
+    def test_runner_buy_budget_credits_confirmed_sells(self):
+        assert "LIVE-SAME-BAR-SELL-CREDIT" in RUNNER_SOURCE
+        assert "buy_cash_remaining += sell_credit" in RUNNER_SOURCE
+        assert "same_bar_sell_credit(ctx)" in RUNNER_SOURCE
 
 
 # ── ticker_daily_state writer (round-5) ───────────────────────────────────────

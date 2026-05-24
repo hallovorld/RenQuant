@@ -78,6 +78,46 @@ def decision_trace_tickers(config: dict) -> list[str]:
     return out
 
 
+def benchmark_sleeve_alpha_funding_capacity(ctx: InferenceContext) -> float:
+    """Return sleeve dollars QP may treat as alpha-funding liquidity.
+
+    Core-satellite construction should let sufficiently qualified alpha
+    satellite trades displace the passive benchmark core. Without this, a
+    fully invested core sleeve starves the QP of cash and converts the active
+    model into a no-op after day one. Disabled unless explicitly configured.
+    """
+    sleeve = benchmark_sleeve_config(ctx)
+    if not (sleeve.get("enabled", False) and sleeve.get("fund_alpha_from_sleeve", False)):
+        return 0.0
+    ticker = benchmark_sleeve_ticker(ctx)
+    if not ticker:
+        return 0.0
+    nav = _finite_float(getattr(ctx, "portfolio_value", 0.0), 0.0)
+    if nav <= 0:
+        return 0.0
+    budget = _finite_float(
+        sleeve.get("alpha_funding_budget_pct", sleeve.get("alpha_budget_pct")),
+        0.0,
+    )
+    if budget <= 0:
+        return 0.0
+    return min(_position_value(ctx, ticker), nav * min(max(budget, 0.0), 1.0))
+
+
+def benchmark_sleeve_cash_reserve_credit(ctx: InferenceContext) -> float:
+    """Return NAV fraction of cash reserve satisfied by the liquid sleeve."""
+    sleeve = benchmark_sleeve_config(ctx)
+    if not (sleeve.get("enabled", False) and sleeve.get("sleeve_counts_as_cash_reserve", False)):
+        return 0.0
+    ticker = benchmark_sleeve_ticker(ctx)
+    if not ticker:
+        return 0.0
+    nav = _finite_float(getattr(ctx, "portfolio_value", 0.0), 0.0)
+    if nav <= 0:
+        return 0.0
+    return min(max(_position_value(ctx, ticker) / nav, 0.0), 1.0)
+
+
 def _finite_float(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -294,6 +334,9 @@ class BenchmarkSleeveTask(Task):
             max(_finite_float(sleeve.get("max_sleeve_pct"), 1.0), 0.0), 1.0,
         )
         pending = _pending_buy_invest(ctx, exclude_ticker=ticker)
+        alpha_funding_gap = 0.0
+        if bool(sleeve.get("fund_alpha_from_sleeve", False)):
+            alpha_funding_gap = max(pending - cash, 0.0)
         available_cash = max(cash - pending, 0.0)
         solve = solve_benchmark_sleeve_target(
             current_sleeve_weight=current_value / nav,
@@ -323,11 +366,15 @@ class BenchmarkSleeveTask(Task):
             "cash": cash,
             "price": price,
             "threshold_value": threshold,
+            "alpha_funding_gap_value": alpha_funding_gap,
             "optimizer": solve,
         }
         ctx._benchmark_sleeve_state = state  # noqa: SLF001
 
         delta = target_value - current_value
+        if alpha_funding_gap > 0.0:
+            reduction = max(alpha_funding_gap, -delta if delta < 0 else 0.0)
+            return self._emit_sell(ctx, ticker, price, reduction, nav, current_value, state)
         if abs(delta) <= threshold:
             ctx.counters["benchmark_sleeve_noop"] = (
                 ctx.counters.get("benchmark_sleeve_noop", 0) + 1
@@ -426,7 +473,10 @@ class BenchmarkSleeveTask(Task):
         current_shares = _finite_float(getattr(hs, "shares", 0.0), 0.0) if hs else 0.0
         if current_shares <= 0:
             return None
-        shares = min(int(desired_reduction // price), int(current_shares))
+        if _finite_float(state.get("alpha_funding_gap_value"), 0.0) > 0.0:
+            shares = min(int(math.ceil(desired_reduction / price)), int(current_shares))
+        else:
+            shares = min(int(desired_reduction // price), int(current_shares))
         if shares < 1:
             return None
         from kernel.exits import ExitSignal  # noqa: PLC0415
