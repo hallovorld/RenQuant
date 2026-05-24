@@ -98,22 +98,29 @@ class TestSourceContracts:
         assert "from kernel.walk_forward_splits import" in src
         assert "build_default_cuts" in src
 
+    def test_supports_point_in_time_wf_window_args(self):
+        src = SCRIPT.read_text()
+        assert "--train-cutoff" in src
+        assert "--data-end" in src
+        assert "data_window_end_exclusive" in src
+        assert "model_path.name + \".metadata.json\"" in src
+
     def test_dumps_val_preds_for_regime_eval(self):
         src = SCRIPT.read_text()
         assert "val_preds.parquet" in src
 
     def test_loc_budget(self):
-        """HF Trainer wrapper + dual head + FiLM + artifact contract: 720 LOC.
+        """HF Trainer wrapper + dual head + FiLM + artifact contract: 780 LOC.
 
         Trajectory: 350 (pre-refactor) → 450 (HF Trainer + dual head + per-
         regime callback) → 550 (+ FiLM Pillar B) → 720 (train-fit
-        preprocessing + config/model contract stamps). All additions are config
-        flags / canonical-lib glue / audit metadata, not custom training
-        infrastructure."""
+        preprocessing + config/model contract stamps) → 780 (point-in-time WF
+        window + sidecar artifact identity). All additions are config flags /
+        canonical-lib glue / audit metadata, not custom training infrastructure."""
         src = SCRIPT.read_text()
         loc = sum(1 for line in src.splitlines()
                   if line.strip() and not line.strip().startswith("#"))
-        assert loc <= 720, f"wrapper grew to {loc} LOC — too thick"
+        assert loc <= 780, f"wrapper grew to {loc} LOC — too thick"
 
     def test_film_layer_class_exported(self):
         """FiLM (Perez 2017) regime conditioning module — Pillar B foundation."""
@@ -319,6 +326,32 @@ class TestPreprocessing:
         val = panel[panel["split_label"] == "val"]["fwd_60d_excess"]
         assert np.isclose(val.max(), meta["upper"])
 
+    def test_train_cutoff_infers_data_end_from_label_lookahead(self, tmp_path):
+        import pandas as pd
+        mod = _load_mod()
+
+        dates = pd.bdate_range("2024-01-01", periods=20)
+        rows = []
+        for d_i, d in enumerate(dates):
+            for t_i, ticker in enumerate(list("ABCDE")):
+                rows.append({
+                    "date": d,
+                    "ticker": ticker,
+                    "f1": float(d_i + t_i),
+                    "fwd_5d_excess": float(d_i - t_i),
+                })
+        path = tmp_path / "panel.parquet"
+        pd.DataFrame(rows).to_parquet(path, index=False)
+
+        panel, _ = mod.load_panel_with_split(
+            path, "all", "fwd_5d_excess", preprocess=False,
+            val_tail_pct=0.2, embargo_days=1,
+            train_cutoff="2024-01-22")
+
+        assert panel.attrs["train_cutoff_date"] == "2024-01-22"
+        assert panel.attrs["data_window_end_exclusive"] == "2024-01-15"
+        assert panel["date"].max() < pd.Timestamp("2024-01-15")
+
     def test_training_contract_stamps_hyperparameters(self):
         import argparse
         import pandas as pd
@@ -354,6 +387,40 @@ class TestPreprocessing:
         assert contract["hyperparameters"]["weight_decay"] == 0.3
         assert contract["preprocessing"]["label_winsor"]["fit_split"] == "train"
         assert contract["selection"]["metric_for_best_model"] == "eval_min_regime_ic"
+
+    def test_training_contract_effective_cutoff_includes_validation_labels(self):
+        import argparse
+        import pandas as pd
+        mod = _load_mod()
+        args = argparse.Namespace(
+            dataset="data/example.parquet", cut="all", label="fwd_60d_excess",
+            seed=44, seq_len=24, patch_length=4, d_model=64, n_heads=4,
+            n_layers=2, epochs=8, lr=1e-4, weight_decay=0.3,
+            lr_scheduler="cosine", warmup_ratio=0.1,
+            early_stopping_patience=2, nll_loss_weight=0.5,
+            ranking_margin=0.1, distributional_head=True,
+            film_regime_cond=False, cross_stock_attn=False, device="cpu",
+            embargo_days=60, train_cutoff="2024-04-01",
+            data_end="2024-01-10",
+        )
+        panel = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=10),
+            "split_label": [
+                "train", "train", "train", "train", "embargo",
+                "val", "val", "val", "test", "test",
+            ],
+        })
+
+        contract = mod.build_training_contract(
+            args, ["f1"], panel, n_params=1, total_steps=1, warmup_steps=0,
+            metric_for_best="eval_min_regime_ic",
+            final_metrics={"eval_min_regime_ic": 0.1},
+        )
+
+        assert contract["effective_train_cutoff_date"] == "2024-01-08"
+        assert contract["selection_fit_splits"] == ["train", "val"]
+        assert contract["train_cutoff_date"] == "2024-04-01"
+        assert contract["data_window_end_exclusive"] == "2024-01-10"
 
     def test_config_contract_stamps_fingerprint_and_watchlist(self, tmp_path):
         import argparse
@@ -693,11 +760,16 @@ class TestSmokeEndToEnd:
         assert result.returncode == 0, (
             f"rc={result.returncode}\nstderr_tail: {result.stderr[-1500:]}"
         )
-        import glob
+        import glob, json
         preds = glob.glob(str(out_dir / "*val_preds.parquet"))
         models = glob.glob(str(out_dir / "*_model.pt"))
+        sidecars = glob.glob(str(out_dir / "*_model.pt.metadata.json"))
         assert len(preds) == 1, f"expected 1 val_preds, found {preds}"
         assert len(models) == 1, f"expected 1 model.pt, found {models}"
+        assert len(sidecars) == 1, f"expected 1 model metadata sidecar, found {sidecars}"
+        meta = json.loads(Path(sidecars[0]).read_text())
+        assert meta["artifact_fingerprint"].startswith("sha256:")
+        assert meta["artifact_sha256"] == meta["artifact_fingerprint"]
         # Per-regime callback ran
         assert "per-regime IC" in combined or "PerRegimeICCallback wired" in combined
 

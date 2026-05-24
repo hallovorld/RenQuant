@@ -35,6 +35,7 @@ Usage::
 from __future__ import annotations
 import argparse
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -285,7 +286,9 @@ def winsorize_label(panel: pd.DataFrame, label_col: str,
 def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
                           preprocess: bool = True,
                           val_tail_pct: float = 0.0,
-                          embargo_days: int = 60) -> tuple[pd.DataFrame, list[str]]:
+                          embargo_days: int = 60,
+                          train_cutoff: str | None = None,
+                          data_end: str | None = None) -> tuple[pd.DataFrame, list[str]]:
     """Load panel + assign train/val/test split.
 
     cut_name = "all": full-data PROD training; last val_tail_pct dates → val.
@@ -296,6 +299,21 @@ def load_panel_with_split(dataset_path: Path, cut_name: str, label_col: str,
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
     panel = panel.dropna(subset=[label_col])
+    cutoff_ts = pd.Timestamp(train_cutoff) if train_cutoff else None
+    end_ts = pd.Timestamp(data_end) if data_end else None
+    if cutoff_ts is not None and end_ts is None:
+        m = re.search(r"fwd_(\d+)d", label_col)
+        end_ts = cutoff_ts - pd.offsets.BDay(int(m.group(1)) if m else 60)
+    if end_ts is not None:
+        panel = panel[panel["date"] < end_ts].copy()
+        if panel.empty:
+            raise ValueError(
+                f"no rows with date < {end_ts.date()} "
+                f"(train_cutoff={train_cutoff}, data_end={data_end})"
+            )
+        panel.attrs["data_window_end_exclusive"] = str(end_ts.date())
+    if cutoff_ts is not None:
+        panel.attrs["train_cutoff_date"] = str(cutoff_ts.date())
     if cut_name == "all":
         dates_sorted = sorted(panel["date"].unique())
         if val_tail_pct > 0:
@@ -386,12 +404,22 @@ def build_training_contract(args: argparse.Namespace, feat_cols: list[str],
         }
     lookahead_match = re.search(r"fwd_(\d+)d", args.label)
     lookahead_days = int(lookahead_match.group(1)) if lookahead_match else None
+    fit_mask = panel["split_label"].isin(["train", "val"])
+    fit_dates = pd.to_datetime(panel.loc[fit_mask, "date"])
+    fit_splits = ["train"]
+    if panel["split_label"].eq("val").any():
+        fit_splits.append("val")
     return {
         "contract_version": 1,
         "trained_date": str(dt.date.today()),
         "git_head": git_head(),
         "dataset": str(args.dataset),
         "cut": args.cut,
+        "train_cutoff_date": getattr(args, "train_cutoff", None),
+        "data_window_end_exclusive": (
+            panel.attrs.get("data_window_end_exclusive")
+            or getattr(args, "data_end", None)
+        ),
         "label_col": args.label,
         "lookahead_days": lookahead_days,
         "seed": args.seed,
@@ -401,8 +429,9 @@ def build_training_contract(args: argparse.Namespace, feat_cols: list[str],
         "split_days": {k: int(v) for k, v in split_days.items()},
         "split_date_ranges": split_ranges,
         "effective_train_cutoff_date": (
-            split_ranges.get("train", {}).get("end")
+            str(fit_dates.max().date()) if not fit_dates.empty else None
         ),
+        "selection_fit_splits": fit_splits,
         "preprocessing": {
             "csrank_norm_per_day": True,
             "label_winsor": panel.attrs.get("label_winsor", {}),
@@ -590,7 +619,9 @@ def train_one(args: argparse.Namespace) -> dict:
     panel, feat_cols = load_panel_with_split(
         Path(args.dataset), args.cut, args.label,
         val_tail_pct=getattr(args, "val_tail_pct", 0.10),
-        embargo_days=getattr(args, "embargo_days", 60))
+        embargo_days=getattr(args, "embargo_days", 60),
+        train_cutoff=getattr(args, "train_cutoff", None),
+        data_end=getattr(args, "data_end", None))
 
     # Compute HMM regime labels once — reused for FiLM dataset injection
     # AND for per-regime IC callback selection metric.
@@ -768,6 +799,15 @@ def train_one(args: argparse.Namespace) -> dict:
             "training_contract": training_contract,
             "per_regime_ic": summary["per_regime_ic"],
         }, model_path)
+        model_fp = "sha256:" + hashlib.sha256(model_path.read_bytes()).hexdigest()
+        sidecar = dict(summary)
+        sidecar.update({
+            "artifact_path": str(model_path),
+            "artifact_sha256": model_fp,
+            "artifact_fingerprint": model_fp,
+        })
+        (model_path.with_name(model_path.name + ".metadata.json")).write_text(
+            json.dumps(sidecar, indent=2, default=str))
         log.info("model saved: %s", model_path)
     return summary
 
@@ -782,6 +822,12 @@ def main():
     p.add_argument("--embargo-days", type=int, default=60,
                    help="Business-day embargo before validation when --cut all "
                         "uses a tail validation split.")
+    p.add_argument("--train-cutoff", default=None,
+                   help="Selection cutoff for a point-in-time WF fold. When "
+                        "--data-end is omitted, data_end is inferred as "
+                        "train_cutoff - label lookahead business days.")
+    p.add_argument("--data-end", default=None,
+                   help="Exclusive max feature/label row date for WF training.")
     p.add_argument("--label", default="fwd_60d_excess")
     p.add_argument("--seq-len", type=int, default=32)
     p.add_argument("--patch-length", type=int, default=4)

@@ -84,6 +84,22 @@ class TestSourceContracts:
         assert mod._infer_raw_er_label("fwd_60d_excess") == "fwd_60d_excess_raw"
         assert mod._infer_raw_er_label("fwd_60d_excess_raw") == "fwd_60d_excess_raw"
 
+    def test_calibrator_fingerprint_ignores_config_fingerprint(self, tmp_path):
+        """Calibrator must bind to scorer bytes, not shared strategy config."""
+        import hashlib
+        script = REPO / "scripts" / "fit_hf_patchtst_calibrator.py"
+        spec = importlib.util.spec_from_file_location("fit_hf_patchtst_calibrator", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        scorer_path = tmp_path / "hf_patchtst_model.pt"
+        scorer_path.write_bytes(b"scorer checkpoint")
+        expected = "sha256:" + hashlib.sha256(scorer_path.read_bytes()).hexdigest()
+
+        assert mod._artifact_fingerprint(
+            scorer_path,
+            {"config_fingerprint": "sha256:shared-config"},
+        ) == expected
+
     def test_training_checkpoint_stamps_provenance_for_leakage_guard(self):
         src = (REPO / "scripts" / "patchtst_hf.py").read_text()
         for required in (

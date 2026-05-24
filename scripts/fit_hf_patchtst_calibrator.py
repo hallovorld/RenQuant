@@ -37,8 +37,9 @@ def _artifact_fingerprint(path: Path, metadata: dict | None = None) -> str:
     meta = metadata or {}
     return (
         meta.get("artifact_fingerprint")
-        or meta.get("config_fingerprint")
         or meta.get("artifact_sha256")
+        or meta.get("model_fingerprint")
+        or meta.get("fingerprint")
         or "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     )
 

@@ -1289,11 +1289,19 @@ Verification:
 
 Next implication:
 
-- PatchTST is still not production-ready. This only makes the strict WF
-  contract capable of covering `.pt` scorer artifacts. Remaining required work:
-  sidecar metadata, rolling `patchtst_hf.py --train-cutoff/--data-end`, HF
-  PatchTST WF manifest driver, causal per-fold calibrators, and the same
-  decision-tree / benchmark-sleeve / active P&L acceptance lenses used for XGB.
+- PatchTST is still not production-ready. This makes the strict WF contract
+  capable of covering `.pt` scorer artifacts. The training script now also
+  supports point-in-time `--train-cutoff` / `--data-end` windows and emits a
+  `*.pt.metadata.json` sidecar with the file-byte artifact fingerprint.
+- One leakage fix was important: because HF Trainer selects the best checkpoint
+  using validation labels, the artifact's `effective_train_cutoff_date` now
+  covers train + validation labels, not only the raw train split.
+- The HF calibrator now refuses to treat `config_fingerprint` as scorer
+  identity. It binds to artifact/file identity, matching the WF loader
+  contract.
+- Remaining required work: HF PatchTST WF manifest driver, causal per-fold
+  calibrator orchestration, and the same decision-tree / benchmark-sleeve /
+  active P&L acceptance lenses used for XGB and SPY.
 
 ## Mainline Queue
 
@@ -1318,11 +1326,12 @@ Next implication:
    hard stop.
 5. Fold PatchTST into the same mainline acceptance path before quoting
    PatchTST portfolio APY/Sharpe as OOS. Static PatchTST full-window sims are
-   style diagnostics only. Required infrastructure: `.pt` scorer fingerprint
-   support, sidecar WF metadata instead of writing into the checkpoint, rolling
-   `patchtst_hf.py --train-cutoff/--data-end`, an HF PatchTST WF manifest
-   driver, causal per-fold calibrators, and the same decision-tree / benchmark
-   sleeve / active P&L lens used for XGB and SPY.
+   style diagnostics only. Completed infrastructure: `.pt` scorer fingerprint
+   support, sidecar metadata instead of checkpoint mutation, rolling
+   `patchtst_hf.py --train-cutoff/--data-end`, and file-identity HF calibrator
+   fingerprinting. Remaining: HF PatchTST WF manifest driver, causal per-fold
+   calibrators, and the same decision-tree / benchmark sleeve / active P&L lens
+   used for XGB and SPY.
 6. Continue after-tax/no-trade-region and stop-loss research per regime, using
    literature-backed hypotheses and paired A/B sims.
 7. Fix remaining audit findings before promotion: run an actual LEAN trace
