@@ -44,6 +44,7 @@ Config (in side config, OFF by default):
 from __future__ import annotations
 
 import logging
+import math
 
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Task
@@ -83,6 +84,86 @@ def _load_borrow_status(path: str = "data/alpaca_borrow_status.json") -> dict:
         return _json.loads(p.read_text()).get("results", {})
     except Exception:
         return {}
+
+
+def _short_calibrator(ctx: InferenceContext):
+    regime_map = getattr(ctx, "_regime_calibrators", None) or {}
+    return regime_map.get(getattr(ctx, "regime", None)) or getattr(
+        ctx, "_global_calibrator", None
+    )
+
+
+def _stamp_short_block(ctx: InferenceContext, ticker: str, reason: str) -> None:
+    blocked = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked is None:
+        blocked = {}
+        ctx._blocked_by_ticker = blocked  # noqa: SLF001
+    blocked.setdefault(ticker, f"short_candidate:{reason}")
+
+
+def _maybe_fill_short_sigma(
+    ctx: InferenceContext,
+    cand,
+    *,
+    ticker: str,
+) -> str | None:
+    sigma = getattr(cand, "sigma", None)
+    if sigma is not None and math.isfinite(float(sigma)) and float(sigma) > 0:
+        return None
+    kelly_cfg = (ctx.config.get("ranking", {}) or {}).get("kelly_sizing", {}) or {}
+    if not bool(kelly_cfg.get("use_realized_vol_fallback", False)):
+        return "sigma_missing"
+    from kernel.panel_pipeline.job_panel_scoring import (  # noqa: PLC0415
+        _realized_vol_annualized,
+    )
+    window = int(kelly_cfg.get("realized_vol_window_days", 60))
+    floor = float(kelly_cfg.get("realized_vol_floor", 0.05))
+    ceiling = float(kelly_cfg.get("realized_vol_ceiling", 1.50))
+    sig = _realized_vol_annualized((getattr(ctx, "ohlcv", {}) or {}).get(ticker), window)
+    if sig is None or not math.isfinite(float(sig)) or float(sig) <= 0:
+        return "sigma_missing"
+    cand.sigma = float(max(floor, min(ceiling, float(sig))))
+    return None
+
+
+def _enrich_short_candidate(
+    ctx: InferenceContext,
+    cand,
+    *,
+    raw_panel_score: float,
+) -> str | None:
+    cal = _short_calibrator(ctx)
+    if cal is None:
+        return "calibrator_missing"
+    from kernel.panel_pipeline.job_panel_scoring import (  # noqa: PLC0415
+        _calibrator_expected_return_at_horizon,
+        _calibrator_native_horizon_days,
+        _qp_mu_horizon_days,
+        _rotation_er_horizon_days,
+    )
+    native_horizon = _calibrator_native_horizon_days(cal, ctx)
+    er_horizon = _rotation_er_horizon_days(ctx, cal)
+    mu_horizon = _qp_mu_horizon_days(ctx, cal)
+    try:
+        prob = float(cal.calibrate_probability(raw_panel_score))
+        er = float(_calibrator_expected_return_at_horizon(
+            cal, raw_panel_score, er_horizon, native_horizon,
+        ))
+        mu = float(_calibrator_expected_return_at_horizon(
+            cal, raw_panel_score, mu_horizon, native_horizon,
+        ))
+    except Exception as exc:
+        return f"calibration_failed:{type(exc).__name__}"
+    if not math.isfinite(er) or er >= 0.0:
+        return "expected_return_nonnegative"
+    if not math.isfinite(mu) or mu >= 0.0:
+        return "mu_nonnegative"
+    cand.rank_score = prob
+    cand.expected_return = er
+    cand.expected_return_horizon_days = er_horizon
+    cand.mu = mu
+    cand.mu_horizon_days = mu_horizon
+    return _maybe_fill_short_sigma(ctx, cand, ticker=cand.ticker)
 
 
 class ShortCandidateSelectionTask(Task):
@@ -168,28 +249,30 @@ class ShortCandidateSelectionTask(Task):
         n_picked = min(n_bottom, max_shorts)
         picks = eligible.head(n_picked)
 
-        # Wrap in CandidateResult objects.
-        # 2026-05-14 fix: NEGATE panel_score so the QP sees a negative μ
-        # for short candidates → optimal w is negative → actual short
-        # allocation. Pre-fix the bottom-decile panel_score was passed
-        # raw, but XGBoost rank:pairwise outputs are typically positive
-        # for the whole universe; "bottom decile" = small positive, not
-        # negative. With μ > 0 the QP optimum is w > 0 (long). The
-        # absolute value preserves magnitude for risk weighting; sign
-        # flip is the directional signal.
+        # Wrap in CandidateResult objects and fail closed unless the same
+        # calibrated alpha contract used by longs says the bottom-score name
+        # has negative edge. QP optimizes μ/Σ; raw rank scores are not μ.
         from kernel.selection import CandidateResult  # noqa: PLC0415
         ctx.short_candidates = []
         for t, v in picks.items():
-            score_sign_flipped = -abs(float(v))   # always non-positive
-            ctx.short_candidates.append(CandidateResult(
+            raw_score = float(v)
+            cand = CandidateResult(
                 ticker=t,
-                raw_score=float(v),                # preserve raw for telemetry
-                rank_score=float(v),
+                raw_score=raw_score,
+                rank_score=float("nan"),
                 rs_score=0.0,
-                detail=f"short_candidate raw_panel_score={v:.4f} → mu={score_sign_flipped:.4f}",
-                expected_return=score_sign_flipped,  # negative
-                panel_score=score_sign_flipped,      # negative — drives QP shorting
-            ))
+                detail=f"short_candidate raw_panel_score={raw_score:.4f}",
+                panel_score=raw_score,
+            )
+            block = _enrich_short_candidate(
+                ctx,
+                cand,
+                raw_panel_score=raw_score,
+            )
+            if block:
+                _stamp_short_block(ctx, t, block)
+                continue
+            ctx.short_candidates.append(cand)
         log.info(
             "ShortCandidateSelectionTask: %d short candidates picked "
             "(bottom %.0f%%, max_shorts=%d) — tickers=%s",

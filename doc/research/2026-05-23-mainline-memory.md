@@ -3082,6 +3082,11 @@ decision-path bugs:
   and slippage wiring fails loudly instead of swallowing configuration errors.
 - Live and LEAN persistence now write pipeline-run cash/PV from a post-
   execution account snapshot, not the pre-trade decision context.
+- Long-short short candidates now fail closed unless the same calibrated
+  alpha contract used by long candidates gives them negative expected return
+  and negative QP μ at the configured horizon, plus finite σ from NGBoost or
+  realized-vol fallback. Raw bottom-decile panel scores no longer enter QP
+  as a hand-flipped proxy for μ.
 
 Validation:
 
@@ -3097,6 +3102,8 @@ Validation:
   tickets not mutating state.
 - `39 passed`: runner sell attribution + LEAN trace/context + LEAN execution
   model + slippage neighborhoods after execution-parity hardening.
+- `21 passed`: short-candidate and long-short QP neighborhoods after
+  calibrated short-admission hardening.
 
 ## Stop Conditions
 
