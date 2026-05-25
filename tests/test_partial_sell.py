@@ -254,6 +254,66 @@ class TestSimAdapterPartialSell:
             f"Bug 6 reopened: cash={adp._cash}, expected $875"
         )
 
+    def test_hifo_tax_age_uses_disposed_lot_not_aggregate_entry_date(self):
+        """HIFO can sell a recent lot from an old aggregate holding.
+
+        Basis was already lot-aware, but tax age used HoldingState.entry_date.
+        That treated a 9-day disposed lot as long-term when an older lot kept
+        the aggregate entry date old. Tax must follow the disposed lot slice.
+        """
+        import pandas as pd
+        from adapters.sim import SimAdapter
+        from kernel.exits import HoldingState, TaxLot, ExitSignal
+
+        adp = SimAdapter.__new__(SimAdapter)
+        hs = HoldingState(
+            entry_price=150.0,
+            entry_date=datetime.date(2023, 1, 1),
+            shares=10,
+            high_watermark=250.0,
+        )
+        hs.lots = [
+            TaxLot(shares=5, price=100.0, date=datetime.date(2023, 1, 1)),
+            TaxLot(shares=5, price=200.0, date=datetime.date(2026, 4, 15)),
+        ]
+        adp._holdings = {"NVDA": hs}
+        adp._pos_shares = {"NVDA": 10}
+        adp._cash = 0.0
+        adp._last_sell_date = {}
+        adp._trade_log = []
+        adp._ohlcv = {}
+
+        ctx = SimpleNamespace(
+            today=datetime.date(2026, 4, 24),
+            prices={"NVDA": 250.0},
+            config={
+                "tax": {
+                    "short_term_rate": 0.50,
+                    "long_term_rate": 0.20,
+                    "long_term_threshold_days": 365,
+                },
+                "rotation": {"joint_actions": {"qp_tax_lot_method": "hifo"}},
+            },
+            exits=[],
+            holdings={},
+        )
+        sig = ExitSignal(
+            should_exit=True,
+            reason="hifo trim",
+            exit_type="kelly_trim",
+            quantity=5.0,
+        )
+
+        adp._apply_sell("NVDA", sig, pd.Timestamp("2026-04-24"), ctx)
+
+        row = adp._trade_log[0]
+        assert row["gross_pnl"] == pytest.approx(250.0)
+        assert row["tax"] == pytest.approx(125.0)
+        assert row["hold_days"] == 9
+        assert row["decision_inputs"]["short_term_gross_pnl"] == pytest.approx(250.0)
+        assert row["decision_inputs"]["long_term_gross_pnl"] == pytest.approx(0.0)
+        assert adp._cash == pytest.approx(1125.0)
+
     def test_nan_quantity_treated_as_full_liquidation(self):
         """Bug 8 fix (2026-05-05): NaN/inf sig.quantity slipped through
         the partial-vs-full check (NaN < total → False; NaN > 0 → False),

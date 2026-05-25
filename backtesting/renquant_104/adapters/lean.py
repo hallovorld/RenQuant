@@ -38,8 +38,13 @@ from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
     is_full_liquidate_signal,
 )
-from kernel.exits import HoldingState, apply_buy_lot, apply_sell_lots, ensure_lots
-from kernel.portfolio import compute_trade_tax
+from kernel.exits import (
+    HoldingState,
+    apply_buy_lot,
+    apply_sell_lots_detailed,
+    ensure_lots,
+)
+from kernel.portfolio import compute_disposed_lot_tax, compute_trade_tax
 from kernel.trade_events import build_buy_trade_event, build_sell_trade_event
 
 log = logging.getLogger("adapters.lean")
@@ -385,6 +390,11 @@ class LeanAdapter:
                 and _math_lex.isfinite(event_gross)
                 else None
             )
+            disposed_lots = []
+            lot_method = str(
+                ((config.get("rotation", {}) or {}).get("joint_actions", {}) or {})
+                .get("qp_tax_lot_method", "fifo")
+            ).lower()
             if (
                 hs is not None
                 and _math_lex.isfinite(price)
@@ -394,11 +404,9 @@ class LeanAdapter:
             ):
                 ensure_lots(hs)
                 had_lots = bool(getattr(hs, "lots", None))
-                lot_method = str(
-                    ((config.get("rotation", {}) or {}).get("joint_actions", {}) or {})
-                    .get("qp_tax_lot_method", "fifo")
-                ).lower()
-                lot_basis, _ = apply_sell_lots(hs, event_shares, lot_method)
+                lot_basis, _, disposed_lots = apply_sell_lots_detailed(
+                    hs, event_shares, lot_method,
+                )
                 if (
                     had_lots
                     and _math_lex.isfinite(lot_basis)
@@ -406,13 +414,30 @@ class LeanAdapter:
                 ):
                     proceeds_basis = lot_basis
                     event_gross = event_shares * price - proceeds_basis
+                else:
+                    disposed_lots = []
                 if is_partial:
                     hs.shares = max(0.0, float(holding_qty) - event_shares)
                     hs.entry_price = hs.weighted_avg_entry_price()
 
-            tax = compute_trade_tax(
-                event_gross, days_held, tax_short, tax_long, tax_thresh,
+            lot_tax = (
+                compute_disposed_lot_tax(
+                    price,
+                    ctx.today,
+                    disposed_lots,
+                    tax_short,
+                    tax_long,
+                    tax_thresh,
+                )
+                if disposed_lots else {}
             )
+            if lot_tax:
+                tax = float(lot_tax["tax"])
+                days_held = int(round(float(lot_tax["weighted_hold_days"])))
+            else:
+                tax = compute_trade_tax(
+                    event_gross, days_held, tax_short, tax_long, tax_thresh,
+                )
 
             if not _math_lex.isfinite(tax):
                 log.warning(
@@ -421,6 +446,7 @@ class LeanAdapter:
                     ticker, event_gross,
                 )
                 tax = 0.0
+            is_lt = days_held >= tax_thresh
             algo._total_tax     += tax
             algo._executed_sells += 1
             if is_lt:
@@ -467,9 +493,18 @@ class LeanAdapter:
                 tax=tax,
                 net_pnl_after_tax=event_net,
                 pnl_pct=event_pnl_pct,
+                hold_days=days_held,
                 attribution_version="lean_exit_decision_v1",
             )
             trade_event["decision_inputs"]["partial"] = is_partial
+            trade_event["decision_inputs"]["tax_lot_method"] = lot_method
+            if lot_tax:
+                trade_event["decision_inputs"]["short_term_gross_pnl"] = lot_tax[
+                    "short_term_gross_pnl"
+                ]
+                trade_event["decision_inputs"]["long_term_gross_pnl"] = lot_tax[
+                    "long_term_gross_pnl"
+                ]
             trade_events.append(trade_event)
 
             if is_partial:

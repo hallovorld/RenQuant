@@ -38,6 +38,15 @@ class TaxLot:
     date:   datetime.date
 
 
+@dataclass(frozen=True)
+class DisposedTaxLot:
+    """A consumed slice of a tax lot from a sell event."""
+
+    shares: float
+    price: float
+    date: datetime.date
+
+
 @lru_cache(maxsize=4096)
 def _is_nyse_trading_day(d: datetime.date) -> bool:
     """Return True iff d is a regular NYSE trading day (Mon-Fri, not a US
@@ -195,6 +204,63 @@ def apply_buy_lot(hs: HoldingState, shares: float, price: float,
         hs.entry_date = date
 
 
+def apply_sell_lots_detailed(
+    hs: HoldingState,
+    shares_to_sell: float,
+    method: str = "fifo",
+) -> tuple[float, float, list[DisposedTaxLot]]:
+    """Consume lots and return cost basis plus disposed lot slices.
+
+    Return tuple: ``(proceeds_basis, realized_gain_dollar, disposed_lots)``.
+    ``realized_gain_dollar`` remains a legacy placeholder because the caller
+    owns the sell price. ``disposed_lots`` carries the acquisition date for
+    each consumed lot slice so tax age can match the same lots used for basis.
+    """
+    if shares_to_sell <= 0 or not hs.lots:
+        return 0.0, 0.0, []
+    method_norm = (method or "fifo").lower()
+    disposed: list[DisposedTaxLot] = []
+    if method_norm == "hifo":
+        # sort copy so we don't mutate the user-visible order until
+        # we actually consume; pop highest-price lot first.
+        order = sorted(range(len(hs.lots)), key=lambda i: -hs.lots[i].price)
+    elif method_norm == "avg":
+        # avg method: trim each lot proportionally to its share weight.
+        total = sum(L.shares for L in hs.lots)
+        if total <= 0:
+            return 0.0, 0.0, []
+        take_frac = min(1.0, shares_to_sell / total)
+        basis = 0.0
+        for L in hs.lots:
+            t = L.shares * take_frac
+            if t <= 0:
+                continue
+            basis += t * L.price
+            disposed.append(DisposedTaxLot(shares=t, price=L.price, date=L.date))
+            L.shares -= t
+        hs.lots = [L for L in hs.lots if L.shares > 1e-9]
+        return basis, 0.0, disposed
+    else:   # FIFO (default)
+        order = list(range(len(hs.lots)))
+
+    remaining = float(shares_to_sell)
+    basis = 0.0
+    for idx in order:
+        if remaining <= 1e-12:
+            break
+        L = hs.lots[idx]
+        take = min(L.shares, remaining)
+        if take <= 0:
+            continue
+        basis += take * L.price
+        disposed.append(DisposedTaxLot(shares=take, price=L.price, date=L.date))
+        L.shares -= take
+        remaining -= take
+    # Drop any lot whose remaining shares are below a numerical floor.
+    hs.lots = [L for L in hs.lots if L.shares > 1e-9]
+    return basis, 0.0, disposed
+
+
 def apply_sell_lots(hs: HoldingState, shares_to_sell: float,
                      method: str = "fifo") -> tuple[float, float]:
     """Consume lots from `hs.lots` per FIFO/HIFO; return (proceeds_basis,
@@ -213,44 +279,10 @@ def apply_sell_lots(hs: HoldingState, shares_to_sell: float,
     ignored lots entirely; here we keep books consistent by trimming
     proportionally).
     """
-    if shares_to_sell <= 0 or not hs.lots:
-        return 0.0, 0.0
-    method_norm = (method or "fifo").lower()
-    if method_norm == "hifo":
-        # sort copy so we don't mutate the user-visible order until
-        # we actually consume; pop highest-price lot first.
-        order = sorted(range(len(hs.lots)), key=lambda i: -hs.lots[i].price)
-    elif method_norm == "avg":
-        # avg method: trim each lot proportionally to its share weight.
-        total = sum(L.shares for L in hs.lots)
-        if total <= 0:
-            return 0.0, 0.0
-        take_frac = min(1.0, shares_to_sell / total)
-        basis = 0.0
-        for L in hs.lots:
-            t = L.shares * take_frac
-            basis += t * L.price
-            L.shares -= t
-        hs.lots = [L for L in hs.lots if L.shares > 1e-9]
-        return basis, 0.0
-    else:   # FIFO (default)
-        order = list(range(len(hs.lots)))
-
-    remaining = float(shares_to_sell)
-    basis = 0.0
-    for idx in order:
-        if remaining <= 1e-12:
-            break
-        L = hs.lots[idx]
-        take = min(L.shares, remaining)
-        if take <= 0:
-            continue
-        basis += take * L.price
-        L.shares -= take
-        remaining -= take
-    # Drop any lot whose remaining shares are below a numerical floor.
-    hs.lots = [L for L in hs.lots if L.shares > 1e-9]
-    return basis, 0.0
+    basis, realized, _disposed = apply_sell_lots_detailed(
+        hs, shares_to_sell, method
+    )
+    return basis, realized
 
 
 # ── Exit result ────────────────────────────────────────────────────────────────

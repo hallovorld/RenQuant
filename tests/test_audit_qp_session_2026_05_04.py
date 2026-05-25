@@ -111,13 +111,13 @@ class TestEntryPriceRefreshAfterPartialHIFO:
         idx_apply_buy  = src.find("def _apply_buy", idx_apply_sell)
         body = src[idx_apply_sell:idx_apply_buy]
         # Both pieces must appear in _apply_sell:
-        assert "apply_sell_lots(" in body
+        assert "apply_sell_lots_detailed(" in body
         assert "weighted_avg_entry_price()" in body, (
             "P1-5 regression: sim's _apply_sell must refresh entry_price "
             "from the surviving lots after apply_sell_lots."
         )
         # AND the refresh must come AFTER apply_sell_lots, not before.
-        idx_consume = body.find("apply_sell_lots(")
+        idx_consume = body.find("apply_sell_lots_detailed(")
         idx_refresh = body.find("weighted_avg_entry_price()")
         assert idx_refresh > idx_consume, (
             "weighted_avg_entry_price() must execute AFTER apply_sell_lots; "

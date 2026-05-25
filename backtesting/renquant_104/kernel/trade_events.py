@@ -150,16 +150,18 @@ def build_sell_trade_event(
     tax: float | None = None,
     net_pnl_after_tax: float | None = None,
     pnl_pct: float | None = None,
+    hold_days: int | None = None,
     attribution_version: str = "exit_decision_v1",
 ) -> dict[str, Any]:
     """Normalize an executed SELL event for DB/audit writers."""
     entry_p = float(getattr(holding, "entry_price", 0.0) or 0.0)
     entry_date = _date_obj(getattr(holding, "entry_date", None))
     today_date = _date_obj(today)
-    hold_days = (
-        (today_date - entry_date).days
-        if holding and today_date is not None and entry_date is not None else 0
-    )
+    if hold_days is None:
+        hold_days = (
+            (today_date - entry_date).days
+            if holding and today_date is not None and entry_date is not None else 0
+        )
     if shares is None:
         raw_qty = getattr(sig, "shares_sold", None)
         if raw_qty is None:

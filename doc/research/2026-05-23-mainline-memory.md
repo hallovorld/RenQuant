@@ -2556,6 +2556,19 @@ entire pipeline end-to-end:
   sentiment coverage `142/142` (max date `2026-05-17`, age `7d`).
   Validation: data-scan preflight and daily-retrain tests passed (`32 passed`).
 
+### Global Round 4/10 — Sell / Tax / Trade Accounting Pass
+
+- New tax-lot age bug found by sidecar audit and fixed: sim/LEAN already used
+  FIFO/HIFO tax lots for disposed cost basis, but tax rate and reported
+  `hold_days` still used aggregate `HoldingState.entry_date`. Under HIFO, an
+  old aggregate holding can sell a recently-added high-cost lot; the old path
+  could tax a 9-day lot at long-term rates. `apply_sell_lots_detailed()` now
+  returns the exact disposed lot slices, sim/LEAN compute event tax from those
+  lot acquisition dates, and annual-net tax reporting consumes ST/LT split
+  P&L from the trade decision inputs. Validation: partial-sell, tax-lot,
+  HIFO-selection, trade-attribution, QP-audit, LEAN backend, and LEAN trace
+  suites passed (`69 passed`).
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

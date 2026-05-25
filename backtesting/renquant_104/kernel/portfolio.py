@@ -70,6 +70,64 @@ def compute_trade_tax(
     return gross_pnl * rate
 
 
+def compute_disposed_lot_tax(
+    sell_price: float,
+    sell_date: _dt.date,
+    disposed_lots: Iterable[Any],
+    short_term_rate: float,
+    long_term_rate: float,
+    long_term_threshold_days: int = 365,
+) -> dict[str, float]:
+    """Tax a sell event using the acquisition date of each disposed lot.
+
+    FIFO/HIFO changes which lot is sold, so the tax age must be computed from
+    the same disposed slices used for cost basis. Returning split ST/LT gains
+    also lets annual-net reporting stay closer to the actual lot accounting.
+    """
+    if not math.isfinite(float(sell_price)) or sell_date is None:
+        return {
+            "tax": 0.0,
+            "weighted_hold_days": 0.0,
+            "short_term_gross_pnl": 0.0,
+            "long_term_gross_pnl": 0.0,
+        }
+    tax = 0.0
+    st_gross = 0.0
+    lt_gross = 0.0
+    total_shares = 0.0
+    weighted_days = 0.0
+    for lot in disposed_lots:
+        shares = _coerce_finite_float(getattr(lot, "shares", None), default=0.0) or 0.0
+        price = _coerce_finite_float(getattr(lot, "price", None), default=0.0) or 0.0
+        date = getattr(lot, "date", None)
+        if shares <= 0 or price <= 0 or date is None:
+            continue
+        if isinstance(date, _dt.datetime):
+            date = date.date()
+        if not isinstance(date, _dt.date):
+            continue
+        hold_days = max(0, (sell_date - date).days)
+        gain = shares * (float(sell_price) - price)
+        total_shares += shares
+        weighted_days += shares * hold_days
+        if hold_days >= int(long_term_threshold_days):
+            lt_gross += gain
+            rate = long_term_rate
+        else:
+            st_gross += gain
+            rate = short_term_rate
+        if math.isfinite(gain) and gain > 0:
+            tax += gain * rate
+    return {
+        "tax": float(tax),
+        "weighted_hold_days": (
+            float(weighted_days / total_shares) if total_shares > 0 else 0.0
+        ),
+        "short_term_gross_pnl": float(st_gross),
+        "long_term_gross_pnl": float(lt_gross),
+    }
+
+
 def compute_netted_capital_gains_tax(
     short_term_net: float,
     long_term_net: float,
@@ -126,6 +184,29 @@ def compute_annual_net_capital_gains_tax(
     for event in realized_events:
         year = _coerce_year(event.get(date_key) or event.get("exit_date"))
         if year is None:
+            continue
+        decision_inputs = event.get("decision_inputs")
+        if not isinstance(decision_inputs, dict):
+            decision_inputs = {}
+        has_lot_split = (
+            "short_term_gross_pnl" in event
+            or "long_term_gross_pnl" in event
+            or "short_term_gross_pnl" in decision_inputs
+            or "long_term_gross_pnl" in decision_inputs
+        )
+        if has_lot_split:
+            buckets[year]["short_term_net"] += _coerce_finite_float(
+                event.get("short_term_gross_pnl")
+                if "short_term_gross_pnl" in event
+                else decision_inputs.get("short_term_gross_pnl"),
+                default=0.0,
+            ) or 0.0
+            buckets[year]["long_term_net"] += _coerce_finite_float(
+                event.get("long_term_gross_pnl")
+                if "long_term_gross_pnl" in event
+                else decision_inputs.get("long_term_gross_pnl"),
+                default=0.0,
+            ) or 0.0
             continue
         gross_pnl = _coerce_finite_float(event.get(pnl_key))
         if gross_pnl is None:

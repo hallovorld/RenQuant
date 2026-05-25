@@ -1406,7 +1406,10 @@ class SimAdapter:
         is a positive float < current shares, sells exactly that many shares and
         reduces _pos_shares in place; the caller then skips the pop step.
         """
-        from kernel.portfolio import compute_trade_tax  # noqa: PLC0415
+        from kernel.portfolio import (  # noqa: PLC0415
+            compute_disposed_lot_tax,
+            compute_trade_tax,
+        )
         if ticker not in self._holdings or ticker not in self._pos_shares:
             return
         hs = self._holdings[ticker]
@@ -1467,12 +1470,12 @@ class SimAdapter:
         # cost basis from `apply_sell_lots`, compute gross_pnl off that.
         # Falls back to avg-cost when the holding has no lots (legacy
         # state with shares but lots not migrated yet — rare).
-        from kernel.exits import apply_sell_lots, ensure_lots  # noqa: PLC0415
+        from kernel.exits import apply_sell_lots_detailed, ensure_lots  # noqa: PLC0415
         ensure_lots(self._holdings[ticker])
         ja_cfg = (ctx.config.get("rotation", {}).get("joint_actions", {}) or {})
         lot_method = str(ja_cfg.get("qp_tax_lot_method", "fifo")).lower()
         had_lots = bool(self._holdings[ticker].lots)
-        proceeds_basis, _ = apply_sell_lots(
+        proceeds_basis, _, disposed_lots = apply_sell_lots_detailed(
             self._holdings[ticker], float(sell_shares), lot_method,
         )
         # 2026-05-10 audit fix (§5.13.11): when proceeds_basis is non-
@@ -1497,13 +1500,26 @@ class SimAdapter:
             if not (_math_q.isfinite(proceeds_basis) and proceeds_basis > 0):
                 proceeds_basis = sell_shares * _fallback_entry
 
-        tax_cfg   = ctx.config.get("tax", {})
-        tax = compute_trade_tax(
-            gross_pnl, hold_days,
-            float(tax_cfg.get("short_term_rate", 0.50)),
-            float(tax_cfg.get("long_term_rate", 0.32)),
-            int(tax_cfg.get("long_term_threshold_days", 365)),
+        tax_cfg = ctx.config.get("tax", {})
+        st_rate = float(tax_cfg.get("short_term_rate", 0.50))
+        lt_rate = float(tax_cfg.get("long_term_rate", 0.32))
+        lt_days = int(tax_cfg.get("long_term_threshold_days", 365))
+        lot_tax = (
+            compute_disposed_lot_tax(
+                float(price),
+                today_ts.date(),
+                disposed_lots,
+                st_rate,
+                lt_rate,
+                lt_days,
+            )
+            if had_lots and disposed_lots else {}
         )
+        if lot_tax:
+            tax = float(lot_tax["tax"])
+            hold_days = int(round(float(lot_tax["weighted_hold_days"])))
+        else:
+            tax = compute_trade_tax(gross_pnl, hold_days, st_rate, lt_rate, lt_days)
         tax_cash_debit_mode = _tax_cash_debit_mode(ctx.config if ctx is not None else {})
         tax_cash_debited = _tax_cash_debit_amount(
             ctx.config if ctx is not None else {}, tax,
@@ -1691,6 +1707,7 @@ class SimAdapter:
             tax=tax,
             net_pnl_after_tax=gross_pnl - tax,
             pnl_pct=_pnl_pct,
+            hold_days=hold_days,
             attribution_version="exit_decision_v1",
         )
         trade_event.update({
@@ -1723,6 +1740,14 @@ class SimAdapter:
             "exit_max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
         })
         trade_event["decision_inputs"]["partial"] = is_partial
+        trade_event["decision_inputs"]["tax_lot_method"] = lot_method
+        if lot_tax:
+            trade_event["decision_inputs"]["short_term_gross_pnl"] = lot_tax[
+                "short_term_gross_pnl"
+            ]
+            trade_event["decision_inputs"]["long_term_gross_pnl"] = lot_tax[
+                "long_term_gross_pnl"
+            ]
         trade_event["decision_inputs"]["tax_cash_debited"] = tax_cash_debited
         trade_event["decision_inputs"]["tax_cash_debit_mode"] = tax_cash_debit_mode
         self._trade_log.append(trade_event)
