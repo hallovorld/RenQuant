@@ -216,6 +216,59 @@ class TestDataFreshnessGateTask(unittest.TestCase):
         self.assertIn("OHLCV MISSING", str(cm.exception))
         self.assertIn("MSFT", str(cm.exception))
 
+    def test_sell_only_ignores_unheld_watchlist_staleness(self) -> None:
+        """Sell-only exits must not be blocked by unrelated buy-universe data.
+
+        Full runs require the whole watchlist/sector context. Sell-only risk
+        exits only need held tickers plus the benchmark. Pre-fix, one stale
+        unheld watchlist name aborted the entire sell-only cron and could block
+        stop-loss/trailing-stop exits.
+        """
+        self.ctx._run_mode = "sell-only"
+        self.ctx.config = {
+            "watchlist": ["AAPL", "MSFT", "NVDA"],
+            "benchmark": "SPY",
+            "sector_etf_map": {"Tech": "XLK"},
+        }
+        self.ctx.holdings = {"AAPL": object()}
+        self.ctx.ohlcv = self._ohlcv({
+            "AAPL": "2026-05-01",
+            "SPY": "2026-05-01",
+            "MSFT": "2026-04-30",  # unheld and stale
+            "NVDA": "2026-04-30",  # unheld and stale
+            "XLK": "2026-04-30",   # buy-side sector context, stale
+        })
+
+        self.Task().run(self.ctx)
+
+    def test_sell_only_still_requires_held_ticker_freshness(self) -> None:
+        self.ctx._run_mode = "sell-only"
+        self.ctx.config = {"watchlist": ["AAPL", "MSFT"], "benchmark": "SPY"}
+        self.ctx.holdings = {"AAPL": object()}
+        self.ctx.ohlcv = self._ohlcv({
+            "AAPL": "2026-04-30",
+            "SPY": "2026-05-01",
+            "MSFT": "2026-05-01",
+        })
+
+        with self.assertRaises(RuntimeError) as cm:
+            self.Task().run(self.ctx)
+        self.assertIn("AAPL", str(cm.exception))
+
+    def test_sell_only_still_requires_benchmark_freshness(self) -> None:
+        self.ctx._run_mode = "sell-only"
+        self.ctx.config = {"watchlist": ["AAPL", "MSFT"], "benchmark": "SPY"}
+        self.ctx.holdings = {"AAPL": object()}
+        self.ctx.ohlcv = self._ohlcv({
+            "AAPL": "2026-05-01",
+            "SPY": "2026-04-30",
+            "MSFT": "2026-05-01",
+        })
+
+        with self.assertRaises(RuntimeError) as cm:
+            self.Task().run(self.ctx)
+        self.assertIn("SPY", str(cm.exception))
+
     def test_ctx_today_governs_reference_date(self) -> None:
         """For a backtest at ctx.today=2024-06-15, panel up to 2024-06-14 passes."""
         self.ctx.today = _dt.date(2024, 6, 15)  # Saturday
@@ -249,10 +302,14 @@ class TestInferencePipelineWiring(unittest.TestCase):
         self.assertGreater(idx_inf, 0)
         self.assertGreater(idx_sell, idx_inf)
         inf_body = src[idx_inf:idx_sell]
+        idx_mode = inf_body.find('ctx._run_mode = getattr(ctx, "_run_mode", None) or "full"')
         idx_gate = inf_body.find("DataFreshnessGateTask().run(ctx)")
         idx_regime = inf_body.find("RegimeJob().run(ctx)")
+        self.assertGreater(idx_mode, 0, "InferencePipeline must stamp full run mode")
         self.assertGreater(idx_gate, 0, "gate not wired into InferencePipeline")
         self.assertGreater(idx_regime, 0)
+        self.assertLess(idx_mode, idx_gate,
+                        "run mode must be stamped before freshness gate")
         self.assertLess(idx_gate, idx_regime,
                         "gate must run BEFORE RegimeJob")
 
@@ -261,10 +318,14 @@ class TestInferencePipelineWiring(unittest.TestCase):
         src = path.read_text()
         idx_sell = src.find("class SellOnlyPipeline")
         sell_body = src[idx_sell:]
+        idx_mode = sell_body.find('ctx._run_mode = getattr(ctx, "_run_mode", None) or "sell-only"')
         idx_gate = sell_body.find("DataFreshnessGateTask().run(ctx)")
         idx_regime = sell_body.find("RegimeJob().run(ctx)")
+        self.assertGreater(idx_mode, 0, "SellOnlyPipeline must stamp sell-only run mode")
         self.assertGreater(idx_gate, 0,
                            "gate not wired into SellOnlyPipeline")
+        self.assertLess(idx_mode, idx_gate,
+                        "run mode must be stamped before freshness gate")
         self.assertLess(idx_gate, idx_regime,
                         "gate must run BEFORE RegimeJob in sell-only too")
 

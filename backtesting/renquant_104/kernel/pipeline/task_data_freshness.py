@@ -82,6 +82,7 @@ class DataFreshnessGateTask(Task):
             )
             return True
 
+        sell_only = self._is_sell_only(ctx)
         missing_expected = sorted(s for s in expected_symbols if s not in ohlcv)
         if missing_expected:
             sample = ", ".join(missing_expected[:10])
@@ -96,7 +97,13 @@ class DataFreshnessGateTask(Task):
             raise RuntimeError(msg)
 
         stale_syms: list[tuple[str, _dt.date]] = []
-        for sym, df in ohlcv.items():
+        symbols_to_check = (
+            sorted(expected_symbols)
+            if sell_only and expected_symbols else
+            sorted(ohlcv)
+        )
+        for sym in symbols_to_check:
+            df = ohlcv.get(sym)
             if df is None or len(df) == 0:
                 stale_syms.append((sym, _dt.date(1970, 1, 1)))
                 continue
@@ -142,6 +149,12 @@ class DataFreshnessGateTask(Task):
             return {str(s) for s in explicit if s}
         watchlist = list(config.get("watchlist", []) or [])
         holdings = list(getattr(ctx, "holdings", {}) or [])
+        if DataFreshnessGateTask._is_sell_only(ctx):
+            expected = {str(s) for s in holdings if s}
+            benchmark = config.get("benchmark", "SPY")
+            if benchmark:
+                expected.add(str(benchmark))
+            return expected
         if not watchlist and not holdings:
             return set()
         expected = {str(s) for s in watchlist + holdings if s}
@@ -152,6 +165,16 @@ class DataFreshnessGateTask(Task):
             if sym:
                 expected.add(str(sym))
         return expected
+
+    @staticmethod
+    def _is_sell_only(ctx) -> bool:
+        config = getattr(ctx, "config", {}) or {}
+        mode = (
+            getattr(ctx, "_run_mode", None)
+            or config.get("_run_mode")
+            or ""
+        )
+        return str(mode).strip().lower().replace("_", "-").startswith("sell-only")
 
     @staticmethod
     def _ref_date(today, ref_ts: pd.Timestamp | None = None) -> _dt.date:

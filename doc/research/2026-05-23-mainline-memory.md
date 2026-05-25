@@ -429,6 +429,18 @@ Make RenQuant 104 scientifically trustworthy end to end:
     `tests/test_smoke_test_model.py tests/test_train_104_no_wf_bypass.py
     tests/test_promote_wf_gate.py tests/test_model_acceptance.py`
     (`100 passed`).
+- Sell-only freshness hardening:
+  - `DataFreshnessGateTask` now distinguishes run mode. Full/buy still
+    requires the whole watchlist, benchmark, and sector ETF context to be
+    fresh; sell-only risk exits require only held tickers plus benchmark.
+  - This fixes the failure mode where one stale unheld watchlist/security ETF
+    blocked intraday/preclose sell-only exits.
+  - The pipeline stamps `_run_mode` before the freshness gate so the task does
+    not infer mode from logs or wrapper names.
+  - Targeted tests passed:
+    `tests/test_data_freshness.py` (`25 passed`) and
+    `tests/test_runner_trade_ntfy.py tests/test_daily_104_shadow_notify.py
+    tests/test_meta_label_veto.py` (`58 passed`).
 
 ## Active Validation
 

@@ -227,6 +227,7 @@ class InferencePipeline:
 
         t0 = time.monotonic()
         log.info("InferencePipeline START  date=%s", ctx.today)
+        ctx._run_mode = getattr(ctx, "_run_mode", None) or "full"
 
         # Audit fix #8 (2026-04-26): if challenger.enabled=true in
         # strategy_config but the live wiring (Phase 4b) hasn't landed
@@ -495,6 +496,7 @@ class SellOnlyPipeline:
     def run(self, ctx: InferenceContext) -> None:
         log.info("SellOnlyPipeline START  date=%s", ctx.today)
         t0 = time.monotonic()
+        ctx._run_mode = getattr(ctx, "_run_mode", None) or "sell-only"
 
         # 2026-05-03 P0: even sell-only paths must refuse stale data.
         from .task_data_freshness import DataFreshnessGateTask  # noqa: PLC0415
