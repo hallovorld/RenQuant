@@ -62,6 +62,36 @@ class TestSourceLevel:
         assert "preflight ntfy suppressed" in src
         assert "log_fn = log.warning if suppress_preflight_ntfy else log.error" in src
 
+    def test_buy_side_preflight_alert_is_not_urgent_error(self):
+        """Model-contract blocks should not page like broker outages."""
+        from live.runner import _preflight_alert_payload
+
+        msg = (
+            "2 hard pre-flight check(s) failed:\n"
+            "  ✗ P-WF-GATE: active panel artifact failed WF\n"
+            "  ✗ P-RUN-ID: run_id not stamped\n"
+        )
+        alert = _preflight_alert_payload("RENQUANT-104", "full", msg)
+
+        assert alert["title"] == "RENQUANT-104 [full] BUY-BLOCKED"
+        assert alert["priority"] == "default"
+        assert alert["taxonomy"] == "DECISION"
+        assert "No orders placed" in alert["body"]
+
+    def test_non_buy_side_preflight_alert_stays_urgent(self):
+        """Broker/account failures remain action-required."""
+        from live.runner import _preflight_alert_payload
+
+        msg = (
+            "1 hard pre-flight check(s) failed:\n"
+            "  ✗ P-BROKER-CONNECT: broker disconnected\n"
+        )
+        alert = _preflight_alert_payload("RENQUANT-104", "full", msg)
+
+        assert alert["title"] == "RENQUANT-104 [full] PREFLIGHT-FAIL"
+        assert alert["priority"] == "urgent"
+        assert alert["taxonomy"] == "ACTION_REQUIRED"
+
     def test_daily_shadow_wrapper_suppresses_inner_preflight_ntfy(self):
         """Shadow failures are non-fatal; daily wrapper sends one alert."""
         src = (REPO_ROOT / "scripts" / "daily_104.sh").read_text()

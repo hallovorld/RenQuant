@@ -26,6 +26,9 @@ def test_shadow_buy_side_preflight_blocks_do_not_page_phone():
     assert "SHADOW_BUY_SIDE_PREFLIGHT_PATTERN" in script
     assert "Shadow preflight-block ntfy suppressed" in script
     assert "P-WF-GATE" in script
+    assert "P-RUN-ID" in script
+    assert "P-CORR-METADATA" in script
+    assert "P-META-LABEL" in script
     assert "P-PREFLIGHT-EXCEPTION" in script
 
 
@@ -45,3 +48,6 @@ def test_buy_blocked_wrapper_alert_has_cooldown():
     assert "BUY_BLOCKED_ALERT_STAMP" in script
     assert "RENQUANT_BUY_BLOCKED_ALERT_COOLDOWN_SEC" in script
     assert "BUY-BLOCKED ntfy suppressed by cooldown" in script
+    assert "P-RUN-ID" in script
+    assert "P-CORR-METADATA" in script
+    assert "P-META-LABEL" in script

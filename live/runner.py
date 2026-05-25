@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import time
 from datetime import datetime
@@ -39,6 +40,86 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("live.runner")
+
+
+_BUY_SIDE_PREFLIGHT_CHECKS = frozenset({
+    "P-MODEL-ARTIFACT",
+    "P-PANEL-CONTRACT",
+    "P-WF-GATE",
+    "P-REGIME-IC",
+    "P-BEST-ITER",
+    "P-CONFIG-FP",
+    "P-WATCHLIST",
+    "P-SECTOR-MAP",
+    "P-CORR-METADATA",
+    "P-FEATURE-COVER",
+    "P-RUN-ID",
+    "P-META-LABEL",
+    "P-CALIBRATOR-HEALTH",
+    "P-CALIBRATOR-FLAT-REGION",
+})
+
+
+def _failed_preflight_check_names(message: str) -> set[str]:
+    """Extract failed preflight check names from PreflightFailed text."""
+    names: set[str] = set()
+    for line in str(message).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("✗"):
+            continue
+        match = re.search(r"\b(P-[A-Z0-9-]+)\b", stripped)
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def _is_buy_side_preflight_block(message: str) -> bool:
+    """True when all failed preflight checks are model/buy admission gates."""
+    failed = _failed_preflight_check_names(message)
+    return bool(failed) and failed.issubset(_BUY_SIDE_PREFLIGHT_CHECKS)
+
+
+def _preflight_alert_payload(label: str, run_mode: str, message: str) -> dict[str, Any]:
+    """Classify a preflight failure into operator-alert severity.
+
+    Model-contract failures intentionally block new buys and are usually
+    resolved by retrain/promote. They should remain visible but not page like a
+    broker/execution outage. Broker/preflight-code failures remain urgent.
+    """
+    import os as _os  # noqa: PLC0415
+
+    failed = sorted(_failed_preflight_check_names(message))
+    buy_side_block = _is_buy_side_preflight_block(message)
+    tag = "BUY-BLOCKED" if buy_side_block else "PREFLIGHT-FAIL"
+    if buy_side_block:
+        body = (
+            "No orders placed; full/buy blocked by model-contract preflight. "
+            "Sell-only/risk exits should still be run by the daily wrapper.\n"
+            f"{message}"
+        )
+        priority = "default"
+        taxonomy = "DECISION"
+        key_parts = ("preflight-buy-blocked", label, run_mode, ",".join(failed))
+    else:
+        body = str(message)
+        priority = "urgent"
+        taxonomy = "ACTION_REQUIRED"
+        key_parts = (
+            "preflight", label, run_mode,
+            ",".join(failed), str(message)[:500],
+        )
+    try:
+        cooldown = int(_os.environ.get("RENQUANT_PREFLIGHT_NTFY_COOLDOWN_SECONDS", "21600"))
+    except ValueError:
+        cooldown = 21600
+    return {
+        "title": f"{label} [{run_mode}] {tag}",
+        "body": body,
+        "priority": priority,
+        "taxonomy": taxonomy,
+        "key": stable_alert_key(*key_parts),
+        "cooldown_seconds": max(0, cooldown),
+    }
 
 
 # ── Kernel support ─────────────────────────────────────────────────────────────
@@ -374,17 +455,15 @@ def _run_once_multi_pipeline(
                 log.info("preflight ntfy suppressed by RENQUANT_SUPPRESS_PREFLIGHT_NTFY")
             else:
                 topic = _os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
+                alert = _preflight_alert_payload(label, run_mode, str(exc))
                 _post_ntfy_with_retries(
                     f"https://ntfy.sh/{topic}",
-                    title=f"{label} [{run_mode}] PREFLIGHT-FAIL",
-                    body=str(exc),
-                    priority="urgent",
-                    taxonomy="ACTION_REQUIRED",
-                    key=stable_alert_key(
-                        "preflight", label, run_mode,
-                        type(exc).__name__, str(exc)[:500],
-                    ),
-                    cooldown_seconds=6 * 60 * 60,
+                    title=alert["title"],
+                    body=alert["body"],
+                    priority=alert["priority"],
+                    taxonomy=alert["taxonomy"],
+                    key=alert["key"],
+                    cooldown_seconds=alert["cooldown_seconds"],
                 )
             raise SystemExit(2) from exc
         except ImportError as exc:
