@@ -290,6 +290,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   extra rows only when backed by a trade/attempt fact; unexplained extras still
   fail. This closes the gap where `trades` could show an attempted off-universe
   ticker while the same run had no per-ticker state row explaining it.
+- Short borrow-cost repair 2026-05-25: sim borrow charging now reads the same
+  configured `long_short.borrow_status_path` as short-candidate admission and
+  treats missing/unknown `easy_to_borrow` metadata as conservative
+  `borrow_rate_missing` / HTB cost instead of silently assuming cheap ETB
+  borrow. This can reduce long/short research APY, but it removes an optimistic
+  cost understatement.
 
 ## Pushed Progress
 
@@ -322,6 +328,17 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_policy_alignment.py tests/test_sim_execution_integration.py
     tests/test_joint_actions.py tests/test_rotation_atomic.py
     tests/test_kelly_sizing.py` (`524 passed`).
+- `9f234fe fix(renquant104): charge conservative borrow on missing metadata`
+  - Removes the fail-open borrow-cost assumption where missing borrow metadata
+    was charged at ETB/cheap rate.
+  - Uses the configured `borrow_status_path` for sim borrow charging so cost
+    accounting and short-candidate admission read the same metadata surface.
+  - Tests passed:
+    `tests/test_short_borrow_cost.py tests/test_short_candidate_selection.py
+    tests/test_short_pnl_vectorbt_validator.py tests/test_sim_trade_ledger.py
+    tests/test_sim_execution_integration.py tests/test_persistence.py
+    tests/test_lean_trace_persistence.py tests/test_runner_state_fixes.py
+    tests/test_adapter_context_contract.py` (`185 passed`).
 - `3779e5c fix(renquant104): persist live execution attempts`
   - Adds live audit events for non-filled broker attempts instead of only
     writing confirmed fills.
