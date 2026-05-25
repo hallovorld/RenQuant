@@ -2624,6 +2624,14 @@ entire pipeline end-to-end:
   QP constraint/emission guards use the specific reason while still allowing
   trims/closes. Validation: regime-admission, QP admission, min-share, panel
   job ordering, and split-job e2e tests passed (`56 passed`).
+- New alpha158 train/infer parity bug found by sidecar audit and fixed:
+  training used pandas `rolling.std()` sample standard deviation (`ddof=1`),
+  while inference single-bar/vectorized paths used population standard
+  deviation (`ddof=0`) for `STD*`, `VSTD*`, and `WVMA*`. That silently changed
+  model input scales at live/sim/LEAN scoring time. The train builder now
+  declares the std contract explicitly, and both inference paths match it.
+  Validation: alpha158, feature-cache, and volume-feature tests passed
+  (`35 passed`).
 
 ## Stop Conditions
 

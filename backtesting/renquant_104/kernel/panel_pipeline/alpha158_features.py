@@ -31,6 +31,9 @@ import pandas as pd
 
 WINDOWS = [5, 10, 20, 30, 60]
 EPS = 1e-12
+# pandas rolling.std() defaults to ddof=1.  The training builder uses that
+# Qlib-compatible sample standard deviation, so inference must do the same.
+STD_DDOF = 1
 
 
 # ── Operators (matching qlib/data/ops.py semantics) ────────────────────────
@@ -134,7 +137,7 @@ def _rolling_at(df_tail: pd.DataFrame) -> dict[str, float]:
         win_v = v[-n:]
         out[f"ROC{n}"]  = c[-n - 1] / c_today if n_bars > n else float("nan")
         out[f"MA{n}"]   = win_c.mean() / c_today
-        out[f"STD{n}"]  = win_c.std() / c_today
+        out[f"STD{n}"]  = win_c.std(ddof=STD_DDOF) / c_today
         out[f"BETA{n}"] = _slope_at(win_c) / c_today
         out[f"RSQR{n}"] = _rsquare_at(win_c)
         out[f"RESI{n}"] = _resi_at(win_c) / c_today
@@ -206,13 +209,13 @@ def _rolling_at(df_tail: pd.DataFrame) -> dict[str, float]:
             prior = prior[np.isfinite(prior) & (prior > 0)]
             v_today = float(prior.mean()) if prior.size > 0 else 1.0
         out[f"VMA{n}"]  = win_v.mean() / v_today
-        out[f"VSTD{n}"] = win_v.std() / v_today
+        out[f"VSTD{n}"] = win_v.std(ddof=STD_DDOF) / v_today
         # WVMA (CV of |return| × volume)
         if n_bars > n:
             c_prev = c[-n - 1: -1]
             abs_ret = np.abs(win_c / np.where(c_prev == 0, EPS, c_prev) - 1)
             wv = abs_ret * win_v
-            out[f"WVMA{n}"] = wv.std() / (wv.mean() + EPS)
+            out[f"WVMA{n}"] = wv.std(ddof=STD_DDOF) / (wv.mean() + EPS)
         else:
             out[f"WVMA{n}"] = 0.0
         # VSUMP/VSUMN/VSUMD
@@ -330,7 +333,7 @@ def compute_alpha158_frame(
 
         cols[f"ROC{n}"] = c.shift(n) / close_safe
         cols[f"MA{n}"] = roll_c.mean() / close_safe
-        cols[f"STD{n}"] = roll_c.std(ddof=0) / close_safe
+        cols[f"STD{n}"] = roll_c.std(ddof=STD_DDOF) / close_safe
         cols[f"BETA{n}"] = _rolling_apply(c, n, _slope_at) / close_safe
         cols[f"RSQR{n}"] = _rolling_apply(c, n, _rsquare_at)
         cols[f"RESI{n}"] = _rolling_apply(c, n, _resi_at) / close_safe
@@ -377,10 +380,10 @@ def compute_alpha158_frame(
         cols[f"SUMD{n}"] = sump - sumn
 
         cols[f"VMA{n}"] = roll_v.mean() / v_today
-        cols[f"VSTD{n}"] = roll_v.std(ddof=0) / v_today
+        cols[f"VSTD{n}"] = roll_v.std(ddof=STD_DDOF) / v_today
         wv = ret.abs() * v
         cols[f"WVMA{n}"] = (
-            wv.rolling(n, min_periods=n).std(ddof=0)
+            wv.rolling(n, min_periods=n).std(ddof=STD_DDOF)
             / (wv.rolling(n, min_periods=n).mean() + EPS)
         )
         pos_vd = vol_delta.clip(lower=0.0)

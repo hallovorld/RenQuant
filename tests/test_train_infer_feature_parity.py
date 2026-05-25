@@ -117,6 +117,35 @@ class TestAlpha158ValueParity:
             assert v1 == v2 or abs(v1 - v2) < 1e-9, \
                 f"LOOKAHEAD LEAK in feature '{k}': trunc={v1} full={v2}"
 
+    def test_alpha158_std_family_matches_training_builder(self, synthetic_ohlcv):
+        """Training and inference must use identical std semantics.
+
+        pandas ``rolling.std()`` defaults to sample std (ddof=1).  A prior
+        inference path used NumPy/pandas population std (ddof=0) for STD,
+        VSTD, and WVMA, silently changing the model input scale at live time.
+        """
+        from kernel.panel_pipeline.alpha158_features import (  # noqa: PLC0415
+            WINDOWS,
+            compute_alpha158_at,
+            compute_alpha158_frame,
+        )
+        from scripts.build_alpha158_qlib import rolling_features  # noqa: PLC0415
+
+        df = synthetic_ohlcv["AAA"]
+        today = df.index[260]
+        train_row = pd.DataFrame(rolling_features(df.loc[:today])).loc[today]
+        infer_row = pd.Series(compute_alpha158_at(df, today=today))
+        frame_row = compute_alpha158_frame(df).loc[today]
+
+        for n in WINDOWS:
+            for fam in ("STD", "VSTD", "WVMA"):
+                col = f"{fam}{n}"
+                expected = train_row[col]
+                assert infer_row[col] == pytest.approx(expected, rel=1e-12, abs=1e-12), \
+                    f"{col} single-bar inference differs from training builder"
+                assert frame_row[col] == pytest.approx(expected, rel=1e-12, abs=1e-12), \
+                    f"{col} vectorized inference differs from training builder"
+
 
 # ── Feature schema stability ─────────────────────────────────────────────────
 

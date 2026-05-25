@@ -105,6 +105,7 @@ log = logging.getLogger("alpha158-qlib")
 WINDOWS = [5, 10, 20, 30, 60]
 EPS = 1e-12
 MAX_SPY_LABEL_FFILL_DAYS = 5
+STD_DDOF = 1
 
 
 # ── Operators (matching qlib/data/ops.py semantics) ────────────────────────
@@ -229,7 +230,7 @@ def rolling_features(df: pd.DataFrame) -> dict[str, pd.Series]:
         # ROC: past close / today close (Qlib's exact formula)
         out[f"ROC{n}"]   = c.shift(n) / c
         out[f"MA{n}"]    = c.rolling(n).mean() / c
-        out[f"STD{n}"]   = c.rolling(n).std() / c
+        out[f"STD{n}"]   = c.rolling(n).std(ddof=STD_DDOF) / c
         out[f"BETA{n}"]  = _slope(c, n) / c
         out[f"RSQR{n}"]  = _rsquare(c, n)
         out[f"RESI{n}"]  = _resi(c, n) / c
@@ -262,10 +263,12 @@ def rolling_features(df: pd.DataFrame) -> dict[str, pd.Series]:
         v_safe = v.where(np.isfinite(v) & (v > 0), v.rolling(20, min_periods=1).mean())
         v_safe = v_safe.where(np.isfinite(v_safe) & (v_safe > 0), 1.0)
         out[f"VMA{n}"]  = v.rolling(n).mean() / v_safe
-        out[f"VSTD{n}"] = v.rolling(n).std() / v_safe
+        out[f"VSTD{n}"] = v.rolling(n).std(ddof=STD_DDOF) / v_safe
         # WVMA: coefficient of variation of (|return| × volume)
         wv = abs_c_ret * v
-        out[f"WVMA{n}"] = wv.rolling(n).std() / (wv.rolling(n).mean() + EPS)
+        out[f"WVMA{n}"] = (
+            wv.rolling(n).std(ddof=STD_DDOF) / (wv.rolling(n).mean() + EPS)
+        )
         # VSUMP/N/D
         pos_v = v_diff.clip(lower=0)
         neg_v = (-v_diff).clip(lower=0)
