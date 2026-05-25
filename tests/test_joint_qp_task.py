@@ -308,6 +308,43 @@ class TestNonFiniteDeltaWGuard:
         assert len(a_orders) == 1, "A's finite Δw must still produce a BUY"
         assert len(b_orders) == 0, "B's NaN Δw must be skipped, not crash"
 
+    def test_qp_buy_audits_actual_solver_mu_not_candidate_mu(self):
+        """When qp_mu_source/alpha_to_mu rewrites the optimizer vector,
+        trade telemetry must record the μ actually consumed by QP.
+        """
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+        from kernel.portfolio_qp.qp_solver import QPSolution
+        import numpy as np
+
+        ctx = _Ctx(config=_qp_on())
+        ctx._qp_tickers = ["A"]
+        cand = _Cand("A", rank_score=0.70, panel_score=0.50, mu=0.01, sigma=0.10)
+        ctx.candidates = [cand]
+        ctx._qp_mu_source_map = {"A": cand}
+        ctx._qp_mu = np.array([0.123])
+        ctx._qp_sigma = np.array([0.045])
+        ctx._qp_forced_mu_source = "ranking_composite"
+        ctx._qp_mu_transformed = True
+        ctx.prices = {"A": 100.0}
+        ctx.cash = ctx.portfolio_value = 10000.0
+        ctx._qp_solution = QPSolution(
+            delta_w=np.array([0.10]),
+            target_w=np.array([0.10]),
+            objective=0.001,
+            n_iter=5,
+            status="optimal",
+            diagnostics={},
+        )
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert len(ctx.orders) == 1
+        decision_inputs = ctx.orders[0]["decision_inputs"]
+        assert decision_inputs["qp_mu_used"] == pytest.approx(0.123)
+        assert decision_inputs["qp_sigma_used"] == pytest.approx(0.045)
+        assert decision_inputs["qp_mu_source"] == "ranking_composite"
+        assert decision_inputs["alpha_to_mu_applied"] is True
+
     def test_inf_dw_skipped_not_crashed(self):
         """Same guard for +inf delta_w."""
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
@@ -403,7 +440,8 @@ class TestQPSoftSellGuard:
 
     def _ctx_for_qp_sell(
         self, *, mu=-0.02, entry_price=80.0, entry_days=40,
-        qp_tax_aware=False, lt_hold_gate_days=0,
+        qp_tax_aware=False, lt_hold_gate_days=0, regime="BULL_CALM",
+        entry_regime=None,
     ):
         from kernel.portfolio_qp.qp_solver import QPSolution
         import numpy as np
@@ -425,7 +463,7 @@ class TestQPSoftSellGuard:
         }
         cfg["lt_hold_gate_days"] = lt_hold_gate_days
         today = datetime.date(2026, 4, 26)
-        ctx = _Ctx(config=cfg, today=today)
+        ctx = _Ctx(config=cfg, today=today, regime=regime)
         ctx._qp_tickers = ["H"]
         ctx._qp_sigma = np.array([0.05])
         ctx._qp_mu = np.array([mu])
@@ -436,6 +474,8 @@ class TestQPSoftSellGuard:
                 entry_date=today - datetime.timedelta(days=entry_days),
             )
         }
+        if entry_regime is not None:
+            ctx.holdings["H"].entry_regime = entry_regime
         ctx.prices = {"H": 100.0}
         ctx.cash = 9000.0
         ctx.portfolio_value = 10000.0
@@ -555,6 +595,26 @@ class TestQPSoftSellGuard:
         assert ctx.exits == []
         assert ctx.counters["qp_soft_sell_blocked"] == 1
         assert ctx._blocked_by_ticker["H"].startswith("qp_soft_sell_horizon:")
+
+    def test_qp_soft_sell_horizon_uses_entry_thesis_regime(self):
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(
+            mu=-0.20,
+            entry_price=120.0,
+            entry_days=30,
+            regime="CHOPPY",
+            entry_regime="BULL_CALM",
+        )
+        ctx.config["risk"]["panel_exit"]["min_holding_days_by_regime"] = {
+            "BULL_CALM": 60,
+        }
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters["qp_soft_sell_blocked"] == 1
+        assert "regime=BULL_CALM" in ctx._blocked_by_ticker["H"]
 
     def test_horizon_gate_uses_disposed_hifo_lot_age_not_position_age(self):
         from kernel.exits import TaxLot

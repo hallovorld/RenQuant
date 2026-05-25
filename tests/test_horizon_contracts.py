@@ -39,3 +39,29 @@ def test_bull_calm_qp_soft_sell_waits_for_panel_thesis_horizon() -> None:
         )
 
         assert bull_calm_days >= panel_horizon, name
+
+
+def test_bull_calm_panel_soft_exits_wait_for_panel_thesis_horizon() -> None:
+    """Panel/model soft exits share the same BULL_CALM thesis horizon as QP."""
+    for name in ("strategy_config.json", "strategy_config.golden.json"):
+        cfg = _load(name)
+        panel_horizon = int(cfg["panel_ltr"]["lookahead_days"])
+        panel_exit = cfg["risk"]["panel_exit"]
+        bull_calm_days = int(
+            panel_exit["min_holding_days_by_regime"]["BULL_CALM"]
+        )
+
+        assert bull_calm_days >= panel_horizon, name
+
+
+def test_bull_calm_stop_loss_uses_entry_thesis_floor_after_regime_change() -> None:
+    """Prod config should not tighten BULL_CALM entry stops on relabel alone."""
+    for name in ("strategy_config.json", "strategy_config.golden.json"):
+        cfg = _load(name)
+        policy = cfg["risk"]["stop_loss_anchor_policy"]
+
+        assert policy["mode"] == "max_entry_current", name
+        assert "BULL_CALM" in policy["entry_regimes"], name
+        assert {"BULL_VOLATILE", "CHOPPY", "BEAR"}.issubset(
+            set(policy["current_regimes"])
+        ), name

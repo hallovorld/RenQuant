@@ -374,8 +374,16 @@
     "require_sector_map_for_buys": true,
     "max_sells_per_bar": 2,
     "stop_loss_anchor_policy": {
-      "mode": "current_regime",
-      "_reason": "Explicit default: cumulative stop-loss follows the current regime unless an A/B config enables max_entry_current for entry-thesis anchoring."
+      "mode": "max_entry_current",
+      "entry_regimes": [
+        "BULL_CALM"
+      ],
+      "current_regimes": [
+        "BULL_VOLATILE",
+        "CHOPPY",
+        "BEAR"
+      ],
+      "_reason": "2026-05-24 Codex exit-path repair: BULL_CALM entries are selected on a 60d thesis. If the regime label later deteriorates, cumulative stop-loss may adapt only by taking max(entry_stop,current_stop), so the path-risk stop stays armed but is not silently tightened below the entry thesis budget."
     },
     "panel_exit": {
       "enabled": true,
@@ -387,9 +395,9 @@
       "mu_strong_sell_ceiling": -0.05,
       "min_universe": 5,
       "min_holding_days_by_regime": {
-        "BULL_CALM": 10
+        "BULL_CALM": 60
       },
-      "_min_holding_days_reason": "2026-05-21 P0-3: selected-score forensics show the panel edge is weak at 1d/5d but positive at 10d/20d. In BULL_CALM, panel_conviction is a soft model exit, not a hard risk exit, so it must wait 10 calendar days before firing. Regime deterioration bypasses this because the key is only BULL_CALM; hard stops/trailing/SDL/max_hold are unaffected.",
+      "_min_holding_days_reason": "2026-05-24 Codex exit-path repair: BULL_CALM panel/QP thesis is trained and calibrated on a 60d forward excess-return horizon. Model-driven soft exits (model_sell and panel_conviction) must not cut that thesis before the same horizon even if the current regime label changes; hard path-risk exits remain unaffected.",
       "tax_adjusted_soft_exit": {
         "enabled": true,
         "short_term_only": true,
@@ -663,6 +671,10 @@
         "min_panel_score": 0.0,
         "topup_min_rank_score": 0.55,
         "topup_min_panel_score": 0.0,
+        "min_expected_return_by_regime": {
+          "BULL_CALM": 0.04
+        },
+        "_min_expected_return_reason": "2026-05-24 Codex QP alpha contract: QP may size only candidates with finite calibrated expected-return evidence on the same 60d horizon as panel_ltr/QP μ. Requiring 4% 60d expected excess return in BULL_CALM keeps thin probability-only signals from becoming trades after friction and benchmark-sleeve opportunity cost.",
         "respect_open_slots": true,
         "_reason": "2026-05-23 Codex alpha-conversion fix: QP may size/rebalance only pre-qualified alpha. WF trace forensics showed negative raw-panel and low-rank QP/TopUp adds were net negative after tax/friction, and QP opened risk when the book was already at the legacy slot cap. Require calibrated rank >=0.55, raw panel >=0, and available slot for new names before emitting QP buys/top-ups."
       },

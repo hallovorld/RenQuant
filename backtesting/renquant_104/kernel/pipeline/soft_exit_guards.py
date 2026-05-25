@@ -37,6 +37,14 @@ def configured_soft_exit_min_days(panel_cfg: dict[str, Any], regime: str | None)
     return _configured_min_days(panel_cfg, regime)
 
 
+def soft_exit_thesis_regime(holding: Any, current_regime: str | None) -> str | None:
+    """Use the entry thesis regime for soft-exit horizon gates when known."""
+    entry_regime = getattr(holding, "entry_regime", None)
+    if entry_regime:
+        return str(entry_regime)
+    return current_regime
+
+
 def soft_exit_horizon_suppression(
     *,
     panel_cfg: dict[str, Any],

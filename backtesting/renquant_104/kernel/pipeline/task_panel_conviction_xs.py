@@ -62,6 +62,7 @@ from .soft_exit_guards import (
     lt_gate_suppression,
     resolve_current_price,
     soft_exit_horizon_suppression,
+    soft_exit_thesis_regime,
     tax_adjusted_soft_exit_suppression,
 )
 
@@ -225,7 +226,7 @@ class CrossSectionalPanelExitTask(Task):
 
             suppress, why = soft_exit_horizon_suppression(
                 panel_cfg=cfg,
-                regime=getattr(ctx, "regime", None),
+                regime=soft_exit_thesis_regime(hs, getattr(ctx, "regime", None)),
                 today=getattr(ctx, "today", None),
                 holding=hs,
             )

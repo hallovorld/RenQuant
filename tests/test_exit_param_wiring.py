@@ -126,6 +126,43 @@ def test_make_sell_tctx_can_anchor_stop_loss_to_entry_regime_when_enabled():
     assert tctx.exit_params["stop_loss_entry_pct"] == 0.15
 
 
+def test_make_sell_tctx_anchors_model_sell_min_hold_to_entry_thesis_horizon():
+    """Model-sell is a soft exit; BULL_CALM 60d thesis should survive
+    current-regime relabeling until its configured horizon has elapsed.
+    """
+    ctx = InferenceContext(
+        config={
+            "min_hold_days": 5,
+            "risk": {
+                "panel_exit": {
+                    "min_holding_days_by_regime": {"BULL_CALM": 60},
+                },
+            },
+            "regime_params": {
+                "BULL_CALM": {"max_hold_days": 500, "stop_loss_pct": 0.15},
+                "CHOPPY": {"max_hold_days": 40, "stop_loss_pct": 0.08},
+            },
+        },
+        today=dt.date(2026, 5, 1),
+        regime="CHOPPY",
+        holdings={
+            "AAPL": HoldingState(
+                entry_price=100.0,
+                entry_date=dt.date(2026, 4, 1),
+                high_watermark=120.0,
+                entry_regime="BULL_CALM",
+            ),
+        },
+        prices={"AAPL": 115.0},
+    )
+
+    tctx = _make_sell_tctx(ctx, "AAPL")
+
+    assert tctx.exit_params["min_hold_days"] == 60
+    assert tctx.exit_params["soft_exit_min_hold_anchor_regime"] == "BULL_CALM"
+    assert tctx.exit_params["soft_exit_min_hold_days"] == 60
+
+
 def test_make_sell_tctx_rejects_unknown_stop_anchor_policy():
     ctx = InferenceContext(
         config={

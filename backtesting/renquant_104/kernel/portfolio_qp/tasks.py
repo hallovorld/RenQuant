@@ -1733,6 +1733,16 @@ def _shares_from_dw(dw: float, nav: float, px: float) -> int:
     return int(abs(dw) * nav / px)
 
 
+def _array_float_at(value, idx: int) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value[idx])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return out if math.isfinite(out) else None
+
+
 def _qp_max_positions(ctx) -> int:
     regime_params = (
         (ctx.config.get("regime_params", {}) or {})
@@ -1820,25 +1830,37 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
     if er_floor is not None:
         floor = float(er_floor)
         expected_return = _source_float(source, "expected_return")
-        if not math.isfinite(expected_return):
-            expected_return = _source_float(source, "mu")
+        horizon_block = _qp_admission_horizon_block_reason(
+            ctx,
+            env,
+            source,
+            metric="expected_return",
+        )
+        if horizon_block:
+            return horizon_block
         if not math.isfinite(expected_return) or expected_return < floor:
             return "qp_admission_expected_return"
 
-    er_over_sigma_floor = _qp_admission_expected_return_over_sigma_floor(
+    er_over_sigma_floor, er_over_sigma_metric = _qp_admission_expected_return_over_sigma_floor(
         gate,
         is_held,
         getattr(ctx, "regime", None),
     )
     if er_over_sigma_floor is not None:
         floor = float(er_over_sigma_floor)
-        expected_return = _source_float(source, "expected_return")
-        if not math.isfinite(expected_return):
-            expected_return = _source_float(source, "mu")
+        signal = _source_float(source, er_over_sigma_metric)
+        horizon_block = _qp_admission_horizon_block_reason(
+            ctx,
+            env,
+            source,
+            metric=er_over_sigma_metric,
+        )
+        if horizon_block:
+            return horizon_block
         sigma = _source_float(source, "sigma")
         ratio = (
-            expected_return / sigma
-            if math.isfinite(expected_return) and math.isfinite(sigma) and sigma > 0
+            signal / sigma
+            if math.isfinite(signal) and math.isfinite(sigma) and sigma > 0
             else float("nan")
         )
         if not math.isfinite(ratio) or ratio < floor:
@@ -1903,7 +1925,59 @@ def _qp_admission_expected_return_over_sigma_floor(
     for key in keys:
         value = _qp_admission_gate_value(gate, key, regime)
         if value is not None:
-            return value
+            metric = "mu" if "_mu_" in key or key.startswith("min_mu") else "expected_return"
+            return value, metric
+    return None, "expected_return"
+
+
+def _qp_admission_expected_horizon(ctx, env: dict) -> int | None:
+    cfg = env.get("cfg", {}) or {}
+    candidates = [
+        cfg.get("qp_mu_horizon_days"),
+        cfg.get("target_horizon_days"),
+    ]
+    full_cfg = getattr(ctx, "config", None) or {}
+    candidates.extend([
+        ((full_cfg.get("rotation", {}) or {}).get("joint_actions", {}) or {}).get(
+            "qp_mu_horizon_days",
+        ),
+        (full_cfg.get("rotation", {}) or {}).get("target_horizon_days"),
+        (full_cfg.get("panel_ltr", {}) or {}).get("lookahead_days"),
+    ])
+    for value in candidates:
+        try:
+            out = int(value)
+        except (TypeError, ValueError):
+            continue
+        if out > 0:
+            return out
+    return None
+
+
+def _source_positive_int(source: object, name: str) -> int | None:
+    value = source.get(name) if isinstance(source, dict) else getattr(source, name, None)
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _qp_admission_horizon_block_reason(
+    ctx,
+    env: dict,
+    source: object,
+    *,
+    metric: str,
+) -> str | None:
+    expected_horizon = _qp_admission_expected_horizon(ctx, env)
+    if expected_horizon is None:
+        return None
+    field = "mu_horizon_days" if metric == "mu" else "expected_return_horizon_days"
+    actual_horizon = _source_positive_int(source, field)
+    if actual_horizon != expected_horizon:
+        suffix = "mu_horizon" if metric == "mu" else "expected_return_horizon"
+        return f"qp_admission_{suffix}"
     return None
 
 
@@ -1987,17 +2061,19 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
         lt_gate_suppression,
         resolve_current_price,
         soft_exit_horizon_suppression,
+        soft_exit_thesis_regime,
         tax_adjusted_soft_exit_suppression,
     )
+    thesis_regime = soft_exit_thesis_regime(hs, getattr(ctx, "regime", None))
     suppress, why = soft_exit_horizon_suppression(
         panel_cfg=panel_cfg,
-        regime=getattr(ctx, "regime", None),
+        regime=thesis_regime,
         today=getattr(ctx, "today", None),
         holding=hs,
     )
     if suppress:
         return "qp_soft_sell_horizon:" + why
-    min_days = configured_soft_exit_min_days(panel_cfg, getattr(ctx, "regime", None))
+    min_days = configured_soft_exit_min_days(panel_cfg, thesis_regime)
     if min_days > 0:
         pending_shares = (_get_path(ctx, "_qp_pending_sell_shares") or {}).get(ticker)
         lot_days = _disposed_lot_min_holding_days(
@@ -2010,7 +2086,7 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
             return (
                 "qp_soft_sell_lot_horizon:"
                 f"lot_days={lot_days} < {min_days} "
-                f"regime={getattr(ctx, 'regime', None)} "
+                f"regime={thesis_regime} "
                 f"method={str(cfg.get('qp_tax_lot_method', 'fifo')).lower()}"
             )
     current_price = resolve_current_price(ctx, hs, ticker)
@@ -2802,6 +2878,15 @@ def _per_asset_tax_lots(hs, price, w_i, nav, today, st_rate, lt_rate,
 def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
     cand = score_sources.get(ticker)
     actual_target_pct = _actual_qp_buy_target_pct(ctx, ticker, shares, px)
+    qp_mu_used = _array_float_at(_get_path(ctx, "_qp_mu"), i)
+    qp_sigma_used = _array_float_at(_get_path(ctx, "_qp_sigma"), i)
+    qp_mu_source = str(
+        getattr(
+            ctx,
+            "_qp_forced_mu_source",
+            (ctx.config or {}).get("ranking", {}).get("qp_mu_source", "mu"),
+        )
+    )
     ctx.orders.append(stamp_order_attribution({
         "ticker": ticker, "shares": shares, "price": px,
         "invest": shares * px,
@@ -2830,6 +2915,10 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
                 cand, "expected_return_horizon_days", None,
             ),
             "mu_horizon_days": getattr(cand, "mu_horizon_days", None),
+            "qp_mu_used": qp_mu_used,
+            "qp_sigma_used": qp_sigma_used,
+            "qp_mu_source": qp_mu_source,
+            "alpha_to_mu_applied": bool(getattr(ctx, "_qp_mu_transformed", False)),
         }))
     log.info("QP_BUY  %-6s  Δw=%+.4f  shares=%d  px=%.2f  invest=$%.0f",
              ticker, float(sol.delta_w[i]), shares, px, shares * px)

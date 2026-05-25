@@ -2821,6 +2821,29 @@ entire pipeline end-to-end:
   horizon evidence in both the score snapshot and QP decision inputs. This
   pushes the same horizon contract into DB audit, not only WF CSV acceptance.
   Validation: persistence/trade-event/ledger tests passed (`56 passed`).
+- QP admission is now strict about expected-return semantics. A configured
+  `min_expected_return*` floor must be backed by finite `expected_return` on
+  the QP horizon; `mu` no longer silently substitutes for missing ER. Ratio
+  floors also respect their key semantics (`min_expected_return_over_sigma`
+  uses ER, `min_mu_over_sigma` uses μ). QP buys now record `qp_mu_used`,
+  `qp_sigma_used`, `qp_mu_source`, and `alpha_to_mu_applied` in
+  `decision_inputs` so forensics can compare P/L against the actual optimizer
+  driver, not only `CandidateResult.mu`. Production/golden configs add a
+  BULL_CALM 60d expected-return floor (`0.04`) under the QP admission gate.
+- BULL_CALM model-driven exits are now thesis-horizon aligned. The 60d
+  `panel_ltr.lookahead_days` horizon is applied to model-sell, XS
+  panel-conviction exits, and QP soft sells using the entry thesis regime
+  when available, so a BULL_CALM entry is not cut by a shorter CHOPPY/BULL_VOL
+  soft-exit window after a regime relabel. Production/golden configs raise
+  `risk.panel_exit.min_holding_days_by_regime.BULL_CALM` from 10 to 60.
+- BULL_CALM cumulative stop-loss now uses `max_entry_current` in
+  production/golden configs for deteriorated current regimes. Hard path-risk
+  stops remain armed, but a later regime label cannot silently tighten a
+  BULL_CALM entry below its original thesis stop budget.
+- Validation for this batch: QP admission/telemetry, exit-param wiring,
+  panel-conviction XS exit, QP soft-sell, horizon contract, WF config parity,
+  and QP μ-contract tests passed (`139 passed`; plus targeted attribution
+  tests `24 passed`).
 
 ## Stop Conditions
 
@@ -2847,6 +2870,10 @@ Stop and fix before reporting performance if any of these happen:
   for emitted orders.
 - QP buy rows in DB lack finite expected return or positive ER/μ horizon
   values in score snapshot / decision inputs.
+- QP admission accepts an expected-return floor by falling back to μ or by
+  mixing ER/μ horizons.
+- BULL_CALM model-driven soft exits can fire before the 60d panel thesis
+  horizon because the current regime relabeled away from BULL_CALM.
 - A metric is not labeled as event-level, annual-net, short-window style, or
   acceptance-grade WF.
 

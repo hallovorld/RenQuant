@@ -150,9 +150,11 @@ def test_qp_blocks_new_candidate_below_expected_return_floor() -> None:
         rank_score=0.61,
         panel_score=0.10,
         expected_return=0.039,
+        expected_return_horizon_days=60,
     )
     env = _env(source=source)
     env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+    env["cfg"]["qp_mu_horizon_days"] = 60
 
     reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
 
@@ -169,18 +171,62 @@ def test_qp_blocks_missing_expected_return_when_floor_configured() -> None:
     assert reason == "qp_admission_expected_return"
 
 
+def test_qp_expected_return_floor_does_not_fallback_to_mu() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        mu=0.10,
+        mu_horizon_days=60,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+    env["cfg"]["qp_mu_horizon_days"] = 60
+
+    reason = _qp_buy_admission_block_reason(
+        SimpleNamespace(config={}, regime="BULL_CALM"),
+        env,
+        "AAA",
+    )
+
+    assert reason == "qp_admission_expected_return_horizon"
+
+
+def test_qp_blocks_expected_return_horizon_mismatch() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.08,
+        expected_return_horizon_days=20,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+    env["cfg"]["qp_mu_horizon_days"] = 60
+
+    reason = _qp_buy_admission_block_reason(
+        SimpleNamespace(config={}, regime="BULL_CALM"),
+        env,
+        "AAA",
+    )
+
+    assert reason == "qp_admission_expected_return_horizon"
+
+
 def test_qp_expected_return_floor_uses_regime_override() -> None:
     source = SimpleNamespace(
         ticker="AAA",
         rank_score=0.61,
         panel_score=0.10,
         expected_return=0.025,
+        expected_return_horizon_days=60,
     )
     env = _env(source=source)
     env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
     env["cfg"]["qp_admission_gate"]["min_expected_return_by_regime"] = {
         "CHOPPY": 0.02,
     }
+    env["cfg"]["qp_mu_horizon_days"] = 60
 
     reason = _qp_buy_admission_block_reason(
         SimpleNamespace(config={}, regime="CHOPPY"),
@@ -197,10 +243,12 @@ def test_qp_held_topup_uses_topup_expected_return_floor() -> None:
         rank_score=0.61,
         panel_score=0.10,
         expected_return=0.025,
+        expected_return_horizon_days=60,
     )
     env = _env(holdings={"AAA": holding}, source=None)
     env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
     env["cfg"]["qp_admission_gate"]["topup_min_expected_return"] = 0.03
+    env["cfg"]["qp_mu_horizon_days"] = 60
 
     reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
 
@@ -213,10 +261,12 @@ def test_qp_blocks_new_candidate_below_expected_return_over_sigma_floor() -> Non
         rank_score=0.61,
         panel_score=0.10,
         expected_return=0.04,
+        expected_return_horizon_days=60,
         sigma=0.50,
     )
     env = _env(source=source)
     env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma"] = 0.10
+    env["cfg"]["qp_mu_horizon_days"] = 60
 
     reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
 
@@ -229,6 +279,7 @@ def test_qp_expected_return_over_sigma_floor_uses_regime_override() -> None:
         rank_score=0.61,
         panel_score=0.10,
         expected_return=0.04,
+        expected_return_horizon_days=60,
         sigma=0.50,
     )
     env = _env(source=source)
@@ -236,6 +287,7 @@ def test_qp_expected_return_over_sigma_floor_uses_regime_override() -> None:
     env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma_by_regime"] = {
         "BULL_CALM": 0.07,
     }
+    env["cfg"]["qp_mu_horizon_days"] = 60
 
     reason = _qp_buy_admission_block_reason(
         SimpleNamespace(config={}, regime="BULL_CALM"),
@@ -246,16 +298,36 @@ def test_qp_expected_return_over_sigma_floor_uses_regime_override() -> None:
     assert reason is None
 
 
-def test_qp_expected_return_over_sigma_falls_back_to_mu() -> None:
+def test_qp_expected_return_over_sigma_does_not_fallback_to_mu() -> None:
     source = SimpleNamespace(
         ticker="AAA",
         rank_score=0.61,
         panel_score=0.10,
         mu=0.06,
+        mu_horizon_days=60,
         sigma=0.50,
     )
     env = _env(source=source)
     env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma"] = 0.10
+    env["cfg"]["qp_mu_horizon_days"] = 60
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "qp_admission_expected_return_horizon"
+
+
+def test_qp_mu_over_sigma_uses_mu_with_matching_horizon() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        mu=0.06,
+        mu_horizon_days=60,
+        sigma=0.50,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_mu_over_sigma"] = 0.10
+    env["cfg"]["qp_mu_horizon_days"] = 60
 
     reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
 

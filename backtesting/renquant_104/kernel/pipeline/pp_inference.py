@@ -25,6 +25,7 @@ from .job_joint_actions  import JointActionJob
 from .job_panel_veto     import PanelRankVetoJob
 from .job_score_distribution import ScoreDistributionJob
 from .exit_params import apply_stop_loss_anchor_policy
+from .soft_exit_guards import configured_soft_exit_min_days, soft_exit_thesis_regime
 
 # PanelScoringJob is imported lazily inside run() to avoid a circular import:
 # kernel.panel_pipeline.__init__ pulls in this module via
@@ -77,6 +78,13 @@ def _make_sell_tctx(ctx: InferenceContext, ticker: str) -> TickerInferenceContex
     if isinstance(entry_regime_p, dict) and "max_hold_days" in entry_regime_p:
         exit_params["max_hold_days"] = entry_regime_p["max_hold_days"]
         exit_params["max_hold_anchor_regime"] = entry_regime
+    panel_exit_cfg = ((ctx.config.get("risk") or {}).get("panel_exit") or {})
+    thesis_regime = soft_exit_thesis_regime(holding, ctx.regime)
+    soft_min_hold = configured_soft_exit_min_days(panel_exit_cfg, thesis_regime)
+    if soft_min_hold > int(exit_params.get("min_hold_days", 0) or 0):
+        exit_params["min_hold_days"] = soft_min_hold
+        exit_params["soft_exit_min_hold_anchor_regime"] = thesis_regime
+        exit_params["soft_exit_min_hold_days"] = soft_min_hold
     apply_stop_loss_anchor_policy(
         exit_params,
         config=ctx.config,
