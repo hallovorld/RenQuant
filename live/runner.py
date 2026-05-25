@@ -352,10 +352,14 @@ def _run_once_multi_pipeline(
     if preflight_cfg.get("enabled", True):
         try:
             from kernel.preflight import run_preflight, PreflightFailed  # noqa: PLC0415
+            is_shadow_broker = getattr(broker, "broker_name", "") == "alpaca_shadow"
+            preflight_strict = bool(preflight_cfg.get("strict", True))
+            if is_shadow_broker:
+                preflight_strict = bool(preflight_cfg.get("shadow_strict", False))
             run_preflight(
                 config, broker=broker, strategy_dir=strategy_dir,
                 broker_name=getattr(broker, "broker_name", None),
-                strict=bool(preflight_cfg.get("strict", True)),
+                strict=preflight_strict,
                 run_mode=run_mode,
             )
         except PreflightFailed as exc:

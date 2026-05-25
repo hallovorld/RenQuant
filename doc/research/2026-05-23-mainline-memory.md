@@ -167,6 +167,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   model-driven `model_sell` hold floor via `max(min_hold_days, profit/loss
   floor)`. Hard path-risk exits (`stop_loss`, trailing stop, SDL, max-hold)
   remain unaffected.
+- Shadow preflight isolation fixed 2026-05-25: `readonly-alpaca`
+  (`broker_name=alpaca_shadow`) now runs full-cycle preflight in non-strict
+  audit mode by default (`live.preflight.shadow_strict` can opt back into hard
+  failure). Production/live full remains strict fail-closed. This lets shadow
+  continue producing decision traces when prod is correctly blocked by WF or
+  contract failures.
 - 2026-05-25 contract/audit fixes landed: panel preflight now hard-fails
   full/buy when sentiment feature columns are present but the artifact lacks a
   `sentiment_runtime_gate_contract` while runtime disables sentiment in any
@@ -266,6 +272,14 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_panel_conviction_exit.py tests/test_joint_qp_task.py
     tests/test_sell_gate_b.py tests/test_earnings_blackout_sell.py
     tests/test_policy_alignment.py` (`440 passed`).
+- Latest shadow/preflight hardening:
+  - `live.runner._run_once_multi_pipeline()` keeps production full/buy strict,
+    but passes `strict=False` to preflight for the read-only shadow broker by
+    default.
+  - Targeted tests passed:
+    `tests/test_runner_preflight_fail_closed.py tests/test_runner_trade_ntfy.py
+    tests/test_daily_104_shadow_notify.py tests/test_smoke_test_model.py`
+    (`73 passed`).
 - `81bd338 fix(renquant104): enforce strict model contracts`
   - Hard-fails buy/full preflight on bad or missing WF/SPY/regime
     IC/calibration/config evidence.

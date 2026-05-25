@@ -14,7 +14,16 @@ class _Broker:
     broker_name = "paper"
 
 
-def _install_fake_pipeline(monkeypatch, *, preflight_exc: Exception, seen: dict) -> None:
+class _ShadowBroker:
+    broker_name = "alpaca_shadow"
+
+
+def _install_fake_pipeline(
+    monkeypatch,
+    *,
+    preflight_exc: Exception | None,
+    seen: dict,
+) -> None:
     kernel_pkg = types.ModuleType("kernel")
     preflight_mod = types.ModuleType("kernel.preflight")
     pipeline_mod = types.ModuleType("kernel.pipeline")
@@ -25,7 +34,9 @@ def _install_fake_pipeline(monkeypatch, *, preflight_exc: Exception, seen: dict)
         pass
 
     def run_preflight(*_args, **_kwargs):
-        raise preflight_exc
+        seen["preflight_kwargs"] = dict(_kwargs)
+        if preflight_exc is not None:
+            raise preflight_exc
 
     class _Pipeline:
         def run(self, ctx):
@@ -85,10 +96,11 @@ def test_unexpected_preflight_exception_aborts_full_run(monkeypatch, caplog):
             broker=_Broker(),
             strategy_dir=Path("backtesting/renquant_104"),
             sell_only=False,
-        )
+    )
 
     assert exc.value.code == 2
-    assert seen == {}
+    assert "pipeline_run" not in seen
+    assert "commit" not in seen
     assert "P-PREFLIGHT-EXCEPTION" in caplog.text
 
 
@@ -108,4 +120,27 @@ def test_unexpected_preflight_exception_allows_sell_only_risk_exit(monkeypatch):
         sell_only=True,
     )
 
-    assert seen == {"pipeline_run": True, "commit": True}
+    assert seen["pipeline_run"] is True
+    assert seen["commit"] is True
+
+
+def test_shadow_full_preflight_is_non_strict_by_default(monkeypatch):
+    seen: dict = {}
+    _install_fake_pipeline(
+        monkeypatch,
+        preflight_exc=None,
+        seen=seen,
+    )
+
+    runner._run_once_multi_pipeline(
+        {"live": {"preflight": {"enabled": True}}},
+        models={},
+        broker=_ShadowBroker(),
+        strategy_dir=Path("backtesting/renquant_104"),
+        sell_only=False,
+    )
+
+    assert seen["preflight_kwargs"]["strict"] is False
+    assert seen["preflight_kwargs"]["broker_name"] == "alpaca_shadow"
+    assert seen["pipeline_run"] is True
+    assert seen["commit"] is True
