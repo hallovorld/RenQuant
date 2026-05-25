@@ -1182,11 +1182,14 @@ def run_trade_contract_gate(wf_result: dict, config: dict) -> dict:
         "strict", "hard", "error", "enforce",
     }
     require_mu = bool(qp_enabled and strict_qp)
+    require_er = bool(qp_enabled and strict_qp)
     require_sigma = bool(kelly.get("enabled") or panel.get("ngboost", {}).get("enabled"))
     report = evaluate_trade_contract(
         pd.concat(frames, ignore_index=True),
         require_entry_mu=require_mu,
         require_entry_sigma=require_sigma,
+        require_entry_expected_return=require_er,
+        require_entry_horizon=require_er,
         require_exit_regime=True,
         require_exit_thresholds=True,
     )
@@ -1196,6 +1199,8 @@ def run_trade_contract_gate(wf_result: dict, config: dict) -> dict:
         "evidence": report.evidence,
         "require_entry_mu": require_mu,
         "require_entry_sigma": require_sigma,
+        "require_entry_expected_return": require_er,
+        "require_entry_horizon": require_er,
     }
 
 

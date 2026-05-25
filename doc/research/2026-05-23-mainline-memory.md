@@ -2811,6 +2811,12 @@ entire pipeline end-to-end:
   horizon-60 trace all three surfaces fail closed (`n=16`; rank Spearman
   `-0.2916`, μ/ER Spearman `-0.3063`), confirming the remaining problem is
   real alpha/QP-driver monotonicity, not a missing-column artifact.
+- Trade-contract acceptance now also requires strict-QP alpha trades to carry
+  finite `entry_expected_return`, `entry_expected_return_horizon_days`, and
+  `entry_mu_horizon_days`, not just `entry_mu`/`entry_sigma`. This prevents
+  future WF acceptance from reporting a μ surface without the horizon contract
+  needed to interpret it. Validation: trade-contract/WF-gate tests passed
+  (`46 passed`).
 
 ## Stop Conditions
 

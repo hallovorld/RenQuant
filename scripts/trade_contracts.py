@@ -21,6 +21,8 @@ def evaluate_trade_contract(
     *,
     require_entry_mu: bool = False,
     require_entry_sigma: bool = False,
+    require_entry_expected_return: bool = False,
+    require_entry_horizon: bool = False,
     require_exit_regime: bool = True,
     require_exit_thresholds: bool = True,
 ) -> TradeContractReport:
@@ -61,6 +63,28 @@ def evaluate_trade_contract(
         evidence["missing_entry_sigma"] = n
         if n:
             issues.append(f"{n} alpha trade(s) missing finite entry_sigma")
+    if require_entry_expected_return:
+        n = _missing_finite(alpha_entry_auditable, "entry_expected_return")
+        evidence["missing_entry_expected_return"] = n
+        if n:
+            issues.append(
+                f"{n} alpha trade(s) missing finite entry_expected_return"
+            )
+    if require_entry_horizon:
+        er_n = _missing_positive_int(
+            alpha_entry_auditable, "entry_expected_return_horizon_days"
+        )
+        mu_n = _missing_positive_int(
+            alpha_entry_auditable, "entry_mu_horizon_days"
+        )
+        evidence["missing_entry_expected_return_horizon_days"] = er_n
+        evidence["missing_entry_mu_horizon_days"] = mu_n
+        if er_n:
+            issues.append(
+                f"{er_n} alpha trade(s) missing entry_expected_return_horizon_days"
+            )
+        if mu_n:
+            issues.append(f"{mu_n} alpha trade(s) missing entry_mu_horizon_days")
     if require_exit_regime:
         n = _missing_nonempty(closed, "exit_regime")
         evidence["missing_exit_regime"] = n
@@ -127,6 +151,15 @@ def _missing_finite(df: pd.DataFrame, col: str) -> int:
         return int(len(df))
     s = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
     return int(s.isna().sum())
+
+
+def _missing_positive_int(df: pd.DataFrame, col: str) -> int:
+    if df.empty:
+        return 0
+    if col not in df.columns:
+        return int(len(df))
+    s = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    return int((s.isna() | (s <= 0)).sum())
 
 
 def _missing_nonempty(df: pd.DataFrame, col: str) -> int:
