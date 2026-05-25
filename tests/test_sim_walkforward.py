@@ -451,6 +451,80 @@ class TestMakeContextPerBarLookup:
         with pytest.raises(ValueError, match="no retrain"):
             adapter._get_panel_scorer_for_bar(pd.Timestamp("2024-02-01"))  # noqa: SLF001
 
+    def test_walkforward_calibrator_comes_from_manifest_not_static_config(
+        self, tmp_path: Path,
+    ):
+        """WF acceptance sims must not reuse a static calibration surface."""
+        from adapters.sim import SimAdapter
+        from training_panel.global_calibrator import GlobalPanelCalibration
+
+        scorer_fp = "sha256:" + ("a" * 64)
+        scorer_path = tmp_path / "panel-ltr.json"
+        _write_synthetic_panel_artifact(
+            scorer_path,
+            trained_date="2024-03-15",
+            artifact_fingerprint=scorer_fp,
+        )
+        fold_cal = tmp_path / "fold-cal.json"
+        GlobalPanelCalibration(
+            prob_x=np.array([0.0, 1.0]),
+            prob_y=np.array([0.40, 0.60]),
+            er_x=np.array([0.0, 1.0]),
+            er_y=np.array([0.01, 0.03]),
+            metadata={
+                "scorer_artifact_fingerprint": scorer_fp,
+                "expected_return_label_contract": "raw_return_units_required",
+            },
+        ).save(fold_cal)
+        static_cal = tmp_path / "static-cal.json"
+        GlobalPanelCalibration(
+            prob_x=np.array([0.0, 1.0]),
+            prob_y=np.array([0.10, 0.20]),
+            er_x=np.array([0.0, 1.0]),
+            er_y=np.array([-0.05, -0.04]),
+            metadata={
+                "scorer_artifact_fingerprint": "sha256:" + ("b" * 64),
+                "expected_return_label_contract": "raw_return_units_required",
+            },
+        ).save(static_cal)
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(json.dumps({
+            "retrains": [{
+                "cutoff_date": "2024-03-01",
+                "trained_date": "2024-03-15",
+                "artifact_uri": str(scorer_path),
+                "calibrator_uri": str(fold_cal),
+            }],
+        }))
+        ohlcv = {"SPY": _tiny_ohlcv()}
+        cfg = {
+            "watchlist": [], "sector_etf_map": {}, "tax": {}, "regime": {},
+            "walkforward": {
+                "enabled": True,
+                "manifest_path": str(manifest),
+            },
+            "ranking": {
+                "panel_scoring": {
+                    "enabled": True,
+                    "global_calibration": {
+                        "enabled": True,
+                        "artifact_path": str(static_cal),
+                    },
+                },
+            },
+        }
+        adapter = SimAdapter(
+            config=cfg, strategy_dir=tmp_path,
+            ohlcv=ohlcv, spy_df=ohlcv["SPY"], sector_etf_map={},
+            initial_cash=100_000,
+        )
+
+        cal = adapter._get_global_calibrator_for_bar(pd.Timestamp("2024-04-15"))  # noqa: SLF001
+
+        assert cal is not None
+        assert cal.expected_return(1.0) == pytest.approx(0.03)
+        assert cal.calibrate_probability(1.0) == pytest.approx(0.60)
+
 
 class TestEndToEndPerBarSwitch:
     """§5.13.1 — synthetic panel through actual SimAdapter, walking 3

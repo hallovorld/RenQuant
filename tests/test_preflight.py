@@ -954,6 +954,61 @@ class TestCheckCalibratorHealth:
         assert not r.ok and r.severity == "hard"
         assert "expected_return.y has flat region" in r.message
 
+    def test_hard_fails_calibrator_mu_without_raw_return_contract(self, tmp_path):
+        """QP μ cannot consume a Gaussianized/rank label as expected return."""
+        from kernel.preflight import _check_calibrator_health
+        cfg = {
+            "panel_ltr": {},
+            "ranking": {
+                "kelly_sizing": {"use_calibrator_mu": True},
+                "panel_scoring": {"global_calibration": {
+                    "enabled": True,
+                    "artifact_path": "artifacts/panel-rank-calibration.json",
+                }},
+            },
+        }
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-rank-calibration.json").write_text(json.dumps({
+            "metadata": {
+                "n_unique_prob_y": 100,
+                "pool_ic": 0.03,
+                "er_std": 0.998,
+            },
+            "probability": {"x": [0.0, 1.0], "y": [0.4, 0.6]},
+            "expected_return": {"x": [0.0, 1.0], "y": [-0.05, 0.05]},
+        }))
+
+        r = _check_calibrator_health(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "expected_return_label_contract" in r.message
+        assert "raw return labels" in r.message
+
+    def test_sell_only_soft_passes_bad_calibrator_mu_contract(self, tmp_path):
+        """Sell-only exits stay armed even when buy/QP μ evidence is invalid."""
+        from kernel.preflight import _check_calibrator_health
+        cfg = {
+            "panel_ltr": {},
+            "ranking": {
+                "kelly_sizing": {"use_calibrator_mu": True},
+                "panel_scoring": {"global_calibration": {
+                    "enabled": True,
+                    "artifact_path": "artifacts/panel-rank-calibration.json",
+                }},
+            },
+        }
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-rank-calibration.json").write_text(json.dumps({
+            "metadata": {"n_unique_prob_y": 100, "pool_ic": 0.03},
+            "probability": {"x": [0.0, 1.0], "y": [0.4, 0.6]},
+            "expected_return": {"x": [0.0, 1.0], "y": [-0.05, 0.05]},
+        }))
+
+        r = _check_calibrator_health(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
+
     def test_hard_fails_when_n_unique_below_floor_for_full(self, tmp_path):
         # Reproduce the 2026-05-04 incident exactly: n_unique=7
         # 2026-05-05 incident fix: severity downgraded from hard→soft.

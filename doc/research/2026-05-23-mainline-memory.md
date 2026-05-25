@@ -53,6 +53,29 @@ Make RenQuant 104 scientifically trustworthy end to end:
   same-recipe 40-row manifest was then generated and evaluated; it also fails
   acceptance on SPY-relative Sharpe/APY, BULL_CALM trade monotonicity, and
   manifest-OOS placebo sanity. Do not promote it.
+- 2026-05-24 correction to the current experiment ledger: any experiment that
+  is not regime-stratified is diagnostic/smoke only, not acceptance evidence.
+  This does **not** mean the model cannot be regime-based; it means promotion
+  evidence must report regime first and pooled metrics second.
+- The BULL_CALM confidence-veto diagnostic
+  `erfloor_bullcalm040_confveto060_20260524` is rejected. It reduced some
+  transition damage but worsened all three WF cuts versus the matching
+  ER-floor baseline and created long no-trade stretches. Do not ship.
+- The ER-floor WF trace did use the manifest per-fold raw-return calibrator,
+  not the stale static sim calibrator. Example checked: 2024-01-02 MO
+  `panel_score=0.25059849` produced `mu=0.04877512`, exactly matching
+  `WalkForwardModelLoader.calibrator_as_of("2024-01-02")`; the stale static
+  calibrator would have produced `0.02547308`.
+- New safety invariant: when `ranking.kelly_sizing.use_calibrator_mu=true`,
+  preflight and runtime buy/QP paths require calibrator metadata
+  `expected_return_label_contract="raw_return_units_required"`. Missing or
+  non-return contracts fail closed for full/buy paths while sell-only remains
+  armed.
+- Remaining main issue after that audit: within BULL_CALM, traded scores are
+  still not monotonic with realized trade P/L. In the rejected confidence-veto
+  trace, BULL_CALM entry-rank Spearman versus net P/L was about `-0.30`; the
+  raw panel score and μ were also negative. This is an alpha-conversion/scoring
+  semantics problem, not merely a regime gate problem.
 
 ## Pushed Progress
 

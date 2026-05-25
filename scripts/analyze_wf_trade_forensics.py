@@ -174,6 +174,46 @@ def _score_spearman(df: pd.DataFrame) -> dict[str, Any]:
     return out
 
 
+def _score_spearman_by_group(
+    df: pd.DataFrame,
+    group_col: str,
+    *,
+    min_n: int = 10,
+) -> list[dict[str, Any]]:
+    """Score/outcome monotonicity by regime or other audit bucket.
+
+    A regime-conditional strategy cannot be promoted from a single pooled
+    Spearman. Keep the grouped rows long-form so markdown/JSON consumers can
+    sort and filter without parsing nested dicts.
+    """
+    if df.empty or group_col not in df.columns:
+        return []
+    rows: list[dict[str, Any]] = []
+    for key, group in df.groupby(group_col, dropna=False, observed=False):
+        if len(group) < min_n:
+            continue
+        corr = _score_spearman(group)
+        for score_col, values in corr.items():
+            rows.append({
+                group_col: "NULL" if pd.isna(key) else str(key),
+                "score_col": score_col,
+                **values,
+            })
+    return rows
+
+
+def _with_entry_exit_regime(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    entry = out.get("entry_regime", pd.Series("NULL", index=out.index))
+    exit_ = out.get("exit_regime", pd.Series("NULL", index=out.index))
+    out["entry_exit_regime"] = (
+        entry.fillna("NULL").astype(str)
+        + "->"
+        + exit_.fillna("NULL").astype(str)
+    )
+    return out
+
+
 def _safe_corr(a: pd.Series, b: pd.Series) -> float | None:
     valid = pd.concat([a, b], axis=1).dropna()
     if len(valid) < 3 or valid.iloc[:, 0].nunique() < 2 or valid.iloc[:, 1].nunique() < 2:
@@ -322,6 +362,7 @@ def _alpha_vs_benchmark(
     alpha = closed[_alpha_trade_mask(closed, benchmark_ticker)].copy()
     prices = _load_close_series(benchmark_ticker)
     alpha = _with_same_capital_benchmark(alpha, benchmark_prices=prices)
+    alpha = _with_entry_exit_regime(alpha)
     return {
         "benchmark_ticker": benchmark_ticker,
         "price_source": (
@@ -332,6 +373,7 @@ def _alpha_vs_benchmark(
         "by_cut": _active_group_table(alpha, "cut", min_n=min_group_n),
         "by_exit_reason": _active_group_table(alpha, "exit_reason", min_n=min_group_n),
         "by_entry_regime": _active_group_table(alpha, "entry_regime", min_n=min_group_n),
+        "by_entry_exit_regime": _active_group_table(alpha, "entry_exit_regime", min_n=min_group_n),
         "by_ticker": _active_group_table(alpha, "ticker", min_n=min_group_n),
     }
 
@@ -511,6 +553,7 @@ def analyze_trace(
     benchmark_ticker = _benchmark_ticker(config)
     trips = _load_round_trips(trace_dir, lot_method=lot_method)
     closed = _closed(trips)
+    closed = _with_entry_exit_regime(closed) if not closed.empty else closed
     payload = {
         "trace_dir": str(trace_dir),
         "tax_lot_method": lot_method,
@@ -528,11 +571,22 @@ def analyze_trace(
         ),
         "tax_integrity": _tax_integrity(closed),
         "score_spearman": _score_spearman(closed),
+        "score_spearman_by_entry_regime": _score_spearman_by_group(
+            closed,
+            "entry_regime",
+            min_n=max(10, min_group_n),
+        ),
+        "score_spearman_by_exit_regime": _score_spearman_by_group(
+            closed,
+            "exit_regime",
+            min_n=max(10, min_group_n),
+        ),
         "groups": {
             "by_cut": _group_table(closed, "cut", min_n=min_group_n),
             "by_exit_reason": _group_table(closed, "exit_reason", min_n=min_group_n),
             "by_entry_regime": _group_table(closed, "entry_regime", min_n=min_group_n),
             "by_exit_regime": _group_table(closed, "exit_regime", min_n=min_group_n),
+            "by_entry_exit_regime": _group_table(closed, "entry_exit_regime", min_n=min_group_n),
             "by_entry_source_job": _group_table(closed, "entry_source_job", min_n=min_group_n),
             "by_exit_source_job": _group_table(closed, "exit_source_job", min_n=min_group_n),
             "by_ticker": _group_table(closed, "ticker", min_n=min_group_n),
@@ -605,7 +659,7 @@ def markdown_report(payload: dict[str, Any]) -> str:
         f"- price_source: `{avb['price_source']}`",
     ])
     lines.append(pd.DataFrame([avb["overall"]]).to_markdown(index=False, floatfmt=".4f"))
-    for key in ("by_cut", "by_exit_reason", "by_entry_regime", "by_ticker"):
+    for key in ("by_cut", "by_exit_reason", "by_entry_regime", "by_entry_exit_regime", "by_ticker"):
         lines.extend(["", f"### alpha_vs_benchmark.{key}"])
         rows = avb.get(key, [])
         if rows:
@@ -619,6 +673,13 @@ def markdown_report(payload: dict[str, Any]) -> str:
         lines.append(pd.DataFrame.from_dict(payload["score_spearman"], orient="index").to_markdown(floatfmt=".4f"))
     else:
         lines.append("Insufficient scored closed trades.")
+    for key in ("score_spearman_by_entry_regime", "score_spearman_by_exit_regime"):
+        lines.extend(["", f"### {key}"])
+        rows = payload.get(key, [])
+        if rows:
+            lines.append(pd.DataFrame(rows).to_markdown(index=False, floatfmt=".4f"))
+        else:
+            lines.append("Insufficient scored closed trades by regime.")
 
     for key, rows in payload["groups"].items():
         lines.extend(["", f"## {key}"])

@@ -106,6 +106,8 @@ def test_alpha_vs_benchmark_measures_same_capital_active_pnl(monkeypatch) -> Non
             "net_pnl_after_tax": 25.0,
             "hold_days": 1,
             "entry_source_job": "JointPortfolioQPJob",
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "CHOPPY",
             "exit_reason": "qp_close",
             "cut": "cut1",
         },
@@ -138,6 +140,48 @@ def test_alpha_vs_benchmark_measures_same_capital_active_pnl(monkeypatch) -> Non
     assert overall["benchmark_pnl_same_capital"] == pytest.approx(20.0)
     assert overall["active_net_after_tax"] == pytest.approx(5.0)
     assert overall["active_win_rate"] == 1.0
+    transition = payload["by_entry_exit_regime"][0]
+    assert transition["entry_exit_regime"] == "BULL_CALM->CHOPPY"
+    assert transition["active_net_after_tax"] == pytest.approx(5.0)
+
+
+def test_score_spearman_by_group_keeps_regime_contract() -> None:
+    rows = []
+    for i in range(12):
+        rows.append({
+            "entry_regime": "BULL_CALM",
+            "entry_rank_score": float(i),
+            "entry_mu": float(i),
+            "entry_panel_score": float(i),
+            "pnl_pct": float(i),
+            "gross_pnl": float(i),
+            "net_pnl_after_tax": float(i),
+        })
+    for i in range(12):
+        rows.append({
+            "entry_regime": "CHOPPY",
+            "entry_rank_score": float(i),
+            "entry_mu": float(i),
+            "entry_panel_score": float(i),
+            "pnl_pct": float(11 - i),
+            "gross_pnl": float(11 - i),
+            "net_pnl_after_tax": float(11 - i),
+        })
+    df = pd.DataFrame(rows)
+
+    payload = wf_forensics._score_spearman_by_group(
+        df,
+        "entry_regime",
+        min_n=10,
+    )
+
+    rank_rows = {
+        row["entry_regime"]: row
+        for row in payload
+        if row["score_col"] == "entry_rank_score"
+    }
+    assert rank_rows["BULL_CALM"]["vs_pnl_pct"] == pytest.approx(1.0)
+    assert rank_rows["CHOPPY"]["vs_pnl_pct"] == pytest.approx(-1.0)
 
 
 def test_cut_exposure_summary_separates_alpha_and_benchmark(monkeypatch) -> None:

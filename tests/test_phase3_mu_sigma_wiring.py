@@ -34,6 +34,7 @@ def _make_calibrator(prob_y, er_y):
     return SimpleNamespace(
         calibrate_probability=lambda s: prob_y[int(s)],
         expected_return     =lambda s: er_y[int(s)],
+        metadata            ={"expected_return_label_contract": "raw_return_units_required"},
     )
 
 
@@ -132,6 +133,23 @@ class TestCalibratorMuWiring:
                 f"{c.ticker}: c.mu={c.mu} ≠ expected_return={expected_er}"
             )
             assert c.expected_return == expected_er
+
+    def test_flag_on_blocks_non_raw_return_calibrator(self):
+        from kernel.panel_pipeline.job_panel_scoring import (
+            ApplyGlobalCalibrationTask,
+        )
+        ctx = _make_ctx(use_cal_mu=True, er_values=[0.05] * 5)
+        ctx._global_calibrator.metadata = {
+            "expected_return_label_contract": "gaussianized_rank_label",
+        }
+
+        ok = ApplyGlobalCalibrationTask().run(ctx)
+
+        assert ok is False
+        assert ctx.candidates == []
+        assert ctx.buy_blocked is True
+        assert ctx.skip_buys is True
+        assert ctx._calibrator_contract_failed is True
 
     def test_nan_expected_return_does_not_set_mu(self):
         from kernel.panel_pipeline.job_panel_scoring import (

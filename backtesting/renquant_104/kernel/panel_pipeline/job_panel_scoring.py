@@ -1540,6 +1540,21 @@ class ApplyGlobalCalibrationTask(Task):
         # and tests/test_calibrator_saturation_guards.py.
         kelly_cfg = ctx.config.get("ranking", {}).get("kelly_sizing", {})
         use_cal_mu = bool(kelly_cfg.get("use_calibrator_mu", False))
+        if use_cal_mu:
+            meta = getattr(cal, "metadata", {}) or {}
+            er_contract = meta.get("expected_return_label_contract")
+            if er_contract != "raw_return_units_required":
+                log.error(
+                    "ApplyGlobalCalibrationTask: use_calibrator_mu=true but "
+                    "calibrator expected_return_label_contract=%r. QP/Kelly "
+                    "requires raw return units for μ; refusing buy path.",
+                    er_contract,
+                )
+                _fail_closed_missing_calibrator(
+                    ctx,
+                    "calibrator_er_contract_invalid",
+                )
+                return False
 
         n_cand = 0
         for c in ctx.candidates:

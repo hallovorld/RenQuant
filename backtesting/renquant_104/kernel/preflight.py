@@ -1259,6 +1259,25 @@ def _check_calibrator_health(
     n_unique = meta.get("n_unique_prob_y")
     pool_ic = meta.get("pool_ic")
 
+    kelly_cfg = (config.get("ranking", {}) or {}).get("kelly_sizing", {}) or {}
+    if bool(kelly_cfg.get("use_calibrator_mu", False)):
+        er_contract = meta.get("expected_return_label_contract")
+        if er_contract != "raw_return_units_required":
+            return _soft_for_sell_only(
+                "P-CALIBRATOR-HEALTH",
+                "ranking.kelly_sizing.use_calibrator_mu=true but calibrator "
+                f"expected_return_label_contract={er_contract!r}; QP/Kelly "
+                "would consume a non-return label as expected-return μ. "
+                "Refit calibrator with raw return labels before buy/full.",
+                run_mode=run_mode,
+                details={
+                    "expected_return_label_contract": er_contract,
+                    "required_contract": "raw_return_units_required",
+                    "use_calibrator_mu": True,
+                    "er_std": meta.get("er_std"),
+                },
+            )
+
     # 2026-05-15 P0 ADDITION: range-bound check on expected_return.y.
     # Catches the bug class that caused the rank_score saturation incident:
     # calibrator artifacts with er.y up to +1.00 (= +100% expected return)
