@@ -33,7 +33,7 @@ class TestSchema:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(ticker_forward_returns)")}
         assert cols == {
             "as_of_date", "ticker", "close_price",
-            "fwd_1d", "fwd_5d", "fwd_10d", "fwd_20d",
+            "fwd_1d", "fwd_5d", "fwd_10d", "fwd_20d", "fwd_60d",
             "updated_at",
         }
 
@@ -41,6 +41,30 @@ class TestSchema:
         conn = _make_conn(tmp_path)
         pk = [r[1] for r in conn.execute("PRAGMA table_info(ticker_forward_returns)") if r[5]]
         assert pk == ["as_of_date", "ticker"]
+
+    def test_legacy_table_migrates_fwd_60d(self, tmp_path):
+        from kernel.persistence import ensure_schema
+
+        db = tmp_path / "legacy.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE ticker_forward_returns (
+                as_of_date DATE NOT NULL,
+                ticker TEXT NOT NULL,
+                close_price REAL,
+                fwd_1d REAL,
+                fwd_5d REAL,
+                fwd_10d REAL,
+                fwd_20d REAL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (as_of_date, ticker)
+            );
+        """)
+        ensure_schema(conn)
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(ticker_forward_returns)")}
+        assert "fwd_60d" in cols
+        conn.close()
 
 
 class TestRecordForwardReturns:
@@ -50,10 +74,10 @@ class TestRecordForwardReturns:
         n = record_forward_returns(conn, [
             {"as_of_date": datetime.date(2026, 4, 1), "ticker": "NVDA",
              "close_price": 100.0, "fwd_1d": 0.01, "fwd_5d": 0.03,
-             "fwd_10d": 0.05, "fwd_20d": 0.09},
+             "fwd_10d": 0.05, "fwd_20d": 0.09, "fwd_60d": 0.21},
             {"as_of_date": datetime.date(2026, 4, 1), "ticker": "AAPL",
              "close_price": 200.0, "fwd_1d": -0.01, "fwd_5d": -0.02,
-             "fwd_10d": -0.01, "fwd_20d": 0.00},
+             "fwd_10d": -0.01, "fwd_20d": 0.00, "fwd_60d": 0.04},
         ])
         assert n == 2
         rows = conn.execute(
@@ -68,17 +92,17 @@ class TestRecordForwardReturns:
         record_forward_returns(conn, [
             {"as_of_date": datetime.date(2026, 4, 1), "ticker": "NVDA",
              "close_price": 100.0, "fwd_1d": 0.01, "fwd_5d": 0.03,
-             "fwd_10d": 0.05, "fwd_20d": None},
+             "fwd_10d": 0.05, "fwd_20d": None, "fwd_60d": None},
         ])
         record_forward_returns(conn, [
             {"as_of_date": datetime.date(2026, 4, 1), "ticker": "NVDA",
              "close_price": None, "fwd_1d": None, "fwd_5d": None,
-             "fwd_10d": None, "fwd_20d": 0.09},
+             "fwd_10d": None, "fwd_20d": 0.09, "fwd_60d": 0.30},
         ])
         row = conn.execute(
-            "SELECT close_price, fwd_1d, fwd_10d, fwd_20d FROM ticker_forward_returns",
+            "SELECT close_price, fwd_1d, fwd_10d, fwd_20d, fwd_60d FROM ticker_forward_returns",
         ).fetchone()
-        assert row == (100.0, 0.01, 0.05, 0.09)
+        assert row == (100.0, 0.01, 0.05, 0.09, 0.30)
 
     def test_upsert_overwrites_non_null(self, tmp_path):
         """Second call with a non-null value must overwrite (fresh data wins)."""
@@ -87,12 +111,12 @@ class TestRecordForwardReturns:
         record_forward_returns(conn, [
             {"as_of_date": datetime.date(2026, 4, 1), "ticker": "NVDA",
              "close_price": 100.0, "fwd_1d": 0.01, "fwd_5d": 0.03,
-             "fwd_10d": 0.05, "fwd_20d": 0.09},
+             "fwd_10d": 0.05, "fwd_20d": 0.09, "fwd_60d": 0.21},
         ])
         record_forward_returns(conn, [
             {"as_of_date": datetime.date(2026, 4, 1), "ticker": "NVDA",
              "close_price": 101.0, "fwd_1d": 0.02, "fwd_5d": 0.03,
-             "fwd_10d": 0.06, "fwd_20d": 0.10},
+             "fwd_10d": 0.06, "fwd_20d": 0.10, "fwd_60d": 0.31},
         ])
         row = conn.execute(
             "SELECT close_price, fwd_1d, fwd_10d FROM ticker_forward_returns",
@@ -146,8 +170,8 @@ class TestBackfillScriptEndToEnd:
         """End-to-end: seed DB + parquet → run script → rows appear."""
         db_path = tmp_path / "runs.db"
         cache_root = tmp_path / "ohlcv"
-        # Seed parquet: 25 trading days, starting 2026-04-01, closes 100 → 125
-        closes = [100.0 + i for i in range(25)]
+        # Seed parquet: 65 trading days, starting 2026-04-01, closes 100 → 165
+        closes = [100.0 + i for i in range(65)]
         self._seed_parquet(cache_root, "NVDA", closes, datetime.date(2026, 4, 1))
         # Decision day: day 0 (close=100.0)
         self._seed_db(db_path, "2026-04-01", "NVDA")
@@ -164,13 +188,14 @@ class TestBackfillScriptEndToEnd:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d FROM ticker_forward_returns",
+            "SELECT close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d, fwd_60d FROM ticker_forward_returns",
         ).fetchone()
         assert row is not None
-        close, f1, f5, f10, f20 = row
+        close, f1, f5, f10, f20, f60 = row
         assert close == 100.0
         # closes[1]/closes[0] - 1 = 101/100 - 1 = 0.01
         assert f1  == pytest.approx(0.01)
         assert f5  == pytest.approx(0.05)
         assert f10 == pytest.approx(0.10)
         assert f20 == pytest.approx(0.20)
+        assert f60 == pytest.approx(0.60)

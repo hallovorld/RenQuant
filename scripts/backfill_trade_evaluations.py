@@ -2,7 +2,7 @@
 """Backfill trade_evaluations — re-evaluate every trade at multiple horizons.
 
 Roadmap §2026-04-26 Phase 2. Joins ``trades`` × ``ticker_forward_returns``
-to compute realized forward returns at horizons (1, 5, 7, 14, 28 days
+to compute realized forward returns at horizons (1, 5, 10, 20, 60 days
 default) for each trade, plus benchmark-relative excess return.
 
 Auto-surfaces "we lost money on these trades" patterns ~14 days after
@@ -20,7 +20,7 @@ Usage::
 
     python scripts/backfill_trade_evaluations.py
     python scripts/backfill_trade_evaluations.py --since 2026-04-01
-    python scripts/backfill_trade_evaluations.py --horizons 1 5 7 14 28
+    python scripts/backfill_trade_evaluations.py --horizons 1 5 10 20 60
     python scripts/backfill_trade_evaluations.py --dry-run   # show what would write
 
 Exit codes
@@ -47,17 +47,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("backfill-trade-eval")
 
-DEFAULT_HORIZONS = [1, 5, 7, 14, 28]
+DEFAULT_HORIZONS = [1, 5, 10, 20, 60]
 
 
 def _supported_fwd_col(horizon_days: int) -> str | None:
     """Map horizon_days → ticker_forward_returns column name.
 
-    The schema only carries fwd_1d / fwd_5d / fwd_10d / fwd_20d. For
-    horizons not in that set (7, 14, 28), fall back to closest.
-    Caller can opt to fill missing horizons with NULL instead.
+    The schema carries direct forward-return columns for horizons used by
+    current 104 decision forensics, including the 60d model/rotation horizon.
     """
-    direct = {1: "fwd_1d", 5: "fwd_5d", 10: "fwd_10d", 20: "fwd_20d"}
+    direct = {
+        1: "fwd_1d",
+        5: "fwd_5d",
+        10: "fwd_10d",
+        20: "fwd_20d",
+        60: "fwd_60d",
+    }
     if horizon_days in direct:
         return direct[horizon_days]
     return None   # horizon not directly supported by current DB schema
@@ -71,10 +76,8 @@ def _build_eval_rows(
 ) -> list[dict]:
     """Query trades + ticker_forward_returns and compose evaluation rows.
 
-    For horizons not directly supported by the DB schema (7, 14, 28),
-    we currently SKIP — would require adding fwd_7d/14d/28d columns
-    + extending the backfill_forward_returns.py script. That's a
-    follow-up task. Direct-supported horizons (1, 5, 10, 20) work today.
+    Unsupported horizons still skip rather than fabricate nearest-neighbor
+    labels. Direct-supported horizons are 1/5/10/20/60.
     """
     cur = conn.cursor()
     where = ""
@@ -89,7 +92,7 @@ def _build_eval_rows(
         col = _supported_fwd_col(h)
         if col is None:
             log.info("Horizon %dd: not directly in DB schema (only "
-                     "1/5/10/20 supported) — skipping", h)
+                     "1/5/10/20/60 supported) — skipping", h)
             n_skipped_unsupported += 1
             continue
 
@@ -138,8 +141,8 @@ def _build_eval_rows(
 
     if n_skipped_unsupported:
         log.warning(
-            "Skipped %d horizon(s) not in DB schema. To support 7d/14d/28d, "
-            "extend ticker_forward_returns with fwd_7d/14d/28d columns and "
+            "Skipped %d horizon(s) not in DB schema. To support additional "
+            "horizons, extend ticker_forward_returns with matching fwd_* columns and "
             "the backfill_forward_returns.py script.", n_skipped_unsupported,
         )
     return rows
@@ -151,8 +154,8 @@ def main() -> int:
     p.add_argument("--db", default="data/runs.alpaca.db")
     p.add_argument("--horizons", type=int, nargs="+", default=DEFAULT_HORIZONS,
                    help="Evaluation horizons in days. Note that the current DB "
-                        "schema only has fwd_1d/5d/10d/20d — others are skipped "
-                        "with a warning.")
+                        "schema has fwd_1d/5d/10d/20d/60d — others are "
+                        "skipped with a warning.")
     p.add_argument("--since", default=None,
                    help="Only evaluate trades whose run_date is on or after this "
                         "ISO date (e.g. '2026-04-01'). Default: all.")

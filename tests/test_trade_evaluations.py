@@ -10,6 +10,7 @@ Coverage:
   * Backfill script's `_build_eval_rows` joins trades + forward returns
     and computes relative return + is_winner correctly.
   * Horizons not in DB schema are skipped, not crashed.
+  * The 60d production horizon is directly supported.
 """
 from __future__ import annotations
 
@@ -161,6 +162,9 @@ class TestBackfillBuildRows:
         spec.loader.exec_module(mod)   # type: ignore[union-attr]
         return mod
 
+    def test_default_horizons_include_production_60d(self, script_module):
+        assert script_module.DEFAULT_HORIZONS == [1, 5, 10, 20, 60]
+
     @pytest.fixture
     def populated_conn(self, conn):
         """Add some pipeline_runs + trades + ticker_forward_returns rows
@@ -176,16 +180,18 @@ class TestBackfillBuildRows:
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("r1", "AAPL", "buy", 10, 200.0, 2000.0),
         )
-        # Forward returns at 5d horizon
+        # Forward returns at 5d + 60d horizons
         conn.execute(
             "INSERT INTO ticker_forward_returns "
-            "(as_of_date, ticker, fwd_1d, fwd_5d) VALUES (?, ?, ?, ?)",
-            ("2026-04-01", "AAPL", 0.005, 0.04),
+            "(as_of_date, ticker, fwd_1d, fwd_5d, fwd_60d) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("2026-04-01", "AAPL", 0.005, 0.04, 0.18),
         )
         conn.execute(
             "INSERT INTO ticker_forward_returns "
-            "(as_of_date, ticker, fwd_1d, fwd_5d) VALUES (?, ?, ?, ?)",
-            ("2026-04-01", "SPY", 0.002, 0.015),
+            "(as_of_date, ticker, fwd_1d, fwd_5d, fwd_60d) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("2026-04-01", "SPY", 0.002, 0.015, 0.10),
         )
         conn.commit()
         return conn
@@ -204,6 +210,19 @@ class TestBackfillBuildRows:
         # relative = ticker - benchmark = 0.04 - 0.015 = 0.025
         assert r["relative_return"] == pytest.approx(0.025)
         assert r["is_winner"] == 1   # ticker beat benchmark
+
+    def test_60d_horizon_supported_for_104_trade_forensics(
+        self, populated_conn, script_module,
+    ):
+        rows = script_module._build_eval_rows(
+            populated_conn, horizons=[60], since=None, benchmark="SPY",
+        )
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["horizon_days"] == 60
+        assert r["fwd_return"] == pytest.approx(0.18)
+        assert r["fwd_return_spy"] == pytest.approx(0.10)
+        assert r["relative_return"] == pytest.approx(0.08)
 
     def test_unsupported_horizon_skipped(self, populated_conn, script_module):
         # Horizon 7d is not in DB schema → skipped

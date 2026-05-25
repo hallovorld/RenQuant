@@ -2,7 +2,7 @@
 """Plan AA — compute forward returns for every (date, ticker) in candidate_scores.
 
 Joins each candidate decision day with the parquet OHLCV cache and
-writes close_price + fwd_{1,5,10,20}d into the ticker_forward_returns
+writes close_price + fwd_{1,5,10,20,60}d into the ticker_forward_returns
 table. Idempotent upsert: skips rows where all 4 horizons are already
 populated.
 
@@ -14,7 +14,7 @@ Usage::
     python scripts/backfill_forward_returns.py --since 2026-01-01
 
 Designed to run daily (cheap after first pass) — most rows are already
-filled, only the tail from the last 20 trading days needs updating as
+filled, only the tail from the last 60 trading days needs updating as
 new bars arrive.
 """
 from __future__ import annotations
@@ -34,7 +34,23 @@ logging.basicConfig(
 log = logging.getLogger("backfill-forward-returns")
 
 
-HORIZONS = [1, 5, 10, 20]
+HORIZONS = [1, 5, 10, 20, 60]
+
+
+def _available_fwd_cols(conn) -> list[str]:
+    cols = {
+        str(r[1])
+        for r in conn.execute("PRAGMA table_info(ticker_forward_returns)").fetchall()
+    }
+    return [f"fwd_{h}d" for h in HORIZONS if f"fwd_{h}d" in cols]
+
+
+def _missing_forward_return_predicate(conn, alias: str = "tfr") -> str:
+    fwd_cols = _available_fwd_cols(conn)
+    if not fwd_cols:
+        return f"{alias}.as_of_date IS NULL"
+    checks = " OR ".join(f"{alias}.{c} IS NULL" for c in fwd_cols)
+    return f"({alias}.as_of_date IS NULL OR {checks})"
 
 
 def _load_ohlcv(ticker: str, cache_root: Path) -> "pd.DataFrame | None":
@@ -88,15 +104,14 @@ def _rows_needing_backfill(
     (e.g. fwd_20d needs 20 trading days in the future) — those show up
     tomorrow and get picked up by the next run.
     """
-    q = """
+    missing_predicate = _missing_forward_return_predicate(conn, "tfr")
+    q = f"""
         SELECT DISTINCT ps.run_date, cs.ticker
           FROM candidate_scores cs
           JOIN pipeline_runs    ps ON ps.run_id = cs.run_id
      LEFT JOIN ticker_forward_returns tfr
             ON tfr.as_of_date = ps.run_date AND tfr.ticker = cs.ticker
-         WHERE (tfr.as_of_date IS NULL
-                OR tfr.fwd_1d  IS NULL OR tfr.fwd_5d  IS NULL
-                OR tfr.fwd_10d IS NULL OR tfr.fwd_20d IS NULL)
+         WHERE {missing_predicate}
     """
     params: list = []
     if since is not None:
@@ -132,15 +147,14 @@ def _benchmark_pairs(
         # Single LEFT JOIN per benchmark — emit (run_date, bench) when
         # the ticker_forward_returns row is missing OR any of the four
         # forward-return columns is NULL.
-        q = """
+        missing_predicate = _missing_forward_return_predicate(conn, "tfr")
+        q = f"""
             SELECT DISTINCT ps.run_date
               FROM pipeline_runs ps
               LEFT JOIN ticker_forward_returns tfr
                      ON tfr.as_of_date = ps.run_date
                     AND tfr.ticker     = ?
-             WHERE (tfr.as_of_date IS NULL
-                    OR tfr.fwd_1d  IS NULL OR tfr.fwd_5d  IS NULL
-                    OR tfr.fwd_10d IS NULL OR tfr.fwd_20d IS NULL)
+             WHERE {missing_predicate}
         """
         params: list = [bench]
         if since is not None:

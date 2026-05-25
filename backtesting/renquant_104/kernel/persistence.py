@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS ticker_forward_returns (
     fwd_5d      REAL,
     fwd_10d     REAL,
     fwd_20d     REAL,
+    fwd_60d     REAL,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (as_of_date, ticker)
 );
@@ -449,6 +450,9 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("gross_pnl",             "REAL"),
         ("proceeds_basis",        "REAL"),
         ("net_pnl_after_tax",     "REAL"),
+    ],
+    "ticker_forward_returns": [
+        ("fwd_60d",               "REAL"),
     ],
 }
 
@@ -1649,7 +1653,8 @@ def record_forward_returns(
 ) -> int:
     """Upsert ticker_forward_returns rows (Plan AA).
 
-    Each row: `{as_of_date, ticker, close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d}`.
+    Each row: `{as_of_date, ticker, close_price, fwd_1d, fwd_5d,
+    fwd_10d, fwd_20d, fwd_60d}`.
     Any field except (as_of_date, ticker) can be None. Returns number of rows written.
     """
     if conn is None:
@@ -1665,19 +1670,21 @@ def record_forward_returns(
             _none_or_float(r.get("fwd_5d")),
             _none_or_float(r.get("fwd_10d")),
             _none_or_float(r.get("fwd_20d")),
+            _none_or_float(r.get("fwd_60d")),
         ))
     if not payload:
         return 0
     conn.executemany(
         """INSERT INTO ticker_forward_returns
-              (as_of_date, ticker, close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+              (as_of_date, ticker, close_price, fwd_1d, fwd_5d, fwd_10d, fwd_20d, fwd_60d)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(as_of_date, ticker) DO UPDATE SET
               close_price = COALESCE(excluded.close_price, close_price),
               fwd_1d      = COALESCE(excluded.fwd_1d, fwd_1d),
               fwd_5d      = COALESCE(excluded.fwd_5d, fwd_5d),
               fwd_10d     = COALESCE(excluded.fwd_10d, fwd_10d),
               fwd_20d     = COALESCE(excluded.fwd_20d, fwd_20d),
+              fwd_60d     = COALESCE(excluded.fwd_60d, fwd_60d),
               updated_at  = CURRENT_TIMESTAMP""",
         payload,
     )

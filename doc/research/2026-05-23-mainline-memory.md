@@ -2661,6 +2661,14 @@ entire pipeline end-to-end:
   applies raw clip before z-score, while panel-space scoring remains unchanged.
   Validation: feature-transform, production-artifact, lookahead, train/infer,
   and WF-gate contract tests passed (`86 passed`).
+- New trade-evaluation horizon mismatch fixed: 104's current model/rotation
+  horizon is 60 trading days, but `ticker_forward_returns` and
+  `backfill_trade_evaluations.py` only supported short horizons up to 20d.
+  The DB schema/migration, forward-return backfill, and trade-evaluation
+  backfill now support `fwd_60d`, and trade evaluation defaults include
+  `[1, 5, 10, 20, 60]`. Validation: forward-return, trade-evaluation,
+  persistence, reconciliation, and conformal-Gate-B wiring tests passed
+  (`92 passed, 1 skipped`).
 
 ## Stop Conditions
 
