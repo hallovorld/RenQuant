@@ -221,6 +221,21 @@ Make RenQuant 104 scientifically trustworthy end to end:
   with the production XGB config, making PatchTST shadow diagnostics
   ambiguous. Explicit config overrides are still respected for read-only prod
   rehearsals.
+- Live/sim/LEAN parity fixes 2026-05-25: full daily live runs now price held
+  symbols from the same daily OHLCV close as unheld candidates; broker marks
+  are reserved for sell-only/intraday risk checks or OHLCV-missing fallback.
+  Non-benchmark benchmark-sleeve tickers (e.g. `VOO` while benchmark=`SPY`)
+  are now included in both live and LEAN price universes. Live sell trade rows
+  now pass broker-confirmed shares, realized gross P/L, basis, P/L percent, and
+  hold days into the shared trade-event builder instead of letting the builder
+  recompute from fallback average cost. Pending live buys no longer count as
+  `selected`; they are tagged `broker_pending_submitted`.
+- Tax/short-side audit fixes 2026-05-25: trade-event builders now fail closed on
+  invalid `tax.cash_debit_mode` instead of silently coercing to event-level
+  cash debit. QP long-term bridge tax rates are bounded between ST and LT and
+  decay toward LT as lots approach long-term status. Sim borrow charging now
+  reads the active `_holdings` / `_config` fields, so open shorts actually pay
+  configured borrow cost when long/short research is enabled.
 
 ## Pushed Progress
 

@@ -387,7 +387,10 @@ def _tax_cash_debit_mode(config: dict) -> str:
     }
     mode = aliases.get(raw, raw)
     if mode not in {"event_level", "reporting_only"}:
-        mode = "event_level"
+        raise ValueError(
+            "invalid tax.cash_debit_mode "
+            f"{raw!r}; expected event_level or reporting_only"
+        )
     return mode
 
 

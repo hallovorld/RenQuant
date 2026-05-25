@@ -20,6 +20,10 @@ from pathlib import Path
 from kernel.config       import load_config, split_date_parts, BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
 from kernel.regime       import RegimeState, load_gmm_artifact
 from kernel.pipeline     import InferencePipeline, SellOnlyPipeline
+from kernel.pipeline.task_benchmark_sleeve import (
+    benchmark_sleeve_ticker,
+    is_benchmark_sleeve_enabled,
+)
 from kernel.walk_forward import (
     assert_correlation_no_leakage,
     assert_gmm_no_leakage,
@@ -151,6 +155,18 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 self._sector_etf_symbols[etf] = self.AddEquity(etf, Resolution.Daily).Symbol
 
         self._spy_sym = self.AddEquity(self._benchmark, Resolution.Daily).Symbol
+        sleeve_ticker = benchmark_sleeve_ticker(CONFIG)
+        if (
+            is_benchmark_sleeve_enabled(CONFIG)
+            and sleeve_ticker
+            and sleeve_ticker != self._benchmark
+            and sleeve_ticker not in self.symbols
+            and sleeve_ticker not in self._sector_etf_symbols
+        ):
+            self._sector_etf_symbols[sleeve_ticker] = self.AddEquity(
+                sleeve_ticker,
+                Resolution.Daily,
+            ).Symbol
 
         # ── Per-run state ────────────────────────────────────────────────────
         from kernel.exits import HoldingState  # local import keeps global scope clean

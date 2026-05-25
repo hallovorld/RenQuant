@@ -2112,7 +2112,10 @@ class SimAdapter:
         No-op when no negative-share positions exist. Safe to call on
         every bar (cheap dict iteration).
         """
-        if not getattr(self, "holdings", None):
+        holdings = getattr(self, "_holdings", None)
+        if holdings is None:
+            holdings = getattr(self, "holdings", None)
+        if not holdings:
             return
         # Lazy-load borrow status once
         if not hasattr(self, "_borrow_status_cache"):
@@ -2128,12 +2131,14 @@ class SimAdapter:
                 self._borrow_status_cache = {}
         bs = self._borrow_status_cache
         # Rates from config or defaults
-        cfg = getattr(self, "_strategy_config", {}) or {}
+        cfg = getattr(self, "_config", None)
+        if cfg is None:
+            cfg = getattr(self, "_strategy_config", {}) or {}
         ls_cfg = cfg.get("long_short", {}) or {}
         rate_etb = float(ls_cfg.get("borrow_rate_etb", 0.005))
         rate_htb = float(ls_cfg.get("borrow_rate_htb", 0.05))
         total_charge = 0.0
-        for ticker, hs in self.holdings.items():
+        for ticker, hs in holdings.items():
             shares = float(getattr(hs, "shares", 0.0) or 0.0)
             if shares >= 0:
                 continue

@@ -132,6 +132,63 @@ def sell_event_price(sig: Any, fallback_price: Any) -> float:
     return 0.0
 
 
+def _finite_number(value: Any, default: float = 0.0) -> float:
+    import math
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def sell_event_realized_kwargs(
+    sig: Any,
+    holding: Any,
+    *,
+    today: Any,
+) -> dict[str, Any]:
+    """Explicit economics for live sell rows after broker confirmation."""
+    out: dict[str, Any] = {}
+    shares = _finite_number(getattr(sig, "shares_sold", None))
+    if shares > 0:
+        out["shares"] = shares
+    gross_attr = getattr(sig, "realized_pnl_dollar", None)
+    gross = _finite_number(gross_attr)
+    if gross_attr is not None:
+        out["gross_pnl"] = gross
+    cost_basis = _finite_number(getattr(sig, "cost_basis", None))
+    if cost_basis > 0 and shares > 0:
+        out["proceeds_basis"] = cost_basis * shares
+    pnl_pct_attr = getattr(sig, "realized_pnl_pct", None)
+    if pnl_pct_attr is not None:
+        out["pnl_pct"] = _finite_number(pnl_pct_attr) / 100.0
+
+    entry_date = getattr(holding, "entry_date", None)
+    today_date = today.date() if isinstance(today, datetime.datetime) else today
+    if isinstance(entry_date, datetime.datetime):
+        entry_date = entry_date.date()
+    if isinstance(today_date, datetime.date) and isinstance(entry_date, datetime.date):
+        out["hold_days"] = max((today_date - entry_date).days, 0)
+    return out
+
+
+def live_trace_selection_maps(
+    trade_events: list[dict[str, Any]] | None,
+    pending_orders: list[dict[str, Any]] | None,
+    blocked_map: dict[str, str] | None = None,
+) -> tuple[set[str], dict[str, str], set[str]]:
+    """Trace filled buys as selected and pending submissions as blocked."""
+    pending_tickers = {
+        str(o.get("ticker"))
+        for o in (pending_orders or [])
+        if isinstance(o, dict) and o.get("ticker")
+    }
+    out_blocked = dict(blocked_map or {})
+    for ticker in pending_tickers:
+        out_blocked.setdefault(ticker, "broker_pending_submitted")
+    return selected_buy_tickers(trade_events), out_blocked, pending_tickers
+
+
 def cap_buy_order_to_cash(order: dict, remaining_cash: float) -> tuple[dict | None, str | None]:
     """Resize or reject one buy intent against the runner's live cash ledger."""
     import math
@@ -745,8 +802,13 @@ class RunnerAdapter:
         # market_value=$100, qty=1e-6 → price=$100M/share). Guard with
         # isfinite + a 1-share floor so we treat sub-share dust as "no
         # trustworthy price" and fall back to OHLCV close below.
+        #
+        # Full daily runs must not mix real-time broker marks for held symbols
+        # with daily OHLCV closes for candidates. Keep broker marks only for
+        # sell-only/intraday risk checks or as an OHLCV-missing fallback.
         import math as _math_p  # noqa: PLC0415
         prices: dict[str, float] = {}
+        broker_mark_prices: dict[str, float] = {}
         for ticker, pos in positions_cache.items():
             qty = float(pos.get("qty", 0))
             mkt = float(pos.get("market_value", 0))
@@ -754,7 +816,9 @@ class RunnerAdapter:
                     and qty >= 0.5 and mkt > 0):
                 px = mkt / qty
                 if _math_p.isfinite(px) and 0 < px < 1e6:
-                    prices[ticker] = px
+                    broker_mark_prices[ticker] = px
+                    if self._sell_only or self._use_intraday_prices:
+                        prices[ticker] = px
 
         # ── OHLCV from parquet cache ─────────────────────────────────────────
         from kernel.data import fetch_ohlcv  # noqa: PLC0415
@@ -762,7 +826,16 @@ class RunnerAdapter:
         watchlist   = config["watchlist"]
         benchmark   = config.get("benchmark", "SPY")
         sector_etfs = set(config.get("sector_etf_map", {}).values())
-        all_symbols = list(dict.fromkeys(watchlist + [benchmark] + sorted(sector_etfs)))
+        extra_symbols = []
+        if is_benchmark_sleeve_enabled(config) and sleeve_ticker:
+            extra_symbols.append(sleeve_ticker)
+        all_symbols = list(dict.fromkeys(
+            watchlist
+            + [benchmark]
+            + sorted(sector_etfs)
+            + sorted(held_set)
+            + extra_symbols
+        ))
 
         ohlcv: dict[str, Any] = {}
         for sym in all_symbols:
@@ -776,7 +849,7 @@ class RunnerAdapter:
                     # (data-feed glitch on suspended/halted ticker) silently
                     # propagated into ctx.prices → Kelly/HWM/QP all received
                     # NaN → cascade of silent failures.
-                    if sym not in prices:
+                    if (not self._sell_only and not self._use_intraday_prices) or sym not in prices:
                         close_val = float(df["close"].iloc[-1])
                         if _math_p.isfinite(close_val) and close_val > 0:
                             prices[sym] = close_val
@@ -789,6 +862,10 @@ class RunnerAdapter:
                             )
             except Exception as exc:
                 log.warning("OHLCV fetch failed for %s: %s", sym, exc)
+
+        if not (self._sell_only or self._use_intraday_prices):
+            for sym, px in broker_mark_prices.items():
+                prices.setdefault(sym, px)
 
         # ── Intraday price overlay (for intraday sell-only checks) ──────────
         if self._use_intraday_prices:
@@ -1453,6 +1530,7 @@ class RunnerAdapter:
                     "tax": self._config.get("tax", {}) or {},
                 },
                 config=self._config,
+                **sell_event_realized_kwargs(sig, hs, today=ctx.today),
             )
             sell_log_record.update({
                 "action":    "SELL",
@@ -1965,11 +2043,13 @@ class RunnerAdapter:
             else:
                 orders_for_db = list(ctx.orders or [])
             pending_orders_for_trace = list(getattr(ctx, "orders_pending", []) or [])
-            pending_tickers_for_trace = {
-                str(o.get("ticker"))
-                for o in pending_orders_for_trace
-                if isinstance(o, dict) and o.get("ticker")
-            }
+            _, _, pending_tickers_for_trace = (
+                live_trace_selection_maps(
+                    [],
+                    pending_orders_for_trace,
+                    getattr(ctx, "_blocked_by_ticker", None) or {},
+                )
+            )
             if pending_tickers_for_trace:
                 ctx.counters["broker_pending_submitted"] = (
                     ctx.counters.get("broker_pending_submitted", 0)
@@ -1992,6 +2072,7 @@ class RunnerAdapter:
                     confidence=getattr(ctx, "confidence", None),
                     regime_params={**regime_p, "tax": self._config.get("tax", {}) or {}},
                     config=self._config,
+                    **sell_event_realized_kwargs(sig, hs, today=ctx.today),
                 ))
             for o in orders_for_db:
                 trade_events.append(build_buy_trade_event(
@@ -2034,8 +2115,13 @@ class RunnerAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
-            selected_tickers = selected_buy_tickers(trade_events) | pending_tickers_for_trace
-            blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
+            selected_tickers, blocked_map, _pending_trace_tickers = (
+                live_trace_selection_maps(
+                    trade_events,
+                    pending_orders_for_trace,
+                    getattr(ctx, "_blocked_by_ticker", None) or {},
+                )
+            )
             for o in getattr(ctx, "orders_skipped", []) or []:
                 if isinstance(o, dict) and o.get("ticker"):
                     blocked_map.setdefault(

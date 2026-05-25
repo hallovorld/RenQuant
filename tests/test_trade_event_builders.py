@@ -5,6 +5,8 @@ import datetime
 import sys
 from pathlib import Path
 
+import pytest
+
 
 STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
@@ -155,6 +157,35 @@ def test_build_sell_trade_event_preserves_exit_source_and_tax_payload():
     assert row["decision_inputs"]["take_profit_pct"] == 0.30
     assert row["decision_inputs"]["qp_delta"] == -0.04
     assert row["attribution_version"] == "unit_sell_v1"
+
+
+def test_build_sell_trade_event_rejects_invalid_tax_cash_debit_mode():
+    today = datetime.date(2026, 5, 24)
+    holding = HoldingState(
+        entry_price=100.0,
+        entry_date=today - datetime.timedelta(days=45),
+        high_watermark=132.0,
+        shares=10.0,
+    )
+    sig = ExitSignal(
+        should_exit=True,
+        reason="model sell",
+        exit_type="model_sell",
+        quantity=4.0,
+    )
+
+    with pytest.raises(ValueError, match="cash_debit_mode"):
+        build_sell_trade_event(
+            ticker="AAPL",
+            sig=sig,
+            holding=holding,
+            price=110.0,
+            today=today,
+            regime="BULL_CALM",
+            confidence=0.8,
+            regime_params={"tax": {"short_term_rate": 0.40}},
+            config={"tax": {"cash_debit_mode": "reportng_only"}},
+        )
 
 
 def test_build_sell_trade_event_uses_applied_exit_params_when_present():

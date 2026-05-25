@@ -17,8 +17,10 @@ if str(STRATEGY_DIR) not in sys.path:
 
 from adapters.runner import (  # noqa: E402
     build_sell_trade_event_for_db,
+    live_trace_selection_maps,
     live_post_execution_snapshot,
     model_type_from_artifact,
+    sell_event_realized_kwargs,
     sell_event_price,
 )
 from kernel.exits import ExitSignal, HoldingState  # noqa: E402
@@ -98,6 +100,51 @@ def test_live_sql_sell_uses_broker_fill_price_when_available():
     assert sell_event_price(sig, 100.0) == 95.0
 
 
+def test_live_sell_trade_uses_explicit_broker_realized_economics():
+    today = datetime.date(2026, 5, 22)
+    holding = HoldingState(
+        entry_price=90.0,  # fallback would produce the wrong P/L
+        entry_date=today - datetime.timedelta(days=20),
+        high_watermark=150.0,
+        shares=10.0,
+    )
+    sig = ExitSignal(
+        should_exit=True,
+        reason="partial QP trim",
+        exit_type="qp_sell",
+        quantity=4.0,
+    )
+    sig.sell_price = 120.0
+    sig.shares_sold = 4.0
+    sig.cost_basis = 100.0
+    sig.realized_pnl_dollar = 80.0
+    sig.realized_pnl_pct = 20.0
+
+    row = build_sell_trade_event_for_db(
+        ticker="AAPL",
+        sig=sig,
+        holding=holding,
+        price=120.0,
+        today=today,
+        regime="BULL_CALM",
+        confidence=0.8,
+        regime_params={
+            "tax": {"short_term_rate": 0.50, "long_term_rate": 0.32},
+        },
+        config={"tax": {"cash_debit_mode": "reporting_only"}},
+        **sell_event_realized_kwargs(sig, holding, today=today),
+    )
+
+    assert row["shares"] == 4.0
+    assert row["gross_pnl"] == 80.0
+    assert row["proceeds_basis"] == 400.0
+    assert row["tax"] == 40.0
+    assert row["net_pnl_after_tax"] == 40.0
+    assert row["pnl_pct"] == 0.20
+    assert row["hold_days"] == 20
+    assert row["decision_inputs"]["gross_pnl"] == 80.0
+
+
 def test_live_post_execution_snapshot_uses_broker_state_and_confirmed_holdings():
     class _Broker:
         def get_account_value(self):
@@ -119,6 +166,18 @@ def test_live_post_execution_snapshot_uses_broker_state_and_confirmed_holdings()
         "cash": 77_000.0,
         "n_holdings": 2,
     }
+
+
+def test_live_trace_marks_pending_buy_as_blocked_not_selected():
+    selected, blocked, pending = live_trace_selection_maps(
+        trade_events=[],
+        pending_orders=[{"ticker": "AAPL", "status": "accepted"}],
+        blocked_map={},
+    )
+
+    assert selected == set()
+    assert pending == {"AAPL"}
+    assert blocked["AAPL"] == "broker_pending_submitted"
 
 
 def test_live_sell_trade_persists_applied_exit_params_from_signal():

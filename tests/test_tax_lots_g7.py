@@ -186,6 +186,7 @@ class TestSellLotConsumption:
 
 from kernel.portfolio_qp.tasks import (   # noqa: E402
     ComputeBrownSmithTaxCostTask,
+    _bridge_rate,
     _per_asset_tax,
     _per_asset_tax_lots,
 )
@@ -312,6 +313,23 @@ class TestQPTaxCostUsesLots:
         # FIFO disposes of $100 basis lot ($30 gain × 30%) → $9/sh tax.
         # HIFO disposes of $120 basis lot ($10 gain × 30%) → $3/sh tax.
         assert cost_fifo > cost_hifo
+
+    def test_lt_bridge_rate_is_bounded_and_decays_to_lt(self):
+        st = 0.50
+        lt = 0.32
+        bridge = 30
+        lt_days = 365
+
+        rates = [
+            _bridge_rate(st, lt, lt_days, days_held, bridge)
+            for days_held in (335, 350, 364, 365)
+        ]
+
+        assert all(lt <= r <= st for r in rates)
+        assert rates[0] == pytest.approx(st)
+        assert rates[1] < rates[0]
+        assert rates[2] < rates[1]
+        assert rates[3] == pytest.approx(lt)
 
 
 # ───────────────────────────────────────────────────────────────────────

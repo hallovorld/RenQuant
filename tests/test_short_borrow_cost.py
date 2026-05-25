@@ -37,10 +37,10 @@ def _mk_adapter(holdings: dict, *, cash: float = 100_000.0,
     from adapters.sim import SimAdapter
     adapter = SimAdapter.__new__(SimAdapter)
     adapter._cash = cash
-    adapter.holdings = holdings
+    adapter._holdings = holdings
     adapter._ohlcv = ohlcv or {}
     adapter._borrow_status_cache = borrow_status or {}
-    adapter._strategy_config = config or {}
+    adapter._config = config or {}
     return adapter
 
 
@@ -105,6 +105,17 @@ class TestDailyBorrowCharge:
         expected = 100 * 100.0 * 0.02 / 252.0
         actual = before - adapter._cash
         assert abs(actual - expected) < 1e-6
+
+    def test_real_adapter_field_names_are_charged(self):
+        adapter = _mk_adapter(
+            holdings={"AAPL": SimpleNamespace(shares=-100, entry_price=100.0)},
+            borrow_status={"AAPL": {"easy_to_borrow": True, "shortable": True}},
+            config={"long_short": {"borrow_rate_etb": 0.02}},
+        )
+        before = adapter._cash
+        adapter._charge_daily_borrow(today_ts=pd.Timestamp("2024-01-15"))
+
+        assert before - adapter._cash == pytest.approx(100 * 100.0 * 0.02 / 252.0)
 
     def test_multiple_shorts_summed(self):
         """Multiple short positions → charges summed"""

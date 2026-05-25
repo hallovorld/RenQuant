@@ -485,6 +485,13 @@ class LeanAdapter:
             + list(algo._sector_etf_symbols.keys())
             + ["SPY"]
         )
+        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+            benchmark_sleeve_ticker,
+            is_benchmark_sleeve_enabled,
+        )
+        sleeve_ticker = benchmark_sleeve_ticker(config)
+        if is_benchmark_sleeve_enabled(config) and sleeve_ticker:
+            all_tickers.append(sleeve_ticker)
         # Remove duplicates, preserve order
         seen: set[str] = set()
         unique_tickers: list[str] = []

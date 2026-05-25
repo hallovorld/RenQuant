@@ -253,6 +253,124 @@ def test_runner_adapter_make_context_satisfies_pipeline_contract(tmp_path):
         adapter._db.close()
 
 
+def test_runner_full_daily_prices_held_symbols_from_daily_close(tmp_path):
+    from adapters.runner import RunnerAdapter
+
+    cfg = _minimal_config(tmp_path)
+    broker = MagicMock()
+    broker.broker_name = None
+    broker.get_account_value.return_value = 100_000.0
+    broker.get_cash.return_value = 90_000.0
+    broker.get_all_positions.return_value = [{
+        "symbol": "AAA",
+        "qty": 10,
+        "qty_available": 10,
+        "market_value": 1_200.0,  # broker mark = 120
+        "avg_entry_price": 80.0,
+    }]
+    broker.get_open_orders.return_value = set()
+    broker.get_filled_orders.return_value = []
+
+    frame = _ohlcv_frame()
+    frame.loc[frame.index[-1], "close"] = 100.0
+    adapter = RunnerAdapter(
+        cfg,
+        models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+        broker=broker,
+        strategy_dir=tmp_path,
+        sell_only=False,
+    )
+
+    with patch("kernel.data.fetch_ohlcv", return_value=frame), \
+         patch("kernel.realized_pnl.compute_recent_realized_pnl",
+               return_value={}):
+        ctx = adapter.make_context()
+
+    try:
+        assert ctx.prices["AAA"] == pytest.approx(100.0)
+    finally:
+        adapter._db.close()
+
+
+def test_runner_sell_only_can_use_broker_mark_for_held_symbols(tmp_path):
+    from adapters.runner import RunnerAdapter
+
+    cfg = _minimal_config(tmp_path)
+    broker = MagicMock()
+    broker.broker_name = None
+    broker.get_account_value.return_value = 100_000.0
+    broker.get_cash.return_value = 90_000.0
+    broker.get_all_positions.return_value = [{
+        "symbol": "AAA",
+        "qty": 10,
+        "qty_available": 10,
+        "market_value": 1_200.0,
+        "avg_entry_price": 80.0,
+    }]
+    broker.get_open_orders.return_value = set()
+    broker.get_filled_orders.return_value = []
+
+    frame = _ohlcv_frame()
+    frame.loc[frame.index[-1], "close"] = 100.0
+    adapter = RunnerAdapter(
+        cfg,
+        models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+        broker=broker,
+        strategy_dir=tmp_path,
+        sell_only=True,
+    )
+
+    with patch("kernel.data.fetch_ohlcv", return_value=frame), \
+         patch("kernel.realized_pnl.compute_recent_realized_pnl",
+               return_value={}):
+        ctx = adapter.make_context()
+
+    try:
+        assert ctx.prices["AAA"] == pytest.approx(120.0)
+    finally:
+        adapter._db.close()
+
+
+def test_runner_prices_non_benchmark_sleeve_ticker(tmp_path):
+    from adapters.runner import RunnerAdapter
+
+    cfg = _minimal_config(tmp_path)
+    cfg["portfolio"] = {
+        "benchmark_sleeve": {
+            "enabled": True,
+            "ticker": "VOO",
+        },
+    }
+    broker = MagicMock()
+    broker.broker_name = None
+    broker.get_account_value.return_value = 100_000.0
+    broker.get_cash.return_value = 90_000.0
+    broker.get_all_positions.return_value = []
+    broker.get_open_orders.return_value = set()
+    broker.get_filled_orders.return_value = []
+
+    frame = _ohlcv_frame()
+    frame.loc[frame.index[-1], "close"] = 501.0
+    adapter = RunnerAdapter(
+        cfg,
+        models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+        broker=broker,
+        strategy_dir=tmp_path,
+        sell_only=False,
+    )
+
+    with patch("kernel.data.fetch_ohlcv", return_value=frame), \
+         patch("kernel.realized_pnl.compute_recent_realized_pnl",
+               return_value={}):
+        ctx = adapter.make_context()
+
+    try:
+        assert ctx.prices["VOO"] == pytest.approx(501.0)
+        assert "VOO" in ctx.ohlcv
+    finally:
+        adapter._db.close()
+
+
 def test_lean_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     from adapters.lean import LeanAdapter
 
@@ -307,6 +425,93 @@ def test_lean_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     _assert_common_contract(ctx, source="lean", db_marker=adapter._db)
     assert ctx.last_sell_pls == {"AAA": 77.0}
     assert ctx.last_stop_exit_dates == {"AAA": today.date() - dt.timedelta(days=2)}
+
+
+def test_lean_adapter_prices_non_benchmark_sleeve_ticker(tmp_path, monkeypatch):
+    from adapters.lean import LeanAdapter
+    import adapters.lean as lean_mod
+
+    monkeypatch.setattr(
+        lean_mod,
+        "Resolution",
+        SimpleNamespace(Daily="Daily"),
+        raising=False,
+    )
+
+    class _Data:
+        def ContainsKey(self, _sym):
+            return False
+
+    class _Portfolio:
+        TotalPortfolioValue = 100_000.0
+        Cash = 80_000.0
+
+    def _history(sym, *_args, **_kwargs):
+        idx = pd.MultiIndex.from_product(
+            [[sym], pd.bdate_range("2026-05-01", periods=3)],
+            names=["symbol", "time"],
+        )
+        close = pd.Series([499.0, 500.0, 501.0], index=idx)
+        return pd.DataFrame(
+            {
+                "open": close,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1_000_000.0,
+            },
+            index=idx,
+        )
+
+    today = dt.datetime(2026, 5, 22)
+    cfg = _minimal_config(tmp_path)
+    cfg["portfolio"] = {
+        "benchmark_sleeve": {
+            "enabled": True,
+            "ticker": "VOO",
+        },
+    }
+    algo = SimpleNamespace(
+        _config=cfg,
+        _strategy_dir=tmp_path,
+        Time=today,
+        _spy_sym="SPY",
+        _benchmark="SPY",
+        _prev_closes={},
+        _spy_returns=[],
+        _models={},
+        _sector_etf_symbols={"VOO": "VOO"},
+        symbols={},
+        _holdings={},
+        _last_sell_dates={},
+        _last_sell_pls={},
+        _last_stop_exit_dates={},
+        Portfolio=_Portfolio(),
+        _skip_buys=False,
+        _regime_state=None,
+        _regime_counts={},
+        _gmm=None,
+        _corr={},
+        _earnings={},
+        _hwm=100_000.0,
+        History=_history,
+    )
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = algo
+    adapter._db = None
+    adapter._universe_rejections = {}
+    adapter._panel_cache_ff = None
+    adapter._panel_cache_fac = None
+    adapter._panel_cache_macro = None
+    adapter._panel_cache_emb = None
+    adapter._panel_cache_last_date = None
+    adapter._meta_label_logger = None
+    adapter._meta_label_predictor = None
+
+    ctx = adapter.make_context(_Data())
+
+    assert ctx.prices["VOO"] == pytest.approx(501.0)
+    assert "VOO" in ctx.ohlcv
 
 
 def test_lean_adapter_uses_non_marginable_buying_power_contract(tmp_path):

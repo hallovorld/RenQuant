@@ -2921,8 +2921,10 @@ def _per_asset_tax(hs, price, w_i, nav, today, st_rate, lt_rate,
             return gain * lt_rate, offset_left
         days_to_lt = max(0, lt_days - days_held)
         if days_to_lt <= bridge_w:
-            amp = (st_rate - lt_rate) * (1.0 - days_to_lt / max(1, bridge_w))
-            return gain * (st_rate + amp), offset_left
+            rate = lt_rate + (st_rate - lt_rate) * (
+                days_to_lt / max(1, bridge_w)
+            )
+            return gain * rate, offset_left
         return gain * st_rate, offset_left
     if gain < 0 and offset_left > 0:
         est_loss = w_i * abs(gain) * nav
@@ -2942,8 +2944,9 @@ def _bridge_rate(st_rate, lt_rate, lt_days, days_held, bridge_w):
         return lt_rate
     days_to_lt = max(0, lt_days - days_held)
     if days_to_lt <= bridge_w:
-        amp = (st_rate - lt_rate) * (1.0 - days_to_lt / max(1, bridge_w))
-        return st_rate + amp
+        return lt_rate + (st_rate - lt_rate) * (
+            days_to_lt / max(1, bridge_w)
+        )
     return st_rate
 
 
