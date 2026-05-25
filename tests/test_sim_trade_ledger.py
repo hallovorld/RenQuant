@@ -135,6 +135,33 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
     assert open_lots.iloc[0]["gross_pnl"] == 60.0
 
 
+def test_round_trips_accepts_live_uppercase_actions() -> None:
+    trade_log = [
+        {
+            "action": "BUY",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-02"),
+            "price": 100.0,
+            "shares": 2,
+            "invest": 200.0,
+        },
+        {
+            "action": "SELL",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-02-01"),
+            "price": 110.0,
+            "shares": 2,
+            "tax": 4.0,
+        },
+    ]
+
+    trips = round_trips_from_trade_log(trade_log)
+
+    assert len(trips) == 1
+    assert trips.loc[0, "status"] == "closed"
+    assert trips.loc[0, "gross_pnl"] == 20.0
+
+
 def test_round_trip_tax_allocation_does_not_tax_losing_lots() -> None:
     trade_log = [
         {

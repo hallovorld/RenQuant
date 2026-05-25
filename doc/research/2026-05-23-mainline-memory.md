@@ -236,6 +236,9 @@ Make RenQuant 104 scientifically trustworthy end to end:
   decay toward LT as lots approach long-term status. Sim borrow charging now
   reads the active `_holdings` / `_config` fields, so open shorts actually pay
   configured borrow cost when long/short research is enabled.
+- Live-log forensic repair 2026-05-25: round-trip reconstruction now normalizes
+  trade `action` casing, so live JSON rows written as `BUY`/`SELL` are not
+  dropped by case-sensitive `buy`/`sell` matching.
 
 ## Pushed Progress
 

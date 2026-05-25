@@ -260,7 +260,8 @@ def _enrich_trade_log_from_result(result: Any) -> list[dict]:
     enriched: list[dict] = []
     for event in list(getattr(result, "trade_log", []) or []):
         row = dict(event)
-        if row.get("action") in {"buy", "sell"} and not row.get("regime"):
+        action = str(row.get("action") or "").lower()
+        if action in {"buy", "sell"} and not row.get("regime"):
             row["regime"] = regime_by_date.get(_as_date(row.get("date")))
         enriched.append(row)
     return enriched
@@ -293,7 +294,7 @@ def round_trips_from_trade_log(
     rows: list[dict] = []
 
     for event_id, event in enumerate(trade_log or []):
-        action = event.get("action")
+        action = str(event.get("action") or "").lower()
         ticker = str(event.get("ticker") or "")
         if not ticker:
             continue
