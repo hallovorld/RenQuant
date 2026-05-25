@@ -24,6 +24,7 @@ SCRIPTS = [
     "scripts/eval_dlinear_5cut_5seed.py",
     "scripts/eval_hf_film_5cut_5seed.py",
     "scripts/eval_hf_trainer_5cut_5seed.py",
+    "scripts/eval_xgb_5cut_5seed.py",
     "scripts/compare_arch_5cut_5seed.py",
     "scripts/dlinear_baseline.py",
     "scripts/verify_sigma_calibration.py",
@@ -34,6 +35,7 @@ SCRIPTS = [
 # don't (they just run main() with hardcoded knobs from the script).
 ARGPARSE_SCRIPTS = [
     "scripts/compare_arch_5cut_5seed.py",
+    "scripts/eval_xgb_5cut_5seed.py",
     "scripts/dlinear_baseline.py",
     "scripts/verify_sigma_calibration.py",
     "scripts/train_ngboost_proper.py",
@@ -109,7 +111,8 @@ class TestTrainNGBoostProperCLI:
 @pytest.mark.parametrize("script_rel",
                           ["scripts/eval_dlinear_5cut_5seed.py",
                            "scripts/eval_hf_film_5cut_5seed.py",
-                           "scripts/eval_hf_trainer_5cut_5seed.py"])
+                           "scripts/eval_hf_trainer_5cut_5seed.py",
+                           "scripts/eval_xgb_5cut_5seed.py"])
 def test_eval_driver_constants_sane(script_rel: str):
     """Eval drivers have hardcoded CUTS / SEEDS / KNOBS. Verify the
     module-level constants are present and sane (5 cuts × 5 seeds)."""
@@ -123,6 +126,30 @@ def test_eval_driver_constants_sane(script_rel: str):
     assert len(mod.CUTS) == 5, f"expected 5 cuts, got {len(mod.CUTS)}"
     assert len(mod.SEEDS) == 5, f"expected 5 seeds, got {len(mod.SEEDS)}"
     assert hasattr(mod, "OUT_ROOT"), f"{script_rel} missing OUT_ROOT"
+
+
+def test_xgb_driver_writes_patchtst_comparator_schema(tmp_path):
+    import importlib.util
+    import pandas as pd
+
+    p = REPO / "scripts/eval_xgb_5cut_5seed.py"
+    spec = importlib.util.spec_from_file_location("xgb_eval", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    results = [{
+        "status": "ok",
+        "cut": "cut1",
+        "seed": 42,
+        "best_val_ic": 0.02,
+        "per_regime_ic": {"BULL_CALM": 0.03, "BEAR": 0.02},
+    }]
+    df = mod.aggregate(results, tmp_path)
+
+    assert list(df.columns) == ["cut", "seed", "regime", "ic"]
+    assert set(df["regime"]) == {"BULL_CALM", "BEAR", "_MIN_"}
+    saved = pd.read_csv(tmp_path / "aggregate.csv")
+    assert list(saved.columns) == ["cut", "seed", "regime", "ic"]
 
 
 class TestCompareArchAggregator:

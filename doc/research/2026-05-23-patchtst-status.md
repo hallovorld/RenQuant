@@ -80,3 +80,34 @@ regime-stratified IC plus true walk-forward trade simulation pass.
   higher-IC canonical seed44.
 - No live promotion. Next scientific step: strict-contract 5-seed rerun, then
   regime-conditional shadow comparison and trade-level monotonicity gate.
+
+## 2026-05-24 Follow-Up: Why Old Sim Looked Better
+
+The "PatchTXT/PatchTST used to look good" claim mixed three different evidence
+types:
+
+- Short-window full sim, 2026-05-06 to 2026-05-22: PatchTST returned `+3.21%`
+  with Sharpe `+6.61`, but this was only 13 trading days with `7` buys and `0`
+  sells. It is a style/readiness diagnostic, not acceptance evidence.
+- Static long-window diagnostic, 2024-07-02 to 2026-02-10: PatchTST returned
+  APY `+1.49%`, Sharpe `+0.23`, and annual-net APY around `+6.07%`. This used
+  a static artifact over a window that is not a point-in-time PatchTST
+  walk-forward acceptance run.
+- Old shadow calibration was contaminated: `artifacts/shadow/panel-rank-
+  calibration.shadow.json` is byte-identical to the production XGB calibrator
+  (`sha256=1baaf489cae3175fa03a13336d35b4875da57bc4ea2186d8cd1bcd2c02ae9990`).
+  Any PatchTST number that interprets PatchTST raw scores through that old
+  file is invalid.
+
+Current code fixes the old PatchTST label-winsorization leak: `scripts/
+patchtst_hf.py` now fits label clipping bounds on `split_label == "train"` and
+`tests/test_patchtst_hf.py` pins the contract. The strict two-cut PatchTST WF
+pilot is structurally valid but weak: real IC `+0.0049`, 60d model-placebo IC
+`+0.0240`, BULL_CALM IC `+0.0030`. That explains the current "bad" number
+without needing to assume a fresh sim arithmetic bug.
+
+One evaluation hole remains fixed in code on 2026-05-24: `scripts/
+eval_xgb_5cut_5seed.py` adds the missing same-cut, same-seed XGB baseline arm
+that writes the same `aggregate.csv` schema consumed by
+`scripts/compare_arch_5cut_5seed.py`. Before this, the 5-cut PatchTST
+comparator could rank PatchTST variants but could not prove PatchTST beats XGB.

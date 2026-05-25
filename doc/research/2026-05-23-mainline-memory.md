@@ -1504,6 +1504,21 @@ PatchTST pilot WF diagnostic:
   scoring path, but not an alpha candidate. It mostly tracks persistent label
   structure and is too weak in BULL_CALM. PatchTST should remain shadow-only
   until acceptance-grade folds show regime-specific trade-domain edge.
+- 2026-05-24 follow-up: the earlier "PatchTST looked great" stream is explained
+  by evidence mixing, not by a single clean acceptance number. The `+3.21%`,
+  Sharpe `+6.61` result was a 13-trading-day, zero-sell style sim. The older
+  2024-07 to 2026-02 PatchTST APY `+1.49%`, Sharpe `+0.23` was a static
+  diagnostic, not a point-in-time PatchTST WF. The old generic shadow
+  calibrator is byte-identical to the prod XGB calibrator, so any run using
+  `artifacts/shadow/panel-rank-calibration.shadow.json` for PatchTST score
+  interpretation is invalid. Current shadow config uses the PatchTST-specific
+  calibrator with strict scorer match.
+- `scripts/eval_xgb_5cut_5seed.py` now fills the missing same-window XGB arm
+  for the PatchTST architecture screen. It writes the same
+  `cut,seed,regime,ic` aggregate schema as the HF PatchTST drivers, so
+  `compare_arch_5cut_5seed.py` can compare PatchTST variants against XGB
+  instead of only comparing PatchTST against itself. Targeted smoke tests:
+  `tests/test_eval_drivers_smoke.py` -> `26 passed`.
 
 Next implication:
 
