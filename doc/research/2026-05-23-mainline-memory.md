@@ -2669,6 +2669,18 @@ entire pipeline end-to-end:
   `[1, 5, 10, 20, 60]`. Validation: forward-return, trade-evaluation,
   persistence, reconciliation, and conformal-Gate-B wiring tests passed
   (`92 passed, 1 skipped`).
+- New alpha158 extra-feature train/runtime parity bugs fixed: runtime
+  fundamentals, PEAD rank, and sentiment imputation were computed over the
+  post-filter target set, while training computed per-date fill/rank over a
+  stable cross-section. Runtime now computes those extra features over the
+  configured/model/watchlist context and reindexes them back to candidates and
+  holdings. Sentiment also no longer carries stale prior-day rows into a
+  no-news day: it uses exact-date rows plus cross-sectional median/final-zero
+  fill, matching the training join. Runtime sentiment zeroing now requires an
+  explicit artifact contract that the model was trained for zeroing; otherwise
+  the system preserves train-parity values and logs the skipped gate. Validation:
+  panel scoring, PEAD, sentiment, daily retrain, train/infer, and alpha158
+  inference tests passed (`123 passed`).
 
 ## Stop Conditions
 

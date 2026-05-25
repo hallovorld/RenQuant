@@ -107,6 +107,336 @@ def _alpha158_cached_rows(
     return rows
 
 
+def _stable_feature_context_tickers(
+    ctx: Any,
+    target_tickers: list[str],
+    scorer: Any | None = None,
+) -> list[str]:
+    """Return the stable cross-section used for extra-feature fill/rank.
+
+    Training fills fundamentals/sentiment and ranks PEAD over the full date
+    cross-section. Runtime must therefore not compute medians/ranks over the
+    post-filter candidate subset; that makes a ticker's feature value depend on
+    which other tickers survived gates on the same bar.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add_many(values: Any) -> None:
+        if isinstance(values, dict):
+            values = values.keys()
+        if not isinstance(values, (list, tuple, set)):
+            return
+        for value in values:
+            if value is None:
+                continue
+            ticker = str(value)
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                out.append(ticker)
+
+    panel_cfg = (getattr(ctx, "config", {}) or {}).get("ranking", {}) \
+        .get("panel_scoring", {})
+    for key in (
+        "feature_context_tickers",
+        "training_universe",
+        "train_tickers",
+        "tickers",
+    ):
+        add_many(panel_cfg.get(key))
+    metadata = getattr(scorer, "metadata", {}) or {}
+    for key in (
+        "feature_context_tickers",
+        "training_universe",
+        "train_tickers",
+        "tickers",
+        "watchlist",
+    ):
+        add_many(metadata.get(key))
+    add_many((getattr(ctx, "config", {}) or {}).get("watchlist", []))
+    add_many(getattr(ctx, "models", {}) or {})
+    add_many(getattr(ctx, "holdings", {}) or {})
+    add_many(target_tickers)
+    return out
+
+
+def _finite_or_none(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _median_fill_rows(
+    raw_by_ticker: dict[str, dict[str, float | None]],
+    target_tickers: list[str],
+    context_tickers: list[str],
+    cols: list[str],
+) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+    medians: dict[str, float] = {}
+    filled: dict[str, dict[str, float]] = {}
+    for col in cols:
+        vals = [
+            float(raw_by_ticker.get(t, {}).get(col))
+            for t in context_tickers
+            if _finite_or_none(raw_by_ticker.get(t, {}).get(col)) is not None
+        ]
+        medians[col] = float(np.median(vals)) if vals else 0.0
+    for ticker in target_tickers:
+        row: dict[str, float] = {}
+        raw = raw_by_ticker.get(ticker, {})
+        for col in cols:
+            value = _finite_or_none(raw.get(col))
+            row[col] = value if value is not None else medians[col]
+        filled[ticker] = row
+    return filled, medians
+
+
+def _apply_fund_features(
+    rows: dict[str, dict[str, float]],
+    fund_panel: pd.DataFrame,
+    today: Any,
+    context_tickers: list[str],
+    fund_cols: list[str],
+) -> tuple[int, int, dict[str, float]]:
+    today_ts = pd.Timestamp(today)
+    panel = fund_panel.copy()
+    panel["date"] = pd.to_datetime(panel["date"])
+    snap = panel[panel["date"] <= today_ts] \
+        .sort_values("date").groupby("ticker").tail(1)
+    by_ticker = {
+        str(t): g.iloc[-1]
+        for t, g in snap.groupby("ticker", sort=False)
+    }
+    raw: dict[str, dict[str, float | None]] = {}
+    for ticker in context_tickers:
+        src = by_ticker.get(str(ticker))
+        raw[ticker] = {
+            col: (_finite_or_none(src[col])
+                  if src is not None and col in src.index else None)
+            for col in fund_cols
+        }
+    target_tickers = list(rows.keys())
+    filled, medians = _median_fill_rows(raw, target_tickers, context_tickers, fund_cols)
+    n_real = 0
+    n_imputed = 0
+    for ticker in target_tickers:
+        for col in fund_cols:
+            if _finite_or_none(raw.get(ticker, {}).get(col)) is None:
+                n_imputed += 1
+            else:
+                n_real += 1
+            rows[ticker][col] = filled[ticker][col]
+    return n_real, n_imputed, medians
+
+
+def _earnings_raw_row(
+    ctx: Any,
+    earn_dir: Path,
+    ticker: str,
+    today_ts: pd.Timestamp,
+) -> tuple[dict[str, float | None], bool, bool, bool]:
+    ep = earn_dir / f"{ticker}.parquet"
+    if not ep.exists():
+        return {}, True, False, False
+    earn = _cached_earnings_surprise(ctx, ep)
+    if earn is None:
+        return {}, True, False, False
+    prior = earn[earn["earnings_date"] <= today_ts]
+    if len(prior) == 0:
+        return {}, False, True, False
+    last = prior.iloc[-1]
+    days_since = int((today_ts - last["earnings_date"]).days)
+    if days_since > 60 or days_since < 0:
+        return {}, False, False, True
+    decay = max(0.0, 1.0 - days_since / 60)
+    surprise = _finite_or_none(last.get("surprise_pct")) or 0.0
+    return {
+        "days_since_earnings": float(days_since),
+        "pead_signal": surprise * decay,
+        "pead_surprise": surprise,
+    }, False, False, False
+
+
+def _apply_pead_features(
+    ctx: Any,
+    rows: dict[str, dict[str, float]],
+    earn_dir: Path,
+    today_ts: pd.Timestamp,
+    context_tickers: list[str],
+    pead_cols: list[str],
+) -> tuple[int, int, int, int]:
+    raw: dict[str, dict[str, float | None]] = {}
+    n_no_data = n_no_prior = n_out_of_window = 0
+    for ticker in context_tickers:
+        row, no_data, no_prior, oow = _earnings_raw_row(ctx, earn_dir, ticker, today_ts)
+        n_no_data += int(no_data)
+        n_no_prior += int(no_prior)
+        n_out_of_window += int(oow)
+        raw[ticker] = {
+            "days_since_earnings": row.get("days_since_earnings"),
+            "pead_signal": row.get("pead_signal"),
+            "pead_quintile_rank": None,
+        }
+        if row.get("pead_surprise") is not None:
+            raw[ticker]["pead_surprise"] = row["pead_surprise"]
+    surprises = {
+        ticker: raw[ticker]["pead_surprise"]
+        for ticker in context_tickers
+        if _finite_or_none(raw.get(ticker, {}).get("pead_surprise")) is not None
+    }
+    if surprises:
+        ranks = pd.Series(surprises, dtype=float).rank(pct=True)
+        for ticker, rank in ranks.items():
+            raw[ticker]["pead_quintile_rank"] = float(rank)
+    filled, _medians = _median_fill_rows(
+        raw, list(rows.keys()), context_tickers, pead_cols,
+    )
+    for ticker, vals in filled.items():
+        for col in pead_cols:
+            rows[ticker][col] = vals[col]
+    return len(surprises), n_no_data, n_no_prior, n_out_of_window
+
+
+def _apply_sue_features(
+    ctx: Any,
+    rows: dict[str, dict[str, float]],
+    earn_dir: Path,
+    today_ts: pd.Timestamp,
+    context_tickers: list[str],
+    sue_cols: list[str],
+) -> tuple[int, int, int]:
+    raw: dict[str, dict[str, float | None]] = {}
+    n_active = n_no_data = n_oow = 0
+    for ticker in context_tickers:
+        ep = earn_dir / f"{ticker}.parquet"
+        if not ep.exists():
+            n_no_data += 1
+            raw[ticker] = {col: None for col in sue_cols}
+            continue
+        earn = _cached_earnings_surprise(ctx, ep)
+        if earn is None:
+            n_no_data += 1
+            raw[ticker] = {col: None for col in sue_cols}
+            continue
+        prior = earn[earn["earnings_date"] <= today_ts]
+        if len(prior) == 0:
+            raw[ticker] = {col: 0.0 for col in sue_cols}
+            continue
+        last = prior.iloc[-1]
+        days_since = int((today_ts - last["earnings_date"]).days)
+        if days_since > 60 or days_since < 0:
+            n_oow += 1
+            raw[ticker] = {col: 0.0 for col in sue_cols}
+            continue
+        decay = max(0.0, 1.0 - days_since / 60)
+        s = prior["surprise_pct"].astype(float)
+        if len(s) >= 2:
+            denom_window = s.iloc[max(0, len(s) - 1 - 4):len(s) - 1]
+            denom = float(denom_window.std()) if len(denom_window) >= 2 else 0.0
+            sue = float(s.iloc[-1]) / max(denom, 1e-6)
+            sue = max(min(sue, 5.0), -5.0)
+        else:
+            sue = 0.0
+        mom = float(s.iloc[-1] - s.iloc[-2]) if len(s) >= 2 else 0.0
+        streak = 0
+        cur_sign = 0
+        for v in s:
+            sign = 1 if v > 0 else (-1 if v < 0 else 0)
+            if sign == 0 or sign != cur_sign:
+                streak = sign
+                cur_sign = sign
+            else:
+                streak += sign
+        raw[ticker] = {
+            "sue_signal": sue * decay,
+            "surprise_momentum": mom * decay,
+            "surprise_streak": float(streak) * decay,
+        }
+        n_active += 1
+    filled, _medians = _median_fill_rows(raw, list(rows.keys()), context_tickers, sue_cols)
+    for ticker, vals in filled.items():
+        for col in sue_cols:
+            rows[ticker][col] = vals[col]
+    return n_active, n_no_data, n_oow
+
+
+def _sentiment_runtime_gate_declared(scorer: Any) -> bool:
+    metadata = getattr(scorer, "metadata", {}) or {}
+    contract = (
+        metadata.get("sentiment_runtime_gate_contract")
+        or metadata.get("sentiment_gate_contract")
+    )
+    return contract in {"trained_zeroing", "runtime_zeroing"} or bool(
+        metadata.get("sentiment_runtime_gate_trained", False)
+    )
+
+
+def _apply_sentiment_features(
+    ctx: Any,
+    scorer: Any,
+    rows: dict[str, dict[str, float]],
+    sent_dir: Path,
+    today_ts: pd.Timestamp,
+    context_tickers: list[str],
+    sent_cols: list[str],
+) -> tuple[int, int, bool]:
+    raw: dict[str, dict[str, float | None]] = {}
+    n_hit = n_miss = 0
+    for ticker in context_tickers:
+        sp = sent_dir / f"{ticker}.parquet"
+        raw[ticker] = {col: None for col in sent_cols}
+        if not sp.exists():
+            n_miss += 1
+            continue
+        try:
+            sdf = _cached_sentiment(ctx, sp)
+        except Exception:
+            n_miss += 1
+            continue
+        exact = sdf[pd.to_datetime(sdf["date"]) == today_ts]
+        if len(exact) == 0:
+            n_miss += 1
+            continue
+        last = exact.iloc[-1]
+        if "sentiment_pos_share" in sent_cols:
+            raw[ticker]["sentiment_pos_share"] = _finite_or_none(
+                last.get("sentiment_pos_share")
+            )
+        if "mean_sentiment" in sent_cols:
+            raw[ticker]["mean_sentiment"] = _finite_or_none(last.get("mean_sentiment"))
+        if "n_articles_log" in sent_cols:
+            if "n_articles_log" in last.index:
+                raw[ticker]["n_articles_log"] = _finite_or_none(last.get("n_articles_log"))
+            else:
+                n_articles = _finite_or_none(last.get("n_articles")) or 0.0
+                raw[ticker]["n_articles_log"] = float(np.log1p(n_articles))
+        n_hit += 1
+    filled, _medians = _median_fill_rows(
+        raw, list(rows.keys()), context_tickers, sent_cols,
+    )
+    for ticker, vals in filled.items():
+        for col in sent_cols:
+            rows[ticker][col] = vals[col]
+    sent_enabled = bool(_sentiment_cfg(ctx).get("enabled", True))
+    gate_applied = False
+    if not sent_enabled:
+        if _sentiment_runtime_gate_declared(scorer):
+            for ticker in rows:
+                for col in sent_cols:
+                    rows[ticker][col] = 0.0
+            gate_applied = True
+        else:
+            log.warning(
+                "ApplyScoresTask[panel_ltr_xgboost]: sentiment gate OFF for "
+                "regime=%s, but artifact lacks trained runtime-zeroing "
+                "contract; leaving exact-date sentiment features unchanged.",
+                getattr(ctx, "regime", "?"),
+            )
+    return n_hit, n_miss, gate_applied
+
+
 def _candidate_ticker(candidate: Any) -> str | None:
     ticker = getattr(candidate, "ticker", None)
     return str(ticker) if ticker else None
@@ -507,62 +837,27 @@ class ApplyScoresTask(Task):
                 fund_cols = ["earnings_yield","book_to_price","gross_profitability","roe","asset_growth"]
                 needs_fund = any(fc in scorer.feature_cols for fc in fund_cols)
                 if needs_fund:
-                    import os                                                       # noqa: PLC0415
                     from pathlib import Path                                         # noqa: PLC0415
-                    import numpy as np                                              # noqa: PLC0415
                     repo = Path(__file__).resolve().parents[4]
                     fp = repo / "data" / "sec_fundamentals_daily.parquet"
-                    if fp.exists():
-                        fund_panel = _cached_parquet(ctx, ("sec_fundamentals_daily", str(fp)), fp)
-                        if fund_panel is None:
-                            fund_panel = pd.DataFrame()
-                        fund_panel["date"] = pd.to_datetime(fund_panel["date"])
-                        snap = fund_panel[fund_panel["date"] <= pd.Timestamp(today)] \
-                            .sort_values("date").groupby("ticker").tail(1)
-                        # ── 2026-05-09 BUG #1 fix: match training-time imputation chain ──
-                        # Training (build_alpha158_fund_panel.py):
-                        #     1) per-date cross-sectional median fillna
-                        #     2) final fillna(0) only if median was also NaN
-                        # Pre-fix runtime: NaN→0 directly (skipped step 1).
-                        # Result: 33% of (ticker,date) cells with NaN raw fund
-                        # values got DIFFERENT imputed values at train vs runtime
-                        # → SHAP shows fund features give ~constant contribution
-                        # at runtime (all map to same z-score branch).
-                        # Fix: replicate the median-then-zero chain.
-                        ticker_raw_fund = {}
-                        for t in rows.keys():
-                            row = snap[snap["ticker"] == t]
-                            if len(row):
-                                ticker_raw_fund[t] = {
-                                    fc: (float(row[fc].iloc[0])
-                                          if (fc in row.columns and pd.notna(row[fc].iloc[0]))
-                                          else None)
-                                    for fc in fund_cols
-                                }
-                            else:
-                                ticker_raw_fund[t] = {fc: None for fc in fund_cols}
-                        # Step 1: cross-sectional median of CURRENT day's
-                        # candidates (mirror training's per-date median)
-                        cs_median = {}
-                        for fc in fund_cols:
-                            vals = [v for v in (ticker_raw_fund[t][fc] for t in rows) if v is not None]
-                            cs_median[fc] = float(np.median(vals)) if vals else 0.0
-                        # Apply median where ticker's value is missing; else use real value
-                        n_real, n_imputed = 0, 0
-                        for t in rows:
-                            for fc in fund_cols:
-                                v = ticker_raw_fund[t][fc]
-                                if v is None:
-                                    rows[t][fc] = cs_median[fc]
-                                    n_imputed += 1
-                                else:
-                                    rows[t][fc] = v
-                                    n_real += 1
-                        log.info(
-                            "ApplyScoresTask[panel_ltr_xgboost]: merged 5 fund features "
-                            "from %s (real=%d imputed_xs_median=%d)",
-                            fp.name, n_real, n_imputed,
-                        )
+                    if not fp.exists():
+                        _fail_closed_panel_scoring(ctx, "panel_fundamentals_missing")
+                        return None
+                    fund_panel = _cached_parquet(ctx, ("sec_fundamentals_daily", str(fp)), fp)
+                    if fund_panel is None or fund_panel.empty:
+                        _fail_closed_panel_scoring(ctx, "panel_fundamentals_empty")
+                        return None
+                    context_tickers = _stable_feature_context_tickers(
+                        ctx, list(rows.keys()), scorer,
+                    )
+                    n_real, n_imputed, _medians = _apply_fund_features(
+                        rows, fund_panel, today, context_tickers, fund_cols,
+                    )
+                    log.info(
+                        "ApplyScoresTask[panel_ltr_xgboost]: merged 5 fund features "
+                        "from %s over context=%d (real=%d imputed_xs_median=%d)",
+                        fp.name, len(context_tickers), n_real, n_imputed,
+                    )
 
                 # PEAD features (E47 promotion 2026-05-08): if the artifact
                 # has days_since_earnings / pead_signal / pead_quintile_rank,
@@ -578,57 +873,24 @@ class ApplyScoresTask(Task):
                 needs_sue  = any(sc in scorer.feature_cols for sc in sue_cols)
                 if needs_pead or needs_sue:
                     from pathlib import Path  # noqa: PLC0415
-                    import numpy as np         # noqa: PLC0415
                     repo = Path(__file__).resolve().parents[4]
                     earn_dir = repo / "data" / "earnings_surprise"
                     today_ts = pd.Timestamp(today)
-                    DECAY = 60   # Bernard-Thomas 1989 drift window
+                    context_tickers = _stable_feature_context_tickers(
+                        ctx, list(rows.keys()), scorer,
+                    )
 
                 if needs_pead:
-                    # Per-ticker: pull most-recent earnings ≤ today
-                    surprises_today = {}  # ticker → surprise_pct (for x-sec rank)
-                    n_no_data = 0; n_no_prior = 0; n_out_of_window = 0
-                    for t in list(rows.keys()):
-                        ep = earn_dir / f"{t}.parquet"
-                        if not ep.exists():
-                            n_no_data += 1
-                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
-                            continue
-                        earn = _cached_earnings_surprise(ctx, ep)
-                        if earn is None:
-                            n_no_data += 1
-                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
-                            continue
-                        prior = earn[earn["earnings_date"] <= today_ts]
-                        if len(prior) == 0:
-                            n_no_prior += 1
-                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
-                            continue
-                        last = prior.iloc[-1]
-                        days_since = int((today_ts - last["earnings_date"]).days)
-                        if days_since > DECAY or days_since < 0:
-                            n_out_of_window += 1
-                            for pc in pead_cols: rows[t].setdefault(pc, 0.0)
-                            continue
-                        decay = max(0.0, 1.0 - days_since / DECAY)
-                        surprise = float(last["surprise_pct"]) if pd.notna(last["surprise_pct"]) else 0.0
-                        rows[t]["days_since_earnings"] = float(days_since)
-                        rows[t]["pead_signal"]         = surprise * decay
-                        surprises_today[t] = surprise
-                    # Cross-sectional quintile rank of today's surprise across all
-                    # tickers in the snap (matches build-time per-date rank logic).
-                    if surprises_today:
-                        ranks = pd.Series(surprises_today).rank(pct=True)
-                        for t, r in ranks.items():
-                            rows[t]["pead_quintile_rank"] = float(r)
-                    # Tickers without active surprise → zero quintile rank
-                    for t in rows:
-                        rows[t].setdefault("pead_quintile_rank", 0.0)
+                    n_active, n_no_data, n_no_prior, n_out_of_window = (
+                        _apply_pead_features(
+                            ctx, rows, earn_dir, today_ts, context_tickers, pead_cols,
+                        )
+                    )
                     log.info("ApplyScoresTask[panel_ltr_xgboost]: computed 3 PEAD features "
-                             "today=%s (%d/%d tickers active in 60d window; "
+                             "today=%s (%d/%d tickers active in context 60d window; "
                              "no_data=%d no_prior=%d out_of_window=%d)",
                              today_ts.date().isoformat(),
-                             len(surprises_today), len(rows),
+                             n_active, len(context_tickers),
                              n_no_data, n_no_prior, n_out_of_window)
 
                 # ── SUE features (E49 promotion 2026-05-09): SUE +
@@ -639,59 +901,12 @@ class ApplyScoresTask(Task):
                 # whereas PEAD only uses the most-recent event.
                 # Foster-Olsen-Shevlin 1984 + Bernard-Thomas 60d decay.
                 if needs_sue:
-                    SUE_WINDOW = 4
-                    n_sue_active = 0; n_sue_no_data = 0; n_sue_oow = 0
-                    for t in list(rows.keys()):
-                        ep = earn_dir / f"{t}.parquet"
-                        if not ep.exists():
-                            n_sue_no_data += 1
-                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        earn = _cached_earnings_surprise(ctx, ep)
-                        if earn is None:
-                            n_sue_no_data += 1
-                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        prior = earn[earn["earnings_date"] <= today_ts]
-                        if len(prior) == 0:
-                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        last = prior.iloc[-1]
-                        days_since = int((today_ts - last["earnings_date"]).days)
-                        if days_since > DECAY or days_since < 0:
-                            n_sue_oow += 1
-                            for sc in sue_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        decay = max(0.0, 1.0 - days_since / DECAY)
-                        s = prior["surprise_pct"].astype(float)
-                        # SUE: most-recent surprise / std(prior 4 quarters)
-                        if len(s) >= 2:
-                            denom_window = s.iloc[max(0, len(s)-1-SUE_WINDOW):len(s)-1]
-                            denom = float(denom_window.std()) if len(denom_window) >= 2 else 0.0
-                            sue = float(s.iloc[-1]) / max(denom, 1e-6)
-                            sue = max(min(sue, 5.0), -5.0)   # clip
-                        else:
-                            sue = 0.0
-                        # Momentum: surprise_t - surprise_(t-1)
-                        mom = float(s.iloc[-1] - s.iloc[-2]) if len(s) >= 2 else 0.0
-                        # Streak: signed consecutive same-direction count
-                        streak = 0
-                        cur_sign = 0
-                        for v in s:
-                            sgn = 1 if v > 0 else (-1 if v < 0 else 0)
-                            if sgn == 0 or sgn != cur_sign:
-                                streak = sgn; cur_sign = sgn
-                            else:
-                                streak += sgn
-                        rows[t]["sue_signal"]        = sue * decay
-                        rows[t]["surprise_momentum"] = mom * decay
-                        rows[t]["surprise_streak"]   = float(streak) * decay
-                        n_sue_active += 1
-                    for t in rows:
-                        for sc in sue_cols: rows[t].setdefault(sc, 0.0)
+                    n_sue_active, n_sue_no_data, n_sue_oow = _apply_sue_features(
+                        ctx, rows, earn_dir, today_ts, context_tickers, sue_cols,
+                    )
                     log.info("ApplyScoresTask[panel_ltr_xgboost]: computed 3 SUE features "
-                             "today=%s (%d/%d tickers active; no_data=%d out_of_window=%d)",
-                             today_ts.date().isoformat(), n_sue_active, len(rows),
+                             "today=%s (%d/%d context tickers active; no_data=%d out_of_window=%d)",
+                             today_ts.date().isoformat(), n_sue_active, len(context_tickers),
                              n_sue_no_data, n_sue_oow)
 
                 # ── Sentiment features (2026-05-18 regime-conditional ─────────
@@ -705,53 +920,19 @@ class ApplyScoresTask(Task):
                     from pathlib import Path as _P  # noqa: PLC0415
                     repo_root = _P(__file__).resolve().parents[4]
                     sent_dir = repo_root / "data" / "news_sentiment_alpaca"
-                    sent_gate = _sentiment_cfg(ctx)
-                    sent_enabled = bool(sent_gate.get("enabled", True))
-                    n_sent_hit = 0
-                    n_sent_miss = 0
                     today_ts_sent = pd.Timestamp(today)
-                    for t in list(rows.keys()):
-                        sp = sent_dir / f"{t}.parquet"
-                        if not sp.exists():
-                            n_sent_miss += 1
-                            for sc in sent_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        try:
-                            sdf = _cached_sentiment(ctx, sp)
-                        except Exception:
-                            n_sent_miss += 1
-                            for sc in sent_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        # Most-recent sentiment date ≤ today (sentiment is daily;
-                        # weekend/holiday tickers fall back to last available)
-                        prior_sent = sdf[sdf["date"] <= today_ts_sent]
-                        if len(prior_sent) == 0:
-                            n_sent_miss += 1
-                            for sc in sent_cols: rows[t].setdefault(sc, 0.0)
-                            continue
-                        last = prior_sent.iloc[-1]
-                        if "sentiment_pos_share" in scorer.feature_cols:
-                            rows[t]["sentiment_pos_share"] = float(
-                                last.get("sentiment_pos_share", 0.0) or 0.0)
-                        if "mean_sentiment" in scorer.feature_cols:
-                            rows[t]["mean_sentiment"] = float(
-                                last.get("mean_sentiment", 0.0) or 0.0)
-                        if "n_articles_log" in scorer.feature_cols:
-                            # Source schema stores raw n_articles; log1p here
-                            raw_n = float(last.get("n_articles", 0.0) or 0.0)
-                            rows[t]["n_articles_log"] = float(np.log1p(raw_n))
-                        n_sent_hit += 1
-                    # Apply regime gate (zero cols if sentiment OFF for current regime)
-                    if not sent_enabled:
-                        for t in rows:
-                            for sc in sent_cols:
-                                if sc in rows[t]:
-                                    rows[t][sc] = 0.0
+                    context_tickers = _stable_feature_context_tickers(
+                        ctx, list(rows.keys()), scorer,
+                    )
+                    n_sent_hit, n_sent_miss, gate_applied = _apply_sentiment_features(
+                        ctx, scorer, rows, sent_dir, today_ts_sent,
+                        context_tickers, sent_cols,
+                    )
                     log.info("ApplyScoresTask[panel_ltr_xgboost]: sentiment "
-                             "features (regime=%s gate=%s) hit=%d miss=%d",
+                             "features (regime=%s gate=%s context=%d) hit=%d miss=%d",
                              getattr(ctx, "regime", "?"),
-                             "ON" if sent_enabled else "OFF",
-                             n_sent_hit, n_sent_miss)
+                             "APPLIED" if gate_applied else "TRAIN_PARITY",
+                             len(context_tickers), n_sent_hit, n_sent_miss)
 
                 # ── Feature-health check (2026-05-08 path-bug regression guard) ─
                 # Catches the silent-zero failure mode that hid the parents[3]

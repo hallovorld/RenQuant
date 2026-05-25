@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -62,6 +63,137 @@ def synthetic_ohlcv():
         }, index=dates)
         out[t] = df
     return out
+
+
+# ── Extra-feature runtime parity helpers ─────────────────────────────────────
+
+class TestAlpha158ExtraFeatureRuntimeParity:
+    """AUDIT REGRESSION GUARD: runtime extra features must be computed over a
+    stable cross-section, then reindexed to trade targets.
+
+    Training fills fund/sentiment NaNs and ranks PEAD per date over the panel
+    cross-section. A live path that recomputes those values over only the
+    candidates that survived gates changes the model input distribution.
+    """
+
+    def test_fundamentals_fill_uses_context_not_candidate_subset(self):
+        from kernel.panel_pipeline.job_panel_scoring import _apply_fund_features  # noqa: PLC0415
+
+        today = pd.Timestamp("2026-02-10")
+        panel = pd.DataFrame({
+            "ticker": ["AAA", "BBB", "CCC"],
+            "date": [today, today, today],
+            "earnings_yield": [np.nan, 1.0, 5.0],
+        })
+        rows = {"AAA": {}, "BBB": {}}
+
+        _apply_fund_features(
+            rows, panel, today,
+            context_tickers=["AAA", "BBB", "CCC"],
+            fund_cols=["earnings_yield"],
+        )
+
+        assert rows["AAA"]["earnings_yield"] == pytest.approx(3.0)
+        assert rows["BBB"]["earnings_yield"] == pytest.approx(1.0)
+
+    def test_pead_rank_uses_context_not_candidate_subset(self, tmp_path):
+        from kernel.panel_pipeline.job_panel_scoring import _apply_pead_features  # noqa: PLC0415
+
+        today = pd.Timestamp("2026-02-10")
+        earn_date = today - pd.Timedelta(days=10)
+        for ticker, surprise in {"AAA": 0.1, "BBB": 0.2, "CCC": 0.3}.items():
+            pd.DataFrame(
+                {"surprise_pct": [surprise]},
+                index=pd.DatetimeIndex([earn_date], name="earnings_date"),
+            ).to_parquet(tmp_path / f"{ticker}.parquet")
+
+        rows = {"AAA": {}, "BBB": {}}
+        ctx = SimpleNamespace(_panel_runtime_cache={})
+        _apply_pead_features(
+            ctx, rows, tmp_path, today,
+            context_tickers=["AAA", "BBB", "CCC"],
+            pead_cols=["days_since_earnings", "pead_signal", "pead_quintile_rank"],
+        )
+
+        assert rows["AAA"]["pead_quintile_rank"] == pytest.approx(1 / 3)
+        assert rows["BBB"]["pead_quintile_rank"] == pytest.approx(2 / 3)
+
+    def test_sentiment_exact_date_and_untrained_gate_does_not_zero(self, tmp_path):
+        from kernel.panel_pipeline.job_panel_scoring import _apply_sentiment_features  # noqa: PLC0415
+
+        today = pd.Timestamp("2026-02-10")
+        prior = today - pd.Timedelta(days=1)
+        pd.DataFrame({
+            "date": [prior],
+            "mean_sentiment": [0.9],
+            "sentiment_pos_share": [1.0],
+            "n_articles": [20],
+        }).to_parquet(tmp_path / "AAA.parquet")
+        for ticker, mean_sent, pos, n_articles in [
+            ("BBB", 0.2, 0.4, 2),
+            ("CCC", 0.6, 0.8, 8),
+        ]:
+            pd.DataFrame({
+                "date": [today],
+                "mean_sentiment": [mean_sent],
+                "sentiment_pos_share": [pos],
+                "n_articles": [n_articles],
+            }).to_parquet(tmp_path / f"{ticker}.parquet")
+
+        rows = {"AAA": {}, "BBB": {}}
+        ctx = SimpleNamespace(
+            _panel_runtime_cache={},
+            regime="BULL_CALM",
+            config={
+                "ranking": {"panel_scoring": {"sentiment": {"enabled": True}}},
+                "regime_params": {"BULL_CALM": {"sentiment": {"enabled": False}}},
+            },
+        )
+        scorer = SimpleNamespace(metadata={})
+        hits, misses, gate_applied = _apply_sentiment_features(
+            ctx, scorer, rows, tmp_path, today,
+            context_tickers=["AAA", "BBB", "CCC"],
+            sent_cols=["sentiment_pos_share", "mean_sentiment", "n_articles_log"],
+        )
+
+        assert hits == 2
+        assert misses == 1
+        assert gate_applied is False
+        assert rows["AAA"]["mean_sentiment"] == pytest.approx(0.4)
+        assert rows["BBB"]["mean_sentiment"] == pytest.approx(0.2)
+        assert rows["BBB"]["sentiment_pos_share"] > 0.0
+
+    def test_sentiment_gate_requires_trained_runtime_contract(self, tmp_path):
+        from kernel.panel_pipeline.job_panel_scoring import _apply_sentiment_features  # noqa: PLC0415
+
+        today = pd.Timestamp("2026-02-10")
+        pd.DataFrame({
+            "date": [today],
+            "mean_sentiment": [0.6],
+            "sentiment_pos_share": [0.8],
+            "n_articles": [8],
+        }).to_parquet(tmp_path / "AAA.parquet")
+        rows = {"AAA": {}}
+        ctx = SimpleNamespace(
+            _panel_runtime_cache={},
+            regime="BULL_CALM",
+            config={
+                "ranking": {"panel_scoring": {"sentiment": {"enabled": True}}},
+                "regime_params": {"BULL_CALM": {"sentiment": {"enabled": False}}},
+            },
+        )
+        scorer = SimpleNamespace(
+            metadata={"sentiment_runtime_gate_contract": "trained_zeroing"},
+        )
+        _hits, _misses, gate_applied = _apply_sentiment_features(
+            ctx, scorer, rows, tmp_path, today,
+            context_tickers=["AAA"],
+            sent_cols=["sentiment_pos_share", "mean_sentiment", "n_articles_log"],
+        )
+
+        assert gate_applied is True
+        assert rows["AAA"]["mean_sentiment"] == pytest.approx(0.0)
+        assert rows["AAA"]["sentiment_pos_share"] == pytest.approx(0.0)
 
 
 # ── alpha158 feature computation parity ─────────────────────────────────────
