@@ -123,6 +123,12 @@ CREATE TABLE IF NOT EXISTS trades (
     expected_return REAL,
     expected_return_horizon_days INTEGER,
     kelly_target_pct REAL,
+    model_type     TEXT,
+    sector         TEXT,
+    blocked_by     TEXT,
+    qp_delta_w     REAL,
+    qp_target_w    REAL,
+    qp_status      TEXT,
     regime         TEXT,
     confidence     REAL,
     order_type     TEXT,
@@ -301,13 +307,19 @@ CREATE INDEX IF NOT EXISTS idx_tds_ticker ON ticker_daily_state(ticker);
 CREATE TABLE IF NOT EXISTS score_distribution (
     run_id        TEXT NOT NULL,
     date          TEXT NOT NULL,        -- YYYY-MM-DD (string for sqlite friendliness)
+    run_type      TEXT,                 -- live | sim | lean
     ticker        TEXT NOT NULL,
     raw_panel     REAL,                 -- pre-calibration scorer output (panel_score)
     rank_score    REAL,                 -- post-calibration probability
+    expected_return_horizon_days INTEGER,
     mu            REAL,                 -- NGBoost μ if active
+    mu_horizon_days INTEGER,
     sigma         REAL,                 -- NGBoost σ if active
     regime        TEXT,                 -- BULL_CALM / etc.
     is_holding    INTEGER DEFAULT 0,    -- 0 = candidate, 1 = held
+    model_type    TEXT,
+    sector        TEXT,
+    blocked_by    TEXT,
     PRIMARY KEY (run_id, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_score_dist_date ON score_distribution(date);
@@ -318,6 +330,7 @@ CREATE INDEX IF NOT EXISTS idx_score_dist_date ON score_distribution(date);
 CREATE TABLE IF NOT EXISTS score_percentiles_daily (
     run_id        TEXT PRIMARY KEY,
     date          TEXT NOT NULL,
+    run_type      TEXT,
     n_cands       INTEGER NOT NULL,
     p01           REAL,
     p05           REAL,
@@ -444,6 +457,17 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("expected_return_horizon_days", "INTEGER"),
         ("mu_horizon_days",    "INTEGER"),
     ],
+    "score_distribution": [
+        ("run_type",                    "TEXT"),
+        ("expected_return_horizon_days", "INTEGER"),
+        ("mu_horizon_days",             "INTEGER"),
+        ("model_type",                  "TEXT"),
+        ("sector",                      "TEXT"),
+        ("blocked_by",                  "TEXT"),
+    ],
+    "score_percentiles_daily": [
+        ("run_type",                    "TEXT"),
+    ],
     # 2026-05-22: persist the per-trade decision tree, not just scalar P&L.
     # Buy orders already carry order-attribution fields at emission time;
     # sell events carry exit diagnostics. These columns make the executed
@@ -470,6 +494,12 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("expected_return",       "REAL"),
         ("expected_return_horizon_days", "INTEGER"),
         ("kelly_target_pct",      "REAL"),
+        ("model_type",            "TEXT"),
+        ("sector",                "TEXT"),
+        ("blocked_by",            "TEXT"),
+        ("qp_delta_w",            "REAL"),
+        ("qp_target_w",           "REAL"),
+        ("qp_status",             "TEXT"),
         ("regime",                "TEXT"),
         ("confidence",            "REAL"),
     ],
@@ -636,26 +666,42 @@ def _rebuild_score_tables_if_needed(conn: sqlite3.Connection) -> None:
         table_info_cache["score_distribution"] = conn.execute(
             "PRAGMA table_info(score_distribution)"
         ).fetchall()
+        old_cols = {r[1] for r in table_info_cache["score_distribution"]}
+        def _old_col(name: str, default: str = "NULL") -> str:
+            return name if name in old_cols else default
         run_expr = _legacy_run_id_expr("score_distribution")
         conn.execute(f"ALTER TABLE score_distribution RENAME TO {tmp}")
         conn.execute(
             """CREATE TABLE score_distribution (
                 run_id        TEXT NOT NULL,
                 date          TEXT NOT NULL,
+                run_type      TEXT,
                 ticker        TEXT NOT NULL,
                 raw_panel     REAL,
                 rank_score    REAL,
+                expected_return_horizon_days INTEGER,
                 mu            REAL,
+                mu_horizon_days INTEGER,
                 sigma         REAL,
                 regime        TEXT,
                 is_holding    INTEGER DEFAULT 0,
+                model_type    TEXT,
+                sector        TEXT,
+                blocked_by    TEXT,
                 PRIMARY KEY (run_id, ticker)
             )"""
         )
         conn.execute(
             f"""INSERT OR REPLACE INTO score_distribution
-                  (run_id, date, ticker, raw_panel, rank_score, mu, sigma, regime, is_holding)
-                SELECT {run_expr}, date, ticker, raw_panel, rank_score, mu, sigma, regime, is_holding
+                  (run_id, date, run_type, ticker, raw_panel, rank_score,
+                   expected_return_horizon_days, mu, mu_horizon_days, sigma,
+                   regime, is_holding, model_type, sector, blocked_by)
+                SELECT {run_expr}, date, {_old_col("run_type")}, ticker,
+                       raw_panel, rank_score,
+                       {_old_col("expected_return_horizon_days")},
+                       mu, {_old_col("mu_horizon_days")}, sigma, regime,
+                       is_holding, {_old_col("model_type")},
+                       {_old_col("sector")}, {_old_col("blocked_by")}
                   FROM {tmp}"""
         )
         conn.execute(f"DROP TABLE {tmp}")
@@ -667,12 +713,16 @@ def _rebuild_score_tables_if_needed(conn: sqlite3.Connection) -> None:
         table_info_cache["score_percentiles_daily"] = conn.execute(
             "PRAGMA table_info(score_percentiles_daily)"
         ).fetchall()
+        old_cols = {r[1] for r in table_info_cache["score_percentiles_daily"]}
+        def _old_col(name: str, default: str = "NULL") -> str:
+            return name if name in old_cols else default
         run_expr = _legacy_run_id_expr("score_percentiles_daily")
         conn.execute(f"ALTER TABLE score_percentiles_daily RENAME TO {tmp}")
         conn.execute(
             """CREATE TABLE score_percentiles_daily (
                 run_id        TEXT PRIMARY KEY,
                 date          TEXT NOT NULL,
+                run_type      TEXT,
                 n_cands       INTEGER NOT NULL,
                 p01           REAL,
                 p05           REAL,
@@ -694,10 +744,11 @@ def _rebuild_score_tables_if_needed(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             f"""INSERT OR REPLACE INTO score_percentiles_daily
-                  (run_id, date, n_cands, p01, p05, p10, p25, p50, p75,
+                  (run_id, date, run_type, n_cands, p01, p05, p10, p25, p50, p75,
                    p85, p90, p95, p99, score_min, score_max, score_mean,
                    score_std, regime)
-                SELECT {run_expr}, date, n_cands, p01, p05, p10, p25, p50, p75,
+                SELECT {run_expr}, date, {_old_col("run_type")},
+                       n_cands, p01, p05, p10, p25, p50, p75,
                        p85, p90, p95, p99, score_min, score_max, score_mean,
                        score_std, regime
                   FROM {tmp}"""
@@ -1050,7 +1101,8 @@ def record_trades(
       net_pnl_after_tax, tax_cash_debited, tax_cash_debit_mode,
       tax_lot_method, rank_score, conviction, sigma_mult, mu,
       mu_horizon_days, sigma, panel_score, rs_score, expected_return,
-      expected_return_horizon_days, kelly_target_pct, regime, confidence,
+      expected_return_horizon_days, kelly_target_pct, model_type, sector,
+      blocked_by, qp_delta_w, qp_target_w, qp_status, regime, confidence,
       order_type/source/source_job/source_task/
       order_source/attribution_version, score_snapshot, decision_inputs.
     """
@@ -1068,7 +1120,9 @@ def record_trades(
             return snap
         keys = (
             "rank_score", "panel_score", "rs_score", "mu", "sigma",
-            "kelly_target_pct", "expected_return", "confidence", "regime",
+            "mu_horizon_days", "kelly_target_pct", "expected_return",
+            "expected_return_horizon_days", "confidence", "regime",
+            "model_type", "sector", "blocked_by",
         )
         fallback = {k: t.get(k) for k in keys if k in t and t.get(k) is not None}
         if fallback:
@@ -1139,6 +1193,12 @@ def record_trades(
             _none_or_float(t.get("expected_return")),
             _none_or_int(t.get("expected_return_horizon_days")),
             _none_or_float(t.get("kelly_target_pct")),
+            t.get("model_type"),
+            t.get("sector"),
+            t.get("blocked_by"),
+            _none_or_float(t.get("qp_delta_w")),
+            _none_or_float(t.get("qp_target_w")),
+            t.get("qp_status"),
             t.get("regime"),
             _none_or_float(t.get("confidence")),
             t.get("order_type"),
@@ -1160,10 +1220,12 @@ def record_trades(
                    rank_score, conviction, sigma_mult, mu, mu_horizon_days, sigma,
                    panel_score, rs_score, expected_return,
                    expected_return_horizon_days, kelly_target_pct,
+                   model_type, sector, blocked_by,
+                   qp_delta_w, qp_target_w, qp_status,
                    regime, confidence,
                    order_type, source, source_job, source_task, order_source,
                    attribution_version, score_snapshot_json, decision_inputs_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 

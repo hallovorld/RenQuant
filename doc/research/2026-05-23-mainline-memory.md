@@ -3019,6 +3019,36 @@ entire pipeline end-to-end:
   `tests/test_wf_gate_regime_sanity_metadata.py`, and
   `tests/test_manifest_sanity_placebo_analysis.py` passed (`46 passed`).
 
+## 2026-05-25 Trace-Parity Repair Bundle
+
+No new experiment was required. A read-only audit found that several forensic
+tables/tools were still making decision quality harder to diagnose:
+
+- `score_distribution` used post-veto survivors only, so percentile thresholds
+  were survivor-biased. It now persists the full `_full_candidate_snapshot`
+  pool, plus `run_type`, model type, sector, block reason, and horizon fields.
+- Score percentile lookup can filter by `run_type`, preventing LEAN rows from
+  contaminating live percentile thresholds for the same date.
+- `sim_trade_ledger` now flattens model type, sector, block reason, QP
+  delta/target/status, QP mu/sigma inputs, and entry/exit horizon fields into
+  first-class round-trip CSV columns.
+- `trades` persistence now stores model type, sector, block reason, and QP
+  delta/target/status. Buy/sell trade-event builders and order attribution
+  stamp those fields from the same ctx/order source used by sim/live/LEAN.
+- LEAN decision traces now use `build_run_bundle(...)` like sim/live instead
+  of the old `{"adapter": "lean"}` placeholder, so artifact/config/data
+  provenance is comparable.
+- Decision-factor IC tooling defaults to the 104 60d target horizon and accepts
+  `--horizon 60`; trade attribution reports retain entry/exit horizons.
+
+Validation completed in this bundle:
+
+- `75 passed`: `tests/test_score_distribution.py`,
+  `tests/test_sim_trade_ledger.py`, `tests/test_trade_event_builders.py`,
+  `tests/test_persistence.py`.
+- `47 passed`: decision-trace/LEAN/ticker-state/sim-live adapter checks.
+- `26 passed`: reconciliation, decision-factor, and trade-attribution checks.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

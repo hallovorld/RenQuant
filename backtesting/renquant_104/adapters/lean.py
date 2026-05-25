@@ -78,6 +78,38 @@ def _positive_finite_price(value: Any) -> float | None:
     return None
 
 
+def _order_payload(order: dict, key: str) -> Any:
+    value = order.get(key)
+    if value is not None:
+        return value
+    for field in ("score_snapshot", "decision_inputs"):
+        payload = order.get(field)
+        if isinstance(payload, dict) and payload.get(key) is not None:
+            return payload.get(key)
+    return None
+
+
+def _stamp_holding_audit_fields(holding: Any, order: dict) -> None:
+    if holding is None or not isinstance(order, dict):
+        return
+    for key in (
+        "model_type",
+        "sector",
+        "blocked_by",
+        "expected_return",
+        "expected_return_horizon_days",
+        "mu",
+        "mu_horizon_days",
+        "sigma",
+        "panel_score",
+        "rank_score",
+        "kelly_target_pct",
+    ):
+        value = _order_payload(order, key)
+        if value is not None:
+            setattr(holding, key, value)
+
+
 def _current_price_for_ticker(
     algo: Any,
     data: Any,
@@ -299,6 +331,10 @@ class LeanAdapter:
                 continue
             hs.shares = qty
             ensure_lots(hs)
+            hs.model_type = _model_type_from_artifact(algo._models.get(ticker))
+            sector = config.get("sector_map", {}).get(ticker)
+            if isinstance(sector, str) and sector:
+                hs.sector = sector
 
         ctx = InferenceContext(
             config           = config,
@@ -370,6 +406,7 @@ class LeanAdapter:
         # loaded successfully (§5.13.10 fallback).
         ctx.snapshot_logger = self._meta_label_logger
         ctx._meta_label_predictor = self._meta_label_predictor  # noqa: SLF001
+        ctx._run_type = "lean"  # noqa: SLF001
         return ctx
 
     # ── commit ─────────────────────────────────────────────────────────────────
@@ -728,6 +765,7 @@ class LeanAdapter:
                 apply_buy_lot(hs_new, shares_f, price_f, ctx.today)
                 hs_new.shares = shares_f
                 algo._holdings[ticker] = hs_new
+            _stamp_holding_audit_fields(algo._holdings.get(ticker), order)
             algo._executed_buys += 1
             # The pipeline already sized an exact whole-share order and sim/live
             # execute that quantity. Use MarketOrder here as well; target_pct is
@@ -779,6 +817,7 @@ class LeanAdapter:
             record_trades,
             validate_decision_trace_integrity,
         )
+        from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
 
         algo = self._algo
         config = algo._config
@@ -792,6 +831,13 @@ class LeanAdapter:
                   .get("artifact_path")
         )
         qp_delta_by_ticker, qp_target_by_ticker, qp_status = qp_trace_maps(ctx)
+        run_bundle = build_run_bundle(
+            config,
+            getattr(algo, "_strategy_dir", None),
+            run_id=str(getattr(ctx, "run_id", "")),
+            run_type="lean",
+            ctx=ctx,
+        )
 
         run_id = record_pipeline_run(
             self._db,
@@ -811,7 +857,7 @@ class LeanAdapter:
             skip_buys=bool(getattr(ctx, "skip_buys", False)),
             bear_only=bool(getattr(ctx, "bear_only", False)),
             counters=getattr(ctx, "counters", {}) or {},
-            run_bundle={"adapter": "lean"},
+            run_bundle=run_bundle,
             run_id=getattr(ctx, "run_id", None),
         )
 

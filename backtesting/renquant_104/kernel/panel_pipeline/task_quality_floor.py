@@ -457,12 +457,20 @@ class QualityFloorTask(Task):
             today_iso = ctx.today.isoformat()
         except Exception:
             return None
+        run_type = getattr(ctx, "_run_type", None) or getattr(ctx, "run_type", None)
         try:
             cur = db.cursor()
-            cur.execute(
-                "SELECT COUNT(*) FROM score_percentiles_daily WHERE date < ?",
-                (today_iso,),
-            )
+            if run_type:
+                cur.execute(
+                    """SELECT COUNT(*) FROM score_percentiles_daily
+                       WHERE date < ? AND run_type = ?""",
+                    (today_iso, run_type),
+                )
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM score_percentiles_daily WHERE date < ?",
+                    (today_iso,),
+                )
             row = cur.fetchone()
             n_rows = int(row[0]) if row else 0
         except Exception:
@@ -471,4 +479,5 @@ class QualityFloorTask(Task):
             return None
         return get_score_percentile_threshold(
             db, today_iso, percentile=percentile, lookback_days=lookback,
+            run_type=run_type if isinstance(run_type, str) and run_type else None,
         )

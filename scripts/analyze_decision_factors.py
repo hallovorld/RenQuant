@@ -216,7 +216,7 @@ def main() -> None:
                         "sim maps to data/sim_runs.db.")
     p.add_argument("--db", default=None,
                    help="Override path; bypasses --source mapping.")
-    p.add_argument("--horizon", type=int, default=10, choices=[1, 5, 10, 20])
+    p.add_argument("--horizon", type=int, default=60, choices=[1, 5, 10, 20, 60])
     p.add_argument("--quantiles", type=int, default=5,
                    help="Number of quantile buckets for rank_score IC.")
     p.add_argument("--since", type=lambda s: datetime.date.fromisoformat(s), default=None)

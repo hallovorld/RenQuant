@@ -31,12 +31,23 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
             "rank_score": 0.72,
             "panel_score": 0.69,
             "mu": 0.03,
+            "mu_horizon_days": 60,
             "sigma": 0.12,
+            "model_type": "xgb",
+            "sector": "tech",
             "source_job": "SelectionJob",
             "source_task": "SizeAndEmitTask",
             "order_source": "SelectionJob.SizeAndEmitTask",
             "order_type": "BUY",
-            "decision_inputs": {"acceptance_reason": "unit buy"},
+            "decision_inputs": {
+                "acceptance_reason": "unit buy",
+                "delta_w": 0.08,
+                "target_w": 0.08,
+                "solver_status": "optimal",
+                "qp_mu_used": 0.025,
+                "qp_sigma_used": 0.10,
+                "qp_mu_source": "expected_return",
+            },
         },
         {
             "action": "buy",
@@ -76,7 +87,12 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
             "source_task": "EmitOrdersFromQPSolutionTask",
             "order_source": "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask",
             "order_type": "SELL_qp_sell",
-            "decision_inputs": {"acceptance_reason": "qp sell"},
+            "decision_inputs": {
+                "acceptance_reason": "qp sell",
+                "delta_w": -0.04,
+                "target_w": 0.03,
+                "solver_status": "optimal",
+            },
         },
     ]
 
@@ -98,11 +114,23 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
     assert closed.iloc[0]["exit_sdl_skip_if_unrealized_above"] == 0.02
     assert closed.iloc[0]["entry_panel_score"] == 0.69
     assert closed.iloc[0]["entry_order_source"] == "SelectionJob.SizeAndEmitTask"
-    assert closed.iloc[0]["entry_decision_inputs"] == {"acceptance_reason": "unit buy"}
+    assert closed.iloc[0]["entry_model_type"] == "xgb"
+    assert closed.iloc[0]["entry_sector"] == "tech"
+    assert closed.iloc[0]["entry_mu_horizon_days"] == 60
+    assert closed.iloc[0]["entry_qp_delta_w"] == 0.08
+    assert closed.iloc[0]["entry_qp_target_w"] == 0.08
+    assert closed.iloc[0]["entry_qp_status"] == "optimal"
+    assert closed.iloc[0]["entry_qp_mu_used"] == 0.025
+    assert closed.iloc[0]["entry_qp_sigma_used"] == 0.10
+    assert closed.iloc[0]["entry_qp_mu_source"] == "expected_return"
+    assert closed.iloc[0]["entry_decision_inputs"]["acceptance_reason"] == "unit buy"
     assert closed.iloc[0]["exit_order_source"] == (
         "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
     )
-    assert closed.iloc[0]["exit_decision_inputs"] == {"acceptance_reason": "qp sell"}
+    assert closed.iloc[0]["exit_qp_delta_w"] == -0.04
+    assert closed.iloc[0]["exit_qp_target_w"] == 0.03
+    assert closed.iloc[0]["exit_qp_status"] == "optimal"
+    assert closed.iloc[0]["exit_decision_inputs"]["acceptance_reason"] == "qp sell"
     assert open_lots.iloc[0]["shares"] == 3
     assert open_lots.iloc[0]["gross_pnl"] == 60.0
 
@@ -179,6 +207,7 @@ def test_round_trips_recover_expected_return_from_score_snapshot() -> None:
 
     closed = round_trips_from_trade_log(trade_log)
     assert closed.iloc[0]["entry_expected_return"] == 0.025
+    assert closed.iloc[0]["entry_expected_return_horizon_days"] == 60
 
 
 def test_round_trips_respect_hifo_lot_method_for_tax_alignment() -> None:

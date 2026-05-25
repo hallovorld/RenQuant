@@ -25,7 +25,9 @@ class _Cand:
     panel_score: float | None = None
     rank_score: float | None = None
     mu: float | None = None
+    mu_horizon_days: int | None = None
     sigma: float | None = None
+    expected_return_horizon_days: int | None = None
 
 
 @dataclass
@@ -33,7 +35,9 @@ class _Hold:
     panel_score: float | None = None
     rank_score: float | None = None
     mu: float | None = None
+    mu_horizon_days: int | None = None
     sigma: float | None = None
+    expected_return_horizon_days: int | None = None
 
 
 @dataclass
@@ -44,6 +48,7 @@ class _Ctx:
     regime: str = "BULL_CALM"
     candidates: list = field(default_factory=list)
     holdings: dict = field(default_factory=dict)
+    models: dict = field(default_factory=dict)
 
 
 def _make_db():
@@ -134,6 +139,50 @@ class TestRecordCandidates:
         assert out[1] == pytest.approx(0.5)
         assert out[2] == pytest.approx(0.7)
 
+    def test_uses_full_candidate_snapshot_and_persists_audit_fields(self):
+        ctx = _Ctx(config={
+            **_cfg_on(),
+            "sector_map": {"A": "tech", "B": "finance"},
+        })
+        ctx._db = _make_db()
+        ctx._run_type = "sim"
+        kept = _Cand(
+            "A", panel_score=0.5, rank_score=0.8, mu=0.01,
+            mu_horizon_days=60, sigma=0.05,
+            expected_return_horizon_days=60,
+        )
+        vetoed = _Cand(
+            "B", panel_score=-0.2, rank_score=0.1, mu=-0.02,
+            mu_horizon_days=60, sigma=0.07,
+            expected_return_horizon_days=60,
+        )
+        ctx.candidates = [kept]
+        ctx._full_candidate_snapshot = [kept, vetoed]
+        ctx._blocked_by_ticker = {"B": "veto:rank_score_below_floor"}
+        ctx.models = {
+            "A": {"_metadata": {"model_type": "xgb"}},
+            "B": {"_metadata": {"model_type": "patchtst"}},
+        }
+
+        RecordScoreDistributionTask().run(ctx)
+
+        rows = ctx._db.execute(
+            """SELECT ticker, run_type, rank_score,
+                      expected_return_horizon_days, mu_horizon_days,
+                      model_type, sector, blocked_by
+                 FROM score_distribution
+                ORDER BY ticker"""
+        ).fetchall()
+        assert rows == [
+            ("A", "sim", 0.8, 60, 60, "xgb", "tech", None),
+            ("B", "sim", 0.1, 60, 60, "patchtst", "finance",
+             "veto:rank_score_below_floor"),
+        ]
+        pct = ctx._db.execute(
+            "SELECT n_cands, score_min, score_max FROM score_percentiles_daily"
+        ).fetchone()
+        assert pct == (2, pytest.approx(0.1), pytest.approx(0.8))
+
 
 class TestPercentilesAggregation:
     def test_writes_percentile_row_with_all_columns(self):
@@ -193,6 +242,28 @@ class TestPercentileLookup:
         db = _make_db()
         with pytest.raises(ValueError, match="Unsupported percentile"):
             get_score_percentile_threshold(db, "2026-04-26", 42)
+
+    def test_get_threshold_filters_run_type_when_requested(self):
+        db = _make_db()
+        db.execute(
+            """INSERT INTO score_percentiles_daily
+               (run_id, date, run_type, n_cands, p85)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("2026-04-26-lean-a", "2026-04-26", "lean", 10, 0.90),
+        )
+        db.execute(
+            """INSERT INTO score_percentiles_daily
+               (run_id, date, run_type, n_cands, p85)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("2026-04-26-live-a", "2026-04-26", "live", 10, 0.40),
+        )
+        db.commit()
+
+        v = get_score_percentile_threshold(
+            db, "2026-04-26", 85, lookback_days=1, run_type="live",
+        )
+
+        assert v == pytest.approx(0.40)
 
 
 class TestPipelineIntegration:

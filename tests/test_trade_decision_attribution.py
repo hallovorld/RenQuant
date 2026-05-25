@@ -40,8 +40,13 @@ def test_build_round_trips_preserves_entry_decision_payload() -> None:
                 "rank_score": 0.61,
                 "panel_score": 0.58,
                 "mu": 0.014,
+                "mu_horizon_days": 60,
                 "sigma": 0.032,
                 "kelly_target_pct": 0.08,
+                "expected_return": 0.025,
+                "expected_return_horizon_days": 60,
+                "model_type": "xgb",
+                "sector": "tech",
                 "confidence": 0.72,
                 "regime": "BULL_CALM",
             }),
@@ -89,6 +94,11 @@ def test_build_round_trips_preserves_entry_decision_payload() -> None:
     assert row["entry_source_job"] == "JointPortfolioQPJob"
     assert row["entry_regime"] == "BULL_CALM"
     assert row["entry_rank_score"] == pytest.approx(0.61)
+    assert row["entry_mu_horizon_days"] == 60
+    assert row["entry_expected_return"] == pytest.approx(0.025)
+    assert row["entry_expected_return_horizon_days"] == 60
+    assert row["entry_model_type"] == "xgb"
+    assert row["entry_sector"] == "tech"
     assert row["entry_acceptance_reason"] == "qp_target_weight_increase"
     assert row["exit_order_type"] == "SELL_model_sell"
     assert row["exit_source_job"] == "TickerSellJob"

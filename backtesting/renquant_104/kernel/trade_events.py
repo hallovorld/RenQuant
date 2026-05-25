@@ -42,6 +42,9 @@ def _score_snapshot(order: dict[str, Any], regime: str | None,
         "mu_horizon_days": order.get("mu_horizon_days"),
         "confidence": order.get("confidence", confidence),
         "regime": order.get("regime", regime),
+        "model_type": order.get("model_type"),
+        "sector": order.get("sector"),
+        "blocked_by": order.get("blocked_by"),
     }
 
 
@@ -50,6 +53,11 @@ def _score_field(order: dict[str, Any], snap: dict[str, Any], key: str) -> Any:
     if value is not None:
         return value
     return snap.get(key)
+
+
+def _decision_field(inputs: dict[str, Any], key: str) -> Any:
+    value = inputs.get(key)
+    return value if value is not None else inputs.get(f"qp_{key}")
 
 
 def _decision_inputs(
@@ -92,6 +100,11 @@ def build_buy_trade_event(
     confidence = order.get("confidence", default_confidence)
     invest = _computed_invest(order)
     snap = _score_snapshot(order, regime, confidence)
+    inputs = _decision_inputs(
+        order,
+        invest=invest,
+        default_acceptance_reason=default_acceptance_reason,
+    )
     return {
         "ticker": order.get("ticker"),
         "action": "buy",
@@ -115,11 +128,7 @@ def build_buy_trade_event(
             order.get("attribution_version") or attribution_version
         ),
         "score_snapshot": snap,
-        "decision_inputs": _decision_inputs(
-            order,
-            invest=invest,
-            default_acceptance_reason=default_acceptance_reason,
-        ),
+        "decision_inputs": inputs,
         "panel_score": _score_field(order, snap, "panel_score"),
         "rs_score": _score_field(order, snap, "rs_score"),
         "kelly_target_pct": _score_field(order, snap, "kelly_target_pct"),
@@ -129,6 +138,12 @@ def build_buy_trade_event(
         ),
         "confidence": confidence,
         "regime": regime,
+        "model_type": _score_field(order, snap, "model_type"),
+        "sector": _score_field(order, snap, "sector"),
+        "blocked_by": _score_field(order, snap, "blocked_by"),
+        "qp_delta_w": _decision_field(inputs, "delta_w"),
+        "qp_target_w": _decision_field(inputs, "target_w"),
+        "qp_status": _decision_field(inputs, "solver_status"),
     }
 
 
@@ -221,6 +236,7 @@ def build_sell_trade_event(
         regime_params=regime_params,
         config=config or {},
     )
+    sig_inputs = getattr(sig, "decision_inputs", None) or {}
     return {
         "ticker": ticker,
         "action": "sell",
@@ -255,6 +271,14 @@ def build_sell_trade_event(
         "attribution_version": attribution_version,
         "confidence": confidence,
         "regime": regime,
+        "model_type": getattr(holding, "model_type", None),
+        "sector": getattr(holding, "sector", None),
+        "blocked_by": getattr(sig, "blocked_by", None) or getattr(
+            holding, "blocked_by", None,
+        ),
+        "qp_delta_w": sig_inputs.get("delta_w"),
+        "qp_target_w": sig_inputs.get("target_w"),
+        "qp_status": sig_inputs.get("solver_status"),
         "score_snapshot": {
             "rank_score": getattr(holding, "rank_score", None),
             "panel_score": getattr(holding, "panel_score", None),
@@ -268,6 +292,8 @@ def build_sell_trade_event(
             "kelly_target_pct": getattr(holding, "kelly_target_pct", None),
             "confidence": confidence,
             "regime": regime,
+            "model_type": getattr(holding, "model_type", None),
+            "sector": getattr(holding, "sector", None),
         },
         "decision_inputs": {
             "acceptance_reason": exit_type or reason,
@@ -308,7 +334,7 @@ def build_sell_trade_event(
             "atr_n_multiplier": exit_p.get("atr_n_multiplier"),
             "max_hold_days": exit_p.get("max_hold_days"),
             "max_hold_anchor_regime": exit_p.get("max_hold_anchor_regime"),
-            **(getattr(sig, "decision_inputs", None) or {}),
+            **sig_inputs,
         },
     }
 

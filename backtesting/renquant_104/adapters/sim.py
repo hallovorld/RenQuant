@@ -93,6 +93,38 @@ def _normalize_buying_power_mode(raw: Any) -> str:
     return _BUYING_POWER_ALIASES[mode]
 
 
+def _order_payload(order: dict, key: str) -> Any:
+    value = order.get(key)
+    if value is not None:
+        return value
+    for field in ("score_snapshot", "decision_inputs"):
+        payload = order.get(field)
+        if isinstance(payload, dict) and payload.get(key) is not None:
+            return payload.get(key)
+    return None
+
+
+def _stamp_holding_audit_fields(holding: Any, order: dict) -> None:
+    if holding is None or not isinstance(order, dict):
+        return
+    for key in (
+        "model_type",
+        "sector",
+        "blocked_by",
+        "expected_return",
+        "expected_return_horizon_days",
+        "mu",
+        "mu_horizon_days",
+        "sigma",
+        "panel_score",
+        "rank_score",
+        "kelly_target_pct",
+    ):
+        value = _order_payload(order, key)
+        if value is not None:
+            setattr(holding, key, value)
+
+
 def _artifact_kind(path: Path) -> str | None:
     try:
         payload = json.loads(path.read_text())
@@ -1141,6 +1173,7 @@ class SimAdapter:
             self, "_buying_power_mode", _BUYING_POWER_SETTLED,
         )
         ctx.run_id = f"{today_date.isoformat()}-sim-{uuid.uuid4().hex[:8]}"
+        ctx._run_type = "sim"  # noqa: SLF001
 
         # Hand prior streak counters to MonitorIdleStreakTask; it writes back.
         ctx.monitor_state = dict(self._monitor_state)
@@ -1969,6 +2002,7 @@ class SimAdapter:
             ))
             self._holdings[ticker] = hs_new
             self._pos_shares[ticker] = shares
+        _stamp_holding_audit_fields(self._holdings.get(ticker), order)
         buy_event = build_buy_trade_event(
             {**order, "price": price, "shares": shares, "invest": invest},
             date=today_ts,

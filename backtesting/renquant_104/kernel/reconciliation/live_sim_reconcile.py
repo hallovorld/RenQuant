@@ -330,32 +330,38 @@ def compute_rolling_ic(
     start_date: str,
     end_date: str,
     window_days: int = 30,
+    horizon_days: int = 60,
 ) -> dict[str, Any]:
     """Rolling 30d Spearman IC of model predictions vs realized fwd returns.
 
     Reads ``candidate_scores`` (predictions) joined to ``ticker_forward_returns``
-    (realized fwd_5d) from ``runs.<broker>.db``. If either table is empty
+    (realized fwd_{horizon_days}d) from ``runs.<broker>.db``. If either table is empty
     or join is empty, returns ``{"ok": False, "warn": "..."}`` — does NOT
     crash (per spec).
     """
-    pairs = _load_score_realized_pairs(db_path, start_date, end_date)
+    pairs = _load_score_realized_pairs(db_path, start_date, end_date, horizon_days)
     if not pairs:
         return {"ok": False, "warn": "no_score_realized_pairs",
-                "n": 0, "ic": 0.0, "window_days": window_days}
+                "n": 0, "ic": 0.0, "window_days": window_days,
+                "horizon_days": horizon_days}
     ic = _spearman_ic(
         [p[0] for p in pairs[-window_days * 50:]],
         [p[1] for p in pairs[-window_days * 50:]],
     )
-    return {"ok": True, "n": len(pairs), "ic": ic, "window_days": window_days}
+    return {"ok": True, "n": len(pairs), "ic": ic, "window_days": window_days,
+            "horizon_days": horizon_days}
 
 
 def _load_score_realized_pairs(
-    db_path: str | Path, start_date: str, end_date: str,
+    db_path: str | Path, start_date: str, end_date: str, horizon_days: int = 60,
 ) -> list[tuple[float, float]]:
-    """Join candidate_scores.rank_score with ticker_forward_returns.fwd_5d.
+    """Join candidate_scores.rank_score with ticker_forward_returns.fwd_Nd.
 
     Returns [] (with a logged warn) when either table is missing or empty.
     """
+    if horizon_days not in {1, 5, 10, 20, 60}:
+        raise ValueError(f"unsupported IC horizon_days={horizon_days}")
+    fwd_col = f"fwd_{horizon_days}d"
     try:
         conn = _connect_readonly(db_path)
     except FileNotFoundError:
@@ -363,15 +369,15 @@ def _load_score_realized_pairs(
     try:
         try:
             rows = conn.execute(
-                """
-                SELECT cs.rank_score, tfr.fwd_5d
+                f"""
+                SELECT cs.rank_score, tfr.{fwd_col}
                 FROM candidate_scores cs
                 JOIN pipeline_runs p ON cs.run_id = p.run_id
                 JOIN ticker_forward_returns tfr
                   ON tfr.ticker = cs.ticker AND tfr.as_of_date = p.run_date
                 WHERE p.run_date >= ? AND p.run_date <= ?
                   AND cs.rank_score IS NOT NULL
-                  AND tfr.fwd_5d    IS NOT NULL
+                  AND tfr.{fwd_col} IS NOT NULL
                 """,
                 (start_date, end_date),
             ).fetchall()

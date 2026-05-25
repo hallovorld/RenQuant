@@ -184,15 +184,45 @@ def _event_score(event: dict[str, Any], key: str) -> Any:
     value = event.get(key)
     if value is not None:
         return value
-    snap = event.get("score_snapshot")
-    if isinstance(snap, str):
-        try:
-            snap = json.loads(snap)
-        except json.JSONDecodeError:
-            snap = None
+    snap = _dict_payload(event.get("score_snapshot"))
     if isinstance(snap, dict):
         return snap.get(key)
     return None
+
+
+def _dict_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _event_field(event: dict[str, Any], *keys: str) -> Any:
+    """Read audit fields from top-level, score snapshot, or decision inputs."""
+    containers = (
+        event,
+        _dict_payload(event.get("score_snapshot")) or {},
+        _dict_payload(event.get("decision_inputs")) or {},
+    )
+    for key in keys:
+        for src in containers:
+            value = src.get(key)
+            if value is not None:
+                return value
+    return None
+
+
+def _event_float(event: dict[str, Any], *keys: str) -> float | None:
+    value = _event_field(event, *keys)
+    if value is None:
+        return None
+    out = _as_float(value, default=float("nan"))
+    return out if math.isfinite(out) else None
 
 
 def _empty_fields(fields: tuple[str, ...]) -> dict[str, Any]:
@@ -291,6 +321,18 @@ def round_trips_from_trade_log(
                 "entry_expected_return_horizon_days": _event_score(
                     event, "expected_return_horizon_days"
                 ),
+                "entry_model_type": _event_field(event, "model_type"),
+                "entry_sector": _event_field(event, "sector"),
+                "entry_blocked_by": _event_field(event, "blocked_by"),
+                "entry_qp_delta_w": _event_float(event, "qp_delta_w", "delta_w"),
+                "entry_qp_target_w": _event_float(event, "qp_target_w", "target_w"),
+                "entry_qp_status": _event_field(event, "qp_status", "solver_status"),
+                "entry_qp_mu_used": _event_float(event, "qp_mu_used"),
+                "entry_qp_sigma_used": _event_float(event, "qp_sigma_used"),
+                "entry_qp_mu_source": _event_field(event, "qp_mu_source"),
+                "entry_alpha_to_mu_applied": _event_field(
+                    event, "alpha_to_mu_applied",
+                ),
                 "entry_source": event.get("source"),
                 "entry_source_job": event.get("source_job"),
                 "entry_source_task": event.get("source_task"),
@@ -348,6 +390,29 @@ def round_trips_from_trade_log(
                 "exit_regime": event.get("regime"),
                 "exit_confidence": event.get("confidence"),
                 "exit_signal_reason": event.get("exit_signal_reason"),
+                "exit_rank_score": _event_score(event, "rank_score"),
+                "exit_rs_score": _event_score(event, "rs_score"),
+                "exit_panel_score": _event_score(event, "panel_score"),
+                "exit_mu": _event_score(event, "mu"),
+                "exit_mu_horizon_days": _event_score(event, "mu_horizon_days"),
+                "exit_sigma": _event_score(event, "sigma"),
+                "exit_kelly_target_pct": _event_score(event, "kelly_target_pct"),
+                "exit_expected_return": _event_score(event, "expected_return"),
+                "exit_expected_return_horizon_days": _event_score(
+                    event, "expected_return_horizon_days",
+                ),
+                "exit_model_type": _event_field(event, "model_type"),
+                "exit_sector": _event_field(event, "sector"),
+                "exit_blocked_by": _event_field(event, "blocked_by"),
+                "exit_qp_delta_w": _event_float(event, "qp_delta_w", "delta_w"),
+                "exit_qp_target_w": _event_float(event, "qp_target_w", "target_w"),
+                "exit_qp_status": _event_field(event, "qp_status", "solver_status"),
+                "exit_qp_mu_used": _event_float(event, "qp_mu_used"),
+                "exit_qp_sigma_used": _event_float(event, "qp_sigma_used"),
+                "exit_qp_mu_source": _event_field(event, "qp_mu_source"),
+                "exit_alpha_to_mu_applied": _event_field(
+                    event, "alpha_to_mu_applied",
+                ),
                 **_copy_fields(event, EXIT_PARAM_FIELDS),
                 "exit_source": event.get("source"),
                 "exit_source_job": event.get("source_job"),
@@ -369,6 +434,18 @@ def round_trips_from_trade_log(
                 "entry_expected_return": lot.get("entry_expected_return"),
                 "entry_expected_return_horizon_days": lot.get(
                     "entry_expected_return_horizon_days"
+                ),
+                "entry_model_type": lot.get("entry_model_type"),
+                "entry_sector": lot.get("entry_sector"),
+                "entry_blocked_by": lot.get("entry_blocked_by"),
+                "entry_qp_delta_w": lot.get("entry_qp_delta_w"),
+                "entry_qp_target_w": lot.get("entry_qp_target_w"),
+                "entry_qp_status": lot.get("entry_qp_status"),
+                "entry_qp_mu_used": lot.get("entry_qp_mu_used"),
+                "entry_qp_sigma_used": lot.get("entry_qp_sigma_used"),
+                "entry_qp_mu_source": lot.get("entry_qp_mu_source"),
+                "entry_alpha_to_mu_applied": lot.get(
+                    "entry_alpha_to_mu_applied"
                 ),
                 **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })
@@ -432,6 +509,29 @@ def round_trips_from_trade_log(
                 "exit_regime": event.get("regime"),
                 "exit_confidence": event.get("confidence"),
                 "exit_signal_reason": event.get("exit_signal_reason"),
+                "exit_rank_score": _event_score(event, "rank_score"),
+                "exit_rs_score": _event_score(event, "rs_score"),
+                "exit_panel_score": _event_score(event, "panel_score"),
+                "exit_mu": _event_score(event, "mu"),
+                "exit_mu_horizon_days": _event_score(event, "mu_horizon_days"),
+                "exit_sigma": _event_score(event, "sigma"),
+                "exit_kelly_target_pct": _event_score(event, "kelly_target_pct"),
+                "exit_expected_return": _event_score(event, "expected_return"),
+                "exit_expected_return_horizon_days": _event_score(
+                    event, "expected_return_horizon_days",
+                ),
+                "exit_model_type": _event_field(event, "model_type"),
+                "exit_sector": _event_field(event, "sector"),
+                "exit_blocked_by": _event_field(event, "blocked_by"),
+                "exit_qp_delta_w": _event_float(event, "qp_delta_w", "delta_w"),
+                "exit_qp_target_w": _event_float(event, "qp_target_w", "target_w"),
+                "exit_qp_status": _event_field(event, "qp_status", "solver_status"),
+                "exit_qp_mu_used": _event_float(event, "qp_mu_used"),
+                "exit_qp_sigma_used": _event_float(event, "qp_sigma_used"),
+                "exit_qp_mu_source": _event_field(event, "qp_mu_source"),
+                "exit_alpha_to_mu_applied": _event_field(
+                    event, "alpha_to_mu_applied",
+                ),
                 **_copy_fields(event, EXIT_PARAM_FIELDS),
                 "exit_source": event.get("source"),
                 "exit_source_job": event.get("source_job"),
@@ -480,6 +580,25 @@ def round_trips_from_trade_log(
                 "exit_regime": None,
                 "exit_confidence": None,
                 "exit_signal_reason": None,
+                "exit_rank_score": None,
+                "exit_rs_score": None,
+                "exit_panel_score": None,
+                "exit_mu": None,
+                "exit_mu_horizon_days": None,
+                "exit_sigma": None,
+                "exit_kelly_target_pct": None,
+                "exit_expected_return": None,
+                "exit_expected_return_horizon_days": None,
+                "exit_model_type": None,
+                "exit_sector": None,
+                "exit_blocked_by": None,
+                "exit_qp_delta_w": None,
+                "exit_qp_target_w": None,
+                "exit_qp_status": None,
+                "exit_qp_mu_used": None,
+                "exit_qp_sigma_used": None,
+                "exit_qp_mu_source": None,
+                "exit_alpha_to_mu_applied": None,
                 **_empty_fields(EXIT_PARAM_FIELDS),
                 **_empty_fields(EXIT_ATTRIBUTION_FIELDS),
                 "entry_regime": lot.get("entry_regime"),
@@ -494,6 +613,18 @@ def round_trips_from_trade_log(
                 "entry_expected_return": lot.get("entry_expected_return"),
                 "entry_expected_return_horizon_days": lot.get(
                     "entry_expected_return_horizon_days"
+                ),
+                "entry_model_type": lot.get("entry_model_type"),
+                "entry_sector": lot.get("entry_sector"),
+                "entry_blocked_by": lot.get("entry_blocked_by"),
+                "entry_qp_delta_w": lot.get("entry_qp_delta_w"),
+                "entry_qp_target_w": lot.get("entry_qp_target_w"),
+                "entry_qp_status": lot.get("entry_qp_status"),
+                "entry_qp_mu_used": lot.get("entry_qp_mu_used"),
+                "entry_qp_sigma_used": lot.get("entry_qp_sigma_used"),
+                "entry_qp_mu_source": lot.get("entry_qp_mu_source"),
+                "entry_alpha_to_mu_applied": lot.get(
+                    "entry_alpha_to_mu_applied"
                 ),
                 **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })

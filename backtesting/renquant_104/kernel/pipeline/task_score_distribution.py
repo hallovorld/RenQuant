@@ -21,6 +21,8 @@ from typing import Any
 
 import numpy as np
 
+from kernel.decision_trace import candidate_trace_pool, model_types_from_models
+
 from .context import InferenceContext
 from .pipeline import Task
 
@@ -58,37 +60,57 @@ class RecordScoreDistributionTask(Task):
             or getattr(ctx, "_run_id", None)
             or f"{date_iso}-unscoped"
         )
+        run_type = _ctx_run_type(ctx)
         regime = str(ctx.regime or "")
+        cand_pool = candidate_trace_pool(ctx)
+        blocked_map = getattr(ctx, "_blocked_by_ticker", None) or {}
+        sector_map = (ctx.config or {}).get("sector_map", {}) or {}
+        model_types = model_types_from_models(getattr(ctx, "models", None) or {})
+        candidate_tickers = {getattr(c, "ticker", None) for c in cand_pool}
 
         rows: list[tuple] = []
-        for c in ctx.candidates:
+        for c in cand_pool:
+            ticker = getattr(c, "ticker", None)
             rows.append((
-                run_id, date_iso, c.ticker,
+                run_id, date_iso, run_type, ticker,
                 getattr(c, "panel_score", None),
                 getattr(c, "rank_score", None),
+                getattr(c, "expected_return_horizon_days", None),
                 getattr(c, "mu", None),
+                getattr(c, "mu_horizon_days", None),
                 getattr(c, "sigma", None),
                 regime,
                 0,  # is_holding=False
+                model_types.get(ticker),
+                _sector_for(ticker, sector_map),
+                blocked_map.get(ticker),
             ))
         for ticker, hs in ctx.holdings.items():
+            if ticker in candidate_tickers:
+                continue
             rows.append((
-                run_id, date_iso, ticker,
+                run_id, date_iso, run_type, ticker,
                 getattr(hs, "panel_score", None),
                 getattr(hs, "rank_score", None),
+                getattr(hs, "expected_return_horizon_days", None),
                 getattr(hs, "mu", None),
+                getattr(hs, "mu_horizon_days", None),
                 getattr(hs, "sigma", None),
                 regime,
                 1,  # is_holding=True
+                model_types.get(ticker),
+                _sector_for(ticker, sector_map),
+                blocked_map.get(ticker),
             ))
 
         try:
             cur = db.cursor()
             cur.executemany(
                 """INSERT OR REPLACE INTO score_distribution
-                   (run_id, date, ticker, raw_panel, rank_score, mu, sigma,
-                    regime, is_holding)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (run_id, date, run_type, ticker, raw_panel, rank_score,
+                    expected_return_horizon_days, mu, mu_horizon_days, sigma,
+                    regime, is_holding, model_type, sector, blocked_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -97,7 +119,7 @@ class RecordScoreDistributionTask(Task):
             # cands for "top X% buy threshold" purposes).
             cand_scores = [
                 float(getattr(c, "rank_score", None))
-                for c in ctx.candidates
+                for c in cand_pool
                 if getattr(c, "rank_score", None) is not None
                 and np.isfinite(float(getattr(c, "rank_score", None)))
             ]
@@ -106,13 +128,14 @@ class RecordScoreDistributionTask(Task):
                 p_vals = np.percentile(arr, self.PERCENTILES)
                 cur.execute(
                     """INSERT OR REPLACE INTO score_percentiles_daily
-                       (run_id, date, n_cands, p01, p05, p10, p25, p50, p75, p85,
+                       (run_id, date, run_type, n_cands, p01, p05, p10, p25, p50, p75, p85,
                         p90, p95, p99, score_min, score_max, score_mean,
                         score_std, regime)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         run_id,
                         date_iso,
+                        run_type,
                         len(cand_scores),
                         float(p_vals[0]), float(p_vals[1]), float(p_vals[2]),
                         float(p_vals[3]), float(p_vals[4]), float(p_vals[5]),
@@ -139,6 +162,7 @@ class RecordScoreDistributionTask(Task):
 def get_score_percentile_threshold(
     db: Any, today_iso: str, percentile: int = 85,
     lookback_days: int = 5,
+    run_type: str | None = None,
 ) -> float | None:
     """Return the score-percentile threshold averaged across the last
     `lookback_days` of trading days, or None if no rows yet.
@@ -151,6 +175,12 @@ def get_score_percentile_threshold(
                     "p85", "p90", "p95", "p99"}:
         raise ValueError(f"Unsupported percentile {percentile}")
     cur = db.cursor()
+    run_filter = "AND run_type = ?" if run_type else ""
+    params: tuple[Any, ...]
+    if run_type:
+        params = (today_iso, run_type, lookback_days)
+    else:
+        params = (today_iso, lookback_days)
     cur.execute(
         f"""SELECT {col}
               FROM (
@@ -161,13 +191,35 @@ def get_score_percentile_threshold(
                            ) AS rn
                       FROM score_percentiles_daily
                      WHERE date <= ?
+                       {run_filter}
                    )
              WHERE rn = 1
              ORDER BY date DESC
              LIMIT ?""",
-        (today_iso, lookback_days),
+        params,
     )
     rows = [r[0] for r in cur.fetchall() if r[0] is not None]
     if not rows:
         return None
     return float(np.mean(rows))
+
+
+def _ctx_run_type(ctx: Any) -> str | None:
+    value = getattr(ctx, "_run_type", None) or getattr(ctx, "run_type", None)
+    if isinstance(value, str) and value:
+        return value
+    run_id = str(getattr(ctx, "run_id", "") or getattr(ctx, "_run_id", ""))
+    for token in ("live", "sim", "lean"):
+        if f"-{token}-" in run_id or run_id.endswith(f"-{token}"):
+            return token
+    return None
+
+
+def _sector_for(ticker: Any, sector_map: dict[str, str]) -> str | None:
+    if ticker is None:
+        return None
+    value = sector_map.get(str(ticker))
+    if isinstance(value, str) and value:
+        return value
+    value = sector_map.get(str(ticker).upper())
+    return value if isinstance(value, str) and value else None

@@ -67,6 +67,7 @@ def _make_db(path: Path) -> sqlite3.Connection:
             as_of_date  DATE NOT NULL,
             ticker      TEXT NOT NULL,
             fwd_5d      REAL,
+            fwd_60d     REAL,
             PRIMARY KEY (as_of_date, ticker)
         );
     """)
@@ -245,7 +246,8 @@ class TestRollingIC:
     def test_perfect_correlation(self, tmp_path):
         live_p = tmp_path / "runs.alpaca.db"
         conn = _make_db(live_p)
-        # Plant predictions that perfectly track realized fwd_5d.
+        # Plant predictions that perfectly track realized fwd_60d, the
+        # renquant_104 target horizon.
         conn.execute(
             "INSERT INTO pipeline_runs (run_id, run_date, run_type) "
             "VALUES (?, ?, ?)", ("r1", "2026-05-09", "live"),
@@ -259,7 +261,8 @@ class TestRollingIC:
             )
             conn.execute(
                 "INSERT INTO ticker_forward_returns (as_of_date, ticker, "
-                "fwd_5d) VALUES (?, ?, ?)", ("2026-05-09", t, ret),
+                "fwd_5d, fwd_60d) VALUES (?, ?, ?, ?)",
+                ("2026-05-09", t, -ret, ret),
             )
         conn.commit(); conn.close()
 

@@ -678,6 +678,12 @@ class RunnerAdapter:
                 entry_kelly_target_pct = es.get("kelly_target_pct"),
                 entry_regime           = es.get("regime"),
             )
+            holdings[ticker].model_type = model_type_from_artifact(
+                self._models.get(ticker)
+            )
+            sector = config.get("sector_map", {}).get(ticker)
+            if isinstance(sector, str) and sector:
+                holdings[ticker].sector = sector
 
         # ── Current prices from broker positions ────────────────────────────
         # 2026-05-09 audit fix (RU-PRICE-1): pre-fix `if qty > 0 and mkt > 0`
@@ -901,6 +907,7 @@ class RunnerAdapter:
             monitor_state     = dict(state.get("monitor_state", {}) or {}),
         )
         ctx.run_id = f"{today.isoformat()}-live-{uuid.uuid4().hex[:8]}"
+        ctx._run_type = "live"  # noqa: SLF001
 
         # Bug 11 fix (2026-04-24): Rotation V4 (thesis_symmetric scoring
         # mode) needs ctx._db to look up candidate scores on each held's
@@ -1895,6 +1902,17 @@ class RunnerAdapter:
                 orders_for_db = list(getattr(ctx, "orders_placed", []) or [])
             else:
                 orders_for_db = list(ctx.orders or [])
+            pending_orders_for_trace = list(getattr(ctx, "orders_pending", []) or [])
+            pending_tickers_for_trace = {
+                str(o.get("ticker"))
+                for o in pending_orders_for_trace
+                if isinstance(o, dict) and o.get("ticker")
+            }
+            if pending_tickers_for_trace:
+                ctx.counters["broker_pending_submitted"] = (
+                    ctx.counters.get("broker_pending_submitted", 0)
+                    + len(pending_tickers_for_trace)
+                )
             trade_events: list[dict] = []
             regime_p = (self._config.get("regime_params", {}) or {}).get(
                 ctx.regime, {},
@@ -1954,7 +1972,7 @@ class RunnerAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
-            selected_tickers = selected_buy_tickers(trade_events)
+            selected_tickers = selected_buy_tickers(trade_events) | pending_tickers_for_trace
             blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
             for o in getattr(ctx, "orders_skipped", []) or []:
                 if isinstance(o, dict) and o.get("ticker"):
