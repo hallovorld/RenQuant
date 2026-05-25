@@ -104,6 +104,7 @@ log = logging.getLogger("alpha158-qlib")
 
 WINDOWS = [5, 10, 20, 30, 60]
 EPS = 1e-12
+MAX_SPY_LABEL_FFILL_DAYS = 5
 
 
 # ── Operators (matching qlib/data/ops.py semantics) ────────────────────────
@@ -294,6 +295,39 @@ def build_features_for_ticker(ticker: str, ohlcv_dir: Path) -> pd.DataFrame | No
     return feat_df
 
 
+def _compute_excess_label_frame(
+    ticker: str,
+    close: pd.Series,
+    spy_close: pd.Series,
+    *,
+    horizons: tuple[int, ...] = (5, 20, 60),
+    max_spy_ffill_days: int = MAX_SPY_LABEL_FFILL_DAYS,
+) -> pd.DataFrame:
+    """Compute forward excess-return labels with bounded SPY alignment.
+
+    SPY is the benchmark leg of the label. If its calendar has a long gap
+    relative to a ticker, unlimited ffill turns stale benchmark prices into
+    apparently valid labels. Bound the ffill gap and let downstream DropnaLabel
+    remove rows whose benchmark leg is not point-in-time credible.
+    """
+    c = close.sort_index()
+    spy = spy_close.sort_index()
+    spy_aligned = spy.reindex(
+        c.index,
+        method="ffill",
+        tolerance=pd.Timedelta(days=max_spy_ffill_days),
+    )
+    rec: dict[str, pd.Series] = {
+        "ticker": pd.Series(ticker, index=c.index),
+        "date": pd.Series(c.index, index=c.index),
+    }
+    for n in horizons:
+        fwd_ticker = c.shift(-n) / c - 1
+        fwd_spy = spy_aligned.shift(-n) / spy_aligned - 1
+        rec[f"fwd_{n}d_excess"] = fwd_ticker - fwd_spy
+    return pd.DataFrame(rec)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -367,15 +401,7 @@ def main() -> None:
             t_df = pd.read_parquet(ohlcv_dir / ticker / "1d.parquet")
         except Exception:
             continue
-        c = t_df["close"].sort_index()
-        spy_aligned = spy_close.reindex(c.index, method="ffill")
-        rec: dict[str, pd.Series] = {"ticker": pd.Series(ticker, index=c.index),
-                                      "date": pd.Series(c.index, index=c.index)}
-        for n in (5, 20, 60):
-            fwd_ticker = c.shift(-n) / c - 1
-            fwd_spy    = spy_aligned.shift(-n) / spy_aligned - 1
-            rec[f"fwd_{n}d_excess"] = fwd_ticker - fwd_spy
-        label_rows.append(pd.DataFrame(rec))
+        label_rows.append(_compute_excess_label_frame(ticker, t_df["close"], spy_close))
     labels_panel = pd.concat(label_rows, ignore_index=True)
     labels_panel["date"] = pd.to_datetime(labels_panel["date"])
     panel = panel.merge(labels_panel, on=["ticker", "date"], how="inner")

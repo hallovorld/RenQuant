@@ -2511,6 +2511,19 @@ entire pipeline end-to-end:
   WF CLI contract, WF recipe-scope, WF config parity, and promotion-gate tests
   passed (`77 passed`).
 
+### Global Round 3/10 — Data / Label Integrity Pass
+
+- New alpha158 label-alignment bug found: `scripts/build_alpha158_qlib.py`
+  aligned SPY benchmark closes to ticker dates with unlimited forward-fill
+  before computing `fwd_{5,20,60}d_excess`. If a ticker/calendar row was far
+  away from the latest SPY bar, this made stale SPY prices look like valid
+  benchmark returns and polluted IC/WF labels without a crash. The label helper
+  now bounds SPY forward-fill to 5 calendar days and leaves stale rows as NaN
+  for downstream `DropnaLabel` handling. Validation:
+  `tests/test_alpha158_label_alignment.py`,
+  `tests/test_train_infer_feature_parity.py`, and
+  `tests/test_walk_forward_splits.py` passed (`24 passed`).
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:
