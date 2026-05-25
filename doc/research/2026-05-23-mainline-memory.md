@@ -2632,6 +2632,16 @@ entire pipeline end-to-end:
   declares the std contract explicitly, and both inference paths match it.
   Validation: alpha158, feature-cache, and volume-feature tests passed
   (`35 passed`).
+- New LEAN/live/sim parity bugs found by sidecar audit and fixed:
+  LEAN previously populated `ctx.prices` mainly for holdings/sector ETFs, so
+  an unheld ranked candidate could be rejected downstream as `size_bad_price`
+  only in LEAN. LEAN now prices every watchlist/model/holding/ETF/SPY ticker
+  from Slice, Security price, or latest OHLCV close. LEAN universe loading now
+  passes current portfolio-held tickers into `UniverseContext`, matching live's
+  broker-held override, and `FilterAutoDropTask` exempts held tickers just like
+  staleness/floor filters. Validation: adapter contract, auto-drop, universe
+  held-exemption, universe-alignment, and daily-104 loader tests passed
+  (`53 passed`).
 
 ## Stop Conditions
 

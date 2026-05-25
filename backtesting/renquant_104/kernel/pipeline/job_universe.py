@@ -345,9 +345,10 @@ class FilterAutoDropTask(UniverseTask):
                     log.warning("auto_drop: live_state read failed: %s", exc)
 
         defensives = set(uctx.config.get("defensive_tickers", []) or [])
+        held = _held_tickers_for_context(uctx)
         dropped = []
         for ticker, art in list(uctx.loaded_models.items()):
-            if ticker in defensives:
+            if ticker in defensives or ticker in held:
                 continue
             n = int(streaks.get(ticker, 0))
             if n >= threshold:

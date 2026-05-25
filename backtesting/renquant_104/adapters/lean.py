@@ -68,6 +68,59 @@ def _symbol_for_ticker(algo: Any, ticker: str):
     return None
 
 
+def _positive_finite_price(value: Any) -> float | None:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isfinite(price) and price > 0.0:
+        return price
+    return None
+
+
+def _current_price_for_ticker(
+    algo: Any,
+    data: Any,
+    ticker: str,
+    ohlcv: dict[str, Any],
+) -> float | None:
+    """Return the current executable price for any ticker the pipeline may size.
+
+    SimAdapter and RunnerAdapter populate prices for all model/watchlist names.
+    LEAN must do the same: a ranked buy candidate with no ``ctx.prices`` entry
+    is rejected downstream as ``size_bad_price`` even if the model signal is
+    valid. Price source order mirrors the execution surface: current Slice,
+    current Security price, then latest OHLCV close.
+    """
+    sym = _symbol_for_ticker(algo, ticker)
+    if sym is not None:
+        try:
+            if data.ContainsKey(sym):
+                px = _positive_finite_price(data[sym].Close)
+                if px is not None:
+                    return px
+        except Exception:
+            pass
+        securities = getattr(algo, "Securities", None)
+        if securities is not None:
+            try:
+                px = _positive_finite_price(securities[sym].Price)
+                if px is not None:
+                    return px
+            except Exception:
+                pass
+
+    df = ohlcv.get(ticker)
+    if df is not None and not getattr(df, "empty", True):
+        try:
+            close = df["close"].dropna()
+            if not close.empty:
+                return _positive_finite_price(close.iloc[-1])
+        except Exception:
+            pass
+    return None
+
+
 def _model_type_from_artifact(model: Any) -> str | None:
     """Extract a readable model type for decision-trace rows."""
     return _shared_model_type_from_artifact(model)
@@ -195,6 +248,7 @@ class LeanAdapter:
         all_tickers = (
             list(config.get("watchlist", []) or [])
             + list(algo._models.keys())
+            + list(algo._holdings.keys())
             + list(algo._sector_etf_symbols.keys())
             + ["SPY"]
         )
@@ -226,20 +280,13 @@ class LeanAdapter:
 
         # ── Portfolio state ──────────────────────────────────────────────────
         prices: dict[str, float] = {}
-        for ticker, hs in algo._holdings.items():
-            sym = _symbol_for_ticker(algo, ticker)
-            if sym and data.ContainsKey(sym):
-                prices[ticker] = float(data[sym].Close)
-            elif sym:
-                prices[ticker] = float(algo.Securities[sym].Price)
+        for ticker in unique_tickers:
+            px = _current_price_for_ticker(algo, data, ticker, ohlcv)
+            if px is not None:
+                prices[ticker] = px
 
         pv   = float(algo.Portfolio.TotalPortfolioValue)
         cash = float(algo.Portfolio.Cash)
-
-        # ── Prices for ETFs (used by CandidateJob RS scoring) ─────────────
-        for ticker, sym in algo._sector_etf_symbols.items():
-            if data.ContainsKey(sym):
-                prices[ticker] = float(data[sym].Close)
 
         holdings = dict(algo._holdings)  # shallow copy; jobs mutate states in place
         for ticker, hs in holdings.items():

@@ -15,6 +15,7 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 STRATEGY = REPO / "backtesting" / "renquant_104"
@@ -229,3 +230,71 @@ def test_lean_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     _assert_common_contract(ctx, source="lean", db_marker=adapter._db)
     assert ctx.last_sell_pls == {"AAA": 77.0}
     assert ctx.last_stop_exit_dates == {"AAA": today.date() - dt.timedelta(days=2)}
+
+
+def test_lean_adapter_prices_unheld_model_candidates(tmp_path):
+    """LEAN must price candidates, not just current holdings.
+
+    Selection/QP sizing rejects selected buys with missing ``ctx.prices`` as
+    ``size_bad_price``. Sim/live already populate model candidate prices; LEAN
+    must expose the same contract.
+    """
+    from adapters.lean import LeanAdapter
+
+    class _Data:
+        _bars = {
+            "AAA": SimpleNamespace(Close=123.45),
+            "SPY": SimpleNamespace(Close=501.0),
+        }
+
+        def ContainsKey(self, sym):
+            return sym in self._bars
+
+        def __getitem__(self, sym):
+            return self._bars[sym]
+
+    class _Portfolio:
+        TotalPortfolioValue = 100_000.0
+        Cash = 100_000.0
+
+    today = dt.datetime(2026, 5, 22)
+    algo = SimpleNamespace(
+        _config=_minimal_config(tmp_path),
+        _strategy_dir=tmp_path,
+        Time=today,
+        _spy_sym="SPY",
+        _benchmark="SPY",
+        _prev_closes={},
+        _spy_returns=[0.01],
+        _models={"AAA": {"_metadata": {"model_type": "xgb"}}},
+        _sector_etf_symbols={},
+        symbols={"AAA": "AAA"},
+        _holdings={},
+        _last_sell_dates={},
+        _last_sell_pls={},
+        _last_stop_exit_dates={},
+        Portfolio=_Portfolio(),
+        _skip_buys=False,
+        _regime_state=None,
+        _regime_counts={"BULL_CALM": 2},
+        _gmm=None,
+        _corr={},
+        _earnings={},
+        _hwm=100_000.0,
+        History=lambda *args, **kwargs: SimpleNamespace(empty=True),
+    )
+    adapter = LeanAdapter.__new__(LeanAdapter)
+    adapter._algo = algo
+    adapter._db = object()
+    adapter._universe_rejections = {}
+    adapter._panel_cache_ff = None
+    adapter._panel_cache_fac = None
+    adapter._panel_cache_macro = None
+    adapter._panel_cache_emb = None
+    adapter._panel_cache_last_date = None
+    adapter._meta_label_logger = None
+    adapter._meta_label_predictor = None
+
+    ctx = adapter.make_context(_Data())
+
+    assert ctx.prices["AAA"] == pytest.approx(123.45)

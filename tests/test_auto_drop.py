@@ -142,6 +142,34 @@ class TestAutoDropTask:
         # GLD is defensive — never drop
         assert "GLD" in uctx.loaded_models
 
+    def test_held_tickers_exempt(self, tmp_path):
+        from kernel.pipeline.job_universe import (
+            FilterAutoDropTask, UniverseContext,
+        )
+        ls = tmp_path / "live_state.json"
+        ls.write_text(json.dumps({
+            "monitor_state": {
+                "filter_streaks": {"HELD": 100, "DEAD": 100},
+            }
+        }))
+
+        uctx = UniverseContext(
+            config={
+                "monitoring": {"auto_drop_filter_days": 63},
+                "defensive_tickers": [],
+            },
+            strategy_dir=tmp_path,
+            loaded_models={
+                "HELD": {"_metadata": {"sharpe": 0.2}},
+                "DEAD": {"_metadata": {"sharpe": 1.5}},
+            },
+            held_tickers={"HELD"},
+            rejections=[],
+        )
+        FilterAutoDropTask().run(uctx)
+        assert "HELD" in uctx.loaded_models
+        assert "DEAD" not in uctx.loaded_models
+
     def test_no_state_file_no_drop(self, tmp_path):
         """When live_state.json doesn't exist (fresh sim), no streaks → no drops."""
         from kernel.pipeline.job_universe import (

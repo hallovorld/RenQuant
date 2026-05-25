@@ -225,13 +225,34 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
     def _load_all_models(self) -> None:
         from kernel.pipeline.job_universe import UniverseContext, LoadUniverseJob
-        uctx = UniverseContext(config=CONFIG, strategy_dir=self._strategy_dir)
+        uctx = UniverseContext(
+            config=CONFIG,
+            strategy_dir=self._strategy_dir,
+            held_tickers=self._current_held_tickers(),
+        )
         LoadUniverseJob().run(uctx)
         self._models = uctx.loaded_models
         self._universe_rejections = dict(uctx.rejections)
         for ticker, reason in uctx.rejections:
             self.Log(f"WARNING: {ticker} {reason}, skipping")
         self.Log(f"Loaded {len(self._models)}/{len(self._watchlist)} models: {sorted(self._models)}")
+
+    def _current_held_tickers(self) -> set[str]:
+        """Return broker/LEAN portfolio-held tickers for universe exemptions.
+
+        Universe floors and auto-drop gates protect new buys. They must not
+        remove a currently-held ticker's model, because that kills model-sell
+        and rotation logic for an open position.
+        """
+        held: set[str] = set(getattr(self, "_holdings", {}) or {})
+        for ticker, sym in getattr(self, "symbols", {}).items():
+            try:
+                qty = float(self.Portfolio[sym].Quantity)
+            except Exception:
+                continue
+            if qty != 0.0:
+                held.add(ticker)
+        return held
 
     def _load_json_artifact(self, filename: str, label: str) -> dict | None:
         p = artifact_path(filename)
