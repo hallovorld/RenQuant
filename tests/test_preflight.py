@@ -1079,6 +1079,93 @@ class TestCheckCalibratorHealth:
         )
 
 
+class TestMetaLabelArtifactContract:
+    """AUDIT REGRESSION GUARD: enabled exit-veto cannot silently no-op."""
+
+    def _artifact(self, path: Path, *, auc: float = 0.554, n_events: int = 146) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "version": 1,
+            "kind": "meta_label_exit_xgb",
+            "feature_cols": ["cum_pnl_pct", "days_held"],
+            "booster_raw_json": "{\"learner\": {}}",
+            "default_threshold": 0.30,
+            "cv_metrics": {"auc_mean": auc, "auc_std": 0.12},
+            "training_data_summary": {
+                "n_events": n_events,
+                "class_balance": 0.55,
+                "fwd_window_days": 20,
+                "feature_count": 2,
+            },
+        }))
+
+    def test_disabled_meta_label_is_soft_skip(self, tmp_path):
+        from kernel.preflight import _check_meta_label_artifact_contract
+        cfg = {"ranking": {"meta_label": {"enabled": False}}}
+
+        r = _check_meta_label_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert r.ok and r.severity == "soft"
+        assert "disabled" in r.message
+
+    def test_enabled_missing_artifact_fails_full(self, tmp_path):
+        from kernel.preflight import _check_meta_label_artifact_contract
+        cfg = {"ranking": {"meta_label": {
+            "enabled": True,
+            "artifact_path": "artifacts/missing-meta.json",
+        }}}
+
+        r = _check_meta_label_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "silently fall back" in r.message
+
+    def test_enabled_missing_artifact_soft_passes_sell_only(self, tmp_path):
+        from kernel.preflight import _check_meta_label_artifact_contract
+        cfg = {"ranking": {"meta_label": {
+            "enabled": True,
+            "artifact_path": "artifacts/missing-meta.json",
+        }}}
+
+        r = _check_meta_label_artifact_contract(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
+
+    def test_enabled_valid_artifact_passes_full(self, tmp_path):
+        from kernel.preflight import _check_meta_label_artifact_contract
+        self._artifact(tmp_path / "artifacts/meta-label-exit.json")
+        cfg = {"ranking": {"meta_label": {
+            "enabled": True,
+            "artifact_path": "artifacts/meta-label-exit.json",
+            "threshold": 0.5,
+        }}}
+
+        r = _check_meta_label_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert r.ok and r.severity == "hard"
+        assert "meta-label artifact ok" in r.message
+        assert r.details["n_events"] == 146
+        assert r.details["fwd_window_days"] == 20
+
+    def test_enabled_low_auc_artifact_fails_full(self, tmp_path):
+        from kernel.preflight import _check_meta_label_artifact_contract
+        self._artifact(tmp_path / "artifacts/meta-label-exit.json", auc=0.49)
+        cfg = {"ranking": {"meta_label": {
+            "enabled": True,
+            "artifact_path": "artifacts/meta-label-exit.json",
+        }}}
+
+        r = _check_meta_label_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "auc_mean" in r.message
+
+    def test_check_in_all_checks(self):
+        from kernel.preflight import ALL_CHECKS, _check_meta_label_artifact_contract
+        assert _check_meta_label_artifact_contract in ALL_CHECKS
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 class TestRunPreflight:

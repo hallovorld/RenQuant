@@ -109,6 +109,15 @@ Make RenQuant 104 scientifically trustworthy end to end:
   path-conditional: either add short-horizon confirmation at entry, train/use a
   meta-label exit veto, or align BULL_CALM exit barriers with the model's
   target horizon. Any rule change needs WF evidence reported per regime first.
+- Meta-label exit veto is not promoted. Current production config has
+  `ranking.meta_label.enabled=false`, and the old 2026-05-11 artifact has only
+  `146` events with CV AUC about `0.554`. New preflight hardening now requires
+  a usable meta-label artifact whenever that veto is enabled for buy/full:
+  valid kind, feature columns, booster payload, threshold, CV AUC, training
+  sample count, class balance, and label horizon. Missing/corrupt/weak
+  artifacts fail closed for buy/full while sell-only remains armed. This
+  prevents a future path-veto experiment from silently degrading back to the
+  un-vetoed stop path.
 
 ## Pushed Progress
 

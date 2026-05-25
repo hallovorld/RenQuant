@@ -1184,6 +1184,114 @@ def _check_artifact_run_id_alignment(
     )
 
 
+def _check_meta_label_artifact_contract(
+    config: dict,
+    strategy_dir: Path,
+    run_mode: str | None = None,
+) -> PreflightCheck:
+    """P-META-LABEL: enabled exit-veto path requires a usable artifact.
+
+    Meta-label is an optional path-rule exit veto. When enabled for buy/full
+    runs, a missing/corrupt artifact would silently turn the decision tree back
+    into the un-vetoed stop path, exactly the false-positive stop-loss class we
+    are auditing. Sell-only runs are allowed to keep raw risk exits armed.
+    """
+    cfg = ((config.get("ranking") or {}).get("meta_label") or {})
+    if not bool(cfg.get("enabled", False)):
+        return PreflightCheck(
+            "P-META-LABEL", "soft", True,
+            "ranking.meta_label disabled; artifact contract not applicable",
+        )
+    rel = cfg.get("artifact_path")
+    if not rel:
+        return _soft_for_sell_only(
+            "P-META-LABEL",
+            "ranking.meta_label.enabled=true but artifact_path is missing; "
+            "full/buy cannot silently fall back to un-vetoed path exits",
+            run_mode=run_mode,
+        )
+    p = _resolve_artifact_path(strategy_dir, rel)
+    if not p.exists():
+        return _soft_for_sell_only(
+            "P-META-LABEL",
+            f"ranking.meta_label.enabled=true but artifact missing at {p}; "
+            "full/buy cannot silently fall back to un-vetoed path exits",
+            run_mode=run_mode,
+        )
+    try:
+        payload = json.loads(p.read_text())
+    except Exception as exc:
+        return _soft_for_sell_only(
+            "P-META-LABEL",
+            f"meta-label artifact unreadable at {p}: {exc}",
+            run_mode=run_mode,
+        )
+
+    errors: list[str] = []
+    if payload.get("kind") != "meta_label_exit_xgb":
+        errors.append(f"kind={payload.get('kind')!r} != 'meta_label_exit_xgb'")
+    feature_cols = payload.get("feature_cols") or []
+    if not isinstance(feature_cols, list) or not feature_cols:
+        errors.append("feature_cols missing/empty")
+    if not isinstance(payload.get("booster_raw_json"), str) or not payload.get("booster_raw_json"):
+        errors.append("booster_raw_json missing/empty")
+    default_threshold = _finite_float(payload.get("default_threshold"))
+    cfg_threshold = _finite_float(cfg.get("threshold", default_threshold))
+    if default_threshold is None:
+        errors.append("default_threshold missing/non-finite")
+    if cfg_threshold is None or not (0.0 <= cfg_threshold <= 1.0):
+        errors.append(f"config threshold invalid: {cfg.get('threshold')!r}")
+
+    cv = payload.get("cv_metrics") or {}
+    auc = _finite_float(cv.get("auc_mean"))
+    min_auc = _finite_float(cfg.get("min_auc", 0.50))
+    if auc is None:
+        errors.append("cv_metrics.auc_mean missing/non-finite")
+    elif min_auc is not None and auc < min_auc:
+        errors.append(f"cv_metrics.auc_mean={auc:.4f} < min_auc={min_auc:.4f}")
+
+    summary = payload.get("training_data_summary") or {}
+    n_events = summary.get("n_events")
+    try:
+        n_events_i = int(n_events)
+    except (TypeError, ValueError):
+        n_events_i = 0
+    min_events = int(cfg.get("min_events", 100))
+    if n_events_i < min_events:
+        errors.append(f"training_data_summary.n_events={n_events_i} < min_events={min_events}")
+    fwd_window = summary.get("fwd_window_days")
+    try:
+        fwd_window_i = int(fwd_window)
+    except (TypeError, ValueError):
+        fwd_window_i = 0
+    if fwd_window_i <= 0:
+        errors.append("training_data_summary.fwd_window_days missing/non-positive")
+    class_balance = _finite_float(summary.get("class_balance"))
+    if class_balance is None or not (0.0 < class_balance < 1.0):
+        errors.append("training_data_summary.class_balance missing/out-of-range")
+
+    if errors:
+        return _soft_for_sell_only(
+            "P-META-LABEL",
+            "meta-label artifact contract failed: " + "; ".join(errors),
+            run_mode=run_mode,
+            details={"artifact_path": str(p), "errors": errors},
+        )
+    return PreflightCheck(
+        "P-META-LABEL", "hard", True,
+        f"meta-label artifact ok: n_events={n_events_i}, auc={auc:.4f}, "
+        f"threshold={cfg_threshold:.2f}, fwd_window_days={fwd_window_i}",
+        details={
+            "artifact_path": str(p),
+            "n_events": n_events_i,
+            "auc_mean": auc,
+            "threshold": cfg_threshold,
+            "fwd_window_days": fwd_window_i,
+            "feature_count": len(feature_cols),
+        },
+    )
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 ALL_CHECKS = (
@@ -1200,6 +1308,7 @@ ALL_CHECKS = (
     _check_state_file,
     _check_broker_connect,
     _check_artifact_run_id_alignment,  # audit fix #2 — soft check
+    _check_meta_label_artifact_contract,
     None,  # _check_calibrator_health — registered below to keep ALL_CHECKS readable
 )
 
