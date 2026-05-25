@@ -353,7 +353,8 @@ class TestTickerDailyStateWiring:
         assert "build_ticker_daily_state_rows" in RUNNER_SOURCE
         assert "build_ticker_daily_state_rows" in SIM_ADAPTER_SOURCE
         assert "decision_trace_tickers" in DECISION_TRACE_SOURCE
-        assert "for tk in decision_trace_tickers(config):" in DECISION_TRACE_SOURCE
+        assert "trace_tickers = list(decision_trace_tickers(config))" in DECISION_TRACE_SOURCE
+        assert "for tk in trace_tickers:" in DECISION_TRACE_SOURCE
 
     def test_blocked_by_preserves_exact_universe_rejection_reason(self):
         # When ticker has no model loaded, keep LoadUniverseJob's exact

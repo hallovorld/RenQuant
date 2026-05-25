@@ -1727,6 +1727,13 @@ def decision_trace_integrity_report(
         (run_id,),
     ).fetchall()
     recorded = {str(r[0]) for r in rows}
+    trade_rows_for_tickers = conn.execute(
+        "SELECT ticker FROM trades WHERE run_id = ? AND ticker IS NOT NULL",
+        (run_id,),
+    ).fetchall()
+    trade_tickers = {str(r[0]) for r in trade_rows_for_tickers}
+    extra_tickers = recorded - expected if expected else set()
+    unexplained_extra_tickers = extra_tickers - trade_tickers
     selected_blockers = conn.execute(
         """SELECT COUNT(*) FROM ticker_daily_state
            WHERE run_id = ? AND selected = 1 AND blocked_by IS NOT NULL""",
@@ -1899,7 +1906,10 @@ def decision_trace_integrity_report(
         "ticker_daily_state_rows": len(recorded),
         "expected_watchlist_rows": len(expected) if expected else None,
         "missing_watchlist_tickers": sorted(expected - recorded),
-        "extra_tickers": sorted(recorded - expected) if expected else [],
+        "extra_tickers": sorted(extra_tickers) if expected else [],
+        "unexplained_extra_tickers": (
+            sorted(unexplained_extra_tickers) if expected else []
+        ),
         "selected_blocked_rows": int(selected_blockers or 0),
         "candidate_selected_blocked_rows": int(candidate_selected_blockers or 0),
         "candidate_reason_gaps": int(candidate_reason_gaps or 0),
@@ -1917,7 +1927,10 @@ def decision_trace_integrity_report(
         "decision_horizon_gaps": int(decision_horizon_gaps or 0),
         "trade_horizon_gaps": int(trade_horizon_gaps or 0),
         "ok": (
-            (not expected or recorded == expected)
+            (
+                not expected
+                or (expected <= recorded and not unexplained_extra_tickers)
+            )
             and int(selected_blockers or 0) == 0
             and int(candidate_selected_blockers or 0) == 0
             and int(candidate_reason_gaps or 0) == 0

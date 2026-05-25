@@ -26,6 +26,8 @@ from kernel.decision_trace import (
     model_types_from_models,
     qp_trace_maps,
     selected_buy_tickers,
+    trade_event_blocked_map,
+    trade_event_tickers,
 )
 
 try:
@@ -1268,6 +1270,7 @@ class LeanAdapter:
         config = algo._config
         selected_tickers = selected_buy_tickers(trade_events)
         blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
+        blocked_map.update(trade_event_blocked_map(trade_events))
         sector_map = config.get("sector_map", {}) or {}
         model_types = model_types_from_models(algo._models)
         panel_artifact = (
@@ -1338,6 +1341,7 @@ class LeanAdapter:
             qp_delta_by_ticker=qp_delta_by_ticker,
             qp_target_by_ticker=qp_target_by_ticker,
             qp_status=qp_status,
+            extra_tickers=trade_event_tickers(trade_events),
         )
         record_ticker_daily_state(
             self._db,

@@ -788,6 +788,39 @@ class TestTrades:
         assert report["fallback_trade_attribution_gaps"] == 1
         conn.close()
 
+    def test_decision_trace_integrity_allows_extra_trade_attempt_ticker(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="live", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[
+                {"ticker": "AAA", "selected": 0, "blocked_by": "no_model_signal"},
+                {"ticker": "BBB", "selected": 0, "blocked_by": "broker_rejected"},
+            ],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "BBB",
+            "action": "buy_rejected",
+            "shares": 1,
+            "price": 100.0,
+            "blocked_by": "broker_rejected",
+            "score_snapshot": {"attempt_status": "buy_rejected"},
+            "decision_inputs": {"attempt_status": "buy_rejected"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is True
+        assert report["extra_tickers"] == ["BBB"]
+        assert report["unexplained_extra_tickers"] == []
+        conn.close()
+
     def test_decision_trace_integrity_report_flags_candidate_reason_gap(self, tmp_path):
         conn = get_connection(_cfg(tmp_path))
         rid = record_pipeline_run(

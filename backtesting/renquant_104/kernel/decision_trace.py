@@ -49,6 +49,30 @@ def selected_buy_tickers(trade_events: list[dict[str, Any]] | None) -> set[str]:
     }
 
 
+def trade_event_tickers(trade_events: list[dict[str, Any]] | None) -> set[str]:
+    """Return all tickers that appear in executed or attempted trade rows."""
+    return {
+        str(event.get("ticker"))
+        for event in (trade_events or [])
+        if event.get("ticker")
+    }
+
+
+def trade_event_blocked_map(
+    trade_events: list[dict[str, Any]] | None,
+) -> dict[str, str]:
+    """Return per-ticker blocked reasons carried by attempted trade rows."""
+    out: dict[str, str] = {}
+    filled_actions = {"buy", "sell", "short_open", "short_cover"}
+    for event in trade_events or []:
+        ticker = event.get("ticker")
+        action = str(event.get("action") or "").lower()
+        blocked = event.get("blocked_by")
+        if ticker and blocked and action not in filled_actions:
+            out[str(ticker)] = str(blocked)
+    return out
+
+
 def candidate_trace_pool(ctx: Any) -> list[Any]:
     """Full candidate pool for trace persistence, including filtered candidates."""
     base = list(
@@ -129,6 +153,7 @@ def build_ticker_daily_state_rows(
     qp_delta_by_ticker: dict[str, float] | None = None,
     qp_target_by_ticker: dict[str, float] | None = None,
     qp_status: str | None = None,
+    extra_tickers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build one `ticker_daily_state` row per decision-trace ticker.
 
@@ -151,6 +176,17 @@ def build_ticker_daily_state_rows(
     prices = getattr(ctx, "prices", {}) or {}
     holdings = getattr(ctx, "holdings", {}) or {}
     watchlist_set = set(config.get("watchlist", []) or [])
+    trace_tickers = list(decision_trace_tickers(config))
+    seen_trace = set(trace_tickers)
+    for tk in sorted(
+        set(extra_tickers or set())
+        | set(selected_tickers or set())
+        | set(pending_broker_tickers or set())
+        | set(blocked_map or {})
+    ):
+        if tk not in seen_trace:
+            trace_tickers.append(tk)
+            seen_trace.add(tk)
     pf_value = (
         float(portfolio_value)
         if portfolio_value is not None
@@ -158,7 +194,7 @@ def build_ticker_daily_state_rows(
     )
 
     rows: list[dict[str, Any]] = []
-    for tk in decision_trace_tickers(config):
+    for tk in trace_tickers:
         hs = holdings.get(tk)
         cand = cand_by_t.get(tk)
         src = cand if cand is not None else hs
@@ -232,4 +268,6 @@ __all__ = [
     "model_types_from_models",
     "qp_trace_maps",
     "selected_buy_tickers",
+    "trade_event_blocked_map",
+    "trade_event_tickers",
 ]

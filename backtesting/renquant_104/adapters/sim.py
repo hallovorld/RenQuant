@@ -56,6 +56,8 @@ from kernel.decision_trace import (
     model_types_from_models,
     qp_trace_maps,
     selected_buy_tickers,
+    trade_event_blocked_map,
+    trade_event_tickers,
 )
 from kernel.pipeline.exit_params import apply_stop_loss_anchor_policy
 from kernel.pipeline.task_execution import (
@@ -1424,7 +1426,8 @@ class SimAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
-            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
+            blocked_map.update(trade_event_blocked_map(trade_events_this_bar))
             sector_map = self._config.get("sector_map", {}) or {}
             model_types = model_types_from_models(self._models)
             panel_artifact = (
@@ -1470,6 +1473,7 @@ class SimAdapter:
                 qp_delta_by_ticker=qp_delta_by_ticker,
                 qp_target_by_ticker=qp_target_by_ticker,
                 qp_status=qp_status,
+                extra_tickers=trade_event_tickers(trade_events_this_bar),
             )
             record_ticker_daily_state(
                 self._db,

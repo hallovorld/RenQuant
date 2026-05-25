@@ -157,7 +157,7 @@ def test_lean_adapter_records_nonfilled_execution_attempts(tmp_path):
     )
     buy_attempt = _lean_buy_attempt_event(
         {
-            "ticker": "AAA",
+            "ticker": "BBB",
             "shares": 3,
             "price": 100.0,
             "target_pct": 0.003,
@@ -189,7 +189,7 @@ def test_lean_adapter_records_nonfilled_execution_attempts(tmp_path):
              FROM trades ORDER BY action""",
     ).fetchall()
     assert rows[0][:5] == (
-        "buy_rejected", "AAA", 3.0, 100.0, "lean_order_status:Rejected",
+        "buy_rejected", "BBB", 3.0, 100.0, "lean_order_status:Rejected",
     )
     assert rows[1][:5] == (
         "sell_pending", "AAA", 5.0, 100.0, "Submitted",
@@ -199,10 +199,14 @@ def test_lean_adapter_records_nonfilled_execution_attempts(tmp_path):
     assert buy_snap["attempt_status"] == "buy_rejected"
     assert sell_inputs["attempt_status"] == "sell_pending"
     assert sell_inputs["status"] == "Submitted"
-    selected = conn.execute(
-        "SELECT selected, blocked_by FROM candidate_scores WHERE ticker='AAA'",
-    ).fetchone()
-    assert selected == (0, None)
+    daily_rows = conn.execute(
+        """SELECT ticker, in_watchlist, in_universe, selected, blocked_by
+             FROM ticker_daily_state ORDER BY ticker""",
+    ).fetchall()
+    assert daily_rows == [
+        ("AAA", 1, 1, 0, "Submitted"),
+        ("BBB", 0, 0, 0, "lean_order_status:Rejected"),
+    ]
     conn.close()
 
 

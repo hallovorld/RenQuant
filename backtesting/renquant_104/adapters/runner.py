@@ -23,6 +23,8 @@ from kernel.decision_trace import (
     model_types_from_models,
     qp_trace_maps,
     selected_buy_tickers,
+    trade_event_blocked_map,
+    trade_event_tickers,
 )
 from kernel.pipeline.task_execution import (
     dedupe_exit_signals,
@@ -2441,6 +2443,7 @@ class RunnerAdapter:
                     blocked_map.setdefault(
                         o["ticker"], f"broker_skip:{o.get('skip_reason', 'skipped')}",
                     )
+            blocked_map.update(trade_event_blocked_map(trade_events))
             # Audit fix DB-DECISION-FACTORS (2026-04-26 round-5): include
             # sector_map + model_types + panel_artifact path so post-hoc
             # analysis has the FULL decision context per (date, ticker).
@@ -2509,6 +2512,7 @@ class RunnerAdapter:
                     qp_delta_by_ticker=qp_delta_by_ticker,
                     qp_target_by_ticker=qp_target_by_ticker,
                     qp_status=qp_status,
+                    extra_tickers=trade_event_tickers(trade_events),
                 )
                 n_tds = record_ticker_daily_state(
                     self._db, run_date=ctx.today, rows=tds_rows,
