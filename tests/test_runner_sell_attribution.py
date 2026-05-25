@@ -20,6 +20,7 @@ if str(STRATEGY_DIR) not in sys.path:
 from adapters.runner import (  # noqa: E402
     apply_live_sell_lot_accounting,
     build_sell_trade_event_for_db,
+    live_execution_attempt_events,
     live_trace_selection_maps,
     live_post_execution_snapshot,
     model_type_from_artifact,
@@ -246,6 +247,87 @@ def test_live_trace_marks_pending_buy_as_blocked_not_selected():
     assert selected == set()
     assert pending == {"AAPL"}
     assert blocked["AAPL"] == "broker_pending_submitted"
+
+
+def test_live_execution_attempt_events_persist_pending_and_skipped_buys():
+    ctx = type("Ctx", (), {
+        "today": datetime.date(2026, 5, 22),
+        "regime": "BULL_CALM",
+        "confidence": 0.8,
+        "orders_pending": [{
+            "ticker": "AAPL", "shares": 3, "price": 100.0,
+            "status": "accepted", "order_id": "ord-1",
+            "source_job": "SelectionJob",
+            "source_task": "SizeAndEmitTask",
+        }],
+        "orders_skipped": [{
+            "ticker": "MSFT", "shares": 2, "price": 200.0,
+            "skip_reason": "cash_budget_exhausted",
+            "source_job": "SelectionJob",
+            "source_task": "SizeAndEmitTask",
+        }],
+        "exits_pending": [],
+        "exits_failed": [],
+    })()
+
+    rows = live_execution_attempt_events(ctx)
+
+    assert [r["action"] for r in rows] == ["buy_pending", "buy_skipped"]
+    assert rows[0]["ticker"] == "AAPL"
+    assert rows[0]["decision_inputs"]["order_id"] == "ord-1"
+    assert rows[0]["decision_inputs"]["status"] == "accepted"
+    assert rows[0]["score_snapshot"]["attempt_status"] == "buy_pending"
+    assert rows[1]["blocked_by"] == "broker_skip:cash_budget_exhausted"
+    assert rows[1]["decision_inputs"]["skip_reason"] == "cash_budget_exhausted"
+
+
+def test_live_execution_attempt_events_persist_rejected_sell_context():
+    holding = HoldingState(
+        entry_price=100.0,
+        entry_date=datetime.date(2026, 5, 1),
+        high_watermark=120.0,
+        shares=5.0,
+        rank_score=0.44,
+        panel_score=0.22,
+        expected_return=0.03,
+        expected_return_horizon_days=60,
+    )
+    holding.model_type = "xgb"
+    holding.sector = "tech"
+    ctx = type("Ctx", (), {
+        "today": datetime.date(2026, 5, 22),
+        "regime": "BULL_CALM",
+        "confidence": 0.8,
+        "holdings": {"AAPL": holding},
+        "prices": {"AAPL": 110.0},
+        "orders_pending": [],
+        "orders_skipped": [],
+        "exits_pending": [],
+        "exits_failed": [{
+            "ticker": "AAPL",
+            "exit_type": "stop_loss",
+            "reason": "stop",
+            "qty": 5,
+            "status": "rejected",
+            "order_id": "ord-2",
+            "error": "broker_status:rejected",
+        }],
+    })()
+
+    rows = live_execution_attempt_events(ctx)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["action"] == "sell_rejected"
+    assert row["shares"] == 5
+    assert row["price"] == 110.0
+    assert row["blocked_by"] == "broker_status:rejected"
+    assert row["score_snapshot"]["rank_score"] == 0.44
+    assert row["score_snapshot"]["expected_return_horizon_days"] == 60
+    assert row["model_type"] == "xgb"
+    assert row["sector"] == "tech"
+    assert row["decision_inputs"]["order_id"] == "ord-2"
+    assert row["decision_inputs"]["error"] == "broker_status:rejected"
 
 
 def test_live_sell_trade_persists_applied_exit_params_from_signal():
