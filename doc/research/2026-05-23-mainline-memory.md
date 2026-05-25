@@ -3095,6 +3095,10 @@ decision-path bugs:
   lookup errors before a buy, the buy is skipped and persisted with
   `open_orders_check_failed:*` instead of silently bypassing the pending-order
   guard and risking a duplicate order.
+- Active and golden regime-detector configs now match on the explicit 5-day
+  bear/choppy thresholds. Active live config no longer relies on hidden
+  `kernel.regime` defaults for those detector knobs, so future default drift
+  cannot silently relabel regimes.
 
 Validation:
 
@@ -3114,6 +3118,10 @@ Validation:
   calibrated short-admission hardening.
 - `156 passed`: execution/tax/persistence/LEAN-live context/slippage/NAV
   regression bundle after the missing-ticket and open-order fail-closed fixes.
+- `134 passed`: config-consistency, regime-label, stop-loss regime, horizon,
+  and QP admission neighborhoods after the active/golden regime config sync.
+- `44 passed`: panel-conviction, min-hold, sell attribution, and trade-event
+  neighborhoods confirming BULL_CALM soft-exit/stop metadata remains wired.
 
 ## Stop Conditions
 

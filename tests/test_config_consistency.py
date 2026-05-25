@@ -7,6 +7,7 @@ doc/archives/audits/2026-04-28-nvts-buy-postmortem.md.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -22,6 +23,14 @@ from kernel.config_consistency import (   # noqa: E402
     fingerprint_config,
     _model_relevant_fields,
 )
+
+
+def test_active_and_golden_regime_detector_config_match():
+    """Live detector knobs must be explicit, not hidden in code defaults."""
+    active = json.loads((STRATEGY_DIR / "strategy_config.json").read_text())
+    golden = json.loads((STRATEGY_DIR / "strategy_config.golden.json").read_text())
+
+    assert active["regime"] == golden["regime"]
 
 
 def _cfg(watchlist=None, lookahead=10, objective="rank:pairwise", emb=False):

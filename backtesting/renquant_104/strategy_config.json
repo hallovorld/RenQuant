@@ -207,7 +207,13 @@
     "choppy_hurst_floor": 0.2,
     "confidence_veto_threshold": 0.0,
     "cusum_cooldown_mode": "wall_time",
-    "cusum_cooldown_days": 3.0
+    "cusum_cooldown_days": 3.0,
+    "bear_vol_threshold_5d": 0.25,
+    "bear_return_threshold_5d": -0.04,
+    "vol_realized_window_5d": 5,
+    "choppy_vol_baseline_window": 60,
+    "choppy_vol_ratio_threshold": 1.5,
+    "choppy_drift_threshold": 0.02
   },
   "regime_params": {
     "BULL_CALM": {
