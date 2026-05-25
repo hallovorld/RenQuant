@@ -510,6 +510,12 @@ class SellOnlyPipeline:
             if tc.exit_signal is not None and tc.exit_signal.should_exit:
                 ctx.exits.append((tc.ticker, tc.exit_signal))
 
+        # AFML ch.20 meta-labeling is a second-stage filter on path-rule
+        # exit events. Keep intraday/pre-close sell-only aligned with the
+        # full daily path so an enabled veto cannot be bypassed by cron mode.
+        from kernel.meta_label.task_meta_label_veto import MetaLabelVetoTask  # noqa: PLC0415
+        MetaLabelVetoTask().run(ctx)
+
         # 2026-04-26 round-7 audit fix MAX-SELLS-PER-BAR:
         # also cap intraday sell-only bursts. Same task, same config.
         from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415

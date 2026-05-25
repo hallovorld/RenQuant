@@ -36,6 +36,7 @@ if str(_STRATEGY_DIR) not in sys.path:
 
 from kernel.exits import ExitSignal, HoldingState  # noqa: E402
 from kernel.meta_label.task_meta_label_veto import MetaLabelVetoTask  # noqa: E402
+from kernel.pipeline.context import InferenceContext  # noqa: E402
 
 
 def _holding(*, entry_price=100.0, hwm=110.0, entry_panel_score=0.5,
@@ -117,6 +118,72 @@ class TestMetaLabelVetoGuards:
         )
         MetaLabelVetoTask().run(ctx)
         assert len(ctx.exits) == 1
+
+
+class TestMetaLabelSellOnlyPipelineRegressionGuard:
+    """AUDIT REGRESSION GUARD: sell-only must share path-exit veto logic.
+
+    López de Prado AFML ch.20 meta-labeling is a second-stage filter on a
+    primary event. In 104 that primary event is the path-rule sell signal.
+    Full daily and sell-only intraday paths must therefore apply the same
+    filter before an order reaches the adapter.
+    """
+
+    def test_sell_only_pipeline_runs_meta_label_veto_after_sell_signals(
+        self,
+        monkeypatch,
+    ):
+        import kernel.meta_label.task_meta_label_veto as veto_mod
+        import kernel.pipeline.pp_inference as pp
+        import kernel.pipeline.task_data_freshness as freshness_mod
+        import kernel.pipeline.task_limit_sells as limit_mod
+        import kernel.pipeline.task_monitor as monitor_mod
+
+        class NoopJob:
+            def run(self, _ctx):
+                return None
+
+        class NoopTask:
+            def run(self, _ctx):
+                return None
+
+        calls = []
+
+        class FakeMetaLabelVetoTask:
+            def run(self, ctx):
+                calls.append(list(ctx.exits))
+                ctx.exits.clear()
+
+        def fake_run_parallel(tctxs, _job):
+            for tc in tctxs:
+                tc.exit_signal = _exit(exit_type="stop_loss")
+
+        monkeypatch.setattr(freshness_mod, "DataFreshnessGateTask", lambda: NoopTask())
+        monkeypatch.setattr(pp, "RegimeJob", lambda: NoopJob())
+        monkeypatch.setattr(pp, "DrawdownJob", lambda: NoopJob())
+        monkeypatch.setattr(pp, "TickerSellJob", lambda: object())
+        monkeypatch.setattr(pp, "run_parallel", fake_run_parallel)
+        monkeypatch.setattr(veto_mod, "MetaLabelVetoTask", FakeMetaLabelVetoTask)
+        monkeypatch.setattr(limit_mod, "LimitSellsPerBarTask", lambda: NoopTask())
+        monkeypatch.setattr(monitor_mod, "MonitorIdleStreakTask", lambda: NoopTask())
+
+        ctx = InferenceContext(
+            config={
+                "ranking": {"meta_label": {"enabled": True, "threshold": 0.5}},
+                "regime_params": {"BULL_CALM": {}},
+            },
+            today=datetime.date(2025, 1, 15),
+            ohlcv={},
+            models={},
+            holdings={"AAPL": _holding()},
+            prices={"AAPL": 95.0},
+            regime="BULL_CALM",
+        )
+
+        pp.SellOnlyPipeline().run(ctx)
+
+        assert calls and calls[0][0][0] == "AAPL"
+        assert ctx.exits == []
 
 
 class TestMetaLabelVetoBehavior:

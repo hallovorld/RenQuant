@@ -2451,6 +2451,20 @@ entire pipeline end-to-end:
 9. Operational scripts, cron, broker, ntfy, failure semantics.
 10. Repo hygiene, stale artifacts, dead paths, cleanup/backlog/report.
 
+### Global Round 1/10 — Pipeline Contract Pass
+
+- New full/sell-only parity bug found: `InferencePipeline` applied
+  `MetaLabelVetoTask` after path-rule sell signals, but `SellOnlyPipeline`
+  skipped the same second-stage filter. Current production has meta-label
+  disabled, so this did not change today's live behavior, but it was a latent
+  contract break: if AFML-style meta-label exit veto is enabled, open/preclose
+  sell-only cron paths would bypass the veto while daily full would not. The
+  sell-only pipeline now runs `MetaLabelVetoTask` after `TickerSellJob`
+  populates `ctx.exits` and before `LimitSellsPerBarTask`, matching the full
+  path's exit-filter ordering. Validation: meta-label veto, pipeline,
+  runner-meta-label wiring, meta-label preflight, no-trade monitor, and data
+  freshness suites passed (`81 passed`, one xgboost warning).
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:
