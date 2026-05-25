@@ -27,6 +27,7 @@ def evaluate_trade_monotonicity(
     min_n_per_regime: int = 30,
     min_spearman: float = 0.02,
     min_top_bottom_spread: float = 0.0,
+    small_n_inversion_min_n: int = 10,
     allow_pass_open: bool = False,
 ) -> TradeMonotonicityReport:
     """Require entry scores to be economically monotone per active regime."""
@@ -46,6 +47,10 @@ def evaluate_trade_monotonicity(
         row = _summarize_group(g, score_col, return_col, net_col)
         row["regime"] = str(regime)
         row["eligible"] = int(row["n"]) >= int(min_n_per_regime)
+        row["small_n_inversion"] = _is_small_n_inversion(
+            row,
+            min_n=small_n_inversion_min_n,
+        )
         if row["eligible"]:
             row["passed"] = _passes_row(
                 row,
@@ -53,6 +58,13 @@ def evaluate_trade_monotonicity(
                 min_top_bottom_spread=min_top_bottom_spread,
             )
             eligible.append(row)
+        elif row["small_n_inversion"]:
+            row["passed"] = False
+            row["detail"] = (
+                "failed_small_n_inversion: "
+                f"n={row['n']} >= {small_n_inversion_min_n} and "
+                "score ordering is economically inverted"
+            )
         else:
             row["passed"] = bool(allow_pass_open)
             row["detail"] = (
@@ -62,6 +74,15 @@ def evaluate_trade_monotonicity(
         regime_reports.append(row)
 
     if not eligible:
+        inverted = [r for r in regime_reports if r.get("small_n_inversion")]
+        if inverted:
+            labels = ", ".join(r["regime"] for r in inverted)
+            return TradeMonotonicityReport(
+                passed=False,
+                reason=f"small-sample score inversion in regime(s): {labels}",
+                regimes=regime_reports,
+                pooled=pooled,
+            )
         if not allow_pass_open:
             return TradeMonotonicityReport(
                 passed=False,
@@ -186,3 +207,21 @@ def _passes_row(
     if spread is None or not np.isfinite(float(spread)):
         return False
     return float(spearman) >= min_spearman and float(spread) > min_top_bottom_spread
+
+
+def _is_small_n_inversion(row: dict[str, Any], *, min_n: int) -> bool:
+    if int(row.get("n") or 0) < int(min_n):
+        return False
+    spearman = row.get("spearman")
+    spread = row.get("top_bottom_return_spread")
+    spearman_bad = (
+        spearman is not None
+        and np.isfinite(float(spearman))
+        and float(spearman) < 0.0
+    )
+    spread_bad = (
+        spread is not None
+        and np.isfinite(float(spread))
+        and float(spread) < 0.0
+    )
+    return bool(spearman_bad or spread_bad)

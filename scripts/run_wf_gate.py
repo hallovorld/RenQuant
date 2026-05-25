@@ -1072,6 +1072,7 @@ def run_trade_monotonicity_gate(
     min_n_per_regime: int = 30,
     min_spearman: float = 0.02,
     min_top_bottom_spread: float = 0.0,
+    small_n_inversion_min_n: int = 10,
     allow_pass_open: bool = False,
 ) -> dict:
     """Evaluate trade score monotonicity from persisted round-trip ledgers."""
@@ -1096,6 +1097,7 @@ def run_trade_monotonicity_gate(
             min_n_per_regime=min_n_per_regime,
             min_spearman=min_spearman,
             min_top_bottom_spread=min_top_bottom_spread,
+            small_n_inversion_min_n=small_n_inversion_min_n,
             allow_pass_open=allow_pass_open,
         )
         payload = {
@@ -1128,6 +1130,7 @@ def run_trade_monotonicity_gate(
         "min_n_per_regime": int(min_n_per_regime),
         "min_spearman": float(min_spearman),
         "min_top_bottom_spread": float(min_top_bottom_spread),
+        "small_n_inversion_min_n": int(small_n_inversion_min_n),
         "allow_pass_open": bool(allow_pass_open),
     }
 

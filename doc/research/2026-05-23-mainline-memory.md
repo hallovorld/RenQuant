@@ -2844,6 +2844,14 @@ entire pipeline end-to-end:
   panel-conviction XS exit, QP soft-sell, horizon contract, WF config parity,
   and QP μ-contract tests passed (`139 passed`; plus targeted attribution
   tests `24 passed`).
+- WF trade monotonicity now fails small-sample inversions even when a caller
+  explicitly allows pass-open diagnostic mode. If a regime has `n>=10` closed
+  trades and either Spearman or top-bottom spread is negative, the gate stamps
+  `small-sample score inversion` instead of hiding behind `n<30`. This matches
+  the latest trace: BULL_CALM has only 16 trades, but rank/μ/ER are already
+  inverted and must block acceptance. Validation:
+  `test_trade_monotonicity_gate`, `test_wf_gate_cli_contract`, and
+  `test_promote_wf_gate` passed (`69 passed`).
 
 ## Stop Conditions
 
@@ -2874,6 +2882,8 @@ Stop and fix before reporting performance if any of these happen:
   mixing ER/μ horizons.
 - BULL_CALM model-driven soft exits can fire before the 60d panel thesis
   horizon because the current regime relabeled away from BULL_CALM.
+- WF trade monotonicity sees `n>=10` but score ordering is inverted and still
+  passes because the regime is below the full `min_n_per_regime` threshold.
 - A metric is not labeled as event-level, annual-net, short-window style, or
   acceptance-grade WF.
 

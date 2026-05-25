@@ -59,16 +59,28 @@ def test_trade_monotonicity_fails_closed_for_tiny_regimes_by_default() -> None:
         min_n_per_regime=30,
     )
     assert report.passed is False
-    assert "insufficient per-regime trade evidence" in report.reason
+    assert "small-sample score inversion" in report.reason
     assert report.regimes[0]["eligible"] is False
+    assert report.regimes[0]["small_n_inversion"] is True
 
 
-def test_trade_monotonicity_pass_open_is_explicit_diagnostic_only() -> None:
+def test_trade_monotonicity_pass_open_is_explicit_diagnostic_only_for_non_inverted_tiny_sample() -> None:
     report = evaluate_trade_monotonicity(
-        _round_trips(inverted=True, n=10),
+        _round_trips(inverted=False, n=10),
         min_n_per_regime=30,
         allow_pass_open=True,
     )
     assert report.passed is True
     assert "pass-open" in report.reason
     assert report.regimes[0]["eligible"] is False
+
+
+def test_trade_monotonicity_pass_open_still_fails_small_n_inversion() -> None:
+    report = evaluate_trade_monotonicity(
+        _round_trips(inverted=True, n=10),
+        min_n_per_regime=30,
+        allow_pass_open=True,
+    )
+    assert report.passed is False
+    assert "small-sample score inversion" in report.reason
+    assert report.regimes[0]["detail"].startswith("failed_small_n_inversion")

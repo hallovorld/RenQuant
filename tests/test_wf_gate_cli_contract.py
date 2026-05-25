@@ -165,8 +165,32 @@ def test_wf_trade_monotonicity_fails_closed_when_regime_sample_is_tiny(tmp_path)
     monotonicity = mod.run_trade_monotonicity_gate(wf_result)
 
     assert monotonicity["passed"] is False
-    assert "insufficient per-regime trade evidence" in monotonicity["reason"]
+    assert "small-sample score inversion" in monotonicity["reason"]
     assert monotonicity["allow_pass_open"] is False
+    assert monotonicity["small_n_inversion_min_n"] == 10
+
+
+def test_wf_trade_monotonicity_pass_open_still_blocks_tiny_inversion(tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    rt = tmp_path / "tiny_inverted.round_trips.csv"
+    pd.DataFrame({
+        "status": ["closed"] * 10,
+        "entry_regime": ["BULL_CALM"] * 10,
+        "entry_rank_score": list(range(10)),
+        "pnl_pct": list(reversed([i / 100 for i in range(10)])),
+        "net_pnl_after_tax": list(reversed([i * 10 for i in range(10)])),
+    }).to_csv(rt, index=False)
+    wf_result = {"cuts": [{"trace_paths": {"round_trips_csv": str(rt)}}]}
+
+    monotonicity = mod.run_trade_monotonicity_gate(
+        wf_result,
+        allow_pass_open=True,
+    )
+
+    assert monotonicity["passed"] is False
+    assert "small-sample score inversion" in monotonicity["reason"]
+    assert monotonicity["allow_pass_open"] is True
 
 
 def test_wf_trade_monotonicity_checks_qp_driver_scores(tmp_path) -> None:
