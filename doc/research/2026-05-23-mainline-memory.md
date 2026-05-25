@@ -3099,6 +3099,11 @@ decision-path bugs:
   bear/choppy thresholds. Active live config no longer relies on hidden
   `kernel.regime` defaults for those detector knobs, so future default drift
   cannot silently relabel regimes.
+- Dormant/future LEAN `ExecutionBackend` now uses the same fail-closed
+  confirmed-fill contract: missing or rejected LEAN order tickets raise instead
+  of returning synthetic `Fill` objects. This prevents a future
+  `ExecutionPipeline` consolidation from reintroducing the unconfirmed-fill
+  state-mutation bug.
 
 Validation:
 
@@ -3122,6 +3127,8 @@ Validation:
   and QP admission neighborhoods after the active/golden regime config sync.
 - `44 passed`: panel-conviction, min-hold, sell attribution, and trade-event
   neighborhoods confirming BULL_CALM soft-exit/stop metadata remains wired.
+- `48 passed`: LEAN backend, shared execution-pipeline, and execution-backend
+  neighborhoods after confirmed-ticket enforcement in `LeanBackend`.
 
 ## Stop Conditions
 

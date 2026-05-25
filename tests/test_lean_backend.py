@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -116,22 +117,33 @@ class MockAlgo:
 
     # ── Order placement (records + applies fill at last close) ──
 
-    def MarketOrder(self, sym: str, quantity: int) -> None:
+    def MarketOrder(self, sym: str, quantity: int):
         self.order_log.append(("MarketOrder", sym, quantity))
         price = self._securities[sym].price
         # quantity < 0 means sell, > 0 means buy
         pos = self._positions.setdefault(sym, _MockPosition())
         pos.quantity += quantity
         self._cash -= quantity * price  # debit on buy, credit on sell
+        return SimpleNamespace(
+            Status="Filled",
+            QuantityFilled=abs(quantity),
+            AverageFillPrice=price,
+        )
 
-    def Liquidate(self, sym: str) -> None:
+    def Liquidate(self, sym: str):
         self.order_log.append(("Liquidate", sym))
         pos = self._positions.get(sym)
         if pos is None or pos.quantity == 0:
-            return
+            return SimpleNamespace(Status="Invalid", QuantityFilled=0)
         price = self._securities[sym].price
+        filled = abs(pos.quantity)
         self._cash += pos.quantity * price
         pos.quantity = 0.0
+        return SimpleNamespace(
+            Status="Filled",
+            QuantityFilled=filled,
+            AverageFillPrice=price,
+        )
 
     def SetHoldings(self, sym: str, target_pct: float) -> None:
         self.order_log.append(("SetHoldings", sym, target_pct))
@@ -263,6 +275,46 @@ class TestLeanBackendOrderPlacement:
         )
         with pytest.raises(ValueError, match="no position"):
             b.place_market_order(intent)
+
+    def test_missing_ticket_does_not_become_fill(self):
+        class NullTicketAlgo(MockAlgo):
+            def MarketOrder(self, sym: str, quantity: int):
+                self.order_log.append(("MarketOrder", sym, quantity))
+                return None
+
+        a = NullTicketAlgo()
+        a.set_price("AAPL", 100.0)
+        b = LeanBackend(a)
+        intent = OrderIntent(
+            ticker="AAPL", side=OrderSide.BUY, shares=100,
+            target_pct=0.10, today=pd.Timestamp("2025-01-02"),
+            reason="x", exit_type=None,
+        )
+
+        with pytest.raises(RuntimeError, match="missing order ticket"):
+            b.place_market_order(intent)
+
+        assert b.get_position_quantity("AAPL") == 0.0
+
+    def test_rejected_ticket_does_not_become_fill(self):
+        class RejectingAlgo(MockAlgo):
+            def MarketOrder(self, sym: str, quantity: int):
+                self.order_log.append(("MarketOrder", sym, quantity))
+                return SimpleNamespace(Status="Rejected", QuantityFilled=0)
+
+        a = RejectingAlgo()
+        a.set_price("AAPL", 100.0)
+        b = LeanBackend(a)
+        intent = OrderIntent(
+            ticker="AAPL", side=OrderSide.BUY, shares=100,
+            target_pct=0.10, today=pd.Timestamp("2025-01-02"),
+            reason="x", exit_type=None,
+        )
+
+        with pytest.raises(RuntimeError, match="order not filled"):
+            b.place_market_order(intent)
+
+        assert b.get_position_quantity("AAPL") == 0.0
 
 
 class TestLeanBackendRegressionGuards:

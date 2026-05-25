@@ -28,6 +28,79 @@ from .backend import ExecutionBackend
 from .types import Fill, OrderIntent, OrderSide
 
 
+def _ticket_status_text(ticket: Any) -> str:
+    status = getattr(ticket, "Status", None)
+    return str(status or "").lower()
+
+
+def _ticket_float(ticket: Any, *names: str) -> float | None:
+    for name in names:
+        value = getattr(ticket, name, None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(out):
+            return out
+    return None
+
+
+def _confirmed_fill(
+    ticket: Any,
+    *,
+    ticker: str,
+    requested_qty: float,
+    fallback_price: float,
+) -> tuple[float, float]:
+    """Return confirmed (abs_qty, avg_price) or raise on missing evidence."""
+    requested_abs = abs(float(requested_qty))
+    fallback = float(fallback_price)
+    if ticket is None:
+        raise RuntimeError(f"LeanBackend {ticker}: missing order ticket")
+    if isinstance(ticket, (list, tuple)):
+        total_qty = 0.0
+        total_value = 0.0
+        for item in ticket:
+            qty, price = _confirmed_fill(
+                item,
+                ticker=ticker,
+                requested_qty=requested_abs,
+                fallback_price=fallback,
+            )
+            total_qty += qty
+            total_value += qty * price
+        if total_qty <= 0.0:
+            raise RuntimeError(f"LeanBackend {ticker}: no filled quantity")
+        return total_qty, total_value / total_qty
+
+    status = _ticket_status_text(ticket)
+    if any(token in status for token in ("reject", "cancel", "invalid", "error")):
+        raise RuntimeError(f"LeanBackend {ticker}: order not filled ({status})")
+    qty = _ticket_float(
+        ticket,
+        "QuantityFilled",
+        "AbsoluteQuantityFilled",
+        "FilledQuantity",
+    )
+    price = _ticket_float(
+        ticket,
+        "AverageFillPrice",
+        "AvgFillPrice",
+        "FillPrice",
+        "Price",
+    )
+    if qty is not None and abs(qty) > 0.0:
+        return abs(qty), price or fallback
+    if "filled" in status:
+        return requested_abs, price or fallback
+    raise RuntimeError(f"LeanBackend {ticker}: order not filled ({status or 'unknown'})")
+
+
 class LeanBackend(ExecutionBackend):
     """Proxy over ``QCAlgorithm`` for the LEAN backtest / paper path.
 
@@ -54,10 +127,16 @@ class LeanBackend(ExecutionBackend):
 
         if intent.side == OrderSide.BUY:
             shares = int(intent.shares)  # type: ignore[arg-type]
-            algo.MarketOrder(sym, shares)
+            ticket = algo.MarketOrder(sym, shares)
+            filled_qty, fill_price = _confirmed_fill(
+                ticket,
+                ticker=intent.ticker,
+                requested_qty=shares,
+                fallback_price=price,
+            )
             return Fill(
                 ticker=intent.ticker, side=OrderSide.BUY,
-                shares=shares, price=price, fees=0.0,
+                shares=int(filled_qty), price=fill_price, fees=0.0,
                 today=intent.today,
             )
 
@@ -70,7 +149,7 @@ class LeanBackend(ExecutionBackend):
             )
         if intent.is_full_liquidate:
             shares = int(current)
-            algo.Liquidate(sym)
+            ticket = algo.Liquidate(sym)
         else:
             requested = int(intent.shares)  # type: ignore[arg-type]
             if requested > current:
@@ -79,10 +158,16 @@ class LeanBackend(ExecutionBackend):
                     f"> held {current}"
                 )
             shares = requested
-            algo.MarketOrder(sym, -shares)
+            ticket = algo.MarketOrder(sym, -shares)
+        filled_qty, fill_price = _confirmed_fill(
+            ticket,
+            ticker=intent.ticker,
+            requested_qty=shares,
+            fallback_price=price,
+        )
         return Fill(
             ticker=intent.ticker, side=OrderSide.SELL,
-            shares=shares, price=price, fees=0.0,
+            shares=int(filled_qty), price=fill_price, fees=0.0,
             today=intent.today,
         )
 
