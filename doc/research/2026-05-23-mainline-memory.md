@@ -2350,6 +2350,13 @@ Operational conclusion:
   `qp_sigma_contract_block`. Validation: QP Grinold-Kahn/integration/static
   contract tests passed (`34 passed`) and broader QP admission/sector/
   correlation/joint/backend tests passed (`106 passed`).
+- Follow-up execution-boundary bug found: `scripts/production_runner.py` was a
+  standalone alpha158 scorer with an `--execute` path that submitted Alpaca
+  paper orders directly, bypassing `live.runner`, `InferencePipeline`, QP
+  admission, risk gates, and decision-trace persistence. Direct execution is
+  now fail-closed by default before artifact load; the script remains available
+  for dry-run/research scoring. Validation: production-runner guard plus
+  sim/live/LEAN adapter parity tests passed (`12 passed`).
 
 ## Stop Conditions
 

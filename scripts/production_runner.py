@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Standalone production runner for the new alpha158+fund+XGB model.
+"""Deprecated standalone scorer for the alpha158+fund+XGB experiment.
 
 End-to-end pipeline:
   1. Load production artifact (panel-ltr-prod-alpha158-fund-fwd60d.json)
@@ -8,8 +8,11 @@ End-to-end pipeline:
   4. Apply z-score normalization using stored stats
   5. XGB inference → cross-sectional scores
   6. Build top-decile portfolio (long-only, 29 stocks, equal-weight)
-  7. (Optional) Execute via Alpaca paper API with --execute flag
-  8. Log picks to data/production_runs/{date}.json for tracking
+  7. Log picks to data/production_runs/{date}.json for tracking
+
+Direct execution is intentionally disabled by default. Live/paper trading must
+go through ``python -m live.runner`` so decisions share InferencePipeline, QP
+admission, risk gates, and decision_trace DB with sim/LEAN.
 
 Usage:
     # Dry run, just show picks:
@@ -235,10 +238,23 @@ def main():
                    default=str(REPO / "backtesting" / "renquant_104"))
     p.add_argument("--date", help="YYYY-MM-DD; default = latest available")
     p.add_argument("--execute", action="store_true",
-                   help="Actually submit orders (only with --broker alpaca-paper)")
+                   help="Deprecated direct execution path; disabled by default")
+    p.add_argument("--allow-legacy-direct-execution", action="store_true",
+                   help=argparse.SUPPRESS)
     p.add_argument("--broker", choices=["alpaca-paper", "dry-run"], default="dry-run")
     p.add_argument("--capital", type=float, default=10000.0)
     args = p.parse_args()
+
+    if args.execute and (
+        not args.allow_legacy_direct_execution
+        or os.getenv("RENQUANT_ALLOW_LEGACY_DIRECT_EXECUTION") != "1"
+    ):
+        p.error(
+            "--execute is disabled for scripts/production_runner.py because it "
+            "bypasses live.runner, InferencePipeline, QP admission, risk gates, "
+            "and decision_trace DB. Use: python -m live.runner --strategy "
+            "renquant_104 --broker alpaca-paper --once"
+        )
 
     art = load_artifact(Path(args.artifact))
     universe = get_universe(Path(args.strategy_dir))
