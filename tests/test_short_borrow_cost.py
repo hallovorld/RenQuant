@@ -9,7 +9,7 @@ Tests pin:
 1. No charge when no shorts open
 2. ETB charge = |short_value| × 0.005 / 252 per bar
 3. HTB charge = |short_value| × 0.05 / 252 per bar
-4. Missing-ticker fail-open (assume ETB)
+4. Missing-ticker charges conservative missing/HTB rate
 5. Rate overridable via config
 6. Cash NaN guard
 """
@@ -81,15 +81,27 @@ class TestDailyBorrowCharge:
         actual = before - adapter._cash
         assert abs(actual - expected) < 1e-6
 
-    def test_missing_ticker_fails_open_etb(self):
-        """If ticker absent from borrow_status, treat as ETB (fail-open)"""
+    def test_missing_ticker_charges_conservative_rate(self):
+        """If ticker absent from borrow_status, charge HTB/missing rate."""
         adapter = _mk_adapter(
             holdings={"NEW": SimpleNamespace(shares=-100, entry_price=50.0)},
-            borrow_status={},  # empty → fail-open
+            borrow_status={},
         )
         before = adapter._cash
         adapter._charge_daily_borrow(today_ts=pd.Timestamp("2024-01-15"))
-        expected = 100 * 50.0 * 0.005 / 252.0  # ETB rate
+        expected = 100 * 50.0 * 0.05 / 252.0
+        actual = before - adapter._cash
+        assert abs(actual - expected) < 1e-6
+
+    def test_missing_ticker_rate_override(self):
+        adapter = _mk_adapter(
+            holdings={"NEW": SimpleNamespace(shares=-100, entry_price=50.0)},
+            borrow_status={},
+            config={"long_short": {"borrow_rate_missing": 0.12}},
+        )
+        before = adapter._cash
+        adapter._charge_daily_borrow(today_ts=pd.Timestamp("2024-01-15"))
+        expected = 100 * 50.0 * 0.12 / 252.0
         actual = before - adapter._cash
         assert abs(actual - expected) < 1e-6
 
@@ -103,6 +115,25 @@ class TestDailyBorrowCharge:
         before = adapter._cash
         adapter._charge_daily_borrow(today_ts=pd.Timestamp("2024-01-15"))
         expected = 100 * 100.0 * 0.02 / 252.0
+        actual = before - adapter._cash
+        assert abs(actual - expected) < 1e-6
+
+    def test_configured_borrow_status_path_is_used(self, tmp_path):
+        status_path = tmp_path / "borrow.json"
+        status_path.write_text(json.dumps({
+            "results": {"AAPL": {"easy_to_borrow": False, "shortable": True}},
+        }))
+        adapter = _mk_adapter(
+            holdings={"AAPL": SimpleNamespace(shares=-100, entry_price=100.0)},
+            borrow_status=None,
+            config={"long_short": {"borrow_status_path": str(status_path)}},
+        )
+        delattr(adapter, "_borrow_status_cache")
+
+        before = adapter._cash
+        adapter._charge_daily_borrow(today_ts=pd.Timestamp("2024-01-15"))
+
+        expected = 100 * 100.0 * 0.05 / 252.0
         actual = before - adapter._cash
         assert abs(actual - expected) < 1e-6
 

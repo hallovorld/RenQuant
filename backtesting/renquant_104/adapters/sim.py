@@ -2252,11 +2252,18 @@ class SimAdapter:
             holdings = getattr(self, "holdings", None)
         if not holdings:
             return
-        # Lazy-load borrow status once
+        # Rates from config or defaults
+        cfg = getattr(self, "_config", None)
+        if cfg is None:
+            cfg = getattr(self, "_strategy_config", {}) or {}
+        ls_cfg = cfg.get("long_short", {}) or {}
+        # Lazy-load borrow status once. Use the same configured metadata path
+        # as ShortCandidateSelectionTask; a hard-coded path here makes sim
+        # costs drift from candidate admission.
         if not hasattr(self, "_borrow_status_cache"):
             import json as _json  # noqa: PLC0415
             from pathlib import Path  # noqa: PLC0415
-            p = Path("data/alpaca_borrow_status.json")
+            p = Path(ls_cfg.get("borrow_status_path", "data/alpaca_borrow_status.json"))
             try:
                 self._borrow_status_cache = (
                     _json.loads(p.read_text()).get("results", {})
@@ -2265,13 +2272,9 @@ class SimAdapter:
             except Exception:
                 self._borrow_status_cache = {}
         bs = self._borrow_status_cache
-        # Rates from config or defaults
-        cfg = getattr(self, "_config", None)
-        if cfg is None:
-            cfg = getattr(self, "_strategy_config", {}) or {}
-        ls_cfg = cfg.get("long_short", {}) or {}
         rate_etb = float(ls_cfg.get("borrow_rate_etb", 0.005))
         rate_htb = float(ls_cfg.get("borrow_rate_htb", 0.05))
+        rate_missing = float(ls_cfg.get("borrow_rate_missing", rate_htb))
         total_charge = 0.0
         for ticker, hs in holdings.items():
             shares = float(getattr(hs, "shares", 0.0) or 0.0)
@@ -2286,9 +2289,14 @@ class SimAdapter:
             if not math.isfinite(price) or price <= 0:
                 continue
             short_value = abs(shares) * price
-            info = bs.get(ticker, {})
-            etb = info.get("easy_to_borrow", True)  # fail-open: assume ETB
-            rate = rate_etb if etb else rate_htb
+            info = bs.get(ticker)
+            if not isinstance(info, dict) or info.get("easy_to_borrow") is None:
+                # Unknown borrow status is not free evidence. Charge the
+                # conservative missing/HTB rate so long-short sims do not
+                # overstate APY by assuming cheap borrow on unverified names.
+                rate = rate_missing
+            else:
+                rate = rate_etb if bool(info.get("easy_to_borrow")) else rate_htb
             daily_cost = short_value * rate / 252.0
             if math.isfinite(daily_cost) and daily_cost > 0:
                 total_charge += daily_cost
