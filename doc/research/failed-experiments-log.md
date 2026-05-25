@@ -8,6 +8,135 @@ Per CLAUDE.md principle 5.7. Every failed experiment is recorded here with: hypo
 
 ---
 
+## 2026-05-25 Feature-space staged XGB strict WF — FAIL on BULL_CALM alpha conversion
+
+**Hypothesis.** The 172-feature, feature-space-aligned panel-LTR XGBoost
+staged model (`codex_featspace_20260523-211211`) might fix the older static
+feature-space/calibrator mismatch and convert positive IC into tradeable alpha
+after the decision tree and QP.
+
+**Method.** Strict WF gate on the matching 40-row same-recipe manifest:
+
+```bash
+OMP_NUM_THREADS=14 MKL_NUM_THREADS=14 OPENBLAS_NUM_THREADS=14 \
+.venv/bin/python scripts/run_wf_gate.py \
+  --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json \
+  --strategy-config artifacts/diagnostics/wf_eval_configs/base_featspace_scopefixed_covered_20260523.json \
+  --derive-config-from-prod \
+  --strict \
+  --jobs 3
+```
+
+Trace used for trade forensics:
+`backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260525T165251Z`.
+
+**Result.**
+
+```
+WF verdict: FAIL
+Cut Sharpes: +0.924, +0.726, -0.120
+Mean Sharpe: +0.510
+SPY mean Sharpe: +1.081
+Beat SPY Sharpe: 1/3
+Beat SPY APY: 0/3
+
+Sanity real IC: +0.0320
+Aligned real IC: +0.0484
+Time-shift placebo IC: +0.0368
+Required placebo threshold: < +0.0242
+Sanity verdict: FAIL
+
+BULL_CALM trade monotonicity: FAIL
+Failed fields: entry_rank_score, entry_mu, entry_expected_return
+All WF buys: JointPortfolioQPJob in BULL_CALM
+```
+
+Trade atlas:
+`doc/research/2026-05-25-bullcalm-trade-atlas.md`.
+
+Closed BULL_CALM alpha trades:
+
+```
+closed trades: 38
+gross P/L: +$16.19k
+estimated tax: +$14.23k
+net after tax: +$1.96k
+same-capital SPY P/L: +$3.49k
+active net after tax: -$1.53k
+gross win rate: 57.9%
+active win rate: 42.1%
+median hold: 60d
+```
+
+Entry quality:
+
+```
+rank-score Q5 active net: -$4.53k, active win rate 0.0%
+sigma Q5 active net:     -$6.06k, active win rate 14.3%
+stop_loss bucket active: -$8.36k
+single_day_loss active:  -$1.94k
+```
+
+**Verdict.** FAIL. This model/config is not promotable. The failure is not tax
+cash debit and not missing trade attribution. The model shows weak positive
+global IC, but BULL_CALM entry ordering is not reliable and the highest score /
+highest sigma buckets lose active dollars versus SPY after the decision tree.
+
+**Implication.**
+
+- BULL_CALM model buys must remain fail-closed unless regime sanity IC and
+  trade monotonicity both pass.
+- QP cannot be treated as the alpha source. It sizes the admitted universe; if
+  BULL_CALM admission is wrong, QP faithfully sizes bad alpha.
+- Exit tuning alone is insufficient: stop-loss and single-day-loss are large
+  negative buckets, but entry rank and sigma ladders are also inverted.
+- Benchmark sleeve/core-beta experiments must be recorded separately and must
+  never be counted as alpha improvement.
+
+**Status.** Rejected. Do not rerun this exact strict WF just to rediscover the
+same result. Re-open only if the training objective, feature set, or admission
+contract changes specifically to improve BULL_CALM regime evidence.
+
+**Reproduction.**
+
+```bash
+.venv/bin/python scripts/analyze_wf_trade_forensics.py \
+  backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260525T165251Z \
+  --config backtesting/renquant_104/artifacts/diagnostics/wf_eval_configs/base_featspace_scopefixed_covered_20260523.prod_semantic.json \
+  --ohlcv-root data/ohlcv
+```
+
+---
+
+## 2026-05-25 Benchmark sleeve post-parity rerun — ABORTED before conclusion
+
+**Why it was started.** A sim/live parity bug was fixed: sim could omit the
+benchmark sleeve ticker from `ctx.prices`, making `BenchmarkSleeveTask` no-op
+only in research while live/LEAN would trade it.
+
+**Why it was stopped.** This rerun validates beta/core sleeve behavior, not the
+current P0 root cause: BULL_CALM model alpha fails regime evidence and active
+trade economics. It was killed before completion so it would not consume time
+or confuse the mainline.
+
+**Partial command.**
+
+```bash
+.venv/bin/python scripts/run_wf_gate.py \
+  --artifact backtesting/renquant_104/artifacts/prod/panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json \
+  --strategy-config artifacts/diagnostics/wf_eval_configs/base_featspace_scopefixed_covered_20260523.benchmark_sleeve_core100_fund15.json \
+  --derive-config-from-prod \
+  --preserve-experiment-overrides \
+  --skip-sanity \
+  --jobs 3 \
+  --trace-dir backtesting/renquant_104/artifacts/diagnostics/wf_trade_traces/20260525T_sleeve_after_sim_price_fix
+```
+
+**Status.** No conclusion. Do not cite. Restart only after the alpha path is
+decided, and label it explicitly as beta/core overlay validation.
+
+---
+
 ## 2026-05-18 Insider trading retest (roadmap #6) — NEGATIVE on 169-feat panel
 
 **Hypothesis.** Lakonishok-Lee 2001 (RFS) "Are Insider Trades Informative?" + Cohen-Malloy-Pomorski 2012 (JF) "Decoding Inside Information": executive Form 4 buys/sells contain alpha, especially when corrected for routine vs information-driven trades. Add 3 insider features to the 169-feat baseline and measure val_IC delta. E22 originally found neutral effect, but on a contaminated panel (side-config bug overwrote prod artifact); retest after fix.
