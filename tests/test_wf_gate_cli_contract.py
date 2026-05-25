@@ -169,6 +169,78 @@ def test_wf_trade_monotonicity_fails_closed_when_regime_sample_is_tiny(tmp_path)
     assert monotonicity["allow_pass_open"] is False
 
 
+def test_wf_trade_monotonicity_checks_qp_driver_scores(tmp_path) -> None:
+    """AUDIT REGRESSION GUARD: QP μ cannot bypass rank-only WF evidence."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    n = 60
+    rt = tmp_path / "qp_driver.round_trips.csv"
+    pd.DataFrame({
+        "status": ["closed"] * n,
+        "entry_regime": ["BULL_CALM"] * n,
+        "entry_rank_score": [i / n for i in range(n)],
+        "entry_mu": list(reversed([i / n for i in range(n)])),
+        "entry_expected_return": list(reversed([i / n for i in range(n)])),
+        "pnl_pct": [i / 100 for i in range(n)],
+        "net_pnl_after_tax": [i * 10 for i in range(n)],
+    }).to_csv(rt, index=False)
+    wf_result = {"cuts": [{"trace_paths": {"round_trips_csv": str(rt)}}]}
+
+    monotonicity = mod.run_trade_monotonicity_gate(
+        wf_result,
+        score_cols=["entry_rank_score", "entry_mu", "entry_expected_return"],
+    )
+
+    assert monotonicity["passed"] is False
+    assert monotonicity["score_reports"]["entry_rank_score"]["passed"] is True
+    assert monotonicity["score_reports"]["entry_mu"]["passed"] is False
+    assert monotonicity["score_reports"]["entry_expected_return"]["passed"] is False
+
+
+def test_wf_qp_config_requires_mu_and_expected_return_monotonicity() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    cols = mod._trade_monotonicity_score_cols_from_config({
+        "rotation": {
+            "joint_actions": {
+                "enabled": True,
+                "solver": "qp",
+                "qp_mu_contract": "strict",
+            },
+        },
+    })
+
+    assert cols == ["entry_rank_score", "entry_mu", "entry_expected_return"]
+
+
+def test_wf_trade_monotonicity_recovers_expected_return_from_snapshot(tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    n = 60
+    rt = tmp_path / "legacy_snapshot.round_trips.csv"
+    pd.DataFrame({
+        "status": ["closed"] * n,
+        "entry_regime": ["BULL_CALM"] * n,
+        "entry_expected_return": [None] * n,
+        "entry_score_snapshot": [
+            {"expected_return": i / n, "mu": i / n}
+            for i in range(n)
+        ],
+        "pnl_pct": [i / 100 for i in range(n)],
+        "net_pnl_after_tax": [i * 10 for i in range(n)],
+    }).to_csv(rt, index=False)
+    wf_result = {"cuts": [{"trace_paths": {"round_trips_csv": str(rt)}}]}
+
+    monotonicity = mod.run_trade_monotonicity_gate(
+        wf_result,
+        score_cols=["entry_expected_return"],
+    )
+
+    assert monotonicity["passed"] is True
+    assert monotonicity["score_reports"]["entry_expected_return"]["pooled"]["n"] == n
+
+
 def test_wf_gate_overall_pass_requires_regime_sanity() -> None:
     """Global sanity IC is insufficient when regime buckets fail."""
     sys.path.insert(0, str(REPO / "scripts"))

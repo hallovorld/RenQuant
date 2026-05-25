@@ -33,6 +33,7 @@ References:
 """
 from __future__ import annotations
 import argparse
+import ast
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
@@ -1067,6 +1068,7 @@ def run_walk_forward(
 def run_trade_monotonicity_gate(
     wf_result: dict,
     *,
+    score_cols: list[str] | tuple[str, ...] | None = None,
     min_n_per_regime: int = 30,
     min_spearman: float = 0.02,
     min_top_bottom_spread: float = 0.0,
@@ -1082,23 +1084,82 @@ def run_trade_monotonicity_gate(
         }
     if not frames:
         return {"passed": False, "reason": "no round-trip ledgers found"}
-    report = evaluate_trade_monotonicity(
-        pd.concat(frames, ignore_index=True),
-        min_n_per_regime=min_n_per_regime,
-        min_spearman=min_spearman,
-        min_top_bottom_spread=min_top_bottom_spread,
-        allow_pass_open=allow_pass_open,
+    df = pd.concat(frames, ignore_index=True)
+    cols = _normalize_trade_monotonicity_score_cols(score_cols)
+    reports: dict[str, dict] = {}
+    failed: list[str] = []
+    primary_report = None
+    for col in cols:
+        report = evaluate_trade_monotonicity(
+            df,
+            score_col=col,
+            min_n_per_regime=min_n_per_regime,
+            min_spearman=min_spearman,
+            min_top_bottom_spread=min_top_bottom_spread,
+            allow_pass_open=allow_pass_open,
+        )
+        payload = {
+            "passed": bool(report.passed),
+            "reason": report.reason,
+            "pooled": report.pooled,
+            "regimes": report.regimes,
+        }
+        reports[col] = payload
+        if primary_report is None:
+            primary_report = report
+        if not report.passed:
+            failed.append(col)
+
+    assert primary_report is not None
+    passed = not failed
+    reason = (
+        f"score monotonicity passed for {', '.join(cols)}"
+        if passed
+        else "score monotonicity failed for "
+        + ", ".join(f"{c}: {reports[c]['reason']}" for c in failed)
     )
     return {
-        "passed": bool(report.passed),
-        "reason": report.reason,
-        "pooled": report.pooled,
-        "regimes": report.regimes,
+        "passed": bool(passed),
+        "reason": reason,
+        "pooled": primary_report.pooled,
+        "regimes": primary_report.regimes,
+        "score_cols": cols,
+        "score_reports": reports,
         "min_n_per_regime": int(min_n_per_regime),
         "min_spearman": float(min_spearman),
         "min_top_bottom_spread": float(min_top_bottom_spread),
         "allow_pass_open": bool(allow_pass_open),
     }
+
+
+def _normalize_trade_monotonicity_score_cols(
+    score_cols: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    raw = list(score_cols or ["entry_rank_score"])
+    out: list[str] = []
+    for col in raw:
+        c = str(col or "").strip()
+        if c and c not in out:
+            out.append(c)
+    return out or ["entry_rank_score"]
+
+
+def _trade_monotonicity_score_cols_from_config(config: dict) -> list[str]:
+    """Scores whose economic ordering must survive into trade P/L.
+
+    Rank gates decide buy eligibility, while QP consumes μ-like expected
+    returns. WF acceptance must therefore validate both surfaces whenever QP
+    is the sizing/rebalance layer.
+    """
+    cols = ["entry_rank_score"]
+    joint = ((config.get("rotation") or {}).get("joint_actions") or {})
+    qp_enabled = bool(joint.get("enabled")) and str(joint.get("solver", "")).lower() == "qp"
+    strict_qp = str(joint.get("qp_mu_contract", "strict")).lower() in {
+        "strict", "hard", "error", "enforce",
+    }
+    if qp_enabled and strict_qp:
+        cols.extend(["entry_mu", "entry_expected_return"])
+    return _normalize_trade_monotonicity_score_cols(cols)
 
 
 def run_trade_contract_gate(wf_result: dict, config: dict) -> dict:
@@ -1155,9 +1216,58 @@ def _load_round_trip_frames(wf_result: dict) -> tuple[list[pd.DataFrame], list[s
         except pd.errors.EmptyDataError:
             continue
         if not frame.empty:
+            frame = _recover_round_trip_entry_scores(frame)
             frame["_wf_cut"] = f"{cut.get('start')}_to_{cut.get('end')}"
             frames.append(frame)
     return frames, missing
+
+
+def _recover_round_trip_entry_scores(frame: pd.DataFrame) -> pd.DataFrame:
+    """Recover score columns from entry_score_snapshot for legacy traces."""
+    if "entry_score_snapshot" not in frame.columns:
+        return frame
+    mappings = {
+        "rank_score": "entry_rank_score",
+        "panel_score": "entry_panel_score",
+        "rs_score": "entry_rs_score",
+        "mu": "entry_mu",
+        "mu_horizon_days": "entry_mu_horizon_days",
+        "sigma": "entry_sigma",
+        "kelly_target_pct": "entry_kelly_target_pct",
+        "expected_return": "entry_expected_return",
+        "expected_return_horizon_days": "entry_expected_return_horizon_days",
+    }
+    out = frame.copy()
+    snapshots = out["entry_score_snapshot"].map(_parse_score_snapshot)
+    for snap_key, col in mappings.items():
+        recovered = snapshots.map(
+            lambda snap, key=snap_key: snap.get(key) if isinstance(snap, dict) else None
+        )
+        if col not in out.columns:
+            out[col] = recovered
+            continue
+        mask = out[col].isna()
+        if bool(mask.any()):
+            out.loc[mask, col] = recovered[mask]
+    return out
+
+
+def _parse_score_snapshot(value) -> dict | None:
+    if isinstance(value, dict):
+        return value
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _benchmark_sleeve_entry_mask(df: pd.DataFrame) -> pd.Series:
@@ -2129,6 +2239,7 @@ def main():
             trade_contract_result = run_trade_contract_gate(wf_result, gate_config)
             trade_gate_result = run_trade_monotonicity_gate(
                 wf_result,
+                score_cols=_trade_monotonicity_score_cols_from_config(gate_config),
                 allow_pass_open=args.allow_pass_open_trade_monotonicity,
             )
             alpha_economics_result = run_alpha_economics_gate(wf_result)
