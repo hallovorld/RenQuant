@@ -244,6 +244,47 @@ class TestModelAsOf:
         cal = loader.calibrator_as_of("2024-01-15")
         assert cal.metadata["scorer_artifact_fingerprint"] == scorer_fp
 
+    def test_calibrator_as_of_accepts_stable_model_content_fingerprint(self, tmp_path):
+        """JSON folds stay bound when mutable WF metadata changes file bytes."""
+        from kernel.panel_pipeline.panel_scorer import model_content_sha256
+        from kernel.walk_forward import WalkForwardModelLoader
+        from training_panel.global_calibrator import GlobalPanelCalibration
+        import numpy as np
+
+        scorer_payload = {
+            "kind": "panel_ltr_xgboost",
+            "feature_cols": ["f0"],
+            "feature_means": [0.0],
+            "feature_stds": [1.0],
+            "booster_raw_json": "{\"learner\":{}}",
+            "metadata": {"wf_gate_metadata": {"passed": True}},
+        }
+        scorer_fp = model_content_sha256(scorer_payload)
+        scorer_path = tmp_path / "panel-ltr.json"
+        scorer_path.write_text(json.dumps(scorer_payload, sort_keys=True))
+
+        cal_path = tmp_path / "cal-A.json"
+        GlobalPanelCalibration(
+            prob_x=np.array([-1.0, 1.0]),
+            prob_y=np.array([0.25, 0.75]),
+            er_x=np.array([-1.0, 1.0]),
+            er_y=np.array([-0.01, 0.01]),
+            metadata={"scorer_model_content_fingerprint": scorer_fp},
+        ).save(cal_path)
+        rows = [
+            _row(
+                "2024-01-01T00:00:00",
+                "2024-01-02T03:00:00",
+                str(scorer_path),
+                calibrator_uri=str(cal_path),
+            ),
+        ]
+        path = _make_manifest(tmp_path, rows)
+        loader = WalkForwardModelLoader(path)
+
+        cal = loader.calibrator_as_of("2024-01-15")
+        assert cal.metadata["scorer_model_content_fingerprint"] == scorer_fp
+
     def test_calibrator_as_of_rejects_foreign_calibrator(self, tmp_path):
         """The loader must not expose a calibrator fitted to another scorer."""
         from kernel.walk_forward import WalkForwardModelLoader

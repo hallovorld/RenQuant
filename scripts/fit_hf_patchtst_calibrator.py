@@ -37,7 +37,8 @@ def _resolve(raw_path: str | None, default: Path) -> Path:
 def _artifact_fingerprint(path: Path, metadata: dict | None = None) -> str:
     meta = metadata or {}
     return (
-        meta.get("artifact_fingerprint")
+        meta.get("model_content_fingerprint")
+        or meta.get("artifact_fingerprint")
         or meta.get("artifact_sha256")
         or meta.get("model_fingerprint")
         or meta.get("fingerprint")
@@ -263,6 +264,7 @@ def main() -> None:
     metadata = {
         "scorer_artifact": str(scorer_path),
         "scorer_artifact_fingerprint": scorer_fp,
+        "scorer_model_content_fingerprint": scorer_fp,
         "scorer_val_ic": scorer.metadata.get("val_ic"),
         "scorer_oos_mean_ic": ic_label,
         "scorer_oos_mean_ic_vs_er_label": ic_er,

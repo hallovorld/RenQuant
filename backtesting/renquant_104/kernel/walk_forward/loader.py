@@ -149,25 +149,51 @@ def _fingerprints_match(expected: str | None, actual: str | None) -> bool:
     )
 
 
-def _scorer_fingerprint_from_payload(payload: dict) -> str | None:
-    """Return the scorer artifact identity stamped in a local artifact JSON."""
+def _scorer_fingerprints_from_payload(payload: dict) -> list[str]:
+    """Return stable scorer identities stamped in a local artifact JSON."""
+    from kernel.panel_pipeline.panel_scorer import model_content_sha256  # noqa: PLC0415
+
+    out: list[str] = []
+    try:
+        out.append(model_content_sha256(payload))
+    except Exception:
+        pass
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     for source in (payload, metadata):
-        for key in ("artifact_fingerprint", "artifact_sha256", "model_fingerprint", "fingerprint"):
+        for key in (
+            "model_content_fingerprint",
+            "artifact_fingerprint",
+            "artifact_sha256",
+            "model_fingerprint",
+            "fingerprint",
+        ):
             value = source.get(key)
             if value:
-                return str(value)
-    return None
+                out.append(str(value))
+    return list(dict.fromkeys(out))
 
 
-def _calibrator_scorer_fingerprint(calibrator: object) -> str | None:
+def _calibrator_scorer_fingerprints(calibrator: object) -> list[str]:
     """Return the scorer identity a calibrator declares it was fitted against."""
     metadata = getattr(calibrator, "metadata", {}) or {}
-    for key in ("scorer_artifact_fingerprint", "scorer_artifact_sha256"):
+    out: list[str] = []
+    for key in (
+        "scorer_model_content_fingerprint",
+        "scorer_artifact_fingerprint",
+        "scorer_artifact_sha256",
+    ):
         value = metadata.get(key)
         if value:
-            return str(value)
-    return None
+            out.append(str(value))
+    return out
+
+
+def _any_fingerprints_match(expected: list[str], actual: list[str]) -> bool:
+    return any(
+        _fingerprints_match(exp, act)
+        for exp in expected
+        for act in actual
+    )
 
 
 class WalkForwardModelLoader:
@@ -329,18 +355,18 @@ class WalkForwardModelLoader:
         p = Path(uri)
         return p if p.is_absolute() else self._manifest_path.parent / p
 
-    def _scorer_fingerprint_for_entry(self, entry: RetrainEntry) -> str | None:
-        """Read the selected fold's local scorer identity without loading it."""
+    def _scorer_fingerprints_for_entry(self, entry: RetrainEntry) -> list[str]:
+        """Read the selected fold's local scorer identities without loading it."""
         resolved = self._resolve_uri(entry.artifact_uri)
         if not isinstance(resolved, Path) or not resolved.exists():
-            return None
+            return []
+        out: list[str] = []
         if resolved.suffix == ".json":
             payload = json.loads(resolved.read_text())
             if isinstance(payload, dict):
-                stamped = _scorer_fingerprint_from_payload(payload)
-                if stamped:
-                    return stamped
-        return "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
+                out.extend(_scorer_fingerprints_from_payload(payload))
+        out.append("sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest())
+        return list(dict.fromkeys(out))
 
     def _assert_calibrator_matches_entry(
         self,
@@ -349,21 +375,21 @@ class WalkForwardModelLoader:
         calibrator_path: "str | Path",
     ) -> None:
         """Enforce the WF per-fold scorer/calibrator fingerprint contract."""
-        scorer_fp = self._scorer_fingerprint_for_entry(entry)
-        cal_fp = _calibrator_scorer_fingerprint(calibrator)
-        if not scorer_fp or not cal_fp:
+        scorer_fps = self._scorer_fingerprints_for_entry(entry)
+        cal_fps = _calibrator_scorer_fingerprints(calibrator)
+        if not scorer_fps or not cal_fps:
             raise ValueError(
                 "WalkForwardModelLoader: missing scorer/calibrator fingerprint "
                 f"for cutoff={entry.cutoff_date.date()} scorer={entry.artifact_uri} "
-                f"calibrator={calibrator_path}. scorer={scorer_fp!r} "
-                f"calibrator={cal_fp!r}."
+                f"calibrator={calibrator_path}. scorer={scorer_fps!r} "
+                f"calibrator={cal_fps!r}."
             )
-        if not _fingerprints_match(cal_fp, scorer_fp):
+        if not _any_fingerprints_match(cal_fps, scorer_fps):
             raise ValueError(
                 "WalkForwardModelLoader: calibrator/scorer fingerprint mismatch "
                 f"for cutoff={entry.cutoff_date.date()} scorer={entry.artifact_uri} "
-                f"calibrator={calibrator_path}. calibrator={cal_fp} "
-                f"scorer={scorer_fp}."
+                f"calibrator={calibrator_path}. calibrator={cal_fps} "
+                f"scorer={scorer_fps}."
             )
 
     @property

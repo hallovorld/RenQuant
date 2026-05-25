@@ -33,6 +33,20 @@ def test_scorer_fingerprint_prefers_artifact_identity(tmp_path: Path) -> None:
     assert mod._scorer_fingerprint(scorer_path, scorer) == "sha256:artifact123"
 
 
+def test_scorer_fingerprint_prefers_model_content_identity(tmp_path: Path) -> None:
+    mod = _load_module()
+    scorer_path = tmp_path / "panel-ltr.json"
+    scorer_path.write_text("artifact bytes")
+    scorer = SimpleNamespace(
+        metadata={
+            "model_content_fingerprint": "sha256:modelcontent123",
+            "artifact_fingerprint": "sha256:artifact123",
+        }
+    )
+
+    assert mod._scorer_fingerprint(scorer_path, scorer) == "sha256:modelcontent123"
+
+
 def test_scorer_fingerprint_ignores_config_identity(tmp_path: Path) -> None:
     """Config fingerprints are shared recipe IDs, not scorer-file identity."""
     mod = _load_module()

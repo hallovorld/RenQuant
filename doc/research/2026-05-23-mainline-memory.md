@@ -2237,6 +2237,38 @@ Operational conclusion:
   silently. This is validation support only; the stop-anchor A/B result above
   is rejected.
 
+## 2026-05-24 Scorer/Calibrator Identity Hardening
+
+- Bug found during code review: scorer/calibrator binding used the full JSON
+  file hash as the primary identity. WF gate and acceptance tools append
+  mutable metadata such as `wf_gate_metadata` after training, so the same
+  predictive model can acquire a new file hash without changing predictions.
+  That makes strict calibration pairing unstable and can also hide whether a
+  mismatch is a real foreign calibrator or a post-hoc audit stamp.
+- Fix direction: split identity into two fields. `artifact_sha256` /
+  `artifact_fingerprint` remain full-file tamper/audit hashes. New
+  `model_content_fingerprint` hashes only prediction-relevant scorer content
+  and explicitly ignores config fingerprints, training metrics, labels, and
+  WF metadata. Runtime matching accepts the stable model-content identity and
+  legacy file hashes, but never accepts `config_fingerprint` alone.
+- Calibrator writers now stamp `scorer_model_content_fingerprint`, and both
+  live `LoadGlobalCalibrationTask` and `WalkForwardModelLoader` compare
+  identity lists fail-closed. Regression tests cover metadata-only mutation,
+  model-content matching, legacy file-hash matching, and rejection of
+  config-only calibrators.
+- Validation: targeted contract and pipeline tests passed
+  (`60 passed, 2 skipped` for scorer/calibrator contracts, `24 passed` for
+  sim walk-forward calibration dispatch, `37 passed` for panel scoring jobs),
+  and modified files compile. Direct inspection still shows current
+  prod/staging calibrators do not match their scorers, and their WF stamps are
+  failed. That is expected for old artifacts; do not promote or trade from
+  them. The next accepted training run must produce a scorer and calibrator
+  with matching model-content identity and passing WF/SPY/regime/sanity gates.
+- This fix does not improve APY/Sharpe by itself. It removes a trust failure
+  that could make downstream APY/Sharpe diagnostics meaningless. The active
+  alpha root remains selected-entry score inversion in BULL_CALM/QP_BUY,
+  especially entry `mu` showing negative Spearman to 60d forward excess.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

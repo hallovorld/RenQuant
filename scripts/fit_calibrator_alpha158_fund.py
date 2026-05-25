@@ -21,6 +21,7 @@ import numpy as np, pandas as pd, xgboost as xgb
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 from kernel.panel_pipeline.feature_transform import transform_feature_frame  # noqa: E402
+from kernel.panel_pipeline.panel_scorer import model_content_sha256  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("fit-calib-direct")
@@ -34,9 +35,15 @@ def _resolve_repo_path(raw_path: str | None, default: Path) -> Path:
 
 
 def _artifact_fingerprint(path: Path, payload: dict) -> str:
-    """Return scorer-file identity, never a shared strategy config identity."""
+    """Return stable scorer identity, never shared strategy config identity."""
+    try:
+        content_fingerprint = model_content_sha256(payload)
+    except ValueError:
+        content_fingerprint = None
     return (
-        payload.get("artifact_fingerprint")
+        payload.get("model_content_fingerprint")
+        or content_fingerprint
+        or payload.get("artifact_fingerprint")
         or payload.get("artifact_sha256")
         or payload.get("model_fingerprint")
         or payload.get("fingerprint")
@@ -459,6 +466,7 @@ def main():
     # Stamp the source artifact path so we can detect drift later
     metadata["scorer_artifact"] = str(art_path)
     metadata["scorer_artifact_fingerprint"] = fingerprint
+    metadata["scorer_model_content_fingerprint"] = fingerprint
     metadata.update(_calibrator_score_metric_metadata(
         label_ics=ics,
         er_ics=er_ics,

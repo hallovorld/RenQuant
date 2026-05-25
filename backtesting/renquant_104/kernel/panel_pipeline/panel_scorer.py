@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
@@ -31,11 +31,95 @@ import xgboost as xgb
 
 
 def artifact_sha256(path: str | Path) -> str:
-    """Stable artifact identity used to bind scorers to calibrators."""
+    """Full-file artifact hash for tamper/audit checks.
+
+    Do not use this as the scorer/calibrator pairing identity: acceptance
+    tools append mutable metadata such as ``wf_gate_metadata`` after training,
+    which changes the file bytes without changing the model.
+    """
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def stamp_artifact_metadata(metadata: dict | None, path: str | Path) -> dict:
+_MUTABLE_ARTIFACT_KEYS = {
+    "metadata",
+    "wf_gate_metadata",
+    "artifact_path",
+    "artifact_sha256",
+    "artifact_fingerprint",
+    "model_content_fingerprint",
+    "config_fingerprint",
+    "config_fingerprint_fields",
+    "trained_date",
+    "training_notes",
+    "label",
+    "label_col",
+    "lookahead_days",
+    "panel_shape",
+    "n_train_rows",
+    "training_train_ic",
+    "val_mean_ic",
+    "val_median_ic",
+    "test_mean_ic",
+    "test_median_ic",
+    "oos_mean_ic",
+}
+
+_PREDICTIVE_CONTENT_HINTS = {
+    "booster_raw_json",
+    "feature_cols",
+    "feature_columns",
+    "feature_means",
+    "feature_stds",
+    "feature_norm_kind",
+    "feature_norm_kinds",
+    "coef",
+    "intercept",
+    "clip_sigma",
+    "state_dict",
+    "config_dict",
+    "model_bytes",
+    "model_bytes_b64",
+}
+
+
+def model_content_sha256(payload: dict[str, Any]) -> str:
+    """Stable scorer identity over immutable model content.
+
+    Panel artifacts are JSON files that later acquire operational metadata
+    (WF gate results, file hashes, paths). Calibrators are fitted to the model
+    score distribution, not to that mutable metadata. Hash only the content
+    that changes the scorer's predictions.
+    """
+    content = {
+        k: v for k, v in payload.items()
+        if k not in _MUTABLE_ARTIFACT_KEYS
+    }
+    if not any(k in content for k in _PREDICTIVE_CONTENT_HINTS):
+        raise ValueError("payload has no recognizable scorer prediction content")
+    blob = json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def model_content_sha256_from_path(path: str | Path) -> str:
+    """Return model-content hash for JSON artifacts, full hash otherwise."""
+    p = Path(path)
+    try:
+        payload = json.loads(p.read_text())
+    except Exception:
+        return artifact_sha256(p)
+    if not isinstance(payload, dict):
+        return artifact_sha256(p)
+    try:
+        return model_content_sha256(payload)
+    except ValueError:
+        return artifact_sha256(p)
+
+
+def stamp_artifact_metadata(
+    metadata: dict | None,
+    path: str | Path,
+    payload: dict[str, Any] | None = None,
+) -> dict:
     """Return metadata with path + fingerprint fields for runtime contracts."""
     meta = dict(metadata or {})
     nested = meta.get("metadata")
@@ -43,9 +127,18 @@ def stamp_artifact_metadata(metadata: dict | None, path: str | Path) -> dict:
         for key, value in nested.items():
             meta.setdefault(key, value)
     sha = artifact_sha256(path)
+    try:
+        content_sha = (
+            model_content_sha256(payload)
+            if isinstance(payload, dict)
+            else model_content_sha256_from_path(path)
+        )
+    except ValueError:
+        content_sha = sha
     meta.setdefault("artifact_path", str(Path(path)))
     meta.setdefault("artifact_sha256", sha)
     meta.setdefault("artifact_fingerprint", sha)
+    meta.setdefault("model_content_fingerprint", content_sha)
     return meta
 
 
@@ -136,6 +229,7 @@ class PanelScorer:
         meta = stamp_artifact_metadata(
             {k: v for k, v in payload.items() if k != "booster_raw_json"},
             path,
+            payload=payload,
         )
         return cls(
             booster=booster,

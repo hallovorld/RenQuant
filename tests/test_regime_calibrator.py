@@ -11,6 +11,7 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -258,6 +259,31 @@ class TestLoadRegimeCalibrators:
         LoadGlobalCalibrationTask().run(ctx)
         assert ctx._global_calibrator is not None
 
+    def test_strict_contract_accepts_model_content_fingerprint(self, tmp_path):
+        """WF metadata can change file bytes; calibration binds to model content."""
+        from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        model_fp = "sha256:modelcontent111111"
+        cal = GlobalPanelCalibration(
+            prob_x=np.array([-1.0, 1.0]),
+            prob_y=np.array([0.25, 0.75]),
+            er_x=np.array([-1.0, 1.0]),
+            er_y=np.array([-0.01, 0.01]),
+            metadata={"n_rows": 500, "scorer_model_content_fingerprint": model_fp},
+        )
+        cal.save(art_dir / "panel-rank-calibration.json")
+
+        ctx = self._make_ctx(tmp_path, regime_enabled=False)
+        ctx._panel_scorer = SimpleNamespace(
+            metadata={
+                "model_content_fingerprint": model_fp,
+                "artifact_fingerprint": "sha256:filehash-after-wf-gate",
+            }
+        )
+        LoadGlobalCalibrationTask().run(ctx)
+        assert ctx._global_calibrator is not None
+
     def test_strict_contract_rejects_preloaded_foreign_calibrator(self, tmp_path):
         """WF-preloaded calibrators must obey the same scorer binding."""
         from kernel.panel_pipeline.job_panel_scoring import LoadGlobalCalibrationTask
@@ -327,7 +353,39 @@ class TestLoadRegimeCalibrators:
 
         assert meta["config_fingerprint"] == "sha256:config000000000000"
         assert meta["artifact_fingerprint"] == meta["artifact_sha256"]
+        assert meta["model_content_fingerprint"] == meta["artifact_sha256"]
         assert meta["artifact_fingerprint"] != meta["config_fingerprint"]
+
+    def test_model_content_fingerprint_ignores_mutable_wf_metadata(self, tmp_path):
+        """WF gate stamping must not invalidate the scorer/calibrator binding."""
+        from kernel.panel_pipeline.panel_scorer import (
+            model_content_sha256,
+            stamp_artifact_metadata,
+        )
+        payload = {
+            "kind": "panel_ltr_xgboost",
+            "feature_cols": ["f0"],
+            "feature_means": [0.0],
+            "feature_stds": [1.0],
+            "booster_raw_json": "{\"learner\":{}}",
+            "config_fingerprint": "sha256:shared-config",
+        }
+        mutated = {
+            **payload,
+            "metadata": {"wf_gate_metadata": {"passed": True}},
+            "artifact_sha256": "sha256:old-file-hash",
+            "artifact_fingerprint": "sha256:old-file-hash",
+        }
+        p1 = tmp_path / "scorer-a.json"
+        p2 = tmp_path / "scorer-b.json"
+        p1.write_text(json.dumps(payload, sort_keys=True))
+        p2.write_text(json.dumps(mutated, sort_keys=True))
+
+        assert model_content_sha256(payload) == model_content_sha256(mutated)
+        meta1 = stamp_artifact_metadata({}, p1, payload=payload)
+        meta2 = stamp_artifact_metadata({}, p2, payload=mutated)
+        assert meta1["artifact_sha256"] != meta2["artifact_sha256"]
+        assert meta1["model_content_fingerprint"] == meta2["model_content_fingerprint"]
 
 
 # ── ApplyGlobalCalibrationTask dispatch ──────────────────────────────────────

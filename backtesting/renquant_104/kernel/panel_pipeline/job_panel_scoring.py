@@ -1262,21 +1262,30 @@ class RegimeModelAdmissionTask(Task):
 
 # ── Global calibration (Item #2 — optional) ───────────────────────────────────
 
-def _fingerprint_value(metadata: dict | None) -> str | None:
-    """Return scorer-file identity, never a shared config fingerprint."""
+def _fingerprint_values(metadata: dict | None) -> list[str]:
+    """Return scorer identities, never shared strategy config fingerprints.
+
+    New artifacts bind calibrators by ``model_content_fingerprint`` because
+    acceptance metadata is mutable. Legacy artifacts used full-file hashes, so
+    keep those as fallback identities until the old folds are re-stamped.
+    """
     if not metadata:
-        return None
+        return []
+    out: list[str] = []
     for key in (
+        "model_content_fingerprint",
+        "scorer_model_content_fingerprint",
         "artifact_fingerprint",
         "scorer_artifact_fingerprint",
         "model_fingerprint",
         "artifact_sha256",
+        "scorer_artifact_sha256",
         "fingerprint",
     ):
         value = metadata.get(key)
         if value:
-            return str(value)
-    return None
+            out.append(str(value))
+    return out
 
 
 def _normalize_fingerprint(value: str | None) -> str:
@@ -1296,6 +1305,14 @@ def _fingerprints_match(expected: str | None, actual: str | None) -> bool:
         len(exp) >= min_prefix
         and len(act) >= min_prefix
         and (exp.startswith(act) or act.startswith(exp))
+    )
+
+
+def _any_fingerprints_match(expected: list[str], actual: list[str]) -> bool:
+    return any(
+        _fingerprints_match(exp, act)
+        for exp in expected
+        for act in actual
     )
 
 
@@ -1328,20 +1345,20 @@ def _assert_calibrator_matches_scorer(
         )
         return
 
-    active_fp = _fingerprint_value(scorer_meta)
-    cal_fp = _fingerprint_value(getattr(calibrator, "metadata", {}) or {})
-    if not active_fp or not cal_fp:
+    active_fps = _fingerprint_values(scorer_meta)
+    cal_fps = _fingerprint_values(getattr(calibrator, "metadata", {}) or {})
+    if not active_fps or not cal_fps:
         raise ValueError(
             "LoadGlobalCalibrationTask contract fail: missing scorer/calibrator "
-            f"fingerprint for {artifact_path}. active={active_fp!r} "
-            f"calibrator={cal_fp!r}. Refit the calibrator with "
-            "scorer_artifact_fingerprint stamped."
+            f"fingerprint for {artifact_path}. active={active_fps!r} "
+            f"calibrator={cal_fps!r}. Refit the calibrator with "
+            "scorer_model_content_fingerprint stamped."
         )
-    if not _fingerprints_match(cal_fp, active_fp):
+    if not _any_fingerprints_match(cal_fps, active_fps):
         raise ValueError(
             "LoadGlobalCalibrationTask contract fail: calibrator/scorer "
-            f"fingerprint mismatch for {artifact_path}. calibrator={cal_fp} "
-            f"active_scorer={active_fp}. Refusing to map panel_score to "
+            f"fingerprint mismatch for {artifact_path}. calibrator={cal_fps} "
+            f"active_scorer={active_fps}. Refusing to map panel_score to "
             "rank_score/mu with a foreign calibration surface."
         )
 
