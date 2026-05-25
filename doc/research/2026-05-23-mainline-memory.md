@@ -166,6 +166,18 @@ Make RenQuant 104 scientifically trustworthy end to end:
     placebo `+0.0282` versus required `< +0.0135`.
   - Conclusion: QP solver prefilter is necessary architecture hardening, but
     it is not the alpha-conversion fix.
+- QP admission now supports an optional calibrated expected-return floor:
+  `min_expected_return` / `min_expected_return_by_regime` for new buys and
+  `topup_min_expected_return` for held top-ups. It checks
+  `expected_return` first and falls back to `mu` only when the explicit field is
+  missing. Missing or below-floor values stamp
+  `qp_admission_expected_return`.
+  - This is not enabled in production yet. It is an A/B hook for the observed
+    failure where BULL_CALM candidates clear rank/panel floors but do not carry
+    enough expected excess return after turnover, stops, and tax.
+  - Targeted tests passed:
+    `tests/test_qp_admission_gate.py tests/test_qp_integration.py
+    tests/test_joint_qp_task.py` (`74 passed`).
 - Latest repair bundle after sidecar audits:
   - `run_wf_gate.py` now marks any run with skipped WF/sanity/trade/parity
     gates or disabled trade traces as `diagnostic_only`; skipped gates can no
@@ -1092,6 +1104,16 @@ only:
   selected with validation labels reaching into the later period.
 - Raw signal control is weak: the 5-date diagnostic has pooled IC `-0.016`,
   after-tax Sharpe `+0.08`, and shuffle control Sharpe `+1.17`.
+- Do not confuse the 13-day PatchTST style win with acceptance. The
+  `2026-05-06` to `2026-05-22` run had `+3.21%` return and Sharpe `+6.61`,
+  but it had only 7 buys, 0 sells, no tax realization, and all P/L was
+  mark-to-market open exposure. It is useful for style only.
+- One older shadow path really was contaminated: `artifacts/shadow/
+  panel-rank-calibration.shadow.json` is byte-identical to the production XGB
+  calibrator (`sha256:1baaf489cae3175fa03a13336d35b4875da57bc4ea2186d8cd1bcd2c02ae9990`).
+  Any PatchTST result using that calibrator is invalid because PatchTST raw
+  scores were interpreted on an XGB score scale. Current shadow configs must
+  use the PatchTST-specific calibrator and strict scorer identity checks.
 
 Conclusion: keep PatchTST as shadow/router research. Do not promote until a
 PatchTST-specific walk-forward manifest exists with causal per-cut artifacts,

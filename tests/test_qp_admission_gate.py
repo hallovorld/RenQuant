@@ -118,6 +118,69 @@ def test_qp_allows_prequalified_candidate_with_available_slot() -> None:
     assert reason is None
 
 
+def test_qp_blocks_new_candidate_below_expected_return_floor() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.039,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "qp_admission_expected_return"
+
+
+def test_qp_blocks_missing_expected_return_when_floor_configured() -> None:
+    source = SimpleNamespace(ticker="AAA", rank_score=0.61, panel_score=0.10)
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "qp_admission_expected_return"
+
+
+def test_qp_expected_return_floor_uses_regime_override() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.025,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+    env["cfg"]["qp_admission_gate"]["min_expected_return_by_regime"] = {
+        "CHOPPY": 0.02,
+    }
+
+    reason = _qp_buy_admission_block_reason(
+        SimpleNamespace(config={}, regime="CHOPPY"),
+        env,
+        "AAA",
+    )
+
+    assert reason is None
+
+
+def test_qp_held_topup_uses_topup_expected_return_floor() -> None:
+    holding = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.025,
+    )
+    env = _env(holdings={"AAA": holding}, source=None)
+    env["cfg"]["qp_admission_gate"]["min_expected_return"] = 0.04
+    env["cfg"]["qp_admission_gate"]["topup_min_expected_return"] = 0.03
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "qp_admission_expected_return"
+
+
 def _ctx_for_source_map(**overrides):
     cfg = {
         "rotation": {

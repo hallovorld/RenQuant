@@ -1524,6 +1524,15 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         if not math.isfinite(sigma) or sigma > cap:
             return "qp_admission_sigma"
 
+    er_floor = _qp_admission_expected_return_floor(gate, is_held, getattr(ctx, "regime", None))
+    if er_floor is not None:
+        floor = float(er_floor)
+        expected_return = _source_float(source, "expected_return")
+        if not math.isfinite(expected_return):
+            expected_return = _source_float(source, "mu")
+        if not math.isfinite(expected_return) or expected_return < floor:
+            return "qp_admission_expected_return"
+
     return None
 
 
@@ -1532,6 +1541,31 @@ def _qp_admission_gate_value(gate: dict, key: str, regime: str | None):
     if isinstance(by_regime, dict) and regime in by_regime:
         return by_regime[regime]
     return gate.get(key)
+
+
+def _qp_admission_expected_return_floor(
+    gate: dict,
+    is_held: bool,
+    regime: str | None,
+):
+    keys = (
+        (
+            "topup_min_expected_return",
+            "topup_min_expected_excess_return",
+            "min_expected_return",
+            "min_expected_excess_return",
+        )
+        if is_held else
+        (
+            "min_expected_return",
+            "min_expected_excess_return",
+        )
+    )
+    for key in keys:
+        value = _qp_admission_gate_value(gate, key, regime)
+        if value is not None:
+            return value
+    return None
 
 
 def _source_float(source: object, name: str) -> float:
