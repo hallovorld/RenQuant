@@ -72,6 +72,8 @@ _PREDICTIVE_CONTENT_HINTS = {
     "feature_stds",
     "feature_norm_kind",
     "feature_norm_kinds",
+    "feature_raw_clip_low",
+    "feature_raw_clip_high",
     "coef",
     "intercept",
     "clip_sigma",

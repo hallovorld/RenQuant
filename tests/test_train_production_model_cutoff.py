@@ -266,6 +266,8 @@ class TestStrictContractStamp:
             booster, ["feat_a"], np.zeros(1), np.ones(1), train,
             cutoff_date=None,
             side_label=None,
+            feature_raw_clip_low=[-1.0],
+            feature_raw_clip_high=[1.0],
             label_used="fwd_60d_excess",
             train_ic=0.10,
             cv_result=cv_result,
@@ -280,6 +282,10 @@ class TestStrictContractStamp:
         assert art["cv_embargo_days"] == 60
         assert art["training_train_ic"] == pytest.approx(0.10)
         assert art["eval_ic"] == pytest.approx(0.046)
+        assert art["feature_raw_clip_low"] == [-1.0]
+        assert art["feature_raw_clip_high"] == [1.0]
+        assert art["feature_raw_clip_fit_split"] == "train"
+        assert art["feature_preprocess_version"] == 2
 
     def test_walk_forward_cv_purges_embargo_before_validation(self, monkeypatch):
         panel = _make_synthetic_panel(n_tickers=8, n_dates=90, start="2023-01-02")

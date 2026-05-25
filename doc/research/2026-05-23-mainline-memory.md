@@ -2652,6 +2652,15 @@ entire pipeline end-to-end:
   `net_pnl_after_tax == gross_pnl - tax`, non-negative tax, no positive tax on
   losing sells, and tax not exceeding positive gross P&L. Validation:
   persistence plus universe/adapter parity tests passed (`88 passed`).
+- New raw alpha158 preprocessing replay bug found by sidecar audit and fixed:
+  training winsorized raw alpha features at train-only 0.1%/99.9% quantiles
+  before z-scoring, but the sidecar/artifact stored only means/stds, so
+  runtime raw scoring could not replay the same transform. The alpha158 stats
+  sidecar now stores raw clip bounds and preprocessing version; production
+  artifacts propagate bounds aligned to `feature_cols`; raw runtime transform
+  applies raw clip before z-score, while panel-space scoring remains unchanged.
+  Validation: feature-transform, production-artifact, lookahead, train/infer,
+  and WF-gate contract tests passed (`86 passed`).
 
 ## Stop Conditions
 

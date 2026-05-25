@@ -16,16 +16,39 @@ import numpy as np
 import pandas as pd
 
 
-def _stats_from_metadata(metadata: dict, n: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def _optional_float_array(values: object, n: int) -> np.ndarray:
+    if not isinstance(values, list) or len(values) != n:
+        return np.full(n, np.nan, dtype=float)
+    out: list[float] = []
+    for v in values:
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            out.append(float("nan"))
+    return np.asarray(out, dtype=float)
+
+
+def _stats_from_metadata(
+    metadata: dict,
+    n: int,
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, np.ndarray]:
     means = metadata.get("feature_means")
     stds = metadata.get("feature_stds")
     kinds = metadata.get("feature_norm_kind") or metadata.get("feature_norm_kinds")
     if means is None or stds is None or len(means) != n or len(stds) != n:
-        return np.zeros(n, dtype=float), np.ones(n, dtype=float), ["identity"] * n
+        return (
+            np.zeros(n, dtype=float),
+            np.ones(n, dtype=float),
+            ["identity"] * n,
+            np.full(n, np.nan, dtype=float),
+            np.full(n, np.nan, dtype=float),
+        )
     out_kinds = list(kinds) if isinstance(kinds, list) and len(kinds) == n else ["legacy_full_z"] * n
     sd = np.asarray(stds, dtype=float)
     sd = np.where(np.isfinite(sd) & (np.abs(sd) > 1e-12), sd, 1.0)
-    return np.asarray(means, dtype=float), sd, out_kinds
+    raw_low = _optional_float_array(metadata.get("feature_raw_clip_low"), n)
+    raw_high = _optional_float_array(metadata.get("feature_raw_clip_high"), n)
+    return np.asarray(means, dtype=float), sd, out_kinds, raw_low, raw_high
 
 
 def transform_feature_frame(
@@ -41,11 +64,18 @@ def transform_feature_frame(
     n = len(feature_cols)
     if n == 0:
         return X.astype(float)
-    means, stds, kinds = _stats_from_metadata(metadata or {}, n)
+    means, stds, kinds, raw_low, raw_high = _stats_from_metadata(metadata or {}, n)
     values = X.values.astype(float)
 
     if source_space == "raw":
         mask = np.ones(n, dtype=bool)
+        clip_mask = mask & np.isfinite(raw_low) & np.isfinite(raw_high) & (raw_high > raw_low)
+        if clip_mask.any():
+            values[:, clip_mask] = np.clip(
+                values[:, clip_mask],
+                raw_low[clip_mask],
+                raw_high[clip_mask],
+            )
     elif source_space == "panel":
         mask = np.asarray([k in {"robust_z", "panel_raw_z"} for k in kinds], dtype=bool)
     else:

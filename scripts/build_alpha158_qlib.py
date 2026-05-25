@@ -298,6 +298,29 @@ def build_features_for_ticker(ticker: str, ohlcv_dir: Path) -> pd.DataFrame | No
     return feat_df
 
 
+def fit_raw_clip_bounds(
+    panel: pd.DataFrame,
+    feat_cols: list[str],
+    train_mask: pd.Series,
+    *,
+    low_q: float = 0.001,
+    high_q: float = 0.999,
+) -> tuple[dict[str, float | None], dict[str, float | None]]:
+    """Fit train-only raw winsor bounds for replay at inference time."""
+    lows: dict[str, float | None] = {}
+    highs: dict[str, float | None] = {}
+    for c in feat_cols:
+        train_col = panel.loc[train_mask, c]
+        q_lo, q_hi = train_col.quantile([low_q, high_q])
+        if np.isfinite(q_lo) and np.isfinite(q_hi) and q_hi > q_lo:
+            lows[c] = float(q_lo)
+            highs[c] = float(q_hi)
+        else:
+            lows[c] = None
+            highs[c] = None
+    return lows, highs
+
+
 def _compute_excess_label_frame(
     ticker: str,
     close: pd.Series,
@@ -432,10 +455,11 @@ def main() -> None:
     # 1e16 outlier in VMA/VSTD historically poisoned the column's stats
     # and collapsed normal values to a single constant after z-score.
     panel[feat_cols] = panel[feat_cols].replace([np.inf, -np.inf], np.nan)
+    raw_clip_low, raw_clip_high = fit_raw_clip_bounds(panel, feat_cols, train_mask)
     for c in feat_cols:
-        train_col = panel.loc[train_mask, c]
-        q_lo, q_hi = train_col.quantile([0.001, 0.999])
-        if np.isfinite(q_lo) and np.isfinite(q_hi) and q_hi > q_lo:
+        q_lo = raw_clip_low[c]
+        q_hi = raw_clip_high[c]
+        if q_lo is not None and q_hi is not None:
             panel[c] = panel[c].clip(q_lo, q_hi)
     # Save per-feature train-only means/stds as sidecar for inference-time
     # reuse (PanelLinearScorer.score_raw needs these to normalize raw
@@ -455,6 +479,11 @@ def main() -> None:
         "feature_cols": feat_cols,
         "feature_means": [feature_stats[c]["mean"] for c in feat_cols],
         "feature_stds":  [feature_stats[c]["std"]  for c in feat_cols],
+        "feature_raw_clip_low": [raw_clip_low[c] for c in feat_cols],
+        "feature_raw_clip_high": [raw_clip_high[c] for c in feat_cols],
+        "feature_raw_clip_quantiles": [0.001, 0.999],
+        "feature_raw_clip_fit_split": "train",
+        "feature_preprocess_version": 2,
         "n_train_rows": int(train_mask.sum()),
         "clip_sigma": 5.0,
     }, indent=2, default=str))

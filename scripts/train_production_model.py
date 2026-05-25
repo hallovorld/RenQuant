@@ -190,14 +190,37 @@ def load_and_slice_panel(cutoff_date: Optional[pd.Timestamp],
     return train, feat_cols, label_used
 
 
-def build_normalization(train: pd.DataFrame, feat_cols: list[str]) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def build_normalization(
+    train: pd.DataFrame,
+    feat_cols: list[str],
+) -> tuple[np.ndarray, np.ndarray, list[str], list[float | None], list[float | None]]:
     """Build the inference normalization chain stored in the artifact.
 
     For each feature, (mean, std) such that (raw - mean) / std = normalized value.
     alpha158 cols: from panel z-score stats; fund cols: robust z-score on train period.
     """
     ps = json.loads(Path("data/alpha158_qlib_dataset.stats.json").read_text())
-    alpha_norm = dict(zip(ps["feature_cols"], zip(ps["feature_means"], ps["feature_stds"])))
+    alpha_cols = list(ps["feature_cols"])
+    alpha_lows = ps.get("feature_raw_clip_low") or [None] * len(alpha_cols)
+    alpha_highs = ps.get("feature_raw_clip_high") or [None] * len(alpha_cols)
+    if len(alpha_lows) != len(alpha_cols) or len(alpha_highs) != len(alpha_cols):
+        alpha_lows = [None] * len(alpha_cols)
+        alpha_highs = [None] * len(alpha_cols)
+    alpha_norm = {
+        c: {
+            "mean": m,
+            "std": s,
+            "raw_clip_low": lo,
+            "raw_clip_high": hi,
+        }
+        for c, m, s, lo, hi in zip(
+            alpha_cols,
+            ps["feature_means"],
+            ps["feature_stds"],
+            alpha_lows,
+            alpha_highs,
+        )
+    }
 
     fund_cols = ["earnings_yield","book_to_price","gross_profitability","roe","asset_growth"]
     fund_raw = pd.read_parquet("data/sec_fundamentals_daily.parquet")
@@ -215,27 +238,54 @@ def build_normalization(train: pd.DataFrame, feat_cols: list[str]) -> tuple[np.n
         fund_norm[c] = (med, scale)
 
     feat_means, feat_stds, feat_norm_kind = [], [], []
+    feat_raw_clip_low: list[float | None] = []
+    feat_raw_clip_high: list[float | None] = []
     for c in feat_cols:
         if c in alpha_norm:
-            m, s = alpha_norm[c]
+            rec = alpha_norm[c]
+            m, s = rec["mean"], rec["std"]
             feat_means.append(m); feat_stds.append(s); feat_norm_kind.append("global_z")
+            feat_raw_clip_low.append(rec["raw_clip_low"])
+            feat_raw_clip_high.append(rec["raw_clip_high"])
         elif c in fund_norm:
             m, s = fund_norm[c]
             feat_means.append(m); feat_stds.append(s); feat_norm_kind.append("robust_z")
+            feat_raw_clip_low.append(None)
+            feat_raw_clip_high.append(None)
         else:
             feat_means.append(0.0); feat_stds.append(1.0); feat_norm_kind.append("identity")
+            feat_raw_clip_low.append(None)
+            feat_raw_clip_high.append(None)
     log.info("Normalization chain: %d global_z, %d robust_z, %d identity",
              feat_norm_kind.count("global_z"), feat_norm_kind.count("robust_z"),
              feat_norm_kind.count("identity"))
-    return np.array(feat_means), np.array(feat_stds), feat_norm_kind
+    return (
+        np.array(feat_means),
+        np.array(feat_stds),
+        feat_norm_kind,
+        feat_raw_clip_low,
+        feat_raw_clip_high,
+    )
 
 
-def _feature_meta(mu: np.ndarray, sd: np.ndarray, kind: list[str]) -> dict:
-    return {
+def _feature_meta(
+    mu: np.ndarray,
+    sd: np.ndarray,
+    kind: list[str],
+    raw_clip_low: list[float | None] | None = None,
+    raw_clip_high: list[float | None] | None = None,
+) -> dict:
+    meta = {
         "feature_means": np.asarray(mu, dtype=float).tolist(),
         "feature_stds": np.asarray(sd, dtype=float).tolist(),
         "feature_norm_kind": list(kind),
     }
+    if raw_clip_low is not None and raw_clip_high is not None:
+        meta["feature_raw_clip_low"] = list(raw_clip_low)
+        meta["feature_raw_clip_high"] = list(raw_clip_high)
+        meta["feature_raw_clip_fit_split"] = "train"
+        meta["feature_preprocess_version"] = 2
+    return meta
 
 
 def panel_training_matrix(
@@ -351,7 +401,7 @@ def evaluate_walk_forward_cv(
             )
             continue
 
-        mu, sd, norm_kind = build_normalization(tr, feat_cols)
+        mu, sd, norm_kind, _, _ = build_normalization(tr, feat_cols)
         booster, train_ic = train_xgb(
             tr,
             feat_cols,
@@ -417,6 +467,8 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    side_label: Optional[str],
                    *,
                    feature_norm_kind: list[str] | None = None,
+                   feature_raw_clip_low: list[float | None] | None = None,
+                   feature_raw_clip_high: list[float | None] | None = None,
                    label_used: str = LABEL,
                    train_ic: float | None = None,
                    cv_result: dict | None = None,
@@ -440,7 +492,11 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         "feature_stds":  sd.tolist(),
         "feature_norm_kind": list(feature_norm_kind or ["legacy_full_z"] * len(feat_cols)),
         "feature_source_contract": {
-            "raw": "apply all feature_means/stds before scoring live/sim rows",
+            "raw": (
+                "apply feature_raw_clip_low/high when present, then "
+                "feature_means/stds, fillna, and z-clip before scoring "
+                "live/sim rows"
+            ),
             "panel": "apply only feature_norm_kind entries that are raw in the prebuilt panel",
         },
         "params": PARAMS,
@@ -471,6 +527,13 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                 if cv_result.get("oos_per_fold_ic") else None
             ),
         })
+    if feature_raw_clip_low is not None and feature_raw_clip_high is not None:
+        if len(feature_raw_clip_low) != len(feat_cols) or len(feature_raw_clip_high) != len(feat_cols):
+            raise ValueError("feature_raw_clip_low/high length must match feature_cols")
+        artifact["feature_raw_clip_low"] = list(feature_raw_clip_low)
+        artifact["feature_raw_clip_high"] = list(feature_raw_clip_high)
+        artifact["feature_raw_clip_fit_split"] = "train"
+        artifact["feature_preprocess_version"] = 2
     if cutoff_date is not None:
         artifact["cutoff_date"] = cutoff_date.isoformat()
         artifact["cutoff_embargo_days"] = int(
@@ -516,7 +579,7 @@ def main():
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
         cutoff_embargo_days=args.cutoff_embargo_days,
     )
-    mu, sd, norm_kind = build_normalization(train, feat_cols)
+    mu, sd, norm_kind, raw_clip_low, raw_clip_high = build_normalization(train, feat_cols)
     cv_result = None
     if not args.skip_cv:
         cv_result = evaluate_walk_forward_cv(
@@ -546,6 +609,8 @@ def main():
     artifact = build_artifact(booster, feat_cols, mu, sd, train,
                               cutoff_date, args.side_label,
                               feature_norm_kind=norm_kind,
+                              feature_raw_clip_low=raw_clip_low,
+                              feature_raw_clip_high=raw_clip_high,
                               label_used=label_used,
                               train_ic=train_ic,
                               cv_result=cv_result,
