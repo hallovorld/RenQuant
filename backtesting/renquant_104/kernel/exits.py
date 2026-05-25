@@ -12,6 +12,7 @@ Priority order (highest → lowest):
 from __future__ import annotations
 
 import datetime
+import math
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -693,6 +694,29 @@ def check_model_sell(
     return state, _NO_EXIT
 
 
+def effective_model_sell_min_hold_days(
+    params: dict,
+    state: HoldingState,
+    current_price: float,
+) -> int:
+    """Resolve the configured model-driven sell hold floor.
+
+    ``min_hold_days`` is the base floor. Optional profit/loss floors are
+    stricter soft-exit guards: they only affect model-driven sells and never
+    block path-risk exits that already fired earlier in ``compute_exits``.
+    """
+    base = int(params.get("min_hold_days", 0))
+    try:
+        entry_price = float(state.entry_price)
+        price = float(current_price)
+    except (TypeError, ValueError):
+        return base
+    if entry_price <= 0 or not math.isfinite(price):
+        return base
+    key = "min_hold_profit_days" if price > entry_price else "min_hold_loss_days"
+    return max(base, int(params.get(key, 0) or 0))
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────────
 
 def compute_exits(
@@ -713,6 +737,7 @@ def compute_exits(
       lt_hold_min_gain                — min unrealized gain required for tax gate (default 0.10)
       consecutive_sell_signals        — model sell streak threshold
       min_hold_days                   — model-sell blocked before N days
+      min_hold_profit_days/loss_days  — optional stricter model-sell floors
     """
     # Audit fix E-5 (Round 5, 2026-04-25): pre-fix, a NaN/inf current_price
     # silently corrupted high_watermark via `max(HWM, NaN) = NaN`. Once HWM
@@ -801,7 +826,7 @@ def compute_exits(
             state, _ = check_model_sell(
                 model_action, state,
                 int(params.get("consecutive_sell_signals", 3)),
-                int(params.get("min_hold_days", 0)),
+                effective_model_sell_min_hold_days(params, state, current_price),
                 today,
             )
             return _NO_EXIT, state
@@ -810,7 +835,7 @@ def compute_exits(
     state, sig = check_model_sell(
         model_action, state,
         int(params.get("consecutive_sell_signals", 3)),
-        int(params.get("min_hold_days", 0)),
+        effective_model_sell_min_hold_days(params, state, current_price),
         today,
     )
     return sig, state

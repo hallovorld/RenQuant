@@ -161,6 +161,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   Every class that appends buy orders must explicitly check both `buy_blocked`
   and `skip_buys`; rotation and greedy joint action now suppress buy/rotation
   legs under those gates while preserving sell-only actions where applicable.
+- Profit/loss min-hold wiring fixed 2026-05-25: `min_hold_profit_days` and
+  `min_hold_loss_days` were present in configs but dead in the main exit
+  engine. They now flow through `_build_exit_params()` and only raise the
+  model-driven `model_sell` hold floor via `max(min_hold_days, profit/loss
+  floor)`. Hard path-risk exits (`stop_loss`, trailing stop, SDL, max-hold)
+  remain unaffected.
 - 2026-05-25 contract/audit fixes landed: panel preflight now hard-fails
   full/buy when sentiment feature columns are present but the artifact lacks a
   `sentiment_runtime_gate_contract` while runtime disables sentiment in any
@@ -250,6 +256,16 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_rotation_atomic.py tests/test_benchmark_sleeve.py
     tests/test_qp_admission_gate.py tests/test_joint_qp_task.py`
     (`174 passed`).
+- Latest exit-contract hardening:
+  - `kernel.exits.effective_model_sell_min_hold_days()` resolves
+    profit/loss-specific min-hold floors for model-driven sells.
+  - `pp_inference._build_exit_params()` now threads
+    `min_hold_profit_days`/`min_hold_loss_days` from strategy config.
+  - Targeted tests passed:
+    `tests/test_exit_param_wiring.py tests/test_panel_conviction_xs_exit.py
+    tests/test_panel_conviction_exit.py tests/test_joint_qp_task.py
+    tests/test_sell_gate_b.py tests/test_earnings_blackout_sell.py
+    tests/test_policy_alignment.py` (`440 passed`).
 - `81bd338 fix(renquant104): enforce strict model contracts`
   - Hard-fails buy/full preflight on bad or missing WF/SPY/regime
     IC/calibration/config evidence.

@@ -62,6 +62,8 @@ def _build_exit_params(regime_p: dict, config: dict) -> dict:
         "max_hold_days":             regime_p.get("max_hold_days",             0),
         "consecutive_sell_signals":  int(config.get("consecutive_sell_signals", 3)),
         "min_hold_days":             int(config.get("min_hold_days", 0)),
+        "min_hold_profit_days":      int(config.get("min_hold_profit_days", 0)),
+        "min_hold_loss_days":        int(config.get("min_hold_loss_days", 0)),
         "lt_hold_gate_days":         int(config.get("lt_hold_gate_days", 0)),
         "lt_hold_min_gain":          float(config.get("lt_hold_min_gain", 0.10)),
         # #18 fix: config-driven LT threshold (not hardcoded 365 in compute_exits).

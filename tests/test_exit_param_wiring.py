@@ -15,7 +15,7 @@ STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
-from kernel.exits import HoldingState  # noqa: E402
+from kernel.exits import HoldingState, compute_exits  # noqa: E402
 from kernel.pipeline.context import InferenceContext  # noqa: E402
 from kernel.pipeline.task_sell import EvaluateExitsTask  # noqa: E402
 from kernel.pipeline.pp_inference import _build_exit_params, _make_sell_tctx  # noqa: E402
@@ -53,9 +53,53 @@ def test_build_exit_params_threads_all_regime_exit_knobs():
 
     assert params["consecutive_sell_signals"] == 4
     assert params["min_hold_days"] == 30
+    assert params["min_hold_profit_days"] == 0
+    assert params["min_hold_loss_days"] == 0
     assert params["lt_hold_gate_days"] == 330
     assert params["lt_hold_min_gain"] == 0.12
     assert params["lt_hold_threshold_days"] == 366
+
+
+def test_build_exit_params_threads_profit_loss_min_hold_knobs():
+    params = _build_exit_params(
+        {"max_hold_days": 500},
+        {
+            "min_hold_days": 5,
+            "min_hold_profit_days": 20,
+            "min_hold_loss_days": 15,
+        },
+    )
+
+    assert params["min_hold_days"] == 5
+    assert params["min_hold_profit_days"] == 20
+    assert params["min_hold_loss_days"] == 15
+
+
+def test_model_sell_uses_profit_loss_min_hold_without_blocking_hard_stops():
+    today = dt.date(2026, 5, 22)
+    state = HoldingState(
+        entry_price=100.0,
+        entry_date=today - dt.timedelta(days=10),
+        high_watermark=110.0,
+        sell_streak=2,
+    )
+    params = {
+        "consecutive_sell_signals": 3,
+        "min_hold_days": 5,
+        "min_hold_profit_days": 20,
+        "min_hold_loss_days": 15,
+        "stop_loss_pct": 0.05,
+    }
+
+    sig, updated = compute_exits(110.0, today, "sell", state, params)
+
+    assert not sig.should_exit
+    assert updated.sell_streak == 2
+
+    hard_sig, _ = compute_exits(94.0, today, "sell", updated, params)
+
+    assert hard_sig.should_exit
+    assert hard_sig.exit_type == "stop_loss"
 
 
 def test_make_sell_tctx_anchors_max_hold_to_entry_regime():
