@@ -2615,6 +2615,15 @@ entire pipeline end-to-end:
   broker-held tickers into `UniverseContext`; state-file `position_hwm` remains
   only a fallback for legacy/sim contexts. Validation: universe-held,
   universe-alignment, and daily-e2e loader tests passed (`41 passed`).
+- New regime-admission/QP top-up bug found by sidecar audit and fixed:
+  `RegimeModelAdmissionTask` correctly cleared new candidates when current
+  regime evidence failed, but holdings could still reach QP with refreshed
+  rank/μ/σ and receive positive deltas through the held source map. Failed
+  regime admission now marks all holdings as QP exit-only with the exact
+  `regime_admission:*` reason, the source-map task preserves that marker, and
+  QP constraint/emission guards use the specific reason while still allowing
+  trims/closes. Validation: regime-admission, QP admission, min-share, panel
+  job ordering, and split-job e2e tests passed (`56 passed`).
 
 ## Stop Conditions
 

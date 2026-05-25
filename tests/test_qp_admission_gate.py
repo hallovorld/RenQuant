@@ -125,6 +125,17 @@ def test_qp_blocks_held_topup_when_marked_exit_only() -> None:
     assert reason == "qp_universe_exit_only"
 
 
+def test_qp_exit_only_topup_reports_specific_reason() -> None:
+    holding = SimpleNamespace(rank_score=0.80, panel_score=0.20)
+    env = _env(holdings={"AAA": holding}, source=None)
+    env["exit_only_tickers"] = {"AAA"}
+    env["exit_only_reasons"] = {"AAA": "regime_admission:failed:BULL_CALM"}
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "regime_admission:failed:BULL_CALM"
+
+
 def test_qp_allows_prequalified_candidate_with_available_slot() -> None:
     source = SimpleNamespace(ticker="AAA", rank_score=0.56, panel_score=0.01)
 
@@ -341,6 +352,23 @@ def test_qp_exit_only_guard_caps_upper_at_current_weight() -> None:
     assert ctx._qp_w_upper.tolist() == [0.07, 0.20]
     assert ctx._blocked_by_ticker["HELD"] == "qp_universe_exit_only"
     assert ctx.counters["qp_exit_only_topup_guard"] == 1
+
+
+def test_qp_exit_only_guard_stamps_specific_reason() -> None:
+    ctx = SimpleNamespace(
+        _qp_exit_only_tickers={"HELD"},
+        _qp_exit_only_reasons={"HELD": "regime_admission:failed:BULL_CALM"},
+        _qp_tickers=["HELD"],
+        _qp_w_upper=np.array([0.20]),
+        _qp_w_current=np.array([0.07]),
+        _blocked_by_ticker={},
+        counters={},
+    )
+
+    ApplyExitOnlyTopupGuardTask().run(ctx)
+
+    assert ctx._qp_w_upper.tolist() == [0.07]
+    assert ctx._blocked_by_ticker["HELD"] == "regime_admission:failed:BULL_CALM"
 
 
 def test_qp_solver_universe_excludes_new_candidates_when_slots_are_full() -> None:

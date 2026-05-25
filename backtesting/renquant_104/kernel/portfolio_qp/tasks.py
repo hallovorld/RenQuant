@@ -585,6 +585,7 @@ class ApplyExitOnlyTopupGuardTask(Task):
             return None
         w_upper_arr = np.asarray(w_upper, dtype=float).copy()
         w_current_arr = np.asarray(w_current, dtype=float)
+        reason_map = dict(getattr(ctx, "_qp_exit_only_reasons", {}) or {})
         capped: list[str] = []
         for i, ticker in enumerate(tickers):
             if (
@@ -595,7 +596,9 @@ class ApplyExitOnlyTopupGuardTask(Task):
                 continue
             w_upper_arr[i] = min(float(w_upper_arr[i]), max(float(w_current_arr[i]), 0.0))
             capped.append(ticker)
-            _stamp_qp_ticker_block(ctx, ticker, "qp_universe_exit_only")
+            _stamp_qp_ticker_block(
+                ctx, ticker, reason_map.get(ticker, "qp_universe_exit_only"),
+            )
         ctx._qp_w_upper = w_upper_arr  # noqa: SLF001
         _inc_counter(ctx, "qp_exit_only_topup_guard", len(capped))
 
@@ -1650,7 +1653,10 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
 
     is_held = ticker in env.get("holdings_set", set())
     if is_held and ticker in set(env.get("exit_only_tickers", set()) or set()):
-        return "qp_universe_exit_only"
+        return (
+            (env.get("exit_only_reasons") or {}).get(ticker)
+            or "qp_universe_exit_only"
+        )
     if (
         not is_held
         and bool(gate.get("respect_open_slots", True))
@@ -2132,6 +2138,7 @@ class EmitOrdersFromQPSolutionTask(Task):
                 t for t, _ in (getattr(ctx, "exits", None) or [])
             },
             exit_only_tickers=set(getattr(ctx, "_qp_exit_only_tickers", set()) or set()),
+            exit_only_reasons=dict(getattr(ctx, "_qp_exit_only_reasons", {}) or {}),
             emitted_new_tickers=set(),
         )
 

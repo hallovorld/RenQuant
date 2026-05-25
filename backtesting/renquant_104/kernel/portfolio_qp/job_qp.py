@@ -126,7 +126,9 @@ class _BuildSourceMapTask(Task):
             for c in self._ordered_long_candidates(ctx)
             if getattr(c, "ticker", None)
         }
-        exit_only_tickers: set[str] = set()
+        exit_only_tickers: set[str] = set(
+            getattr(ctx, "_qp_exit_only_tickers", set()) or set()
+        )
         for t, hs in holdings.items():
             if t == sleeve_ticker:
                 continue

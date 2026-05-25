@@ -43,6 +43,7 @@ def _metadata(regime: str = "BULL_CALM", *, eligible=True, passed=True) -> dict:
 def _ctx(metadata: dict, *, regime: str = "BULL_CALM", cfg: dict | None = None):
     return SimpleNamespace(
         candidates=[_cand("AAPL"), _cand("MSFT")],
+        holdings={},
         config={"ranking": {"panel_scoring": {"regime_admission": cfg or {}}}},
         regime=regime,
         counters={},
@@ -71,6 +72,20 @@ def test_regime_admission_blocks_missing_current_regime_stats() -> None:
         "MSFT": "regime_admission:no_trade_stats:BULL_CALM",
     }
     assert len(ctx._full_candidate_snapshot) == 2
+
+
+def test_regime_admission_marks_holdings_exit_only_on_failed_regime() -> None:
+    holding = SimpleNamespace(ticker="AAPL", rank_score=0.80, panel_score=0.20)
+    ctx = _ctx(_metadata("BEAR"), regime="BULL_CALM")
+    ctx.holdings = {"AAPL": holding}
+
+    RegimeModelAdmissionTask().run(ctx)
+
+    reason = "regime_admission:no_trade_stats:BULL_CALM"
+    assert ctx.candidates == []
+    assert ctx._qp_exit_only_tickers == {"AAPL"}
+    assert ctx._qp_exit_only_reasons == {"AAPL": reason}
+    assert ctx._blocked_by_ticker["AAPL"] == reason
 
 
 def test_regime_admission_blocks_ineligible_regime() -> None:

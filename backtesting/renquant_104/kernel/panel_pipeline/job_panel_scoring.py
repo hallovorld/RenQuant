@@ -1251,6 +1251,18 @@ class RegimeModelAdmissionTask(Task):
         blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
         for cand in ctx.candidates:
             blocked[cand.ticker] = reason
+        holdings = getattr(ctx, "holdings", {}) or {}
+        if holdings:
+            exit_only = set(getattr(ctx, "_qp_exit_only_tickers", set()) or set())
+            exit_only_reasons = dict(
+                getattr(ctx, "_qp_exit_only_reasons", {}) or {}
+            )
+            for ticker in holdings:
+                exit_only.add(ticker)
+                exit_only_reasons.setdefault(ticker, reason)
+                blocked.setdefault(ticker, reason)
+            ctx._qp_exit_only_tickers = exit_only  # noqa: SLF001
+            ctx._qp_exit_only_reasons = exit_only_reasons  # noqa: SLF001
         ctx._blocked_by_ticker = blocked  # noqa: SLF001
         n = len(ctx.candidates)
         ctx.candidates = []
