@@ -796,10 +796,14 @@ class ValidateQPMuContractTask(Task):
             t for t in tickers
             if not _has_finite_attr(src.get(t), "mu")
         ]
+        missing_sigma = [
+            t for t in tickers
+            if not _has_finite_attr(src.get(t), "sigma")
+        ]
         forced_raw = forced not in {"", "none", "mu"}
         ok = (not forced_missing) and (
             alpha_applied or (not missing_mu and not forced_raw)
-        )
+        ) and not missing_sigma
         ctx._qp_mu_contract = {  # noqa: SLF001
             "ok": ok,
             "mode": mode,
@@ -810,22 +814,37 @@ class ValidateQPMuContractTask(Task):
             "forced_source_missing_sample": forced_missing[:10],
             "missing_mu_count": len(missing_mu),
             "missing_mu_sample": missing_mu[:10],
+            "missing_sigma_count": len(missing_sigma),
+            "missing_sigma_sample": missing_sigma[:10],
         }
         if ok:
             return None
 
-        _inc_counter(ctx, "qp_mu_contract_fallback", len(missing_mu) or int(forced_raw))
+        affected = sorted({
+            str(t) for t in (missing_mu + missing_sigma + forced_missing)
+        })
+        affected_count = len(affected) or int(forced_raw)
+        _inc_counter(ctx, "qp_mu_contract_fallback", affected_count)
         msg = (
             "ValidateQPMuContract: QP μ contract failed "
             f"(missing_mu={len(missing_mu)}, forced_source={forced}, "
             f"forced_missing={len(forced_missing)}, "
+            f"missing_sigma={len(missing_sigma)}, "
             f"alpha_to_mu_applied={alpha_applied})"
         )
         if mode in {"strict", "hard", "error", "enforce"}:
             _inc_counter(ctx, "qp_mu_contract_block", 1)
-            affected = missing_mu if missing_mu else list(tickers)
-            for ticker in affected:
-                _stamp_qp_ticker_block(ctx, str(ticker), "qp_mu_contract_block")
+            if affected:
+                for ticker in affected:
+                    reason = (
+                        "qp_mu_contract_block"
+                        if ticker in {str(t) for t in missing_mu + forced_missing}
+                        else "qp_sigma_contract_block"
+                    )
+                    _stamp_qp_ticker_block(ctx, str(ticker), reason)
+            else:
+                for ticker in tickers:
+                    _stamp_qp_ticker_block(ctx, str(ticker), "qp_mu_contract_block")
             log.error("%s — stopping QP job", msg)
             return False
         log.warning("%s — continuing in warn mode", msg)

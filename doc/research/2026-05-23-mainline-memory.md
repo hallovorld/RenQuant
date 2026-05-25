@@ -2342,6 +2342,14 @@ Operational conclusion:
   `kelly_zero:*`). Validation: buy-quality/Kelly/blocked-by tests passed
   (`64 passed`) and persistence/LEAN trace/buy-emitter/order-attribution tests
   passed (`47 passed`).
+- Follow-up QP input-contract bug found: runtime strict QP contract enforced
+  finite μ but allowed missing σ to flow through `_BuildSigmaVectorTask`'s
+  legacy `0.05` default. That can understate risk and let QP amplify a ticker
+  with no real risk evidence. `ValidateQPMuContractTask` now treats missing
+  σ as a hard contract failure in strict mode and stamps
+  `qp_sigma_contract_block`. Validation: QP Grinold-Kahn/integration/static
+  contract tests passed (`34 passed`) and broader QP admission/sector/
+  correlation/joint/backend tests passed (`106 passed`).
 
 ## Stop Conditions
 

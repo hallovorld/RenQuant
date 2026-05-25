@@ -159,7 +159,8 @@ class TestQPMuContract:
         from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
         src = {
             "AAA": SimpleNamespace(ticker="AAA", panel_score=1.2),
-            "BBB": SimpleNamespace(ticker="BBB", mu=0.01, panel_score=0.5),
+            "BBB": SimpleNamespace(ticker="BBB", mu=0.01, sigma=0.10,
+                                   panel_score=0.5),
         }
         ctx = SimpleNamespace(
             _qp_tickers=["AAA", "BBB"],
@@ -171,6 +172,22 @@ class TestQPMuContract:
         assert ValidateQPMuContractTask().run(ctx) is None
         assert ctx.counters["qp_mu_contract_fallback"] == 1
         assert ctx._qp_mu_contract["ok"] is False
+
+    def test_strict_mode_stops_when_sigma_is_missing(self):
+        from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
+        src = {"AAA": SimpleNamespace(ticker="AAA", mu=0.01, sigma=None)}
+        ctx = SimpleNamespace(
+            _qp_tickers=["AAA"],
+            _qp_mu_source_map=src,
+            counters={},
+            config={"rotation": {"joint_actions": {"qp_mu_contract": "strict"}}},
+        )
+
+        assert ValidateQPMuContractTask().run(ctx) is False
+        assert ctx.counters["qp_mu_contract_block"] == 1
+        assert ctx._qp_mu_contract["ok"] is False
+        assert ctx._qp_mu_contract["missing_sigma_count"] == 1
+        assert ctx._blocked_by_ticker["AAA"] == "qp_sigma_contract_block"
 
     def test_strict_mode_stops_when_raw_scores_are_untransformed(self):
         from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
@@ -187,7 +204,8 @@ class TestQPMuContract:
 
     def test_grinold_kahn_transform_satisfies_contract(self):
         from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
-        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=1.2)}
+        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=1.2,
+                                      sigma=0.10)}
         ctx = SimpleNamespace(
             _qp_tickers=["AAA"],
             _qp_mu_source_map=src,
@@ -204,7 +222,8 @@ class TestQPMuContract:
 
     def test_missing_forced_source_fails_even_after_transform(self):
         from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
-        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=None)}
+        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=None,
+                                      sigma=0.10)}
         ctx = SimpleNamespace(
             _qp_tickers=["AAA"],
             _qp_mu_source_map=src,
