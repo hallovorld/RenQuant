@@ -215,6 +215,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   runtime inference. A diagnostic W1/W2/W3 path-rule-only retrain had only
   `108` events and weak CV AUC `0.491 ± 0.104`; do not promote meta-label until
   more clean path-rule samples exist and per-regime WF A/B passes.
+- Shadow routing fix 2026-05-25: `readonly-alpaca` for `renquant_104` now
+  defaults to `strategy_config.shadow.json`. Before this, an ad-hoc readonly
+  run without `--strategy-config-name` logged `[SHADOW]RENQUANT-104` but scored
+  with the production XGB config, making PatchTST shadow diagnostics
+  ambiguous. Explicit config overrides are still respected for read-only prod
+  rehearsals.
 
 ## Pushed Progress
 

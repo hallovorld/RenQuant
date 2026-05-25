@@ -91,8 +91,8 @@ def _get_broker(broker_type: str, initial_cash: float = 100_000) -> BaseBroker:
         # cancel_order / place_stop_order) are swallowed locally with a
         # synthesised filled response. broker_name="alpaca_shadow" gives
         # state-file isolation: live_state.alpaca_shadow.json + runs_alpaca_shadow.db
-        # never collide with prod live_state.alpaca.json. Pair with
-        # `--strategy-config-name strategy_config.shadow.json` so the
+        # never collide with prod live_state.alpaca.json. For renquant_104
+        # the CLI defaults this broker to strategy_config.shadow.json so the
         # panel scorer also swaps (HF PatchTST instead of XGB).
         from .broker_readonly import ReadOnlyBrokerWrapper  # noqa: PLC0415
         real = AlpacaBroker(paper=False)
@@ -310,6 +310,7 @@ def _load_strategy_multi(
 
     config["_use_kernel"] = True
     config["_strategy_dir"] = str(strategy_dir)
+    config["_strategy_config_name"] = config_name
     config.setdefault("_universe_rejections", {})
     return config, models, strategy_dir
 
@@ -807,6 +808,24 @@ def _is_multi_stock(strategy_name: str) -> bool:
     return "watchlist" in config
 
 
+def _resolve_strategy_config_name(
+    strategy_name: str,
+    broker_type: str,
+    requested_config_name: str | None,
+) -> str:
+    """Resolve the strategy config file for CLI runs.
+
+    Read-only Alpaca is the renquant_104 shadow e2e path. Letting it default
+    to production config makes logs say "[SHADOW]" while scoring with prod XGB.
+    Keep explicit overrides possible for read-only prod rehearsals.
+    """
+    if requested_config_name:
+        return requested_config_name
+    if broker_type == "readonly-alpaca" and strategy_name == "renquant_104":
+        return "strategy_config.shadow.json"
+    return "strategy_config.json"
+
+
 def main():
     parser = argparse.ArgumentParser(description="RenQuant live trading runner")
     parser.add_argument("--strategy", required=True, help="Strategy directory name")
@@ -824,11 +843,25 @@ def main():
                         help="Seconds between runs in scheduled mode (default: 86400). "
                              "Production scheduling uses launchd; this loop is intended "
                              "only for ad-hoc tests.")
-    parser.add_argument("--strategy-config-name", default="strategy_config.json",
+    parser.add_argument("--strategy-config-name", default=None,
                         help="Side config filename inside the strategy dir "
-                             "(default: strategy_config.json). Use this to test "
-                             "alternate configs without touching the live one.")
+                             "(default: strategy_config.shadow.json for "
+                             "renquant_104 readonly-alpaca shadow, otherwise "
+                             "strategy_config.json). Use this to test alternate "
+                             "configs without touching the live one.")
     args = parser.parse_args()
+    config_name = _resolve_strategy_config_name(
+        args.strategy,
+        args.broker,
+        args.strategy_config_name,
+    )
+    if args.strategy_config_name is None and config_name != "strategy_config.json":
+        log.info(
+            "Auto-selected %s for %s %s run",
+            config_name,
+            args.strategy,
+            args.broker,
+        )
 
     # 2026-04-27: thread broker tag through to UniverseContext for
     # broker-isolated live_state read.
@@ -843,7 +876,7 @@ def main():
     broker.connect()
     config, models, strategy_dir = _load_strategy_multi(
         args.strategy, broker_name=broker.broker_name,
-        config_name=args.strategy_config_name,
+        config_name=config_name,
         broker=broker,
     )
     # Reconstruct broker with real initial_cash from config (PaperBroker
