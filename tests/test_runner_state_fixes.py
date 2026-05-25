@@ -38,7 +38,11 @@ LIVE_RUNNER_SOURCE = LIVE_RUNNER_PATH.read_text()
 ROTATION_SOURCE = ROTATION_PATH.read_text()
 DECISION_TRACE_SOURCE = DECISION_TRACE_PATH.read_text()
 
-from adapters.runner import cap_buy_order_to_cash, same_bar_sell_credit  # noqa: E402
+from adapters.runner import (  # noqa: E402
+    cap_buy_order_to_cash,
+    effective_live_holdings_after_orders,
+    same_bar_sell_credit,
+)
 from adapters.sim import _model_type_from_artifact as sim_model_type_from_artifact  # noqa: E402
 
 
@@ -84,7 +88,21 @@ class TestStateGCNewBuys:
     def test_orders_placed_extends_currently_held(self):
         # Fix: extend currently_held with broker-confirmed buys before GC sweep
         assert 'getattr(ctx, "orders_placed", [])' in RUNNER_SOURCE
-        assert "currently_held.add(t)" in RUNNER_SOURCE
+        assert "effective_live_holdings_after_orders" in RUNNER_SOURCE
+
+    def test_full_exit_is_removed_before_state_gc(self):
+        current = effective_live_holdings_after_orders(
+            ["AAPL", "MSFT"],
+            {"AAPL"},
+            [{"ticker": "NVDA"}],
+        )
+
+        assert current == {"MSFT", "NVDA"}
+
+    def test_runner_skips_holding_state_persistence_for_full_exits(self):
+        assert "full_exit_tickers: set[str] = set()" in RUNNER_SOURCE
+        assert "full_exit_tickers.add(ticker)" in RUNNER_SOURCE
+        assert "if ticker in full_exit_tickers:" in RUNNER_SOURCE
 
 
 # ── ENTRY-DATE-FROM-FILLS ──────────────────────────────────────────────────────

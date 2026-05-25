@@ -168,6 +168,26 @@ def same_bar_sell_credit(ctx: Any) -> float:
     return credit
 
 
+def effective_live_holdings_after_orders(
+    starting_holding_tickers: Any,
+    full_exit_tickers: set[str],
+    orders_placed: Any,
+) -> set[str]:
+    """Return live holdings after confirmed full exits and accepted buys.
+
+    ``ctx.holdings`` is a start-of-bar snapshot. RunnerAdapter must subtract
+    broker-confirmed full exits before state GC, otherwise it can resurrect
+    sell streak / HWM state for positions that were just liquidated.
+    """
+    current = {str(t) for t in (starting_holding_tickers or []) if t}
+    current.difference_update({str(t) for t in (full_exit_tickers or set()) if t})
+    for order in orders_placed or []:
+        ticker = order.get("ticker") if isinstance(order, dict) else None
+        if ticker:
+            current.add(str(ticker))
+    return current
+
+
 def _preopen_cancel_symbols(strategy_dir: Path, broker_name: str | None, today_str: str) -> set[str]:
     """Symbols whose queued orders were cancelled by the pre-open gate today."""
     if broker_name != "alpaca":
@@ -1085,6 +1105,7 @@ class RunnerAdapter:
             ctx.exits_placed = []
         if not hasattr(ctx, "exits_failed"):
             ctx.exits_failed = []
+        full_exit_tickers: set[str] = set()
         # Audit fix QTY-NaN (Round 2 deep audit, 2026-04-25): same NaN-
         # slip pattern as SE-1/TR-NaN/ROT-NaN-PRICE. Pre-fix, a broker
         # response with NaN qty (rare but possible during account
@@ -1220,6 +1241,7 @@ class RunnerAdapter:
             # top-ups — that would prevent the position from ever growing
             # back toward the Kelly target after an over-weight trim.
             if not is_partial:
+                full_exit_tickers.add(ticker)
                 self._last_sell_dates_str[ticker] = today_str
                 self._entry_dates.pop(ticker, None)
                 self._entry_signals.pop(ticker, None)   # Approach A cleanup
@@ -1428,6 +1450,8 @@ class RunnerAdapter:
         # via EX-HWM), fall back to a finite-checked max if hs is missing.
         import math
         for ticker, hs in ctx.holdings.items():
+            if ticker in full_exit_tickers:
+                continue
             self._sell_streaks[ticker] = hs.sell_streak
             # Prefer the validated HWM that compute_exits computed for
             # this bar; only fall back to a price-based max if hs is
@@ -1460,11 +1484,11 @@ class RunnerAdapter:
         # would re-seed) but the immediate write was wrong. Fix: extend
         # currently_held with tickers from ctx.orders_placed (broker-confirmed
         # buys) so GC preserves them.
-        currently_held = set(ctx.holdings.keys())
-        for o in getattr(ctx, "orders_placed", []) or []:
-            t = o.get("ticker") if isinstance(o, dict) else None
-            if t:
-                currently_held.add(t)
+        currently_held = effective_live_holdings_after_orders(
+            ctx.holdings.keys(),
+            full_exit_tickers,
+            getattr(ctx, "orders_placed", []) or [],
+        )
 
         # ── Manual / external disposition detection (Z2, 2026-04-28) ──────
         # Invariant: ANY position that disappears between bars must stamp

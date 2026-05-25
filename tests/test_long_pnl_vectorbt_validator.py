@@ -181,3 +181,18 @@ class TestSimAdapterLongMatchesVectorbt:
         assert sell_rows[0]["tax"] == pytest.approx(expected_tax)
         assert sell_rows[0]["tax_cash_debited"] == pytest.approx(0.0)
         assert sell_rows[0]["tax_cash_debit_mode"] == "reporting_only"
+
+    def test_unknown_tax_cash_mode_fails_closed(self):
+        """A typo must not silently switch reporting-only runs to cash-debit tax."""
+        from adapters.sim import _tax_cash_debit_mode
+
+        with pytest.raises(ValueError, match="Unknown tax.cash_debit_mode"):
+            _tax_cash_debit_mode({"tax": {"cash_debit_mode": "reportng_only"}})
+
+    def test_legacy_event_cash_debit_alias_is_explicit(self):
+        from adapters.sim import _tax_cash_debit_mode
+
+        assert (
+            _tax_cash_debit_mode({"tax": {"cash_debit_mode": "event_cash_debit"}})
+            == "event_level"
+        )

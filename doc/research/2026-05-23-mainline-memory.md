@@ -2391,6 +2391,22 @@ Operational conclusion:
   preserves and extends the existing map instead of clobbering it. Validation:
   blocked-by, buy-quality, DB persistence, and LEAN trace tests passed
   (`71 passed`).
+- Follow-up live sell-state bug found: `RunnerAdapter.commit()` correctly
+  cleared state dictionaries after a broker-confirmed full sell, but later
+  reused the start-of-bar `ctx.holdings` snapshot to re-persist the sold
+  ticker's `sell_streaks` and `position_hwm`, and state GC also treated the
+  just-sold ticker as still held. Full exits are now tracked explicitly:
+  state persistence skips them and GC computes effective holdings as
+  start-of-bar holdings minus confirmed full exits plus accepted buys.
+  Validation: runner state/sell attribution/live-state suites passed
+  (`97 passed`) plus partial-sell/HWM/sim-live/post-stop tests (`44 passed`).
+- Follow-up tax config bug found: an unknown `tax.cash_debit_mode` only logged
+  a warning and silently fell back to immediate event-level tax debits. A typo
+  in a reporting-only config could therefore corrupt cash/APY while looking
+  like a valid run. Unknown modes now fail closed; the legacy
+  `event_cash_debit` spelling is accepted only as an explicit alias.
+  Validation: vectorbt long-P&L cross-check, sim result tax reporting, and WF
+  config parity tests passed (`23 passed`).
 
 ## Stop Conditions
 
