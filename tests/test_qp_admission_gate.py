@@ -181,6 +181,61 @@ def test_qp_held_topup_uses_topup_expected_return_floor() -> None:
     assert reason == "qp_admission_expected_return"
 
 
+def test_qp_blocks_new_candidate_below_expected_return_over_sigma_floor() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.04,
+        sigma=0.50,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma"] = 0.10
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "qp_admission_expected_return_over_sigma"
+
+
+def test_qp_expected_return_over_sigma_floor_uses_regime_override() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.04,
+        sigma=0.50,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma"] = 0.10
+    env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma_by_regime"] = {
+        "BULL_CALM": 0.07,
+    }
+
+    reason = _qp_buy_admission_block_reason(
+        SimpleNamespace(config={}, regime="BULL_CALM"),
+        env,
+        "AAA",
+    )
+
+    assert reason is None
+
+
+def test_qp_expected_return_over_sigma_falls_back_to_mu() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        mu=0.06,
+        sigma=0.50,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma"] = 0.10
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason is None
+
+
 def _ctx_for_source_map(**overrides):
     cfg = {
         "rotation": {

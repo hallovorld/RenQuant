@@ -1533,6 +1533,25 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         if not math.isfinite(expected_return) or expected_return < floor:
             return "qp_admission_expected_return"
 
+    er_over_sigma_floor = _qp_admission_expected_return_over_sigma_floor(
+        gate,
+        is_held,
+        getattr(ctx, "regime", None),
+    )
+    if er_over_sigma_floor is not None:
+        floor = float(er_over_sigma_floor)
+        expected_return = _source_float(source, "expected_return")
+        if not math.isfinite(expected_return):
+            expected_return = _source_float(source, "mu")
+        sigma = _source_float(source, "sigma")
+        ratio = (
+            expected_return / sigma
+            if math.isfinite(expected_return) and math.isfinite(sigma) and sigma > 0
+            else float("nan")
+        )
+        if not math.isfinite(ratio) or ratio < floor:
+            return "qp_admission_expected_return_over_sigma"
+
     return None
 
 
@@ -1559,6 +1578,34 @@ def _qp_admission_expected_return_floor(
         (
             "min_expected_return",
             "min_expected_excess_return",
+        )
+    )
+    for key in keys:
+        value = _qp_admission_gate_value(gate, key, regime)
+        if value is not None:
+            return value
+    return None
+
+
+def _qp_admission_expected_return_over_sigma_floor(
+    gate: dict,
+    is_held: bool,
+    regime: str | None,
+):
+    keys = (
+        (
+            "topup_min_expected_return_over_sigma",
+            "topup_min_mu_over_sigma",
+            "topup_min_edge_over_sigma",
+            "min_expected_return_over_sigma",
+            "min_mu_over_sigma",
+            "min_edge_over_sigma",
+        )
+        if is_held else
+        (
+            "min_expected_return_over_sigma",
+            "min_mu_over_sigma",
+            "min_edge_over_sigma",
         )
     )
     for key in keys:

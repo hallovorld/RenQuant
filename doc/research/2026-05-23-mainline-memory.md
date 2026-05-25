@@ -76,6 +76,21 @@ Make RenQuant 104 scientifically trustworthy end to end:
   trace, BULL_CALM entry-rank Spearman versus net P/L was about `-0.30`; the
   raw panel score and μ were also negative. This is an alpha-conversion/scoring
   semantics problem, not merely a regime gate problem.
+- Follow-up on the accepted ER-floor baseline trace
+  `erfloor_bullcalm040_20260524`: after adding forward-return alignment to
+  the forensic tool, BULL_CALM entry events show score/μ are negative versus
+  20d/60d SPY-relative forward returns but positive at 120d:
+  `entry_mu` Spearman is about `-0.217` at 20d, `-0.123` at 60d, and `+0.227`
+  at 120d. Mean hold is far shorter than 120d. This points to a horizon
+  mismatch: the model may be selecting longer-horizon relative winners while
+  the current stop/QP/rotation path realizes them on a shorter horizon.
+- New diagnostic hook: `scripts/analyze_wf_trade_forensics.py --ohlcv-root`
+  now reports entry-score versus forward excess-return alignment. Use this
+  before declaring a decision-tree change solved alpha conversion.
+- New A/B hook: QP alpha admission now supports
+  `min_expected_return_over_sigma[_by_regime]` and top-up aliases. This is
+  not enabled in production; it is for testing risk-adjusted admission instead
+  of raw μ floors.
 
 ## Pushed Progress
 

@@ -214,6 +214,159 @@ def _with_entry_exit_regime(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _entry_events(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    required = {"cut", "entry_event_id", "ticker", "entry_date"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
+
+    def _join_unique(values: pd.Series) -> str:
+        uniq = sorted({str(v) for v in values.dropna().tolist()})
+        return "|".join(uniq)
+
+    first_cols = [
+        "entry_regime",
+        "entry_rank_score",
+        "entry_panel_score",
+        "entry_mu",
+        "entry_sigma",
+        "entry_expected_return",
+        "entry_source_job",
+    ]
+    agg: dict[str, Any] = {
+        "shares": "sum",
+        "gross_pnl": "sum",
+        "tax": "sum",
+        "net_pnl_after_tax": "sum",
+        "hold_days": "mean",
+        "pnl_pct": "mean",
+        "exit_reason": _join_unique,
+    }
+    for col in first_cols:
+        if col in df.columns:
+            agg[col] = "first"
+    events = (
+        df.groupby(["cut", "entry_event_id", "ticker", "entry_date"], dropna=False)
+        .agg(agg)
+        .reset_index()
+    )
+    events["entry_date"] = pd.to_datetime(events["entry_date"], errors="coerce")
+    return events
+
+
+def _load_close(root: Path, ticker: str) -> pd.Series | None:
+    p = root / ticker / "1d.parquet"
+    if not p.exists():
+        return None
+    try:
+        df = pd.read_parquet(p, columns=["close"])
+    except Exception:
+        return None
+    if "close" not in df.columns:
+        return None
+    s = pd.to_numeric(df["close"], errors="coerce").dropna()
+    s.index = pd.to_datetime(s.index)
+    return s.sort_index()
+
+
+def _forward_return(close: pd.Series | None, date: Any, horizon: int) -> float:
+    if close is None or close.empty:
+        return float("nan")
+    ts = pd.Timestamp(date)
+    idx = close.index.searchsorted(ts, side="left")
+    end = idx + int(horizon)
+    if idx >= len(close) or end >= len(close):
+        return float("nan")
+    base = float(close.iloc[idx])
+    future = float(close.iloc[end])
+    if base <= 0 or not math.isfinite(base) or not math.isfinite(future):
+        return float("nan")
+    return future / base - 1.0
+
+
+def _forward_return_alignment(
+    closed: pd.DataFrame,
+    *,
+    ohlcv_root: Path | None,
+    benchmark_ticker: str,
+    horizons: tuple[int, ...] = (20, 60, 120),
+    min_n: int = 10,
+) -> dict[str, Any]:
+    if ohlcv_root is None:
+        return {"enabled": False, "reason": "ohlcv_root_not_set"}
+    events = _entry_events(closed)
+    if events.empty:
+        return {"enabled": True, "reason": "no_entry_events", "overall": []}
+    benchmark = _load_close(ohlcv_root, benchmark_ticker)
+    close_cache: dict[str, pd.Series | None] = {benchmark_ticker: benchmark}
+    for ticker in events["ticker"].dropna().astype(str).unique():
+        close_cache.setdefault(ticker, _load_close(ohlcv_root, ticker))
+
+    enriched = events.copy()
+    for h in horizons:
+        raw_vals: list[float] = []
+        bench_vals: list[float] = []
+        excess_vals: list[float] = []
+        for row in enriched.itertuples(index=False):
+            stock_ret = _forward_return(
+                close_cache.get(str(row.ticker)),
+                row.entry_date,
+                h,
+            )
+            bench_ret = _forward_return(benchmark, row.entry_date, h)
+            raw_vals.append(stock_ret)
+            bench_vals.append(bench_ret)
+            excess_vals.append(
+                stock_ret - bench_ret
+                if math.isfinite(stock_ret) and math.isfinite(bench_ret)
+                else float("nan")
+            )
+        enriched[f"fwd_{h}d_return"] = raw_vals
+        enriched[f"fwd_{h}d_{benchmark_ticker.lower()}"] = bench_vals
+        enriched[f"fwd_{h}d_excess_{benchmark_ticker.lower()}"] = excess_vals
+
+    def _rows(group: pd.DataFrame, group_name: str | None = None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for score_col in ("entry_rank_score", "entry_panel_score", "entry_mu"):
+            if score_col not in group.columns:
+                continue
+            for h in horizons:
+                y_col = f"fwd_{h}d_excess_{benchmark_ticker.lower()}"
+                d = group[[score_col, y_col]].replace([np.inf, -np.inf], np.nan).dropna()
+                if len(d) < min_n or d[score_col].nunique() < 3 or d[y_col].nunique() < 3:
+                    continue
+                from scipy.stats import spearmanr  # noqa: PLC0415
+                rho, _ = spearmanr(d[score_col], d[y_col])
+                item = {
+                    "score_col": score_col,
+                    "horizon_days": int(h),
+                    "n": int(len(d)),
+                    "spearman_vs_forward_excess": float(rho),
+                    "mean_forward_excess": float(d[y_col].mean()),
+                }
+                if group_name is not None:
+                    item["entry_regime"] = group_name
+                out.append(item)
+        return out
+
+    by_regime: list[dict[str, Any]] = []
+    if "entry_regime" in enriched.columns:
+        for regime, group in enriched.groupby("entry_regime", dropna=False, observed=False):
+            by_regime.extend(
+                _rows(group, "NULL" if pd.isna(regime) else str(regime))
+            )
+
+    return {
+        "enabled": True,
+        "benchmark_ticker": benchmark_ticker,
+        "ohlcv_root": str(ohlcv_root),
+        "n_entry_events": int(len(enriched)),
+        "overall": _rows(enriched),
+        "by_entry_regime": by_regime,
+    }
+
+
 def _safe_corr(a: pd.Series, b: pd.Series) -> float | None:
     valid = pd.concat([a, b], axis=1).dropna()
     if len(valid) < 3 or valid.iloc[:, 0].nunique() < 2 or valid.iloc[:, 1].nunique() < 2:
@@ -547,6 +700,7 @@ def analyze_trace(
     config: dict[str, Any] | None = None,
     lot_method_override: str | None = None,
     min_group_n: int = 1,
+    ohlcv_root: Path | None = None,
 ) -> dict[str, Any]:
     trace_dir = trace_dir.resolve()
     lot_method = _tax_lot_method(config, lot_method_override)
@@ -571,6 +725,12 @@ def analyze_trace(
         ),
         "tax_integrity": _tax_integrity(closed),
         "score_spearman": _score_spearman(closed),
+        "forward_return_alignment": _forward_return_alignment(
+            closed,
+            ohlcv_root=ohlcv_root,
+            benchmark_ticker=benchmark_ticker,
+            min_n=max(10, min_group_n),
+        ),
         "score_spearman_by_entry_regime": _score_spearman_by_group(
             closed,
             "entry_regime",
@@ -680,6 +840,22 @@ def markdown_report(payload: dict[str, Any]) -> str:
             lines.append(pd.DataFrame(rows).to_markdown(index=False, floatfmt=".4f"))
         else:
             lines.append("Insufficient scored closed trades by regime.")
+    fra = payload.get("forward_return_alignment", {})
+    lines.extend(["", "## Forward Return Alignment"])
+    if fra.get("enabled"):
+        lines.append(
+            f"- entry_events: {fra.get('n_entry_events')}"
+            f"  benchmark: `{fra.get('benchmark_ticker')}`"
+        )
+        for key in ("overall", "by_entry_regime"):
+            rows = fra.get(key, [])
+            lines.extend(["", f"### forward_return_alignment.{key}"])
+            if rows:
+                lines.append(pd.DataFrame(rows).to_markdown(index=False, floatfmt=".4f"))
+            else:
+                lines.append("Insufficient rows.")
+    else:
+        lines.append(f"Disabled: {fra.get('reason')}")
 
     for key, rows in payload["groups"].items():
         lines.extend(["", f"## {key}"])
@@ -709,6 +885,12 @@ def main() -> int:
     parser.add_argument("--config", default=None, help="Strategy config JSON used by the sim")
     parser.add_argument("--lot-method", choices=["fifo", "hifo", "avg"], default=None)
     parser.add_argument("--min-group-n", type=int, default=1)
+    parser.add_argument(
+        "--ohlcv-root",
+        default=None,
+        help="Optional OHLCV parquet root for entry-score vs forward-return checks. "
+             "Default: disabled. Typical value: data/ohlcv.",
+    )
     parser.add_argument("--json-out", default=None)
     parser.add_argument("--md-out", default=None)
     args = parser.parse_args()
@@ -722,6 +904,7 @@ def main() -> int:
         config=config,
         lot_method_override=args.lot_method,
         min_group_n=args.min_group_n,
+        ohlcv_root=(REPO_ROOT / args.ohlcv_root if args.ohlcv_root else None),
     )
 
     if args.json_out:

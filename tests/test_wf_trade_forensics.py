@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -182,6 +183,61 @@ def test_score_spearman_by_group_keeps_regime_contract() -> None:
     }
     assert rank_rows["BULL_CALM"]["vs_pnl_pct"] == pytest.approx(1.0)
     assert rank_rows["CHOPPY"]["vs_pnl_pct"] == pytest.approx(-1.0)
+
+
+def test_forward_return_alignment_separates_model_signal_from_trade_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "ohlcv"
+    dates = pd.bdate_range("2024-01-02", periods=80)
+    spy = pd.DataFrame({"close": np.linspace(100.0, 110.0, len(dates))}, index=dates)
+    (root / "SPY").mkdir(parents=True)
+    spy.to_parquet(root / "SPY" / "1d.parquet")
+    rows = []
+    for i in range(12):
+        ticker = f"T{i:02d}"
+        # Higher entry score gets higher forward return.
+        close = np.linspace(50.0, 50.0 + i * 2.0, len(dates))
+        (root / ticker).mkdir(parents=True)
+        pd.DataFrame({"close": close}, index=dates).to_parquet(
+            root / ticker / "1d.parquet"
+        )
+        rows.append({
+            "status": "closed",
+            "cut": "cut1",
+            "entry_event_id": i,
+            "ticker": ticker,
+            "entry_date": dates[0],
+            "exit_reason": "qp_close",
+            "shares": 1,
+            "gross_pnl": 1.0,
+            "tax": 0.0,
+            "net_pnl_after_tax": 1.0,
+            "pnl_pct": 0.01,
+            "hold_days": 20,
+            "entry_regime": "BULL_CALM",
+            "entry_rank_score": float(i),
+            "entry_panel_score": float(i),
+            "entry_mu": float(i),
+        })
+    closed = pd.DataFrame(rows)
+
+    payload = wf_forensics._forward_return_alignment(
+        closed,
+        ohlcv_root=root,
+        benchmark_ticker="SPY",
+        horizons=(20,),
+        min_n=10,
+    )
+
+    assert payload["enabled"] is True
+    assert payload["n_entry_events"] == 12
+    row = next(
+        r for r in payload["by_entry_regime"]
+        if r["score_col"] == "entry_rank_score"
+    )
+    assert row["entry_regime"] == "BULL_CALM"
+    assert row["spearman_vs_forward_excess"] == pytest.approx(1.0)
 
 
 def test_cut_exposure_summary_separates_alpha_and_benchmark(monkeypatch) -> None:
