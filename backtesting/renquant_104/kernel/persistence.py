@@ -491,6 +491,10 @@ def _rebuild_ticker_daily_state_if_needed(conn: sqlite3.Connection) -> None:
     table_info_cache["ticker_daily_state"] = conn.execute(
         "PRAGMA table_info(ticker_daily_state)"
     ).fetchall()
+    old_cols = {r[1] for r in table_info_cache["ticker_daily_state"]}
+    def _old_col(name: str, default: str = "NULL") -> str:
+        return name if name in old_cols else default
+
     run_expr = _legacy_run_id_expr("ticker_daily_state")
     conn.execute(f"ALTER TABLE ticker_daily_state RENAME TO {tmp}")
     conn.execute(
@@ -512,8 +516,10 @@ def _rebuild_ticker_daily_state_if_needed(conn: sqlite3.Connection) -> None:
             panel_score       REAL,
             rank_score        REAL,
             expected_return   REAL,
+            expected_return_horizon_days INTEGER,
             kelly_target_pct  REAL,
             mu                REAL,
+            mu_horizon_days    INTEGER,
             sigma             REAL,
             in_candidates     INTEGER,
             selected          INTEGER,
@@ -531,16 +537,22 @@ def _rebuild_ticker_daily_state_if_needed(conn: sqlite3.Connection) -> None:
                in_watchlist, in_universe, pending_at_broker,
                has_position, position_qty, position_pct,
                model_type, model_action, sell_streak,
-               panel_score, rank_score, expected_return, kelly_target_pct,
-               mu, sigma, in_candidates, selected, blocked_by, sector,
+               panel_score, rank_score, expected_return,
+               expected_return_horizon_days, kelly_target_pct,
+               mu, mu_horizon_days, sigma,
+               in_candidates, selected, blocked_by, sector,
                qp_delta_w, qp_target_w, qp_status)
             SELECT {run_expr}, date, ticker, regime, confidence,
                    in_watchlist, in_universe, pending_at_broker,
                    has_position, position_qty, position_pct,
                    model_type, model_action, sell_streak,
-                   panel_score, rank_score, expected_return, kelly_target_pct,
-                   mu, sigma, in_candidates, selected, blocked_by, sector,
-                   qp_delta_w, qp_target_w, qp_status
+                   panel_score, rank_score, expected_return,
+                   {_old_col("expected_return_horizon_days")},
+                   kelly_target_pct,
+                   mu, {_old_col("mu_horizon_days")}, sigma,
+                   in_candidates, selected, blocked_by, sector,
+                   {_old_col("qp_delta_w")}, {_old_col("qp_target_w")},
+                   {_old_col("qp_status")}
               FROM {tmp}"""
     )
     conn.execute(f"DROP TABLE {tmp}")

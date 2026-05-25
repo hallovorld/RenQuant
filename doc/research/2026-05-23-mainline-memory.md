@@ -2576,6 +2576,15 @@ entire pipeline end-to-end:
   computes `selected_tickers` from normalized `trade_events`, matching sim and
   LEAN. Validation: runner selected-state, trade-event builder, and candidate
   persistence tests passed (`16 passed`).
+- New decision-trace migration bug found by sidecar audit and fixed: legacy
+  `ticker_daily_state` schemas keyed by `(date, ticker)` were rebuilt into the
+  newer `(run_id, ticker)` schema without carrying the post-horizon-contract
+  columns `expected_return_horizon_days` and `mu_horizon_days`. Fresh DBs were
+  correct, but migrated DBs could silently lose horizon observability. The
+  rebuild path now creates and inserts both horizon columns with safe NULL
+  defaults for truly old rows, then `record_ticker_daily_state()` can persist
+  current 60d horizons normally. Validation: persistence, candidate-score,
+  ticker-daily-state, and decision-trace-horizon tests passed (`23 passed`).
 
 ## Stop Conditions
 

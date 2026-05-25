@@ -94,6 +94,67 @@ class TestConnectionLifecycle:
         assert "idx_trades_date" in indexes
         conn.close()
 
+    def test_legacy_ticker_daily_state_rebuild_keeps_horizon_columns(self, tmp_path):
+        """Legacy date-keyed TDS rebuild must preserve post-migration columns."""
+        db = tmp_path / "runs.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE ticker_daily_state (
+                date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                regime TEXT,
+                confidence REAL,
+                in_watchlist INTEGER,
+                in_universe INTEGER,
+                pending_at_broker INTEGER,
+                has_position INTEGER,
+                position_qty REAL,
+                position_pct REAL,
+                model_type TEXT,
+                model_action TEXT,
+                sell_streak INTEGER,
+                panel_score REAL,
+                rank_score REAL,
+                expected_return REAL,
+                kelly_target_pct REAL,
+                mu REAL,
+                sigma REAL,
+                in_candidates INTEGER,
+                selected INTEGER,
+                blocked_by TEXT,
+                sector TEXT,
+                PRIMARY KEY (date, ticker)
+            );
+            INSERT INTO ticker_daily_state
+              (date, ticker, expected_return, mu, selected)
+              VALUES ('2026-05-24', 'AAA', 0.01, 0.02, 0);
+        """)
+
+        ensure_schema(conn)
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(ticker_daily_state)")}
+        assert "expected_return_horizon_days" in cols
+        assert "mu_horizon_days" in cols
+        record_ticker_daily_state(
+            conn,
+            run_id="run-new",
+            run_date=datetime.date(2026, 5, 25),
+            rows=[{
+                "ticker": "AAA",
+                "expected_return": 0.03,
+                "expected_return_horizon_days": 60,
+                "mu": 0.04,
+                "mu_horizon_days": 60,
+                "selected": 1,
+            }],
+        )
+        row = conn.execute(
+            """SELECT expected_return_horizon_days, mu_horizon_days
+               FROM ticker_daily_state WHERE run_id='run-new' AND ticker='AAA'"""
+        ).fetchone()
+        assert row == (60, 60)
+        conn.close()
+
 
 class TestPipelineRun:
     def test_insert_and_read_back(self, tmp_path):
