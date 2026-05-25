@@ -645,7 +645,24 @@ class LeanAdapter:
         # price, shares, or target_pct so a single bad order doesn't
         # poison the held state.
         import math
-        for order in ctx.orders:
+        from kernel.pipeline.order_dedupe import (  # noqa: PLC0415
+            dedupe_buy_orders_first_wins,
+        )
+        deduped_orders, skipped_duplicate_buys = (
+            dedupe_buy_orders_first_wins(ctx.orders)
+        )
+        for order in skipped_duplicate_buys:
+            try:
+                ticker = (
+                    order.get("ticker")
+                    if isinstance(order, dict) else
+                    getattr(order, "ticker", "?")
+                )
+            except Exception:
+                ticker = "?"
+            algo.Debug(f"{ctx.today} {ticker} SKIP — duplicate same-bar buy intent")
+
+        for order in deduped_orders:
             ticker     = order["ticker"]
             shares     = order["shares"]
             target_pct = order["target_pct"]

@@ -1257,16 +1257,26 @@ class SimAdapter:
         # phantom holding state. Belt-and-braces: even though current
         # pipeline order makes this hard to trigger, dedupe matches the
         # exit-side pattern (first-write-wins) and is cheap.
-        seen_buy_tickers: set[str] = set()
+        from kernel.pipeline.order_dedupe import (  # noqa: PLC0415
+            dedupe_buy_orders_first_wins,
+        )
+        deduped_orders, skipped_duplicate_buys = dedupe_buy_orders_first_wins(ctx.orders)
+        if skipped_duplicate_buys:
+            ctx.orders_skipped = list(getattr(ctx, "orders_skipped", []) or [])
+            for order in skipped_duplicate_buys:
+                if isinstance(order, dict):
+                    ctx.orders_skipped.append({
+                        **order,
+                        "skip_reason": "duplicate_buy_intent",
+                    })
+            ctx.counters = getattr(ctx, "counters", None) or {}
+            ctx.counters["duplicate_buy_intent_skipped"] = (
+                ctx.counters.get("duplicate_buy_intent_skipped", 0)
+                + len(skipped_duplicate_buys)
+            )
         self._buying_power_remaining = self._available_buying_power()
         try:
-            for order in ctx.orders:
-                t = order.get("ticker") if isinstance(order, dict) else getattr(order, "ticker", None)
-                if t is not None and t in seen_buy_tickers:
-                    # Same ticker already booked this bar — skip the dup.
-                    continue
-                if t is not None:
-                    seen_buy_tickers.add(t)
+            for order in deduped_orders:
                 self._apply_buy(order, today_ts, ctx)
         finally:
             self._buying_power_remaining = None

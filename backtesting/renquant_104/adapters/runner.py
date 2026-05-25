@@ -1414,7 +1414,25 @@ class RunnerAdapter:
                 sell_credit,
             )
         if not self._sell_only:
-            for order_intent in ctx.orders:
+            from kernel.pipeline.order_dedupe import (  # noqa: PLC0415
+                dedupe_buy_orders_first_wins,
+            )
+            deduped_orders, skipped_duplicate_buys = (
+                dedupe_buy_orders_first_wins(ctx.orders)
+            )
+            for order_intent in skipped_duplicate_buys:
+                ticker = (
+                    order_intent.get("ticker")
+                    if isinstance(order_intent, dict) else
+                    getattr(order_intent, "ticker", "?")
+                )
+                log.info("BUY skipped: duplicate same-bar buy intent for %s", ticker)
+                if isinstance(order_intent, dict):
+                    ctx.orders_skipped.append({
+                        **order_intent,
+                        "skip_reason": "duplicate_buy_intent",
+                    })
+            for order_intent in deduped_orders:
                 order, budget_reason = cap_buy_order_to_cash(
                     order_intent, buy_cash_remaining,
                 )

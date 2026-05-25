@@ -2791,6 +2791,12 @@ entire pipeline end-to-end:
   than closer to zero. This keeps RankingJob and JointPortfolioQPJob from
   disagreeing about the same quality penalty. Validation: buy-quality and
   QP regression tests passed (`13 passed`, `117 passed, 4 skipped`).
+- New adapter parity fix: sim, live runner, and LEAN now share
+  `dedupe_buy_orders_first_wins()` for same-bar duplicate buy intents. The
+  contract is first-write-wins with duplicate intents audit-skipped, preventing
+  sim from silently underestimating live/LEAN exposure when two post-selection
+  tasks emit the same ticker. Validation: adapter/order/partial-sell tests
+  passed (`76 passed`).
 
 ## Stop Conditions
 
@@ -2808,6 +2814,7 @@ Stop and fix before reporting performance if any of these happen:
 - Sim/live/LEAN construct panel inference frames through different code paths.
 - A buy-quality gate changes ordering/admission but leaves QP/Kelly alpha
   fields (`mu`, `expected_return`) unpenalized.
+- Sim/live/LEAN adapters do not share same-bar duplicate-buy semantics.
 - Trade logs lack `blocked_by`, model type, sector, score snapshot, QP
   target/delta/status, or sell P/L/tax/net for emitted orders.
 - A metric is not labeled as event-level, annual-net, short-window style, or
