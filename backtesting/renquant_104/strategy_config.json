@@ -938,6 +938,7 @@
     "cv_embargo_days": 60,
     "num_boost_round": 300,
     "neutralize_features": true,
+    "strict_neutralization": true,
     "nan_prone_cols": [],
     "asset_embeddings": {
       "enabled": false,

@@ -2532,6 +2532,17 @@ entire pipeline end-to-end:
   data blocks training before artifacts are stamped. Validation:
   daily-retrain orchestration, smoke-model, and WF-config parity tests passed
   (`60 passed`).
+- New sector-neutralization fail-open found: with
+  `panel_ltr.neutralize_features=true`, `SectorMomentumTask` and
+  `TickerPanelNeutralizeJob` could silently fall back to raw feature frames when
+  sector ETF OHLCV, ticker sector metadata, or a sector momentum frame was
+  missing. That breaks the training/inference distribution contract and lets
+  missing sector metadata disable a key risk-control assumption. Production and
+  golden config now set `strict_neutralization=true`; missing sector context
+  raises unless an experiment explicitly opts out with
+  `strict_neutralization=false`. Validation: panel-training, neutralization,
+  train/infer parity, panel-bugfix, and WF-config parity tests passed
+  (`55 passed`).
 
 ## Stop Conditions
 

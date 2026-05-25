@@ -108,6 +108,16 @@ class TestSectorMomentumTask:
         SectorMomentumTask().run(ctx)
         assert "sentinel" in ctx.sector_momentum  # untouched
 
+    def test_strict_neutralization_requires_sector_etfs(self, tmp_path):
+        from training_panel.pp_panel_training import SectorMomentumTask
+        ctx, _ = _make_context(tmp_path)
+        ctx.sector_etf_ohlcv = {}
+        ctx.config["panel_ltr"]["neutralize_features"] = True
+        ctx.config["panel_ltr"]["strict_neutralization"] = True
+
+        with pytest.raises(RuntimeError, match="no sector ETF OHLCV"):
+            SectorMomentumTask().run(ctx)
+
 
 class TestPanelDataJob:
     def test_should_skip_when_ohlcv_and_momentum_present(self, tmp_path):
@@ -188,6 +198,74 @@ class TestTickerPanelJobs:
         TickerPanelNeutralizeJob().run(tc)
         assert tc.neutralized_frame is not None
         assert tc.neutralized_frame.index.equals(tc.feature_frame.index)
+
+    def test_neutralize_job_fails_closed_on_missing_sector_metadata(self, tmp_path):
+        from training_panel.pp_panel_training import (
+            TickerPanelContext, TickerPanelNeutralizeJob,
+        )
+        ctx, tickers = _make_context(tmp_path)
+        tc = TickerPanelContext(
+            ticker=tickers[0],
+            ohlcv=ctx.ohlcv,
+            sector_momentum={"tech": pd.DataFrame({"mom_20d": [0.1]})},
+            ticker_sectors={},
+            config={
+                "panel_ltr": {
+                    "neutralize_features": True,
+                    "strict_neutralization": True,
+                },
+            },
+        )
+        tc.feature_frame = pd.DataFrame({"rel_mom_20d": [0.1, 0.2]})
+
+        with pytest.raises(RuntimeError, match="ticker sector metadata is missing"):
+            TickerPanelNeutralizeJob().run(tc)
+
+    def test_neutralize_job_fails_closed_on_missing_sector_frame(self, tmp_path):
+        from training_panel.pp_panel_training import (
+            TickerPanelContext, TickerPanelNeutralizeJob,
+        )
+        ctx, tickers = _make_context(tmp_path)
+        tc = TickerPanelContext(
+            ticker=tickers[0],
+            ohlcv=ctx.ohlcv,
+            sector_momentum={"finance": pd.DataFrame({"mom_20d": [0.1]})},
+            ticker_sectors={tickers[0]: "tech"},
+            config={
+                "panel_ltr": {
+                    "neutralize_features": True,
+                    "strict_neutralization": True,
+                },
+            },
+        )
+        tc.feature_frame = pd.DataFrame({"rel_mom_20d": [0.1, 0.2]})
+
+        with pytest.raises(RuntimeError, match="has no sector momentum frame"):
+            TickerPanelNeutralizeJob().run(tc)
+
+    def test_neutralize_job_non_strict_preserves_legacy_fallback(self, tmp_path):
+        from training_panel.pp_panel_training import (
+            TickerPanelContext, TickerPanelNeutralizeJob,
+        )
+        ctx, tickers = _make_context(tmp_path)
+        frame = pd.DataFrame({"rel_mom_20d": [0.1, 0.2]})
+        tc = TickerPanelContext(
+            ticker=tickers[0],
+            ohlcv=ctx.ohlcv,
+            sector_momentum={},
+            ticker_sectors={},
+            config={
+                "panel_ltr": {
+                    "neutralize_features": True,
+                    "strict_neutralization": False,
+                },
+            },
+        )
+        tc.feature_frame = frame
+
+        TickerPanelNeutralizeJob().run(tc)
+
+        pd.testing.assert_frame_equal(tc.neutralized_frame, frame)
 
     def test_factor_job_produces_expected_columns(self, tmp_path):
         from training_panel.pp_panel_training import (

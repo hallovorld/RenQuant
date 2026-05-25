@@ -375,6 +375,13 @@ class SectorMomentumTask(PanelTask):
             log.info("SectorMomentumTask: already populated — skipping")
             return
         if not ctx.sector_etf_ohlcv:
+            cfg = ctx.config.get("panel_ltr", {})
+            strict = bool(cfg.get("strict_neutralization", cfg.get("neutralize_features", True)))
+            if cfg.get("neutralize_features", True) and strict:
+                raise RuntimeError(
+                    "SectorMomentumTask: neutralize_features=true but no "
+                    "sector ETF OHLCV is available; refusing raw-feature fallback"
+                )
             log.warning("SectorMomentumTask: no sector_etf_ohlcv — skipping")
             return
         from training_panel.neutralization import compute_sector_momentum
@@ -1197,21 +1204,53 @@ class TickerPanelNeutralizeJob(PanelTickerJob):
         if not cfg.get("neutralize_features", True):
             tc.neutralized_frame = tc.feature_frame.copy()
             return
-        if not tc.sector_momentum or tc.ticker not in tc.ticker_sectors:
+        strict = bool(cfg.get("strict_neutralization", True))
+        if not tc.sector_momentum:
+            if strict:
+                raise RuntimeError(
+                    f"{tc.ticker}: neutralize_features=true but sector momentum "
+                    "is missing"
+                )
+            tc.neutralized_frame = tc.feature_frame.copy()
+            return
+        if tc.ticker not in tc.ticker_sectors:
+            if strict:
+                raise RuntimeError(
+                    f"{tc.ticker}: neutralize_features=true but ticker sector "
+                    "metadata is missing"
+                )
+            tc.neutralized_frame = tc.feature_frame.copy()
+            return
+        sector = tc.ticker_sectors[tc.ticker]
+        if sector not in tc.sector_momentum:
+            if strict:
+                raise RuntimeError(
+                    f"{tc.ticker}: neutralize_features=true but sector '{sector}' "
+                    "has no sector momentum frame"
+                )
             tc.neutralized_frame = tc.feature_frame.copy()
             return
         try:
             neutralized = neutralize_features(
                 {tc.ticker: tc.feature_frame},
                 tc.sector_momentum,
-                {tc.ticker: tc.ticker_sectors[tc.ticker]},
+                {tc.ticker: sector},
                 cols=NEUTRALIZE_COLS,
                 rolling_window=int(cfg.get("neutralize_rolling_window", 252)),
                 expanding_warmup_days=int(cfg.get("neutralize_warmup_days", 252)),
             )
-            tc.neutralized_frame = neutralized.get(tc.ticker, tc.feature_frame.copy())
+            if tc.ticker not in neutralized:
+                if strict:
+                    raise RuntimeError(
+                        f"{tc.ticker}: neutralize_features returned no frame"
+                    )
+                tc.neutralized_frame = tc.feature_frame.copy()
+                return
+            tc.neutralized_frame = neutralized[tc.ticker]
         except Exception as exc:
             log.error("  %s: TickerPanelNeutralizeJob failed — %s", tc.ticker, exc)
+            if strict:
+                raise
             tc.neutralized_frame = tc.feature_frame.copy()
 
 
