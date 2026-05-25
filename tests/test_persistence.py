@@ -735,6 +735,95 @@ class TestTrades:
         assert report["sell_economic_gaps"] == 1
         conn.close()
 
+    @pytest.mark.parametrize(
+        ("gross_pnl", "tax", "net_pnl_after_tax"),
+        [
+            (100.0, 10.0, 999.0),   # net must equal gross - tax
+            (100.0, -1.0, 101.0),   # tax cannot be negative
+            (100.0, 120.0, -20.0),  # tax cannot exceed positive gross
+            (-10.0, 1.0, -11.0),    # losing sell must not carry positive tax
+            (float("nan"), 0.0, 0.0),
+        ],
+    )
+    def test_decision_trace_integrity_report_flags_corrupt_sell_economics(
+        self,
+        tmp_path,
+        gross_pnl,
+        tax,
+        net_pnl_after_tax,
+    ):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "held_no_new_buy",
+                "in_universe": 1,
+                "model_type": "xgb",
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "sell",
+            "shares": 1,
+            "price": 100.0,
+            "gross_pnl": gross_pnl,
+            "tax": tax,
+            "net_pnl_after_tax": net_pnl_after_tax,
+            "score_snapshot": {"rank_score": 0.40},
+            "decision_inputs": {"exit_reason": "stop_loss"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["sell_economic_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_accepts_valid_sell_economics(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "held_no_new_buy",
+                "in_universe": 0,
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "sell",
+            "shares": 1,
+            "price": 100.0,
+            "gross_pnl": 100.0,
+            "tax": 25.0,
+            "net_pnl_after_tax": 75.0,
+            "score_snapshot": {"rank_score": 0.40},
+            "decision_inputs": {"exit_reason": "stop_loss"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is True
+        assert report["sell_economic_gaps"] == 0
+        conn.close()
+
     def test_decision_trace_integrity_report_flags_qp_attribution_gap(self, tmp_path):
         conn = get_connection(_cfg(tmp_path))
         rid = record_pipeline_run(

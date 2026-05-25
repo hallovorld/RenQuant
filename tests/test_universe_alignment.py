@@ -374,6 +374,13 @@ class TestAdapterParity:
         src = self._read("backtesting/renquant_104/main.py")
         assert "LoadUniverseJob" in src
 
+    def test_lean_universe_passes_finite_nonzero_held_tickers(self):
+        src = self._read("backtesting/renquant_104/main.py")
+        assert "held_tickers=self._current_held_tickers()" in src
+        assert "def _current_held_tickers" in src
+        assert "math.isfinite(qty)" in src
+        assert "abs(qty) > 1e-9" in src
+
     def test_sim_adapter_calls_job(self):
         src = self._read("backtesting/renquant_104/adapters/sim.py")
         assert "LoadUniverseJob" in src

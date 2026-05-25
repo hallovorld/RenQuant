@@ -24,12 +24,15 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
 log = logging.getLogger("kernel.persistence")
+_ECON_ABS_TOL = 1e-6
+_ECON_REL_TOL = 1e-6
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -462,6 +465,45 @@ def _has_table(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _sell_economics_are_valid(
+    gross_pnl: Any,
+    tax: Any,
+    net_pnl_after_tax: Any,
+) -> bool:
+    """Validate realized sell accounting invariants.
+
+    The trace DB is an audit surface, so sell rows must satisfy basic
+    accounting identities before downstream analysis trusts them:
+
+    ``net_pnl_after_tax == gross_pnl - tax``; tax is finite/non-negative;
+    losses do not carry positive tax; and tax cannot exceed positive gross
+    P&L. Annual netting may lower the eventual tax bill, but it cannot make an
+    event-level row internally inconsistent.
+    """
+    gross = _finite_float(gross_pnl)
+    tax_v = _finite_float(tax)
+    net = _finite_float(net_pnl_after_tax)
+    if gross is None or tax_v is None or net is None:
+        return False
+    scale = max(abs(gross), abs(tax_v), abs(net), 1.0)
+    tol = max(_ECON_ABS_TOL, _ECON_REL_TOL * scale)
+    if tax_v < -tol:
+        return False
+    if gross <= tol and tax_v > tol:
+        return False
+    if gross > tol and tax_v - gross > tol:
+        return False
+    return math.isclose(net, gross - tax_v, rel_tol=_ECON_REL_TOL, abs_tol=tol)
 
 
 def _legacy_run_id_expr(table: str) -> str:
@@ -1496,7 +1538,7 @@ def decision_trace_integrity_report(
                 sh = 0.0
             if sh <= 0:
                 sell_share_gaps += 1
-            if gross_pnl is None or tax is None or net_pnl_after_tax is None:
+            if not _sell_economics_are_valid(gross_pnl, tax, net_pnl_after_tax):
                 sell_economic_gaps += 1
         try:
             score_snapshot = json.loads(score_json) if score_json else {}

@@ -2642,6 +2642,16 @@ entire pipeline end-to-end:
   staleness/floor filters. Validation: adapter contract, auto-drop, universe
   held-exemption, universe-alignment, and daily-104 loader tests passed
   (`53 passed`).
+- Follow-up LEAN held-source hardening fixed: `_current_held_tickers()` now
+  admits only finite non-dust quantities (`abs(qty) > 1e-9`), matching live's
+  broker-held source semantics. This prevents NaN/dust portfolio quantities
+  from granting phantom held exemptions during LEAN universe loading.
+- New decision-trace accounting integrity bug found by sidecar audit and
+  fixed: `decision_trace_integrity_report()` previously checked only that sell
+  economics were non-null. It now requires finite shares/economics,
+  `net_pnl_after_tax == gross_pnl - tax`, non-negative tax, no positive tax on
+  losing sells, and tax not exceeding positive gross P&L. Validation:
+  persistence plus universe/adapter parity tests passed (`88 passed`).
 
 ## Stop Conditions
 

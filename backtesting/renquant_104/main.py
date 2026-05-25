@@ -14,6 +14,7 @@ path-equivalence between sim and LEAN.)
 """
 from AlgorithmImports import *  # noqa: F401,F403
 import json
+import math
 from pathlib import Path
 
 from kernel.config       import load_config, split_date_parts, BULL_CALM, BULL_VOLATILE, CHOPPY, BEAR, REGIMES, artifact_path
@@ -250,7 +251,7 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
                 qty = float(self.Portfolio[sym].Quantity)
             except Exception:
                 continue
-            if qty != 0.0:
+            if math.isfinite(qty) and abs(qty) > 1e-9:
                 held.add(ticker)
         return held
 
