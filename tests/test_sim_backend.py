@@ -187,6 +187,27 @@ class TestSimBackendSellParity:
         b.drain_settled(pd.Timestamp("2025-02-04"))
         assert b.get_cash() > cash_after_buy
 
+    def test_t2_pending_proceeds_remain_in_portfolio_value_before_settlement(self):
+        """NAV is economic equity, so unsettled sell proceeds still count."""
+        b = _make_backend(cash=100_000.0, exec_enabled=True, t2_days=2)
+        b.update_bar_prices({"AAPL": 100.0}, today=pd.Timestamp("2025-01-02"))
+        b.place_market_order(OrderIntent(
+            ticker="AAPL", side=OrderSide.BUY, shares=100,
+            target_pct=0.10, today=pd.Timestamp("2025-01-02"),
+            reason="setup", exit_type=None,
+        ))
+        cash_after_buy = b.get_cash()
+        b.update_bar_prices({"AAPL": 105.0}, today=pd.Timestamp("2025-02-01"))
+        fill = b.place_market_order(OrderIntent(
+            ticker="AAPL", side=OrderSide.SELL, shares=None,
+            target_pct=0.0, today=pd.Timestamp("2025-02-01"),
+            reason="exit", exit_type="model_sell",
+        ))
+        pending = fill.shares * fill.price - fill.fees
+
+        assert math.isclose(b.get_cash(), cash_after_buy)
+        assert math.isclose(b.get_portfolio_value(), cash_after_buy + pending)
+
     def test_sell_with_slippage_decreases_fill_price(self):
         b = _make_backend(cash=100_000.0, exec_enabled=True)
         b.update_bar_prices({"AAPL": 100.0}, today=pd.Timestamp("2025-01-02"))

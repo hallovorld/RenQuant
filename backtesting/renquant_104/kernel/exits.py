@@ -74,6 +74,38 @@ def _is_nyse_trading_day(d: datetime.date) -> bool:
         return True   # weekday already passed; assume trading day
 
 
+@lru_cache(maxsize=4096)
+def nyse_trading_days_between(start: datetime.date, end: datetime.date) -> int:
+    """Count NYSE sessions after ``start`` through and including ``end``.
+
+    Entry day is day zero. This matches forward-label horizons such as
+    `fwd_60d_excess`: a position bought on T has completed one thesis day on
+    the next NYSE session, not on the next calendar day.
+    """
+    if not isinstance(start, datetime.date) or not isinstance(end, datetime.date):
+        return 0
+    if end <= start:
+        return 0
+    try:
+        import pandas_market_calendars as mcal  # noqa: PLC0415
+
+        nyse = mcal.get_calendar("XNYS")
+        sessions = nyse.valid_days(
+            start_date=start + datetime.timedelta(days=1),
+            end_date=end,
+        )
+        return int(len(sessions))
+    except Exception:
+        pass
+    cur = start + datetime.timedelta(days=1)
+    count = 0
+    while cur <= end:
+        if _is_nyse_trading_day(cur):
+            count += 1
+        cur += datetime.timedelta(days=1)
+    return count
+
+
 # ── Per-position mutable state ─────────────────────────────────────────────────
 
 @dataclass
@@ -642,7 +674,7 @@ def check_model_sell(
     Streak only counts after min_hold_days.  Returns updated state and exit.
     """
     if min_hold_days > 0:
-        days_held = (today - state.entry_date).days
+        days_held = nyse_trading_days_between(state.entry_date, today)
         if days_held < min_hold_days:
             # Don't touch streak — can't have earned streak yet
             return state, _NO_EXIT

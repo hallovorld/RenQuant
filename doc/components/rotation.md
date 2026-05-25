@@ -269,7 +269,7 @@ and `tests/test_rotation_atomic.py`.
     "enabled": true,
     "mode": "er",                      // "er" | "thesis_primary" | "thesis_symmetric"
     "min_expected_advantage_pct": 0.03,
-    "target_horizon_days": 20,
+    "target_horizon_days": 60,
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 30,
     "lt_protection_days": 30,

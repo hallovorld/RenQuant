@@ -3129,6 +3129,13 @@ Validation:
   neighborhoods confirming BULL_CALM soft-exit/stop metadata remains wired.
 - `48 passed`: LEAN backend, shared execution-pipeline, and execution-backend
   neighborhoods after confirmed-ticket enforcement in `LeanBackend`.
+- `80 passed`: model-sell, cross-sectional panel exit, legacy panel exit,
+  QP soft-sell, and exit-param wiring after the BULL_CALM 60-session thesis
+  horizon was converted from calendar-day counting to NYSE trading-session
+  counting.
+- `169 passed`: soft-exit/QP/LEAN trace/SimBackend/execution-backend bundle
+  after LEAN sell audit rows began receiving real current-regime params and
+  SimBackend NAV began counting unsettled T+N sell proceeds.
 
 ## Stop Conditions
 
@@ -3162,6 +3169,16 @@ Stop and fix before reporting performance if any of these happen:
   mixing ER/μ horizons.
 - BULL_CALM model-driven soft exits can fire before the 60d panel thesis
   horizon because the current regime relabeled away from BULL_CALM.
+- BULL_CALM/QP soft-exit min-hold uses calendar days instead of NYSE trading
+  sessions. The panel label is a trading-day lookahead, so calendar-day
+  release is horizon drift.
+- LEAN sell audit rows call the shared trade-event builder with tax-only
+  regime params while `stop_loss_anchor_policy=max_entry_current` is enabled.
+  That can either omit the applied stop contract or fail instead of recording
+  the decision tree.
+- SimBackend with T+N enabled reports portfolio value without unsettled sell
+  proceeds. Cash availability should exclude unsettled proceeds; NAV should
+  include them.
 - WF trade monotonicity sees `n>=10` but score ordering is inverted and still
   passes because the regime is below the full `min_n_per_regime` threshold.
 - A metric is not labeled as event-level, annual-net, short-window style, or

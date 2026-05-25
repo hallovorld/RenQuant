@@ -183,6 +183,30 @@ class TestSoftExitGuards:
         PanelConvictionExitTask().run(tc)
         assert tc.exit_signal is None
 
+    def test_entry_thesis_regime_suppresses_after_current_regime_changes(self):
+        today = datetime.date(2026, 6, 15)
+        h = _hs(0.10, -0.05)
+        h.entry_date = today - datetime.timedelta(days=60)
+        h.entry_regime = "BULL_CALM"
+        tc = SimpleNamespace(
+            ticker="NVDA",
+            holding=h,
+            exit_signal=None,
+            today=today,
+            regime="CHOPPY",
+            price=95.0,
+            config={"risk": {"panel_exit": {
+                "enabled": True,
+                "panel_sell_floor": 0.20,
+                "mu_sell_ceiling": 0.0,
+                "min_holding_days_by_regime": {"BULL_CALM": 60},
+            }}},
+        )
+
+        PanelConvictionExitTask().run(tc)
+
+        assert tc.exit_signal is None
+
     def test_tax_adjusted_gate_suppresses_marginal_short_term_gain_exit(self):
         today = datetime.date(2026, 2, 1)
         h = _hs(0.10, -0.02)

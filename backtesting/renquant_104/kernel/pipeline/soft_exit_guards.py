@@ -11,12 +11,21 @@ import datetime
 import math
 from typing import Any
 
+from kernel.exits import nyse_trading_days_between
+
 
 def holding_days(today: Any, holding: Any) -> int | None:
     entry_date = getattr(holding, "entry_date", None)
     if not isinstance(today, datetime.date) or not isinstance(entry_date, datetime.date):
         return None
     return max(0, (today - entry_date).days)
+
+
+def trading_holding_days(today: Any, holding: Any) -> int | None:
+    entry_date = getattr(holding, "entry_date", None)
+    if not isinstance(today, datetime.date) or not isinstance(entry_date, datetime.date):
+        return None
+    return nyse_trading_days_between(entry_date, today)
 
 
 def _configured_min_days(panel_cfg: dict[str, Any], regime: str | None) -> int:
@@ -56,11 +65,14 @@ def soft_exit_horizon_suppression(
     min_days = _configured_min_days(panel_cfg, regime)
     if min_days <= 0:
         return False, ""
-    days = holding_days(today, holding)
+    days = trading_holding_days(today, holding)
     if days is None:
         return False, ""
     if days < min_days:
-        return True, f"horizon_min_days days={days} < {min_days} regime={regime}"
+        return True, (
+            f"horizon_min_days trading_days={days} < {min_days} "
+            f"regime={regime}"
+        )
     return False, ""
 
 

@@ -306,6 +306,30 @@ class TestHorizonAndTaxGates:
         assert ctx.exits == []
         assert ctx.counters.get("xs_panel_exit_horizon_suppressed") == 1
 
+    def test_bull_calm_horizon_counts_trading_days_not_calendar_days(self):
+        cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
+        ctx = _ctx(
+            holdings={
+                "EARLY": _holding(
+                    panel=0.05,
+                    mu=-0.20,
+                    days_back=60,
+                    entry_regime="BULL_CALM",
+                ),
+            },
+            candidates=cands,
+            cfg_panel_exit=self._bearish_cfg(
+                min_holding_days_by_regime={"BULL_CALM": 60},
+            ),
+            prices={"EARLY": 95.0},
+            regime="CHOPPY",
+        )
+
+        CrossSectionalPanelExitTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters.get("xs_panel_exit_horizon_suppressed") == 1
+
     def test_root_level_lt_gate_330_does_not_act_like_30_day_default(self):
         cands = [_cand(f"X{i}", 0.10 + i * 0.04) for i in range(20)]
         ctx = _ctx(

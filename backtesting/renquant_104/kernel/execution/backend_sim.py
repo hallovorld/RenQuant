@@ -255,6 +255,8 @@ class SimBackend(ExecutionBackend):
 
     def get_portfolio_value(self) -> float:
         total = self._cash
+        if self._t2_queue is not None:
+            total += self._t2_queue.pending_total()
         for ticker, pos in self._positions.items():
             if pos.quantity == 0:
                 continue

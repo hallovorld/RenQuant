@@ -204,6 +204,50 @@ def test_build_sell_trade_event_uses_applied_exit_params_when_present():
     assert row["decision_inputs"]["stop_loss_entry_pct"] == 0.15
 
 
+def test_build_sell_trade_event_fallback_applies_stop_anchor_policy():
+    """Fallback audit rows need real regime params, not tax-only metadata."""
+    today = datetime.date(2026, 5, 24)
+    holding = HoldingState(
+        entry_price=100.0,
+        entry_date=today - datetime.timedelta(days=20),
+        high_watermark=108.0,
+        shares=5.0,
+        entry_regime="BULL_CALM",
+    )
+    sig = ExitSignal(
+        should_exit=True,
+        reason="qp trim",
+        exit_type="qp_sell",
+        quantity=2.0,
+    )
+
+    row = build_sell_trade_event(
+        ticker="AAPL",
+        sig=sig,
+        holding=holding,
+        price=97.0,
+        today=today,
+        regime="CHOPPY",
+        confidence=0.5,
+        regime_params={
+            "stop_loss_pct": 0.08,
+            "tax": {"short_term_rate": 0.40, "long_term_rate": 0.20},
+        },
+        config={
+            "risk": {"stop_loss_anchor_policy": {"mode": "max_entry_current"}},
+            "regime_params": {
+                "BULL_CALM": {"stop_loss_pct": 0.15},
+                "CHOPPY": {"stop_loss_pct": 0.08},
+            },
+        },
+    )
+
+    assert row["decision_inputs"]["stop_loss_pct"] == 0.15
+    assert row["decision_inputs"]["stop_loss_anchor_policy"] == "max_entry_current"
+    assert row["decision_inputs"]["stop_loss_anchor_regime"] == "BULL_CALM"
+    assert row["decision_inputs"]["stop_loss_current_regime"] == "CHOPPY"
+
+
 def test_adapters_use_shared_sell_trade_event_builder():
     runner_src = (STRATEGY_DIR / "adapters/runner.py").read_text()
     lean_src = (STRATEGY_DIR / "adapters/lean.py").read_text()

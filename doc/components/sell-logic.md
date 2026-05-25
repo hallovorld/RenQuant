@@ -147,9 +147,9 @@ if max_n ≤ 0 or len(ctx.exits) == 0:
     return
 
 # Partition: risk exits exempt; model_sells go through cap.
-risk_kept   = [(t, s) for t, s in ctx.exits if s.exit_type ∈ RISK_TYPES]
+risk_kept   = [(t, s) for t, s in ctx.exits if s.exit_type ∈ HARD_RISK_TYPES]
 model_sells = [(t, s, μ(t)) for t, s in ctx.exits
-                            if s.exit_type == "model_sell"]
+                            if s.exit_type ∈ {"model_sell", "panel_conviction"}]
 # Other types (preserve, fail-open) → risk_kept
 
 if len(model_sells) ≤ max_n:
@@ -167,15 +167,17 @@ ctx.counters["model_sell_throttled"] += dropped_count
 ```python
 RISK_EXIT_TYPES = {
     "stop_loss", "trailing_stop", "single_day_loss", "max_hold",
-    "panel_conviction", "rotation", "kelly_trim", "joint_sell",
+    "rotation", "kelly_trim", "joint_sell",
     # legacy aliases:
     "sdl", "trailing_stop_loss", "gap_down", "max_hold_days",
 }
 ```
 
-The "fail-open" rule is intentional: any unrecognized exit_type passes
-through (preserved). Better to risk one extra sell than to suppress a
-risk-management signal we don't recognize.
+`panel_conviction` is intentionally **not** risk-exempt anymore: it is a
+soft model-signal exit and shares the same cap as `model_sell`. The
+"fail-open" rule is intentional: any unrecognized exit_type passes through
+(preserved). Better to risk one extra sell than to suppress a risk-management
+signal we don't recognize.
 
 ### Defaults
 

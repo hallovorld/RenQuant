@@ -2180,6 +2180,7 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
         soft_exit_horizon_suppression,
         soft_exit_thesis_regime,
         tax_adjusted_soft_exit_suppression,
+        trading_holding_days,
     )
     thesis_regime = soft_exit_thesis_regime(hs, getattr(ctx, "regime", None))
     suppress, why = soft_exit_horizon_suppression(
@@ -2262,6 +2263,8 @@ def _disposed_lot_min_holding_days(
     lot_method: str,
 ) -> int | None:
     """Minimum age among lots a QP soft sell would actually dispose."""
+    from kernel.pipeline.soft_exit_guards import trading_holding_days  # noqa: PLC0415
+
     if not isinstance(today, _dt.date):
         return None
     try:
@@ -2272,19 +2275,13 @@ def _disposed_lot_min_holding_days(
         return None
     lots = list(getattr(holding, "lots", None) or [])
     if not lots:
-        entry_date = getattr(holding, "entry_date", None)
-        if isinstance(entry_date, _dt.date):
-            return max(0, (today - entry_date).days)
-        return None
+        return trading_holding_days(today, holding)
 
     method = str(lot_method or "fifo").lower()
     if method == "hifo":
         ordered = sorted(lots, key=lambda lot: -float(getattr(lot, "price", 0.0) or 0.0))
     elif method == "avg":
-        entry_date = getattr(holding, "entry_date", None)
-        if isinstance(entry_date, _dt.date):
-            return max(0, (today - entry_date).days)
-        ordered = lots
+        return trading_holding_days(today, holding)
     else:
         ordered = lots
 
@@ -2305,7 +2302,11 @@ def _disposed_lot_min_holding_days(
         take = min(lot_shares, target - consumed)
         if take <= 0:
             continue
-        age = max(0, (today - lot_date).days)
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        age = trading_holding_days(today, SimpleNamespace(entry_date=lot_date))
+        if age is None:
+            return None
         min_days = age if min_days is None else min(min_days, age)
         consumed += take
     return min_days

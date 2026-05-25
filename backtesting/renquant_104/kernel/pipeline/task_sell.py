@@ -10,6 +10,7 @@ from .soft_exit_guards import (
     lt_gate_suppression,
     resolve_current_price,
     soft_exit_horizon_suppression,
+    soft_exit_thesis_regime,
     tax_adjusted_soft_exit_suppression,
 )
 from .task_benchmark_sleeve import (
@@ -392,7 +393,7 @@ class PanelConvictionExitTask(Task):
         if fires:
             suppress, why = soft_exit_horizon_suppression(
                 panel_cfg=cfg,
-                regime=getattr(tc, "regime", None),
+                regime=soft_exit_thesis_regime(hs, getattr(tc, "regime", None)),
                 today=getattr(tc, "today", None),
                 holding=hs,
             )

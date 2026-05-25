@@ -1,4 +1,4 @@
-"""ExecutionPipeline — single source of truth for sim / LEAN / live order
+"""ExecutionPipeline — consolidation target for sim / LEAN / live order
 placement, holding-state bookkeeping, and wash-sale stamping.
 
 Sits AFTER :class:`InferencePipeline` in every adapter's bar loop:
@@ -9,9 +9,9 @@ Sits AFTER :class:`InferencePipeline` in every adapter's bar loop:
    ExecutionPipeline.run(ctx)   # this module — translate decisions to broker
 
 Per CLAUDE.md §1b: composed of Jobs (ExitsJob → BuysJob), each a sequence
-of ≤50-line Tasks. Per §5.13.5: the **only** place execution decisions
-materialize as broker calls; sim / runner / LEAN adapters all route here
-in slices 3-4 of the P0 consolidation.
+of ≤50-line Tasks. This path is test-backed but not yet the active adapter
+execution path; sim / runner / LEAN still use their adapter commit hooks
+until the P0 execution consolidation is finished.
 """
 from __future__ import annotations
 

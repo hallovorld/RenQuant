@@ -799,6 +799,10 @@ class LeanAdapter:
                 event_gross / proceeds_basis
                 if proceeds_basis and proceeds_basis > 0 else None
             )
+            regime_p = dict(
+                (config.get("regime_params", {}) or {}).get(ctx.regime, {}) or {}
+            )
+            regime_p["tax"] = config.get("tax", {}) or {}
             trade_event = build_sell_trade_event(
                 ticker=ticker,
                 sig=sig,
@@ -807,7 +811,7 @@ class LeanAdapter:
                 today=ctx.today,
                 regime=ctx.regime,
                 confidence=ctx.confidence,
-                regime_params={"tax": config.get("tax", {}) or {}},
+                regime_params=regime_p,
                 config=config,
                 shares=event_shares,
                 gross_pnl=event_gross,

@@ -176,10 +176,14 @@ neutralized_rel_mom_20d = rel_mom_20d − β_sector × sector_etf_mom_20d
 
 这是整个 pipeline 里最关键的一步。label 质量决定模型能否学到信号。
 
-#### Step 4.1 — 计算原始 5 天远期收益
+#### Step 4.1 — 计算原始 N 天远期收益
+
+生产配置以 `panel_ltr.lookahead_days` 为唯一 horizon 来源。当前
+`renquant_104` production/golden 是 **60 个 NYSE 交易日**，对应
+`fwd_60d_excess`；历史文档里的 5d 只是早期默认，不是当前生产合同。
 
 ```
-fwd_return_i,t = close_i,t+5 / close_i,t − 1
+fwd_return_i,t = close_i,t+N / close_i,t − 1
 ```
 
 #### Step 4.2 — β 中性化(去掉市场和行业暴露)
@@ -346,7 +350,8 @@ mean_ic = mean(ic_date for all date)
 禁运期:[t_test_end + 1, t_test_end + embargo_days]
 ```
 
-N 默认等于 lookahead_days = 5。
+N 默认等于 `panel_ltr.lookahead_days`。当前生产合同为 60 个 NYSE
+交易日，soft-exit / QP horizon gates 也必须按交易日而不是日历日计数。
 
 ---
 

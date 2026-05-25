@@ -24,6 +24,7 @@ from kernel.exits import (  # noqa: E402
     HoldingState,
     _is_nyse_trading_day,
     check_model_sell,
+    nyse_trading_days_between,
 )
 decide_model_exit = check_model_sell   # alias for these tests
 
@@ -68,6 +69,12 @@ def _holding(entry_days_ago: int = 60, sell_streak: int = 0,
 
 
 class TestStreakTradingDay:
+    def _first_date_with_n_trading_days(self, entry: datetime.date, n: int) -> datetime.date:
+        cur = entry
+        while nyse_trading_days_between(entry, cur) < n:
+            cur += datetime.timedelta(days=1)
+        return cur
+
     def test_sunday_does_not_increment(self):
         """User-found bug: e2e on Sunday should NOT inc streak."""
         sunday = datetime.date(2026, 4, 26)
@@ -117,6 +124,40 @@ class TestStreakTradingDay:
         )
         assert new_state.sell_streak == 2, \
             "Sunday hold must NOT reset streak (preserve until Mon)"
+
+    def test_min_hold_uses_trading_days_not_calendar_days(self):
+        today = datetime.date(2026, 6, 15)
+        entry = today - datetime.timedelta(days=60)
+        assert nyse_trading_days_between(entry, today) < 60
+        state = HoldingState(
+            entry_price=100.0,
+            entry_date=entry,
+            high_watermark=110.0,
+            sell_streak=2,
+            shares=10,
+        )
+
+        new_state, exit_sig = decide_model_exit("sell", state, 3, 60, today)
+
+        assert new_state.sell_streak == 2
+        assert exit_sig.should_exit is False
+
+    def test_min_hold_allows_after_configured_trading_days(self):
+        entry = datetime.date(2026, 4, 16)
+        today = self._first_date_with_n_trading_days(entry, 60)
+        state = HoldingState(
+            entry_price=100.0,
+            entry_date=entry,
+            high_watermark=110.0,
+            sell_streak=2,
+            shares=10,
+        )
+
+        new_state, exit_sig = decide_model_exit("sell", state, 3, 60, today)
+
+        assert nyse_trading_days_between(entry, today) == 60
+        assert new_state.sell_streak == 3
+        assert exit_sig.should_exit is True
 
     def test_monday_hold_resets_streak(self):
         """A real trading-day hold signal does reset the streak."""
