@@ -42,6 +42,7 @@ from kernel.pipeline.task_benchmark_sleeve import (
 
 from .tasks import (
     ApplyConvictionCapTask,
+    ApplyExitOnlyTopupGuardTask,
     ApplyExposureScalingTask,
     ApplyGrinoldKahnTransformTask,
     ApplySectorMetadataGuardTask,
@@ -120,10 +121,18 @@ class _BuildSourceMapTask(Task):
             if exclude_benchmark_sleeve_from_alpha(ctx) else None
         )
         holdings = ctx.holdings or {}
+        long_candidate_tickers = {
+            getattr(c, "ticker", None)
+            for c in self._ordered_long_candidates(ctx)
+            if getattr(c, "ticker", None)
+        }
+        exit_only_tickers: set[str] = set()
         for t, hs in holdings.items():
             if t == sleeve_ticker:
                 continue
             src[t] = hs
+            if t not in long_candidate_tickers:
+                exit_only_tickers.add(t)
         admitted_new_tickers: set[str] = set()
         blocked_map = getattr(ctx, "_blocked_by_ticker", None)
         if blocked_map is None:
@@ -143,6 +152,7 @@ class _BuildSourceMapTask(Task):
                 continue
             if t in holdings:
                 src[t] = c   # candidate wins (newer scores)
+                exit_only_tickers.discard(t)
                 continue
             if t in short_tickers:
                 # The short-candidate phase below owns this ticker. Do not let
@@ -199,7 +209,9 @@ class _BuildSourceMapTask(Task):
             t = getattr(c, "ticker", None)
             if t and t != sleeve_ticker:
                 src[t] = c
+                exit_only_tickers.discard(t)
         ctx._qp_mu_source_map = src   # noqa: SLF001
+        ctx._qp_exit_only_tickers = exit_only_tickers  # noqa: SLF001
         self._sync_ticker_order(ctx, src)
 
     @staticmethod
@@ -462,6 +474,9 @@ class JointPortfolioQPJob(Job):
             # multiplicatively with conviction & sector caps below. See
             # doc/AUDIT_2026-05-12_dead_paths.md.
             ApplyExposureScalingTask(),
+            # Held names that are not current buy candidates stay available
+            # for trims/closes, but QP must not add fresh risk to them.
+            ApplyExitOnlyTopupGuardTask(),
             # Missing sector metadata cannot be an implicit exemption from
             # sector constraints. Cap unmapped names at current weight before
             # building sector/correlation matrices.

@@ -563,6 +563,43 @@ class ApplySectorMetadataGuardTask(Task):
         )
 
 
+class ApplyExitOnlyTopupGuardTask(Task):
+    """Prevent held-but-unadmitted names from becoming QP top-ups.
+
+    Holdings remain in the QP universe so the optimizer can reduce or close
+    them. That exit permission must not imply fresh alpha admission. If the
+    current buy/candidate path did not admit a held ticker, cap its upper
+    weight at current weight before solve; the emission path has a second
+    fail-closed check.
+    """
+    name = "ApplyExitOnlyTopupGuardTask"
+
+    def run(self, ctx) -> bool | None:
+        exit_only = set(getattr(ctx, "_qp_exit_only_tickers", set()) or set())
+        if not exit_only:
+            return None
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        w_upper = _get_path(ctx, "_qp_w_upper")
+        w_current = _get_path(ctx, "_qp_w_current")
+        if not tickers or w_upper is None or w_current is None:
+            return None
+        w_upper_arr = np.asarray(w_upper, dtype=float).copy()
+        w_current_arr = np.asarray(w_current, dtype=float)
+        capped: list[str] = []
+        for i, ticker in enumerate(tickers):
+            if (
+                ticker not in exit_only
+                or i >= len(w_upper_arr)
+                or i >= len(w_current_arr)
+            ):
+                continue
+            w_upper_arr[i] = min(float(w_upper_arr[i]), max(float(w_current_arr[i]), 0.0))
+            capped.append(ticker)
+            _stamp_qp_ticker_block(ctx, ticker, "qp_universe_exit_only")
+        ctx._qp_w_upper = w_upper_arr  # noqa: SLF001
+        _inc_counter(ctx, "qp_exit_only_topup_guard", len(capped))
+
+
 _BuildADVVectorTask = None  # lazy class, defined below
 
 
@@ -1612,6 +1649,8 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         return None
 
     is_held = ticker in env.get("holdings_set", set())
+    if is_held and ticker in set(env.get("exit_only_tickers", set()) or set()):
+        return "qp_universe_exit_only"
     if (
         not is_held
         and bool(gate.get("respect_open_slots", True))
@@ -2092,6 +2131,7 @@ class EmitOrdersFromQPSolutionTask(Task):
             preexisting_exit_tickers={
                 t for t, _ in (getattr(ctx, "exits", None) or [])
             },
+            exit_only_tickers=set(getattr(ctx, "_qp_exit_only_tickers", set()) or set()),
             emitted_new_tickers=set(),
         )
 

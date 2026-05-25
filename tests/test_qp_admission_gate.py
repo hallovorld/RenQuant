@@ -5,13 +5,18 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 REPO = Path(__file__).resolve().parent.parent
 KERNEL = REPO / "backtesting/renquant_104"
 if str(KERNEL) not in sys.path:
     sys.path.insert(0, str(KERNEL))
 
 from kernel.portfolio_qp.job_qp import _BuildSourceMapTask  # noqa: E402
-from kernel.portfolio_qp.tasks import _qp_buy_admission_block_reason  # noqa: E402
+from kernel.portfolio_qp.tasks import (  # noqa: E402
+    ApplyExitOnlyTopupGuardTask,
+    _qp_buy_admission_block_reason,
+)
 
 
 def _env(
@@ -108,6 +113,16 @@ def test_qp_blocks_held_topup_below_rank_floor() -> None:
     reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
 
     assert reason == "qp_admission_rank"
+
+
+def test_qp_blocks_held_topup_when_marked_exit_only() -> None:
+    holding = SimpleNamespace(rank_score=0.80, panel_score=0.20)
+    env = _env(holdings={"AAA": holding}, source=None)
+    env["exit_only_tickers"] = {"AAA"}
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason == "qp_universe_exit_only"
 
 
 def test_qp_allows_prequalified_candidate_with_available_slot() -> None:
@@ -294,6 +309,38 @@ def test_qp_solver_universe_keeps_held_names_for_trim_even_below_topup_floor() -
     assert ctx._qp_tickers == ["HELD"]
     assert ctx._qp_mu_source_map["HELD"] is held
     assert "HELD" not in ctx._blocked_by_ticker
+
+
+def test_qp_solver_marks_held_without_current_candidate_exit_only() -> None:
+    held = SimpleNamespace(ticker="HELD", rank_score=0.80, panel_score=0.20)
+    ctx = _ctx_for_source_map(
+        holdings={"HELD": held},
+        candidates=[],
+        _qp_tickers=["HELD"],
+    )
+
+    _BuildSourceMapTask().run(ctx)
+
+    assert ctx._qp_tickers == ["HELD"]
+    assert ctx._qp_mu_source_map["HELD"] is held
+    assert ctx._qp_exit_only_tickers == {"HELD"}
+
+
+def test_qp_exit_only_guard_caps_upper_at_current_weight() -> None:
+    ctx = SimpleNamespace(
+        _qp_exit_only_tickers={"HELD"},
+        _qp_tickers=["HELD", "OPEN"],
+        _qp_w_upper=np.array([0.20, 0.20]),
+        _qp_w_current=np.array([0.07, 0.00]),
+        _blocked_by_ticker={},
+        counters={},
+    )
+
+    ApplyExitOnlyTopupGuardTask().run(ctx)
+
+    assert ctx._qp_w_upper.tolist() == [0.07, 0.20]
+    assert ctx._blocked_by_ticker["HELD"] == "qp_universe_exit_only"
+    assert ctx.counters["qp_exit_only_topup_guard"] == 1
 
 
 def test_qp_solver_universe_excludes_new_candidates_when_slots_are_full() -> None:

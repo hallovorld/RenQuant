@@ -2596,6 +2596,16 @@ entire pipeline end-to-end:
   fractional-share execution or a true mixed-integer lot-size optimizer.
   Validation: QP min-share, QP admission, and WF-config parity tests passed
   (`38 passed`).
+- New QP held-universe exemption bug found by sidecar audit and fixed:
+  holdings must stay in the QP universe so the optimizer can trim/close them,
+  but that exit permission was not explicitly separated from buy/top-up
+  admission. A held ticker that was no longer a current buy candidate could
+  still receive a positive QP delta through the same source map. The source-map
+  task now marks held-but-unadmitted names as `qp_universe_exit_only`, a new
+  guard caps their QP upper bound at current weight before solve, and the
+  emission gate blocks any positive delta with the same reason as a second
+  line of defense. Validation: QP admission, min-share, conviction-cap, and
+  split-job e2e tests passed (`55 passed`).
 
 ## Stop Conditions
 
