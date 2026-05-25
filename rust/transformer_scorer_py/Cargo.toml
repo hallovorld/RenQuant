@@ -11,6 +11,10 @@ name = "transformer_scorer_py"
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
+[features]
+default = []
+metal = ["transformer_scorer/metal"]
+
 [dependencies]
 transformer_scorer = { path = "../transformer_scorer" }
 candle-core = { workspace = true }

@@ -16,8 +16,6 @@
 //!   * NaN labels in test → skip those rows in the per-date Spearman
 //!   * all-equal predictions OR labels → IC=0 for that group (ties)
 
-use anyhow::Result;
-
 /// Compute Spearman rank correlation between two equal-length f32 vectors.
 /// NaN entries on either side cause the corresponding rows to be dropped.
 /// Returns None if fewer than 2 valid pairs remain or one side is constant.

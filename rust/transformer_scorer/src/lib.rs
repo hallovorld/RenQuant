@@ -20,7 +20,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use candle_core::{DType, Device, Module, Tensor};
-use candle_nn::{linear, ops, Activation, Linear, VarBuilder};
+use candle_nn::{linear, Linear, VarBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

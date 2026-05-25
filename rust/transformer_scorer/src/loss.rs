@@ -16,7 +16,7 @@
 //! a higher level handles batching weights via NaN-fraction guard).
 
 use anyhow::Result;
-use candle_core::{DType, Module, Tensor};
+use candle_core::{DType, Tensor};
 use candle_nn::ops::{log_softmax, softmax};
 
 /// ListNet loss. All inputs are (B, T) tensors.

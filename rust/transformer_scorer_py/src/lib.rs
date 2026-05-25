@@ -19,7 +19,7 @@
 use ::transformer_scorer::PanelScorer as RustPanelScorer;
 use candle_core::Device;
 use ndarray::Array2;
-use numpy::{PyArray2, PyReadonlyArray2};
+use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;

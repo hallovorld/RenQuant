@@ -6,7 +6,9 @@
 //! For each row in the batch, generate all label-distinct pairs (i, j)
 //! where label_i > label_j. The loss for the pair is:
 //!
+//! ```text
 //!     L_ij = log(1 + exp(-(s_i - s_j)))
+//! ```
 //!
 //! which is the binary cross-entropy of the "i ranks above j" event.
 //! Gradient is `-1/(1+exp(s_i-s_j))` for s_i and `+1/(...)` for s_j —
@@ -36,7 +38,6 @@ pub fn ranknet_loss(
     pad_mask: &Tensor,
     nan_mask: Option<&Tensor>,
 ) -> Result<Tensor> {
-    let device = score.device();
     let dtype  = score.dtype();
     debug_assert_eq!(dtype, DType::F32, "expected f32 inputs");
 
