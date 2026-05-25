@@ -2568,6 +2568,14 @@ entire pipeline end-to-end:
   P&L from the trade decision inputs. Validation: partial-sell, tax-lot,
   HIFO-selection, trade-attribution, QP-audit, LEAN backend, and LEAN trace
   suites passed (`69 passed`).
+- New live decision-trace selected-state bug found by sidecar audit and fixed:
+  live DB persistence built normalized buy trade rows, but selected tickers
+  were still derived from raw broker order dicts. Raw live order dicts do not
+  necessarily carry `action="buy"`, so a broker-confirmed buy could be written
+  as `selected=0` in `candidate_scores` / `ticker_daily_state`. Runner now
+  computes `selected_tickers` from normalized `trade_events`, matching sim and
+  LEAN. Validation: runner selected-state, trade-event builder, and candidate
+  persistence tests passed (`16 passed`).
 
 ## Stop Conditions
 

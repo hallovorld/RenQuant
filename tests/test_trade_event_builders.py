@@ -11,6 +11,7 @@ if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
 from kernel.exits import ExitSignal, HoldingState  # noqa: E402
+from kernel.decision_trace import selected_buy_tickers  # noqa: E402
 from kernel.trade_events import build_buy_trade_event, build_sell_trade_event  # noqa: E402
 
 
@@ -42,6 +43,14 @@ def test_build_buy_trade_event_computes_invest_and_audit_payload():
     assert row["score_snapshot"]["panel_score"] == 0.04
     assert row["decision_inputs"]["acceptance_reason"] == "QP_BUY"
     assert row["decision_inputs"]["source_job"] == "JointPortfolioQPJob"
+
+
+def test_selected_buy_tickers_uses_normalized_trade_events():
+    raw_order = {"ticker": "AAPL", "shares": 3, "price": 100.0}
+    assert selected_buy_tickers([raw_order]) == set()
+
+    row = build_buy_trade_event(raw_order, date="2026-05-24")
+    assert selected_buy_tickers([row]) == {"AAPL"}
 
 
 def test_adapters_use_shared_buy_trade_event_builder():

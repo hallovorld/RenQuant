@@ -451,6 +451,6 @@ class TestSelectedMeansActuallyPlaced:
     """Decision telemetry selected=1 means accepted/applied order, not intent."""
 
     def test_live_selected_uses_broker_confirmed_orders(self):
-        assert "selected_tickers = selected_buy_tickers(orders_for_db)" in RUNNER_SOURCE
+        assert "selected_tickers = selected_buy_tickers(trade_events)" in RUNNER_SOURCE
         assert "def selected_buy_tickers" in DECISION_TRACE_SOURCE
         assert "broker_skip:" in RUNNER_SOURCE

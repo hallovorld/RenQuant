@@ -1772,7 +1772,7 @@ class RunnerAdapter:
                 run_bundle       = run_bundle,
                 run_id          = getattr(ctx, "run_id", None),
             )
-            selected_tickers = selected_buy_tickers(orders_for_db)
+            selected_tickers = selected_buy_tickers(trade_events)
             blocked_map = dict(getattr(ctx, "_blocked_by_ticker", None) or {})
             for o in getattr(ctx, "orders_skipped", []) or []:
                 if isinstance(o, dict) and o.get("ticker"):
