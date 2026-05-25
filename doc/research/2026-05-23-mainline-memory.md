@@ -1519,6 +1519,15 @@ PatchTST pilot WF diagnostic:
   `compare_arch_5cut_5seed.py` can compare PatchTST variants against XGB
   instead of only comparing PatchTST against itself. Targeted smoke tests:
   `tests/test_eval_drivers_smoke.py` -> `26 passed`.
+- Same-window comparator result:
+  - HF cross-stock PatchTST mean min-regime IC `+0.0507`.
+  - HF FiLM PatchTST `+0.0477`.
+  - HF baseline PatchTST `+0.0467`.
+  - XGB same-window baseline `+0.0283` with high variance (`std=0.2191`).
+  - XGB dominates cut1/cut3/cut4 but collapses in cut2_fed (`-0.3752` mean
+    min-regime IC). PatchTST is weaker in several stress cuts but much less
+    broken in cut2_fed. This supports regime/router research, not PatchTST
+    promotion as a single primary.
 - Expected-return QP-admission A/B (`BULL_CALM` new/top-up floor `0.04`) was
   run as diagnostic-only with config parity intentionally skipped. Verdict:
   FAIL. Annual-net cut metrics were:

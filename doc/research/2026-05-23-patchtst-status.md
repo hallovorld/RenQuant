@@ -111,3 +111,28 @@ eval_xgb_5cut_5seed.py` adds the missing same-cut, same-seed XGB baseline arm
 that writes the same `aggregate.csv` schema consumed by
 `scripts/compare_arch_5cut_5seed.py`. Before this, the 5-cut PatchTST
 comparator could rank PatchTST variants but could not prove PatchTST beats XGB.
+
+The same-window XGB arm was then run:
+
+| arm | mean min-regime IC | std | read |
+|---|---:|---:|---|
+| HF cross-stock PatchTST | `+0.0507` | `0.0896` | Best PatchTST variant, but below Tier-2 architecture gap vs FiLM. |
+| HF FiLM PatchTST | `+0.0477` | `0.0782` | Similar to baseline. |
+| HF baseline PatchTST | `+0.0467` | `0.0833` | Similar to FiLM/cross-stock. |
+| XGB same-window baseline | `+0.0283` | `0.2191` | Stronger in cut1/cut3/cut4, but catastrophically negative in cut2_fed. |
+
+Per-cut min-regime IC:
+
+| cut | XGB | HF baseline | HF FiLM | HF cross-stock |
+|---|---:|---:|---:|---:|
+| cut1_covid | `+0.2069` | `+0.1220` | `+0.1142` | `+0.1128` |
+| cut2_fed | `-0.3752` | `-0.0430` | `-0.0342` | `-0.0423` |
+| cut3_inflpk | `+0.0917` | `+0.0102` | `+0.0211` | `+0.0120` |
+| cut4_svb | `+0.1974` | `+0.1594` | `+0.1561` | `+0.1865` |
+| cut5_unwind | `+0.0205` | `-0.0152` | `-0.0186` | `-0.0154` |
+
+Interpretation: PatchTST is not obviously useless; it is more stable than XGB
+on the Fed cut, while XGB is much stronger in several stress cuts. This argues
+for regime/router research, not for replacing the primary with PatchTST. It
+also confirms that the old question "is PatchTST good?" was too pooled; the
+right question is which regime/cut each model can trade without breaking.

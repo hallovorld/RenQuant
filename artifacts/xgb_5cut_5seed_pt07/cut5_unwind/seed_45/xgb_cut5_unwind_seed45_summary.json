@@ -1,0 +1,37 @@
+{
+  "status": "ok",
+  "arch": "xgb_rank_pairwise",
+  "cut": "cut5_unwind",
+  "seed": 45,
+  "best_val_ic": 0.005242115905251303,
+  "pool_ic": 0.018520216971978705,
+  "per_regime_ic": {
+    "BULL_VOLATILE": 0.005242115905251303,
+    "CHOPPY": 0.023620570041221756,
+    "BEAR": 0.193597446782028
+  },
+  "n_features": 172,
+  "n_train_rows": 277578,
+  "n_val_rows": 11644,
+  "params": {
+    "objective": "rank:pairwise",
+    "eval_metric": "rmse",
+    "eta": 0.05,
+    "max_depth": 5,
+    "min_child_weight": 50.0,
+    "subsample": 0.7,
+    "colsample_bytree": 0.7,
+    "reg_lambda": 1.0,
+    "reg_alpha": 0.5,
+    "tree_method": "hist",
+    "nthread": 4,
+    "verbosity": 0,
+    "seed": 45
+  },
+  "label_winsor": {
+    "enabled": true,
+    "fit_split": "train",
+    "lower": -2.6156331025891393,
+    "upper": 4.003914826023146
+  }
+}
