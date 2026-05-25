@@ -168,6 +168,85 @@ def _fmt_debug_float(value: Any, spec: str, missing: str = "NA") -> str:
     return format(value_f, spec)
 
 
+def _lean_ticket_status_text(ticket: Any) -> str:
+    status = getattr(ticket, "Status", None)
+    return str(status or "").lower()
+
+
+def _lean_ticket_float(ticket: Any, *names: str) -> float | None:
+    for name in names:
+        value = getattr(ticket, name, None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(out):
+            return out
+    return None
+
+
+def _lean_order_execution(
+    ticket: Any,
+    *,
+    requested_qty: float,
+    fallback_price: float,
+) -> tuple[bool, float, float, str]:
+    """Return (filled, qty, avg_price, status) for a LEAN order ticket.
+
+    Tests and some lightweight mocks return ``None`` from MarketOrder/
+    Liquidate. Preserve that legacy assumption as filled; real tickets must
+    either expose a filled status or a positive filled quantity.
+    """
+    requested_abs = abs(float(requested_qty))
+    fallback = _positive_finite_price(fallback_price) or 0.0
+    if ticket is None:
+        return True, requested_abs, fallback, "assumed_filled_none_ticket"
+    if isinstance(ticket, (list, tuple)):
+        total_qty = 0.0
+        total_value = 0.0
+        statuses: list[str] = []
+        for item in ticket:
+            ok, qty, px, status = _lean_order_execution(
+                item,
+                requested_qty=requested_abs,
+                fallback_price=fallback,
+            )
+            statuses.append(status)
+            if ok and qty > 0:
+                total_qty += qty
+                total_value += qty * (px if px > 0 else fallback)
+        if total_qty > 0:
+            return True, total_qty, total_value / total_qty, ",".join(statuses)
+        return False, 0.0, fallback, ",".join(statuses)
+
+    status = _lean_ticket_status_text(ticket)
+    if any(token in status for token in ("reject", "cancel", "invalid", "error")):
+        return False, 0.0, fallback, status
+    qty = _lean_ticket_float(
+        ticket,
+        "QuantityFilled",
+        "AbsoluteQuantityFilled",
+        "FilledQuantity",
+    )
+    price = _lean_ticket_float(
+        ticket,
+        "AverageFillPrice",
+        "AvgFillPrice",
+        "FillPrice",
+        "Price",
+    )
+    if qty is not None and abs(qty) > 0:
+        return True, abs(qty), price or fallback, status
+    if "filled" in status:
+        return True, requested_abs, price or fallback, status
+    return False, 0.0, price or fallback, status or "unknown"
+
+
 class LeanAdapter:
     """Translate between LEAN API and InferenceContext.
 
@@ -458,16 +537,43 @@ class LeanAdapter:
 
             req_qty = getattr(sig, "quantity", None)
             holding_qty = float(algo.Portfolio[sym].Quantity)
-            is_partial = not is_full_liquidate_signal(sig, holding_qty)
-            event_shares = float(req_qty) if is_partial else float(holding_qty)
             try:
-                price = float(algo.Securities[sym].Price)
+                fallback_price = float(algo.Securities[sym].Price)
             except Exception:
-                price = 0.0
+                fallback_price = 0.0
+            is_full_request = is_full_liquidate_signal(sig, holding_qty)
+            if is_full_request:
+                requested_exit_shares = float(holding_qty)
+                ticket = algo.Liquidate(sym)
+            else:
+                requested_exit_shares = min(float(req_qty), float(holding_qty))
+                requested_order_shares = int(requested_exit_shares)
+                if requested_order_shares <= 0:
+                    algo.Debug(
+                        f"{ctx.today} {ticker} EXIT skipped — requested "
+                        f"shares round to zero ({requested_exit_shares})"
+                    )
+                    continue
+                requested_exit_shares = float(requested_order_shares)
+                ticket = algo.MarketOrder(sym, -requested_order_shares)
+            filled, filled_qty, fill_price, status = _lean_order_execution(
+                ticket,
+                requested_qty=requested_exit_shares,
+                fallback_price=fallback_price,
+            )
+            if not filled or filled_qty <= 0.0:
+                algo.Debug(
+                    f"{ctx.today} {ticker} EXIT skipped — LEAN order not "
+                    f"filled (status={status})"
+                )
+                continue
+            event_shares = min(float(filled_qty), float(holding_qty))
+            is_partial = event_shares < float(holding_qty) - 1e-9
+            price = fill_price if fill_price > 0 else fallback_price
 
             if is_partial:
                 # Partial sell fallback when lot accounting is unavailable.
-                frac = float(req_qty) / max(holding_qty, 1.0)
+                frac = float(event_shares) / max(holding_qty, 1.0)
                 event_gross = gross_pnl_broker * frac
             else:
                 event_gross = gross_pnl_broker
@@ -596,14 +702,7 @@ class LeanAdapter:
                 ]
             trade_events.append(trade_event)
 
-            if is_partial:
-                # Place a market order for -quantity (negative = sell).
-                # MarketOrder API: place exactly N shares, leaves remainder.
-                algo.MarketOrder(sym, -int(req_qty))
-                # DON'T stamp last_sell_dates — partial trim shouldn't
-                # block top-up via wash-sale (matches RunnerAdapter +
-                # SimAdapter behaviour after the 2026-04-24 fix).
-            else:
+            if not is_partial:
                 algo._last_sell_dates[ticker] = ctx.today
                 if not hasattr(algo, "_last_sell_pls"):
                     algo._last_sell_pls = {}
@@ -611,7 +710,6 @@ class LeanAdapter:
                     float(event_gross) if _math_lex.isfinite(event_gross)
                     else None
                 )
-                algo.Liquidate(sym)
                 full_exits.add(ticker)
             # G8 (2026-05-04): stamp post-stop blackout date on path-rule
             # exits regardless of partial/full. Tracked separately from
@@ -733,6 +831,29 @@ class LeanAdapter:
                 f"rs={_fmt_debug_float(order.get('rs_score'), '.3f')} "
                 f"pct={target_pct_f:.2%} {order.get('detail', '')}"
             )
+            order_qty = int(shares_f)
+            if order_qty <= 0:
+                algo.Debug(
+                    f"{ctx.today} {ticker} SKIP — shares round to zero "
+                    f"({shares_f})"
+                )
+                continue
+            ticket = algo.MarketOrder(sym, order_qty)
+            filled, filled_qty, fill_price, status = _lean_order_execution(
+                ticket,
+                requested_qty=float(order_qty),
+                fallback_price=price_f,
+            )
+            if not filled or filled_qty <= 0.0:
+                algo.Debug(
+                    f"{ctx.today} {ticker} BUY skipped — LEAN order not "
+                    f"filled (status={status})"
+                )
+                continue
+            shares_f = float(filled_qty)
+            price_f = float(fill_price or price_f)
+            if ctx.portfolio_value and ctx.portfolio_value > 0:
+                target_pct_f = shares_f * price_f / float(ctx.portfolio_value)
 
             if already_held:
                 hs = algo._holdings[ticker]
@@ -767,10 +888,6 @@ class LeanAdapter:
                 algo._holdings[ticker] = hs_new
             _stamp_holding_audit_fields(algo._holdings.get(ticker), order)
             algo._executed_buys += 1
-            # The pipeline already sized an exact whole-share order and sim/live
-            # execute that quantity. Use MarketOrder here as well; target_pct is
-            # retained only as decision/audit metadata.
-            algo.MarketOrder(sym, int(shares_f))
             trade_events.append(build_buy_trade_event(
                 {
                     **order,

@@ -3070,6 +3070,10 @@ decision-path bugs:
   horizon when raw μ is consumed without an alpha-to-mu transform.
 - Live SQLite sell rows now prefer the broker-confirmed `sig.sell_price` over
   the decision snapshot price, so DB P&L/tax rows match fills.
+- LEAN commit now confirms buy/sell order tickets before mutating holdings,
+  sell ledgers, tax totals, or trade events. Rejected/cancelled/invalid orders
+  fail closed and only leave a debug message; filled orders use actual filled
+  quantity and average fill price for state and tax attribution.
 
 Validation:
 
@@ -3081,6 +3085,8 @@ Validation:
   updating the held-top-up contract.
 - `100 passed`: persistence/decision-trace/score-distribution/runner-sell
   attribution/emit-helper/min-share-floor neighborhood.
+- `14 passed`: LEAN trace persistence neighborhood, including rejected buy/sell
+  tickets not mutating state.
 
 ## Stop Conditions
 
