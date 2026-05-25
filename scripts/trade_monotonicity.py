@@ -27,6 +27,7 @@ def evaluate_trade_monotonicity(
     min_n_per_regime: int = 30,
     min_spearman: float = 0.02,
     min_top_bottom_spread: float = 0.0,
+    allow_pass_open: bool = False,
 ) -> TradeMonotonicityReport:
     """Require entry scores to be economically monotone per active regime."""
     df = _clean_round_trips(round_trips, score_col, return_col, net_col, regime_col)
@@ -53,13 +54,24 @@ def evaluate_trade_monotonicity(
             )
             eligible.append(row)
         else:
-            row["passed"] = True
+            row["passed"] = bool(allow_pass_open)
             row["detail"] = (
-                f"pass-open: n={row['n']} < min_n_per_regime={min_n_per_regime}"
+                f"{'pass-open' if allow_pass_open else 'fail-closed'}: "
+                f"n={row['n']} < min_n_per_regime={min_n_per_regime}"
             )
         regime_reports.append(row)
 
     if not eligible:
+        if not allow_pass_open:
+            return TradeMonotonicityReport(
+                passed=False,
+                reason=(
+                    "insufficient per-regime trade evidence: no regime has "
+                    f"n >= {min_n_per_regime}"
+                ),
+                regimes=regime_reports,
+                pooled=pooled,
+            )
         return TradeMonotonicityReport(
             passed=True,
             reason=f"pass-open: no regime has n >= {min_n_per_regime}",

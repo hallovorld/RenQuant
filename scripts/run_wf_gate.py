@@ -83,6 +83,8 @@ def _required_validation_skip_reasons(args) -> list[str]:
         reasons.append("sanity_skipped")
     if bool(getattr(args, "skip_trade_gates", False)):
         reasons.append("trade_gates_skipped")
+    if bool(getattr(args, "allow_pass_open_trade_monotonicity", False)):
+        reasons.append("trade_monotonicity_pass_open_allowed")
     if bool(getattr(args, "skip_config_parity", False)):
         reasons.append("config_parity_skipped")
     if bool(getattr(args, "no_trade_trace", False)):
@@ -96,6 +98,7 @@ def _compute_overall_pass(
     sanity_result: dict,
     trade_contract_result: dict,
     trade_gate_result: dict,
+    alpha_economics_result: dict,
     validation_scope_ok: bool,
     parity_result: dict,
     skipped_required_gates: list[str],
@@ -107,6 +110,7 @@ def _compute_overall_pass(
         and _sanity_result_passed(sanity_result)
         and bool(trade_contract_result["passed"])
         and bool(trade_gate_result["passed"])
+        and bool(alpha_economics_result["passed"])
         and validation_scope_ok
         and bool(parity_result.get("passed", True))
     )
@@ -989,10 +993,19 @@ def run_walk_forward(
     ]
     has_spy_sharpe = len(spy_sharpes) == len(results)
     has_spy_apy = len(spy_apys) == len(results)
+    missing_benchmark_metrics: list[str] = []
+    if not has_spy_sharpe:
+        missing_benchmark_metrics.append("spy_sharpe")
+    if not has_spy_apy:
+        missing_benchmark_metrics.append("spy_apy")
     absolute_ok = mean_sharpe >= 0.40 and n_pos >= 2
     benchmark_ok = (
-        (not has_spy_sharpe or (mean_sharpe_vs_spy >= 0 and n_beat_spy_sharpe >= 2))
-        and (not has_spy_apy or (mean_apy_vs_spy >= 0 and n_beat_spy_apy >= 2))
+        has_spy_sharpe
+        and has_spy_apy
+        and mean_sharpe_vs_spy >= 0
+        and n_beat_spy_sharpe >= 2
+        and mean_apy_vs_spy >= 0
+        and n_beat_spy_apy >= 2
     )
     regime_ok = not regime_benchmark_failures
     pass_sharpe = bool(absolute_ok and benchmark_ok and regime_ok)
@@ -1018,6 +1031,8 @@ def run_walk_forward(
         "strategy_minus_spy_apy_mean": float(mean_apy_vs_spy),
         "n_cuts_beat_spy_sharpe": int(n_beat_spy_sharpe),
         "n_cuts_beat_spy_apy": int(n_beat_spy_apy),
+        "benchmark_data_missing": bool(missing_benchmark_metrics),
+        "missing_benchmark_metrics": missing_benchmark_metrics,
         "benchmark_by_dominant_regime": benchmark_by_regime,
         "regime_benchmark_failures": regime_benchmark_failures,
         "performance_tax_basis_counts": _value_counts(results, "performance_tax_basis"),
@@ -1038,7 +1053,13 @@ def run_walk_forward(
             if pass_sharpe else
             f"FAIL: absolute_ok={absolute_ok}, benchmark_ok={benchmark_ok}, "
             f"regime_ok={regime_ok}; mean Sharpe {mean_sharpe:+.3f}, "
-            f"{n_pos}/3 cuts > 0{benchmark_suffix}{regime_suffix}"
+            f"{n_pos}/3 cuts > 0"
+            + (
+                f"; benchmark_data_missing={missing_benchmark_metrics}"
+                if missing_benchmark_metrics else ""
+            )
+            + benchmark_suffix
+            + regime_suffix
         ),
     }
 
@@ -1049,6 +1070,7 @@ def run_trade_monotonicity_gate(
     min_n_per_regime: int = 30,
     min_spearman: float = 0.02,
     min_top_bottom_spread: float = 0.0,
+    allow_pass_open: bool = False,
 ) -> dict:
     """Evaluate trade score monotonicity from persisted round-trip ledgers."""
     frames, missing = _load_round_trip_frames(wf_result)
@@ -1065,6 +1087,7 @@ def run_trade_monotonicity_gate(
         min_n_per_regime=min_n_per_regime,
         min_spearman=min_spearman,
         min_top_bottom_spread=min_top_bottom_spread,
+        allow_pass_open=allow_pass_open,
     )
     return {
         "passed": bool(report.passed),
@@ -1074,6 +1097,7 @@ def run_trade_monotonicity_gate(
         "min_n_per_regime": int(min_n_per_regime),
         "min_spearman": float(min_spearman),
         "min_top_bottom_spread": float(min_top_bottom_spread),
+        "allow_pass_open": bool(allow_pass_open),
     }
 
 
@@ -1131,8 +1155,164 @@ def _load_round_trip_frames(wf_result: dict) -> tuple[list[pd.DataFrame], list[s
         except pd.errors.EmptyDataError:
             continue
         if not frame.empty:
+            frame["_wf_cut"] = f"{cut.get('start')}_to_{cut.get('end')}"
             frames.append(frame)
     return frames, missing
+
+
+def _benchmark_sleeve_entry_mask(df: pd.DataFrame) -> pd.Series:
+    mask = pd.Series(False, index=df.index)
+    for col in (
+        "entry_order_type",
+        "order_type",
+        "entry_source_job",
+        "source_job",
+        "entry_source_task",
+        "source_task",
+        "entry_reason",
+        "reason",
+    ):
+        if col not in df.columns:
+            continue
+        s = df[col].astype(str).str.lower()
+        if col in {"entry_source_job", "source_job"}:
+            mask = mask | s.eq("benchmarksleevejob")
+        mask = mask | s.str.contains("benchmark_sleeve", regex=False, na=False)
+        mask = mask | s.str.contains("benchmarksleevetask", regex=False, na=False)
+    return mask
+
+
+def _load_benchmark_close(benchmark_ticker: str) -> pd.Series | None:
+    path = REPO / "data" / "ohlcv" / benchmark_ticker.upper() / "1d.parquet"
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path).sort_index()
+    if "close" not in df.columns:
+        return None
+    close = pd.to_numeric(df["close"], errors="coerce").dropna()
+    close.index = pd.to_datetime(close.index).normalize()
+    return close.sort_index()
+
+
+def _close_on_or_before(close: pd.Series, value: object) -> float | None:
+    try:
+        ts = pd.Timestamp(value).normalize()
+    except Exception:
+        return None
+    idx = close.index.searchsorted(ts, side="right") - 1
+    if idx < 0:
+        return None
+    out = float(close.iloc[idx])
+    return out if math.isfinite(out) and out > 0 else None
+
+
+def run_alpha_economics_gate(
+    wf_result: dict,
+    *,
+    benchmark_ticker: str = "SPY",
+    min_positive_cuts: int = 2,
+) -> dict:
+    """Require benchmark-sleeve runs to prove active alpha economics.
+
+    Full-portfolio WF can include a SPY/core sleeve. That sleeve is useful for
+    live beta exposure, but model acceptance must still prove that non-sleeve
+    alpha trades add value versus simply putting the same entry capital into
+    the benchmark over the same holding window.
+    """
+    frames, missing = _load_round_trip_frames(wf_result)
+    if missing:
+        return {
+            "passed": False,
+            "reason": "missing round-trip ledger(s): " + "; ".join(missing[:5]),
+            "missing": missing,
+        }
+    if not frames:
+        return {"passed": False, "reason": "no round-trip ledgers found"}
+    df = pd.concat(frames, ignore_index=True)
+    status = (
+        df["status"].astype(str).str.lower()
+        if "status" in df.columns else
+        pd.Series(["closed"] * len(df), index=df.index)
+    )
+    closed = df[status.eq("closed")].copy()
+    sleeve_mask = _benchmark_sleeve_entry_mask(closed)
+    n_sleeve = int(sleeve_mask.sum())
+    if n_sleeve == 0:
+        return {
+            "passed": True,
+            "reason": "no benchmark sleeve closed trades; full WF metrics are alpha-owned",
+            "evidence": {"n_benchmark_sleeve_closed": 0},
+        }
+    alpha = closed[~sleeve_mask].copy()
+    if alpha.empty:
+        return {
+            "passed": False,
+            "reason": "benchmark sleeve present but no closed alpha trades",
+            "evidence": {"n_benchmark_sleeve_closed": n_sleeve, "n_alpha_closed": 0},
+        }
+    close = _load_benchmark_close(benchmark_ticker)
+    if close is None or close.empty:
+        return {
+            "passed": False,
+            "reason": f"benchmark close data missing for {benchmark_ticker}",
+            "evidence": {"benchmark": benchmark_ticker},
+        }
+
+    active_by_cut: dict[str, float] = {}
+    comparable = 0
+    skipped = 0
+    for _, row in alpha.iterrows():
+        entry_px = _finite_number(row.get("entry_price"))
+        exit_px = _finite_number(row.get("exit_price"))
+        shares = _finite_number(row.get("shares"))
+        net = _finite_number(row.get("net_pnl_after_tax"))
+        if entry_px is None or exit_px is None or shares is None or net is None:
+            skipped += 1
+            continue
+        b0 = _close_on_or_before(close, row.get("entry_date"))
+        b1 = _close_on_or_before(close, row.get("exit_date"))
+        if b0 is None or b1 is None:
+            skipped += 1
+            continue
+        entry_capital = abs(float(shares) * float(entry_px))
+        benchmark_pnl = entry_capital * (b1 / b0 - 1.0)
+        active = float(net) - benchmark_pnl
+        cut = str(row.get("_wf_cut") or "UNKNOWN")
+        active_by_cut[cut] = active_by_cut.get(cut, 0.0) + active
+        comparable += 1
+
+    if comparable == 0:
+        return {
+            "passed": False,
+            "reason": "benchmark sleeve present but alpha active-return comparison unavailable",
+            "evidence": {
+                "n_benchmark_sleeve_closed": n_sleeve,
+                "n_alpha_closed": int(len(alpha)),
+                "skipped_alpha_rows": skipped,
+            },
+        }
+    total_active = float(sum(active_by_cut.values()))
+    positive_cuts = int(sum(1 for v in active_by_cut.values() if v > 0))
+    passed = bool(total_active > 0.0 and positive_cuts >= int(min_positive_cuts))
+    return {
+        "passed": passed,
+        "reason": (
+            "alpha active economics passed"
+            if passed else
+            "alpha active economics failed versus same-capital benchmark"
+        ),
+        "evidence": {
+            "benchmark": benchmark_ticker,
+            "n_benchmark_sleeve_closed": n_sleeve,
+            "n_alpha_closed": int(len(alpha)),
+            "n_comparable_alpha_closed": int(comparable),
+            "skipped_alpha_rows": int(skipped),
+            "active_net_after_tax": total_active,
+            "active_net_after_tax_by_cut": active_by_cut,
+            "positive_active_cuts": positive_cuts,
+            "min_positive_cuts": int(min_positive_cuts),
+        },
+    }
 
 
 def _effective_artifact_cutoff(artifact: dict) -> pd.Timestamp | None:
@@ -1766,6 +1946,10 @@ def main():
                          "for quick parser tests.")
     ap.add_argument("--skip-trade-gates", action="store_true",
                     help="Skip trade-level monotonicity acceptance gates.")
+    ap.add_argument("--allow-pass-open-trade-monotonicity", action="store_true",
+                    help="Diagnostic only: allow insufficient per-regime "
+                         "trade evidence to pass-open. Metadata stamped with "
+                         "this flag is never promotable.")
     ap.add_argument("--skip-config-parity", action="store_true",
                     help="Skip prod/WF decision-semantics parity guard. "
                          "Use only for explicitly exploratory runs.")
@@ -1932,6 +2116,7 @@ def main():
 
     trade_gate_result = {"passed": True, "reason": "skipped"}
     trade_contract_result = {"passed": True, "reason": "skipped"}
+    alpha_economics_result = {"passed": True, "reason": "skipped"}
     if not args.skip_wf and not args.skip_trade_gates:
         if trace_dir is None:
             trade_gate_result = {
@@ -1939,11 +2124,17 @@ def main():
                 "reason": "trade gates require persisted round-trip ledgers",
             }
             trade_contract_result = dict(trade_gate_result)
+            alpha_economics_result = dict(trade_gate_result)
         elif wf_result.get("cuts"):
             trade_contract_result = run_trade_contract_gate(wf_result, gate_config)
-            trade_gate_result = run_trade_monotonicity_gate(wf_result)
+            trade_gate_result = run_trade_monotonicity_gate(
+                wf_result,
+                allow_pass_open=args.allow_pass_open_trade_monotonicity,
+            )
+            alpha_economics_result = run_alpha_economics_gate(wf_result)
         log.info("Trade contract result: %s", trade_contract_result["reason"])
         log.info("Trade gate result: %s", trade_gate_result["reason"])
+        log.info("Alpha economics result: %s", alpha_economics_result["reason"])
 
     sanity_result = {"passed": True, "reason": "skipped"}
     if not args.skip_sanity:
@@ -1976,6 +2167,7 @@ def main():
         sanity_result=sanity_result,
         trade_contract_result=trade_contract_result,
         trade_gate_result=trade_gate_result,
+        alpha_economics_result=alpha_economics_result,
         validation_scope_ok=validation_scope_ok,
         parity_result=parity_result,
         skipped_required_gates=skipped_required_gates,
@@ -2024,6 +2216,7 @@ def main():
         ),
         "trade_contract":      trade_contract_result,
         "trade_monotonicity":  trade_gate_result,
+        "alpha_economics":     alpha_economics_result,
         "real_ic":             sanity_result.get("real_ic"),
         "sanity_shuffled_ic":  sanity_result.get("sanity_shuffled_ic"),
         "sanity_placebo_ic":   sanity_result.get("sanity_placebo_ic"),

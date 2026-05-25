@@ -2769,6 +2769,20 @@ entire pipeline end-to-end:
   already blocked; this closes the remaining semantics gap so cvxportfolio is
   only used when it matches the requested objective/constraints. Validation:
   broad QP tests passed (`385 passed, 4 skipped`).
+- New WF acceptance hardening fixed three alpha-conversion leaks. First,
+  missing SPY benchmark metrics now fail closed instead of letting an
+  absolute-Sharpe-only run pass. Second, trade monotonicity no longer
+  pass-opens when no regime has enough closed alpha trades; explicit
+  `--allow-pass-open-trade-monotonicity` is diagnostic-only and makes metadata
+  non-promotable. Third, benchmark-sleeve runs now stamp and require
+  `alpha_economics`: alpha trades must add positive active net P/L versus
+  same-capital SPY in at least two WF cuts, so the SPY/core sleeve cannot
+  promote a weak model. `promote()` now refuses missing/failed
+  `trade_monotonicity` or `alpha_economics`. Current latest trace now fails
+  monotonicity correctly (`n=16`, pooled Spearman `-0.2916`, top-bottom spread
+  `-0.3225`) while alpha active economics is positive in 2/3 cuts. Validation:
+  targeted WF/promote/trade/preflight/model-acceptance tests passed
+  (`64 passed`, `147 passed`).
 
 ## Stop Conditions
 
@@ -2776,6 +2790,10 @@ Stop and fix before reporting performance if any of these happen:
 
 - WF config loses `tax.cash_debit_mode=reporting_only`.
 - WF/sanity metadata lacks passing regime-level IC/placebo evidence.
+- WF metadata lacks passing trade monotonicity with at least one eligible
+  regime, or was stamped with pass-open trade monotonicity.
+- A benchmark-sleeve WF run lacks passing alpha-economics evidence versus
+  same-capital SPY.
 - A calibrator/scorer fingerprint mismatch is detected.
 - Sector metadata is missing for a buyable ticker.
 - A buy/full path silently falls back to raw score or a weaker score.

@@ -650,6 +650,61 @@ def _check_wf_gate(staging_data: dict, staging_path: Path) -> None:
             f"aligned_real_ic={wf.get('sanity_placebo_aligned_real_ic')}. "
             f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
         )
+    trade_monotonicity = (
+        wf.get("trade_monotonicity")
+        if isinstance(wf.get("trade_monotonicity"), dict)
+        else None
+    )
+    if not trade_monotonicity or trade_monotonicity.get("passed") is not True:
+        raise ValueError(
+            f"promote: refused — wf_gate_metadata is missing passing "
+            f"trade_monotonicity on {staging_path.name}. Detail: "
+            f"{trade_monotonicity.get('reason') if isinstance(trade_monotonicity, dict) else 'absent'}. "
+            f"Re-run `scripts/run_wf_gate.py` with persisted trade trace so "
+            f"entry-score monotonicity participates in the promotion verdict. "
+            f"Override with RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
+    if bool(trade_monotonicity.get("allow_pass_open")):
+        raise ValueError(
+            f"promote: refused — trade_monotonicity was allowed to pass-open "
+            f"on {staging_path.name}; this is diagnostic-only evidence. "
+            f"Re-run without --allow-pass-open-trade-monotonicity. Override "
+            f"with RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
+    regimes_raw = trade_monotonicity.get("regimes")
+    if isinstance(regimes_raw, dict):
+        regimes = [
+            stats for stats in regimes_raw.values()
+            if isinstance(stats, dict)
+        ]
+    elif isinstance(regimes_raw, list):
+        regimes = [stats for stats in regimes_raw if isinstance(stats, dict)]
+    else:
+        regimes = []
+    eligible = [stats for stats in regimes if bool(stats.get("eligible", False))]
+    failed = [stats for stats in eligible if stats.get("passed") is not True]
+    if not eligible or failed:
+        raise ValueError(
+            f"promote: refused — trade_monotonicity lacks passing eligible "
+            f"regime evidence on {staging_path.name}. "
+            f"eligible={len(eligible)} failed={len(failed)} reason="
+            f"{trade_monotonicity.get('reason')}. Override with "
+            f"RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
+    alpha_economics = (
+        wf.get("alpha_economics")
+        if isinstance(wf.get("alpha_economics"), dict)
+        else None
+    )
+    if not alpha_economics or alpha_economics.get("passed") is not True:
+        raise ValueError(
+            f"promote: refused — wf_gate_metadata is missing passing "
+            f"alpha_economics on {staging_path.name}. Detail: "
+            f"{alpha_economics.get('reason') if isinstance(alpha_economics, dict) else 'absent'}. "
+            f"Re-run `scripts/run_wf_gate.py` with persisted trade trace so "
+            f"benchmark-sleeve runs prove active alpha economics. Override "
+            f"with RQ_ALLOW_NO_WF=1 (emergency only)."
+        )
     sanity = wf.get("sanity_regime_ic") if isinstance(wf.get("sanity_regime_ic"), dict) else None
     if not sanity or sanity.get("passed") is not True:
         raise ValueError(

@@ -53,10 +53,21 @@ def test_trade_monotonicity_fails_when_rank_is_anti_predictive() -> None:
     assert report.regimes[0]["top_bottom_return_spread"] < 0
 
 
-def test_trade_monotonicity_passes_open_for_tiny_regimes() -> None:
+def test_trade_monotonicity_fails_closed_for_tiny_regimes_by_default() -> None:
     report = evaluate_trade_monotonicity(
         _round_trips(inverted=True, n=10),
         min_n_per_regime=30,
+    )
+    assert report.passed is False
+    assert "insufficient per-regime trade evidence" in report.reason
+    assert report.regimes[0]["eligible"] is False
+
+
+def test_trade_monotonicity_pass_open_is_explicit_diagnostic_only() -> None:
+    report = evaluate_trade_monotonicity(
+        _round_trips(inverted=True, n=10),
+        min_n_per_regime=30,
+        allow_pass_open=True,
     )
     assert report.passed is True
     assert "pass-open" in report.reason

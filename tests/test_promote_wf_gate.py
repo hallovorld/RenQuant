@@ -41,6 +41,36 @@ def _wf_meta(passed: bool = True, age_days: float = 1.0) -> dict:
         "wf_3cut_apy_mean": 0.075,
         "sanity_shuffled_ic": -0.0024,
         "sanity_placebo_ic": 0.012,
+        "trade_monotonicity": {
+            "passed": True,
+            "reason": "score monotonicity passed in 1 active regime(s)",
+            "pooled": {
+                "n": 80,
+                "spearman": 0.08,
+                "top_bottom_return_spread": 0.04,
+            },
+            "regimes": [
+                {
+                    "regime": "BULL_CALM",
+                    "eligible": True,
+                    "passed": True,
+                    "n": 80,
+                    "spearman": 0.09,
+                    "top_bottom_return_spread": 0.05,
+                }
+            ],
+            "min_n_per_regime": 30,
+            "min_spearman": 0.02,
+            "allow_pass_open": False,
+        },
+        "alpha_economics": {
+            "passed": True,
+            "reason": "alpha active economics passed",
+            "evidence": {
+                "active_net_after_tax": 1000.0,
+                "positive_active_cuts": 2,
+            },
+        },
         "sanity_regime_ic": {
             "passed": True,
             "reason": "regime sanity IC passed",
@@ -87,6 +117,47 @@ class TestCheckWFGate:
         data = {"metadata": {"wf_gate_metadata": _wf_meta(passed=True)}}
         # No raise = pass
         _check_wf_gate(data, Path("/fake.json"))
+
+    def test_passed_true_without_trade_monotonicity_raises(self):
+        wf = _wf_meta(passed=True)
+        del wf["trade_monotonicity"]
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="trade_monotonicity"):
+            _check_wf_gate(data, Path("/fake.json"))
+
+    def test_trade_monotonicity_pass_open_raises(self):
+        wf = _wf_meta(passed=True)
+        wf["trade_monotonicity"]["allow_pass_open"] = True
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="pass-open"):
+            _check_wf_gate(data, Path("/fake.json"))
+
+    def test_trade_monotonicity_without_eligible_regime_raises(self):
+        wf = _wf_meta(passed=True)
+        wf["trade_monotonicity"]["regimes"][0]["eligible"] = False
+        wf["trade_monotonicity"]["reason"] = (
+            "insufficient per-regime trade evidence"
+        )
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="eligible regime"):
+            _check_wf_gate(data, Path("/fake.json"))
+
+    def test_passed_true_without_alpha_economics_raises(self):
+        wf = _wf_meta(passed=True)
+        del wf["alpha_economics"]
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="alpha_economics"):
+            _check_wf_gate(data, Path("/fake.json"))
+
+    def test_failed_alpha_economics_raises(self):
+        wf = _wf_meta(passed=True)
+        wf["alpha_economics"] = {
+            "passed": False,
+            "reason": "alpha active economics failed versus same-capital benchmark",
+        }
+        data = {"metadata": {"wf_gate_metadata": wf}}
+        with pytest.raises(ValueError, match="alpha_economics"):
+            _check_wf_gate(data, Path("/fake.json"))
 
     def test_passed_true_without_regime_sanity_raises(self):
         wf = _wf_meta(passed=True)

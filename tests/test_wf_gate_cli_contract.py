@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -121,6 +123,7 @@ def test_wf_gate_skip_flags_are_not_acceptance_passes() -> None:
         skip_trade_gates=True,
         skip_config_parity=True,
         no_trade_trace=True,
+        allow_pass_open_trade_monotonicity=True,
     )
 
     reasons = mod._required_validation_skip_reasons(args)
@@ -129,6 +132,7 @@ def test_wf_gate_skip_flags_are_not_acceptance_passes() -> None:
         sanity_result={"passed": True},
         trade_contract_result={"passed": True},
         trade_gate_result={"passed": True},
+        alpha_economics_result={"passed": True},
         validation_scope_ok=True,
         parity_result={"passed": True},
         skipped_required_gates=reasons,
@@ -140,8 +144,29 @@ def test_wf_gate_skip_flags_are_not_acceptance_passes() -> None:
         "trade_gates_skipped",
         "config_parity_skipped",
         "trade_trace_disabled",
+        "trade_monotonicity_pass_open_allowed",
     }
     assert overall is False
+
+
+def test_wf_trade_monotonicity_fails_closed_when_regime_sample_is_tiny(tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    rt = tmp_path / "tiny.round_trips.csv"
+    pd.DataFrame({
+        "status": ["closed"] * 10,
+        "entry_regime": ["BULL_CALM"] * 10,
+        "entry_rank_score": list(range(10)),
+        "pnl_pct": list(reversed([i / 100 for i in range(10)])),
+        "net_pnl_after_tax": list(reversed([i * 10 for i in range(10)])),
+    }).to_csv(rt, index=False)
+    wf_result = {"cuts": [{"trace_paths": {"round_trips_csv": str(rt)}}]}
+
+    monotonicity = mod.run_trade_monotonicity_gate(wf_result)
+
+    assert monotonicity["passed"] is False
+    assert "insufficient per-regime trade evidence" in monotonicity["reason"]
+    assert monotonicity["allow_pass_open"] is False
 
 
 def test_wf_gate_overall_pass_requires_regime_sanity() -> None:
@@ -152,6 +177,7 @@ def test_wf_gate_overall_pass_requires_regime_sanity() -> None:
         wf_result={"passed": True},
         trade_contract_result={"passed": True},
         trade_gate_result={"passed": True},
+        alpha_economics_result={"passed": True},
         validation_scope_ok=True,
         parity_result={"passed": True},
         skipped_required_gates=[],
@@ -325,6 +351,82 @@ def test_wf_gate_rejects_positive_sharpe_when_all_cuts_lag_spy(monkeypatch) -> N
     assert result["benchmark_by_dominant_regime"]["BULL_CALM"]["n_cuts"] == 3
     assert result["regime_benchmark_failures"] == ["BULL_CALM"]
     assert "SPY" in result["reason"]
+
+
+def test_wf_gate_rejects_positive_sharpe_when_benchmark_data_missing(monkeypatch) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    def fake_run_sim_cut(strategy_config, start, end, trace_dir=None):
+        del strategy_config, trace_dir
+        return {
+            "start": start,
+            "end": end,
+            "sharpe": 0.80,
+            "apy": 0.12,
+            "returncode": 0,
+            "market_context": {"benchmark": "SPY", "error": "missing SPY"},
+            "trade_trace_summary": {"buy_regime_counts": {"BULL_CALM": 1}},
+        }
+
+    monkeypatch.setattr(mod, "run_sim_cut", fake_run_sim_cut)
+
+    result = mod.run_walk_forward("unit_config.json", jobs=1)
+
+    assert result["passed"] is False
+    assert result["benchmark_data_missing"] is True
+    assert set(result["missing_benchmark_metrics"]) == {"spy_sharpe", "spy_apy"}
+    assert "benchmark_data_missing" in result["reason"]
+
+
+def test_wf_alpha_economics_rejects_sleeve_driven_positive_portfolio(monkeypatch, tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+    rt = tmp_path / "round_trips.csv"
+    pd.DataFrame([
+        {
+            "status": "closed",
+            "ticker": "SPY",
+            "entry_source_job": "BenchmarkSleeveJob",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-02-02",
+            "shares": 10,
+            "entry_price": 100,
+            "exit_price": 120,
+            "net_pnl_after_tax": 100,
+        },
+        {
+            "status": "closed",
+            "ticker": "AAA",
+            "entry_source_job": "JointPortfolioQPJob",
+            "entry_date": "2024-01-02",
+            "exit_date": "2024-02-02",
+            "shares": 10,
+            "entry_price": 100,
+            "exit_price": 101,
+            "net_pnl_after_tax": 10,
+        },
+    ]).to_csv(rt, index=False)
+    wf_result = {
+        "cuts": [
+            {
+                "start": "2024-01-02",
+                "end": "2024-12-31",
+                "trace_paths": {"round_trips_csv": str(rt)},
+            }
+        ]
+    }
+    close = pd.Series(
+        [100.0, 120.0],
+        index=pd.to_datetime(["2024-01-02", "2024-02-02"]),
+    )
+    monkeypatch.setattr(mod, "_load_benchmark_close", lambda _ticker: close)
+
+    result = mod.run_alpha_economics_gate(wf_result, min_positive_cuts=1)
+
+    assert result["passed"] is False
+    assert result["evidence"]["n_benchmark_sleeve_closed"] == 1
+    assert result["evidence"]["active_net_after_tax"] < 0
 
 
 def test_wf_gate_counts_performance_tax_basis() -> None:
