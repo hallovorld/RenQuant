@@ -273,9 +273,27 @@ Make RenQuant 104 scientifically trustworthy end to end:
   lot method for realized basis, tax, net P/L, and hold days. If fill history
   is unavailable or lot quantities do not match broker quantity, live falls
   back to broker avg-entry with a warning.
+- Live execution-attempt trace repair 2026-05-25: broker pending/skipped/
+  rejected buy and sell attempts now persist as distinct audit events
+  (`buy_pending`, `buy_skipped`, `sell_pending`, `sell_rejected`) with
+  order id/status/error, score snapshot, source metadata, and decision inputs.
+  They do not count as selected buys or realized exits.
 
 ## Pushed Progress
 
+- `3779e5c fix(renquant104): persist live execution attempts`
+  - Adds live audit events for non-filled broker attempts instead of only
+    writing confirmed fills.
+  - Pending/skipped/rejected attempts carry order id/status/error,
+    skip/block reason, source job/task, score snapshot, and decision inputs.
+  - Aggregate tests passed:
+    `tests/test_runner_sell_attribution.py tests/test_runner_state_fixes.py
+    tests/test_short_candidate_selection.py tests/test_short_cover_stop_phase_2d.py
+    tests/test_short_cover_tax.py tests/test_short_pnl_vectorbt_validator.py
+    tests/test_sim_trade_ledger.py tests/test_sim_execution_integration.py
+    tests/test_persistence.py tests/test_trade_event_builders.py
+    tests/test_qp_long_short_phase2a.py tests/test_lean_trace_persistence.py
+    tests/test_adapter_context_contract.py` (`219 passed`).
 - `92ed9a0 fix(renquant104): align live sell tax lot accounting`
   - Reconstructs live tax lots from broker fills and hydrates `HoldingState.lots`
     when quantities match the broker position.
