@@ -15,6 +15,14 @@ if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
 
 
+def _filled_ticket(qty: float, price: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        Status="Filled",
+        QuantityFilled=qty,
+        AverageFillPrice=price,
+    )
+
+
 def test_lean_adapter_records_full_watchlist_trace(tmp_path):
     """AUDIT REGRESSION GUARD: LEAN must write the same sidecar DB trace
     as sim/live so backtest Sharpe/APY can be replayed by decision tree."""
@@ -406,8 +414,8 @@ def test_lean_commit_stamps_full_exit_pl_for_wash_sale_parity(tmp_path):
         _blocked_min_hold=0,
         _preflight_ok=True,
         Debug=lambda *_args, **_kwargs: None,
-        Liquidate=lambda _sym: None,
-        MarketOrder=lambda _sym, _qty: None,
+        Liquidate=lambda _sym: _filled_ticket(10.0, 105.0),
+        MarketOrder=lambda _sym, qty: _filled_ticket(abs(qty), 105.0),
         SetHoldings=lambda _sym, _target: None,
     )
     adapter = LeanAdapter.__new__(LeanAdapter)
@@ -436,7 +444,11 @@ def test_lean_commit_stamps_full_exit_pl_for_wash_sale_parity(tmp_path):
     assert algo._last_sell_pls["AAA"] == 50.0
 
 
-def test_lean_commit_rejected_exit_does_not_mutate_state(tmp_path):
+@pytest.mark.parametrize(
+    "exit_ticket",
+    [SimpleNamespace(Status="Rejected", QuantityFilled=0), None],
+)
+def test_lean_commit_rejected_exit_does_not_mutate_state(tmp_path, exit_ticket):
     from adapters.lean import LeanAdapter
     from kernel.exits import ExitSignal, HoldingState
     from kernel.pipeline.context import InferenceContext
@@ -504,7 +516,7 @@ def test_lean_commit_rejected_exit_does_not_mutate_state(tmp_path):
         _blocked_min_hold=0,
         _preflight_ok=True,
         Debug=lambda *_args, **_kwargs: None,
-        Liquidate=lambda _sym: SimpleNamespace(Status="Rejected", QuantityFilled=0),
+        Liquidate=lambda _sym: exit_ticket,
         MarketOrder=lambda _sym, _qty: None,
         SetHoldings=lambda _sym, _target: None,
     )
@@ -605,8 +617,8 @@ def test_lean_commit_buy_and_topup_maintain_tax_lots(tmp_path):
         _blocked_min_hold=0,
         _preflight_ok=True,
         Debug=lambda *_args, **_kwargs: None,
-        Liquidate=lambda _sym: None,
-        MarketOrder=lambda _sym, _qty: None,
+        Liquidate=lambda _sym: _filled_ticket(5.0, 120.0),
+        MarketOrder=lambda _sym, qty: _filled_ticket(qty, 120.0),
         SetHoldings=lambda _sym, _target: None,
     )
     adapter = LeanAdapter.__new__(LeanAdapter)
@@ -649,7 +661,11 @@ def test_lean_commit_buy_and_topup_maintain_tax_lots(tmp_path):
     assert out.entry_price == 110.0
 
 
-def test_lean_commit_rejected_buy_does_not_mutate_state(tmp_path):
+@pytest.mark.parametrize(
+    "buy_ticket",
+    [SimpleNamespace(Status="Rejected", QuantityFilled=0), None],
+)
+def test_lean_commit_rejected_buy_does_not_mutate_state(tmp_path, buy_ticket):
     from adapters.lean import LeanAdapter
     from kernel.pipeline.context import InferenceContext
 
@@ -707,7 +723,7 @@ def test_lean_commit_rejected_buy_does_not_mutate_state(tmp_path):
         _preflight_ok=True,
         Debug=lambda *_args, **_kwargs: None,
         Liquidate=lambda _sym: None,
-        MarketOrder=lambda _sym, _qty: SimpleNamespace(Status="Rejected", QuantityFilled=0),
+        MarketOrder=lambda _sym, _qty: buy_ticket,
         SetHoldings=lambda _sym, _target: None,
     )
     adapter = LeanAdapter.__new__(LeanAdapter)
@@ -817,7 +833,9 @@ def test_lean_commit_benchmark_sleeve_buy_allows_missing_alpha_scores(tmp_path):
         _preflight_ok=True,
         Debug=lambda msg: debug_lines.append(str(msg)),
         Liquidate=lambda _sym: None,
-        MarketOrder=lambda sym, qty: market_calls.append((sym, qty)),
+        MarketOrder=lambda sym, qty: (
+            market_calls.append((sym, qty)) or _filled_ticket(qty, 500.0)
+        ),
         SetHoldings=lambda _sym, _target: pytest.fail("BUY must use exact-share MarketOrder"),
     )
     adapter = LeanAdapter.__new__(LeanAdapter)
@@ -939,8 +957,8 @@ def test_lean_partial_sell_uses_fifo_disposed_basis_for_tax(tmp_path):
         _corr_blocks=0,
         _blocked_min_hold=0,
         Debug=lambda *_args, **_kwargs: None,
-        Liquidate=lambda _sym: None,
-        MarketOrder=lambda _sym, _qty: None,
+        Liquidate=lambda _sym: _filled_ticket(10.0, 250.0),
+        MarketOrder=lambda _sym, qty: _filled_ticket(abs(qty), 250.0),
         SetHoldings=lambda _sym, _target: None,
     )
     adapter = LeanAdapter.__new__(LeanAdapter)

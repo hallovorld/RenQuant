@@ -1542,8 +1542,16 @@ class RunnerAdapter:
                             **order, "skip_reason": "pending_order_exists",
                         })
                         continue
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.error(
+                        "BUY skipped: could not verify open orders for %s: %s",
+                        ticker, exc,
+                    )
+                    ctx.orders_skipped.append({
+                        **order,
+                        "skip_reason": f"open_orders_check_failed:{type(exc).__name__}",
+                    })
+                    continue
 
                 try:
                     result = broker.place_order(ticker, "BUY", shares)

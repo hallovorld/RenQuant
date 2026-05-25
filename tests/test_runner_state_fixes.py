@@ -280,6 +280,13 @@ class TestRunnerCashBudgetGuard:
         assert "buy_cash_remaining += sell_credit" in RUNNER_SOURCE
         assert "same_bar_sell_credit(ctx)" in RUNNER_SOURCE
 
+    def test_open_order_guard_fails_closed(self):
+        guard_pos = RUNNER_SOURCE.index("pending = broker.get_open_orders()")
+        nearby = RUNNER_SOURCE[guard_pos:guard_pos + 1000]
+        assert "open_orders_check_failed" in nearby
+        assert "continue" in nearby
+        assert "except Exception:\n                    pass" not in nearby
+
 
 class TestBrokerOrderFillAccounting:
     """Accepted/submitted is not filled. Live state and DB mutate on fills only."""

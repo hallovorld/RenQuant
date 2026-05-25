@@ -3087,6 +3087,14 @@ decision-path bugs:
   and negative QP μ at the configured horizon, plus finite σ from NGBoost or
   realized-vol fallback. Raw bottom-decile panel scores no longer enter QP
   as a hand-flipped proxy for μ.
+- LEAN missing order tickets now fail closed. A `None` return from
+  `MarketOrder`/`Liquidate` is no longer treated as an assumed fill, so LEAN
+  cannot mutate holdings, wash-sale ledgers, tax totals, or trade events
+  without explicit fill evidence.
+- Live duplicate-order protection now fails closed. If Alpaca open-order
+  lookup errors before a buy, the buy is skipped and persisted with
+  `open_orders_check_failed:*` instead of silently bypassing the pending-order
+  guard and risking a duplicate order.
 
 Validation:
 
@@ -3104,6 +3112,8 @@ Validation:
   model + slippage neighborhoods after execution-parity hardening.
 - `21 passed`: short-candidate and long-short QP neighborhoods after
   calibrated short-admission hardening.
+- `156 passed`: execution/tax/persistence/LEAN-live context/slippage/NAV
+  regression bundle after the missing-ticket and open-order fail-closed fixes.
 
 ## Stop Conditions
 

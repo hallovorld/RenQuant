@@ -320,14 +320,14 @@ def _lean_order_execution(
 ) -> tuple[bool, float, float, str]:
     """Return (filled, qty, avg_price, status) for a LEAN order ticket.
 
-    Tests and some lightweight mocks return ``None`` from MarketOrder/
-    Liquidate. Preserve that legacy assumption as filled; real tickets must
-    either expose a filled status or a positive filled quantity.
+    Real tickets must either expose a filled status or a positive filled
+    quantity. A missing ticket is not execution evidence; fail closed so LEAN
+    cannot mutate state/tax as if an unconfirmed order filled.
     """
     requested_abs = abs(float(requested_qty))
     fallback = _positive_finite_price(fallback_price) or 0.0
     if ticket is None:
-        return True, requested_abs, fallback, "assumed_filled_none_ticket"
+        return False, 0.0, fallback, "missing_order_ticket"
     if isinstance(ticket, (list, tuple)):
         total_qty = 0.0
         total_value = 0.0
