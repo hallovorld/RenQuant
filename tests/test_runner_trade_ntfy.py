@@ -418,6 +418,27 @@ class TestSilentIntradayNoOp:
         m.assert_called_once()
         body = m.call_args[0][0].data.decode()
         assert "FAILED-EXIT AAPL" in body
+        assert "no trade" not in body
+        assert m.call_args[0][0].headers.get("Title").endswith("FAILED-EXIT")
+        assert m.call_args[0][0].headers.get("Priority") == "urgent"
+
+    def test_loud_on_pending_order_even_when_silent_flag(self):
+        notify = self._import()
+        ctx = _stub_ctx(
+            orders_pending=[{
+                "ticker": "AAPL", "shares": 5,
+                "status": "accepted", "order_id": "abc",
+            }],
+        )
+        with patch("urllib.request.urlopen") as m:
+            notify("RENQUANT-104", "sell-only (intraday)", ctx, silent_if_quiet=True)
+        m.assert_called_once()
+        req = m.call_args[0][0]
+        body = req.data.decode()
+        assert "PENDING-BUY AAPL" in body
+        assert "no trade" not in body
+        assert req.headers.get("Title").endswith("PENDING")
+        assert req.headers.get("Priority") == "high"
 
     def test_loud_on_unmanaged_even_when_silent_flag(self):
         notify = self._import()

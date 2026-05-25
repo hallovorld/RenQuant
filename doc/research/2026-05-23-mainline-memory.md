@@ -2681,6 +2681,19 @@ entire pipeline end-to-end:
   the system preserves train-parity values and logs the skipped gate. Validation:
   panel scoring, PEAD, sentiment, daily retrain, train/infer, and alpha158
   inference tests passed (`123 passed`).
+- New live execution accounting bug fixed: Alpaca `accepted` / `new` market
+  DAY orders were being treated as executed fills. Runner live state, trade
+  DB rows, same-bar sell credit, wash-sale clocks, entry dates, P/L stamps, and
+  ntfy trade wording now update only from filled/partially-filled quantities.
+  Submitted-but-unfilled orders are tracked as pending and surfaced in ntfy
+  without mutating execution state. Alpaca order responses now include
+  `filled_qty` and `filled_avg_price`; failed exits are urgent ntfy events and
+  no longer append a misleading `no trade` suffix. The daily forward-return
+  backfill now routes live mode through broker-tagged DB paths such as
+  `data/runs.alpaca.db`, matching the actual live trace DB. Validation:
+  runner state, trade ntfy, conformal/backfill, portfolio-DB-path, and state
+  path tests passed (`107 passed, 1 skipped`; plus broader runner/DB tests
+  `105 passed, 1 skipped`).
 
 ## Stop Conditions
 

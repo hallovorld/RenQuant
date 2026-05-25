@@ -176,6 +176,10 @@ def main() -> None:
                         "specific notebook session's decisions.")
     p.add_argument("--db", default=None,
                    help="Explicit path; bypasses --source mapping.")
+    p.add_argument("--broker", default="alpaca",
+                   choices=["alpaca", "alpaca_paper", "paper", "ibkr"],
+                   help="Broker tag for live runs.db lookup. Live RenQuant 104 "
+                        "uses data/runs.{broker}.db, not legacy data/runs.db.")
     p.add_argument("--since", type=lambda s: datetime.date.fromisoformat(s),
                    default=None,
                    help="Only backfill rows at or after this date (YYYY-MM-DD).")
@@ -189,12 +193,19 @@ def main() -> None:
              "conformal-fit JOIN nulls every candidate row.",
     )
     args = p.parse_args()
-    if args.db is None:
-        args.db = "data/sim_runs.db" if args.source == "sim" else "data/runs.db"
-
     strategy_dir = REPO_ROOT / "backtesting" / args.strategy
     if str(strategy_dir) not in sys.path:
         sys.path.insert(0, str(strategy_dir))
+
+    if args.db is None:
+        if args.source == "sim":
+            args.db = "data/sim_runs.db"
+        else:
+            from kernel.state_paths import runs_db_path  # noqa: PLC0415
+            p_db = runs_db_path("data/runs.db", args.broker)
+            args.db = str(
+                p_db.relative_to(REPO_ROOT) if p_db.is_absolute() else p_db
+            )
 
     from kernel.persistence import (  # noqa: PLC0415
         get_connection, record_forward_returns,

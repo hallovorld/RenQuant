@@ -235,6 +235,15 @@ class TestBackfillBenchmark:
             "scripts/backfill_forward_returns.py must expose --benchmarks "
             "so operators can ensure SPY is covered for M3 fits"
         )
+        assert "--broker" in out.stdout, (
+            "live forward-return backfill must route to broker-tagged "
+            "runs DBs such as data/runs.alpaca.db"
+        )
+
+    def test_live_default_routes_through_runs_db_path(self):
+        src = (REPO_ROOT / "scripts" / "backfill_forward_returns.py").read_text()
+        assert "runs_db_path" in src
+        assert 'else "data/runs.db"' not in src
 
     def test_benchmark_pairs_helper_returns_missing_only(self, tmp_path: Path):
         """The helper must NOT emit pairs that already have all 4

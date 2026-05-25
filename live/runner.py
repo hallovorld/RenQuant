@@ -496,6 +496,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     # skipped, but the old ntfy misreported it as a trade).
     is_shadow      = label.startswith("[SHADOW]")
     orders         = list(getattr(ctx, "orders_placed",  []) or [])
+    orders_pending = list(getattr(ctx, "orders_pending", []) or [])
     orders_skipped = list(getattr(ctx, "orders_skipped", []) or [])
     # Audit fix EXITS-FAIL (Round 2 deep audit, 2026-04-25): prefer
     # broker-confirmed `exits_placed`; fall back to `ctx.exits` for
@@ -509,6 +510,7 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         exits = list(exits_placed_attr or [])
     else:
         exits = list(getattr(ctx, "exits", []) or [])
+    exits_pending = list(getattr(ctx, "exits_pending", []) or [])
     exits_failed = list(getattr(ctx, "exits_failed", []) or [])
     regime         = getattr(ctx, "regime", None) or "?"
     conf   = getattr(ctx, "confidence", None)
@@ -592,6 +594,22 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
         else:
             parts.append(f"EXIT {tkr} ({reason})")
 
+    for o in orders_pending:
+        if isinstance(o, dict):
+            tkr = o.get("ticker", "?")
+            shares = o.get("shares", "?")
+            status = o.get("status", "pending")
+            oid = o.get("order_id", "?")
+            parts.append(f"PENDING-BUY {tkr} x{shares} ({status} {oid})")
+    for e in exits_pending:
+        if isinstance(e, dict):
+            tkr = e.get("ticker", "?")
+            qty = e.get("qty", "?")
+            status = e.get("status", "pending")
+            oid = e.get("order_id", "?")
+            rsn = e.get("exit_type") or e.get("reason") or "sell"
+            parts.append(f"PENDING-EXIT {tkr} x{qty} ({rsn}; {status} {oid})")
+
     # EXITS-FAIL: surface failed sells distinctly so the operator
     # doesn't confuse a broker rejection with a successful exit. Each
     # entry is a dict with ticker / exit_type / qty / error.
@@ -624,20 +642,22 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
             parts.append(f"BLOCKED-ROTATION {sell_t}→{buy_t} ({reason})")
 
     has_trade = bool(orders or exits)
+    has_pending = bool(orders_pending or exits_pending)
     # Anything the operator should see counts as "actionable" for the
     # silent-if-quiet gate. A bare-quiet cycle = no orders, no exits, no
     # failed exits, no unmanaged broker position, no rotation block, no
     # skipped intent. When silent_if_quiet=True (intraday sell-only),
     # those cycles return without sending ntfy.
     if silent_if_quiet and not (
-        has_trade or exits_failed or non_wl_holds or rot_blocked or orders_skipped
+        has_trade or has_pending or exits_failed or non_wl_holds
+        or rot_blocked or orders_skipped
     ):
         log.info("ntfy suppressed (silent intraday no-op): %s [%s]", label, run_mode)
         return
     # If the guard blocked every intent (orders all skipped), the cycle
     # produced no real trade — surface the skip reason prominently so
     # the user doesn't mistake a blocked-duplicate for a fresh buy.
-    if not has_trade:
+    if not has_trade and not has_pending and not exits_failed:
         if orders_skipped:
             skip_parts = [
                 f"{o.get('ticker', '?')} ({o.get('skip_reason', 'skipped')})"
@@ -711,16 +731,25 @@ def _notify_decision(label: str, run_mode: str, ctx, silent_if_quiet: bool = Fal
     topic    = os.environ.get("RENQUANT_NTFY_TOPIC", "renquant")
     if is_shadow:
         parts.insert(0, "SHADOW/HYPOTHETICAL (no live orders)")
-        tag = "SHADOW-ACTION" if has_trade else "SHADOW-DECISION"
+        tag = "SHADOW-ACTION" if (has_trade or has_pending) else "SHADOW-DECISION"
         priority = "default"
     else:
-        tag = "TRADE" if has_trade else "DECISION"
-        priority = "high"  if has_trade else "default"
+        if has_trade:
+            tag = "TRADE"
+        elif has_pending:
+            tag = "PENDING"
+        elif exits_failed:
+            tag = "FAILED-EXIT"
+        else:
+            tag = "DECISION"
+        priority = "urgent" if exits_failed else (
+            "high" if (has_trade or has_pending) else "default"
+        )
     title    = f"{label} [{run_mode}] {tag}"
     body     = " | ".join(parts)
     url      = f"https://ntfy.sh/{topic}"
     actionable = bool(
-        has_trade or exits_failed or non_wl_holds or rot_blocked
+        has_trade or has_pending or exits_failed or non_wl_holds or rot_blocked
     )
     if actionable:
         taxonomy = "TRADE" if has_trade else "ACTION_REQUIRED"

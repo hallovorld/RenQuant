@@ -168,12 +168,70 @@ def same_bar_sell_credit(ctx: Any) -> float:
     return credit
 
 
+def normalize_order_status(status: Any) -> str:
+    """Normalize broker enum/string order status to a lower-case token."""
+    return str(status or "").split(".")[-1].strip().lower()
+
+
+def broker_order_execution(
+    result: dict | None,
+    requested_qty: float,
+    fallback_price: float,
+) -> dict[str, Any]:
+    """Classify a broker order response as filled, pending, or rejected.
+
+    Live Alpaca can accept an after-close market DAY order without executing it
+    until the next session. Only filled quantity is allowed to mutate live
+    state, trade DB rows, same-bar cash credit, or realized P/L.
+    """
+    import math
+
+    result = dict(result or {})
+    status = normalize_order_status(result.get("status"))
+    terminal_rejects = {
+        "rejected", "canceled", "cancelled", "expired",
+        "stopped", "suspended", "done_for_day",
+    }
+    def _finite_float(value: Any, default: float = 0.0) -> float:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        return out if math.isfinite(out) else default
+
+    requested = _finite_float(requested_qty)
+    filled_qty = _finite_float(result.get("filled_qty"))
+    if filled_qty <= 0 and status in {"filled", "partially_filled"}:
+        filled_qty = _finite_float(result.get("quantity"), requested)
+    avg_price = _finite_float(result.get("filled_avg_price"))
+    if avg_price <= 0:
+        avg_price = _finite_float(result.get("price"), fallback_price)
+
+    is_filled = filled_qty > 0 or status == "filled"
+    is_partial = (
+        status == "partially_filled"
+        or (is_filled and requested > 0 and filled_qty < requested - 1e-9)
+    )
+    is_rejected = status in terminal_rejects
+    is_pending = not is_filled and not is_rejected
+    return {
+        **result,
+        "status": status,
+        "filled": bool(is_filled),
+        "pending": bool(is_pending),
+        "rejected": bool(is_rejected),
+        "partial": bool(is_partial),
+        "filled_qty": float(filled_qty if is_filled else 0.0),
+        "filled_avg_price": float(avg_price if avg_price > 0 else fallback_price),
+    }
+
+
 def effective_live_holdings_after_orders(
     starting_holding_tickers: Any,
     full_exit_tickers: set[str],
     orders_placed: Any,
 ) -> set[str]:
-    """Return live holdings after confirmed full exits and accepted buys.
+    """Return live holdings after confirmed full exits and filled buys.
 
     ``ctx.holdings`` is a start-of-bar snapshot. RunnerAdapter must subtract
     broker-confirmed full exits before state GC, otherwise it can resurrect
@@ -1103,6 +1161,8 @@ class RunnerAdapter:
         # buys); falls back to ctx.exits when those fields aren't set.
         if not hasattr(ctx, "exits_placed"):
             ctx.exits_placed = []
+        if not hasattr(ctx, "exits_pending"):
+            ctx.exits_pending = []
         if not hasattr(ctx, "exits_failed"):
             ctx.exits_failed = []
         full_exit_tickers: set[str] = set()
@@ -1190,6 +1250,47 @@ class RunnerAdapter:
                     "error":      str(exc),
                 })
                 continue
+            execution = broker_order_execution(
+                result, requested_qty=sell_qty,
+                fallback_price=ctx.prices.get(ticker, 0.0),
+            )
+            if execution["rejected"]:
+                log.error(
+                    "SELL rejected for %s: status=%s order_id=%s",
+                    ticker, execution["status"], execution.get("order_id"),
+                )
+                ctx.exits_failed.append({
+                    "ticker":     ticker,
+                    "exit_type":  getattr(sig, "exit_type", ""),
+                    "reason":     getattr(sig, "reason", ""),
+                    "qty":        sell_qty,
+                    "is_partial": is_partial,
+                    "order_id":   execution.get("order_id"),
+                    "status":     execution["status"],
+                    "error":      f"broker_status:{execution['status']}",
+                })
+                continue
+            if execution["pending"]:
+                pending = {
+                    "ticker":     ticker,
+                    "exit_type":  getattr(sig, "exit_type", ""),
+                    "reason":     getattr(sig, "reason", ""),
+                    "qty":        sell_qty,
+                    "is_partial": is_partial,
+                    "order_id":   execution.get("order_id"),
+                    "status":     execution["status"],
+                }
+                ctx.exits_pending.append(pending)
+                log.warning(
+                    "SELL pending at broker for %s: %.0f shares status=%s "
+                    "order_id=%s; live_state/DB not mutated until fill.",
+                    ticker, sell_qty, execution["status"], execution.get("order_id"),
+                )
+                continue
+
+            sell_qty = float(execution["filled_qty"] or sell_qty)
+            price = float(execution["filled_avg_price"] or ctx.prices.get(ticker, 0.0))
+            is_partial = bool(execution["partial"] or sell_qty < qty - 1e-9)
 
             # 2026-05-18: stamp P/L on the ExitSignal so live/runner.py's
             # _notify_decision can render explicit $ realized P/L in ntfy.
@@ -1198,7 +1299,6 @@ class RunnerAdapter:
             # via Alpaca's tax-lot accounting on its side). Sell price is
             # the current ctx.prices snapshot (close-to-fill at market;
             # bracket/limit orders would refine this).
-            price = ctx.prices.get(ticker, 0.0)
             cost_basis = float(pos_cache.get(ticker, {}).get(
                 "avg_entry_price", 0.0
             ))
@@ -1288,13 +1388,14 @@ class RunnerAdapter:
             })
 
         # ── Apply buys ───────────────────────────────────────────────────────
-        # Track BUYS as they actually reach the broker vs what the pipeline
-        # merely intended. `ctx.orders_placed` = submitted to Alpaca,
-        # `ctx.orders_skipped` = blocked locally (with reason). The
-        # runner-level ntfy reads these; `ctx.orders` keeps the pipeline
-        # intent unchanged for DB / audit.
+        # Track BUYS as they actually execute vs what the pipeline merely
+        # intended. `ctx.orders_placed` = filled/partially-filled at broker,
+        # `ctx.orders_pending` = submitted but not filled yet, and
+        # `ctx.orders_skipped` = blocked locally or rejected.
         if not hasattr(ctx, "orders_placed"):
             ctx.orders_placed = []
+        if not hasattr(ctx, "orders_pending"):
+            ctx.orders_pending = []
         if not hasattr(ctx, "orders_skipped"):
             ctx.orders_skipped = []
         import math
@@ -1357,7 +1458,45 @@ class RunnerAdapter:
                         **order, "skip_reason": f"broker_error:{type(exc).__name__}",
                     })
                     continue
-                # Broker accepted — record
+                execution = broker_order_execution(
+                    result, requested_qty=shares, fallback_price=price,
+                )
+                if execution["rejected"]:
+                    log.error(
+                        "BUY rejected for %s: status=%s order_id=%s",
+                        ticker, execution["status"], execution.get("order_id"),
+                    )
+                    ctx.orders_skipped.append({
+                        **order,
+                        "skip_reason": f"broker_status:{execution['status']}",
+                        "order_id": execution.get("order_id"),
+                        "status": execution["status"],
+                    })
+                    continue
+
+                submitted_notional = shares * price
+                if execution["pending"]:
+                    ctx.orders_pending.append({
+                        **order,
+                        "order_id": execution.get("order_id"),
+                        "status": execution["status"],
+                    })
+                    buy_cash_remaining = max(buy_cash_remaining - submitted_notional, 0.0)
+                    log.warning(
+                        "BUY pending at broker for %s: %d shares status=%s "
+                        "order_id=%s; entry state/DB not mutated until fill.",
+                        ticker, shares, execution["status"], execution.get("order_id"),
+                    )
+                    continue
+
+                shares = int(execution["filled_qty"] or shares)
+                price = float(execution["filled_avg_price"] or price)
+                order = {**order, "shares": shares, "price": price}
+                if execution.get("order_id") is not None:
+                    order["order_id"] = execution.get("order_id")
+                order["status"] = execution["status"]
+                order["filled_qty"] = shares
+                order["filled_avg_price"] = price
                 ctx.orders_placed.append(order)
 
                 invest = shares * price

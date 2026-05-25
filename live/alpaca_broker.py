@@ -217,6 +217,10 @@ class AlpacaBroker(BaseBroker):
             "action": action,
             "symbol": symbol,
             "quantity": int(quantity),
+            "filled_qty": float(getattr(order, "filled_qty", 0) or 0),
+            "filled_avg_price": float(getattr(order, "filled_avg_price", 0) or 0),
+            "submitted_at": str(getattr(order, "submitted_at", "") or ""),
+            "filled_at": str(getattr(order, "filled_at", "") or ""),
         }
 
     # ── Broker-side stop orders (Z9, 2026-04-28) ────────────────────────────

@@ -39,6 +39,7 @@ ROTATION_SOURCE = ROTATION_PATH.read_text()
 DECISION_TRACE_SOURCE = DECISION_TRACE_PATH.read_text()
 
 from adapters.runner import (  # noqa: E402
+    broker_order_execution,
     cap_buy_order_to_cash,
     effective_live_holdings_after_orders,
     same_bar_sell_credit,
@@ -278,6 +279,51 @@ class TestRunnerCashBudgetGuard:
         assert "LIVE-SAME-BAR-SELL-CREDIT" in RUNNER_SOURCE
         assert "buy_cash_remaining += sell_credit" in RUNNER_SOURCE
         assert "same_bar_sell_credit(ctx)" in RUNNER_SOURCE
+
+
+class TestBrokerOrderFillAccounting:
+    """Accepted/submitted is not filled. Live state and DB mutate on fills only."""
+
+    def test_accepted_order_is_pending_not_filled(self):
+        out = broker_order_execution(
+            {"order_id": "o1", "status": "accepted", "quantity": 3},
+            requested_qty=3,
+            fallback_price=100.0,
+        )
+
+        assert out["pending"] is True
+        assert out["filled"] is False
+        assert out["filled_qty"] == 0.0
+
+    def test_filled_order_uses_filled_qty_and_avg_price(self):
+        out = broker_order_execution(
+            {
+                "order_id": "o1",
+                "status": "filled",
+                "quantity": 5,
+                "filled_qty": 2,
+                "filled_avg_price": 101.25,
+            },
+            requested_qty=5,
+            fallback_price=100.0,
+        )
+
+        assert out["filled"] is True
+        assert out["partial"] is True
+        assert out["filled_qty"] == 2.0
+        assert out["filled_avg_price"] == 101.25
+
+    def test_runner_has_pending_lists_and_does_not_treat_pending_as_placed(self):
+        assert "orders_pending" in RUNNER_SOURCE
+        assert "exits_pending" in RUNNER_SOURCE
+        assert "entry state/DB not mutated until fill" in RUNNER_SOURCE
+        assert "live_state/DB not mutated until fill" in RUNNER_SOURCE
+
+    def test_ntfy_surfaces_pending_and_failed_exit_is_urgent(self):
+        assert "PENDING-BUY" in LIVE_RUNNER_SOURCE
+        assert "PENDING-EXIT" in LIVE_RUNNER_SOURCE
+        assert 'tag = "FAILED-EXIT"' in LIVE_RUNNER_SOURCE
+        assert 'priority = "urgent" if exits_failed' in LIVE_RUNNER_SOURCE
 
 
 # ── ticker_daily_state writer (round-5) ───────────────────────────────────────
