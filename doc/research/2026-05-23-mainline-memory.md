@@ -2543,6 +2543,18 @@ entire pipeline end-to-end:
   `strict_neutralization=false`. Validation: panel-training, neutralization,
   train/infer parity, panel-bugfix, and WF-config parity tests passed
   (`55 passed`).
+- Follow-up active-source scan gap found by sidecar audit: after adding the
+  daily retrain scan, `scan_training_inputs()` still scanned legacy
+  per-ticker fundamentals but not the active alpha158+fund sources:
+  `data/sec_fundamentals_daily.parquet` and
+  `data/news_sentiment_alpaca/`. Strict retrain could therefore pass the
+  preflight while the actual model inputs were missing or mostly imputed. The
+  scan report now includes both active sources and raises issues for missing,
+  unreadable, stale, or materially under-covered active inputs. Current repo
+  scan is clean under these active-source thresholds:
+  SEC coverage `130/142` (`91.5%`, max date `2026-02-10`, age `103d`) and
+  sentiment coverage `142/142` (max date `2026-05-17`, age `7d`).
+  Validation: data-scan preflight and daily-retrain tests passed (`32 passed`).
 
 ## Stop Conditions
 

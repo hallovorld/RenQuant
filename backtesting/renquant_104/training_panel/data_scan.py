@@ -137,6 +137,47 @@ def _scan_source(
     return cov
 
 
+def _scan_panel_source(
+    name: str,
+    path: Path,
+    watchlist: list[str],
+    today: _dt.date,
+    *,
+    ticker_col: str = "ticker",
+    date_col: str = "date",
+) -> SourceCoverage:
+    """Scan a single panel file keyed by ticker/date."""
+    if not path.exists():
+        return SourceCoverage(name=name, missing_tickers=watchlist[:20])
+    try:
+        df = pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+    except Exception:
+        return SourceCoverage(name=name, missing_tickers=watchlist[:20])
+    if df.empty or ticker_col not in df.columns or date_col not in df.columns:
+        return SourceCoverage(name=name, missing_tickers=watchlist[:20])
+
+    tickers = set(map(str, df[ticker_col].dropna().unique()))
+    found = sorted(set(watchlist) & tickers)
+    cov = SourceCoverage(
+        name=name,
+        n_tickers=len(found),
+        n_tickers_vs_watchlist=len(found) / max(1, len(watchlist)),
+        missing_tickers=[t for t in watchlist if t not in tickers][:20],
+        n_rows_total=len(df),
+    )
+    counts = df[df[ticker_col].astype(str).isin(watchlist)].groupby(ticker_col).size()
+    if not counts.empty:
+        cov.rows_per_ticker_min = int(counts.min())
+        cov.rows_per_ticker_p50 = int(counts.median())
+        cov.rows_per_ticker_max = int(counts.max())
+    dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
+    if not dates.empty:
+        cov.date_min = str(dates.min().date())
+        cov.date_max = str(dates.max().date())
+        cov.age_days = (today - dates.max().date()).days
+    return cov
+
+
 def scan_training_inputs(
     watchlist: list[str],
     repo_root: Path,
@@ -149,8 +190,10 @@ def scan_training_inputs(
     Sources scanned (per-ticker unless noted):
       * daily OHLCV       — backtesting/data/equity/usa/daily/{TICKER}.zip
                              OR data/ohlcv/{TICKER}/1d.parquet
+      * sec_fundamentals_daily — active alpha158+fund panel source
       * fundamentals      — data/fundamentals/{TICKER}.parquet
       * earnings_surprise — data/earnings_surprise/{TICKER}.{parquet,csv}
+      * news_sentiment_alpaca — active alpha158+fund sentiment source
       * insider_trades    — data/insider_trades/{TICKER}.{parquet,csv}
       * hourly bars       — data/intraday/{TICKER}/1h.parquet (only when
                              ``include_intraday=True``)
@@ -189,6 +232,22 @@ def scan_training_inputs(
             daily_paths[t] = zp
     cov_daily = _scan_source("daily_ohlcv", daily_paths, watchlist, today)
     report.sources["daily_ohlcv"] = cov_daily
+
+    # ── Active alpha158+fund panel sources ───────────────────────────────
+    sec_panel = repo_root / "data" / "sec_fundamentals_daily.parquet"
+    sec_cov = _scan_panel_source(
+        "sec_fundamentals_daily", sec_panel, watchlist, today
+    )
+    report.sources["sec_fundamentals_daily"] = sec_cov
+
+    sent_paths: dict[str, Path] = {}
+    for t in watchlist:
+        p = repo_root / "data" / "news_sentiment_alpaca" / f"{t}.parquet"
+        if p.exists():
+            sent_paths[t] = p
+    report.sources["news_sentiment_alpaca"] = _scan_source(
+        "news_sentiment_alpaca", sent_paths, watchlist, today,
+    )
 
     # ── Source 2: fundamentals ───────────────────────────────────────────
     fund_paths = {
@@ -299,6 +358,36 @@ def scan_training_inputs(
         report.issues.append(
             f"daily OHLCV coverage only {cov_pct*100:.1f}% of watchlist — "
             f"missing {len(report.sources['daily_ohlcv'].missing_tickers)} ticker(s)"
+        )
+
+    if sec_cov.n_rows_total <= 0:
+        report.issues.append(
+            "active SEC fundamentals panel missing or unreadable: "
+            "data/sec_fundamentals_daily.parquet"
+        )
+    elif sec_cov.n_tickers_vs_watchlist < 0.90:
+        report.issues.append(
+            f"SEC fundamentals panel coverage only "
+            f"{sec_cov.n_tickers_vs_watchlist*100:.1f}% of watchlist — "
+            f"missing {len(sec_cov.missing_tickers)} ticker(s)"
+        )
+    elif sec_cov.age_days is not None and sec_cov.age_days > 120:
+        report.issues.append(
+            f"SEC fundamentals panel is {sec_cov.age_days}d stale (max date "
+            f"{sec_cov.date_max})"
+        )
+
+    sent_cov = report.sources["news_sentiment_alpaca"]
+    if sent_cov.n_tickers_vs_watchlist < 0.50:
+        report.issues.append(
+            f"news sentiment coverage only "
+            f"{sent_cov.n_tickers_vs_watchlist*100:.1f}% of watchlist — "
+            "active sentiment features would be mostly imputed"
+        )
+    elif sent_cov.age_days is not None and sent_cov.age_days > 14:
+        report.issues.append(
+            f"news sentiment data is {sent_cov.age_days}d stale (max date "
+            f"{sent_cov.date_max})"
         )
 
     # Stale-data check

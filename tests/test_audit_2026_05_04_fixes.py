@@ -590,6 +590,45 @@ class TestDataScanPreflight:
         assert "alignment" in d
         assert "watchlist_coverage_pct" in d["alignment"]
 
+    def test_scan_reports_active_alpha158_sources(self, tmp_path):
+        from training_panel.data_scan import scan_training_inputs
+        import pandas as pd
+
+        idx = pd.date_range("2024-01-01", periods=20, freq="B")
+        for ticker in ("AAPL", "MSFT", "SPY"):
+            path = tmp_path / "data" / "ohlcv" / ticker / "1d.parquet"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame({"close": range(20)}, index=idx).to_parquet(path)
+
+        report = scan_training_inputs(["AAPL", "MSFT"], tmp_path, today=idx[-1].date())
+
+        assert "sec_fundamentals_daily" in report.sources
+        assert "news_sentiment_alpaca" in report.sources
+        assert any("active SEC fundamentals panel" in x for x in report.issues)
+
+    def test_scan_fails_when_active_sentiment_source_missing(self, tmp_path):
+        from training_panel.data_scan import scan_training_inputs
+        import pandas as pd
+
+        idx = pd.date_range("2024-01-01", periods=20, freq="B")
+        for ticker in ("AAPL", "MSFT", "SPY"):
+            path = tmp_path / "data" / "ohlcv" / ticker / "1d.parquet"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame({"close": range(20)}, index=idx).to_parquet(path)
+
+        sec = pd.DataFrame({
+            "ticker": ["AAPL", "MSFT"],
+            "date": [idx[-1], idx[-1]],
+            "earnings_yield": [0.05, 0.04],
+        })
+        sec_path = tmp_path / "data" / "sec_fundamentals_daily.parquet"
+        sec_path.parent.mkdir(parents=True, exist_ok=True)
+        sec.to_parquet(sec_path, index=False)
+
+        report = scan_training_inputs(["AAPL", "MSFT"], tmp_path, today=idx[-1].date())
+
+        assert any("news sentiment coverage only 0.0%" in x for x in report.issues)
+
     def test_strict_mode_raises_on_issues(self, tmp_path):
         """When data_scan.strict=true, alignment issues abort training."""
         # Deliberately point at an empty repo — daily coverage = 0% → issue
