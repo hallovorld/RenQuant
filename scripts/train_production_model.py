@@ -83,6 +83,14 @@ def parse_args() -> argparse.Namespace:
         help="JSON config or list file; filter panel rows to tickers in this watchlist. Track 1 wl retrain.",
     )
     p.add_argument(
+        "--fingerprint-config", type=str, default=None,
+        help=(
+            "Strategy config whose model-relevant fields are stamped into the "
+            "artifact. Defaults to renquant_104/strategy_config.json; pass the "
+            "same scoring config used by strict WF/sim when training side configs."
+        ),
+    )
+    p.add_argument(
         "--cv-n-splits", type=int, default=3,
         help="Number of purged walk-forward folds stamped into the artifact.",
     )
@@ -444,20 +452,98 @@ def evaluate_walk_forward_cv(
     }
 
 
-def stamp_fingerprint(artifact: dict) -> str:
-    """Stamp config_fingerprint_fields + config_fingerprint (production only).
+def _resolve_repo_path(path: str | Path) -> Path:
+    p = Path(path)
+    return p if p.is_absolute() else REPO / p
 
-    Per §5.13.13: walk-forward artifacts skip fingerprinting since they
-    aren't intended to match live config — only the daily prod retrain
-    does this step.
+
+def _load_json(path: str | Path) -> object:
+    return json.loads(_resolve_repo_path(path).read_text())
+
+
+def _watchlist_from_payload(payload: object) -> list[str] | None:
+    if isinstance(payload, list):
+        return [str(x) for x in payload]
+    if isinstance(payload, dict):
+        wl = payload.get("watchlist") or payload.get("proposed_watchlist")
+        if isinstance(wl, list):
+            return [str(x) for x in wl]
+    return None
+
+
+def build_fingerprint_config(
+    *,
+    fingerprint_config_path: str | None,
+    watchlist_file: str | None,
+    label_used: str,
+    feat_cols: list[str],
+) -> dict:
+    """Build the exact model-relevant config stamp for this artifact.
+
+    Walk-forward artifacts are used by strict sim/WF gates, so they must carry
+    the same config contract as production artifacts. The stamp is derived from
+    the requested scoring config, then normalized to the actual training inputs
+    that this script controls (label horizon, objective, resolution, embedding
+    columns, and optional watchlist filter).
     """
+    cfg_path = (
+        _resolve_repo_path(fingerprint_config_path)
+        if fingerprint_config_path
+        else REPO / "backtesting/renquant_104/strategy_config.json"
+    )
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+
+    if watchlist_file:
+        payload = _load_json(watchlist_file)
+        wl = _watchlist_from_payload(payload)
+        if wl is not None:
+            cfg["watchlist"] = wl
+        if isinstance(payload, dict):
+            for key in ("benchmark", "sector_map", "sector_etf_map"):
+                if key in payload:
+                    cfg[key] = payload[key]
+
+    panel = cfg.setdefault("panel_ltr", {})
+    panel["lookahead_days"] = infer_label_lookahead_days(label_used)
+    panel["training_resolution"] = "daily"
+    panel.setdefault("hourly", {})["enabled"] = False
+    panel.setdefault("minute", {})["enabled"] = False
+    panel.setdefault("asset_embeddings", {})["enabled"] = any(
+        str(c).startswith("emb_") for c in feat_cols
+    )
+    panel.setdefault("xgb_params", {})["objective"] = PARAMS["objective"]
+    return cfg
+
+
+def stamp_fingerprint(
+    artifact: dict,
+    *,
+    fingerprint_config_path: str | None = None,
+    watchlist_file: str | None = None,
+    label_used: str = LABEL,
+    feat_cols: list[str] | None = None,
+) -> str:
+    """Stamp config_fingerprint_fields + config_fingerprint for all artifacts."""
     sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
-    from kernel.config_consistency import _model_relevant_fields, fingerprint_config  # noqa: PLC0415
-    live_cfg_path = REPO / "backtesting/renquant_104/strategy_config.json"
-    live_cfg = json.loads(live_cfg_path.read_text()) if live_cfg_path.exists() else {}
-    artifact["config_fingerprint_fields"] = _model_relevant_fields(live_cfg)
-    fp = fingerprint_config(live_cfg)
+    from kernel.config_consistency import (  # noqa: PLC0415
+        _model_relevant_fields,
+        fingerprint_config,
+    )
+    cfg = build_fingerprint_config(
+        fingerprint_config_path=fingerprint_config_path,
+        watchlist_file=watchlist_file,
+        label_used=label_used,
+        feat_cols=list(feat_cols or artifact.get("feature_cols") or []),
+    )
+    artifact["config_fingerprint_fields"] = _model_relevant_fields(cfg)
+    fp = fingerprint_config(cfg)
     artifact["config_fingerprint"] = fp
+    artifact.setdefault("metadata", {})["config_fingerprint_source"] = {
+        "fingerprint_config_path": str(fingerprint_config_path or "strategy_config.json"),
+        "watchlist_file": str(watchlist_file) if watchlist_file else None,
+        "label_used": label_used,
+        "feature_count": len(feat_cols or artifact.get("feature_cols") or []),
+    }
     return fp
 
 
@@ -617,11 +703,14 @@ def main():
                               cutoff_embargo_days=args.cutoff_embargo_days,
                               train_run_id=str(uuid.uuid4())[:8])
 
-    if not is_walkforward:
-        fp = stamp_fingerprint(artifact)
-        log.info("Fingerprint: %s", fp)
-    else:
-        log.info("Walk-forward artifact — skipping fingerprint stamp (§5.13.13).")
+    fp = stamp_fingerprint(
+        artifact,
+        fingerprint_config_path=args.fingerprint_config,
+        watchlist_file=args.watchlist_file,
+        label_used=label_used,
+        feat_cols=feat_cols,
+    )
+    log.info("Fingerprint: %s%s", fp, " (walk-forward)" if is_walkforward else "")
     attach_inference_smoke(artifact, booster, feat_cols)
     smoke = artifact.get("metadata", {}).get("inference_smoke_test", {})
     log.info(

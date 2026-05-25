@@ -159,6 +159,7 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
                      label: str | None = None,
                      watchlist_file: str | None = None,
                      artifact_root: str | None = None,
+                     fingerprint_config: str | None = None,
                      fit_calibrator: bool = True,
                      calibrator_method: str = "platt") -> tuple[bool, Path, Path | None, str]:
     """Subprocess train_production_model.py for one cutoff.
@@ -191,6 +192,8 @@ def train_one_cutoff(cutoff: pd.Timestamp, strategy_dir: Path,
         cmd.extend(["--label", label])
     if watchlist_file:
         cmd.extend(["--watchlist-file", watchlist_file])
+    if fingerprint_config:
+        cmd.extend(["--fingerprint-config", fingerprint_config])
     log.info("train_one_cutoff: cutoff=%s start  cmd=%s",
              cutoff_iso, " ".join(cmd))
     t0 = time.monotonic()
@@ -299,6 +302,8 @@ def parse_args() -> argparse.Namespace:
                    help="Forward label column to use (default: panel default fwd_60d_excess)")
     p.add_argument("--watchlist-file", default=None,
                    help="JSON config file to filter panel to a custom watchlist")
+    p.add_argument("--fingerprint-config", default=None,
+                   help="Strategy config whose model-relevant fields are stamped into each WF artifact")
     p.add_argument("--artifact-root", default=None,
                    help="Override artifacts/<root>/ subdirectory (default: walkforward_v2)")
     p.add_argument("--jobs", type=int, default=1,
@@ -335,6 +340,7 @@ def train_cutoffs(retrain_dates: list[pd.Timestamp],
             label=args.label,
             watchlist_file=args.watchlist_file,
             artifact_root=args.artifact_root,
+            fingerprint_config=args.fingerprint_config,
             fit_calibrator=not args.skip_calibrators,
             calibrator_method=args.calibrator_method,
         )

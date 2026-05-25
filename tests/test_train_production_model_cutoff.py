@@ -287,6 +287,44 @@ class TestStrictContractStamp:
         assert art["feature_raw_clip_fit_split"] == "train"
         assert art["feature_preprocess_version"] == 2
 
+    def test_walkforward_artifact_gets_strict_config_fingerprint(self, tmp_path):
+        cfg_path = tmp_path / "strategy_config.wf.json"
+        cfg_path.write_text(json.dumps({
+            "watchlist": ["AAA", "BBB"],
+            "benchmark": "SPY",
+            "sector_map": {"AAA": "tech", "BBB": "finance"},
+            "sector_etf_map": {"tech": "XLK", "finance": "XLF"},
+            "panel_ltr": {
+                "lookahead_days": 5,
+                "training_resolution": "hourly",
+                "hourly": {"enabled": True},
+                "minute": {"enabled": True},
+                "asset_embeddings": {"enabled": True},
+                "xgb_params": {"objective": "rank:ndcg"},
+            },
+        }))
+        art = {"feature_cols": ["feat_a", "feat_b"]}
+
+        fp = TPM.stamp_fingerprint(
+            art,
+            fingerprint_config_path=str(cfg_path),
+            label_used="fwd_60d_excess",
+            feat_cols=["feat_a", "feat_b"],
+        )
+
+        assert fp.startswith("sha256:")
+        assert art["config_fingerprint"] == fp
+        fields = art["config_fingerprint_fields"]
+        assert fields["watchlist"] == ["AAA", "BBB"]
+        assert fields["lookahead_days"] == 60
+        assert fields["objective"] == "rank:pairwise"
+        assert fields["asset_embeddings"] is False
+        assert fields["training_resolution"] == "daily"
+        assert fields["hourly_enabled"] is False
+        assert fields["minute_enabled"] is False
+        assert fields["sector_map"] == {"AAA": "tech", "BBB": "finance"}
+        assert fields["sector_etf_map"] == {"finance": "XLF", "tech": "XLK"}
+
     def test_walk_forward_cv_purges_embargo_before_validation(self, monkeypatch):
         panel = _make_synthetic_panel(n_tickers=8, n_dates=90, start="2023-01-02")
         calls = []
@@ -328,8 +366,7 @@ class TestBackwardCompat:
         assert out.name == "panel-ltr-prod-alpha158-fund-fwd60d.json"
         assert out.parent.name == "data"
 
-    def test_walkforward_skip_fingerprint_flag_inferred(self):
-        """Walkforward artifacts skip fingerprint stamp (per resolve_paths)."""
+    def test_walkforward_flag_inferred_for_safe_output_path(self):
         args = argparse.Namespace(
             train_cutoff="2024-01-01",
             output_path="artifacts/walkforward_v2/2024-01-01/panel-ltr.json",

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -94,6 +95,33 @@ def test_train_walkforward_panel_supports_cutoff_parallelism():
     assert "entries_by_cutoff" in src
 
 
+def test_train_walkforward_panel_passes_fingerprint_config(monkeypatch, tmp_path):
+    import scripts.train_walkforward_panel as twp
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd, **_kwargs):
+        seen["cmd"] = list(cmd)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(twp.subprocess, "run", fake_run)
+
+    ok, artifact_path, calibrator_path, err = twp.train_one_cutoff(
+        pd.Timestamp("2024-01-01"),
+        tmp_path,
+        fingerprint_config="artifacts/diagnostics/wf_eval_configs/base.json",
+        fit_calibrator=False,
+    )
+
+    assert ok is True
+    assert calibrator_path is None
+    assert err == ""
+    assert artifact_path.name == "panel-ltr.json"
+    assert "--fingerprint-config" in seen["cmd"]
+    idx = seen["cmd"].index("--fingerprint-config")
+    assert seen["cmd"][idx + 1] == "artifacts/diagnostics/wf_eval_configs/base.json"
+
+
 def test_train_walkforward_panel_stamps_per_fold_calibrator_uri():
     entry = build_retrain_entry(
         pd.Timestamp("2024-01-01"),
@@ -137,6 +165,7 @@ def _wf_args(**overrides):
         artifact_root = None
         skip_calibrators = False
         calibrator_method = "platt"
+        fingerprint_config = None
         jobs = 1
         allow_partial_manifest = False
 
