@@ -755,7 +755,6 @@ def run_sim_cut(
         "--start", start, "--end", end,
         "--no-compare",
         "--no-persist",
-        "--skip-preflight",
     ]
     if traces:
         trace_dir.mkdir(parents=True, exist_ok=True)

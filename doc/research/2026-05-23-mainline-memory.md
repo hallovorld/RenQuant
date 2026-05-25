@@ -2503,6 +2503,13 @@ entire pipeline end-to-end:
   and fail closed on mismatch; auto-discovery is allowed only when no preferred
   manifest is supplied. Validation: WF recipe-scope, WF CLI contract, and
   promotion-gate tests passed (`69 passed`).
+- New WF acceptance-path bug found: `run_wf_gate.py` invoked each
+  `run_sim_104.py` cut with `--skip-preflight`, bypassing the sim side-config
+  static-path validator that prevents no-op/unwired configs from spending
+  compute and stamping APY/Sharpe. WF cuts now keep that static preflight while
+  still using `--no-persist` and `--no-compare` for isolation. Validation:
+  WF CLI contract, WF recipe-scope, WF config parity, and promotion-gate tests
+  passed (`77 passed`).
 
 ## Stop Conditions
 

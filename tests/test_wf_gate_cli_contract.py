@@ -39,11 +39,11 @@ def test_wf_gate_recipe_fingerprint_includes_feature_space_contract() -> None:
     assert mod._recipe_fingerprint(old) != mod._recipe_fingerprint(new)
 
 
-def test_wf_gate_sim_cuts_do_not_use_live_static_path_or_persistence() -> None:
+def test_wf_gate_sim_cuts_keep_static_preflight_but_not_persistence() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert '"--no-compare"' in src
     assert '"--no-persist"' in src
-    assert '"--skip-preflight"' in src
+    assert '"--skip-preflight"' not in src
     assert "returncode" in src and "sim cuts failed execution" in src
 
 
@@ -460,7 +460,7 @@ def test_wf_gate_can_derive_prod_semantic_config() -> None:
     assert "build_wf_config_from_prod" in src
     assert "wf_eval_configs" in src
     assert "_matching_manifest_for_recipe" in src
-    assert "using same-recipe manifest" in src
+    assert "gate can fail closed" in src
 
 
 def test_run_sim_disables_live_freshness_by_default_for_historical_sims() -> None:
