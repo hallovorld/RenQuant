@@ -258,9 +258,58 @@ Make RenQuant 104 scientifically trustworthy end to end:
 - Short-candidate trace repair 2026-05-25: `candidate_trace_pool()` now includes
   `ctx.short_candidates`, and short candidates persist with role
   `short_candidate` instead of overwriting same-ticker long candidate rows.
+- Sim sell execution contract repair 2026-05-25: full-exit ownership is now
+  removed only after `_apply_sell()` proves an executable simulated fill. A
+  missing same-bar price/OHLCV no longer deletes a held position without a
+  trade row.
+- Short-side execution trace repair 2026-05-25: negative-share holdings are
+  excluded from the ordinary sell-to-close universe and managed by
+  `ShortCoverStopLossTask` buy-to-cover orders instead. QP short-open signals
+  now carry source-map score/horizon fields, sim short-open trade rows use the
+  shared trade-event builder, and integrity checks validate short-cover
+  economics like sell rows.
 
 ## Pushed Progress
 
+- `05875c9 fix(renquant104): complete short-side execution traces`
+  - Excludes short holdings from ordinary sell-to-close jobs so short stops
+    cannot become additional sells.
+  - Carries QP source-map score/horizon fields into `qp_short_open` signals and
+    persists short-open trade rows with score snapshot, decision inputs,
+    source job/task, QP delta/target/status, sector/model fields when present.
+  - Extends decision-trace integrity to validate `short_cover` P&L/tax/net
+    accounting.
+  - Aggregate tests passed:
+    `tests/test_short_candidate_selection.py tests/test_short_cover_stop_phase_2d.py
+    tests/test_short_cover_tax.py tests/test_short_pnl_vectorbt_validator.py
+    tests/test_sim_trade_ledger.py tests/test_sim_execution_integration.py
+    tests/test_persistence.py tests/test_trade_event_builders.py
+    tests/test_qp_long_short_phase2a.py tests/test_lean_trace_persistence.py
+    tests/test_adapter_context_contract.py` (`153 passed`).
+- `0b8e157 fix(renquant104): preserve sim holdings on skipped sells`
+  - Makes `_apply_sell()` return an execution result and only removes
+    full-exit holdings after a real simulated fill.
+  - Regression test: full exit with no executable price leaves holdings,
+    share ledger, cash, and trade log unchanged.
+  - Targeted tests passed:
+    `tests/test_sim_execution_integration.py tests/test_sim_trade_ledger.py
+    tests/test_short_cover_tax.py` (`34 passed`).
+- `e6b8bf5 fix(renquant104): persist short candidate traces`
+  - Adds `ctx.short_candidates` to the candidate trace pool and persists them
+    with role `short_candidate`, so QP short-side decisions do not overwrite or
+    disappear behind same-ticker long candidate rows.
+  - Targeted tests passed:
+    `tests/test_persistence.py::TestCandidateScores::test_candidate_trace_pool_includes_short_candidates_with_distinct_role
+    tests/test_short_candidate_selection.py tests/test_lean_trace_persistence.py`
+    (`30 passed`).
+- `498977c fix(renquant104): wire short cover stop orders`
+  - Wires `ShortCoverStopLossTask` into `InferencePipeline` before buy scan and
+    changes it to emit buy-to-cover orders instead of incompatible sell exits.
+  - Allows sim buy-to-cover to bypass the ordinary new-long buying-power gate.
+  - Targeted tests passed:
+    `tests/test_short_cover_stop_phase_2d.py tests/test_short_cover_tax.py
+    tests/test_short_pnl_vectorbt_validator.py tests/test_sim_trade_ledger.py
+    tests/test_sim_execution_integration.py` (`47 passed`).
 - `ddf193d fix(renquant104): repair short cover accounting`
   - Repairs sim buy-to-cover state transitions, tax rows, win-rate/tax summary
     inclusion, and round-trip matching for `short_open`/`short_cover`.
