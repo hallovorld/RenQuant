@@ -11,7 +11,7 @@ Prints four diagnostic tables:
   2. Tier base-rate realization       — does each `tiered_thresholds` cut
                                          correspond to a real edge?
   3. Regime-conditional IC            — does the ranker work in every regime?
-  4. Block reason × fwd_10d outcome   — did the blocks save us money?
+  4. Block reason × fwd_Nd outcome    — did the blocks save us money?
 
 Usage::
 
