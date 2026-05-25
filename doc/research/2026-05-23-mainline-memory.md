@@ -2366,6 +2366,15 @@ Operational conclusion:
   `base_rate` for missing scaler or unknown methods, matching the stricter
   scoring helper. Validation: compile passed and kernel/ranking regression
   tests passed (`293 passed`).
+- Follow-up QP risk-constraint bug found: when sector/correlation C2 hard caps
+  made the QP infeasible, `_retry_with_relaxed_c2_caps()` automatically
+  relaxed caps by `1.5x` and could then drop C2 caps entirely. That contradicts
+  the "hard diversification constraint" contract and can turn risk limits into
+  suggestions. Production/golden configs now set
+  `qp_c2_infeasible_policy="strict"`; strict mode keeps the hard constraints
+  and blocks QP orders for the bar. Explicit `relax`/`drop` remains available
+  only for diagnostic configs. Validation: QP sector/correlation/admission/
+  integration/contract tests passed (`70 passed`).
 
 ## Stop Conditions
 

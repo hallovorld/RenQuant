@@ -411,4 +411,5 @@ def test_prod_configs_enable_qp_admission_gate() -> None:
         assert gate["min_panel_score"] >= 0.0, name
         assert joint["qp_min_invested_pct"] == 0.0, name
         assert joint["qp_cash_drag_lambda"] == 0.0, name
+        assert joint["qp_c2_infeasible_policy"] == "strict", name
         assert cfg["ranking"]["kelly_sizing"]["topup_conviction_floor"] >= 0.55, name

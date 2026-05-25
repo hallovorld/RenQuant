@@ -21,11 +21,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
-from kernel.portfolio_qp.qp_solver import solve_portfolio_qp  # noqa: E402
+from kernel.portfolio_qp.qp_solver import QPSolution, solve_portfolio_qp  # noqa: E402
 from kernel.portfolio_qp.task_joint_qp import JointPortfolioQPTask  # noqa: E402
 from kernel.portfolio_qp.tasks import (  # noqa: E402
     ApplySectorMetadataGuardTask,
     BuildSectorConstraintMatrixTask,
+    _retry_with_relaxed_c2_caps,
 )
 
 
@@ -105,6 +106,65 @@ def _complex_qp_ctx() -> _QPCtx:
 
 
 # ── Direct solver-level enforcement ───────────────────────────────────────────
+
+def _qp_solution(status: str) -> QPSolution:
+    return QPSolution(
+        delta_w=np.zeros(2),
+        target_w=np.zeros(2),
+        objective=0.0,
+        n_iter=0,
+        status=status,
+        diagnostics={},
+    )
+
+
+class TestC2InfeasiblePolicy:
+    def test_default_policy_keeps_hard_caps_fail_closed(self):
+        calls = []
+
+        def _solve(**kwargs):
+            calls.append(kwargs)
+            return _qp_solution("optimal")
+
+        sol = _retry_with_relaxed_c2_caps(
+            _qp_solution("infeasible:sector"),
+            {
+                "sector_indicator": np.ones((1, 2)),
+                "sector_cap_vec": np.array([0.10]),
+                "corr_group_pairs": [(0, 1, 0.20)],
+            },
+            _solve,
+        )
+
+        assert sol.status == "infeasible:sector"
+        assert calls == []
+        assert sol.diagnostics["c2_infeasible_policy"] == "strict"
+
+    def test_relax_policy_is_explicit_diagnostic_path(self):
+        calls = []
+
+        def _solve(**kwargs):
+            calls.append(kwargs)
+            return _qp_solution("optimal")
+
+        sol = _retry_with_relaxed_c2_caps(
+            _qp_solution("infeasible:sector"),
+            {
+                "sector_indicator": np.ones((1, 2)),
+                "sector_cap_vec": np.array([0.10]),
+                "corr_group_pairs": [(0, 1, 0.20)],
+            },
+            _solve,
+            policy="relax",
+        )
+
+        assert sol.status == "optimal"
+        assert len(calls) == 1
+        np.testing.assert_allclose(calls[0]["sector_cap_vec"], [0.15])
+        assert calls[0]["corr_group_pairs"][0][:2] == (0, 1)
+        assert calls[0]["corr_group_pairs"][0][2] == pytest.approx(0.30)
+        assert sol.diagnostics["c2_infeasible_policy"] == "relax"
+
 
 class TestSolverSectorConstraint:
     """Smoke tests on solve_portfolio_qp's sector_indicator + sector_cap_vec."""

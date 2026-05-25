@@ -707,6 +707,8 @@
       "_qp_sector_cap_enabled_reason": "2026-05-10 C2: hard linear sector cap inside QP solve. Total sector weight \u2264 max_positions_per_sector \u00d7 max_position_pct. Closes audit gap where stress reallocation could exceed sector cap that buy-side filter enforced.",
       "qp_correlation_cap_enabled": true,
       "_qp_correlation_cap_enabled_reason": "2026-05-10 C2: hard linear group cap on high-corr pairs (|\u03c1| \u2265 correlation_guard_threshold). wp[i] + wp[j] \u2264 2 \u00d7 max_position_pct. Linear approx of pair-product cap (Boyd 2004 \u00a74.4).",
+      "qp_c2_infeasible_policy": "strict",
+      "_qp_c2_infeasible_policy_reason": "2026-05-24 Codex audit: sector/correlation caps are hard diversification constraints. If they make the QP infeasible, block QP orders for the bar instead of relaxing or dropping risk constraints. Diagnostic configs may explicitly set relax/drop.",
       "qp_conviction_cap_enabled": true,
       "qp_mu_contract": "strict",
       "_qp_mu_contract_reason": "2026-05-21 Codex audit: QP objective expects \u03bc in expected-return / volatility units. Strictly reject raw rank_score/panel_score fallback; valid sources are calibrator expected_return, NGBoost \u03bc, or alpha_to_mu."

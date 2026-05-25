@@ -1320,7 +1320,12 @@ class SolveMarkowitzQPTask(Task):
         if backend == "cvxportfolio":
             self._strip_kwargs_for_cvxportfolio(kwargs, ctx)
         sol = _solve(**kwargs)
-        sol = _retry_with_relaxed_c2_caps(sol, kwargs, _solve)
+        sol = _retry_with_relaxed_c2_caps(
+            sol,
+            kwargs,
+            _solve,
+            policy=str(cfg.get("qp_c2_infeasible_policy", "strict")),
+        )
         ctx._qp_solution = sol  # noqa: SLF001
         ctx._qp_status = str(getattr(sol, "status", "missing_solution"))  # noqa: SLF001
         ctx._qp_diagnostics = dict(getattr(sol, "diagnostics", {}) or {})  # noqa: SLF001
@@ -1402,24 +1407,40 @@ class SolveMarkowitzQPTask(Task):
         kwargs.pop("gross_max", None)
 
 
-# ── Soft-fallback for C2 hard constraints (sector + corr pair caps) ───────
+# ── Optional diagnostic fallback for C2 hard constraints ──────────────────
 
-def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn):
-    """If the QP went infeasible with C2 caps active, relax + retry.
+def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn, *, policy: str = "strict"):
+    """Handle infeasible QP solves when C2 caps are active.
 
-    Retry sequence (per task spec — never silently drop, always log):
-      1. Multiply sector_cap_vec and corr_pair caps by 1.5 → re-solve.
-      2. If still infeasible → drop both C2 caps entirely → physics-only solve.
+    Production default is strict fail-closed: sector and correlation caps are
+    hard risk constraints, so an infeasible solve means "no QP trade this bar",
+    not "retry with weaker diversification." This follows the convex
+    optimization contract in Boyd & Vandenberghe: constraints define the
+    feasible set; preferences belong in the objective.
+
+    Diagnostic-only policies:
+      - "relax": multiply C2 caps by 1.5 and re-solve once.
+      - "drop": after the relax retry also drop C2 caps entirely.
 
     Returns the final QPSolution. Status carries `infeasible:*` only when
-    even the physics-only fallback failed (unusual — points to deeper Σ
-    or μ corruption).
+    the selected policy does not find a feasible solution.
     """
     if not sol.status.startswith("infeasible"):
         return sol
     has_c2 = (kwargs.get("sector_indicator") is not None
               or kwargs.get("corr_group_pairs"))
     if not has_c2:
+        return sol
+    mode = str(policy or "strict").strip().lower()
+    if mode in {"", "strict", "fail_closed", "fail-closed", "none", "off"}:
+        sol.diagnostics = {
+            **(getattr(sol, "diagnostics", {}) or {}),
+            "c2_infeasible_policy": "strict",
+        }
+        log.error(
+            "QP infeasible with C2 caps — strict policy keeps sector/corr "
+            "constraints and blocks QP orders for this bar",
+        )
         return sol
     log.warning("QP infeasible with C2 caps — retrying with caps relaxed ×1.5")
     relaxed = dict(kwargs)
@@ -1433,6 +1454,16 @@ def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn):
         ]
     sol = solve_fn(**relaxed)
     if not sol.status.startswith("infeasible"):
+        sol.diagnostics = {
+            **(getattr(sol, "diagnostics", {}) or {}),
+            "c2_infeasible_policy": "relax",
+        }
+        return sol
+    if mode not in {"drop", "relax_then_drop", "drop_after_relax"}:
+        sol.diagnostics = {
+            **(getattr(sol, "diagnostics", {}) or {}),
+            "c2_infeasible_policy": "relax",
+        }
         return sol
     log.warning(
         "QP still infeasible after relax — dropping C2 caps for this bar "
@@ -1442,7 +1473,12 @@ def _retry_with_relaxed_c2_caps(sol, kwargs, solve_fn):
     last_resort["sector_indicator"] = None
     last_resort["sector_cap_vec"]   = None
     last_resort["corr_group_pairs"] = None
-    return solve_fn(**last_resort)
+    sol = solve_fn(**last_resort)
+    sol.diagnostics = {
+        **(getattr(sol, "diagnostics", {}) or {}),
+        "c2_infeasible_policy": "drop",
+    }
+    return sol
 
 
 # ── 7. Translate Δw → orders / exits ───────────────────────────────────────
@@ -2319,6 +2355,7 @@ _QP_PER_REGIME_KEYS = (
     "qp_sigma_horizon_mode",
     "qp_horizon_contract",
     "qp_admission_gate",
+    "qp_c2_infeasible_policy",
 )
 
 
