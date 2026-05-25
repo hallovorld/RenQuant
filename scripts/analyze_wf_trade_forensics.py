@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,11 @@ from sim_trade_ledger import round_trips_from_trade_log
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+STRATEGY_DIR = REPO_ROOT / "backtesting" / "renquant_104"
+if str(STRATEGY_DIR) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_DIR))
+
+from kernel.meta_label.triple_barrier import apply_triple_barrier  # noqa: E402
 
 
 def _as_float(value: Any, default: float = float("nan")) -> float:
@@ -364,6 +370,218 @@ def _forward_return_alignment(
         "n_entry_events": int(len(enriched)),
         "overall": _rows(enriched),
         "by_entry_regime": by_regime,
+    }
+
+
+def _realized_sigma_daily(
+    close: pd.Series | None,
+    date: Any,
+    *,
+    window: int = 20,
+    default: float = 0.01,
+) -> float:
+    """Daily realized volatility known at ``date``.
+
+    This is a diagnostic helper for exit-path labeling. It intentionally uses
+    only returns up to the exit bar, so the triple-barrier width never sees the
+    future path it is labeling.
+    """
+    if close is None or close.empty:
+        return float(default)
+    idx = close.index.searchsorted(pd.Timestamp(date), side="right")
+    if idx <= 1:
+        return float(default)
+    rets = close.iloc[:idx].pct_change().dropna().tail(int(window))
+    if len(rets) < 5:
+        return float(default)
+    sigma = float(rets.std())
+    return sigma if math.isfinite(sigma) and sigma > 0 else float(default)
+
+
+def _exit_path_audit(
+    closed: pd.DataFrame,
+    *,
+    ohlcv_root: Path | None,
+    benchmark_ticker: str,
+    horizons: tuple[int, ...] = (20, 60, 120),
+    barrier_window_days: int = 60,
+    pt_mult: float = 10.0,
+    sl_mult: float = 10.0,
+    min_n: int = 1,
+) -> dict[str, Any]:
+    """Audit whether realized exits were path-correct after the sell.
+
+    The triple-barrier lens follows AFML's path-dependent labeling: from the
+    exit bar, did price hit a lower volatility-scaled barrier first
+    (exit was correct), or recover / finish positive first (exit was likely a
+    false-positive path exit)?  This is diagnostic evidence, not a trading
+    rule by itself.
+    """
+    if ohlcv_root is None:
+        return {"enabled": False, "reason": "ohlcv_root_not_set"}
+    if closed.empty:
+        return {"enabled": True, "reason": "no_closed_trades", "overall": {}}
+
+    benchmark = _load_close(ohlcv_root, benchmark_ticker)
+    close_cache: dict[str, pd.Series | None] = {benchmark_ticker: benchmark}
+    for ticker in closed["ticker"].dropna().astype(str).unique():
+        close_cache.setdefault(ticker, _load_close(ohlcv_root, ticker))
+
+    rows: list[dict[str, Any]] = []
+    for row in closed.itertuples(index=False):
+        ticker = str(getattr(row, "ticker", "")).upper()
+        exit_date = getattr(row, "exit_date", None)
+        exit_price = _as_float(getattr(row, "exit_price", None), float("nan"))
+        close = close_cache.get(ticker)
+        barrier_label = None
+        barrier_date = None
+        barrier_price = None
+        exit_correct = None
+        sigma_daily = _realized_sigma_daily(close, exit_date)
+        if close is not None and math.isfinite(exit_price):
+            tb = apply_triple_barrier(
+                close,
+                entry_idx=pd.Timestamp(exit_date),
+                entry_price=exit_price,
+                pt_mult=float(pt_mult),
+                sl_mult=float(sl_mult),
+                sigma_daily=sigma_daily,
+                max_horizon_days=int(barrier_window_days),
+                return_terminal_sign=True,
+            )
+            if tb is not None:
+                barrier_label, barrier_date, barrier_price = tb
+                # After a sell, lower-first means the exit avoided further loss.
+                exit_correct = 1 if int(barrier_label) == -1 else 0
+
+        item = {
+            "cut": getattr(row, "cut", None),
+            "ticker": ticker,
+            "entry_date": getattr(row, "entry_date", None),
+            "exit_date": exit_date,
+            "entry_regime": getattr(row, "entry_regime", None),
+            "exit_regime": getattr(row, "exit_regime", None),
+            "entry_exit_regime": getattr(row, "entry_exit_regime", None),
+            "exit_reason": getattr(row, "exit_reason", None),
+            "gross_pnl": _as_float(getattr(row, "gross_pnl", None), 0.0),
+            "net_pnl_after_tax": _as_float(getattr(row, "net_pnl_after_tax", None), 0.0),
+            "pnl_pct": _as_float(getattr(row, "pnl_pct", None), float("nan")),
+            "hold_days": _as_float(getattr(row, "hold_days", None), float("nan")),
+            "entry_rank_score": _as_float(getattr(row, "entry_rank_score", None), float("nan")),
+            "entry_mu": _as_float(getattr(row, "entry_mu", None), float("nan")),
+            "entry_sigma": _as_float(getattr(row, "entry_sigma", None), float("nan")),
+            "exit_price": exit_price,
+            "path_sigma_daily": sigma_daily,
+            "barrier_window_days": int(barrier_window_days),
+            "barrier_label": barrier_label,
+            "barrier_date": barrier_date,
+            "barrier_price": barrier_price,
+            "exit_correct_by_barrier": exit_correct,
+        }
+        for h in horizons:
+            stock_ret = _forward_return(close, exit_date, h)
+            bench_ret = _forward_return(benchmark, exit_date, h)
+            item[f"post_exit_{h}d_return"] = stock_ret
+            item[f"post_exit_{h}d_{benchmark_ticker.lower()}"] = bench_ret
+            item[f"post_exit_{h}d_excess_{benchmark_ticker.lower()}"] = (
+                stock_ret - bench_ret
+                if math.isfinite(stock_ret) and math.isfinite(bench_ret)
+                else float("nan")
+            )
+        rows.append(item)
+
+    audit = pd.DataFrame(rows)
+    if audit.empty:
+        return {"enabled": True, "reason": "no_auditable_exits", "overall": {}}
+
+    def _path_summary(group: pd.DataFrame) -> dict[str, Any]:
+        correct = pd.to_numeric(group["exit_correct_by_barrier"], errors="coerce")
+        out: dict[str, Any] = {
+            "n": int(len(group)),
+            "labeled_n": int(correct.notna().sum()),
+            "barrier_correct_exit_rate": (
+                float(correct.dropna().mean()) if correct.notna().any() else None
+            ),
+            "barrier_false_positive_rate": (
+                float((1.0 - correct.dropna()).mean()) if correct.notna().any() else None
+            ),
+            "gross_pnl": float(pd.to_numeric(group["gross_pnl"], errors="coerce").fillna(0.0).sum()),
+            "net_pnl_after_tax": float(
+                pd.to_numeric(group["net_pnl_after_tax"], errors="coerce").fillna(0.0).sum()
+            ),
+            "median_hold_days": (
+                float(pd.to_numeric(group["hold_days"], errors="coerce").dropna().median())
+                if pd.to_numeric(group["hold_days"], errors="coerce").notna().any()
+                else None
+            ),
+        }
+        for h in horizons:
+            raw_col = f"post_exit_{h}d_return"
+            excess_col = f"post_exit_{h}d_excess_{benchmark_ticker.lower()}"
+            raw = pd.to_numeric(group[raw_col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            excess = pd.to_numeric(group[excess_col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            out[f"mean_post_exit_{h}d_return"] = (
+                float(raw.dropna().mean()) if raw.notna().any() else None
+            )
+            out[f"mean_post_exit_{h}d_excess"] = (
+                float(excess.dropna().mean()) if excess.notna().any() else None
+            )
+        return out
+
+    def _group_rows(group_col: str) -> list[dict[str, Any]]:
+        if group_col not in audit.columns:
+            return []
+        out: list[dict[str, Any]] = []
+        for key, group in audit.groupby(group_col, dropna=False, observed=False):
+            if len(group) < min_n:
+                continue
+            out.append({
+                group_col: "NULL" if pd.isna(key) else str(key),
+                **_path_summary(group),
+            })
+        return sorted(out, key=lambda r: float(r.get("net_pnl_after_tax") or 0.0))
+
+    bad_exits = audit[
+        pd.to_numeric(audit["exit_correct_by_barrier"], errors="coerce").eq(0)
+    ].sort_values("net_pnl_after_tax").head(25)
+    cols = [
+        "cut",
+        "ticker",
+        "entry_date",
+        "exit_date",
+        "entry_regime",
+        "exit_regime",
+        "exit_reason",
+        "gross_pnl",
+        "net_pnl_after_tax",
+        "pnl_pct",
+        "hold_days",
+        "entry_rank_score",
+        "entry_mu",
+        "path_sigma_daily",
+        "barrier_label",
+        "barrier_date",
+        "barrier_price",
+    ]
+    for h in horizons:
+        cols.append(f"post_exit_{h}d_excess_{benchmark_ticker.lower()}")
+
+    return {
+        "enabled": True,
+        "benchmark_ticker": benchmark_ticker,
+        "ohlcv_root": str(ohlcv_root),
+        "barrier_window_days": int(barrier_window_days),
+        "pt_mult": float(pt_mult),
+        "sl_mult": float(sl_mult),
+        "n_exits": int(len(audit)),
+        "overall": _path_summary(audit),
+        "by_exit_reason": _group_rows("exit_reason"),
+        "by_entry_regime": _group_rows("entry_regime"),
+        "by_exit_regime": _group_rows("exit_regime"),
+        "by_entry_exit_regime": _group_rows("entry_exit_regime"),
+        "barrier_false_positive_examples": _json_ready(
+            bad_exits[[c for c in cols if c in bad_exits.columns]].to_dict(orient="records")
+        ),
     }
 
 
@@ -731,6 +949,12 @@ def analyze_trace(
             benchmark_ticker=benchmark_ticker,
             min_n=max(10, min_group_n),
         ),
+        "exit_path_audit": _exit_path_audit(
+            closed,
+            ohlcv_root=ohlcv_root,
+            benchmark_ticker=benchmark_ticker,
+            min_n=min_group_n,
+        ),
         "score_spearman_by_entry_regime": _score_spearman_by_group(
             closed,
             "entry_regime",
@@ -856,6 +1080,33 @@ def markdown_report(payload: dict[str, Any]) -> str:
                 lines.append("Insufficient rows.")
     else:
         lines.append(f"Disabled: {fra.get('reason')}")
+
+    epa = payload.get("exit_path_audit", {})
+    lines.extend(["", "## Exit Path Audit"])
+    if epa.get("enabled"):
+        lines.extend([
+            f"- exits: {epa.get('n_exits')}",
+            f"- barrier_window_days: {epa.get('barrier_window_days')}",
+            f"- barrier: ±{epa.get('pt_mult')} / {epa.get('sl_mult')} daily-sigma multiples",
+            f"- benchmark: `{epa.get('benchmark_ticker')}`",
+        ])
+        if epa.get("overall"):
+            lines.append(pd.DataFrame([epa["overall"]]).to_markdown(index=False, floatfmt=".4f"))
+        for key in ("by_exit_reason", "by_entry_regime", "by_exit_regime", "by_entry_exit_regime"):
+            rows = epa.get(key, [])
+            lines.extend(["", f"### exit_path_audit.{key}"])
+            if rows:
+                lines.append(pd.DataFrame(rows).to_markdown(index=False, floatfmt=".4f"))
+            else:
+                lines.append("No rows.")
+        examples = pd.DataFrame(epa.get("barrier_false_positive_examples", []))
+        lines.extend(["", "### exit_path_audit.false_positive_examples"])
+        if not examples.empty:
+            lines.append(examples.to_markdown(index=False, floatfmt=".4f"))
+        else:
+            lines.append("No false-positive examples.")
+    else:
+        lines.append(f"Disabled: {epa.get('reason')}")
 
     for key, rows in payload["groups"].items():
         lines.extend(["", f"## {key}"])

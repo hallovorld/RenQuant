@@ -91,6 +91,24 @@ Make RenQuant 104 scientifically trustworthy end to end:
   `min_expected_return_over_sigma[_by_regime]` and top-up aliases. This is
   not enabled in production; it is for testing risk-adjusted admission instead
   of raw μ floors.
+- 2026-05-24 exit-path audit added to
+  `scripts/analyze_wf_trade_forensics.py`: after each closed sell it applies
+  an AFML-style 60-business-day triple-barrier label using realized daily
+  volatility known at the exit bar. In the accepted ER-floor diagnostic trace
+  `erfloor_bullcalm040_20260524`, BULL_CALM exits are mostly not path-correct:
+  overall barrier-correct exit rate is `43.3%` and false-positive rate is
+  `56.7%`. `stop_loss` is worse: `14` exits, `0%` win rate, net `-$7.78k`,
+  only `35.7%` barrier-correct, `64.3%` false-positive, with mean post-exit
+  excess returns versus SPY of `+4.0%` at 20d, `+10.8%` at 60d, and `+21.7%`
+  at 120d. Examples include PLTR/NVDA/INTC/COHR stop exits that later
+  recovered strongly. This pins the current alpha-conversion thesis:
+  the model may be selecting longer-horizon BULL_CALM winners, while current
+  stop/QP/rotation exits realize them on a shorter/noisier path.
+- Do not respond by globally disabling or widening stops. The same audit shows
+  some stop-loss exits were correct, so the next fix must be regime- and
+  path-conditional: either add short-horizon confirmation at entry, train/use a
+  meta-label exit veto, or align BULL_CALM exit barriers with the model's
+  target horizon. Any rule change needs WF evidence reported per regime first.
 
 ## Pushed Progress
 

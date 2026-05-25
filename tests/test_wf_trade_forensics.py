@@ -240,6 +240,97 @@ def test_forward_return_alignment_separates_model_signal_from_trade_path(
     assert row["spearman_vs_forward_excess"] == pytest.approx(1.0)
 
 
+def test_exit_path_audit_flags_stop_loss_false_positive_recoveries(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "ohlcv"
+    dates = pd.bdate_range("2024-01-02", periods=90)
+    spy = pd.DataFrame({"close": np.full(len(dates), 100.0)}, index=dates)
+    (root / "SPY").mkdir(parents=True)
+    spy.to_parquet(root / "SPY" / "1d.parquet")
+
+    exit_idx = 20
+    # Constant pre-exit path makes the audit use its documented 1% default
+    # daily sigma. From exit_price=90, ±10σ barriers are 81 / 99.
+    recover = np.concatenate([
+        np.full(exit_idx + 1, 90.0),
+        np.linspace(92.0, 105.0, len(dates) - exit_idx - 1),
+    ])
+    fall = np.concatenate([
+        np.full(exit_idx + 1, 90.0),
+        np.linspace(88.0, 75.0, len(dates) - exit_idx - 1),
+    ])
+    for ticker, close in {"RECOVER": recover, "FALL": fall}.items():
+        (root / ticker).mkdir(parents=True)
+        pd.DataFrame({"close": close}, index=dates).to_parquet(
+            root / ticker / "1d.parquet"
+        )
+
+    closed = pd.DataFrame([
+        {
+            "status": "closed",
+            "cut": "cut1",
+            "ticker": "RECOVER",
+            "entry_date": dates[0],
+            "exit_date": dates[exit_idx],
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "BULL_CALM",
+            "entry_exit_regime": "BULL_CALM->BULL_CALM",
+            "exit_reason": "stop_loss",
+            "shares": 1,
+            "entry_price": 100.0,
+            "exit_price": 90.0,
+            "gross_pnl": -10.0,
+            "tax": 0.0,
+            "net_pnl_after_tax": -10.0,
+            "pnl_pct": -0.10,
+            "hold_days": 20,
+            "entry_rank_score": 0.8,
+            "entry_mu": 0.05,
+        },
+        {
+            "status": "closed",
+            "cut": "cut1",
+            "ticker": "FALL",
+            "entry_date": dates[0],
+            "exit_date": dates[exit_idx],
+            "entry_regime": "BULL_CALM",
+            "exit_regime": "BULL_CALM",
+            "entry_exit_regime": "BULL_CALM->BULL_CALM",
+            "exit_reason": "stop_loss",
+            "shares": 1,
+            "entry_price": 100.0,
+            "exit_price": 90.0,
+            "gross_pnl": -10.0,
+            "tax": 0.0,
+            "net_pnl_after_tax": -10.0,
+            "pnl_pct": -0.10,
+            "hold_days": 20,
+            "entry_rank_score": 0.7,
+            "entry_mu": 0.04,
+        },
+    ])
+
+    payload = wf_forensics._exit_path_audit(
+        closed,
+        ohlcv_root=root,
+        benchmark_ticker="SPY",
+        horizons=(20,),
+        min_n=1,
+    )
+
+    assert payload["enabled"] is True
+    stop_row = payload["by_exit_reason"][0]
+    assert stop_row["exit_reason"] == "stop_loss"
+    assert stop_row["labeled_n"] == 2
+    assert stop_row["barrier_correct_exit_rate"] == pytest.approx(0.5)
+    assert stop_row["barrier_false_positive_rate"] == pytest.approx(0.5)
+    assert any(
+        row["ticker"] == "RECOVER"
+        for row in payload["barrier_false_positive_examples"]
+    )
+
+
 def test_cut_exposure_summary_separates_alpha_and_benchmark(monkeypatch) -> None:
     prices = {
         "SPY": pd.Series(
