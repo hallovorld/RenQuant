@@ -127,7 +127,10 @@ def test_sim_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     adapter._pending_settle_cash = MethodType(lambda self: 0.0, adapter)
     adapter._available_buying_power = MethodType(lambda self: 100_000.0, adapter)
     adapter._get_panel_scorer_for_bar = MethodType(lambda self, _today: None, adapter)
-    adapter._get_global_calibrator_for_bar = MethodType(lambda self, _today: None, adapter)
+    adapter._get_global_calibrator_for_bar = MethodType(
+        lambda self, _today: None,
+        adapter,
+    )
 
     ctx = adapter.make_context(today)
 
@@ -139,6 +142,80 @@ def test_sim_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     assert getattr(ctx, "_panel_factor_frames")["AAA"].index.max() <= today
     assert getattr(ctx, "_panel_macro_frame").index.max() <= today
     assert getattr(ctx, "_panel_asset_embeddings") == {"AAA": [0.1, -0.2]}
+
+
+def test_sim_adapter_prices_enabled_benchmark_sleeve_from_spy_df(tmp_path):
+    """Sim must price the benchmark sleeve like live/LEAN do.
+
+    A missing SPY price makes BenchmarkSleeveTask no-op in sim while live/LEAN
+    would trade it, which breaks the shared-pipeline contract.
+    """
+    from adapters.sim import SimAdapter
+
+    today = pd.Timestamp("2026-02-27")
+    cfg = _minimal_config(tmp_path)
+    cfg["portfolio"] = {
+        "benchmark_sleeve": {
+            "enabled": True,
+            "ticker": "SPY",
+        },
+    }
+    ohlcv = {"AAA": _ohlcv_frame()}
+    spy_df = _ohlcv_frame()
+    adapter = SimAdapter.__new__(SimAdapter)
+    adapter._config = cfg
+    adapter._ohlcv = ohlcv
+    adapter._spy_df = spy_df
+    adapter._spy_prev_close = 100.0
+    adapter._spy_returns = [0.01]
+    adapter._models = {"AAA": {"_metadata": {"model_type": "xgb"}}}
+    adapter._sector_etf_map = {}
+    adapter._holdings = {}
+    adapter._gmm = None
+    adapter._corr = {}
+    adapter._earnings = {}
+    adapter._cash = 100_000.0
+    adapter._last_sell_date = {}
+    adapter._last_sell_pls = {}
+    adapter._last_stop_exit_date = {}
+    adapter._hwm = 100_000.0
+    adapter._skip_buys = False
+    adapter._regime_state = None
+    adapter._regime_counts = {"BULL_CALM": 1}
+    adapter._feature_cache = {}
+    adapter._monitor_state = {"idle_days": 0}
+    adapter._rotation_proposals = []
+    adapter._meta_label_logger = None
+    adapter._meta_label_predictor = None
+    adapter._db = None
+    adapter._exec_enabled = False
+    adapter._ngboost_head = None
+    adapter._panel_runtime_cache = {}
+    adapter._alpha158_feature_cache = {}
+    adapter._panel_history_cache = None
+    adapter._panel_history_seq_len = 64
+    adapter._panel_feature_frames = {}
+    adapter._panel_factor_frames = {}
+    adapter._panel_macro_frame = None
+    adapter._panel_asset_embeddings = {}
+    adapter._charge_daily_borrow = MethodType(lambda self, _today: None, adapter)
+    adapter._portfolio_value = MethodType(
+        lambda self, _prices, today_ts=None: 100_000.0,
+        adapter,
+    )
+    adapter._pending_settle_cash = MethodType(lambda self: 0.0, adapter)
+    adapter._available_buying_power = MethodType(lambda self: 100_000.0, adapter)
+    adapter._get_panel_scorer_for_bar = MethodType(lambda self, _today: None, adapter)
+    adapter._get_global_calibrator_for_bar = MethodType(
+        lambda self, _today: None,
+        adapter,
+    )
+
+    ctx = adapter.make_context(today)
+
+    assert ctx.prices["SPY"] == pytest.approx(float(spy_df.loc[today, "close"]))
+    assert "SPY" in ctx.ohlcv
+    assert ctx.ohlcv["SPY"].index.max() <= today
 
 
 def test_runner_adapter_make_context_satisfies_pipeline_contract(tmp_path):

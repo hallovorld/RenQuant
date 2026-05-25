@@ -1004,6 +1004,41 @@ class SimAdapter:
 
     # ── Public entry points ─────────────────────────────────────────────────
 
+    def _price_frame_for(self, ticker: str) -> pd.DataFrame | None:
+        """Return the bar frame used to price ``ticker`` in sim context."""
+        key = str(ticker or "").strip().upper()
+        if not key:
+            return None
+        df = self._ohlcv.get(key)
+        benchmark = str(self._config.get("benchmark") or "SPY").strip().upper()
+        if df is None and key == benchmark and self._spy_df is not None:
+            df = self._spy_df
+        return df
+
+    def _context_price_tickers(self) -> list[str]:
+        """Ticker universe that must receive current-bar prices.
+
+        Live and LEAN price the watchlist/model universe, sector ETFs, held
+        positions, and benchmark. Keep sim aligned so optional beta sleeve
+        logic cannot silently no-op only in research.
+        """
+        from kernel.pipeline.task_benchmark_sleeve import (  # noqa: PLC0415
+            benchmark_sleeve_ticker,
+        )
+
+        tickers: list[str] = []
+        tickers.extend(str(t).upper() for t in self._config.get("watchlist", []) if t)
+        tickers.extend(str(t).upper() for t in self._models)
+        tickers.extend(str(t).upper() for t in self._sector_etf_map.values() if t)
+        tickers.extend(str(t).upper() for t in self._holdings)
+        benchmark = str(self._config.get("benchmark") or "SPY").strip().upper()
+        if benchmark:
+            tickers.append(benchmark)
+        sleeve_ticker = benchmark_sleeve_ticker(self._config)
+        if sleeve_ticker:
+            tickers.append(sleeve_ticker)
+        return list(dict.fromkeys(tickers))
+
     def make_context(self, today: pd.Timestamp):
         """Build InferenceContext from current sim state + today's bar."""
         from kernel.pipeline.context import InferenceContext  # noqa: PLC0415
@@ -1041,19 +1076,10 @@ class SimAdapter:
                     self._spy_returns = self._spy_returns[-100:]
             self._spy_prev_close = spy_close
 
-        # Prices for this bar — union of models + sector ETFs
+        # Prices for this bar — same priced universe contract as live/LEAN.
         prices: dict[str, float] = {}
-        for t in self._models:
-            df = self._ohlcv.get(t)
-            if df is not None and today_ts in df.index:
-                prices[t] = float(df.loc[today_ts, "close"])
-        for _sec, etf in self._sector_etf_map.items():
-            df = self._ohlcv.get(etf)
-            if df is not None and today_ts in df.index:
-                prices[etf] = float(df.loc[today_ts, "close"])
-        # Held-position prices (in case a holding isn't in _models — defensives)
-        for t in self._holdings:
-            df = self._ohlcv.get(t)
+        for t in self._context_price_tickers():
+            df = self._price_frame_for(t)
             if df is not None and today_ts in df.index:
                 prices[t] = float(df.loc[today_ts, "close"])
 
@@ -1076,6 +1102,12 @@ class SimAdapter:
         truncated = {
             t: df.loc[:today_ts] for t, df in self._ohlcv.items()
         }
+        for t in self._context_price_tickers():
+            if t in truncated:
+                continue
+            df = self._price_frame_for(t)
+            if df is not None:
+                truncated[t] = df.loc[:today_ts]
 
         ctx = InferenceContext(
             config           = self._config,

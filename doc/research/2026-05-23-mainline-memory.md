@@ -127,6 +127,28 @@ Make RenQuant 104 scientifically trustworthy end to end:
   current evidence says the remaining problem is not tax cash corruption or
   the old greedy selector; it is BULL_CALM score/holding-horizon/exits failing
   to convert IC into realized alpha.
+- 2026-05-25 label-contract correction: WF sanity now uses the artifact's
+  declared rank-LTR label (`fwd_60d_excess`) instead of a hard-coded raw-return
+  label. The corrected strict rerun still fails: annual-net cut Sharpes
+  `+0.924`, `+0.726`, `-0.120`; mean Sharpe `+0.510` vs SPY `+1.081`;
+  sanity real IC `+0.0320`, aligned real IC `+0.0484`, placebo IC `+0.0368`
+  versus required `< +0.0242`; BULL_CALM score monotonicity still fails.
+  This is better measurement, not a promoted model.
+- New strict-trace forensics on `20260525T165251Z` confirm tax integrity is
+  clean (`tax_cash_debited=0`, no tax greater than positive gross, no losing
+  rows with positive tax). The closed alpha trades have gross `+$16.19k`,
+  tax-estimated net `+$1.96k`, but same-capital SPY comparison is `+$3.49k`,
+  so active net is `-$1.53k`; active win rate is only `42.1%`. All entries are
+  BULL_CALM QP buys, and BULL_CALM rank/μ/panel-score Spearman versus net P/L
+  remains negative. Treat BULL_CALM model buys as not accepted until regime
+  evidence and trade monotonicity pass.
+- Sim/live/LEAN parity bug found 2026-05-25: when benchmark sleeve is enabled,
+  live and LEAN price the benchmark, but sim could omit the sleeve ticker from
+  `ctx.prices` if it was not a loaded model/sector ETF/holding. That made
+  `BenchmarkSleeveTask` no-op only in sim. Sim now prices watchlist, models,
+  sector ETFs, holdings, benchmark, and the enabled sleeve ticker, with SPY
+  falling back to `spy_df`; regression coverage is in
+  `tests/test_adapter_context_contract.py`.
 - 2026-05-25 contract/audit fixes landed: panel preflight now hard-fails
   full/buy when sentiment feature columns are present but the artifact lacks a
   `sentiment_runtime_gate_contract` while runtime disables sentiment in any
@@ -172,6 +194,27 @@ Make RenQuant 104 scientifically trustworthy end to end:
 
 ## Pushed Progress
 
+- `9007475 docs: add codex bug bounty retrospective`
+  - Adds the Codex retrospective for the failed "10-round" bug bounty:
+    the audit was not a true end-to-end invariant chain, experiments outran
+    contracts, global IC was over-trusted, alpha admission and QP sizing were
+    blurred, and trade-level audit/memory discipline were insufficient.
+  - Non-negotiable repair protocol: start from the pipeline contract, make
+    acceptance evidence regime-first, separate alpha qualification from
+    portfolio sizing, persist every decision-tree field, and stop/promote only
+    through strict gates.
+- `65f5d9c fix(wf): validate sanity against artifact label contract`
+  - WF sanity and the standalone manifest sanity script now derive the label
+    column from the artifact contract instead of hard-coding raw-return labels.
+  - Targeted tests passed:
+    `tests/test_wf_gate_cli_contract.py
+    tests/test_wf_gate_regime_sanity_metadata.py`.
+- Latest sim benchmark-sleeve pricing parity fix:
+  - `SimAdapter` now prices the same context universe expected by live/LEAN,
+    including benchmark and enabled benchmark-sleeve ticker.
+  - Targeted tests passed:
+    `tests/test_adapter_context_contract.py tests/test_benchmark_sleeve.py
+    tests/test_no_trade_invariant.py` (`20 passed, 2 skipped`).
 - `81bd338 fix(renquant104): enforce strict model contracts`
   - Hard-fails buy/full preflight on bad or missing WF/SPY/regime
     IC/calibration/config evidence.
