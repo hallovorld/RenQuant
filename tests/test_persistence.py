@@ -859,6 +859,99 @@ class TestTrades:
         assert report["qp_trade_attribution_gaps"] == 1
         conn.close()
 
+    def test_decision_trace_integrity_report_flags_qp_buy_horizon_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 1,
+                "blocked_by": None,
+                "in_universe": 1,
+                "model_type": "xgb",
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 100.0,
+            "source_job": "JointPortfolioQPJob",
+            "score_snapshot": {
+                "rank_score": 0.61,
+                "mu": 0.02,
+                "sigma": 0.18,
+            },
+            "decision_inputs": {
+                "source_job": "JointPortfolioQPJob",
+                "delta_w": 0.05,
+                "target_w": 0.05,
+                "solver_status": "optimal",
+            },
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["qp_buy_horizon_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_accepts_qp_buy_horizon(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 1,
+                "blocked_by": None,
+                "in_universe": 1,
+                "model_type": "xgb",
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 100.0,
+            "source_job": "JointPortfolioQPJob",
+            "score_snapshot": {
+                "rank_score": 0.61,
+                "mu": 0.02,
+                "mu_horizon_days": 60,
+                "sigma": 0.18,
+                "expected_return": 0.02,
+                "expected_return_horizon_days": 60,
+            },
+            "decision_inputs": {
+                "source_job": "JointPortfolioQPJob",
+                "delta_w": 0.05,
+                "target_w": 0.05,
+                "solver_status": "optimal",
+                "expected_return_horizon_days": 60,
+                "mu_horizon_days": 60,
+            },
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is True
+        assert report["qp_buy_horizon_gaps"] == 0
+        conn.close()
+
     def test_decision_trace_integrity_report_flags_model_type_gap(self, tmp_path):
         conn = get_connection(_cfg(tmp_path))
         rid = record_pipeline_run(

@@ -1523,6 +1523,7 @@ def decision_trace_integrity_report(
     sell_economic_gaps = 0
     fallback_trade_attribution_gaps = 0
     qp_trade_attribution_gaps = 0
+    qp_buy_horizon_gaps = 0
     for (
         action,
         shares,
@@ -1575,6 +1576,21 @@ def decision_trace_integrity_report(
                 decision_inputs.get(k) is None for k in required
             ):
                 qp_trade_attribution_gaps += 1
+            if str(action or "").lower() == "buy":
+                if (
+                    not isinstance(score_snapshot, dict)
+                    or not _json_finite(score_snapshot.get("expected_return"))
+                    or not _json_positive_int(
+                        score_snapshot.get("expected_return_horizon_days")
+                    )
+                    or not _json_positive_int(score_snapshot.get("mu_horizon_days"))
+                    or not isinstance(decision_inputs, dict)
+                    or not _json_positive_int(
+                        decision_inputs.get("expected_return_horizon_days")
+                    )
+                    or not _json_positive_int(decision_inputs.get("mu_horizon_days"))
+                ):
+                    qp_buy_horizon_gaps += 1
     return {
         "run_id": run_id,
         "ticker_daily_state_rows": len(recorded),
@@ -1590,6 +1606,7 @@ def decision_trace_integrity_report(
         "sell_share_gaps": int(sell_share_gaps),
         "sell_economic_gaps": int(sell_economic_gaps),
         "qp_trade_attribution_gaps": int(qp_trade_attribution_gaps),
+        "qp_buy_horizon_gaps": int(qp_buy_horizon_gaps),
         "model_type_gaps": int(model_type_gaps or 0),
         "ok": (
             (not expected or recorded == expected)
@@ -1602,9 +1619,24 @@ def decision_trace_integrity_report(
             and int(sell_share_gaps) == 0
             and int(sell_economic_gaps) == 0
             and int(qp_trade_attribution_gaps) == 0
+            and int(qp_buy_horizon_gaps) == 0
             and int(model_type_gaps or 0) == 0
         ),
     }
+
+
+def _json_finite(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _json_positive_int(value: Any) -> bool:
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def validate_decision_trace_integrity(

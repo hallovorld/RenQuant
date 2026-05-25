@@ -2817,6 +2817,10 @@ entire pipeline end-to-end:
   future WF acceptance from reporting a μ surface without the horizon contract
   needed to interpret it. Validation: trade-contract/WF-gate tests passed
   (`46 passed`).
+- Decision-trace integrity now flags QP buy rows that lack buy-side ER/μ
+  horizon evidence in both the score snapshot and QP decision inputs. This
+  pushes the same horizon contract into DB audit, not only WF CSV acceptance.
+  Validation: persistence/trade-event/ledger tests passed (`56 passed`).
 
 ## Stop Conditions
 
@@ -2841,6 +2845,8 @@ Stop and fix before reporting performance if any of these happen:
 - Trade logs lack `blocked_by`, model type, sector, score snapshot, QP
   target/delta/status, buy-side expected-return horizon, or sell P/L/tax/net
   for emitted orders.
+- QP buy rows in DB lack finite expected return or positive ER/μ horizon
+  values in score snapshot / decision inputs.
 - A metric is not labeled as event-level, annual-net, short-window style, or
   acceptance-grade WF.
 
