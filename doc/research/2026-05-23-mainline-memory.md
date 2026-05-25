@@ -2494,6 +2494,15 @@ entire pipeline end-to-end:
   both source directories in cache invalidation. Validation:
   daily-retrain, train/infer feature parity, sentiment panel join, and
   production panel invariant tests passed (`37 passed` + `5 passed`).
+- New WF-evidence selection bug found: when `--derive-config-from-prod` saw a
+  preferred walk-forward manifest that did not match the candidate recipe,
+  `_matching_manifest_for_recipe()` searched the whole sim artifact directory
+  and silently replaced it with the highest-coverage same-recipe manifest. That
+  could stamp APY/Sharpe evidence from an unintended manifest. The gate now
+  treats a configured preferred manifest as the evidence contract: validate it
+  and fail closed on mismatch; auto-discovery is allowed only when no preferred
+  manifest is supplied. Validation: WF recipe-scope, WF CLI contract, and
+  promotion-gate tests passed (`69 passed`).
 
 ## Stop Conditions
 

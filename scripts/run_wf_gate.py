@@ -346,11 +346,11 @@ def _matching_manifest_for_recipe(
     """Return a WF manifest whose artifacts match the candidate recipe.
 
     Weekly promotion is only valid when historical point-in-time artifacts use
-    the same statistical recipe as the candidate. When the operator-supplied
-    base WF config points at a stale manifest, prefer a same-recipe manifest
-    with the broadest retrain coverage instead of spending compute on known
-    incomparable evidence. If no matching manifest exists, return the preferred
-    manifest plus its failure evidence so the caller can fail closed.
+    the same statistical recipe as the candidate. If the operator-supplied base
+    WF config names a manifest, that manifest is the evidence contract: validate
+    it and fail closed on mismatch instead of silently substituting a broader
+    manifest. Auto-discovery is allowed only when no preferred manifest was
+    supplied.
     """
     checked: list[tuple[Path, dict]] = []
     seen: set[Path] = set()
@@ -369,6 +369,13 @@ def _matching_manifest_for_recipe(
         checked.append((p, _manifest_recipe_usage(p, artifact_path)))
 
     add(preferred_manifest)
+    if preferred_manifest is not None and checked:
+        p, usage = checked[0]
+        usage = dict(usage)
+        usage["checked_manifest_count"] = 1
+        usage["manifest_selection_policy"] = "preferred_manifest_required"
+        return p, usage
+
     root = search_dir or (STRATEGY_DIR / "artifacts" / "sim")
     if root.exists():
         for candidate in sorted(root.glob("walkforward_manifest*.json")):
