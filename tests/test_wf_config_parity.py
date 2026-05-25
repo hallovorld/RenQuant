@@ -276,6 +276,7 @@ def test_builder_fails_closed_on_silent_experiment_override(tmp_path: Path) -> N
     base_wf["rotation"]["joint_actions"]["qp_admission_gate"] = {
         "enabled": True,
         "max_sigma_by_regime": {"BULL_CALM": 0.38},
+        "min_expected_return_by_regime": {"BULL_CALM": 0.04},
     }
 
     try:
@@ -287,6 +288,7 @@ def test_builder_fails_closed_on_silent_experiment_override(tmp_path: Path) -> N
         )
     except ValueError as exc:
         assert "max_sigma_by_regime" in str(exc)
+        assert "min_expected_return_by_regime" in str(exc)
         assert "would be dropped" in str(exc)
     else:
         raise AssertionError("builder silently dropped an experiment override")
@@ -307,6 +309,7 @@ def test_builder_preserves_explicit_experiment_override_when_requested(tmp_path:
     base_wf["rotation"]["joint_actions"]["qp_admission_gate"] = {
         "enabled": True,
         "max_sigma_by_regime": {"BULL_CALM": 0.38},
+        "min_expected_return_by_regime": {"BULL_CALM": 0.04},
     }
 
     built = build_wf_config_from_prod(
@@ -319,6 +322,11 @@ def test_builder_preserves_explicit_experiment_override_when_requested(tmp_path:
 
     gate = built["rotation"]["joint_actions"]["qp_admission_gate"]
     assert gate["max_sigma_by_regime"] == {"BULL_CALM": 0.38}
+    assert gate["min_expected_return_by_regime"] == {"BULL_CALM": 0.04}
     assert "rotation.joint_actions.qp_admission_gate.max_sigma_by_regime" in (
         built["_experiment_overrides_preserved"]
+    )
+    assert (
+        "rotation.joint_actions.qp_admission_gate.min_expected_return_by_regime"
+        in built["_experiment_overrides_preserved"]
     )

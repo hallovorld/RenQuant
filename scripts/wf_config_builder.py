@@ -27,6 +27,14 @@ EXPERIMENT_OVERRIDE_PATHS = (
     "rotation.joint_actions.qp_admission_gate.max_sigma_by_regime",
     "rotation.joint_actions.qp_admission_gate.topup_max_sigma",
     "rotation.joint_actions.qp_admission_gate.topup_max_sigma_by_regime",
+    "rotation.joint_actions.qp_admission_gate.min_expected_return",
+    "rotation.joint_actions.qp_admission_gate.min_expected_return_by_regime",
+    "rotation.joint_actions.qp_admission_gate.min_expected_excess_return",
+    "rotation.joint_actions.qp_admission_gate.min_expected_excess_return_by_regime",
+    "rotation.joint_actions.qp_admission_gate.topup_min_expected_return",
+    "rotation.joint_actions.qp_admission_gate.topup_min_expected_return_by_regime",
+    "rotation.joint_actions.qp_admission_gate.topup_min_expected_excess_return",
+    "rotation.joint_actions.qp_admission_gate.topup_min_expected_excess_return_by_regime",
 )
 
 
