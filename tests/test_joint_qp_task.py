@@ -548,6 +548,12 @@ class TestQPSoftSellGuard:
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
 
         ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=80.0, qp_tax_aware=True)
+        ctx.holdings["H"].rank_score = 0.61
+        ctx.holdings["H"].panel_score = 0.42
+        ctx.holdings["H"].mu = -0.20
+        ctx.holdings["H"].sigma = 0.05
+        ctx.holdings["H"].expected_return_horizon_days = 20
+        ctx.holdings["H"].mu_horizon_days = 20
 
         EmitOrdersFromQPSolutionTask().run(ctx)
 
@@ -560,6 +566,16 @@ class TestQPSoftSellGuard:
         assert sig.decision_inputs["target_w"] == pytest.approx(0.05)
         assert sig.decision_inputs["solver_status"] == "optimal"
         assert sig.decision_inputs["shares"] > 0
+        assert sig.decision_inputs["qp_mu_used"] == pytest.approx(-0.20)
+        assert sig.decision_inputs["qp_sigma_used"] == pytest.approx(0.05)
+        assert sig.decision_inputs["qp_mu_source"] == "mu"
+        assert sig.decision_inputs["alpha_to_mu_applied"] is False
+        assert sig.decision_inputs["rank_score"] == pytest.approx(0.61)
+        assert sig.decision_inputs["panel_score"] == pytest.approx(0.42)
+        assert sig.decision_inputs["mu"] == pytest.approx(-0.20)
+        assert sig.decision_inputs["sigma"] == pytest.approx(0.05)
+        assert sig.decision_inputs["expected_return_horizon_days"] == 20
+        assert sig.decision_inputs["mu_horizon_days"] == 20
 
     def test_horizon_gate_blocks_young_qp_trim(self):
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask

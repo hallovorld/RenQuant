@@ -54,6 +54,10 @@ def test_live_sell_trade_preserves_exit_signal_source_metadata():
             "stop_decay_floor": 0.08,
             "sdl_skip_if_unrealized_above": 0.02,
         },
+        config={
+            "tax": {"cash_debit_mode": "reporting_only"},
+            "rotation": {"joint_actions": {"qp_tax_lot_method": "hifo"}},
+        },
     )
 
     assert row["source_job"] == "JointPortfolioQPJob"
@@ -65,10 +69,15 @@ def test_live_sell_trade_preserves_exit_signal_source_metadata():
     assert row["gross_pnl"] == 30.0
     assert row["tax"] == 15.0
     assert row["net_pnl_after_tax"] == 15.0
+    assert row["tax_cash_debited"] == 0.0
+    assert row["tax_cash_debit_mode"] == "reporting_only"
     assert row["rank_score"] == 0.71
     assert row["decision_inputs"]["quantity"] == 3.0
     assert row["decision_inputs"]["shares"] == 3.0
     assert row["decision_inputs"]["gross_pnl"] == 30.0
+    assert row["decision_inputs"]["tax_cash_debited"] == 0.0
+    assert row["decision_inputs"]["tax_cash_debit_mode"] == "reporting_only"
+    assert row["decision_inputs"]["tax_lot_method"] == "hifo"
     assert row["decision_inputs"]["take_profit_pct"] == 0.30
     assert row["decision_inputs"]["sdl_skip_if_unrealized_above"] == 0.02
 

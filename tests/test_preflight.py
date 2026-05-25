@@ -185,6 +185,25 @@ class TestCheckModelArtifact:
 # ── P-PANEL-CONTRACT ──────────────────────────────────────────────────────
 
 class TestCheckPanelArtifactContract:
+    @staticmethod
+    def _valid_panel_payload(feature_cols=None, **overrides):
+        payload = {
+            "best_iter": 50,
+            "feature_cols": feature_cols or ["f1", "f2"],
+            "trained_date": "2026-05-22",
+            "config_fingerprint": "sha256:test",
+            "panel_shape": {"rows": 1000, "tickers": 3, "dates": 300},
+            "lookahead_days": 10,
+            "train_run_id": "test-run",
+            "oos_mean_ic": 0.035,
+            "oos_std_ic": 0.010,
+            "oos_per_fold_ic": [0.02, 0.03, 0.04],
+            "cv_method": "purged_walk_forward",
+            "cv_embargo_days": 20,
+        }
+        payload.update(overrides)
+        return payload
+
     def test_xgb_contract_missing_evidence_fails_full_by_default(self, tmp_path):
         cfg = {"ranking": {"panel_scoring": {
             "kind": "xgb",
@@ -284,6 +303,71 @@ class TestCheckPanelArtifactContract:
 
         assert not r.ok and r.severity == "hard"
         assert "config_fingerprint missing" in r.message
+
+    def test_sentiment_features_without_runtime_gate_contract_fail_full(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+            "sentiment": {
+                "enabled": True,
+                "regime_policy": {"BULL_CALM": False, "BEAR": True},
+            },
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps(
+            self._valid_panel_payload(
+                feature_cols=["alpha_a", "sentiment_pos_share", "mean_sentiment"],
+            )
+        ))
+
+        r = _check_panel_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert not r.ok and r.severity == "hard"
+        assert "missing sentiment_runtime_gate_contract" in r.message
+        assert "BULL_CALM" in r.message
+
+    def test_sentiment_features_with_trained_gate_contract_pass_full(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+            "sentiment": {
+                "enabled": True,
+                "regime_policy": {"BULL_CALM": False, "BEAR": True},
+            },
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps(
+            self._valid_panel_payload(
+                feature_cols=["alpha_a", "sentiment_pos_share", "mean_sentiment"],
+                sentiment_runtime_gate_contract="trained_zeroing",
+            )
+        ))
+
+        r = _check_panel_artifact_contract(cfg, tmp_path, run_mode="full")
+
+        assert r.ok and r.severity == "hard"
+        assert r.details["sentiment_runtime_gate_required"] is True
+
+    def test_sentiment_contract_gap_allows_sell_only_exits(self, tmp_path):
+        cfg = {"ranking": {"panel_scoring": {
+            "kind": "xgb",
+            "artifact_path": "artifacts/panel-ltr.json",
+            "sentiment": {
+                "enabled": True,
+                "regime_policy": {"BULL_CALM": False},
+            },
+        }}}
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / "artifacts/panel-ltr.json").write_text(json.dumps(
+            self._valid_panel_payload(
+                feature_cols=["alpha_a", "sentiment_pos_share"],
+            )
+        ))
+
+        r = _check_panel_artifact_contract(cfg, tmp_path, run_mode="sell-only")
+
+        assert r.ok and r.severity == "soft"
+        assert "sell-only risk exits are allowed" in r.message
 
 
 # ── P-WF-GATE ────────────────────────────────────────────────────────────────

@@ -2924,6 +2924,50 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
              ticker, float(sol.delta_w[i]), shares, px, shares * px)
 
 
+def _qp_solver_decision_inputs(ctx, sol, i) -> dict:
+    qp_mu_source = str(
+        getattr(
+            ctx,
+            "_qp_forced_mu_source",
+            (ctx.config or {}).get("ranking", {}).get("qp_mu_source", "mu"),
+        )
+    )
+    return {
+        "solver_status": getattr(sol, "status", None),
+        "qp_mu_used": _array_float_at(_get_path(ctx, "_qp_mu"), i),
+        "qp_sigma_used": _array_float_at(_get_path(ctx, "_qp_sigma"), i),
+        "qp_mu_source": qp_mu_source,
+        "alpha_to_mu_applied": bool(getattr(ctx, "_qp_mu_transformed", False)),
+    }
+
+
+def _holding_score_snapshot(hs) -> dict:
+    return {
+        "rank_score": getattr(hs, "rank_score", None),
+        "rs_score": getattr(hs, "rs_score", None),
+        "panel_score": getattr(hs, "panel_score", None),
+        "mu": getattr(hs, "mu", None),
+        "sigma": getattr(hs, "sigma", None),
+        "expected_return": getattr(hs, "expected_return", None),
+    }
+
+
+def _qp_sell_decision_inputs(ctx, ticker, qty, held, dw, target_w, sol, i, hs) -> dict:
+    inputs = {
+        "delta_w": float(dw),
+        "target_w": float(target_w),
+        "shares": float(qty),
+        "held_shares": float(held),
+        "expected_return_horizon_days": getattr(
+            hs, "expected_return_horizon_days", None,
+        ),
+        "mu_horizon_days": getattr(hs, "mu_horizon_days", None),
+    }
+    inputs.update(_qp_solver_decision_inputs(ctx, sol, i))
+    inputs.update(_holding_score_snapshot(hs))
+    return inputs
+
+
 def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
     """Emit SELL signal, including SHORT-OPEN when target_w < 0.
 
@@ -2963,17 +3007,9 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig = ctx.exits[-1][1]
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
-        sig.decision_inputs = {
-            "delta_w": float(dw),
-            "target_w": float(target_w),
-            "solver_status": getattr(sol, "status", None),
-            "shares": float(qty),
-            "held_shares": float(held),
-            "expected_return_horizon_days": getattr(
-                hs, "expected_return_horizon_days", None,
-            ),
-            "mu_horizon_days": getattr(hs, "mu_horizon_days", None),
-        }
+        sig.decision_inputs = _qp_sell_decision_inputs(
+            ctx, ticker, qty, held, dw, target_w, sol, i, hs,
+        )
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
                  ticker, dw, qty, exit_type)
         return True
@@ -2994,17 +3030,9 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig = ctx.exits[-1][1]
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
-        sig.decision_inputs = {
-            "delta_w": float(dw),
-            "target_w": float(target_w),
-            "solver_status": getattr(sol, "status", None),
-            "shares": float(long_close),
-            "held_shares": float(held),
-            "expected_return_horizon_days": getattr(
-                hs, "expected_return_horizon_days", None,
-            ),
-            "mu_horizon_days": getattr(hs, "mu_horizon_days", None),
-        }
+        sig.decision_inputs = _qp_sell_decision_inputs(
+            ctx, ticker, long_close, held, dw, target_w, sol, i, hs,
+        )
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=qp_close",
                  ticker, dw, long_close)
         emitted = True
@@ -3020,13 +3048,9 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
         sig = ctx.exits[-1][1]
         sig.source_job = "JointPortfolioQPJob"
         sig.source_task = "EmitOrdersFromQPSolutionTask"
-        sig.decision_inputs = {
-            "delta_w": float(dw),
-            "target_w": float(target_w),
-            "solver_status": getattr(sol, "status", None),
-            "shares": float(short_open),
-            "held_shares": float(held),
-        }
+        sig.decision_inputs = _qp_sell_decision_inputs(
+            ctx, ticker, short_open, held, dw, target_w, sol, i, hs,
+        )
         log.info("QP_SHORT_OPEN %-6s  Δw=%+.4f  shares=%d  target_w=%+.4f",
                  ticker, dw, short_open, target_w)
         emitted = True

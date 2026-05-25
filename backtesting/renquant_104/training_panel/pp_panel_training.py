@@ -36,6 +36,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from threading import current_thread
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -43,6 +44,132 @@ import pandas as pd
 from .context import PanelTrainingContext, TickerPanelContext
 
 log = logging.getLogger("training_panel.pipeline")
+
+
+def _apply_training_sentiment_gate(
+    panel: pd.DataFrame,
+    feature_cols: list[str],
+    config: dict,
+    regime_by_date: dict,
+) -> tuple[pd.DataFrame, dict]:
+    """Zero sentiment inputs during training for runtime-OFF regimes."""
+    from kernel.artifact_contract import sentiment_runtime_gate_requirement  # noqa: PLC0415
+
+    req = sentiment_runtime_gate_requirement({"feature_cols": feature_cols}, config)
+    if not req["required"]:
+        return panel, {}
+    if "date" not in panel.columns:
+        raise RuntimeError(
+            "sentiment runtime gate contract requires date column in training panel"
+        )
+    if not regime_by_date:
+        raise RuntimeError(
+            "sentiment runtime gate contract requires production regime labels"
+        )
+
+    lookup = {
+        pd.Timestamp(k).normalize(): str(v)
+        for k, v in regime_by_date.items()
+        if v is not None
+    }
+    row_dates = pd.to_datetime(panel["date"]).dt.normalize()
+    row_regimes = row_dates.map(lookup)
+    missing = int(row_regimes.isna().sum())
+    if missing:
+        raise RuntimeError(
+            "sentiment runtime gate contract missing regime labels for "
+            f"{missing}/{len(panel)} training rows"
+        )
+
+    disabled = set(req["disabled_regimes"])
+    mask = row_regimes.isin(disabled)
+    out = panel.copy()
+    for col in req["sentiment_feature_cols"]:
+        if col in out.columns:
+            out.loc[mask, col] = 0.0
+
+    return out, {
+        "sentiment_runtime_gate_contract": "trained_zeroing",
+        "sentiment_runtime_gate_feature_cols": list(req["sentiment_feature_cols"]),
+        "sentiment_runtime_gate_disabled_regimes": list(req["disabled_regimes"]),
+        "sentiment_runtime_gate_zeroed_rows": int(mask.sum()),
+        "sentiment_runtime_gate_policy": req["effective_policy"],
+    }
+
+
+def _build_training_regime_map(ctx: PanelTrainingContext, dates) -> dict:
+    """Replay the production regime Task chain for training-panel dates."""
+    spy = ctx.spy_df
+    if spy is None or spy.empty:
+        raise RuntimeError("cannot build training regime map without SPY OHLCV")
+    spy = spy.copy()
+    if "date" in spy.columns:
+        spy["date"] = pd.to_datetime(spy["date"])
+        spy = spy.sort_values("date").set_index("date")
+    else:
+        spy.index = pd.to_datetime(spy.index)
+        spy = spy.sort_index()
+
+    from kernel.regime import RegimeState  # noqa: PLC0415
+    from kernel.pipeline.task_regime import (  # noqa: PLC0415
+        BEAROverrideTask,
+        CUSUMTask,
+        GMMTask,
+        HurstTask,
+        RegimeFinalizeTask,
+    )
+
+    gmm = _load_training_gmm(ctx)
+    tasks = [HurstTask(), CUSUMTask(), GMMTask(), BEAROverrideTask(), RegimeFinalizeTask()]
+    run_ctx = SimpleNamespace(
+        config=ctx.config,
+        regime_state=RegimeState(),
+        spy_returns=[],
+        ohlcv={},
+        gmm=gmm,
+        regime_counts={},
+        today=None,
+        regime=None,
+        confidence=None,
+    )
+    out: dict[pd.Timestamp, str] = {}
+    for raw_d in sorted({pd.Timestamp(d).normalize() for d in dates}):
+        hist = spy.loc[spy.index <= raw_d].copy()
+        if len(hist) < 30:
+            continue
+        run_ctx.today = raw_d.date()
+        run_ctx.ohlcv = {"SPY": hist}
+        run_ctx.spy_returns = hist["close"].pct_change().dropna().values
+        for task in tasks:
+            task.run(run_ctx)
+        out[raw_d] = str(run_ctx.regime)
+    return out
+
+
+def _load_training_gmm(ctx: PanelTrainingContext) -> dict | None:
+    rel = (ctx.config.get("regime", {}) or {}).get("gmm_artifact")
+    if not rel:
+        return None
+    raw = Path(str(rel))
+    candidates: list[Path]
+    if raw.is_absolute():
+        candidates = [raw]
+    else:
+        strategy_dir = ctx.strategy_dir
+        repo_root = strategy_dir.parent.parent if strategy_dir else Path.cwd()
+        candidates = []
+        if strategy_dir:
+            candidates.append(strategy_dir / raw)
+            candidates.append(strategy_dir / "artifacts" / raw)
+        candidates.append(repo_root / raw)
+    for path in candidates:
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception as exc:
+                raise RuntimeError(f"failed to read GMM artifact {path}: {exc}") from exc
+    log.warning("sentiment training gate: GMM artifact %s not found; regime replay uses fallback paths", rel)
+    return None
 
 
 def _resolve_cache_dir(cfg_value: str, ctx_config: dict) -> Path:
@@ -2323,6 +2450,29 @@ class BuildPanelTask(PanelTask):
                 f"train_cutoff={cutoff.isoformat()}"
             )
 
+        from kernel.artifact_contract import sentiment_runtime_gate_requirement  # noqa: PLC0415
+        sent_req = sentiment_runtime_gate_requirement(
+            {"feature_cols": feature_cols},
+            ctx.config,
+        )
+        if sent_req["required"]:
+            regime_map = _build_training_regime_map(ctx, panel["date"].unique())
+            panel, sent_meta = _apply_training_sentiment_gate(
+                panel,
+                feature_cols,
+                ctx.config,
+                regime_map,
+            )
+            if sent_meta:
+                meta.update(sent_meta)
+                log.info(
+                    "BuildPanelTask sentiment gate: zeroed %d rows across %d "
+                    "sentiment cols for disabled regimes=%s",
+                    sent_meta["sentiment_runtime_gate_zeroed_rows"],
+                    len(sent_meta["sentiment_runtime_gate_feature_cols"]),
+                    sent_meta["sentiment_runtime_gate_disabled_regimes"],
+                )
+
         ctx.panel = panel
         ctx.group_sizes = group_sizes
         ctx.panel_metadata = meta
@@ -2909,6 +3059,15 @@ class SaveArtifactTask(PanelTask):
             # warns when run_ids don't match (stale artifact from different run).
             "train_run_id":    ctx.config.get("_train_run_id"),
         }
+        for key in (
+            "sentiment_runtime_gate_contract",
+            "sentiment_runtime_gate_feature_cols",
+            "sentiment_runtime_gate_disabled_regimes",
+            "sentiment_runtime_gate_zeroed_rows",
+            "sentiment_runtime_gate_policy",
+        ):
+            if key in ctx.panel_metadata:
+                meta[key] = ctx.panel_metadata[key]
         # 2026-04-28: stamp config fingerprint so RunnerAdapter can detect
         # config/model drift at inference startup. See
         # kernel/config_consistency.py for the spec. Three incidents in

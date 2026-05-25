@@ -118,6 +118,24 @@ Make RenQuant 104 scientifically trustworthy end to end:
   optimizer-driven QP soft sells wait at least the 60d panel thesis horizon.
   Hard risk exits remain armed. This is a structural alpha-conversion fix, not
   final WF acceptance evidence.
+- 2026-05-25 strict WF rerun on
+  `panel-ltr.alpha158_fund.codex_featspace_20260523-211211.staging.json`
+  failed acceptance: mean Sharpe `+0.510`, SPY mean Sharpe `+1.081`, beat
+  SPY Sharpe `1/3`, beat SPY APY `0/3`, and BULL_CALM trade monotonicity
+  failed for `entry_rank_score`, `entry_mu`, and `entry_expected_return`.
+  All WF buys were attributed to `JointPortfolioQPJob` in BULL_CALM. The
+  current evidence says the remaining problem is not tax cash corruption or
+  the old greedy selector; it is BULL_CALM score/holding-horizon/exits failing
+  to convert IC into realized alpha.
+- 2026-05-25 contract/audit fixes landed: panel preflight now hard-fails
+  full/buy when sentiment feature columns are present but the artifact lacks a
+  `sentiment_runtime_gate_contract` while runtime disables sentiment in any
+  regime. Training now zeroes sentiment rows for runtime-OFF regimes and
+  stamps `trained_zeroing`. QP sell events now mirror QP buy solver provenance
+  (`qp_mu_used`, `qp_sigma_used`, `qp_mu_source`, score snapshot), and live
+  sell rows stamp `tax_cash_debited`, `tax_cash_debit_mode`, and tax-lot
+  method for DB audit. WF placebo failure text now reports the actual
+  threshold `0.5 * |aligned_real_ic|`.
 - Post-repair diagnostic WF
   `horizon60_erfloor_bullcalm040_diag_20260524-190959` still failed. It was
   explicitly diagnostic-only (`--skip-sanity --skip-config-parity`, ER-floor

@@ -127,6 +127,19 @@ def _sanity_result_passed(sanity_result: dict) -> bool:
     return bool(regime_ic.get("passed"))
 
 
+def _placebo_ic_threshold(aligned_real_ic: float) -> float:
+    """Maximum acceptable absolute time-shift placebo IC."""
+    return max(0.005, 0.5 * abs(float(aligned_real_ic)))
+
+
+def _placebo_ic_requirement_text(aligned_real_ic: float) -> str:
+    threshold = _placebo_ic_threshold(aligned_real_ic)
+    return (
+        f"threshold={threshold:+.4f} "
+        f"(0.5×|aligned_real_ic|, aligned_real_ic={aligned_real_ic:+.4f})"
+    )
+
+
 def _resolve_strategy_path(raw: str | None) -> Path | None:
     if not raw:
         return None
@@ -1885,10 +1898,9 @@ def run_sanity_battery(
             placebo_ic = ic
             placebo_aligned_real_ic = aligned_real_ic
             log.info(
-                "  placebo_ic = %+.4f (expect < 0.5 × aligned_real_ic = %+.4f; "
-                "full_real_ic=%+.4f)",
+                "  placebo_ic = %+.4f (expect < %s; full_real_ic=%+.4f)",
                 placebo_ic,
-                0.5 * placebo_aligned_real_ic,
+                _placebo_ic_requirement_text(placebo_aligned_real_ic),
                 real_ic,
             )
     if placebo_ic != placebo_ic:
@@ -1995,7 +2007,7 @@ def run_sanity_battery(
         (placebo_ic == placebo_ic)
         and (placebo_aligned_real_ic == placebo_aligned_real_ic)
         and (
-            abs(placebo_ic) < max(0.005, 0.5 * abs(placebo_aligned_real_ic))
+            abs(placebo_ic) < _placebo_ic_threshold(placebo_aligned_real_ic)
             if placebo_aligned_real_ic != 0 else
             True
         )
@@ -2018,8 +2030,8 @@ def run_sanity_battery(
         sanity_reason = (
             f"FAIL: shuf_ic={shuf_ic:+.4f} (need |·| < 0.005), "
             f"placebo_ic={placebo_ic:+.4f} "
-            f"(must be available and < 0.5×aligned_real_ic="
-            f"{placebo_aligned_real_ic:+.4f})"
+            f"(must be available and < "
+            f"{_placebo_ic_requirement_text(placebo_aligned_real_ic)})"
         )
     return {
         "passed": pass_all,

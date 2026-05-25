@@ -2174,28 +2174,10 @@ def _ngb_cfg(ctx) -> dict:
 # net signal; disable where ts-30-placebo-adjusted net IC was negative.
 # Operator can override via regime_params.<R>.sentiment.enabled.
 
-SENTIMENT_FEATURE_COLS = ("sentiment_pos_share", "mean_sentiment", "n_articles_log")
-
-_SENTIMENT_DEFAULT_REGIME_POLICY = {
-    # Strict policy: ON only where regime-stratified IC eval clearly cleared
-    # ts-30 placebo. Off elsewhere keeps the model's prediction independent
-    # of sentiment in regimes where it hurts.
-    "HIGH_SPIKED": True,
-    "HIGH_NORMAL": True,
-    "MED_CALM":    True,
-    "MED_SPIKED":  True,   # weak positive net, keep ON conservatively
-    "LOW_CALM":    True,   # +0.040 (low n_d=21 but consistent sign)
-    "LOW_SPIKED":  False,  # ~zero (largest n_d=84, no signal)
-    "LOW_NORMAL":  False,  # NEGATIVE
-    "MED_NORMAL":  False,  # NEGATIVE
-    "HIGH_CALM":   True,   # n_d=4 (skipped in eval; benefit of doubt for high-trend)
-    # Strategy's HMM regimes (legacy naming) — passthrough for safety
-    "BULL_CALM":     False,
-    "BULL_VOLATILE": True,
-    "BULL_STRONG":   False,
-    "BEAR":          True,
-    "CHOPPY":        True,
-}
+from kernel.artifact_contract import (  # noqa: E402
+    SENTIMENT_DEFAULT_REGIME_POLICY as _SENTIMENT_DEFAULT_REGIME_POLICY,
+    SENTIMENT_FEATURE_COLS,
+)
 
 
 def _sentiment_cfg(ctx) -> dict:

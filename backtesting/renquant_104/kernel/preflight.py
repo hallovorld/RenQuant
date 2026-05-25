@@ -361,7 +361,11 @@ def _check_panel_artifact_contract(
     except Exception as exc:
         return PreflightCheck("P-PANEL-CONTRACT", "hard", False, f"unreadable: {exc}")
     from kernel.artifact_contract import validate_panel_artifact_contract  # noqa: PLC0415
-    result = validate_panel_artifact_contract(payload, strict=strict_contract)
+    result = validate_panel_artifact_contract(
+        payload,
+        strict=strict_contract,
+        runtime_config=config,
+    )
     severity = "hard" if strict_contract else "soft"
     if not result.ok:
         if _is_sell_only_run(run_mode):

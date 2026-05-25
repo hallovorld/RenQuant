@@ -356,6 +356,66 @@ class TestBuildPanelTask:
         assert len(ctx.group_sizes) == ctx.panel["date"].nunique()
 
 
+class TestTrainingSentimentGate:
+    def test_zeroes_training_sentiment_rows_for_runtime_off_regimes(self):
+        from training_panel.pp_panel_training import _apply_training_sentiment_gate
+
+        panel = pd.DataFrame({
+            "date": pd.to_datetime(["2026-01-02", "2026-01-05"]),
+            "ticker": ["AAA", "BBB"],
+            "sentiment_pos_share": [0.8, 0.7],
+            "mean_sentiment": [0.4, -0.2],
+            "alpha": [1.0, 2.0],
+        })
+        cfg = {
+            "ranking": {"panel_scoring": {"sentiment": {
+                "enabled": True,
+                "regime_policy": {"BULL_CALM": False, "BEAR": True},
+            }}},
+        }
+
+        out, meta = _apply_training_sentiment_gate(
+            panel,
+            ["alpha", "sentiment_pos_share", "mean_sentiment"],
+            cfg,
+            {
+                pd.Timestamp("2026-01-02"): "BULL_CALM",
+                pd.Timestamp("2026-01-05"): "BEAR",
+            },
+        )
+
+        assert out.loc[0, "sentiment_pos_share"] == pytest.approx(0.0)
+        assert out.loc[0, "mean_sentiment"] == pytest.approx(0.0)
+        assert out.loc[1, "sentiment_pos_share"] == pytest.approx(0.7)
+        assert out.loc[1, "mean_sentiment"] == pytest.approx(-0.2)
+        assert meta["sentiment_runtime_gate_contract"] == "trained_zeroing"
+        assert meta["sentiment_runtime_gate_zeroed_rows"] == 1
+        assert "BULL_CALM" in meta["sentiment_runtime_gate_disabled_regimes"]
+
+    def test_training_sentiment_gate_requires_complete_regime_labels(self):
+        from training_panel.pp_panel_training import _apply_training_sentiment_gate
+
+        panel = pd.DataFrame({
+            "date": pd.to_datetime(["2026-01-02"]),
+            "ticker": ["AAA"],
+            "sentiment_pos_share": [0.8],
+        })
+        cfg = {
+            "ranking": {"panel_scoring": {"sentiment": {
+                "enabled": True,
+                "regime_policy": {"BULL_CALM": False},
+            }}},
+        }
+
+        with pytest.raises(RuntimeError, match="missing regime labels"):
+            _apply_training_sentiment_gate(
+                panel,
+                ["sentiment_pos_share"],
+                cfg,
+                {pd.Timestamp("2026-01-05"): "BULL_CALM"},
+            )
+
+
 class TestPanelAssemblyJob:
     def test_runs_all_three_tasks_in_order(self, tmp_path):
         from training_panel.pp_panel_training import PanelAssemblyJob

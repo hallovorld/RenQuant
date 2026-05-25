@@ -34,6 +34,27 @@ PANEL_STRICT_FIELDS = (
     "cv_embargo_days",
 )
 
+SENTIMENT_FEATURE_COLS = ("sentiment_pos_share", "mean_sentiment", "n_articles_log")
+
+SENTIMENT_RUNTIME_GATE_CONTRACTS = {"trained_zeroing", "runtime_zeroing"}
+
+SENTIMENT_DEFAULT_REGIME_POLICY = {
+    "HIGH_SPIKED": True,
+    "HIGH_NORMAL": True,
+    "MED_CALM": True,
+    "MED_SPIKED": True,
+    "LOW_CALM": True,
+    "LOW_SPIKED": False,
+    "LOW_NORMAL": False,
+    "MED_NORMAL": False,
+    "HIGH_CALM": True,
+    "BULL_CALM": False,
+    "BULL_VOLATILE": True,
+    "BULL_STRONG": False,
+    "BEAR": True,
+    "CHOPPY": True,
+}
+
 _VOLATILE_CONFIG_KEYS = {
     "_strategy_dir",
     "_strategy_config_name",
@@ -126,6 +147,7 @@ def validate_panel_artifact_contract(
     payload: dict[str, Any],
     *,
     strict: bool = False,
+    runtime_config: dict[str, Any] | None = None,
 ) -> ContractResult:
     """Validate evidence-bearing metadata on a panel-LTR artifact."""
     errors: list[str] = []
@@ -182,6 +204,15 @@ def validate_panel_artifact_contract(
             if _is_missing(payload.get(key)):
                 warnings.append(f"missing {key}; next retrain must stamp it")
 
+    sentiment_req = sentiment_runtime_gate_requirement(payload, runtime_config)
+    if sentiment_req["required"] and not has_sentiment_runtime_gate_contract(payload):
+        disabled = ", ".join(sentiment_req["disabled_regimes"][:8])
+        features = ", ".join(sentiment_req["sentiment_feature_cols"])
+        errors.append(
+            "missing sentiment_runtime_gate_contract for sentiment feature_cols "
+            f"[{features}] while runtime disables sentiment in regime(s): {disabled}"
+        )
+
     return ContractResult(
         name="panel_artifact",
         ok=not errors,
@@ -193,8 +224,75 @@ def validate_panel_artifact_contract(
             "lookahead_days": payload.get("lookahead_days"),
             "cv_embargo_days": payload.get("cv_embargo_days"),
             "oos_mean_ic": payload.get("oos_mean_ic"),
+            "sentiment_runtime_gate_required": sentiment_req["required"],
+            "sentiment_runtime_gate_disabled_regimes": sentiment_req["disabled_regimes"],
+            "sentiment_runtime_gate_feature_cols": sentiment_req["sentiment_feature_cols"],
         },
     )
+
+
+def has_sentiment_runtime_gate_contract(payload: dict[str, Any]) -> bool:
+    """Return whether an artifact declares a compatible sentiment gate contract."""
+    for source in _metadata_sources(payload):
+        contract = (
+            source.get("sentiment_runtime_gate_contract")
+            or source.get("sentiment_gate_contract")
+        )
+        if contract in SENTIMENT_RUNTIME_GATE_CONTRACTS:
+            return True
+        if bool(source.get("sentiment_runtime_gate_trained", False)):
+            return True
+    return False
+
+
+def sentiment_runtime_gate_requirement(
+    payload: dict[str, Any],
+    runtime_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe whether sentiment features require a runtime gate contract."""
+    feature_cols = payload.get("feature_cols") or []
+    sentiment_cols = sorted(set(feature_cols) & set(SENTIMENT_FEATURE_COLS))
+    policy = sentiment_effective_regime_policy(runtime_config or {})
+    disabled = sorted(regime for regime, enabled in policy.items() if not enabled)
+    return {
+        "required": bool(sentiment_cols and disabled),
+        "sentiment_feature_cols": sentiment_cols,
+        "disabled_regimes": disabled,
+        "effective_policy": policy,
+    }
+
+
+def sentiment_effective_regime_policy(
+    runtime_config: dict[str, Any] | None,
+) -> dict[str, bool]:
+    """Resolve runtime sentiment policy using the same precedence as scoring."""
+    cfg = runtime_config or {}
+    panel_sent = (
+        cfg.get("ranking", {})
+        .get("panel_scoring", {})
+        .get("sentiment", {})
+    )
+    global_enabled = bool(panel_sent.get("enabled", True))
+    policy = dict(SENTIMENT_DEFAULT_REGIME_POLICY)
+    explicit_policy = panel_sent.get("regime_policy") or {}
+    if isinstance(explicit_policy, dict):
+        for regime, enabled in explicit_policy.items():
+            policy[str(regime)] = bool(enabled)
+
+    regime_params = cfg.get("regime_params") or {}
+    if isinstance(regime_params, dict):
+        for regime, params in regime_params.items():
+            if not isinstance(params, dict):
+                continue
+            sent = params.get("sentiment")
+            if isinstance(sent, dict) and "enabled" in sent:
+                policy[str(regime)] = bool(sent["enabled"])
+
+    if not policy:
+        policy["GLOBAL_FALLBACK"] = global_enabled
+    elif not global_enabled:
+        policy.setdefault("GLOBAL_FALLBACK", False)
+    return policy
 
 
 def validate_feature_contract(
@@ -250,7 +348,11 @@ def build_run_bundle(
     panel_path = paths.get("panel")
     panel_payload = _read_json(panel_path) if panel_path else None
     if isinstance(panel_payload, dict):
-        contract = validate_panel_artifact_contract(panel_payload, strict=False)
+        contract = validate_panel_artifact_contract(
+            panel_payload,
+            strict=False,
+            runtime_config=config,
+        )
         bundle["panel_contract"] = {
             "ok": contract.ok,
             "errors": contract.errors,
@@ -305,6 +407,14 @@ def _read_json(path: Path | None) -> dict[str, Any] | None:
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def _metadata_sources(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = [payload]
+    nested = payload.get("metadata")
+    if isinstance(nested, dict):
+        sources.append(nested)
+    return sources
 
 
 def _strip_volatile(obj: Any) -> Any:

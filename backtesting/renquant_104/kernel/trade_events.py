@@ -204,6 +204,9 @@ def build_sell_trade_event(
         tax = max(gross_pnl, 0.0) * rate
     if net_pnl_after_tax is None and gross_pnl is not None and tax is not None:
         net_pnl_after_tax = gross_pnl - tax
+    tax_cash_mode = _tax_cash_debit_mode(config or {})
+    tax_cash_debited = _tax_cash_debit_amount(config or {}, tax or 0.0)
+    tax_lot_method = _tax_lot_method(config or {})
     exit_type = getattr(sig, "exit_type", "") or ""
     reason = getattr(sig, "reason", None)
     source_job = str(getattr(sig, "source_job", None) or "TickerSellJob")
@@ -228,6 +231,8 @@ def build_sell_trade_event(
         "proceeds_basis": proceeds_basis,
         "tax": tax,
         "net_pnl_after_tax": net_pnl_after_tax,
+        "tax_cash_debited": tax_cash_debited,
+        "tax_cash_debit_mode": tax_cash_mode,
         "exit_reason": exit_type,
         "pnl_pct": pnl_pct,
         "hold_days": hold_days,
@@ -267,6 +272,9 @@ def build_sell_trade_event(
             "shares": shares,
             "gross_pnl": gross_pnl,
             "tax": tax,
+            "tax_cash_debited": tax_cash_debited,
+            "tax_cash_debit_mode": tax_cash_mode,
+            "tax_lot_method": tax_lot_method,
             "net_pnl_after_tax": net_pnl_after_tax,
             "hold_days": hold_days,
             "pnl_pct": pnl_pct,
@@ -328,6 +336,47 @@ def _applied_exit_params(
         entry_regime_params=entry_regime_p,
     )
     return exit_p
+
+
+def _tax_cash_debit_mode(config: dict) -> str:
+    tax_cfg = (config.get("tax") or {}) if isinstance(config, dict) else {}
+    raw = str(tax_cfg.get("cash_debit_mode", "event_level") or "event_level").lower()
+    aliases = {
+        "event": "event_level",
+        "immediate": "event_level",
+        "stress": "event_level",
+        "none": "reporting_only",
+        "off": "reporting_only",
+        "reporting": "reporting_only",
+        "reporting-only": "reporting_only",
+        "reporting_only": "reporting_only",
+        "annual_net": "reporting_only",
+        "event_level": "event_level",
+        "event_cash_debit": "event_level",
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in {"event_level", "reporting_only"}:
+        mode = "event_level"
+    return mode
+
+
+def _tax_cash_debit_amount(config: dict, tax: float) -> float:
+    try:
+        tax_f = float(tax)
+    except (TypeError, ValueError):
+        return 0.0
+    if tax_f <= 0.0:
+        return 0.0
+    if _tax_cash_debit_mode(config) == "reporting_only":
+        return 0.0
+    return tax_f
+
+
+def _tax_lot_method(config: dict) -> str:
+    return str(
+        ((config.get("rotation", {}) or {}).get("joint_actions", {}) or {})
+        .get("qp_tax_lot_method", (config.get("tax", {}) or {}).get("lot_method", "fifo"))
+    ).lower()
 
 
 __all__ = ["build_buy_trade_event", "build_sell_trade_event"]

@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -303,6 +304,16 @@ def test_wf_gate_sanity_fails_closed_without_regime_sanity() -> None:
     mod = importlib.import_module("run_wf_gate")
 
     assert mod._sanity_result_passed({"passed": True}) is False
+
+
+def test_wf_gate_placebo_reason_reports_threshold_not_aligned_ic() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    assert mod._placebo_ic_threshold(0.0548) == pytest.approx(0.0274)
+    text = mod._placebo_ic_requirement_text(0.0548)
+    assert "threshold=+0.0274" in text
+    assert "aligned_real_ic=+0.0548" in text
 
 
 def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
