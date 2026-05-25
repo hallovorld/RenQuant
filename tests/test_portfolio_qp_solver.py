@@ -254,6 +254,79 @@ class TestSolutionShape:
         )
 
 
+class TestSolverStatusPolicy:
+    class _FakeProblem:
+        def __init__(self, statuses):
+            self._statuses = list(statuses)
+            self.status = None
+            self.calls = []
+
+        def solve(self, solver, verbose=False):
+            self.calls.append(solver)
+            self.status = self._statuses.pop(0)
+
+    def test_optimal_inaccurate_tries_fallback_by_default(self):
+        """Strict default rejects optimal_inaccurate and continues the chain."""
+        from kernel.portfolio_qp.qp_solver import _solve_cvx
+
+        prob = self._FakeProblem(["optimal_inaccurate", "optimal"])
+
+        status = _solve_cvx(prob, "PRIMARY", ["FALLBACK"])
+
+        assert status == "optimal"
+        assert prob.calls == ["PRIMARY", "FALLBACK"]
+
+    def test_optimal_inaccurate_requires_explicit_allow_flag(self):
+        """Diagnostic override can accept optimal_inaccurate without fallback."""
+        from kernel.portfolio_qp.qp_solver import _solve_cvx
+
+        prob = self._FakeProblem(["optimal_inaccurate", "optimal"])
+
+        status = _solve_cvx(
+            prob,
+            "PRIMARY",
+            ["FALLBACK"],
+            allow_optimal_inaccurate=True,
+        )
+
+        assert status == "optimal_inaccurate"
+        assert prob.calls == ["PRIMARY"]
+
+    def test_task_passes_optimal_inaccurate_policy_to_solver(self):
+        """Config is the only path that enables the diagnostic status policy."""
+        from types import SimpleNamespace
+
+        from kernel.portfolio_qp.tasks import SolveMarkowitzQPTask
+
+        ctx = SimpleNamespace(
+            config={"rotation": {"joint_actions": {
+                "qp_allow_optimal_inaccurate": True,
+            }}},
+            _qp_w_current=np.zeros(1),
+            _qp_mu=np.array([0.01]),
+            _qp_sigma=np.array([0.10]),
+            _qp_Sigma_full=None,
+            _qp_cash_reserve=0.0,
+            _qp_w_upper=np.array([0.20]),
+            _qp_w_lower=0.0,
+            _qp_dw_max=np.array([0.50]),
+            _qp_wash_mask=None,
+            _qp_drawdown=0.0,
+            _qp_drawdown_limit=0.20,
+            _qp_tax_cost=None,
+            _qp_turnover_max=None,
+            _qp_v_daily_dollar=None,
+            portfolio_value=100_000.0,
+        )
+
+        kwargs = SolveMarkowitzQPTask._build_solver_kwargs(  # noqa: SLF001
+            ctx,
+            ctx.config["rotation"]["joint_actions"],
+        )
+
+        assert kwargs["allow_optimal_inaccurate"] is True
+
+
 class TestPerformance:
     def test_100_asset_solve_under_500ms(self):
         """Solver must handle our universe scale (~101 assets) quickly."""

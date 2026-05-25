@@ -147,6 +147,71 @@ class TestFullSigmaMatrix:
         assert ctx._qp_Sigma_full[0, 1] == pytest.approx(0.0, abs=1e-12)
         assert ctx._qp_Sigma_full[1, 0] == pytest.approx(0.0, abs=1e-12)
 
+    def test_missing_corr_blocks_when_full_sigma_required(self):
+        """Full-Sigma mode must fail closed instead of diagonal fallback."""
+        from types import SimpleNamespace
+
+        from kernel.portfolio_qp.tasks import ComputeFullSigmaTask
+
+        ctx = SimpleNamespace(
+            config={"rotation": {"joint_actions": {"qp_use_full_sigma": True}}},
+            corr_matrix=None,
+            _qp_tickers=["A", "B"],
+            _qp_sigma=np.array([0.20, 0.30]),
+        )
+
+        ret = ComputeFullSigmaTask().run(ctx)
+
+        assert ret is False
+        assert ctx._qp_Sigma_full is None
+        assert ctx._qp_failure_reason == "qp_full_sigma_missing_corr"
+        assert ctx._blocked_by_ticker == {
+            "A": "qp_full_sigma_missing_corr",
+            "B": "qp_full_sigma_missing_corr",
+        }
+
+    def test_incomplete_corr_blocks_when_full_sigma_required(self):
+        """Missing pairwise cells are not silently interpreted as rho=0."""
+        from types import SimpleNamespace
+
+        from kernel.portfolio_qp.tasks import ComputeFullSigmaTask
+
+        ctx = SimpleNamespace(
+            config={"rotation": {"joint_actions": {"qp_use_full_sigma": True}}},
+            corr_matrix={"A": {"B": 0.10}, "B": {"C": 0.20}},
+            _qp_tickers=["A", "B", "C"],
+            _qp_sigma=np.array([0.20, 0.30, 0.25]),
+        )
+
+        ret = ComputeFullSigmaTask().run(ctx)
+
+        assert ret is False
+        assert ctx._qp_failure_reason == "qp_full_sigma_incomplete_corr"
+        assert "A|C" in ctx._qp_covariance_issue["missing_pairs"]
+
+    def test_explicit_diag_fallback_allows_missing_corr(self):
+        """Diagnostic configs can opt into the legacy diagonal fallback."""
+        from types import SimpleNamespace
+
+        from kernel.portfolio_qp.tasks import ComputeFullSigmaTask
+
+        ctx = SimpleNamespace(
+            config={"rotation": {"joint_actions": {
+                "qp_use_full_sigma": True,
+                "qp_allow_diagonal_sigma_fallback": True,
+            }}},
+            corr_matrix=None,
+            _qp_tickers=["A", "B"],
+            _qp_sigma=np.array([0.20, 0.30]),
+        )
+
+        ret = ComputeFullSigmaTask().run(ctx)
+
+        assert ret is None
+        assert ctx._qp_Sigma_full is None
+        assert ctx._qp_covariance_fallback_reason == "qp_full_sigma_missing_corr"
+        assert not hasattr(ctx, "_qp_failure_reason")
+
 
 # ── Fix 3: Turnover hard constraint ─────────────────────────────────────────
 

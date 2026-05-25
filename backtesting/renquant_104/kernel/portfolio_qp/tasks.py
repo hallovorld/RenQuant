@@ -102,8 +102,9 @@ class ComputeFullSigmaTask(Task):
     Reads:  ctx._qp_tickers, ctx._qp_sigma, ctx.corr_matrix,
              ctx.config['_strategy_dir'], ctx.config['regime']['correlation_artifact'],
              ctx.config['rotation']['joint_actions']['qp_use_full_sigma']
-    Writes: ctx._qp_Sigma_full (np.ndarray | None — None falls back to
-             diagonal Σ in the solver)
+    Writes: ctx._qp_Sigma_full (np.ndarray | None — None only when full
+             covariance is disabled, or when an explicit diagnostic
+             diagonal fallback is enabled)
     """
     name = "ComputeFullSigmaTask"
 
@@ -112,34 +113,101 @@ class ComputeFullSigmaTask(Task):
         if not bool(cfg.get("qp_use_full_sigma", True)):
             ctx._qp_Sigma_full = None  # noqa: SLF001
             return
+        tickers = _get_path(ctx, "_qp_tickers") or []
+        n = len(tickers)
+        try:
+            sig = np.asarray(_get_path(ctx, "_qp_sigma"), dtype=float)
+        except (TypeError, ValueError):
+            return self._fail_full_sigma(ctx, "qp_full_sigma_invalid_sigma")
+        if sig.shape != (n,) or not np.isfinite(sig).all() or (sig <= 0).any():
+            return self._fail_full_sigma(ctx, "qp_full_sigma_invalid_sigma")
+
+        Sigma = np.zeros((n, n))
+        for i in range(n):
+            Sigma[i, i] = sig[i] ** 2
+        if n <= 1:
+            ctx._qp_Sigma_full = Sigma + 1e-8 * np.eye(n)  # noqa: SLF001
+            return
+
         corr = getattr(ctx, "corr_matrix", None)
         if not corr:
             corr = self._load_corr_from_artifact(ctx)
         if not corr:
-            log.warning(
-                "ComputeFullSigmaTask: qp_use_full_sigma=true but no "
-                "correlation matrix was loaded; falling back to diagonal Σ."
-            )
-            ctx._qp_Sigma_full = None  # noqa: SLF001
-            return
-        tickers = _get_path(ctx, "_qp_tickers") or []
-        sig = _get_path(ctx, "_qp_sigma")
-        n = len(tickers)
-        Sigma = np.zeros((n, n))
-        for i in range(n):
-            Sigma[i, i] = sig[i] ** 2
+            if _allow_diagonal_sigma_fallback(cfg):
+                ctx._qp_Sigma_full = None  # noqa: SLF001
+                ctx._qp_covariance_fallback_reason = "qp_full_sigma_missing_corr"  # noqa: SLF001
+                log.warning(
+                    "ComputeFullSigmaTask: qp_use_full_sigma=true but no "
+                    "correlation matrix was loaded; explicit diagonal "
+                    "fallback enabled."
+                )
+                return
+            return self._fail_full_sigma(ctx, "qp_full_sigma_missing_corr")
+        missing_pairs: list[str] = []
+        invalid_pairs: list[str] = []
+        allow_diag = _allow_diagonal_sigma_fallback(cfg)
         for i, ti in enumerate(tickers):
             for j in range(i + 1, n):
                 tj = tickers[j]
-                rho = _lookup_corr_explicit_none(corr, ti, tj, default=0.0)
-                try:
-                    rho_f = max(-0.99, min(0.99, float(rho)))
-                except (TypeError, ValueError):
-                    rho_f = 0.0
+                rho = _lookup_corr_required(corr, ti, tj)
+                if rho is None:
+                    if allow_diag:
+                        rho_f = 0.0
+                    else:
+                        missing_pairs.append(f"{ti}|{tj}")
+                        continue
+                else:
+                    try:
+                        rho_f = max(-0.99, min(0.99, float(rho)))
+                    except (TypeError, ValueError):
+                        if allow_diag:
+                            rho_f = 0.0
+                        else:
+                            invalid_pairs.append(f"{ti}|{tj}")
+                            continue
                 cov = rho_f * sig[i] * sig[j]
                 Sigma[i, j] = cov
                 Sigma[j, i] = cov
+        if missing_pairs or invalid_pairs:
+            return self._fail_full_sigma(
+                ctx,
+                "qp_full_sigma_incomplete_corr",
+                missing_pairs=missing_pairs,
+                invalid_pairs=invalid_pairs,
+            )
+        if allow_diag and n > 1:
+            n_off_diag = int((np.abs(Sigma) > 1e-12).sum() - np.count_nonzero(np.diag(Sigma)))
+            if n_off_diag == 0:
+                ctx._qp_covariance_fallback_reason = "qp_full_sigma_all_zero_corr"  # noqa: SLF001
         ctx._qp_Sigma_full = Sigma + 1e-8 * np.eye(n)  # noqa: SLF001
+
+    @staticmethod
+    def _fail_full_sigma(
+        ctx,
+        reason: str,
+        *,
+        missing_pairs: list[str] | None = None,
+        invalid_pairs: list[str] | None = None,
+    ) -> bool:
+        ctx._qp_Sigma_full = None  # noqa: SLF001
+        ctx._qp_status = f"infeasible:{reason}"  # noqa: SLF001
+        ctx._qp_failure_reason = reason  # noqa: SLF001
+        ctx._qp_n_buys = 0  # noqa: SLF001
+        ctx._qp_n_sells = 0  # noqa: SLF001
+        ctx._qp_covariance_issue = {  # noqa: SLF001
+            "reason": reason,
+            "missing_pairs": list(missing_pairs or [])[:25],
+            "invalid_pairs": list(invalid_pairs or [])[:25],
+        }
+        _stamp_all_qp_blocks(ctx, reason)
+        log.error(
+            "ComputeFullSigmaTask: full covariance required but unavailable "
+            "(reason=%s missing_pairs=%d invalid_pairs=%d); blocking QP orders",
+            reason,
+            len(missing_pairs or []),
+            len(invalid_pairs or []),
+        )
+        return False
 
     @staticmethod
     def _load_corr_from_artifact(ctx) -> dict | None:
@@ -154,6 +222,7 @@ class ComputeFullSigmaTask(Task):
         rel_path = Path(str(rel))
         path = rel_path if rel_path.is_absolute() else Path(sd) / "artifacts" / rel_path
         if not path.exists():
+            ctx._qp_corr_load_error = f"missing:{path}"  # noqa: SLF001
             return None
         try:
             raw = json.loads(path.read_text())
@@ -174,7 +243,8 @@ class ComputeFullSigmaTask(Task):
                 context="ComputeFullSigmaTask corr",
             )
             return corr
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            ctx._qp_corr_load_error = f"{path}:{type(exc).__name__}:{exc}"  # noqa: SLF001
             log.warning("ComputeFullSigmaTask: corr load failed from %s (%s)", path, exc)
             return None
 
@@ -192,6 +262,25 @@ def _lookup_corr_explicit_none(corr: dict, left: str, right: str, *, default: fl
         if value is not None:
             return value
     return default
+
+
+def _lookup_corr_required(corr: dict, left: str, right: str):
+    """Symmetric corr lookup that returns None only when both directions miss."""
+    row = corr.get(left)
+    if isinstance(row, dict) and right in row and row.get(right) is not None:
+        return row.get(right)
+    row = corr.get(right)
+    if isinstance(row, dict) and left in row and row.get(left) is not None:
+        return row.get(left)
+    return None
+
+
+def _allow_diagonal_sigma_fallback(cfg: dict) -> bool:
+    """Explicit diagnostic escape hatch for running QP without full Sigma."""
+    if bool(cfg.get("qp_allow_diagonal_sigma_fallback", False)):
+        return True
+    policy = str(cfg.get("qp_full_sigma_fallback_policy", "strict")).lower()
+    return policy in {"diagonal", "diag", "allow_diagonal", "diagnostic_diagonal"}
 
 
 class AlignQPHorizonUnitsTask(Task):
@@ -1449,6 +1538,7 @@ class SolveMarkowitzQPTask(Task):
             sector_cap_vec=_get_path(ctx, "_qp_sector_cap_vec"),
             corr_group_pairs=_get_path(ctx, "_qp_corr_group_pairs"),
             gross_max=_get_path(ctx, "_qp_gross_max"),
+            allow_optimal_inaccurate=bool(cfg.get("qp_allow_optimal_inaccurate", False)),
         )
 
     @staticmethod
@@ -1493,6 +1583,7 @@ class SolveMarkowitzQPTask(Task):
         kwargs.pop("sector_cap_vec", None)
         kwargs.pop("corr_group_pairs", None)
         kwargs.pop("gross_max", None)
+        kwargs.pop("allow_optimal_inaccurate", None)
 
 
 # ── Optional diagnostic fallback for C2 hard constraints ──────────────────

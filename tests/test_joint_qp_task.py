@@ -818,10 +818,11 @@ class TestEarningsBlackoutQPTopUp:
         return cfg
 
     def test_blocks_top_up_within_buffer(self):
-        """Held name with earnings tomorrow → QP top-up suppressed."""
+        """Admitted held name with earnings tomorrow → QP top-up suppressed."""
         ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
         # Earnings 2 days from "today" (2026-04-26) → within ±3-day buffer
         ctx.earnings_calendar = {"H": ["2026-04-28"]}
+        ctx.candidates = [_Cand("H", mu=0.05, sigma=0.10)]
         ctx.holdings = {"H": _Hold(shares=10, mu=0.05, sigma=0.10)}
         ctx.prices = {"H": 100.0}
         ctx.cash = 9000.0
@@ -833,9 +834,10 @@ class TestEarningsBlackoutQPTopUp:
         )
 
     def test_allows_top_up_outside_buffer(self):
-        """Held name with earnings 30 days out → QP top-up allowed."""
+        """Admitted held name with earnings 30 days out → QP top-up allowed."""
         ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
         ctx.earnings_calendar = {"H": ["2026-05-26"]}  # +30d
+        ctx.candidates = [_Cand("H", mu=0.10, sigma=0.10)]
         ctx.holdings = {"H": _Hold(shares=10, mu=0.10, sigma=0.10)}
         ctx.prices = {"H": 100.0}
         ctx.cash = 9000.0
@@ -862,9 +864,10 @@ class TestEarningsBlackoutQPTopUp:
 
     def test_no_earnings_calendar_no_op(self):
         """Empty earnings_calendar (e.g. data outage) must not silently
-        block all top-ups — the task degrades gracefully."""
+        block admitted top-ups — the task degrades gracefully."""
         ctx = _Ctx(config=self._cfg_with_earnings(buf=3))
         ctx.earnings_calendar = {}     # empty
+        ctx.candidates = [_Cand("H", mu=0.10, sigma=0.10)]
         ctx.holdings = {"H": _Hold(shares=10, mu=0.10, sigma=0.10)}
         ctx.prices = {"H": 100.0}
         ctx.cash = 9000.0
@@ -895,8 +898,8 @@ class TestActionDirections:
             == "JointPortfolioQPJob.EmitOrdersFromQPSolutionTask"
         )
 
-    def test_positive_mu_on_held_topup_preserves_holding_scores(self):
-        """QP top-ups use holdings as the score source when no candidate exists."""
+    def test_positive_mu_on_held_without_candidate_does_not_topup(self):
+        """QP may not convert a held-only score into a fresh top-up."""
         ctx = _Ctx(config=_qp_on())
         ctx.holdings = {
             "H": _Hold(
@@ -914,13 +917,44 @@ class TestActionDirections:
         ret = JointPortfolioQPTask().run(ctx)
 
         assert ret is True
+        assert ctx.orders == []
+        assert ctx._blocked_by_ticker["H"] == "qp_universe_exit_only"
+
+    def test_positive_mu_on_admitted_held_topup_preserves_candidate_scores(self):
+        """QP top-ups use the current candidate as score source when admitted."""
+        ctx = _Ctx(config=_qp_on())
+        ctx.candidates = [
+            _Cand(
+                "H",
+                rank_score=0.62,
+                panel_score=0.60,
+                mu=0.05,
+                sigma=0.10,
+            ),
+        ]
+        ctx.holdings = {
+            "H": _Hold(
+                shares=1,
+                rank_score=0.51,
+                panel_score=0.49,
+                mu=0.01,
+                sigma=0.20,
+            ),
+        }
+        ctx.prices = {"H": 100.0}
+        ctx.cash = 9900.0
+        ctx.portfolio_value = 10000.0
+
+        ret = JointPortfolioQPTask().run(ctx)
+
+        assert ret is True
         assert len(ctx.orders) == 1
         order = ctx.orders[0]
         assert order["ticker"] == "H"
         assert order["mu"] == pytest.approx(0.05)
         assert order["sigma"] == pytest.approx(0.10)
-        assert order["rank_score"] == pytest.approx(0.61)
-        assert order["panel_score"] == pytest.approx(0.59)
+        assert order["rank_score"] == pytest.approx(0.62)
+        assert order["panel_score"] == pytest.approx(0.60)
         assert order["score_snapshot"]["mu"] == pytest.approx(0.05)
         assert order["score_snapshot"]["sigma"] == pytest.approx(0.10)
 

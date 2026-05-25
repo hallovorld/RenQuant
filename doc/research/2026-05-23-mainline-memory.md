@@ -2742,6 +2742,17 @@ entire pipeline end-to-end:
   fail closed while LEAN backtests still traded on invalid artifacts. Validation:
   LEAN preflight wiring, trace persistence, universe alignment, and runner
   preflight fail-closed tests passed (`45 passed`).
+- New QP covariance/solver fail-closed hardening fixed: when
+  `qp_use_full_sigma=true`, multi-asset QP now requires complete finite
+  correlation metadata and blocks QP orders instead of silently degrading to
+  diagonal covariance. A diagnostic-only fallback must be explicitly enabled
+  via `qp_allow_diagonal_sigma_fallback` or
+  `qp_full_sigma_fallback_policy=diagonal`. `optimal_inaccurate` solver status
+  is rejected by default and only accepted via `qp_allow_optimal_inaccurate`.
+  Tests were updated to preserve the alpha/QP separation contract: held-only
+  names are exit-only and cannot be optimized into top-ups unless the ticker
+  is also an admitted buy candidate. Validation: broad QP tests passed
+  (`382 passed, 4 skipped`).
 
 ## Stop Conditions
 

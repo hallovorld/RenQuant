@@ -36,6 +36,8 @@ References (read prior to design — CLAUDE.md §5.12, §5.12a):
 Solver chain: CLARABEL (primary, interior point) → OSQP (alternative IP) →
 SCS (large-scale fallback). All three are convex-QP-optimal; the chain
 exists to maximize success probability across solver-specific edge cases.
+`optimal_inaccurate` is rejected by default; pass the explicit diagnostic
+flag only for local analysis.
 
 Status semantics: `optimal` (clean solve), `optimal_no_signal` (μ ≈ 0 →
 solver returned Δw ≈ 0; valid but caller should fall through to a Kelly
@@ -66,7 +68,14 @@ class QPSolution:
     diagnostics:    dict                   # solver internals + binding hints
 
 
-def _solve_cvx(prob, primary, fallbacks, *, verbose: bool = False) -> str:
+def _solve_cvx(
+    prob,
+    primary,
+    fallbacks,
+    *,
+    verbose: bool = False,
+    allow_optimal_inaccurate: bool = False,
+) -> str:
     """Solve a cvxpy problem with a primary solver + ordered fallbacks.
 
     Returns the final `prob.status`. Catches solver exceptions per attempt;
@@ -79,8 +88,16 @@ def _solve_cvx(prob, primary, fallbacks, *, verbose: bool = False) -> str:
         try:
             prob.solve(solver=solver, verbose=verbose)
             last_status = prob.status
-            if last_status in ("optimal", "optimal_inaccurate"):
+            if last_status == "optimal":
                 return last_status
+            if last_status == "optimal_inaccurate":
+                if allow_optimal_inaccurate:
+                    return last_status
+                log.warning(
+                    "QP solver %s returned optimal_inaccurate; strict status "
+                    "policy rejects it and tries the next solver",
+                    solver,
+                )
         except (cp.error.SolverError, Exception) as exc:  # noqa: BLE001
             last_status = f"exception:{type(exc).__name__}"
             log.debug("QP solver %s raised %s; trying next", solver, exc)
@@ -117,6 +134,7 @@ def solve_portfolio_qp(
     min_invested_pct:     float = 0.0,    # SOFT target now; was hard floor pre-2026-05-06
     cash_drag_lambda:     float = 0.05,   # NEW: penalty coefficient on cash-drag
     gross_max:            float | None = None,  # Long-Short Phase 2A: cap Σ|wp| (set when shorts enabled)
+    allow_optimal_inaccurate: bool = False,
     # ── 2026-05-10 industrial-grade constraints (Track C2) ───────────────
     # Sector cap as hard linear constraint: S @ wp ≤ sector_cap_vec.
     # `sector_indicator` is an m × n indicator matrix (m sectors), `sector_cap_vec`
@@ -338,9 +356,18 @@ def solve_portfolio_qp(
     # ── Solve with chained solver fallback ────────────────────────────────
     obj  = cp.Maximize(cp.sum(obj_terms))
     prob = cp.Problem(obj, constraints)
-    status = _solve_cvx(prob, cp.CLARABEL, [cp.OSQP, cp.SCS])
+    allow_inaccurate = bool(allow_optimal_inaccurate)
+    status = _solve_cvx(
+        prob,
+        cp.CLARABEL,
+        [cp.OSQP, cp.SCS],
+        allow_optimal_inaccurate=allow_inaccurate,
+    )
 
-    if status not in ("optimal", "optimal_inaccurate"):
+    ok_statuses = {"optimal"}
+    if allow_inaccurate:
+        ok_statuses.add("optimal_inaccurate")
+    if status not in ok_statuses:
         log.warning(
             "QP infeasible: status=%s  n=%d  sum(w_current)=%.3f  "
             "cash_slack=%.3f  per_asset_cap_max=%.3f  turnover_max=%s  "
@@ -360,6 +387,8 @@ def solve_portfolio_qp(
             objective=0.0, n_iter=-1, status=f"infeasible:{status}",
             diagnostics={"n_assets": n, "primary": "CLARABEL",
                           "fallback_chain": ["OSQP", "SCS"],
+                          "solver_status": status,
+                          "allow_optimal_inaccurate": bool(allow_inaccurate),
                           "n_sector_constraints": n_sector_rows,
                           "n_corr_pair_constraints": n_corr_pairs},
         )
@@ -409,6 +438,7 @@ def solve_portfolio_qp(
             "impact_cost_max":  float(impact_coef_arr.max()) if impact_coef_arr.size else 0.0,
             "min_invested_pct": float(min_invested_pct),
             "cash_drag_lambda": float(cash_drag_lambda),
+            "allow_optimal_inaccurate": bool(allow_inaccurate),
             "solver_status":    status,
             "primary":          "CLARABEL",
             # Diagnostic: # of non-zero off-diagonal Σ entries — non-zero
