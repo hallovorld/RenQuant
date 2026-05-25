@@ -28,6 +28,10 @@ class TestAdapterStampsPnl:
         # fall back to HoldingState.entry_price (running avg-cost).
         assert 'getattr(hs, "entry_price", 0.0)' in ADAPTER_SRC
 
+    def test_cost_basis_uses_commit_position_cache(self):
+        assert "pos_cache.get(ticker, {}).get(" in ADAPTER_SRC
+        assert "_positions_cache_for_pl" not in ADAPTER_SRC
+
     def test_pnl_computation_uses_current_price(self):
         # Sell price taken from ctx.prices (close-to-fill snapshot).
         # When bracket/limit orders are later wired, replace with the

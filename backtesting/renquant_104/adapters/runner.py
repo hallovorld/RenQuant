@@ -1178,10 +1178,9 @@ class RunnerAdapter:
             # the current ctx.prices snapshot (close-to-fill at market;
             # bracket/limit orders would refine this).
             price = ctx.prices.get(ticker, 0.0)
-            cost_basis = float(positions_cache.get(ticker, {}).get(
+            cost_basis = float(pos_cache.get(ticker, {}).get(
                 "avg_entry_price", 0.0
-            )) if hasattr(self, "_positions_cache_for_pl") else 0.0
-            # `positions_cache` was a local in commit(); not available here.
+            ))
             # Use HoldingState.entry_price as the running avg-cost fallback.
             hs = (ctx.holdings or {}).get(ticker)
             if hs is not None and cost_basis <= 0:

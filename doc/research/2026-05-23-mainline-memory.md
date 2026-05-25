@@ -2319,6 +2319,12 @@ Operational conclusion:
   separation (`81 passed`), and config/panel/universe parity (`106 passed`).
   This does not claim APY/Sharpe improvement; it prevents future decision
   quality analysis from being based on incomplete trace rows.
+- Follow-up bug found in live sell P/L stamping: the sell branch intended to
+  use broker `avg_entry_price` but referenced a stale/nonexistent
+  `positions_cache` path behind an unused sentinel. It now reads the actual
+  `pos_cache` local and then falls back to `HoldingState.entry_price`.
+  Validation: sell-ntfy / runner sell-attribution / runner-state tests passed
+  (`62 passed`).
 
 ## Stop Conditions
 
