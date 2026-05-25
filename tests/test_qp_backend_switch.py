@@ -100,6 +100,36 @@ class TestBackendSwitch:
             "qp_global:infeasible:cvxportfolio_unsupported_constraints"
         )
 
+    @pytest.mark.parametrize(
+        ("field", "value", "expected"),
+        [
+            ("_qp_tax_cost", np.array([0.01, 0.0, 0.0, 0.0, 0.0]), "tax_cost_per_sell"),
+            ("cash_drag", (0.70, 10.0), "cash_drag_min_invested"),
+            ("fixed_cost", 0.001, "fixed_cost_per_trade"),
+        ],
+    )
+    def test_cvxportfolio_blocks_when_economic_terms_would_be_dropped(
+        self,
+        field,
+        value,
+        expected,
+    ):
+        """The opt-in backend must not silently ignore tax/cash/fixed costs."""
+        from kernel.portfolio_qp.tasks import SolveMarkowitzQPTask
+        ctx = _make_ctx(backend="cvxportfolio")
+        cfg = ctx.config["rotation"]["joint_actions"]
+        if field == "cash_drag":
+            cfg["qp_min_invested_pct"], cfg["qp_cash_drag_lambda"] = value
+        elif field == "fixed_cost":
+            cfg["qp_fixed_cost_per_trade"] = value
+        else:
+            setattr(ctx, field, value)
+
+        SolveMarkowitzQPTask().run(ctx)
+
+        assert ctx._qp_solution.status == "infeasible:cvxportfolio_unsupported_constraints"
+        assert expected in ctx._qp_solution.diagnostics["unsupported_hard_constraints"]
+
     def test_case_insensitive(self):
         """Config string is normalised to lowercase — `CVXPortfolio`,
         `CVXPY`, etc. all route correctly."""

@@ -2762,6 +2762,13 @@ entire pipeline end-to-end:
   sell-only remains soft so risk exits can still run. Validation: preflight,
   panel scoring, NGBoost, quantile-head, global-calibrator, and per-regime
   sigma-wire tests passed (`191 passed, 1 skipped`).
+- New cvxportfolio backend semantic guard fixed: the opt-in QP backend now
+  blocks instead of silently dropping economic terms it cannot faithfully
+  encode, including tax sell costs, cash-drag/min-invested soft penalty, and
+  fixed per-trade costs. Sector/correlation/gross hard constraints were
+  already blocked; this closes the remaining semantics gap so cvxportfolio is
+  only used when it matches the requested objective/constraints. Validation:
+  broad QP tests passed (`385 passed, 4 skipped`).
 
 ## Stop Conditions
 

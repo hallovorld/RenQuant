@@ -1550,6 +1550,21 @@ class SolveMarkowitzQPTask(Task):
             unsupported.append("correlation_cap")
         if kwargs.get("gross_max") is not None:
             unsupported.append("gross_max")
+        tax_cost = kwargs.get("tax_cost_per_sell")
+        if tax_cost is not None:
+            try:
+                tax_arr = np.asarray(tax_cost, dtype=float)
+                if np.isfinite(tax_arr).any() and np.nanmax(np.abs(tax_arr)) > 1e-12:
+                    unsupported.append("tax_cost_per_sell")
+            except (TypeError, ValueError):
+                unsupported.append("tax_cost_per_sell")
+        min_invested = float(kwargs.get("min_invested_pct") or 0.0)
+        cash_drag = float(kwargs.get("cash_drag_lambda") or 0.0)
+        if min_invested > 0.0 and cash_drag > 0.0:
+            unsupported.append("cash_drag_min_invested")
+        fixed_cost = float(kwargs.get("fixed_cost_per_trade") or 0.0)
+        if fixed_cost > 0.0:
+            unsupported.append("fixed_cost_per_trade")
         return unsupported
 
     @staticmethod
