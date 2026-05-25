@@ -63,6 +63,8 @@ snapshot, not a source of truth; rerun the command above after any commit.
    after review. Current obvious queue: `scripts/_train_BB_*.py`,
    `scripts/_train_fwd20d.py`, `scripts/_train_fwd5d.py`.
    These are now classified as `scratch_code_artifact`, not production code.
+   The live no-trade-streak repair tool was promoted only after adding a
+   default dry-run contract; `--apply` is now required for state mutation.
 3. Create experiment ledgers for raw result directories before cleanup:
    PatchTST, transformer prototypes, exit A/B, WF trade forensics, and
    Qlib baselines.
