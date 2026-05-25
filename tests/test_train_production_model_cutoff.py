@@ -248,6 +248,64 @@ class TestSideLabelInArtifact:
 class TestStrictContractStamp:
     """Production artifacts must carry machine-checkable OOS evidence."""
 
+    def test_sentiment_gate_zeroes_training_rows_and_stamps_contract(self):
+        dates = pd.bdate_range("2024-01-02", periods=2)
+        train = pd.DataFrame({
+            "ticker": ["AAA", "AAA"],
+            "date": dates,
+            "mean_sentiment": [0.7, -0.4],
+            "n_articles_log": [2.0, 3.0],
+            "sentiment_pos_share": [0.8, 0.2],
+            "feat_a": [1.0, 2.0],
+            "fwd_60d_excess": [0.01, 0.02],
+        })
+        cfg = {
+            "ranking": {
+                "panel_scoring": {
+                    "sentiment": {
+                        "regime_policy": {
+                            "BULL_CALM": False,
+                            "BEAR": True,
+                        }
+                    }
+                }
+            }
+        }
+        regime_by_date = {
+            pd.Timestamp(dates[0]).normalize(): "BULL_CALM",
+            pd.Timestamp(dates[1]).normalize(): "BEAR",
+        }
+
+        out, meta = TPM.apply_sentiment_training_gate(
+            train,
+            ["feat_a", "mean_sentiment", "n_articles_log", "sentiment_pos_share"],
+            cfg,
+            regime_by_date,
+        )
+
+        assert out.loc[0, "mean_sentiment"] == 0.0
+        assert out.loc[0, "n_articles_log"] == 0.0
+        assert out.loc[0, "sentiment_pos_share"] == 0.0
+        assert out.loc[1, "mean_sentiment"] == pytest.approx(-0.4)
+        assert meta["sentiment_runtime_gate_contract"] == "trained_zeroing"
+        assert meta["sentiment_runtime_gate_zeroed_rows"] == 1
+
+    def test_sentiment_gate_requires_complete_regime_labels(self):
+        train = pd.DataFrame({
+            "ticker": ["AAA"],
+            "date": [pd.Timestamp("2024-01-02")],
+            "mean_sentiment": [0.7],
+            "fwd_60d_excess": [0.01],
+        })
+
+        with pytest.raises(ValueError, match="missing regime labels"):
+            TPM.apply_sentiment_training_gate(
+                train,
+                ["mean_sentiment"],
+                {},
+                {pd.Timestamp("2024-01-03"): "BEAR"},
+            )
+
     def test_build_artifact_stamps_strict_contract_fields(self):
         booster = mock.MagicMock()
         booster.save_raw.return_value = b"{}"
@@ -272,6 +330,10 @@ class TestStrictContractStamp:
             train_ic=0.10,
             cv_result=cv_result,
             train_run_id="abc12345",
+            sentiment_contract_metadata={
+                "sentiment_runtime_gate_contract": "trained_zeroing",
+                "sentiment_runtime_gate_zeroed_rows": 12,
+            },
         )
 
         assert art["train_run_id"] == "abc12345"
@@ -286,6 +348,8 @@ class TestStrictContractStamp:
         assert art["feature_raw_clip_high"] == [1.0]
         assert art["feature_raw_clip_fit_split"] == "train"
         assert art["feature_preprocess_version"] == 2
+        assert art["sentiment_runtime_gate_contract"] == "trained_zeroing"
+        assert art["sentiment_runtime_gate_zeroed_rows"] == 12
 
     def test_walkforward_artifact_gets_strict_config_fingerprint(self, tmp_path):
         cfg_path = tmp_path / "strategy_config.wf.json"

@@ -515,6 +515,76 @@ def build_fingerprint_config(
     return cfg
 
 
+def build_sentiment_training_regime_map(
+    dates,
+    runtime_config: dict,
+) -> dict[pd.Timestamp, str]:
+    """Replay the production regime chain for training rows.
+
+    The production alpha158 trainer is separate from PanelTrainingPipeline, but
+    must honor the same sentiment runtime gate contract. We reuse the existing
+    regime replay helper instead of inventing a second detector.
+    """
+    from types import SimpleNamespace  # noqa: PLC0415
+    from training_panel.pp_panel_training import _build_training_regime_map  # noqa: PLC0415
+
+    spy_path = REPO / "data" / "ohlcv" / "SPY" / "1d.parquet"
+    if not spy_path.exists():
+        raise FileNotFoundError(f"SPY OHLCV missing for sentiment gate: {spy_path}")
+    spy_df = pd.read_parquet(spy_path)
+    cfg = dict(runtime_config)
+    cfg.setdefault("_strategy_dir", str(STRATEGY_DIR))
+    ctx = SimpleNamespace(config=cfg, spy_df=spy_df, strategy_dir=STRATEGY_DIR)
+    return _build_training_regime_map(ctx, dates)
+
+
+def apply_sentiment_training_gate(
+    train: pd.DataFrame,
+    feat_cols: list[str],
+    runtime_config: dict,
+    regime_by_date: dict,
+) -> tuple[pd.DataFrame, dict]:
+    """Zero sentiment features in rows where runtime would disable sentiment."""
+    from kernel.artifact_contract import sentiment_runtime_gate_requirement  # noqa: PLC0415
+
+    req = sentiment_runtime_gate_requirement({"feature_cols": feat_cols}, runtime_config)
+    if not req["required"]:
+        return train, {}
+    if "date" not in train.columns:
+        raise ValueError("sentiment runtime gate requires date column in training panel")
+    if not regime_by_date:
+        raise ValueError("sentiment runtime gate requires regime labels")
+
+    lookup = {
+        pd.Timestamp(k).normalize(): str(v)
+        for k, v in regime_by_date.items()
+        if v is not None
+    }
+    row_dates = pd.to_datetime(train["date"]).dt.normalize()
+    row_regimes = row_dates.map(lookup)
+    missing = int(row_regimes.isna().sum())
+    if missing:
+        raise ValueError(
+            "sentiment runtime gate missing regime labels for "
+            f"{missing}/{len(train)} training rows"
+        )
+
+    disabled = set(req["disabled_regimes"])
+    mask = row_regimes.isin(disabled)
+    out = train.copy()
+    for col in req["sentiment_feature_cols"]:
+        if col in out.columns:
+            out.loc[mask, col] = 0.0
+
+    return out, {
+        "sentiment_runtime_gate_contract": "trained_zeroing",
+        "sentiment_runtime_gate_feature_cols": list(req["sentiment_feature_cols"]),
+        "sentiment_runtime_gate_disabled_regimes": list(req["disabled_regimes"]),
+        "sentiment_runtime_gate_zeroed_rows": int(mask.sum()),
+        "sentiment_runtime_gate_policy": req["effective_policy"],
+    }
+
+
 def stamp_fingerprint(
     artifact: dict,
     *,
@@ -559,7 +629,8 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
                    train_ic: float | None = None,
                    cv_result: dict | None = None,
                    cutoff_embargo_days: int | None = None,
-                   train_run_id: str | None = None) -> dict:
+                   train_run_id: str | None = None,
+                   sentiment_contract_metadata: dict | None = None) -> dict:
     """Build artifact dict, stamping cutoff_date + side_label when set."""
     raw_json = bytes(booster.save_raw(raw_format="json")).decode("utf-8")
     lookahead_days = infer_label_lookahead_days(label_used)
@@ -630,6 +701,8 @@ def build_artifact(booster: xgb.Booster, feat_cols: list[str],
         ).isoformat()
     if side_label is not None:
         artifact["side_label"] = side_label
+    if sentiment_contract_metadata:
+        artifact.update(sentiment_contract_metadata)
     return artifact
 
 
@@ -665,6 +738,28 @@ def main():
         cutoff_date, watchlist_file=args.watchlist_file, label_override=args.label,
         cutoff_embargo_days=args.cutoff_embargo_days,
     )
+    fingerprint_cfg = build_fingerprint_config(
+        fingerprint_config_path=args.fingerprint_config,
+        watchlist_file=args.watchlist_file,
+        label_used=label_used,
+        feat_cols=feat_cols,
+    )
+    regime_map = build_sentiment_training_regime_map(
+        train["date"].unique(),
+        fingerprint_cfg,
+    )
+    train, sentiment_contract = apply_sentiment_training_gate(
+        train,
+        feat_cols,
+        fingerprint_cfg,
+        regime_map,
+    )
+    if sentiment_contract:
+        log.info(
+            "Sentiment gate contract: trained_zeroing rows=%d disabled_regimes=%s",
+            sentiment_contract["sentiment_runtime_gate_zeroed_rows"],
+            sentiment_contract["sentiment_runtime_gate_disabled_regimes"],
+        )
     mu, sd, norm_kind, raw_clip_low, raw_clip_high = build_normalization(train, feat_cols)
     cv_result = None
     if not args.skip_cv:
@@ -701,7 +796,8 @@ def main():
                               train_ic=train_ic,
                               cv_result=cv_result,
                               cutoff_embargo_days=args.cutoff_embargo_days,
-                              train_run_id=str(uuid.uuid4())[:8])
+                              train_run_id=str(uuid.uuid4())[:8],
+                              sentiment_contract_metadata=sentiment_contract)
 
     fp = stamp_fingerprint(
         artifact,
