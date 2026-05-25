@@ -1703,6 +1703,10 @@ Operational conclusion:
   `metadata.wf_gate_metadata` nested under `scorer.metadata["metadata"]`, while
   `RegimeModelAdmissionTask` read `scorer.metadata["wf_gate_metadata"]`.
   Flattening is now enforced by loader tests.
+- Calibrator/scorer binding must use scorer-file identity, not shared config
+  identity. `fit_panel_calibrator.py` now stamps `scorer_artifact_fingerprint`
+  from artifact/model/file hashes only; `config_fingerprint` is intentionally
+  ignored because it can be common across multiple scorer artifacts.
 - Per-regime placebo admission must use the same `0.5 x aligned_real` ratio as
   the top-level WF gate. The earlier runtime rule only blocked placebo above
   `1.0 x aligned_real`, which would have let BULL_CALM's `0.97` ratio through.

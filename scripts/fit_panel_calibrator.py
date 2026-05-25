@@ -17,6 +17,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -33,6 +34,16 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("fit-panel-calibrator")
+
+
+def _scorer_fingerprint(path: Path, scorer: object) -> str:
+    metadata = dict(getattr(scorer, "metadata", {}) or {})
+    for key in ("artifact_fingerprint", "model_fingerprint",
+                "artifact_sha256", "fingerprint"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def main() -> None:
@@ -274,6 +285,7 @@ def main() -> None:
         )
     log.info("Loading panel scorer: %s", scorer_path)
     scorer = PanelScorer.load(scorer_path)
+    scorer_fp = _scorer_fingerprint(scorer_path, scorer)
     nan_cols = list(panel_cfg.get("nan_prone_cols", []))
 
     # ── Score every date ────────────────────────────────────────────────────
@@ -393,6 +405,7 @@ def main() -> None:
 
     calib.save(out_path, metadata={
         "scorer_artifact": str(scorer_path),
+        "scorer_artifact_fingerprint": scorer_fp,
         "scorer_oos_mean_ic": scorer.metadata.get("oos_mean_ic"),
         "method": calib_method,
     })
@@ -459,6 +472,7 @@ def main() -> None:
                 rc_path = strategy_dir / "artifacts" / f"panel-calibration-{regime}.json"
                 cal.save(rc_path, metadata={
                     "scorer_artifact": str(scorer_path),
+                    "scorer_artifact_fingerprint": scorer_fp,
                     "scorer_oos_mean_ic": scorer.metadata.get("oos_mean_ic"),
                     "regime": regime,
                 })
