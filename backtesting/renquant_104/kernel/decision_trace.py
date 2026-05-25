@@ -134,6 +134,7 @@ def build_ticker_daily_state_rows(
     score_snapshots = getattr(ctx, "_ticker_score_snapshot", {}) or {}
     prices = getattr(ctx, "prices", {}) or {}
     holdings = getattr(ctx, "holdings", {}) or {}
+    watchlist_set = set(config.get("watchlist", []) or [])
     pf_value = (
         float(portfolio_value)
         if portfolio_value is not None
@@ -177,7 +178,7 @@ def build_ticker_daily_state_rows(
             "ticker": tk,
             "regime": getattr(ctx, "regime", None),
             "confidence": getattr(ctx, "confidence", None),
-            "in_watchlist": 1,
+            "in_watchlist": 1 if tk in watchlist_set else 0,
             "in_universe": 1 if tk in model_keys else 0,
             "pending_at_broker": 1 if tk in pending_broker_tickers else 0,
             "has_position": has_pos,

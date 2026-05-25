@@ -2325,6 +2325,13 @@ Operational conclusion:
   `pos_cache` local and then falls back to `HoldingState.entry_price`.
   Validation: sell-ntfy / runner sell-attribution / runner-state tests passed
   (`62 passed`).
+- Follow-up data-quality bug found in `ticker_daily_state`: benchmark sleeve
+  rows appended for trace completeness were marked `in_watchlist=1` even when
+  the sleeve ticker was not part of the alpha watchlist. This could pollute
+  SQL analysis that separates alpha universe from passive sleeve. The row
+  builder now writes real watchlist membership while still including the sleeve
+  row for trace completeness. Validation: decision-trace / benchmark-sleeve /
+  LEAN trace / persistence tests passed (`58 passed`).
 
 ## Stop Conditions
 
