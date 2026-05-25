@@ -2870,6 +2870,20 @@ entire pipeline end-to-end:
   inverted and must block acceptance. Validation:
   `test_trade_monotonicity_gate`, `test_wf_gate_cli_contract`, and
   `test_promote_wf_gate` passed (`69 passed`).
+- 2026-05-25 audit correction: WF sanity/placebo now validates the scorer
+  against the artifact's own `label_col` (`fwd_60d_excess` for current
+  panel-LTR) instead of hard-coding `fwd_60d_excess_raw`. The raw label is
+  still the expected-return/calibrator target, but using it as the rank-LTR
+  placebo label mixed two objectives and obscured the real failure. Re-running
+  the manifest placebo diagnostic with the corrected label still fails:
+  real IC `+0.0320`, aligned 60d real IC `+0.0548`, 60d placebo IC `+0.0368`.
+  Regime split is the main clue: `BULL_CALM` mean IC is only `+0.0095` while
+  `BEAR` is `+0.2403`; the strict WF trade ledger's buys are almost entirely
+  BULL_CALM. Current conclusion: global IC is not enough; admission must be
+  regime-qualified before QP can convert scores into buys. Validation:
+  `tests/test_wf_gate_cli_contract.py`,
+  `tests/test_wf_gate_regime_sanity_metadata.py`, and
+  `tests/test_manifest_sanity_placebo_analysis.py` passed (`46 passed`).
 
 ## Stop Conditions
 
@@ -2877,6 +2891,9 @@ Stop and fix before reporting performance if any of these happen:
 
 - WF config loses `tax.cash_debit_mode=reporting_only`.
 - WF/sanity metadata lacks passing regime-level IC/placebo evidence.
+- WF sanity uses any label other than the artifact's `label_col` for the
+  model-ranking placebo gate, except when an operator explicitly asks for a
+  return-scale diagnostic.
 - WF metadata lacks passing trade monotonicity with at least one eligible
   regime, or was stamped with pass-open trade monotonicity.
 - Strict-QP WF metadata lacks monotonicity evidence for the actual QP driver

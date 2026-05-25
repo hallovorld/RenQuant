@@ -24,6 +24,7 @@ def _panel() -> pd.DataFrame:
                 "date": d,
                 "ticker": ticker,
                 "f1": float(rank),
+                "fwd_60d_excess": float(rank) * 0.01,
                 "fwd_60d_excess_raw": float(rank) * 0.01,
             })
     return pd.DataFrame(rows)
@@ -39,7 +40,7 @@ def test_run_sanity_battery_stamps_regime_ic_metadata(monkeypatch, tmp_path):
     }))
 
     def fake_score(val, *_args, **_kwargs):
-        mu = pd.Series(val["fwd_60d_excess_raw"].to_numpy(), index=val.index)
+        mu = pd.Series(val["fwd_60d_excess"].to_numpy(), index=val.index)
         return mu, {
             "sanity_eval_scope": "walkforward_manifest",
             "sanity_eval_start": str(pd.Timestamp(val["date"].min()).date()),
@@ -65,6 +66,7 @@ def test_run_sanity_battery_stamps_regime_ic_metadata(monkeypatch, tmp_path):
         },
     )
 
+    assert result["sanity_label_col"] == "fwd_60d_excess"
     assert "sanity_regime_ic" in result
     assert result["sanity_placebo_aligned_real_ic"] is not None
     assert any(

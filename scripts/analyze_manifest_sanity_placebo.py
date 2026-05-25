@@ -34,6 +34,7 @@ from scripts.run_wf_gate import (  # noqa: E402
     _load_artifact_payload,
     _load_sanity_panel,
     _score_manifest_sanity,
+    _sanity_model_label_col,
 )
 
 
@@ -341,6 +342,8 @@ def analyze_manifest(
     logging.getLogger("kernel.panel_pipeline.hf_patchtst_scorer").setLevel(logging.WARNING)
     logging.getLogger("kernel.panel_pipeline.patchtst_scorer").setLevel(logging.WARNING)
     artifact = _load_artifact_payload(artifact_path)
+    if str(label).lower() in {"", "auto"}:
+        label = _sanity_model_label_col(artifact)
     feat_cols = list(artifact.get("feature_cols") or [])
     if not feat_cols:
         raise ValueError(f"artifact missing feature_cols: {artifact_path}")
@@ -509,7 +512,15 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--artifact", required=True)
     ap.add_argument("--manifest", required=True)
-    ap.add_argument("--label", default="fwd_60d_excess_raw")
+    ap.add_argument(
+        "--label",
+        default="auto",
+        help=(
+            "Label for IC/placebo diagnostics. Default 'auto' uses the "
+            "artifact label_col; pass fwd_60d_excess_raw for return-scale "
+            "expected-return diagnostics."
+        ),
+    )
     ap.add_argument("--strategy-dir", default=str(STRATEGY_DIR))
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--shifts", default=",".join(str(x) for x in DEFAULT_SHIFTS))

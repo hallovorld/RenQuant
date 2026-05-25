@@ -316,6 +316,17 @@ def test_wf_gate_placebo_reason_reports_threshold_not_aligned_ic() -> None:
     assert "aligned_real_ic=+0.0548" in text
 
 
+def test_wf_gate_sanity_uses_artifact_label_contract() -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    mod = importlib.import_module("run_wf_gate")
+
+    assert mod._sanity_model_label_col({
+        "label_col": "fwd_20d_excess",
+        "lookahead_days": 60,
+    }) == "fwd_20d_excess"
+    assert mod._sanity_model_label_col({"lookahead_days": 5}) == "fwd_5d_excess"
+
+
 def test_wf_gate_sanity_reindexes_missing_optional_features() -> None:
     src = (REPO / "scripts/run_wf_gate.py").read_text()
     assert "transform_feature_frame(" in src

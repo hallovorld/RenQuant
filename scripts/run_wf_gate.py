@@ -140,6 +140,22 @@ def _placebo_ic_requirement_text(aligned_real_ic: float) -> str:
     )
 
 
+def _sanity_model_label_col(artifact: dict) -> str:
+    """Return the label column the scorer was actually trained to rank."""
+    for key in ("label_col", "label"):
+        value = artifact.get(key)
+        if value:
+            return str(value)
+    lookahead = artifact.get("lookahead_days")
+    try:
+        horizon = int(lookahead)
+    except (TypeError, ValueError):
+        horizon = 60
+    if horizon <= 0:
+        horizon = 60
+    return f"fwd_{horizon}d_excess"
+
+
 def _resolve_strategy_path(raw: str | None) -> Path | None:
     if not raw:
         return None
@@ -1715,19 +1731,21 @@ def run_sanity_battery(
     feat_cols = artifact.get("feature_cols", [])
     if not feat_cols:
         return {"passed": False, "reason": "artifact missing feature_cols"}
-    # Use raw expected-return labels; when the scorer needs newer feature
-    # columns (for example PatchTST sentiment features), merge those features
-    # from the training feature panel while keeping raw labels point-in-time.
+    # Validate against the model's own ranking target. Raw return-scale labels
+    # are still used by calibrator/economics checks, but mixing them into the
+    # rank-LTR placebo gate validates a different objective than the one the
+    # scorer optimized.
+    LABEL = _sanity_model_label_col(artifact)
     try:
-        panel, panel_meta = _load_sanity_panel(feat_cols, "fwd_60d_excess_raw")
+        panel, panel_meta = _load_sanity_panel(feat_cols, LABEL)
     except (FileNotFoundError, KeyError) as exc:
         log.error("sanity panel unavailable — fail closed: %s", exc)
         return {
             "passed": False,
             "reason": str(exc),
             "sanity_method": "existing_model_label_diagnostics",
+            "sanity_label_col": LABEL,
         }
-    LABEL = "fwd_60d_excess_raw"
     panel = panel.dropna(subset=[LABEL])
     distinct = sorted(panel.date.unique())
     val_cut = distinct[int(len(distinct) * 0.8)]
@@ -1738,6 +1756,7 @@ def run_sanity_battery(
             "passed": False,
             "reason": "empty validation partition — sanity unavailable",
             "sanity_method": "existing_model_label_diagnostics",
+            "sanity_label_col": LABEL,
         }
 
     # Predict using the artifact's model on val
@@ -1757,6 +1776,7 @@ def run_sanity_battery(
                     "reason": "manifest sanity missing manifest_path",
                     "sanity_method": "manifest_point_in_time_label_diagnostics",
                     "sanity_eval_scope": "walkforward_manifest",
+                    "sanity_label_col": LABEL,
                 }
             mu_s, sanity_meta = _score_manifest_sanity(
                 val,
@@ -1777,6 +1797,7 @@ def run_sanity_battery(
                     "reason": contract["reason"],
                     "sanity_method": "existing_model_label_diagnostics",
                     "sanity_eval_scope": "static_artifact",
+                    "sanity_label_col": LABEL,
                     "cutoff_contract": "artifact cutoff + lookahead_days < eval_start",
                     **contract,
                 }
@@ -1807,12 +1828,14 @@ def run_sanity_battery(
                 "passed": False,
                 "reason": "sanity not implemented for this kind",
                 "sanity_method": "existing_model_label_diagnostics",
+                "sanity_label_col": LABEL,
             }
     except Exception as exc:
         log.exception("sanity prediction failed; fail closed")
         return {
             "passed": False,
             "reason": f"prediction failed: {exc}",
+            "sanity_label_col": LABEL,
             "sanity_method": (
                 "manifest_point_in_time_label_diagnostics"
                 if (artifact_usage or {}).get("eval_scope") == "walkforward_manifest"
@@ -2043,6 +2066,7 @@ def run_sanity_battery(
             if placebo_aligned_real_ic == placebo_aligned_real_ic
             else None
         ),
+        "sanity_label_col": LABEL,
         "sanity_method": sanity_method,
         "placebo_shift_diagnostics": placebo_shift_diagnostics,
         "sanity_regime_ic": sanity_regime_ic,
@@ -2354,6 +2378,7 @@ def main():
         "sanity_placebo_aligned_real_ic": (
             sanity_result.get("sanity_placebo_aligned_real_ic")
         ),
+        "sanity_label_col":    sanity_result.get("sanity_label_col"),
         "sanity_method":       sanity_result.get("sanity_method"),
         "sanity_eval_scope":   sanity_result.get("sanity_eval_scope"),
         "sanity_manifest_path": sanity_result.get("sanity_manifest_path"),
