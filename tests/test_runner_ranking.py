@@ -106,19 +106,22 @@ class TestBlendWeights:
         assert (w_rank, w_rs) == (0.5, 0.5)
 
 
-class TestBlendScoresTaskIgnoresRs:
-    """BlendScoresTask hardcodes (1.0, 0.0) — rs_score is no longer blended."""
+class TestBlendScoresTaskRegimeWeights:
+    """BlendScoresTask defaults to panel rank but supports explicit regime blends."""
 
-    def _make_ctx(self, blend_weights=None):
+    def _make_ctx(self, *, blend_weights=None, regime_blend_weights=None, regime="BULL_CALM"):
         import datetime as dt
         from kernel.pipeline.context import InferenceContext
         from kernel.selection import CandidateResult
         ranking: dict = {}
         if blend_weights is not None:
             ranking["blend_weights"] = blend_weights
+        if regime_blend_weights is not None:
+            ranking["regime_blend_weights"] = regime_blend_weights
         ctx = InferenceContext(config={"ranking": ranking}, today=dt.date(2026, 4, 22))
+        ctx.regime = regime
         ctx.candidates = [
-            # rank=0.1, rs=0.9 — if rs still counted it'd win. rank=0.9 must win.
+            # rank=0.1, rs=0.9 — with an rs-only BULL_CALM blend this must win.
             CandidateResult(ticker="RS_ONLY",   raw_score=0, rank_score=0.1,
                             rs_score=0.9, detail="", expected_return=0),
             CandidateResult(ticker="RANK_ONLY", raw_score=0, rank_score=0.9,
@@ -131,6 +134,7 @@ class TestBlendScoresTaskIgnoresRs:
         ctx = self._make_ctx()
         BlendScoresTask().run(ctx)
         assert ctx._blend_w == (1.0, 0.0)  # noqa: SLF001
+        assert ctx._blend_source == "default_panel_rank_only"  # noqa: SLF001
 
     def test_ranking_reflects_rank_only(self):
         """The rank_score ordering must match, regardless of rs_score."""
@@ -138,6 +142,31 @@ class TestBlendScoresTaskIgnoresRs:
         ctx = self._make_ctx()
         BlendScoresTask().run(ctx)
         SortCandidatesTask().run(ctx)
+        assert [c.ticker for c in ctx.ranked] == ["RANK_ONLY", "RS_ONLY"]
+
+    def test_regime_weight_can_rank_by_relative_strength(self):
+        """Regression: SortCandidatesTask must not discard the blended order."""
+        from kernel.pipeline.task_ranking import BlendScoresTask, SortCandidatesTask
+        ctx = self._make_ctx(regime_blend_weights={"BULL_CALM": [0.0, 1.0]})
+        BlendScoresTask().run(ctx)
+        SortCandidatesTask().run(ctx)
+        assert ctx._blend_w == (0.0, 1.0)  # noqa: SLF001
+        assert [c.ticker for c in ctx.ranked] == ["RS_ONLY", "RANK_ONLY"]
+        # Admission thresholds still see the original calibrated rank score.
+        assert {c.ticker: c.rank_score for c in ctx.ranked} == {
+            "RS_ONLY": 0.1,
+            "RANK_ONLY": 0.9,
+        }
+
+    def test_regime_weight_is_conditional_on_current_regime(self):
+        from kernel.pipeline.task_ranking import BlendScoresTask, SortCandidatesTask
+        ctx = self._make_ctx(
+            regime="CHOPPY",
+            regime_blend_weights={"BULL_CALM": [0.0, 1.0]},
+        )
+        BlendScoresTask().run(ctx)
+        SortCandidatesTask().run(ctx)
+        assert ctx._blend_w == (1.0, 0.0)  # noqa: SLF001
         assert [c.ticker for c in ctx.ranked] == ["RANK_ONLY", "RS_ONLY"]
 
     def test_legacy_config_rs_weight_warns_and_ignored(self, caplog):

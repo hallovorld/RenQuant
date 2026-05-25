@@ -102,6 +102,8 @@ ACTIVE_PATHS: list[tuple[str, str]] = [
     ("ranking.kelly_sizing.rotation_target_floor",    "task_rotation.py:529"),
     ("ranking.kelly_sizing.trim_enabled",             "task_trim.py:60"),
     ("ranking.kelly_sizing.trim_threshold",           "task_trim.py:62"),
+    # ── ranking blend knobs (task_ranking.py::_resolve_blend_weights) ─────
+    ("ranking.regime_blend_weights.*.*",              "task_ranking.py:_resolve_blend_weights"),
     # ── tiered_thresholds (read in selection/joint_actions) ──────────────
     ("tiered_thresholds.*.min_model_score",           "selection.py:400, task_joint_actions.py:284"),
     # ── exposure_scaling (top-level) ─────────────────────────────────────

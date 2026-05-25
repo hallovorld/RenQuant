@@ -46,3 +46,17 @@ def test_nested_underscore_notes_are_inert_metadata():
     assert "ranking.meta_label._codex_ab_reason" in joined
     assert "INERT_METADATA" in joined
     assert "✗ ranking.meta_label._codex_ab_reason" not in joined
+
+
+def test_regime_blend_weight_is_active_path():
+    mod = _load_validator()
+    baseline = {"ranking": {"regime_blend_weights": {"BULL_CALM": [1.0, 0.0]}}}
+    candidate = {"ranking": {"regime_blend_weights": {"BULL_CALM": [0.35, 0.65]}}}
+
+    active, report = mod.static_validate(baseline, candidate)
+
+    joined = "\n".join(report)
+    assert active
+    assert "ranking.regime_blend_weights.BULL_CALM.0" in joined
+    assert "ranking.regime_blend_weights.BULL_CALM.1" in joined
+    assert "ACTIVE" in joined

@@ -2064,6 +2064,41 @@ Operational conclusion:
   forensic lens; it must be retrained and accepted regime-first before any
   promotion.
 
+## 2026-05-24 Production Label + BULL_CALM RS Finding
+
+- Correction: active 104 alpha158/fund production training does not use the
+  older `PanelTrainingPipeline` label hook above. The live retrain path is
+  `build_alpha158_qlib.py -> build_alpha158_fund_panel.py ->
+  train_production_model.py -> fit_calibrator_alpha158_fund.py`. It trains
+  XGB rank:pairwise on `fwd_60d_excess`, a per-date cross-sectionally
+  standardized stock-minus-SPY 60d excess-return label; the calibrator then
+  fits expected-return μ on raw `fwd_60d_excess_raw`.
+- Extra diagnostic on the same `horizon60_erfloor_bullcalm040_diag_20260524-190959`
+  trace joined entries to production labels. In BULL_CALM selected trades,
+  `entry_panel_score` is inverted not only versus realized active P&L but also
+  versus the model's own 60d label: Spearman vs `fwd_60d_excess` is about
+  `-0.304`, and vs raw `fwd_60d_excess_raw` about `-0.301`. This is a selected
+  decision-tree subset failure, not just a tax/reporting artifact.
+- In the same closed-trade subset, `entry_rs_score` is the only score with the
+  right sign: Spearman vs raw 60d label about `+0.335`, vs normalized 60d
+  label about `+0.351`, and vs active net P&L about `+0.259`. RS quintiles
+  were monotone in net P&L: bottom RS quintile about `-$1.39k`, top quintile
+  about `+$4.26k`. This supports a BULL_CALM-specific momentum/relative-strength
+  thesis, not a global RS promotion.
+- Found and fixed an engineering blocker before any RS A/B: `BlendScoresTask`
+  could sort by blended `rank_score/rs_score`, but `SortCandidatesTask`
+  immediately re-sorted by original `rank_score`, discarding the blend. The
+  new explicit knob is `ranking.regime_blend_weights`; default remains
+  panel-rank-only. Tests now prove a BULL_CALM rs-only blend changes order
+  while tier/QP admission still sees the original calibrated rank score.
+- Next caveat: JointActionJob/QP still sorts and sizes by calibrated expected
+  return and raw panel tiebreaks. Therefore `regime_blend_weights` repairs the
+  ranking contract but may not be sufficient to improve APY/Sharpe if QP's
+  action menu continues to use the anti-predictive BULL_CALM panel μ as the
+  economic owner. If the RS-blend A/B is neutral, the next structural repair is
+  a regime-conditional signal combiner/expected-return head, not another
+  threshold tweak.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:
