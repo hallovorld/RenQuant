@@ -26,6 +26,7 @@ from kernel.walk_forward import (
     assert_lean_panel_no_leakage,
     parse_correlation_artifact,
 )
+from kernel.preflight    import run_preflight
 from adapters.lean       import LeanAdapter
 
 CONFIG = load_config()
@@ -98,6 +99,16 @@ class AdaptiveRegimeMultiStockStrategy(QCAlgorithm):
 
         self._config       = CONFIG
         self._strategy_dir = Path(__file__).resolve().parent
+        self._config["_strategy_dir"] = str(self._strategy_dir)
+        self._preflight_ok = False
+        run_preflight(
+            CONFIG,
+            broker=None,
+            strategy_dir=self._strategy_dir,
+            strict=True,
+            run_mode="full",
+        )
+        self._preflight_ok = True
         self._watchlist    = CONFIG["watchlist"]
         self._benchmark    = CONFIG.get("benchmark", "SPY")
 

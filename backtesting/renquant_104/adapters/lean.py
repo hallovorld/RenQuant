@@ -379,6 +379,11 @@ class LeanAdapter:
         algo   = self._algo
         config = algo._config
 
+        if getattr(ctx, "orders", None) and not bool(getattr(algo, "_preflight_ok", False)):
+            raise RuntimeError(
+                "LEAN preflight did not complete successfully; refusing to submit buy orders"
+            )
+
         tax_short      = algo._tax_short
         tax_long       = algo._tax_long
         tax_thresh     = algo._tax_thresh_days

@@ -2734,6 +2734,14 @@ entire pipeline end-to-end:
   runner state, trade ntfy, conformal/backfill, portfolio-DB-path, and state
   path tests passed (`107 passed, 1 skipped`; plus broader runner/DB tests
   `105 passed, 1 skipped`).
+- New LEAN/full preflight bypass fixed: `main.py` now runs the same strict
+  `run_preflight(..., run_mode="full")` contract before loading the universe
+  or constructing `InferencePipeline`, stamps `_preflight_ok` only after a
+  successful check, and `LeanAdapter.commit()` refuses buy orders unless that
+  stamp is present. This closes the sim/live/LEAN parity gap where live could
+  fail closed while LEAN backtests still traded on invalid artifacts. Validation:
+  LEAN preflight wiring, trace persistence, universe alignment, and runner
+  preflight fail-closed tests passed (`45 passed`).
 
 ## Stop Conditions
 
