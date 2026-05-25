@@ -277,13 +277,34 @@ class TestCalibrateScore:
             "method": "platt",
             "platt_coef": 1.0,
             "platt_intercept": 0.0,
+            "platt_scale_mean": 0.0,
+            "platt_scale_std": 1.0,
         }
         val = calibrate_score(0.0, cal)
         assert val == pytest.approx(0.5)
 
     def test_platt_clipped(self):
-        cal = {"method": "platt", "platt_coef": 100.0, "platt_intercept": 100.0}
+        cal = {
+            "method": "platt",
+            "platt_coef": 100.0,
+            "platt_intercept": 100.0,
+            "platt_scale_mean": 0.0,
+            "platt_scale_std": 1.0,
+        }
         assert calibrate_score(1.0, cal) == pytest.approx(1.0)
+
+    def test_platt_missing_scaler_returns_base_rate(self):
+        cal = {
+            "method": "platt",
+            "platt_coef": 1.0,
+            "platt_intercept": 0.0,
+            "base_rate": 0.37,
+        }
+        assert calibrate_score(0.0, cal) == pytest.approx(0.37)
+
+    def test_unknown_method_returns_base_rate(self):
+        cal = {"method": "platt_typo", "base_rate": 0.23}
+        assert calibrate_score(0.99, cal) == pytest.approx(0.23)
 
 
 class TestPredictClassification:

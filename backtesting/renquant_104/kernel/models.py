@@ -57,13 +57,18 @@ def calibrate_score(raw_score: float, calibration: dict | None) -> float:
         intercept = calibration.get("platt_intercept")
         if coef is None or intercept is None:
             return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
-        scaled    = raw_score
         scale_std = calibration.get("platt_scale_std")
-        if scale_std and scale_std > 0:
-            scaled = (raw_score - calibration.get("platt_scale_mean", 0.0)) / scale_std
+        scale_mean = calibration.get("platt_scale_mean")
+        if (scale_std is None
+                or not math.isfinite(float(scale_std))
+                or float(scale_std) <= 0
+                or scale_mean is None
+                or not math.isfinite(float(scale_mean))):
+            return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
+        scaled = (raw_score - float(scale_mean)) / float(scale_std)
         log_odds  = coef * scaled + intercept
         return float(np.clip(1.0 / (1.0 + math.exp(-log_odds)), 0.0, 1.0))
-    return float(raw_score)
+    return float(np.clip(calibration.get("base_rate", 0.0), 0.0, 1.0))
 
 
 def expected_return_from_calibration(

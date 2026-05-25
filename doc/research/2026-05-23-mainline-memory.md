@@ -2357,6 +2357,15 @@ Operational conclusion:
   now fail-closed by default before artifact load; the script remains available
   for dry-run/research scoring. Validation: production-runner guard plus
   sim/live/LEAN adapter parity tests passed (`12 passed`).
+- Follow-up calibration drift bug found: `kernel/scoring.py` had already made
+  Platt calibration fail closed when scaler metadata is missing, but
+  `kernel/models.py::calibrate_score()` still treated missing
+  `platt_scale_mean/std` as "use raw score" and returned raw score for unknown
+  methods. That is a silent fallback to an uncalibrated score path. The model
+  helper now requires finite Platt scaler metadata and falls back to
+  `base_rate` for missing scaler or unknown methods, matching the stricter
+  scoring helper. Validation: compile passed and kernel/ranking regression
+  tests passed (`293 passed`).
 
 ## Stop Conditions
 
