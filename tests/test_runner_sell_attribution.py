@@ -10,16 +10,20 @@ import datetime
 import sys
 from pathlib import Path
 
+import pytest
+
 
 STRATEGY_DIR = Path(__file__).resolve().parent.parent / "backtesting" / "renquant_104"
 if str(STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(STRATEGY_DIR))
 
 from adapters.runner import (  # noqa: E402
+    apply_live_sell_lot_accounting,
     build_sell_trade_event_for_db,
     live_trace_selection_maps,
     live_post_execution_snapshot,
     model_type_from_artifact,
+    reconstruct_live_tax_lots_from_fills,
     sell_event_realized_kwargs,
     sell_event_price,
 )
@@ -143,6 +147,70 @@ def test_live_sell_trade_uses_explicit_broker_realized_economics():
     assert row["pnl_pct"] == 0.20
     assert row["hold_days"] == 20
     assert row["decision_inputs"]["gross_pnl"] == 80.0
+
+
+def test_live_partial_sell_uses_reconstructed_hifo_tax_lots():
+    today = datetime.date(2026, 1, 10)
+    fills = [
+        {
+            "symbol": "AAPL", "action": "BUY", "qty": 10,
+            "avg_price": 100.0, "filled_at": "2026-01-02T14:30:00+00:00",
+        },
+        {
+            "symbol": "AAPL", "action": "BUY", "qty": 10,
+            "avg_price": 150.0, "filled_at": "2026-01-03T14:30:00+00:00",
+        },
+    ]
+    cfg = {
+        "tax": {"short_term_rate": 0.50, "long_term_rate": 0.20},
+        "rotation": {"joint_actions": {"qp_tax_lot_method": "hifo"}},
+    }
+    lots = reconstruct_live_tax_lots_from_fills(fills, config=cfg)
+    holding = HoldingState(
+        entry_price=125.0,
+        entry_date=datetime.date(2026, 1, 2),
+        high_watermark=160.0,
+        shares=20.0,
+    )
+    holding.lots = lots["AAPL"]
+    sig = ExitSignal(
+        should_exit=True,
+        reason="partial QP trim",
+        exit_type="qp_sell",
+        quantity=10.0,
+    )
+
+    assert apply_live_sell_lot_accounting(
+        sig,
+        holding,
+        shares=10.0,
+        price=160.0,
+        today=today,
+        config=cfg,
+    ) is True
+
+    row = build_sell_trade_event_for_db(
+        ticker="AAPL",
+        sig=sig,
+        holding=holding,
+        price=160.0,
+        today=today,
+        regime="BULL_CALM",
+        confidence=0.8,
+        regime_params={"tax": cfg["tax"]},
+        config={**cfg, "tax": {**cfg["tax"], "cash_debit_mode": "reporting_only"}},
+        **sell_event_realized_kwargs(sig, holding, today=today),
+    )
+
+    assert row["shares"] == 10.0
+    assert row["proceeds_basis"] == 1500.0
+    assert row["gross_pnl"] == 100.0
+    assert row["tax"] == 50.0
+    assert row["net_pnl_after_tax"] == 50.0
+    assert row["pnl_pct"] == pytest.approx(100.0 / 1500.0)
+    assert row["hold_days"] == 7
+    assert holding.shares == 10.0
+    assert holding.entry_price == 100.0
 
 
 def test_live_post_execution_snapshot_uses_broker_state_and_confirmed_holdings():

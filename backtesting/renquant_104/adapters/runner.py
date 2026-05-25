@@ -157,12 +157,26 @@ def sell_event_realized_kwargs(
     if gross_attr is not None:
         out["gross_pnl"] = gross
     cost_basis = _finite_number(getattr(sig, "cost_basis", None))
-    if cost_basis > 0 and shares > 0:
+    proceeds_basis_attr = getattr(sig, "proceeds_basis", None)
+    proceeds_basis = _finite_number(proceeds_basis_attr)
+    if proceeds_basis_attr is not None and proceeds_basis > 0:
+        out["proceeds_basis"] = proceeds_basis
+    elif cost_basis > 0 and shares > 0:
         out["proceeds_basis"] = cost_basis * shares
+    tax_attr = getattr(sig, "realized_tax", None)
+    if tax_attr is not None:
+        out["tax"] = _finite_number(tax_attr)
+    net_attr = getattr(sig, "net_pnl_after_tax", None)
+    if net_attr is not None:
+        out["net_pnl_after_tax"] = _finite_number(net_attr)
     pnl_pct_attr = getattr(sig, "realized_pnl_pct", None)
     if pnl_pct_attr is not None:
         out["pnl_pct"] = _finite_number(pnl_pct_attr) / 100.0
 
+    hold_days_attr = getattr(sig, "hold_days", None)
+    if hold_days_attr is not None:
+        out["hold_days"] = max(int(_finite_number(hold_days_attr)), 0)
+        return out
     entry_date = getattr(holding, "entry_date", None)
     today_date = today.date() if isinstance(today, datetime.datetime) else today
     if isinstance(entry_date, datetime.datetime):
@@ -170,6 +184,136 @@ def sell_event_realized_kwargs(
     if isinstance(today_date, datetime.date) and isinstance(entry_date, datetime.date):
         out["hold_days"] = max((today_date - entry_date).days, 0)
     return out
+
+
+def _fill_date(fill: dict[str, Any]) -> datetime.date | None:
+    raw = fill.get("filled_at")
+    if not raw:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def reconstruct_live_tax_lots_from_fills(
+    fills: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, list[Any]]:
+    """Rebuild current long tax lots from broker fill history.
+
+    This keeps live partial-sell accounting on the same FIFO/HIFO contract as
+    sim/LEAN. Alpaca exposes only average entry on positions, which is not
+    enough to audit a partial trim's realized basis.
+    """
+    from kernel.exits import HoldingState, TaxLot, apply_buy_lot, apply_sell_lots_detailed
+
+    lot_method = str(
+        (((config or {}).get("rotation", {}) or {}).get("joint_actions", {}) or {})
+        .get("qp_tax_lot_method", ((config or {}).get("tax", {}) or {}).get("lot_method", "fifo"))
+    ).lower()
+    states: dict[str, HoldingState] = {}
+    ordered = sorted(
+        [f for f in (fills or []) if isinstance(f, dict)],
+        key=lambda f: str(f.get("filled_at") or ""),
+    )
+    for fill in ordered:
+        ticker = str(fill.get("symbol") or "").strip()
+        action = str(fill.get("action") or "").upper()
+        try:
+            qty = float(fill.get("qty") or 0.0)
+            price = float(fill.get("avg_price") or fill.get("filled_avg_price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        fill_date = _fill_date(fill)
+        if not ticker or qty <= 0 or price <= 0 or fill_date is None:
+            continue
+        hs = states.get(ticker)
+        if action == "BUY":
+            if hs is None:
+                hs = HoldingState(
+                    entry_price=price,
+                    entry_date=fill_date,
+                    high_watermark=price,
+                    shares=0.0,
+                )
+                states[ticker] = hs
+            apply_buy_lot(hs, qty, price, fill_date)
+            hs.shares = hs.total_shares()
+            hs.entry_price = hs.weighted_avg_entry_price()
+            hs.high_watermark = max(float(hs.high_watermark or price), price)
+        elif action == "SELL" and hs is not None:
+            apply_sell_lots_detailed(hs, qty, lot_method)
+            hs.shares = hs.total_shares()
+            hs.entry_price = hs.weighted_avg_entry_price()
+            if hs.shares <= 1e-9:
+                states.pop(ticker, None)
+    return {
+        ticker: [TaxLot(shares=L.shares, price=L.price, date=L.date) for L in hs.lots]
+        for ticker, hs in states.items()
+        if hs.lots
+    }
+
+
+def apply_live_sell_lot_accounting(
+    sig: Any,
+    holding: Any,
+    *,
+    shares: float,
+    price: float,
+    today: Any,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Stamp live sell economics from reconstructed tax lots when available."""
+    import math
+    from kernel.exits import apply_sell_lots_detailed
+    from kernel.portfolio import compute_disposed_lot_tax
+
+    if holding is None or not getattr(holding, "lots", None):
+        return False
+    if not (math.isfinite(float(shares)) and shares > 0
+            and math.isfinite(float(price)) and price > 0):
+        return False
+    lot_method = str(
+        (((config or {}).get("rotation", {}) or {}).get("joint_actions", {}) or {})
+        .get("qp_tax_lot_method", ((config or {}).get("tax", {}) or {}).get("lot_method", "fifo"))
+    ).lower()
+    proceeds_basis, _, disposed_lots = apply_sell_lots_detailed(
+        holding, float(shares), lot_method,
+    )
+    if not (math.isfinite(float(proceeds_basis)) and proceeds_basis > 0):
+        return False
+    gross_pnl = float(shares) * float(price) - float(proceeds_basis)
+    today_date = today.date() if isinstance(today, datetime.datetime) else today
+    tax_cfg = (config or {}).get("tax", {}) or {}
+    lot_tax = compute_disposed_lot_tax(
+        float(price),
+        today_date,
+        disposed_lots,
+        float(tax_cfg.get("short_term_rate", 0.50)),
+        float(tax_cfg.get("long_term_rate", 0.32)),
+        int(tax_cfg.get("long_term_threshold_days", 365)),
+    )
+    tax = float(lot_tax.get("tax", 0.0))
+    cost_basis = float(proceeds_basis) / float(shares)
+    sig.cost_basis = cost_basis
+    sig.proceeds_basis = float(proceeds_basis)
+    sig.realized_pnl_dollar = float(gross_pnl)
+    sig.realized_tax = tax
+    sig.net_pnl_after_tax = float(gross_pnl - tax)
+    sig.realized_pnl_pct = (
+        float(gross_pnl) / float(proceeds_basis) * 100.0
+        if proceeds_basis > 0 else 0.0
+    )
+    sig.hold_days = int(round(float(lot_tax.get("weighted_hold_days", 0.0))))
+    try:
+        holding.shares = max(0.0, float(getattr(holding, "shares", 0.0) or 0.0) - float(shares))
+        if getattr(holding, "lots", None):
+            holding.entry_price = holding.weighted_avg_entry_price()
+    except Exception:
+        pass
+    return True
 
 
 def live_trace_selection_maps(
@@ -648,8 +792,10 @@ class RunnerAdapter:
         # missing entry_dates so hold tenure reflects actual cost-basis
         # tenure, not "first time the runner saw this position".
         first_fill_map: dict[str, datetime.date] = {}
+        broker_fills: list[dict[str, Any]] = []
         try:
             fills = broker.get_filled_orders()
+            broker_fills = list(fills or [])
             for f in fills or []:
                 sym = f.get("symbol")
                 if not sym or f.get("action") != "BUY":
@@ -672,6 +818,10 @@ class RunnerAdapter:
             log.info("ENTRY-DATE-FROM-FILLS: broker.get_filled_orders unavailable "
                      "(%s) — will fall back to sentinel for missing entry dates",
                      type(exc).__name__)
+        live_tax_lots = reconstruct_live_tax_lots_from_fills(
+            broker_fills,
+            config=config,
+        )
 
         # ── Holdings from live state + broker positions ─────────────────────
         from kernel.exits import HoldingState  # noqa: PLC0415
@@ -788,6 +938,20 @@ class RunnerAdapter:
                 entry_kelly_target_pct = es.get("kelly_target_pct"),
                 entry_regime           = es.get("regime"),
             )
+            lots = live_tax_lots.get(ticker)
+            if lots:
+                lot_qty = sum(float(getattr(L, "shares", 0.0) or 0.0) for L in lots)
+                if abs(lot_qty - qty_held) <= max(0.01, abs(qty_held) * 1e-4):
+                    holdings[ticker].lots = lots
+                    holdings[ticker].entry_price = (
+                        holdings[ticker].weighted_avg_entry_price()
+                    )
+                else:
+                    log.warning(
+                        "LIVE-TAX-LOTS: %s reconstructed lot qty %.4f != broker "
+                        "qty %.4f; using broker avg_entry_price fallback",
+                        ticker, lot_qty, qty_held,
+                    )
             holdings[ticker].model_type = model_type_from_artifact(
                 self._models.get(ticker)
             )
@@ -1430,32 +1594,44 @@ class RunnerAdapter:
             price = float(execution["filled_avg_price"] or ctx.prices.get(ticker, 0.0))
             is_partial = bool(execution["partial"] or sell_qty < qty - 1e-9)
 
-            # 2026-05-18: stamp P/L on the ExitSignal so live/runner.py's
-            # _notify_decision can render explicit $ realized P/L in ntfy.
-            # User mandate: "每次卖出的时候 ntfy 里给我算一下具体 pl 是多少".
-            # Cost basis comes from broker avg_entry_price (FIFO/HIFO-aware
-            # via Alpaca's tax-lot accounting on its side). Sell price is
-            # the current ctx.prices snapshot (close-to-fill at market;
-            # bracket/limit orders would refine this).
-            cost_basis = float(pos_cache.get(ticker, {}).get(
-                "avg_entry_price", 0.0
-            ))
             # Use HoldingState.entry_price as the running avg-cost fallback.
             hs = (ctx.holdings or {}).get(ticker)
-            if hs is not None and cost_basis <= 0:
-                cost_basis = float(getattr(hs, "entry_price", 0.0) or 0.0)
-            if cost_basis > 0 and price > 0:
-                gain_per_share = price - cost_basis
-                gain_dollar = gain_per_share * sell_qty
-                gain_pct = (price / cost_basis - 1.0) * 100.0
-                try:
-                    sig.realized_pnl_dollar = float(gain_dollar)
-                    sig.realized_pnl_pct = float(gain_pct)
-                    sig.cost_basis = float(cost_basis)
-                    sig.sell_price = float(price)
-                    sig.shares_sold = float(sell_qty)
-                except Exception:
-                    pass
+            lot_accounted = apply_live_sell_lot_accounting(
+                sig,
+                hs,
+                shares=float(sell_qty),
+                price=float(price),
+                today=ctx.today,
+                config=self._config,
+            )
+            if not lot_accounted:
+                # 2026-05-18: stamp P/L on the ExitSignal so live/runner.py's
+                # _notify_decision can render explicit $ realized P/L in ntfy.
+                # Fallback cost basis is broker avg_entry_price when fill
+                # history cannot reconstruct tax lots.
+                cost_basis = float(pos_cache.get(ticker, {}).get(
+                    "avg_entry_price", 0.0
+                ))
+                if hs is not None and cost_basis <= 0:
+                    cost_basis = float(getattr(hs, "entry_price", 0.0) or 0.0)
+                if cost_basis > 0 and price > 0:
+                    gain_per_share = price - cost_basis
+                    gain_dollar = gain_per_share * sell_qty
+                    gain_pct = (price / cost_basis - 1.0) * 100.0
+                    try:
+                        sig.realized_pnl_dollar = float(gain_dollar)
+                        sig.realized_pnl_pct = float(gain_pct)
+                        sig.cost_basis = float(cost_basis)
+                        sig.sell_price = float(price)
+                        sig.shares_sold = float(sell_qty)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        sig.sell_price = float(price)
+                        sig.shares_sold = float(sell_qty)
+                    except Exception:
+                        pass
             else:
                 try:
                     sig.sell_price = float(price)
