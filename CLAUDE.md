@@ -220,11 +220,30 @@ P0 fixes ─────────→ retrain ──────────�
 **5.10 Saturate hardware.** M4 Pro = 14 cores + 48 GB RAM. Before any long compute job: `OMP_NUM_THREADS=14`, `MKL_NUM_THREADS=14`, `OPENBLAS_NUM_THREADS=14`; XGBoost `nthread=14` / `n_jobs=-1`; sklearn `n_jobs=-1`. Datasets < 5 GB load fully into RAM. **Verify** ≥80% user CPU via `top -l 1 | grep CPU` after dispatch — fix bottleneck BEFORE letting it eat hours.
 
 **5.11 Experiment design optimizes for time-to-answer.** Decision tree before any multi-hour run:
+0. **No-run path first**: before launching a new experiment, explicitly ask
+   "can code review, data audit, procedure audit, an existing trace, or a
+   focused unit/integration test answer this?" If yes, do that first. New
+   experiments are for unresolved empirical questions, not for debugging
+   invariants that can be proven from code/data already on disk.
 1. **Range-finding** ("does X work at all?") → top-down single endpoint, 30 min wallclock.
 2. **Optimization** ("find best subset/hyperparam") → ONLY after range-finding shows X works.
 3. **Diagnostic** ("why did Y fail?") → §5.2 sanity sequence FIRST, THEN mechanism.
 
 Sunk-cost guard: kill the experiment when mid-run evidence already answers the question.
+
+**5.11a Never idle behind a running experiment.** Once a long experiment is
+running, immediately switch to non-competing work: code review, data-flow
+audit, decision-trace audit, cleanup, regression tests, docs, or the next
+bounded feature/fix. Waiting is allowed only when the next action truly depends
+on the result or additional work would contend for the same scarce resource
+(for example MPS/GPU memory). Record what was done while the run was active.
+
+**5.11b Experiments must reuse existing evidence before spending compute.**
+Before re-running a sim/WF/training job, inspect prior artifacts/logs/traces and
+write down why they are insufficient (stale code, missing fields, failed
+contract, wrong regime split, etc.). If the only gap is missing analysis, write
+the analyzer and use existing data. Re-running without first checking available
+evidence is a process bug.
 
 **5.12 Default to canonical references; never reinvent.** First question for any algorithmic / data / model decision: *what does Qlib / cvxportfolio / scikit-learn / PyPortfolioOpt / the canonical paper do?* Reference set:
 - Cross-sectional ranking & features: `microsoft/qlib` (Alpha158, LinearModel, LGBModel, TransformerModel)
