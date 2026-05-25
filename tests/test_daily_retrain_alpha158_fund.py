@@ -46,6 +46,8 @@ def ctx(tmp_path):
         ohlcv_dir=tmp_path / "ohlcv",
         alpha158_panel=tmp_path / "alpha158.parquet",
         sec_fund_panel=tmp_path / "fund.parquet",
+        earnings_surprise_dir=tmp_path / "earnings_surprise",
+        news_sentiment_dir=tmp_path / "news_sentiment_alpaca",
         fund_merged_panel=tmp_path / "merged.parquet",
         xgb_artifact_src=tmp_path / "xgb_src.json",
         xgb_artifact_dst=tmp_path / "xgb_dst.json",
@@ -132,6 +134,8 @@ class TestMergeFundFeaturesTaskSkip:
     def test_skips_when_output_newer_than_inputs(self, ctx):
         _touch(ctx.alpha158_panel, mtime=100)
         _touch(ctx.sec_fund_panel, mtime=100)
+        _touch(ctx.earnings_surprise_dir / "AAA.parquet", mtime=100)
+        _touch(ctx.news_sentiment_dir / "AAA.parquet", mtime=100)
         _touch(ctx.fund_merged_panel, mtime=200)
         assert MergeFundFeaturesTask().should_skip(ctx) is not None
 
@@ -139,6 +143,25 @@ class TestMergeFundFeaturesTaskSkip:
         _touch(ctx.fund_merged_panel, mtime=100)
         _touch(ctx.alpha158_panel, mtime=200)  # alpha158 changed
         _touch(ctx.sec_fund_panel, mtime=100)
+        assert MergeFundFeaturesTask().should_skip(ctx) is None
+
+    def test_runs_when_pead_or_sentiment_inputs_newer_than_output(self, ctx):
+        """AUDIT REGRESSION GUARD: cached merge must include all sources.
+
+        build_alpha158_fund_panel.py reads data/earnings_surprise for PEAD/SUE
+        and data/news_sentiment_alpaca for sentiment. Weekly promote must not
+        stamp a fresh model on a stale merged feature panel when those sources
+        changed after the prior merge.
+        """
+        _touch(ctx.alpha158_panel, mtime=100)
+        _touch(ctx.sec_fund_panel, mtime=100)
+        _touch(ctx.fund_merged_panel, mtime=200)
+        _touch(ctx.earnings_surprise_dir / "AAA.parquet", mtime=250)
+        assert MergeFundFeaturesTask().should_skip(ctx) is None
+
+        _touch(ctx.fund_merged_panel, mtime=300)
+        _touch(ctx.earnings_surprise_dir / "AAA.parquet", mtime=100)
+        _touch(ctx.news_sentiment_dir / "AAA.parquet", mtime=350)
         assert MergeFundFeaturesTask().should_skip(ctx) is None
 
     def test_run_truncates_to_sec_coverage_by_default(self, ctx):

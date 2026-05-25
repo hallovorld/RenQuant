@@ -59,6 +59,8 @@ class DailyRetrainContext:
     ohlcv_dir:           Path = REPO / "data" / "ohlcv"
     alpha158_panel:      Path = REPO / "data" / "alpha158_qlib_dataset.parquet"
     sec_fund_panel:      Path = REPO / "data" / "sec_fundamentals_daily.parquet"
+    earnings_surprise_dir: Path = REPO / "data" / "earnings_surprise"
+    news_sentiment_dir:  Path = REPO / "data" / "news_sentiment_alpaca"
     fund_merged_panel:   Path = REPO / "data" / "alpha158_291_fundamental_dataset.parquet"
     xgb_artifact_src:    Path = REPO / "data" / "panel-ltr-prod-alpha158-fund-fwd60d.json"
     # 2026-05-11 sim/prod isolation: prod artifacts live under artifacts/prod/.
@@ -130,9 +132,12 @@ class MergeFundFeaturesTask(RetrainTask):
         if not ctx.fund_merged_panel.exists():
             return None
         if ctx.fund_merged_panel.stat().st_mtime > _newest_mtime(
-            ctx.alpha158_panel, ctx.sec_fund_panel
+            ctx.alpha158_panel,
+            ctx.sec_fund_panel,
+            ctx.earnings_surprise_dir,
+            ctx.news_sentiment_dir,
         ):
-            return "merged panel newer than alpha158 + fund inputs"
+            return "merged panel newer than alpha158 + fund/PEAD/SUE/sentiment inputs"
         return None
 
     def run(self, ctx: DailyRetrainContext) -> None:

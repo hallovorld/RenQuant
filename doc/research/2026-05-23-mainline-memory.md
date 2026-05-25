@@ -2485,6 +2485,15 @@ entire pipeline end-to-end:
   `SetHoldings` sizing semantics. Validation: LEAN trace/backend,
   data-freshness, sim/live parity, buy-emission, and QP admission tests passed
   (`77 passed`).
+- New weekly-promotion feature-cache bug found: the alpha158+fund merge cache
+  only compared the merged panel mtime against alpha158 and SEC fundamentals,
+  but `build_alpha158_fund_panel.py` also reads `data/earnings_surprise` for
+  PEAD/SUE and `data/news_sentiment_alpaca` for sentiment. Weekly promotion
+  could therefore stamp a fresh model on a stale merged feature panel after
+  those sources changed. `MergeFundFeaturesTask.should_skip()` now includes
+  both source directories in cache invalidation. Validation:
+  daily-retrain, train/infer feature parity, sentiment panel join, and
+  production panel invariant tests passed (`37 passed` + `5 passed`).
 
 ## Stop Conditions
 
