@@ -239,9 +239,29 @@ Make RenQuant 104 scientifically trustworthy end to end:
 - Live-log forensic repair 2026-05-25: round-trip reconstruction now normalizes
   trade `action` casing, so live JSON rows written as `BUY`/`SELL` are not
   dropped by case-sensitive `buy`/`sell` matching.
+- Long/short parity hardening 2026-05-25: short candidates are now gated by an
+  explicit `ctx.supports_short_open` backend capability. Sim declares support
+  for research; live and LEAN declare no support until their execution paths can
+  open/cover shorts with the same semantics. Missing/invalid borrow metadata
+  also fails closed unless a research config explicitly opts into
+  `allow_missing_borrow_status`.
+- Short-cover accounting repair 2026-05-25: sim buy-to-cover no longer emits a
+  fake long buy or leaves a zero-share holding after covering. Partial cover
+  keeps the remaining short with the original short entry basis; over-cover
+  emits a separate clean long residual. `short_cover` rows now enter win-rate,
+  tax, annual-net reporting, and trade-ledger round-trip matching.
 
 ## Pushed Progress
 
+- `869f6b2 fix(renquant104): gate short candidates by backend capability`
+  - Adds explicit short-open backend capability to sim/live/LEAN contexts.
+  - Blocks `long_short.enabled=true` from generating short candidates on live
+    and LEAN until those backends have execution parity.
+  - Tightens borrow metadata handling for short-candidate selection.
+  - Targeted tests passed:
+    `tests/test_short_candidate_selection.py tests/test_adapter_context_contract.py
+    tests/test_qp_long_short_phase2a.py tests/test_no_leverage_invariant.py`
+    (`42 passed`).
 - `9007475 docs: add codex bug bounty retrospective`
   - Adds the Codex retrospective for the failed "10-round" bug bounty:
     the audit was not a true end-to-end invariant chain, experiments outran

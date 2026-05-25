@@ -229,6 +229,56 @@ def _empty_fields(fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: None for field in fields}
 
 
+def _entry_lot_from_event(
+    *,
+    event_id: int,
+    event: dict[str, Any],
+    ticker: str,
+    shares: float,
+    side: str,
+) -> dict[str, Any]:
+    return {
+        "event_id": event_id,
+        "ticker": ticker,
+        "side": side,
+        "entry_date": _as_date(event.get("date")),
+        "entry_price": _as_float(event.get("price")),
+        "remaining_shares": shares,
+        "entry_invest": _as_float(event.get("invest")),
+        "entry_regime": event.get("regime"),
+        "entry_rank_score": _event_score(event, "rank_score"),
+        "entry_rs_score": _event_score(event, "rs_score"),
+        "entry_panel_score": _event_score(event, "panel_score"),
+        "entry_mu": _event_score(event, "mu"),
+        "entry_mu_horizon_days": _event_score(event, "mu_horizon_days"),
+        "entry_sigma": _event_score(event, "sigma"),
+        "entry_sigma_mult": event.get("sigma_mult"),
+        "entry_kelly_target_pct": _event_score(event, "kelly_target_pct"),
+        "entry_expected_return": _event_score(event, "expected_return"),
+        "entry_expected_return_horizon_days": _event_score(
+            event, "expected_return_horizon_days"
+        ),
+        "entry_model_type": _event_field(event, "model_type"),
+        "entry_sector": _event_field(event, "sector"),
+        "entry_blocked_by": _event_field(event, "blocked_by"),
+        "entry_qp_delta_w": _event_float(event, "qp_delta_w", "delta_w"),
+        "entry_qp_target_w": _event_float(event, "qp_target_w", "target_w"),
+        "entry_qp_status": _event_field(event, "qp_status", "solver_status"),
+        "entry_qp_mu_used": _event_float(event, "qp_mu_used"),
+        "entry_qp_sigma_used": _event_float(event, "qp_sigma_used"),
+        "entry_qp_mu_source": _event_field(event, "qp_mu_source"),
+        "entry_alpha_to_mu_applied": _event_field(event, "alpha_to_mu_applied"),
+        "entry_source": event.get("source"),
+        "entry_source_job": event.get("source_job"),
+        "entry_source_task": event.get("source_task"),
+        "entry_order_source": event.get("order_source"),
+        "entry_order_type": event.get("order_type"),
+        "entry_attribution_version": event.get("attribution_version"),
+        "entry_score_snapshot": _json_safe(event.get("score_snapshot")),
+        "entry_decision_inputs": _json_safe(event.get("decision_inputs")),
+    }
+
+
 def trade_log_frame(trade_log: list[dict]) -> pd.DataFrame:
     """Return a stable raw-event DataFrame sorted by event date."""
     rows = []
@@ -291,6 +341,7 @@ def round_trips_from_trade_log(
     if method not in {"fifo", "hifo", "avg"}:
         method = "fifo"
     lots: dict[str, list[dict]] = defaultdict(list)
+    short_lots: dict[str, list[dict]] = defaultdict(list)
     rows: list[dict] = []
 
     for event_id, event in enumerate(trade_log or []):
@@ -302,47 +353,198 @@ def round_trips_from_trade_log(
             shares = _as_float(event.get("shares"))
             if shares <= 0:
                 continue
-            lots[ticker].append({
-                "event_id": event_id,
-                "ticker": ticker,
-                "entry_date": _as_date(event.get("date")),
-                "entry_price": _as_float(event.get("price")),
-                "remaining_shares": shares,
-                "entry_invest": _as_float(event.get("invest")),
-                "entry_regime": event.get("regime"),
-                "entry_rank_score": _event_score(event, "rank_score"),
-                "entry_rs_score": _event_score(event, "rs_score"),
-                "entry_panel_score": _event_score(event, "panel_score"),
-                "entry_mu": _event_score(event, "mu"),
-                "entry_mu_horizon_days": _event_score(event, "mu_horizon_days"),
-                "entry_sigma": _event_score(event, "sigma"),
-                "entry_sigma_mult": event.get("sigma_mult"),
-                "entry_kelly_target_pct": _event_score(event, "kelly_target_pct"),
-                "entry_expected_return": _event_score(event, "expected_return"),
-                "entry_expected_return_horizon_days": _event_score(
-                    event, "expected_return_horizon_days"
-                ),
-                "entry_model_type": _event_field(event, "model_type"),
-                "entry_sector": _event_field(event, "sector"),
-                "entry_blocked_by": _event_field(event, "blocked_by"),
-                "entry_qp_delta_w": _event_float(event, "qp_delta_w", "delta_w"),
-                "entry_qp_target_w": _event_float(event, "qp_target_w", "target_w"),
-                "entry_qp_status": _event_field(event, "qp_status", "solver_status"),
-                "entry_qp_mu_used": _event_float(event, "qp_mu_used"),
-                "entry_qp_sigma_used": _event_float(event, "qp_sigma_used"),
-                "entry_qp_mu_source": _event_field(event, "qp_mu_source"),
-                "entry_alpha_to_mu_applied": _event_field(
-                    event, "alpha_to_mu_applied",
-                ),
-                "entry_source": event.get("source"),
-                "entry_source_job": event.get("source_job"),
-                "entry_source_task": event.get("source_task"),
-                "entry_order_source": event.get("order_source"),
-                "entry_order_type": event.get("order_type"),
-                "entry_attribution_version": event.get("attribution_version"),
-                "entry_score_snapshot": _json_safe(event.get("score_snapshot")),
-                "entry_decision_inputs": _json_safe(event.get("decision_inputs")),
-            })
+            lots[ticker].append(_entry_lot_from_event(
+                event_id=event_id,
+                event=event,
+                ticker=ticker,
+                shares=shares,
+                side="long",
+            ))
+            continue
+
+        if action == "short_open":
+            shares = _as_float(event.get("shares"))
+            if shares <= 0:
+                continue
+            short_lots[ticker].append(_entry_lot_from_event(
+                event_id=event_id,
+                event=event,
+                ticker=ticker,
+                shares=shares,
+                side="short",
+            ))
+            continue
+
+        if action == "short_cover":
+            cover_shares = _as_float(event.get("shares"))
+            if cover_shares <= 0:
+                continue
+            cover_price = _as_float(event.get("price"))
+            event_tax = _as_float(event.get("tax"))
+            event_tax_cash = _as_float(event.get("tax_cash_debited"), default=event_tax)
+            matched_rows: list[dict[str, Any]] = []
+            lot_takes = _lot_takes(short_lots[ticker], cover_shares, method)
+            for lot_idx, take in lot_takes:
+                lot = short_lots[ticker][lot_idx]
+                if take <= 1e-9:
+                    continue
+                entry_price = _as_float(lot.get("entry_price"))
+                gross_pnl = (entry_price - cover_price) * take
+                entry_value = entry_price * take
+                pnl_pct = gross_pnl / entry_value if entry_value > 0 else 0.0
+                entry_date = lot.get("entry_date", "")
+                exit_date = _as_date(event.get("date"))
+                matched_rows.append({
+                    "status": "closed",
+                    "direction": "short",
+                    "ticker": ticker,
+                    "entry_event_id": lot.get("event_id"),
+                    "exit_event_id": event_id,
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "hold_days": (
+                        pd.Timestamp(exit_date) - pd.Timestamp(entry_date)
+                    ).days if entry_date and exit_date else event.get("hold_days"),
+                    "shares": take,
+                    "entry_price": entry_price,
+                    "exit_price": cover_price,
+                    "gross_pnl": gross_pnl,
+                    "tax": 0.0,
+                    "tax_cash_debited": 0.0,
+                    "tax_cash_debit_mode": event.get("tax_cash_debit_mode", "event_level"),
+                    "net_pnl_after_tax": gross_pnl,
+                    "tax_allocation_method": "pending",
+                    "pnl_pct": pnl_pct,
+                    "sim_sell_pnl_pct": event.get("pnl_pct"),
+                    "exit_reason": event.get("exit_reason", "short_cover"),
+                    "partial_exit": bool(event.get("partial", False)),
+                    "exit_regime": event.get("regime"),
+                    "exit_confidence": event.get("confidence"),
+                    "exit_signal_reason": event.get("exit_signal_reason"),
+                    "exit_rank_score": _event_score(event, "rank_score"),
+                    "exit_rs_score": _event_score(event, "rs_score"),
+                    "exit_panel_score": _event_score(event, "panel_score"),
+                    "exit_mu": _event_score(event, "mu"),
+                    "exit_mu_horizon_days": _event_score(event, "mu_horizon_days"),
+                    "exit_sigma": _event_score(event, "sigma"),
+                    "exit_kelly_target_pct": _event_score(event, "kelly_target_pct"),
+                    "exit_expected_return": _event_score(event, "expected_return"),
+                    "exit_expected_return_horizon_days": _event_score(
+                        event, "expected_return_horizon_days",
+                    ),
+                    "exit_model_type": _event_field(event, "model_type"),
+                    "exit_sector": _event_field(event, "sector"),
+                    "exit_blocked_by": _event_field(event, "blocked_by"),
+                    "exit_qp_delta_w": _event_float(event, "qp_delta_w", "delta_w"),
+                    "exit_qp_target_w": _event_float(event, "qp_target_w", "target_w"),
+                    "exit_qp_status": _event_field(event, "qp_status", "solver_status"),
+                    "exit_qp_mu_used": _event_float(event, "qp_mu_used"),
+                    "exit_qp_sigma_used": _event_float(event, "qp_sigma_used"),
+                    "exit_qp_mu_source": _event_field(event, "qp_mu_source"),
+                    "exit_alpha_to_mu_applied": _event_field(
+                        event, "alpha_to_mu_applied",
+                    ),
+                    **_copy_fields(event, EXIT_PARAM_FIELDS),
+                    "exit_source": event.get("source"),
+                    "exit_source_job": event.get("source_job"),
+                    "exit_source_task": event.get("source_task"),
+                    "exit_order_source": event.get("order_source"),
+                    "exit_order_type": event.get("order_type"),
+                    "exit_attribution_version": event.get("attribution_version"),
+                    "exit_score_snapshot": _json_safe(event.get("score_snapshot")),
+                    "exit_decision_inputs": _json_safe(event.get("decision_inputs")),
+                    "entry_regime": lot.get("entry_regime"),
+                    "entry_rank_score": lot.get("entry_rank_score"),
+                    "entry_rs_score": lot.get("entry_rs_score"),
+                    "entry_panel_score": lot.get("entry_panel_score"),
+                    "entry_mu": lot.get("entry_mu"),
+                    "entry_mu_horizon_days": lot.get("entry_mu_horizon_days"),
+                    "entry_sigma": lot.get("entry_sigma"),
+                    "entry_sigma_mult": lot.get("entry_sigma_mult"),
+                    "entry_kelly_target_pct": lot.get("entry_kelly_target_pct"),
+                    "entry_expected_return": lot.get("entry_expected_return"),
+                    "entry_expected_return_horizon_days": lot.get(
+                        "entry_expected_return_horizon_days"
+                    ),
+                    "entry_model_type": lot.get("entry_model_type"),
+                    "entry_sector": lot.get("entry_sector"),
+                    "entry_blocked_by": lot.get("entry_blocked_by"),
+                    "entry_qp_delta_w": lot.get("entry_qp_delta_w"),
+                    "entry_qp_target_w": lot.get("entry_qp_target_w"),
+                    "entry_qp_status": lot.get("entry_qp_status"),
+                    "entry_qp_mu_used": lot.get("entry_qp_mu_used"),
+                    "entry_qp_sigma_used": lot.get("entry_qp_sigma_used"),
+                    "entry_qp_mu_source": lot.get("entry_qp_mu_source"),
+                    "entry_alpha_to_mu_applied": lot.get(
+                        "entry_alpha_to_mu_applied"
+                    ),
+                    **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
+                })
+
+            for lot_idx, take in sorted(lot_takes, key=lambda x: x[0], reverse=True):
+                if lot_idx >= len(short_lots[ticker]):
+                    continue
+                short_lots[ticker][lot_idx]["remaining_shares"] -= take
+                if short_lots[ticker][lot_idx]["remaining_shares"] <= 1e-9:
+                    short_lots[ticker].pop(lot_idx)
+
+            remaining = cover_shares - sum(take for _, take in lot_takes)
+            if matched_rows:
+                positive_gross = sum(
+                    max(0.0, _as_float(r.get("gross_pnl")))
+                    for r in matched_rows
+                )
+                if event_tax > 0 and positive_gross > 0:
+                    for r in matched_rows:
+                        gross = _as_float(r.get("gross_pnl"))
+                        if gross <= 0:
+                            r["tax_allocation_method"] = "loss_no_tax"
+                            continue
+                        tax_alloc = event_tax * (gross / positive_gross)
+                        r["tax"] = tax_alloc
+                        r["net_pnl_after_tax"] = gross - tax_alloc
+                        r["tax_allocation_method"] = "positive_gross_prorata"
+                        if event_tax_cash > 0:
+                            r["tax_cash_debited"] = event_tax_cash * (
+                                gross / positive_gross
+                            )
+                else:
+                    for r in matched_rows:
+                        gross = _as_float(r.get("gross_pnl"))
+                        r["tax_allocation_method"] = (
+                            "loss_no_tax" if gross <= 0 else "event_tax_zero"
+                        )
+                rows.extend(matched_rows)
+            if remaining > 1e-9:
+                rows.append({
+                    "status": "unmatched_short_cover",
+                    "direction": "short",
+                    "ticker": ticker,
+                    "entry_event_id": None,
+                    "exit_event_id": event_id,
+                    "entry_date": "",
+                    "exit_date": _as_date(event.get("date")),
+                    "hold_days": event.get("hold_days"),
+                    "shares": remaining,
+                    "entry_price": None,
+                    "exit_price": cover_price,
+                    "gross_pnl": None,
+                    "tax": 0.0,
+                    "tax_cash_debited": 0.0,
+                    "tax_cash_debit_mode": event.get("tax_cash_debit_mode", "event_level"),
+                    "net_pnl_after_tax": None,
+                    "tax_allocation_method": "unmatched_short_cover_unallocated",
+                    "pnl_pct": event.get("pnl_pct"),
+                    "sim_sell_pnl_pct": event.get("pnl_pct"),
+                    "exit_reason": event.get("exit_reason", "short_cover"),
+                    "partial_exit": bool(event.get("partial", False)),
+                    "exit_regime": event.get("regime"),
+                    "exit_confidence": event.get("confidence"),
+                    "exit_signal_reason": event.get("exit_signal_reason"),
+                    **_empty_fields(EXIT_PARAM_FIELDS),
+                    **_empty_fields(EXIT_ATTRIBUTION_FIELDS),
+                    **_empty_fields(ENTRY_ATTRIBUTION_FIELDS),
+                })
             continue
 
         if action != "sell":
@@ -556,6 +758,92 @@ def round_trips_from_trade_log(
             )
             rows.append({
                 "status": "open",
+                "ticker": ticker,
+                "entry_event_id": lot.get("event_id"),
+                "exit_event_id": None,
+                "entry_date": lot.get("entry_date"),
+                "exit_date": "",
+                "hold_days": None,
+                "shares": shares,
+                "entry_price": entry_price,
+                "exit_price": mark if math.isfinite(mark) else None,
+                "gross_pnl": gross_pnl,
+                "tax": 0.0,
+                "tax_cash_debited": 0.0,
+                "tax_cash_debit_mode": None,
+                "net_pnl_after_tax": gross_pnl,
+                "pnl_pct": (
+                    gross_pnl / (entry_price * shares)
+                    if gross_pnl is not None and entry_price > 0 and shares > 0
+                    else None
+                ),
+                "sim_sell_pnl_pct": None,
+                "exit_reason": "open",
+                "partial_exit": False,
+                "exit_regime": None,
+                "exit_confidence": None,
+                "exit_signal_reason": None,
+                "exit_rank_score": None,
+                "exit_rs_score": None,
+                "exit_panel_score": None,
+                "exit_mu": None,
+                "exit_mu_horizon_days": None,
+                "exit_sigma": None,
+                "exit_kelly_target_pct": None,
+                "exit_expected_return": None,
+                "exit_expected_return_horizon_days": None,
+                "exit_model_type": None,
+                "exit_sector": None,
+                "exit_blocked_by": None,
+                "exit_qp_delta_w": None,
+                "exit_qp_target_w": None,
+                "exit_qp_status": None,
+                "exit_qp_mu_used": None,
+                "exit_qp_sigma_used": None,
+                "exit_qp_mu_source": None,
+                "exit_alpha_to_mu_applied": None,
+                **_empty_fields(EXIT_PARAM_FIELDS),
+                **_empty_fields(EXIT_ATTRIBUTION_FIELDS),
+                "entry_regime": lot.get("entry_regime"),
+                "entry_rank_score": lot.get("entry_rank_score"),
+                "entry_rs_score": lot.get("entry_rs_score"),
+                "entry_panel_score": lot.get("entry_panel_score"),
+                "entry_mu": lot.get("entry_mu"),
+                "entry_mu_horizon_days": lot.get("entry_mu_horizon_days"),
+                "entry_sigma": lot.get("entry_sigma"),
+                "entry_sigma_mult": lot.get("entry_sigma_mult"),
+                "entry_kelly_target_pct": lot.get("entry_kelly_target_pct"),
+                "entry_expected_return": lot.get("entry_expected_return"),
+                "entry_expected_return_horizon_days": lot.get(
+                    "entry_expected_return_horizon_days"
+                ),
+                "entry_model_type": lot.get("entry_model_type"),
+                "entry_sector": lot.get("entry_sector"),
+                "entry_blocked_by": lot.get("entry_blocked_by"),
+                "entry_qp_delta_w": lot.get("entry_qp_delta_w"),
+                "entry_qp_target_w": lot.get("entry_qp_target_w"),
+                "entry_qp_status": lot.get("entry_qp_status"),
+                "entry_qp_mu_used": lot.get("entry_qp_mu_used"),
+                "entry_qp_sigma_used": lot.get("entry_qp_sigma_used"),
+                "entry_qp_mu_source": lot.get("entry_qp_mu_source"),
+                "entry_alpha_to_mu_applied": lot.get(
+                    "entry_alpha_to_mu_applied"
+                ),
+                **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
+            })
+
+    for ticker, q in short_lots.items():
+        mark = _as_float(end_prices.get(ticker), default=float("nan"))
+        for lot in q:
+            shares = _as_float(lot.get("remaining_shares"))
+            entry_price = _as_float(lot.get("entry_price"))
+            gross_pnl = (
+                (entry_price - mark) * shares
+                if math.isfinite(mark) and entry_price > 0 else None
+            )
+            rows.append({
+                "status": "open",
+                "direction": "short",
                 "ticker": ticker,
                 "entry_event_id": lot.get("event_id"),
                 "exit_event_id": None,

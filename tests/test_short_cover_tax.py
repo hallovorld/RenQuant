@@ -75,6 +75,11 @@ class TestShortCoverTax:
             f"cash={adapter._cash}, expected {expected_cash}; "
             f"short_pnl={short_pnl}, tax={expected_tax}"
         )
+        assert "AAPL" not in adapter._holdings
+        assert "AAPL" not in adapter._pos_shares
+        assert [e["action"] for e in adapter._trade_log] == ["short_cover"]
+        assert adapter._trade_log[0]["gross_pnl"] == pytest.approx(short_pnl)
+        assert adapter._trade_log[0]["tax"] == pytest.approx(expected_tax)
 
     def test_short_cover_at_loss_no_tax(self):
         """Short AAPL at $150, cover at $180 → loss. No tax owed.
@@ -95,6 +100,10 @@ class TestShortCoverTax:
         assert abs(adapter._cash - expected) < 0.01, (
             f"cash={adapter._cash}, expected {expected} (no tax on short loss)"
         )
+        assert "AAPL" not in adapter._holdings
+        assert [e["action"] for e in adapter._trade_log] == ["short_cover"]
+        assert adapter._trade_log[0]["gross_pnl"] == pytest.approx(-3000.0)
+        assert adapter._trade_log[0]["tax"] == pytest.approx(0.0)
 
     def test_short_cover_uses_st_rate_regardless_of_hold(self):
         """§1233: shorts always short-term even if held > 365 days.
@@ -135,6 +144,45 @@ class TestShortCoverTax:
             f"cash={adapter._cash}, expected {expected_cash}. "
             f"§1233 violated if LT rate applied (would give {7000*0.20})"
         )
+
+    def test_partial_short_cover_keeps_remaining_short_without_long_lot(self):
+        adapter, today = _mk_adapter_with_short(
+            short_shares=100, short_entry=150.0, cover_price=120.0,
+        )
+        ctx = SimpleNamespace(config={"tax": {
+            "short_term_rate": 0.50,
+            "long_term_rate": 0.32,
+            "long_term_threshold_days": 365,
+        }})
+        cash_before = adapter._cash
+
+        adapter._apply_buy({"ticker": "AAPL", "shares": 40, "price": 120.0}, today, ctx)
+
+        expected_tax = (150.0 - 120.0) * 40 * 0.50
+        assert adapter._cash == pytest.approx(cash_before - 40 * 120.0 - expected_tax)
+        assert adapter._holdings["AAPL"].shares == pytest.approx(-60.0)
+        assert adapter._holdings["AAPL"].entry_price == pytest.approx(150.0)
+        assert adapter._holdings["AAPL"].lots == []
+        assert [e["action"] for e in adapter._trade_log] == ["short_cover"]
+        assert adapter._trade_log[0]["partial"] is True
+
+    def test_over_cover_closes_short_and_opens_clean_long_residual(self):
+        adapter, today = _mk_adapter_with_short(
+            short_shares=100, short_entry=150.0, cover_price=120.0,
+        )
+        ctx = SimpleNamespace(config={"tax": {
+            "short_term_rate": 0.50,
+            "long_term_rate": 0.32,
+            "long_term_threshold_days": 365,
+        }})
+
+        adapter._apply_buy({"ticker": "AAPL", "shares": 125, "price": 120.0}, today, ctx)
+
+        assert adapter._holdings["AAPL"].shares == pytest.approx(25.0)
+        assert adapter._holdings["AAPL"].entry_price == pytest.approx(120.0)
+        assert len(adapter._holdings["AAPL"].lots) == 1
+        assert adapter._holdings["AAPL"].lots[0].shares == pytest.approx(25.0)
+        assert [e["action"] for e in adapter._trade_log] == ["short_cover", "buy"]
 
     def test_long_buy_not_affected_no_short_tax(self):
         """Regular long buy (no existing short) doesn't trigger short tax."""

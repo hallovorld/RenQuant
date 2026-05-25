@@ -1899,7 +1899,6 @@ class SimAdapter:
         # and adjust avg entry price. Otherwise fresh position.
         if ticker in self._holdings:
             old_shares = float(self._pos_shares.get(ticker, 0))
-            new_shares = old_shares + shares
             old_entry  = self._holdings[ticker].entry_price
             # 2026-05-14 audit RED #A: short-cover P&L tax per §1233.
             # When old_shares < 0 (short position) and we BUY to cover,
@@ -1915,9 +1914,18 @@ class SimAdapter:
                 covered_shares = min(shares, -old_shares)  # how many we actually closed
                 if covered_shares > 0:
                     short_pnl = (old_entry - price) * covered_shares
+                    entry_date = getattr(self._holdings[ticker], "entry_date", None)
+                    today_date = today_ts.date() if hasattr(today_ts, "date") else today_ts
+                    hold_days = (
+                        (today_date - entry_date).days
+                        if entry_date is not None and hasattr(today_date, "__sub__")
+                        else 0
+                    )
+                    tax_cfg = ctx.config.get("tax", {}) if ctx is not None else {}
+                    short_tax = 0.0
+                    short_tax_cash_debited = 0.0
                     if short_pnl > 0:
                         from kernel.portfolio import compute_trade_tax  # noqa: PLC0415
-                        tax_cfg = ctx.config.get("tax", {}) if ctx is not None else {}
                         # §1233: shorts always short-term. hold_days=0
                         # forces ST rate.
                         short_tax = compute_trade_tax(
@@ -1941,6 +1949,59 @@ class SimAdapter:
                                 ticker, short_pnl, short_tax,
                                 short_tax_cash_debited, int(covered_shares),
                             )
+                    entry_notional = old_entry * covered_shares
+                    pnl_pct = short_pnl / entry_notional if entry_notional > 0 else 0.0
+                    decision_inputs = dict(order.get("decision_inputs") or {})
+                    decision_inputs.update({
+                        "acceptance_reason": "short_cover",
+                        "short_entry_price": old_entry,
+                        "cover_price": price,
+                        "shares": covered_shares,
+                        "gross_pnl": short_pnl,
+                        "tax": short_tax,
+                        "tax_cash_debited": short_tax_cash_debited,
+                        "tax_cash_debit_mode": _tax_cash_debit_mode(
+                            ctx.config if ctx is not None else {},
+                        ),
+                        "net_pnl_after_tax": short_pnl - short_tax,
+                        "hold_days": hold_days,
+                        "pnl_pct": pnl_pct,
+                    })
+                    self._trade_log.append({
+                        "ticker": ticker,
+                        "action": "short_cover",
+                        "date": today_ts,
+                        "shares": covered_shares,
+                        "price": price,
+                        "gross_pnl": short_pnl,
+                        "proceeds_basis": entry_notional,
+                        "tax": short_tax,
+                        "net_pnl_after_tax": short_pnl - short_tax,
+                        "tax_cash_debited": short_tax_cash_debited,
+                        "tax_cash_debit_mode": _tax_cash_debit_mode(
+                            ctx.config if ctx is not None else {},
+                        ),
+                        "tax_lot_method": "short_1233",
+                        "exit_reason": "short_cover",
+                        "pnl_pct": pnl_pct,
+                        "hold_days": hold_days,
+                        "partial": covered_shares < -old_shares,
+                        "regime": getattr(ctx, "regime", None),
+                        "confidence": getattr(ctx, "confidence", None),
+                        "order_type": "BUY_TO_COVER",
+                        "source": order.get("source", "SimAdapter"),
+                        "source_job": order.get("source_job"),
+                        "source_task": order.get("source_task"),
+                        "order_source": order.get("order_source"),
+                        "attribution_version": order.get(
+                            "attribution_version", "short_cover_v1",
+                        ),
+                        "score_snapshot": order.get("score_snapshot"),
+                        "decision_inputs": decision_inputs,
+                        "qp_delta_w": decision_inputs.get("delta_w"),
+                        "qp_target_w": decision_inputs.get("target_w"),
+                        "qp_status": decision_inputs.get("solver_status"),
+                    })
                     # §1233(e) → §1091: short-cover loss creates a wash-sale
                     # window for subsequent LONG buys of substantially identical
                     # security within 30 days. Stamp _last_sell_date +
@@ -1952,6 +2013,47 @@ class SimAdapter:
                         if not hasattr(self, "_last_sell_pls"):
                             self._last_sell_pls = {}
                         self._last_sell_pls[ticker] = float(short_pnl)
+                remaining_short = max(0.0, -old_shares - covered_shares)
+                remaining_long = max(0.0, shares - covered_shares)
+                if remaining_short > 1e-9:
+                    self._holdings[ticker].shares = -remaining_short
+                    self._pos_shares[ticker] = -remaining_short
+                    return
+                self._holdings.pop(ticker, None)
+                self._pos_shares.pop(ticker, None)
+                if remaining_long <= 1e-9:
+                    return
+                shares = remaining_long
+                fee_total = float(buy_fees.get("total", 0.0) or 0.0)
+                fee_prorata = fee_total * (remaining_long / max(shares + covered_shares, 1e-9))
+                invest = shares * price + fee_prorata
+                hs_new = HoldingState(
+                    entry_price    = price,
+                    entry_date     = today_ts.date(),
+                    high_watermark = price,
+                    prev_close     = price,
+                    shares         = shares,
+                    entry_rank_score       = order.get("rank_score"),
+                    entry_panel_score      = order.get("panel_score"),
+                    entry_kelly_target_pct = order.get("kelly_target_pct"),
+                    entry_regime           = order.get("regime"),
+                )
+                hs_new.lots.append(TaxLot(
+                    shares=float(shares), price=float(price), date=today_ts.date(),
+                ))
+                self._holdings[ticker] = hs_new
+                self._pos_shares[ticker] = shares
+                _stamp_holding_audit_fields(self._holdings.get(ticker), order)
+                buy_event = build_buy_trade_event(
+                    {**order, "price": price, "shares": shares, "invest": invest},
+                    date=today_ts,
+                    default_regime=getattr(ctx, "regime", None),
+                    default_confidence=getattr(ctx, "confidence", None),
+                    default_acceptance_reason="sim_buy_after_short_cover",
+                )
+                self._trade_log.append(buy_event)
+                return
+            new_shares = old_shares + shares
             # SAB-2 guard: if old_entry is NaN/inf (corrupted state), use
             # the current price as entry rather than corrupt new_entry.
             if not math.isfinite(old_entry):
@@ -2269,17 +2371,27 @@ class SimAdapter:
         apy = (1 + total_ret) ** (1 / n_years) - 1 if n_years > 0 else 0.0
 
         sells = [t for t in self._trade_log if t["action"] == "sell"]
-        wins  = [t for t in sells if t.get("pnl_pct", 0.0) > 0]
-        win_rate  = len(wins) / max(1, len(sells))
-        avg_hold  = sum(t.get("hold_days", 0) for t in sells) / len(sells) if sells else 0.0
-        avg_pnl   = sum(t.get("pnl_pct",   0) for t in sells) / len(sells) if sells else 0.0
-        total_tax = sum(_finite_float(t.get("tax"), default=0.0) for t in sells)
+        realized_exits = [
+            t for t in self._trade_log
+            if str(t.get("action", "")).lower() in {"sell", "short_cover"}
+        ]
+        wins  = [t for t in realized_exits if t.get("pnl_pct", 0.0) > 0]
+        win_rate  = len(wins) / max(1, len(realized_exits))
+        avg_hold  = (
+            sum(t.get("hold_days", 0) for t in realized_exits) / len(realized_exits)
+            if realized_exits else 0.0
+        )
+        avg_pnl   = (
+            sum(t.get("pnl_pct", 0) for t in realized_exits) / len(realized_exits)
+            if realized_exits else 0.0
+        )
+        total_tax = sum(_finite_float(t.get("tax"), default=0.0) for t in realized_exits)
         tax_cash_debited = sum(
             _finite_float(
                 t.get("tax_cash_debited"),
                 default=_finite_float(t.get("tax"), default=0.0),
             )
-            for t in sells
+            for t in realized_exits
         )
         # Short-cover tax is recorded as a cash debit during _apply_buy because
         # the action that realizes short P&L is a buy-to-cover, not a sell.
@@ -2289,11 +2401,11 @@ class SimAdapter:
             float(tax_cash_debited),
             _finite_float(getattr(self, "_tax_cash_debited", 0.0), default=0.0),
         )
-        exit_reasons = dict(Counter(t.get("exit_reason", "?") for t in sells))
+        exit_reasons = dict(Counter(t.get("exit_reason", "?") for t in realized_exits))
         tax_cfg = (getattr(self, "_config", {}) or {}).get("tax", {}) or {}
         from kernel.portfolio import compute_annual_net_capital_gains_tax  # noqa: PLC0415
         annual_tax_summary = compute_annual_net_capital_gains_tax(
-            sells,
+            realized_exits,
             short_term_rate=float(tax_cfg.get("short_term_rate", 0.50)),
             long_term_rate=float(tax_cfg.get("long_term_rate", 0.32)),
             long_term_threshold_days=int(tax_cfg.get("long_term_threshold_days", 365)),
@@ -2307,7 +2419,7 @@ class SimAdapter:
             else 0.0
         )
         annual_net_equity_df = _annual_net_equity_curve(
-            equity_df, sells, annual_tax_summary,
+            equity_df, realized_exits, annual_tax_summary,
         )
 
         # Rotation sell/buy pairs (same-day sell with exit_reason=rotation + same-day rotation buy)

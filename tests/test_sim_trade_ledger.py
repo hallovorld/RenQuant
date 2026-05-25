@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "scripts") not in sys.path:
@@ -133,6 +134,67 @@ def test_round_trips_fifo_matches_partial_sell_and_allocates_tax() -> None:
     assert closed.iloc[0]["exit_decision_inputs"]["acceptance_reason"] == "qp sell"
     assert open_lots.iloc[0]["shares"] == 3
     assert open_lots.iloc[0]["gross_pnl"] == 60.0
+
+
+def test_round_trips_matches_short_open_to_cover_and_allocates_tax() -> None:
+    trade_log = [
+        {
+            "action": "short_open",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-02"),
+            "shares": 100,
+            "price": 150.0,
+            "regime": "BULL_CALM",
+            "order_type": "SHORT_OPEN",
+        },
+        {
+            "action": "short_cover",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-02-01"),
+            "shares": 100,
+            "price": 120.0,
+            "gross_pnl": 3000.0,
+            "tax": 1500.0,
+            "tax_cash_debited": 1500.0,
+            "tax_cash_debit_mode": "event_level",
+            "pnl_pct": 0.20,
+            "hold_days": 30,
+            "exit_reason": "short_cover",
+            "order_type": "BUY_TO_COVER",
+        },
+    ]
+
+    trips = round_trips_from_trade_log(trade_log)
+
+    assert len(trips) == 1
+    row = trips.iloc[0]
+    assert row["direction"] == "short"
+    assert row["status"] == "closed"
+    assert row["gross_pnl"] == pytest.approx(3000.0)
+    assert row["tax"] == pytest.approx(1500.0)
+    assert row["net_pnl_after_tax"] == pytest.approx(1500.0)
+    assert row["entry_price"] == pytest.approx(150.0)
+    assert row["exit_price"] == pytest.approx(120.0)
+
+
+def test_round_trips_reports_open_short_mark_to_market() -> None:
+    trade_log = [
+        {
+            "action": "short_open",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-02"),
+            "shares": 100,
+            "price": 150.0,
+        },
+    ]
+
+    trips = round_trips_from_trade_log(trade_log, end_prices={"AAPL": 140.0})
+
+    assert len(trips) == 1
+    row = trips.iloc[0]
+    assert row["direction"] == "short"
+    assert row["status"] == "open"
+    assert row["gross_pnl"] == pytest.approx(1000.0)
 
 
 def test_round_trips_accepts_live_uppercase_actions() -> None:
