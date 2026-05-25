@@ -2606,6 +2606,15 @@ entire pipeline end-to-end:
   emission gate blocks any positive delta with the same reason as a second
   line of defense. Validation: QP admission, min-share, conviction-cap, and
   split-job e2e tests passed (`55 passed`).
+- New live universe-held source bug found by sidecar audit and fixed:
+  `LoadUniverseJob` used `live_state.position_hwm` to decide which tickers were
+  held and therefore exempt from staleness/universe floors. In live mode that
+  state can be stale before RunnerAdapter GC reconciles broker positions, so a
+  flat ticker could receive a held exemption and become buyable. The live
+  runner now connects the broker before universe load and passes authoritative
+  broker-held tickers into `UniverseContext`; state-file `position_hwm` remains
+  only a fallback for legacy/sim contexts. Validation: universe-held,
+  universe-alignment, and daily-e2e loader tests passed (`41 passed`).
 
 ## Stop Conditions
 

@@ -16,8 +16,9 @@ open new positions with weak models). Held positions need their models
 This suite pins:
   1. `FilterUniverseFloorTask` admits currently-held tickers even when
      their floor metric is below threshold.
-  2. It reads held tickers from `live_state.json::position_hwm` (no
-     broker coupling).
+  2. Live contexts use broker-provided held tickers before falling back to
+     `live_state.json::position_hwm`, so stale state cannot create phantom
+     held exemptions.
   3. Non-held tickers below threshold are still filtered (existing
      behaviour preserved).
   4. Defensives + held are both admitted (union, not XOR).
@@ -52,7 +53,8 @@ def _art(sharpe: float | None = None) -> dict:
 
 
 def _ctx(*, tmp_path: Path, loaded: dict, held: set[str] | None = None,
-         defensives: list[str] | None = None, threshold: float = 1.0) -> UniverseContext:
+         defensives: list[str] | None = None, threshold: float = 1.0,
+         held_tickers: set[str] | None = None) -> UniverseContext:
     """Build a UniverseContext with an on-disk live_state.json stub."""
     state_file = tmp_path / "live_state.json"
     state_file.write_text(json.dumps({
@@ -68,6 +70,7 @@ def _ctx(*, tmp_path: Path, loaded: dict, held: set[str] | None = None,
         },
         strategy_dir=tmp_path,
         loaded_models=dict(loaded),
+        held_tickers=held_tickers,
     )
 
 
@@ -77,11 +80,44 @@ class TestLoadHeldTickers:
     def test_empty_when_file_missing(self, tmp_path):
         assert _load_held_tickers(tmp_path) == set()
 
+
+class TestLiveBrokerHeldTickerSource:
+    def test_broker_positions_are_authoritative_held_source(self):
+        from live.runner import _broker_held_tickers
+
+        class Broker:
+            def get_all_positions(self):
+                return [
+                    {"symbol": "CAT", "qty": "2"},
+                    {"symbol": "AMZN", "qty": "0"},
+                    {"symbol": "SHORT", "qty": "-1"},
+                ]
+
+        assert _broker_held_tickers(Broker()) == {"CAT", "SHORT"}
+
     def test_reads_position_hwm_keys(self, tmp_path):
         (tmp_path / "live_state.json").write_text(json.dumps({
             "position_hwm": {"AMZN": 250.0, "CAT": 840.0, "XLU": 46.0},
         }))
         assert _load_held_tickers(tmp_path) == {"AMZN", "CAT", "XLU"}
+
+    def test_context_held_tickers_override_stale_position_hwm(self, tmp_path):
+        """Broker snapshot wins; stale live_state must not grant exemption."""
+        ctx = _ctx(
+            tmp_path=tmp_path,
+            loaded={
+                "AMZN": _art(sharpe=0.668),  # stale state only
+                "CAT": _art(sharpe=0.668),   # broker-held
+            },
+            held={"AMZN"},
+            held_tickers={"CAT"},
+            threshold=1.0,
+        )
+
+        FilterUniverseFloorTask().run(ctx)
+
+        assert "CAT" in ctx.loaded_models
+        assert "AMZN" not in ctx.loaded_models
 
     def test_handles_missing_key(self, tmp_path):
         (tmp_path / "live_state.json").write_text(json.dumps({

@@ -36,6 +36,10 @@ class UniverseContext:
     # Broker tag for state-file isolation (mirrors InferenceContext.broker_name).
     # None for sim/lean paths; live runs set it from broker.broker_name.
     broker_name:    str | None              = None
+    # Authoritative held tickers from the broker. When present, this wins over
+    # live_state-derived position_hwm keys so stale state cannot grant held
+    # exemptions to flat tickers.
+    held_tickers:   set[str] | None          = None
     loaded_models:  dict[str, dict]          = field(default_factory=dict)
     rejections:     list[tuple[str, str]]    = field(default_factory=list)
 
@@ -79,7 +83,7 @@ class FilterStalenessTask(UniverseTask):
             return True
         today = date.today()
         stale: list[tuple[str, str]] = []
-        held = _load_held_tickers(uctx.strategy_dir, uctx.broker_name)
+        held = _held_tickers_for_context(uctx)
         for ticker, art in uctx.loaded_models.items():
             meta = art.get("_metadata", {})
             trained = meta.get("trained_date")
@@ -189,6 +193,12 @@ def _load_held_tickers(
     return set((data.get("position_hwm") or {}).keys())
 
 
+def _held_tickers_for_context(uctx: UniverseContext) -> set[str]:
+    if uctx.held_tickers is not None:
+        return {str(t) for t in uctx.held_tickers if t}
+    return _load_held_tickers(uctx.strategy_dir, uctx.broker_name)
+
+
 class FilterUniverseFloorTask(UniverseTask):
     """Drop tickers whose quality metric (per universe_floor.type) < threshold.
 
@@ -201,7 +211,8 @@ class FilterUniverseFloorTask(UniverseTask):
          available when the regime demands them (BEAR / bear_only
          branch). Filtering them out here would make BEAR buys
          structurally impossible.
-      2. **Currently-held tickers** (read from `live_state.json`). The
+      2. **Currently-held tickers** (broker snapshot for live, state-file
+         fallback for legacy/sim contexts). The
          floor is designed to gate OFFENSIVE new buys from weak models;
          dropping a held position's model kills the `model_sell_streak`
          exit path (ScoreModelTask → tc.model=None → action="hold"
@@ -226,7 +237,7 @@ class FilterUniverseFloorTask(UniverseTask):
         if threshold <= 0:
             return True
         defensives = set(uctx.config.get("defensive_tickers", []) or [])
-        held       = _load_held_tickers(uctx.strategy_dir, uctx.broker_name)
+        held       = _held_tickers_for_context(uctx)
         below: list[tuple[str, str]] = []
         held_admitted: list[tuple[str, float]] = []
         for ticker, art in uctx.loaded_models.items():

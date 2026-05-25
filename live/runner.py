@@ -190,9 +190,35 @@ def _build_relative_features(
     return result.dropna()
 
 
+def _broker_held_tickers(broker: BaseBroker | None) -> set[str] | None:
+    """Return currently held symbols from broker positions, or None if unavailable."""
+    if broker is None:
+        return None
+    try:
+        positions = broker.get_all_positions() or []
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "UNIVERSE-HELD-SOURCE: broker.get_all_positions failed before "
+            "universe load (%s) — falling back to broker-isolated live_state",
+            exc,
+        )
+        return None
+    held: set[str] = set()
+    for pos in positions:
+        try:
+            qty = float(pos.get("qty", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        sym = pos.get("symbol") if isinstance(pos, dict) else None
+        if sym and np.isfinite(qty) and abs(qty) > 1e-9:
+            held.add(str(sym))
+    return held
+
+
 def _load_strategy_multi(
     strategy_name: str, broker_name: str | None = None,
     config_name: str = "strategy_config.json",
+    broker: BaseBroker | None = None,
 ) -> tuple[dict[str, Any], dict, Path]:
     """Load multi-stock strategy config and per-stock kernel model artifacts."""
     strategy_dir = REPO_ROOT / "backtesting" / strategy_name
@@ -219,7 +245,10 @@ def _load_strategy_multi(
         # broker_name comes from caller (main()): translation of args.broker
         # into a state-isolation tag. None falls back to legacy live_state.json.
         uctx = UniverseContext(
-            config=config, strategy_dir=strategy_dir, broker_name=broker_name,
+            config=config,
+            strategy_dir=strategy_dir,
+            broker_name=broker_name,
+            held_tickers=_broker_held_tickers(broker),
         )
         LoadUniverseJob().run(uctx)
         models = uctx.loaded_models
@@ -778,16 +807,18 @@ def main():
     # leaked the raw CLI arg into ALLOWED_BROKERS validation.
     initial_cash = 100_000  # placeholder; real value set after config load below
     broker = _get_broker(args.broker, initial_cash=initial_cash)
+    broker.connect()
     config, models, strategy_dir = _load_strategy_multi(
         args.strategy, broker_name=broker.broker_name,
         config_name=args.strategy_config_name,
+        broker=broker,
     )
     # Reconstruct broker with real initial_cash from config (PaperBroker
     # needs it; AlpacaBroker / wrapper ignore it but cheap to re-init).
     initial_cash = config.get("initial_cash", 100_000)
     if isinstance(broker, PaperBroker):
         broker = _get_broker(args.broker, initial_cash=initial_cash)
-    broker.connect()
+        broker.connect()
     run_fn = lambda: run_once_multi(
         config, models, broker, strategy_dir,
         sell_only=args.sell_only,
