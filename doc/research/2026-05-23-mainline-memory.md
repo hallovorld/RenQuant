@@ -2753,6 +2753,15 @@ entire pipeline end-to-end:
   names are exit-only and cannot be optimized into top-ups unless the ticker
   is also an admitted buy candidate. Validation: broad QP tests passed
   (`382 passed, 4 skipped`).
+- New NGBoost fail-closed hardening fixed: when the effective NGBoost path is
+  enabled globally or by regime overlay, missing artifact path, missing
+  artifact, load failure, missing feature columns, missing inference matrix,
+  prediction exceptions, and incomplete μ/σ coverage in override mode now
+  block new buys instead of falling back to panel-only scores. Full/buy
+  preflight now requires NGBoost feature columns and `train_run_id` alignment;
+  sell-only remains soft so risk exits can still run. Validation: preflight,
+  panel scoring, NGBoost, quantile-head, global-calibrator, and per-regime
+  sigma-wire tests passed (`191 passed, 1 skipped`).
 
 ## Stop Conditions
 

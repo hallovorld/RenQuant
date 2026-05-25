@@ -138,6 +138,26 @@ def _is_global_calibration_enabled(config: dict) -> bool:
     )
 
 
+def _ngboost_activation(config: dict) -> tuple[dict, list[str], bool]:
+    """Return NGBoost config, activating regime overlays, and active flag."""
+    ngb_cfg = (
+        (config.get("ranking", {}) or {})
+        .get("panel_scoring", {})
+        .get("ngboost", {})
+        or {}
+    )
+    regime_params = config.get("regime_params", {}) or {}
+    per_regime_activates = [
+        str(regime) for regime, params in regime_params.items()
+        if isinstance(params, dict)
+        and isinstance(params.get("ngboost"), dict)
+        and params["ngboost"].get("enabled") is True
+    ]
+    return ngb_cfg, per_regime_activates, (
+        bool(ngb_cfg.get("enabled", False)) or bool(per_regime_activates)
+    )
+
+
 def _soft_for_sell_only(
     name: str,
     message: str,
@@ -1042,6 +1062,7 @@ def _check_correlation_artifact_metadata(
 def _check_feature_coverage(
     config: dict, strategy_dir: Path,
     feature_drift_pct: float = 0.05,
+    run_mode: str | None = None,
 ) -> PreflightCheck:
     """P-FEATURE-COVER: NGBoost head's feature_cols are present.
 
@@ -1053,68 +1074,78 @@ def _check_feature_coverage(
     panel_cfg = config.get("panel_ltr", {})
     panel_rel = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
 
-    ngb_cfg = (config.get("ranking", {})
-                       .get("panel_scoring", {})
-                       .get("ngboost", {}))
-
     # 2026-05-17 Bug fix: a per-regime overlay can activate NGB even when
-    # the global flag is False. Pre-fix, P-FEATURE-COVER skipped entirely
-    # on global enabled=False, leaving NGB feature-drift risk un-validated
-    # whenever today's regime ∈ {BEAR, CHOPPY, BULL_VOLATILE} (or any
-    # regime with `regime_params.<R>.ngboost.enabled=True`). If panel-LTR
-    # and NGB head disagree on feature_cols, ApplyNGBoostTask hard-fails
-    # at runtime (CRIT-1) → all candidates blocked the moment σ-wire
-    # activates. Catch it at preflight instead.
-    regime_params = config.get("regime_params", {}) or {}
-    per_regime_activates = [
-        r for r, p in regime_params.items()
-        if isinstance(p, dict)
-        and isinstance(p.get("ngboost"), dict)
-        and p["ngboost"].get("enabled") is True
-    ]
-    ngb_potentially_active = (
-        bool(ngb_cfg.get("enabled", False)) or bool(per_regime_activates)
-    )
+    # the global flag is False. Catch that at preflight instead of waiting
+    # for runtime drift guards to clear every candidate.
+    ngb_cfg, per_regime_activates, ngb_potentially_active = _ngboost_activation(config)
     if not ngb_potentially_active:
         return PreflightCheck(
             "P-FEATURE-COVER", "soft", True,
             "NGBoost disabled globally + no per-regime overlay activates — skip",
         )
-    ngb_rel = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
+    ngb_rel = ngb_cfg.get("artifact_path")
+    if not ngb_rel:
+        return _soft_for_sell_only(
+            "P-FEATURE-COVER",
+            "NGBoost can activate but ranking.panel_scoring.ngboost.artifact_path "
+            f"is missing (per_regime={per_regime_activates}); full/buy cannot "
+            "silently fall back to panel-only scoring",
+            run_mode=run_mode,
+            details={"per_regime_activates": per_regime_activates},
+        )
 
-    panel_p = strategy_dir / panel_rel
-    ngb_p   = strategy_dir / ngb_rel
+    panel_p = _resolve_artifact_path(strategy_dir, panel_rel)
+    ngb_p   = _resolve_artifact_path(strategy_dir, ngb_rel)
     if not panel_p.exists() or not ngb_p.exists():
-        return PreflightCheck(
-            "P-FEATURE-COVER", "hard", False,
+        return _soft_for_sell_only(
+            "P-FEATURE-COVER",
             f"artifact missing: panel={panel_p.exists()} ngb={ngb_p.exists()}",
+            run_mode=run_mode,
+            details={"panel_path": str(panel_p), "ngboost_path": str(ngb_p)},
         )
     try:
         panel_meta = json.loads(panel_p.read_text())
         ngb_meta   = json.loads(ngb_p.read_text())
     except Exception as exc:
-        return PreflightCheck(
-            "P-FEATURE-COVER", "hard", False, f"unreadable: {exc}",
+        return _soft_for_sell_only(
+            "P-FEATURE-COVER",
+            f"unreadable: {exc}",
+            run_mode=run_mode,
+            details={"panel_path": str(panel_p), "ngboost_path": str(ngb_p)},
         )
     panel_feats = set(panel_meta.get("feature_cols") or [])
     ngb_feats   = set(ngb_meta.get("feature_cols")   or [])
     if not ngb_feats:
-        return PreflightCheck(
-            "P-FEATURE-COVER", "soft", True,
-            "NGBoost feature_cols not stamped — skip",
+        return _soft_for_sell_only(
+            "P-FEATURE-COVER",
+            "NGBoost feature_cols not stamped; full/buy cannot validate "
+            "runtime feature parity",
+            run_mode=run_mode,
+            details={"ngboost_path": str(ngb_p)},
         )
     missing = ngb_feats - panel_feats
     pct = len(missing) / max(1, len(ngb_feats))
-    if pct > feature_drift_pct:
-        return PreflightCheck(
-            "P-FEATURE-COVER", "hard", False,
+    feature_drift_pct = float(
+        ngb_cfg.get("max_feature_drift_pct", feature_drift_pct)
+    )
+    allow_partial = bool(ngb_cfg.get("allow_partial_feature_fill", False))
+    if missing and (not allow_partial or pct > feature_drift_pct):
+        policy = (
+            "partial fill disabled"
+            if not allow_partial else
+            f"missing_pct={pct:.1%} > max_feature_drift_pct={feature_drift_pct:.1%}"
+        )
+        return _soft_for_sell_only(
+            "P-FEATURE-COVER",
             f"NGBoost expects {len(ngb_feats)} feats, "
             f"{len(missing)} ({pct:.1%}) missing from panel — "
-            f"retrain NGBoost head against current panel pipeline. "
+            f"{policy}; retrain NGBoost head against current panel pipeline. "
             f"First 5 missing: {sorted(missing)[:5]}",
+            run_mode=run_mode,
             details={"missing_count": len(missing),
                      "missing_pct": pct,
-                     "first_missing": sorted(missing)[:10]},
+                     "first_missing": sorted(missing)[:10],
+                     "allow_partial_feature_fill": allow_partial},
         )
     return PreflightCheck(
         "P-FEATURE-COVER", "hard", True,
@@ -1178,7 +1209,7 @@ def _check_broker_connect(broker: Any) -> PreflightCheck:
 
 
 def _check_artifact_run_id_alignment(
-    config: dict, strategy_dir: Path
+    config: dict, strategy_dir: Path, run_mode: str | None = None,
 ) -> PreflightCheck:
     """P-RUN-ID: panel-ltr and ngboost-head share the same train_run_id.
 
@@ -1186,41 +1217,67 @@ def _check_artifact_run_id_alignment(
     silently come from a different training run (e.g. a side-config retrain
     overwriting production NGBoost). A mismatch means μ/σ was fit on a
     different panel feature distribution than the scorer — Kelly sizing
-    corrupted. Soft check (old artifacts don't have run_id yet).
+    corrupted. Hard for full/buy when NGBoost can activate; sell-only may
+    still run risk exits without the μ/σ head.
     """
     panel_cfg  = config.get("panel_ltr", {})
     ltr_rel    = panel_cfg.get("artifact_path", "artifacts/prod/panel-ltr.alpha158_fund.json")
-    ngb_cfg    = (config.get("ranking", {}).get("panel_scoring", {})
-                  .get("ngboost", {}))
-    ngb_rel    = ngb_cfg.get("artifact_path", "artifacts/prod/ngboost-head.alpha158_fund.json")
-    ltr_path   = strategy_dir / ltr_rel
-    ngb_path   = strategy_dir / ngb_rel
+    ngb_cfg, per_regime_activates, ngb_potentially_active = _ngboost_activation(config)
+    if not ngb_potentially_active:
+        return PreflightCheck(
+            "P-RUN-ID", "soft", True,
+            "NGBoost disabled globally + no per-regime overlay activates — skip",
+        )
+    ngb_rel = ngb_cfg.get("artifact_path")
+    if not ngb_rel:
+        return _soft_for_sell_only(
+            "P-RUN-ID",
+            "NGBoost can activate but ranking.panel_scoring.ngboost.artifact_path "
+            f"is missing (per_regime={per_regime_activates}); cannot verify "
+            "panel/NGBoost train_run_id alignment",
+            run_mode=run_mode,
+            details={"per_regime_activates": per_regime_activates},
+        )
+    ltr_path   = _resolve_artifact_path(strategy_dir, ltr_rel)
+    ngb_path   = _resolve_artifact_path(strategy_dir, ngb_rel)
     for p in (ltr_path, ngb_path):
         if not p.exists():
-            return PreflightCheck(
-                "P-RUN-ID", "soft", True, f"artifact missing: {p} — skip",
+            return _soft_for_sell_only(
+                "P-RUN-ID",
+                f"artifact missing: {p}; cannot verify panel/NGBoost "
+                "train_run_id alignment",
+                run_mode=run_mode,
+                details={"panel_path": str(ltr_path), "ngboost_path": str(ngb_path)},
             )
     try:
         ltr_id = json.loads(ltr_path.read_text()).get("train_run_id")
         ngb_id = json.loads(ngb_path.read_text()).get("train_run_id")
     except Exception as exc:
-        return PreflightCheck(
-            "P-RUN-ID", "soft", True, f"unreadable: {exc}",
+        return _soft_for_sell_only(
+            "P-RUN-ID",
+            f"unreadable: {exc}",
+            run_mode=run_mode,
+            details={"panel_path": str(ltr_path), "ngboost_path": str(ngb_path)},
         )
     if ltr_id is None or ngb_id is None:
-        return PreflightCheck(
-            "P-RUN-ID", "soft", True,
-            "run_id not stamped (pre-2026-04-29 artifact) — skip",
+        return _soft_for_sell_only(
+            "P-RUN-ID",
+            "run_id not stamped on panel or NGBoost artifact; full/buy "
+            "cannot mix unstamped μ/σ with panel scores",
+            run_mode=run_mode,
+            details={"panel_train_run_id": ltr_id, "ngboost_train_run_id": ngb_id},
         )
     if ltr_id != ngb_id:
-        return PreflightCheck(
-            "P-RUN-ID", "soft", False,
+        return _soft_for_sell_only(
+            "P-RUN-ID",
             f"run_id mismatch: panel-ltr={ltr_id} ngboost={ngb_id}. "
             f"NGBoost μ/σ may be from a different training run — Kelly "
             f"sizing potentially corrupted. Retrain recommended.",
+            run_mode=run_mode,
+            details={"panel_train_run_id": ltr_id, "ngboost_train_run_id": ngb_id},
         )
     return PreflightCheck(
-        "P-RUN-ID", "soft", True,
+        "P-RUN-ID", "hard", True,
         f"run_id aligned ({ltr_id})",
     )
 

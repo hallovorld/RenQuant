@@ -2000,12 +2000,39 @@ class ApplyGlobalCalibrationTask(Task):
 
 # ── NGBoost tasks (Stage 2 — optional) ────────────────────────────────────────
 
+def _fail_closed_ngboost(ctx: InferenceContext, reason: str, *, detail: str = "") -> bool:
+    """Block new buys when an enabled NGBoost scoring path is unusable."""
+    _nan = float("nan")
+    blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
+    for cand in list(getattr(ctx, "candidates", []) or []):
+        ticker = getattr(cand, "ticker", None)
+        if ticker:
+            blocked[ticker] = reason
+        if hasattr(cand, "mu"):
+            cand.mu = _nan
+        if hasattr(cand, "sigma"):
+            cand.sigma = _nan
+    ctx._blocked_by_ticker = blocked  # noqa: SLF001
+    ctx._ngboost_fail_closed_reason = reason  # noqa: SLF001
+    if detail:
+        ctx._ngboost_fail_closed_detail = detail  # noqa: SLF001
+    ctx.buy_blocked = True
+    ctx.skip_buys = True
+    ctx.candidates = []
+    if hasattr(ctx, "counters"):
+        ctx.counters["ngb_fail_closed"] = (
+            ctx.counters.get("ngb_fail_closed", 0) + 1
+        )
+    log.error("NGBoost fail-closed: %s%s", reason, f" ({detail})" if detail else "")
+    return False
+
+
 class LoadNGBoostTask(Task):
     """Load the NGBoostHead artifact when enabled.
 
-    No-op when the `ngboost.enabled` sub-flag is false. Failure to load is
-    logged and downstream NGBoost tasks short-circuit — the LTR-only path
-    keeps working.
+    No-op when the effective NGBoost flag is false. When it is true, failure
+    is fail-closed for new buys; otherwise live/full silently trades a weaker
+    panel-only score while the operator believes μ/σ is active.
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
@@ -2027,18 +2054,22 @@ class LoadNGBoostTask(Task):
         # production model and breach sim/prod isolation.
         artifact = ngb_cfg.get("artifact_path")
         if not artifact:
-            log.error(
-                "LoadNGBoostTask: ngboost.enabled=true but artifact_path "
-                "is not set in cfg.ranking.panel_scoring.ngboost. Refusing "
-                "to default to any prod path — NGBoost disabled for this run."
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_artifact_path_missing",
+                detail="ranking.panel_scoring.ngboost.artifact_path missing",
             )
-            ctx._ngboost_head = None  # noqa: SLF001
-            return
         p = Path(artifact)
         if not p.is_absolute():
             strategy_dir = ctx.config.get("_strategy_dir")
             if strategy_dir:
                 p = Path(strategy_dir) / p
+        if not p.exists():
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_artifact_missing",
+                detail=str(p),
+            )
 
         try:
             # Polymorphic loader: dispatches on artifact `kind` field.
@@ -2051,9 +2082,19 @@ class LoadNGBoostTask(Task):
             from training_panel.quantile_head import load_head_by_kind  # noqa: PLC0415
             ctx._ngboost_head = load_head_by_kind(p)  # noqa: SLF001
         except Exception as exc:
-            log.warning("LoadNGBoostTask: failed to load %s — %s", p, exc)
             ctx._ngboost_head = None  # noqa: SLF001
-            return
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_load_failed",
+                detail=f"{p}: {type(exc).__name__}: {exc}",
+            )
+        if not getattr(ctx._ngboost_head, "feature_cols", None):
+            ctx._ngboost_head = None  # noqa: SLF001
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_feature_cols_missing",
+                detail=str(p),
+            )
         head_kind = type(ctx._ngboost_head).__name__
         log.info("LoadNGBoostTask: loaded %s (features=%d)",
                  head_kind, len(ctx._ngboost_head.feature_cols))
@@ -2261,8 +2302,10 @@ class ApplyNGBoostTask(Task):
             return
         head = getattr(ctx, "_ngboost_head", None)
         X    = getattr(ctx, "_panel_matrix", None)
-        if head is None or X is None or X.empty:
-            return
+        if head is None:
+            return _fail_closed_ngboost(ctx, "ngb_head_missing")
+        if X is None or X.empty:
+            return _fail_closed_ngboost(ctx, "ngb_matrix_missing")
 
         # Audit N-25 (2026-04-25): pre-fix this returned early if ANY
         # head.feature_cols was missing from X — one missing column killed
@@ -2284,40 +2327,21 @@ class ApplyNGBoostTask(Task):
             n_missing = len(missing)
             pct_miss  = n_missing / max(1, n_total)
             drift_thr = float(ngb_cfg.get("max_feature_drift_pct", 0.05))
-            if pct_miss > drift_thr:
-                log.error(
-                    "ApplyNGBoostTask: %d/%d (%.1f%%) feature cols MISSING from "
-                    "inference panel — exceeds max_feature_drift_pct=%.2f. "
-                    "NGBoost head was likely trained with features that the "
-                    "current panel pipeline no longer produces (e.g. macro "
-                    "block disabled after head was trained). FAIL-SAFE: "
-                    "writing NaN μ/σ on every candidate + holding so Gate B "
-                    "rejects them all + clearing ctx.candidates to block "
-                    "buys outright. RETRAIN: `python scripts/train_104.py "
-                    "--skip-baseline --skip-recalibrate --force`. First 10 "
-                    "missing: %s",
-                    n_missing, n_total, pct_miss * 100, drift_thr,
-                    missing[:10],
+            allow_partial = bool(ngb_cfg.get("allow_partial_feature_fill", False))
+            if not allow_partial or pct_miss > drift_thr:
+                reason = (
+                    "ngb_missing_features"
+                    if not allow_partial else
+                    "ngb_feature_drift"
                 )
-                # CRIT-1 fix (2026-04-28 self-audit): pre-fix, returning here
-                # left every cand.mu / cand.sigma as None. Gate B's
-                # `_gate_b_edge_sharpe` PASSES None-μ/σ ("no NGBoost → no
-                # signal to gate; pass") so drift hard-fail silently
-                # promoted ALL candidates through the quality floor — the
-                # opposite of fail-safe. Now: stamp NaN so Gate B rejects
-                # ("mu_nan" reason) AND clear candidate list to block buys.
-                # Holdings keep their None μ/σ so SellGateB also no-ops
-                # (path rules continue to govern exits).
-                _nan = float("nan")
-                for cand in ctx.candidates:
-                    cand.mu    = _nan
-                    cand.sigma = _nan
-                ctx.candidates = []   # block all buys this bar
-                if hasattr(ctx, "counters"):
-                    ctx.counters["ngb_drift_fail"] = (
-                        ctx.counters.get("ngb_drift_fail", 0) + 1
-                    )
-                return
+                return _fail_closed_ngboost(
+                    ctx,
+                    reason,
+                    detail=(
+                        f"{n_missing}/{n_total} missing "
+                        f"({pct_miss:.1%}); first={missing[:10]}"
+                    ),
+                )
             log.warning(
                 "ApplyNGBoostTask: feature matrix missing %d/%d cols (%.1f%%, "
                 "below %.0f%% hard-fail threshold) — filling with 0.0 (z-scored "
@@ -2381,16 +2405,56 @@ class ApplyNGBoostTask(Task):
         try:
             dist = head.predict_distribution(X)
         except Exception as exc:
-            log.warning("ApplyNGBoostTask: predict failed — %s", exc)
-            return
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_predict_failed",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
 
         lambda_sigma = float(ngb_cfg.get("lambda_sigma", 1.0))
         score_mode   = str(ngb_cfg.get("score_mode", "mu_minus_lambda_sigma"))
         override     = (score_mode == "mu_minus_lambda_sigma")
 
-        mu    = dist["mu"]
-        sigma = dist["sigma"]
+        try:
+            mu    = dist["mu"]
+            sigma = dist["sigma"]
+        except Exception as exc:
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_predict_contract_failed",
+                detail=f"missing mu/sigma: {type(exc).__name__}: {exc}",
+            )
         combined = mu - lambda_sigma * sigma
+
+        missing_or_bad: list[str] = []
+        for cand in ctx.candidates:
+            ticker = getattr(cand, "ticker", None)
+            if not ticker or ticker not in mu.index or ticker not in sigma.index:
+                missing_or_bad.append(str(ticker))
+                continue
+            if pd.isna(mu.loc[ticker]) or pd.isna(sigma.loc[ticker]):
+                missing_or_bad.append(str(ticker))
+        coverage_floor = float(
+            ngb_cfg.get(
+                "min_prediction_coverage",
+                1.0 if override else 0.0,
+            )
+        )
+        coverage = (
+            (len(ctx.candidates) - len(missing_or_bad)) / max(1, len(ctx.candidates))
+        )
+        strict_coverage = bool(
+            ngb_cfg.get("strict_prediction_coverage", override)
+        )
+        if missing_or_bad and (strict_coverage or coverage < coverage_floor):
+            return _fail_closed_ngboost(
+                ctx,
+                "ngb_prediction_incomplete",
+                detail=(
+                    f"coverage={coverage:.1%} floor={coverage_floor:.1%}; "
+                    f"bad={missing_or_bad[:10]}"
+                ),
+            )
 
         # Audit N-5 / N-25 (2026-04-25): after the NGBoost head's NaN
         # passthrough, predict_distribution returns NaN at rows it couldn't
