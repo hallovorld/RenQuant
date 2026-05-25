@@ -106,19 +106,22 @@ class SizeAndEmitTask(Task):
     """Size each selected ticker and emit buy orders → ctx.orders."""
 
     def run(self, ctx: InferenceContext) -> bool | None:
+        def _block(ticker: str, reason: str) -> None:
+            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+            if blocked_map is None:
+                blocked_map = {}
+                ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+            blocked_map.setdefault(ticker, reason)
+            key = f"selection_{reason.split(':', 1)[0]}"
+            ctx.counters[key] = ctx.counters.get(key, 0) + 1
+
         buy_blocked = bool(getattr(ctx, "buy_blocked", False)) and not bool(getattr(ctx, "bear_only", False))
         skip_buys = bool(getattr(ctx, "skip_buys", False))
         if buy_blocked or skip_buys:
             reason = "buy_blocked" if buy_blocked else "skip_buys"
             selected = list(getattr(ctx, "_selected", []) or [])  # noqa: SLF001
-            blocked_map = getattr(ctx, "_blocked_by_ticker", None)
-            if blocked_map is None:
-                blocked_map = {}
-                ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
             for ticker in selected:
-                blocked_map.setdefault(ticker, reason)
-            key = f"selection_{reason}"
-            ctx.counters[key] = ctx.counters.get(key, 0) + len(selected)
+                _block(ticker, reason)
             log.info(
                 "SizeAndEmitTask: %s — suppressed %d selected buy(s)",
                 reason, len(selected),
@@ -204,6 +207,7 @@ class SizeAndEmitTask(Task):
             if price is None or not _math.isfinite(price) or price <= 0:
                 log.warning("SizeAndEmitTask: bad price (%s) for %s — skipping",
                             price, ticker)
+                _block(ticker, "size_bad_price")
                 continue
 
             c = next((c for c in ctx.ranked if c.ticker == ticker), None)
@@ -235,6 +239,7 @@ class SizeAndEmitTask(Task):
                 max_pct = float(c.kelly_target_pct) * conv * sig_m
                 if max_pct <= 0:
                     log.info("SizeAndEmitTask: %s Kelly=0 — skip", ticker)
+                    _block(ticker, "kelly_zero:capped_zero")
                     continue
             else:
                 max_pct = base_max_pct * conv * sig_m
@@ -264,6 +269,7 @@ class SizeAndEmitTask(Task):
                 log.info("SizeAndEmitTask: %s insufficient cash — skip "
                          "(remaining_cash=$%.0f price=$%.2f)",
                          ticker, remaining_cash, price)
+                _block(ticker, "size_insufficient_cash")
                 continue
 
             invest     = shares * price
@@ -276,6 +282,7 @@ class SizeAndEmitTask(Task):
                     "— skipping to preserve cash invariant",
                     ticker, invest, remaining_cash,
                 )
+                _block(ticker, "size_cash_invariant")
                 continue
             target_pct = invest / ctx.portfolio_value if ctx.portfolio_value > 0 else 0.0
             ctx.orders.append(stamp_order_attribution({

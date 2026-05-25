@@ -2332,6 +2332,16 @@ Operational conclusion:
   builder now writes real watchlist membership while still including the sleeve
   row for trace completeness. Validation: decision-trace / benchmark-sleeve /
   LEAN trace / persistence tests passed (`58 passed`).
+- Follow-up trace bug found in `SizeAndEmitTask`: selected candidates skipped
+  during second-stage sizing (`bad price`, `Kelly=0`, insufficient cash, or
+  cash-invariant guard) only wrote logs and did not populate
+  `_blocked_by_ticker`. The DB could then show these tickers as generic
+  `candidate_not_selected`, hiding why a model-qualified candidate became no
+  order. Sizing now stamps explicit reasons (`size_bad_price`,
+  `size_insufficient_cash`, `size_cash_invariant`, or preserved
+  `kelly_zero:*`). Validation: buy-quality/Kelly/blocked-by tests passed
+  (`64 passed`) and persistence/LEAN trace/buy-emitter/order-attribution tests
+  passed (`47 passed`).
 
 ## Stop Conditions
 

@@ -172,6 +172,31 @@ class TestCashAwareFill:
                              portfolio_value=10_000.0)
         SizeAndEmitTask().run(ctx)
         assert ctx.orders == []
+        assert ctx._blocked_by_ticker == {
+            "A": "size_insufficient_cash",
+            "B": "size_insufficient_cash",
+        }
+
+    def test_bad_price_records_size_block_reason(self):
+        """Selected candidates skipped in sizing must remain explainable in DB."""
+        ctx = _size_emit_ctx(selected=["A"], cash=10_000.0,
+                             portfolio_value=10_000.0,
+                             prices={"A": float("nan")})
+        SizeAndEmitTask().run(ctx)
+        assert ctx.orders == []
+        assert ctx._blocked_by_ticker["A"] == "size_bad_price"
+
+    def test_zero_kelly_preserves_precise_upstream_reason(self):
+        """If Kelly already wrote a precise reason, sizing must not erase it."""
+        cand = _candidate("A", kelly=0.0)
+        ctx = _size_emit_ctx(selected=["A"], cash=10_000.0,
+                             portfolio_value=10_000.0,
+                             ranked=[cand])
+        ctx.config["ranking"] = {"kelly_sizing": {"enabled": True}}
+        ctx._blocked_by_ticker = {"A": "kelly_zero:mu_le_min_edge"}
+        SizeAndEmitTask().run(ctx)
+        assert ctx.orders == []
+        assert ctx._blocked_by_ticker["A"] == "kelly_zero:mu_le_min_edge"
 
     def test_sufficient_cash_all_picks_filled(self):
         """Plenty of cash: all selected picks should get a fill."""
