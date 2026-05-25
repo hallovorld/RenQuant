@@ -268,9 +268,30 @@ Make RenQuant 104 scientifically trustworthy end to end:
   now carry source-map score/horizon fields, sim short-open trade rows use the
   shared trade-event builder, and integrity checks validate short-cover
   economics like sell rows.
+- Live sell tax-lot parity repair 2026-05-25: live partial sells now rebuild
+  current long lots from broker fill history and use the configured FIFO/HIFO
+  lot method for realized basis, tax, net P/L, and hold days. If fill history
+  is unavailable or lot quantities do not match broker quantity, live falls
+  back to broker avg-entry with a warning.
 
 ## Pushed Progress
 
+- `92ed9a0 fix(renquant104): align live sell tax lot accounting`
+  - Reconstructs live tax lots from broker fills and hydrates `HoldingState.lots`
+    when quantities match the broker position.
+  - Uses the same `apply_sell_lots_detailed()`/`compute_disposed_lot_tax()`
+    path as sim/LEAN for live partial sells; explicit realized economics flow
+    into DB trade rows and ntfy P/L fields.
+  - Regression: HIFO live trim over lots `10@100`, `10@150`, sell `10@160`
+    records basis `1500`, gross `100`, tax `50`, net `50`, not avg-cost.
+  - Aggregate tests passed:
+    `tests/test_runner_sell_attribution.py tests/test_runner_state_fixes.py
+    tests/test_short_candidate_selection.py tests/test_short_cover_stop_phase_2d.py
+    tests/test_short_cover_tax.py tests/test_short_pnl_vectorbt_validator.py
+    tests/test_sim_trade_ledger.py tests/test_sim_execution_integration.py
+    tests/test_persistence.py tests/test_trade_event_builders.py
+    tests/test_qp_long_short_phase2a.py tests/test_lean_trace_persistence.py
+    tests/test_adapter_context_contract.py` (`217 passed`).
 - `05875c9 fix(renquant104): complete short-side execution traces`
   - Excludes short holdings from ordinary sell-to-close jobs so short stops
     cannot become additional sells.
