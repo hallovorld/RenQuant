@@ -202,14 +202,15 @@ class TestQPMuContract:
         assert ValidateQPMuContractTask().run(ctx) is None
         assert ctx._qp_mu_contract["ok"] is True
 
-    def test_task_is_wired_between_transform_and_weights(self):
+    def test_task_is_wired_after_horizon_alignment_before_weights(self):
         from kernel.portfolio_qp.job_qp import JointPortfolioQPJob
         job = JointPortfolioQPJob()
         names = [type(t).__name__ for t in job.tasks]
+        idx_horizon = names.index("AlignQPHorizonUnitsTask")
         idx_gk = names.index("ApplyGrinoldKahnTransformTask")
         idx_contract = names.index("ValidateQPMuContractTask")
         idx_weights = names.index("BuildWeightVectorTask")
-        assert idx_gk < idx_contract < idx_weights
+        assert idx_horizon < idx_gk < idx_contract < idx_weights
 
 
 class TestQPHorizonContract:
@@ -269,14 +270,15 @@ class TestQPHorizonContract:
         assert AlignQPHorizonUnitsTask().run(ctx) is False
         assert ctx._qp_horizon_contract["ok"] is False
 
-    def test_task_is_wired_between_mu_contract_and_covariance(self):
+    def test_task_is_wired_before_alpha_transform_and_covariance(self):
         from kernel.portfolio_qp.job_qp import JointPortfolioQPJob
         job = JointPortfolioQPJob()
         names = [type(t).__name__ for t in job.tasks]
-        idx_contract = names.index("ValidateQPMuContractTask")
+        idx_force = names.index("ForceMuSourceTask")
         idx_horizon = names.index("AlignQPHorizonUnitsTask")
+        idx_gk = names.index("ApplyGrinoldKahnTransformTask")
         idx_sigma = names.index("ComputeFullSigmaTask")
-        assert idx_contract < idx_horizon < idx_sigma
+        assert idx_force < idx_horizon < idx_gk < idx_sigma
 
 
 class TestQPCashDeploymentContract:

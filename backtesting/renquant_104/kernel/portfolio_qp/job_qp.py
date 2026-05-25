@@ -431,6 +431,10 @@ class JointPortfolioQPJob(Job):
             # whether NGBoost's σ (in Kelly path) adds value independent
             # of the destructive μ-scale mismatch.
             ForceMuSourceTask(),
+            # QP expects μ and σ/Σ to share one rebalance horizon. Calibrator
+            # μ is 60d in prod; realized-vol fallback is annualized, so align
+            # σ before either covariance construction or alpha-to-mu scaling.
+            AlignQPHorizonUnitsTask(),
             # 2026-05-12: Grinold-Kahn α→μ transform (off by default).
             # Normalizes ANY scoring source (LTR panel_score / NGBoost μ /
             # custom) to σ-scale, decoupling QP risk-penalty calibration
@@ -440,10 +444,6 @@ class JointPortfolioQPJob(Job):
             # QP expects μ to be expected-return-like. Strict by default:
             # raw rank/panel scores cannot silently reach the optimizer.
             ValidateQPMuContractTask(),
-            # QP expects μ and σ/Σ to share one rebalance horizon. Calibrator
-            # μ is 60d in prod; realized-vol fallback is annualized, so align
-            # σ before covariance construction.
-            AlignQPHorizonUnitsTask(),
             BuildWeightVectorTask(),
             ComputeFullSigmaTask(),
             ShrinkSigmaLedoitWolfTask(),           # G5: LW shrinkage (off by default)

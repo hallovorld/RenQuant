@@ -3,9 +3,11 @@
 Pinned invariants:
 
 1. Default (qp_mu_source="mu" or missing) → no-op. _qp_mu preserved.
-2. qp_mu_source="panel_score" → _qp_mu rewritten from candidate.panel_score
-   ignoring any NGBoost mu that may have been there.
-3. Fallback when panel_score missing → try rank_score.
+2. qp_mu_source="panel_score" / "rs_score" / "ranking_composite" → _qp_mu
+   rewritten from the requested candidate signal, ignoring any NGBoost mu
+   that may have been there.
+3. Fallback when the requested score is missing → try rank_score, then
+   panel_score / rs_score.
 
 Reference: doc/AUDIT_2026-05-12_dead_paths.md §NGBoost SUSPECT.
 This task validates whether NGBoost σ (kept on candidate objects, used
@@ -26,11 +28,15 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 
-def _cand(ticker, mu=None, panel_score=None, rank_score=None):
+def _cand(ticker, mu=None, panel_score=None, rank_score=None, rs_score=None,
+          ranking_composite=None):
     c = SimpleNamespace(ticker=ticker)
     if mu is not None:          c.mu = mu
     if panel_score is not None: c.panel_score = panel_score
     if rank_score  is not None: c.rank_score  = rank_score
+    if rs_score is not None:    c.rs_score = rs_score
+    if ranking_composite is not None:
+        c._ranking_composite = ranking_composite
     return c
 
 
@@ -82,6 +88,34 @@ class TestForceMuSource:
         ForceMuSourceTask().run(ctx)
         assert ctx._qp_mu[0] == pytest.approx(1.3)
 
+    def test_force_rs_score(self):
+        """qp_mu_source='rs_score' lets QP consume a regime momentum signal."""
+        from kernel.portfolio_qp.tasks import ForceMuSourceTask
+        ctx = _make_ctx(
+            tickers=["X", "Y"],
+            src_map={
+                "X": _cand("X", mu=0.01, rank_score=0.8, rs_score=0.2),
+                "Y": _cand("Y", mu=0.02, rank_score=0.6, rs_score=0.9),
+            },
+            ranking={"qp_mu_source": "rs_score"},
+        )
+        ForceMuSourceTask().run(ctx)
+        np.testing.assert_array_equal(ctx._qp_mu, [0.2, 0.9])
+
+    def test_force_ranking_composite(self):
+        """qp_mu_source='ranking_composite' uses the post-RankingJob blend."""
+        from kernel.portfolio_qp.tasks import ForceMuSourceTask
+        ctx = _make_ctx(
+            tickers=["X", "Y"],
+            src_map={
+                "X": _cand("X", rank_score=0.9, rs_score=0.1, ranking_composite=0.0),
+                "Y": _cand("Y", rank_score=0.6, rs_score=0.9, ranking_composite=1.0),
+            },
+            ranking={"qp_mu_source": "ranking_composite"},
+        )
+        ForceMuSourceTask().run(ctx)
+        np.testing.assert_array_equal(ctx._qp_mu, [0.0, 1.0])
+
     def test_fallback_when_panel_score_missing(self):
         """panel_score missing → try rank_score."""
         from kernel.portfolio_qp.tasks import ForceMuSourceTask
@@ -126,8 +160,10 @@ class TestWiredInQPJob:
         names = [type(t).__name__ for t in job.tasks]
         idx_mu = names.index("_BuildMuVectorTask")
         idx_fs = names.index("ForceMuSourceTask")
+        idx_horizon = names.index("AlignQPHorizonUnitsTask")
         idx_gk = names.index("ApplyGrinoldKahnTransformTask")
-        assert idx_mu < idx_fs < idx_gk, (
+        assert idx_mu < idx_fs < idx_horizon < idx_gk, (
             f"Expected _BuildMuVectorTask < ForceMuSourceTask < "
-            f"ApplyGrinoldKahnTransformTask but got mu={idx_mu} fs={idx_fs} gk={idx_gk}"
+            f"AlignQPHorizonUnitsTask < ApplyGrinoldKahnTransformTask but "
+            f"got mu={idx_mu} fs={idx_fs} horizon={idx_horizon} gk={idx_gk}"
         )

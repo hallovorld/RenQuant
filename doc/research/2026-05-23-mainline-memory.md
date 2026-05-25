@@ -2124,6 +2124,20 @@ Operational conclusion:
   prior diagnostic; if APY/Sharpe still lag SPY, the remaining culprit is the
   QP economic owner (`mu`/expected_return and risk/cost objective), not the
   admission-order bypass.
+- Validation result: the ledger changed only in the 2024-01-02 cut; the two
+  later cuts stayed byte-identical. Mean WF Sharpe was still only about
+  `+0.438` vs SPY `+1.081`, and BULL_CALM score monotonicity still failed.
+  Therefore ranking-order bypass was a real bug but not the dominant owner of
+  APY/Sharpe. The active bottleneck is QP's economic objective: it still
+  optimizes using anti-predictive `mu`/expected-return semantics.
+- Follow-up fix: `ForceMuSourceTask` now supports `ranking_composite` and
+  `rs_score`, so QP μ can be sourced from the same regime-aware alpha signal
+  that RankingJob used. Also fixed the scientific order of operations:
+  `AlignQPHorizonUnitsTask` now runs before Grinold-Kahn `alpha_to_mu`, so
+  `μ = IC × σ × z(score)` uses sigma on the same rebalance horizon as the QP
+  covariance. This follows the Markowitz single-period contract. Defaults
+  remain unchanged until a diagnostic config explicitly enables the alternate
+  μ source and `alpha_to_mu`.
 
 ## Stop Conditions
 

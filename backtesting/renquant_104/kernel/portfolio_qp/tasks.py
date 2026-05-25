@@ -631,7 +631,19 @@ class ForceMuSourceTask(Task):
         source = str((ctx.config or {}).get("ranking", {}).get("qp_mu_source", "mu")).lower()
         if source == "mu":
             return None  # no-op: keep mu from BuildMuVectorTask
-        if source not in ("panel_score", "rank_score"):
+        source_attr = {
+            "panel_score": "panel_score",
+            "panel": "panel_score",
+            "rank_score": "rank_score",
+            "rank": "rank_score",
+            "rs_score": "rs_score",
+            "rs": "rs_score",
+            "ranking_composite": "_ranking_composite",
+            "composite": "_ranking_composite",
+            "blend": "_ranking_composite",
+            "blended": "_ranking_composite",
+        }.get(source)
+        if source_attr is None:
             log.warning("ForceMuSource: unknown source '%s' — no-op", source)
             return None
         tickers   = _get_path(ctx, "_qp_tickers") or []
@@ -642,11 +654,14 @@ class ForceMuSourceTask(Task):
             obj = src_map.get(t)
             if obj is None:
                 continue
-            val = getattr(obj, source, None)
+            val = getattr(obj, source_attr, None)
             if val is None:
-                # fallback: try the other rank field
-                alt = "rank_score" if source == "panel_score" else "panel_score"
-                val = getattr(obj, alt, None)
+                for alt in ("rank_score", "panel_score", "rs_score"):
+                    if alt == source_attr:
+                        continue
+                    val = getattr(obj, alt, None)
+                    if val is not None:
+                        break
             try:
                 v = float(val) if val is not None else 0.0
             except (TypeError, ValueError):
