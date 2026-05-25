@@ -2785,6 +2785,17 @@ Stop and fix before reporting performance if any of these happen:
 - A metric is not labeled as event-level, annual-net, short-window style, or
   acceptance-grade WF.
 
+## Current Production Gate Status
+
+- Full preflight on the current checked-out `renquant_104/strategy_config.json`
+  intentionally fails closed after the hardening commits. Blocking reasons:
+  active panel artifact lacks the strict panel contract fields, carries failed
+  WF evidence (`wf_sharpe_mean=-1.3233`, `spy_sharpe_mean=1.0808`), lacks
+  regime IC evidence, has a config fingerprint mismatch on sector metadata,
+  and lacks panel/NGBoost `train_run_id` alignment. This is not a code
+  regression; it means buy/full must wait for a newly trained and acceptance-
+  passing artifact, while sell-only risk exits remain allowed.
+
 ## Companion Docs
 
 - Detailed stream separation:
