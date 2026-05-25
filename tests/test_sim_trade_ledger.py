@@ -150,6 +150,37 @@ def test_round_trip_tax_allocation_does_not_tax_losing_lots() -> None:
     assert not ((closed["gross_pnl"] > 0) & (closed["tax"] > closed["gross_pnl"])).any()
 
 
+def test_round_trips_recover_expected_return_from_score_snapshot() -> None:
+    """AUDIT REGRESSION GUARD: old QP logs only had ER in score_snapshot."""
+    trade_log = [
+        {
+            "action": "buy",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-01-02"),
+            "price": 100.0,
+            "shares": 1,
+            "invest": 100.0,
+            "score_snapshot": {
+                "rank_score": 0.61,
+                "expected_return": 0.025,
+                "expected_return_horizon_days": 60,
+            },
+        },
+        {
+            "action": "sell",
+            "ticker": "AAPL",
+            "date": pd.Timestamp("2024-02-01"),
+            "price": 110.0,
+            "shares": 1,
+            "tax": 0.0,
+            "exit_reason": "qp_sell",
+        },
+    ]
+
+    closed = round_trips_from_trade_log(trade_log)
+    assert closed.iloc[0]["entry_expected_return"] == 0.025
+
+
 def test_round_trips_respect_hifo_lot_method_for_tax_alignment() -> None:
     """Forensics must replay the same disposal rule as the sim.
 

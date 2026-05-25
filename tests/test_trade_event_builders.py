@@ -45,6 +45,31 @@ def test_build_buy_trade_event_computes_invest_and_audit_payload():
     assert row["decision_inputs"]["source_job"] == "JointPortfolioQPJob"
 
 
+def test_build_buy_trade_event_promotes_snapshot_expected_return():
+    """AUDIT REGRESSION GUARD: round-trip ledgers read top-level ER fields."""
+    row = build_buy_trade_event(
+        {
+            "ticker": "AAPL",
+            "shares": 3,
+            "price": 100.0,
+            "rank_score": 0.61,
+            "score_snapshot": {
+                "rank_score": 0.61,
+                "panel_score": 0.04,
+                "expected_return": 0.025,
+                "expected_return_horizon_days": 60,
+                "mu": 0.025,
+                "mu_horizon_days": 60,
+            },
+        },
+        date="2026-05-24",
+    )
+
+    assert row["expected_return"] == 0.025
+    assert row["expected_return_horizon_days"] == 60
+    assert row["mu_horizon_days"] == 60
+
+
 def test_selected_buy_tickers_uses_normalized_trade_events():
     raw_order = {"ticker": "AAPL", "shares": 3, "price": 100.0}
     assert selected_buy_tickers([raw_order]) == set()
@@ -71,7 +96,10 @@ def test_build_sell_trade_event_preserves_exit_source_and_tax_payload():
         entry_regime="BULL_CALM",
         rank_score=0.72,
         panel_score=0.55,
+        expected_return=0.022,
+        expected_return_horizon_days=60,
         mu=0.014,
+        mu_horizon_days=60,
         sigma=0.03,
         kelly_target_pct=0.11,
     )
@@ -113,6 +141,9 @@ def test_build_sell_trade_event_preserves_exit_source_and_tax_payload():
     assert row["pnl_pct"] == 0.10
     assert row["hold_days"] == 45
     assert row["rank_score"] == 0.72
+    assert row["expected_return"] == 0.022
+    assert row["score_snapshot"]["expected_return_horizon_days"] == 60
+    assert row["score_snapshot"]["mu_horizon_days"] == 60
     assert row["score_snapshot"]["kelly_target_pct"] == 0.11
     assert row["decision_inputs"]["take_profit_pct"] == 0.30
     assert row["decision_inputs"]["qp_delta"] == -0.04

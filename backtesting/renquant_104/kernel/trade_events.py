@@ -38,9 +38,18 @@ def _score_snapshot(order: dict[str, Any], regime: str | None,
         "sigma": order.get("sigma"),
         "kelly_target_pct": order.get("kelly_target_pct"),
         "expected_return": order.get("expected_return"),
+        "expected_return_horizon_days": order.get("expected_return_horizon_days"),
+        "mu_horizon_days": order.get("mu_horizon_days"),
         "confidence": order.get("confidence", confidence),
         "regime": order.get("regime", regime),
     }
+
+
+def _score_field(order: dict[str, Any], snap: dict[str, Any], key: str) -> Any:
+    value = order.get(key)
+    if value is not None:
+        return value
+    return snap.get(key)
 
 
 def _decision_inputs(
@@ -82,6 +91,7 @@ def build_buy_trade_event(
     regime = order.get("regime", default_regime)
     confidence = order.get("confidence", default_confidence)
     invest = _computed_invest(order)
+    snap = _score_snapshot(order, regime, confidence)
     return {
         "ticker": order.get("ticker"),
         "action": "buy",
@@ -90,11 +100,12 @@ def build_buy_trade_event(
         "price": order.get("price"),
         "invest": invest,
         "target_pct": order.get("target_pct"),
-        "rank_score": order.get("rank_score"),
+        "rank_score": _score_field(order, snap, "rank_score"),
         "conviction": order.get("conviction"),
         "sigma_mult": order.get("sigma_mult"),
-        "mu": order.get("mu"),
-        "sigma": order.get("sigma"),
+        "mu": _score_field(order, snap, "mu"),
+        "mu_horizon_days": _score_field(order, snap, "mu_horizon_days"),
+        "sigma": _score_field(order, snap, "sigma"),
         "order_type": order.get("order_type"),
         "source": order.get("source"),
         "source_job": order.get("source_job"),
@@ -103,16 +114,19 @@ def build_buy_trade_event(
         "attribution_version": (
             order.get("attribution_version") or attribution_version
         ),
-        "score_snapshot": _score_snapshot(order, regime, confidence),
+        "score_snapshot": snap,
         "decision_inputs": _decision_inputs(
             order,
             invest=invest,
             default_acceptance_reason=default_acceptance_reason,
         ),
-        "panel_score": order.get("panel_score"),
-        "rs_score": order.get("rs_score"),
-        "kelly_target_pct": order.get("kelly_target_pct"),
-        "expected_return": order.get("expected_return"),
+        "panel_score": _score_field(order, snap, "panel_score"),
+        "rs_score": _score_field(order, snap, "rs_score"),
+        "kelly_target_pct": _score_field(order, snap, "kelly_target_pct"),
+        "expected_return": _score_field(order, snap, "expected_return"),
+        "expected_return_horizon_days": _score_field(
+            order, snap, "expected_return_horizon_days",
+        ),
         "confidence": confidence,
         "regime": regime,
     }
@@ -218,7 +232,12 @@ def build_sell_trade_event(
         "pnl_pct": pnl_pct,
         "hold_days": hold_days,
         "rank_score": getattr(holding, "rank_score", None),
+        "expected_return": getattr(holding, "expected_return", None),
+        "expected_return_horizon_days": getattr(
+            holding, "expected_return_horizon_days", None,
+        ),
         "mu": getattr(holding, "mu", None),
+        "mu_horizon_days": getattr(holding, "mu_horizon_days", None),
         "sigma": getattr(holding, "sigma", None),
         "order_type": f"SELL_{exit_type}" if exit_type else "SELL",
         "source": str(getattr(sig, "source", None) or "ExitPipeline"),
@@ -229,7 +248,12 @@ def build_sell_trade_event(
         "score_snapshot": {
             "rank_score": getattr(holding, "rank_score", None),
             "panel_score": getattr(holding, "panel_score", None),
+            "expected_return": getattr(holding, "expected_return", None),
+            "expected_return_horizon_days": getattr(
+                holding, "expected_return_horizon_days", None,
+            ),
             "mu": getattr(holding, "mu", None),
+            "mu_horizon_days": getattr(holding, "mu_horizon_days", None),
             "sigma": getattr(holding, "sigma", None),
             "kelly_target_pct": getattr(holding, "kelly_target_pct", None),
             "confidence": confidence,

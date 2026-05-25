@@ -180,6 +180,21 @@ def _copy_fields(event: dict[str, Any], fields: tuple[str, ...]) -> dict[str, An
     return {field: event.get(field) for field in fields}
 
 
+def _event_score(event: dict[str, Any], key: str) -> Any:
+    value = event.get(key)
+    if value is not None:
+        return value
+    snap = event.get("score_snapshot")
+    if isinstance(snap, str):
+        try:
+            snap = json.loads(snap)
+        except json.JSONDecodeError:
+            snap = None
+    if isinstance(snap, dict):
+        return snap.get(key)
+    return None
+
+
 def _empty_fields(fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: None for field in fields}
 
@@ -264,14 +279,18 @@ def round_trips_from_trade_log(
                 "remaining_shares": shares,
                 "entry_invest": _as_float(event.get("invest")),
                 "entry_regime": event.get("regime"),
-                "entry_rank_score": event.get("rank_score"),
-                "entry_rs_score": event.get("rs_score"),
-                "entry_panel_score": event.get("panel_score"),
-                "entry_mu": event.get("mu"),
-                "entry_sigma": event.get("sigma"),
+                "entry_rank_score": _event_score(event, "rank_score"),
+                "entry_rs_score": _event_score(event, "rs_score"),
+                "entry_panel_score": _event_score(event, "panel_score"),
+                "entry_mu": _event_score(event, "mu"),
+                "entry_mu_horizon_days": _event_score(event, "mu_horizon_days"),
+                "entry_sigma": _event_score(event, "sigma"),
                 "entry_sigma_mult": event.get("sigma_mult"),
-                "entry_kelly_target_pct": event.get("kelly_target_pct"),
-                "entry_expected_return": event.get("expected_return"),
+                "entry_kelly_target_pct": _event_score(event, "kelly_target_pct"),
+                "entry_expected_return": _event_score(event, "expected_return"),
+                "entry_expected_return_horizon_days": _event_score(
+                    event, "expected_return_horizon_days"
+                ),
                 "entry_source": event.get("source"),
                 "entry_source_job": event.get("source_job"),
                 "entry_source_task": event.get("source_task"),
@@ -343,10 +362,14 @@ def round_trips_from_trade_log(
                 "entry_rs_score": lot.get("entry_rs_score"),
                 "entry_panel_score": lot.get("entry_panel_score"),
                 "entry_mu": lot.get("entry_mu"),
+                "entry_mu_horizon_days": lot.get("entry_mu_horizon_days"),
                 "entry_sigma": lot.get("entry_sigma"),
                 "entry_sigma_mult": lot.get("entry_sigma_mult"),
                 "entry_kelly_target_pct": lot.get("entry_kelly_target_pct"),
                 "entry_expected_return": lot.get("entry_expected_return"),
+                "entry_expected_return_horizon_days": lot.get(
+                    "entry_expected_return_horizon_days"
+                ),
                 **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })
 
@@ -464,10 +487,14 @@ def round_trips_from_trade_log(
                 "entry_rs_score": lot.get("entry_rs_score"),
                 "entry_panel_score": lot.get("entry_panel_score"),
                 "entry_mu": lot.get("entry_mu"),
+                "entry_mu_horizon_days": lot.get("entry_mu_horizon_days"),
                 "entry_sigma": lot.get("entry_sigma"),
                 "entry_sigma_mult": lot.get("entry_sigma_mult"),
                 "entry_kelly_target_pct": lot.get("entry_kelly_target_pct"),
                 "entry_expected_return": lot.get("entry_expected_return"),
+                "entry_expected_return_horizon_days": lot.get(
+                    "entry_expected_return_horizon_days"
+                ),
                 **{field: lot.get(field) for field in ENTRY_ATTRIBUTION_FIELDS},
             })
 
