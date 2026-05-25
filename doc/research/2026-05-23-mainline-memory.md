@@ -2797,6 +2797,20 @@ entire pipeline end-to-end:
   sim from silently underestimating live/LEAN exposure when two post-selection
   tasks emit the same ticker. Validation: adapter/order/partial-sell tests
   passed (`76 passed`).
+- New trade-telemetry repair: QP buy events and legacy forensic ledgers no
+  longer lose `expected_return`, `expected_return_horizon_days`, or
+  `mu_horizon_days` when those fields are present in `score_snapshot`. This
+  fixes the audit gap where round-trip rows showed `entry_expected_return=NaN`
+  even though the QP decision had an ER/μ surface. Validation:
+  trade-event, ledger, persistence, attribution, and decision-trace tests
+  passed (`60 passed`; broader local neighborhood `84 passed`).
+- New WF acceptance hardening: trade monotonicity now validates the actual QP
+  driver scores under strict QP config, not only `entry_rank_score`. The gate
+  checks `entry_rank_score`, `entry_mu`, and `entry_expected_return`, and
+  recovers legacy snapshot-only ER fields before scoring. On the latest
+  horizon-60 trace all three surfaces fail closed (`n=16`; rank Spearman
+  `-0.2916`, μ/ER Spearman `-0.3063`), confirming the remaining problem is
+  real alpha/QP-driver monotonicity, not a missing-column artifact.
 
 ## Stop Conditions
 
@@ -2806,6 +2820,9 @@ Stop and fix before reporting performance if any of these happen:
 - WF/sanity metadata lacks passing regime-level IC/placebo evidence.
 - WF metadata lacks passing trade monotonicity with at least one eligible
   regime, or was stamped with pass-open trade monotonicity.
+- Strict-QP WF metadata lacks monotonicity evidence for the actual QP driver
+  surfaces (`entry_mu` and `entry_expected_return`), even if
+  `entry_rank_score` alone looks acceptable.
 - A benchmark-sleeve WF run lacks passing alpha-economics evidence versus
   same-capital SPY.
 - A calibrator/scorer fingerprint mismatch is detected.
@@ -2816,7 +2833,8 @@ Stop and fix before reporting performance if any of these happen:
   fields (`mu`, `expected_return`) unpenalized.
 - Sim/live/LEAN adapters do not share same-bar duplicate-buy semantics.
 - Trade logs lack `blocked_by`, model type, sector, score snapshot, QP
-  target/delta/status, or sell P/L/tax/net for emitted orders.
+  target/delta/status, buy-side expected-return horizon, or sell P/L/tax/net
+  for emitted orders.
 - A metric is not labeled as event-level, annual-net, short-window style, or
   acceptance-grade WF.
 
