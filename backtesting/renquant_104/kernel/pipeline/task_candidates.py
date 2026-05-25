@@ -181,6 +181,7 @@ class ScoreBuyTask(Task):
         tc._raw_score       = sr.raw_score          # noqa: SLF001
         tc._rank_score      = sr.rank_score         # noqa: SLF001
         tc._expected_return = sr.expected_return    # noqa: SLF001
+        tc._expected_return_horizon_days = rotation_horizon  # noqa: SLF001
 
         bypass = bool(
             tc.config.get("ranking", {})
@@ -257,6 +258,7 @@ class AssembleCandidateTask(Task):
         raw  = getattr(tc, "_raw_score",        0.0)
         rank = getattr(tc, "_rank_score",       0.0)
         er   = getattr(tc, "_expected_return",  0.0)
+        er_h = getattr(tc, "_expected_return_horizon_days", None)
         tc.candidate = CandidateResult(
             ticker          = tc.ticker,
             raw_score       = raw,
@@ -265,5 +267,6 @@ class AssembleCandidateTask(Task):
             detail          = (f"raw={raw:.3f} rank={rank:.3f} "
                                f"rs={tc.rs_score:.3f} er={er:+.4f}"),
             expected_return = er,
+            expected_return_horizon_days=er_h,
         )
         log.debug("AssembleCandidateTask [%s]: candidate assembled", tc.ticker)

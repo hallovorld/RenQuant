@@ -1377,15 +1377,32 @@ class RunnerAdapter:
                         )
                     else:
                         self._z9_cancel_stop(ticker, reason="trim → flat")
-            self._log_trade(ctx, {
+            regime_p = (self._config.get("regime_params", {}) or {}).get(
+                ctx.regime, {},
+            ) or {}
+            sell_log_record = build_sell_trade_event_for_db(
+                ticker=ticker,
+                sig=sig,
+                holding=hs,
+                price=price,
+                today=ctx.today,
+                regime=getattr(ctx, "regime", None),
+                confidence=getattr(ctx, "confidence", None),
+                regime_params={
+                    **regime_p,
+                    "tax": self._config.get("tax", {}) or {},
+                },
+                config=self._config,
+            )
+            sell_log_record.update({
                 "action":    "SELL",
                 "symbol":    ticker,
                 "exit_type": sig.exit_type,
                 "reason":    sig.reason,
-                "price":     price,
                 "qty":       sell_qty,
                 "partial":   is_partial,
             })
+            self._log_trade(ctx, sell_log_record)
 
         # ── Apply buys ───────────────────────────────────────────────────────
         # Track BUYS as they actually execute vs what the pipeline merely
@@ -1583,7 +1600,14 @@ class RunnerAdapter:
                 # that don't tag).
                 fallback_type = "TOP_UP" if is_topup else "NEW_BUY"
                 order_type    = order.get("order_type", fallback_type)
-                self._log_trade(ctx, {
+                buy_log_record = build_buy_trade_event(
+                    order,
+                    date=ctx.today,
+                    default_regime=ctx.regime,
+                    default_confidence=ctx.confidence,
+                    default_acceptance_reason="live_buy",
+                )
+                buy_log_record.update({
                     "action":     "BUY",
                     "symbol":     ticker,
                     "shares":     shares,
@@ -1594,6 +1618,7 @@ class RunnerAdapter:
                     "rs_score":   order.get("rs_score",   0.0) or 0.0,
                     "regime":     order.get("regime",     ctx.regime),
                 })
+                self._log_trade(ctx, buy_log_record)
 
         # ── Persist updated sell streaks from SellJob ─────────────────────
         # Audit fix LS-HWM-1 (Round 2 deep audit, 2026-04-25): pre-fix,

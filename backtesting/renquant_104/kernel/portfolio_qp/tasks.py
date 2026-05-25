@@ -115,59 +115,22 @@ class ComputeFullSigmaTask(Task):
             return
         tickers = _get_path(ctx, "_qp_tickers") or []
         n = len(tickers)
-        try:
-            sig = np.asarray(_get_path(ctx, "_qp_sigma"), dtype=float)
-        except (TypeError, ValueError):
-            return self._fail_full_sigma(ctx, "qp_full_sigma_invalid_sigma")
-        if sig.shape != (n,) or not np.isfinite(sig).all() or (sig <= 0).any():
+        sig = self._coerce_sigma(ctx, n)
+        if sig is None:
             return self._fail_full_sigma(ctx, "qp_full_sigma_invalid_sigma")
 
-        Sigma = np.zeros((n, n))
-        for i in range(n):
-            Sigma[i, i] = sig[i] ** 2
+        Sigma = self._diagonal_sigma(sig)
         if n <= 1:
             ctx._qp_Sigma_full = Sigma + 1e-8 * np.eye(n)  # noqa: SLF001
             return
 
-        corr = getattr(ctx, "corr_matrix", None)
+        corr = self._resolve_corr(ctx)
         if not corr:
-            corr = self._load_corr_from_artifact(ctx)
-        if not corr:
-            if _allow_diagonal_sigma_fallback(cfg):
-                ctx._qp_Sigma_full = None  # noqa: SLF001
-                ctx._qp_covariance_fallback_reason = "qp_full_sigma_missing_corr"  # noqa: SLF001
-                log.warning(
-                    "ComputeFullSigmaTask: qp_use_full_sigma=true but no "
-                    "correlation matrix was loaded; explicit diagonal "
-                    "fallback enabled."
-                )
-                return
-            return self._fail_full_sigma(ctx, "qp_full_sigma_missing_corr")
-        missing_pairs: list[str] = []
-        invalid_pairs: list[str] = []
+            return self._handle_missing_corr(ctx, cfg)
         allow_diag = _allow_diagonal_sigma_fallback(cfg)
-        for i, ti in enumerate(tickers):
-            for j in range(i + 1, n):
-                tj = tickers[j]
-                rho = _lookup_corr_required(corr, ti, tj)
-                if rho is None:
-                    if allow_diag:
-                        rho_f = 0.0
-                    else:
-                        missing_pairs.append(f"{ti}|{tj}")
-                        continue
-                else:
-                    try:
-                        rho_f = max(-0.99, min(0.99, float(rho)))
-                    except (TypeError, ValueError):
-                        if allow_diag:
-                            rho_f = 0.0
-                        else:
-                            invalid_pairs.append(f"{ti}|{tj}")
-                            continue
-                cov = rho_f * sig[i] * sig[j]
-                Sigma[i, j] = cov
-                Sigma[j, i] = cov
+        missing_pairs, invalid_pairs = self._fill_corr_covariances(
+            Sigma, tickers, sig, corr, allow_diag=allow_diag,
+        )
         if missing_pairs or invalid_pairs:
             return self._fail_full_sigma(
                 ctx,
@@ -175,11 +138,71 @@ class ComputeFullSigmaTask(Task):
                 missing_pairs=missing_pairs,
                 invalid_pairs=invalid_pairs,
             )
-        if allow_diag and n > 1:
-            n_off_diag = int((np.abs(Sigma) > 1e-12).sum() - np.count_nonzero(np.diag(Sigma)))
-            if n_off_diag == 0:
-                ctx._qp_covariance_fallback_reason = "qp_full_sigma_all_zero_corr"  # noqa: SLF001
+        self._stamp_all_zero_corr_fallback(ctx, Sigma, allow_diag=allow_diag)
         ctx._qp_Sigma_full = Sigma + 1e-8 * np.eye(n)  # noqa: SLF001
+
+    @staticmethod
+    def _coerce_sigma(ctx, n: int):
+        try:
+            sig = np.asarray(_get_path(ctx, "_qp_sigma"), dtype=float)
+        except (TypeError, ValueError):
+            return None
+        if sig.shape != (n,) or not np.isfinite(sig).all() or (sig <= 0).any():
+            return None
+        return sig
+
+    @staticmethod
+    def _diagonal_sigma(sig):
+        Sigma = np.zeros((len(sig), len(sig)))
+        for i in range(len(sig)):
+            Sigma[i, i] = sig[i] ** 2
+        return Sigma
+
+    def _resolve_corr(self, ctx):
+        corr = getattr(ctx, "corr_matrix", None)
+        return corr or self._load_corr_from_artifact(ctx)
+
+    def _handle_missing_corr(self, ctx, cfg: dict) -> bool | None:
+        if _allow_diagonal_sigma_fallback(cfg):
+            ctx._qp_Sigma_full = None  # noqa: SLF001
+            ctx._qp_covariance_fallback_reason = "qp_full_sigma_missing_corr"  # noqa: SLF001
+            log.warning(
+                "ComputeFullSigmaTask: qp_use_full_sigma=true but no "
+                "correlation matrix was loaded; explicit diagonal "
+                "fallback enabled."
+            )
+            return None
+        return self._fail_full_sigma(ctx, "qp_full_sigma_missing_corr")
+
+    @staticmethod
+    def _fill_corr_covariances(Sigma, tickers, sig, corr, *, allow_diag: bool):
+        missing_pairs: list[str] = []
+        invalid_pairs: list[str] = []
+        for i, ti in enumerate(tickers):
+            for j in range(i + 1, len(tickers)):
+                tj = tickers[j]
+                rho_f = _coerce_corr_for_qp(
+                    corr, ti, tj, allow_diag=allow_diag,
+                    missing_pairs=missing_pairs,
+                    invalid_pairs=invalid_pairs,
+                )
+                if rho_f is None:
+                    continue
+                cov = rho_f * sig[i] * sig[j]
+                Sigma[i, j] = cov
+                Sigma[j, i] = cov
+        return missing_pairs, invalid_pairs
+
+    @staticmethod
+    def _stamp_all_zero_corr_fallback(ctx, Sigma, *, allow_diag: bool) -> None:
+        if not allow_diag or len(Sigma) <= 1:
+            return
+        n_off_diag = int(
+            (np.abs(Sigma) > 1e-12).sum()
+            - np.count_nonzero(np.diag(Sigma))
+        )
+        if n_off_diag == 0:
+            ctx._qp_covariance_fallback_reason = "qp_full_sigma_all_zero_corr"  # noqa: SLF001
 
     @staticmethod
     def _fail_full_sigma(
@@ -273,6 +296,30 @@ def _lookup_corr_required(corr: dict, left: str, right: str):
     if isinstance(row, dict) and left in row and row.get(left) is not None:
         return row.get(left)
     return None
+
+
+def _coerce_corr_for_qp(
+    corr: dict,
+    left: str,
+    right: str,
+    *,
+    allow_diag: bool,
+    missing_pairs: list[str],
+    invalid_pairs: list[str],
+) -> float | None:
+    rho = _lookup_corr_required(corr, left, right)
+    if rho is None:
+        if allow_diag:
+            return 0.0
+        missing_pairs.append(f"{left}|{right}")
+        return None
+    try:
+        return max(-0.99, min(0.99, float(rho)))
+    except (TypeError, ValueError):
+        if allow_diag:
+            return 0.0
+        invalid_pairs.append(f"{left}|{right}")
+        return None
 
 
 def _allow_diagonal_sigma_fallback(cfg: dict) -> bool:
@@ -1857,7 +1904,7 @@ def _qp_buy_admission_block_reason(ctx, env: dict, ticker: str) -> str | None:
         )
         if horizon_block:
             return horizon_block
-        sigma = _source_float(source, "sigma")
+        sigma = _qp_admission_sigma(ctx, env, ticker, source)
         ratio = (
             signal / sigma
             if math.isfinite(signal) and math.isfinite(sigma) and sigma > 0
@@ -1988,6 +2035,40 @@ def _source_float(source: object, name: str) -> float:
     except (TypeError, ValueError):
         return float("nan")
     return out if math.isfinite(out) else float("nan")
+
+
+def _qp_admission_sigma(ctx, env: dict, ticker: str, source: object) -> float:
+    """Return σ in the same horizon units QP uses for μ admission.
+
+    The optional edge-over-risk gate compares a horizon return estimate to a
+    volatility estimate. If QP is configured to scale annual/daily σ to the
+    μ horizon, admission must use the same scale; otherwise this gate blocks
+    good candidates for a pure unit mismatch.
+    """
+    tickers = list(env.get("tickers") or [])
+    sigma_vec = env.get("sigma_vec")
+    if sigma_vec is not None and ticker in tickers:
+        idx = tickers.index(ticker)
+        try:
+            out = float(sigma_vec[idx])
+        except (TypeError, ValueError, IndexError):
+            out = float("nan")
+        if math.isfinite(out) and out > 0:
+            return out
+
+    raw = _source_float(source, "sigma")
+    if not math.isfinite(raw) or raw <= 0:
+        return float("nan")
+    cfg = env.get("cfg", {}) or {}
+    mode = str(cfg.get("qp_sigma_horizon_mode", "none")).lower()
+    if mode in {"none", "off", "disabled"}:
+        return raw
+    horizon = _qp_admission_expected_horizon(ctx, env)
+    if horizon is None:
+        return raw
+    unit = str(cfg.get("qp_sigma_unit", "horizon")).lower()
+    scale = _qp_sigma_horizon_scale(unit, horizon)
+    return raw * scale if scale is not None else raw
 
 
 def _buy_cost_multiplier(config: dict) -> float:

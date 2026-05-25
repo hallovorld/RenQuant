@@ -17,6 +17,7 @@ if str(STRATEGY_DIR) not in sys.path:
 
 from kernel.exits import HoldingState, compute_exits  # noqa: E402
 from kernel.pipeline.context import InferenceContext  # noqa: E402
+from kernel.pipeline.context import TickerInferenceContext  # noqa: E402
 from kernel.pipeline.task_sell import EvaluateExitsTask  # noqa: E402
 from kernel.pipeline.pp_inference import _build_exit_params, _make_sell_tctx  # noqa: E402
 
@@ -100,6 +101,34 @@ def test_model_sell_uses_profit_loss_min_hold_without_blocking_hard_stops():
 
     assert hard_sig.should_exit
     assert hard_sig.exit_type == "stop_loss"
+
+
+def test_evaluate_exits_task_stamps_core_exit_source_task():
+    today = dt.date(2026, 5, 22)
+    tctx = TickerInferenceContext(
+        ticker="AAPL",
+        ohlcv={},
+        model=None,
+        config={},
+        today=today,
+        regime="BULL_CALM",
+        regime_params={},
+        exit_params={"stop_loss_pct": 0.05},
+        holding=HoldingState(
+            entry_price=100.0,
+            entry_date=today - dt.timedelta(days=40),
+            high_watermark=105.0,
+        ),
+        price=94.0,
+    )
+
+    EvaluateExitsTask().run(tctx)
+
+    assert tctx.exit_signal.should_exit
+    assert tctx.exit_signal.exit_type == "stop_loss"
+    assert tctx.exit_signal.source_job == "TickerSellJob"
+    assert tctx.exit_signal.source_task == "EvaluateExitsTask"
+    assert tctx.exit_signal.order_source == "TickerSellJob.EvaluateExitsTask"
 
 
 def test_make_sell_tctx_anchors_max_hold_to_entry_regime():

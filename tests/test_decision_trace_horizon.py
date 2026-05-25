@@ -5,12 +5,18 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 from kernel.decision_trace import build_ticker_daily_state_rows  # noqa: E402
 from kernel.exits import HoldingState  # noqa: E402
+from kernel.pipeline.context import TickerInferenceContext  # noqa: E402
+from kernel.pipeline.task_candidates import (  # noqa: E402
+    AssembleCandidateTask,
+    ScoreBuyTask,
+)
 from kernel.selection import CandidateResult  # noqa: E402
 
 
@@ -59,6 +65,42 @@ def test_ticker_daily_state_rows_carry_score_horizons() -> None:
     assert by_ticker["AAA"]["mu_horizon_days"] == 60
     assert by_ticker["BBB"]["expected_return_horizon_days"] == 60
     assert by_ticker["BBB"]["mu_horizon_days"] == 60
+
+
+def test_score_buy_task_stamps_expected_return_horizon(monkeypatch) -> None:
+    import kernel.models as models  # noqa: PLC0415
+
+    def fake_score_artifact(model, row, *, holdings, horizon_days):
+        assert horizon_days == 60
+        return SimpleNamespace(
+            signal="hold",
+            raw_score=0.1,
+            rank_score=0.61,
+            expected_return=0.04,
+        )
+
+    monkeypatch.setattr(models, "score_artifact", fake_score_artifact)
+    tc = TickerInferenceContext(
+        ticker="AAA",
+        ohlcv={},
+        model={"policy_type": "xgboost"},
+        config={
+            "rotation": {"target_horizon_days": 60},
+            "ranking": {"panel_scoring": {"bypass_ticker_gate": True}},
+        },
+        today=datetime.date(2026, 5, 25),
+        regime="BULL_CALM",
+        regime_params={},
+        exit_params={},
+        features=pd.DataFrame([{"x": 1.0}]),
+    )
+
+    ScoreBuyTask().run(tc)
+    AssembleCandidateTask().run(tc)
+
+    assert tc._expected_return_horizon_days == 60  # noqa: SLF001
+    assert tc.candidate.expected_return == 0.04
+    assert tc.candidate.expected_return_horizon_days == 60
 
 
 def test_benchmark_sleeve_trace_row_is_not_marked_watchlist_member() -> None:

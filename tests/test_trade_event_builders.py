@@ -138,10 +138,17 @@ def test_build_sell_trade_event_preserves_exit_source_and_tax_payload():
     assert row["proceeds_basis"] == 400.0
     assert row["tax"] == 16.0
     assert row["net_pnl_after_tax"] == 24.0
+    assert row["tax_cash_debited"] == 16.0
+    assert row["tax_cash_debit_mode"] == "event_level"
+    assert row["tax_lot_method"] == "fifo"
     assert row["pnl_pct"] == 0.10
     assert row["hold_days"] == 45
     assert row["rank_score"] == 0.72
+    assert row["panel_score"] == 0.55
     assert row["expected_return"] == 0.022
+    assert row["kelly_target_pct"] == 0.11
+    assert row["regime"] == "BULL_CALM"
+    assert row["confidence"] == 0.8
     assert row["score_snapshot"]["expected_return_horizon_days"] == 60
     assert row["score_snapshot"]["mu_horizon_days"] == 60
     assert row["score_snapshot"]["kelly_target_pct"] == 0.11

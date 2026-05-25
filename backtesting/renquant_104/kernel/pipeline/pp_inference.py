@@ -336,6 +336,9 @@ class InferencePipeline:
                     "raw_score": getattr(tc, "_raw_score", None),
                     "rank_score": getattr(tc, "_rank_score", None),
                     "expected_return": getattr(tc, "_expected_return", None),
+                    "expected_return_horizon_days": getattr(
+                        tc, "_expected_return_horizon_days", None,
+                    ),
                     "model_action": getattr(tc, "model_action", None),
                 }
                 if any(v is not None for v in snap.values()):

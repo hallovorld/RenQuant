@@ -174,6 +174,12 @@ class EvaluateExitsTask(Task):
 
         if sig.should_exit:
             sig.exit_params = dict(tc.exit_params or {})
+            if not getattr(sig, "source_job", None):
+                sig.source_job = "TickerSellJob"
+            if not getattr(sig, "source_task", None):
+                sig.source_task = "EvaluateExitsTask"
+            if not getattr(sig, "order_source", None):
+                sig.order_source = f"{sig.source_job}.{sig.source_task}"
             tc.exit_signal = sig
         elif tc.model_action == "sell" and updated_hs.sell_streak > 0:
             # Use the typed field on ExitSignal (was a dynamic attribute write

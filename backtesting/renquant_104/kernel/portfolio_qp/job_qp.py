@@ -154,7 +154,6 @@ class _BuildSourceMapTask(Task):
                 continue
             if t in holdings:
                 src[t] = c   # candidate wins (newer scores)
-                exit_only_tickers.discard(t)
                 continue
             if t in short_tickers:
                 # The short-candidate phase below owns this ticker. Do not let
@@ -324,12 +323,6 @@ class _BuildSourceMapTask(Task):
                         setattr(canonical, attr, getattr(cand, attr))
             ordered.append(canonical)
             seen.add(ticker)
-        for cand in candidates:
-            ticker = getattr(cand, "ticker", None)
-            if not ticker or ticker in seen:
-                continue
-            ordered.append(cand)
-            seen.add(ticker)
         for idx, cand in enumerate(ordered):
             if not math.isfinite(_finite_attr(cand, "_ranking_order_index")):
                 setattr(cand, "_ranking_order_index", idx)
@@ -389,12 +382,7 @@ class _BuildSourceMapTask(Task):
 
     @staticmethod
     def _sync_ticker_order(ctx, src: dict) -> None:
-        current = list(getattr(ctx, "_qp_tickers", None) or [])
-        ordered = [t for t in current if t in src]
-        for t in src:
-            if t not in ordered:
-                ordered.append(t)
-        ctx._qp_tickers = ordered  # noqa: SLF001
+        ctx._qp_tickers = list(src)  # noqa: SLF001
 
 
 def _finite_attr(obj, name: str) -> float:

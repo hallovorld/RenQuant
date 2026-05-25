@@ -62,6 +62,7 @@ def test_lean_adapter_records_full_watchlist_trace(tmp_path):
             "AAA": {
                 "rank_score": 0.42,
                 "expected_return": 0.013,
+                "expected_return_horizon_days": 60,
                 "model_action": "hold",
             },
         },

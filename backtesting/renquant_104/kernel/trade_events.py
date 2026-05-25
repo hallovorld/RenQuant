@@ -233,10 +233,13 @@ def build_sell_trade_event(
         "net_pnl_after_tax": net_pnl_after_tax,
         "tax_cash_debited": tax_cash_debited,
         "tax_cash_debit_mode": tax_cash_mode,
+        "tax_lot_method": tax_lot_method,
         "exit_reason": exit_type,
         "pnl_pct": pnl_pct,
         "hold_days": hold_days,
         "rank_score": getattr(holding, "rank_score", None),
+        "panel_score": getattr(holding, "panel_score", None),
+        "kelly_target_pct": getattr(holding, "kelly_target_pct", None),
         "expected_return": getattr(holding, "expected_return", None),
         "expected_return_horizon_days": getattr(
             holding, "expected_return_horizon_days", None,
@@ -250,6 +253,8 @@ def build_sell_trade_event(
         "source_task": source_task,
         "order_source": order_source,
         "attribution_version": attribution_version,
+        "confidence": confidence,
+        "regime": regime,
         "score_snapshot": {
             "rank_score": getattr(holding, "rank_score", None),
             "panel_score": getattr(holding, "panel_score", None),

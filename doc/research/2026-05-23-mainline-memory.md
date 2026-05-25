@@ -518,6 +518,32 @@ Make RenQuant 104 scientifically trustworthy end to end:
     `doc/research/2026-05-24-sim-live-parity-audit.md`.
   - Key remaining risk: duplicated adapter decision-trace writers and
     manually built `InferenceContext` fields can drift again.
+- Latest sidecar-audit repair bundle:
+  - `trades` now has first-class SQL columns for tax cash debit mode/amount,
+    tax-lot method, score horizons, panel/expected-return/Kelly fields, and
+    regime/confidence. These were previously only recoverable from JSON blobs.
+  - Decision-trace integrity now fails when `expected_return` or `mu` appears
+    without its horizon in `candidate_scores`, `ticker_daily_state`, or
+    `trades`.
+  - `ScoreBuyTask` stamps `expected_return_horizon_days` for both candidates
+    and scored-but-blocked ticker snapshots; core sell exits stamp
+    `TickerSellJob.EvaluateExitsTask` provenance instead of falling back to
+    the exit type as the source task.
+  - Live JSON trade logs now use the same shared buy/sell trade-event builders
+    as DB persistence, so they carry score snapshots, source attribution,
+    sell P&L/tax/net, and tax-lot metadata instead of minimal order rows.
+  - QP preserves explicit exit-only markers for held candidates, does not
+    append unranked candidates when `ctx.ranked` is present, emits by ranked
+    source-map order, and scales optional ER/σ admission using the same
+    horizon-matched σ contract as the optimizer.
+  - `ComputeFullSigmaTask.run()` was split back under the CLAUDE.md Task-size
+    acceptance limit without changing semantics.
+  - Targeted tests passed:
+    `tests/test_decision_trace_horizon.py tests/test_exit_param_wiring.py
+    tests/test_qp_admission_gate.py tests/test_persistence.py
+    tests/test_trade_event_builders.py tests/test_runner_sell_attribution.py`
+    (`98 passed`), plus broader QP and adapter neighborhoods:
+    `135 passed, 1 xfailed` and `51 passed`.
 - Sigma-cap diagnostic after preserving the actual override:
   - Baseline strict trace: 56 closed trades, gross `+11238.72`, tax
     `+10370.53`, net `+868.19`, mean Sharpe `+0.133`, SPY mean `+1.081`.

@@ -334,6 +334,26 @@ def test_qp_mu_over_sigma_uses_mu_with_matching_horizon() -> None:
     assert reason is None
 
 
+def test_qp_er_over_sigma_gate_uses_horizon_scaled_sigma() -> None:
+    source = SimpleNamespace(
+        ticker="AAA",
+        rank_score=0.61,
+        panel_score=0.10,
+        expected_return=0.04,
+        expected_return_horizon_days=60,
+        sigma=0.50,
+    )
+    env = _env(source=source)
+    env["cfg"]["qp_admission_gate"]["min_expected_return_over_sigma"] = 0.10
+    env["cfg"]["qp_mu_horizon_days"] = 60
+    env["cfg"]["qp_sigma_unit"] = "annualized"
+    env["cfg"]["qp_sigma_horizon_mode"] = "match_mu"
+
+    reason = _qp_buy_admission_block_reason(SimpleNamespace(config={}), env, "AAA")
+
+    assert reason is None
+
+
 def _ctx_for_source_map(**overrides):
     cfg = {
         "rotation": {
@@ -392,6 +412,23 @@ def test_qp_solver_universe_keeps_held_names_for_trim_even_below_topup_floor() -
     assert ctx._qp_tickers == ["HELD"]
     assert ctx._qp_mu_source_map["HELD"] is held
     assert "HELD" not in ctx._blocked_by_ticker
+
+
+def test_qp_source_map_preserves_explicit_exit_only_for_held_candidate() -> None:
+    held = SimpleNamespace(ticker="HELD", rank_score=0.80, panel_score=0.20)
+    cand = SimpleNamespace(ticker="HELD", rank_score=0.82, panel_score=0.22)
+    ctx = _ctx_for_source_map(
+        holdings={"HELD": held},
+        candidates=[cand],
+        _qp_tickers=["HELD"],
+        _qp_exit_only_tickers={"HELD"},
+    )
+
+    _BuildSourceMapTask().run(ctx)
+
+    assert ctx._qp_tickers == ["HELD"]
+    assert ctx._qp_mu_source_map["HELD"] is cand
+    assert ctx._qp_exit_only_tickers == {"HELD"}
 
 
 def test_qp_solver_marks_held_without_current_candidate_exit_only() -> None:
@@ -474,6 +511,35 @@ def test_qp_solver_universe_budgets_multiple_new_candidates_against_open_slots()
     assert ctx._qp_tickers == [*list(holdings), "FIRST"]
     assert set(ctx._qp_mu_source_map) == {*holdings, "FIRST"}
     assert ctx._blocked_by_ticker["SECOND"] == "qp_admission_no_slot"
+
+
+def test_qp_source_map_does_not_append_unranked_candidates_when_ranked_present() -> None:
+    ranked = SimpleNamespace(ticker="RANKED", rank_score=0.70, panel_score=0.10)
+    unranked = SimpleNamespace(ticker="UNRANKED", rank_score=0.69, panel_score=0.09)
+    ctx = _ctx_for_source_map(
+        candidates=[ranked, unranked],
+        ranked=[ranked],
+        _qp_tickers=["RANKED", "UNRANKED"],
+    )
+
+    _BuildSourceMapTask().run(ctx)
+
+    assert ctx._qp_tickers == ["RANKED"]
+    assert set(ctx._qp_mu_source_map) == {"RANKED"}
+
+
+def test_qp_emits_cash_capped_buys_in_ranked_order() -> None:
+    low = SimpleNamespace(ticker="LOW", rank_score=0.60, panel_score=0.10)
+    high = SimpleNamespace(ticker="HIGH", rank_score=0.80, panel_score=0.20)
+    ctx = _ctx_for_source_map(
+        candidates=[low, high],
+        ranked=[high, low],
+        _qp_tickers=["LOW", "HIGH"],
+    )
+
+    _BuildSourceMapTask().run(ctx)
+
+    assert ctx._qp_tickers == ["HIGH", "LOW"]
 
 
 def test_qp_solver_universe_allocates_slots_by_kelly_priority() -> None:

@@ -91,6 +91,11 @@ class TestConnectionLifecycle:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
         indexes = {r[1] for r in conn.execute("PRAGMA index_list(trades)")}
         assert "trade_date" in cols
+        assert "tax_cash_debited" in cols
+        assert "tax_cash_debit_mode" in cols
+        assert "tax_lot_method" in cols
+        assert "expected_return_horizon_days" in cols
+        assert "mu_horizon_days" in cols
         assert "idx_trades_date" in indexes
         conn.close()
 
@@ -541,6 +546,16 @@ class TestTrades:
             "gross_pnl": 40.0,
             "proceeds_basis": 500.0,
             "net_pnl_after_tax": 32.0,
+            "tax_cash_debited": 0.0,
+            "tax_cash_debit_mode": "reporting_only",
+            "tax_lot_method": "hifo",
+            "panel_score": 0.58,
+            "expected_return": 0.021,
+            "expected_return_horizon_days": 60,
+            "kelly_target_pct": 0.08,
+            "mu_horizon_days": 60,
+            "regime": "BULL_CALM",
+            "confidence": 0.72,
             "order_type": "QP_BUY",
             "source": "JointPortfolioQPJob.JointPortfolioQPTask",
             "source_job": "JointPortfolioQPJob",
@@ -567,7 +582,11 @@ class TestTrades:
             """SELECT trade_date, order_type, source_job, source_task,
                       order_source, attribution_version,
                       score_snapshot_json, decision_inputs_json,
-                      gross_pnl, proceeds_basis, net_pnl_after_tax
+                      gross_pnl, proceeds_basis, net_pnl_after_tax,
+                      tax_cash_debited, tax_cash_debit_mode,
+                      tax_lot_method, panel_score, expected_return,
+                      expected_return_horizon_days, kelly_target_pct,
+                      mu_horizon_days, regime, confidence
                  FROM trades WHERE run_id = ? AND ticker = 'AAA'""",
             (rid,),
         ).fetchone()
@@ -586,6 +605,16 @@ class TestTrades:
         assert row[8] == pytest.approx(40.0)
         assert row[9] == pytest.approx(500.0)
         assert row[10] == pytest.approx(32.0)
+        assert row[11] == pytest.approx(0.0)
+        assert row[12] == "reporting_only"
+        assert row[13] == "hifo"
+        assert row[14] == pytest.approx(0.58)
+        assert row[15] == pytest.approx(0.021)
+        assert row[16] == 60
+        assert row[17] == pytest.approx(0.08)
+        assert row[18] == 60
+        assert row[19] == "BULL_CALM"
+        assert row[20] == pytest.approx(0.72)
         conn.close()
 
     def test_record_trades_fills_minimal_decision_payload(self, tmp_path):
@@ -932,6 +961,50 @@ class TestTrades:
 
         assert report["ok"] is False
         assert report["qp_buy_horizon_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_score_horizon_gaps(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        conn.execute(
+            """INSERT INTO candidate_scores
+               (run_id, ticker, role, selected, blocked_by, expected_return)
+               VALUES (?, 'AAA', 'candidate', 0, 'not_selected', 0.03)""",
+            (rid,),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "not_selected",
+                "in_universe": 1,
+                "model_type": "xgb",
+                "expected_return": 0.03,
+            }],
+        )
+        record_trades(conn, rid, [{
+            "ticker": "AAA",
+            "action": "buy",
+            "shares": 1,
+            "price": 100.0,
+            "expected_return": 0.03,
+            "score_snapshot": {"rank_score": 0.61},
+            "decision_inputs": {"acceptance_reason": "unit"},
+        }])
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["AAA"],
+        )
+
+        assert report["ok"] is False
+        assert report["candidate_horizon_gaps"] == 1
+        assert report["decision_horizon_gaps"] == 1
+        assert report["trade_horizon_gaps"] == 1
         conn.close()
 
     def test_decision_trace_integrity_report_accepts_qp_buy_horizon(self, tmp_path):

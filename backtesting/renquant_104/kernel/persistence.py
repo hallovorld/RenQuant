@@ -109,11 +109,22 @@ CREATE TABLE IF NOT EXISTS trades (
     gross_pnl      REAL,
     proceeds_basis REAL,
     net_pnl_after_tax REAL,
+    tax_cash_debited REAL,
+    tax_cash_debit_mode TEXT,
+    tax_lot_method TEXT,
     rank_score     REAL,
     conviction     REAL,
     sigma_mult     REAL,
     mu             REAL,
+    mu_horizon_days INTEGER,
     sigma          REAL,
+    panel_score    REAL,
+    rs_score       REAL,
+    expected_return REAL,
+    expected_return_horizon_days INTEGER,
+    kelly_target_pct REAL,
+    regime         TEXT,
+    confidence     REAL,
     order_type     TEXT,
     source         TEXT,
     source_job     TEXT,
@@ -450,6 +461,17 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("gross_pnl",             "REAL"),
         ("proceeds_basis",        "REAL"),
         ("net_pnl_after_tax",     "REAL"),
+        ("tax_cash_debited",      "REAL"),
+        ("tax_cash_debit_mode",   "TEXT"),
+        ("tax_lot_method",        "TEXT"),
+        ("mu_horizon_days",       "INTEGER"),
+        ("panel_score",           "REAL"),
+        ("rs_score",              "REAL"),
+        ("expected_return",       "REAL"),
+        ("expected_return_horizon_days", "INTEGER"),
+        ("kelly_target_pct",      "REAL"),
+        ("regime",                "TEXT"),
+        ("confidence",            "REAL"),
     ],
     "ticker_forward_returns": [
         ("fwd_60d",               "REAL"),
@@ -1025,7 +1047,10 @@ def record_trades(
     Expected keys (all optional except ticker + action):
       ticker, action ('buy'|'sell'), shares, price, invest, target_pct,
       exit_reason, pnl_pct, hold_days, tax, gross_pnl, proceeds_basis,
-      net_pnl_after_tax, rank_score, conviction, sigma_mult, mu, sigma,
+      net_pnl_after_tax, tax_cash_debited, tax_cash_debit_mode,
+      tax_lot_method, rank_score, conviction, sigma_mult, mu,
+      mu_horizon_days, sigma, panel_score, rs_score, expected_return,
+      expected_return_horizon_days, kelly_target_pct, regime, confidence,
       order_type/source/source_job/source_task/
       order_source/attribution_version, score_snapshot, decision_inputs.
     """
@@ -1100,11 +1125,22 @@ def record_trades(
             _none_or_float(t.get("gross_pnl")),
             _none_or_float(t.get("proceeds_basis")),
             _none_or_float(t.get("net_pnl_after_tax")),
+            _none_or_float(t.get("tax_cash_debited")),
+            t.get("tax_cash_debit_mode"),
+            t.get("tax_lot_method"),
             _none_or_float(t.get("rank_score")),
             _none_or_float(t.get("conviction")),
             _none_or_float(t.get("sigma_mult")),
             _none_or_float(t.get("mu")),
+            _none_or_int(t.get("mu_horizon_days")),
             _none_or_float(t.get("sigma")),
+            _none_or_float(t.get("panel_score")),
+            _none_or_float(t.get("rs_score")),
+            _none_or_float(t.get("expected_return")),
+            _none_or_int(t.get("expected_return_horizon_days")),
+            _none_or_float(t.get("kelly_target_pct")),
+            t.get("regime"),
+            _none_or_float(t.get("confidence")),
             t.get("order_type"),
             t.get("source"),
             t.get("source_job"),
@@ -1120,10 +1156,14 @@ def record_trades(
                   (run_id, trade_date, ticker, action, shares, price, invest, target_pct,
                    exit_reason, pnl_pct, hold_days, tax,
                    gross_pnl, proceeds_basis, net_pnl_after_tax,
-                   rank_score, conviction, sigma_mult, mu, sigma,
+                   tax_cash_debited, tax_cash_debit_mode, tax_lot_method,
+                   rank_score, conviction, sigma_mult, mu, mu_horizon_days, sigma,
+                   panel_score, rs_score, expected_return,
+                   expected_return_horizon_days, kelly_target_pct,
+                   regime, confidence,
                    order_type, source, source_job, source_task, order_source,
                    attribution_version, score_snapshot_json, decision_inputs_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 
@@ -1533,6 +1573,33 @@ def decision_trace_integrity_report(
              AND (sector IS NULL OR TRIM(sector) = '')""",
         (run_id,),
     ).fetchone()[0]
+    candidate_horizon_gaps = conn.execute(
+        """SELECT COUNT(*) FROM candidate_scores
+           WHERE run_id = ?
+             AND (
+               (expected_return IS NOT NULL AND expected_return_horizon_days IS NULL)
+               OR (mu IS NOT NULL AND mu_horizon_days IS NULL)
+             )""",
+        (run_id,),
+    ).fetchone()[0]
+    decision_horizon_gaps = conn.execute(
+        """SELECT COUNT(*) FROM ticker_daily_state
+           WHERE run_id = ?
+             AND (
+               (expected_return IS NOT NULL AND expected_return_horizon_days IS NULL)
+               OR (mu IS NOT NULL AND mu_horizon_days IS NULL)
+             )""",
+        (run_id,),
+    ).fetchone()[0]
+    trade_horizon_gaps = conn.execute(
+        """SELECT COUNT(*) FROM trades
+           WHERE run_id = ?
+             AND (
+               (expected_return IS NOT NULL AND expected_return_horizon_days IS NULL)
+               OR (mu IS NOT NULL AND mu_horizon_days IS NULL)
+             )""",
+        (run_id,),
+    ).fetchone()[0]
 
     trade_rows = conn.execute(
         """SELECT action, shares, gross_pnl, tax, net_pnl_after_tax,
@@ -1633,6 +1700,9 @@ def decision_trace_integrity_report(
         "model_type_gaps": int(model_type_gaps or 0),
         "selected_sector_gaps": int(selected_sector_gaps or 0),
         "candidate_selected_sector_gaps": int(candidate_selected_sector_gaps or 0),
+        "candidate_horizon_gaps": int(candidate_horizon_gaps or 0),
+        "decision_horizon_gaps": int(decision_horizon_gaps or 0),
+        "trade_horizon_gaps": int(trade_horizon_gaps or 0),
         "ok": (
             (not expected or recorded == expected)
             and int(selected_blockers or 0) == 0
@@ -1648,6 +1718,9 @@ def decision_trace_integrity_report(
             and int(model_type_gaps or 0) == 0
             and int(selected_sector_gaps or 0) == 0
             and int(candidate_selected_sector_gaps or 0) == 0
+            and int(candidate_horizon_gaps or 0) == 0
+            and int(decision_horizon_gaps or 0) == 0
+            and int(trade_horizon_gaps or 0) == 0
         ),
     }
 
