@@ -55,7 +55,9 @@ def _cand(ticker, rank_score=0.50, panel_score=0.50, **kw):
         ticker=ticker,
         rank_score=rank_score,
         panel_score=panel_score,
-        expected_return=None, mu=None, sigma=None,
+        expected_return=kw.get("expected_return"),
+        mu=kw.get("mu"),
+        sigma=kw.get("sigma"),
         features=kw.get("features", {}),
     )
 
@@ -106,6 +108,63 @@ class TestRegimeMomentumAlignment:
         assert abs(ctx.candidates[1].rank_score - 0.40) < 1e-9
         assert abs(ctx.candidates[2].rank_score - 0.495) < 1e-9
         assert ctx.counters.get("regime_momentum_shrunk") == 2
+
+    def test_momentum_shrink_propagates_to_qp_alpha_fields(self):
+        from kernel.pipeline.task_buy_quality_gates import (
+            RegimeMomentumAlignmentTask,
+        )
+        ctx = SimpleNamespace(
+            config={"ranking": {"buy_quality_gates": {
+                "regime_momentum": {"enabled": True, "mismatch_scale": 0.5}
+            }}},
+            regime="BULL_CALM", hurst=0.77,
+            candidates=[
+                _cand(
+                    "LOSER",
+                    rank_score=0.80,
+                    expected_return=0.04,
+                    mu=0.06,
+                ),
+            ],
+            ohlcv={"LOSER": _ohlcv_with_r60("LOSER", -0.05)},
+            counters={},
+        )
+
+        RegimeMomentumAlignmentTask().run(ctx)
+
+        c = ctx.candidates[0]
+        assert c.rank_score == 0.40
+        assert c.expected_return == 0.02
+        assert c.mu == 0.03
+        assert c.quality_multiplier == 0.5
+        assert c.quality_penalty_reasons == ["regime_momentum_mismatch"]
+
+    def test_momentum_shrink_makes_negative_qp_alpha_more_negative(self):
+        from kernel.pipeline.task_buy_quality_gates import (
+            RegimeMomentumAlignmentTask,
+        )
+        ctx = SimpleNamespace(
+            config={"ranking": {"buy_quality_gates": {
+                "regime_momentum": {"enabled": True, "mismatch_scale": 0.5}
+            }}},
+            regime="BULL_CALM", hurst=0.77,
+            candidates=[
+                _cand(
+                    "LOSER",
+                    rank_score=0.80,
+                    expected_return=-0.04,
+                    mu=-0.06,
+                ),
+            ],
+            ohlcv={"LOSER": _ohlcv_with_r60("LOSER", -0.05)},
+            counters={},
+        )
+
+        RegimeMomentumAlignmentTask().run(ctx)
+
+        c = ctx.candidates[0]
+        assert c.expected_return == -0.08
+        assert c.mu == -0.12
 
     def test_non_momentum_regime_no_op(self):
         from kernel.pipeline.task_buy_quality_gates import (

@@ -2783,6 +2783,14 @@ entire pipeline end-to-end:
   `-0.3225`) while alpha active economics is positive in 2/3 cuts. Validation:
   targeted WF/promote/trade/preflight/model-acceptance tests passed
   (`64 passed`, `147 passed`).
+- New buy-quality/QP alignment fixed: `RegimeMomentumAlignmentTask` no longer
+  shrinks only `rank_score` while leaving QP/Kelly alpha fields untouched.
+  When a momentum-regime candidate has negative own 60-day momentum, the task
+  now records a `quality_multiplier` and also penalizes `mu` and
+  `expected_return` by default, with negative alpha made more negative rather
+  than closer to zero. This keeps RankingJob and JointPortfolioQPJob from
+  disagreeing about the same quality penalty. Validation: buy-quality and
+  QP regression tests passed (`13 passed`, `117 passed, 4 skipped`).
 
 ## Stop Conditions
 
@@ -2798,6 +2806,8 @@ Stop and fix before reporting performance if any of these happen:
 - Sector metadata is missing for a buyable ticker.
 - A buy/full path silently falls back to raw score or a weaker score.
 - Sim/live/LEAN construct panel inference frames through different code paths.
+- A buy-quality gate changes ordering/admission but leaves QP/Kelly alpha
+  fields (`mu`, `expected_return`) unpenalized.
 - Trade logs lack `blocked_by`, model type, sector, score snapshot, QP
   target/delta/status, or sell P/L/tax/net for emitted orders.
 - A metric is not labeled as event-level, annual-net, short-window style, or

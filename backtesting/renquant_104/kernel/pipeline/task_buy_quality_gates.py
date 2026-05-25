@@ -63,6 +63,10 @@ class RegimeMomentumAlignmentTask(Task):
                                     this factor when mismatched)
       attr: str                     (default "rank_score" — which score
                                     attribute to shrink; "panel_score" also valid)
+      propagate_to_alpha_fields: bool (default True — also penalize
+                                    QP/Kelly alpha fields such as mu and
+                                    expected_return so sizing cannot undo the
+                                    quality gate)
     """
     name = "RegimeMomentumAlignmentTask"
 
@@ -85,6 +89,8 @@ class RegimeMomentumAlignmentTask(Task):
         r60d_floor     = float(cfg.get("r60d_floor",     0.0))
         mismatch_scale = float(cfg.get("mismatch_scale", 0.5))
         attr = str(cfg.get("attr", "rank_score"))
+        propagate_to_alpha = bool(cfg.get("propagate_to_alpha_fields", True))
+        alpha_attrs = list(cfg.get("alpha_attrs", ["mu", "expected_return"]) or [])
 
         regime = getattr(ctx, "regime", None)
         hurst = getattr(ctx, "hurst", None) or getattr(ctx, "_hurst", None)
@@ -112,13 +118,36 @@ class RegimeMomentumAlignmentTask(Task):
                 continue
             if r60 >= r60d_floor:
                 continue
-            # Mismatch — shrink the chosen score attribute
-            old = getattr(cand, attr, None)
-            if old is None or not math.isfinite(old):
+            changed: dict[str, tuple[float, float]] = {}
+            for target_attr in _quality_penalty_attrs(
+                attr,
+                alpha_attrs if propagate_to_alpha else [],
+            ):
+                old = getattr(cand, target_attr, None)
+                if old is None:
+                    continue
+                try:
+                    old_f = float(old)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(old_f):
+                    continue
+                new = _penalize_higher_is_better(old_f, mismatch_scale)
+                setattr(cand, target_attr, new)
+                changed[target_attr] = (old_f, new)
+            if not changed:
                 continue
-            new = float(old) * mismatch_scale
-            setattr(cand, attr, new)
-            shrunk.append((cand.ticker, r60, old, new))
+            prior_mult = getattr(cand, "quality_multiplier", 1.0)
+            try:
+                prior_mult_f = float(prior_mult)
+            except (TypeError, ValueError):
+                prior_mult_f = 1.0
+            cand.quality_multiplier = prior_mult_f * mismatch_scale
+            reasons = list(getattr(cand, "quality_penalty_reasons", []) or [])
+            reasons.append("regime_momentum_mismatch")
+            cand.quality_penalty_reasons = reasons
+            shown_old, shown_new = changed.get(attr, next(iter(changed.values())))
+            shrunk.append((cand.ticker, r60, shown_old, shown_new, changed))
 
         if shrunk:
             log.info(
@@ -126,9 +155,12 @@ class RegimeMomentumAlignmentTask(Task):
                 "%d/%d candidate %s by ×%.2f (mismatched 60d returns)",
                 regime, hurst, len(shrunk), len(candidates), attr, mismatch_scale,
             )
-            for t, r60, old, new in shrunk[:5]:
+            for t, r60, old, new, changed in shrunk[:5]:
                 log.info("  %s r60=%+.2f%% %s %.4f → %.4f",
                           t, r60 * 100, attr, old, new)
+                extra = {k: v for k, v in changed.items() if k != attr}
+                if extra:
+                    log.info("    alpha fields penalized: %s", extra)
             if len(shrunk) > 5:
                 log.info("  (+%d more shrunk)", len(shrunk) - 5)
             ctx.counters = getattr(ctx, "counters", None) or {}
@@ -229,6 +261,28 @@ class DeepDrawdownVetoTask(Task):
 
 
 # ── Pure helpers ────────────────────────────────────────────────────────────
+
+
+def _quality_penalty_attrs(primary: str, alpha_attrs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in [primary, *alpha_attrs]:
+        key = str(name).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _penalize_higher_is_better(value: float, scale: float) -> float:
+    """Apply a quality penalty without making negative alpha less bad."""
+    s = min(max(float(scale), 1.0e-6), 1.0)
+    if value > 0:
+        return value * s
+    if value < 0:
+        return value / s
+    return value
 
 
 def _trailing_return(df, days: int) -> float | None:
