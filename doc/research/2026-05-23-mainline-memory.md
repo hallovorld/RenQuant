@@ -2523,6 +2523,15 @@ entire pipeline end-to-end:
   `tests/test_alpha158_label_alignment.py`,
   `tests/test_train_infer_feature_parity.py`, and
   `tests/test_walk_forward_splits.py` passed (`24 passed`).
+- New training-preflight bypass found: the production alpha158+fund retrain
+  uses `DailyRetrainAlpha158FundPipeline`, not `PanelDataJob`, so it did not
+  run the mandated `ScanTrainingDataTask` before rebuilding labels/models.
+  The daily retrain pipeline now starts with `ScanDailyTrainingDataTask`, writes
+  `artifacts/daily_retrain_training_data_scan.json`, and production/golden
+  config sets `panel_ltr.data_scan.strict=true` so missing/stale OHLCV or SPY
+  data blocks training before artifacts are stamped. Validation:
+  daily-retrain orchestration, smoke-model, and WF-config parity tests passed
+  (`60 passed`).
 
 ## Stop Conditions
 

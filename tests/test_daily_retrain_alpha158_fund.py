@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO / "backtesting" / "renquant_104"))
 from training_panel.daily_retrain_alpha158_fund import (  # noqa: E402
     DailyRetrainContext,
     DailyRetrainAlpha158FundPipeline,
+    ScanDailyTrainingDataTask,
     BuildAlpha158PanelTask,
     MergeFundFeaturesTask,
     TrainPanelLTRTask,
@@ -54,6 +55,7 @@ def ctx(tmp_path):
         calibrator_artifact=tmp_path / "calib.json",
     )
     c.ohlcv_dir.mkdir(parents=True, exist_ok=True)
+    c.data_scan_enabled = False
     return c
 
 
@@ -235,12 +237,15 @@ class TestPipelineOrchestration:
         order: list[str] = []
         def fake(self_t, ctx_):
             order.append(self_t.name)
-        with patch.object(BuildAlpha158PanelTask, "run", fake), \
+        ctx.data_scan_enabled = True
+        with patch.object(ScanDailyTrainingDataTask, "run", fake), \
+             patch.object(BuildAlpha158PanelTask, "run", fake), \
              patch.object(MergeFundFeaturesTask, "run", fake), \
              patch.object(TrainPanelLTRTask, "run", fake), \
              patch.object(RefitCalibratorTask, "run", fake):
             DailyRetrainAlpha158FundPipeline().run(ctx)
         assert order == [
+            "ScanDailyTrainingDataTask",
             "BuildAlpha158PanelTask",
             "MergeFundFeaturesTask",
             "TrainPanelLTRTask",
@@ -257,6 +262,7 @@ class TestPipelineOrchestration:
         _touch(ctx.calibrator_artifact, mtime=500)   # newer than xgb
         DailyRetrainAlpha158FundPipeline().run(ctx)
         assert set(ctx.skipped) == {
+            "ScanDailyTrainingDataTask",
             "BuildAlpha158PanelTask",
             "MergeFundFeaturesTask",
             "TrainPanelLTRTask",
@@ -270,3 +276,36 @@ class TestPipelineOrchestration:
             with pytest.raises(RuntimeError, match="kaboom"):
                 DailyRetrainAlpha158FundPipeline().run(ctx)
         assert any("kaboom" in e for e in ctx.errors)
+
+
+class TestScanDailyTrainingDataTask:
+    def test_pipeline_starts_with_data_scan(self):
+        assert isinstance(
+            DailyRetrainAlpha158FundPipeline().tasks[0],
+            ScanDailyTrainingDataTask,
+        )
+
+    def test_strict_scan_raises_on_issues_and_writes_report(self, ctx):
+        ctx.data_scan_enabled = True
+        ctx.watchlist = ["AAA"]
+        ctx.data_scan_strict = True
+
+        class Report:
+            issues = ["daily OHLCV coverage only 0.0%"]
+
+            def to_dict(self):
+                return {"issues": self.issues}
+
+        with patch(
+            "training_panel.data_scan.scan_training_inputs",
+            return_value=Report(),
+        ), patch("training_panel.data_scan.log_scan_summary"), patch(
+            "training_panel.data_scan.write_scan_report"
+        ) as write_report:
+            with pytest.raises(RuntimeError, match="strict=true"):
+                ScanDailyTrainingDataTask().run(ctx)
+
+        write_report.assert_called_once()
+        assert write_report.call_args.args[1].name == (
+            "daily_retrain_training_data_scan.json"
+        )

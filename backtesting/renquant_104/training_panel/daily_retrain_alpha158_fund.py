@@ -35,6 +35,7 @@ Usage (interactive):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import subprocess
 import sys
@@ -75,6 +76,11 @@ class DailyRetrainContext:
     elapsed: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     truncate_to_sec_max: bool = True
+    watchlist: list[str] = field(default_factory=list)
+    data_scan_enabled: bool = True
+    data_scan_strict: bool = True
+    data_scan_include_intraday: bool | None = None
+    data_scan_artifact_name: str = "daily_retrain_training_data_scan.json"
 
 
 class RetrainTask(ABC):
@@ -120,6 +126,65 @@ class BuildAlpha158PanelTask(RetrainTask):
 
     def run(self, ctx: DailyRetrainContext) -> None:
         _run_script(ctx.repo_dir / "scripts" / "build_alpha158_qlib.py")
+
+
+class ScanDailyTrainingDataTask(RetrainTask):
+    """Phase 0 — fail-fast data scan for the alpha158 production retrain path.
+
+    The broader PanelTrainingPipeline already starts with ScanTrainingDataTask,
+    but the alpha158+fund production retrain path is a separate Task pipeline.
+    It must not bypass the same data contract before building labels/models.
+    """
+
+    def should_skip(self, ctx: DailyRetrainContext) -> str | None:
+        if not ctx.data_scan_enabled:
+            return "data scan explicitly disabled"
+        return None
+
+    def run(self, ctx: DailyRetrainContext) -> None:
+        from training_panel.data_scan import (  # noqa: PLC0415
+            scan_training_inputs,
+            log_scan_summary,
+            write_scan_report,
+        )
+
+        cfg = _load_strategy_config(ctx.strategy_dir)
+        scan_cfg = cfg.get("panel_ltr", {}).get("data_scan", {})
+        watchlist = list(ctx.watchlist or cfg.get("watchlist", []))
+        if not watchlist:
+            raise RuntimeError(
+                "ScanDailyTrainingDataTask: no watchlist available for data scan"
+            )
+
+        include_intraday = ctx.data_scan_include_intraday
+        if include_intraday is None:
+            pl_cfg = cfg.get("panel_ltr", {})
+            include_intraday = bool(
+                scan_cfg.get(
+                    "include_intraday",
+                    pl_cfg.get("hourly", {}).get("enabled", False)
+                    or pl_cfg.get("minute", {}).get("enabled", False),
+                )
+            )
+        strict = bool(scan_cfg.get("strict", ctx.data_scan_strict))
+        artifact_name = str(scan_cfg.get("artifact_path", ctx.data_scan_artifact_name))
+
+        report = scan_training_inputs(
+            watchlist,
+            ctx.repo_dir,
+            include_intraday=bool(include_intraday),
+        )
+        log_scan_summary(report)
+        ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = ctx.artifacts_dir / artifact_name
+        write_scan_report(report, artifact_path)
+        log.info("  data scan report → %s", artifact_path.relative_to(ctx.repo_dir))
+
+        if report.issues and strict:
+            raise RuntimeError(
+                f"ScanDailyTrainingDataTask: {len(report.issues)} data issue(s) "
+                f"and strict=true. Issues: {report.issues}"
+            )
 
 
 class MergeFundFeaturesTask(RetrainTask):
@@ -215,12 +280,20 @@ def _run_script(script: Path, args: list[str] | None = None,
         raise RuntimeError(f"{script.name} exited {rc}")
 
 
+def _load_strategy_config(strategy_dir: Path) -> dict:
+    path = strategy_dir / "strategy_config.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
 class DailyRetrainAlpha158FundPipeline:
     """Four-Task linear pipeline. Each Task implements should_skip → run."""
 
     @property
     def tasks(self) -> list[RetrainTask]:
         return [
+            ScanDailyTrainingDataTask(),
             BuildAlpha158PanelTask(),
             MergeFundFeaturesTask(),
             TrainPanelLTRTask(),

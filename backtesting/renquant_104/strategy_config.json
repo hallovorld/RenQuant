@@ -925,6 +925,12 @@
   "panel_ltr": {
     "lookahead_days": 60,
     "_lookahead_days_reason_2026-05-10": "Production artifact (panel-ltr.alpha158_fund.json trained 2026-05-09) has lookahead_days=60 / label_col=fwd_60d_excess. Prior config value (10) silently diverged from the artifact produced by scripts/train_production_model.py, which hardcodes 60. Setting config to 60 makes panel_ltr.lookahead_days the single source of truth (\u00a75.13.5) and matches the production training horizon (CLAUDE.md project-status: 'XGBoost rank:pairwise + alpha158 + 5 fund + 3 PEAD + 3 SUE = 169 features, fwd_60d label').",
+    "data_scan": {
+      "enabled": true,
+      "strict": true,
+      "artifact_path": "daily_retrain_training_data_scan.json",
+      "_reason_2026-05-24": "Production alpha158 retrain must start with the same fail-fast data coverage/alignment contract as PanelTrainingPipeline. Missing/stale OHLCV or benchmark data must block training before labels/models are rebuilt."
+    },
     "beta_window": 252,
     "min_history_days": 252,
     "age_warmup_days": 504,
