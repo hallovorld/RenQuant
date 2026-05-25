@@ -2269,6 +2269,30 @@ Operational conclusion:
   alpha root remains selected-entry score inversion in BULL_CALM/QP_BUY,
   especially entry `mu` showing negative Spearman to 60d forward excess.
 
+## 2026-05-24 QP Contract Bug-Hunt Follow-Up
+
+- Bug found: `_BuildMuVectorTask` still had an automatic `panel_score`
+  fallback when `mu` was missing. Strict production config usually stopped
+  this before solve, but any warn/off path could still optimize raw scores as
+  expected returns. This violates the no-silent-fallback rule and makes old
+  experiments suspect if they relaxed `qp_mu_contract`.
+- Fix: QP μ vector now reads only finite `mu`. Explicit raw-score experiments
+  must use `ranking.qp_mu_source` plus `alpha_to_mu`; missing forced-source
+  fields are recorded as `_qp_forced_mu_missing_tickers` and fail the strict
+  contract even after transform. This keeps QP as sizing/rebalance only.
+- Bug found: `ComputeFullSigmaTask` repeated the old `0.0 or reverse_lookup`
+  correlation bug. A real zero correlation could be replaced by a stale
+  reverse-direction value. The task also filled every direction independently,
+  so asymmetric stale correlation artifacts could create asymmetric covariance
+  matrices.
+- Fix: full-Σ construction now uses explicit `None` checks and fills the
+  covariance matrix symmetrically from one pair lookup. Regression tests cover
+  real `0.0` correlation versus stale reverse `0.95`.
+- Validation: QP-focused tests passed (`60 passed`) and modified QP files
+  compile. This is another trust fix, not yet proof of better APY/Sharpe.
+  Re-run acceptance only after the next scorer/calibrator pair passes strict
+  identity and WF gates.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

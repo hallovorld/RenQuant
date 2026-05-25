@@ -67,15 +67,19 @@ log = logging.getLogger("kernel.portfolio_qp.job")
 
 
 class _BuildMuVectorTask(BuildVectorFromMappingTask):
-    """Specialized: μ from candidates first, holdings second, panel_score
-    fallback. Inherits all NaN-handling from the atom."""
+    """Specialized: μ from candidates first, holdings second.
+
+    Do not fall back to raw panel/rank scores here. QP μ is an
+    expected-return-like quantity; raw score sources must be requested
+    explicitly through ForceMuSourceTask and normalized by alpha_to_mu.
+    """
 
     def __init__(self):
         super().__init__(
             tickers_field="_qp_tickers",
             source_field="_qp_mu_source_map",
             attr="mu", target="_qp_mu",
-            default=0.0, fallback_attr="panel_score",
+            default=0.0,
         )
 
     @property

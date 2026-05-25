@@ -126,17 +126,19 @@ class ComputeFullSigmaTask(Task):
         sig = _get_path(ctx, "_qp_sigma")
         n = len(tickers)
         Sigma = np.zeros((n, n))
+        for i in range(n):
+            Sigma[i, i] = sig[i] ** 2
         for i, ti in enumerate(tickers):
-            for j, tj in enumerate(tickers):
-                if i == j:
-                    Sigma[i, j] = sig[i] ** 2
-                    continue
-                rho = corr.get(ti, {}).get(tj) or corr.get(tj, {}).get(ti, 0.0)
+            for j in range(i + 1, n):
+                tj = tickers[j]
+                rho = _lookup_corr_explicit_none(corr, ti, tj, default=0.0)
                 try:
                     rho_f = max(-0.99, min(0.99, float(rho)))
                 except (TypeError, ValueError):
                     rho_f = 0.0
-                Sigma[i, j] = rho_f * sig[i] * sig[j]
+                cov = rho_f * sig[i] * sig[j]
+                Sigma[i, j] = cov
+                Sigma[j, i] = cov
         ctx._qp_Sigma_full = Sigma + 1e-8 * np.eye(n)  # noqa: SLF001
 
     @staticmethod
@@ -175,6 +177,21 @@ class ComputeFullSigmaTask(Task):
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("ComputeFullSigmaTask: corr load failed from %s (%s)", path, exc)
             return None
+
+
+def _lookup_corr_explicit_none(corr: dict, left: str, right: str, *, default: float = 0.0):
+    """Symmetric corr lookup that treats 0.0 as real data, not missing."""
+    row = corr.get(left)
+    if isinstance(row, dict):
+        value = row.get(right)
+        if value is not None:
+            return value
+    row = corr.get(right)
+    if isinstance(row, dict):
+        value = row.get(left)
+        if value is not None:
+            return value
+    return default
 
 
 class AlignQPHorizonUnitsTask(Task):
@@ -648,33 +665,33 @@ class ForceMuSourceTask(Task):
             return None
         tickers   = _get_path(ctx, "_qp_tickers") or []
         src_map   = _get_path(ctx, "_qp_mu_source_map") or {}
-        new_mu    = np.zeros(len(tickers))
+        new_mu    = np.full(len(tickers), np.nan)
         n_set     = 0
+        missing: list[str] = []
         for i, t in enumerate(tickers):
             obj = src_map.get(t)
             if obj is None:
+                missing.append(str(t))
                 continue
             val = getattr(obj, source_attr, None)
-            if val is None:
-                for alt in ("rank_score", "panel_score", "rs_score"):
-                    if alt == source_attr:
-                        continue
-                    val = getattr(obj, alt, None)
-                    if val is not None:
-                        break
             try:
-                v = float(val) if val is not None else 0.0
+                v = float(val) if val is not None else math.nan
             except (TypeError, ValueError):
-                v = 0.0
+                v = math.nan
             if math.isfinite(v):
                 new_mu[i] = v
                 n_set += 1
+            else:
+                missing.append(str(t))
         ctx._qp_mu = new_mu  # noqa: SLF001
+        ctx._qp_forced_mu_source = source  # noqa: SLF001
+        ctx._qp_forced_mu_missing_tickers = missing  # noqa: SLF001
         log.info(
-            "ForceMuSource: μ_QP ← %s for %d/%d tickers (μ̄=%.4f, σ_μ=%.4f)",
+            "ForceMuSource: μ_QP ← %s for %d/%d tickers (missing=%d, μ̄=%.4f, σ_μ=%.4f)",
             source, n_set, len(tickers),
-            float(new_mu.mean()) if len(new_mu) else 0.0,
-            float(new_mu.std(ddof=1)) if len(new_mu) > 1 else 0.0,
+            len(missing),
+            float(np.nanmean(new_mu)) if n_set else 0.0,
+            float(np.nanstd(new_mu, ddof=1)) if n_set > 1 else 0.0,
         )
 
 
@@ -774,18 +791,23 @@ class ValidateQPMuContractTask(Task):
         forced = str((ctx.config or {}).get("ranking", {}).get("qp_mu_source", "mu")).lower()
         tickers = _get_path(ctx, "_qp_tickers") or []
         src = _get_path(ctx, "_qp_mu_source_map") or {}
+        forced_missing = list(getattr(ctx, "_qp_forced_mu_missing_tickers", []) or [])
         missing_mu = [
             t for t in tickers
             if not _has_finite_attr(src.get(t), "mu")
         ]
         forced_raw = forced not in {"", "none", "mu"}
-        ok = alpha_applied or (not missing_mu and not forced_raw)
+        ok = (not forced_missing) and (
+            alpha_applied or (not missing_mu and not forced_raw)
+        )
         ctx._qp_mu_contract = {  # noqa: SLF001
             "ok": ok,
             "mode": mode,
             "alpha_to_mu_enabled": bool(alpha_cfg.get("enabled", False)),
             "alpha_to_mu_applied": alpha_applied,
             "forced_source": forced,
+            "forced_source_missing_count": len(forced_missing),
+            "forced_source_missing_sample": forced_missing[:10],
             "missing_mu_count": len(missing_mu),
             "missing_mu_sample": missing_mu[:10],
         }
@@ -794,9 +816,10 @@ class ValidateQPMuContractTask(Task):
 
         _inc_counter(ctx, "qp_mu_contract_fallback", len(missing_mu) or int(forced_raw))
         msg = (
-            "ValidateQPMuContract: QP μ uses raw score semantics "
-            f"(missing_mu={len(missing_mu)}, forced_source={forced}) while "
-            "alpha_to_mu was not applied"
+            "ValidateQPMuContract: QP μ contract failed "
+            f"(missing_mu={len(missing_mu)}, forced_source={forced}, "
+            f"forced_missing={len(forced_missing)}, "
+            f"alpha_to_mu_applied={alpha_applied})"
         )
         if mode in {"strict", "hard", "error", "enforce"}:
             _inc_counter(ctx, "qp_mu_contract_block", 1)

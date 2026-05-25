@@ -6,8 +6,8 @@ Pinned invariants:
 2. qp_mu_source="panel_score" / "rs_score" / "ranking_composite" → _qp_mu
    rewritten from the requested candidate signal, ignoring any NGBoost mu
    that may have been there.
-3. Fallback when the requested score is missing → try rank_score, then
-   panel_score / rs_score.
+3. Missing requested score is recorded and left NaN; no silent fallback to a
+   weaker score is allowed.
 
 Reference: doc/AUDIT_2026-05-12_dead_paths.md §NGBoost SUSPECT.
 This task validates whether NGBoost σ (kept on candidate objects, used
@@ -116,8 +116,8 @@ class TestForceMuSource:
         ForceMuSourceTask().run(ctx)
         np.testing.assert_array_equal(ctx._qp_mu, [0.0, 1.0])
 
-    def test_fallback_when_panel_score_missing(self):
-        """panel_score missing → try rank_score."""
+    def test_missing_forced_source_is_recorded_without_fallback(self):
+        """panel_score missing must not silently fall back to rank_score."""
         from kernel.portfolio_qp.tasks import ForceMuSourceTask
         ctx = _make_ctx(
             tickers=["A"],
@@ -125,8 +125,8 @@ class TestForceMuSource:
             ranking={"qp_mu_source": "panel_score"},
         )
         ForceMuSourceTask().run(ctx)
-        # Should fall back to rank_score
-        assert ctx._qp_mu[0] == pytest.approx(0.7)
+        assert np.isnan(ctx._qp_mu[0])
+        assert ctx._qp_forced_mu_missing_tickers == ["A"]
 
     def test_unknown_source_no_op(self):
         """Unknown source string → no-op + warning, _qp_mu preserved."""
@@ -148,7 +148,8 @@ class TestForceMuSource:
         )
         ForceMuSourceTask().run(ctx)
         assert ctx._qp_mu[0] == pytest.approx(1.5)
-        assert ctx._qp_mu[1] == 0.0
+        assert np.isnan(ctx._qp_mu[1])
+        assert ctx._qp_forced_mu_missing_tickers == ["MISSING"]
 
 
 class TestWiredInQPJob:

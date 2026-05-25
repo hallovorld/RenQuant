@@ -202,6 +202,28 @@ class TestQPMuContract:
         assert ValidateQPMuContractTask().run(ctx) is None
         assert ctx._qp_mu_contract["ok"] is True
 
+    def test_missing_forced_source_fails_even_after_transform(self):
+        from kernel.portfolio_qp.tasks import ValidateQPMuContractTask
+        src = {"AAA": SimpleNamespace(ticker="AAA", panel_score=None)}
+        ctx = SimpleNamespace(
+            _qp_tickers=["AAA"],
+            _qp_mu_source_map=src,
+            _qp_mu_transformed=True,
+            _qp_forced_mu_missing_tickers=["AAA"],
+            counters={},
+            config={
+                "ranking": {
+                    "qp_mu_source": "panel_score",
+                    "alpha_to_mu": {"enabled": True, "ic": 0.10},
+                },
+                "rotation": {"joint_actions": {"qp_mu_contract": "strict"}},
+            },
+        )
+
+        assert ValidateQPMuContractTask().run(ctx) is False
+        assert ctx._qp_mu_contract["ok"] is False
+        assert ctx._qp_mu_contract["forced_source_missing_count"] == 1
+
     def test_task_is_wired_after_horizon_alignment_before_weights(self):
         from kernel.portfolio_qp.job_qp import JointPortfolioQPJob
         job = JointPortfolioQPJob()

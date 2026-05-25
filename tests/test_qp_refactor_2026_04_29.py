@@ -129,6 +129,24 @@ class TestFullSigmaMatrix:
                 risk_aversion=3.0, w_upper=0.30,
             )
 
+    def test_zero_corr_is_not_replaced_by_reverse_lookup(self):
+        """A real 0.0 corr must not fall through to a stale reverse value."""
+        from types import SimpleNamespace
+
+        from kernel.portfolio_qp.tasks import ComputeFullSigmaTask
+
+        ctx = SimpleNamespace(
+            config={"rotation": {"joint_actions": {"qp_use_full_sigma": True}}},
+            corr_matrix={"A": {"B": 0.0}, "B": {"A": 0.95}},
+            _qp_tickers=["A", "B"],
+            _qp_sigma=np.array([0.20, 0.30]),
+        )
+
+        ComputeFullSigmaTask().run(ctx)
+
+        assert ctx._qp_Sigma_full[0, 1] == pytest.approx(0.0, abs=1e-12)
+        assert ctx._qp_Sigma_full[1, 0] == pytest.approx(0.0, abs=1e-12)
+
 
 # ── Fix 3: Turnover hard constraint ─────────────────────────────────────────
 

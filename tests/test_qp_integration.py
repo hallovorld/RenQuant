@@ -220,6 +220,7 @@ class TestQPMuContractIntegration:
         assert ret is True
         assert ctx.counters["qp_mu_contract_block"] == 1
         assert ctx._qp_mu_contract["ok"] is False
+        assert ctx._qp_mu[0] == pytest.approx(0.0)
         assert ctx._blocked_by_ticker["RAW"] == "qp_mu_contract_block"
         assert ctx.orders == []
         assert ctx.exits == []
