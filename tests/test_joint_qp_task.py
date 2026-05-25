@@ -487,6 +487,28 @@ class TestQPSoftSellGuard:
         assert ctx.exits == []
         assert ctx.counters["qp_soft_sell_blocked"] == 1
 
+    def test_qp_soft_sell_guard_can_use_stricter_qp_horizon_than_panel_exit(self):
+        """AUDIT REGRESSION GUARD: QP trims can require the model thesis
+        horizon without changing the separate panel-conviction exit floor.
+        """
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        ctx = self._ctx_for_qp_sell(mu=-0.20, entry_price=120.0, entry_days=30)
+        ctx.config["risk"]["panel_exit"]["min_holding_days_by_regime"] = {
+            "BULL_CALM": 10,
+        }
+        ctx.config["rotation"]["joint_actions"]["qp_soft_sell_guard"] = {
+            "enabled": True,
+            "apply_tax_gates": False,
+            "min_holding_days_by_regime": {"BULL_CALM": 60},
+        }
+
+        EmitOrdersFromQPSolutionTask().run(ctx)
+
+        assert ctx.exits == []
+        assert ctx.counters["qp_soft_sell_blocked"] == 1
+        assert ctx._blocked_by_ticker["H"].startswith("qp_soft_sell_horizon:")
+
     def test_horizon_gate_uses_disposed_hifo_lot_age_not_position_age(self):
         from kernel.exits import TaxLot
         from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask

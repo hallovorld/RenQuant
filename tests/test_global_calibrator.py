@@ -89,6 +89,22 @@ class TestFit:
 
 
 class TestPersistence:
+    def test_expected_return_can_be_requested_at_explicit_horizon(self):
+        cal = GlobalPanelCalibration(
+            prob_x=np.array([0.0, 1.0]),
+            prob_y=np.array([0.4, 0.8]),
+            er_x=np.array([0.0, 1.0]),
+            er_y=np.array([0.06, 0.12]),
+            metadata={"lookahead_days": 60},
+        )
+
+        assert cal.expected_return(0.0) == pytest.approx(0.06)
+        assert cal.expected_return(0.0, horizon_days=20) == pytest.approx(0.02)
+        assert cal.expected_return(1.0, horizon_days=120) == pytest.approx(0.24)
+        assert cal.expected_return_vec(
+            np.array([0.0, 1.0]), horizon_days=20,
+        ).tolist() == pytest.approx([0.02, 0.04])
+
     def test_save_load_roundtrip(self, tmp_path):
         ps, fr = _synthetic_panel(seed=7)
         # Production calibrators use Platt + smooth bounded ER. Legacy isotonic

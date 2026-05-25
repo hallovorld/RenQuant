@@ -45,6 +45,10 @@ def score_snapshot(order: dict, *, source_obj: Any = None, ctx: Any = None) -> d
             _pick(order, source_obj, "kelly_target_pct")
         ),
         "expected_return": _finite_or_none(getattr(source_obj, "expected_return", None)),
+        "expected_return_horizon_days": getattr(
+            source_obj, "expected_return_horizon_days", None,
+        ),
+        "mu_horizon_days": getattr(source_obj, "mu_horizon_days", None),
         "confidence": _finite_or_none(order.get("confidence", getattr(ctx, "confidence", None))),
         "regime": order.get("regime", getattr(ctx, "regime", None)),
     }

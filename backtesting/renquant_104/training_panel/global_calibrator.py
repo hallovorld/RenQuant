@@ -79,12 +79,53 @@ class GlobalPanelCalibration:
         return float(np.interp(raw_score, self.prob_x, self.prob_y,
                                left=self.prob_y[0], right=self.prob_y[-1]))
 
-    def expected_return(self, raw_score: float) -> float:
-        """Map a raw panel score → E[R_i - R_spy] over lookahead_days."""
+    def _native_lookahead_days(self) -> int | None:
+        """Return the horizon, in trading days, used to fit the ER head."""
+        for key in ("lookahead_days_used", "lookahead_days", "er_lookahead"):
+            raw = self.metadata.get(key)
+            try:
+                days = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if days > 0:
+                return days
+        return None
+
+    def _scale_expected_return_to_horizon(
+        self,
+        value: float,
+        horizon_days: int | None,
+    ) -> float:
+        if horizon_days is None:
+            return float(value)
+        native = self._native_lookahead_days()
+        if native is None or native <= 0 or int(horizon_days) == native:
+            return float(value)
+        return float(value) * (float(horizon_days) / float(native))
+
+    def expected_return(
+        self,
+        raw_score: float,
+        *,
+        horizon_days: int | None = None,
+    ) -> float:
+        """Map a raw panel score → E[R_i - R_spy] over the requested horizon.
+
+        The artifact's ER curve is fit over its native ``lookahead_days``.
+        Callers that consume a different decision horizon must say so
+        explicitly; otherwise rotation/QP can silently compare 20-day
+        thresholds to 60-day expected returns.
+        """
         if len(self.er_x) == 0 or len(self.er_y) == 0:
             return 0.0
-        return float(np.interp(raw_score, self.er_x, self.er_y,
-                               left=self.er_y[0], right=self.er_y[-1]))
+        native_value = float(np.interp(
+            raw_score,
+            self.er_x,
+            self.er_y,
+            left=self.er_y[0],
+            right=self.er_y[-1],
+        ))
+        return self._scale_expected_return_to_horizon(native_value, horizon_days)
 
     # Vectorized helpers
     def calibrate_probability_vec(self, raws: np.ndarray) -> np.ndarray:
@@ -93,11 +134,27 @@ class GlobalPanelCalibration:
         return np.interp(raws, self.prob_x, self.prob_y,
                          left=self.prob_y[0], right=self.prob_y[-1])
 
-    def expected_return_vec(self, raws: np.ndarray) -> np.ndarray:
+    def expected_return_vec(
+        self,
+        raws: np.ndarray,
+        *,
+        horizon_days: int | None = None,
+    ) -> np.ndarray:
         if len(self.er_x) == 0 or len(self.er_y) == 0:
             return np.zeros(np.shape(raws), dtype=float)
-        return np.interp(raws, self.er_x, self.er_y,
-                         left=self.er_y[0], right=self.er_y[-1])
+        values = np.interp(
+            raws,
+            self.er_x,
+            self.er_y,
+            left=self.er_y[0],
+            right=self.er_y[-1],
+        )
+        if horizon_days is None:
+            return values
+        native = self._native_lookahead_days()
+        if native is None or native <= 0 or int(horizon_days) == native:
+            return values
+        return values * (float(horizon_days) / float(native))
 
     def save(self, path: str | Path, metadata: dict | None = None) -> None:
         merged_meta = {**self.metadata, **(metadata or {})}

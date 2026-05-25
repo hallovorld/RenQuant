@@ -1375,6 +1375,61 @@ def _fail_closed_missing_calibrator(ctx: InferenceContext, reason: str) -> None:
     )
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _calibrator_native_horizon_days(cal: Any, ctx: InferenceContext) -> int | None:
+    meta = getattr(cal, "metadata", {}) or {}
+    for key in ("lookahead_days_used", "lookahead_days", "er_lookahead"):
+        days = _positive_int(meta.get(key))
+        if days is not None:
+            return days
+    return _positive_int((ctx.config.get("panel_ltr", {}) or {}).get("lookahead_days"))
+
+
+def _rotation_er_horizon_days(ctx: InferenceContext, cal: Any) -> int | None:
+    return (
+        _positive_int((ctx.config.get("rotation", {}) or {}).get("target_horizon_days"))
+        or _calibrator_native_horizon_days(cal, ctx)
+    )
+
+
+def _qp_mu_horizon_days(ctx: InferenceContext, cal: Any) -> int | None:
+    joint_cfg = (
+        ((ctx.config.get("rotation", {}) or {}).get("joint_actions", {}) or {})
+    )
+    return (
+        _positive_int(joint_cfg.get("qp_mu_horizon_days"))
+        or _positive_int((ctx.config.get("panel_ltr", {}) or {}).get("lookahead_days"))
+        or _calibrator_native_horizon_days(cal, ctx)
+    )
+
+
+def _calibrator_expected_return_at_horizon(
+    cal: Any,
+    raw_score: float,
+    horizon_days: int | None,
+    native_horizon_days: int | None,
+) -> float:
+    try:
+        return float(cal.expected_return(raw_score, horizon_days=horizon_days))
+    except TypeError:
+        base = float(cal.expected_return(raw_score))
+    if (
+        horizon_days is None
+        or native_horizon_days is None
+        or native_horizon_days <= 0
+        or int(horizon_days) == int(native_horizon_days)
+    ):
+        return base
+    return base * (float(horizon_days) / float(native_horizon_days))
+
+
 class LoadGlobalCalibrationTask(Task):
     """Load the global panel calibrator artifact(s) if enabled.
 
@@ -1540,6 +1595,9 @@ class ApplyGlobalCalibrationTask(Task):
         # and tests/test_calibrator_saturation_guards.py.
         kelly_cfg = ctx.config.get("ranking", {}).get("kelly_sizing", {})
         use_cal_mu = bool(kelly_cfg.get("use_calibrator_mu", False))
+        native_horizon = _calibrator_native_horizon_days(cal, ctx)
+        rotation_horizon = _rotation_er_horizon_days(ctx, cal)
+        qp_mu_horizon = _qp_mu_horizon_days(ctx, cal)
         if use_cal_mu:
             meta = getattr(cal, "metadata", {}) or {}
             er_contract = meta.get("expected_return_label_contract")
@@ -1561,15 +1619,28 @@ class ApplyGlobalCalibrationTask(Task):
             if c.panel_score is None or c.panel_score != c.panel_score:
                 continue
             prob = cal.calibrate_probability(c.panel_score)
-            er   = cal.expected_return(c.panel_score)
+            er = _calibrator_expected_return_at_horizon(
+                cal,
+                c.panel_score,
+                rotation_horizon,
+                native_horizon,
+            )
             c.rank_score      = float(prob)
             c.expected_return = float(er)
+            c.expected_return_horizon_days = rotation_horizon
             if use_cal_mu and math.isfinite(er):
+                mu = _calibrator_expected_return_at_horizon(
+                    cal,
+                    c.panel_score,
+                    qp_mu_horizon,
+                    native_horizon,
+                )
                 # c.expected_return is clipped to [-0.20, +0.20] at load time
                 # (GlobalPanelCalibration.load). Kelly numerator is therefore
                 # bounded; Kelly denominator (σ²) still needs σ via NGBoost
                 # OR the realized-vol fallback (see ApplyRealizedVolFallbackTask).
-                c.mu = float(er)
+                c.mu = float(mu)
+                c.mu_horizon_days = qp_mu_horizon
             n_cand += 1
 
         n_held = 0
@@ -1578,14 +1649,29 @@ class ApplyGlobalCalibrationTask(Task):
             if ps is None or ps != ps:
                 continue
             hs.rank_score      = cal.calibrate_probability(ps)
-            hs.expected_return = cal.expected_return(ps)
+            hs.expected_return = _calibrator_expected_return_at_horizon(
+                cal,
+                ps,
+                rotation_horizon,
+                native_horizon,
+            )
+            hs.expected_return_horizon_days = rotation_horizon
             if use_cal_mu and math.isfinite(hs.expected_return):
-                hs.mu = float(hs.expected_return)
+                hs.mu = float(_calibrator_expected_return_at_horizon(
+                    cal,
+                    ps,
+                    qp_mu_horizon,
+                    native_horizon,
+                ))
+                hs.mu_horizon_days = qp_mu_horizon
             n_held += 1
 
         log.info(
-            "ApplyGlobalCalibrationTask: calibrated %d/%d candidates, %d/%d holdings",
+            "ApplyGlobalCalibrationTask: calibrated %d/%d candidates, %d/%d "
+            "holdings (er_horizon=%s, mu_horizon=%s, native_horizon=%s)",
             n_cand, len(ctx.candidates), n_held, len(ctx.holdings),
+            rotation_horizon, qp_mu_horizon if use_cal_mu else None,
+            native_horizon,
         )
         # 2026-05-09 BUG #6 GUARD CLASS: post-calibrate diversity check.
         # If the calibrator collapses to constant output across candidates,

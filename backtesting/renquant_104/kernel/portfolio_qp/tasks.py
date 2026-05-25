@@ -1686,7 +1686,10 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     hs = (getattr(ctx, "holdings", None) or {}).get(ticker)
     if hs is None:
         return None
-    panel_cfg = ((getattr(ctx, "config", {}) or {}).get("risk", {}) or {}).get("panel_exit", {}) or {}
+    panel_cfg = _qp_soft_sell_effective_panel_cfg(
+        ((getattr(ctx, "config", {}) or {}).get("risk", {}) or {}).get("panel_exit", {}) or {},
+        guard_cfg,
+    )
     from kernel.pipeline.soft_exit_guards import (  # noqa: PLC0415
         configured_soft_exit_min_days,
         lt_gate_suppression,
@@ -1744,6 +1747,26 @@ def _qp_soft_sell_block_reason(ctx, ticker: str, sol, i: int) -> str | None:
     if suppress:
         return "qp_soft_sell_tax:" + why
     return None
+
+
+def _qp_soft_sell_effective_panel_cfg(
+    panel_cfg: dict[str, Any],
+    guard_cfg: Any,
+) -> dict[str, Any]:
+    """QP-specific soft-sell guard config.
+
+    QP trims are optimizer-driven soft exits but they do not need to share
+    every threshold with the cross-sectional panel-conviction exit. Let the
+    QP guard override the thesis-age horizon while inheriting the shared
+    panel-exit defaults for LT/tax helpers.
+    """
+    merged = dict(panel_cfg or {})
+    if not isinstance(guard_cfg, dict):
+        return merged
+    for key in ("min_holding_days", "min_holding_days_by_regime"):
+        if key in guard_cfg:
+            merged[key] = guard_cfg[key]
+    return merged
 
 
 def _disposed_lot_min_holding_days(
@@ -2508,6 +2531,10 @@ def _emit_qp_buy(ctx, ticker, shares, px, sol, i, score_sources):
             "target_w": float(sol.target_w[i]),
             "actual_target_w": float(actual_target_pct),
             "solver_status": getattr(sol, "status", None),
+            "expected_return_horizon_days": getattr(
+                cand, "expected_return_horizon_days", None,
+            ),
+            "mu_horizon_days": getattr(cand, "mu_horizon_days", None),
         }))
     log.info("QP_BUY  %-6s  Δw=%+.4f  shares=%d  px=%.2f  invest=$%.0f",
              ticker, float(sol.delta_w[i]), shares, px, shares * px)
@@ -2558,6 +2585,10 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
             "solver_status": getattr(sol, "status", None),
             "shares": float(qty),
             "held_shares": float(held),
+            "expected_return_horizon_days": getattr(
+                hs, "expected_return_horizon_days", None,
+            ),
+            "mu_horizon_days": getattr(hs, "mu_horizon_days", None),
         }
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=%s",
                  ticker, dw, qty, exit_type)
@@ -2585,6 +2616,10 @@ def _emit_qp_sell(ctx, ticker, shares, dw, sol, i) -> bool:
             "solver_status": getattr(sol, "status", None),
             "shares": float(long_close),
             "held_shares": float(held),
+            "expected_return_horizon_days": getattr(
+                hs, "expected_return_horizon_days", None,
+            ),
+            "mu_horizon_days": getattr(hs, "mu_horizon_days", None),
         }
         log.info("QP_SELL %-6s  Δw=%+.4f  shares=%d  reason=qp_close",
                  ticker, dw, long_close)

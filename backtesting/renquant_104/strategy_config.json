@@ -630,7 +630,8 @@
   "rotation": {
     "enabled": true,
     "min_expected_advantage_pct": 0.06,
-    "target_horizon_days": 20,
+    "target_horizon_days": 60,
+    "_target_horizon_days_reason": "2026-05-24 Codex horizon-contract fix: panel-LTR production label/calibrator/QP μ are 60d (`panel_ltr.lookahead_days=60`, `qp_mu_horizon_days=60`). Rotation decisions must use the same expected-return horizon; 20d made logs/thresholds short-horizon while the panel calibrator supplied 60d μ, and BULL_CALM forensics showed the signal aligns better at longer horizons.",
     "transaction_cost_pct": 0.0,
     "min_rotation_hold_days": 7,
     "lt_protection_days": 30,
@@ -668,6 +669,10 @@
       "qp_soft_sell_guard": {
         "enabled": true,
         "apply_tax_gates": false,
+        "min_holding_days_by_regime": {
+          "BULL_CALM": 60
+        },
+        "_min_holding_days_reason": "2026-05-24 Codex exit-path audit: BULL_CALM QP soft sells had high false-positive continuation rates after exit while hard risk exits remain armed. QP trims are model-driven soft exits, so they should not cut a 60d panel thesis before its own horizon unless a path-risk rule fires.",
         "_apply_tax_gates_reason": "2026-05-23 Codex audit: QP soft sells still need the thesis-age horizon guard, but tax/LT suppression is disabled while qp_tax_aware=false so the order-emission stage cannot reintroduce hidden tax-driven hold logic."
       },
       "qp_tax_lot_method": "hifo",

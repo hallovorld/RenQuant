@@ -109,6 +109,15 @@ Make RenQuant 104 scientifically trustworthy end to end:
   path-conditional: either add short-horizon confirmation at entry, train/use a
   meta-label exit veto, or align BULL_CALM exit barriers with the model's
   target horizon. Any rule change needs WF evidence reported per regime first.
+- Horizon-contract repair implemented 2026-05-24: production/golden 104 now
+  aligns `rotation.target_horizon_days`,
+  `rotation.joint_actions.qp_mu_horizon_days`, and
+  `panel_ltr.lookahead_days` at `60` trading days. The global panel calibrator
+  now accepts an explicit `horizon_days`, pipeline scoring stamps both
+  `expected_return_horizon_days` and `mu_horizon_days`, and BULL_CALM
+  optimizer-driven QP soft sells wait at least the 60d panel thesis horizon.
+  Hard risk exits remain armed. This is a structural alpha-conversion fix, not
+  final WF acceptance evidence.
 - Meta-label exit veto is not promoted. Current production config has
   `ranking.meta_label.enabled=false`, and the old 2026-05-11 artifact has only
   `146` events with CV AUC about `0.554`. New preflight hardening now requires
@@ -232,6 +241,22 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_qp_long_short_phase2a.py tests/test_short_candidate_selection.py
     tests/test_runner_sell_attribution.py
     tests/test_repair_decision_trace_invariants.py` (`77 passed`).
+- Latest horizon-contract repair:
+  - `GlobalPanelCalibration.expected_return()` and its vectorized helper now
+    support an explicit `horizon_days` argument, scaling from the artifact's
+    native ER lookahead when needed.
+  - `ApplyGlobalCalibrationTask` computes rotation expected return and QP
+    Kelly/optimizer `mu` at separate explicit horizons and stamps both fields
+    into candidate/holding decision records.
+  - Production/golden 104 require the panel label horizon, rotation horizon,
+    and QP μ horizon to match at 60 trading days; BULL_CALM QP soft sells now
+    use a 60d thesis-age guard while hard risk exits remain unchanged.
+  - Targeted tests passed:
+    `tests/test_wf_config_parity.py tests/test_order_attribution_contract.py
+    tests/test_persistence.py::TestTrades tests/test_qp_grinold_kahn_transform.py
+    tests/test_joint_qp_task.py tests/test_phase3_mu_sigma_wiring.py
+    tests/test_global_calibrator.py tests/test_horizon_contracts.py`
+    (`115 passed`).
 - Post-prefilter WF validation completed and still failed:
   - Annual-net Sharpe by cut: `+1.037`, `+0.191`, `-0.310`.
   - Mean Sharpe `+0.306`; SPY mean Sharpe `+1.081`; delta `-0.775`.

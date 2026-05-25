@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -35,6 +36,21 @@ def _make_calibrator(prob_y, er_y):
         calibrate_probability=lambda s: prob_y[int(s)],
         expected_return     =lambda s: er_y[int(s)],
         metadata            ={"expected_return_label_contract": "raw_return_units_required"},
+    )
+
+
+def _make_real_horizon_calibrator():
+    from training_panel.global_calibrator import GlobalPanelCalibration
+
+    return GlobalPanelCalibration(
+        prob_x=np.array([0.0, 1.0]),
+        prob_y=np.array([0.40, 0.80]),
+        er_x=np.array([0.0, 1.0]),
+        er_y=np.array([0.06, 0.12]),
+        metadata={
+            "lookahead_days": 60,
+            "expected_return_label_contract": "raw_return_units_required",
+        },
     )
 
 
@@ -103,6 +119,51 @@ def _make_ctx(*, n=5, use_cal_mu=False, use_vol_fallback=False,
     )
 
 
+def _make_horizon_ctx():
+    cfg = {
+        "rotation": {
+            "target_horizon_days": 20,
+            "joint_actions": {"qp_mu_horizon_days": 60},
+        },
+        "ranking": {
+            "panel_scoring": {"global_calibration": {"enabled": True}},
+            "kelly_sizing": {
+                "enabled": True,
+                "use_calibrator_mu": True,
+            },
+        },
+        "panel_ltr": {"lookahead_days": 60},
+        "regime_params": {"BULL_CALM": {"max_position_pct": 0.20}},
+    }
+    return SimpleNamespace(
+        config=cfg,
+        candidates=[
+            SimpleNamespace(
+                ticker="AAA",
+                panel_score=0.0,
+                rank_score=None,
+                expected_return=None,
+                mu=None,
+                sigma=None,
+                kelly_target_pct=0.0,
+            )
+        ],
+        holdings={
+            "HELD": SimpleNamespace(
+                panel_score=1.0,
+                rank_score=None,
+                expected_return=None,
+                mu=None,
+            )
+        },
+        regime="BULL_CALM",
+        confidence=1.0,
+        ohlcv={},
+        _global_calibrator=_make_real_horizon_calibrator(),
+        _regime_calibrators=None,
+    )
+
+
 class TestCalibratorMuWiring:
     """Phase 3-A,B: c.mu = c.expected_return wiring."""
 
@@ -164,6 +225,34 @@ class TestCalibratorMuWiring:
         assert ctx.candidates[0].mu is None
         assert ctx.candidates[1].mu == 0.03
         assert ctx.candidates[2].mu == 0.05
+
+    def test_expected_return_and_qp_mu_have_explicit_separate_horizons(self):
+        """AUDIT REGRESSION GUARD: rotation ER and QP μ cannot silently use
+        different horizons under the same attribute.
+
+        The panel artifact's native ER head is 60d. With a 20d rotation
+        horizon and a 60d QP horizon, expected_return must be scaled to 20d
+        while mu remains 60d. Pre-fix both fields were the unlabelled 60d
+        value, making decision logs say 20d while QP/rotation consumed 60d.
+        """
+        from kernel.panel_pipeline.job_panel_scoring import (
+            ApplyGlobalCalibrationTask,
+        )
+
+        ctx = _make_horizon_ctx()
+
+        ApplyGlobalCalibrationTask().run(ctx)
+
+        cand = ctx.candidates[0]
+        held = ctx.holdings["HELD"]
+        assert cand.expected_return == pytest.approx(0.02)
+        assert cand.expected_return_horizon_days == 20
+        assert cand.mu == pytest.approx(0.06)
+        assert cand.mu_horizon_days == 60
+        assert held.expected_return == pytest.approx(0.04)
+        assert held.expected_return_horizon_days == 20
+        assert held.mu == pytest.approx(0.12)
+        assert held.mu_horizon_days == 60
 
 
 class TestRealizedVolFallback:
