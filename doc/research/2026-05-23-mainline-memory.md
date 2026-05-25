@@ -2056,6 +2056,13 @@ Operational conclusion:
   regime-condition the BULL_CALM entry label/calibrator objective against
   active forward return and/or realized trade-compatible path risk, then pass
   leak-safe WF with regime-first score ladders.
+- A/B hook added after this diagnosis: `panel_ltr.label_target` now supports
+  `benchmark_relative`, which Gaussianizes the exact stock/SPY forward active
+  return `(1+r_stock)/(1+r_spy)-1` before LTR training. Default remains
+  `residual` so production behavior is unchanged until a WF side run passes.
+  This candidate target is aligned with the calibrator and same-capital SPY
+  forensic lens; it must be retrained and accepted regime-first before any
+  promotion.
 
 ## Stop Conditions
 

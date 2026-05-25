@@ -91,6 +91,32 @@ class TestComputeResidualReturns:
         assert res["AAA"].index.equals(tkr.index)
 
 
+class TestBenchmarkRelativeReturns:
+    def test_matches_exact_stock_over_benchmark_ratio(self):
+        from training_panel.labels import compute_benchmark_relative_returns
+
+        idx = _dates(3)
+        stock = pd.Series([0.20, -0.10, 0.05], index=idx)
+        spy = pd.Series([0.10, -0.20, 0.05], index=idx)
+
+        rel = compute_benchmark_relative_returns({"AAA": stock}, spy)["AAA"]
+
+        expected = ((1.0 + stock) / (1.0 + spy)) - 1.0
+        assert np.allclose(rel.values, expected.values)
+
+    def test_preserves_stock_index_and_nan_on_zero_benchmark_denominator(self):
+        from training_panel.labels import compute_benchmark_relative_returns
+
+        idx = _dates(3)
+        stock = pd.Series([0.20, 0.10, 0.05], index=idx)
+        spy = pd.Series([0.10, -1.00, 0.05], index=idx)
+
+        rel = compute_benchmark_relative_returns({"AAA": stock}, spy)["AAA"]
+
+        assert rel.index.equals(idx)
+        assert np.isnan(rel.iloc[1])
+
+
 class TestGaussianizeCrossSection:
     def test_gaussianize_preserves_ranking(self):
         from training_panel.labels import gaussianize_cross_section

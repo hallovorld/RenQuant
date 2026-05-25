@@ -13,6 +13,8 @@ encodes "outperforms peers" rather than "goes up with the market".
 Public API::
 
     compute_residual_returns(...)    — purged rolling β neutralization
+    compute_benchmark_relative_returns(...)
+                                      — exact stock/benchmark forward excess
     gaussianize_cross_section(...)   — per-date rank → normal quantile
     build_labels(...)                — full pipeline
 """
@@ -107,6 +109,31 @@ def compute_residual_returns(
             residual = residual - beta_sec * sec_fwd_orth
 
         out[t] = residual
+    return out
+
+
+def compute_benchmark_relative_returns(
+    fwd_returns: dict[str, pd.Series],
+    benchmark_returns: pd.Series,
+) -> dict[str, pd.Series]:
+    """Per-ticker exact benchmark-relative forward return.
+
+    For a stock forward return ``r_i`` and benchmark forward return ``r_b``,
+    the same-capital active return is the relative price ratio:
+
+        ``(1 + r_i) / (1 + r_b) - 1``.
+
+    This is the training target aligned with the calibrator and WF trade
+    forensics when the portfolio is judged against SPY same-capital P&L.
+    """
+    bench = benchmark_returns.astype(float)
+    out: dict[str, pd.Series] = {}
+    for ticker, fwd in fwd_returns.items():
+        stock = fwd.astype(float)
+        b = bench.reindex(stock.index)
+        denom = (1.0 + b).replace(0.0, np.nan)
+        rel = ((1.0 + stock) / denom) - 1.0
+        out[ticker] = rel.replace([np.inf, -np.inf], np.nan)
     return out
 
 

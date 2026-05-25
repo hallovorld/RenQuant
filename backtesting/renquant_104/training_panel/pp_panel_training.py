@@ -1689,7 +1689,9 @@ class LabelsTask(PanelTask):
         if ctx.labels:
             return
         from training_panel.labels import (
+            compute_benchmark_relative_returns,
             compute_residual_returns,
+            compute_residual_returns_hit_aligned,
             gaussianize_cross_section,
         )
         from training_panel.panel_frame import resolve_lookahead_days  # noqa: PLC0415
@@ -1756,42 +1758,64 @@ class LabelsTask(PanelTask):
             if sec in sec_fwd_frames
         }
 
-        if label_mode == "triple_barrier":
-            # E24 v2 fix (2026-05-02): hit-time-matched residualization.
-            # ticker_fwd is variable-horizon (1..max_horizon_days), so
-            # SPY/sector benchmark forward returns must use the SAME hit
-            # horizon per (ticker, t) row — not the fixed `lookahead`-day
-            # window. Mixing horizons in OLS produces anti-predictive
-            # labels (initial v1 fix attempt eval_ic=−0.0744 with mismatch).
-            #
-            # New path: compute_residual_returns_hit_aligned reads
-            # `hit_days` per (ticker, t) from the triple-barrier output
-            # and constructs per-row spy_fwd[i,t] = spy_close[t+hit] / spy_close[t] − 1.
-            # β estimation uses the same purged rolling OLS, with purge =
-            # max_horizon_days so prior-window β fit doesn't see future
-            # bars. Sector orthogonalization (FWL) preserved.
-            from training_panel.labels import compute_residual_returns_hit_aligned  # noqa: PLC0415
-            hit_days_by_ticker = {t: tb_out[t]["hit_days"] for t in tb_out}
-            sec_close_by_ticker = {
-                t: ctx.sector_etf_ohlcv[sec]["close"].astype(float)
-                for t, sec in ctx.ticker_sectors.items()
-                if sec in ctx.sector_etf_ohlcv
-            }
-            ctx.raw_residuals = compute_residual_returns_hit_aligned(
+        label_target = str(cfg.get("label_target", "residual")).lower()
+        if label_target in {"benchmark_relative", "active_excess", "spy_relative"}:
+            if label_mode == "triple_barrier":
+                raise RuntimeError(
+                    "LabelsTask: panel_ltr.label_target=benchmark_relative "
+                    "is not supported with label_mode=triple_barrier because "
+                    "benchmark returns must match each row's variable hit day."
+                )
+            ctx.raw_residuals = compute_benchmark_relative_returns(
                 fwd_returns,
-                hit_days_by_ticker,
-                ctx.ohlcv[benchmark]["close"].astype(float),
-                sec_close_by_ticker,
-                beta_window=beta_window,
-                purge_days=tb_cfg.max_horizon_days,
+                spy_fwd,
             )
-            log.info("LabelsTask: triple_barrier mode — hit-time-matched "
-                     "residualization (purge=%d, beta_window=%d)",
-                     tb_cfg.max_horizon_days, beta_window)
+            log.info(
+                "LabelsTask: label_target=benchmark_relative — training labels "
+                "use exact stock/SPY forward active return before per-date "
+                "Gaussianization."
+            )
+        elif label_target in {"residual", "beta_sector_residual", "neutralized"}:
+            if label_mode == "triple_barrier":
+                # E24 v2 fix (2026-05-02): hit-time-matched residualization.
+                # ticker_fwd is variable-horizon (1..max_horizon_days), so
+                # SPY/sector benchmark forward returns must use the SAME hit
+                # horizon per (ticker, t) row — not the fixed `lookahead`-day
+                # window. Mixing horizons in OLS produces anti-predictive
+                # labels (initial v1 fix attempt eval_ic=−0.0744 with mismatch).
+                #
+                # New path: compute_residual_returns_hit_aligned reads
+                # `hit_days` per (ticker, t) from the triple-barrier output
+                # and constructs per-row spy_fwd[i,t] = spy_close[t+hit] / spy_close[t] − 1.
+                # β estimation uses the same purged rolling OLS, with purge =
+                # max_horizon_days so prior-window β fit doesn't see future
+                # bars. Sector orthogonalization (FWL) preserved.
+                hit_days_by_ticker = {t: tb_out[t]["hit_days"] for t in tb_out}
+                sec_close_by_ticker = {
+                    t: ctx.sector_etf_ohlcv[sec]["close"].astype(float)
+                    for t, sec in ctx.ticker_sectors.items()
+                    if sec in ctx.sector_etf_ohlcv
+                }
+                ctx.raw_residuals = compute_residual_returns_hit_aligned(
+                    fwd_returns,
+                    hit_days_by_ticker,
+                    ctx.ohlcv[benchmark]["close"].astype(float),
+                    sec_close_by_ticker,
+                    beta_window=beta_window,
+                    purge_days=tb_cfg.max_horizon_days,
+                )
+                log.info("LabelsTask: triple_barrier mode — hit-time-matched "
+                         "residualization (purge=%d, beta_window=%d)",
+                         tb_cfg.max_horizon_days, beta_window)
+            else:
+                ctx.raw_residuals = compute_residual_returns(
+                    fwd_returns, spy_fwd, sec_fwd_by_ticker,
+                    beta_window=beta_window, lookahead_days=lookahead,
+                )
         else:
-            ctx.raw_residuals = compute_residual_returns(
-                fwd_returns, spy_fwd, sec_fwd_by_ticker,
-                beta_window=beta_window, lookahead_days=lookahead,
+            raise RuntimeError(
+                f"LabelsTask: unsupported panel_ltr.label_target={label_target!r}. "
+                "Expected 'residual' or 'benchmark_relative'."
             )
         ctx.labels = gaussianize_cross_section(ctx.raw_residuals)
 
@@ -2834,6 +2858,7 @@ class SaveArtifactTask(PanelTask):
             "training_notes":  cfg.get("training_notes", "Stage-1 panel pipeline"),
             "neutralize_features": cfg.get("neutralize_features", True),
             "lookahead_days":  cfg.get("lookahead_days", 5),
+            "label_target":    cfg.get("label_target", "residual"),
             "beta_window":     cfg.get("beta_window", 60),
             "min_history_days": cfg.get("min_history_days", 252),
             "cv_method":       cfg.get("cv_method", "purged"),

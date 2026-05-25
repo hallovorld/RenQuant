@@ -213,7 +213,8 @@ class TestLabelsTaskIntegration:
         src_path = REPO_ROOT / "backtesting" / "renquant_104" / "training_panel" / "pp_panel_training.py"
         src = src_path.read_text()
         idx = src.find("class LabelsTask(PanelTask):")
-        block = src[idx:idx + 5000]
+        end = src.find("ctx.labels = gaussianize_cross_section", idx)
+        block = src[idx:(end + 200 if end > idx else idx + 7000)]
         # The triple_barrier branch must use the hit-aligned function
         assert "compute_residual_returns_hit_aligned" in block, (
             "LabelsTask triple_barrier branch must use compute_residual_returns_hit_aligned "
