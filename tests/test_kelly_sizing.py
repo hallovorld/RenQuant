@@ -259,6 +259,24 @@ class TestTopUpHeldTask:
         assert ctx.orders == []
         assert ctx._blocked_by_ticker["AAA"] == "topup_owned_by_qp"
 
+    def test_exit_only_holding_is_not_topped_up(self):
+        """Regime/model admission can mark holdings exit-only before TopUp."""
+        ctx = _ctx(
+            holdings={"AAA": _held(shares=10, kelly_target_pct=0.30,
+                                   panel_score=0.60)},
+            prices={"AAA": 100.0},
+            portfolio=10000.0,
+        )
+        ctx._qp_exit_only_tickers = {"AAA"}
+        ctx._qp_exit_only_reasons = {
+            "AAA": "regime_admission:failed:BULL_CALM",
+        }
+
+        TopUpHeldTask().run(ctx)
+
+        assert ctx.orders == []
+        assert ctx._blocked_by_ticker["AAA"] == "regime_admission:failed:BULL_CALM"
+
 
 # ── SizeAndEmit Kelly scaling — source-level check ──────────────────────────
 

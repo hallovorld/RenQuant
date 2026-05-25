@@ -148,6 +148,12 @@ class TopUpHeldTask(Task):
                 if t is not None:
                     already_selling.add(t)
         rotation_sells = {p.sell_ticker for p in (getattr(ctx, "rotations", []) or [])}
+        blocked = getattr(ctx, "_blocked_by_ticker", None)
+        if blocked is None:
+            blocked = {}
+            ctx._blocked_by_ticker = blocked  # noqa: SLF001
+        exit_only_tickers = set(getattr(ctx, "_qp_exit_only_tickers", set()) or set())
+        exit_only_reasons = dict(getattr(ctx, "_qp_exit_only_reasons", {}) or {})
 
         added = 0
         # Shared buy budget: Selection/QP/rotation may already have queued
@@ -207,6 +213,9 @@ class TopUpHeldTask(Task):
         for ticker, hs in ctx.holdings.items():
             if ticker in already_buying or ticker in already_selling \
                or ticker in rotation_sells:
+                continue
+            if ticker in exit_only_tickers:
+                blocked[ticker] = exit_only_reasons.get(ticker, "topup_exit_only")
                 continue
             if earnings_check_active and is_earnings_blocked(
                     ticker, today, earnings_calendar, earnings_buf):

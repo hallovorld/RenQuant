@@ -149,6 +149,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   sector ETFs, holdings, benchmark, and the enabled sleeve ticker, with SPY
   falling back to `spy_df`; regression coverage is in
   `tests/test_adapter_context_contract.py`.
+- Non-QP defense-in-depth fixed 2026-05-25: regime admission now evaluates
+  held positions even when there are no new candidates, and marks failed-regime
+  holdings exit-only. Standalone Kelly TopUp now honors that exit-only marker.
+  Production QP already avoided this path, but the fix prevents a future
+  non-QP config or A/B from adding to a holding in a regime where the model
+  evidence has failed.
 - 2026-05-25 contract/audit fixes landed: panel preflight now hard-fails
   full/buy when sentiment feature columns are present but the artifact lacks a
   `sentiment_runtime_gate_contract` while runtime disables sentiment in any
@@ -215,6 +221,15 @@ Make RenQuant 104 scientifically trustworthy end to end:
   - Targeted tests passed:
     `tests/test_adapter_context_contract.py tests/test_benchmark_sleeve.py
     tests/test_no_trade_invariant.py` (`20 passed, 2 skipped`).
+- Latest regime/top-up admission hardening:
+  - `RegimeModelAdmissionTask` no longer returns early when only holdings are
+    present; weak-regime evidence marks holdings exit-only.
+  - `TopUpHeldTask` skips holdings in `_qp_exit_only_tickers`, preserving the
+    model/QP separation invariant outside the active QP path too.
+  - Targeted tests passed:
+    `tests/test_regime_model_admission.py tests/test_kelly_sizing.py
+    tests/test_buy_quality_gates.py tests/test_qp_admission_gate.py
+    tests/test_joint_qp_task.py` (`148 passed`).
 - `81bd338 fix(renquant104): enforce strict model contracts`
   - Hard-fails buy/full preflight on bad or missing WF/SPY/regime
     IC/calibration/config evidence.

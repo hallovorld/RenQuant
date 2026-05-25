@@ -40,9 +40,15 @@ def _metadata(regime: str = "BULL_CALM", *, eligible=True, passed=True) -> dict:
     }
 
 
-def _ctx(metadata: dict, *, regime: str = "BULL_CALM", cfg: dict | None = None):
+def _ctx(
+    metadata: dict,
+    *,
+    regime: str = "BULL_CALM",
+    cfg: dict | None = None,
+    candidates: list | None = None,
+):
     return SimpleNamespace(
-        candidates=[_cand("AAPL"), _cand("MSFT")],
+        candidates=[_cand("AAPL"), _cand("MSFT")] if candidates is None else candidates,
         holdings={},
         config={"ranking": {"panel_scoring": {"regime_admission": cfg or {}}}},
         regime=regime,
@@ -86,6 +92,21 @@ def test_regime_admission_marks_holdings_exit_only_on_failed_regime() -> None:
     assert ctx._qp_exit_only_tickers == {"AAPL"}
     assert ctx._qp_exit_only_reasons == {"AAPL": reason}
     assert ctx._blocked_by_ticker["AAPL"] == reason
+
+
+def test_regime_admission_marks_holdings_exit_only_without_candidates() -> None:
+    holding = SimpleNamespace(ticker="AAPL", rank_score=0.80, panel_score=0.20)
+    ctx = _ctx(_metadata("BEAR"), regime="BULL_CALM", candidates=[])
+    ctx.holdings = {"AAPL": holding}
+
+    RegimeModelAdmissionTask().run(ctx)
+
+    reason = "regime_admission:no_trade_stats:BULL_CALM"
+    assert ctx.candidates == []
+    assert ctx._qp_exit_only_tickers == {"AAPL"}
+    assert ctx._qp_exit_only_reasons == {"AAPL": reason}
+    assert ctx._blocked_by_ticker["AAPL"] == reason
+    assert ctx.counters["regime_admission_blocked"] == 0
 
 
 def test_regime_admission_blocks_ineligible_regime() -> None:

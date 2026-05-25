@@ -1403,7 +1403,9 @@ class RegimeModelAdmissionTask(Task):
     """
 
     def run(self, ctx: InferenceContext) -> bool | None:
-        if not ctx.candidates:
+        candidates = list(getattr(ctx, "candidates", []) or [])
+        holdings = getattr(ctx, "holdings", {}) or {}
+        if not candidates and not holdings:
             return None
         panel_cfg = ctx.config.get("ranking", {}).get("panel_scoring", {})
         cfg = panel_cfg.get("regime_admission", {}) or {}
@@ -1428,11 +1430,10 @@ class RegimeModelAdmissionTask(Task):
             return None
 
         ctx._full_candidate_snapshot = list(getattr(ctx, "_full_candidate_snapshot", None)
-                                            or ctx.candidates)  # noqa: SLF001
+                                            or candidates)  # noqa: SLF001
         blocked = getattr(ctx, "_blocked_by_ticker", None) or {}
-        for cand in ctx.candidates:
+        for cand in candidates:
             blocked[cand.ticker] = reason
-        holdings = getattr(ctx, "holdings", {}) or {}
         if holdings:
             exit_only = set(getattr(ctx, "_qp_exit_only_tickers", set()) or set())
             exit_only_reasons = dict(
@@ -1445,7 +1446,7 @@ class RegimeModelAdmissionTask(Task):
             ctx._qp_exit_only_tickers = exit_only  # noqa: SLF001
             ctx._qp_exit_only_reasons = exit_only_reasons  # noqa: SLF001
         ctx._blocked_by_ticker = blocked  # noqa: SLF001
-        n = len(ctx.candidates)
+        n = len(candidates)
         ctx.candidates = []
         ctx.counters["regime_admission_blocked"] = (
             ctx.counters.get("regime_admission_blocked", 0) + n
