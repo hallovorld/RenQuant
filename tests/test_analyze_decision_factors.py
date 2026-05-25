@@ -4,6 +4,7 @@ from __future__ import annotations
 import pandas as pd
 
 from scripts.analyze_decision_factors import _print_block_outcomes
+from scripts.analyze_decision_factors import resolve_db_path
 
 
 class TestBlockReasonAttribution:
@@ -22,3 +23,15 @@ class TestBlockReasonAttribution:
         assert "(selected)" in out
         assert "tier" in out
         assert "kelly_zero:mu_none" not in out
+
+
+class TestDecisionDbResolution:
+    def test_live_defaults_to_alpaca_broker_db(self):
+        """Regression guard: live diagnostics must read the real broker DB."""
+        assert str(resolve_db_path("live")).endswith("data/runs.alpaca.db")
+
+    def test_local_keeps_legacy_generic_db_available(self):
+        assert str(resolve_db_path("local")).endswith("data/runs.db")
+
+    def test_override_bypasses_source_mapping(self):
+        assert str(resolve_db_path("sim", "tmp/custom.db")).endswith("tmp/custom.db")

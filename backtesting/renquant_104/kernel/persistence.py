@@ -945,6 +945,14 @@ def record_candidate_scores(
     qp_delta_by_ticker = qp_delta_by_ticker or {}
     qp_target_by_ticker = qp_target_by_ticker or {}
     excluded_holding_keys = {str(t).upper() for t in (excluded_holding_tickers or set())}
+
+    def _sector_for(ticker: str) -> str | None:
+        value = sector_map.get(ticker)
+        if isinstance(value, str) and value:
+            return value
+        value = sector_map.get(str(ticker).upper())
+        return value if isinstance(value, str) and value else None
+
     for c in candidates:
         selected = c.ticker in selected_tickers
         rows.append((
@@ -962,7 +970,7 @@ def record_candidate_scores(
             _none_or_int(getattr(c, "expected_return_horizon_days", None)),
             _none_or_float(getattr(c, "kelly_target_pct", None)),
             model_types.get(c.ticker),
-            sector_map.get(c.ticker),
+            _sector_for(c.ticker),
             panel_artifact,
             _none_or_int(getattr(c, "mu_horizon_days", None)),
             _none_or_float(qp_delta_by_ticker.get(c.ticker)),
@@ -986,7 +994,7 @@ def record_candidate_scores(
             _none_or_int(getattr(hs, "expected_return_horizon_days", None)),
             _none_or_float(getattr(hs, "kelly_target_pct", None)),
             model_types.get(ticker),
-            sector_map.get(ticker),
+            _sector_for(ticker),
             panel_artifact,
             _none_or_int(getattr(hs, "mu_horizon_days", None)),
             _none_or_float(qp_delta_by_ticker.get(ticker)),
@@ -1510,6 +1518,21 @@ def decision_trace_integrity_report(
              AND model_type IS NULL""",
         (run_id,),
     ).fetchone()[0]
+    selected_sector_gaps = conn.execute(
+        """SELECT COUNT(*) FROM ticker_daily_state
+           WHERE run_id = ?
+             AND COALESCE(selected, 0) = 1
+             AND (sector IS NULL OR TRIM(sector) = '')""",
+        (run_id,),
+    ).fetchone()[0]
+    candidate_selected_sector_gaps = conn.execute(
+        """SELECT COUNT(*) FROM candidate_scores
+           WHERE run_id = ?
+             AND role = 'candidate'
+             AND COALESCE(selected, 0) = 1
+             AND (sector IS NULL OR TRIM(sector) = '')""",
+        (run_id,),
+    ).fetchone()[0]
 
     trade_rows = conn.execute(
         """SELECT action, shares, gross_pnl, tax, net_pnl_after_tax,
@@ -1608,6 +1631,8 @@ def decision_trace_integrity_report(
         "qp_trade_attribution_gaps": int(qp_trade_attribution_gaps),
         "qp_buy_horizon_gaps": int(qp_buy_horizon_gaps),
         "model_type_gaps": int(model_type_gaps or 0),
+        "selected_sector_gaps": int(selected_sector_gaps or 0),
+        "candidate_selected_sector_gaps": int(candidate_selected_sector_gaps or 0),
         "ok": (
             (not expected or recorded == expected)
             and int(selected_blockers or 0) == 0
@@ -1621,6 +1646,8 @@ def decision_trace_integrity_report(
             and int(qp_trade_attribution_gaps) == 0
             and int(qp_buy_horizon_gaps) == 0
             and int(model_type_gaps or 0) == 0
+            and int(selected_sector_gaps or 0) == 0
+            and int(candidate_selected_sector_gaps or 0) == 0
         ),
     }
 

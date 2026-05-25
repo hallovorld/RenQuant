@@ -290,6 +290,36 @@ class TestCandidateScores:
         assert row[0] == "sector_cap"
         conn.close()
 
+    def test_sector_map_lookup_is_case_stable(self, tmp_path):
+        """Selected rows must keep sector metadata even if ticker case drifts."""
+        from kernel.selection import CandidateResult
+
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        cand = CandidateResult(
+            ticker="bac", raw_score=0.5, rank_score=0.7,
+            rs_score=0.0, detail="", expected_return=0.02,
+        )
+
+        record_candidate_scores(
+            conn,
+            rid,
+            [cand],
+            {},
+            selected_tickers={"bac"},
+            sector_map={"BAC": "finance"},
+        )
+
+        row = conn.execute(
+            """SELECT sector FROM candidate_scores
+               WHERE run_id = ? AND ticker = 'bac'""",
+            (rid,),
+        ).fetchone()
+        assert row[0] == "finance"
+        conn.close()
+
     def test_qp_delta_recorded_for_candidates_and_holdings(self, tmp_path):
         from kernel.selection import CandidateResult
         from kernel.exits import HoldingState
@@ -874,6 +904,7 @@ class TestTrades:
                 "blocked_by": None,
                 "in_universe": 1,
                 "model_type": "xgb",
+                "sector": "tech",
             }],
         )
         record_trades(conn, rid, [{
@@ -918,6 +949,7 @@ class TestTrades:
                 "blocked_by": None,
                 "in_universe": 1,
                 "model_type": "xgb",
+                "sector": "tech",
             }],
         )
         record_trades(conn, rid, [{
@@ -976,6 +1008,40 @@ class TestTrades:
 
         assert report["ok"] is False
         assert report["model_type_gaps"] == 1
+        conn.close()
+
+    def test_decision_trace_integrity_report_flags_selected_sector_gap(self, tmp_path):
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "BAC",
+                "selected": 1,
+                "blocked_by": None,
+                "in_universe": 1,
+                "model_type": "xgb",
+                "sector": None,
+            }],
+        )
+        conn.execute(
+            """INSERT INTO candidate_scores
+               (run_id, ticker, role, selected, blocked_by, sector)
+               VALUES (?, 'BAC', 'candidate', 1, NULL, NULL)""",
+            (rid,),
+        )
+
+        report = decision_trace_integrity_report(
+            conn, rid, expected_watchlist=["BAC"],
+        )
+
+        assert report["ok"] is False
+        assert report["selected_sector_gaps"] == 1
+        assert report["candidate_selected_sector_gaps"] == 1
         conn.close()
 
     def test_validate_decision_trace_integrity_raises_when_strict(self, tmp_path):

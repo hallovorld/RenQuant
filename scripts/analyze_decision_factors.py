@@ -19,6 +19,7 @@ Usage::
     python scripts/analyze_decision_factors.py --horizon 5   # use fwd_5d instead
     python scripts/analyze_decision_factors.py --quantiles 10
     python scripts/analyze_decision_factors.py --since 2026-01-01
+    python scripts/analyze_decision_factors.py --source sim
 """
 from __future__ import annotations
 
@@ -29,6 +30,28 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+SOURCE_DB = {
+    # Live decisions are broker-scoped. The old data/runs.db default is a
+    # generic/local scratch DB and is often empty, which made diagnostics
+    # falsely report "no rows" for real Alpaca decision traces.
+    "live": "data/runs.alpaca.db",
+    "alpaca": "data/runs.alpaca.db",
+    "alpaca-shadow": "data/runs.alpaca_shadow.db",
+    "paper": "data/runs.paper.db",
+    "local": "data/runs.db",
+    "sim": "data/sim_runs.db",
+}
+
+
+def resolve_db_path(source: str, override: str | None = None) -> Path:
+    if override is not None:
+        return REPO_ROOT / override
+    rel = SOURCE_DB.get(source)
+    if rel is None:
+        raise ValueError(f"unknown source: {source}")
+    return REPO_ROOT / rel
 
 
 def _fetch_joined(
@@ -187,9 +210,10 @@ def _print_block_outcomes(df: "pd.DataFrame") -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--source", choices=["live", "sim"], default="live",
-                   help="Read live decision traces (data/runs.db, default) or "
-                        "the ephemeral notebook-sim DB (data/sim_runs.db).")
+    p.add_argument("--source", choices=sorted(SOURCE_DB), default="live",
+                   help="Read a decision-trace DB. Default live maps to "
+                        "data/runs.alpaca.db; local maps to data/runs.db; "
+                        "sim maps to data/sim_runs.db.")
     p.add_argument("--db", default=None,
                    help="Override path; bypasses --source mapping.")
     p.add_argument("--horizon", type=int, default=10, choices=[1, 5, 10, 20])
@@ -201,12 +225,7 @@ def main() -> None:
                    help="rank_score cut points for tier realization table.")
     args = p.parse_args()
 
-    if args.db is not None:
-        db_path = REPO_ROOT / args.db
-    else:
-        db_path = REPO_ROOT / (
-            "data/sim_runs.db" if args.source == "sim" else "data/runs.db"
-        )
+    db_path = resolve_db_path(args.source, args.db)
     if not db_path.exists():
         print(f"ERROR: DB not found at {db_path}", file=sys.stderr)
         sys.exit(1)

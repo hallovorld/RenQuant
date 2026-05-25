@@ -98,6 +98,15 @@ def _score_value(src: Any, snap: dict[str, Any], name: str) -> Any:
     return value if value is not None else snap.get(name)
 
 
+def _sector_for(ticker: str, sector_map: dict[str, str]) -> str | None:
+    value = sector_map.get(ticker)
+    if isinstance(value, str) and value:
+        return value
+    upper = str(ticker).upper()
+    value = sector_map.get(upper)
+    return value if isinstance(value, str) and value else None
+
+
 def build_ticker_daily_state_rows(
     *,
     config: dict,
@@ -200,7 +209,7 @@ def build_ticker_daily_state_rows(
             "in_candidates": 1 if cand is not None else 0,
             "selected": 1 if tk in selected_tickers else 0,
             "blocked_by": blocked_str,
-            "sector": sector_map.get(tk),
+            "sector": _sector_for(tk, sector_map),
             "qp_delta_w": qp_delta_by_ticker.get(tk),
             "qp_target_w": qp_target_by_ticker.get(tk),
             "qp_status": qp_status,
