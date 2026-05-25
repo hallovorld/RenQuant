@@ -1318,6 +1318,22 @@ class SolveMarkowitzQPTask(Task):
         backend, _solve = self._pick_backend(cfg)
         kwargs = self._build_solver_kwargs(ctx, cfg)
         if backend == "cvxportfolio":
+            unsupported = self._unsupported_cvxportfolio_constraints(kwargs)
+            if unsupported:
+                sol = self._unsupported_cvxportfolio_solution(kwargs, unsupported)
+                ctx._qp_solution = sol  # noqa: SLF001
+                ctx._qp_status = sol.status  # noqa: SLF001
+                ctx._qp_diagnostics = dict(sol.diagnostics)  # noqa: SLF001
+                ctx._qp_failure_reason = f"qp_global:{sol.status}"  # noqa: SLF001
+                _stamp_all_qp_blocks(ctx, ctx._qp_failure_reason)
+                ctx._qp_n_buys = 0  # noqa: SLF001
+                ctx._qp_n_sells = 0  # noqa: SLF001
+                log.error(
+                    "cvxportfolio backend cannot enforce hard QP constraints "
+                    "%s — strict policy blocks QP orders for this bar",
+                    unsupported,
+                )
+                return False
             self._strip_kwargs_for_cvxportfolio(kwargs, ctx)
         sol = _solve(**kwargs)
         sol = _retry_with_relaxed_c2_caps(
@@ -1396,10 +1412,42 @@ class SolveMarkowitzQPTask(Task):
         )
 
     @staticmethod
+    def _unsupported_cvxportfolio_constraints(kwargs: dict) -> list[str]:
+        unsupported: list[str] = []
+        if kwargs.get("sector_indicator") is not None:
+            unsupported.append("sector_cap")
+        if kwargs.get("corr_group_pairs"):
+            unsupported.append("correlation_cap")
+        if kwargs.get("gross_max") is not None:
+            unsupported.append("gross_max")
+        return unsupported
+
+    @staticmethod
+    def _unsupported_cvxportfolio_solution(kwargs: dict, unsupported: list[str]):
+        from kernel.portfolio_qp.qp_solver import QPSolution  # noqa: PLC0415
+        w_current = np.asarray(kwargs.get("w_current"), dtype=float)
+        if w_current.ndim != 1:
+            w_current = np.zeros(0)
+        return QPSolution(
+            delta_w=np.zeros_like(w_current),
+            target_w=w_current.copy(),
+            objective=0.0,
+            n_iter=-1,
+            status="infeasible:cvxportfolio_unsupported_constraints",
+            diagnostics={
+                "backend": "cvxportfolio",
+                "unsupported_hard_constraints": list(unsupported),
+            },
+        )
+
+    @staticmethod
     def _strip_kwargs_for_cvxportfolio(kwargs: dict, ctx) -> None:
-        """cvxportfolio backend doesn't accept the post-2026-05-10 linear
-        constraints (sector/corr/gross_max) — strip them so it doesn't
-        TypeError. Falls back to soft diversification via Σ shrinkage."""
+        """Strip kwargs unsupported by cvxportfolio after hard-constraint precheck.
+
+        Sector/correlation/gross constraints must already be absent here.
+        The strict precheck above blocks if they are present, so this helper
+        only removes explicit ``None`` placeholders and optional metadata.
+        """
         kwargs["tickers"] = _get_path(ctx, "_qp_tickers")
         kwargs.pop("sector_indicator", None)
         kwargs.pop("sector_cap_vec", None)

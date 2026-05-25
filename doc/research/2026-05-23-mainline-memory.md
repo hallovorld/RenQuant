@@ -2375,6 +2375,14 @@ Operational conclusion:
   and blocks QP orders for the bar. Explicit `relax`/`drop` remains available
   only for diagnostic configs. Validation: QP sector/correlation/admission/
   integration/contract tests passed (`70 passed`).
+- Follow-up QP backend-boundary bug found: the optional `cvxportfolio`
+  backend cannot enforce the project-specific hard sector, correlation, and
+  gross-exposure constraints. The previous shim stripped those kwargs before
+  solving, so a backend-switch experiment could silently compare a weaker risk
+  contract. `SolveMarkowitzQPTask` now fails closed with
+  `infeasible:cvxportfolio_unsupported_constraints` whenever those hard
+  constraints are present. Validation: backend-switch, cvxportfolio parity,
+  sector, and correlation tests passed (`48 passed`).
 
 ## Stop Conditions
 

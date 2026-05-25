@@ -84,6 +84,22 @@ class TestBackendSwitch:
             "cvxportfolio.SinglePeriodOpt"
         )
 
+    def test_cvxportfolio_blocks_when_hard_constraints_present(self):
+        from kernel.portfolio_qp.tasks import SolveMarkowitzQPTask
+        ctx = _make_ctx(backend="cvxportfolio")
+        ctx._qp_sector_indicator = np.ones((1, 5))
+        ctx._qp_sector_cap_vec = np.array([0.30])
+
+        SolveMarkowitzQPTask().run(ctx)
+
+        assert ctx._qp_solution.status == "infeasible:cvxportfolio_unsupported_constraints"
+        assert ctx._qp_solution.diagnostics["unsupported_hard_constraints"] == [
+            "sector_cap",
+        ]
+        assert ctx._qp_failure_reason == (
+            "qp_global:infeasible:cvxportfolio_unsupported_constraints"
+        )
+
     def test_case_insensitive(self):
         """Config string is normalised to lowercase — `CVXPortfolio`,
         `CVXPY`, etc. all route correctly."""
