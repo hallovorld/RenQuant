@@ -2407,6 +2407,20 @@ Operational conclusion:
   `event_cash_debit` spelling is accepted only as an explicit alias.
   Validation: vectorbt long-P&L cross-check, sim result tax reporting, and WF
   config parity tests passed (`23 passed`).
+- Follow-up data/trace bug found: buy-universe construction correctly excluded
+  loaded models whose OHLCV was missing, but the decision trace could later
+  label the ticker `no_model_signal`. That is false: the model was present but
+  the data was absent. Full inference now stamps `missing_ohlcv` before the
+  buy scan, and ticker-daily-state preserves that reason.
+- Follow-up data-freshness bug found: an entirely empty `ctx.ohlcv` was allowed
+  to pass the freshness gate whenever downstream code was expected to fail.
+  That was acceptable for minimal test stubs but unsafe for production configs
+  with a watchlist/holdings. The gate now derives expected symbols from the
+  watchlist, held tickers, benchmark, and sector ETFs; if any expected symbol
+  is absent, buy/full and sell-only paths fail closed before decisions.
+  Validation: data freshness, typed adapter, missing-OHLCV trace, buy-universe,
+  LEAN trace, and persistence suites passed (`44 + 44 passed` across the two
+  targeted runs).
 
 ## Stop Conditions
 

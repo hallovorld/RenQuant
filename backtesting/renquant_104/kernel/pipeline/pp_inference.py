@@ -156,6 +156,41 @@ def _buy_universe(ctx: InferenceContext) -> list[str]:
             and t not in pending_at_broker and t in ctx.ohlcv]
 
 
+def _mark_missing_buy_ohlcv(ctx: InferenceContext) -> None:
+    """Persist a precise trace reason for loaded models missing OHLCV.
+
+    `_buy_universe` must exclude tickers with no price history, but the
+    decision trace should not later call that a model no-signal event.
+    """
+    blocked_map = getattr(ctx, "_blocked_by_ticker", None)
+    if blocked_map is None:
+        blocked_map = {}
+        ctx._blocked_by_ticker = blocked_map  # noqa: SLF001
+    held = set(ctx.holdings.keys())
+    pending_at_broker = set(getattr(ctx, "pending_broker_tickers", None) or [])
+    from .task_benchmark_sleeve import (  # noqa: PLC0415
+        benchmark_sleeve_ticker,
+        exclude_benchmark_sleeve_from_alpha,
+    )
+    sleeve_ticker = (
+        benchmark_sleeve_ticker(ctx) if exclude_benchmark_sleeve_from_alpha(ctx)
+        else None
+    )
+    missing = [
+        t for t in (ctx.models or {})
+        if t not in held
+        and t != sleeve_ticker
+        and t not in pending_at_broker
+        and t not in (ctx.ohlcv or {})
+    ]
+    for ticker in missing:
+        blocked_map.setdefault(ticker, "missing_ohlcv")
+    if missing:
+        ctx.counters["missing_ohlcv"] = (
+            ctx.counters.get("missing_ohlcv", 0) + len(missing)
+        )
+
+
 def _sell_universe(ctx: InferenceContext) -> list[str]:
     from .task_benchmark_sleeve import (  # noqa: PLC0415
         benchmark_sleeve_ticker,
@@ -209,6 +244,8 @@ class InferencePipeline:
                 ctx._challenger_warned_once = True   # noqa: SLF001
         except Exception:
             pass    # never let observability break the pipeline
+
+        _mark_missing_buy_ohlcv(ctx)
 
         # 2026-05-03 P0 incident: panel pipeline ingested through Thursday
         # only, model + inference ran on stale data, 6 live orders went out

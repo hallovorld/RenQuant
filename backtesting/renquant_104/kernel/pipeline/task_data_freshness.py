@@ -50,7 +50,17 @@ class DataFreshnessGateTask(Task):
             return True
 
         ohlcv = getattr(ctx, "ohlcv", None) or {}
+        expected_symbols = self._expected_symbols(ctx, cfg)
         if not ohlcv:
+            if expected_symbols:
+                sample = ", ".join(sorted(expected_symbols)[:10])
+                msg = (
+                    "DataFreshnessGateTask: OHLCV missing — expected market "
+                    f"data for {len(expected_symbols)} symbol(s). Sample: {sample}. "
+                    "Refusing to submit any orders."
+                )
+                log.error(msg)
+                raise RuntimeError(msg)
             # Empty ohlcv is a different bug class (missing fetch) — downstream
             # tasks (RegimeJob loading SPY etc) raise their own errors. This
             # gate's scope is STALENESS only. Log + continue keeps test stubs
@@ -71,6 +81,19 @@ class DataFreshnessGateTask(Task):
                 "before %s — degenerate calendar; skipping check.", ref_date
             )
             return True
+
+        missing_expected = sorted(s for s in expected_symbols if s not in ohlcv)
+        if missing_expected:
+            sample = ", ".join(missing_expected[:10])
+            n = len(missing_expected)
+            msg = (
+                f"DataFreshnessGateTask: OHLCV MISSING — {n} expected symbol(s) "
+                f"are absent from ctx.ohlcv. Sample: {sample}"
+                + (f" (+{n - 10} more)" if n > 10 else "")
+                + ". Refusing to submit any orders."
+            )
+            log.error(msg)
+            raise RuntimeError(msg)
 
         stale_syms: list[tuple[str, _dt.date]] = []
         for sym, df in ohlcv.items():
@@ -108,6 +131,27 @@ class DataFreshnessGateTask(Task):
             len(ohlcv), last_close,
         )
         return True
+
+    @staticmethod
+    def _expected_symbols(ctx, cfg: dict) -> set[str]:
+        if cfg.get("require_expected_symbols", True) is False:
+            return set()
+        config = getattr(ctx, "config", {}) or {}
+        explicit = cfg.get("expected_symbols")
+        if explicit:
+            return {str(s) for s in explicit if s}
+        watchlist = list(config.get("watchlist", []) or [])
+        holdings = list(getattr(ctx, "holdings", {}) or [])
+        if not watchlist and not holdings:
+            return set()
+        expected = {str(s) for s in watchlist + holdings if s}
+        benchmark = config.get("benchmark", "SPY")
+        if benchmark:
+            expected.add(str(benchmark))
+        for sym in (config.get("sector_etf_map", {}) or {}).values():
+            if sym:
+                expected.add(str(sym))
+        return expected
 
     @staticmethod
     def _ref_date(today, ref_ts: pd.Timestamp | None = None) -> _dt.date:

@@ -199,6 +199,23 @@ class TestDataFreshnessGateTask(unittest.TestCase):
         # Should not raise — gate logs warning and defers to downstream.
         self.Task().run(self.ctx)
 
+    def test_empty_ohlcv_with_expected_symbols_raises(self) -> None:
+        """Production configs with a watchlist must not trade with no data."""
+        self.ctx.config = {"watchlist": ["AAPL", "MSFT"], "benchmark": "SPY"}
+        self.ctx.ohlcv = {}
+        with self.assertRaises(RuntimeError) as cm:
+            self.Task().run(self.ctx)
+        self.assertIn("OHLCV missing", str(cm.exception))
+        self.assertIn("AAPL", str(cm.exception))
+
+    def test_missing_expected_symbol_raises(self) -> None:
+        self.ctx.config = {"watchlist": ["AAPL", "MSFT"], "benchmark": "SPY"}
+        self.ctx.ohlcv = self._ohlcv({"AAPL": "2026-05-01", "SPY": "2026-05-01"})
+        with self.assertRaises(RuntimeError) as cm:
+            self.Task().run(self.ctx)
+        self.assertIn("OHLCV MISSING", str(cm.exception))
+        self.assertIn("MSFT", str(cm.exception))
+
     def test_ctx_today_governs_reference_date(self) -> None:
         """For a backtest at ctx.today=2024-06-15, panel up to 2024-06-14 passes."""
         self.ctx.today = _dt.date(2024, 6, 15)  # Saturday
