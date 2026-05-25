@@ -2081,10 +2081,11 @@ class EmitOrdersFromQPSolutionTask(Task):
             holdings_set=set((ctx.holdings or {}).keys()),
             holdings=(ctx.holdings or {}),
             max_positions=_qp_max_positions(ctx),
-            # 2026-05-17 min_share_floor for high-price stocks. See
-            # _emit_orders_loop comment for rationale. Defaults: floor 5%,
-            # ceiling 15%. Disable by setting floor=0.0.
-            min_share_floor_pct=float(cfg.get("qp_min_share_floor_pct", 0.05)),
+            # 2026-05-24 safety hardening: disabled by default. Whole-share
+            # rounding must not turn a sub-1-share optimizer target into an
+            # over-target trade. Use fractional shares or a true MIP lot-size
+            # optimizer before re-enabling this exploratory override.
+            min_share_floor_pct=float(cfg.get("qp_min_share_floor_pct", 0.0)),
             min_share_ceiling_pct=float(cfg.get("qp_min_share_ceiling_pct", 0.15)),
             defensive_set=set((ctx.config or {}).get("defensive_tickers", []) or []),
             bear_only=bool(getattr(ctx, "bear_only", False)),
@@ -2182,14 +2183,13 @@ class EmitOrdersFromQPSolutionTask(Task):
                 # dollar budget (target_w × NAV) gets silently dropped — for a
                 # $10k account this blocks EQIX ($1059), BKNG ($5k), NVR ($8k),
                 # etc. entirely, biasing the strategy toward low-price names.
-                # Fix: if 1 share's weight is in [floor, ceiling], allow buying
-                # 1 share. ceiling caps the over-allocation vs intended target.
-                # Default range [5%, 15%]: floor 5% = minimum-conviction
-                # opening threshold; ceiling 15% < the `max_position_pct=20%`
-                # golden cap leaves safety buffer. Portfolio-construction
-                # engineering choices, not academic — exploratory per
-                # CLAUDE.md §5.12. (Proper fix is fractional-share support
-                # via Alpaca; out of today's scope.)
+                # 2026-05-24 audit: this is now an explicit experiment only
+                # (default floor=0). Markowitz/Boyd-style constrained QP
+                # weights are the contract; integer execution may round down
+                # to stay feasible, but rounding up to one share can exceed
+                # the optimizer target/cap and manufacture an unintended
+                # trade. Mature fixes are fractional-share execution or a
+                # mixed-integer lot-size optimizer, not silent over-allocation.
                 floor   = env["min_share_floor_pct"]
                 ceiling = env["min_share_ceiling_pct"]
                 if floor > 0:

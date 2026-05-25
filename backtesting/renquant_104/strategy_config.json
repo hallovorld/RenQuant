@@ -655,6 +655,8 @@
       "qp_dw_max": 0.5,
       "qp_min_dw_pct": 0.02,
       "_qp_min_dw_pct_reason": "2026-05-04: raised 0.005\u21920.02 to stop QP micro-trim (was killing strategy via 91 sub-$500 sells with full ST tax + slippage; sells avg +13% gross but net -3.6%).",
+      "qp_min_share_floor_pct": 0.0,
+      "_qp_min_share_floor_pct_reason": "2026-05-24 Codex QP safety fix: disabled whole-share floor. Continuous Markowitz/Boyd QP weights are the constraint contract; integer execution may round down when target delta is below one share, but must not round up to one share and exceed solver target/caps. Re-enable only with fractional-share execution or a mixed-integer lot-size optimizer.",
       "qp_admission_gate": {
         "enabled": true,
         "min_rank_score": 0.55,

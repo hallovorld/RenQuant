@@ -2585,6 +2585,17 @@ entire pipeline end-to-end:
   defaults for truly old rows, then `record_ticker_daily_state()` can persist
   current 60d horizons normally. Validation: persistence, candidate-score,
   ticker-daily-state, and decision-trace-horizon tests passed (`23 passed`).
+- New QP integer-execution bug found by sidecar audit and fixed: the
+  `qp_min_share_floor` path could turn a positive solver delta that rounded to
+  zero shares into a forced 1-share buy when one share was 5-15% of NAV. This
+  helped high-priced stocks enter small accounts, but it violated the QP
+  target/cap contract and could manufacture trades larger than the optimizer's
+  intended allocation. Production/golden config now sets
+  `qp_min_share_floor_pct=0.0`, and the code default is disabled; sub-1-share
+  deltas round down to `qp_zero_shares` unless a future experiment uses
+  fractional-share execution or a true mixed-integer lot-size optimizer.
+  Validation: QP min-share, QP admission, and WF-config parity tests passed
+  (`38 passed`).
 
 ## Stop Conditions
 

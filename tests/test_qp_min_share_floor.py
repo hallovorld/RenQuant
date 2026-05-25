@@ -1,4 +1,4 @@
-"""Tests for the QP min_share_floor (2026-05-17 EQIX-class fix).
+"""Tests for the QP min_share_floor guard.
 
 Pre-fix: any candidate whose share price exceeded the QP's dollar budget
 (target_w × NAV) had `_shares_from_dw` return 0 → silently dropped at the
@@ -6,15 +6,20 @@ Pre-fix: any candidate whose share price exceeded the QP's dollar budget
 ($1059/share), BKNG ($5k), NVR ($8k), etc. entirely — biasing the
 strategy toward low-price names.
 
-Fix: when shares=0 BUT (1-share weight ∈ [floor, ceiling]), allow buying
-1 share. Defaults: floor=5%, ceiling=15% (avoid blowing the position cap
-on a $1500 share for a $10k acct).
+2026-05-24 safety fix: the old default rounded sub-1-share QP targets up
+to 1 share when one-share weight was within [floor, ceiling]. That violates
+the optimizer target/cap contract. Default is now disabled; explicit
+experimental enablement still retains the BUY-only and ceiling guards.
 
 Invariant: this only fires on BUY intent (dw > 0) and never on SELL.
 """
 from __future__ import annotations
+
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
@@ -24,7 +29,7 @@ TASKS_SRC = TASKS_PATH.read_text()
 
 
 class TestQpMinShareFloor:
-    """2026-05-17 EQIX-class fix — small-acct + high-price stocks."""
+    """Integer execution must not overrule QP targets by default."""
 
     def test_fix_tag_present(self):
         assert "QP_MIN_SHARE_FLOOR" in TASKS_SRC
@@ -49,12 +54,12 @@ class TestQpMinShareFloor:
             "ceiling must prevent buying 1 share when it'd exceed max_position cap"
         assert "floor <= one_share_pct" in nearby
 
-    def test_defaults_are_safe(self):
-        """floor=0.05 (5%) ceiling=0.15 (15%) — defensible defaults."""
-        assert '0.05' in TASKS_SRC.split("qp_min_share_floor_pct")[1][:200], \
-            "default floor should be 5%"
+    def test_default_is_disabled(self):
+        """Integer execution must not round a sub-1-share QP target upward."""
+        assert '0.0' in TASKS_SRC.split("qp_min_share_floor_pct")[1][:200], \
+            "default floor should be disabled"
         assert '0.15' in TASKS_SRC.split("qp_min_share_ceiling_pct")[1][:200], \
-            "default ceiling should be 15%"
+            "legacy experiment ceiling should remain explicit"
 
     def test_disable_via_floor_zero(self):
         """Setting floor=0 must disable the feature (regression guard)."""
@@ -62,6 +67,69 @@ class TestQpMinShareFloor:
         nearby = TASKS_SRC[snippet_start - 600: snippet_start + 200]
         assert "if floor > 0" in nearby, \
             "floor=0 must skip the min-share path (disable knob)"
+
+    def test_disabled_default_rounds_down_sub_share_qp_target(self):
+        """Do not manufacture a 1-share buy beyond the solver delta."""
+        from kernel.portfolio_qp.tasks import EmitOrdersFromQPSolutionTask
+
+        cand = SimpleNamespace(
+            ticker="EQIX",
+            rank_score=0.80,
+            panel_score=0.20,
+            mu=0.04,
+            sigma=0.20,
+        )
+        ctx = SimpleNamespace(
+            config={},
+            orders=[],
+            exits=[],
+            holdings={},
+            candidates=[cand],
+            counters={},
+            _blocked_by_ticker={},
+        )
+        env = {
+            "cfg": {},
+            "sol": SimpleNamespace(
+                status="optimal",
+                delta_w=np.array([0.04]),
+                target_w=np.array([0.04]),
+            ),
+            "tickers": ["EQIX"],
+            "prices": {"EQIX": 1059.0},
+            "nav": 10_000.0,
+            "cash": 10_000.0,
+            "cash_actual": 10_000.0,
+            "cash_reserve": 0.0,
+            "buy_cost_multiplier": 1.0,
+            "min_dw": 0.02,
+            "no_trade_factor": 0.0,
+            "band_cap": 0.05,
+            "sigma_vec": np.array([0.20]),
+            "cands": {"EQIX": cand},
+            "score_sources": {"EQIX": cand},
+            "buy_blocked": False,
+            "buys_gated": False,
+            "earnings_cal": {},
+            "earn_buf": 0,
+            "today": None,
+            "holdings_set": set(),
+            "holdings": {},
+            "max_positions": 8,
+            "min_share_floor_pct": 0.0,
+            "min_share_ceiling_pct": 0.15,
+            "defensive_set": set(),
+            "bear_only": False,
+            "preexisting_exit_tickers": set(),
+            "emitted_new_tickers": set(),
+        }
+
+        nb, ns, counters = EmitOrdersFromQPSolutionTask._emit_orders_loop(ctx, env)
+
+        assert (nb, ns) == (0, 0)
+        assert counters["zero_shares"] == 1
+        assert ctx.orders == []
+        assert ctx._blocked_by_ticker["EQIX"] == "qp_zero_shares"
 
 
 class TestDeepDrawdownVetoDisabled:
