@@ -155,6 +155,12 @@ Make RenQuant 104 scientifically trustworthy end to end:
   Production QP already avoided this path, but the fix prevents a future
   non-QP config or A/B from adding to a holding in a regime where the model
   evidence has failed.
+- Buy-emitter contract hardened 2026-05-25: the previous source-level contract
+  still allowlisted greedy `SizeAndEmitTask`, `EmitRotationsTask`, and greedy
+  `JointActionTask` as "production dormant" paths. That allowlist is gone.
+  Every class that appends buy orders must explicitly check both `buy_blocked`
+  and `skip_buys`; rotation and greedy joint action now suppress buy/rotation
+  legs under those gates while preserving sell-only actions where applicable.
 - 2026-05-25 contract/audit fixes landed: panel preflight now hard-fails
   full/buy when sentiment feature columns are present but the artifact lacks a
   `sentiment_runtime_gate_contract` while runtime disables sentiment in any
@@ -230,6 +236,20 @@ Make RenQuant 104 scientifically trustworthy end to end:
     `tests/test_regime_model_admission.py tests/test_kelly_sizing.py
     tests/test_buy_quality_gates.py tests/test_qp_admission_gate.py
     tests/test_joint_qp_task.py` (`148 passed`).
+- Latest buy-emitter gate hardening:
+  - `EmitRotationsTask` suppresses the whole rotation pair when `bear_only`,
+    `skip_buys`, or `buy_blocked` is active, so it never emits an orphan sell
+    plus blocked buy.
+  - Greedy `JointActionTask` now sets `buys_gated` and builds only sell actions
+    when `skip_buys`/`buy_blocked` is active.
+  - `tests/test_buy_emit_contract.py` no longer has known-gap allowlists; all
+    buy emitters must mention both `buy_blocked` and `skip_buys`.
+  - Targeted tests passed:
+    `tests/test_buy_emit_contract.py tests/test_kelly_sizing.py
+    tests/test_joint_actions.py tests/test_thesis_rotation.py
+    tests/test_rotation_atomic.py tests/test_benchmark_sleeve.py
+    tests/test_qp_admission_gate.py tests/test_joint_qp_task.py`
+    (`174 passed`).
 - `81bd338 fix(renquant104): enforce strict model contracts`
   - Hard-fails buy/full preflight on bad or missing WF/SPY/regime
     IC/calibration/config evidence.

@@ -710,6 +710,32 @@ class EmitRotationsTask(Task):
 
         if not ctx.rotations:
             return
+        bear_only = bool(getattr(ctx, "bear_only", False))
+        if bear_only or getattr(ctx, "skip_buys", False) \
+           or getattr(ctx, "buy_blocked", False):
+            reason = (
+                "bear_only" if bear_only else
+                "skip_buys" if getattr(ctx, "skip_buys", False) else
+                "buy_blocked"
+            )
+            if not hasattr(ctx, "rotations_blocked"):
+                ctx.rotations_blocked = []
+            for pair in ctx.rotations:
+                ctx.rotations_blocked.append({
+                    "sell": pair.sell_ticker,
+                    "buy": pair.buy_ticker,
+                    "reason": reason,
+                })
+                blocked = getattr(ctx, "_blocked_by_ticker", None)
+                if blocked is None:
+                    blocked = {}
+                    ctx._blocked_by_ticker = blocked  # noqa: SLF001
+                blocked.setdefault(pair.buy_ticker, reason)
+            log.info(
+                "EmitRotationsTask: %s — suppressed %d rotation buy(s)",
+                reason, len(ctx.rotations),
+            )
+            return False
 
         # Hoisted for use inside the per-pair loop (PR1-CASH fix).
         rotation_cfg = ctx.config.get("rotation", {})

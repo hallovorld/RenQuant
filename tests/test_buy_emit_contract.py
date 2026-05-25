@@ -57,46 +57,13 @@ def test_every_buy_emitter_checks_buy_blocked_or_skip_buys():
         if not path.exists():
             continue
         for class_name, body in _emit_class_bodies(path).items():
-            has_explicit_gate = (
-                "buy_blocked" in body
-                or "skip_buys" in body
-                or "bear_only" in body
-                or "buys_gated" in body
-            )
+            has_explicit_gate = "buy_blocked" in body and "skip_buys" in body
             if not has_explicit_gate:
                 violations.append((path.name, class_name))
 
-    # As of 2026-05-05, expected GATED emitters:
-    #   TopUpHeldTask                  — checks bear_only/skip_buys/buy_blocked
-    #   SizeAndEmitTask                — Phase 2b skip implicit; we still want explicit
-    #   EmitRotationsTask              — currently NOT gated → known issue, allowlist
-    #   JointActionTask                — greedy fallback, gated by joint_actions.enabled
-    #   EmitOrdersFromQPSolutionTask   — checks both buy_blocked + skip_buys
-    #
-    # Allowlist below documents known-but-low-priority cases. Removing
-    # an entry asserts the class is now gated.
-    KNOWN_GAPS = {
-        # (filename, classname): reason
-        ("task_rotation.py", "EmitRotationsTask"):
-            "Rotation buys not gated yet — only fires under greedy "
-            "(joint_actions.enabled=False), which production does NOT use. "
-            "TODO: add explicit gate so safe under any solver.",
-        ("task_selection.py", "SizeAndEmitTask"):
-            "Greedy SizeAndEmit reads ctx.ranked which is empty when "
-            "Phase 2b skipped (buy_blocked path); production uses QP "
-            "not greedy. TODO: add explicit gate for defense-in-depth.",
-        ("task_joint_actions.py", "JointActionTask"):
-            "Greedy fallback when solver != qp. Production uses solver=qp "
-            "→ this code path is dormant. TODO: add explicit gate.",
-    }
-
-    real_violations = [
-        v for v in violations if (v[0], v[1]) not in KNOWN_GAPS
-    ]
-    assert not real_violations, (
-        f"Unexpected buy-emit class lacks buy_blocked/skip_buys/bear_only "
-        f"check: {real_violations}. Either add the gate or update the "
-        f"KNOWN_GAPS allowlist with a clear reason."
+    assert not violations, (
+        f"Unexpected buy-emit class lacks both buy_blocked and skip_buys "
+        f"check: {violations}. Add the gate before the emitter can ship."
     )
 
 

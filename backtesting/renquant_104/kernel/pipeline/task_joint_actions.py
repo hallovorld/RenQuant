@@ -191,6 +191,18 @@ class JointActionTask(Task):
             # offensive regimes (matches RotationJob.should_skip behaviour).
             log.info("JointActionJob: BEAR — defer to legacy SelectionJob")
             return False
+        buys_gated = bool(getattr(ctx, "skip_buys", False)) \
+            or bool(getattr(ctx, "buy_blocked", False))
+        if buys_gated:
+            reason = (
+                "skip_buys" if getattr(ctx, "skip_buys", False)
+                else "buy_blocked"
+            )
+            log.info(
+                "JointActionJob: %s — suppressing greedy buys/rotations; "
+                "sell actions remain eligible",
+                reason,
+            )
 
         # ── Configuration ────────────────────────────────────────────────
         fee_pct      = float(joint_cfg.get("fee_pct", 0.0005))
@@ -250,9 +262,11 @@ class JointActionTask(Task):
         pending_at_broker: set[str] = set(
             getattr(ctx, "pending_broker_tickers", None) or []
         )
-        eligible_cands = [c for c in ctx.ranked
-                          if c.ticker not in held_set
-                          and c.ticker not in pending_at_broker]
+        eligible_cands = [] if buys_gated else [
+            c for c in ctx.ranked
+            if c.ticker not in held_set
+            and c.ticker not in pending_at_broker
+        ]
         if pending_at_broker:
             log.info(
                 "JointActionJob: BROKER-PRECHECK excluded %d cand(s) "
@@ -393,7 +407,9 @@ class JointActionTask(Task):
         # when max_rot_bar=0, no rotation can fire. Skip menu generation
         # entirely so Bug MM's defer-for-rotate logic doesn't strand a
         # SELL waiting on an impossible rotation.
-        rotate_holdings = ctx.holdings.items() if max_rot_bar > 0 else []
+        rotate_holdings = (
+            ctx.holdings.items() if max_rot_bar > 0 and not buys_gated else []
+        )
         for h_t, h in rotate_holdings:
             if h_t in prior_exit_tickers:
                 continue
