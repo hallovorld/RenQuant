@@ -166,6 +166,21 @@ class TestShortCoverTax:
         assert [e["action"] for e in adapter._trade_log] == ["short_cover"]
         assert adapter._trade_log[0]["partial"] is True
 
+    def test_short_cover_is_not_blocked_by_long_buying_power_gate(self):
+        adapter, today = _mk_adapter_with_short(
+            short_shares=100, short_entry=150.0, cover_price=120.0, cash=1_000.0,
+        )
+        ctx = SimpleNamespace(config={"tax": {
+            "short_term_rate": 0.50,
+            "long_term_rate": 0.32,
+            "long_term_threshold_days": 365,
+        }})
+
+        adapter._apply_buy({"ticker": "AAPL", "shares": 100, "price": 120.0}, today, ctx)
+
+        assert "AAPL" not in adapter._holdings
+        assert [e["action"] for e in adapter._trade_log] == ["short_cover"]
+
     def test_over_cover_closes_short_and_opens_clean_long_residual(self):
         adapter, today = _mk_adapter_with_short(
             short_shares=100, short_entry=150.0, cover_price=120.0,

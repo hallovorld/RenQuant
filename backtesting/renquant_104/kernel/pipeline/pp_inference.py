@@ -308,6 +308,13 @@ class InferencePipeline:
         from .task_limit_sells import LimitSellsPerBarTask  # noqa: PLC0415
         LimitSellsPerBarTask().run(ctx)
 
+        # Long-short research path: a short position must have a symmetric
+        # buy-to-cover risk stop before any new alpha buys/QP sizing happen.
+        # Live and LEAN currently declare supports_short_open=False, so this is
+        # active only for sim research unless backend parity is added.
+        from .task_short_cover import ShortCoverStopLossTask  # noqa: PLC0415
+        ShortCoverStopLossTask().run(ctx)
+
         score_db_cfg = ctx.config.get("score_db") or {}
         scan_when_buy_blocked = bool(score_db_cfg.get("scan_when_buy_blocked", True))
         audit_scan = bool(ctx.buy_blocked and not ctx.bear_only and scan_when_buy_blocked)

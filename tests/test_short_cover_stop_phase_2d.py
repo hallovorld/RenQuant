@@ -1,14 +1,10 @@
-"""Phase 2D unit tests — short cover stop-loss + IRC §1233 marker.
-
-NOT YET WIRED into the pipeline. Tests prove the tasks behave correctly
-when called; wiring is a separate operator decision per
-backtesting/renquant_104/kernel/pipeline/task_short_cover.py docstring.
-"""
+"""Phase 2D unit tests — short cover stop-loss + IRC §1233 marker."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import inspect
 
 import numpy as np
 import pandas as pd
@@ -19,7 +15,7 @@ sys.path.insert(0, str(REPO_ROOT / "backtesting" / "renquant_104"))
 
 
 def _short(qty, entry):
-    return SimpleNamespace(qty=qty, entry_price=entry)
+    return SimpleNamespace(qty=qty, shares=qty, entry_price=entry)
 
 
 def _ohlcv(price):
@@ -34,19 +30,19 @@ class TestShortCoverStopLoss:
         from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
         ctx = SimpleNamespace(
             config={"risk": {"short_cover_stop_pct": 0.15}},
-            short_holdings={"X": _short(qty=-10, entry=100.0)},
+            holdings={"X": _short(qty=-10, entry=100.0)},
             ohlcv={"X": _ohlcv(115.0)},  # +15% from entry = -15% for short
-            exits=[], counters={},
+            orders=[], counters={},
         )
         ShortCoverStopLossTask().run(ctx)
-        assert len(ctx.exits) == 1
-        ticker, sig = ctx.exits[0]
-        assert ticker == "X"
-        assert sig.reason == "short_cover_stop"
-        assert sig.qty == 10  # POSITIVE (buy_to_close)
-        assert sig.details["side"] == "buy_to_close"
-        assert sig.details["loss_pct"] == 0.15
-        assert sig.details["tax_holding_period"] == "ST_FORCED_§1233"
+        assert len(ctx.orders) == 1
+        order = ctx.orders[0]
+        assert order["ticker"] == "X"
+        assert order["detail"] == "short_cover_stop"
+        assert order["shares"] == 10  # POSITIVE (buy_to_close)
+        assert order["decision_inputs"]["side"] == "buy_to_close"
+        assert order["decision_inputs"]["loss_pct"] == 0.15
+        assert order["decision_inputs"]["tax_holding_period"] == "ST_FORCED_§1233"
         assert ctx.counters["short_cover_stop_triggered"] == 1
 
     def test_short_within_threshold_no_cover(self):
@@ -55,12 +51,12 @@ class TestShortCoverStopLoss:
         from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
         ctx = SimpleNamespace(
             config={"risk": {"short_cover_stop_pct": 0.15}},
-            short_holdings={"X": _short(qty=-10, entry=100.0)},
+            holdings={"X": _short(qty=-10, entry=100.0)},
             ohlcv={"X": _ohlcv(110.0)},
-            exits=[], counters={},
+            orders=[], counters={},
         )
         ShortCoverStopLossTask().run(ctx)
-        assert ctx.exits == []
+        assert ctx.orders == []
         assert "short_cover_stop_triggered" not in ctx.counters
 
     def test_short_winning_no_cover(self):
@@ -68,23 +64,23 @@ class TestShortCoverStopLoss:
         from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
         ctx = SimpleNamespace(
             config={"risk": {"short_cover_stop_pct": 0.15}},
-            short_holdings={"X": _short(qty=-10, entry=100.0)},
+            holdings={"X": _short(qty=-10, entry=100.0)},
             ohlcv={"X": _ohlcv(80.0)},
-            exits=[], counters={},
+            orders=[], counters={},
         )
         ShortCoverStopLossTask().run(ctx)
-        assert ctx.exits == []
+        assert ctx.orders == []
 
     def test_disabled_no_op(self):
         from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
         ctx = SimpleNamespace(
             config={"risk": {"short_cover_stop_enabled": False}},
-            short_holdings={"X": _short(qty=-10, entry=100.0)},
+            holdings={"X": _short(qty=-10, entry=100.0)},
             ohlcv={"X": _ohlcv(120.0)},
-            exits=[], counters={},
+            orders=[], counters={},
         )
         ShortCoverStopLossTask().run(ctx)
-        assert ctx.exits == []
+        assert ctx.orders == []
 
     def test_long_position_ignored(self):
         """A LONG position (qty > 0) in short_holdings (corrupted state)
@@ -92,28 +88,49 @@ class TestShortCoverStopLoss:
         from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
         ctx = SimpleNamespace(
             config={"risk": {}},
-            short_holdings={"X": _short(qty=+10, entry=100.0)},
+            holdings={"X": _short(qty=+10, entry=100.0)},
             ohlcv={"X": _ohlcv(120.0)},
-            exits=[], counters={},
+            orders=[], counters={},
         )
         ShortCoverStopLossTask().run(ctx)
-        assert ctx.exits == []
+        assert ctx.orders == []
 
     def test_multiple_shorts_partial_trigger(self):
         from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
         ctx = SimpleNamespace(
             config={"risk": {"short_cover_stop_pct": 0.15}},
-            short_holdings={
+            holdings={
                 "WIN":  _short(qty=-10, entry=100.0),  # 80 cur → +20% short profit
                 "MEH":  _short(qty=-10, entry=100.0),  # 110 cur → -10% loss, no trig
                 "LOSE": _short(qty=-10, entry=100.0),  # 120 cur → -20% loss, COVER
             },
             ohlcv={"WIN": _ohlcv(80.0), "MEH": _ohlcv(110.0), "LOSE": _ohlcv(120.0)},
-            exits=[], counters={},
+            orders=[], counters={},
         )
         ShortCoverStopLossTask().run(ctx)
-        assert len(ctx.exits) == 1
-        assert ctx.exits[0][0] == "LOSE"
+        assert len(ctx.orders) == 1
+        assert ctx.orders[0]["ticker"] == "LOSE"
+
+    def test_legacy_short_holdings_surface_still_supported(self):
+        from kernel.pipeline.task_short_cover import ShortCoverStopLossTask
+        ctx = SimpleNamespace(
+            config={"risk": {"short_cover_stop_pct": 0.15}},
+            holdings={},
+            short_holdings={"X": SimpleNamespace(qty=-10, entry_price=100.0)},
+            ohlcv={"X": _ohlcv(120.0)},
+            orders=[], counters={},
+        )
+        ShortCoverStopLossTask().run(ctx)
+        assert ctx.orders[0]["ticker"] == "X"
+
+    def test_inference_pipeline_wires_short_cover_before_buy_scan(self):
+        from kernel.pipeline.pp_inference import InferencePipeline
+
+        src = inspect.getsource(InferencePipeline.run)
+        assert "ShortCoverStopLossTask().run(ctx)" in src
+        assert src.index("ShortCoverStopLossTask().run(ctx)") < src.index(
+            "Phase 2b (buy scan)"
+        )
 
 
 class TestIRC1233TaxMarker:

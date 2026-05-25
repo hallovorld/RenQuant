@@ -250,9 +250,21 @@ Make RenQuant 104 scientifically trustworthy end to end:
   keeps the remaining short with the original short entry basis; over-cover
   emits a separate clean long residual. `short_cover` rows now enter win-rate,
   tax, annual-net reporting, and trade-ledger round-trip matching.
+- Short-cover stop wiring 2026-05-25: `ShortCoverStopLossTask` is no longer
+  dead code and no longer emits legacy sell-style `ctx.exits`. It now emits
+  buy-to-cover `ctx.orders` before the buy scan; sim routes those through the
+  repaired buy-to-cover accounting path. Buy-to-cover is risk reduction and is
+  not blocked by the ordinary new-long buying-power gate.
 
 ## Pushed Progress
 
+- `ddf193d fix(renquant104): repair short cover accounting`
+  - Repairs sim buy-to-cover state transitions, tax rows, win-rate/tax summary
+    inclusion, and round-trip matching for `short_open`/`short_cover`.
+  - Targeted tests passed:
+    `tests/test_sim_trade_ledger.py tests/test_short_cover_tax.py
+    tests/test_short_pnl_vectorbt_validator.py tests/test_sim_execution_integration.py`
+    plus the long-short parity bundle (`78 passed`).
 - `869f6b2 fix(renquant104): gate short candidates by backend capability`
   - Adds explicit short-open backend capability to sim/live/LEAN contexts.
   - Blocks `long_short.enabled=true` from generating short candidates on live

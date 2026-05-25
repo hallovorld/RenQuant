@@ -1875,10 +1875,15 @@ class SimAdapter:
         if not math.isfinite(invest):
             log.warning("SimAdapter: %s buy invest non-finite — rejecting", ticker)
             return
+        existing_shares = (
+            float(self._pos_shares.get(ticker, 0))
+            if ticker in self._holdings else 0.0
+        )
+        is_short_cover_order = existing_shares < 0
         budget = getattr(self, "_buying_power_remaining", None)
         if budget is None or not math.isfinite(float(budget)):
             budget = self._available_buying_power()
-        if invest > float(budget) + 1e-6:
+        if not is_short_cover_order and invest > float(budget) + 1e-6:
             log.warning(
                 "SimAdapter: insufficient buying power for %s "
                 "(need %.2f, have %.2f; settled_cash=%.2f pending_settle=%.2f mode=%s)",

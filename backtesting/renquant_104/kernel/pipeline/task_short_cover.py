@@ -1,10 +1,5 @@
 """Phase 2D — Short cover stop-loss + IRC §1233 ST tax marker.
 
-NOT YET WIRED into InferencePipeline. Ships as ready-to-use code. The
-2026-05-15 long-short Phase 2A/2B + paper-account broker isolation are
-in place; this module unlocks Phase 2D (operator decision required to
-wire into inference pipeline + flip shorts ON).
-
 Two tasks:
 
   ShortCoverStopLossTask
@@ -27,14 +22,12 @@ Two tasks:
     on every short-cover trade so the realized-PnL ledger reports
     correctly. Reporting-only — no algorithmic effect.
 
-Both tasks are PURE — no I/O, no broker calls. They emit ExitSignal
-records that the standard execution path (ExecuteExitsTask) processes.
+Both tasks are PURE — no I/O, no broker calls. Short-cover stops emit
+``ctx.orders`` buy-to-cover rows; adapters route those through the normal buy
+execution path, where an existing negative holding is covered instead of
+opening a fresh long.
 
 Tests: tests/test_short_cover_stop_phase_2d.py.
-
-When wired into InferencePipeline (next session), insert AFTER
-TickerSellJob (long sells already settled) and BEFORE JointActionJob
-(so cover orders compete for capital alongside new buys).
 
 References:
   IRC §1233(a) — character of gain on short sale (always ST)
@@ -59,12 +52,12 @@ class ShortCoverStopLossTask(Task):
     loss exceeds `cover_stop_pct` of entry price.
 
     Reads:
-      ctx.short_holdings: dict[ticker, ShortHoldingState] — keys: qty (negative),
-        entry_price, regime_at_entry, days_held
+      ctx.holdings: dict[ticker, HoldingState] with shares < 0
+        Legacy tests may also pass ctx.short_holdings with qty < 0.
       ctx.config["risk"]["short_cover_stop_pct"] (default 0.15)
       ctx.ohlcv[ticker] — current price for MTM
     Writes:
-      ctx.exits.append((ticker, ExitSignal(reason="short_cover_stop", ...)))
+      ctx.orders.append(buy-to-cover order)
       ctx.counters["short_cover_stop_triggered"]
     """
     name = "ShortCoverStopLossTask"
@@ -75,14 +68,16 @@ class ShortCoverStopLossTask(Task):
             return
         cover_pct = float(cfg.get("short_cover_stop_pct", 0.15))
 
-        shorts = getattr(ctx, "short_holdings", None) or {}
+        shorts = _short_holding_map(ctx)
         if not shorts:
             return
         ohlcv = getattr(ctx, "ohlcv", None) or {}
 
         triggered = []
         for ticker, holding in shorts.items():
-            qty = float(getattr(holding, "qty", 0))
+            qty = float(
+                getattr(holding, "shares", getattr(holding, "qty", 0)) or 0
+            )
             if qty >= 0:  # not a short
                 continue
             entry = float(getattr(holding, "entry_price", 0))
@@ -111,33 +106,36 @@ class ShortCoverStopLossTask(Task):
         if not triggered:
             return
 
-        # Emit cover orders. The exit_type "short_cover_stop" is novel —
-        # downstream ExecuteExitsTask must route to buy_to_close (not
-        # the long sell path).
-        from collections import namedtuple
-        ExitSignal = namedtuple("ExitSignal", ["reason", "qty", "details"])
-        exits = list(getattr(ctx, "exits", None) or [])
+        orders = list(getattr(ctx, "orders", None) or [])
         for t in triggered:
-            sig = ExitSignal(
-                reason="short_cover_stop",
-                qty=t["qty"],
-                details={
+            orders.append({
+                "ticker": t["ticker"],
+                "shares": float(t["qty"]),
+                "price": float(t["current"]),
+                "target_pct": 0.0,
+                "detail": "short_cover_stop",
+                "order_type": "BUY_TO_COVER_short_cover_stop",
+                "source": "ShortCoverStopLossTask",
+                "source_job": "ShortCoverStopLossTask",
+                "source_task": "short_cover_stop",
+                "order_source": "ShortCoverStopLossTask.short_cover_stop",
+                "decision_inputs": {
+                    "acceptance_reason": "short_cover_stop",
                     "side": "buy_to_close",
                     "loss_pct": t["loss_pct"],
                     "trigger": cover_pct,
                     "entry_price": t["entry"],
                     "current_price": t["current"],
-                    "tax_holding_period": "ST_FORCED_§1233",  # always ST for shorts
+                    "tax_holding_period": "ST_FORCED_§1233",
                 },
-            )
-            exits.append((t["ticker"], sig))
+            })
             log.warning(
                 "ShortCoverStopLoss: %s loss=%.2f%% (entry=$%.2f cur=$%.2f) "
                 "≥ trigger=%.0f%% → buy_to_close %.0f shares (§1233 ST tax)",
                 t["ticker"], t["loss_pct"] * 100, t["entry"], t["current"],
                 cover_pct * 100, t["qty"],
             )
-        ctx.exits = exits
+        ctx.orders = orders
         ctx.counters = getattr(ctx, "counters", None) or {}
         ctx.counters["short_cover_stop_triggered"] = (
             ctx.counters.get("short_cover_stop_triggered", 0) + len(triggered)
@@ -189,3 +187,14 @@ class IRC1233TaxMarkerTask(Task):
 
 
 __all__ = ["ShortCoverStopLossTask", "IRC1233TaxMarkerTask"]
+
+
+def _short_holding_map(ctx) -> dict[str, Any]:
+    holdings = getattr(ctx, "holdings", None) or {}
+    out = {
+        ticker: hs for ticker, hs in holdings.items()
+        if float(getattr(hs, "shares", 0) or 0) < 0
+    }
+    if out:
+        return out
+    return getattr(ctx, "short_holdings", None) or {}
