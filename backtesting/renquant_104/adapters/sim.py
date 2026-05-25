@@ -1172,6 +1172,7 @@ class SimAdapter:
         ctx.buying_power_mode = getattr(
             self, "_buying_power_mode", _BUYING_POWER_SETTLED,
         )
+        ctx.supports_short_open = True
         ctx.run_id = f"{today_date.isoformat()}-sim-{uuid.uuid4().hex[:8]}"
         ctx._run_type = "sim"  # noqa: SLF001
 

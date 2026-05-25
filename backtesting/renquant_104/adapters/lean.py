@@ -570,6 +570,7 @@ class LeanAdapter:
         ctx.pending_settle_cash = float(bp_snapshot["pending_settle_cash"])
         ctx.buying_power_mode = str(bp_snapshot["buying_power_mode"])
         ctx.buying_power_source = str(bp_snapshot["buying_power_source"])
+        ctx.supports_short_open = False
         ctx.run_id = f"{today.isoformat()}-lean-{uuid.uuid4().hex[:8]}"
         if self._db is not None:
             ctx._db = self._db  # noqa: SLF001

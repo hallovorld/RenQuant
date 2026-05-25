@@ -1037,6 +1037,7 @@ class RunnerAdapter:
             monitor_state     = dict(state.get("monitor_state", {}) or {}),
         )
         ctx.run_id = f"{today.isoformat()}-live-{uuid.uuid4().hex[:8]}"
+        ctx.supports_short_open = False
         ctx._run_type = "live"  # noqa: SLF001
 
         # Bug 11 fix (2026-04-24): Rotation V4 (thesis_symmetric scoring

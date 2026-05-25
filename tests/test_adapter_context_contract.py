@@ -142,6 +142,7 @@ def test_sim_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     assert getattr(ctx, "_panel_factor_frames")["AAA"].index.max() <= today
     assert getattr(ctx, "_panel_macro_frame").index.max() <= today
     assert getattr(ctx, "_panel_asset_embeddings") == {"AAA": [0.1, -0.2]}
+    assert ctx.supports_short_open is True
 
 
 def test_sim_adapter_prices_enabled_benchmark_sleeve_from_spy_df(tmp_path):
@@ -249,6 +250,7 @@ def test_runner_adapter_make_context_satisfies_pipeline_contract(tmp_path):
         assert ctx.last_sell_pls == {"AAA": -12.0}
         assert ctx.pending_broker_tickers == {"PENDING"}
         assert ctx.monitor_state == {}
+        assert ctx.supports_short_open is False
     finally:
         adapter._db.close()
 
@@ -425,6 +427,7 @@ def test_lean_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     _assert_common_contract(ctx, source="lean", db_marker=adapter._db)
     assert ctx.last_sell_pls == {"AAA": 77.0}
     assert ctx.last_stop_exit_dates == {"AAA": today.date() - dt.timedelta(days=2)}
+    assert ctx.supports_short_open is False
 
 
 def test_lean_adapter_prices_non_benchmark_sleeve_ticker(tmp_path, monkeypatch):

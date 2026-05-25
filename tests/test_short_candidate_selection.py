@@ -41,7 +41,7 @@ def _ohlcv():
 
 
 def _mk_ctx(scores_dict, *, long_tickers=(), held_tickers=(),
-            ls_cfg=None, bear_only=False):
+            ls_cfg=None, bear_only=False, supports_short_open=True):
     """Minimal ctx with panel_scores_all + filter inputs."""
     scores = pd.Series(scores_dict, name="panel_score")
     cands = [SimpleNamespace(ticker=t) for t in long_tickers]
@@ -60,7 +60,11 @@ def _mk_ctx(scores_dict, *, long_tickers=(), held_tickers=(),
         "panel_ltr": {"lookahead_days": 60},
     }
     if ls_cfg is not None:
-        cfg["long_short"] = ls_cfg
+        cfg["long_short"] = {
+            "allow_missing_borrow_status": True,
+            "borrow_status_path": "__missing_test_borrow_status__.json",
+            **ls_cfg,
+        }
     ctx = SimpleNamespace(
         config=cfg,
         candidates=cands,
@@ -68,6 +72,7 @@ def _mk_ctx(scores_dict, *, long_tickers=(), held_tickers=(),
         bear_only=bear_only,
         ohlcv={t: _ohlcv() for t in scores_dict},
         regime="BULL_CALM",
+        supports_short_open=supports_short_open,
     )
     ctx._panel_scores_all = scores
     ctx._global_calibrator = _FakeCalibrator()
@@ -93,6 +98,40 @@ class TestShortCandidateSelectionTask:
         assert tickers == ["T00", "T01"], (
             f"Expected bottom 2 (T00, T01); got {tickers}"
         )
+
+    def test_enabled_without_backend_short_support_skips_fail_closed(self):
+        """long_short must not create actions a backend cannot execute."""
+        from kernel.pipeline.task_short_candidates import ShortCandidateSelectionTask
+
+        ctx = _mk_ctx(
+            {"T00": -2.0, "T01": -1.0, "T02": 1.0},
+            ls_cfg={"enabled": True, "short_decile": 0.5},
+            supports_short_open=False,
+        )
+
+        ShortCandidateSelectionTask().run(ctx)
+
+        assert ctx.short_candidates == []
+        assert ctx.counters["short_open_unsupported"] == 1
+
+    def test_enabled_missing_borrow_status_skips_fail_closed(self, tmp_path):
+        """Synthetic shorts require explicit borrow metadata unless opted out."""
+        from kernel.pipeline.task_short_candidates import ShortCandidateSelectionTask
+
+        ctx = _mk_ctx(
+            {"T00": -2.0, "T01": -1.0, "T02": 1.0},
+            ls_cfg={
+                "enabled": True,
+                "short_decile": 0.5,
+                "allow_missing_borrow_status": False,
+                "borrow_status_path": str(tmp_path / "missing.json"),
+            },
+        )
+
+        ShortCandidateSelectionTask().run(ctx)
+
+        assert ctx.short_candidates == []
+        assert ctx.counters["short_borrow_status_missing"] == 1
 
     def test_long_candidate_overlap_allowed(self):
         """Tickers in ctx.candidates CAN be short candidates. The QP source
