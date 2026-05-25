@@ -1666,6 +1666,7 @@ class RunnerAdapter:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
                 record_live_state_snapshot, record_ticker_daily_state,
+                validate_decision_trace_integrity,
             )
             from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
             # Reconstruct trade events from ctx (live path doesn't keep an
@@ -1847,6 +1848,12 @@ class RunnerAdapter:
                 cash            = float(ctx.cash) if ctx.cash is not None else None,
                 portfolio_value = float(ctx.portfolio_value) if ctx.portfolio_value else None,
                 n_holdings      = len(ctx.holdings),
+            )
+            validate_decision_trace_integrity(
+                self._db,
+                run_id,
+                self._config,
+                context="RunnerAdapter.commit",
             )
 
     # ── Trade log ─────────────────────────────────────────────────────────────

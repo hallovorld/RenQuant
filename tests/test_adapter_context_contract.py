@@ -110,9 +110,14 @@ def test_sim_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     adapter._alpha158_feature_cache = {}
     adapter._panel_history_cache = None
     adapter._panel_history_seq_len = 64
-    adapter._panel_feature_frames = None
-    adapter._panel_factor_frames = None
-    adapter._panel_macro_frame = None
+    adapter._panel_feature_frames = {
+        "AAA": pd.DataFrame({"f": [1.0]}, index=[today]),
+    }
+    adapter._panel_factor_frames = {
+        "AAA": pd.DataFrame({"g": [2.0]}, index=[today]),
+    }
+    adapter._panel_macro_frame = pd.DataFrame({"m": [3.0]}, index=[today])
+    adapter._panel_asset_embeddings = {"AAA": [0.1, -0.2]}
     adapter._charge_daily_borrow = MethodType(lambda self, _today: None, adapter)
     adapter._portfolio_value = MethodType(
         lambda self, _prices, today_ts=None: 100_000.0,
@@ -129,6 +134,10 @@ def test_sim_adapter_make_context_satisfies_pipeline_contract(tmp_path):
     assert ctx.last_sell_pls == {"AAA": 123.45}
     assert ctx.last_stop_exit_dates == {"AAA": (today - pd.Timedelta(days=3)).date()}
     assert ctx.ohlcv["AAA"].index.max() <= today
+    assert getattr(ctx, "_panel_feature_frames")["AAA"].index.max() <= today
+    assert getattr(ctx, "_panel_factor_frames")["AAA"].index.max() <= today
+    assert getattr(ctx, "_panel_macro_frame").index.max() <= today
+    assert getattr(ctx, "_panel_asset_embeddings") == {"AAA": [0.1, -0.2]}
 
 
 def test_runner_adapter_make_context_satisfies_pipeline_contract(tmp_path):

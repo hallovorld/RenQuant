@@ -669,6 +669,7 @@ class LeanAdapter:
             record_pipeline_run,
             record_ticker_daily_state,
             record_trades,
+            validate_decision_trace_integrity,
         )
 
         algo = self._algo
@@ -746,6 +747,12 @@ class LeanAdapter:
             run_date=ctx.today,
             rows=rows,
             run_id=run_id,
+        )
+        validate_decision_trace_integrity(
+            self._db,
+            run_id,
+            config,
+            context="LeanAdapter._record_decision_trace",
         )
 
 

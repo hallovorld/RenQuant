@@ -1549,6 +1549,46 @@ def decision_trace_integrity_report(
     }
 
 
+def validate_decision_trace_integrity(
+    conn: sqlite3.Connection | None,
+    run_id: str | None,
+    config: dict,
+    *,
+    context: str = "decision_trace",
+) -> dict[str, Any]:
+    """Validate the just-written decision trace and optionally fail closed.
+
+    The persistence layer is only useful if every run can be replayed from DB
+    rows. This helper is called by sim/live/LEAN adapters immediately after
+    they write candidate_scores, trades, and ticker_daily_state.
+    """
+    if conn is None or run_id is None:
+        return {}
+    from kernel.pipeline.task_benchmark_sleeve import decision_trace_tickers  # noqa: PLC0415
+
+    report = decision_trace_integrity_report(
+        conn,
+        run_id,
+        expected_watchlist=decision_trace_tickers(config),
+    )
+    if report.get("ok", False):
+        log.info("%s: decision trace integrity OK (run_id=%s)", context, run_id)
+        return report
+
+    msg = (
+        f"{context}: decision trace integrity failed for run_id={run_id}: "
+        f"{json.dumps(report, sort_keys=True, default=str)}"
+    )
+    strict = bool(
+        (config.get("persistence", {}) or {})
+        .get("strict_decision_trace_integrity", True)
+    )
+    if strict:
+        raise RuntimeError(msg)
+    log.warning(msg)
+    return report
+
+
 def record_forward_returns(
     conn: sqlite3.Connection | None,
     rows: Iterable[dict],
@@ -1754,5 +1794,6 @@ __all__ = [
     "record_portfolio_metrics",
     "record_ticker_daily_state",
     "decision_trace_integrity_report",
+    "validate_decision_trace_integrity",
     "lookup_candidate_scores_on_date",
 ]

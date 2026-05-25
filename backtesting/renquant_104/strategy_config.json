@@ -1134,7 +1134,8 @@
   },
   "persistence": {
     "enabled": true,
-    "db_path": "data/runs.db"
+    "db_path": "data/runs.db",
+    "strict_decision_trace_integrity": true
   },
   "monitoring": {
     "max_no_trade_days": 15,

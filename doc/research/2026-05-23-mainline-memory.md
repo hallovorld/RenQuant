@@ -2293,6 +2293,33 @@ Operational conclusion:
   Re-run acceptance only after the next scorer/calibrator pair passes strict
   identity and WF gates.
 
+## 2026-05-24 Sim/Live Trace Contract Follow-Up
+
+- Bug found: `SimAdapter` built and cached `asset_embeddings` from the shared
+  panel runtime bundle but did not attach them to each per-bar
+  `InferenceContext`. Live and LEAN used `attach_panel_runtime_frames()` and
+  therefore did attach `_panel_asset_embeddings`. Any scorer with `emb_*`
+  columns could validate on a different feature surface in sim than in live.
+- Fix: `SimAdapter.make_context()` now carries `_panel_asset_embeddings` into
+  the per-bar context; regression coverage pins feature/factor/macro slicing
+  plus embedding propagation.
+- Bug found: `decision_trace_integrity_report()` existed but was not invoked
+  by sim/live/LEAN after DB writes. That meant incomplete `ticker_daily_state`,
+  missing blocked reasons, missing trade payloads, missing sell economics, or
+  QP attribution gaps could remain a post-hoc test-only finding instead of a
+  daily/full failure.
+- Fix: added `validate_decision_trace_integrity()` and wired it into
+  `SimAdapter.commit()`, `RunnerAdapter.commit()`, and
+  `LeanAdapter._record_decision_trace()` after they write candidate scores,
+  trades, and ticker daily state. `persistence.strict_decision_trace_integrity`
+  is now explicitly `true` in both live config and golden config, with default
+  fail-closed behavior.
+- Validation: targeted suites passed: adapter/panel scoring (`43 passed`),
+  persistence/LEAN/adapter contract (`44 passed`), veto/runner state/DB
+  separation (`81 passed`), and config/panel/universe parity (`106 passed`).
+  This does not claim APY/Sharpe improvement; it prevents future decision
+  quality analysis from being based on incomplete trace rows.
+
 ## Stop Conditions
 
 Stop and fix before reporting performance if any of these happen:

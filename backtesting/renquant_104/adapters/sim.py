@@ -1165,6 +1165,13 @@ class SimAdapter:
         # Bug #25: also propagate macro frame, sliced to today_ts
         if getattr(self, "_panel_macro_frame", None) is not None:
             ctx._panel_macro_frame = self._panel_macro_frame.loc[:today_ts]  # noqa: SLF001
+        # T2-2 parity: live/LEAN attach the full PanelFrameBundle, including
+        # per-ticker asset embeddings. Sim was keeping embeddings on the
+        # adapter but not carrying them into the per-bar context, so any scorer
+        # with emb_* columns validated on a different feature surface than
+        # production. Embeddings are per-ticker constants, not time-indexed.
+        if getattr(self, "_panel_asset_embeddings", None) is not None:
+            ctx._panel_asset_embeddings = self._panel_asset_embeddings  # noqa: SLF001
 
         return ctx
 
@@ -1298,7 +1305,7 @@ class SimAdapter:
         if self._db is not None:
             from kernel.persistence import (  # noqa: PLC0415
                 record_pipeline_run, record_candidate_scores, record_trades,
-                record_ticker_daily_state,
+                record_ticker_daily_state, validate_decision_trace_integrity,
             )
             from kernel.artifact_contract import build_run_bundle  # noqa: PLC0415
             run_bundle = build_run_bundle(
@@ -1380,6 +1387,12 @@ class SimAdapter:
                 run_date=today_ts.date(),
                 rows=tds_rows,
                 run_id=run_id,
+            )
+            validate_decision_trace_integrity(
+                self._db,
+                run_id,
+                self._config,
+                context="SimAdapter.commit",
             )
 
     # ── Sim-side execution primitives ───────────────────────────────────────

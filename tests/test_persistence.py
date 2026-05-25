@@ -23,6 +23,7 @@ from kernel.persistence import (  # noqa: E402
     record_training_run,
     record_ticker_daily_state,
     decision_trace_integrity_report,
+    validate_decision_trace_integrity,
 )
 
 
@@ -732,6 +733,58 @@ class TestTrades:
 
         assert report["ok"] is False
         assert report["model_type_gaps"] == 1
+        conn.close()
+
+    def test_validate_decision_trace_integrity_raises_when_strict(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        cfg.update({
+            "watchlist": ["AAA"],
+            "persistence": {
+                **cfg["persistence"],
+                "strict_decision_trace_integrity": True,
+            },
+        })
+        conn = get_connection(cfg)
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+
+        with pytest.raises(RuntimeError, match="decision trace integrity failed"):
+            validate_decision_trace_integrity(
+                conn, rid, cfg, context="unit-test",
+            )
+        conn.close()
+
+    def test_validate_decision_trace_integrity_passes_complete_trace(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        cfg.update({
+            "watchlist": ["AAA"],
+            "persistence": {
+                **cfg["persistence"],
+                "strict_decision_trace_integrity": True,
+            },
+        })
+        conn = get_connection(cfg)
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 5, 22),
+        )
+        record_ticker_daily_state(
+            conn,
+            run_id=rid,
+            run_date=datetime.date(2026, 5, 22),
+            rows=[{
+                "ticker": "AAA",
+                "selected": 0,
+                "blocked_by": "no_model_signal",
+                "in_universe": 0,
+            }],
+        )
+
+        report = validate_decision_trace_integrity(
+            conn, rid, cfg, context="unit-test",
+        )
+
+        assert report["ok"] is True
         conn.close()
 
 
