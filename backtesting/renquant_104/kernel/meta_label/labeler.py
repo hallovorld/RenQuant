@@ -21,6 +21,23 @@ import pandas as pd
 
 from .triple_barrier import apply_triple_barrier
 
+PATH_TRIGGER_COLUMNS: tuple[str, ...] = (
+    "trigger_stop_loss",
+    "trigger_trailing_stop",
+    "trigger_single_day_loss",
+    "trigger_max_hold",
+)
+
+
+def _has_path_rule_trigger(row: pd.Series) -> bool:
+    for col in PATH_TRIGGER_COLUMNS:
+        try:
+            if int(row.get(col, 0) or 0) == 1:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
 
 def _resolve_sigma_daily(row: pd.Series, default_sigma_daily: float) -> float:
     """Get a daily-σ estimate for a snapshot row.
@@ -85,8 +102,8 @@ def label_snapshots(
     pd.DataFrame
         Copy of ``snapshot_df`` with three columns populated/added:
         ``fwd_5d_ret``, ``fwd_20d_ret`` (forward returns regardless of
-        trigger), and ``meta_label`` (0/1 only for any_trigger==1 rows;
-        NaN otherwise).
+        trigger), and ``meta_label`` (0/1 only for rows with a path-rule
+        trigger eligible for MetaLabelVetoTask; NaN otherwise).
     """
     out = snapshot_df.copy()
     # Ensure the column shape
@@ -121,13 +138,15 @@ def label_snapshots(
         out.at[i, "fwd_5d_ret"]  = _fwd_geometric_return(close, anchor, fwd_short_window)
         out.at[i, "fwd_20d_ret"] = _fwd_geometric_return(close, anchor, fwd_window)
 
-        # Meta-label only for rows with a primary-signal trigger
+        # Meta-label only for rows with a path-rule trigger. Older snapshots
+        # may have any_trigger=1 for model/QP exits; those are not eligible at
+        # inference time and must not contaminate the training target.
         any_trig = row.get("any_trigger", 0)
         try:
             any_trig_i = int(any_trig) if pd.notna(any_trig) else 0
         except (TypeError, ValueError):
             any_trig_i = 0
-        if any_trig_i != 1:
+        if any_trig_i != 1 or not _has_path_rule_trigger(row):
             continue
 
         event_price = float(close.loc[anchor])

@@ -232,6 +232,29 @@ class TestSnapshotHoldingsTaskFeatures:
         assert rows_by_ticker["MSFT"]["trigger_stop_loss"] == 0
         assert rows_by_ticker["MSFT"]["any_trigger"] == 0
 
+    def test_model_driven_exits_do_not_become_meta_label_triggers(self):
+        logger = SnapshotLogger()
+        model_sig = ExitSignal(
+            should_exit=True,
+            reason="model",
+            exit_type="model_sell",
+        )
+        ctx = _make_ctx(
+            holdings={"AAPL": _make_holding(entry_price=100.0, hwm=110.0)},
+            today=datetime.date(2025, 1, 15),
+            prices={"AAPL": 95.0},
+            spy_returns=[0.001] * 80,
+            exits=[("AAPL", model_sig)],
+            snapshot_logger=logger,
+        )
+        SnapshotHoldingsTask().run(ctx)
+        row = logger._rows[0]  # noqa: SLF001
+        assert row["any_trigger"] == 0
+        assert row["trigger_stop_loss"] == 0
+        assert row["trigger_trailing_stop"] == 0
+        assert row["trigger_single_day_loss"] == 0
+        assert row["trigger_max_hold"] == 0
+
     def test_spy_returns_features(self):
         logger = SnapshotLogger()
         # 80 days of constant +0.1% / day. spy_5d_ret = 0.5%, spy_20d_ret = 2%, spy_60d_ret = 6%

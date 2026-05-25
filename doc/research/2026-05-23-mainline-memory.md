@@ -118,6 +118,16 @@ Make RenQuant 104 scientifically trustworthy end to end:
   artifacts fail closed for buy/full while sell-only remains armed. This
   prevents a future path-veto experiment from silently degrading back to the
   un-vetoed stop path.
+- Meta-label training contamination found and fixed. Old snapshot labels marked
+  `any_trigger=1` for model/QP exits, but runtime `MetaLabelVetoTask` only
+  applies to path-rule exits (`stop_loss`, `trailing_stop`,
+  `single_day_loss`, `max_hold`). The old W1 artifact therefore trained on
+  `146` labeled rows, but only `37` were path-rule rows; `109` rows were a
+  different decision problem. `SnapshotHoldingsTask`, `label_snapshots`, and
+  `_meta_label_train.py` now filter to the same path-rule trigger surface as
+  runtime inference. A diagnostic W1/W2/W3 path-rule-only retrain had only
+  `108` events and weak CV AUC `0.491 ± 0.104`; do not promote meta-label until
+  more clean path-rule samples exist and per-regime WF A/B passes.
 
 ## Pushed Progress
 

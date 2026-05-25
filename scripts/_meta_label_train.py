@@ -54,6 +54,34 @@ logging.basicConfig(
 )
 log = logging.getLogger("meta-label-train")
 
+PATH_TRIGGER_COLUMNS: tuple[str, ...] = (
+    "trigger_stop_loss",
+    "trigger_trailing_stop",
+    "trigger_single_day_loss",
+    "trigger_max_hold",
+)
+
+
+def select_path_rule_training_events(df: pd.DataFrame) -> pd.DataFrame:
+    """Return labeled rows matching MetaLabelVetoTask's inference surface.
+
+    Historical snapshot logs set ``any_trigger=1`` for some model/QP exits
+    while the runtime veto only ever sees path-rule exits. Training on those
+    rows mixes a different decision problem into the classifier and weakens the
+    artifact. The training set is therefore exactly labeled rows with one of
+    the canonical path-trigger columns set.
+    """
+    if df.empty or "meta_label" not in df.columns:
+        return df.iloc[0:0].copy()
+    work = df[df["meta_label"].notna()].copy()
+    if work.empty:
+        return work
+    mask = pd.Series(False, index=work.index)
+    for col in PATH_TRIGGER_COLUMNS:
+        if col in work.columns:
+            mask |= pd.to_numeric(work[col], errors="coerce").fillna(0).astype(int).eq(1)
+    return work[mask].copy().reset_index(drop=True)
+
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -76,12 +104,16 @@ def main() -> None:
 
     # Load + filter to labelled rows
     log.info("Reading labels → %s", args.labels)
-    df = pd.read_parquet(args.labels)
-    df = df[df["meta_label"].notna()].copy().reset_index(drop=True)
+    raw_df = pd.read_parquet(args.labels)
+    raw_labeled = int(raw_df["meta_label"].notna().sum()) if "meta_label" in raw_df.columns else 0
+    df = select_path_rule_training_events(raw_df)
     n_events = len(df)
     if n_events < 100:
-        log.error("Only %d labelled events; need ≥ 100 for meaningful training.",
-                  n_events)
+        log.error(
+            "Only %d path-rule labelled events out of %d labelled rows; "
+            "need ≥ 100 for meaningful training.",
+            n_events, raw_labeled,
+        )
         sys.exit(1)
     balance = float(df["meta_label"].mean())
     log.info("Labelled events: %d  class_balance(positive)=%.2f%%",
@@ -250,6 +282,8 @@ def main() -> None:
         "feature_importance":    fi_payload,
         "training_data_summary": {
             "n_events":            n_events,
+            "n_raw_labeled_events": raw_labeled,
+            "training_event_filter": "path_rule_triggers_only",
             "class_balance":       balance,
             "fwd_window_days":     args.label_horizon_days,
             "feature_count":       len(feature_cols),

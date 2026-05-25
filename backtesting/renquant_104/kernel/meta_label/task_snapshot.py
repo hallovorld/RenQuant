@@ -20,6 +20,7 @@ from typing import Any
 
 from kernel.pipeline.context import InferenceContext
 from kernel.pipeline.pipeline import Task
+from kernel.exit_types import META_LABEL_VETO_ELIGIBLE
 
 # Regime → integer code (snapshot column `regime_code`). Pinned here
 # so the meta-label classifier sees a stable encoding.
@@ -107,11 +108,14 @@ class SnapshotHoldingsTask(Task):
         regime_code = _REGIME_CODE.get(ctx.regime, -1)
         confidence  = float(ctx.confidence) if hasattr(ctx, "confidence") else float("nan")
 
-        # Trigger lookup — which tickers have a path-rule exit this bar
+        # Trigger lookup — only path-rule exits are eligible for the
+        # meta-label veto. Model/QP exits must not leak into training labels.
         triggers_by_ticker: dict[str, str] = {}
         for ticker, sig in (getattr(ctx, "exits", []) or []):
             if sig is not None and getattr(sig, "should_exit", False):
-                triggers_by_ticker[ticker] = getattr(sig, "exit_type", "")
+                exit_type = getattr(sig, "exit_type", "")
+                if exit_type in META_LABEL_VETO_ELIGIBLE:
+                    triggers_by_ticker[ticker] = exit_type
         n_triggers = len(triggers_by_ticker)
 
         # Portfolio context

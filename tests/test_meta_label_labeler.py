@@ -68,6 +68,19 @@ class TestLabelSnapshotsBasics:
         out = label_snapshots(df, close_paths={"AAPL": _close_series(prices)})
         assert pd.isna(out.iloc[0]["meta_label"])
 
+    def test_any_trigger_without_path_rule_yields_nan_meta_label(self):
+        # Regression: old snapshots sometimes marked model/QP exits as
+        # any_trigger=1. The runtime veto never sees those exit types, so the
+        # labeler must not train on them.
+        row = _snapshot_row(date_iso="2025-01-15", ticker="AAPL", any_trigger=1)
+        df = pd.DataFrame([row])
+        prices = [100.0 * (0.99 ** i) for i in range(30)]
+        out = label_snapshots(
+            df,
+            close_paths={"AAPL": _close_series(prices, start="2025-01-01")},
+        )
+        assert pd.isna(out.iloc[0]["meta_label"])
+
 
 class TestLabelSnapshotsTripleBarrierIntegration:
 
