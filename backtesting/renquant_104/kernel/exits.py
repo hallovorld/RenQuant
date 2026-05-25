@@ -84,8 +84,10 @@ class HoldingState:
     prev_close:      float | None = None
     rank_score:      float | None = None   # latest calibrated probability (set by ScoreModelTask)
     expected_return: float | None = None   # latest E[R-SPY] over rotation horizon
+    expected_return_horizon_days: int | None = None
     panel_score:     float | None = None   # latest cross-sectional panel-LTR score (set by PanelScoringJob)
     mu:              float | None = None   # latest NGBoost μ (set by PanelScoringJob)
+    mu_horizon_days: int | None = None
     sigma:           float | None = None   # latest NGBoost σ (set by PanelScoringJob, fwd-5d)
     # 2026-05-10: realized daily-return std (20d rolling) — fallback when
     # NGBoost is OFF in prod so σ-aware exits (stop_loss / single_day_loss)

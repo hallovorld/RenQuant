@@ -230,6 +230,49 @@ class TestCandidateScores:
         assert rows[("BBB", "holding")][2] == "optimal"
         conn.close()
 
+    def test_score_horizon_fields_recorded_for_candidates_and_holdings(self, tmp_path):
+        from kernel.selection import CandidateResult
+        from kernel.exits import HoldingState
+
+        conn = get_connection(_cfg(tmp_path))
+        rid = record_pipeline_run(
+            conn, run_type="sim", run_date=datetime.date(2026, 4, 22),
+        )
+        cand = CandidateResult(
+            ticker="AAA",
+            raw_score=0,
+            rank_score=0.8,
+            rs_score=0,
+            detail="",
+            expected_return=0.04,
+            expected_return_horizon_days=60,
+            mu=0.04,
+            mu_horizon_days=60,
+        )
+        holding = HoldingState(
+            entry_price=100.0,
+            entry_date=datetime.date(2026, 3, 1),
+            high_watermark=105.0,
+            expected_return=0.03,
+            expected_return_horizon_days=60,
+            mu=0.03,
+            mu_horizon_days=60,
+        )
+
+        record_candidate_scores(conn, rid, [cand], {"BBB": holding}, selected_tickers=set())
+
+        rows = {
+            (r[0], r[1]): r[2:]
+            for r in conn.execute(
+                """SELECT ticker, role, expected_return_horizon_days, mu_horizon_days
+                     FROM candidate_scores WHERE run_id = ?""",
+                (rid,),
+            )
+        }
+        assert rows[("AAA", "candidate")] == (60, 60)
+        assert rows[("BBB", "holding")] == (60, 60)
+        conn.close()
+
     def test_non_selected_candidate_gets_explicit_default_reason(self, tmp_path):
         from kernel.selection import CandidateResult
         conn = get_connection(_cfg(tmp_path))

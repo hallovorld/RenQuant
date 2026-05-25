@@ -175,8 +175,12 @@ def build_ticker_daily_state_rows(
             "panel_score": _score_value(src, snap, "panel_score"),
             "rank_score": _score_value(src, snap, "rank_score"),
             "expected_return": _score_value(src, snap, "expected_return"),
+            "expected_return_horizon_days": _score_value(
+                src, snap, "expected_return_horizon_days",
+            ),
             "kelly_target_pct": _score_value(src, snap, "kelly_target_pct"),
             "mu": _score_value(src, snap, "mu"),
+            "mu_horizon_days": _score_value(src, snap, "mu_horizon_days"),
             "sigma": _score_value(src, snap, "sigma"),
             "in_candidates": 1 if cand is not None else 0,
             "selected": 1 if tk in selected_tickers else 0,

@@ -76,10 +76,12 @@ CREATE TABLE IF NOT EXISTS candidate_scores (
     -- additional factors that drove this bar's decision so post-hoc
     -- analysis can reconstruct WHY each ticker was selected/blocked.
     expected_return    REAL,        -- calibrated ER (drives rotation)
+    expected_return_horizon_days INTEGER,
     kelly_target_pct   REAL,        -- Kelly sizing target (μ/σ²)
     model_type         TEXT,        -- per-ticker model: 'Manual' | 'XGBoost' | 'QLearning' | 'Classification'
     sector             TEXT,        -- from sector_map, easier than join
     panel_ltr_artifact TEXT,        -- 'panel-ltr.json' filename or full path
+    mu_horizon_days    INTEGER,
     qp_delta_w         REAL,        -- QP optimized delta weight for this ticker
     qp_target_w        REAL,        -- QP optimized target weight for this ticker
     qp_status          TEXT,        -- optimizer status attached to this row
@@ -263,8 +265,10 @@ CREATE TABLE IF NOT EXISTS ticker_daily_state (
     panel_score       REAL,
     rank_score        REAL,
     expected_return   REAL,
+    expected_return_horizon_days INTEGER,
     kelly_target_pct  REAL,
     mu                REAL,
+    mu_horizon_days   INTEGER,
     sigma             REAL,
     -- Final decision
     in_candidates     INTEGER,        -- 1 if reached ctx.candidates (per-ticker model said buy)
@@ -408,10 +412,12 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     # existing candidate_scores tables to add the new factor columns.
     "candidate_scores": [
         ("expected_return",    "REAL"),
+        ("expected_return_horizon_days", "INTEGER"),
         ("kelly_target_pct",   "REAL"),
         ("model_type",         "TEXT"),
         ("sector",             "TEXT"),
         ("panel_ltr_artifact", "TEXT"),
+        ("mu_horizon_days",    "INTEGER"),
         ("qp_delta_w",         "REAL"),
         ("qp_target_w",        "REAL"),
         ("qp_status",          "TEXT"),
@@ -420,6 +426,8 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("qp_delta_w",         "REAL"),
         ("qp_target_w",        "REAL"),
         ("qp_status",          "TEXT"),
+        ("expected_return_horizon_days", "INTEGER"),
+        ("mu_horizon_days",    "INTEGER"),
     ],
     # 2026-05-22: persist the per-trade decision tree, not just scalar P&L.
     # Buy orders already carry order-attribution fields at emission time;
@@ -851,7 +859,7 @@ def record_candidate_scores(
 
     `candidates`:  iterable of CandidateResult-like objects (must have
                    .ticker, .raw_score, .rank_score, .rs_score, .panel_score,
-                   .mu, .sigma)
+                   .mu, .sigma, and optional horizon-day fields)
     `holdings`:    dict of ticker → HoldingState (only rank_score / panel_score /
                    mu / sigma attributes are read; other fields ignored)
     `selected_tickers`: set of candidate tickers that ended up in orders this run
@@ -891,10 +899,12 @@ def record_candidate_scores(
             None if selected else blocked_map.get(c.ticker, "candidate_not_selected"),
             # New decision-factor columns
             _none_or_float(getattr(c, "expected_return", None)),
+            _none_or_int(getattr(c, "expected_return_horizon_days", None)),
             _none_or_float(getattr(c, "kelly_target_pct", None)),
             model_types.get(c.ticker),
             sector_map.get(c.ticker),
             panel_artifact,
+            _none_or_int(getattr(c, "mu_horizon_days", None)),
             _none_or_float(qp_delta_by_ticker.get(c.ticker)),
             _none_or_float(qp_target_by_ticker.get(c.ticker)),
             qp_status,
@@ -911,10 +921,12 @@ def record_candidate_scores(
             0,
             None,
             _none_or_float(getattr(hs, "expected_return", None)),
+            _none_or_int(getattr(hs, "expected_return_horizon_days", None)),
             _none_or_float(getattr(hs, "kelly_target_pct", None)),
             model_types.get(ticker),
             sector_map.get(ticker),
             panel_artifact,
+            _none_or_int(getattr(hs, "mu_horizon_days", None)),
             _none_or_float(qp_delta_by_ticker.get(ticker)),
             _none_or_float(qp_target_by_ticker.get(ticker)),
             qp_status,
@@ -924,9 +936,11 @@ def record_candidate_scores(
             """INSERT OR REPLACE INTO candidate_scores
                   (run_id, ticker, role, raw_score, rank_score, panel_score, rs_score,
                    mu, sigma, selected, blocked_by,
-                   expected_return, kelly_target_pct, model_type, sector,
-                   panel_ltr_artifact, qp_delta_w, qp_target_w, qp_status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   expected_return, expected_return_horizon_days,
+                   kelly_target_pct, model_type, sector,
+                   panel_ltr_artifact, mu_horizon_days,
+                   qp_delta_w, qp_target_w, qp_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 
@@ -1312,8 +1326,9 @@ def record_ticker_daily_state(
     Each row dict supports: regime, confidence, in_watchlist, in_universe,
     pending_at_broker, has_position, position_qty, position_pct,
     model_type, model_action, sell_streak, panel_score, rank_score,
-    expected_return, kelly_target_pct, mu, sigma, in_candidates,
-    selected, blocked_by, sector, qp_delta_w, qp_target_w, qp_status.
+    expected_return, expected_return_horizon_days, kelly_target_pct,
+    mu, mu_horizon_days, sigma, in_candidates, selected, blocked_by,
+    sector, qp_delta_w, qp_target_w, qp_status.
     `ticker` required.
     """
     if conn is None:
@@ -1343,8 +1358,10 @@ def record_ticker_daily_state(
             _none_or_float(r.get("panel_score")),
             _none_or_float(r.get("rank_score")),
             _none_or_float(r.get("expected_return")),
+            _none_or_int(r.get("expected_return_horizon_days")),
             _none_or_float(r.get("kelly_target_pct")),
             _none_or_float(r.get("mu")),
+            _none_or_int(r.get("mu_horizon_days")),
             _none_or_float(r.get("sigma")),
             _none_or_int(r.get("in_candidates")),
             _none_or_int(r.get("selected")),
@@ -1362,10 +1379,12 @@ def record_ticker_daily_state(
                in_watchlist, in_universe, pending_at_broker,
                has_position, position_qty, position_pct,
                model_type, model_action, sell_streak,
-               panel_score, rank_score, expected_return, kelly_target_pct,
-               mu, sigma, in_candidates, selected, blocked_by, sector,
+               panel_score, rank_score, expected_return,
+               expected_return_horizon_days, kelly_target_pct,
+               mu, mu_horizon_days, sigma,
+               in_candidates, selected, blocked_by, sector,
                qp_delta_w, qp_target_w, qp_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         payload,
     )
     return len(payload)

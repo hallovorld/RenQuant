@@ -118,6 +118,20 @@ Make RenQuant 104 scientifically trustworthy end to end:
   optimizer-driven QP soft sells wait at least the 60d panel thesis horizon.
   Hard risk exits remain armed. This is a structural alpha-conversion fix, not
   final WF acceptance evidence.
+- Post-repair diagnostic WF
+  `horizon60_erfloor_bullcalm040_diag_20260524-190959` still failed. It was
+  explicitly diagnostic-only (`--skip-sanity --skip-config-parity`, ER-floor
+  override preserved) and must not be used for promotion. Mean annual-net
+  Sharpe was `+0.459` vs SPY `+1.081`; cut Sharpes were `+0.782`, `+0.696`,
+  and `-0.101`. Trade count dropped from `67` to `35`, median hold rose from
+  `31d` to `60d`, and QP sells/closes became less churny, but BULL_CALM score
+  monotonicity remained negative (`entry_mu` Spearman vs net P/L `-0.268`).
+  Therefore the next main issue is not only premature exit/QP churn; BULL_CALM
+  entry-score ordering itself is still wrong for realized active P/L.
+- Decision-trace horizon observability is now part of the contract:
+  `candidate_scores` and `ticker_daily_state` persist
+  `expected_return_horizon_days` and `mu_horizon_days`. Future audits should
+  never report a `mu`/expected-return number without its horizon.
 - Meta-label exit veto is not promoted. Current production config has
   `ranking.meta_label.enabled=false`, and the old 2026-05-11 artifact has only
   `146` events with CV AUC about `0.554`. New preflight hardening now requires
@@ -257,6 +271,19 @@ Make RenQuant 104 scientifically trustworthy end to end:
     tests/test_joint_qp_task.py tests/test_phase3_mu_sigma_wiring.py
     tests/test_global_calibrator.py tests/test_horizon_contracts.py`
     (`115 passed`).
+- Latest decision-trace horizon observability:
+  - `candidate_scores` and `ticker_daily_state` now persist
+    `expected_return_horizon_days` and `mu_horizon_days` for candidates and
+    holdings.
+  - `build_ticker_daily_state_rows()` carries those fields through the shared
+    sim/live/LEAN trace builder.
+  - Targeted tests passed:
+    `tests/test_persistence.py::TestCandidateScores
+    tests/test_persistence.py::TestTrades tests/test_ticker_daily_state.py
+    tests/test_decision_trace_horizon.py tests/test_order_attribution_contract.py
+    tests/test_phase3_mu_sigma_wiring.py tests/test_global_calibrator.py
+    tests/test_horizon_contracts.py tests/test_wf_config_parity.py`
+    (`72 passed`).
 - Post-prefilter WF validation completed and still failed:
   - Annual-net Sharpe by cut: `+1.037`, `+0.191`, `-0.310`.
   - Mean Sharpe `+0.306`; SPY mean Sharpe `+1.081`; delta `-0.775`.
